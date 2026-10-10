@@ -6,42 +6,87 @@ How `ohgo` is structured, and why. The port invariants live in
 ## Layers
 
 ```
-cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor
+cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
+             Builds a shared harness (slash-command backend) used by both UIs.
   │ builds
   ├─► agent    The model/tool loop. Sees only ai.StreamFn, never HTTP.
-  │     ├─► ai        Message model, transports (Anthropic, OpenAI-compatible),
-  │     │             credential registry. No catalog imports.
-  │     ├─► catalog   Embedded model facts. Produces ai.Model values.
-  │     ├─► tools     read write edit bash glob grep ls webfetch todo task.
+  │     ├─► ai        Message model, three transports (Anthropic,
+  │     │             OpenAI-compatible, Ollama native), Registry, probe.
+  │     │             Imports creds for secrets, never catalog for facts.
+  │     ├─► catalog   Bundled model facts (379 models / 12 providers) plus
+  │     │             live discovery for 5 dynamic providers. Produces
+  │     │             ai.Model values; imports ai for the type only.
+  │     ├─► creds     Credential chain: explicit → file → env → shell text.
+  │     │             Single owner of ProviderEnvVars; secrets never printed.
+  │     ├─► tools     read write edit bash wait glob grep ls webfetch todo
+  │     │             task (task only when maxDepth > 1; wait shares bash's
+  │     │             job table). task imports agent for the subagent spec.
   │     ├─► prompt    System prompt assembly + AGENTS.md discovery.
   │     ├─► session   SQLite transcript store (pure Go, no cgo).
   │     ├─► tokens    Heuristic token estimator + Tokenizer seam.
+  │     ├─► usage     (in agent/) Per-turn token/cost ledger.
   │     └─► tui       State machine (no TTY) + renderer + Bubble Tea bridge.
   ├─► vcs shell diff edit ast
   │           Ported Rust core: git awareness, shell parsing, Myers diff,
   │           fuzzy edit application, Go AST search. Pure Go, zero cgo.
-  ├─► config   ~/.ohgo/settings.json + approval precedence.
+  ├─► config   ~/.ohgo/settings.json: model, tokens, reasoning, approvals,
+  │            theme, compaction. AutoApprove wins over Approvals.
   └─► jsonschema  Reflection-free validator for tool schemas.
 ```
 
-Dependency arrows point one way: `catalog → ai`, `tools → agent`,
-`cmd → everything`. Nothing in `ai` imports `catalog`; nothing in `agent`
-constructs HTTP. A cycle here is a bug, not a shortcut.
+Dependency arrows point one way: `catalog → ai` (type only), `ai → creds`
+(secrets only), `tools → agent` (subagent spec only), `cmd → everything`.
+Nothing in `ai` imports `catalog`; nothing in `agent` constructs HTTP;
+nothing outside `creds` reads a provider credential from env or shell. A
+cycle here is a bug, not a shortcut.
 
 ## The turn
 
 One `Loop.Run` call is one turn:
 
-1. Convert agent messages to a provider request (compaction first, if due).
+1. Resolve the model once at startup (`resolveModel`: flag → settings →
+   env → catalog default; unknown is an error, never a fallback). The
+   completion budget is the model's own ceiling, clamped, never a flat
+   constant. Compaction runs first, if due.
 2. Stream the assistant message; reassemble tool calls in emission order.
-3. Approve each call (policy → hook → default deny), run approved calls with
-   bounded concurrency, exclusive tools draining the batch on both sides.
+3. Approve each call (settings policy → hook → default deny; `--yes`
+   skips), run approved calls with bounded concurrency, exclusive tools
+   draining the batch on both sides.
 4. Append results, repeat until the model stops calling tools or the
-   wall-clock deadline expires.
+   wall-clock deadline (`--deadline`, default none) expires. Usage is added
+   to the ledger per turn.
 
-The caller owns the conversation: the REPL accumulates history across turns
-and rebases it after compaction, because re-appending to a pre-compaction
-list would resurrect summarised context.
+The caller owns the conversation: the REPL and the TUI accumulate history
+across turns and rebase it after compaction (`rebaseHistory`), because
+re-appending to a pre-compaction list would resurrect summarised context.
+Compaction itself is injected, never constructed in the loop: `New` fails
+without a summarizer when compaction is enabled, and the summarizer takes
+its `StreamFn` as a parameter so tests substitute a stub.
+
+## Subagents
+
+Delegation is the one capability that creates another agent, so isolation
+is structural, not advisory (`agent/subagent.go`, `tools/task.go`):
+
+- The child inherits stream, model, tools, budget, approval, compaction,
+  summarizer. It drops `OnTurn`, `OnToolProgress`, `TransformContext`,
+  steering. It refuses: no system prompt (inheriting the parent's is an
+  identity leak), an empty task, a write tool under a read-only request.
+- The depth bound is baked into the tool set: a subagent at the cap is
+  built without a task tool, so it cannot delegate however prompted.
+  Default `--max-depth 1` means the top level may delegate once.
+- The task tool is omitted entirely when `maxDepth <= 1` or `--no-tools`.
+
+## Background jobs
+
+`bash` with `background: true` spawns a detached job and returns its id;
+`wait` collects output incrementally by cursor, under one lock, returning
+only what arrived since the last call. Timeouts are kill-after (the call
+already returned). Caps: 8 running (refusal names the limit), 32 retained
+(oldest completed evicted), 30 KB output per job with a truncation notice.
+A background spawn is shared (`Exclusive` false); foreground runs stay
+serialised. Both tools are built from one `BashTool` instance — two job
+tables would let `bash` start jobs no `wait` could ever see.
 
 ## Concurrency
 
@@ -51,11 +96,15 @@ list would resurrect summarised context.
 - Tool → loop progress flows through `Context.OnProgress`; loop → UI through
   `Config.OnToolProgress` (`started → update → finished`). The final report
   carries the post-`AfterToolCall` result, so the UI never shows output the
-  model will not receive.
+  model will not receive. Progress callbacks run outside locks.
 - UI state is owned by the update goroutine. Loop goroutines send `Event`
   values through a buffered channel that drops on full — a stalled command
   is worse than a missing preview line. Approvals carry per-request reply
   channels, so an answer reaches the exact tool that blocked.
+- Turns never overlap: a submit while busy queues (cap 5, refusal past it)
+  and drains in order from the turn's end message on the update goroutine.
+  Ctrl+c cancels the turn (denying a blocking approval first, clearing the
+  abandoned queue, reporting interruption); only an idle Ctrl+c quits.
 
 ## Errors, by kind
 
@@ -77,20 +126,55 @@ shape, so a later run with a different model is not fed host-specific
 extensions. UI-only messages are dropped at write time. Writes use one
 connection and one transaction per append (WAL on), which is what keeps
 `modernc.org/sqlite` from reporting "database is locked" under its default
-pool.
+pool. A store that will not open degrades to running without persistence;
+a resume id that does not exist is fatal, because an empty session would
+look like wiped history.
 
 ## Transports
 
-Two SSE protocols, not one: Anthropic finalises tool calls inline
-(`content_block_stop`, explicit `message_stop`); OpenAI-compatible endpoints
-finalise after `[DONE]`/EOF because argument fragments have no terminator.
-The accumulator strategies differ on purpose — unifying them drops the first
-fragment of every call. Six providers (groq, together, fireworks, deepseek,
-cerebras, mistral) share the Chat Completions transport; the per-provider
-work is a base URL and a credential name. OpenRouter rides the same
-transport with attribution headers; Ollama Cloud speaks native `ollama-chat`
-(NDJSON `/api/chat`, tool calls reassembled per message, `done_reason`
-mapped with load-as-error).
+Three protocols, not one:
+
+- **Anthropic Messages** finalises tool calls inline (`content_block_stop`,
+  explicit `message_stop`).
+- **OpenAI Chat Completions** finalises after `[DONE]`/EOF because argument
+  fragments have no terminator.
+- **Ollama native** (`ollama-chat`: NDJSON `POST {base}/api/chat`, tool
+  calls reassembled per message, `done_reason` mapped with load-as-error).
+
+The accumulator strategies differ on purpose — unifying the first two drops
+the first fragment of every call. One Chat Completions transport serves
+groq, together, fireworks, deepseek, cerebras, mistral, plus OpenRouter
+(with attribution headers) and the OpenCode gateways (zen/go); the
+per-provider work is a base URL and a credential name. `ai.ProbeProvider`
+checks reachability + authentication without spending a completion and backs
+`/connect` validation, `/providers`, `/status`, and the TUI probe view.
+`xai` and Responses-only model lines are excluded on purpose (no Responses
+transport in this build), recorded in `TestExcludedProvidersAreDocumented`.
+
+## CLI and harness (`cmd/ohgo`)
+
+Root runs the interactive session; subcommands: `run`, `sessions` (+
+`show`), `models [provider]`, `doctor`, `init`, `docs`, `version`. Flags:
+`--model`, `--resume`, `--dir`, `--no-tui`, `--plain`, `--no-tools`,
+`--yes`, `--reasoning`/`--effort`, `--max-depth`, `--deadline`.
+
+Both interactive paths share one backend (`harness.go`): the full-screen
+UI and the plain REPL call the same code for `/model` (static then live
+discovery), `/compact`, `/sessions`/`/resume`, `/jobs`, `/providers`,
+`/status`, `/usage`, `/doctor`, `/connect` (numbered wizard: provider →
+credential → validated model list → saved key + settings), `/disconnect`
+(file/explicit keys only; env/shell keys say where to unset). Presentation
+differs; decisions do not. Commands parse before anything reaches the
+model; a bare `/` is a path. Prompt history (`~/.ohgo/history`, last 1000,
+commands excluded, `OHGO_HISTORY_FILE` overrides, empty disables) is an
+audit trail, best-effort.
+
+`ohgo init` is a pure-planned wizard (`planInit`) writing
+`~/.ohgo/settings.json`; it never overwrites without `--force`. `ohgo
+doctor` checks workdir, config, catalog, model resolution, credentials,
+session store, tool set — each failure naming its fix — as structured
+reports shared with the in-TUI doctor. `ohgo docs --dir` generates man
+pages + markdown from the live cobra tree.
 
 ## Terminal workspace (`tui`)
 
@@ -101,40 +185,60 @@ event/approval channels plus Bubble Tea commands. Derived display phases
 (`DeriveRuntime`: idle, working, streaming, running tool, awaiting
 approval, shutting down) are computed per render, never stored.
 
-- `tui/width.go`: cell-width measurement, truncation, and wrapping
+- `tui/model.go`: the state machine — composer, viewport (scroll + sticky
+  follow), queue, overlays, sessions/models/jobs/commands/connect pickers,
+  theme, workspace, probe/doctor/providers wiring.
+- `tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,
+  prompt history with draft preservation.
+- `tui/entries.go`: transcript entries rebuilt from replayed messages (tool
+  cards from stored calls, orphans kept, UI-only skipped).
+- `tui/markdown.go`: dependency-free chat prose (fences, code, headers,
+  lists, quotes, rules); tables pass through rather than mangled.
+- `tui/width.go`: cell-width measurement, truncation, wrapping
   (ANSI-stripped, CJK/emoji-aware, hard-breaks unbroken runs).
 - `tui/layout.go`: responsive tiers (wide ≥100, medium 70–99, narrow <70,
   mini <40×8), content width, conversation height, bounded composer.
-- `tui/style.go`: semantic chrome styles, separators, hints, runtime
-  markers (text plus color, never color alone).
+- `tui/style.go`: two palettes (dark/light) behind one resolver plus
+  semantic chrome (typo degrades to dark; text plus color, never color
+  alone).
 - `tui/view.go`: adaptive header/conversation/composer/status, bounded
   approval preview and pickers, mini-mode notice, overlap-free slicing.
-- Pickers (`sessions`, `models`, `jobs`, `commands`, connect flow) share one
-  overlay, filter, and keyboard contract; `/model` resolves native ids
-  through the catalog with caller-built detail (context/price/local/caps).
-- The model picker owns a list state machine (`tui/picker.go`): query plus
-  text cursor, highlight index into the filtered set, scroll offset, and
-  result-window rows recomputed from `WindowSizeMsg`. Navigation
-  (arrows/page/home/end) always keeps the highlight rendered in-viewport;
-  search tokenizes on whitespace (AND across name, id, provider, metadata)
-  with `provider:` pins and verified-price `free` matching; refreshes swap
-  rows by value-preserving `SetItems` under a generation guard.
-- Catalog freshness (`catalog/dynamic.go`): `SnapshotAll` merges bundled
-  and cached rows per (provider, id) with origins; `DiscoverModelsFresh`
-  re-fetches one provider with stale fallback; pricing presence travels
-  with each record so unknown is never presented as free.
+  Overlays take over (transcript + composer hidden) so streaming output
+  never fights a moving cursor.
+- `tui/commands.go`: the shared `/` registry (`ParseCommand`, `HelpText`,
+  typo suggestions); both UIs dispatch through it.
+- `tui/picker.go`: the generic list state machine (query + cursor,
+  highlight, scroll, window rows from `WindowSizeMsg`; whitespace-AND
+  search with `provider:` pins and verified-price `free` matching;
+  value-preserving `SetItems` under a generation guard). The model picker
+  resolves native `provider/id` through the catalog with caller-built
+  detail (context/price/local/caps).
+- Catalog freshness (`catalog/dynamic.go`, `snapshot`): `SnapshotAll`
+  merges bundled + cached rows per (provider, id) with origins;
+  `DiscoverModelsFresh` re-fetches one provider (24h disk cache in
+  `~/.ohgo/cache`, stale fallback); pricing presence travels with each
+  record so unknown is never presented as free. Dynamic set: `ollama`,
+  `ollama-cloud`, `openrouter`, `opencode-zen`, `opencode-go` (13th
+  provider overall: plain `ollama` has no bundled rows — local models exist
+  only on the user's machine).
 
 ## Credentials and discovery
 
 - Precedence is explicit → credential file (`~/.ohgo/credentials.json`,
   0600, atomic) → environment → parsed shell startup files. Shell files are
   read as text and never executed; dynamic lines are skipped and reported.
+  `creds` owns the table; `ai.Registry` wraps it with base-URL overrides
+  (`SetBaseURL` replaces the whole base, `/v1` included) and explicit keys
+  (`SetAPIKey` beats the environment, which is what makes gateways and test
+  servers usable).
 - Sources are labeled everywhere (`environment (X)`); values never reach
-  output, logs, transcripts, or errors.
+  output, logs, transcripts, or errors (`Scrub` + a test scanning doctor
+  output for the test key).
 - Bundled catalog rows answer offline; ids the bundle never saw resolve
-  through live discovery (24h disk cache, stale fallback). Discovered rows
-  face the same validation as bundled ones; context-less rows are skipped,
-  minimal gateway ids merge with bundled facts or not at all.
+  through live discovery (bounded timeout, stale-cache fallback).
+  Discovered rows face the same validation as bundled ones; context-less
+  rows are skipped, minimal gateway ids merge with bundled facts or not at
+  all.
 
 ## Performance notes
 
@@ -148,4 +252,7 @@ approval, shutting down) are computed per render, never stored.
 - Token counting is heuristic (bytes/4, round up) behind a `Tokenizer`
   interface, so a real BPE encoder drops in without touching call sites.
 
-Run `make bench` for the current numbers; `make check` for the full gate.
+Run `make bench` for the current numbers; `make check` for the full gate
+(build + vet + gofmt + tests). Releases are `make release` (four static
+tarballs: linux/darwin × amd64/arm64, `CGO_ENABLED=0`) installed via
+`install.sh` or `make install` (`~/.local/bin` by default).
