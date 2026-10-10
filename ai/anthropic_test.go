@@ -25,11 +25,11 @@ func sseServer(t *testing.T, body string, status int) (*httptest.Server, *string
 		captured = string(buf)
 		if status != 0 {
 			w.WriteHeader(status)
-			fmt.Fprint(w, `{"error":{"type":"invalid_request_error","message":"bad request"}}`)
+			_, _ = fmt.Fprint(w, `{"error":{"type":"invalid_request_error","message":"bad request"}}`)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	t.Cleanup(server.Close)
 	return server, &captured
@@ -250,7 +250,7 @@ func TestAnthropicSendsAuthAndCacheControl(t *testing.T) {
 		_, _ = r.Body.Read(buf)
 		captured = string(buf)
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, anthropicTextStream)
+		_, _ = fmt.Fprint(w, anthropicTextStream)
 	}))
 	t.Cleanup(server.Close)
 	provider := &AnthropicProvider{APIKey: "sk-test", BaseURL: server.URL}

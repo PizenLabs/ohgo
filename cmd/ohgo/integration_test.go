@@ -67,10 +67,10 @@ func TestEndToEndToolCallRoundTrip(t *testing.T) {
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		if len(requestBodies) == 1 {
-			fmt.Fprint(w, anthropicTurnSSE("read", `{"path":"hello.txt"}`))
+			_, _ = fmt.Fprint(w, anthropicTurnSSE("read", `{"path":"hello.txt"}`))
 			return
 		}
-		fmt.Fprint(w, anthropicFinalTurn)
+		_, _ = fmt.Fprint(w, anthropicFinalTurn)
 	}))
 	defer server.Close()
 
@@ -120,7 +120,7 @@ func TestEndToEndProviderErrorSurfaces(t *testing.T) {
 	root := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":{"type":"authentication_error","message":"invalid key"}}`)
+		_, _ = fmt.Fprint(w, `{"error":{"type":"authentication_error","message":"invalid key"}}`)
 	}))
 	defer server.Close()
 

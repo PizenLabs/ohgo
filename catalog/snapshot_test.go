@@ -50,7 +50,7 @@ func servePayload(t *testing.T, payload string, status int, sawAuth *bool) *http
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		fmt.Fprint(w, payload)
+		_, _ = fmt.Fprint(w, payload)
 	}))
 }
 
@@ -351,9 +351,9 @@ func TestOllamaDiscoveryWithNilClient(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/tags":
-			fmt.Fprint(w, `{"models":[{"name":"llama3.1:8b","model":"llama3.1:8b"}]}`)
+			_, _ = fmt.Fprint(w, `{"models":[{"name":"llama3.1:8b","model":"llama3.1:8b"}]}`)
 		case "/api/show":
-			fmt.Fprint(w, `{"capabilities":["vision","thinking"],
+			_, _ = fmt.Fprint(w, `{"capabilities":["vision","thinking"],
 				"model_info":{"llama.context_length":64000}}`)
 		default:
 			http.NotFound(w, r)
@@ -385,7 +385,7 @@ func TestOllamaShowFailureWithNilClient(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/tags" {
-			fmt.Fprint(w, `{"models":[{"name":"m","model":"m"}]}`)
+			_, _ = fmt.Fprint(w, `{"models":[{"name":"m","model":"m"}]}`)
 			return
 		}
 		http.Error(w, "broken", http.StatusInternalServerError)

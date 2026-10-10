@@ -223,11 +223,11 @@ func showOllamaModel(ctx context.Context, client *http.Client, nativeBase, apiKe
 	resp, err := client.Do(httpReq)
 	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		return fallback
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var payload struct {
 		Capabilities []string       `json:"capabilities"`
 		ModelInfo    map[string]any `json:"model_info"`
@@ -294,7 +294,7 @@ func getJSON(ctx context.Context, client *http.Client, url, apiKey string, targe
 	if err != nil {
 		return fmt.Errorf("catalog: get %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {
 	case 401, 403:
 		return fmt.Errorf("catalog: %s rejected the credential (HTTP %d)", url, resp.StatusCode)

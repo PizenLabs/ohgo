@@ -1,0 +1,13 @@
+# Pinned golangci-lint configuration: `make lint` (and CI) must report
+# 0 issues. The enabled set is the default four that caught real bugs here
+# (unhandled closes, dead branches, a value-receiver write to nowhere);
+# nothing is excluded, so a new finding is a fix, not a suppression.
+version: "2"
+linters:
+  enable:
+    - errcheck
+    - ineffassign
+    - staticcheck
+    - unused
+run:
+  timeout: 5m

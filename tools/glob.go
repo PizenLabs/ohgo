@@ -223,13 +223,11 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	// scan finished.
 	if timedOut {
 		if len(matches) == 0 {
-			sb.WriteString(fmt.Sprintf(
-				"\n\nglob timed out after %s before finding any matches — results are incomplete, "+
-					"NOT proof of absence. Narrow the scan with a deeper \"path\".", timeout))
+			fmt.Fprintf(&sb, "\n\nglob timed out after %s before finding any matches — results are incomplete, "+
+				"NOT proof of absence. Narrow the scan with a deeper \"path\".", timeout)
 		} else {
-			sb.WriteString(fmt.Sprintf(
-				"\n\n[glob timed out after %s; showing %d of %d partial matches — results are incomplete]",
-				timeout, len(matches), totalMatches))
+			fmt.Fprintf(&sb, "\n\n[glob timed out after %s; showing %d of %d partial matches — results are incomplete]",
+				timeout, len(matches), totalMatches)
 		}
 	} else if len(matches) == 0 {
 		return agent.Result{

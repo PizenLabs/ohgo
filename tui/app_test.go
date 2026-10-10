@@ -252,7 +252,7 @@ func TestProgramPersistsTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	sess, err := store.Create(t.TempDir(), "anthropic/claude-sonnet-4-5")
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +287,7 @@ func TestProgramPersistsUIOnlyMessagesAsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	sess, _ := store.Create(t.TempDir(), "m")
 
 	p := NewProgram(nil, "test", 0)
@@ -334,14 +334,14 @@ func TestProgramResumeRoundTrip(t *testing.T) {
 		ToolCallID: "c1", ToolName: "read",
 		Content: []ai.ContentBlock{ai.TextContent{Text: "package a"}},
 	})
-	store.Close()
+	_ = store.Close()
 
 	// Second session: reopen and replay, exactly as a resume does.
 	reopened, err := session.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 
 	resumedSess, err := reopened.Get(id)
 	if err != nil {

@@ -19,7 +19,7 @@ func TestLiveOllamaLocalTags(t *testing.T) {
 	if err != nil {
 		t.Skipf("no local Ollama server: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

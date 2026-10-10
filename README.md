@@ -108,6 +108,16 @@ starts work or drops history):
 - **Mini (<40 cols or <8 rows):** a size notice instead of overlapping
   regions. Input and history are preserved; enlarge to resume.
 
+On an empty conversation the workspace shows a short welcome — identity, one
+invitation to describe a task, and at most three examples — as chrome, never
+as a transcript entry: it cannot enter the session log, it disappears the
+moment real content arrives, it never reappears over a resumed transcript, and
+`/clear` brings it back. Narrow terminals drop the examples and keep the
+introduction plus a `/help` pointer. The header owns identity, model, and
+runtime phase; the status line owns workspace context (cwd, session, context
+%, measured usage) and never repeats them. Short content is padded below the
+transcript so the composer stays pinned to the bottom of the screen.
+
 Shortcuts that are shown always work: `enter` send (queues while busy),
 `alt+enter`/`ctrl+j` insert a break, `↑` recalls history on a single line,
 `pgup`/`pgdn` scroll, `esc` cancels a turn (never quits), `ctrl+c` cancels

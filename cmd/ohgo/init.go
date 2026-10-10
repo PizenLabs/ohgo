@@ -155,17 +155,17 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		return fmt.Errorf("init: %w", err)
 	}
 
-	fmt.Fprintf(out, "wrote %s\n", settingsPath())
-	fmt.Fprintf(out, "model: %s\ntheme: %s\n", plan.model, plan.theme)
+	_, _ = fmt.Fprintf(out, "wrote %s\n", settingsPath())
+	_, _ = fmt.Fprintf(out, "model: %s\ntheme: %s\n", plan.model, plan.theme)
 	if len(plan.providers) == 0 {
-		fmt.Fprintln(out, "no provider credentials found: export one, e.g. export ANTHROPIC_API_KEY=...")
+		_, _ = fmt.Fprintln(out, "no provider credentials found: export one, e.g. export ANTHROPIC_API_KEY=...")
 	} else {
-		fmt.Fprintf(out, "credentials: %s\n", strings.Join(plan.providers, ", "))
+		_, _ = fmt.Fprintf(out, "credentials: %s\n", strings.Join(plan.providers, ", "))
 	}
 	if plan.keyHint != "" {
-		fmt.Fprintf(out, "missing credential for %s: %s\n", plan.model, plan.keyHint)
+		_, _ = fmt.Fprintf(out, "missing credential for %s: %s\n", plan.model, plan.keyHint)
 	} else {
-		fmt.Fprintln(out, "run `ohgo doctor` to verify, then `ohgo` to start.")
+		_, _ = fmt.Fprintln(out, "run `ohgo doctor` to verify, then `ohgo` to start.")
 	}
 	return nil
 }

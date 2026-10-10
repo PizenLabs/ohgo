@@ -31,9 +31,9 @@ func newRecordingServer(t *testing.T, stream string) *recordingServer {
 		srv.mu.Unlock()
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, stream)
+		_, _ = io.WriteString(w, stream)
 	}))
-	t.Cleanup(srv.Server.Close)
+	t.Cleanup(srv.Close)
 	return srv
 }
 
@@ -304,7 +304,7 @@ func TestWireSendsTheProviderCredential(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, openAIStream)
+		_, _ = io.WriteString(w, openAIStream)
 	}))
 	defer server.Close()
 
@@ -349,7 +349,7 @@ func TestWireHonoursABaseURLRootedAtAVersion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, openAIStream)
+		_, _ = io.WriteString(w, openAIStream)
 	}))
 	defer server.Close()
 
@@ -384,7 +384,7 @@ func TestRegistryPrefersASetKeyOverTheEnvironment(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, openAIStream)
+		_, _ = io.WriteString(w, openAIStream)
 	}))
 	defer server.Close()
 

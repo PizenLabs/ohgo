@@ -337,6 +337,6 @@ func BenchmarkGoSearch(b *testing.B) {
 		b.Fatal(err)
 	}
 	for i := 0; i < b.N; i++ {
-		GoBackend{}.Search(path, Options{})
+		_, _ = GoBackend{}.Search(path, Options{})
 	}
 }

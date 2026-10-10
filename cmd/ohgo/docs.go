@@ -44,7 +44,7 @@ the result without maintaining it by hand.`,
 			if err := doc.GenMarkdownTree(root, dir); err != nil {
 				return fmt.Errorf("docs: markdown: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "wrote reference into %s\n", dir)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrote reference into %s\n", dir)
 			return nil
 		},
 	}

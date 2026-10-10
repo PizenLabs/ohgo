@@ -84,7 +84,7 @@ func ProbeProvider(ctx context.Context, client *http.Client, api API, baseURL, a
 		result.Detail = probeConnDetail(base, err)
 		return result
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	result.Reachable = true
 
 	switch resp.StatusCode {

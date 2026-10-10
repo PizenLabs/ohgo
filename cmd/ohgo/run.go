@@ -637,7 +637,7 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		Compaction:      compactionFromSettings(opts.settings),
 		Summarize:       newSummarizer(registry.StreamFn(), opts.model),
 		OnCompact: func(result agent.CompactResult) {
-			fmt.Fprintf(out, "[compacted %d messages into %d tokens; %d retained]\n",
+			_, _ = fmt.Fprintf(out, "[compacted %d messages into %d tokens; %d retained]\n",
 				result.Compacted, result.AfterTokens, result.Retained)
 		},
 	})
@@ -762,7 +762,7 @@ func printTurn(out io.Writer, turn agent.Turn) {
 		switch b := block.(type) {
 		case ai.TextContent:
 			if b.Text != "" {
-				fmt.Fprintln(out, b.Text)
+				_, _ = fmt.Fprintln(out, b.Text)
 			}
 		}
 	}
@@ -771,7 +771,7 @@ func printTurn(out io.Writer, turn agent.Turn) {
 		if outcome.Result.IsError {
 			status = "error"
 		}
-		fmt.Fprintf(out, "  %s %s [%s]\n", status, outcome.ToolName, outcome.CallID)
+		_, _ = fmt.Fprintf(out, "  %s %s [%s]\n", status, outcome.ToolName, outcome.CallID)
 	}
 }
 
@@ -788,11 +788,11 @@ func approveToolCall(out io.Writer, opts options, call ai.ToolCall, approval age
 		}
 	}
 	if approval.Reason != "" {
-		fmt.Fprintf(out, "%s (%s)\n", call.Name, approval.Reason)
+		_, _ = fmt.Fprintf(out, "%s (%s)\n", call.Name, approval.Reason)
 	} else {
-		fmt.Fprintln(out, call.Name)
+		_, _ = fmt.Fprintln(out, call.Name)
 	}
-	fmt.Fprint(out, "Run this tool? [y/N] ")
+	_, _ = fmt.Fprint(out, "Run this tool? [y/N] ")
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
 	if err != nil && err != io.EOF {
@@ -873,21 +873,21 @@ func openSession(opts options, resumeID int64) (*session.Store, *session.Session
 	if resumeID > 0 {
 		sess, err := store.Get(resumeID)
 		if err != nil {
-			store.Close()
+			_ = store.Close()
 			if errors.Is(err, session.ErrSessionNotFound) {
 				return nil, nil, nil, fmt.Errorf("%w: %d", session.ErrSessionNotFound, resumeID)
 			}
 			return nil, nil, nil, err
 		}
-		return store, &sess, func() { store.Close() }, nil
+		return store, &sess, func() { _ = store.Close() }, nil
 	}
 
 	sess, err := store.Create(opts.root, opts.model.Provider+"/"+opts.model.ID)
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return disabled(err)
 	}
-	return store, &sess, func() { store.Close() }, nil
+	return store, &sess, func() { _ = store.Close() }, nil
 }
 
 // loadHistory replays a stored transcript so a resumed session continues from
@@ -1097,11 +1097,19 @@ func runSession(cmd *cobra.Command, args []string) error {
 			// channel no UI is reading.
 			loop.SetApprovalHook(program.ApprovalFunc())
 		}
+		// The program owns turn output and persistence here (transcript via
+		// events, store via runTurn): the loop's hooks must stay silent, or
+		// every turn prints raw text over the alt-screen and persists twice.
+		loop.SetTurnHook(nil)
+		loop.SetCompactHook(func(result agent.CompactResult) {
+			program.PublishNotice(fmt.Sprintf("context compacted: %d messages summarised, %d retained",
+				result.Compacted, result.Retained))
+		})
 		return program.Run()
 	}
 
-	fmt.Fprintf(out, "ohgo %s \u00b7 %s/%s \u00b7 %s\n", version, opts.model.Provider, opts.model.ID, opts.root)
-	fmt.Fprintln(out, "Type your request, or /quit to exit.")
+	_, _ = fmt.Fprintf(out, "ohgo %s \u00b7 %s/%s \u00b7 %s\n", version, opts.model.Provider, opts.model.ID, opts.root)
+	_, _ = fmt.Fprintln(out, "Type your request, or /quit to exit.")
 
 	var history []agent.Message
 	if sess != nil && resumeID > 0 {
@@ -1109,7 +1117,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "resumed session %d (%d messages)\n", sess.ID, len(history))
+		_, _ = fmt.Fprintf(out, "resumed session %d (%d messages)\n", sess.ID, len(history))
 	}
 
 	plain := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
@@ -1135,10 +1143,10 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		if pending != "" {
 			text, pending = pending, ""
 		} else {
-			fmt.Fprint(out, "\n> ")
+			_, _ = fmt.Fprint(out, "\n> ")
 			line, err := reader.ReadString('\n')
 			if err == io.EOF {
-				fmt.Fprintln(out)
+				_, _ = fmt.Fprintln(out)
 				return nil
 			}
 			if err != nil {
@@ -1158,45 +1166,45 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			case "quit", "exit":
 				return nil
 			case "help":
-				fmt.Fprintln(out, tui.HelpText())
+				_, _ = fmt.Fprintln(out, tui.HelpText())
 				continue
 			case "clear":
 				history = nil
-				fmt.Fprintln(out, "Transcript cleared.")
+				_, _ = fmt.Fprintln(out, "Transcript cleared.")
 				continue
 			case "model":
 				// The plain REPL switches models the same way the full-screen
 				// UI does, including live discovery for ids the bundle never
 				// saw — one resolver serves both.
 				if len(command.Args) == 0 {
-					fmt.Fprintln(out, "usage: /model provider/id — e.g. /model groq/llama-3.1-8b-instant")
+					_, _ = fmt.Fprintln(out, "usage: /model provider/id — e.g. /model groq/llama-3.1-8b-instant")
 					continue
 				}
 				model, err := h.SwitchModel(context.Background(), command.Args[0])
 				if err != nil {
-					fmt.Fprintf(out, "unknown model %q: %v\nrun `ohgo models` to list them\n", command.Args[0], err)
+					_, _ = fmt.Fprintf(out, "unknown model %q: %v\nrun `ohgo models` to list them\n", command.Args[0], err)
 					continue
 				}
-				fmt.Fprintf(out, "Switched to %s/%s.\n", model.Provider, model.ID)
+				_, _ = fmt.Fprintf(out, "Switched to %s/%s.\n", model.Provider, model.ID)
 				continue
 			case "models":
 				for _, id := range h.ModelList() {
-					fmt.Fprintln(out, "  "+id)
+					_, _ = fmt.Fprintln(out, "  "+id)
 				}
 				continue
 			case "providers":
 				for _, row := range h.ProviderRows() {
-					fmt.Fprintf(out, "  %-14s %s\n", row.ID, row.KeyDetail)
+					_, _ = fmt.Fprintf(out, "  %-14s %s\n", row.ID, row.KeyDetail)
 				}
-				fmt.Fprintln(out, "probing current endpoint…")
+				_, _ = fmt.Fprintln(out, "probing current endpoint…")
 				probe := h.ProbeCurrent(context.Background())
-				fmt.Fprintf(out, "endpoint: %s\n", probe.Detail)
+				_, _ = fmt.Fprintf(out, "endpoint: %s\n", probe.Detail)
 				continue
 			case "status":
-				fmt.Fprintln(out, h.StatusReport(history, 0, "full-screen UI only", false))
+				_, _ = fmt.Fprintln(out, h.StatusReport(history, 0, "full-screen UI only", false))
 				continue
 			case "usage":
-				fmt.Fprintln(out, h.UsageReport())
+				_, _ = fmt.Fprintln(out, h.UsageReport())
 				continue
 			case "doctor":
 				for _, line := range h.DoctorLines() {
@@ -1204,13 +1212,13 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 					if !line.OK {
 						status = "FAIL"
 					}
-					fmt.Fprintf(out, "%-10s %-12s %s\n", status, line.Name, line.Detail)
+					_, _ = fmt.Fprintf(out, "%-10s %-12s %s\n", status, line.Name, line.Detail)
 				}
 				continue
 			case "retry":
 				last, ok := agent.LastUserText(history)
 				if !ok {
-					fmt.Fprintln(out, "nothing to retry: no prompt yet")
+					_, _ = fmt.Fprintln(out, "nothing to retry: no prompt yet")
 					continue
 				}
 				pending = last
@@ -1218,15 +1226,15 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			case "compact":
 				compacted, summary, err := h.CompactHistory(context.Background(), history)
 				if err != nil {
-					fmt.Fprintf(out, "compact: %v\n", err)
+					_, _ = fmt.Fprintf(out, "compact: %v\n", err)
 					continue
 				}
 				history = compacted
-				fmt.Fprintf(out, "Compacted: %s.\n", summary)
+				_, _ = fmt.Fprintf(out, "Compacted: %s.\n", summary)
 				continue
 			case "connect":
 				if err := h.ConnectREPL(out, reader); err != nil {
-					fmt.Fprintf(out, "connect: %v\n", err)
+					_, _ = fmt.Fprintf(out, "connect: %v\n", err)
 				}
 				continue
 			case "disconnect":
@@ -1236,44 +1244,44 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				}
 				outcome, err := h.Disconnect(provider)
 				if err != nil {
-					fmt.Fprintf(out, "disconnect: %v\n", err)
+					_, _ = fmt.Fprintf(out, "disconnect: %v\n", err)
 					continue
 				}
-				fmt.Fprintln(out, outcome)
+				_, _ = fmt.Fprintln(out, outcome)
 				continue
 			case "sessions":
 				h.ListSessions(out)
 				continue
 			case "resume":
 				if len(command.Args) == 0 {
-					fmt.Fprintln(out, "usage: /resume <id>")
+					_, _ = fmt.Fprintln(out, "usage: /resume <id>")
 					continue
 				}
 				var id int64
 				if _, err := fmt.Sscanf(command.Args[0], "%d", &id); err != nil {
-					fmt.Fprintf(out, "invalid session id %q\n", command.Args[0])
+					_, _ = fmt.Fprintf(out, "invalid session id %q\n", command.Args[0])
 					continue
 				}
 				relayed, notice, err := h.ResumeSession(id)
 				if err != nil {
-					fmt.Fprintf(out, "resume: %v\n", err)
+					_, _ = fmt.Fprintf(out, "resume: %v\n", err)
 					continue
 				}
 				history = relayed
-				fmt.Fprintln(out, notice)
+				_, _ = fmt.Fprintln(out, notice)
 				continue
 			case "jobs":
-				fmt.Fprintln(out, h.JobsReport())
+				_, _ = fmt.Fprintln(out, h.JobsReport())
 				continue
 			case "theme":
-				fmt.Fprintln(out, "theme applies to the full-screen UI (dark or light via /theme there)")
+				_, _ = fmt.Fprintln(out, "theme applies to the full-screen UI (dark or light via /theme there)")
 				continue
 			default:
 				text := fmt.Sprintf("unknown command /%s — try /help", command.Name)
 				if near, ok := tui.SuggestCommand(command.Name); ok {
 					text = fmt.Sprintf("unknown command /%s — did you mean /%s?", command.Name, near)
 				}
-				fmt.Fprintln(out, text)
+				_, _ = fmt.Fprintln(out, text)
 				continue
 			}
 		}
@@ -1298,7 +1306,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 
 		turns, err := h.loop.Run(context.Background(), request)
 		if err != nil {
-			fmt.Fprintf(out, "error: %v\n", err)
+			_, _ = fmt.Fprintf(out, "error: %v\n", err)
 			continue
 		}
 		if h.usage != nil {

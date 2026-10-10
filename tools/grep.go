@@ -421,7 +421,7 @@ func (t *GrepTool) scanFile(ctx context.Context, path string, matcher *lineMatch
 	if err != nil {
 		return nil
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
@@ -432,7 +432,7 @@ func (t *GrepTool) scanFile(ctx context.Context, path string, matcher *lineMatch
 	// mmap behaviour. Reading the tail would change which matches appear.
 	reader := bufio.NewReaderSize(file, 64*1024)
 	if info.Size() > GrepMaxFileBytes {
-		reader = bufio.NewReaderSize(ioLimitReader{file, GrepMaxFileBytes}, 64*1024)
+		reader = bufio.NewReaderSize(&ioLimitReader{file, GrepMaxFileBytes}, 64*1024)
 	}
 
 	scanner := bufio.NewScanner(reader)
@@ -473,7 +473,7 @@ type ioLimitReader struct {
 }
 
 // Read implements io.Reader.
-func (r ioLimitReader) Read(p []byte) (int, error) {
+func (r *ioLimitReader) Read(p []byte) (int, error) {
 	if r.left <= 0 {
 		return 0, io.EOF
 	}

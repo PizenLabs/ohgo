@@ -54,7 +54,7 @@ func runDoctor(cmd *cobra.Command) error {
 			status = "FAIL"
 			failed = true
 		}
-		fmt.Fprintf(out, "%-10s %-12s %s\n", status, rep.Name, rep.Detail)
+		_, _ = fmt.Fprintf(out, "%-10s %-12s %s\n", status, rep.Name, rep.Detail)
 	}
 	if failed {
 		return fmt.Errorf("ohgo doctor: %d of %d checks failed", countFailed(reports), len(reports))
@@ -148,7 +148,7 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 		add("sessions", false, fmt.Sprintf("cannot open %s: %v", path, err))
 	} else {
 		list, listErr := store.List(1)
-		store.Close()
+		_ = store.Close()
 		if listErr != nil {
 			add("sessions", false, fmt.Sprintf("store unreadable: %v", listErr))
 		} else {

@@ -206,6 +206,13 @@ type State struct {
 	Pending *PendingApproval
 	// Quit is set once the session has been asked to exit.
 	Quit bool
+	// SlashCursor selects within the inline slash suggestions, when the
+	// composer holds a leading "/". It is derived UI cursor state, reset
+	// whenever the input text itself changes.
+	SlashCursor int
+	// SlashHide dismisses the inline suggestions while keeping the typed
+	// text (esc). Any input change shows them again.
+	SlashHide bool
 	// closedAssistant marks that the trailing assistant entry has ended, so
 	// the next turn opens a new one.
 	closedAssistant bool
@@ -329,8 +336,15 @@ func (s *State) Apply(event Event) {
 	case InputChanged:
 		s.Input = e.Text
 		s.Cursor = len([]rune(e.Text))
+		s.SlashCursor = 0
+		s.SlashHide = false
 
 	case ComposerChanged:
+		if s.Input != e.Text {
+			// New text re-opens discovery and parks on the top match.
+			s.SlashCursor = 0
+			s.SlashHide = false
+		}
 		s.Input = e.Text
 		s.Cursor = clampCursor(e.Text, e.Cursor)
 		// Typing over a recalled entry leaves history: the draft stays saved
@@ -338,6 +352,10 @@ func (s *State) Apply(event Event) {
 		if s.HistCursor >= 0 {
 			s.HistCursor = -1
 		}
+
+	case SlashMoved:
+		s.SlashHide = false
+		s.moveSlash(e.Delta)
 
 	case HistoryMoved:
 		s.moveHistory(e.Delta)
@@ -943,6 +961,103 @@ func (ComposerChanged) eventKind() string { return "composer_changed" }
 type HistoryMoved struct{ Delta int }
 
 func (HistoryMoved) eventKind() string { return "history_moved" }
+
+// SlashMoved shifts the inline slash-suggestion highlight. Positive goes down.
+type SlashMoved struct{ Delta int }
+
+func (SlashMoved) eventKind() string { return "slash_moved" }
+
+// maxSlashRows bounds the inline command suggestions so discovery never
+// evicts the conversation. Render and layout share slashWindow, so reserved
+// and rendered rows always agree.
+const maxSlashRows = 5
+
+// SlashActive reports whether the composer holds a completable slash line:
+// single-line input starting with "/". Multiline input stays prose.
+func SlashActive(input string) bool {
+	if !strings.HasPrefix(input, "/") {
+		return false
+	}
+	return !strings.Contains(input, "\n")
+}
+
+// SlashSuggestions filters the authoritative command registry by the text
+// after the leading "/". Hidden aliases stay out, matching /help, so the
+// list can never drift from what dispatch accepts.
+func SlashSuggestions(input string) []CommandSpec {
+	if !SlashActive(input) {
+		return nil
+	}
+	filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(input, "/")))
+	var out []CommandSpec
+	for _, spec := range Commands {
+		if spec.Hidden {
+			continue
+		}
+		if filter == "" || strings.HasPrefix(strings.ToLower(spec.Name), filter) {
+			out = append(out, spec)
+		}
+	}
+	return out
+}
+
+// slashWindow returns the visible suggestion window with its start offset
+// and clamped cursor, plus whether rows hide above or below. The window
+// follows the cursor so the highlight is always on a rendered row, never
+// scrolled off. Render and layout share it so reserved and rendered rows
+// always agree.
+func slashWindow(s State) (shown []CommandSpec, start, cursor int, above, below bool) {
+	matches := SlashSuggestions(s.Input)
+	if s.SlashHide || len(matches) == 0 {
+		return nil, 0, 0, false, false
+	}
+	cursor = s.SlashCursor
+	if cursor < 0 || cursor >= len(matches) {
+		cursor = 0
+	}
+	start = 0
+	if len(matches) > maxSlashRows {
+		start = cursor - maxSlashRows + 1
+		if start < 0 {
+			start = 0
+		}
+		if start+maxSlashRows > len(matches) {
+			start = len(matches) - maxSlashRows
+		}
+	}
+	end := start + maxSlashRows
+	if end > len(matches) {
+		end = len(matches)
+	}
+	return matches[start:end], start, cursor, start > 0, end < len(matches)
+}
+
+// slashRows counts the suggestion rows the composer will render, so the
+// layout reserves exactly what the view draws.
+func slashRows(s State) int {
+	shown, _, _, above, below := slashWindow(s)
+	n := len(shown)
+	if above {
+		n++
+	}
+	if below {
+		n++
+	}
+	return n
+}
+
+// moveSlash shifts the suggestion highlight, wrapping at both ends.
+func (s *State) moveSlash(delta int) {
+	n := len(SlashSuggestions(s.Input))
+	if n == 0 {
+		s.SlashCursor = 0
+		return
+	}
+	s.SlashCursor = (s.SlashCursor + delta) % n
+	if s.SlashCursor < 0 {
+		s.SlashCursor += n
+	}
+}
 
 // MessageQueued holds a prompt typed while a turn runs.
 type MessageQueued struct{ Text string }

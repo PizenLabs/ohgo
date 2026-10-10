@@ -118,7 +118,7 @@ func TestConnectREPLEndToEnd(t *testing.T) {
 	// A scripted OpenRouter: discovery lists two models, chat is never hit.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":[
+		_, _ = fmt.Fprint(w, `{"data":[
 			{"id":"test/alpha","context_length":10000,"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]},
 			{"id":"test/beta","context_length":20000,"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}]}`)
 	}))
@@ -172,7 +172,7 @@ func TestResumeSessionMovesPointer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	sess, err := store.Create(dir, "m")
 	if err != nil {
 		t.Fatal(err)

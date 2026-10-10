@@ -369,21 +369,21 @@ func (s *Store) saveLocked() error {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(append(raw, '\n')); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("creds: write temp: %w", err)
 	}
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("creds: chmod: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("creds: write temp: %w", err)
 	}
 	if err := os.Rename(tmpName, s.path); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("creds: replace %s: %w", s.path, err)
 	}
 	return nil

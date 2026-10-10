@@ -123,14 +123,14 @@ func newContractServer(t *testing.T) *contractServer {
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch {
 		case isChild:
-			io.WriteString(w, anthropicTextStream("I read the file and it is correct."))
+			_, _ = io.WriteString(w, anthropicTextStream("I read the file and it is correct."))
 		case parentCount == 1:
-			io.WriteString(w, anthropicToolCallStream("call_1", "task", `{"prompt":"check src/auth"}`))
+			_, _ = io.WriteString(w, anthropicToolCallStream("call_1", "task", `{"prompt":"check src/auth"}`))
 		default:
-			io.WriteString(w, anthropicTextStream("Done, based on the subagent's report."))
+			_, _ = io.WriteString(w, anthropicTextStream("Done, based on the subagent's report."))
 		}
 	}))
-	t.Cleanup(srv.Server.Close)
+	t.Cleanup(srv.Close)
 	return srv
 }
 

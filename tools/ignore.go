@@ -183,6 +183,3 @@ func matchPath(pattern, rel string) bool {
 	}
 	return matchSegments(strings.Split(pattern, "/"), strings.Split(rel, "/"))
 }
-
-// loadIgnoreRules is a test seam that parses contents without touching disk.
-func (ig *ignorer) loadIgnoreRules(base, contents string) { ig.appendFile(base, contents) }

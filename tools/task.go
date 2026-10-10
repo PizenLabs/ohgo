@@ -18,13 +18,6 @@ type Spawner interface {
 	Spawn(ctx context.Context, spec agent.SubagentSpec) (agent.SubagentResult, error)
 }
 
-// spawnFunc adapts a function to Spawner.
-type spawnFunc func(ctx context.Context, spec agent.SubagentSpec) (agent.SubagentResult, error)
-
-func (f spawnFunc) Spawn(ctx context.Context, spec agent.SubagentSpec) (agent.SubagentResult, error) {
-	return f(ctx, spec)
-}
-
 // SystemBuilder renders the prompt a subagent is given for a task.
 //
 // It lives in this package rather than in agent because it describes what *this

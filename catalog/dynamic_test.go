@@ -29,7 +29,7 @@ func TestDiscoverOpenRouterMapsRichEntries(t *testing.T) {
 			t.Errorf("auth = %q, want the bearer key", r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":[
+		_, _ = fmt.Fprint(w, `{"data":[
 			{"id":"anthropic/claude-sonnet-4-5","name":"Sonnet","context_length":1000000,
 			 "pricing":{"prompt":"0.000003","completion":"0.000015","input_cache_read":"0.0000003","input_cache_write":"0.00000375"},
 			 "architecture":{"input_modalities":["text","image"]},
@@ -76,7 +76,7 @@ func TestDiscoverGatewayMergesMinimalEntries(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":[{"id":"deepseek-v4-pro"},{"id":"brand-new-model"}]}`)
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"deepseek-v4-pro"},{"id":"brand-new-model"}]}`)
 	}))
 	defer server.Close()
 
@@ -115,14 +115,14 @@ func TestDiscoverOllamaEnrichesViaShow(t *testing.T) {
 			if auth := r.Header.Get("Authorization"); auth != "" {
 				t.Errorf("auth = %q, want no header for local discovery", auth)
 			}
-			fmt.Fprint(w, `{"models":[{"name":"llama3.1:latest","model":"llama3.1:latest"},{"name":"qwen","model":"qwen"}]}`)
+			_, _ = fmt.Fprint(w, `{"models":[{"name":"llama3.1:latest","model":"llama3.1:latest"},{"name":"qwen","model":"qwen"}]}`)
 		case r.URL.Path == "/api/show":
 			var body struct {
 				Model string `json:"model"`
 			}
-			json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			if body.Model == "llama3.1:latest" {
-				fmt.Fprint(w, `{"capabilities":["completion","vision"],"model_info":{"llama.context_length":8192}}`)
+				_, _ = fmt.Fprint(w, `{"capabilities":["completion","vision"],"model_info":{"llama.context_length":8192}}`)
 			} else {
 				w.WriteHeader(404)
 			}
@@ -175,10 +175,10 @@ func TestDiscoverOllamaCloudCapsKnownIds(t *testing.T) {
 			if r.Header.Get("Authorization") != "Bearer k" {
 				t.Errorf("auth missing the cloud key")
 			}
-			fmt.Fprint(w, `{"models":[{"name":"deepseek-v4-pro","model":"deepseek-v4-pro"}]}`)
+			_, _ = fmt.Fprint(w, `{"models":[{"name":"deepseek-v4-pro","model":"deepseek-v4-pro"}]}`)
 			return
 		}
-		fmt.Fprint(w, `{"capabilities":["completion"],"model_info":{"x.context_length":1000000}}`)
+		_, _ = fmt.Fprint(w, `{"capabilities":["completion"],"model_info":{"x.context_length":1000000}}`)
 	}))
 	defer server.Close()
 
@@ -201,7 +201,7 @@ func TestDiscoverCachesAndFallsBack(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":[{"id":"m/one","context_length":1000,
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"m/one","context_length":1000,
 			"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}]}`)
 	}))
 	defer server.Close()
@@ -239,7 +239,7 @@ func extractModels(raw []byte) string {
 	var cached struct {
 		Models any `json:"models"`
 	}
-	json.Unmarshal(raw, &cached)
+	_ = json.Unmarshal(raw, &cached)
 	out, _ := json.Marshal(cached.Models)
 	return string(out)
 }
@@ -250,7 +250,7 @@ func TestResolveDynamicFindsDiscoveredIds(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":[{"id":"new/model","context_length":5000,
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"new/model","context_length":5000,
 			"pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}]}`)
 	}))
 	defer server.Close()

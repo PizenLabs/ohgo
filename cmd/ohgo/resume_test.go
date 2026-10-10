@@ -38,9 +38,9 @@ func newScriptedServer(t *testing.T, body string) *scriptedServer {
 		srv.mu.Unlock()
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, body)
+		_, _ = io.WriteString(w, body)
 	}))
-	t.Cleanup(srv.Server.Close)
+	t.Cleanup(srv.Close)
 	return srv
 }
 
@@ -110,7 +110,7 @@ func TestReplPersistsEveryTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	sess, err := store.Create(t.TempDir(), "anthropic/claude-sonnet-4-5")
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestResumeSeedsHistoryFromTheStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	sess, err := store.Create(t.TempDir(), "anthropic/claude-sonnet-4-5")
 	if err != nil {
 		t.Fatal(err)
@@ -360,8 +360,8 @@ func TestIsTerminalRejectsAPipe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	if isTerminal(reader) {
 		t.Error("a pipe was reported as a terminal")
 	}
@@ -373,7 +373,7 @@ func TestIsTerminalRejectsAPipe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer devNull.Close()
+	defer func() { _ = devNull.Close() }()
 	if isTerminal(devNull) {
 		t.Error("/dev/null was reported as a terminal")
 	}

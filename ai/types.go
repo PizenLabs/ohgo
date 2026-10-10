@@ -92,9 +92,6 @@ type ToolCall struct {
 	// argumentsJSON accumulates the streamed argument fragments. It is cleared
 	// when the call closes and Arguments is populated.
 	argumentsJSON string
-	// pendingInput marks a call whose input block arrived empty and is
-	// therefore expected to be filled in by input_json_delta events.
-	pendingInput bool
 }
 
 // RawArguments returns the accumulated, not-yet-decoded argument fragments.

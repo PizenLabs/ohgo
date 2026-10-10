@@ -14,24 +14,47 @@ const (
 	GapY = 1
 )
 
-// Semantic accent roles. Hues stay restrained: color signals state, never
-// decorates. Every state also carries a text marker (✓ ✗ ● ○) so nothing
-// depends on color alone.
+// Semantic colour tokens. Every style in the package resolves through one of
+// these, so a theme change lands here and nowhere else.
+//
+// The indexes are 256-colour, deliberately not truecolor hex: they resolve on
+// every terminal that reports colour and degrade predictably on the rest.
+// Colour signals state or voice; it never decorates ordinary metadata, and
+// every state that uses colour also carries a text marker (✓ ✗ ● ○ ■ ◐).
 const (
-	accentBlue   = "39"
-	accentViolet = "141"
-	accentGreen  = "42"
-	accentAmber  = "214"
-	accentRed    = "196"
-	mutedDark    = "244"
-	mutedLight   = "242"
+	// Dark theme: muted surfaces, a single restrained mint accent.
+	darkText    = "252" // body text
+	darkMuted   = "244" // metadata, separators, hints
+	darkAccent  = "121" // mint: focus, the user's voice, selection
+	darkTool    = "73"  // soft teal: tool identity, distinct from the accent
+	darkSuccess = "42"
+	darkWarning = "214"
+	darkDanger  = "196"
+	darkCodeFg  = "228"
+	darkCodeBg  = "236"
+
+	// Light theme: dark foregrounds on a bright screen, same semantics.
+	lightText    = "235"
+	lightMuted   = "242"
+	lightAccent  = "28"
+	lightTool    = "30"
+	lightSuccess = "28"
+	lightWarning = "166"
+	lightDanger  = "160"
+	lightCodeFg  = "235"
+	lightCodeBg  = "254"
 )
 
-// ExtraStyles carries semantic styles beyond the base palette.
+// fg is the single place a token becomes a style foreground.
+func fg(token string) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(token))
+}
+
+// ExtraStyles carries the semantic chrome styles that sit above the base
+// message palette: separators, the header, severity signals, and key hints.
 //
-// The base Palette stays the source of truth for message colors; these cover
-// chrome introduced by the workbench layout: separators, headers, focus,
-// and severity signals.
+// They exist so header and hint rendering never reach for a raw colour: the
+// role is named, and the theme layer decides what it looks like.
 type ExtraStyles struct {
 	Separator lipgloss.Style
 	Header    lipgloss.Style
@@ -46,28 +69,26 @@ type ExtraStyles struct {
 // ExtrasFor resolves semantic chrome styles for a theme.
 func ExtrasFor(theme string) *ExtraStyles {
 	if NormalizeTheme(theme) == ThemeLight {
-		muted := lipgloss.NewStyle().Foreground(lipgloss.Color(mutedLight))
 		return &ExtraStyles{
-			Separator: muted,
-			Header:    lipgloss.NewStyle().Foreground(lipgloss.Color("235")).Bold(true),
-			Focus:     lipgloss.NewStyle().Foreground(lipgloss.Color("27")).Bold(true),
-			Success:   lipgloss.NewStyle().Foreground(lipgloss.Color("28")),
-			Warning:   lipgloss.NewStyle().Foreground(lipgloss.Color("166")),
-			Danger:    lipgloss.NewStyle().Foreground(lipgloss.Color("160")),
-			Hint:      muted,
-			Key:       lipgloss.NewStyle().Foreground(lipgloss.Color("235")).Bold(true),
+			Separator: fg(lightMuted),
+			Header:    fg(lightText).Bold(true),
+			Focus:     fg(lightAccent).Bold(true),
+			Success:   fg(lightSuccess),
+			Warning:   fg(lightWarning),
+			Danger:    fg(lightDanger),
+			Hint:      fg(lightMuted),
+			Key:       fg(lightText).Bold(true),
 		}
 	}
-	muted := lipgloss.NewStyle().Foreground(lipgloss.Color(mutedDark))
 	return &ExtraStyles{
-		Separator: muted,
-		Header:    lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Bold(true),
-		Focus:     lipgloss.NewStyle().Foreground(lipgloss.Color(accentBlue)).Bold(true),
-		Success:   lipgloss.NewStyle().Foreground(lipgloss.Color(accentGreen)),
-		Warning:   lipgloss.NewStyle().Foreground(lipgloss.Color(accentAmber)),
-		Danger:    lipgloss.NewStyle().Foreground(lipgloss.Color(accentRed)),
-		Hint:      muted,
-		Key:       lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Bold(true),
+		Separator: fg(darkMuted),
+		Header:    fg(darkText).Bold(true),
+		Focus:     fg(darkAccent).Bold(true),
+		Success:   fg(darkSuccess),
+		Warning:   fg(darkWarning),
+		Danger:    fg(darkDanger),
+		Hint:      fg(darkMuted),
+		Key:       fg(darkText).Bold(true),
 	}
 }
 
@@ -79,22 +100,16 @@ func SeparatorLine(width int, pal *Palette) string {
 	return pal.Muted.Render(strings.Repeat("─", width))
 }
 
-// KeyHint renders one keyboard hint as "key action".
-func KeyHint(key, action string, pal *Palette) string {
-	ex := ExtrasFor(ThemeDark)
-	_ = ex
-	return pal.Muted.Render(key + " " + action)
-}
-
 // ComposerHints returns the contextual hint row for the composer.
 //
 // Every hint shown must work: enter submits, alt+enter / ctrl+j inserts a
-// break, esc cancels a turn, pgup/pgdn scroll. No decorative shortcuts.
+// break, esc cancels a turn, pgup/pgdn scroll. The idle set teaches the two
+// discovery paths (/ commands, ? help) so nobody must memorise them first.
 func ComposerHints(busy bool) string {
 	if busy {
 		return "enter queue · esc cancel · alt+enter break · pgup/pgdn scroll"
 	}
-	return "enter send · alt+enter break · ↑ history · pgup/pgdn scroll"
+	return "enter send · alt+enter break · / commands · ? help"
 }
 
 // RuntimeState names the agent/UI phase for header and status.

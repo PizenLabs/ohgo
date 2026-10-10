@@ -98,7 +98,7 @@ func (t *WebFetchTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 	if err != nil {
 		return agent.ErrorResult("fetch %q: %v", rawURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return agent.ErrorResult("fetch returned HTTP %d for %s", resp.StatusCode, rawURL)
@@ -156,9 +156,8 @@ func (t *WebFetchTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 // head content is dropped entirely, and block elements become line breaks.
 func htmlToText(html string) string {
 	var (
-		out      strings.Builder
-		drop     bool // true while inside script/style/head
-		tagStart = -1
+		out  strings.Builder
+		drop bool // true while inside script/style/head
 	)
 
 	runes := []byte(html)
@@ -167,7 +166,7 @@ func htmlToText(html string) string {
 
 		if c == '<' {
 			// A tag ends at the next '>' outside a quoted attribute value.
-			tagStart = i
+			tagStart := i
 			j := i + 1
 			for j < len(runes) && runes[j] != '>' {
 				if runes[j] == '"' || runes[j] == '\'' {
