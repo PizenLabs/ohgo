@@ -1,12 +1,85 @@
 package tui
 
 import (
+	"strings"
 	"unicode"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // Composer editing helpers. All operate on (text, rune cursor) and return the
 // result, so they are pure and testable without a state machine. The caller
 // folds the outcome back through ComposerChanged, which clamps.
+
+// maxComposerRows bounds how many display rows the composer shows before it
+// scrolls to the tail. It matches the layout's own cap so the region reserved
+// and the region rendered agree.
+const maxComposerRows = 6
+
+// composerRows hard-wraps one logical line to width cells, preserving every
+// rune (multiple spaces are not folded: what was typed is what is shown). It
+// reports where the cursor lands as a row and rune index within the returned
+// rows, or haveCursor=false when cursor is negative.
+func composerRows(line string, cursor, width int) (rows []string, cursorRow, cursorRune int, haveCursor bool) {
+	if width < 1 {
+		width = 1
+	}
+	runes := []rune(line)
+	if cursor > len(runes) {
+		cursor = len(runes)
+	}
+	row := make([]rune, 0, width)
+	rowW := 0
+	flush := func() {
+		rows = append(rows, string(row))
+		row = row[:0]
+		rowW = 0
+	}
+	for i := 0; i <= len(runes); i++ {
+		if i == cursor {
+			cursorRow, cursorRune, haveCursor = len(rows), len(row), true
+		}
+		if i == len(runes) {
+			break
+		}
+		rw := runewidth.RuneWidth(runes[i])
+		if rowW+rw > width && len(row) > 0 {
+			flush()
+		}
+		row = append(row, runes[i])
+		rowW += rw
+	}
+	flush()
+	return rows, cursorRow, cursorRune, haveCursor
+}
+
+// layoutComposer folds every logical line of composed text to width cells and
+// returns the display rows plus the cursor's absolute row and rune index.
+//
+// The cursor is a rune offset into text; it is mapped to a row here so the
+// view can place the block cursor after reflow without splitting a rune or
+// losing it when a line wraps.
+func layoutComposer(text string, cursor, width int) (rows []string, cursorRow, cursorRune int, haveCursor bool) {
+	if width < 1 {
+		width = 1
+	}
+	offset := 0
+	for _, line := range strings.Split(text, "\n") {
+		lineRunes := []rune(line)
+		lineCursor := -1
+		if cursor >= offset && cursor <= offset+len(lineRunes) {
+			lineCursor = cursor - offset
+		}
+		local, localRow, localRune, localHave := composerRows(line, lineCursor, width)
+		base := len(rows)
+		rows = append(rows, local...)
+		if localHave {
+			cursorRow, cursorRune, haveCursor = base+localRow, localRune, true
+		}
+		offset += len(lineRunes) + 1 // +1 for the newline
+	}
+	return rows, cursorRow, cursorRune, haveCursor
+}
 
 // insertAt inserts s at the rune offset.
 func insertAt(text string, cursor int, s string) string {

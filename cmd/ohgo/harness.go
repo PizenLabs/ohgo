@@ -212,11 +212,11 @@ func (h *harness) Disconnect(provider string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	switch {
-	case source == "explicit":
+	switch source {
+	case "explicit":
 		h.registry.SetAPIKey(provider, "")
 		return fmt.Sprintf("removed the in-session credential for %s", provider), nil
-	case source == "credential file":
+	case "credential file":
 		path, pathErr := creds.DefaultPath()
 		if pathErr != nil {
 			return "", pathErr
@@ -259,16 +259,16 @@ func (h *harness) ResumeSession(id int64) (history []agent.Message, notice strin
 // ListSessions prints stored sessions newest-first for the REPL.
 func (h *harness) ListSessions(out io.Writer) {
 	if h.store == nil {
-		fmt.Fprintln(out, "no session store attached")
+		_, _ = fmt.Fprintln(out, "no session store attached")
 		return
 	}
 	list, err := h.store.List(20)
 	if err != nil {
-		fmt.Fprintf(out, "sessions: %v\n", err)
+		_, _ = fmt.Fprintf(out, "sessions: %v\n", err)
 		return
 	}
 	if len(list) == 0 {
-		fmt.Fprintln(out, "No sessions yet.")
+		_, _ = fmt.Fprintln(out, "No sessions yet.")
 		return
 	}
 	for _, sess := range list {
@@ -276,10 +276,10 @@ func (h *harness) ListSessions(out io.Writer) {
 		if title == "" {
 			title = sess.Model
 		}
-		fmt.Fprintf(out, "#%-5d %-16s %-28s %s\n",
+		_, _ = fmt.Fprintf(out, "#%-5d %-16s %-28s %s\n",
 			sess.ID, sess.UpdatedAt.Format("2006-01-02 15:04"), title, sess.Cwd)
 	}
-	fmt.Fprintln(out, "resume with /resume <id>")
+	_, _ = fmt.Fprintln(out, "resume with /resume <id>")
 }
 
 // JobsReport prints background jobs for the REPL. The table is shared with
@@ -362,9 +362,9 @@ func (h *harness) ConnectREPL(out io.Writer, in io.Reader) error {
 	if len(rows) == 0 {
 		return fmt.Errorf("no providers known")
 	}
-	fmt.Fprintln(out, "Choose a provider:")
+	_, _ = fmt.Fprintln(out, "Choose a provider:")
 	for i, row := range rows {
-		fmt.Fprintf(out, "  %2d  %-14s %s\n", i+1, row.ID, row.KeyDetail)
+		_, _ = fmt.Fprintf(out, "  %2d  %-14s %s\n", i+1, row.ID, row.KeyDetail)
 	}
 	choice, err := readChoice(reader, out, len(rows))
 	if err != nil {
@@ -377,9 +377,9 @@ func (h *harness) ConnectREPL(out io.Writer, in io.Reader) error {
 	if keyErr == nil {
 		options = append(options, "use detected credential ("+source+")")
 	}
-	fmt.Fprintln(out, "Credential:")
+	_, _ = fmt.Fprintln(out, "Credential:")
 	for i, option := range options {
-		fmt.Fprintf(out, "  %2d  %s\n", i+1, option)
+		_, _ = fmt.Fprintf(out, "  %2d  %s\n", i+1, option)
 	}
 	useDetected := false
 	if len(options) > 1 {
@@ -400,7 +400,7 @@ func (h *harness) ConnectREPL(out io.Writer, in io.Reader) error {
 		}
 	}
 
-	fmt.Fprintln(out, "validating…")
+	_, _ = fmt.Fprintln(out, "validating…")
 	validateKey := ""
 	if !useDetected {
 		validateKey = key
@@ -412,15 +412,15 @@ func (h *harness) ConnectREPL(out io.Writer, in io.Reader) error {
 	if len(models) == 0 {
 		return fmt.Errorf("no models listed for %s", provider)
 	}
-	fmt.Fprintln(out, "Models (Enter for the first):")
+	_, _ = fmt.Fprintln(out, "Models (Enter for the first):")
 	shown := models
 	if len(shown) > 30 {
 		shown = shown[:30]
 	}
 	for i, id := range shown {
-		fmt.Fprintf(out, "  %2d  %s\n", i+1, id)
+		_, _ = fmt.Fprintf(out, "  %2d  %s\n", i+1, id)
 	}
-	fmt.Fprint(out, "model [1]: ")
+	_, _ = fmt.Fprint(out, "model [1]: ")
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		return fmt.Errorf("read input: %w", err)
@@ -440,13 +440,13 @@ func (h *harness) ConnectREPL(out io.Writer, in io.Reader) error {
 	if err := h.SaveConnect(provider, saveKey, provider+"/"+model); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "connected to %s as %s\n", provider, model)
+	_, _ = fmt.Fprintf(out, "connected to %s as %s\n", provider, model)
 	return nil
 }
 
 // readChoice reads a 1-based menu choice.
 func readChoice(reader *bufio.Reader, out io.Writer, max int) (int, error) {
-	fmt.Fprintf(out, "choice [1-%d]: ", max)
+	_, _ = fmt.Fprintf(out, "choice [1-%d]: ", max)
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		return 0, fmt.Errorf("read input: %w", err)
@@ -463,15 +463,15 @@ func readChoice(reader *bufio.Reader, out io.Writer, max int) (int, error) {
 // than pretending otherwise.
 func readSecret(out io.Writer, reader *bufio.Reader, in io.Reader, prompt string) (string, error) {
 	if file, ok := in.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
-		fmt.Fprint(out, prompt)
+		_, _ = fmt.Fprint(out, prompt)
 		secret, err := term.ReadPassword(int(file.Fd()))
-		fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out)
 		if err != nil {
 			return "", fmt.Errorf("read input: %w", err)
 		}
 		return string(secret), nil
 	}
-	fmt.Fprintf(out, "%s (input will echo: not a terminal)\n> ", prompt)
+	_, _ = fmt.Fprintf(out, "%s (input will echo: not a terminal)\n> ", prompt)
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		return "", fmt.Errorf("read input: %w", err)

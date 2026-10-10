@@ -91,17 +91,17 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("session: apply schema: %w", err)
 	}
 	// Writes must survive a crash mid-session, otherwise a resumed
 	// conversation silently loses turns.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("session: enable WAL: %w", err)
 	}
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("session: enable foreign keys: %w", err)
 	}
 
@@ -185,7 +185,7 @@ func (s *Store) List(limit int) ([]Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Session
 	for rows.Next() {
@@ -212,7 +212,7 @@ func (s *Store) Append(sessionID int64, msg StoredMessage) error {
 	if err != nil {
 		return fmt.Errorf("session: begin: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var next int
 	if err := tx.QueryRow(
@@ -252,7 +252,7 @@ func (s *Store) Messages(sessionID int64, limit int) ([]StoredMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: read messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []StoredMessage
 	for rows.Next() {
@@ -302,7 +302,7 @@ func (s *Store) Delete(sessionID int64) error {
 	if err != nil {
 		return fmt.Errorf("session: begin delete: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Explicit message deletion first: the driver honours ON DELETE CASCADE,
 	// but only when foreign keys are enabled, and a partially-applied cascade

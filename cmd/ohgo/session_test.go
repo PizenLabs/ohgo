@@ -81,7 +81,7 @@ func TestPersistTurnWritesTheTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	sess, err := store.Create("/tmp", "anthropic/claude-sonnet-4-5")
 	if err != nil {

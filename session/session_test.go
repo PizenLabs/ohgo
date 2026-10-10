@@ -16,7 +16,7 @@ func openStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
 
@@ -301,7 +301,7 @@ func TestStoreReopensPersistently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 
 	loaded, err := reopened.Messages(sess.ID, 0)
 	if err != nil {
@@ -326,7 +326,7 @@ func TestOpenIsIdempotentOnAnExistingDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.Close()
+	_ = store.Close()
 
 	if _, err := Open(path); err != nil {
 		t.Fatalf("second open failed: %v", err)

@@ -220,6 +220,31 @@ func (l *Loop) SetApprovalHook(approve func(call ai.ToolCall, approval Approval)
 	l.cfg.Approve = approve
 }
 
+// SetTurnHook installs the per-turn reporter after construction, or nil to
+// silence turn reports.
+//
+// The plain REPL prints and persists through this hook; the full-screen UI
+// must clear it, because the program owns both jobs there (transcript via
+// events, persistence via runTurn) and a hook would print raw turns over the
+// alt-screen and persist every turn twice.
+//
+// It must be called before Run, never during one.
+func (l *Loop) SetTurnHook(hook func(Turn)) {
+	l.cfg.OnTurn = hook
+}
+
+// SetCompactHook installs the compaction reporter after construction, or nil
+// to silence compaction reports.
+//
+// Same ownership reason as SetTurnHook: the plain path prints to stdout,
+// which would scribble over the alt-screen, so the UI replaces it with a
+// transcript notice.
+//
+// It must be called before Run, never during one.
+func (l *Loop) SetCompactHook(hook func(CompactResult)) {
+	l.cfg.OnCompact = hook
+}
+
 // Tools returns the loop's tool set.
 //
 // The UI needs it to build views over live tool state (the background-job

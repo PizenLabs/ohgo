@@ -33,7 +33,9 @@ func keyMsg(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
 
 func TestPickerUpDownScrollsWindow(t *testing.T) {
 	s := New()
-	s.Apply(TerminalResized{Width: 120, Height: 12})
+	// Six models in a viewport that fits four result rows: every step
+	// must keep the marker inside the scrolled window.
+	s.Apply(TerminalResized{Width: 120, Height: 10})
 	openModelsPicker(&s, testModels())
 	rows := s.Picker.VisibleRows
 	if rows <= 0 || rows >= len(testModels()) {
@@ -182,7 +184,7 @@ func TestPickerSpaceInSearch(t *testing.T) {
 	}
 	for _, item := range p.state.Picker.Filtered() {
 		hay := strings.ToLower(item.Title + " " + item.Detail + " " + item.Value + " " + item.Name)
-		if !strings.Contains(hay, "deepseek") || (!strings.Contains(hay, "free") && !(item.PriceKnown && item.Free)) {
+		if !strings.Contains(hay, "deepseek") || (!strings.Contains(hay, "free") && (!item.PriceKnown || !item.Free)) {
 			t.Errorf("item %+v does not match both tokens", item)
 		}
 	}

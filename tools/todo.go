@@ -25,15 +25,6 @@ const (
 	TaskBlocked TaskStatus = "blocked"
 )
 
-// validTaskStatus is the set of statuses the tool accepts.
-var validTaskStatus = map[TaskStatus]bool{
-	TaskPending:    true,
-	TaskInProgress: true,
-	TaskCompleted:  true,
-	TaskAbandoned:  true,
-	TaskBlocked:    true,
-}
-
 // Task is one todo item.
 type Task struct {
 	// Content is the task text. It is the identity of a task across operations,

@@ -60,7 +60,7 @@ func versionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print the version",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintf(cmd.OutOrStdout(), "ohgo %s\n", version)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "ohgo %s\n", version)
 			return nil
 		},
 	}
@@ -91,14 +91,14 @@ lines; pass a provider name to narrow it, e.g. "ohgo models groq".`,
 						err, strings.Join(catalog.ProviderNames(), ", "))
 				}
 				for _, model := range models {
-					fmt.Fprintf(out, "%-40s %8s ctx  %s\n",
+					_, _ = fmt.Fprintf(out, "%-40s %8s ctx  %s\n",
 						model.ID, formatInt(model.ContextWindow), model.API)
 				}
 				return nil
 			}
 
 			for _, model := range catalog.List() {
-				fmt.Fprintf(out, "%-38s %-10s %8s ctx  %s\n",
+				_, _ = fmt.Fprintf(out, "%-38s %-10s %8s ctx  %s\n",
 					model.ID, model.Provider, formatInt(model.ContextWindow), model.API)
 			}
 			return nil
@@ -131,7 +131,7 @@ func sessionsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer func() { _ = store.Close() }()
 
 			list, err := store.List(50)
 			if err != nil {
@@ -139,11 +139,11 @@ func sessionsCmd() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			if len(list) == 0 {
-				fmt.Fprintln(out, "No sessions yet.")
+				_, _ = fmt.Fprintln(out, "No sessions yet.")
 				return nil
 			}
 			for _, sess := range list {
-				fmt.Fprintf(out, "%-6d %-20s %-28s %s\n",
+				_, _ = fmt.Fprintf(out, "%-6d %-20s %-28s %s\n",
 					sess.ID, sess.UpdatedAt.Format("2006-01-02 15:04"), sess.Model, sess.Cwd)
 			}
 			return nil
@@ -172,7 +172,7 @@ func sessionShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer store.Close()
+			defer func() { _ = store.Close() }()
 
 			// Resolve the session first: Messages on an unknown id returns an
 			// empty list rather than failing, which would make a typo look like
@@ -187,11 +187,11 @@ func sessionShowCmd() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			if len(messages) == 0 {
-				fmt.Fprintf(out, "Session %d is empty.\n", id)
+				_, _ = fmt.Fprintf(out, "Session %d is empty.\n", id)
 				return nil
 			}
 			for _, msg := range messages {
-				fmt.Fprintf(out, "%-11s %s\n", msg.Role+":", msg.Text)
+				_, _ = fmt.Fprintf(out, "%-11s %s\n", msg.Role+":", msg.Text)
 			}
 			return nil
 		},

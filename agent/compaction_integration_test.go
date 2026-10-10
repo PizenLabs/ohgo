@@ -120,3 +120,49 @@ func TestLoopAcceptsDisabledCompactionWithoutSummarizer(t *testing.T) {
 		t.Fatalf("New with default settings: %v", err)
 	}
 }
+
+// TestSetCompactHookRoutesCompactionReports proves the setter behind the
+// full-screen UI: a hook installed after construction still receives the
+// compaction report (so the UI can show a notice), and clearing it silences
+// reports that would otherwise print over the alt-screen.
+func TestSetCompactHookRoutesCompactionReports(t *testing.T) {
+	tool := newScriptedTool("read", "contents")
+	cfg := Config{
+		Model: ai.Model{ID: "test", Provider: "anthropic", API: ai.APIAnthropicMessages, ContextWindow: 100000},
+		Tools: []Tool{tool},
+		Stream: completedStreamFn(ai.AssistantMessage{
+			Content:    []ai.ContentBlock{ai.TextContent{Text: "done"}},
+			StopReason: ai.StopEndTurn,
+		}),
+		// Threshold sits between the initial history and the compacted
+		// remainder, so exactly one compaction fires per run: any lower
+		// and the loop recompacts forever on its own summary.
+		Compaction: Compaction{Enabled: true, Strategy: StrategySummarize, ThresholdTokens: 1500, KeepRecent: 2},
+		Summarize:  func(ctx context.Context, messages []Message) (string, error) { return "SUMMARY", nil },
+	}
+	loop, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var reports []CompactResult
+	loop.SetCompactHook(func(result CompactResult) { reports = append(reports, result) })
+	big := []Message{
+		UserMessage{Text: "start " + strings.Repeat("x", 2000)},
+		UserMessage{Text: strings.Repeat("y", 2000)},
+		UserMessage{Text: strings.Repeat("z", 2000)},
+		UserMessage{Text: strings.Repeat("w", 2000)},
+	}
+	if _, err := loop.Run(context.Background(), big); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(reports) != 1 || reports[0].Compacted <= 0 {
+		t.Fatalf("reports = %+v, want one meaningful compaction report", reports)
+	}
+	loop.SetCompactHook(nil)
+	if _, err := loop.Run(context.Background(), []Message{UserMessage{Text: "small"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("reports = %d after silencing, want still 1", len(reports))
+	}
+}

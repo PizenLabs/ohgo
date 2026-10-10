@@ -20,7 +20,7 @@ func TestProbeClassifiesReachableAndAuthenticated(t *testing.T) {
 			t.Errorf("auth = %q, want the bearer key", r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"id":"a"},{"id":"b"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"a"},{"id":"b"}]}`))
 	}))
 	defer server.Close()
 
@@ -79,7 +79,7 @@ func TestProbeOllamaTagsShape(t *testing.T) {
 			t.Errorf("auth = %q, want no header without a key", auth)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"models":[{"name":"llama3.1"}]}`))
+		_, _ = w.Write([]byte(`{"models":[{"name":"llama3.1"}]}`))
 	}))
 	defer server.Close()
 
@@ -102,7 +102,7 @@ func TestProbeAnthropicUsesKeyHeader(t *testing.T) {
 			t.Errorf("headers missing the key or version")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[]}`))
+		_, _ = w.Write([]byte(`{"data":[]}`))
 	}))
 	defer server.Close()
 
@@ -131,7 +131,7 @@ func TestOpenRouterSendsAttributionHeaders(t *testing.T) {
 		referer = r.Header.Get("HTTP-Referer")
 		title = r.Header.Get("X-Title")
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Write([]byte("data: [DONE]\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
 
@@ -155,7 +155,7 @@ func TestOpenRouterSendsAttributionHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	stream.Result()
+	_, _ = stream.Result()
 	if referer == "" || title == "" {
 		t.Errorf("referer = %q title = %q, want both attribution headers", referer, title)
 	}

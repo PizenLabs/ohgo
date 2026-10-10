@@ -465,16 +465,38 @@ func TestNarrowStatusStaysOneLine(t *testing.T) {
 	s.Status.Model = "groq/some-long-model-name"
 	s.Status.ContextUsed = 10
 	s.Status.ContextWindow = 100
+	s.Apply(WorkspaceUpdated{Cwd: "/home/user/project", HasCwd: true, Session: "#7", HasSession: true})
 	s.Apply(TerminalResized{Width: 40, Height: 24})
 	out := Render(s)
-	// The header keeps the model (identity matters); the footer must not
-	// spend narrow rows on the budget prefix.
 	lines := strings.Split(out, "\n")
-	status := lines[len(lines)-2]
+	// Identity lives in the header; the footer keeps workspace context and
+	// must not spend narrow rows repeating the model or the budget prefix.
+	header := lines[0]
+	if !strings.Contains(header, "groq/some-long-model-name") {
+		t.Errorf("header = %q, want the model kept there", header)
+	}
+	status := findStatusLine(t, out, "#7")
 	if strings.Contains(status, "context") {
 		t.Errorf("narrow status = %q, want the compact form", status)
 	}
-	if !strings.Contains(status, "groq/some-long-model-name") {
-		t.Errorf("narrow status = %q, want the model kept", status)
+	if strings.Contains(status, "groq/some-long-model-name") {
+		t.Errorf("narrow status = %q, want identity de-duplicated out of the footer", status)
 	}
+	if !strings.Contains(status, "project") {
+		t.Errorf("narrow status = %q, want the working directory kept", status)
+	}
+}
+
+// findStatusLine locates the footer by its session marker. The composer is
+// a multi-row block (rules, input, suggestions), so the status line is no
+// longer at a fixed offset from the end.
+func findStatusLine(t *testing.T, out, marker string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, marker) {
+			return line
+		}
+	}
+	t.Fatalf("no status line containing %q in %q", marker, out)
+	return ""
 }

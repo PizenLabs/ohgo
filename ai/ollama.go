@@ -234,7 +234,7 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (*Stream, erro
 
 	stream := newStream(64)
 	go func() {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		final := AssistantMessage{Model: req.Model}
 		acc := newOllamaAccumulator(&final)
 
@@ -309,7 +309,7 @@ func ollamaConnError(base string, err error) error {
 // readOllamaError decodes a non-2xx response, classifying auth failures so a
 // rejected key reads as rejected rather than generic.
 func readOllamaError(resp *http.Response, base string) error {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var payload struct {
 		Error string `json:"error"`
 	}

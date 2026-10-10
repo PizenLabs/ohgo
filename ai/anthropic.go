@@ -180,7 +180,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (*Stream, e
 
 	stream := newStream(64)
 	go func() {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		final := AssistantMessage{Model: req.Model}
 		state := &anthropicAccumulator{msg: &final}
 

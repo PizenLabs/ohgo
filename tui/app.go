@@ -342,6 +342,28 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.handlePickerKey(msg)
 	}
 
+	// Inline slash discovery owns its keys while visible: navigating,
+	// accepting, or dismissing suggestions must not leak into history,
+	// line movement, or submission. Tab is deliberately untouched: it
+	// keeps opening the full command palette, matching its contract.
+	if p.state.Secret == nil && p.state.Pending == nil &&
+		!p.state.SlashHide && len(SlashSuggestions(p.state.Input)) > 0 {
+		switch msg.String() {
+		case "up", "ctrl+p":
+			p.state.Apply(SlashMoved{Delta: -1})
+			return p, nil
+		case "down", "ctrl+n":
+			p.state.Apply(SlashMoved{Delta: 1})
+			return p, nil
+		case "esc":
+			// Dismiss keeps the draft: the text stays, only the list hides
+			// until the next keystroke.
+			p.state.SlashHide = true
+			return p, nil
+		case "enter":
+			return p.acceptSlash()
+		}
+	}
 	// A secret prompt captures the composer: typing masks, enter submits to
 	// the setup flow, escape abandons it. Nothing typed here may become a
 	// prompt — that path would persist the key into history.
@@ -362,11 +384,12 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return p, nil
 		default:
-			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			switch msg.Type {
+			case tea.KeyRunes, tea.KeySpace:
 				text := p.state.Input + string(msg.Runes)
-				p.state.Apply(ComposerChanged{Text: text, Cursor: len([]rune(text))})
-			} else if msg.Type == tea.KeySpace {
-				text := p.state.Input + " "
+				if msg.Type == tea.KeySpace {
+					text = p.state.Input + " "
+				}
 				p.state.Apply(ComposerChanged{Text: text, Cursor: len([]rune(text))})
 			}
 			return p, nil
@@ -497,15 +520,49 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		// Space arrives as KeySpace, not KeyRunes: without this branch no
 		// space can ever be typed into the composer.
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-			text := insertAt(p.state.Input, p.state.Cursor, string(msg.Runes))
-			p.state.Apply(ComposerChanged{Text: text, Cursor: p.state.Cursor + len(msg.Runes)})
-		} else if msg.Type == tea.KeySpace {
-			text := insertAt(p.state.Input, p.state.Cursor, " ")
-			p.state.Apply(ComposerChanged{Text: text, Cursor: p.state.Cursor + 1})
+		switch msg.Type {
+		case tea.KeyRunes, tea.KeySpace:
+			text := string(msg.Runes)
+			if msg.Type == tea.KeySpace {
+				text = " "
+			}
+			// "?" on an empty composer opens contextual help from the
+			// authoritative registry. While composing it stays literal:
+			// help must never steal a question mark being typed.
+			if text == "?" && strings.TrimSpace(p.state.Input) == "" && p.state.Secret == nil {
+				p.openCommandPalette("")
+				return p, nil
+			}
+			composed := insertAt(p.state.Input, p.state.Cursor, text)
+			p.state.Apply(ComposerChanged{Text: composed, Cursor: p.state.Cursor + len([]rune(text))})
 		}
 		return p, nil
 	}
+}
+
+// acceptSlash resolves Enter on a slash line: an exact known command (with
+// or without arguments) dispatches exactly like submitting it; a partial
+// line completes to the highlighted suggestion and stays in the composer
+// so a second Enter runs what the user has now seen.
+func (p *Program) acceptSlash() (tea.Model, tea.Cmd) {
+	matches := SlashSuggestions(p.state.Input)
+	if len(matches) == 0 {
+		return p, nil
+	}
+	cur := p.state.SlashCursor
+	if cur < 0 || cur >= len(matches) {
+		cur = 0
+	}
+	typed := strings.TrimSpace(p.state.Input)
+	if command, ok := ParseCommand(typed); ok {
+		if _, known := LookupCommand(command.Name); known &&
+			(typed == "/"+command.Name || len(command.Args) > 0) {
+			return p, p.runCommand(command)
+		}
+	}
+	completed := "/" + matches[cur].Name
+	p.state.Apply(ComposerChanged{Text: completed, Cursor: len([]rune(completed))})
+	return p, nil
 }
 
 // pageStep scrolls by half the viewport, or a fixed step when the size is
@@ -1015,13 +1072,6 @@ func (p *Program) resumeSession(item PickerItem) tea.Cmd {
 	return nil
 }
 
-// storeOf keeps the existing store when the opener did not hand back a new
-// session object with one. Sessions live in one database, so the store only
-// changes when the caller says it does.
-func storeOf(sess *session.Session, current *session.Store) *session.Store {
-	return current
-}
-
 // openJobsView lists background jobs. Choosing one shows its latest output;
 // the wait tool remains the way to follow a running job.
 func (p *Program) openJobsView() {
@@ -1269,19 +1319,35 @@ func (p *Program) runTurn(text string) {
 		}
 	}
 
-	for _, outcome := range lastTurnResults(turns) {
-		p.persist(agent.ToolResultMessage{
-			ToolCallID: outcome.CallID,
-			ToolName:   outcome.ToolName,
-			Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
-			IsError:    outcome.Result.IsError,
-		})
+	// Assistant text must reach the transcript: tool progress travels through
+	// the hook above, but the model's own words only exist on the completed
+	// turns. Without this the transcript shows the user's prompts with empty
+	// space where the answers belong, which reads as "nothing appears".
+	for _, turn := range turns {
+		if text := turn.Assistant.Text(); text != "" {
+			p.publish(AssistantDelta{Text: text})
+		}
 	}
+
+	// Every turn persists its assistant plus all of its results, in the same
+	// order as the plain path: dropping non-final results would lose the
+	// evidence the transcript replays, and persisting is the program's job
+	// here (the loop's turn hook stays silent in UI mode — see SetTurnHook).
 	for _, turn := range turns {
 		p.persist(agent.AssistantMessage{Message: turn.Assistant})
+		for _, outcome := range turn.Results {
+			p.persist(agent.ToolResultMessage{
+				ToolCallID: outcome.CallID,
+				ToolName:   outcome.ToolName,
+				Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
+				IsError:    outcome.Result.IsError,
+			})
+		}
 	}
 	p.publish(AssistantDone{})
 }
+
+// persist appends one message to the transcript, if a session is attached.
 
 // SetModelSwitcher installs the handlers behind /model.
 //
@@ -1297,10 +1363,21 @@ func (p *Program) SetModelSwitcher(set func(id string) error, current func() str
 // history is the replayed conversation from a previous run, so a resumed
 // session continues rather than restarting. The program keeps its own copy: a
 // caller mutating the slice afterwards must not change what the session sends.
+// The replayed entries land in the transcript too, so a CLI resume shows
+// what the model will continue instead of an empty welcome screen while the
+// loop secretly holds full history. This mirrors the /sessions picker path,
+// which applies HistoryReplaced on choosing.
 func (p *Program) AttachSession(store *session.Store, sess *session.Session, history []agent.Message) {
 	p.store = store
 	p.session = sess
 	p.history = append([]agent.Message(nil), history...)
+	if len(history) == 0 {
+		return
+	}
+	p.state.Apply(HistoryReplaced{Entries: EntriesFromMessages(history)})
+	if sess != nil {
+		p.state.Apply(Notice{Text: fmt.Sprintf("resumed session %d (%d messages)", sess.ID, len(history))})
+	}
 }
 
 // persist appends one message to the transcript, if a session is attached.
@@ -1322,12 +1399,12 @@ func (p *Program) persist(msg agent.Message) {
 	}
 }
 
-// lastTurnResults flattens the tool results of the most recent turn.
-func lastTurnResults(turns []agent.Turn) []agent.ToolOutcome {
-	if len(turns) == 0 {
-		return nil
-	}
-	return turns[len(turns)-1].Results
+// PublishNotice records a transcript notice from outside the update
+// goroutine. Like PublishWorkspace it is safe before Run and travels the
+// event channel live, so background work (compaction reports, validation
+// outcomes) never writes to the terminal directly.
+func (p *Program) PublishNotice(text string) {
+	p.publish(Notice{Text: text})
 }
 
 // rebase rebuilds history from the request that was sent plus the new turns.

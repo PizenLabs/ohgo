@@ -194,8 +194,7 @@ func TestGrepHonoursCancellation(t *testing.T) {
 	writeTree(t, root, map[string]string{"a.go": "needle\n"})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, result := grepText(t, NewGrepTool(root), map[string]any{"pattern": "needle"})
-	result = NewGrepTool(root).Execute(agent.Context{Ctx: ctx}, map[string]any{"pattern": "needle"})
+	result := NewGrepTool(root).Execute(agent.Context{Ctx: ctx}, map[string]any{"pattern": "needle"})
 	if !result.IsError {
 		t.Fatal("expected a cancelled context to fail")
 	}
@@ -300,7 +299,7 @@ func TestWebFetchRejectsNonHTTPSchemes(t *testing.T) {
 func TestWebFetchExtractsTextFromHTML(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, `<!DOCTYPE html>
+		_, _ = fmt.Fprintf(w, `<!DOCTYPE html>
 <html><head><title>T</title><style>body{color:red}</style></head>
 <body>
 <script>var secret = "must not leak";</script>
@@ -338,7 +337,7 @@ func TestWebFetchExtractsTextFromHTML(t *testing.T) {
 func TestWebFetchReturnsPlainText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, "line one\nline two\n")
+		_, _ = fmt.Fprint(w, "line one\nline two\n")
 	}))
 	defer server.Close()
 

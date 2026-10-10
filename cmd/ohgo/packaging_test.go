@@ -21,7 +21,7 @@ var providerKeyVars = []string{
 func clearProviderKeys(t *testing.T) {
 	t.Helper()
 	for _, name := range providerKeyVars {
-		os.Unsetenv(name)
+		_ = os.Unsetenv(name)
 	}
 }
 

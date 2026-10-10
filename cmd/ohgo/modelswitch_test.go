@@ -36,7 +36,7 @@ func TestPickerSelectionDrivesInference(t *testing.T) {
 	clearProviderKeys(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":[{"id":"future/picked-v2","name":"Picked V2",
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"future/picked-v2","name":"Picked V2",
 			"context_length":200000,"pricing":{"prompt":"0","completion":"0"},
 			"supported_parameters":["tools"]}]}`)
 	}))

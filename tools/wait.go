@@ -197,7 +197,7 @@ func renderWait(id string, snap jobSnapshot) (agent.Result, bool) {
 func renderFinished(id string, snap jobSnapshot) agent.Result {
 	var sb strings.Builder
 	if snap.truncationNotice {
-		sb.WriteString(fmt.Sprintf("[earlier output of %s truncated at %d bytes]\n", id, BashMaxOutput))
+		fmt.Fprintf(&sb, "[earlier output of %s truncated at %d bytes]\n", id, BashMaxOutput)
 	}
 	sb.WriteString(strings.TrimRight(snap.text, "\n"))
 	if snap.done {

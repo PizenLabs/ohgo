@@ -51,6 +51,11 @@ type Layout struct {
 	HeaderLines   int
 	ComposerLines int
 	StatusLines   int
+	// SlashLines is the suggestion rows the composer will render. It equals
+	// what slashBudget reserves: the renderer truncates to it, so reserved
+	// and rendered rows always agree even on viewports shorter than the
+	// full suggestion window. Negative means uncapped (unknown size).
+	SlashLines int
 	// ShowDetail reports secondary metadata survives (context %, session,
 	// cwd). Narrow tiers drop it before touching conversation width.
 	ShowDetail bool
@@ -92,6 +97,7 @@ func ComputeLayout(s State) Layout {
 			ContentWidth: 0, // zero means "do not wrap"
 			ShowDetail:   true,
 			ShowHints:    true,
+			SlashLines:   -1, // uncapped: render everything
 		}
 	}
 	content := s.Width - 2
@@ -106,10 +112,18 @@ func ComputeLayout(s State) Layout {
 	}
 	header := 2 // header line + separator
 	status := 1
-	composer := composerHeight(s, content, mode)
 	hints := 0
-	if mode == LayoutWide && s.Height >= 20 {
+	if mode == LayoutWide && s.Height >= 20 && s.Picker == nil {
 		hints = 1
+	}
+	composer, sugg := composerHeight(s, content, mode, hints)
+	// An open picker hides the composer (and its hints row belongs to the
+	// transcript chrome, not the picker): reserving rows for regions that
+	// never render would short the viewport and unpin the status line.
+	// The picker area fills the released rows instead.
+	if s.Picker != nil {
+		composer = 0
+		sugg = 0
 	}
 	chrome := header + status + hints + composer
 	conv := s.Height - chrome
@@ -127,43 +141,87 @@ func ComputeLayout(s State) Layout {
 		StatusLines:        status,
 		ShowDetail:         mode == LayoutWide || mode == LayoutMedium,
 		ShowHints:          hints > 0,
+		SlashLines:         sugg,
 	}
 }
 
-// composerHeight sizes the composer in rows: wrapped input lines plus one hint
-// row on wide terminals. Bounded so a pasted novel cannot evict the
-// conversation entirely.
-func composerHeight(s State, contentWidth int, mode LayoutMode) int {
-	lines := 1
+// composerHeight sizes the composer in rows: the two framing rules plus
+// hard-wrapped input lines, inline slash suggestions, and the interaction
+// state line. Bounded so a pasted novel cannot evict the conversation. It
+// uses the same wrap as renderComposer so the reserved rows and the rendered
+// rows agree. It also returns the suggestion rows, capped so the chrome
+// leaves the transcript at least one row: suggestions yield first — rules,
+// input, and state never shrink for them. The renderer truncates to the
+// same count via Layout.SlashLines.
+func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (lines, sugg int) {
+	lines = 2 // the two framing rules
 	if s.Secret != nil {
-		lines = 2 // masked line + hint
-	} else {
-		text := s.Input
-		if text == "" {
-			lines = 1
-		} else {
-			n := 0
-			for _, part := range splitInputLines(text) {
-				wrapped := WrapToWidth(part, contentWidth-2)
-				n += len(wrapped)
-			}
-			if n < 1 {
-				n = 1
-			}
-			lines = n
+		// contentWidth is clamped to at least 10 wherever this runs, so
+		// contentWidth-2 is exactly what composerWrapWidth yields there.
+		masked := len(secretMaskedRows(s.Secret.Label, s.Input, contentWidth-2))
+		if masked > maxComposerRows {
+			masked = maxComposerRows
 		}
-		if mode == LayoutMini {
-			// Mini never renders; keep the count sane for callers.
-			if lines > 2 {
-				lines = 2
-			}
-			return lines
+		lines += masked + 1 // masked block + hint
+		return lines, 0
+	}
+	inputRows := 1
+	text := s.Input
+	if text != "" {
+		// Same sanitized text the renderer folds: pasted escapes must not
+		// change the reserved row count behind the view's back.
+		clean, _ := sanitizeWithCursor(text, 0)
+		wrapWidth := contentWidth - 2
+		if wrapWidth < 1 {
+			wrapWidth = 1
 		}
-		if lines > 6 {
-			lines = 6
+		rows, _, _, _ := layoutComposer(clean, -1, wrapWidth)
+		inputRows = len(rows)
+		if inputRows < 1 {
+			inputRows = 1
+		}
+		if inputRows > maxComposerRows {
+			inputRows = maxComposerRows
 		}
 	}
-	return lines
+	lines += inputRows
+	stateRows := 0
+	if composerStateRows(s) > 0 {
+		stateRows = 1
+		lines++
+	}
+	sugg = slashRows(s)
+	if s.Height > 0 {
+		maxSugg := s.Height - 2 - 1 - hintRows - 2 - inputRows - stateRows - 1
+		if maxSugg < 0 {
+			maxSugg = 0
+		}
+		if sugg > maxSugg {
+			sugg = maxSugg
+		}
+	}
+	lines += sugg
+	if mode == LayoutMini {
+		// Mini never renders; keep the count sane for callers.
+		if lines > 2 {
+			lines = 2
+		}
+		return lines, 0
+	}
+	return lines, sugg
+}
+
+// composerStateRows reports whether the queued-prompts line shows. Busy and
+// approval states live in the header, status, and modal (see
+// composerStateLine); only the queue needs this row.
+func composerStateRows(s State) int {
+	if s.Pending != nil {
+		return 0
+	}
+	if len(s.Queued) > 0 {
+		return 1
+	}
+	return 0
 }
 
 // pickerRowsFor sizes the picker's result window from the terminal size:
@@ -179,20 +237,4 @@ func pickerRowsFor(s State) int {
 		rows = 1
 	}
 	return rows
-}
-
-// splitInputLines splits composer text preserving empty lines.
-func splitInputLines(text string) []string {
-	if text == "" {
-		return []string{""}
-	}
-	out := []string{}
-	start := 0
-	for i := 0; i < len(text); i++ {
-		if text[i] == '\n' {
-			out = append(out, text[start:i])
-			start = i + 1
-		}
-	}
-	return append(out, text[start:])
 }

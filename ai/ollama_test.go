@@ -32,7 +32,7 @@ func newOllamaHarness(t *testing.T, status int, lines []string) *ollamaHarness {
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.WriteHeader(status)
 		for _, line := range lines {
-			fmt.Fprintln(w, line)
+			_, _ = fmt.Fprintln(w, line)
 		}
 	}))
 	t.Cleanup(h.server.Close)

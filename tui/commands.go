@@ -95,7 +95,7 @@ func (p *Program) statusReport() string {
 	if p.state.Status.Busy {
 		sb.WriteString(" · working")
 	}
-	sb.WriteString(fmt.Sprintf("\ntheme: %s", NormalizeTheme(p.state.Theme)))
+	fmt.Fprintf(&sb, "\ntheme: %s", NormalizeTheme(p.state.Theme))
 	if p.state.ConnDetail != "" {
 		state := "not connected"
 		if p.state.ConnOK {

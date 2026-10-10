@@ -181,30 +181,62 @@ pages + markdown from the live cobra tree.
 The workbench separates runtime truth from rendering: `State.Apply(Event)`
 is the only transition (terminal-free, test-covered); `Render(State)` is
 pure and performs no I/O; `Program` bridges the agent loop via buffered
-event/approval channels plus Bubble Tea commands. Derived display phases
+event/approval channels plus Bubble Tea commands. In full-screen mode the
+program owns turn output and persistence outright: it clears the loop's turn
+and compaction hooks (`SetTurnHook(nil)`, notice-routed compact reports), so
+no turn ever prints raw text over the alt-screen and no turn persists twice.
+Derived display phases
 (`DeriveRuntime`: idle, working, streaming, running tool, awaiting
 approval, shutting down) are computed per render, never stored.
 
 - `tui/model.go`: the state machine — composer, viewport (scroll + sticky
   follow), queue, overlays, sessions/models/jobs/commands/connect pickers,
-  theme, workspace, probe/doctor/providers wiring.
+  theme, workspace, probe/doctor/providers wiring. Slash discovery state
+  (`SlashCursor`, `SlashHide`, `SlashMoved`) filters the authoritative
+  `Commands` registry inline — never a second catalog.
 - `tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,
   prompt history with draft preservation.
 - `tui/entries.go`: transcript entries rebuilt from replayed messages (tool
   cards from stored calls, orphans kept, UI-only skipped).
-- `tui/markdown.go`: dependency-free chat prose (fences, code, headers,
-  lists, quotes, rules); tables pass through rather than mangled.
+- `tui/markdown.go`: dependency-free chat prose (fences, code, headings with
+  hierarchy, nested/ordered lists, quotes, rules, links, tables with
+  terminal-width-aware columns and a stacked narrow fallback). One wrap
+  ownership: plain cells are measured and folded first, ANSI applied after,
+  so styling never inflates the budget and raw model ANSI is consumed at the
+  boundary. Partial streaming constructs render provisionally (unclosed
+  markers stay literal) and converge on completion; rendering is a pure
+  function of the accumulated text, so chunk splits cannot diverge it.
+- `tui/sanitize.go`: the trust boundary for everything else. Tool results,
+  prompts, notices, composer input, and chrome fields pass here: SGR colors
+  survive, cursor-movement CSI, OSC hyperlinks, carriage returns (folded to
+  newlines, or spaces inline), and stray controls do not. A cursor-aware
+  variant keeps composer cursor mapping exact across sanitization.
 - `tui/width.go`: cell-width measurement, truncation, wrapping
-  (ANSI-stripped, CJK/emoji-aware, hard-breaks unbroken runs).
+  (ANSI-stripped, CJK/emoji-aware, hard-breaks unbroken runs, combining
+  marks stay attached).
 - `tui/layout.go`: responsive tiers (wide ≥100, medium 70–99, narrow <70,
-  mini <40×8), content width, conversation height, bounded composer.
+  mini <40×8), content width, conversation height, bounded composer (two
+  framing rules + input rows + slash suggestion rows + state line, all
+  counted so reserved and rendered rows agree). Suggestion rows carry a
+  viewport budget (`Layout.SlashLines`): on short screens they yield first
+  so the transcript keeps a row. An open picker releases the composer rows
+  it hides, and the picker area fills them instead.
 - `tui/style.go`: two palettes (dark/light) behind one resolver plus
   semantic chrome (typo degrades to dark; text plus color, never color
   alone).
 - `tui/view.go`: adaptive header/conversation/composer/status, bounded
-  approval preview and pickers, mini-mode notice, overlap-free slicing.
-  Overlays take over (transcript + composer hidden) so streaming output
-  never fights a moving cursor.
+  approval preview (cap derived from the computed chrome, not a constant;
+  the separator blank yields on viewports too short to hold it),
+  pickers, mini-mode notice, overlap-free slicing. The transcript and the
+  picker each emit exactly their viewport rows — entry separators live
+  inside the budget, and a zero-row transcript yields to modal pressure on
+  tiny screens rather than overflowing.
+  The composer is two restrained rules around the input with an inline
+  slash-suggestion list and a queued-prompts line (busy and approval live
+  in the header, status, and modal — never restated under the input). `?` on an empty composer opens command
+  help from the registry; while composing it stays literal. Overlays take
+  over (transcript + composer hidden) so streaming output never fights a
+  moving cursor.
 - `tui/commands.go`: the shared `/` registry (`ParseCommand`, `HelpText`,
   typo suggestions); both UIs dispatch through it.
 - `tui/picker.go`: the generic list state machine (query + cursor,

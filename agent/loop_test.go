@@ -400,3 +400,47 @@ func TestLoopSetModelClearsAResolver(t *testing.T) {
 		t.Errorf("request model = %q, want %q", all[0].Model.ID, catalog.MustResolve("openai/gpt-5").ID)
 	}
 }
+
+// TestSetTurnHookReplacesAndSilencesReports pins the hook the full-screen UI
+// depends on: installing nil must stop turn reports (which would otherwise
+// print raw turns over the alt-screen), and installing a hook must replace
+// the construction-time one rather than adding a second reporter.
+func TestSetTurnHookReplacesAndSilencesReports(t *testing.T) {
+	tool := newScriptedTool("read", "contents")
+	done := ai.AssistantMessage{
+		Content:    []ai.ContentBlock{ai.TextContent{Text: "done"}},
+		StopReason: ai.StopEndTurn,
+	}
+	streamFn, _ := scriptedStream(done, done, done)
+	var first, second int
+	loop, err := New(Config{
+		Model:  catalog.MustResolve("anthropic/claude-sonnet-4-5"),
+		Stream: streamFn,
+		Tools:  []Tool{tool},
+		OnTurn: func(Turn) { first++ },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := loop.Run(ctx, []Message{UserMessage{Text: "go"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if first != 1 {
+		t.Fatalf("construction hook fired %d times, want 1", first)
+	}
+	loop.SetTurnHook(nil)
+	if _, err := loop.Run(ctx, []Message{UserMessage{Text: "go"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if first != 1 {
+		t.Fatalf("silenced hook fired %d times, want still 1", first)
+	}
+	loop.SetTurnHook(func(Turn) { second++ })
+	if _, err := loop.Run(ctx, []Message{UserMessage{Text: "go"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if second != 1 || first != 1 {
+		t.Errorf("hooks = (%d, %d), want the replacement alone at (1, 1)", first, second)
+	}
+}

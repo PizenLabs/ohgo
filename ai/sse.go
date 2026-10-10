@@ -56,6 +56,10 @@ func readSSE(ctx context.Context, body io.Reader, fn func(sseEvent) error) error
 		}
 
 		line := scanner.Text()
+		if isSSEIgnored(line) {
+			// Neither field affects decoding for these transports.
+			continue
+		}
 		switch {
 		case line == "":
 			if err := flush(); err != nil {
@@ -69,8 +73,6 @@ func readSSE(ctx context.Context, body io.Reader, fn func(sseEvent) error) error
 			payload := strings.TrimPrefix(line, "data:")
 			payload = strings.TrimPrefix(payload, " ")
 			data = append(data, payload)
-		case strings.HasPrefix(line, "id:"), strings.HasPrefix(line, "retry:"):
-			// Neither field affects decoding for these transports.
 		default:
 			// Unknown field; ignore per the SSE spec.
 		}
@@ -79,6 +81,13 @@ func readSSE(ctx context.Context, body io.Reader, fn func(sseEvent) error) error
 		return fmt.Errorf("ai: read SSE body: %w", err)
 	}
 	return flush()
+}
+
+// isSSEIgnored reports whether a line carries an SSE field this transport
+// ignores. id and retry govern reconnection, not decoding, so neither
+// affects the events produced here.
+func isSSEIgnored(line string) bool {
+	return strings.HasPrefix(line, "id:") || strings.HasPrefix(line, "retry:")
 }
 
 // httpError is a non-2xx response from a provider.
@@ -142,7 +151,7 @@ func doJSON(ctx context.Context, client *http.Client, url string, req any, heade
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, &httpError{Status: resp.StatusCode, Body: string(body), Header: resp.Header}
 	}
 	return resp, nil
