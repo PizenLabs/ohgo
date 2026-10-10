@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a change to ohgo behavior
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep it to one idea per issue. The TypeScript original is the contract authority — note any divergence there.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What task is hard or impossible today?
+      placeholder: "I can't ..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Observable behavior you want, including CLI/TUI surface and config.
+      placeholder: "`ohgo run --...` should ..."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other designs or workarounds, and why they fall short.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: false
+      options:
+        - agent / tools
+        - providers / models (ai, catalog)
+        - TUI / REPL
+        - session / storage
+        - config / CLI
+        - docs / other
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: "This is one idea, not a bundle"
+          required: true
+        - label: "I searched existing issues for a duplicate"
+          required: false

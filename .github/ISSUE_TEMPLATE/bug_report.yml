@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a reproducible problem in ohgo
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Fill in what you can — a reproducer matters more than perfect formatting.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw vs. what you expected.
+      placeholder: "ohgo run crashed with ...; expected ..."
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal commands, config, and input that trigger it.
+      placeholder: |
+        1. `ohgo doctor`
+        2. `ohgo run "..."`
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: From `ohgo --version` or `git describe --tags --always --dirty`.
+      placeholder: "v0.1.0 / ed60b2b-dirty"
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, arch, Go version, terminal.
+      placeholder: "darwin/arm64, go 1.27.1, iTerm2"
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste `ohgo doctor` output and any relevant log excerpt. Redact API keys.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: "I redacted all credentials from logs/config"
+          required: true
+        - label: "I searched existing issues for a duplicate"
+          required: false

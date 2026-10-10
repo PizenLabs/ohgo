@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/PizenLabs/ohgo/discussions
+    about: Ask how to use ohgo, propose ideas, or get help with setup.
