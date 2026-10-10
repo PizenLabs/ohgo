@@ -1,0 +1,13 @@
+/ohgo
+*.exe
+*.test
+*.out
+coverage.*
+.env
+.env.local
+.idea/
+.vscode/
+*.swp
+.DS_Store
+go.work
+go.work.sum

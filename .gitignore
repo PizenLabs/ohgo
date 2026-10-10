@@ -1,0 +1,32 @@
+# Binaries
+/ohgo
+*.exe
+
+# Test output
+*.test
+*.out
+coverage.*
+
+# Local env
+.env
+.env.local
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Go workspace
+go.work
+go.work.sum
+
+# Release artifacts
+/dist/
+
+# File
+PROGRESS.md
+MEMORY.md
+PORT.md
