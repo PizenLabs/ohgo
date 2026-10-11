@@ -32,39 +32,58 @@ type Palette struct {
 	Code      lipgloss.Style
 	CodeFence lipgloss.Style
 	Heading   lipgloss.Style
-	Bold      lipgloss.Style
-	Italic    lipgloss.Style
-	Quote     lipgloss.Style
-	Bullet    lipgloss.Style
-	Muted     lipgloss.Style
+	// Heading2 and Heading3 stratify the header hierarchy below Heading
+	// (H1): H2 is sage, H3 muted sage, so depth reads without parsing.
+	Heading2 lipgloss.Style
+	Heading3 lipgloss.Style
+	// Code token styles highlight fenced code lexically. Every token
+	// carries the same background as Code so a highlighted line keeps one
+	// uniform block; the foreground alone signals the token kind.
+	CodeKeyword lipgloss.Style
+	CodeString  lipgloss.Style
+	CodeComment lipgloss.Style
+	CodeNumber  lipgloss.Style
+	Bold        lipgloss.Style
+	Italic      lipgloss.Style
+	Quote       lipgloss.Style
+	Bullet      lipgloss.Style
+	Muted       lipgloss.Style
 }
 
 // DarkPalette is the default: muted surfaces with a single mint accent for
-// the user's voice and focus, primary text for the assistant.
+// the user's voice and focus, primary text for the assistant. Headers step
+// down a deep-forest scale — bright emerald H1, sage H2, muted sage H3 —
+// and code tokens reuse the same scale so prose and code read as one theme.
 func DarkPalette() *Palette {
 	return &Palette{
-		User:      fg(darkAccent).Bold(true),
-		Assistant: fg(darkText),
-		ToolName:  fg(darkTool).Bold(true),
-		ToolDone:  fg(darkSuccess),
-		ToolError: fg(darkDanger),
-		ToolRun:   fg(darkWarning),
-		Notice:    fg(darkMuted).Italic(true),
-		Status:    fg(darkMuted),
-		Prompt:    fg(darkAccent),
-		Choice:    fg(darkText),
-		Selected:  fg(darkAccent).Bold(true),
-		Truncated: fg(darkMuted),
-		Cursor:    fg(darkAccent).Reverse(true),
-		Queued:    fg(darkMuted).Italic(true),
-		Code:      fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
-		CodeFence: fg(darkMuted),
-		Heading:   fg(darkAccent).Bold(true),
-		Bold:      lipgloss.NewStyle().Bold(true),
-		Italic:    lipgloss.NewStyle().Italic(true),
-		Quote:     fg(darkMuted).Italic(true),
-		Bullet:    fg(darkAccent),
-		Muted:     fg(darkMuted),
+		User:        fg(darkAccent).Bold(true),
+		Assistant:   fg(darkText),
+		ToolName:    fg(darkTool).Bold(true),
+		ToolDone:    fg(darkSuccess),
+		ToolError:   fg(darkDanger),
+		ToolRun:     fg(darkWarning),
+		Notice:      fg(darkMuted).Italic(true),
+		Status:      fg(darkMuted),
+		Prompt:      fg(darkAccent),
+		Choice:      fg(darkText),
+		Selected:    fg(darkAccent).Bold(true),
+		Truncated:   fg(darkMuted),
+		Cursor:      fg(darkAccent).Reverse(true),
+		Queued:      fg(darkMuted).Italic(true),
+		Code:        fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
+		CodeFence:   fg(darkMuted),
+		Heading:     fg(darkH1).Bold(true),
+		Heading2:    fg(darkH2).Bold(true),
+		Heading3:    fg(darkH3).Bold(true),
+		CodeKeyword: fg(darkH1).Background(lipgloss.Color(darkCodeBg)).Bold(true),
+		CodeString:  fg(darkCodeStr).Background(lipgloss.Color(darkCodeBg)),
+		CodeComment: fg(darkMuted).Background(lipgloss.Color(darkCodeBg)).Italic(true),
+		CodeNumber:  fg(darkTool).Background(lipgloss.Color(darkCodeBg)),
+		Bold:        lipgloss.NewStyle().Bold(true),
+		Italic:      lipgloss.NewStyle().Italic(true),
+		Quote:       fg(darkMuted).Italic(true),
+		Bullet:      fg(darkAccent),
+		Muted:       fg(darkMuted),
 	}
 }
 
@@ -72,28 +91,34 @@ func DarkPalette() *Palette {
 // backgrounds that would clash with a light screen, the same semantics.
 func LightPalette() *Palette {
 	return &Palette{
-		User:      fg(lightAccent).Bold(true),
-		Assistant: fg(lightText),
-		ToolName:  fg(lightTool).Bold(true),
-		ToolDone:  fg(lightSuccess),
-		ToolError: fg(lightDanger),
-		ToolRun:   fg(lightWarning),
-		Notice:    fg(lightMuted).Italic(true),
-		Status:    fg(lightMuted),
-		Prompt:    fg(lightAccent),
-		Choice:    fg(lightText),
-		Selected:  fg(lightAccent).Bold(true),
-		Truncated: fg(lightMuted),
-		Cursor:    fg(lightAccent).Reverse(true),
-		Queued:    fg(lightMuted).Italic(true),
-		Code:      fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
-		CodeFence: fg(lightMuted),
-		Heading:   fg(lightAccent).Bold(true),
-		Bold:      lipgloss.NewStyle().Bold(true),
-		Italic:    lipgloss.NewStyle().Italic(true),
-		Quote:     fg(lightMuted).Italic(true),
-		Bullet:    fg(lightAccent),
-		Muted:     fg(lightMuted),
+		User:        fg(lightAccent).Bold(true),
+		Assistant:   fg(lightText),
+		ToolName:    fg(lightTool).Bold(true),
+		ToolDone:    fg(lightSuccess),
+		ToolError:   fg(lightDanger),
+		ToolRun:     fg(lightWarning),
+		Notice:      fg(lightMuted).Italic(true),
+		Status:      fg(lightMuted),
+		Prompt:      fg(lightAccent),
+		Choice:      fg(lightText),
+		Selected:    fg(lightAccent).Bold(true),
+		Truncated:   fg(lightMuted),
+		Cursor:      fg(lightAccent).Reverse(true),
+		Queued:      fg(lightMuted).Italic(true),
+		Code:        fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
+		CodeFence:   fg(lightMuted),
+		Heading:     fg(lightH1).Bold(true),
+		Heading2:    fg(lightH2).Bold(true),
+		Heading3:    fg(lightH3).Bold(true),
+		CodeKeyword: fg(lightH1).Background(lipgloss.Color(lightCodeBg)).Bold(true),
+		CodeString:  fg(lightCodeStr).Background(lipgloss.Color(lightCodeBg)),
+		CodeComment: fg(lightMuted).Background(lipgloss.Color(lightCodeBg)).Italic(true),
+		CodeNumber:  fg(lightTool).Background(lipgloss.Color(lightCodeBg)),
+		Bold:        lipgloss.NewStyle().Bold(true),
+		Italic:      lipgloss.NewStyle().Italic(true),
+		Quote:       fg(lightMuted).Italic(true),
+		Bullet:      fg(lightAccent),
+		Muted:       fg(lightMuted),
 	}
 }
 
@@ -151,7 +176,15 @@ func Render(state State) string {
 // composerHintsFor picks the hint row for the current interaction: slash
 // navigation while discovering commands, the busy set while a turn runs,
 // the idle set otherwise. Every hint shown must work.
+//
+// An open approval owns the interaction, so no composer hint is produced: the
+// dialog has captured enter, esc, and the scroll keys, and advertising them
+// here would contradict the key line it prints instead. ComputeLayout drops
+// the row in the same case, so the frame keeps its budget either way.
 func composerHintsFor(state State) string {
+	if state.Pending != nil {
+		return ""
+	}
 	if !state.SlashHide && len(SlashSuggestions(state.Input)) > 0 && state.Secret == nil {
 		return "↑↓ navigate · enter accept · esc dismiss · tab palette"
 	}
@@ -285,15 +318,24 @@ func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout
 		}
 		return
 	}
-	if state.Scroll > 0 && avail > 0 {
-		sb.WriteString(pal.Muted.Render(fmt.Sprintf("↑ %d lines above — end to follow", state.Scroll)) + "\n")
+	// The scroll offset is clamped to the content: an offset past the top
+	// would emit fewer than avail rows and unpin the composer from the
+	// bottom of the viewport, and the marker must count lines actually
+	// above rather than the raw offset. Render stays pure — the stored
+	// offset is untouched, so scrolling back down still moves.
+	scroll := state.Scroll
+	if max := len(lines) - avail; scroll > max {
+		scroll = max
+	}
+	if scroll > 0 && avail > 0 {
+		sb.WriteString(pal.Muted.Render(fmt.Sprintf("↑ %d lines above — end to follow", scroll)) + "\n")
 		avail--
 	}
-	start := len(lines) - avail - state.Scroll
+	start := len(lines) - avail - scroll
 	if start < 0 {
 		start = 0
 	}
-	end := len(lines) - state.Scroll
+	end := len(lines) - scroll
 	if end < start {
 		end = start
 	}
@@ -970,6 +1012,13 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 		badge = pal.ToolRun.Render("· " + tool.Name)
 	}
 	sb.WriteString(badge + "\n")
+
+	// The compact outcome summary lands before the bounded body: a finished
+	// call reads as one line even when its full result follows.
+	if tool.Status != ToolRunning && tool.Summary != "" {
+		summary := sanitizeInline(tool.Summary)
+		sb.WriteString("  " + pal.Status.Render("⎿ "+TruncateToWidth(summary, dialogWidth(layout))) + "\n")
+	}
 
 	if tool.Text == "" {
 		return

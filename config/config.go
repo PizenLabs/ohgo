@@ -36,6 +36,20 @@ type Settings struct {
 	// value behaves as dark, so a typo degrades to the default rather than
 	// an error.
 	Theme string `json:"theme,omitempty"`
+	// Mouse selects how the full-screen UI receives the wheel.
+	//
+	// "select" (the default) never requests mouse reporting, so the terminal
+	// keeps text selection and drag-copy; the wheel reaches the UI through
+	// alternate scroll mode, which terminals that do not implement it — and
+	// multiplexers such as tmux, which consume the wheel for their own
+	// copy-mode — never provide.
+	//
+	// "report" asks the terminal for real mouse events, so the wheel works
+	// everywhere including inside tmux, at the cost of the terminal's own
+	// selection: drag-select needs a modifier (Shift, or Option on macOS).
+	//
+	// Any other value behaves as "select", so a typo keeps copy working.
+	Mouse string `json:"mouse,omitempty"`
 	// Compaction configures context reduction. A nil pointer means "use the
 	// built-in defaults", which is distinct from "disabled".
 	Compaction *Compaction `json:"compaction,omitempty"`

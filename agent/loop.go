@@ -69,6 +69,11 @@ type Config struct {
 	AfterToolCall func(call AfterToolCallContext) AfterToolCallResult
 	// OnTurn is called after each turn, for streaming progress to a UI.
 	OnTurn func(Turn)
+	// OnTextDelta receives visible model text while a stream is still open,
+	// in order. A UI publishes each delta so the answer reveals as it is
+	// generated instead of landing as one block when the turn completes.
+	// Nil disables it; transports that never token-stream never fire it.
+	OnTextDelta func(delta string)
 	// Approve decides whether a call may run without prompting.
 	Approve func(call ai.ToolCall, approval Approval) (bool, string)
 	// Compaction configures context reduction. The zero value disables it.
@@ -98,6 +103,10 @@ type ToolProgress struct {
 	CallID string
 	// ToolName is the tool running.
 	ToolName string
+	// Args are the arguments the call runs with. They let a UI describe
+	// what the call does while it is still running, before any output
+	// exists. The map is the call's own arguments, never fabricated text.
+	Args map[string]any
 	// Result holds the partial outcome, or the final one when Final is true.
 	Result Result
 	// Final marks the last report for this call.
@@ -121,9 +130,18 @@ const (
 )
 
 // Stage returns the stage this report represents.
+//
+// The pre-Execute announcement carries no outcome yet — an empty, non-final
+// report — so it stages as started. A non-final report carrying a partial
+// outcome stages as an update. Consumers must switch on this rather than
+// re-deriving the stage from emptiness: the inference lives here, once, next
+// to the code that emits the announcement.
 func (p ToolProgress) Stage() ToolProgressStage {
 	if p.Final {
 		return ProgressFinished
+	}
+	if p.Result.Text == "" && p.Result.Details == nil {
+		return ProgressStarted
 	}
 	return ProgressUpdate
 }
@@ -207,6 +225,17 @@ const defaultMaxTokens = 8192
 // It must be called before Run, never during one.
 func (l *Loop) SetToolProgressHook(hook func(progress ToolProgress)) {
 	l.cfg.OnToolProgress = hook
+}
+
+// SetTextDeltaHook installs the live-text reporter after construction.
+//
+// Same construction-order reason as SetToolProgressHook: a UI is built after
+// the loop but is the only thing that can turn streamed text into display
+// events.
+//
+// It must be called before Run, never during one.
+func (l *Loop) SetTextDeltaHook(hook func(delta string)) {
+	l.cfg.OnTextDelta = hook
 }
 
 // SetApprovalHook installs the approval gate after construction.
@@ -321,7 +350,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 			return turns, fmt.Errorf("agent: open stream: %w", err)
 		}
 
-		assistant, err := drain(ctx, stream)
+		assistant, err := l.drain(ctx, stream)
 		if err != nil {
 			return turns, fmt.Errorf("agent: stream: %w", err)
 		}
@@ -411,16 +440,21 @@ func (l *Loop) convert(messages []Message) ([]ai.Message, error) {
 
 // drain consumes a stream to completion and returns the assembled message.
 //
-// Events are discarded on purpose: the loop's contract is the completed
-// message. A UI that wants partial output subscribes through the stream it
-// supplied via StreamFn.
-func drain(ctx context.Context, stream *ai.Stream) (ai.AssistantMessage, error) {
+// Visible text deltas are forwarded to OnTextDelta while the stream is still
+// open, in order, so a UI can reveal the answer as it is generated. The
+// loop's contract is still the completed message: a nil hook only skips the
+// forwarding, and every other event is discarded on purpose.
+func (l *Loop) drain(ctx context.Context, stream *ai.Stream) (ai.AssistantMessage, error) {
 	if stream == nil {
 		return ai.AssistantMessage{}, errors.New("agent: nil stream")
 	}
-	for range stream.Events {
+	hook := l.cfg.OnTextDelta
+	for event := range stream.Events {
 		// Draining is required: the producer blocks on an unbuffered send
 		// otherwise, and the stream would never finish.
+		if delta, ok := event.(ai.EventTextDelta); ok && hook != nil && delta.Delta != "" {
+			hook(delta.Delta)
+		}
 		select {
 		case <-ctx.Done():
 			return ai.AssistantMessage{}, ctx.Err()
@@ -578,6 +612,7 @@ func (l *Loop) execute(
 		l.cfg.OnToolProgress(ToolProgress{
 			CallID:   call.ID,
 			ToolName: call.Name,
+			Args:     args,
 			Elapsed:  time.Since(started),
 		})
 		// Forward the tool's own partial reports. The closure captures only
@@ -586,6 +621,7 @@ func (l *Loop) execute(
 			l.cfg.OnToolProgress(ToolProgress{
 				CallID:   call.ID,
 				ToolName: call.Name,
+				Args:     args,
 				Result:   partial,
 				Elapsed:  time.Since(started),
 			})
@@ -619,6 +655,7 @@ func (l *Loop) execute(
 		l.cfg.OnToolProgress(ToolProgress{
 			CallID:   call.ID,
 			ToolName: call.Name,
+			Args:     args,
 			Result:   result,
 			Final:    true,
 			Elapsed:  time.Since(started),

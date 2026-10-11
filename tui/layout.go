@@ -113,7 +113,12 @@ func ComputeLayout(s State) Layout {
 	header := 2 // header line + separator
 	status := 1
 	hints := 0
-	if mode == LayoutWide && s.Height >= 20 && s.Picker == nil {
+	// An open approval captures enter, esc, alt+enter, and the scroll keys, so
+	// the composer hint row would advertise bindings the dialog has taken over.
+	// Drop it here rather than at render time: reserved and rendered rows have
+	// to agree or the frame stops filling the viewport. The dialog prints its
+	// own key line, so nothing is left untaught.
+	if mode == LayoutWide && s.Height >= 20 && s.Picker == nil && s.Pending == nil {
 		hints = 1
 	}
 	composer, sugg := composerHeight(s, content, mode, hints)

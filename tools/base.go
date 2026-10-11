@@ -135,6 +135,10 @@ func boolArg(args map[string]any, key string, fallback bool) (bool, error) {
 // The containment check lives here rather than at every tool call site: a
 // caller that forgets it must fail loudly, not silently read outside Root.
 func resolvePath(root, path string) (string, error) {
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory %q: %w", root, err)
+	}
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(root, path)
 	}
@@ -152,10 +156,18 @@ func resolvePath(root, path string) (string, error) {
 			}
 			// Checking containment after resolution is what makes a symlink
 			// escape impossible: the resolved prefix is authoritative.
-			if !withinRoot(root, final) {
+			if !withinRoot(resolvedRoot, final) {
 				return "", fmt.Errorf("path %q escapes the working directory", path)
 			}
-			return final, nil
+			// Keep the workspace's original spelling for callers. On macOS,
+			// /var is commonly a symlink to /private/var; returning the
+			// canonical spelling would make an in-root result look outside
+			// the root to callers that compare lexical paths.
+			rel, err := filepath.Rel(resolvedRoot, final)
+			if err != nil {
+				return "", fmt.Errorf("relativize resolved path %q: %w", final, err)
+			}
+			return filepath.Join(root, rel), nil
 		}
 		if !os.IsNotExist(err) {
 			return "", err

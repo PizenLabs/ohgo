@@ -32,6 +32,12 @@ const (
 	darkDanger  = "196"
 	darkCodeFg  = "228"
 	darkCodeBg  = "236"
+	// Deep-forest header scale: bright emerald H1, sage H2, muted sage H3.
+	darkH1 = "85"
+	darkH2 = "114"
+	darkH3 = "144"
+	// Warm amber strings read against the dark code background.
+	darkCodeStr = "214"
 
 	// Light theme: dark foregrounds on a bright screen, same semantics.
 	lightText    = "235"
@@ -43,6 +49,12 @@ const (
 	lightDanger  = "160"
 	lightCodeFg  = "235"
 	lightCodeBg  = "254"
+	// Same forest scale for bright terminals: deep emerald H1, dark sage
+	// H2, muted grey H3.
+	lightH1      = "28"
+	lightH2      = "65"
+	lightH3      = "242"
+	lightCodeStr = "166"
 )
 
 // fg is the single place a token becomes a style foreground.

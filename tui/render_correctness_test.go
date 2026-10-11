@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -140,28 +141,34 @@ func forcedPalette() *Palette {
 		return renderer.NewStyle().Foreground(lipgloss.Color(token))
 	}
 	return &Palette{
-		User:      fg("121").Bold(true),
-		Assistant: fg("252"),
-		ToolName:  fg("73").Bold(true),
-		ToolDone:  fg("42"),
-		ToolError: fg("196"),
-		ToolRun:   fg("214"),
-		Notice:    fg("244").Italic(true),
-		Status:    fg("244"),
-		Prompt:    fg("121"),
-		Choice:    fg("252"),
-		Selected:  fg("121").Bold(true),
-		Truncated: fg("244"),
-		Cursor:    fg("121").Reverse(true),
-		Queued:    fg("244").Italic(true),
-		Code:      fg("228").Background(lipgloss.Color("236")),
-		CodeFence: fg("244"),
-		Heading:   fg("121").Bold(true),
-		Bold:      renderer.NewStyle().Bold(true),
-		Italic:    renderer.NewStyle().Italic(true),
-		Quote:     fg("244").Italic(true),
-		Bullet:    fg("121"),
-		Muted:     fg("240"),
+		User:        fg("121").Bold(true),
+		Assistant:   fg("252"),
+		ToolName:    fg("73").Bold(true),
+		ToolDone:    fg("42"),
+		ToolError:   fg("196"),
+		ToolRun:     fg("214"),
+		Notice:      fg("244").Italic(true),
+		Status:      fg("244"),
+		Prompt:      fg("121"),
+		Choice:      fg("252"),
+		Selected:    fg("121").Bold(true),
+		Truncated:   fg("244"),
+		Cursor:      fg("121").Reverse(true),
+		Queued:      fg("244").Italic(true),
+		Code:        fg("228").Background(lipgloss.Color("236")),
+		CodeFence:   fg("244"),
+		Heading:     fg("121").Bold(true),
+		Heading2:    fg("114").Bold(true),
+		Heading3:    fg("144").Bold(true),
+		CodeKeyword: fg("85").Background(lipgloss.Color("236")).Bold(true),
+		CodeString:  fg("214").Background(lipgloss.Color("236")),
+		CodeComment: fg("240").Background(lipgloss.Color("236")).Italic(true),
+		CodeNumber:  fg("73").Background(lipgloss.Color("236")),
+		Bold:        renderer.NewStyle().Bold(true),
+		Italic:      renderer.NewStyle().Italic(true),
+		Quote:       fg("244").Italic(true),
+		Bullet:      fg("121"),
+		Muted:       fg("240"),
 	}
 }
 
@@ -982,6 +989,50 @@ func fullRules(out string, width int) int {
 	return n
 }
 
+// Scrolling must not unpin the chrome: a scrolled-up frame still fills the
+// viewport exactly, keeps the header on top, and keeps the status line glued
+// directly above the dual composer rules with the hint row last — the prompt
+// never drifts up into the transcript region.
+func TestScrolledFrameKeepsFooterPinned(t *testing.T) {
+	s := New()
+	s.Status.Model = "m"
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	var sb strings.Builder
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&sb, "line %d with some words to fill the transcript\n", i)
+	}
+	s.Apply(AssistantDelta{Text: sb.String()})
+	s.Apply(AssistantDone{})
+	s.Apply(WorkspaceUpdated{Cwd: "/work/project", HasCwd: true, Session: "#9", HasSession: true})
+	s.Apply(ScrollMoved{Delta: 10})
+	if s.Follow {
+		t.Fatal("scroll left follow engaged: the scrolled case cannot be reached")
+	}
+	out := Render(s)
+	lines := strings.Split(out, "\n")
+	if len(lines) != 24 {
+		t.Fatalf("%d lines, want exactly 24: the footer floats", len(lines))
+	}
+	if !strings.Contains(lines[0], "ohgo") {
+		t.Errorf("header left the top: %q", lines[0])
+	}
+	if got := fullRules(out, 79); got != 3 {
+		t.Errorf("%d full-width rules, want 3 (header + dual composer)", got)
+	}
+	if !strings.Contains(out, "lines above") {
+		t.Error("scrolled viewport lost its position marker")
+	}
+	// Bottom block is status, rule, composer, rule — in that order (80
+	// columns is the medium tier, which drops the hint row to keep the
+	// conversation's rows).
+	if !strings.Contains(lines[20], "#9") {
+		t.Errorf("line 20 = %q, want the status glued above the composer", lines[20])
+	}
+	if last := stripForTest(t, lines[23]); strings.Trim(last, "─") != "" || CellWidth(last) != 79 {
+		t.Errorf("last line = %q, want the composer's bottom rule pinned last", last)
+	}
+}
+
 func TestRenderLongTranscriptBounded(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 30})
@@ -1002,6 +1053,92 @@ func TestRenderLongTranscriptBounded(t *testing.T) {
 		if CellWidth(line) > 80 {
 			t.Errorf("line %d overflows: %d cells", i, CellWidth(line))
 			break
+		}
+	}
+}
+
+// A tab-indented fence is the ordinary shape of a Go or Rust snippet, and it
+// broke the whole frame: the code line was measured with its tab counted as a
+// zero-width cell, then the styling pass expanded that tab to four spaces
+// while the block was padded, so the row landed four cells past the budget.
+//
+// A row wider than the terminal is not merely ugly — the terminal soft-wraps
+// it, so the frame becomes taller than the viewport. The terminal scrolls,
+// pinned chrome drifts out of place, and stale rows stay on screen. That is
+// the ghosted, misaligned screen, so the contract pinned here is the one that
+// matters to the user: no rendered row is ever wider than it was measured for.
+func TestCodeFenceTabsNeverWidenTheFrame(t *testing.T) {
+	// Tabs at two depths, so both a leading and an interior tab are covered.
+	const src = "Here is the code:\n\n```go\nfunc main() {\n\tfmt.Println(\"hi\")\n\tif ok {\n\t\tfmt.Println(\"deep\")\n\t}\n}\n```\n\nDone.\n"
+
+	for _, width := range []int{40, 44, 60, 80, 120} {
+		out := RenderMarkdownWrapped(src, forcedPalette(), width)
+		for i, line := range strings.Split(out, "\n") {
+			if got := CellWidth(line); got > width {
+				t.Errorf("content width %d: row %d is %d cells, over budget: %q",
+					width, i, got, stripForTest(t, line))
+			}
+		}
+	}
+
+	for _, size := range [][2]int{{44, 14}, {60, 20}, {80, 24}, {120, 30}} {
+		width, height := size[0], size[1]
+		for i, line := range strings.Split(renderAssistant(t, src, width, height), "\n") {
+			if got := CellWidth(line); got > width {
+				t.Errorf("terminal %dx%d: row %d is %d cells, wider than the terminal: %q",
+					width, height, i, got, stripForTest(t, line))
+			}
+		}
+	}
+}
+
+// The pipeline-wide form of the same contract: whatever the content shape, the
+// frame the terminal receives is never wider than the terminal, and is exactly
+// as tall as it. This is the guard for the whole render path, not one block —
+// a table column, a CJK run, or a tab in tool output can each mis-measure, and
+// each one soft-wraps into an extra physical row that scrolls the frame and
+// unpins the chrome.
+//
+// Mini concedes the viewport on purpose (it prints "terminal too small"), so it
+// is excluded rather than counted as a failure.
+func TestRenderedFrameFitsTerminalExactly(t *testing.T) {
+	cases := map[string]string{
+		"prose and lists":  "Para.\n\n**Key:**\n* **One**: a bullet long enough to need wrapping at narrow widths\n* **Two**: another\n",
+		"fenced code":      "```go\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n```\n",
+		"table":            "| Name | Description | Cost |\n| --- | --- | --- |\n| alpha | the first one | 1 |\n| beta | the second | 22 |\n",
+		"wide glyphs":      strings.Repeat("这是一个很长的中文句子。", 20) + "\n",
+		"unbroken run":     "See " + strings.Repeat("https://example.com/a/long/path", 8) + " end.\n",
+		"nested list":      "0. a\n   1. b\n      2. c\n         3. d\n",
+		"tabs in prose":    "col1\tcol2\tcol3\nvalue\tvalue\tvalue\n",
+		"deeply indented":  strings.Repeat("    ", 6) + "indented prose that has to wrap somewhere\n",
+		"empty and blank":  "\n\n\nafter blanks\n",
+		"only a delimiter": "```\n```\n",
+	}
+	for name, text := range cases {
+		for _, size := range [][2]int{{40, 12}, {44, 14}, {60, 20}, {80, 24}, {120, 30}, {200, 50}} {
+			width, height := size[0], size[1]
+			s := New()
+			s.Apply(TerminalResized{Width: width, Height: height})
+			s.Apply(UserSubmitted{Text: "show me"})
+			s.Apply(AssistantDelta{Text: text})
+			s.Apply(AssistantDone{})
+			if ComputeLayout(s).Mode == LayoutMini {
+				continue
+			}
+			rows := strings.Split(Render(s), "\n")
+			if n := len(rows); n > 0 && rows[n-1] == "" {
+				rows = rows[:n-1]
+			}
+			if len(rows) != height {
+				t.Errorf("%s at %dx%d: frame is %d rows, want exactly %d",
+					name, width, height, len(rows), height)
+			}
+			for i, row := range rows {
+				if got := CellWidth(row); got > width {
+					t.Errorf("%s at %dx%d: row %d is %d cells, wider than the terminal: %q",
+						name, width, height, i, got, stripForTest(t, row))
+				}
+			}
 		}
 	}
 }
