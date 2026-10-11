@@ -103,6 +103,10 @@ type ToolProgress struct {
 	CallID string
 	// ToolName is the tool running.
 	ToolName string
+	// Args are the arguments the call runs with. They let a UI describe
+	// what the call does while it is still running, before any output
+	// exists. The map is the call's own arguments, never fabricated text.
+	Args map[string]any
 	// Result holds the partial outcome, or the final one when Final is true.
 	Result Result
 	// Final marks the last report for this call.
@@ -126,9 +130,18 @@ const (
 )
 
 // Stage returns the stage this report represents.
+//
+// The pre-Execute announcement carries no outcome yet — an empty, non-final
+// report — so it stages as started. A non-final report carrying a partial
+// outcome stages as an update. Consumers must switch on this rather than
+// re-deriving the stage from emptiness: the inference lives here, once, next
+// to the code that emits the announcement.
 func (p ToolProgress) Stage() ToolProgressStage {
 	if p.Final {
 		return ProgressFinished
+	}
+	if p.Result.Text == "" && p.Result.Details == nil {
+		return ProgressStarted
 	}
 	return ProgressUpdate
 }
@@ -599,6 +612,7 @@ func (l *Loop) execute(
 		l.cfg.OnToolProgress(ToolProgress{
 			CallID:   call.ID,
 			ToolName: call.Name,
+			Args:     args,
 			Elapsed:  time.Since(started),
 		})
 		// Forward the tool's own partial reports. The closure captures only
@@ -607,6 +621,7 @@ func (l *Loop) execute(
 			l.cfg.OnToolProgress(ToolProgress{
 				CallID:   call.ID,
 				ToolName: call.Name,
+				Args:     args,
 				Result:   partial,
 				Elapsed:  time.Since(started),
 			})
@@ -640,6 +655,7 @@ func (l *Loop) execute(
 		l.cfg.OnToolProgress(ToolProgress{
 			CallID:   call.ID,
 			ToolName: call.Name,
+			Args:     args,
 			Result:   result,
 			Final:    true,
 			Elapsed:  time.Since(started),

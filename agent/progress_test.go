@@ -203,8 +203,16 @@ func TestLoopProgressSeesAfterToolCallOverride(t *testing.T) {
 
 func TestToolProgressStage(t *testing.T) {
 	// A consumer switching on stage must not have to infer it from emptiness.
-	if got := (ToolProgress{}).Stage(); got != ProgressUpdate {
-		t.Errorf("an empty report staged as %q, want update", got)
+	// The pre-Execute announcement is an empty, non-final report, so it
+	// stages as started; a partial outcome stages as an update.
+	if got := (ToolProgress{}).Stage(); got != ProgressStarted {
+		t.Errorf("an empty report staged as %q, want started", got)
+	}
+	if got := (ToolProgress{Result: Result{Text: "partial"}}).Stage(); got != ProgressUpdate {
+		t.Errorf("a partial report staged as %q, want update", got)
+	}
+	if got := (ToolProgress{Result: Result{Details: struct{}{}}}).Stage(); got != ProgressUpdate {
+		t.Errorf("a structured partial staged as %q, want update", got)
 	}
 	if got := (ToolProgress{Final: true}).Stage(); got != ProgressFinished {
 		t.Errorf("a final report staged as %q, want finished", got)

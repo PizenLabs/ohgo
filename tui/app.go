@@ -1551,34 +1551,33 @@ func (p *Program) runTurn(text string) {
 		}
 	})
 	p.loop.SetToolProgressHook(func(progress agent.ToolProgress) {
-		if progress.Final {
+		switch progress.Stage() {
+		case agent.ProgressFinished:
 			text, truncated := TruncateForDisplay(progress.Result.Text, toolOutputLimit)
 			p.publish(ToolFinished{
 				ID:        progress.CallID,
 				Text:      text,
+				Summary:   CompactResultSummary(progress.Result.Text, progress.Result.IsError),
 				IsError:   progress.Result.IsError,
 				Truncated: truncated,
 				At:        time.Now(),
 			})
-			return
-		}
-		// Stage reports the pre-Execute announcement as an update — a report
-		// with no outcome yet — so the announcement is recognised by having
-		// nothing to report. An actual partial update always carries a
-		// result. Mistaking one for the other left tool calls with no badge
-		// and their outcomes nowhere to land.
-		if progress.Result.Text == "" && progress.Result.Details == nil {
+		case agent.ProgressStarted:
+			// The announcement carries the call's arguments but no outcome
+			// yet, so the block opens with what the call will do rather
+			// than a blank name.
 			p.publish(ToolStarted{
-				ID:   progress.CallID,
-				Name: progress.ToolName,
-				At:   time.Now(),
+				ID:      progress.CallID,
+				Name:    progress.ToolName,
+				Summary: ToolSummaryForCall(progress.ToolName, progress.Args),
+				At:      time.Now(),
 			})
-			return
+		default:
+			p.publish(ToolPreview{
+				ID:      progress.CallID,
+				Summary: oneLine(progress.Result.Text),
+			})
 		}
-		p.publish(ToolPreview{
-			ID:      progress.CallID,
-			Summary: oneLine(progress.Result.Text),
-		})
 	})
 
 	turns, err := p.loop.Run(ctx, request)

@@ -268,12 +268,19 @@ func (s *State) Apply(event Event) {
 		s.Status.Busy = false
 
 	case ToolStarted:
+		// A second announcement for the same call updates nothing: an
+		// empty partial report must never open a duplicate block next to
+		// the running one.
+		if existing := s.tool(e.ID); existing != nil {
+			return
+		}
 		s.Entries = append(s.Entries, Entry{
 			Kind: EntryTool,
 			Tool: &ToolEntry{
 				ID:        e.ID,
 				Name:      e.Name,
 				Status:    ToolRunning,
+				Summary:   e.Summary,
 				StartedAt: e.At,
 			},
 		})
@@ -293,7 +300,7 @@ func (s *State) Apply(event Event) {
 			return
 		}
 		tool.EndedAt = e.At
-		tool.Summary = ""
+		tool.Summary = e.Summary
 		tool.Text = e.Text
 		tool.Truncated = e.Truncated
 		if e.IsError {
@@ -685,10 +692,14 @@ type AssistantDone struct{}
 func (AssistantDone) eventKind() string { return "assistant_done" }
 
 // ToolStarted announces a call beginning.
+//
+// Summary describes what this particular call does, derived from its
+// arguments at publication time — never inferred from assistant prose.
 type ToolStarted struct {
-	ID   string
-	Name string
-	At   time.Time
+	ID      string
+	Name    string
+	Summary string
+	At      time.Time
 }
 
 func (ToolStarted) eventKind() string { return "tool_started" }
@@ -702,9 +713,15 @@ type ToolPreview struct {
 func (ToolPreview) eventKind() string { return "tool_preview" }
 
 // ToolFinished records a call's outcome.
+//
+// Summary is the compact, deterministic description of the outcome (line
+// count, first error line), shown even when the full text below is bounded
+// or truncated. IsError keeps success and failure distinct without
+// re-deriving it from the text.
 type ToolFinished struct {
 	ID        string
 	Text      string
+	Summary   string
 	IsError   bool
 	Truncated bool
 	At        time.Time
@@ -780,6 +797,34 @@ func ToolSummaryForCall(name string, args map[string]any) string {
 		}
 	}
 	return name
+}
+
+// CompactResultSummary derives the one-line outcome description for a
+// finished tool call from its real output.
+//
+// It is deliberately generic: per-tool phrasing ("PASS — 27 tests") would
+// require the renderer to understand every tool, which is how renderers
+// become execution detectors. Line counts and the first error line are
+// always honest. Empty and single-line successes need no summary — the
+// badge plus the bounded body already says it.
+func CompactResultSummary(text string, isError bool) string {
+	trimmed := strings.TrimRight(text, "\n")
+	if isError {
+		first := trimmed
+		if i := strings.Index(first, "\n"); i >= 0 {
+			first = first[:i]
+		}
+		first = oneLine(first)
+		if first == "" {
+			return "error"
+		}
+		return "error: " + first
+	}
+	if trimmed == "" || !strings.Contains(trimmed, "\n") {
+		return ""
+	}
+	lines := strings.Count(trimmed, "\n") + 1
+	return fmt.Sprintf("%d lines", lines)
 }
 
 // oneLine collapses whitespace and truncates a value for a summary line.

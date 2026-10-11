@@ -1013,6 +1013,13 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	}
 	sb.WriteString(badge + "\n")
 
+	// The compact outcome summary lands before the bounded body: a finished
+	// call reads as one line even when its full result follows.
+	if tool.Status != ToolRunning && tool.Summary != "" {
+		summary := sanitizeInline(tool.Summary)
+		sb.WriteString("  " + pal.Status.Render("⎿ "+TruncateToWidth(summary, dialogWidth(layout))) + "\n")
+	}
+
 	if tool.Text == "" {
 		return
 	}
