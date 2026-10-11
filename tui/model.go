@@ -73,6 +73,10 @@ type ToolEntry struct {
 	Name string
 	// Status is the lifecycle position.
 	Status ToolStatus
+	// Invocation describes what the call does, captured at start from its
+	// arguments and never overwritten by the outcome. It keeps the badge
+	// line truthful after the finish replaces Summary with the result.
+	Invocation string
 	// Summary is a short human-readable description of what the call is doing.
 	// It is filled from streamed arguments while the call runs.
 	Summary string
@@ -83,6 +87,10 @@ type ToolEntry struct {
 	EndedAt   time.Time
 	// Truncated marks that the outcome text was cut for display.
 	Truncated bool
+	// Expanded is presentation-only: whether the transcript shows the
+	// bounded body below the compact summary. It never affects execution,
+	// approval, or the stored outcome.
+	Expanded bool
 }
 
 // Duration returns how long the call took, or zero if it has not started.
@@ -277,11 +285,12 @@ func (s *State) Apply(event Event) {
 		s.Entries = append(s.Entries, Entry{
 			Kind: EntryTool,
 			Tool: &ToolEntry{
-				ID:        e.ID,
-				Name:      e.Name,
-				Status:    ToolRunning,
-				Summary:   e.Summary,
-				StartedAt: e.At,
+				ID:         e.ID,
+				Name:       e.Name,
+				Status:     ToolRunning,
+				Invocation: e.Summary,
+				Summary:    e.Summary,
+				StartedAt:  e.At,
 			},
 		})
 		s.growScroll(1)
@@ -300,6 +309,9 @@ func (s *State) Apply(event Event) {
 			return
 		}
 		tool.EndedAt = e.At
+		// The outcome replaces the running summary, but the invocation
+		// stays: the badge keeps saying what ran while the summary line
+		// says what it produced.
 		tool.Summary = e.Summary
 		tool.Text = e.Text
 		tool.Truncated = e.Truncated
@@ -309,6 +321,13 @@ func (s *State) Apply(event Event) {
 			tool.Status = ToolDone
 		}
 		s.growScroll(countLines(e.Text) + 1)
+
+	case ToolToggled:
+		// Expansion is presentation-only: flipping it never re-runs the
+		// tool, mutates its result, or touches approval state.
+		if tool := s.tool(e.ID); tool != nil {
+			tool.Expanded = !tool.Expanded
+		}
 
 	case Notice:
 		s.Entries = append(s.Entries, Entry{Kind: EntryNotice, Notice: e.Text})
@@ -658,6 +677,31 @@ func (s *State) tool(id string) *ToolEntry {
 	return nil
 }
 
+// LatestToolID names the most recent tool block, or "" when there is none.
+//
+// Ctrl+O operates on this block: with no cursor model in the transcript,
+// the latest activity is the smallest deterministic rule consistent with
+// the interaction model — the user just watched it run.
+func (s *State) LatestToolID() string {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		if entry := &s.Entries[i]; entry.Kind == EntryTool && entry.Tool != nil {
+			return entry.Tool.ID
+		}
+	}
+	return ""
+}
+
+// toolIndex returns the transcript index of a tool block, or -1.
+func (s *State) toolIndex(id string) int {
+	for i := range s.Entries {
+		entry := &s.Entries[i]
+		if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
 // AssistantText returns the concatenated assistant text, for tests and for the
 // non-interactive renderer.
 func (s *State) AssistantText() string {
@@ -728,6 +772,16 @@ type ToolFinished struct {
 }
 
 func (ToolFinished) eventKind() string { return "tool_finished" }
+
+// ToolToggled flips one tool block between its collapsed and expanded
+// projections. It carries only the call id: the target is the same
+// semantic block, and the toggle never touches execution state.
+type ToolToggled struct {
+	// ID is the provider's tool call id to expand or collapse.
+	ID string
+}
+
+func (ToolToggled) eventKind() string { return "tool_toggled" }
 
 // Notice adds a system line.
 type Notice struct{ Text string }

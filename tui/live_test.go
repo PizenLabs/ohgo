@@ -236,7 +236,7 @@ func TestLiveCommitCutLandsOnAParagraphBoundary(t *testing.T) {
 	if cut <= 0 || cut >= len(rest) {
 		t.Fatalf("commitCut = %d, want a real cut inside the text", cut)
 	}
-	if !isParagraphEnd(rest, cut-1) {
+	if !isParagraphEnd(rest, cut) {
 		t.Errorf("commitCut = %d cuts at %q, which is not the end of a blank line; "+
 			"a mid-paragraph seal would put a render in the scrollback the next delta contradicts",
 			cut, string(rest[max(0, cut-12):cut]))
@@ -323,10 +323,13 @@ func TestLiveAppendsEachScrollbackLineOnce(t *testing.T) {
 
 	joined := joinAll(history)
 	for i := 0; i < 6; i++ {
-		line := "> question " + strconv.Itoa(i)
+		line := "question " + strconv.Itoa(i)
 		if n := strings.Count(joined, line); n != 1 {
 			t.Errorf("%q appears %d times in the scrollback, want exactly one", line, n)
 		}
+	}
+	if strings.Contains(joined, "> question") {
+		t.Errorf("scrollback keeps the old \"> \" question prefix, want the background block with no prefix")
 	}
 }
 

@@ -163,6 +163,13 @@ func TestToolOutputBoundedAndWrapped(t *testing.T) {
 	now := time.Now()
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: strings.Repeat("x", 20000), At: now})
+	// Collapsed stays compact: a 20k result must not flood the transcript.
+	collapsed := Render(s)
+	if strings.Contains(collapsed, strings.Repeat("x", 1000)) {
+		t.Errorf("collapsed render dumped the raw output instead of bounding it")
+	}
+	// Expanded still bounds: the truncation marker survives the toggle.
+	s.Apply(ToolToggled{ID: "c1"})
 	out := Render(s)
 	if !strings.Contains(out, "truncated") {
 		t.Errorf("render lacks the truncation marker for a 20k result")

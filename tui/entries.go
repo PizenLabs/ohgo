@@ -44,10 +44,12 @@ func EntriesFromMessages(messages []agent.Message) []Entry {
 				entries = append(entries, Entry{
 					Kind: EntryTool,
 					Tool: &ToolEntry{
-						ID:     m.ToolCallID,
-						Name:   m.ToolName,
-						Status: errorOrDone(m.IsError),
-						Text:   m.Text(),
+						ID:         m.ToolCallID,
+						Name:       m.ToolName,
+						Invocation: m.ToolName,
+						Status:     errorOrDone(m.IsError),
+						Text:       m.Text(),
+						Summary:    CompactResultSummary(m.Text(), m.IsError),
 					},
 				})
 			}
@@ -91,22 +93,25 @@ func pairedCall(messages []agent.Message, id string) bool {
 
 // toolEntryFor pairs one call with its result, if any arrived.
 func toolEntryFor(call ai.ToolCall, result agent.ToolResultMessage) Entry {
-	summary := ToolSummaryForCall(call.Name, call.Arguments)
+	invocation := ToolSummaryForCall(call.Name, call.Arguments)
 	entry := Entry{
 		Kind: EntryTool,
 		Tool: &ToolEntry{
-			ID:      call.ID,
-			Name:    call.Name,
-			Summary: summary,
-			Status:  ToolDone,
+			ID:         call.ID,
+			Name:       call.Name,
+			Invocation: invocation,
+			Summary:    invocation,
+			Status:     ToolDone,
 		},
 	}
 	if result.ToolCallID == "" {
+		entry.Tool.Summary = ""
 		entry.Tool.Text = "(earlier result not shown)"
 		return entry
 	}
 	entry.Tool.Status = errorOrDone(result.IsError)
 	entry.Tool.Text = result.Text()
+	entry.Tool.Summary = CompactResultSummary(result.Text(), result.IsError)
 	return entry
 }
 

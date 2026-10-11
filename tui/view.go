@@ -15,6 +15,7 @@ import (
 // only literals.
 type Palette struct {
 	User      lipgloss.Style
+	UserBG    lipgloss.Style
 	Assistant lipgloss.Style
 	ToolName  lipgloss.Style
 	ToolDone  lipgloss.Style
@@ -54,9 +55,12 @@ type Palette struct {
 // the user's voice and focus, primary text for the assistant. Headers step
 // down a deep-forest scale — bright emerald H1, sage H2, muted sage H3 —
 // and code tokens reuse the same scale so prose and code read as one theme.
+// The question keeps a faint background block instead of a label prefix so
+// it reads apart from the answer.
 func DarkPalette() *Palette {
 	return &Palette{
 		User:        fg(darkAccent).Bold(true),
+		UserBG:      fg(darkText).Background(lipgloss.Color(darkUserBg)),
 		Assistant:   fg(darkText),
 		ToolName:    fg(darkTool).Bold(true),
 		ToolDone:    fg(darkSuccess),
@@ -89,9 +93,11 @@ func DarkPalette() *Palette {
 
 // LightPalette reads on bright terminals: dark foregrounds, no heavy
 // backgrounds that would clash with a light screen, the same semantics.
+// The question keeps its faint background block here as well.
 func LightPalette() *Palette {
 	return &Palette{
 		User:        fg(lightAccent).Bold(true),
+		UserBG:      fg(lightText).Background(lipgloss.Color(lightUserBg)),
 		Assistant:   fg(lightText),
 		ToolName:    fg(lightTool).Bold(true),
 		ToolDone:    fg(lightSuccess),
@@ -952,13 +958,13 @@ func composerWrapWidth(layout Layout) int {
 // renderEntry writes one transcript entry, wrapped to the content width.
 // frame is the current spinner frame, shared with the status line so a running
 // tool and the footer animate in step.
+//
+// The question renders as a faint background block across the content width,
+// with no label prefix: the surface alone separates it from the answer.
 func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, frame string) {
 	switch entry.Kind {
 	case EntryUser:
-		sb.WriteString(pal.User.Render("you") + "\n")
-		for _, wl := range wrapPlain(entry.UserText, layout) {
-			sb.WriteString("  " + wl + "\n")
-		}
+		renderUserBlock(sb, entry.UserText, pal, layout)
 		sb.WriteString("\n")
 
 	case EntryAssistant:
@@ -989,38 +995,78 @@ func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, 
 
 // renderTool writes a tool call and, once finished, its outcome.
 //
+// The default projection is collapsed and compact: one badge line naming
+// the invocation plus one ⎿ outcome line. The bounded body appears only
+// when the block is expanded via Ctrl+O, so a long agent run stays
+// scannable without losing the deeper content.
+//
 // States are text plus color: running spinner, ✓ success, ✗ failure, ·
 // pending, so nothing depends on hue alone. Output is bounded and wrapped;
 // large results collapse to the limit with a truncation marker rather than
 // flooding the conversation.
 func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, frame string) {
+	// The badge names the invocation (tool plus its bounded arguments),
+	// falling back to the bare tool name for blocks that predate it.
+	// The invocation is truncated against the viewport minus the badge
+	// chrome around it, so a long path can never soft-wrap the terminal.
+	elapsed := tool.elapsed()
+	invBudget := dialogWidth(layout)
+	switch tool.Status {
+	case ToolRunning:
+		invBudget -= CellWidth("⠋  running")
+	case ToolDone, ToolError:
+		invBudget -= 4 + CellWidth(elapsed)
+	default:
+		invBudget -= 2
+	}
+	if invBudget < 8 {
+		invBudget = 8
+	}
+	invocation := TruncateToWidth(sanitizeInline(toolInvocation(tool)), invBudget)
 	var badge string
 	switch tool.Status {
 	case ToolRunning:
-		badge = pal.ToolRun.Render(frame+" "+tool.Name) + "  " + pal.Status.Render("running")
-		if tool.Summary != "" {
-			// Summaries derive from tool arguments: single-line chrome
-			// over untrusted text, sanitized before measuring.
-			summary := sanitizeInline(tool.Summary)
-			badge += "  " + pal.Status.Render(TruncateToWidth(summary, dialogWidth(layout)))
-		}
+		badge = pal.ToolRun.Render(frame+" "+invocation) + "  " + pal.Status.Render("running")
 	case ToolDone:
-		badge = pal.ToolDone.Render("✓ "+tool.Name) + "  " + pal.Status.Render(tool.elapsed())
+		badge = pal.ToolDone.Render("✓ "+invocation) + "  " + pal.Status.Render(elapsed)
 	case ToolError:
-		badge = pal.ToolError.Render("✗ "+tool.Name) + "  " + pal.Status.Render(tool.elapsed())
+		badge = pal.ToolError.Render("✗ "+invocation) + "  " + pal.Status.Render(elapsed)
 	case ToolPending:
-		badge = pal.ToolRun.Render("· " + tool.Name)
+		badge = pal.ToolRun.Render("· " + invocation)
 	}
 	sb.WriteString(badge + "\n")
 
-	// The compact outcome summary lands before the bounded body: a finished
-	// call reads as one line even when its full result follows.
-	if tool.Status != ToolRunning && tool.Summary != "" {
-		summary := sanitizeInline(tool.Summary)
-		sb.WriteString("  " + pal.Status.Render("⎿ "+TruncateToWidth(summary, dialogWidth(layout))) + "\n")
+	// The compact outcome lands on one ⎿ line: the finished summary when
+	// the executor provided one, else a bounded first-line fallback so a
+	// single-line result stays visible even with its body collapsed.
+	// The hint width is reserved up front so the whole row stays bounded.
+	if tool.Status != ToolRunning {
+		if outcome := collapsedOutcome(tool); outcome != "" {
+			hint := ""
+			if toolExpandable(tool) && !tool.Expanded {
+				hint = "  (ctrl+o to expand)"
+			}
+			budget := dialogWidth(layout) - 4 - CellWidth(hint)
+			if budget < 8 {
+				budget = 8
+			}
+			sb.WriteString("  " + pal.Status.Render("⎿ "+TruncateToWidth(outcome, budget)))
+			if hint != "" {
+				sb.WriteString(pal.Muted.Render(hint))
+			}
+			sb.WriteString("\n")
+		}
 	}
 
-	if tool.Text == "" {
+	// Collapsed is the default: the body below only renders expanded.
+	// Expansion is presentation-only — the same semantic Text, bounded by
+	// the same truncation, wrapping, and sanitization as before.
+	if !tool.Expanded || tool.Text == "" {
+		// A finished block keeps its blank separator so sequential calls
+		// stay distinct; a running one stays tight while it streams.
+		if tool.Status == ToolDone || tool.Status == ToolError {
+			sb.WriteString("\n")
+		}
 		return
 	}
 	body, truncated := TruncateForDisplay(tool.Text, toolOutputLimit)
@@ -1049,6 +1095,48 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 		sb.WriteString(pal.Truncated.Render("    … [truncated]") + "\n")
 	}
 	sb.WriteString("\n")
+}
+
+// toolInvocation names what the call does: the captured invocation when the
+// block opened with one, else the bare tool name.
+func toolInvocation(tool *ToolEntry) string {
+	if tool.Invocation != "" {
+		return tool.Invocation
+	}
+	if tool.Name != "" {
+		return tool.Name
+	}
+	return "tool"
+}
+
+// collapsedOutcome is the one-line result shown with or without expansion.
+// The executor's compact summary wins; without one, the first line of the
+// outcome stands in so trivial results stay visible.
+func collapsedOutcome(tool *ToolEntry) string {
+	if tool.Summary != "" {
+		return sanitizeInline(tool.Summary)
+	}
+	if strings.TrimSpace(tool.Text) == "" {
+		return ""
+	}
+	first := tool.Text
+	if i := strings.Index(first, "\n"); i >= 0 {
+		first = first[:i]
+	}
+	return sanitizeInline(oneLine(first))
+}
+
+// toolExpandable reports whether expanding reveals more than the collapsed
+// line already says: multi-line or truncated outcomes only. Trivial
+// single-line results stay hint-free so sequential runs stay scannable.
+func toolExpandable(tool *ToolEntry) bool {
+	if tool.Text == "" {
+		return false
+	}
+	if tool.Truncated {
+		return true
+	}
+	return strings.Contains(strings.TrimRight(tool.Text, "\n"), "\n")
 }
 
 // toolOutputLimit bounds one tool's displayed outcome.
@@ -1208,6 +1296,24 @@ func separatorWidth(state State, layout Layout) int {
 		return w
 	}
 	return 40
+}
+
+// renderUserBlock writes the question as a faint background layer across
+// the content width. Each wrapped line is padded to the full budget before
+// styling so the background reads as one solid block rather than patchy
+// per-word highlights. The stored text stays untouched; only this render
+// carries the background.
+func renderUserBlock(sb *strings.Builder, text string, pal *Palette, layout Layout) {
+	width := textWidth(layout)
+	for _, wl := range wrapPlain(text, layout) {
+		padded := wl
+		if width > 0 {
+			if gap := width - CellWidth(wl); gap > 0 {
+				padded += strings.Repeat(" ", gap)
+			}
+		}
+		sb.WriteString(pal.UserBG.Render(padded) + "\n")
+	}
 }
 
 // wrapPlain wraps unstyled transcript prose to the content width. Input is

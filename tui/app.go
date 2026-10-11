@@ -532,6 +532,36 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "ctrl+o":
+		// Expand or collapse the latest activity block. Presentation-only:
+		// the toggle flips the block's Expanded flag and never re-runs
+		// the tool, mutates its result, or touches approval state. A
+		// modal overlay owns the keyboard while open, so this is a no-op
+		// until it closes.
+		id := p.state.LatestToolID()
+		if id == "" {
+			return p, nil
+		}
+		expanding := true
+		if tool := p.state.tool(id); tool != nil {
+			expanding = !tool.Expanded
+		}
+		p.state.Apply(ToolToggled{ID: id})
+		if p.live != nil && expanding {
+			// Output-first owns sealed lines: a still-live block
+			// re-renders in place on the next frame, but an
+			// already-sealed one cannot be rewritten, so its bounded
+			// expanded projection prints once below as new scrollback.
+			// Collapsing flips state only — sealed lines stay where the
+			// terminal put them.
+			if idx := p.state.toolIndex(id); idx >= 0 && idx < p.live.painted {
+				if lines := expandedToolLines(p.state, id); len(lines) > 0 {
+					return p, printTranscript(lines)
+				}
+			}
+		}
+		return p, nil
+
 	case "ctrl+c":
 		return p.cancelOrQuit()
 

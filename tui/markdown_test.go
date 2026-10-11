@@ -53,11 +53,12 @@ func TestMarkdownHeadersBulletsQuotes(t *testing.T) {
 }
 
 func TestMarkdownTableRendersGrid(t *testing.T) {
-	// Tables render as an aligned grid, not raw pipes: the header,
-	// the separator, and padded body cells each own a row.
+	// Tables render as a solid-border grid, not raw pipes: the top rule,
+	// the header row, the header separator, the body row, and the bottom
+	// rule each own a row.
 	in := "| a | b |\n|---|---|\n| 1 | 2 |"
 	out := stripForTest(t, RenderMarkdown(in, DarkPalette()))
-	for _, want := range []string{"| a | b |", "|---|---|", "| 1 | 2 |"} {
+	for _, want := range []string{"┌───┬───┐", "│ a │ b │", "├───┼───┤", "│ 1 │ 2 │", "└───┴───┘"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table = %q, want grid row %q", out, want)
 		}
@@ -68,9 +69,10 @@ func TestMarkdownTableAlignment(t *testing.T) {
 	// The delimiter row owns alignment: `:---` left, `:--:` center,
 	// `---:` right. Padding is spaces around display cells, so a
 	// right-aligned number visibly shifts and centering splits the slack.
+	// Borders are solid │, not raw pipes.
 	in := "| left | center | right |\n|:---|:---:|---:|\n| a | b | c |"
 	out := stripForTest(t, RenderMarkdownWrapped(in, DarkPalette(), 40))
-	for _, want := range []string{"| a    |", "|   b    |", "|     c |"} {
+	for _, want := range []string{"│ a    │", "│   b    │", "│     c │"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table = %q, want aligned cell %q", out, want)
 		}
@@ -83,7 +85,7 @@ func TestMarkdownTableEscapedPipe(t *testing.T) {
 	// the content.
 	in := "| a | b |\n|---|---|\n| x\\|y | 2 |"
 	out := stripForTest(t, RenderMarkdownWrapped(in, DarkPalette(), 40))
-	if !strings.Contains(out, "| x|y | 2 |") {
+	if !strings.Contains(out, "│ x|y │ 2 │") {
 		t.Errorf("table = %q, want the escaped pipe kept in its cell", out)
 	}
 	if strings.Contains(out, "\\") {
@@ -101,8 +103,8 @@ func TestMarkdownTableStackedFallback(t *testing.T) {
 			t.Errorf("table = %q, want stacked line %q", out, want)
 		}
 	}
-	if strings.Contains(out, "|---|---|") {
-		t.Errorf("table = %q, want no grid separator in stacked form", out)
+	if strings.Contains(out, "┌") || strings.Contains(out, "┼") {
+		t.Errorf("table = %q, want no grid borders in stacked form", out)
 	}
 }
 

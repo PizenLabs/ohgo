@@ -696,7 +696,7 @@ func (r *blockRenderer) renderTable(lines []string, start int) ([]string, int) {
 			}
 		}
 	}
-	overhead := 3*ncols + 1 // "| a | b |"
+	overhead := 3*ncols + 1 // "│ a │ b │"
 	avail := width - overhead
 	const minCol = 4
 	if avail < ncols*minCol {
@@ -717,6 +717,7 @@ func (r *blockRenderer) renderTable(lines []string, start int) ([]string, int) {
 		colW[best]--
 	}
 	var out []string
+	out = append(out, r.pal.Muted.Render(tableBorder("┌", "┬", "┐", colW)))
 	emit := func(cells []string, isHeader bool) {
 		wrapped := make([][]string, ncols)
 		height := 1
@@ -730,35 +731,52 @@ func (r *blockRenderer) renderTable(lines []string, start int) ([]string, int) {
 		}
 		for row := 0; row < height; row++ {
 			var sb strings.Builder
-			sb.WriteString("| ")
+			sb.WriteString(r.pal.Muted.Render("│ "))
 			for c := 0; c < ncols; c++ {
 				text := ""
 				if row < len(wrapped[c]) {
 					text = wrapped[c][row]
 				}
-				sb.WriteString(padCellAlign(text, colW[c], aligns[c]))
+				padded := padCellAlign(text, colW[c], aligns[c])
+				if isHeader {
+					// Bold per cell rather than the whole row so the
+					// solid borders stay muted while the header text
+					// keeps its emphasis. Nested ANSI from inline
+					// markup survives, as before.
+					padded = r.pal.Bold.Render(padded)
+				}
+				sb.WriteString(padded)
 				if c < ncols-1 {
-					sb.WriteString(" | ")
+					sb.WriteString(r.pal.Muted.Render(" │ "))
 				}
 			}
-			sb.WriteString(" |")
-			line := sb.String()
-			if isHeader {
-				line = r.pal.Bold.Render(line)
-			}
-			out = append(out, line)
+			sb.WriteString(r.pal.Muted.Render(" │"))
+			out = append(out, sb.String())
 		}
 	}
 	emit(header, true)
-	sep := "|"
-	for _, w := range colW {
-		sep += strings.Repeat("-", w+2) + "|"
-	}
-	out = append(out, r.pal.Muted.Render(sep))
+	out = append(out, r.pal.Muted.Render(tableBorder("├", "┼", "┤", colW)))
 	for _, row := range rows {
 		emit(row, false)
 	}
+	out = append(out, r.pal.Muted.Render(tableBorder("└", "┴", "┘", colW)))
 	return out, i
+}
+
+// tableBorder draws one solid horizontal rule for the table grid: the edge
+// pair joined by one "─" run per column (cell width plus its two padding
+// spaces). Corners and tees stay in the set so the grid reads as one box.
+func tableBorder(left, mid, right string, colW []int) string {
+	var sb strings.Builder
+	sb.WriteString(left)
+	for c, w := range colW {
+		sb.WriteString(strings.Repeat("─", w+2))
+		if c < len(colW)-1 {
+			sb.WriteString(mid)
+		}
+	}
+	sb.WriteString(right)
+	return sb.String()
 }
 
 // renderTableStacked is the narrow-terminal fallback: each row becomes
