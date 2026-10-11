@@ -107,6 +107,20 @@ func TestToolOutputWithControlsRendersSafely(t *testing.T) {
 	now := time.Now()
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "building\x1b[2K\r50%\r\x1b[1Adone\nok", At: now})
+	// Collapsed is the default: the first line stays visible, the rest
+	// waits for expansion, and cursor control reaches the terminal in
+	// neither projection.
+	collapsed := Render(s)
+	if strings.Contains(collapsed, "\x1b[1A") || strings.Contains(collapsed, "\x1b[2K") || strings.Contains(collapsed, "\r") {
+		t.Errorf("cursor control reached the terminal:\n%q", collapsed)
+	}
+	if stripped := stripForTest(t, collapsed); !strings.Contains(stripped, "building") {
+		t.Errorf("collapsed outcome lost the first line:\n%s", stripped)
+	}
+	if strings.Contains(stripForTest(t, collapsed), "\nok") {
+		t.Errorf("collapsed body leaked the full output:\n%s", collapsed)
+	}
+	s.Apply(ToolToggled{ID: "c1"})
 	out := Render(s)
 	if strings.Contains(out, "\x1b[1A") || strings.Contains(out, "\x1b[2K") || strings.Contains(out, "\r") {
 		t.Errorf("cursor control reached the terminal:\n%q", out)

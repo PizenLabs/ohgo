@@ -142,6 +142,7 @@ func forcedPalette() *Palette {
 	}
 	return &Palette{
 		User:        fg("121").Bold(true),
+		UserBG:      renderer.NewStyle().Background(lipgloss.Color("237")),
 		Assistant:   fg("252"),
 		ToolName:    fg("73").Bold(true),
 		ToolDone:    fg("42"),
@@ -290,8 +291,8 @@ func TestMarkdownTableDegradesOnNarrowTerminal(t *testing.T) {
 			t.Errorf("narrow table lost %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "|---|---|") {
-		t.Errorf("narrow table kept a corrupting delimiter row:\n%s", out)
+	if strings.Contains(out, "|---") {
+		t.Errorf("narrow table kept a raw markdown delimiter row:\n%s", out)
 	}
 }
 

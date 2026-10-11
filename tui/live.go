@@ -324,14 +324,20 @@ func liveMarkdownLines(text string, pal *Palette, layout Layout) []string {
 // live block keeps as little of the answer as it safely can. An earlier
 // boundary is a longer remainder and therefore never shorter, so the walk is
 // monotone and the first hit is the latest that fits.
+//
+// The cut lands before the blank separator, not after it, so the remainder
+// owns the separating blank row: the committed prefix renders without a
+// trailing blank (rendering trims it) and the remainder renders with its
+// leading blank intact, and joining the two reproduces the whole-document
+// render exactly.
 func commitCut(rest []rune, budget int, pal *Palette, layout Layout) int {
 	for scanned, i := 0, len(rest)-1; i > 0 && scanned < liveCommitWalk; i-- {
 		if !isParagraphEnd(rest, i) {
 			continue
 		}
 		scanned++
-		if len(liveMarkdownLines(string(rest[i+1:]), pal, layout)) <= budget {
-			return i + 1
+		if len(liveMarkdownLines(string(rest[i:]), pal, layout)) <= budget {
+			return i
 		}
 	}
 	return -1
@@ -406,10 +412,12 @@ func firstUnstable(s State) int {
 }
 
 // liveEntryLines renders one sealed entry as permanent scrollback.
+// The question uses the same faint background block as the fullscreen
+// view, with no label prefix, so both modes distinguish it identically.
 func liveEntryLines(s State, e Entry, pal *Palette, layout Layout) []string {
 	switch e.Kind {
 	case EntryUser:
-		return indentLines(pal.User.Render("> "), wrapPlain(e.UserText, layout))
+		return liveUserLines(e.UserText, pal, layout)
 
 	case EntryAssistant:
 		return liveMarkdownLines(e.AssistantText, pal, layout)
@@ -433,17 +441,46 @@ func liveEntryLines(s State, e Entry, pal *Palette, layout Layout) []string {
 	return nil
 }
 
-// indentLines prefixes the first line and hangs the rest under it.
-func indentLines(prefix string, lines []string) []string {
+// liveUserLines renders the question as a faint background block, padded
+// to the content width like the fullscreen view so the surface reads solid.
+func liveUserLines(text string, pal *Palette, layout Layout) []string {
+	width := textWidth(layout)
+	lines := wrapPlain(text, layout)
 	out := make([]string, 0, len(lines))
-	for i, l := range lines {
-		if i == 0 {
-			out = append(out, prefix+l)
-			continue
+	for _, l := range lines {
+		padded := l
+		if width > 0 {
+			if gap := width - CellWidth(l); gap > 0 {
+				padded += strings.Repeat(" ", gap)
+			}
 		}
-		out = append(out, strings.Repeat(" ", CellWidth(prefix))+l)
+		out = append(out, pal.UserBG.Render(padded))
 	}
 	return out
+}
+
+// expandedToolLines renders one tool block's expanded projection as new
+// scrollback lines for live mode.
+//
+// A sealed block cannot be rewritten — the terminal owns those rows now —
+// so expanding one prints the same bounded projection fullscreen renders
+// inline (badge, compact outcome, bounded body), correlated by the
+// identical badge. Collapsing flips state only: sealed lines stay where
+// the terminal put them.
+func expandedToolLines(s State, id string) []string {
+	for _, e := range s.Entries {
+		if e.Kind != EntryTool || e.Tool == nil || e.Tool.ID != id {
+			continue
+		}
+		cpy := *e.Tool
+		cpy.Expanded = true
+		pal := PaletteFor(s.Theme)
+		layout := ComputeLayout(s)
+		var b strings.Builder
+		renderTool(&b, &cpy, pal, layout, spinnerFrame(s.Status.Spinner))
+		return splitLines(b.String())
+	}
+	return nil
 }
 
 // liveOverlay renders a modal overlay in place of the answer. Precedence

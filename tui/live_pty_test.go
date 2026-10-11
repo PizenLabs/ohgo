@@ -122,7 +122,7 @@ func TestLiveSessionUnderARrealPTY(t *testing.T) {
 	waitFor("Session boundary inspection", 20*time.Second)
 	waitFor("```go", 20*time.Second)
 	waitFor("sessionCheck", 20*time.Second)
-	waitFor("| a | b |", 20*time.Second)
+	waitFor("│ a │ b │", 20*time.Second)
 	waitFor("Closing line.", 20*time.Second)
 
 	// A second prompt asks for a tool call, which blocks on an approval.
@@ -219,8 +219,8 @@ func assertTranscriptArrived(t *testing.T, out string) {
 		"The session check moved to",
 		"```go",
 		"sessionCheck",
-		"| a | b |",
-		"| 1 | 2 |",
+		"│ a │ b │",
+		"│ 1 │ 2 │",
 		"Closing line.",
 	} {
 		if !strings.Contains(plain, phrase) {

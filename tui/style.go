@@ -38,6 +38,9 @@ const (
 	darkH3 = "144"
 	// Warm amber strings read against the dark code background.
 	darkCodeStr = "214"
+	// Faint user background: a subtle surface behind the question so it
+	// reads as a block distinct from the answer, without a label prefix.
+	darkUserBg = "237"
 
 	// Light theme: dark foregrounds on a bright screen, same semantics.
 	lightText    = "235"
@@ -55,6 +58,9 @@ const (
 	lightH2      = "65"
 	lightH3      = "242"
 	lightCodeStr = "166"
+	// Faint user background for bright terminals: slightly darker than
+	// the screen, distinct from the code surface.
+	lightUserBg = "253"
 )
 
 // fg is the single place a token becomes a style foreground.

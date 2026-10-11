@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -63,14 +64,26 @@ func TestLiveSessionInsideTmux(t *testing.T) {
 			ptyRows, ptyCols, tmuxPath, sock, ptyCols, ptyRows, session, exe))
 	attach.Env = append(os.Environ(), "OHGO_LIVE_PTY_CHILD=1", "TERM=xterm-256color")
 	attach.Stdin = heldIn
+	// The client's output is pumped by os/exec on its own goroutine while the
+	// test below reads it, so every access goes through the mutex — the same
+	// pattern the PTY harness uses for its capture.
+	var attachMu sync.Mutex
 	var attachOut strings.Builder
-	attach.Stdout = &attachOut
-	attach.Stderr = &attachOut
+	attach.Stdout = writerFunc(func(b []byte) (int, error) {
+		attachMu.Lock()
+		defer attachMu.Unlock()
+		return attachOut.Write(b)
+	})
+	attach.Stderr = attach.Stdout
 	if err := attach.Start(); err != nil {
 		t.Fatalf("start a tmux client: %v", err)
 	}
 	defer func() { _ = attach.Process.Kill() }()
-	waitServer(t, tmuxPath, sock, attachOut.String())
+	waitServer(t, tmuxPath, sock, func() string {
+		attachMu.Lock()
+		defer attachMu.Unlock()
+		return attachOut.String()
+	}())
 	t.Cleanup(func() { _ = exec.Command(tmuxPath, "-S", sock, "kill-server").Run() })
 
 	send := func(keys string) {
@@ -112,7 +125,7 @@ func TestLiveSessionInsideTmux(t *testing.T) {
 		t.Errorf("the bottom of the answer is not on screen:\n%s", visible)
 	}
 	history := pane(80)
-	for _, line := range []string{"Session boundary inspection", "```go", "| a | b |"} {
+	for _, line := range []string{"Session boundary inspection", "```go", "│ a │ b │"} {
 		if !strings.Contains(history, line) {
 			t.Errorf("%q is not in tmux's scrollback, so the terminal owns no history:\n%s", line, history)
 		}
