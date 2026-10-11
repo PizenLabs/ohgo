@@ -211,6 +211,14 @@ approval, shutting down) are computed per render, never stored.
   survive, cursor-movement CSI, OSC hyperlinks, carriage returns (folded to
   newlines, or spaces inline), and stray controls do not. A cursor-aware
   variant keeps composer cursor mapping exact across sanitization.
+- `tui/mode.go`: terminal mode control — alternate scroll (DEC 1007) and the
+  mouse-mode policy. Mouse reporting is **off by default** because requesting it
+  makes the terminal stop doing its own selection. The default route to the
+  wheel is 1007, which multiplexers do not forward (measured against tmux 3.7c:
+  a pane using 1007 alone receives nothing), so `MouseDefaultFor` selects
+  reporting when `$TMUX` is set. `--mouse select|report` and the `mouse` setting
+  override it; anything unrecognised degrades to `select` so a typo never costs
+  drag-copy. Both modes are bracketed on entry and restored on every exit path.
 - `tui/width.go`: cell-width measurement, truncation, wrapping
   (ANSI-stripped, CJK/emoji-aware, hard-breaks unbroken runs, combining
   marks stay attached).

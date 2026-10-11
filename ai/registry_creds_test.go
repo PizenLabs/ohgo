@@ -36,6 +36,7 @@ func TestRegistryPrefersFileOverEnvironment(t *testing.T) {
 
 func TestRegistryReadsShellFiles(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("GROQ_API_KEY", "")
 	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export GROQ_API_KEY=shell-key\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +56,7 @@ func TestRegistryReadsShellFiles(t *testing.T) {
 
 func TestRegistryKeepsTheMissingKeyMessage(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("GROQ_API_KEY", "")
 	t.Setenv("HOME", home)
 
 	registry := NewRegistry()

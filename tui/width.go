@@ -17,6 +17,47 @@ func CellWidth(s string) int {
 	return runewidth.StringWidth(ansi.Strip(s))
 }
 
+// CodeTabWidth is the tab stop the renderer commits to when it lays out a code
+// block.
+//
+// It is fixed rather than inherited because measurement must agree with the
+// terminal: the styling pass expands tabs to spaces on its way out, so a tab
+// left in a line is counted as a zero-width cell by CellWidth and then painted
+// four cells wide. Committing to one width here is what lets a padded row
+// still fit its budget.
+const CodeTabWidth = 4
+
+// expandTabs replaces each tab with spaces up to the next CodeTabWidth stop.
+//
+// Callers must run this before measuring anything they will later style or
+// pad. A tab is not zero-width on screen, and leaving one in place makes the
+// measured width and the rendered width disagree by up to CodeTabWidth cells
+// per tab — enough for a padded code row to overflow its budget, which the
+// terminal then soft-wraps, turning one logical row into two.
+func expandTabs(s string) string {
+	if !strings.Contains(s, "\t") {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	col := 0
+	for _, r := range s {
+		if r == '\t' {
+			n := CodeTabWidth - col%CodeTabWidth
+			sb.WriteString(strings.Repeat(" ", n))
+			col += n
+			continue
+		}
+		sb.WriteRune(r)
+		// A zero-width rune (combining mark) must not advance the column:
+		// it rides the previous cell, so the next tab stop stays put.
+		if w := runewidth.RuneWidth(r); w > 0 {
+			col += w
+		}
+	}
+	return sb.String()
+}
+
 // TruncateToWidth cuts s to at most width cells, appending ellipsis when cut.
 //
 // A non-positive width yields the empty string. The ellipsis counts against

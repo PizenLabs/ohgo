@@ -55,13 +55,24 @@ func TestCtrlJInsertsNewline(t *testing.T) {
 	}
 }
 
-func TestUpFallsBackToHistoryOnASingleLine(t *testing.T) {
+// On an idle single-line composer the arrows belong to the transcript, because
+// that is where the wheel delivers its ticks (see wheelScrolls). History recall
+// is not lost — ctrl+p and ctrl+n were already bound to the same handlers and
+// still reach it, including the return-to-draft step.
+func TestHistoryRecallMovesToTheCtrlBindingsOnAnIdleComposer(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Apply(UserSubmitted{Text: "earlier"})
 	p.state.Apply(InputChanged{Text: ""})
-	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+
+	keyPress(p, tea.KeyMsg{Type: tea.KeyCtrlP})
 	if p.state.Input != "earlier" {
-		t.Errorf("input = %q, want history recall on a single line", p.state.Input)
+		t.Fatalf("ctrl+p did not recall history: input = %q", p.state.Input)
+	}
+	// The draft is restored by the same binding, so a cancelled recall does not
+	// strand the user in someone else's prompt.
+	keyPress(p, tea.KeyMsg{Type: tea.KeyCtrlN})
+	if p.state.Input != "" {
+		t.Errorf("ctrl+n did not restore the draft: input = %q", p.state.Input)
 	}
 }
 

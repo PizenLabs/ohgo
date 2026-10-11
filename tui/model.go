@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/tokens"
@@ -118,16 +119,27 @@ func (p *PendingApproval) Selected() string {
 	return p.Choices[p.Cursor]
 }
 
-// Move shifts the cursor, wrapping at both ends.
+// Move shifts the cursor, stopping at either end.
+//
+// It deliberately does not wrap. Wrapping made every navigation key a way onto
+// the affirmative choice: the cursor opens on the conservative option, and with
+// two choices a forward move landed on the other index, so pressing Tab or an
+// arrow to look around and then Enter reflexively ran the tool. Stopping at the
+// ends keeps the conservative default the resting place, so the affirmative
+// option is only ever reached by a deliberate move, never by wrap-around.
 func (p *PendingApproval) Move(delta int) {
 	if len(p.Choices) == 0 {
 		p.Cursor = 0
 		return
 	}
-	p.Cursor = (p.Cursor + delta) % len(p.Choices)
-	if p.Cursor < 0 {
-		p.Cursor += len(p.Choices)
+	next := p.Cursor + delta
+	if next < 0 {
+		next = 0
 	}
+	if next >= len(p.Choices) {
+		next = len(p.Choices) - 1
+	}
+	p.Cursor = next
 }
 
 // Status is the persistent footer.
@@ -510,10 +522,14 @@ func (s *State) Apply(event Event) {
 		// The status line is preserved: the model and budget still apply.
 		// Queued prompts go too — they were typed against the context that
 		// was just dropped. Recallable history stays: it is memory, not
-		// context.
+		// context. The viewport rejoins the live edge: a stale scroll offset
+		// would pin the next turn's output to the top of an empty
+		// transcript instead of following it.
 		s.Entries = nil
 		s.Pending = nil
 		s.Queued = nil
+		s.Scroll = 0
+		s.Follow = true
 		s.closedAssistant = false
 	}
 }
@@ -767,21 +783,62 @@ func ToolSummaryForCall(name string, args map[string]any) string {
 }
 
 // oneLine collapses whitespace and truncates a value for a summary line.
+//
+// The cut lands on a rune boundary: a byte cut inside a multi-byte rune
+// would show as � in the approval dialog this feeds.
 func oneLine(text string) string {
 	const max = 60
 	collapsed := strings.Join(strings.Fields(text), " ")
 	if len(collapsed) > max {
-		return collapsed[:max] + "…"
+		cut := max
+		for cut > 0 && !utf8.RuneStart(collapsed[cut]) {
+			cut--
+		}
+		return collapsed[:cut] + "…"
 	}
 	return collapsed
 }
 
+// assistantChunkRunes bounds one AssistantDelta event so a long turn
+// reveals chunk-by-chunk across successive renders instead of landing as
+// a single block. Small turns stay a single event: chunking is
+// progressive disclosure, never pacing — no timers, no blocked loop.
+const assistantChunkRunes = 1024
+
+// splitAssistantChunks slices text into rune-bounded chunks for
+// sequential publishing. It returns nil for empty text, and the
+// concatenation of the chunks always equals the input.
+func splitAssistantChunks(text string) []string {
+	if text == "" {
+		return nil
+	}
+	runes := []rune(text)
+	var out []string
+	for len(runes) > 0 {
+		n := assistantChunkRunes
+		if n > len(runes) {
+			n = len(runes)
+		}
+		out = append(out, string(runes[:n]))
+		runes = runes[n:]
+	}
+	return out
+}
+
 // TruncateForDisplay cuts a long outcome so one tool cannot flood the view.
+//
+// The cut lands on a rune boundary for the same reason: the outcome is
+// displayed (after sanitizeBlock repairs it to �), and keeping a whole
+// character beats displaying a replacement glyph for half of one.
 func TruncateForDisplay(text string, limit int) (string, bool) {
 	if limit <= 0 || len(text) <= limit {
 		return text, false
 	}
-	return text[:limit] + "\n… [truncated]", true
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + "\n… [truncated]", true
 }
 
 // ModelID renders a model as "provider/id", matching the CLI's own format.
@@ -1112,6 +1169,28 @@ func NormalizeTheme(name string) string {
 		return ThemeLight
 	}
 	return ThemeDark
+}
+
+// Mouse modes: how the full-screen UI receives the wheel.
+const (
+	// MouseSelect never requests mouse reporting, so the terminal keeps text
+	// selection and drag-copy. The wheel arrives as arrow keys via alternate
+	// scroll mode, which terminals without it — and multiplexers such as tmux,
+	// which consume the wheel for their own copy-mode — do not provide.
+	MouseSelect = "select"
+	// MouseReport requests real mouse events, so the wheel works everywhere
+	// including inside tmux, at the cost of the terminal's own selection.
+	MouseReport = "report"
+)
+
+// NormalizeMouse maps a configured mode to a known one. Anything unrecognised
+// becomes MouseSelect: a typo must not silently cost the user drag-copy, which
+// is the capability they are more likely to notice losing.
+func NormalizeMouse(name string) string {
+	if strings.EqualFold(strings.TrimSpace(name), MouseReport) {
+		return MouseReport
+	}
+	return MouseSelect
 }
 
 // ThemeChanged switches the palette.

@@ -954,7 +954,35 @@ func runSession(cmd *cobra.Command, args []string) error {
 	// hook, so the routing happens here rather than inside buildLoop. A pipe or
 	// a test never reaches this branch and keeps plain line output.
 	if useInteractiveUI(cmd) {
-		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow)
+		programOpts := []tui.ProgramOption{}
+		// Precedence: flag, then settings, then the environment default. The
+		// environment matters because the wheel reaches the program by
+		// different routes in different terminals, and a multiplexer that does
+		// not forward alternate scroll needs mouse reporting to deliver it at
+		// all — see tui.MouseDefaultFor for the measurement behind that.
+		// An unrecognised value degrades to select so a typo never silently
+		// costs the user drag-copy.
+		mouse := opts.settings.Mouse
+		if flag := flagValue(cmd, "mouse"); flag != "" {
+			mouse = flag
+		}
+		if mouse == "" {
+			mouse = tui.MouseDefaultFor(os.Getenv("TMUX"))
+		}
+		if tui.NormalizeMouse(mouse) == tui.MouseReport {
+			programOpts = append(programOpts, tui.WithMouseReporting())
+		}
+		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+
+		// Output-first mode is a different interaction boundary, not a
+		// different program: the same loop, the same state machine, the same
+		// approval and command paths. The terminal scrolls, selects and
+		// copies; ohgo writes the transcript and keeps the composer. It
+		// rejects mouse reporting outright, so the mouse policy above is
+		// ignored there.
+		if live, _ := cmd.Flags().GetBool("live"); live {
+			return program.RunLive()
+		}
 
 		// One harness serves the UI's commands; the REPL builds its own
 		// further down from the same pieces, so both agree.

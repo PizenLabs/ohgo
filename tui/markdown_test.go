@@ -6,7 +6,8 @@ import (
 )
 
 // The markdown renderer covers chat prose, not documents: fences, inline
-// code, headers, emphasis, lists, quotes, rules. Anything else passes through.
+// code, headers, emphasis, lists, quotes, rules, and tables, which render
+// as grids with a stacked narrow fallback.
 
 func TestMarkdownFenceKeepsTheLanguage(t *testing.T) {
 	out := RenderMarkdown("```go\nfmt.Println()\n```", DarkPalette())
@@ -51,12 +52,57 @@ func TestMarkdownHeadersBulletsQuotes(t *testing.T) {
 	}
 }
 
-func TestMarkdownPassthroughForTables(t *testing.T) {
-	// Tables are outside the ported subset: they pass through untouched
-	// rather than mangled.
+func TestMarkdownTableRendersGrid(t *testing.T) {
+	// Tables render as an aligned grid, not raw pipes: the header,
+	// the separator, and padded body cells each own a row.
 	in := "| a | b |\n|---|---|\n| 1 | 2 |"
-	if out := RenderMarkdown(in, DarkPalette()); !strings.Contains(out, "| a | b |") {
-		t.Errorf("table = %q, want it passed through", out)
+	out := stripForTest(t, RenderMarkdown(in, DarkPalette()))
+	for _, want := range []string{"| a | b |", "|---|---|", "| 1 | 2 |"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table = %q, want grid row %q", out, want)
+		}
+	}
+}
+
+func TestMarkdownTableAlignment(t *testing.T) {
+	// The delimiter row owns alignment: `:---` left, `:--:` center,
+	// `---:` right. Padding is spaces around display cells, so a
+	// right-aligned number visibly shifts and centering splits the slack.
+	in := "| left | center | right |\n|:---|:---:|---:|\n| a | b | c |"
+	out := stripForTest(t, RenderMarkdownWrapped(in, DarkPalette(), 40))
+	for _, want := range []string{"| a    |", "|   b    |", "|     c |"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table = %q, want aligned cell %q", out, want)
+		}
+	}
+}
+
+func TestMarkdownTableEscapedPipe(t *testing.T) {
+	// A backslash-escaped pipe stays inside its cell: splitting on it
+	// would corrupt the grid, and leaking the backslash would corrupt
+	// the content.
+	in := "| a | b |\n|---|---|\n| x\\|y | 2 |"
+	out := stripForTest(t, RenderMarkdownWrapped(in, DarkPalette(), 40))
+	if !strings.Contains(out, "| x|y | 2 |") {
+		t.Errorf("table = %q, want the escaped pipe kept in its cell", out)
+	}
+	if strings.Contains(out, "\\") {
+		t.Errorf("table = %q, want no leaked backslash", out)
+	}
+}
+
+func TestMarkdownTableStackedFallback(t *testing.T) {
+	// Below the minimum column budget the grid yields to "header: value"
+	// lines so nothing overflows and no grid corrupts.
+	in := "| a | b |\n|---|---|\n| 1 | 2 |"
+	out := stripForTest(t, RenderMarkdownWrapped(in, DarkPalette(), 14))
+	for _, want := range []string{"a: 1", "b: 2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table = %q, want stacked line %q", out, want)
+		}
+	}
+	if strings.Contains(out, "|---|---|") {
+		t.Errorf("table = %q, want no grid separator in stacked form", out)
 	}
 }
 

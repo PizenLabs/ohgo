@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
@@ -77,11 +80,34 @@ type Program struct {
 	// blocked, and it is only ever written from the update goroutine.
 	pending *approvalRequest
 
+	// done closes when Run returns. It bounds the approval bridge past
+	// shutdown: a tool reaching approval after the UI is gone gets a denial
+	// instead of waiting on an answer nobody will send. Never closed by hand;
+	// closeDone owns it.
+	done chan struct{}
+	// doneOnce makes the shutdown release idempotent: Run defers it, and
+	// tests drive shutdown without Run.
+	doneOnce sync.Once
+
 	// history is the running conversation. The Program owns it because
 	// Loop.Run is a turn, not a session — see AGENTS.md invariant I18.
 	// It is touched from turn goroutines and the update goroutine alike,
 	// so every access goes through mu.
 	history []agent.Message
+
+	// termOut is where terminal mode changes are written. It is a field so a
+	// test can observe the sequences without a terminal; production writes to
+	// the process stdout.
+	termOut io.Writer
+
+	// mouseReporting records whether the terminal is asked for mouse events.
+	// Off by default: see WithMouseReporting for the trade it avoids.
+	mouseReporting bool
+
+	// live is the output-first presenter, set by RunLive and nil otherwise.
+	// When it is set, View returns only the live region and transcript blocks
+	// leave through the renderer as print lines — see live.go.
+	live *livePainter
 
 	// cancelTurn aborts the in-flight turn, if any. Set when a turn starts,
 	// cleared when it ends, guarded by mu for the same reason as history.
@@ -228,13 +254,34 @@ func (p *Program) SetConnectHooks(hooks ConnectHooks) {
 	p.connect = hooks
 }
 
+// ProgramOption configures a Program at construction.
+type ProgramOption func(*Program)
+
+// WithMouseReporting makes the program request mouse reporting from the
+// terminal, so wheel ticks arrive as real mouse events instead of as arrow
+// keys.
+//
+// This is opt-in because it costs something real: once the terminal sends mouse
+// events it stops doing its own text selection, so drag-select and copy stop
+// working without a modifier (usually Shift, or Option on macOS). The default
+// keeps the terminal in charge of selection and reaches the wheel through
+// alternate scroll mode instead — see Run for why that is not always enough.
+func WithMouseReporting() ProgramOption {
+	return func(p *Program) { p.mouseReporting = true }
+}
+
 // NewProgram returns a program driving the given loop.
-func NewProgram(loop *agent.Loop, model string, window int) *Program {
+func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOption) *Program {
 	p := &Program{
 		loop:      loop,
 		events:    make(chan Event, 256),
 		approvals: make(chan approvalRequest, 8),
+		done:      make(chan struct{}),
 		window:    window,
+		termOut:   os.Stdout,
+	}
+	for _, opt := range opts {
+		opt(p)
 	}
 	p.state = New()
 	p.state.Status.Model = model
@@ -248,7 +295,22 @@ func (p *Program) Init() tea.Cmd {
 }
 
 // Update implements tea.Model.
+//
+// It is a thin shell around update so live mode folds one state change into
+// one output decision: the rows that have just become history leave as print
+// commands, and the live region is left for the renderer to paint. Folding
+// inside the message handlers would emit several frames per keystroke.
 func (p *Program) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := p.update(msg)
+	if p.live != nil {
+		if history := p.live.render(p.state); len(history) > 0 {
+			cmd = tea.Batch(cmd, printTranscript(history))
+		}
+	}
+	return model, cmd
+}
+
+func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.KeyMsg:
 		return p.handleKey(m)
@@ -283,6 +345,71 @@ func (p *Program) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		p.state.Apply(TerminalResized{Width: m.Width, Height: m.Height})
+		return p, nil
+
+	case tea.MouseMsg:
+		if p.live != nil {
+			// Output-first mode never requests a mouse mode, so the terminal
+			// never sends these and the handler below is unreachable here.
+			// Isolating it explicitly keeps the alt-screen path untouched
+			// while making sure it cannot quietly become part of a boundary
+			// that says the terminal owns the wheel.
+			return p, nil
+		}
+		return p.handleMouse(m)
+	}
+	return p, nil
+}
+
+// mouseScrollLines is one wheel tick in transcript rows: enough to feel
+// like scrolling, small enough to keep context. Follow semantics come
+// from ScrollMoved itself — scrolling up clears follow, scrolling back to
+// the bottom restores it — so the wheel cannot break sticky-follow.
+const mouseScrollLines = 3
+
+// wheelScrolls reports whether the arrow keys must act as wheel ticks.
+//
+// Run serves the wheel through alternate scroll mode, which has the terminal
+// send plain arrow keys the program cannot tell apart from pressed ones. The
+// arrows are therefore given to the transcript only while the composer has
+// nothing to do with them — no text to move a cursor within, and no overlay
+// owning the keyboard. That is the state a reader is in, and the one where
+// scrolling is what the user means. Typing keeps the arrows for editing.
+func wheelScrolls(s State) bool {
+	if s.Picker != nil || s.Secret != nil || s.Pending != nil {
+		return false
+	}
+	return s.Input == ""
+}
+
+// handleMouse routes wheel ticks to the scrollable region in focus: the
+// picker selection while one is open, the transcript otherwise. Press,
+// release, and motion are deliberately ignored and never move state.
+//
+// Mouse reporting is off (see Run): the terminal owns selection and the
+// application never receives mouse bytes in normal operation, so there is
+// no protocol stream that can split across input reads and leak into the
+// composer. The handler stays as a defensive contract: if reporting is ever
+// re-enabled, wheel ticks scroll without touching prompt text, and every
+// other mouse message remains a no-op.
+func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.Button != tea.MouseButtonWheelUp && m.Button != tea.MouseButtonWheelDown {
+		return p, nil
+	}
+	switch m.Button {
+	case tea.MouseButtonWheelUp:
+		if p.state.Picker != nil {
+			p.state.Apply(PickerMoved{Delta: -1})
+			return p, nil
+		}
+		p.state.Apply(ScrollMoved{Delta: mouseScrollLines})
+		return p, nil
+	case tea.MouseButtonWheelDown:
+		if p.state.Picker != nil {
+			p.state.Apply(PickerMoved{Delta: 1})
+			return p, nil
+		}
+		p.state.Apply(ScrollMoved{Delta: -mouseScrollLines})
 		return p, nil
 	}
 	return p, nil
@@ -334,6 +461,13 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p.answer(true, "")
 		case "n", "N", "esc":
 			return p.answer(false, "denied by user")
+		case "ctrl+c":
+			// The reflex abort key must not be swallowed by this switch: the
+			// turn would stay parked on a question nobody can reach. Reuse the
+			// turn-cancel path, which denies the blocked tool before cancelling,
+			// so aborting can never approve the work it abandons.
+			p.cancelTurnNow("cancelled")
+			return p, nil
 		}
 		return p, nil
 	}
@@ -386,10 +520,11 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			switch msg.Type {
 			case tea.KeyRunes, tea.KeySpace:
-				text := p.state.Input + string(msg.Runes)
+				chunk := string(msg.Runes)
 				if msg.Type == tea.KeySpace {
-					text = p.state.Input + " "
+					chunk = " "
 				}
+				text := p.state.Input + chunk
 				p.state.Apply(ComposerChanged{Text: text, Cursor: len([]rune(text))})
 			}
 			return p, nil
@@ -440,8 +575,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Ctrl+d on an empty composer quits, matching terminal convention;
 		// anywhere else it deletes the character ahead.
 		if msg.String() == "ctrl+d" && strings.TrimSpace(p.state.Input) == "" && !p.state.Status.Busy {
-			p.state.Apply(QuitRequested{})
-			return p, tea.Quit
+			return p, p.quitNow()
 		}
 		text, cursor := deleteAt(p.state.Input, p.state.Cursor)
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
@@ -460,6 +594,13 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "end", "ctrl+e":
+		// The transcript names "end" in its scrolled-up marker, so while
+		// scrolled up it re-engages the live edge; otherwise (and always
+		// for ctrl+e) it moves the composer cursor to end of line.
+		if msg.String() == "end" && !p.state.Follow {
+			p.state.Apply(ScrollToBottom{})
+			return p, nil
+		}
 		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: lineEnd(p.state.Input, p.state.Cursor)})
 		return p, nil
 
@@ -479,6 +620,16 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "up", "ctrl+p":
+		// The terminal cannot say which arrows it synthesised for the wheel,
+		// so the policy is state-based: the arrows belong to the transcript
+		// exactly when the composer has nothing to move a cursor within and
+		// nothing to recall. Any text, or an overlay owning the keyboard, and
+		// the arrows go back to editing. History recall never moves: ctrl+p
+		// and ctrl+n reach it whether or not the wheel does.
+		if msg.String() == "up" && wheelScrolls(p.state) {
+			p.state.Apply(ScrollMoved{Delta: mouseScrollLines})
+			return p, nil
+		}
 		if line, ok := lineAbove(p.state.Input, p.state.Cursor); ok {
 			p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: line})
 		} else {
@@ -487,6 +638,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "down", "ctrl+n":
+		if msg.String() == "down" && wheelScrolls(p.state) {
+			p.state.Apply(ScrollMoved{Delta: -mouseScrollLines})
+			return p, nil
+		}
 		if line, ok := lineBelow(p.state.Input, p.state.Cursor); ok {
 			p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: line})
 		} else {
@@ -533,6 +688,9 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				p.openCommandPalette("")
 				return p, nil
 			}
+			// KeyRunes (typed or pasted, including bracketed pastes) is user
+			// text: it inserts verbatim at the cursor. The application must
+			// not second-guess prose that resembles protocol bytes.
 			composed := insertAt(p.state.Input, p.state.Cursor, text)
 			p.state.Apply(ComposerChanged{Text: composed, Cursor: p.state.Cursor + len([]rune(text))})
 		}
@@ -585,8 +743,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	switch command.Name {
 	case "quit", "exit":
-		p.state.Apply(QuitRequested{})
-		return tea.Quit
+		return p.quitNow()
 
 	case "help":
 		p.state.Apply(Notice{Text: HelpText()})
@@ -594,6 +751,11 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	case "clear":
 		p.state.Apply(Cleared{})
+		if p.live != nil {
+			// The scrollback keeps the lines that were there; the painter
+			// must not try to reconcile its progress against them.
+			p.live.forget()
+		}
 		p.mu.Lock()
 		p.history = nil
 		p.mu.Unlock()
@@ -834,8 +996,7 @@ func (p *Program) cancelOrQuit() (tea.Model, tea.Cmd) {
 		p.cancelTurnNow("cancelled")
 		return p, nil
 	}
-	p.state.Apply(QuitRequested{})
-	return p, tea.Quit
+	return p, p.quitNow()
 }
 
 // cancelTurnNow aborts the in-flight turn, if any.
@@ -1066,6 +1227,9 @@ func (p *Program) resumeSession(item PickerItem) tea.Cmd {
 	// already points at. Only the session pointer moves.
 	p.session = sess
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
+	if p.live != nil {
+		p.live.forget()
+	}
 	if opened.Notice != "" {
 		p.state.Apply(Notice{Text: opened.Notice})
 	}
@@ -1167,6 +1331,21 @@ func (p *Program) PublishWorkspace(meta WorkspaceUpdated) {
 // runtime; the returned command would be a no-op there anyway.
 func (c Command) runOn(p *Program) { p.runCommand(c) }
 
+// quitNow ends the session from any idle-state quit path (/quit, /exit,
+// ctrl+d, idle ctrl+c).
+//
+// A tool blocked in its approval prompt is denied first: without that the
+// tool waits on an answer channel no UI reads after shutdown, stranding its
+// goroutine (and the turn holding it) until the process exits. Denial is the
+// same conservative answer n/esc gives, so quitting can never approve work.
+func (p *Program) quitNow() tea.Cmd {
+	if p.pending != nil {
+		p.answer(false, "denied by user")
+	}
+	p.state.Apply(QuitRequested{})
+	return tea.Quit
+}
+
 // answer unblocks the tool that is waiting.
 func (p *Program) answer(approved bool, reason string) (tea.Model, tea.Cmd) {
 	if p.pending != nil {
@@ -1180,12 +1359,106 @@ func (p *Program) answer(approved bool, reason string) (tea.Model, tea.Cmd) {
 }
 
 // View implements tea.Model.
-func (p *Program) View() string { return Render(p.state) }
+//
+// In live mode it returns the live region only. The transcript itself is not
+// here: it has already left through print commands, and re-rendering it as a
+// frame would make the renderer own a second copy of the scrollback.
+func (p *Program) View() string {
+	if p.live != nil {
+		return p.live.view()
+	}
+	return Render(p.state)
+}
+
+// enterAlternateScroll turns on alternate scroll mode and returns the function
+// that turns it back off. The caller must always call it: the mode outlives the
+// process state that set it, and a terminal left in alternate scroll keeps
+// translating the wheel into arrows long after the UI is gone.
+func (p *Program) enterAlternateScroll() func() {
+	setAlternateScroll(p.termOut, true)
+	return func() { setAlternateScroll(p.termOut, false) }
+}
 
 // Run starts the UI and blocks until it exits.
+//
+// Terminal ownership stays with Bubble Tea throughout: alt-screen entry,
+// raw mode, and their restoration on every exit path (normal, error,
+// signal, panic) are its shutdown sequence's job. The app's share is
+// releasing the approval bridge below so no tool outlives the UI.
+//
+// Mouse reporting is off unless explicitly requested (WithMouseReporting).
+// Bubble Tea decodes SGR mouse reports only when whole in one input read; a
+// report split across reads degrades to a lone esc plus a KeyRunes tail
+// (verified against bubbletea v1.3.10: ESC then "[<64;67;30M" arrives as esc
+// + typed text), and that tail lands in the composer verbatim. Requesting
+// cell-motion reporting also maximises the split rate (a motion event per cell
+// of every drag) while hijacking drag-select from the terminal.
+//
+// By default the wheel is therefore served without a mouse protocol at all:
+// alternate scroll mode (1007) leaves selection and copy untouched and has the
+// terminal send wheel ticks as plain arrow keys, which this program already
+// parses as whole sequences. handleKey decides what an arrow means.
+//
+// That path has limits the application cannot fix. Terminals that do not
+// implement 1007 never forward the wheel, and a multiplexer such as tmux
+// consumes wheel events for its own copy-mode before the pane's terminal sees
+// them at all. For those, WithMouseReporting asks for real mouse events —
+// which tmux does forward to a pane that requests them — at the cost of the
+// terminal's own selection.
 func (p *Program) Run() error {
-	_, err := tea.NewProgram(p, tea.WithAltScreen()).Run()
+	defer p.closeDone()
+	release := p.enterAlternateScroll()
+	defer release()
+
+	opts := []tea.ProgramOption{tea.WithAltScreen()}
+	if p.mouseReporting {
+		opts = append(opts, tea.WithMouseCellMotion())
+	}
+	_, err := tea.NewProgram(p, opts...).Run()
 	return err
+}
+
+// RunLive starts the output-first UI and blocks until it exits.
+//
+// It differs from Run in exactly one terminal fact, and that fact is the
+// whole prototype: no alternate screen. Output goes to the terminal's normal
+// buffer, so everything ohgo writes scrolls into the terminal's own
+// scrollback and stays there.
+//
+// What is *not* different is the ownership boundary. Bubble Tea still owns
+// raw mode, the hidden cursor, bracketed paste, and their restoration on
+// every exit path (normal, error, signal, panic); this method is still the
+// lifecycle construction boundary. No mouse mode of any kind is requested —
+// not 1000, 1002, 1003, 1006, not alternate scroll (1007), not cell motion —
+// which is what leaves the wheel, drag selection and copy with the terminal.
+// Note that tea.WithoutRenderer is deliberately not used here: it makes
+// Bubble Tea skip terminal initialisation entirely, including raw mode, which
+// would leave the composer unable to read a single keypress.
+//
+// The transcript is streamed rather than repainted: sealed rows are handed to
+// the renderer as print lines and the renderer writes them above its frame,
+// so the terminal scrolls them into the scrollback. Only the live region —
+// the in-flight answer, the status line and the composer — is ever repainted,
+// and it is bounded to a known row count, so nothing already in the scrollback
+// is rewritten.
+func (p *Program) RunLive() error {
+	defer p.closeDone()
+
+	painter := newLivePainter()
+	p.live = painter
+	_, err := tea.NewProgram(p).Run()
+
+	// Bubble Tea has stopped and restored the terminal, so what follows is
+	// plain output: an answer whose turn was interrupted, or one still hidden
+	// behind an overlay, still reaches the scrollback.
+	painter.sealToTerminal(p.termOut, p.state)
+	return err
+}
+
+// closeDone releases tools blocked past shutdown. Idempotent: Run defers it,
+// and headless tests drive shutdown without Run.
+func (p *Program) closeDone() {
+	p.doneOnce.Do(func() { close(p.done) })
 }
 
 // waitForEvent returns a command that blocks for the next state event.
@@ -1260,20 +1533,25 @@ func (p *Program) runTurn(text string) {
 	// The loop's hook is installed for the duration of the turn rather than
 	// at construction, because the program is the only thing that can turn
 	// it into UI events.
+	//
+	// Visible model text is forwarded the same way: each delta publishes as
+	// it arrives, so the answer reveals sequentially while the stream is
+	// open instead of dumping as one block when the turn completes. Only
+	// deltas that reach the event channel count as revealed — a dropped
+	// delta stays the completed turn's job below, never silently lost.
+	var live strings.Builder
+	p.loop.SetTextDeltaHook(func(delta string) {
+		if delta == "" {
+			return
+		}
+		for _, chunk := range splitAssistantChunks(delta) {
+			if p.publishOK(AssistantDelta{Text: chunk}) {
+				live.WriteString(chunk)
+			}
+		}
+	})
 	p.loop.SetToolProgressHook(func(progress agent.ToolProgress) {
-		switch progress.Stage() {
-		case agent.ProgressStarted:
-			p.publish(ToolStarted{
-				ID:   progress.CallID,
-				Name: progress.ToolName,
-				At:   time.Now(),
-			})
-		case agent.ProgressUpdate:
-			p.publish(ToolPreview{
-				ID:      progress.CallID,
-				Summary: oneLine(progress.Result.Text),
-			})
-		case agent.ProgressFinished:
+		if progress.Final {
 			text, truncated := TruncateForDisplay(progress.Result.Text, toolOutputLimit)
 			p.publish(ToolFinished{
 				ID:        progress.CallID,
@@ -1282,7 +1560,25 @@ func (p *Program) runTurn(text string) {
 				Truncated: truncated,
 				At:        time.Now(),
 			})
+			return
 		}
+		// Stage reports the pre-Execute announcement as an update — a report
+		// with no outcome yet — so the announcement is recognised by having
+		// nothing to report. An actual partial update always carries a
+		// result. Mistaking one for the other left tool calls with no badge
+		// and their outcomes nowhere to land.
+		if progress.Result.Text == "" && progress.Result.Details == nil {
+			p.publish(ToolStarted{
+				ID:   progress.CallID,
+				Name: progress.ToolName,
+				At:   time.Now(),
+			})
+			return
+		}
+		p.publish(ToolPreview{
+			ID:      progress.CallID,
+			Summary: oneLine(progress.Result.Text),
+		})
 	})
 
 	turns, err := p.loop.Run(ctx, request)
@@ -1323,9 +1619,23 @@ func (p *Program) runTurn(text string) {
 	// the hook above, but the model's own words only exist on the completed
 	// turns. Without this the transcript shows the user's prompts with empty
 	// space where the answers belong, which reads as "nothing appears".
+	// Text already revealed live while the stream was open is skipped by
+	// common prefix, so the tail publishes without duplicating: without live
+	// deltas (replayed or non-streaming transports) nothing was revealed and
+	// the whole turn publishes in bounded chunks as before.
+	streamed := live.String()
+	consumed := 0
 	for _, turn := range turns {
 		if text := turn.Assistant.Text(); text != "" {
-			p.publish(AssistantDelta{Text: text})
+			rest := text
+			if consumed < len(streamed) {
+				skip := commonPrefixLen(text, streamed[consumed:])
+				rest = text[skip:]
+				consumed += skip
+			}
+			for _, chunk := range splitAssistantChunks(rest) {
+				p.publish(AssistantDelta{Text: chunk})
+			}
 		}
 	}
 
@@ -1424,31 +1734,70 @@ func rebase(request []agent.Message, turns []agent.Turn) []agent.Message {
 	return out
 }
 
+// commonPrefixLen reports the shared byte prefix of two strings, so text
+// already revealed while streaming is published once, never twice. The
+// result always lands on a rune boundary: backing off a split continuation
+// byte keeps the tail valid UTF-8 for CJK/emoji turns.
+func commonPrefixLen(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	for i > 0 && i < len(a) && i < len(b) && !utf8.RuneStart(a[i]) {
+		i--
+	}
+	return i
+}
+
 // publish sends a state event, dropping it if the UI has gone away.
 func (p *Program) publish(event Event) {
+	_ = p.publishOK(event)
+}
+
+// publishOK sends a state event and reports whether it landed. A full
+// buffer must never block a tool: losing a preview line is acceptable, a
+// stalled shell command is not.
+func (p *Program) publishOK(event Event) bool {
 	select {
 	case p.events <- event:
+		return true
 	default:
 		// A full buffer must never block a tool: losing a preview line is
 		// acceptable, a stalled shell command is not.
+		return false
 	}
 }
 
 // ApprovalFunc returns the loop's approval hook.
 //
 // It blocks the calling tool until the user answers, which is what makes the
-// prompt modal without the loop knowing a UI exists.
+// prompt modal without the loop knowing a UI exists. Past shutdown there is
+// no UI left to answer, so the tool is denied instead of parked forever: a
+// denial the turn can complete beats a goroutine that never returns.
 func (p *Program) ApprovalFunc() func(call ai.ToolCall, approval agent.Approval) (bool, string) {
 	return func(call ai.ToolCall, approval agent.Approval) (bool, string) {
 		answer := make(chan approvalAnswer, 1)
-		p.approvals <- approvalRequest{
+		request := approvalRequest{
 			toolName: call.Name,
 			reason:   approval.Reason,
 			summary:  ToolSummaryForCall(call.Name, call.Arguments),
 			answer:   answer,
 		}
-		reply := <-answer
-		return reply.approved, reply.reason
+		select {
+		case p.approvals <- request:
+		case <-p.done:
+			return false, "session ended"
+		}
+		select {
+		case reply := <-answer:
+			return reply.approved, reply.reason
+		case <-p.done:
+			return false, "session ended"
+		}
 	}
 }
 

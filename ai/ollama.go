@@ -188,6 +188,9 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (*Stream, erro
 	}
 	base := ollamaNativeBase(p.BaseURL)
 	if base == "" {
+		base = ollamaNativeBase(req.Model.BaseURL)
+	}
+	if base == "" {
 		base = OllamaBaseURL
 	}
 

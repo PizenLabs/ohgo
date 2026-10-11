@@ -44,6 +44,8 @@ func rootCmd() *cobra.Command {
 	root.PersistentFlags().String("effort", "", "reasoning effort: minimal, low, medium, high")
 	root.PersistentFlags().Int("max-depth", 1, "subagent nesting depth, counting this agent (1 disables delegation)")
 	root.PersistentFlags().Duration("deadline", 0, "wall-clock budget for the whole run, e.g. 10m (0 = no limit)")
+	root.PersistentFlags().String("mouse", "", "wheel handling in the full-screen UI: select (default, keeps drag-copy) or report (works inside tmux, needs Shift/Option to select)")
+	root.PersistentFlags().Bool("live", false, "output-first UI: ohgo writes the transcript and the terminal owns scrolling, selection and copy")
 
 	root.AddCommand(versionCmd())
 	root.AddCommand(modelsCmd())

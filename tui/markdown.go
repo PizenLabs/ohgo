@@ -47,6 +47,13 @@ func RenderMarkdownWrapped(text string, pal *Palette, width int) string {
 	// an escape sequence mid-line. Fenced code keeps its text and
 	// whitespace; only the foreign styling goes.
 	text = stripANSI(text)
+	// Carriage returns never reach the terminal: model output routinely
+	// uses CRLF line endings (especially inside fenced code), and a raw
+	// \r moves the cursor to the row start, overwriting visible text.
+	// Folded exactly like sanitizeBlock does for every other untrusted-text
+	// path, so all render boundaries agree on what a line is.
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 	r := &blockRenderer{pal: pal, width: width}
 	return r.render(text)
 }
@@ -160,27 +167,21 @@ func (r *blockRenderer) renderHeading(trimmed string) string {
 	}
 	text := strings.TrimSpace(trimmed[level:])
 	chunks := parseInline(text, r.pal)
-	var styled string
+	// Headers stratify down the forest scale so depth reads without
+	// parsing: bright emerald H1, sage H2, muted sage H3 and below.
+	outer := r.pal.Heading
 	switch level {
-	case 1:
-		styled = applyChunks(chunks, "", r.pal.Heading)
 	case 2:
-		styled = applyChunks(chunks, "", r.pal.Prompt)
-	default:
-		styled = applyChunks(chunks, "", r.pal.Bold)
+		outer = r.pal.Heading2
+	case 3, 4, 5, 6:
+		outer = r.pal.Heading3
 	}
+	styled := applyChunks(chunks, "", outer)
 	// Headings are short by construction; wrap only on overflow.
 	if w := r.wrapWidth(); w > 0 && CellWidth(styled) > w {
 		wrapped := wrapChunks(chunks, w, "", "", nil)
 		for i, wl := range wrapped {
-			switch level {
-			case 1:
-				wrapped[i] = r.pal.Heading.Render(wl)
-			case 2:
-				wrapped[i] = r.pal.Prompt.Render(wl)
-			default:
-				wrapped[i] = r.pal.Bold.Render(wl)
-			}
+			wrapped[i] = outer.Render(wl)
 		}
 		return strings.Join(wrapped, "\n")
 	}
@@ -203,7 +204,7 @@ func (r *blockRenderer) renderFence(lines []string, start int) ([]string, int) {
 			i++
 			break
 		}
-		out = append(out, r.renderCodeLine(lines[i]))
+		out = append(out, r.renderCodeLine(lines[i], lang))
 	}
 	// An unclosed fence renders to the end as code: provisional during
 	// streaming, exact when the model never closed it.
@@ -213,15 +214,189 @@ func (r *blockRenderer) renderFence(lines []string, start int) ([]string, int) {
 	return out, i
 }
 
-func (r *blockRenderer) renderCodeLine(line string) string {
-	if w := r.wrapWidth(); w > 0 && CellWidth(line) > w {
-		// Preserve whitespace: hard-fold, never reindent.
-		return strings.Join(sliceCells(line, w), "\n")
+func (r *blockRenderer) renderCodeLine(line, lang string) string {
+	// Tabs become spaces before anything measures them: the styling pass
+	// expands them anyway, so measuring the raw line would pad the row for a
+	// cell count the terminal never honours and overflow the block width.
+	line = expandTabs(line)
+	if w := r.wrapWidth(); w > 0 {
+		if CellWidth(line) > w {
+			// Preserve whitespace: hard-fold the plain text first, then
+			// highlight each piece, so ANSI never inflates the budget.
+			var folded []string
+			for _, piece := range sliceCells(line, w) {
+				folded = append(folded, padCode(highlightCode(piece, lang, r.pal), CellWidth(piece), w, r.pal))
+			}
+			return strings.Join(folded, "\n")
+		}
+		return padCode(highlightCode(line, lang, r.pal), CellWidth(line), w, r.pal)
 	}
 	if line == "" {
 		return r.pal.Code.Render(" ")
 	}
-	return r.pal.Code.Render(line)
+	return highlightCode(line, lang, r.pal)
+}
+
+// padCode extends a highlighted code line to the full wrap width with the
+// code background, so the block reads as one uniform surface instead of
+// patchy per-token backgrounds that end where the text ends. Widths are
+// plain cells measured before styling, so ANSI never inflates the budget.
+func padCode(styled string, plainWidth, width int, pal *Palette) string {
+	if width <= 0 || plainWidth >= width {
+		return styled
+	}
+	return styled + pal.Code.Render(strings.Repeat(" ", width-plainWidth))
+}
+
+// knownCodeLangs bounds lexical highlighting to languages with a comment
+// and keyword shape the scanner knows. Anything else falls back to the
+// plain code block so an exotic label degrades to readable text rather
+// than wrong colours.
+var knownCodeLangs = map[string]bool{
+	"go": true, "python": true, "py": true, "javascript": true, "js": true,
+	"typescript": true, "ts": true, "tsx": true, "jsx": true, "java": true,
+	"rust": true, "rs": true, "c": true, "h": true, "cpp": true, "cc": true,
+	"csharp": true, "cs": true, "ruby": true, "rb": true, "sh": true,
+	"bash": true, "zsh": true, "shell": true, "sql": true, "yaml": true,
+	"yml": true, "json": true, "html": true, "css": true, "xml": true,
+	"toml": true, "dockerfile": true, "makefile": true, "lua": true,
+	"kotlin": true, "kt": true, "swift": true, "php": true,
+}
+
+// hashCommentLangs use "#" for line comments; SQL uses "--"; the rest use
+// "//". The comment marker is per language family so a "#" inside Go or a
+// "//" inside shell script is never mistaken for a comment.
+var hashCommentLangs = map[string]bool{
+	"python": true, "py": true, "ruby": true, "rb": true, "sh": true,
+	"bash": true, "zsh": true, "shell": true, "yaml": true, "yml": true,
+	"toml": true, "dockerfile": true, "makefile": true,
+}
+
+// codeKeywords is the shared keyword shape across the known languages:
+// control flow, declarations, and module markers. Per-language builtins
+// stay plain text — a missed keyword is invisible, a wrong one misleads.
+var codeKeywords = map[string]bool{
+	"func": true, "return": true, "if": true, "else": true, "elif": true,
+	"for": true, "while": true, "import": true, "from": true, "export": true,
+	"package": true, "type": true, "struct": true, "interface": true,
+	"class": true, "def": true, "fn": true, "let": true, "const": true,
+	"var": true, "new": true, "delete": true, "try": true, "catch": true,
+	"except": true, "finally": true, "throw": true, "raise": true,
+	"switch": true, "case": true, "default": true, "break": true,
+	"continue": true, "do": true, "in": true, "of": true, "as": true,
+	"is": true, "nil": true, "null": true, "true": true, "false": true,
+	"self": true, "this": true, "super": true, "pass": true, "lambda": true,
+	"with": true, "yield": true, "await": true, "async": true, "match": true,
+	"select": true, "chan": true, "map": true, "range": true, "goto": true,
+	"defer": true, "go": true, "fallthrough": true, "enum": true,
+	"extends": true, "implements": true, "static": true, "public": true,
+	"private": true, "protected": true, "void": true, "int": true,
+	"string": true, "bool": true, "SELECT": true, "FROM": true, "WHERE": true,
+}
+
+// highlightCode colours one physical code line without adding or removing
+// cells: the return carries ANSI but strips to the input, and never contains
+// a newline, so wrapping done on the plain text stays truthful.
+//
+// An unterminated string or missing comment close colours to end of line:
+// provisional during streaming, convergent when the fence closes.
+func highlightCode(line, lang string, pal *Palette) string {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	if lang == "" || !knownCodeLangs[lang] {
+		return pal.Code.Render(line)
+	}
+	comment := "//"
+	if hashCommentLangs[lang] {
+		comment = "#"
+	} else if lang == "sql" || lang == "lua" {
+		comment = "--"
+	}
+	runes := []rune(line)
+	type span struct {
+		text  string
+		style *lipgloss.Style
+	}
+	var spans []span
+	var plain strings.Builder
+	flush := func() {
+		if plain.Len() > 0 {
+			spans = append(spans, span{text: plain.String()})
+			plain.Reset()
+		}
+	}
+	emit := func(text string, style lipgloss.Style) {
+		flush()
+		s := style
+		spans = append(spans, span{text: text, style: &s})
+	}
+	isDigit := func(c rune) bool { return c >= '0' && c <= '9' }
+	isWord := func(c rune) bool {
+		return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+	}
+	i := 0
+	for i < len(runes) {
+		rest := string(runes[i:])
+		// A line comment runs to end of line. It starts a comment only at
+		// a word boundary (or line start) so URLs and operators inside
+		// code ("http://x", "a//b" in shell paths) stay code-coloured.
+		if strings.HasPrefix(rest, comment) && (i == 0 || !isWord(runes[i-1])) {
+			flush()
+			s := pal.CodeComment
+			spans = append(spans, span{text: string(runes[i:]), style: &s})
+			break
+		}
+		switch c := runes[i]; {
+		case c == '\'' || c == '"' || c == '`':
+			// Strings run to their matching quote; backslash escapes the
+			// next rune. An unterminated string colours to end of line.
+			j := i + 1
+			for j < len(runes) {
+				if runes[j] == '\\' && c != '`' {
+					j += 2
+					continue
+				}
+				if runes[j] == c {
+					j++
+					break
+				}
+				j++
+			}
+			emit(string(runes[i:j]), pal.CodeString)
+			i = j
+		case isDigit(c) && (i == 0 || !isWord(runes[i-1])):
+			j := i + 1
+			for j < len(runes) && (isWord(runes[j]) || runes[j] == '.') {
+				j++
+			}
+			emit(string(runes[i:j]), pal.CodeNumber)
+			i = j
+		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_':
+			j := i + 1
+			for j < len(runes) && isWord(runes[j]) {
+				j++
+			}
+			word := string(runes[i:j])
+			if codeKeywords[word] {
+				emit(word, pal.CodeKeyword)
+			} else {
+				plain.WriteString(word)
+			}
+			i = j
+		default:
+			plain.WriteRune(c)
+			i++
+		}
+	}
+	flush()
+	var sb strings.Builder
+	for _, sp := range spans {
+		if sp.style != nil {
+			sb.WriteString(sp.style.Render(sp.text))
+		} else {
+			sb.WriteString(pal.Code.Render(sp.text))
+		}
+	}
+	return sb.String()
 }
 
 // ---- quotes ----
@@ -410,17 +585,89 @@ func isDelimiterRow(line string) bool {
 func splitRow(line string) []string {
 	t := strings.TrimSpace(line)
 	t = strings.TrimPrefix(t, "|")
-	t = strings.TrimSuffix(t, "|")
-	parts := strings.Split(t, "|")
-	for i, p := range parts {
-		parts[i] = strings.TrimSpace(p)
+	// A trailing pipe is the border marker only when unescaped: `b\|`
+	// ends a cell with a literal pipe, not the row.
+	if strings.HasSuffix(t, "|") && !isEscapedPipe(t, len(t)-1) {
+		t = t[:len(t)-1]
 	}
-	return parts
+	var cells []string
+	var cur strings.Builder
+	escaped := false
+	for _, r := range t {
+		switch {
+		case escaped:
+			// GFM backslash escapes: `\|` and `\\` collapse, anything
+			// else keeps the backslash, matching the inline parser,
+			// which assigns it no meaning.
+			if r != '|' && r != '\\' {
+				cur.WriteRune('\\')
+			}
+			cur.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case r == '|':
+			cells = append(cells, strings.TrimSpace(cur.String()))
+			cur.Reset()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if escaped {
+		cur.WriteRune('\\')
+	}
+	return append(cells, strings.TrimSpace(cur.String()))
+}
+
+// isEscapedPipe reports whether the byte at pos is escaped by an odd run of
+// preceding backslashes. Pipes and backslashes are ASCII, so byte indexing
+// is safe here.
+func isEscapedPipe(s string, pos int) bool {
+	n := 0
+	for i := pos - 1; i >= 0 && s[i] == '\\'; i-- {
+		n++
+	}
+	return n%2 == 1
+}
+
+// colAlign is a table column's horizontal alignment, read from the
+// delimiter row (`:---` left, `:--:` center, `---:` right, `---` left).
+type colAlign int
+
+const (
+	alignLeft colAlign = iota
+	alignCenter
+	alignRight
+)
+
+// parseAligns reads one alignment per delimiter cell. The delimiter row is
+// already validated to hold only dashes and colons, so anything unlisted
+// here is left-aligned by default, never an error.
+func parseAligns(delimiter string) []colAlign {
+	cells := splitRow(delimiter)
+	aligns := make([]colAlign, len(cells))
+	for i, cell := range cells {
+		c := strings.TrimSpace(cell)
+		left, right := strings.HasPrefix(c, ":"), strings.HasSuffix(c, ":")
+		switch {
+		case left && right:
+			aligns[i] = alignCenter
+		case right:
+			aligns[i] = alignRight
+		default:
+			aligns[i] = alignLeft
+		}
+	}
+	return aligns
 }
 
 func (r *blockRenderer) renderTable(lines []string, start int) ([]string, int) {
 	header := splitRow(lines[start])
+	aligns := parseAligns(lines[start+1])
 	ncols := len(header)
+	for len(aligns) < ncols {
+		aligns = append(aligns, alignLeft)
+	}
 	var rows [][]string
 	i := start + 2 // skip delimiter
 	for ; i < len(lines); i++ {
@@ -489,7 +736,7 @@ func (r *blockRenderer) renderTable(lines []string, start int) ([]string, int) {
 				if row < len(wrapped[c]) {
 					text = wrapped[c][row]
 				}
-				sb.WriteString(padCell(text, colW[c]))
+				sb.WriteString(padCellAlign(text, colW[c], aligns[c]))
 				if c < ncols-1 {
 					sb.WriteString(" | ")
 				}
@@ -560,12 +807,25 @@ func sum(vals []int) int {
 	return total
 }
 
-func padCell(s string, width int) string {
+// padCellAlign pads styled text to exactly width cells without touching its
+// ANSI sequences: CellWidth measures display cells, and padding is spaces,
+// so styling never leaks into neighbouring columns. Centering puts odd
+// slack on the right.
+func padCellAlign(s string, width int, align colAlign) string {
 	w := CellWidth(s)
 	if w >= width {
 		return s
 	}
-	return s + strings.Repeat(" ", width-w)
+	gap := width - w
+	switch align {
+	case alignRight:
+		return strings.Repeat(" ", gap) + s
+	case alignCenter:
+		left := gap / 2
+		return strings.Repeat(" ", left) + s + strings.Repeat(" ", gap-left)
+	default:
+		return s + strings.Repeat(" ", gap)
+	}
 }
 
 // ---- inline ----

@@ -146,19 +146,30 @@ func TestApprovalDefaultsToTheSafestChoice(t *testing.T) {
 	}
 }
 
-func TestApprovalCursorWraps(t *testing.T) {
+// The approval cursor stops at the ends rather than wrapping.
+//
+// Wrapping turned every navigation key into an escape from the conservative
+// default, which sits on the last choice: a forward move resolved to index 0,
+// so Tab landed on "Yes" and Enter then ran the tool. See
+// TestApprovalNavigationStopsAtTheEndInsteadOfWrapping for the user-visible
+// contract; this pins the arithmetic.
+func TestApprovalCursorStopsAtTheEnds(t *testing.T) {
 	p := &PendingApproval{Choices: []string{"a", "b", "c"}, Cursor: 2}
 	p.Move(1)
-	if p.Cursor != 0 {
-		t.Errorf("cursor = %d, want it to wrap to 0", p.Cursor)
+	if p.Cursor != 2 {
+		t.Errorf("cursor = %d, want it to stay at the last choice", p.Cursor)
 	}
 	p.Move(-1)
-	if p.Cursor != 2 {
-		t.Errorf("cursor = %d, want it to wrap to the last", p.Cursor)
+	if p.Cursor != 1 {
+		t.Errorf("cursor = %d, want one step back", p.Cursor)
 	}
 	p.Move(5)
-	if p.Cursor != 1 {
-		t.Errorf("cursor = %d, want 1 (5 mod 3 from 2)", p.Cursor)
+	if p.Cursor != 2 {
+		t.Errorf("cursor = %d, want it clamped to the last choice", p.Cursor)
+	}
+	p.Move(-5)
+	if p.Cursor != 0 {
+		t.Errorf("cursor = %d, want it clamped to the first choice", p.Cursor)
 	}
 }
 

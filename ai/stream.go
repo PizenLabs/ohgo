@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -135,6 +136,35 @@ func NewCompletedStream(msg AssistantMessage) *Stream {
 	stream := newStream(2)
 	stream.publish(context.Background(), EventStart{Message: msg})
 	stream.publish(context.Background(), EventDone{Message: msg})
+	stream.finish(msg, nil)
+	return stream
+}
+
+// NewTextStream returns a stream that emits each delta as an EventTextDelta
+// before completing with their concatenation.
+//
+// It exists for scripting token-by-token streams in tests without an HTTP
+// server: a consumer draining Events sees the same sequence a live provider
+// produces, and Result reports the assembled message.
+func NewTextStream(deltas ...string) *Stream {
+	var sb strings.Builder
+	for _, d := range deltas {
+		sb.WriteString(d)
+	}
+	msg := AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: sb.String()}},
+	}
+	// The buffer holds the whole sequence: publishing blocks until a reader
+	// drains, and there is no reader in this path.
+	stream := newStream(len(deltas) + 2)
+	ctx := context.Background()
+	stream.publish(ctx, EventStart{Message: AssistantMessage{}})
+	for _, d := range deltas {
+		if d != "" {
+			stream.publish(ctx, EventTextDelta{Delta: d})
+		}
+	}
+	stream.publish(ctx, EventDone{Message: msg})
 	stream.finish(msg, nil)
 	return stream
 }
