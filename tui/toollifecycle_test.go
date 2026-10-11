@@ -127,9 +127,16 @@ loop:
 			t.Fatal("runTurn hung: no completion and no events")
 		}
 	}
+	// The loop above can observe `done` before it has read every buffered
+	// event, so the start may still be waiting in the channel. Keep looking
+	// while draining: the turn has returned, so nothing new can arrive.
 	for {
 		select {
 		case event := <-p.events:
+			if s, ok := event.(ToolStarted); ok && s.ID == "c1" {
+				cpy := s
+				started = &cpy
+			}
 			p.state.Apply(event)
 		default:
 			goto drained

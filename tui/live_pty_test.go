@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -50,9 +51,8 @@ func TestLiveSessionUnderARrealPTY(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
-	cmd := exec.Command("/usr/bin/script", "-q", "/dev/null", "/bin/sh", "-c",
-		fmt.Sprintf("stty rows %d cols %d; exec %q -test.run TestLiveSessionUnderARrealPTY -test.timeout 120s",
-			ptyRows, ptyCols, exe))
+	cmd := scriptPTY(fmt.Sprintf("stty rows %d cols %d; exec %q -test.run TestLiveSessionUnderARrealPTY -test.timeout 120s",
+		ptyRows, ptyCols, exe))
 	cmd.Env = append(os.Environ(), "OHGO_LIVE_PTY_CHILD=1", "TERM=xterm-256color")
 
 	stdin, err := cmd.StdinPipe()
@@ -162,6 +162,21 @@ func TestLiveSessionUnderARrealPTY(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(b []byte) (int, error) { return f(b) }
+
+// scriptPTY returns script(1) running command on a pseudo-terminal.
+//
+// The two script(1) implementations disagree on their argument shape: the
+// BSD script (macOS and the BSDs) takes the command positionally after the
+// file, while util-linux script (Linux, including CI) takes it with -c and
+// the file last. Handing the BSD form to util-linux fails outright with
+// "unexpected number of arguments" and no child runs, so the harness builds
+// argv for its host.
+func scriptPTY(command string) *exec.Cmd {
+	if runtime.GOOS == "linux" {
+		return exec.Command("/usr/bin/script", "-q", "-c", command, "/dev/null")
+	}
+	return exec.Command("/usr/bin/script", "-q", "/dev/null", "/bin/sh", "-c", command)
+}
 
 // assertNoTerminalHijack checks the property the whole mode rests on: nothing
 // in the byte stream asks the terminal for the wheel, for drag selection, or

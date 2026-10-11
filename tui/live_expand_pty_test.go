@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -106,9 +105,8 @@ func TestLiveExpandUnderARealPTY(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
-	cmd := exec.Command("/usr/bin/script", "-q", "/dev/null", "/bin/sh", "-c",
-		fmt.Sprintf("stty rows %d cols %d; exec %q -test.run TestLiveExpandUnderARealPTY -test.timeout 120s",
-			ptyRows, ptyCols, exe))
+	cmd := scriptPTY(fmt.Sprintf("stty rows %d cols %d; exec %q -test.run TestLiveExpandUnderARealPTY -test.timeout 120s",
+		ptyRows, ptyCols, exe))
 	cmd.Env = append(os.Environ(), "OHGO_EXPAND_PTY_CHILD=1", "TERM=xterm-256color")
 
 	stdin, err := cmd.StdinPipe()
