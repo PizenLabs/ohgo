@@ -20,6 +20,11 @@ var ErrNotFound = errors.New("config: not found")
 type Settings struct {
 	// Model is the default model as "provider/id", e.g. "anthropic/claude-sonnet-4-5".
 	Model string `json:"model,omitempty"`
+	// Models maps a workspace name ("ask", "fuzz", "build") to a
+	// "provider/id" override for that authority. A workspace with no entry
+	// falls back to Model, so configuring one workspace does not require
+	// configuring all three (§11, §12, I7).
+	Models map[string]string `json:"models,omitempty"`
 	// MaxTokens caps each completion.
 	MaxTokens int `json:"maxTokens,omitempty"`
 	// Reasoning enables extended thinking by default.
@@ -178,7 +183,34 @@ func (s Settings) ApprovalFor(tool string) (string, bool) {
 // It returns ok=false when the value is not in "provider/id" form, so the
 // caller can fall back to the default model rather than guessing a provider.
 func (s Settings) ModelID() (provider, id string, ok bool) {
-	value := strings.TrimSpace(s.Model)
+	return splitModel(s.Model)
+}
+
+// ModelFor returns the effective model reference for a workspace.
+//
+// Precedence within configuration is workspace-specific, then global default
+// (§12). An unknown or unconfigured workspace falls back to the global model,
+// so the presence of a workspace-specific model never has to be complete.
+func (s Settings) ModelFor(workspace string) (provider, id string, ok bool) {
+	if workspace != "" {
+		if value, found := s.Models[normalizeWorkspaceKey(workspace)]; found {
+			if provider, id, ok := splitModel(value); ok {
+				return provider, id, true
+			}
+		}
+	}
+	return splitModel(s.Model)
+}
+
+// normalizeWorkspaceKey lowercases and trims a workspace name for lookup, so
+// "ASK" and "ask" address the same model.
+func normalizeWorkspaceKey(workspace string) string {
+	return strings.ToLower(strings.TrimSpace(workspace))
+}
+
+// splitModel parses a "provider/id" reference.
+func splitModel(value string) (provider, id string, ok bool) {
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", "", false
 	}

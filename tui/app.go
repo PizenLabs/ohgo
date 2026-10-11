@@ -180,6 +180,11 @@ type Program struct {
 	// pickerRestoreSet marks pickerRestore as deliberate: an empty restore
 	// is still a restore, distinct from "no restore".
 	pickerRestoreSet bool
+
+	// support runs an ephemeral $sup query on the ASK authority's model. Nil
+	// means the surface is unavailable, in which case $sup is treated as an
+	// ordinary prompt. Its conversation never reaches the store or history.
+	support func(ctx context.Context, question string) (string, error)
 }
 
 // modelsRefreshedMsg carries an async catalog refresh into Update.
@@ -566,6 +571,13 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.cancelOrQuit()
 
 	case "esc":
+		// Escape closes the ephemeral support surface when one is open and no
+		// turn is running: the surface must return the user to the previous
+		// interaction without touching the main task (§34).
+		if p.state.Support && !p.state.Status.Busy {
+			p.state.Apply(SupportClosed{})
+			return p, nil
+		}
 		// Escape backs out of a running turn the way ctrl+c does, but never
 		// quits: a stray keypress must not end the session.
 		if p.state.Status.Busy {
@@ -1524,10 +1536,39 @@ func tick() tea.Cmd {
 // which is the race this queue exists to prevent. When the turn ends, the
 // returned message drains the queue on the update goroutine.
 func (p *Program) submit(text string) tea.Cmd {
+	// $sup is routed to the ephemeral surface before it can become a turn:
+	// it must never persist, never touch history, and never reach the store
+	// (§10.2). A bare "$sup" closes the surface.
+	if question, ok := ParseSupport(text); ok && p.support != nil {
+		return func() tea.Msg {
+			p.runSupport(question)
+			return turnFinishedMsg{}
+		}
+	}
 	return func() tea.Msg {
 		p.runTurn(text)
 		return turnFinishedMsg{}
 	}
+}
+
+// runSupport executes one ephemeral $sup exchange.
+//
+// It runs off the update goroutine and publishes the exchange as view-only
+// entries. Nothing here touches p.history, the store, or the session: that
+// isolation is the whole contract of the surface (I6, I17).
+func (p *Program) runSupport(question string) {
+	if strings.TrimSpace(question) == "" {
+		p.publish(SupportClosed{})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	answer, err := p.support(ctx, question)
+	if err != nil {
+		p.publish(Notice{Text: "$sup: " + err.Error()})
+		return
+	}
+	p.publish(SupportTurn{Question: question, Answer: answer})
 }
 
 // drainQueue starts the oldest queued prompt. It runs on the update
@@ -1695,6 +1736,15 @@ func (p *Program) runTurn(text string) {
 func (p *Program) SetModelSwitcher(set func(id string) error, current func() string) {
 	p.setModel = set
 	p.currentModel = current
+}
+
+// SetSupportFunc installs the ephemeral $sup handler.
+//
+// The handler runs on the ASK authority's model and must not persist anything:
+// the program routes its exchange through view-only entries. A nil handler
+// leaves $sup unavailable, in which case it is treated as an ordinary prompt.
+func (p *Program) SetSupportFunc(support func(ctx context.Context, question string) (string, error)) {
+	p.support = support
 }
 
 // AttachSession wires the program to a persistent transcript.

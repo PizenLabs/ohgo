@@ -74,6 +74,14 @@ type Config struct {
 	// generated instead of landing as one block when the turn completes.
 	// Nil disables it; transports that never token-stream never fire it.
 	OnTextDelta func(delta string)
+	// Admit decides whether a call is permitted at all, before approval.
+	//
+	// It is the runtime authority seam: the workspace capability policy is
+	// enforced here, below the UI and above execution, so no model output and
+	// no UI state can grant a capability (I5, I14). A nil Admit admits every
+	// call, which preserves the pre-authority behavior for callers that do not
+	// install one.
+	Admit func(call ai.ToolCall, tool Tool) (bool, string)
 	// Approve decides whether a call may run without prompting.
 	Approve func(call ai.ToolCall, approval Approval) (bool, string)
 	// Compaction configures context reduction. The zero value disables it.
@@ -247,6 +255,15 @@ func (l *Loop) SetTextDeltaHook(hook func(delta string)) {
 // It must be called before Run, never during one.
 func (l *Loop) SetApprovalHook(approve func(call ai.ToolCall, approval Approval) (bool, string)) {
 	l.cfg.Approve = approve
+}
+
+// SetAdmitHook installs the runtime authority gate after construction.
+//
+// It exists for the same construction-order reason as SetApprovalHook: the
+// workspace that owns the policy may be resolved (from a resumed session)
+// after the loop is built. It must be called before Run, never during one.
+func (l *Loop) SetAdmitHook(admit func(call ai.ToolCall, tool Tool) (bool, string)) {
+	l.cfg.Admit = admit
 }
 
 // SetTurnHook installs the per-turn reporter after construction, or nil to
@@ -585,6 +602,19 @@ func (l *Loop) execute(
 			if err := ValidateArgs(tool, args); err != nil {
 				return fail(fmt.Sprintf("Invalid arguments for %q: %v", call.Name, err))
 			}
+		}
+	}
+
+	// Authority is consulted before approval: a call the workspace forbids is
+	// refused outright, never offered to the user as something they could
+	// approve. That order is what stops conversation or a model explanation
+	// from standing in for a capability (§27, §37).
+	if l.cfg.Admit != nil {
+		if admitted, reason := l.cfg.Admit(call, tool); !admitted {
+			if reason == "" {
+				reason = "capability denied"
+			}
+			return fail(reason)
 		}
 	}
 

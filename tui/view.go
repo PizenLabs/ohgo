@@ -990,7 +990,30 @@ func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, 
 			sb.WriteString(pal.Notice.Render(wl) + "\n")
 		}
 		sb.WriteString("\n")
+
+	case EntrySupport:
+		renderSupportEntry(sb, entry, pal, layout)
 	}
+}
+
+// renderSupportEntry renders one $sup exchange.
+//
+// The question carries a "$sup" marker and the answer renders through the
+// markdown layer, so the ephemeral surface reads as distinct from the main
+// conversation without depending on colour alone.
+func renderSupportEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout) {
+	if entry.SupportIsQuestion {
+		for _, line := range wrapPlain("$sup "+entry.SupportText, layout) {
+			sb.WriteString(pal.Notice.Render(line) + "\n")
+		}
+		sb.WriteString("\n")
+		return
+	}
+	rendered := RenderMarkdownWrapped(entry.SupportText, pal, textWidth(layout))
+	for _, wl := range strings.Split(rendered, "\n") {
+		sb.WriteString(wl + "\n")
+	}
+	sb.WriteString("\n")
 }
 
 // renderTool writes a tool call and, once finished, its outcome.
@@ -1237,11 +1260,37 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 	if status.Busy {
 		parts = append(parts, spinnerFrame(status.Spinner)+" working")
 	}
+	if state.Support {
+		// The ephemeral surface is open. Marking it here keeps the user aware
+		// that this interaction is not part of the main task (§34).
+		parts = append(parts, "$sup")
+	}
 	out := strings.Join(parts, "  ·  ")
 	if state.Width > 0 {
 		out = TruncateToWidth(out, state.Width-1)
 	}
-	return pal.Status.Render(out)
+	if status.Workspace == "" {
+		return pal.Status.Render(out)
+	}
+	// The authority badge leads the footer, in its own semantic accent. Plain
+	// cells are measured and truncated before styling, so ANSI never inflates
+	// the one-row budget.
+	badge := sanitizeInline(status.Workspace)
+	const sep = "  ·  "
+	if state.Width > 0 {
+		restBudget := state.Width - 1 - CellWidth(badge) - CellWidth(sep)
+		if restBudget < 0 {
+			// Too narrow for both: the authority identity is the part that
+			// must survive, so the context detail yields.
+			return WorkspaceBadge(status.WorkspaceAccent, TruncateToWidth(badge, state.Width-1))
+		}
+		out = TruncateToWidth(out, restBudget)
+	}
+	styled := WorkspaceBadge(status.WorkspaceAccent, badge)
+	if out == "" {
+		return styled
+	}
+	return styled + pal.Status.Render(sep+out)
 }
 
 // shortenCwd keeps the tail of a long path: the leaf directory is what

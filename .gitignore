@@ -23,6 +23,9 @@ coverage.*
 go.work
 go.work.sum
 
+# Project-local ohgo identity (machine-local, per checkout)
+.ohgo/
+
 # Release artifacts
 /dist/
 

@@ -48,6 +48,11 @@ type Entry struct {
 	Tool *ToolEntry
 	// Notice is set when Kind is EntryNotice.
 	Notice string
+	// SupportText is set when Kind is EntrySupport: the question when
+	// SupportIsQuestion, else the answer.
+	SupportText string
+	// SupportIsQuestion marks a support question entry rather than an answer.
+	SupportIsQuestion bool
 }
 
 // EntryKind discriminates an Entry.
@@ -63,6 +68,9 @@ const (
 	EntryTool EntryKind = "tool"
 	// EntryNotice is a system notice, e.g. a compaction.
 	EntryNotice EntryKind = "notice"
+	// EntrySupport is one turn of the ephemeral $sup surface. It is rendered
+	// but never persisted and never enters the model's context (§10.2, I17).
+	EntrySupport EntryKind = "support"
 )
 
 // ToolEntry is the live state of one tool call.
@@ -169,6 +177,13 @@ type Status struct {
 	// Empty hides it. The producer labels estimates; the view never invents
 	// numbers, and unknown values stay absent rather than rendering as zero.
 	UsageText string
+	// Workspace is the execution authority label, e.g. "BUILD". Empty hides
+	// it. It is authority identity, not decoration: it tells the user which
+	// boundary the session is running under.
+	Workspace string
+	// WorkspaceAccent is the semantic 256-color index for the workspace, from
+	// workspace.Style(). Empty falls back to a neutral accent.
+	WorkspaceAccent string
 }
 
 // Percent renders the context budget, or -1 when there is no window.
@@ -236,6 +251,10 @@ type State struct {
 	// closedAssistant marks that the trailing assistant entry has ended, so
 	// the next turn opens a new one.
 	closedAssistant bool
+	// Support reports that the ephemeral $sup surface is open. It is UI state
+	// only: the workspace and session authority are unchanged while it is set
+	// (§34).
+	Support bool
 }
 
 // New returns an empty state.
@@ -539,9 +558,37 @@ func (s *State) Apply(event Event) {
 		if e.HasUsage {
 			s.Status.UsageText = e.UsageText
 		}
+		if e.HasWorkspace {
+			s.Status.Workspace = e.Workspace
+			s.Status.WorkspaceAccent = e.WorkspaceAccent
+		}
 
 	case QuitRequested:
 		s.Quit = true
+
+	case SupportTurn:
+		// The ephemeral surface records its exchange in the view only. It is
+		// never persisted and never added to the conversation the model sees,
+		// so it cannot pollute the main task context (I17).
+		s.Entries = append(s.Entries,
+			Entry{Kind: EntrySupport, SupportText: e.Question, SupportIsQuestion: true},
+			Entry{Kind: EntrySupport, SupportText: e.Answer},
+		)
+		s.Support = true
+		s.growScroll(countLines(e.Question) + countLines(e.Answer) + 2)
+
+	case SupportClosed:
+		// Closing removes the ephemeral entries outright: the surface must
+		// return the user to the previous interaction, not leave a transcript
+		// of a conversation that never happened.
+		kept := s.Entries[:0]
+		for _, entry := range s.Entries {
+			if entry.Kind != EntrySupport {
+				kept = append(kept, entry)
+			}
+		}
+		s.Entries = kept
+		s.Support = false
 
 	case Cleared:
 		// /clear drops the transcript so the next turn starts from nothing.
@@ -986,6 +1033,21 @@ func IsCommand(line string) bool {
 	return ok
 }
 
+// ParseSupport reports whether a line invokes the ephemeral support surface
+// and returns its question.
+//
+// $sup is a capability of ASK, not a workspace and not a slash command (§10.1,
+// I6): it is recognised separately so it can be routed to an isolated
+// conversation that never touches the main context. A bare "$sup" carries an
+// empty question, which the caller treats as "close the surface".
+func ParseSupport(line string) (question string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed != "$sup" && !strings.HasPrefix(trimmed, "$sup ") && !strings.HasPrefix(trimmed, "$sup\t") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, "$sup")), true
+}
+
 // CommandSpec describes one command for the help listing.
 type CommandSpec struct {
 	// Name is the command word.
@@ -1427,8 +1489,9 @@ type ProbeFinished struct {
 func (ProbeFinished) eventKind() string { return "probe_finished" }
 
 // WorkspaceUpdated carries out-of-band chrome metadata: working directory,
-// session label, and measured usage text. It never touches the transcript,
-// so a resize or a usage tick cannot duplicate requests or mutate history.
+// session label, measured usage text, and the execution authority. It never
+// touches the transcript, so a resize or a usage tick cannot duplicate
+// requests or mutate history.
 type WorkspaceUpdated struct {
 	// Cwd is the working directory for the status line. Empty leaves it.
 	Cwd string
@@ -1436,14 +1499,37 @@ type WorkspaceUpdated struct {
 	Session string
 	// UsageText is preformatted usage detail. Empty leaves it.
 	UsageText string
-	// HasCwd, HasSession, HasUsage mark which fields apply: an empty string
-	// can be a deliberate clear, not just an omission.
-	HasCwd     bool
-	HasSession bool
-	HasUsage   bool
+	// Workspace is the execution authority label, e.g. "BUILD".
+	Workspace string
+	// WorkspaceAccent is the semantic accent for the authority. The producer
+	// reads it from workspace.Style(), so the TUI never hardcodes a
+	// workspace colour (§9).
+	WorkspaceAccent string
+	// HasCwd, HasSession, HasUsage, HasWorkspace mark which fields apply: an
+	// empty string can be a deliberate clear, not just an omission.
+	HasCwd       bool
+	HasSession   bool
+	HasUsage     bool
+	HasWorkspace bool
 }
 
 func (WorkspaceUpdated) eventKind() string { return "workspace_updated" }
+
+// SupportTurn records one ephemeral $sup exchange. It never persists and never
+// enters the model's context (I17).
+type SupportTurn struct {
+	// Question is what the user asked.
+	Question string
+	// Answer is the support model's reply.
+	Answer string
+}
+
+func (SupportTurn) eventKind() string { return "support_turn" }
+
+// SupportClosed dismisses the ephemeral surface, removing its entries.
+type SupportClosed struct{}
+
+func (SupportClosed) eventKind() string { return "support_closed" }
 
 // ModelOption is one enriched model row for the picker. Detail lines are
 // built by the caller (which owns the catalog); the picker only renders

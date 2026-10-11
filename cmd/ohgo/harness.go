@@ -40,6 +40,12 @@ type harness struct {
 	settings *config.Settings
 	root     string
 	model    ai.Model
+	// workspace is the execution authority label, e.g. "BUILD". Empty when the
+	// caller did not supply one, in which case /status omits it rather than
+	// inventing an authority.
+	workspace string
+	// support is the ephemeral $sup surface. Nil means $sup is unavailable.
+	support *supportSurface
 }
 
 // newHarness assembles the backend. usage and settings may be nil only where
@@ -115,6 +121,9 @@ func (h *harness) StatusReport(history []agent.Message, queued int, theme string
 	fmt.Fprintf(&sb, "turns: %d", len(history))
 	if h.sess != nil {
 		fmt.Fprintf(&sb, " · session #%d", h.sess.ID)
+	}
+	if h.workspace != "" {
+		fmt.Fprintf(&sb, " · workspace %s", h.workspace)
 	}
 	if queued > 0 {
 		fmt.Fprintf(&sb, " · %d queued", queued)

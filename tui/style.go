@@ -118,6 +118,24 @@ func SeparatorLine(width int, pal *Palette) string {
 	return pal.Muted.Render(strings.Repeat("─", width))
 }
 
+// badgeNeutral is the fallback accent for an unlabelled workspace.
+const badgeNeutral = "244"
+
+// WorkspaceBadge renders the execution-authority label with its semantic
+// accent.
+//
+// The accent is a workspace-owned identity colour (ASK teal, FUZZ magenta,
+// BUILD blue), not a theme token: it must read the same under every palette
+// (§9). It is passed in by the producer, which reads it from
+// workspace.Style(), so this package never hardcodes a workspace colour. An
+// empty accent degrades to neutral rather than borrowing an authority's.
+func WorkspaceBadge(accent, label string) string {
+	if accent == "" {
+		accent = badgeNeutral
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(accent)).Bold(true).Render(label)
+}
+
 // ComposerHints returns the contextual hint row for the composer.
 //
 // Every hint shown must work: enter submits, alt+enter / ctrl+j inserts a

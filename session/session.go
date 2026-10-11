@@ -18,11 +18,17 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/workspace"
 	_ "modernc.org/sqlite"
 )
 
 // Schema is applied on open. It is idempotent so re-opening an existing
 // database is safe.
+//
+// The workspace and project columns are part of the durable authority and
+// identity record (§35): a resumed session must restore the workspace it ran
+// under and the project it belonged to, not infer either from process state.
+// Existing databases predate these columns; migrate adds them.
 const schema = `
 CREATE TABLE IF NOT EXISTS sessions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,6 +36,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TEXT NOT NULL,
     cwd        TEXT NOT NULL,
     model      TEXT NOT NULL,
+    workspace  TEXT NOT NULL DEFAULT 'build',
+    project    TEXT NOT NULL DEFAULT '',
     title      TEXT NOT NULL DEFAULT ''
 );
 
@@ -44,7 +52,26 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id, seq);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    artifact_id TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    origin      TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE(session_id, artifact_id)
+);
+
+CREATE INDEX IF NOT EXISTS artifacts_by_session ON artifacts(session_id, id);
 `
+
+// DefaultWorkspace is the authority a session runs under when none is
+// recorded. It preserves the pre-workspace behavior: existing ohgo sessions
+// could mutate, so an unlabelled session is assumed to be BUILD rather than
+// silently downgraded to a read-only authority.
+const DefaultWorkspace = "build"
 
 // Store persists sessions and their transcripts.
 type Store struct {
@@ -94,6 +121,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("session: apply schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	// Writes must survive a crash mid-session, otherwise a resumed
 	// conversation silently loses turns.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
@@ -138,18 +169,50 @@ type Session struct {
 	UpdatedAt time.Time
 	// Cwd is the working directory the session ran in.
 	Cwd string
-	// Model is the model id the session used.
+	// Model is the effective model id the session resolved, "provider/id".
+	// It is the session's own snapshot: a later config change must not
+	// silently alter what a resumed session calls (§13, I8).
 	Model string
+	// Workspace is the authority the session ran under ("ask", "fuzz",
+	// "build"). Empty in a database row read before migration defaults to
+	// DefaultWorkspace.
+	Workspace string
+	// Project is the stable project identity the session belongs to. Empty
+	// when the session predates project identity.
+	Project string
 	// Title is a human-readable label, derived from the first turn.
 	Title string
 }
 
-// Create opens a new session.
+// CreateOptions describes a new session.
+type CreateOptions struct {
+	// Cwd is the working directory.
+	Cwd string
+	// Model is the resolved effective model, "provider/id".
+	Model string
+	// Workspace is the authority the session runs under. Empty means
+	// DefaultWorkspace.
+	Workspace string
+	// Project is the stable project identity. Empty means "unidentified".
+	Project string
+}
+
+// Create opens a new session under the default authority.
 func (s *Store) Create(cwd, model string) (Session, error) {
+	return s.CreateWith(CreateOptions{Cwd: cwd, Model: model})
+}
+
+// CreateWith opens a new session recording its workspace and project.
+func (s *Store) CreateWith(opts CreateOptions) (Session, error) {
+	workspace := opts.Workspace
+	if workspace == "" {
+		workspace = DefaultWorkspace
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := s.db.Exec(
-		`INSERT INTO sessions (created_at, updated_at, cwd, model, title) VALUES (?, ?, ?, ?, '')`,
-		now, now, cwd, model,
+		`INSERT INTO sessions (created_at, updated_at, cwd, model, workspace, project, title)
+		 VALUES (?, ?, ?, ?, ?, ?, '')`,
+		now, now, opts.Cwd, opts.Model, workspace, opts.Project,
 	)
 	if err != nil {
 		return Session{}, fmt.Errorf("session: create: %w", err)
@@ -162,15 +225,42 @@ func (s *Store) Create(cwd, model string) (Session, error) {
 		ID:        id,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
-		Cwd:       cwd,
-		Model:     model,
+		Cwd:       opts.Cwd,
+		Model:     opts.Model,
+		Workspace: workspace,
+		Project:   opts.Project,
 	}, nil
+}
+
+// SetAuthority records the effective workspace and model for a session.
+//
+// It is used at resolution time so the stored snapshot matches what actually
+// executes, which is what makes a later restart truthful (§13, §31).
+func (s *Store) SetAuthority(id int64, workspace, model string) error {
+	if workspace == "" {
+		workspace = DefaultWorkspace
+	}
+	result, err := s.db.Exec(
+		`UPDATE sessions SET workspace = ?, model = ?, updated_at = ? WHERE id = ?`,
+		workspace, model, time.Now().UTC().Format(time.RFC3339Nano), id,
+	)
+	if err != nil {
+		return fmt.Errorf("session: set authority: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("session: confirm authority: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: session %d", ErrSessionNotFound, id)
+	}
+	return nil
 }
 
 // Get returns one session by id.
 func (s *Store) Get(id int64) (Session, error) {
 	row := s.db.QueryRow(
-		`SELECT id, created_at, updated_at, cwd, model, title FROM sessions WHERE id = ?`, id)
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title FROM sessions WHERE id = ?`, id)
 	return scanSession(row)
 }
 
@@ -180,7 +270,7 @@ func (s *Store) List(limit int) ([]Session, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(
-		`SELECT id, created_at, updated_at, cwd, model, title FROM sessions ORDER BY updated_at DESC LIMIT ?`,
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title FROM sessions ORDER BY updated_at DESC LIMIT ?`,
 		limit)
 	if err != nil {
 		return nil, fmt.Errorf("session: list: %w", err)
@@ -310,6 +400,9 @@ func (s *Store) Delete(sessionID int64) error {
 	if _, err := tx.Exec(`DELETE FROM messages WHERE session_id = ?`, sessionID); err != nil {
 		return fmt.Errorf("session: delete messages: %w", err)
 	}
+	if _, err := tx.Exec(`DELETE FROM artifacts WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("session: delete artifacts: %w", err)
+	}
 	result, err := tx.Exec(`DELETE FROM sessions WHERE id = ?`, sessionID)
 	if err != nil {
 		return fmt.Errorf("session: delete session: %w", err)
@@ -322,6 +415,60 @@ func (s *Store) Delete(sessionID int64) error {
 		return fmt.Errorf("%w: session %d", ErrSessionNotFound, sessionID)
 	}
 	return tx.Commit()
+}
+
+// SaveArtifact records a structured handoff artifact for a session.
+//
+// Artifacts are runtime state worth persisting (§35): a Finding that BUILD has
+// not yet acted on must survive a restart. The artifact is validated first, so
+// an incomplete handoff is refused at the boundary rather than stored as a
+// claim.
+func (s *Store) SaveArtifact(sessionID int64, artifact workspace.Artifact) error {
+	if err := artifact.Validate(); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(artifact)
+	if err != nil {
+		return fmt.Errorf("session: encode artifact: %w", err)
+	}
+	createdAt := artifact.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO artifacts (session_id, artifact_id, kind, origin, payload, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(session_id, artifact_id) DO UPDATE SET payload = excluded.payload`,
+		sessionID, artifact.ID, string(artifact.Kind), string(artifact.Origin), payload,
+		createdAt.UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		return fmt.Errorf("session: save artifact: %w", err)
+	}
+	return nil
+}
+
+// Artifacts returns a session's artifacts, oldest first.
+func (s *Store) Artifacts(sessionID int64) ([]workspace.Artifact, error) {
+	rows, err := s.db.Query(
+		`SELECT payload FROM artifacts WHERE session_id = ? ORDER BY id ASC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session: read artifacts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []workspace.Artifact
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("session: scan artifact: %w", err)
+		}
+		var artifact workspace.Artifact
+		if err := json.Unmarshal([]byte(payload), &artifact); err != nil {
+			return nil, fmt.Errorf("session: decode artifact: %w", err)
+		}
+		out = append(out, artifact)
+	}
+	return out, rows.Err()
 }
 
 // StoredMessage is one persisted turn, in a form that survives a round trip.
@@ -458,7 +605,7 @@ func scanSession(row rowScanner) (Session, error) {
 		createdAt string
 		updatedAt string
 	)
-	if err := row.Scan(&sess.ID, &createdAt, &updatedAt, &sess.Cwd, &sess.Model, &sess.Title); err != nil {
+	if err := row.Scan(&sess.ID, &createdAt, &updatedAt, &sess.Cwd, &sess.Model, &sess.Workspace, &sess.Project, &sess.Title); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrSessionNotFound
 		}
@@ -474,7 +621,66 @@ func scanSession(row rowScanner) (Session, error) {
 	}
 	sess.CreatedAt = created
 	sess.UpdatedAt = updated
+	if sess.Workspace == "" {
+		sess.Workspace = DefaultWorkspace
+	}
 	return sess, nil
+}
+
+// migrate adds columns that predate this build, so an existing database keeps
+// working rather than failing on the first query.
+//
+// It is additive and idempotent: a column already present is left alone, and
+// no existing row is rewritten. The workspace default preserves the previous
+// behavior (a session could mutate), and an empty project means "unidentified"
+// rather than inventing an identity.
+func migrate(db *sql.DB) error {
+	columns, err := tableColumns(db, "sessions")
+	if err != nil {
+		return err
+	}
+	additions := []struct {
+		name string
+		ddl  string
+	}{
+		{"workspace", `ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT '` + DefaultWorkspace + `'`},
+		{"project", `ALTER TABLE sessions ADD COLUMN project TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, add := range additions {
+		if columns[add.name] {
+			continue
+		}
+		if _, err := db.Exec(add.ddl); err != nil {
+			return fmt.Errorf("session: migrate add %s: %w", add.name, err)
+		}
+	}
+	return nil
+}
+
+// tableColumns reports the columns of a table by name.
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, fmt.Errorf("session: inspect %s: %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notNull   int
+			dfltValue any
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			return nil, fmt.Errorf("session: scan %s columns: %w", table, err)
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
 }
 
 // configDir locates the directory holding ohgo state.
