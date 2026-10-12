@@ -562,6 +562,36 @@ func (h *harness) ModelList() []string {
 	return ids
 }
 
+// SavePlaneKey persists an API key for the model control plane's inline
+// prompt. The key goes to the credential file (0600, never the shell) so a
+// later resolve sees it; the registry's explicit map is untouched so
+// /disconnect semantics stay intact. An empty key or a keyless provider is
+// refused rather than stored.
+func (h *harness) SavePlaneKey(provider, key string) error {
+	provider = strings.TrimSpace(provider)
+	key = strings.TrimSpace(key)
+	if provider == "" || provider == tui.AllProviders {
+		return fmt.Errorf("select a provider first")
+	}
+	if vars, ok := creds.ProviderEnvVars(provider); !ok {
+		return fmt.Errorf("unknown provider %q", provider)
+	} else if len(vars) == 0 {
+		return fmt.Errorf("%s needs no API key", provider)
+	}
+	if key == "" {
+		return fmt.Errorf("empty key: paste a key or press esc to cancel")
+	}
+	path, err := creds.DefaultPath()
+	if err != nil {
+		return err
+	}
+	store, err := creds.Open(path)
+	if err != nil {
+		return err
+	}
+	return store.Set(provider, key)
+}
+
 // SaveConnect persists a /connect outcome: the pasted key goes to the
 // credential file (0600, never the shell), the model goes to settings and
 // the loop together. An empty key keeps whatever credential resolved.

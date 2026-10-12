@@ -807,6 +807,61 @@ func (s *State) Apply(event Event) {
 			s.Plane.ApplyAssignment(e.Result, e.Roles, e.Notice)
 		}
 
+	case PlaneAuthOpened:
+		if s.Plane != nil {
+			s.Plane.OpenAuth()
+		}
+
+	case PlaneAuthClosed:
+		if s.Plane != nil {
+			s.Plane.CloseAuth()
+		}
+
+	case PlaneAuthTyped:
+		if s.Plane != nil {
+			s.Plane.InsertAuthText(e.Text)
+		}
+
+	case PlaneAuthBackspace:
+		if s.Plane != nil {
+			s.Plane.DeleteAuthBefore()
+		}
+
+	case PlaneAuthDelete:
+		if s.Plane != nil {
+			s.Plane.DeleteAuthAt()
+		}
+
+	case PlaneAuthCursorMoved:
+		if s.Plane != nil {
+			s.Plane.MoveAuthCursor(e.Delta)
+		}
+
+	case PlaneAuthClearedToStart:
+		if s.Plane != nil {
+			s.Plane.ClearAuthToStart()
+		}
+
+	case PlaneAuthClearedToEnd:
+		if s.Plane != nil {
+			s.Plane.ClearAuthToEnd()
+		}
+
+	case PlaneAuthWordBack:
+		if s.Plane != nil {
+			s.Plane.DeleteAuthWordBack()
+		}
+
+	case PlaneAuthSaved:
+		if s.Plane != nil {
+			s.Plane.ApplyAuthSaved(e.Providers, e.Notice)
+		}
+
+	case PlaneAuthFailed:
+		if s.Plane != nil {
+			s.Plane.Notice = e.Notice
+		}
+
 	case PlaneRowsChanged:
 		if s.Plane != nil {
 			s.Plane.SetVisibleRows(e.Rows)
@@ -2093,6 +2148,71 @@ type PlaneAssigned struct {
 }
 
 func (PlaneAssigned) eventKind() string { return "plane_assigned" }
+
+// PlaneAuthOpened starts inline API-key entry for the highlighted provider.
+type PlaneAuthOpened struct{}
+
+func (PlaneAuthOpened) eventKind() string { return "plane_auth_opened" }
+
+// PlaneAuthClosed abandons key entry without saving.
+type PlaneAuthClosed struct{}
+
+func (PlaneAuthClosed) eventKind() string { return "plane_auth_closed" }
+
+// PlaneAuthTyped inserts text into the key entry at the cursor.
+type PlaneAuthTyped struct{ Text string }
+
+func (PlaneAuthTyped) eventKind() string { return "plane_auth_typed" }
+
+// PlaneAuthBackspace deletes the rune before the entry cursor.
+type PlaneAuthBackspace struct{}
+
+func (PlaneAuthBackspace) eventKind() string { return "plane_auth_backspace" }
+
+// PlaneAuthDelete deletes the rune under the entry cursor.
+type PlaneAuthDelete struct{}
+
+func (PlaneAuthDelete) eventKind() string { return "plane_auth_delete" }
+
+// PlaneAuthCursorMoved shifts the entry cursor. Positive goes right.
+type PlaneAuthCursorMoved struct{ Delta int }
+
+func (PlaneAuthCursorMoved) eventKind() string { return "plane_auth_cursor_moved" }
+
+// PlaneAuthClearedToStart deletes everything before the entry cursor.
+type PlaneAuthClearedToStart struct{}
+
+func (PlaneAuthClearedToStart) eventKind() string { return "plane_auth_cleared_to_start" }
+
+// PlaneAuthClearedToEnd deletes everything from the entry cursor onward.
+type PlaneAuthClearedToEnd struct{}
+
+func (PlaneAuthClearedToEnd) eventKind() string { return "plane_auth_cleared_to_end" }
+
+// PlaneAuthWordBack deletes the word before the entry cursor.
+type PlaneAuthWordBack struct{}
+
+func (PlaneAuthWordBack) eventKind() string { return "plane_auth_word_back" }
+
+// PlaneAuthSaved records a successful key save: the prompt closes, the
+// provider pane refreshes, and the footer confirms the provider.
+type PlaneAuthSaved struct {
+	// Providers is the refreshed provider pane, or nil to leave it.
+	Providers []ProviderRow
+	// Notice is the confirmation shown in the footer.
+	Notice string
+}
+
+func (PlaneAuthSaved) eventKind() string { return "plane_auth_saved" }
+
+// PlaneAuthFailed records a refused save. The prompt stays open so the key
+// can be corrected; only the footer notice changes.
+type PlaneAuthFailed struct {
+	// Notice is the refusal shown in the footer.
+	Notice string
+}
+
+func (PlaneAuthFailed) eventKind() string { return "plane_auth_failed" }
 
 // PlaneRowsChanged resizes the list window, e.g. after a resize.
 type PlaneRowsChanged struct{ Rows int }

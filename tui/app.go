@@ -287,6 +287,10 @@ type ModelControlHooks struct {
 	// EffectiveWindow reports the runtime context window after an apply, so
 	// the status line does not keep a stale budget. Optional.
 	EffectiveWindow func() int
+	// SaveKey persists an API key for a provider through the credential
+	// authority (the file store). Nil means saving is unavailable; the
+	// prompt reports it rather than losing the typed key silently.
+	SaveKey func(provider, key string) error
 }
 
 // SetModelControl installs the model control plane behind /model. Without it,
@@ -1410,6 +1414,11 @@ func (p *Program) closePlane() {
 // modes. Search owns printable input, so no letter ever executes a command.
 func (p *Program) handlePlaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	plane := p.state.Plane
+	// The inline key prompt owns the keyboard while open: typing masks,
+	// Enter saves through the credential seam, Esc abandons the input.
+	if plane.Auth != nil {
+		return p.handlePlaneAuthKey(msg)
+	}
 	// An open variant prompt owns the keyboard: nothing behind it moves
 	// until a variant is confirmed or the prompt is abandoned.
 	if plane.Variant != nil {
@@ -1459,7 +1468,18 @@ func (p *Program) handleModelBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		p.state.Apply(PlaneModeToggled{})
 		return p, nil
-	case "left", "ctrl+b":
+	case "left":
+		// The left arrow docks focus on the PROVIDERS pane; inside the
+		// search box it moves the query cursor instead.
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterCursorMoved{Delta: -1})
+			return p, nil
+		}
+		if !inFlow {
+			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusProviders})
+		}
+		return p, nil
+	case "ctrl+b":
 		if plane.Focus == PlaneFocusSearch {
 			p.state.Apply(PlaneFilterCursorMoved{Delta: -1})
 			return p, nil
@@ -1468,7 +1488,18 @@ func (p *Program) handleModelBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(PlaneFocusMoved{Delta: -1})
 		}
 		return p, nil
-	case "right", "ctrl+f":
+	case "right":
+		// The right arrow docks focus on the MODELS list; inside the
+		// search box it moves the query cursor instead.
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterCursorMoved{Delta: 1})
+			return p, nil
+		}
+		if !inFlow {
+			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
+		}
+		return p, nil
+	case "ctrl+f":
 		if plane.Focus == PlaneFocusSearch {
 			p.state.Apply(PlaneFilterCursorMoved{Delta: 1})
 			return p, nil
@@ -1503,6 +1534,14 @@ func (p *Program) handleModelBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+e":
 		if plane.Focus == PlaneFocusSearch {
 			p.state.Apply(PlaneFilterCursorMoved{Delta: len([]rune(plane.Filter))})
+			return p, nil
+		}
+		// Inline credential entry is a providers-pane action in browse
+		// mode only. On the models list or the search box it stays a
+		// no-op (search keeps its end-of-line behaviour above), so a
+		// stray chord never opens a prompt over the wrong target.
+		if !inFlow && plane.Focus == PlaneFocusProviders {
+			p.state.Apply(PlaneAuthOpened{})
 		}
 		return p, nil
 	case "backspace", "ctrl+h":
@@ -1706,6 +1745,101 @@ func (p *Program) handleVariantKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		return p, nil
 	}
+}
+
+// handlePlaneAuthKey routes keys while the inline API-key prompt is open.
+//
+// The prompt is strictly modal: printable input edits the masked key, Enter
+// saves through the credential seam, Esc abandons the input. Nothing else
+// moves behind it, so a keystroke can never half-assign a model while a key
+// is being typed.
+func (p *Program) handlePlaneAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		p.state.Apply(PlaneAuthClosed{})
+		return p, nil
+	case "enter":
+		p.savePlaneKey()
+		return p, nil
+	case "backspace", "ctrl+h":
+		p.state.Apply(PlaneAuthBackspace{})
+		return p, nil
+	case "delete", "ctrl+d":
+		p.state.Apply(PlaneAuthDelete{})
+		return p, nil
+	case "left", "ctrl+b":
+		p.state.Apply(PlaneAuthCursorMoved{Delta: -1})
+		return p, nil
+	case "right", "ctrl+f":
+		p.state.Apply(PlaneAuthCursorMoved{Delta: 1})
+		return p, nil
+	case "home", "ctrl+a":
+		if p.state.Plane != nil && p.state.Plane.Auth != nil {
+			p.state.Apply(PlaneAuthCursorMoved{Delta: -len([]rune(p.state.Plane.Auth.Input))})
+		}
+		return p, nil
+	case "end", "ctrl+e":
+		if p.state.Plane != nil && p.state.Plane.Auth != nil {
+			p.state.Apply(PlaneAuthCursorMoved{Delta: len([]rune(p.state.Plane.Auth.Input))})
+		}
+		return p, nil
+	case "ctrl+u":
+		p.state.Apply(PlaneAuthClearedToStart{})
+		return p, nil
+	case "ctrl+k":
+		p.state.Apply(PlaneAuthClearedToEnd{})
+		return p, nil
+	case "ctrl+w":
+		p.state.Apply(PlaneAuthWordBack{})
+		return p, nil
+	default:
+		// Space arrives as KeySpace, not KeyRunes: accept both, or a pasted
+		// key with spaces loses them. Only the masked bullets ever render.
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			text := string(msg.Runes)
+			if msg.Type == tea.KeySpace {
+				text = " "
+			}
+			if text != "" {
+				p.state.Apply(PlaneAuthTyped{Text: text})
+			}
+		}
+		return p, nil
+	}
+}
+
+// savePlaneKey persists the typed key through the caller's credential seam,
+// then refreshes the provider pane so the credential glyph flips from
+// unauthenticated to active immediately. An empty key or a missing seam is
+// refused with the prompt left open, so the typed input is never lost to a
+// no-op submit.
+func (p *Program) savePlaneKey() {
+	plane := p.state.Plane
+	if plane == nil || plane.Auth == nil {
+		return
+	}
+	provider := plane.Auth.Provider
+	key := strings.TrimSpace(plane.Auth.Input)
+	if key == "" {
+		p.state.Apply(PlaneAuthFailed{Notice: "empty key: paste a key or press esc to cancel"})
+		return
+	}
+	if p.modelControl.SaveKey == nil {
+		p.state.Apply(PlaneAuthFailed{Notice: "credential saving is unavailable"})
+		return
+	}
+	if err := p.modelControl.SaveKey(provider, key); err != nil {
+		p.state.Apply(PlaneAuthFailed{Notice: sanitizeInline(err.Error())})
+		return
+	}
+	var providers []ProviderRow
+	if p.modelControl.Providers != nil {
+		providers = p.modelControl.Providers()
+	}
+	p.state.Apply(PlaneAuthSaved{
+		Providers: providers,
+		Notice:    "✓ API key saved for " + provider,
+	})
 }
 
 // applyPlane applies the pending transaction through the caller's Assign hook,

@@ -1294,6 +1294,9 @@ func runSession(cmd *cobra.Command, args []string) error {
 				return held.AssignRole(update)
 			},
 			EffectiveWindow: func() int { return held.model.ContextWindow },
+			SaveKey: func(provider, key string) error {
+				return held.SavePlaneKey(provider, key)
+			},
 		})
 		// Workspace commands route through the harness seam: the program never
 		// owns authority, it asks the owner to move it at a turn boundary.

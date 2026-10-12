@@ -20,23 +20,26 @@ type ModalRect struct {
 	Height int
 }
 
-// Modal geometry constants. The modal is a dialog, not a viewport: it has
-// a preferred size, hard maxima, and margins that keep it off the terminal
-// edges. Small terminals degrade to a smaller dialog rather than a broken
-// full-screen layout.
+// Modal geometry constants. The dialog is responsive: it grows with the
+// terminal instead of holding a fixed preferred size, so the model list and
+// the two-column metadata keep reading space on roomy terminals and still
+// draw on small ones. The formulas are the contract:
+//
+//	modalWidth = clamp(76, viewportWidth-8, 108)
+//	modalHeight = clamp(22, viewportHeight-4, 44)
 const (
-	// planeModalPreferredWidth is the dialog width on a roomy terminal.
-	planeModalPreferredWidth = 88
+	// planeModalLoWidth and planeModalHiWidth bound the horizontal clamp.
+	planeModalLoWidth = 76
 	// planeModalMaxWidth caps the dialog so ultrawide terminals keep
 	// conversation context on both sides.
-	planeModalMaxWidth = 100
-	// planeModalPreferredHeight is the dialog height on a roomy terminal.
-	planeModalPreferredHeight = 24
+	planeModalMaxWidth = 108
+	// planeModalLoHeight and planeModalMaxHeight bound the vertical clamp.
+	planeModalLoHeight = 22
 	// planeModalMaxHeight caps the dialog so short context stays visible
 	// above and below.
-	planeModalMaxHeight = 28
+	planeModalMaxHeight = 44
 	// planeModalMarginX is the total horizontal margin (both sides).
-	planeModalMarginX = 4
+	planeModalMarginX = 8
 	// planeModalMarginY is the total vertical margin (header/status plus
 	// air around the dialog).
 	planeModalMarginY = 4
@@ -49,34 +52,19 @@ const (
 
 // PlaneModalRect returns the centered modal rectangle for a terminal size.
 //
-// The rectangle is a constraint, not a fill: it never exceeds the preferred
-// size, never touches the terminal edges while margins fit, and always stays
-// inside the terminal. All model-plane layout derives from it; no pane
-// decides its own terminal coordinates.
+// It follows the responsive clamp, never touches the terminal edges while
+// margins fit, and always stays inside the terminal. All model-plane layout
+// derives from it; no pane decides its own terminal coordinates.
 func PlaneModalRect(termWidth, termHeight int) ModalRect {
 	if termWidth <= 0 || termHeight <= 0 {
 		return ModalRect{}
 	}
-	availW := termWidth - planeModalMarginX
-	availH := termHeight - planeModalMarginY
+	width := clampInt(termWidth-planeModalMarginX, planeModalLoWidth, planeModalMaxWidth)
+	height := clampInt(termHeight-planeModalMarginY, planeModalLoHeight, planeModalMaxHeight)
 	// The dialog shares the screen with the header and status chrome, so
 	// it is further bounded by the conversation area it overlays.
-	if conv := termHeight - 3; conv < availH {
-		availH = conv
-	}
-	width := planeModalPreferredWidth
-	if width > planeModalMaxWidth {
-		width = planeModalMaxWidth
-	}
-	if width > availW {
-		width = availW
-	}
-	height := planeModalPreferredHeight
-	if height > planeModalMaxHeight {
-		height = planeModalMaxHeight
-	}
-	if height > availH {
-		height = availH
+	if conv := termHeight - 3; conv < height {
+		height = conv
 	}
 	if width < planeModalMinWidth {
 		width = planeModalMinWidth
@@ -119,6 +107,73 @@ func PlaneModalRect(termWidth, termHeight int) ModalRect {
 		y = 0
 	}
 	return ModalRect{X: x, Y: y, Width: width, Height: height}
+}
+
+// ModelPickerRect is the picker-geometry entry point behind MODEL CONTROL.
+// It shares the plane's responsive clamp so the checklist's expanded
+// dimensions (76x22 min to 108x44 max) hold on every caller.
+func ModelPickerRect(termWidth, termHeight int) ModalRect {
+	return PlaneModalRect(termWidth, termHeight)
+}
+
+// planeModalTitle names the active mode for the border title. The title is
+// derived, never stored: browsing shows search or providers by focus, the
+// roles mode and its selection steps show roles, and the thinking step shows
+// effort, so the border always says where the next key operates.
+func planeModalTitle(plane *ModelPlaneState) string {
+	if plane == nil {
+		return "MODEL CONTROL · search"
+	}
+	if plane.Auth != nil {
+		return "MODEL CONTROL · providers"
+	}
+	if plane.Variant != nil {
+		return "MODEL CONTROL · search"
+	}
+	switch plane.Stage {
+	case PlaneStageEffort, PlaneStageApply:
+		return "MODEL CONTROL · effort"
+	case PlaneStageRole, PlaneStageModel:
+		return "MODEL CONTROL · roles"
+	}
+	if plane.Mode == PlaneRoles {
+		return "MODEL CONTROL · roles"
+	}
+	switch plane.Focus {
+	case PlaneFocusProviders:
+		return "MODEL CONTROL · providers"
+	case PlaneFocusEffort:
+		return "MODEL CONTROL · effort"
+	case PlaneFocusRoles:
+		return "MODEL CONTROL · roles"
+	default:
+		return "MODEL CONTROL · search"
+	}
+}
+
+// planeTitleBorder draws the top border with the centered mode title in the
+// ASK teal accent. The border itself is the title row, which returns one
+// vertical cell to the model list and the metadata grid.
+func planeTitleBorder(interior int, title string) string {
+	title = sanitizeInline(title)
+	const prefix = " "
+	const suffix = " "
+	full := prefix + title + suffix
+	fullW := CellWidth(full)
+	if interior <= 0 {
+		return "┌┐"
+	}
+	if interior <= fullW {
+		t := TruncateToWidth(title, interior)
+		if gap := interior - CellWidth(t); gap > 0 {
+			t += strings.Repeat(" ", gap)
+		}
+		return "┌" + WorkspaceBadge("37", t) + "┐"
+	}
+	left := (interior - fullW) / 2
+	right := interior - fullW - left
+	styled := WorkspaceBadge("37", full)
+	return "┌" + strings.Repeat("─", left) + styled + strings.Repeat("─", right) + "┐"
 }
 
 // planeModalColumns splits the modal interior (excluding borders) into left
@@ -221,6 +276,16 @@ func renderFullPlaneArea(sb *strings.Builder, state State, pal *Palette, layout 
 	}
 
 	lines := zipColumns(left, right, leftWidth, pal.Muted.Render("│"))
+	if plane.Auth != nil {
+		// The unknown-size fallback has no modal to replace, so the
+		// prompt lands below the panes where tests and narrow renders
+		// can still see its masked input.
+		width := displayWidth(state, layout)
+		if width < 20 {
+			width = 20
+		}
+		lines = append(lines, renderPlaneAuthPane(plane, pal, width, 4)...)
+	}
 
 	// The overlay fills its budget exactly: a footer summarises the key
 	// contract and the last outcome, short content pads below so the status
@@ -250,61 +315,69 @@ func renderFullPlaneArea(sb *strings.Builder, state State, pal *Palette, layout 
 	}
 }
 
-// renderPlaneModal builds the dialog rows: borders, a title naming the
-// focused control, the split panes fitted to the interior, and a footer
-// with the keys that actually work. Every row is exactly rect.Width cells.
+// renderPlaneModal builds the dialog rows: a border-embedded title naming
+// the active mode, the split panes fitted to the interior, a divider, and a
+// footer with the keys that actually work. Every row is exactly rect.Width
+// cells.
 func renderPlaneModal(plane *ModelPlaneState, pal *Palette, state State, layout Layout, rect ModalRect) []string {
 	interior := rect.Width - 2
 	if interior < 1 {
 		interior = 1
 	}
-	contentH := rect.Height - 4 // borders + title + footer
+	// Top border carries the centered title, so the body gains its row:
+	// borders (2) + footer (1).
+	contentH := rect.Height - 3
 	if contentH < 1 {
 		contentH = 1
+	}
+	// The divider above the footer claims one body row so the footer reads
+	// apart from the panes without costing the list its detail.
+	bodyH := contentH - 1
+	if bodyH < 1 {
+		bodyH = 1
 	}
 	leftW, rightW, stacked := planeModalColumns(interior)
 
 	var body []string
 	switch {
+	case plane.Auth != nil:
+		// The key prompt replaces the body wherever it was opened from:
+		// entry must stay visible and masked while nothing behind moves.
+		body = fitPane(renderPlaneAuthPane(plane, pal, interior, bodyH), bodyH)
 	case plane.Variant != nil:
 		// The variant prompt replaces the body wherever it was opened
 		// from: choosing must stay visible in both flows.
 		if stacked {
-			body = fitPane(renderPlaneVariantPane(plane, pal, interior, contentH), contentH)
+			body = fitPane(renderPlaneVariantPane(plane, pal, interior, bodyH), bodyH)
 		} else {
-			left := fitPane(renderPlaneProvidersPane(plane, pal, state, leftW), contentH)
-			right := fitPane(renderPlaneVariantPane(plane, pal, rightW, contentH), contentH)
+			left := fitPane(renderPlaneProvidersPane(plane, pal, state, leftW), bodyH)
+			right := fitPane(renderPlaneVariantPane(plane, pal, rightW, bodyH), bodyH)
 			body = zipColumns(left, right, leftW, pal.Muted.Render("│"))
 		}
 	case plane.Stage != PlaneStageBrowse:
 		// The assignment flow is a single bounded body: progressive
 		// disclosure of one step at a time, inside the same dialog.
-		body = fitPane(renderPlaneFlow(plane, pal, interior, contentH), contentH)
+		body = fitPane(renderPlaneFlow(plane, pal, interior, bodyH), bodyH)
 	case stacked:
-		body = renderPlaneStacked(plane, pal, state, layout, interior, contentH)
+		body = renderPlaneStacked(plane, pal, state, layout, interior, bodyH)
 	case plane.Mode == PlaneRoles:
-		left := fitPane(renderPlaneRolesPane(plane, pal, leftW), contentH)
-		right := fitPane(renderPlaneAssignmentPane(plane, pal, rightW), contentH)
+		left := fitPane(renderPlaneRolesPane(plane, pal, leftW), bodyH)
+		right := fitPane(renderPlaneAssignmentPane(plane, pal, rightW), bodyH)
 		body = zipColumns(left, right, leftW, pal.Muted.Render("│"))
 	default:
-		left := fitPane(renderPlaneProvidersPane(plane, pal, state, leftW), contentH)
-		right := fitPane(renderPlaneModelsPaneBudget(plane, pal, state, layout, rightW, planeModalDetailBudget(plane, contentH)), contentH)
+		left := fitPane(renderPlaneProvidersPane(plane, pal, state, leftW), bodyH)
+		right := fitPane(renderPlaneModelsPaneBudget(plane, pal, state, layout, rightW, planeModalDetailBudget(plane, bodyH)), bodyH)
 		body = zipColumns(left, right, leftW, pal.Muted.Render("│"))
 	}
 
-	title := " MODEL CONTROL · " + plane.FocusName() + " "
-	title = TruncateToWidth(title, interior)
-	if gap := interior - CellWidth(title); gap > 0 {
-		title += strings.Repeat(" ", gap)
-	}
 	footer := planeFooter(plane, pal, interior)
 	if gap := interior - CellWidth(footer); gap > 0 {
 		footer += strings.Repeat(" ", gap)
 	}
+	divider := pal.Muted.Render(TruncateToWidth(" "+strings.Repeat("─", maxInt(interior-2, 1))+" ", interior))
 
 	out := make([]string, 0, rect.Height)
-	out = append(out, "┌"+strings.Repeat("─", interior)+"┐")
-	out = append(out, "│"+pal.Heading.Render(title)+"│")
+	out = append(out, planeTitleBorder(interior, planeModalTitle(plane)))
 	for _, line := range body {
 		// Body rows carry their own styling; pad with plain spaces so the
 		// outer borders land in the same column on every row.
@@ -313,6 +386,7 @@ func renderPlaneModal(plane *ModelPlaneState, pal *Palette, state State, layout 
 		}
 		out = append(out, "│"+TruncateToWidth(line, interior)+"│")
 	}
+	out = append(out, "│"+TruncateToWidth(divider, interior)+"│")
 	out = append(out, "│"+TruncateToWidth(footer, interior)+"│")
 	out = append(out, "└"+strings.Repeat("─", interior)+"┘")
 	// Center horizontally within the terminal: margins on both sides keep
@@ -361,6 +435,9 @@ func planeModalDetailBudget(plane *ModelPlaneState, contentH int) int {
 // so navigation stays explicit instead of drawing clipped panes. An open
 // variant prompt takes the whole interior: choosing must stay visible.
 func renderPlaneStacked(plane *ModelPlaneState, pal *Palette, state State, layout Layout, width, contentH int) []string {
+	if plane.Auth != nil {
+		return fitPane(renderPlaneAuthPane(plane, pal, width, contentH), contentH)
+	}
 	if plane.Variant != nil {
 		return fitPane(renderPlaneVariantPane(plane, pal, width, contentH), contentH)
 	}
@@ -566,8 +643,10 @@ func fitPane(lines []string, height int) []string {
 // shortcuts are deliberately absent: with a search input on screen, only
 // non-printable navigation keys are advertised.
 func planeFooter(plane *ModelPlaneState, pal *Palette, width int) string {
-	hints := "type to filter · Tab roles · Enter choose · Esc close"
-	if plane.Variant != nil {
+	hints := "←→ pane  ·  ↑↓ select  ·  Enter choose  ·  Tab roles  ·  Esc exit"
+	if plane.Auth != nil {
+		hints = "Enter save  ·  Esc cancel"
+	} else if plane.Variant != nil {
 		hints = "↑↓ choose variant · Enter confirm · Esc cancel"
 	} else if plane.Stage == PlaneStageRole {
 		hints = "↑↓ role · Enter choose · Esc back"
@@ -579,12 +658,8 @@ func planeFooter(plane *ModelPlaneState, pal *Palette, width int) string {
 		hints = "Enter apply · Esc back"
 	} else if plane.Mode == PlaneRoles {
 		hints = "↑↓ role · Enter assign model · Tab models · Esc back"
-	} else if plane.Focus == PlaneFocusSearch {
-		hints = "type to filter · Enter models · Tab roles · Esc leave"
-	} else if plane.Focus == PlaneFocusProviders {
-		hints = "↑↓ provider · Enter models · Tab roles · Esc close"
-	} else if plane.Focus == PlaneFocusModels {
-		hints = "↑↓ model · Enter choose role · Tab roles · Esc close"
+	} else if plane.Stage == PlaneStageBrowse && plane.Mode == PlaneModels && plane.Focus == PlaneFocusProviders {
+		hints = "←→ pane  ·  Ctrl+E configure key  ·  ↑↓ select  ·  Esc exit"
 	}
 	if width < 50 {
 		// Narrow dialogs cannot fit the full contract: abbreviate rather
@@ -726,12 +801,9 @@ func renderPlaneProvidersPane(plane *ModelPlaneState, pal *Palette, state State,
 	lines = append(lines, renderPlaneSearch(plane, pal, width))
 
 	total := len(plane.Models)
-	if scope := plane.ProviderScope(); scope == "" {
-		lines = append(lines, pal.Muted.Render(TruncateToWidth(fmt.Sprintf("%d models", total), width)))
-	} else {
-		lines = append(lines, pal.Muted.Render(TruncateToWidth(
-			fmt.Sprintf("%d of %d models", len(plane.VisibleModels()), total), width)))
-	}
+	visible := len(plane.VisibleModels())
+	lines = append(lines, pal.Muted.Render(TruncateToWidth(
+		fmt.Sprintf("%d of %d models", visible, total), width)))
 	return lines
 }
 
@@ -851,13 +923,17 @@ func renderPlaneModelsPaneBudget(plane *ModelPlaneState, pal *Palette, state Sta
 	return lines
 }
 
-// renderPlaneModelRow draws a compact, scan-friendly model row: the highlight
-// marker, a quiet in-use dot, the name, then price, context, and capability
-// signals. The name keeps at least half the row: metadata yields before the
-// name does, and price outranks the signals, so narrowing the dialog drops
-// "vision"/"think" long before it eats the name or the price. The in-use dot
-// stays muted while the highlight stays accented, so the cursor — where the
-// next key operates — always wins the eye over where the session runs.
+// renderPlaneModelRow draws one model row with strict two-ended column
+// docking: the name is left-aligned (truncated with an ellipsis when long)
+// and the metadata group is rigidly right-docked in fixed-width,
+// right-aligned columns (price 11, context 6, capabilities 10). Missing
+// price, context, or capability metadata renders as a muted "-" placeholder
+// inside its fixed-width column, so the group width never varies and price,
+// context, and tags land on one straight vertical axis across rows instead
+// of floating behind each name. Narrow panes shed capabilities first, then context,
+// keeping the name and price visible longest. The in-use dot stays muted
+// while the highlight stays accented, so the cursor — where the next key
+// operates — always wins the eye over where the session runs.
 func renderPlaneModelRow(index int, plane *ModelPlaneState, model ModelOption, pal *Palette, width int) string {
 	name := sanitizeInline(model.Name)
 	if name == "" {
@@ -877,15 +953,52 @@ func renderPlaneModelRow(index int, plane *ModelPlaneState, model ModelOption, p
 		activeW = 2
 	}
 
-	tail := []string{}
-	if price := planePrice(model); price != "" {
-		tail = append(tail, price)
+	// Fixed right-docked columns: exact widths, right-aligned, so every
+	// row's metadata shares one vertical axis.
+	const rowPriceW = 11 // "$0.80/$1.60"
+	const rowCtxW = 6    // "262k"
+	const rowCapW = 10   // "vis think"
+	const rowGap = "  "
+	price := sanitizeInline(planePrice(model))
+	if price == "" {
+		// Missing pricing stays a fixed-width muted placeholder so the
+		// price column never collapses and the shared axis holds.
+		price = "-"
 	}
+	ctx := "-"
 	if model.Context > 0 {
-		tail = append(tail, formatCount(model.Context))
+		if formatted := sanitizeInline(formatCount(model.Context)); formatted != "" {
+			ctx = formatted
+		}
 	}
-	tail = append(tail, planeCapSignals(model)...)
-	nameMin := width / 2
+	capStr := sanitizeInline(planeCapShort(model))
+	if capStr == "" {
+		// No confirmed capabilities still occupies the 10-cell column
+		// so context and price dock on the same axis every row.
+		capStr = "-"
+	}
+	type col struct {
+		text string
+		w    int
+	}
+	cols := []col{
+		{price, rowPriceW},
+		{ctx, rowCtxW},
+		{capStr, rowCapW},
+	}
+	groupWidth := func(cs []col) int {
+		if len(cs) == 0 {
+			return 0
+		}
+		total := 0
+		for _, c := range cs {
+			total += c.w
+		}
+		return total + (len(cs)-1)*CellWidth(rowGap)
+	}
+	// The name keeps a fair share of the row: metadata yields before the
+	// name does, and price outranks context outranks capabilities.
+	nameMin := width / 3
 	if nameMin < 12 {
 		nameMin = 12
 	}
@@ -895,50 +1008,67 @@ func renderPlaneModelRow(index int, plane *ModelPlaneState, model ModelOption, p
 	if nameMin < 1 {
 		nameMin = 1
 	}
-	maxSuffix := width - CellWidth(marker) - activeW - nameMin - 2
-	if maxSuffix < 0 {
-		maxSuffix = 0
+	maxGroup := width - CellWidth(marker) - activeW - nameMin - CellWidth(rowGap)
+	if maxGroup < 0 {
+		maxGroup = 0
 	}
-	for len(tail) > 1 && CellWidth(strings.Join(tail, "  ")) > maxSuffix {
-		tail = tail[:len(tail)-1]
+	for len(cols) > 1 && groupWidth(cols) > maxGroup {
+		cols = cols[:len(cols)-1]
 	}
-	suffix := strings.Join(tail, "  ")
-	if CellWidth(suffix) > maxSuffix {
-		suffix = TruncateToWidth(suffix, maxSuffix)
+	group := ""
+	for i, c := range cols {
+		if i > 0 {
+			group += rowGap
+		}
+		group += padLeftCells(c.text, c.w)
+	}
+	if CellWidth(group) > maxGroup && maxGroup > 0 {
+		group = TruncateToWidth(group, maxGroup)
 	}
 
 	nameWidth := width - CellWidth(marker) - activeW
-	if suffix != "" {
-		nameWidth -= CellWidth(suffix) + 2
+	if group != "" {
+		nameWidth -= CellWidth(group) + CellWidth(rowGap)
 	}
 	if nameWidth < 6 {
 		nameWidth = 6
 	}
-	line := marker + active + TruncateToWidth(name, nameWidth)
-	if suffix != "" {
-		suffixWidth := width - CellWidth(line) - 1
-		if suffixWidth > 0 {
-			line += "  " + pal.Muted.Render(TruncateToWidth(suffix, suffixWidth))
-		}
+	// Pad the name cell so the right-docked group always starts from the
+	// same column: short names get filler, long names truncate, and the
+	// group never floats.
+	nameCell := padRight(TruncateToWidth(name, nameWidth), nameWidth)
+	line := marker + active + nameCell
+	if group != "" {
+		line += rowGap + pal.Muted.Render(group)
 	}
 	return TruncateToWidth(line, width)
 }
 
-// planeCapSignals renders the short capability tokens shown on a model row.
+// padLeftCells right-aligns text in a fixed-width column.
+func padLeftCells(text string, width int) string {
+	if gap := width - CellWidth(text); gap > 0 {
+		return strings.Repeat(" ", gap) + text
+	}
+	return text
+}
+
+// planeCapShort renders the fixed-width capability tag for a model row:
+// "vis" for image input, "think" for reasoning, joined as "vis think".
 // Only confirmed capabilities appear; absence is silent rather than claiming
-// "unsupported".
-func planeCapSignals(model ModelOption) []string {
+// "unsupported". The abbreviated form keeps the pair inside the 10-cell
+// right-docked column on every row.
+func planeCapShort(model ModelOption) string {
 	var out []string
 	for _, modality := range model.InputModalities {
 		if modality == "image" {
-			out = append(out, "vision")
+			out = append(out, "vis")
 			break
 		}
 	}
 	if model.Reasoning && model.ReasoningKnown {
 		out = append(out, "think")
 	}
-	return out
+	return strings.Join(out, " ")
 }
 
 // planePrice renders the row's price when authoritative: "free" for verified
@@ -985,26 +1115,66 @@ func planeModelDetailFor(plane *ModelPlaneState, model ModelOption, pal *Palette
 	if budget <= 0 {
 		budget = 1
 	}
-	var lines []string
-	add := func(label, value string) {
-		if value == "" {
-			return
-		}
-		lines = append(lines, TruncateToWidth("  "+pal.Muted.Render(padLabel(label))+value, width))
-	}
-
 	name := sanitizeInline(model.Name)
 	if name == "" {
 		name = sanitizeInline(model.Title)
 	}
+	if name == "" {
+		name = sanitizeInline(model.ID)
+	}
+	// Narrow panes keep the single-column list so values never crush.
+	if width < 50 {
+		var lines []string
+		add := func(label, value string) {
+			if value == "" {
+				return
+			}
+			lines = append(lines, TruncateToWidth("  "+pal.Muted.Render(padLabel(label))+value, width))
+		}
+		lines = append(lines, pal.Bold.Render(TruncateToWidth("  "+name, width)))
+		add("ID", sanitizeInline(model.ID))
+		add("Context", planeContext(model))
+		add("Output", planeOutput(model))
+		add("Input", planeModalities(model))
+		add("Thinking", planeThinking(model))
+		add("Price", planePriceDetail(model))
+		add("Role", planeRoleLine(plane, pal))
+		if radio := planeEffortRadioFor(plane, model, pal, width); len(radio) > 0 {
+			lines = append(lines, radio...)
+		}
+		if len(lines) > budget {
+			lines = lines[:budget]
+		}
+		return lines
+	}
+	var lines []string
 	lines = append(lines, pal.Bold.Render(TruncateToWidth("  "+name, width)))
-	add("ID", sanitizeInline(model.ID))
-	add("Context", planeContext(model))
-	add("Output", planeOutput(model))
-	add("Input", planeModalities(model))
-	add("Thinking", planeThinking(model))
-	add("Price", planePriceDetail(model))
-	add("Role", planeRoleLine(plane, pal))
+	lines = append(lines, TruncateToWidth("  "+pal.Muted.Render(padDetailLabel("ID"))+sanitizeInline(model.ID), width))
+	// Borderless metadata grid: two invisible parallel axes split at half
+	// the pane width. Left cells fill their half so the right column always
+	// opens at the same offset; right cells carry consistent padding from
+	// that offset. Whitespace alone separates the columns.
+	half := width / 2
+	if half < 10 {
+		half = 10
+	}
+	if half > width-11 {
+		half = width - 11
+	}
+	grid := [][2]string{
+		{"Context", planeContext(model)},
+		{"Output", planeOutput(model)},
+		{"Thinking", planeThinkingCompact(model)},
+	}
+	right := []string{planeInputCell(model), planeVisionCell(model), planePriceCompact(model)}
+	rightLabels := []string{"Input", "Vision", "Price"}
+	for i := range grid {
+		left := padRight("  "+pal.Muted.Render(padDetailLabel(grid[i][0]))+sanitizeInline(grid[i][1]), half)
+		left = TruncateToWidth(left, half)
+		rightCell := "  " + pal.Muted.Render(padDetailLabel(rightLabels[i])) + sanitizeInline(right[i])
+		lines = append(lines, TruncateToWidth(left+strings.Repeat(" ", gridGapWidth)+rightCell, width))
+	}
+	lines = append(lines, TruncateToWidth("  "+pal.Muted.Render(padDetailLabel("Role"))+planeRoleLineShort(plane, pal), width))
 
 	if radio := planeEffortRadioFor(plane, model, pal, width); len(radio) > 0 {
 		lines = append(lines, radio...)
@@ -1013,6 +1183,79 @@ func planeModelDetailFor(plane *ModelPlaneState, model ModelOption, pal *Palette
 		lines = lines[:budget]
 	}
 	return lines
+}
+
+// gridGapWidth is the whitespace separation between the metadata grid
+// columns: no line character, just empty cells, so the two key-value axes
+// read as parallel without a boundary.
+const gridGapWidth = 4
+
+// padDetailLabel pads a grid label to a stable column with its · separator.
+func padDetailLabel(label string) string {
+	const labelW = 8
+	if CellWidth(label) >= labelW {
+		return label + " · "
+	}
+	return label + strings.Repeat(" ", labelW-CellWidth(label)) + "· "
+}
+
+// planeInputCell renders the text input modality, or unknown when unlisted.
+func planeInputCell(model ModelOption) string {
+	if len(model.InputModalities) == 0 {
+		return "unknown"
+	}
+	for _, m := range model.InputModalities {
+		if m == "text" {
+			return "text"
+		}
+	}
+	return model.InputModalities[0]
+}
+
+// planeVisionCell renders image support distinctly from an unknown source.
+func planeVisionCell(model ModelOption) string {
+	if len(model.InputModalities) == 0 {
+		return "unknown"
+	}
+	for _, m := range model.InputModalities {
+		if m == "image" {
+			return "supported"
+		}
+	}
+	return "unsupported"
+}
+
+// planeThinkingCompact renders the grid thinking state without the ladder
+// list: the effort radio below already names the levels, so repeating them
+// here only crushes the symmetric columns.
+func planeThinkingCompact(model ModelOption) string {
+	if len(model.ThinkingEfforts) > 0 {
+		return "supported"
+	}
+	return planeThinking(model)
+}
+
+// planePriceCompact renders the grid price: free, unknown, or "$in / $out".
+func planePriceCompact(model ModelOption) string {
+	if !model.PriceKnown {
+		return "unknown"
+	}
+	if model.Free {
+		return "free"
+	}
+	if model.CostInput == 0 && model.CostOutput == 0 {
+		return "unknown"
+	}
+	return fmt.Sprintf("$%s / $%s", trimPrice(model.CostInput), trimPrice(model.CostOutput))
+}
+
+// planeRoleLineShort names the role target for the grid's full-width row.
+func planeRoleLineShort(plane *ModelPlaneState, pal *Palette) string {
+	role := strings.ToUpper(sanitizeInline(plane.ActiveRole))
+	if role == "" {
+		role = "unset"
+	}
+	return pal.Bold.Render(role) + pal.Muted.Render(" (Enter assigns · Tab roles)")
 }
 
 // planeContext renders the context window, or "unknown".
@@ -1072,11 +1315,11 @@ func planePriceDetail(model ModelOption) string {
 
 // planeRoleLine names the role an Enter applies to and how to change it.
 func planeRoleLine(plane *ModelPlaneState, pal *Palette) string {
-	role := strings.ToUpper(plane.ActiveRole)
+	role := strings.ToUpper(sanitizeInline(plane.ActiveRole))
 	if role == "" {
 		role = "unset"
 	}
-	return pal.Bold.Render(role) + pal.Muted.Render("  (Enter assigns; Tab moves focus)")
+	return pal.Bold.Render(role) + pal.Muted.Render("  (Enter assigns · Tab roles)")
 }
 
 // planeEffortRadio renders the thinking effort radio for a model that exposes
@@ -1210,6 +1453,35 @@ func renderPlaneVariantPane(plane *ModelPlaneState, pal *Palette, width, content
 	if chosen, ok := plane.ChosenVariant(); ok {
 		lines = append(lines, planeModelDetailFor(plane, chosen, pal, width, budget)...)
 	}
+	return lines
+}
+
+// renderPlaneAuthPane draws the inline API-key prompt: the target provider,
+// a masked input row with a text cursor, and the save/cancel contract.
+// Only bullets ever render: the raw key never reaches the screen on any row.
+func renderPlaneAuthPane(plane *ModelPlaneState, pal *Palette, width, contentH int) []string {
+	auth := plane.Auth
+	if auth == nil {
+		return nil
+	}
+	_ = contentH
+	title := "Configure API Key for " + sanitizeInline(auth.Display)
+	if title == "Configure API Key for " {
+		title = "Configure API Key for " + sanitizeInline(auth.Provider)
+	}
+	lines := []string{pal.Heading.Render(TruncateToWidth(title, width))}
+	masked := strings.Repeat("•", len([]rune(auth.Input)))
+	runes := []rune(masked)
+	cur := auth.Cursor
+	if cur < 0 {
+		cur = 0
+	}
+	if cur > len(runes) {
+		cur = len(runes)
+	}
+	query := string(runes[:cur]) + pal.Cursor.Render(" ") + string(runes[cur:])
+	lines = append(lines, TruncateToWidth(pal.Muted.Render("> ")+query, width))
+	lines = append(lines, pal.Muted.Render(TruncateToWidth("[Enter save  ·  Esc cancel]", width)))
 	return lines
 }
 

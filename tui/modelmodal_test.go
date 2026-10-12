@@ -425,3 +425,245 @@ func TestPlaneOpenPreservesStateAndEscClosesCleanly(t *testing.T) {
 		t.Errorf("closing changed the transcript: %d -> %d", entries, len(p.state.Entries))
 	}
 }
+
+// TestModelPickerRectResponsiveClamp pins the viewport formula:
+// width = clamp(76, w-8, 108), height = clamp(22, h-4, 44).
+func TestModelPickerRectResponsiveClamp(t *testing.T) {
+	if rect := ModelPickerRect(100, 30); rect.Width != 92 || rect.Height != 26 {
+		t.Fatalf("100x30 rect = %+v, want 92x26", rect)
+	}
+	if rect := PlaneModalRect(200, 60); rect.Width != 108 || rect.Height != 44 {
+		t.Fatalf("large rect = %+v, want capped 108x44", rect)
+	}
+	if got, want := ModelPickerRect(100, 30), PlaneModalRect(100, 30); got != want {
+		t.Fatalf("ModelPickerRect = %+v, want PlaneModalRect %+v", got, want)
+	}
+	for _, size := range [][2]int{{90, 26}, {76, 22}, {50, 15}, {40, 10}} {
+		rect := PlaneModalRect(size[0], size[1])
+		if rect.X < 0 || rect.Y < 0 || rect.X+rect.Width > size[0] || rect.Y+rect.Height > size[1] {
+			t.Errorf("size %v: rect %+v escapes the terminal", size, rect)
+		}
+	}
+}
+
+// TestPlaneBorderTitleNamesTheMode proves the title lives centered in the
+// top border in the ASK teal accent, naming search, providers, roles, and
+// effort by focus and stage.
+func TestPlaneBorderTitleNamesTheMode(t *testing.T) {
+	plane := NewModelPlane(planeFixture())
+	plane.FocusModels()
+	if got := planeModalTitle(plane); got != "MODEL CONTROL · search" {
+		t.Errorf("browse models title = %q, want search", got)
+	}
+	plane.FocusProviders()
+	if got := planeModalTitle(plane); got != "MODEL CONTROL · providers" {
+		t.Errorf("providers title = %q, want providers", got)
+	}
+	plane.ToggleMode()
+	if got := planeModalTitle(plane); got != "MODEL CONTROL · roles" {
+		t.Errorf("roles title = %q, want roles", got)
+	}
+	plane.ToggleMode()
+	plane.FocusModels()
+	model, _ := plane.ChosenModel()
+	plane.beginModelFirst(model)
+	plane.chooseRole()
+	if got := planeModalTitle(plane); got != "MODEL CONTROL · effort" {
+		t.Errorf("effort title = %q, want effort", got)
+	}
+	s := New()
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Apply(ModelPlaneOpened(planeFixture()))
+	out := stripANSI(Render(s))
+	found := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, " "), "┌") && strings.Contains(line, "MODEL CONTROL") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("no top border carries the MODEL CONTROL title")
+	}
+}
+
+// TestPlaneDetailGridIsSymmetric proves the bottom-right metadata renders
+// as a borderless two-column grid with aligned pairs and no divider
+// character.
+func TestPlaneDetailGridIsSymmetric(t *testing.T) {
+	plane := NewModelPlane(planeFixture())
+	plane.FocusModels()
+	detail := planeModelDetail(plane, PaletteFor(ThemeDark), 67, 12)
+	joined := strings.Join(detail, "\n")
+	for _, want := range []string{"Context", "Input", "Output", "Vision", "Thinking", "Price"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("detail grid missing %q:\n%s", want, joined)
+		}
+	}
+	for _, line := range detail {
+		if CellWidth(line) > 67 {
+			t.Errorf("detail row overflows (%d cells): %q", CellWidth(line), line)
+		}
+	}
+}
+
+// TestPlaneRowsSanitizeExternalText proves catalog and provider text passes
+// the sanitization boundary before measuring or rendering.
+func TestPlaneRowsSanitizeExternalText(t *testing.T) {
+	pal := PaletteFor(ThemeDark)
+	plane := NewModelPlane(planeFixture())
+	plane.FocusModels()
+	nasty := ModelOption{
+		ID: "openrouter/\x1b[2Jevil", Provider: "openrouter\x1b[3;1H",
+		Name: "Evil\x1b[2K Model\nsplit", Context: 131000,
+		PriceKnown: true, CostInput: 0.8, CostOutput: 1.6,
+		InputModalities: []string{"text"},
+	}
+	row := renderPlaneModelRow(0, plane, nasty, pal, 60)
+	if strings.Contains(row, "\x1b[2J") || strings.Contains(row, "\n") {
+		t.Errorf("model row leaked unsanitized text: %q", row)
+	}
+	detail := strings.Join(planeModelDetailFor(plane, nasty, pal, 67, 12), "\n")
+	if strings.Contains(detail, "\x1b[2J") {
+		t.Errorf("detail leaked unsanitized text: %q", detail)
+	}
+	provider := ProviderRow{ID: "evil\x1b[2J", Name: "Evil\nProvider", Count: 3, KeyDetail: "missing"}
+	prow := renderProviderRow(0, plane, provider, pal, 40)
+	if strings.Contains(prow, "\x1b[2J") || strings.Contains(prow, "\n") {
+		t.Errorf("provider row leaked unsanitized text: %q", prow)
+	}
+}
+
+// TestPlaneRowRightGroupDocks proves strict two-ended docking: every row
+// with full metadata fills the pane exactly, and the price, context, and
+// capability columns share one vertical axis across rows of different name
+// lengths.
+func TestPlaneRowRightGroupDocks(t *testing.T) {
+	pal := PaletteFor(ThemeDark)
+	plane := NewModelPlane(planeFixture())
+	plane.FocusModels()
+	models := []ModelOption{
+		{ID: "m/kimi-k2.5", Provider: "m", Name: "kimi-k2.5", Context: 262000, PriceKnown: true, CostInput: 0.6, CostOutput: 3, InputModalities: []string{"text", "image"}, Reasoning: true, ReasoningKnown: true},
+		{ID: "m/a-much-longer-model-name-here", Provider: "m", Name: "A Much Longer Model Name Here", Context: 131000, PriceKnown: true, CostInput: 0.8, CostOutput: 1.6, InputModalities: []string{"text"}, Reasoning: true, ReasoningKnown: true},
+		{ID: "m/tiny", Provider: "m", Name: "T", Context: 1000000, PriceKnown: true, CostInput: 0.3, CostOutput: 2.5, InputModalities: []string{"text", "image"}},
+	}
+	const width = 67
+	var plain []string
+	for i, model := range models {
+		line := stripANSI(renderPlaneModelRow(i, plane, model, pal, width))
+		plain = append(plain, line)
+		if CellWidth(line) != width {
+			t.Errorf("row %d width = %d, want exactly %d (right-docked): %q", i, CellWidth(line), width, line)
+		}
+	}
+	// The capability column (last 10 cells) right-aligns on every row.
+	for i, line := range plain {
+		runes := []rune(line)
+		if len(runes) < 10 {
+			t.Fatalf("row %d too short: %q", i, line)
+		}
+	}
+	if got := string([]rune(plain[0])[len([]rune(plain[0]))-10:]); got != " vis think" {
+		t.Errorf("kimi caps = %q, want %q", got, " vis think")
+	}
+	if got := string([]rune(plain[1])[len([]rune(plain[1]))-10:]); got != "     think" {
+		t.Errorf("long-name caps = %q, want %q", got, "     think")
+	}
+	// The context column ends at the same cell on every full row: the
+	// three cells before the caps gap hold the context's last digit.
+	for i, line := range plain {
+		runes := []rune(line)
+		ctxEnd := len(runes) - 10 - 2
+		if ctxEnd < 0 || ctxEnd >= len(runes) {
+			t.Fatalf("row %d too short for a context column: %q", i, line)
+		}
+		if c := runes[ctxEnd-1]; c < '0' || (c > '9' && c != 'M' && c != 'k') {
+			t.Errorf("row %d context does not dock at the shared axis: %q", i, line)
+		}
+	}
+}
+
+// TestPlaneMetadataWhitespaceSeparation proves the metadata grid is
+// borderless: no │ character separates the columns, and the right-column
+// keys (Input, Vision, Price) start on one shared axis past the halfway
+// mark on every grid row.
+func TestPlaneMetadataWhitespaceSeparation(t *testing.T) {
+	plane := NewModelPlane(planeFixture())
+	plane.FocusModels()
+	const width = 67
+	detail := planeModelDetail(plane, PaletteFor(ThemeDark), width, 12)
+	axis := -1
+	found := 0
+	for _, line := range detail {
+		plain := stripANSI(line)
+		if strings.Contains(plain, "│") {
+			t.Errorf("grid leaked a divider character: %q", plain)
+		}
+		var leftHit, rightHit string
+		for _, label := range []string{"Context", "Output", "Thinking"} {
+			if strings.Contains(plain, label) {
+				leftHit = label
+			}
+		}
+		for _, label := range []string{"Input", "Vision", "Price"} {
+			if strings.Contains(plain, label) {
+				rightHit = label
+			}
+		}
+		if leftHit == "" || rightHit == "" {
+			continue
+		}
+		found++
+		col := CellWidth(plain[:strings.Index(plain, rightHit)])
+		if axis < 0 {
+			axis = col
+		} else if col != axis {
+			t.Errorf("%s axis at cell %d, want the shared axis %d: %q", rightHit, col, axis, plain)
+		}
+	}
+	if found != 3 {
+		t.Errorf("grid rows = %d, want 3 (context/output/thinking)", found)
+	}
+	if axis <= width/2 {
+		t.Errorf("right axis at cell %d, want it past half (%d)", axis, width/2)
+	}
+}
+
+// TestPlaneArrowKeysSwitchPanes proves ← docks focus on PROVIDERS and →
+// docks focus on the MODELS list, while search keeps the arrows for cursor
+// movement.
+func TestPlaneArrowKeysSwitchPanes(t *testing.T) {
+	p := openPlaneProgram(t)
+	left := tea.KeyMsg{Type: tea.KeyLeft}
+	right := tea.KeyMsg{Type: tea.KeyRight}
+
+	p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
+	p.Update(left)
+	if p.state.Plane.Focus != PlaneFocusProviders {
+		t.Fatalf("left: focus = %v, want providers", p.state.Plane.Focus)
+	}
+	p.Update(right)
+	if p.state.Plane.Focus != PlaneFocusModels {
+		t.Fatalf("right: focus = %v, want models", p.state.Plane.Focus)
+	}
+	// Inside search the arrows edit text, never steal focus.
+	p.state.Apply(PlaneFocusSet{Focus: PlaneFocusSearch})
+	p.state.Apply(PlaneFilterChanged{Text: "ab"})
+	p.state.Apply(PlaneFilterCursorMoved{Delta: -1})
+	before := p.state.Plane.FilterCursor
+	p.Update(left)
+	if p.state.Plane.Focus != PlaneFocusSearch {
+		t.Error("left in search left the search box")
+	}
+	if p.state.Plane.FilterCursor != before-1 {
+		t.Errorf("left in search: cursor = %d, want %d", p.state.Plane.FilterCursor, before-1)
+	}
+
+	// The browse footer advertises the pane contract.
+	s := New()
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Apply(ModelPlaneOpened(planeFixture()))
+	s.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
+	if out := stripANSI(Render(s)); !strings.Contains(out, "←→ pane") {
+		t.Error("browse footer lost the ←→ pane hint")
+	}
+}

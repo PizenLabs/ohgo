@@ -269,14 +269,20 @@ func planeRowsFor(s State) int {
 		return 0
 	}
 	rect := PlaneModalRect(s.Width, s.Height)
-	contentH := rect.Height - 4
+	// Borders (2) + footer (1); the top border carries the title and the
+	// divider above the footer claims one body row.
+	contentH := rect.Height - 3
 	if contentH < 1 {
 		contentH = 1
+	}
+	bodyH := contentH - 1
+	if bodyH < 1 {
+		bodyH = 1
 	}
 	if p := s.Plane; p != nil && p.Stage != PlaneStageBrowse {
 		// The assignment flow is a single bounded body: a title, the summary
 		// fields, a separator, then the step. The list gets whatever remains.
-		rows := contentH - 6
+		rows := bodyH - 6
 		if rows < 1 {
 			rows = 1
 		}
@@ -291,7 +297,7 @@ func planeRowsFor(s State) int {
 		// marker when the list does not fit (one fewer list row keeps the
 		// detail — role line and effort radio — on screen).
 		need = 2 + detailLen
-		rows := contentH - need
+		rows := bodyH - need
 		if len(p.VisibleModels()) > rows && rows > 1 {
 			rows--
 		}
@@ -300,7 +306,7 @@ func planeRowsFor(s State) int {
 		}
 		return rows
 	}
-	rows := contentH - need
+	rows := bodyH - need
 	if rows < 1 {
 		rows = 1
 	}
