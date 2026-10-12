@@ -195,6 +195,27 @@ type Status struct {
 	GitStatus string
 	// Ready is runtime readiness, e.g. "ready". Empty renders "ready".
 	Ready string
+	// Version is the binary version, e.g. "0.1.0-dev" or "v1.0.0". Empty
+	// hides it: the header and the welcome frame show no version rather
+	// than an invented one.
+	Version string
+}
+
+// VersionLabel normalizes a raw version for display alongside the brand.
+//
+// It trims surrounding space, reports "" for unknown, and ensures the
+// leading "v" ("1.0.0" becomes "v1.0.0", "v1.0.0" passes through), so every
+// surface spells the release the same way without each call site repeating
+// the rule.
+func VersionLabel(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if strings.HasPrefix(v, "v") {
+		return v
+	}
+	return "v" + v
 }
 
 // Percent renders the context budget, or -1 when there is no window.

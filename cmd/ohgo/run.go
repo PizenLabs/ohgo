@@ -1260,7 +1260,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	// hook, so the routing happens here rather than inside buildLoop. A pipe or
 	// a test never reaches this branch and keeps plain line output.
 	if useInteractiveUI(cmd) {
-		programOpts := []tui.ProgramOption{}
+		programOpts := []tui.ProgramOption{tui.WithVersion(version)}
 		// Precedence: flag, then settings, then the environment default. The
 		// environment matters because the wheel reaches the program by
 		// different routes in different terminals, and a multiplexer that does
@@ -1558,7 +1558,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 
 	surface := newSupportSurface(supportLoopBuilder(opts, registry, out))
 
-	programOpts := []tui.ProgramOption{}
+	programOpts := []tui.ProgramOption{tui.WithVersion(version)}
 	mouse := opts.settings.Mouse
 	if flag := flagValue(cmd, "mouse"); flag != "" {
 		mouse = flag

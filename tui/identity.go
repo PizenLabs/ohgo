@@ -25,6 +25,9 @@ type IdentityFacts struct {
 	Git string
 	// Ready is runtime readiness, e.g. "ready".
 	Ready string
+	// Version is the release label for the frame title, e.g. "v1.0.0".
+	// Empty renders a bare "ohgo" frame with no invented release.
+	Version string
 }
 
 // FactsFromStatus derives the identity facts from rendered state.
@@ -37,6 +40,7 @@ func FactsFromStatus(s State) IdentityFacts {
 		Cwd:       s.Status.Cwd,
 		Git:       gitLine(s),
 		Ready:     readyLine(s),
+		Version:   VersionLabel(s.Status.Version),
 	}
 }
 
@@ -78,43 +82,50 @@ var capabilityModes = []struct{ name, desc string }{
 // width. It is pure: semantic sections first, then a density policy per
 // tier, then truncation so no line exceeds width and no border breaks.
 //
-// Tiers mirror LayoutForMode: wide (>=100) boxes a two-column composition,
-// medium (70-99) boxes a dense vertical stack, narrow (<70) drops the border
-// and keeps content over decoration. Non-positive widths render the medium
-// stack unboxed.
+// Tiers mirror LayoutForMode: wide (>=100) and medium (70-99) box the same
+// clean vertical stack — identity, meta, capability modes grouped together,
+// then affordances — narrow (<70) drops the border and keeps content over
+// decoration. Non-positive widths render the stack unboxed. There are no
+// inner divider rules: the outer frame is the only box drawing, so the modes
+// read as one group rather than two split panes.
 func RenderIdentitySurface(f IdentityFacts, width int) string {
 	if width <= 0 {
-		return renderIdentityStack(f, 0, false)
+		return renderIdentityStack(f, 0)
 	}
 	switch {
 	case width >= WideMinWidth:
-		return renderIdentityBoxed(f, width, true)
+		return renderIdentityBoxed(f, width)
 	case width >= MediumMinWidth:
-		return renderIdentityBoxed(f, width, false)
+		return renderIdentityBoxed(f, width)
 	default:
-		return renderIdentityStack(f, width, false)
+		return renderIdentityStack(f, width)
 	}
 }
 
 // renderIdentityStack is the borderless semantic stack shared by narrow
 // terminals and unbounded renders.
-func renderIdentityStack(f IdentityFacts, width int, _ bool) string {
-	lines := identityContentLines(f, false, 0)
+func renderIdentityStack(f IdentityFacts, width int) string {
+	lines := identityContentLines(f)
 	return fitLines(lines, width)
 }
 
 // renderIdentityBoxed frames the semantic content in a terminal-native box.
-// split selects the two-column capability region on wide terminals.
-func renderIdentityBoxed(f IdentityFacts, width int, split bool) string {
+func renderIdentityBoxed(f IdentityFacts, width int) string {
 	inner := width - 4
 	if inner < 10 {
 		// Too small for a box: content beats decoration.
-		return renderIdentityStack(f, width, false)
+		return renderIdentityStack(f, width)
 	}
-	contentW := inner - 2
-	content := identityContentLines(f, split, contentW)
+	content := identityContentLines(f)
+	// The frame names the release beside the brand ("ohgo v1.0.0"), sized
+	// from the label so the border never breaks; unknown versions keep the
+	// bare title.
+	title := "─ ohgo ─"
+	if v := sanitizeInline(f.Version); v != "" {
+		title = "─ ohgo " + v + " ─"
+	}
 	var sb strings.Builder
-	sb.WriteString(fitOne("┌─ ohgo ─"+strings.Repeat("─", max(0, inner-8))+"┐", width) + "\n")
+	sb.WriteString(fitOne("┌"+title+strings.Repeat("─", max(0, inner-CellWidth(title)))+"┐", width) + "\n")
 	sb.WriteString(fitOne("│"+strings.Repeat(" ", inner)+"│", width) + "\n")
 	for _, line := range content {
 		sb.WriteString(fitOne("│ "+truncateCells(line, inner-2)+strings.Repeat(" ", max(0, inner-2-CellWidth(truncateCells(line, inner-2))))+" │", width) + "\n")
@@ -125,10 +136,10 @@ func renderIdentityBoxed(f IdentityFacts, width int, split bool) string {
 }
 
 // identityContentLines builds the semantic sections: identity header, runtime
-// meta, capability modes, affordances. split packs modes and affordances
-// into two columns on wide terminals. contentW sizes the divider and the
-// columns; non-positive falls back to a fixed 34-cell column.
-func identityContentLines(f IdentityFacts, split bool, contentW int) []string {
+// meta, capability modes grouped together, affordances. One vertical stack at
+// every width: modes are never split across columns, and there are no inner
+// divider rules — the outer frame carries the only box drawing.
+func identityContentLines(f IdentityFacts) []string {
 	var lines []string
 	title := "OHGO"
 	if f.Greeting != "" {
@@ -157,42 +168,19 @@ func identityContentLines(f IdentityFacts, split bool, contentW int) []string {
 	if ready == "" {
 		ready = "ready"
 	}
-	col := 34
-	if contentW > 0 {
-		// Two columns share the content width around the divider.
-		col = (contentW - 1) / 2
-		if col < 10 {
-			col = 10
-		}
+	// Stacked meta: one fact per line so terminals truncate
+	// values, never whole facts. Capability modes stay grouped together,
+	// then the affordance line — no columns, no inner rules.
+	lines = append(lines, "model      "+model)
+	lines = append(lines, "git        "+git)
+	lines = append(lines, "workspace  "+cwd)
+	lines = append(lines, "status     "+ready)
+	lines = append(lines, "")
+	for _, m := range capabilityModes {
+		lines = append(lines, padCells(m.name, 9)+m.desc)
 	}
-	divider := strings.Repeat("─", col)
-	if split {
-		lines = append(lines, "model      "+model+"        git    "+git)
-		lines = append(lines, "workspace  "+cwd+"        status "+ready)
-		lines = append(lines, "")
-		lines = append(lines, divider+"┬"+divider)
-		lines = append(lines, padCells("ASK", col)+"│ "+padCells("BUILD", col))
-		lines = append(lines, padCells(capabilityModes[0].desc, col)+"│ "+padCells(capabilityModes[1].desc, col))
-		lines = append(lines, padCells("", col)+"│ "+padCells("", col))
-		lines = append(lines, padCells("BUILD", col)+"│ "+padCells("FUZZ", col))
-		lines = append(lines, padCells(capabilityModes[1].desc, col)+"│ "+padCells(capabilityModes[2].desc, col))
-		lines = append(lines, padCells("", col)+"│ "+padCells("", col))
-		lines = append(lines, padCells("Dynamic path. Static authority.", col)+"│ "+padCells("/model   choose model", col))
-		lines = append(lines, padCells("Truthful state transition.", col)+"│ "+padCells("/help    commands", col))
-	} else {
-		// Stacked meta: one fact per line so narrow terminals truncate
-		// values, never whole facts.
-		lines = append(lines, "model      "+model)
-		lines = append(lines, "git        "+git)
-		lines = append(lines, "workspace  "+cwd)
-		lines = append(lines, "status     "+ready)
-		lines = append(lines, "")
-		for _, m := range capabilityModes {
-			lines = append(lines, padCells(m.name, 9)+m.desc)
-		}
-		lines = append(lines, "")
-		lines = append(lines, "/model    choose model        /help    commands")
-	}
+	lines = append(lines, "")
+	lines = append(lines, "/model    choose model        /help    commands")
 	return lines
 }
 

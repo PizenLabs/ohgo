@@ -361,6 +361,13 @@ func WithMouseReporting() ProgramOption {
 	return func(p *Program) { p.mouseReporting = true }
 }
 
+// WithVersion records the binary release for the chrome: the header brands
+// as "ohgo v1.0.0" and the welcome frame titles itself the same way. Empty
+// hides the label rather than rendering a placeholder.
+func WithVersion(v string) ProgramOption {
+	return func(p *Program) { p.state.Status.Version = strings.TrimSpace(v) }
+}
+
 // NewProgram returns a program driving the given loop.
 func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOption) *Program {
 	p := &Program{
@@ -371,10 +378,13 @@ func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOptio
 		window:    window,
 		termOut:   os.Stdout,
 	}
+	// State first, options after: an option records into the state the
+	// program actually runs (model, version), rather than a zero value
+	// the constructor then overwrites.
+	p.state = New()
 	for _, opt := range opts {
 		opt(p)
 	}
-	p.state = New()
 	p.state.Status.Model = model
 	p.state.Status.ContextWindow = window
 	return p

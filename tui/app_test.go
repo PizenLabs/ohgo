@@ -186,6 +186,20 @@ func TestAdvanceSpinnerWraps(t *testing.T) {
 	}
 }
 
+// WithVersion records the binary release on the chrome state: the header and
+// the welcome frame read it from there, so the option is the only wiring the
+// command layer needs.
+func TestWithVersionRecordsTheRelease(t *testing.T) {
+	p := NewProgram(nil, "test", 0, WithVersion("1.0.0"))
+	if got := p.state.Status.Version; got != "1.0.0" {
+		t.Errorf("state version = %q, want the raw release %q", got, "1.0.0")
+	}
+	plain := NewProgram(nil, "test", 0)
+	if got := plain.state.Status.Version; got != "" {
+		t.Errorf("state version = %q, want unknown without the option", got)
+	}
+}
+
 // TestRenderNeverPanicsOnAnEmptyState guards the alt-screen path: a nil tool or
 // a missing window would crash the whole session, not just redraw.
 func TestRenderNeverPanicsOnAnEmptyState(t *testing.T) {

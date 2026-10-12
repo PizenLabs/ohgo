@@ -274,10 +274,13 @@ const (
 // and the connection state. It is the only place identity and phase appear:
 // the status line below carries workspace context, never a second copy.
 //
-// The line reads `ohgo · model · phase · check`, each segment in its chrome
-// role: the brand in primary, the model in sage, an active phase in bold
-// accent (idle in muted), the check status in amber, and every separator in
-// dim slate. Phase and connection stay words, never colour alone.
+// The line reads `ohgo v1.0.0 · model · phase · check`, each segment in its
+// chrome role: the brand in primary, the release label muted beside it, the
+// model in sage, an active phase in bold accent (idle in muted), the check
+// status in amber, and every separator in dim slate. Phase and connection
+// stay words, never colour alone. An unknown version hides rather than
+// rendering as a placeholder, and the model budget shrinks to pay for the
+// label so the header stays one row.
 //
 // Width sheds detail, never rows: full terminals show the whole model id and
 // probe detail; medium terminals keep the state word and shorten the model;
@@ -296,12 +299,15 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	if model == "" {
 		model = "no model"
 	}
+	// The release label arrives from build metadata: trusted but
+	// normalized and sanitized like any other chrome text.
+	version := sanitizeInline(VersionLabel(state.Status.Version))
 	phase := string(runtime)
 	tier := headerTier(state.Width)
 	conn, showConn := headerConn(state, tier)
 	width := displayWidth(state, layout)
 
-	modelShown := fitHeaderModel(model, width-headerChromeOverhead(marker, phase, conn, showConn))
+	modelShown := fitHeaderModel(model, width-headerChromeOverhead(marker, phase, conn, showConn, version))
 
 	phaseStyle := chrome.Idle
 	if headerRuntimeActive(runtime) {
@@ -309,6 +315,9 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	}
 	var sb strings.Builder
 	sb.WriteString(chrome.Brand.Render("ohgo"))
+	if version != "" {
+		sb.WriteString(chrome.Version.Render(" " + version))
+	}
 	sb.WriteString(" ")
 	sb.WriteString(phaseStyle.Render(marker))
 	sb.WriteString(" ")
@@ -368,8 +377,11 @@ func headerConn(state State, tier string) (string, bool) {
 
 // headerChromeOverhead counts every header cell except the model itself, so
 // the model receives exactly the remaining budget.
-func headerChromeOverhead(marker, phase, conn string, showConn bool) int {
+func headerChromeOverhead(marker, phase, conn string, showConn bool, version string) int {
 	n := CellWidth("ohgo " + marker + " " + " · " + phase)
+	if version != "" {
+		n += CellWidth(" " + version)
+	}
 	if showConn {
 		n += CellWidth(" · " + conn)
 	}
@@ -636,8 +648,8 @@ func styleIdentityLine(line string, pal *Palette, chrome *Chrome) string {
 		strings.HasPrefix(trimmed, "─") {
 		return pal.Separator.Render(line)
 	}
-	if strings.HasPrefix(trimmed, "OHGO") {
-		return pal.Heading.Render(line)
+	if greetingBrandIndex(line) >= 0 {
+		return styleGreetingTitle(line, pal)
 	}
 	if strings.Contains(line, "│") {
 		if styled, ok := styleBoxedModes(line, pal, chrome); ok {
@@ -646,6 +658,43 @@ func styleIdentityLine(line string, pal *Palette, chrome *Chrome) string {
 		return pal.Muted.Render(line)
 	}
 	return styleModeBadges(line, pal, chrome)
+}
+
+// greetingBrandIndex locates the identity title brand when it leads the row:
+// every cell before it is blank space or a box border, and the brand stands
+// alone (followed by space or end of line). It reports -1 when OHGO appears
+// mid-row — a workspace path, a model id — so those rows keep their own
+// styling instead of borrowing the title's.
+func greetingBrandIndex(line string) int {
+	const brand = "OHGO"
+	idx := strings.Index(line, brand)
+	if idx < 0 {
+		return -1
+	}
+	for _, r := range line[:idx] {
+		if r != ' ' && r != '│' {
+			return -1
+		}
+	}
+	if tail := line[idx+len(brand):]; tail != "" && !strings.HasPrefix(tail, " ") && !strings.HasPrefix(tail, "│") {
+		return -1
+	}
+	return idx
+}
+
+// styleGreetingTitle renders the identity title row: the OHGO brand keeps
+// the heading style while the personal address ("Good evening, Toma.") reads
+// in bold body text, so the greeting carries emphasis instead of blending
+// into the brand — or, on the boxed surface, into the muted row. Borders
+// stay muted, bare or boxed alike. Styling wraps measured cells, so the
+// stripped row still equals the input.
+func styleGreetingTitle(line string, pal *Palette) string {
+	const brand = "OHGO"
+	idx := greetingBrandIndex(line)
+	if idx < 0 {
+		return pal.Heading.Render(line)
+	}
+	return pal.Muted.Render(line[:idx]) + pal.Heading.Render(brand) + pal.Bold.Render(line[idx+len(brand):])
 }
 
 // modeLabels are the authority names that render as accent badges.

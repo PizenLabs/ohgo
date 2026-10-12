@@ -18,6 +18,7 @@ func TestChromeTokensResolveToPalette(t *testing.T) {
 		"check": colorName(chrome.Check.GetForeground()),
 		"modes": colorName(chrome.Active.GetForeground()),
 		"dim":   colorName(chrome.Separator.GetForeground()),
+		"rel":   colorName(chrome.Version.GetForeground()),
 	}
 	// Literal hex: the palette is the contract, not the constant names.
 	want := map[string]string{
@@ -26,6 +27,7 @@ func TestChromeTokensResolveToPalette(t *testing.T) {
 		"check": "#C9A86A",
 		"modes": "#7AA8C9",
 		"dim":   "#4C566A",
+		"rel":   "#6C7A89",
 	}
 	for name, w := range want {
 		if got[name] != w {
@@ -190,6 +192,94 @@ func TestModeBadgeStylingKeepsCells(t *testing.T) {
 		styled := styleIdentityLine(line, pal, chrome)
 		if got := ansi.Strip(styled); got != line {
 			t.Errorf("stripped = %q, want the input cells unchanged %q", got, line)
+		}
+	}
+}
+
+// The header brands the release beside the app name, and an unknown release
+// leaves the legacy line untouched: no placeholder, no shifted segments.
+func TestHeaderShowsVersionBesideBrand(t *testing.T) {
+	versioned := New()
+	versioned.Status.Model = "groq/m"
+	versioned.Status.Version = "1.0.0"
+	versioned.Apply(TerminalResized{Width: 120, Height: 24})
+	header := ansi.Strip(strings.Split(Render(versioned), "\n")[0])
+	if !strings.Contains(header, "ohgo v1.0.0 ○") {
+		t.Errorf("header = %q, want the release beside the brand", header)
+	}
+
+	bare := New()
+	bare.Status.Model = "groq/m"
+	bare.Apply(TerminalResized{Width: 120, Height: 24})
+	legacy := ansi.Strip(strings.Split(Render(bare), "\n")[0])
+	if !strings.Contains(legacy, "ohgo ○") {
+		t.Errorf("header = %q, want the legacy brand-to-marker order with no release", legacy)
+	}
+	if strings.Contains(legacy, " v") {
+		t.Errorf("header = %q, want no release label for an unknown version", legacy)
+	}
+}
+
+// The release label is chrome, not model text: it survives every width while
+// the header stays one row, with the model paying the cell budget.
+func TestHeaderWithVersionFitsAcrossWidths(t *testing.T) {
+	const model = "groq/deepseek-r1-distill-llama-70b"
+	for _, width := range []int{140, 100, 81, 80, 70, 60, 55, 54, 50, 40} {
+		s := New()
+		s.Status.Model = model
+		s.Status.Version = "1.0.0"
+		s.Apply(TerminalResized{Width: width, Height: 24})
+		if ComputeLayout(s).Mode == LayoutMini {
+			continue
+		}
+		header := ansi.Strip(strings.Split(Render(s), "\n")[0])
+		if got := CellWidth(header); got > width {
+			t.Errorf("width %d: header is %d cells, want one row: %q", width, got, header)
+		}
+		if !strings.Contains(header, "v1.0.0") {
+			t.Errorf("width %d: header shed the release label: %q", width, header)
+		}
+	}
+}
+
+// The greeting address reads bold while the brand keeps the heading style,
+// boxed or bare alike: emphasis must not move cells either.
+func TestGreetingAddressRendersBold(t *testing.T) {
+	fp := forcedPalette()
+	chrome := ChromeFor(ThemeDark)
+	bare := "OHGO   Good evening, Jack."
+	if styled := styleIdentityLine(bare, fp, chrome); !strings.Contains(styled, fp.Bold.Render("   Good evening, Jack.")) {
+		t.Errorf("bare title = %q, want the address in bold", ansi.Strip(styled))
+	}
+	boxed := "│ OHGO   Good evening, Jack. │"
+	styled := styleIdentityLine(boxed, fp, chrome)
+	if !strings.Contains(styled, fp.Heading.Render("OHGO")) {
+		t.Errorf("boxed title = %q, want the brand in the heading style", ansi.Strip(styled))
+	}
+	if !strings.Contains(styled, fp.Bold.Render("   Good evening, Jack. │")) {
+		t.Errorf("boxed title = %q, want the address in bold", ansi.Strip(styled))
+	}
+	for _, line := range []string{bare, boxed} {
+		if got := ansi.Strip(styleIdentityLine(line, fp, chrome)); got != line {
+			t.Errorf("stripped = %q, want the input cells unchanged %q", got, line)
+		}
+	}
+}
+
+// OHGO mid-row is content, not the title: a path or id containing the brand
+// must keep its own styling instead of borrowing the title's.
+func TestGreetingTitleIgnoresMidRowBrand(t *testing.T) {
+	fp := forcedPalette()
+	chrome := ChromeFor(ThemeDark)
+	for _, line := range []string{
+		"│ workspace  ~/OHGOlabs │",
+		"│ model      OHGOx      │",
+	} {
+		if greetingBrandIndex(line) >= 0 {
+			t.Errorf("brand index matched mid-row content: %q", line)
+		}
+		if styled := styleIdentityLine(line, fp, chrome); strings.Contains(styled, fp.Heading.Render("OHGO")) {
+			t.Errorf("row = %q, want no title styling on brand-like content", ansi.Strip(styled))
 		}
 	}
 }

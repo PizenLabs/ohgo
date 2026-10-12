@@ -86,6 +86,63 @@ func TestIdentitySurfaceNeverImpliesAPipeline(t *testing.T) {
 	}
 }
 
+// The wide composition groups every capability mode in one stack. A prior
+// 2x2-grid layout duplicated BUILD (badge and description), so the welcome
+// box read as if there were two BUILD authorities.
+func TestIdentitySurfaceWideShowsEachModeOnce(t *testing.T) {
+	out := RenderIdentitySurface(identityTestFacts(), 120)
+	for mode, desc := range map[string]string{
+		"ASK":   "Understand, inspect, reason",
+		"BUILD": "Authorized changes",
+		"FUZZ":  "$sup · fast assistance",
+	} {
+		if got := strings.Count(out, mode); got != 1 {
+			t.Errorf("wide surface shows %q %d times, want once:\n%s", mode, got, out)
+		}
+		if got := strings.Count(out, desc); got != 1 {
+			t.Errorf("wide surface shows %q %d times, want once:\n%s", desc, got, out)
+		}
+	}
+}
+
+// The welcome box carries no inner split rules: modes stay grouped in one
+// stack, and the outer frame is the only box drawing. An inner ─┬─ divider
+// or a third │ inside a row would mean the content split in two again.
+func TestIdentitySurfaceWideHasNoInnerSplit(t *testing.T) {
+	out := RenderIdentitySurface(identityTestFacts(), 120)
+	if strings.Contains(out, "┬") {
+		t.Errorf("wide surface kept an inner column divider:\n%s", out)
+	}
+	for i, line := range strings.Split(out, "\n") {
+		if strings.Count(line, "│") > 2 {
+			t.Errorf("wide surface line %d splits content in two: %q", i, line)
+		}
+	}
+}
+
+// The welcome frame titles the release beside the brand; an unknown release
+// keeps the bare frame with no invented version.
+func TestIdentitySurfaceFrameTitlesTheRelease(t *testing.T) {
+	facts := identityTestFacts()
+	facts.Version = "v1.0.0"
+	if out := RenderIdentitySurface(facts, 120); !strings.Contains(out, "─ ohgo v1.0.0 ─") {
+		t.Errorf("wide surface lacks the release title:\n%s", out)
+	}
+	if out := RenderIdentitySurface(identityTestFacts(), 120); !strings.Contains(out, "┌─ ohgo ─") {
+		t.Errorf("bare surface lost its frame title:\n%s", out)
+	}
+}
+
+// FactsFromStatus normalizes the release once, so the header and the frame
+// cannot spell it differently.
+func TestFactsFromStatusCarriesVersion(t *testing.T) {
+	s := New()
+	s.Status.Version = "1.0.0"
+	if got := FactsFromStatus(s).Version; got != "v1.0.0" {
+		t.Errorf("facts version = %q, want %q", got, "v1.0.0")
+	}
+}
+
 // The state machine owns the facts; rendering only reads them.
 
 func TestIdentityUpdatedAppliesWithoutTouchingTranscript(t *testing.T) {

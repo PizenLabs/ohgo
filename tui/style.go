@@ -111,6 +111,9 @@ const (
 type Chrome struct {
 	// Brand renders the app name.
 	Brand lipgloss.Style
+	// Version renders the release label beside the brand, e.g. "v1.0.0".
+	// It stays muted: identity first, release metadata second.
+	Version lipgloss.Style
 	// Model renders the model name / active engine.
 	Model lipgloss.Style
 	// Active renders the runtime phase and mode badges when active.
@@ -132,6 +135,7 @@ func ChromeFor(theme string) *Chrome {
 	if NormalizeTheme(theme) == ThemeLight {
 		return &Chrome{
 			Brand:     fg(chromeLightPrimary).Bold(true),
+			Version:   fg(lightMuted),
 			Model:     fg(chromeLightModel),
 			Active:    fg(chromeLightAccent).Bold(true),
 			Idle:      fg(lightMuted),
@@ -143,6 +147,7 @@ func ChromeFor(theme string) *Chrome {
 	}
 	return &Chrome{
 		Brand:     fg(ColorPrimary).Bold(true),
+		Version:   fg(ColorMuted),
 		Model:     fg(ColorModel),
 		Active:    fg(ColorAccent).Bold(true),
 		Idle:      fg(ColorMuted),
