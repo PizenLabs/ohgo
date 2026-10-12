@@ -417,13 +417,21 @@ func Providers() []Provider {
 }
 
 // ThinkingFor returns the effort configuration for a reference, or nil.
+//
+// It consults the merged roster — discovered rows override bundled ones, id
+// by id — so it reports the same ladder SnapshotAll exposes to the model
+// picker. The assignment seam and the runtime resolver both read this, which
+// is what keeps them from disagreeing about what a dynamic model exposes.
 func ThinkingFor(ref string) *Thinking {
-	doc, err := load()
-	if err != nil {
+	provider, id, ok := strings.Cut(strings.TrimSpace(ref), "/")
+	if !ok || provider == "" || id == "" {
 		return nil
 	}
-	provider, id, ok := strings.Cut(strings.TrimSpace(ref), "/")
-	if !ok {
+	if rec, found := findCachedRecord(provider, id); found {
+		return rec.Thinking
+	}
+	doc, err := load()
+	if err != nil {
 		return nil
 	}
 	if rec, ok := doc.Models[provider][id]; ok {

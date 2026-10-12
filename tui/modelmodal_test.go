@@ -268,28 +268,19 @@ func TestPlaneTypingIgnoresRolesMode(t *testing.T) {
 	}
 }
 
-// TestPlaneTabCyclesFocusDeterministically pins the streamlined focus order:
-// Provider -> Model -> Role -> Effort, with search reached by typing rather
-// than as an interrupting Tab stop.
-func TestPlaneTabCyclesFocusDeterministically(t *testing.T) {
+// TestPlaneTabTogglesBetweenModelAndRoles pins the top-level navigation: Tab
+// switches MODEL and ROLES, and the mode always matches the visible pane.
+func TestPlaneTabTogglesBetweenModelAndRoles(t *testing.T) {
 	p := openPlaneProgram(t)
 	p.state.Apply(PlaneFocusSet{Focus: PlaneFocusProviders})
 	tab := tea.KeyMsg{Type: tea.KeyTab}
-	want := []PlaneFocus{PlaneFocusModels, PlaneFocusRoles, PlaneFocusEffort}
-	for i, focus := range want {
-		p.Update(tab)
-		if p.state.Plane.Focus != focus {
-			t.Fatalf("tab %d: focus = %v, want %v", i+1, p.state.Plane.Focus, focus)
-		}
-	}
-	// A fourth Tab reaches search; a fifth wraps to providers.
 	p.Update(tab)
-	if p.state.Plane.Focus != PlaneFocusSearch {
-		t.Fatalf("tab 4: focus = %v, want search", p.state.Plane.Focus)
+	if p.state.Plane.Mode != PlaneRoles {
+		t.Fatalf("tab: mode = %q, want roles", p.state.Plane.Mode)
 	}
 	p.Update(tab)
-	if p.state.Plane.Focus != PlaneFocusProviders {
-		t.Fatalf("tab 5: focus = %v, want wrap to providers", p.state.Plane.Focus)
+	if p.state.Plane.Mode != PlaneModels {
+		t.Fatalf("tab: mode = %q, want models", p.state.Plane.Mode)
 	}
 }
 
@@ -319,11 +310,10 @@ func TestPlaneEffortControlIsVisibleAndModelSpecific(t *testing.T) {
 	}
 }
 
-// TestPlaneEffortSelectionPersistsThroughAssign proves the visible control
-// routes through the existing authority seam.
+// TestPlaneEffortSelectionPersistsThroughAssign proves the effort step routes
+// the visible choice through the existing authority seam.
 func TestPlaneEffortSelectionPersistsThroughAssign(t *testing.T) {
 	p := openPlaneProgram(t)
-	p.state.Apply(PlaneFocusSet{Focus: PlaneFocusEffort})
 	var assigned RoleAssignment
 	p.SetModelControl(ModelControlHooks{
 		Providers:  func() []ProviderRow { return planeFixture().Providers },
@@ -334,21 +324,24 @@ func TestPlaneEffortSelectionPersistsThroughAssign(t *testing.T) {
 			return update, planeFixture().Roles, nil
 		},
 	})
-	// Step the radio to a non-default rung, then assign.
+	p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // stage the model (sonnet, laddered)
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // choose the default role (build)
+	// Step the effort radio off its default rung, then Apply.
 	p.Update(tea.KeyMsg{Type: tea.KeyDown})
 	p.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if assigned.Effort == "" {
-		t.Error("assign carried no effort: the radio selection did not reach the seam")
+	if assigned.Effort == "" || assigned.Effort == EffortOff {
+		t.Errorf("assign effort = %q, want a chosen rung the radio reached", assigned.Effort)
 	}
 	if assigned.Model == "" {
 		t.Error("assign carried no model")
 	}
 }
 
-// TestPlaneRoleEnterStagesInsteadOfAssigning proves the streamlined Roles
-// flow end to end: Enter on a role never assigns a hidden model — it stages
-// the role and returns to model search — and the next model Enter assigns to
-// that staged role with a single confirmation and no stacked popups.
+// TestPlaneRoleEnterStagesInsteadOfAssigning proves the roles-first flow end
+// to end: Enter on a role never assigns a hidden model — it stages the role
+// and moves to model selection — and the model pick continues to the apply
+// step with a single confirmation and no stacked popups.
 func TestPlaneRoleEnterStagesInsteadOfAssigning(t *testing.T) {
 	var assigned RoleAssignment
 	calls := 0
@@ -363,7 +356,7 @@ func TestPlaneRoleEnterStagesInsteadOfAssigning(t *testing.T) {
 			return update, planeFixture().Roles, nil
 		},
 	})
-	// Enter on the ASK role stages it for replacement.
+	// Enter on the ASK role stages it for a model choice.
 	p.state.Apply(PlaneFocusSet{Focus: PlaneFocusRoles})
 	p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if calls != 0 {
@@ -372,14 +365,21 @@ func TestPlaneRoleEnterStagesInsteadOfAssigning(t *testing.T) {
 	if p.state.Plane.ActiveRole != "ask" {
 		t.Fatalf("active role = %q, want the staged ask role", p.state.Plane.ActiveRole)
 	}
-	if p.state.Plane.Focus != PlaneFocusModels {
-		t.Fatalf("focus = %v, want model search for the replacement", p.state.Plane.Focus)
+	if p.state.Plane.Stage != PlaneStageModel {
+		t.Fatalf("stage = %v, want model selection for the staged role", p.state.Plane.Stage)
 	}
-	// Pick the plain model and assign it to the staged role.
+	// Pick the plain model (no ladder) and continue to the apply step.
 	p.state.Plane.Move(1)
 	p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if p.state.Plane.Stage != PlaneStageApply {
+		t.Fatalf("stage = %v, want apply for a model with no ladder", p.state.Plane.Stage)
+	}
+	if calls != 0 {
+		t.Fatal("the model pick persisted before Apply")
+	}
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // apply
 	if calls != 1 {
-		t.Fatalf("calls = %d, want one assignment after the model pick", calls)
+		t.Fatalf("calls = %d, want one assignment after Apply", calls)
 	}
 	if assigned.Role != "ask" {
 		t.Errorf("assigned role = %q, want the staged ask role", assigned.Role)

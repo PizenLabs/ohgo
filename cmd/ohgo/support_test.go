@@ -80,10 +80,10 @@ func TestSupportSurfaceKeepsItsOwnConversation(t *testing.T) {
 	opts := options{root: t.TempDir(), model: catalog.MustResolve("anthropic/claude-sonnet-4-5"), settings: config.Default(), autoApprove: true}
 
 	surface := newSupportSurface(supportLoopBuilder(opts, registry, io.Discard))
-	if _, err := surface.ask(t.Context(), "first"); err != nil {
+	if _, err := surface.ask(t.Context(), "first", nil); err != nil {
 		t.Fatalf("first ask: %v", err)
 	}
-	if _, err := surface.ask(t.Context(), "second"); err != nil {
+	if _, err := surface.ask(t.Context(), "second", nil); err != nil {
 		t.Fatalf("second ask: %v", err)
 	}
 	// The second request carries the first exchange, so the surface is a real

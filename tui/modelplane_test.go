@@ -213,10 +213,13 @@ func TestPlaneEffortOptionsAreModelSpecific(t *testing.T) {
 	if len(second) != 3 || second[1] != "standard" || second[2] != "extended" {
 		t.Fatalf("second options = %v, want off + the second model's ladder", second)
 	}
-	// The pending effort is re-validated against the new model rather than
-	// carrying a level it does not accept.
-	if plane.Effort != EffortOff && !contains(second, plane.Effort) {
-		t.Errorf("effort = %q survives a model change, want a valid option", plane.Effort)
+	// Browsing stages no effort: the transaction is empty until a model is
+	// chosen and the flow reaches the effort step.
+	if plane.Stage != PlaneStageBrowse {
+		t.Errorf("stage = %v, want browse", plane.Stage)
+	}
+	if plane.Effort != "" {
+		t.Errorf("effort = %q, want no pending effort while browsing", plane.Effort)
 	}
 }
 
@@ -328,10 +331,19 @@ func TestModelCommandOpensControlPlaneWhenHooksAreInstalled(t *testing.T) {
 		t.Fatalf("control plane did not render as a split:\n%s", out)
 	}
 
-	// Enter on the model stop applies the highlighted model to the active role.
-	// The plane opens on providers, so step focus there first.
+	// Model mode is a linear transaction: Enter chooses the model, the next
+	// chooses the role, the next applies the effort. Nothing persists until
+	// the explicit Apply.
 	p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
 	p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if assigned.Role != "" {
+		t.Fatalf("the model step persisted %+v, want a pending-only stage", assigned)
+	}
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // choose the default role
+	if assigned.Role != "" {
+		t.Fatalf("the role step persisted %+v, want a pending-only stage", assigned)
+	}
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // apply
 	if assigned.Role != "build" {
 		t.Errorf("assigned role = %q, want build", assigned.Role)
 	}
@@ -340,6 +352,9 @@ func TestModelCommandOpensControlPlaneWhenHooksAreInstalled(t *testing.T) {
 	}
 	if p.state.Plane == nil || !strings.Contains(p.state.Plane.Notice, "assigned") {
 		t.Errorf("notice = %q, want a confirmation", p.state.Plane.Notice)
+	}
+	if p.state.Plane.Stage != PlaneStageBrowse {
+		t.Errorf("stage = %v, want browse after Apply", p.state.Plane.Stage)
 	}
 }
 
@@ -385,7 +400,9 @@ func TestPlaneRefusesToChangeModelsMidTurn(t *testing.T) {
 		t.Fatal("the plane did not open")
 	}
 	p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
-	p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // stage the model
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // choose the role
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // apply: refused at the busy boundary
 	if called {
 		t.Error("an assignment landed while a turn was running")
 	}
@@ -445,11 +462,10 @@ func TestPlaneRolesPaneDisplaysAssignedModels(t *testing.T) {
 	}
 }
 
-// TestPlaneStageRoleReturnsToModelSearch proves the Roles-mode Enter
-// contract: choosing a role stages it as the assignment target and returns
-// to model browsing for its replacement, instead of assigning a hidden
-// model highlight. The model pane's search then acts as the picker.
-func TestPlaneStageRoleReturnsToModelSearch(t *testing.T) {
+// TestPlaneStageRoleBeginsTheRolesFlow proves the Roles-mode Enter contract:
+// choosing a role stages it as the assignment target and moves to model
+// selection within roles mode, without assigning a hidden model highlight.
+func TestPlaneStageRoleBeginsTheRolesFlow(t *testing.T) {
 	plane := NewModelPlane(planeFixture())
 	plane.FocusRoles()
 	// Highlight ASK (index 0 is ask in the fixture).
@@ -460,8 +476,11 @@ func TestPlaneStageRoleReturnsToModelSearch(t *testing.T) {
 	if plane.ActiveRole != "ask" {
 		t.Errorf("active role = %q, want ask", plane.ActiveRole)
 	}
-	if plane.Mode != PlaneModels {
-		t.Errorf("mode = %q, want model browsing for the replacement", plane.Mode)
+	if plane.Mode != PlaneRoles {
+		t.Errorf("mode = %q, want roles kept for the roles-first flow", plane.Mode)
+	}
+	if plane.Stage != PlaneStageModel {
+		t.Errorf("stage = %v, want model selection", plane.Stage)
 	}
 	if plane.Focus != PlaneFocusModels {
 		t.Errorf("focus = %v, want models so typing searches", plane.Focus)
@@ -469,14 +488,4 @@ func TestPlaneStageRoleReturnsToModelSearch(t *testing.T) {
 	if !strings.Contains(plane.Notice, "ASK") {
 		t.Errorf("notice = %q, want it to name the staged role", plane.Notice)
 	}
-}
-
-// contains reports membership for small option slices.
-func contains(list []string, want string) bool {
-	for _, item := range list {
-		if item == want {
-			return true
-		}
-	}
-	return false
 }

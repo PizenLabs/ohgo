@@ -118,7 +118,7 @@ func ComputeLayout(s State) Layout {
 	// Drop it here rather than at render time: reserved and rendered rows have
 	// to agree or the frame stops filling the viewport. The dialog prints its
 	// own key line, so nothing is left untaught.
-	if mode == LayoutWide && s.Height >= 20 && s.Picker == nil && s.Plane == nil && s.Pending == nil {
+	if mode == LayoutWide && s.Height >= 20 && s.Picker == nil && s.Plane == nil && s.SupportPanel == nil && s.Pending == nil {
 		hints = 1
 	}
 	composer, sugg := composerHeight(s, content, mode, hints)
@@ -126,7 +126,7 @@ func ComputeLayout(s State) Layout {
 	// transcript chrome, not the overlay): reserving rows for regions that
 	// never render would short the viewport and unpin the status line.
 	// The overlay area fills the released rows instead.
-	if s.Picker != nil || s.Plane != nil {
+	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil {
 		composer = 0
 		sugg = 0
 	}
@@ -272,6 +272,15 @@ func planeRowsFor(s State) int {
 	contentH := rect.Height - 4
 	if contentH < 1 {
 		contentH = 1
+	}
+	if p := s.Plane; p != nil && p.Stage != PlaneStageBrowse {
+		// The assignment flow is a single bounded body: a title, the summary
+		// fields, a separator, then the step. The list gets whatever remains.
+		rows := contentH - 6
+		if rows < 1 {
+			rows = 1
+		}
+		return rows
 	}
 	// Left chrome: heading, separator, search heading, search box, count,
 	// plus room for the overflow marker.

@@ -10,20 +10,19 @@ import (
 // through the caller-supplied hooks — the program never owns durable
 // configuration, and the plane never invents a model fact.
 //
-// Two modes share one topology:
+// Assignment is a linear, capability-aware transaction. Browsing mutates
+// nothing; a pending assignment lives only in the plane's transient state until
+// the user applies it. The two top-level modes share one flow:
 //
-//	model mode (default)      roles mode (Tab)
-//	┌────────────┬──────────┐ ┌────────────┬──────────┐
-//	│ PROVIDERS  │ MODELS   │ │ ROLES      │ASSIGNMENT│
-//	└────────────┴──────────┘ └────────────┴──────────┘
+//	model mode (default)          roles mode (Tab)
+//	MODEL -> ROLE -> EFFORT ->    ROLES -> MODEL -> EFFORT ->
+//	APPLY -> MODEL                APPLY -> ROLES
 //
-// Focus moves Provider -> Model -> Role -> Effort with Tab (or ←/→) and
-// Enter advances Provider into Models; Enter on a model assigns it to the
-// staged role (opening the variant prompt only when the model needs a
-// variant choice), while Enter on a role stages it and returns to model
-// search so its replacement can be found. The Roles pane only displays each
-// role's current model, and effort is a visible radio on its own stop —
-// never a second stacked popup.
+// The current workspace supplies the default focused role in the model-first
+// flow; it is a navigation convenience, never an implicit assignment. An
+// effort ladder comes only from the selected model's authoritative metadata,
+// so the picker can never stage a value the model does not expose. Effort is
+// part of the flow, not a separate Tab stop.
 
 // PlaneMode selects what the control plane is editing.
 type PlaneMode string
@@ -36,11 +35,37 @@ const (
 	PlaneRoles PlaneMode = "roles"
 )
 
-// PlaneFocus names which control owns the keyboard in the control plane.
+// PlaneStage names the step of the assignment transaction. Browsing is not a
+// transaction; the other stages form the linear, capability-aware flow:
+//
+//	model mode: MODEL -> ROLE -> EFFORT -> APPLY
+//	roles mode: ROLES -> MODEL -> EFFORT -> APPLY
+//
+// A stage holds only transient UI state. Nothing is persisted until APPLY, so
+// Esc at any stage discards the pending assignment without touching
+// configuration.
+type PlaneStage int
+
+// Assignment stages.
+const (
+	// PlaneStageBrowse is the resting state: MODEL or ROLES depending on Mode.
+	PlaneStageBrowse PlaneStage = iota
+	// PlaneStageRole chooses the role a selected model is assigned to.
+	PlaneStageRole
+	// PlaneStageModel chooses the model for a selected role.
+	PlaneStageModel
+	// PlaneStageEffort chooses the thinking effort; Enter applies.
+	PlaneStageEffort
+	// PlaneStageApply applies a model that exposes no effort ladder, where
+	// there is no effort step to confirm.
+	PlaneStageApply
+)
+
+// PlaneFocus names which control owns the keyboard while browsing.
 //
 // Focus is explicit state: every key is interpreted against it, and Tab
-// cycles through it deterministically. Search owns all printable input;
-// no other focus does.
+// switches between the MODEL and ROLES modes. Search owns all printable
+// input; no other focus does.
 type PlaneFocus int
 
 // Plane focus targets.
@@ -51,22 +76,21 @@ const (
 	PlaneFocusSearch
 	// PlaneFocusModels puts the keyboard on the model pane.
 	PlaneFocusModels
-	// PlaneFocusEffort puts the keyboard on the thinking-effort control.
+	// PlaneFocusEffort is retained for callers that explicitly address the
+	// effort control; the linear flow reaches it through PlaneStageEffort.
 	PlaneFocusEffort
-	// PlaneFocusRoles puts the keyboard on role assignment.
+	// PlaneFocusRoles is retained for callers that explicitly address role
+	// assignment; the flow reaches it through the role stage or ROLES mode.
 	PlaneFocusRoles
 )
 
-// planeFocusOrder is the deterministic Tab cycle for the streamlined flow:
-// providers, models, roles, effort, and back to providers. Search is not a
-// Tab stop: typing anywhere in model mode focuses it, Esc leaves it, so the
-// main path stays Provider -> Model -> Role -> Effort without an extra stop.
-// Search remains last for Shift+Tab reachability from providers.
+// planeFocusOrder is the deterministic Tab cycle within MODEL browsing:
+// providers and models, with search reached by typing. Tab between the two
+// top-level modes is handled explicitly, not by this order; the order keeps
+// Shift+Tab reachability for programmatic callers.
 var planeFocusOrder = []PlaneFocus{
 	PlaneFocusProviders,
 	PlaneFocusModels,
-	PlaneFocusRoles,
-	PlaneFocusEffort,
 	PlaneFocusSearch,
 }
 
@@ -117,13 +141,18 @@ type RoleAssignment struct {
 
 // ModelPlaneState is the persistent split-pane model control surface.
 //
-// It owns only presentation state: cursors, the filter, the pending effort,
-// and the roster the caller handed it. It never persists anything itself.
+// It owns only presentation state: cursors, the filter, the pending
+// transaction, and the roster the caller handed it. It never persists
+// anything itself.
 type ModelPlaneState struct {
 	// Mode selects model browsing or role assignment.
 	Mode PlaneMode
 	// Focus selects the pane the keyboard drives in model mode.
 	Focus PlaneFocus
+	// Stage names the step of the assignment transaction. Browse is the
+	// resting state; the other stages are the linear flow. A stage owns only
+	// transient state: nothing is persisted until Apply.
+	Stage PlaneStage
 
 	// Providers is the provider pane's roster (including the All row).
 	Providers []ProviderRow
@@ -150,19 +179,28 @@ type ModelPlaneState struct {
 	// FilterCursor is the rune offset in Filter where typing lands.
 	FilterCursor int
 
-	// Effort is the thinking effort chosen for the highlighted model. It is
-	// applied with the model when a role is assigned. Empty means the model
-	// exposes no ladder.
+	// Effort is the thinking effort chosen for the pending assignment. It is
+	// applied with the model when the assignment is applied. Empty means the
+	// model exposes no ladder.
 	Effort string
+	// EffortCursor selects the highlighted option in EffortOptions during the
+	// effort stage.
+	EffortCursor int
+
+	// PendingModel is the model staged in the current assignment transaction
+	// (model mode: the model picked before the role; roles mode: the model
+	// picked for the staged role). It is UI state only: the transaction is not
+	// persisted until Apply.
+	PendingModel ModelOption
 
 	// Variant is the open choose-a-variant prompt, or nil. While set the
 	// keyboard picks a variant row and nothing else assigns.
 	Variant *PlaneVariantState
 
-	// ActiveRole is the role an Enter applies to in model mode.
+	// ActiveRole is the role the pending assignment targets.
 	ActiveRole string
 
-	// VisibleRows bounds the rendered list window (both panes share it).
+	// VisibleRows bounds the rendered list window.
 	VisibleRows int
 
 	// Loading reports the first catalog snapshot has not arrived yet.
@@ -193,7 +231,6 @@ func NewModelPlane(opened ModelPlaneOpened) *ModelPlaneState {
 		Stale:      opened.Stale,
 	}
 	plane.selectActiveProvider()
-	plane.syncEffort()
 	return plane
 }
 
@@ -270,7 +307,7 @@ func (p *ModelPlaneState) ChosenModel() (ModelOption, bool) {
 	return visible[p.ModelCursor], true
 }
 
-// ChosenRole returns the highlighted role in roles mode.
+// ChosenRole returns the highlighted role.
 func (p *ModelPlaneState) ChosenRole() (RoleAssignment, bool) {
 	if p.RoleCursor < 0 || p.RoleCursor >= len(p.Roles) {
 		return RoleAssignment{}, false
@@ -278,12 +315,36 @@ func (p *ModelPlaneState) ChosenRole() (RoleAssignment, bool) {
 	return p.Roles[p.RoleCursor], true
 }
 
-// Move shifts the highlight in the focused pane, wrapping and keeping it in
-// view. In roles mode the role cursor moves regardless of focus. Search
-// focus navigates the model list without leaving the input; effort focus
-// is driven by CycleEffort, so Move leaves it untouched.
+// activeModel returns the model the current transaction is about: the staged
+// model during Role/Effort/Apply, else the highlighted model. Capability
+// questions always resolve against this, so the flow never consults a stale
+// highlight.
+func (p *ModelPlaneState) activeModel() (ModelOption, bool) {
+	if p.PendingModel.ID != "" {
+		return p.PendingModel, true
+	}
+	return p.ChosenModel()
+}
+
+// Move shifts the highlight. Its target follows the stage: the role list while
+// choosing a role, the effort ladder while choosing an effort, else the focused
+// browse pane (or the model list in the roles flow).
 func (p *ModelPlaneState) Move(delta int) {
-	if p.Mode == PlaneRoles || p.Focus == PlaneFocusRoles {
+	switch p.Stage {
+	case PlaneStageRole:
+		p.RoleCursor = wrap(p.RoleCursor+delta, len(p.Roles))
+		return
+	case PlaneStageEffort:
+		p.MoveEffort(delta)
+		return
+	case PlaneStageModel:
+		p.ModelCursor = wrap(p.ModelCursor+delta, len(p.VisibleModels()))
+		p.ensureModelVisible()
+		return
+	case PlaneStageApply:
+		return
+	}
+	if p.Mode == PlaneRoles {
 		p.RoleCursor = wrap(p.RoleCursor+delta, len(p.Roles))
 		return
 	}
@@ -294,19 +355,11 @@ func (p *ModelPlaneState) Move(delta int) {
 		// end of a narrowed set.
 		p.ModelCursor = 0
 		p.ModelOffset = 0
-		p.syncEffort()
 		p.ensureProviderVisible()
 		p.ensureModelVisible()
 		return
 	}
-	if p.Focus == PlaneFocusEffort {
-		// The effort stop is driven by CycleEffort, never by list motion:
-		// a scroll wheel over the dialog must not move the model
-		// highlight out from under the radio.
-		return
-	}
 	p.ModelCursor = wrap(p.ModelCursor+delta, len(p.VisibleModels()))
-	p.syncEffort()
 	p.ensureModelVisible()
 }
 
@@ -320,13 +373,13 @@ func (p *ModelPlaneState) focusIndex() int {
 	return 0
 }
 
-// setFocus moves the keyboard to a focus stop and keeps the mode in step:
-// the roles panes render exactly when the roles stop owns the keyboard.
+// setFocus moves the keyboard to a browse focus stop. The mode follows so the
+// roles panes render exactly when roles browsing owns the keyboard.
 func (p *ModelPlaneState) setFocus(focus PlaneFocus) {
 	p.Focus = focus
 	if focus == PlaneFocusRoles {
 		p.Mode = PlaneRoles
-	} else if p.Mode == PlaneRoles {
+	} else if p.Mode == PlaneRoles && p.Stage == PlaneStageBrowse {
 		p.Mode = PlaneModels
 	}
 }
@@ -342,10 +395,20 @@ func (p *ModelPlaneState) PrevFocus() {
 }
 
 // FocusName reports the focused control for the footer and tests. An open
-// variant prompt owns the keyboard regardless of the underlying focus stop.
+// variant prompt owns the keyboard regardless of the underlying stage.
 func (p *ModelPlaneState) FocusName() string {
 	if p.Variant != nil {
 		return "variant"
+	}
+	switch p.Stage {
+	case PlaneStageRole:
+		return "role"
+	case PlaneStageModel:
+		return "model"
+	case PlaneStageEffort:
+		return "effort"
+	case PlaneStageApply:
+		return "apply"
 	}
 	switch p.Focus {
 	case PlaneFocusProviders:
@@ -364,86 +427,104 @@ func (p *ModelPlaneState) FocusName() string {
 }
 
 // Page shifts the highlight by approximately one viewport, parking at the ends.
-// On the effort stop it moves to the first or last option by direction.
 func (p *ModelPlaneState) Page(delta int) {
-	if p.Mode == PlaneRoles || p.Focus == PlaneFocusRoles {
-		step := p.VisibleRows
-		if step <= 1 {
-			step = 10
-		}
-		p.RoleCursor += delta * step
-		p.RoleCursor = clampIndex(p.RoleCursor, len(p.Roles))
+	switch p.Stage {
+	case PlaneStageRole:
+		p.RoleCursor = clampIndex(p.RoleCursor+delta*p.planeStep(), len(p.Roles))
+		return
+	case PlaneStageEffort:
+		p.effortEnd(delta > 0)
+		return
+	case PlaneStageModel:
+		p.pageModel(delta)
+		return
+	case PlaneStageApply:
 		return
 	}
-	if p.Focus == PlaneFocusEffort {
-		if delta < 0 {
-			p.effortEnd(false)
-		} else {
-			p.effortEnd(true)
-		}
+	if p.Mode == PlaneRoles {
+		p.RoleCursor = clampIndex(p.RoleCursor+delta*p.planeStep(), len(p.Roles))
 		return
-	}
-	step := p.VisibleRows
-	if step <= 1 {
-		step = 10
 	}
 	if p.Focus == PlaneFocusProviders {
-		p.ProviderCursor += delta * step
-		p.ProviderCursor = clampIndex(p.ProviderCursor, len(p.Providers))
+		p.ProviderCursor = clampIndex(p.ProviderCursor+delta*p.planeStep(), len(p.Providers))
 		p.ModelCursor, p.ModelOffset = 0, 0
-		p.syncEffort()
 		p.ensureProviderVisible()
 		return
 	}
-	p.ModelCursor += delta * step
-	p.ModelCursor = clampIndex(p.ModelCursor, len(p.VisibleModels()))
-	p.syncEffort()
+	p.pageModel(delta)
+}
+
+// pageModel shifts the model highlight by about a viewport.
+func (p *ModelPlaneState) pageModel(delta int) {
+	p.ModelCursor = clampIndex(p.ModelCursor+delta*p.planeStep(), len(p.VisibleModels()))
 	p.ensureModelVisible()
 }
 
-// Top parks the highlight on the first row of the focused pane, or the
-// first effort option on the effort stop.
+// planeStep is the page size, defaulting when no window has been measured.
+func (p *ModelPlaneState) planeStep() int {
+	if p.VisibleRows > 1 {
+		return p.VisibleRows
+	}
+	return 10
+}
+
+// Top parks the highlight on the first row of the current control.
 func (p *ModelPlaneState) Top() {
-	if p.Mode == PlaneRoles || p.Focus == PlaneFocusRoles {
+	switch p.Stage {
+	case PlaneStageRole:
 		p.RoleCursor = 0
 		return
-	}
-	if p.Focus == PlaneFocusEffort {
+	case PlaneStageEffort:
 		p.effortEnd(false)
+		return
+	case PlaneStageModel:
+		p.ModelCursor = 0
+		p.ensureModelVisible()
+		return
+	case PlaneStageApply:
+		return
+	}
+	if p.Mode == PlaneRoles {
+		p.RoleCursor = 0
 		return
 	}
 	if p.Focus == PlaneFocusProviders {
 		p.ProviderCursor = 0
 		p.ModelCursor, p.ModelOffset = 0, 0
-		p.syncEffort()
 		p.ensureProviderVisible()
 		return
 	}
 	p.ModelCursor = 0
-	p.syncEffort()
 	p.ensureModelVisible()
 }
 
-// Bottom parks the highlight on the last row of the focused pane, or the
-// last effort option on the effort stop.
+// Bottom parks the highlight on the last row of the current control.
 func (p *ModelPlaneState) Bottom() {
-	if p.Mode == PlaneRoles || p.Focus == PlaneFocusRoles {
+	switch p.Stage {
+	case PlaneStageRole:
 		p.RoleCursor = clampIndex(len(p.Roles)-1, len(p.Roles))
 		return
-	}
-	if p.Focus == PlaneFocusEffort {
+	case PlaneStageEffort:
 		p.effortEnd(true)
+		return
+	case PlaneStageModel:
+		p.ModelCursor = clampIndex(len(p.VisibleModels())-1, len(p.VisibleModels()))
+		p.ensureModelVisible()
+		return
+	case PlaneStageApply:
+		return
+	}
+	if p.Mode == PlaneRoles {
+		p.RoleCursor = clampIndex(len(p.Roles)-1, len(p.Roles))
 		return
 	}
 	if p.Focus == PlaneFocusProviders {
 		p.ProviderCursor = clampIndex(len(p.Providers)-1, len(p.Providers))
 		p.ModelCursor, p.ModelOffset = 0, 0
-		p.syncEffort()
 		p.ensureProviderVisible()
 		return
 	}
 	p.ModelCursor = clampIndex(len(p.VisibleModels())-1, len(p.VisibleModels()))
-	p.syncEffort()
 	p.ensureModelVisible()
 }
 
@@ -462,14 +543,18 @@ func (p *ModelPlaneState) FocusEffort() { p.setFocus(PlaneFocusEffort) }
 // FocusRoles moves the keyboard onto role assignment.
 func (p *ModelPlaneState) FocusRoles() { p.setFocus(PlaneFocusRoles) }
 
-// ToggleMode swaps between model browsing and role assignment, keeping the
-// selected model so an assignment never requires re-finding it.
+// ToggleMode swaps between model browsing and role assignment. Switching modes
+// abandons any pending transaction: a mode change is a new context, not a step
+// in the flow.
 func (p *ModelPlaneState) ToggleMode() {
+	p.resetTransaction()
 	if p.Mode == PlaneRoles {
 		p.Mode = PlaneModels
+		p.Focus = PlaneFocusModels
 		return
 	}
 	p.Mode = PlaneRoles
+	p.Focus = PlaneFocusRoles
 }
 
 // SetFilter replaces the query, parking the text cursor at the end.
@@ -477,7 +562,6 @@ func (p *ModelPlaneState) SetFilter(text string) {
 	p.Filter = text
 	p.FilterCursor = len([]rune(text))
 	p.ModelCursor, p.ModelOffset = 0, 0
-	p.syncEffort()
 }
 
 // InsertFilterText inserts s at the query cursor.
@@ -497,7 +581,6 @@ func (p *ModelPlaneState) InsertFilterText(s string) {
 	p.Filter = string(out)
 	p.FilterCursor = cur + len([]rune(s))
 	p.ModelCursor, p.ModelOffset = 0, 0
-	p.syncEffort()
 }
 
 // DeleteFilterBefore removes the rune before the query cursor.
@@ -510,7 +593,6 @@ func (p *ModelPlaneState) DeleteFilterBefore() {
 	p.Filter = string(append(runes[:cur-1], runes[cur:]...))
 	p.FilterCursor = cur - 1
 	p.ModelCursor, p.ModelOffset = 0, 0
-	p.syncEffort()
 }
 
 // DeleteFilterAt removes the rune under the query cursor.
@@ -522,7 +604,6 @@ func (p *ModelPlaneState) DeleteFilterAt() {
 	}
 	p.Filter = string(append(runes[:cur], runes[cur+1:]...))
 	p.ModelCursor, p.ModelOffset = 0, 0
-	p.syncEffort()
 }
 
 // MoveFilterCursor shifts the query cursor, clamped to the text.
@@ -535,17 +616,17 @@ func (p *ModelPlaneState) ClearFilter() {
 	p.Filter = ""
 	p.FilterCursor = 0
 	p.ModelCursor, p.ModelOffset = 0, 0
-	p.syncEffort()
 }
 
-// EffortOptions returns the thinking choices the highlighted model exposes.
+// EffortOptions returns the thinking choices the model under the current
+// transaction exposes.
 //
 // A model with an explicit ladder offers "off" plus each level; a model that
 // accepts thinking but exposes no ladder offers no choices (support alone is
 // reported); a model the metadata marks unsupported offers none. The plane
 // never renders a control for a capability the model does not expose.
 func (p *ModelPlaneState) EffortOptions() []string {
-	model, ok := p.ChosenModel()
+	model, ok := p.activeModel()
 	if !ok {
 		return nil
 	}
@@ -564,22 +645,45 @@ func effortOptions(model ModelOption) []string {
 	return out
 }
 
-// CycleEffort moves the pending effort among the highlighted model's options.
-// It is a no-op when the model exposes no ladder.
-func (p *ModelPlaneState) CycleEffort(delta int) {
+// MoveEffort moves the pending effort among the staged model's options. It is
+// a no-op when the model exposes no ladder.
+func (p *ModelPlaneState) MoveEffort(delta int) {
+	options := p.EffortOptions()
+	if len(options) == 0 {
+		p.Effort = ""
+		p.EffortCursor = 0
+		return
+	}
+	p.EffortCursor = wrap(p.EffortCursor+delta, len(options))
+	p.Effort = options[p.EffortCursor]
+}
+
+// effortEnd parks the pending effort on the first or last option.
+func (p *ModelPlaneState) effortEnd(last bool) {
 	options := p.EffortOptions()
 	if len(options) == 0 {
 		return
 	}
-	index := 0
-	for i, option := range options {
-		if option == p.Effort {
-			index = i
-			break
+	if last {
+		p.EffortCursor = len(options) - 1
+	} else {
+		p.EffortCursor = 0
+	}
+	p.Effort = options[p.EffortCursor]
+}
+
+// SetEffort selects an explicit effort option when the staged model exposes it.
+// Unknown values are refused so the UI can never stage an effort the model does
+// not accept.
+func (p *ModelPlaneState) SetEffort(option string) {
+	options := p.EffortOptions()
+	for i, candidate := range options {
+		if candidate == option {
+			p.Effort = option
+			p.EffortCursor = i
+			return
 		}
 	}
-	index = wrap(index+delta, len(options))
-	p.Effort = options[index]
 }
 
 // SplitModelVariant separates a "provider/id" reference into its base and
@@ -671,11 +775,10 @@ func (p *ModelPlaneState) NeedsVariantChoice(model ModelOption) bool {
 	return false
 }
 
-// OpenVariant starts the variant prompt for the highlighted model. It
-// reports false — and changes nothing — when no choice is needed.
-func (p *ModelPlaneState) OpenVariant() bool {
-	model, ok := p.ChosenModel()
-	if !ok || !p.NeedsVariantChoice(model) {
+// OpenVariant starts the variant prompt for the given model. It reports false
+// — and changes nothing — when no choice is needed.
+func (p *ModelPlaneState) OpenVariant(model ModelOption) bool {
+	if !p.NeedsVariantChoice(model) {
 		return false
 	}
 	base, _ := SplitModelVariant(model.ID)
@@ -719,94 +822,22 @@ func (p *ModelPlaneState) ChosenVariant() (ModelOption, bool) {
 // CancelVariant dismisses the prompt without choosing anything.
 func (p *ModelPlaneState) CancelVariant() { p.Variant = nil }
 
-// VariantAssignment builds the assignment for the chosen variant: the
-// sibling row's full id — variant suffix included — with the pending effort
-// re-validated against that row's own ladder. A pending effort the sibling
-// does not expose falls back to its first option rather than failing at the
-// authority seam.
-func (p *ModelPlaneState) VariantAssignment() (RoleAssignment, bool) {
-	variant, ok := p.ChosenVariant()
-	if !ok {
-		return RoleAssignment{}, false
+// ConfirmVariant commits the chosen sibling and advances the flow: in model
+// mode to role selection, in roles mode straight to the effort step, since the
+// role was already chosen. The variant's own ladder is resolved fresh, so a
+// level carried from the base never survives into the Apply.
+func (p *ModelPlaneState) ConfirmVariant(model ModelOption) {
+	p.Variant = nil
+	if model.ID == "" {
+		return
 	}
-	role := p.ActiveRole
+	p.PendingModel = model
 	if p.Mode == PlaneRoles {
-		chosen, ok := p.ChosenRole()
-		if !ok {
-			return RoleAssignment{}, false
-		}
-		role = chosen.Role
-	}
-	effort := p.Effort
-	options := effortOptions(variant)
-	if len(options) == 0 {
-		effort = ""
-	} else {
-		matched := false
-		for _, option := range options {
-			if option == effort {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			effort = options[0]
-		}
-	}
-	return RoleAssignment{Role: role, Model: variant.ID, Effort: effort}, true
-}
-
-// effortEnd parks the pending effort on the first or last option.
-func (p *ModelPlaneState) effortEnd(last bool) {
-	options := p.EffortOptions()
-	if len(options) == 0 {
+		p.stageEffort()
 		return
 	}
-	if last {
-		p.Effort = options[len(options)-1]
-		return
-	}
-	p.Effort = options[0]
-}
-
-// SetEffort selects an explicit effort option when the highlighted model
-// exposes it. Unknown values are refused so the UI can never stage an
-// effort the model does not accept.
-func (p *ModelPlaneState) SetEffort(option string) {
-	for _, candidate := range p.EffortOptions() {
-		if candidate == option {
-			p.Effort = option
-			return
-		}
-	}
-}
-
-// syncEffort re-validates the pending effort against the highlighted model.
-//
-// A model change must never leave an effort the new model does not accept:
-// that would persist an effort the provider rejects. When the pending effort
-// is invalid, the active role's own effort is preferred (so re-opening a role
-// shows what it is set to), otherwise "off".
-func (p *ModelPlaneState) syncEffort() {
-	options := p.EffortOptions()
-	if len(options) == 0 {
-		p.Effort = ""
-		return
-	}
-	for _, option := range options {
-		if option == p.Effort {
-			return
-		}
-	}
-	if role, ok := p.roleByModel(p.ActiveRole); ok && role.Effort != "" {
-		for _, option := range options {
-			if option == role.Effort {
-				p.Effort = role.Effort
-				return
-			}
-		}
-	}
-	p.Effort = options[0]
+	p.Stage = PlaneStageRole
+	p.RoleCursor = p.activeRoleIndex()
 }
 
 // roleByModel returns the role assignment for a role name.
@@ -819,51 +850,134 @@ func (p *ModelPlaneState) roleByModel(name string) (RoleAssignment, bool) {
 	return RoleAssignment{}, false
 }
 
-// NextRole cycles the active role in model mode, so Enter applies elsewhere
-// without a trip through roles mode.
+// activeRoleIndex returns the index of the active role, or 0.
+func (p *ModelPlaneState) activeRoleIndex() int {
+	for i, role := range p.Roles {
+		if role.Role == p.ActiveRole {
+			return i
+		}
+	}
+	return 0
+}
+
+// NextRole cycles the active role. It backs the programmatic role cycle; the
+// interactive flow selects a role explicitly in the role stage.
 func (p *ModelPlaneState) NextRole(delta int) {
 	if len(p.Roles) == 0 {
 		return
 	}
-	index := 0
-	for i, role := range p.Roles {
-		if role.Role == p.ActiveRole {
-			index = i
-			break
-		}
-	}
+	index := p.activeRoleIndex()
 	index = wrap(index+delta, len(p.Roles))
 	p.ActiveRole = p.Roles[index].Role
-	p.syncEffort()
 }
 
-// StageRole picks the highlighted role as the assignment target and returns
-// to model browsing so the user can search for and select its replacement.
-// It is the Roles-mode Enter contract: the Roles pane only displays each
-// role's current model, and choosing a role stages it instead of assigning
-// a hidden model highlight. The model pane's search then acts as the small
-// picker for that role; Enter there assigns to the staged ActiveRole.
-// It reports false when no role is highlighted.
+// StageRole begins the roles-first transaction for the highlighted role and
+// moves to model selection. It reports false when no role is highlighted.
 func (p *ModelPlaneState) StageRole() bool {
 	chosen, ok := p.ChosenRole()
 	if !ok {
 		return false
 	}
 	p.ActiveRole = chosen.Role
-	p.RoleCursor = clampIndex(p.RoleCursor, len(p.Roles))
-	// Return to model browsing with the keyboard on the model list: typing
-	// auto-focuses search, so the picker is one keystroke away without an
-	// extra Enter from search to results.
-	p.setFocus(PlaneFocusModels)
-	p.syncEffort()
+	p.PendingModel = ModelOption{}
+	p.Stage = PlaneStageModel
+	p.Focus = PlaneFocusModels
 	p.ensureModelVisible()
-	p.Notice = "select model for " + strings.ToUpper(chosen.Role) + " — Enter assigns"
+	p.Notice = "select model for " + strings.ToUpper(chosen.Role)
 	return true
 }
 
-// Assignment builds the assignment the user is about to apply: the highlighted
-// model with the pending effort, targeting the active role (model mode) or the
-// highlighted role (roles mode).
+// beginModelFirst begins the model-first transaction for a picked model: the
+// model is staged and the flow moves to role selection. The default focused
+// role is the active one (derived from the workspace); it is navigation only,
+// never an implicit assignment.
+func (p *ModelPlaneState) beginModelFirst(model ModelOption) bool {
+	if model.ID == "" {
+		return false
+	}
+	p.PendingModel = model
+	p.Stage = PlaneStageRole
+	p.RoleCursor = p.activeRoleIndex()
+	p.Notice = ""
+	return true
+}
+
+// chooseRole confirms the highlighted role and resolves the selected model's
+// exact capability: an effort step when it exposes a ladder, an explicit apply
+// step otherwise.
+func (p *ModelPlaneState) chooseRole() bool {
+	chosen, ok := p.ChosenRole()
+	if !ok {
+		return false
+	}
+	p.ActiveRole = chosen.Role
+	p.stageEffort()
+	return true
+}
+
+// chooseModel confirms the highlighted model for the staged role and resolves
+// its capability into the next step.
+func (p *ModelPlaneState) chooseModel() bool {
+	model, ok := p.ChosenModel()
+	if !ok {
+		return false
+	}
+	p.PendingModel = model
+	p.stageEffort()
+	return true
+}
+
+// stageEffort resolves the staged model's authoritative ladder and enters the
+// effort step, or the apply step when there is no ladder. The role's current
+// effort is preselected only when the model exposes it; otherwise the model's
+// own first option is shown, so an incompatible effort is never carried into
+// Apply.
+func (p *ModelPlaneState) stageEffort() {
+	options := effortOptions(p.PendingModel)
+	if len(options) == 0 {
+		p.Effort = ""
+		p.EffortCursor = 0
+		p.Stage = PlaneStageApply
+		return
+	}
+	p.Stage = PlaneStageEffort
+	p.EffortCursor = 0
+	if role, ok := p.roleByModel(p.ActiveRole); ok && role.Effort != "" {
+		for i, option := range options {
+			if option == role.Effort {
+				p.EffortCursor = i
+				break
+			}
+		}
+	}
+	p.Effort = options[p.EffortCursor]
+	p.ensureModelVisible()
+}
+
+// PendingAssignment builds the assignment the user is about to apply. It only
+// returns ok in an applyable stage (effort or apply), so a half-built
+// transaction can never reach the authority seam.
+func (p *ModelPlaneState) PendingAssignment() (RoleAssignment, bool) {
+	if p.Stage != PlaneStageEffort && p.Stage != PlaneStageApply {
+		return RoleAssignment{}, false
+	}
+	if p.ActiveRole == "" || p.PendingModel.ID == "" {
+		return RoleAssignment{}, false
+	}
+	effort := p.Effort
+	if p.Stage == PlaneStageApply {
+		effort = ""
+	}
+	return RoleAssignment{
+		Role:   p.ActiveRole,
+		Model:  p.PendingModel.ID,
+		Effort: effort,
+	}, true
+}
+
+// Assignment builds the assignment for the highlighted model with the pending
+// effort. It is a convenience for callers outside the staged flow; the staged
+// flow uses PendingAssignment.
 func (p *ModelPlaneState) Assignment() (RoleAssignment, bool) {
 	model, ok := p.ChosenModel()
 	if !ok {
@@ -871,11 +985,9 @@ func (p *ModelPlaneState) Assignment() (RoleAssignment, bool) {
 	}
 	role := p.ActiveRole
 	if p.Mode == PlaneRoles {
-		chosen, ok := p.ChosenRole()
-		if !ok {
-			return RoleAssignment{}, false
+		if chosen, ok := p.ChosenRole(); ok {
+			role = chosen.Role
 		}
-		role = chosen.Role
 	}
 	return RoleAssignment{
 		Role:   role,
@@ -884,19 +996,58 @@ func (p *ModelPlaneState) Assignment() (RoleAssignment, bool) {
 	}, true
 }
 
-// ApplyAssignment records the result of an assignment attempt: the applied
-// role list replaces the plane's, the notice reports the outcome, and the
-// active role parks on what was just assigned.
+// CancelStage backs out one step of the transaction: an effort/apply step
+// returns to model or role selection, a selection step returns to browsing.
+// It never persists and never closes the dialog.
+func (p *ModelPlaneState) CancelStage() {
+	switch p.Stage {
+	case PlaneStageEffort, PlaneStageApply:
+		if p.Mode == PlaneRoles {
+			p.Stage = PlaneStageModel
+			p.Focus = PlaneFocusModels
+		} else {
+			p.Stage = PlaneStageRole
+		}
+	case PlaneStageRole, PlaneStageModel:
+		p.resetTransaction()
+		p.browseFocus()
+	default:
+		p.resetTransaction()
+		p.browseFocus()
+	}
+}
+
+// browseFocus parks focus on the pane the current mode browses.
+func (p *ModelPlaneState) browseFocus() {
+	if p.Mode == PlaneRoles {
+		p.Focus = PlaneFocusRoles
+		return
+	}
+	p.Focus = PlaneFocusModels
+}
+
+// resetTransaction discards any pending assignment and returns to browsing.
+func (p *ModelPlaneState) resetTransaction() {
+	p.Stage = PlaneStageBrowse
+	p.PendingModel = ModelOption{}
+	p.Effort = ""
+	p.EffortCursor = 0
+}
+
+// ApplyAssignment records the result of an assignment attempt. A successful
+// assignment clears the transaction and returns to browsing; a refusal keeps
+// the pending step so the user can adjust it without starting over.
 func (p *ModelPlaneState) ApplyAssignment(result RoleAssignment, roles []RoleAssignment, notice string) {
 	if roles != nil {
 		p.Roles = roles
 	}
 	if result.Role != "" {
 		p.ActiveRole = result.Role
+		p.resetTransaction()
+		p.browseFocus()
+		p.clampRoleCursor()
 	}
 	p.Notice = notice
-	p.syncEffort()
-	p.clampRoleCursor()
 }
 
 // SetRoles replaces the role roster (e.g. after a refresh).
@@ -922,7 +1073,6 @@ func (p *ModelPlaneState) SetModels(models []ModelOption) {
 			}
 		}
 	}
-	p.syncEffort()
 	p.ensureModelVisible()
 }
 

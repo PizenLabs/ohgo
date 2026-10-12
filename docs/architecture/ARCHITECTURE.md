@@ -67,8 +67,9 @@ execution`:
 - The session records its workspace, project identity, and effective model.
   A resumed session restores its own snapshot rather than silently following a
   changed configuration.
-- `$sup` is an ephemeral capability of ASK: a second loop on the ASK model,
-  whose conversation is never persisted and never enters the main history.
+- `$sup` is an ephemeral interaction surface on the SUP model role: a second
+  loop on the SUP-resolved model under read-only authority, whose
+  conversation is never persisted and never enters the main history.
 - Cross-workspace handoff is artifact-based: `workspace.Artifact` (plan,
   finding, change, verification) is validated and persisted per session; the
   `artifact` tool enforces that a workspace only authors its own kind.
@@ -203,8 +204,9 @@ credential → validated model list → saved key + settings), `/disconnect`
 (file/explicit keys only; env/shell keys say where to unset). Presentation
 differs; decisions do not. Commands parse before anything reaches the
 model; a bare `/` is a path. `$sup <question>` opens the ephemeral support
-surface (an ASK capability that is never persisted and never enters the main
-history); a bare `$sup` or ESC closes it. Prompt history (`~/.ohgo/history`,
+surface (a SUP-role interaction that is never persisted and never enters the
+main history); a bare `$sup` opens it with input focus and starts no
+provider call, and ESC closes it. Prompt history (`~/.ohgo/history`,
 last 1000, commands excluded, `OHGO_HISTORY_FILE` overrides, empty disables) is
 an audit trail, best-effort.
 

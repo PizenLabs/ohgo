@@ -257,8 +257,16 @@ type State struct {
 	closedAssistant bool
 	// Support reports that the ephemeral $sup surface is open. It is UI state
 	// only: the workspace and session authority are unchanged while it is set
-	// (§34).
+	// (§34). It is derived from SupportPanel: non-nil means open.
 	Support bool
+	// SupportPanel is the ephemeral support overlay. Non-nil while the
+	// surface is open; nil after close discards it. It never enters the
+	// normal transcript, history, or session.
+	SupportPanel *SupportPanel
+	// SupportSeq identifies the latest support turn. Support lifecycle
+	// events carry it so a late event from an old support turn cannot
+	// mutate the new one.
+	SupportSeq int
 	// TurnSeq identifies the latest turn. Lifecycle events carry it so a late
 	// event from an old turn cannot mutate the new one.
 	TurnSeq int
@@ -739,7 +747,9 @@ func (s *State) Apply(event Event) {
 
 	case PlaneVariantOpened:
 		if s.Plane != nil {
-			s.Plane.OpenVariant()
+			if model, ok := s.Plane.ChosenModel(); ok {
+				s.Plane.OpenVariant(model)
+			}
 		}
 
 	case PlaneVariantMoved:
@@ -754,7 +764,7 @@ func (s *State) Apply(event Event) {
 
 	case PlaneEffortCycled:
 		if s.Plane != nil {
-			s.Plane.CycleEffort(e.Delta)
+			s.Plane.MoveEffort(e.Delta)
 		}
 
 	case PlaneRoleCycled:
@@ -765,6 +775,31 @@ func (s *State) Apply(event Event) {
 	case PlaneRoleStaged:
 		if s.Plane != nil {
 			s.Plane.StageRole()
+		}
+
+	case PlaneModelStaged:
+		if s.Plane != nil {
+			s.Plane.beginModelFirst(e.Model)
+		}
+
+	case PlaneRoleChosen:
+		if s.Plane != nil {
+			s.Plane.chooseRole()
+		}
+
+	case PlaneModelChosen:
+		if s.Plane != nil {
+			s.Plane.chooseModel()
+		}
+
+	case PlaneStageCancelled:
+		if s.Plane != nil {
+			s.Plane.CancelStage()
+		}
+
+	case PlaneVariantConfirmed:
+		if s.Plane != nil {
+			s.Plane.ConfirmVariant(e.Model)
 		}
 
 	case PlaneAssigned:
@@ -810,18 +845,117 @@ func (s *State) Apply(event Event) {
 		s.Quit = true
 
 	case SupportTurn:
-		// The ephemeral surface records its exchange in the view only. It is
-		// never persisted and never added to the conversation the model sees,
-		// so it cannot pollute the main task context (I17).
-		s.Entries = append(s.Entries,
-			Entry{Kind: EntrySupport, SupportText: e.Question, SupportIsQuestion: true},
-			Entry{Kind: EntrySupport, SupportText: e.Answer},
-		)
+		// Legacy single-event form: the exchange lands in the overlay as a
+		// finished turn. It never touches the normal transcript, history, or
+		// session (I17). EntrySupport entries are no longer produced: the
+		// panel is the surface, not the main viewport.
+		if s.SupportPanel == nil {
+			s.SupportSeq++
+			s.SupportPanel = &SupportPanel{Status: SupportIdle, Seq: s.SupportSeq}
+		}
+		s.SupportPanel.Request = e.Question
+		s.SupportPanel.Response = e.Answer
+		s.SupportPanel.Status = SupportCompleted
+		s.SupportPanel.Input = ""
+		s.SupportPanel.Cursor = 0
+		s.SupportPanel.Scroll = 0
 		s.Support = true
 		s.growScroll(countLines(e.Question) + countLines(e.Answer) + 2)
 
+	case SupportOpened:
+		if s.SupportPanel == nil {
+			s.SupportPanel = &SupportPanel{Status: SupportIdle}
+		}
+		if s.SupportPanel.Status == SupportRunning {
+			break
+		}
+		if e.Model != "" {
+			s.SupportPanel.Model = e.Model
+			s.SupportPanel.Effort = e.Effort
+		}
+		if s.SupportPanel.Status != SupportCompleted &&
+			s.SupportPanel.Status != SupportCancelled &&
+			s.SupportPanel.Status != SupportFailed {
+			s.SupportPanel.Status = SupportIdle
+		}
+		s.SupportPanel.Scroll = 0
+		s.Support = true
+
+	case SupportInputChanged:
+		if s.SupportPanel == nil || s.SupportPanel.Status == SupportRunning {
+			break
+		}
+		s.SupportPanel.Input = e.Text
+		s.SupportPanel.Cursor = clampCursor(e.Text, e.Cursor)
+
+	case SupportStarted:
+		seq := e.Seq
+		if seq == 0 {
+			s.SupportSeq++
+			seq = s.SupportSeq
+		} else if seq > s.SupportSeq {
+			s.SupportSeq = seq
+		}
+		if s.SupportPanel == nil {
+			s.SupportPanel = &SupportPanel{}
+		}
+		s.SupportPanel.Request = e.Request
+		s.SupportPanel.Response = ""
+		s.SupportPanel.Status = SupportRunning
+		s.SupportPanel.Seq = seq
+		s.SupportPanel.Model = e.Model
+		s.SupportPanel.Effort = e.Effort
+		s.SupportPanel.Error = ""
+		s.SupportPanel.Input = ""
+		s.SupportPanel.Cursor = 0
+		s.SupportPanel.Scroll = 0
+		s.Support = true
+		s.growScroll(countLines(e.Request) + 1)
+
+	case SupportDelta:
+		panel := s.SupportPanel
+		if panel == nil || e.Seq != panel.Seq || panel.Status != SupportRunning {
+			break
+		}
+		panel.Response += e.Text
+		s.growScroll(strings.Count(e.Text, "\n"))
+
+	case SupportDone:
+		panel := s.SupportPanel
+		if panel == nil || e.Seq != panel.Seq || panel.Status != SupportRunning {
+			break
+		}
+		if e.Text != "" {
+			panel.Response += e.Text
+		}
+		panel.Status = SupportCompleted
+
+	case SupportFailedEvent:
+		panel := s.SupportPanel
+		if panel == nil || e.Seq != panel.Seq || panel.Status != SupportRunning {
+			break
+		}
+		panel.Status = SupportFailed
+		panel.Error = e.Error
+
+	case SupportCancelledEvent:
+		panel := s.SupportPanel
+		if panel == nil || e.Seq != panel.Seq {
+			break
+		}
+		// Idempotent: the first cancellation wins; a terminal panel
+		// stays terminal without a second line.
+		if panel.Status != SupportRunning {
+			break
+		}
+		panel.Status = SupportCancelled
+		panel.Error = ""
+		if e.Text != "" && e.Text != "cancelled" {
+			panel.Response = e.Text
+		}
+
 	case SupportClosed:
-		// Closing removes the ephemeral entries outright: the surface must
+		// Closing discards the ephemeral panel outright: the surface must
 		// return the user to the previous interaction, not leave a transcript
 		// of a conversation that never happened.
 		kept := s.Entries[:0]
@@ -831,7 +965,27 @@ func (s *State) Apply(event Event) {
 			}
 		}
 		s.Entries = kept
+		s.SupportPanel = nil
 		s.Support = false
+
+	case SupportScrolled:
+		// The response viewport follows the transcript convention: an
+		// offset above the live edge, floored at zero. Overshoot parks
+		// at the oldest line in the view, which clamps to the content
+		// without mutating the stored offset.
+		if s.SupportPanel == nil {
+			break
+		}
+		s.SupportPanel.Scroll += e.Delta
+		if s.SupportPanel.Scroll < 0 {
+			s.SupportPanel.Scroll = 0
+		}
+
+	case SupportScrollToBottom:
+		if s.SupportPanel == nil {
+			break
+		}
+		s.SupportPanel.Scroll = 0
 
 	case Cleared:
 		// /clear drops the transcript so the next turn starts from nothing.
@@ -1891,12 +2045,40 @@ type PlaneRoleCycled struct{ Delta int }
 
 func (PlaneRoleCycled) eventKind() string { return "plane_role_cycled" }
 
-// PlaneRoleStaged stages the highlighted role as the assignment target and
-// returns to model browsing so its replacement can be searched for and
-// selected. It is the Roles-mode Enter contract.
+// PlaneRoleStaged begins the roles-first transaction for the highlighted role:
+// the role is staged and the flow moves to model selection. It never assigns.
 type PlaneRoleStaged struct{}
 
 func (PlaneRoleStaged) eventKind() string { return "plane_role_staged" }
+
+// PlaneModelStaged begins the model-first transaction for a picked model: the
+// model is staged and the flow moves to role selection. It never assigns.
+type PlaneModelStaged struct{ Model ModelOption }
+
+func (PlaneModelStaged) eventKind() string { return "plane_model_staged" }
+
+// PlaneRoleChosen confirms the highlighted role in the role stage and advances
+// to the effort (or apply) step.
+type PlaneRoleChosen struct{}
+
+func (PlaneRoleChosen) eventKind() string { return "plane_role_chosen" }
+
+// PlaneModelChosen confirms the highlighted model in the roles-flow model step
+// and advances to the effort (or apply) step.
+type PlaneModelChosen struct{}
+
+func (PlaneModelChosen) eventKind() string { return "plane_model_chosen" }
+
+// PlaneStageCancelled backs out one step of the assignment transaction,
+// discarding transient state without persisting or closing.
+type PlaneStageCancelled struct{}
+
+func (PlaneStageCancelled) eventKind() string { return "plane_stage_cancelled" }
+
+// PlaneVariantConfirmed commits a chosen variant row and advances the flow.
+type PlaneVariantConfirmed struct{ Model ModelOption }
+
+func (PlaneVariantConfirmed) eventKind() string { return "plane_variant_confirmed" }
 
 // PlaneAssigned records the outcome of an assignment attempt: the applied
 // role, the refreshed role roster, and a one-line notice (confirmation or
@@ -1994,8 +2176,152 @@ type WorkspaceUpdated struct {
 
 func (WorkspaceUpdated) eventKind() string { return "workspace_updated" }
 
+// SupportStatus is where a support turn is in its lifecycle.
+type SupportStatus string
+
+// Support lifecycle states.
+const (
+	// SupportIdle means the panel is open for input with no turn in flight.
+	SupportIdle SupportStatus = "idle"
+	// SupportRunning means a support request is executing.
+	SupportRunning SupportStatus = "running"
+	// SupportCompleted means the support response finished.
+	SupportCompleted SupportStatus = "completed"
+	// SupportCancelled means the support turn was cancelled.
+	SupportCancelled SupportStatus = "cancelled"
+	// SupportFailed means the support turn ended in an error.
+	SupportFailed SupportStatus = "failed"
+)
+
+// SupportPanel is the ephemeral $sup overlay state.
+//
+// It owns the support interaction while open: its input, the in-flight or
+// finished response, and the effective SUP model identity the runtime
+// resolved. It is discarded on close and never enters the normal
+// transcript, history, or session.
+type SupportPanel struct {
+	// Input is the support request being composed.
+	Input string
+	// Cursor is the rune offset in Input where typing lands.
+	Cursor int
+	// Request is the submitted support question for the current turn.
+	Request string
+	// Response is the streamed support answer for the current turn.
+	Response string
+	// Status is the lifecycle position of the current turn.
+	Status SupportStatus
+	// Seq identifies the current support turn. Stale events are dropped.
+	Seq int
+	// Model is the effective SUP model reference, e.g. "provider/id".
+	Model string
+	// Effort is the effective thinking effort, or "" when unset.
+	Effort string
+	// Error carries a failure message when Status is SupportFailed.
+	Error string
+	// Scroll is the response viewport offset in lines above the live edge.
+	// Zero follows new output; positive looks back at older lines while
+	// streaming continues underneath. It is presentation-only and never
+	// enters the transcript, history, or session.
+	Scroll int
+}
+
+// SupportInputFocused reports whether the panel owns printable input: the
+// panel is open and no support turn is running.
+func (s *State) SupportInputFocused() bool {
+	if s.SupportPanel == nil {
+		return false
+	}
+	return s.SupportPanel.Status != SupportRunning
+}
+
+// SupportBusy reports whether a support turn is in flight.
+func (s *State) SupportBusy() bool {
+	return s.SupportPanel != nil && s.SupportPanel.Status == SupportRunning
+}
+
+// SupportOpened opens the ephemeral surface without starting a turn. A
+// bare "$sup" carries no request, so no provider call occurs yet.
+type SupportOpened struct {
+	// Model is the effective SUP model reference for display.
+	Model string
+	// Effort is the effective thinking effort for display.
+	Effort string
+}
+
+func (SupportOpened) eventKind() string { return "support_opened" }
+
+// SupportInputChanged sets the support composer's text and cursor.
+type SupportInputChanged struct {
+	// Text is the new support input.
+	Text string
+	// Cursor is the rune offset where typing lands.
+	Cursor int
+}
+
+func (SupportInputChanged) eventKind() string { return "support_input_changed" }
+
+// SupportStarted begins one support turn with its own sequence identity.
+type SupportStarted struct {
+	// Seq identifies the support turn.
+	Seq int
+	// Request is the submitted support question.
+	Request string
+	// Model is the effective SUP model reference.
+	Model string
+	// Effort is the effective thinking effort.
+	Effort string
+}
+
+func (SupportStarted) eventKind() string { return "support_started" }
+
+// SupportDelta streams one chunk of the support answer.
+type SupportDelta struct {
+	// Seq identifies the support turn.
+	Seq int
+	// Text is the chunk to append.
+	Text string
+}
+
+func (SupportDelta) eventKind() string { return "support_delta" }
+
+// SupportDone marks a support turn successfully completed.
+type SupportDone struct {
+	// Seq identifies the support turn.
+	Seq int
+	// Text is appended when the transport did not stream (empty otherwise).
+	Text string
+}
+
+func (SupportDone) eventKind() string { return "support_done" }
+
+// SupportFailedEvent marks a support turn failed with an error.
+type SupportFailedEvent struct {
+	// Seq identifies the support turn.
+	Seq int
+	// Error is the user-visible failure.
+	Error string
+}
+
+func (SupportFailedEvent) eventKind() string { return "support_failed" }
+
+// SupportCancelledEvent is the single semantic cancellation transition
+// for a support turn: the first one wins, later duplicates and stale
+// turns are dropped.
+type SupportCancelledEvent struct {
+	// Seq identifies the support turn.
+	Seq int
+	// Text is the user-visible cancellation line. Empty renders "cancelled".
+	Text string
+}
+
+func (SupportCancelledEvent) eventKind() string { return "support_cancelled" }
+
 // SupportTurn records one ephemeral $sup exchange. It never persists and never
 // enters the model's context (I17).
+//
+// It is the legacy single-event form: it opens the overlay (when needed)
+// with the finished exchange, so older callers keep working while the
+// interactive path streams through SupportStarted/SupportDelta/SupportDone.
 type SupportTurn struct {
 	// Question is what the user asked.
 	Question string
@@ -2009,6 +2335,21 @@ func (SupportTurn) eventKind() string { return "support_turn" }
 type SupportClosed struct{}
 
 func (SupportClosed) eventKind() string { return "support_closed" }
+
+// SupportScrolled moves the support response viewport. Positive Delta looks
+// back at older lines; negative returns toward the live edge. The view
+// clamps to the content, so overshoot simply parks at the oldest line.
+type SupportScrolled struct {
+	// Delta is the lines to move. Positive goes up (older).
+	Delta int
+}
+
+func (SupportScrolled) eventKind() string { return "support_scrolled" }
+
+// SupportScrollToBottom re-engages the support live edge.
+type SupportScrollToBottom struct{}
+
+func (SupportScrollToBottom) eventKind() string { return "support_scroll_to_bottom" }
 
 // ModelOption is one enriched model row for the picker. Detail lines are
 // built by the caller (which owns the catalog); the picker only renders

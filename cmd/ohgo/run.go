@@ -796,35 +796,43 @@ func admitFor(ws workspace.Workspace) func(ai.ToolCall, agent.Tool) (bool, strin
 	}
 }
 
-// supportLoopBuilder returns a lazy builder for the ephemeral $sup loop.
+// supportLoopBuilder returns a builder for the ephemeral $sup runtime.
 //
-// The loop runs on the ASK model (§10.3) under ASK authority, so support can
-// reason and read but cannot mutate. It is built on first use rather than at
-// startup: resolving a second model eagerly would cost a network round trip for
-// a capability most sessions never invoke.
-func supportLoopBuilder(opts options, registry *ai.Registry, out io.Writer) func() (*agent.Loop, error) {
-	return func() (*agent.Loop, error) {
-		askModel, err := resolveWorkspaceModel(opts.settings, workspace.Ask, "", "",
-			dynamicResolver(context.Background(), registry))
+// The model and effort resolve through the SUP role on every invocation,
+// so a /model reassignment applies to the next $sup with no restart. The
+// loop runs under ASK authority (read-only), so support can reason and
+// read but cannot mutate. It is built lazily on first use: resolving a
+// second model eagerly would cost a round trip for a capability most
+// sessions never invoke.
+func supportLoopBuilder(opts options, registry *ai.Registry, out io.Writer) func() (supportBundle, error) {
+	return func() (supportBundle, error) {
+		supModel, effort, err := resolveSupModel(opts.settings, dynamicResolver(context.Background(), registry))
 		if err != nil {
-			return nil, fmt.Errorf("$sup: resolve ask model: %w", err)
+			return supportBundle{}, err
 		}
-		askOpts := opts
-		askOpts.workspace = workspace.Ask
-		askOpts.model = askModel
-		askOpts.maxTokens = resolveMaxTokens(opts.settings, askModel)
+		supOpts := opts
+		supOpts.workspace = workspace.Ask
+		supOpts.model = supModel
+		supOpts.maxTokens = resolveMaxTokens(opts.settings, supModel)
+		enabled, level := supReasoning(effort)
+		supOpts.reasoning = enabled
+		supOpts.effort = level
 		// Support is read-only by construction (ASK authority), so read tools
 		// are auto-approved rather than parking a modal prompt on a query the
 		// user expects to be instant.
-		loop, err := buildLoop(askOpts, registry, out, nil, nil,
+		loop, err := buildLoop(supOpts, registry, out, nil, nil,
 			func(ai.ToolCall, agent.Approval) (bool, string) { return true, "" })
 		if err != nil {
-			return nil, err
+			return supportBundle{}, err
 		}
 		// The caller renders the exchange itself; the loop's turn hook would
 		// otherwise print raw text.
 		loop.SetTurnHook(nil)
-		return loop, nil
+		return supportBundle{
+			loop:   loop,
+			ref:    supModel.Provider + "/" + supModel.ID,
+			effort: effort,
+		}, nil
 	}
 }
 
@@ -1216,7 +1224,10 @@ func runSession(cmd *cobra.Command, args []string) error {
 		held.usage.SetCost(opts.model.Cost)
 		held.workspace = opts.authority().Label()
 		held.support = surface
-		program.SetSupportFunc(surface.ask)
+		program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
+			return surface.ask(ctx, question, onDelta)
+		})
+		program.SetSupportInfo(held.SupportInfo)
 
 		// A resumed session replays its transcript, so the UI continues rather
 		// than restarts. Loading it here means a failure is fatal rather than a

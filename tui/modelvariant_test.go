@@ -163,25 +163,36 @@ func TestVariantPromptOpensBeforeAssign(t *testing.T) {
 }
 
 // TestVariantConfirmAssignsTheChosenSuffix proves the confirmed sibling's
-// full id — suffix included — flows through the existing seam with effort.
+// full id — suffix included — flows through the linear transaction to the
+// existing seam: variant, then role, then effort, then Apply.
 func TestVariantConfirmAssignsTheChosenSuffix(t *testing.T) {
 	var assigned RoleAssignment
+	calls := 0
 	p := openVariantProgram(t, func(update RoleAssignment) (RoleAssignment, []RoleAssignment, error) {
+		calls++
 		assigned = update
 		update.Name = "Base Model"
 		return update, variantFixture().Roles, nil
 	})
 	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // opens the prompt
 	p.Update(tea.KeyMsg{Type: tea.KeyDown})  // :free
-	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // confirms
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // confirms the variant
+	if p.state.Plane.Variant != nil {
+		t.Fatal("the prompt stayed open after confirming")
+	}
+	if p.state.Plane.Stage != PlaneStageRole {
+		t.Fatalf("stage = %v, want role selection after the variant", p.state.Plane.Stage)
+	}
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // choose BUILD (the default role)
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // apply the effort step
+	if calls != 1 {
+		t.Fatalf("calls = %d, want one assignment after Apply", calls)
+	}
 	if assigned.Model != "openrouter/vendor/base:free" {
 		t.Errorf("assigned model = %q, want the chosen suffixed id", assigned.Model)
 	}
 	if assigned.Role != "build" {
 		t.Errorf("assigned role = %q, want build", assigned.Role)
-	}
-	if p.state.Plane.Variant != nil {
-		t.Error("the prompt stayed open after confirming")
 	}
 	if notice := p.state.Plane.Notice; !strings.Contains(notice, "assigned") {
 		t.Errorf("notice = %q, want a confirmation", notice)
@@ -196,8 +207,10 @@ func TestVariantDefaultConfirmsTheBareBase(t *testing.T) {
 		assigned = update
 		return update, variantFixture().Roles, nil
 	})
-	p.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // opens the prompt
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // confirms the bare base
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // choose the role
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter}) // apply
 	if assigned.Model != "openrouter/vendor/base" {
 		t.Errorf("assigned model = %q, want the bare base default", assigned.Model)
 	}
@@ -269,28 +282,37 @@ func TestVariantConfirmRefusesMidTurn(t *testing.T) {
 	}
 }
 
-// TestVariantAssignmentFallsBackEffort proves a pending effort the sibling
-// does not expose degrades to the sibling's own ladder instead of failing
-// at the authority seam.
-func TestVariantAssignmentFallsBackEffort(t *testing.T) {
+// TestVariantEffortResolvesAgainstTheVariantLadder proves the confirmed
+// variant's own ladder decides the effort step: a level offered by the base is
+// not carried into a sibling that does not expose it, and there is no silent
+// fallback to a level the sibling would reject.
+func TestVariantEffortResolvesAgainstTheVariantLadder(t *testing.T) {
 	plane := NewModelPlane(variantFixture())
-	plane.FocusModels()
-	plane.Effort = "medium"
-	plane.Variant = &PlaneVariantState{
-		Base: "openrouter/vendor/base",
-		Options: []ModelOption{
-			{ID: "openrouter/vendor/base:odd", Provider: "openrouter", ThinkingEfforts: []string{"ludicrous"}, Reasoning: true, ReasoningKnown: true},
-		},
+	plane.Mode = PlaneRoles
+	plane.ActiveRole = "sup"
+	plane.PendingModel = ModelOption{
+		ID: "openrouter/vendor/base", Provider: "openrouter",
+		ThinkingEfforts: []string{"low", "high"}, Reasoning: true, ReasoningKnown: true,
 	}
-	update, ok := plane.VariantAssignment()
-	if !ok {
-		t.Fatal("no assignment produced")
+	plane.Effort = "high"
+	plane.EffortCursor = 2
+	variant := ModelOption{
+		ID: "openrouter/vendor/base:odd", Provider: "openrouter",
+		ThinkingEfforts: []string{"ludicrous"}, Reasoning: true, ReasoningKnown: true,
 	}
-	if update.Model != "openrouter/vendor/base:odd" {
-		t.Errorf("model = %q, want the sibling id", update.Model)
+	plane.ConfirmVariant(variant)
+	if plane.PendingModel.ID != "openrouter/vendor/base:odd" {
+		t.Fatalf("pending model = %q, want the sibling id", plane.PendingModel.ID)
 	}
-	if update.Effort != EffortOff {
-		t.Errorf("effort = %q, want the sibling ladder's first option, not a level it rejects", update.Effort)
+	if plane.Stage != PlaneStageEffort {
+		t.Fatalf("stage = %v, want the effort step for the sibling's ladder", plane.Stage)
+	}
+	if plane.Effort != EffortOff || plane.EffortCursor != 0 {
+		t.Errorf("effort = %q cursor = %d, want the sibling ladder's first option, not the base's level",
+			plane.Effort, plane.EffortCursor)
+	}
+	if got := plane.EffortOptions(); len(got) != 2 || got[1] != "ludicrous" {
+		t.Errorf("options = %v, want off + ludicrous", got)
 	}
 }
 

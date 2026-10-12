@@ -381,20 +381,42 @@ func (h *harness) SetModel(ref string) (ai.Model, error) {
 		return ai.Model{}, err
 	}
 	h.applyModel(model)
-	if h.settings != nil {
-		role := h.sessionRole()
-		if !config.ValidRole(config.NormalizeRole(role)) {
-			role = string(config.RoleBuild)
-		}
-		h.settings.SetRoleModel(role, model.Provider+"/"+model.ID)
-		if err := config.Save(*h.settings); err != nil {
-			return model, fmt.Errorf("save configuration: %w", err)
-		}
-		if role == h.sessionRole() {
-			h.recordSessionAuthority(model)
-		}
+	if h.settings == nil {
+		return model, nil
+	}
+	role := h.sessionRole()
+	if !config.ValidRole(config.NormalizeRole(role)) {
+		role = string(config.RoleBuild)
+	}
+	canonical := model.Provider + "/" + model.ID
+	// A model switch must not carry an effort the new model does not expose:
+	// the incompatible claim is dropped instead of persisted to fail at
+	// invocation time. A still-valid effort survives the switch.
+	effort := h.roleEffortFor(role)
+	if effort != "" && effort != tui.EffortOff && !catalog.ThinkingFor(canonical).Supports(effort) {
+		effort = ""
+	}
+	h.settings.AssignRole(role, canonical, effort)
+	if err := config.Save(*h.settings); err != nil {
+		return model, fmt.Errorf("save configuration: %w", err)
+	}
+	enabled, level := h.reasoningFor(effort)
+	if h.loop != nil {
+		h.loop.SetReasoning(enabled, level)
+	}
+	if role == h.sessionRole() {
+		h.recordSessionAuthority(model)
 	}
 	return model, nil
+}
+
+// roleEffortFor returns a role's currently persisted explicit effort.
+func (h *harness) roleEffortFor(role string) string {
+	if h.settings == nil {
+		return ""
+	}
+	_, effort, _ := h.settings.RoleModel(role)
+	return strings.TrimSpace(effort)
 }
 
 // CompactHistory summarises a history on demand, returning the rebuilt

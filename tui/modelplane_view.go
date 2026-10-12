@@ -266,14 +266,22 @@ func renderPlaneModal(plane *ModelPlaneState, pal *Palette, state State, layout 
 
 	var body []string
 	switch {
+	case plane.Variant != nil:
+		// The variant prompt replaces the body wherever it was opened
+		// from: choosing must stay visible in both flows.
+		if stacked {
+			body = fitPane(renderPlaneVariantPane(plane, pal, interior, contentH), contentH)
+		} else {
+			left := fitPane(renderPlaneProvidersPane(plane, pal, state, leftW), contentH)
+			right := fitPane(renderPlaneVariantPane(plane, pal, rightW, contentH), contentH)
+			body = zipColumns(left, right, leftW, pal.Muted.Render("│"))
+		}
+	case plane.Stage != PlaneStageBrowse:
+		// The assignment flow is a single bounded body: progressive
+		// disclosure of one step at a time, inside the same dialog.
+		body = fitPane(renderPlaneFlow(plane, pal, interior, contentH), contentH)
 	case stacked:
 		body = renderPlaneStacked(plane, pal, state, layout, interior, contentH)
-	case plane.Variant != nil:
-		// The variant prompt replaces the right pane wherever it was
-		// opened from: choosing must stay visible in both modes.
-		left := fitPane(renderPlaneProvidersPane(plane, pal, state, leftW), contentH)
-		right := fitPane(renderPlaneVariantPane(plane, pal, rightW, contentH), contentH)
-		body = zipColumns(left, right, leftW, pal.Muted.Render("│"))
 	case plane.Mode == PlaneRoles:
 		left := fitPane(renderPlaneRolesPane(plane, pal, leftW), contentH)
 		right := fitPane(renderPlaneAssignmentPane(plane, pal, rightW), contentH)
@@ -370,6 +378,174 @@ func renderPlaneStacked(plane *ModelPlaneState, pal *Palette, state State, layou
 	return fitPane(lines, contentH)
 }
 
+// renderPlaneFlow draws the linear assignment flow: the choices already made,
+// then the control for the current step. The step's control is guaranteed a
+// row even in the smallest dialog, and its cursor row is never scrolled off, so
+// the highlighted control can never be invisible.
+func renderPlaneFlow(plane *ModelPlaneState, pal *Palette, width, contentH int) []string {
+	var header []string
+	if plane.PendingModel.ID != "" {
+		header = append(header, flowField(pal, width, "Model", planeModelName(plane.PendingModel)))
+	}
+	if plane.ActiveRole != "" && plane.Stage != PlaneStageRole {
+		header = append(header, flowField(pal, width, "Role", strings.ToUpper(plane.ActiveRole)))
+	}
+	// The control comes first: shed summary rows before the step can be lost.
+	if max := contentH - 1; max < 0 {
+		header = nil
+	} else if len(header) > max {
+		header = header[:max]
+	}
+	budget := contentH - len(header)
+	if budget < 1 {
+		budget = 1
+	}
+
+	var step []string
+	switch plane.Stage {
+	case PlaneStageRole:
+		rows := roleFlowRows(plane, pal, width)
+		step = headedRows(pal, width, "Assign to role", rows, plane.RoleCursor, budget)
+	case PlaneStageModel:
+		rows := modelFlowRows(plane, pal, width)
+		rows = append([]string{renderPlaneSearch(plane, pal, width)}, rows...)
+		step = headedRows(pal, width, "Select model for "+strings.ToUpper(plane.ActiveRole), rows, plane.ModelCursor+1, budget)
+	case PlaneStageEffort:
+		rows := effortFlowRows(plane, pal, width)
+		step = headedRows(pal, width, "Thinking effort", rows, plane.EffortCursor, budget)
+	case PlaneStageApply:
+		step = []string{TruncateToWidth("  "+pal.Bold.Render("Enter")+pal.Muted.Render(" applies the assignment"), width)}
+	}
+	return append(header, step...)
+}
+
+// headedRows renders a step heading and its control rows, windowed to budget so
+// the cursor row is always visible. With a single row of budget the heading
+// yields: the control is the thing that must never be lost.
+func headedRows(pal *Palette, width int, heading string, rows []string, cursor, budget int) []string {
+	if budget <= 0 {
+		return nil
+	}
+	if budget == 1 {
+		return cursorRows(rows, cursor, 1)
+	}
+	out := make([]string, 0, budget)
+	out = append(out, pal.Muted.Render(TruncateToWidth(heading, width)))
+	out = append(out, cursorRows(rows, cursor, budget-1)...)
+	return out
+}
+
+// cursorRows returns at most size rows of a list with the cursor row kept in
+// view. Short lists pass through untouched.
+func cursorRows(rows []string, cursor, size int) []string {
+	if size <= 0 || len(rows) <= size {
+		return rows
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(rows) {
+		cursor = len(rows) - 1
+	}
+	start := cursor - size + 1
+	if start < 0 {
+		start = 0
+	}
+	if start+size > len(rows) {
+		start = len(rows) - size
+	}
+	return rows[start : start+size]
+}
+
+// flowField renders one "label value" row of the flow summary.
+func flowField(pal *Palette, width int, label, value string) string {
+	return TruncateToWidth("  "+pal.Muted.Render(padLabel(label))+pal.Bold.Render(sanitizeInline(value)), width)
+}
+
+// planeModelName names a model row for humans, falling back through its fields.
+func planeModelName(model ModelOption) string {
+	if model.Name != "" {
+		return model.Name
+	}
+	if model.Title != "" {
+		return model.Title
+	}
+	return model.ID
+}
+
+// roleFlowRows renders the role choices of the role step.
+func roleFlowRows(plane *ModelPlaneState, pal *Palette, width int) []string {
+	out := make([]string, 0, len(plane.Roles))
+	for i, role := range plane.Roles {
+		marker := "  "
+		if i == plane.RoleCursor {
+			marker = pal.Selected.Render("> ")
+		}
+		name := strings.ToUpper(sanitizeInline(role.Role))
+		row := marker + pal.Bold.Render(name)
+		model := sanitizeInline(planeModelNameFromRole(role))
+		if model != "" {
+			if room := width - CellWidth(row) - CellWidth(model) - 3; room >= 1 {
+				row += strings.Repeat(" ", room) + pal.Muted.Render(model)
+			}
+		}
+		out = append(out, TruncateToWidth(row, width))
+	}
+	return out
+}
+
+// planeModelNameFromRole names the model a role currently resolves to.
+func planeModelNameFromRole(role RoleAssignment) string {
+	if role.Name != "" {
+		return role.Name
+	}
+	if role.Model != "" {
+		return role.Model
+	}
+	return "unset"
+}
+
+// modelFlowRows renders the model choices of the roles-flow model step, windowed
+// around the highlight so the selected row is always visible.
+func modelFlowRows(plane *ModelPlaneState, pal *Palette, width int) []string {
+	visible := plane.VisibleModels()
+	if len(visible) == 0 {
+		return []string{pal.Muted.Render(TruncateToWidth("  (no matches — esc backs out)", width))}
+	}
+	rows := plane.VisibleRows
+	if rows <= 0 || rows > len(visible) {
+		rows = len(visible)
+	}
+	window, start := window(visible, plane.ModelOffset, rows)
+	out := make([]string, 0, len(window)+1)
+	for i, model := range window {
+		out = append(out, renderPlaneModelRow(start+i, plane, model, pal, width))
+	}
+	if hidden := len(visible) - start - len(window); hidden > 0 {
+		out = append(out, pal.Muted.Render(TruncateToWidth(fmt.Sprintf("  … %d more", hidden), width)))
+	}
+	return out
+}
+
+// effortFlowRows renders the effort ladder of the effort step.
+func effortFlowRows(plane *ModelPlaneState, pal *Palette, width int) []string {
+	options := plane.EffortOptions()
+	if len(options) == 0 {
+		return []string{pal.Muted.Render(TruncateToWidth("  this model exposes no thinking effort", width))}
+	}
+	out := make([]string, 0, len(options))
+	for i, option := range options {
+		marker := "  "
+		choice := pal.Muted.Render("○ " + option)
+		if i == plane.EffortCursor {
+			marker = pal.Selected.Render("> ")
+			choice = pal.Selected.Render("● " + option)
+		}
+		out = append(out, TruncateToWidth(marker+choice, width))
+	}
+	return out
+}
+
 // fitPane pins a pane to exactly height rows: short content pads below,
 // overflow yields from the bottom so headings survive.
 func fitPane(lines []string, height int) []string {
@@ -390,35 +566,30 @@ func fitPane(lines []string, height int) []string {
 // shortcuts are deliberately absent: with a search input on screen, only
 // non-printable navigation keys are advertised.
 func planeFooter(plane *ModelPlaneState, pal *Palette, width int) string {
-	hints := "type to filter · Tab focus · Enter select · Esc close"
+	hints := "type to filter · Tab roles · Enter choose · Esc close"
 	if plane.Variant != nil {
 		hints = "↑↓ choose variant · Enter confirm · Esc cancel"
-	} else if plane.Focus == PlaneFocusEffort {
-		hints = "Tab focus · ↑↓←→ effort · Enter assign · Esc close"
-	} else if plane.Focus == PlaneFocusSearch {
-		hints = "type to filter · Enter accept · Tab focus · Esc leave"
-	} else if plane.Focus == PlaneFocusProviders {
-		hints = "Tab focus · ↑↓ provider · Enter models · Esc close"
-	} else if plane.Focus == PlaneFocusModels {
-		hints = "Tab focus · ↑↓ model · Enter assign · Esc close"
+	} else if plane.Stage == PlaneStageRole {
+		hints = "↑↓ role · Enter choose · Esc back"
+	} else if plane.Stage == PlaneStageModel {
+		hints = "type to filter · ↑↓ model · Enter choose · Esc back"
+	} else if plane.Stage == PlaneStageEffort {
+		hints = "↑↓ effort · Enter apply · Esc back"
+	} else if plane.Stage == PlaneStageApply {
+		hints = "Enter apply · Esc back"
 	} else if plane.Mode == PlaneRoles {
-		hints = "Tab focus · ↑↓ role · Enter choose model · Esc close"
+		hints = "↑↓ role · Enter assign model · Tab models · Esc back"
+	} else if plane.Focus == PlaneFocusSearch {
+		hints = "type to filter · Enter models · Tab roles · Esc leave"
+	} else if plane.Focus == PlaneFocusProviders {
+		hints = "↑↓ provider · Enter models · Tab roles · Esc close"
+	} else if plane.Focus == PlaneFocusModels {
+		hints = "↑↓ model · Enter choose role · Tab roles · Esc close"
 	}
 	if width < 50 {
 		// Narrow dialogs cannot fit the full contract: abbreviate rather
 		// than truncate the close key away.
-		if plane.Variant != nil {
-			hints = "↑↓ · Enter · Esc"
-		} else {
-			short := map[PlaneFocus]string{
-				PlaneFocusSearch:    "type · Enter · Tab · Esc",
-				PlaneFocusEffort:    "Tab · ↑↓ effort · Enter · Esc",
-				PlaneFocusRoles:     "Tab · ↑↓ · Enter · Esc",
-				PlaneFocusProviders: "Tab · ↑↓ · Enter · Esc",
-				PlaneFocusModels:    "Tab · ↑↓ · Enter · Esc",
-			}
-			hints = short[plane.Focus]
-		}
+		hints = "↑↓ · Enter · Esc"
 	}
 	status := plane.Notice
 	if status == "" {

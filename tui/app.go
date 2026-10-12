@@ -185,10 +185,20 @@ type Program struct {
 	// is still a restore, distinct from "no restore".
 	pickerRestoreSet bool
 
-	// support runs an ephemeral $sup query on the ASK authority's model. Nil
+	// support runs an ephemeral $sup query on the SUP role's model. Nil
 	// means the surface is unavailable, in which case $sup is treated as an
 	// ordinary prompt. Its conversation never reaches the store or history.
-	support func(ctx context.Context, question string) (string, error)
+	// The onDelta callback streams answer chunks; it may be nil.
+	support func(ctx context.Context, question string, onDelta func(string)) (string, error)
+
+	// supportInfo reports the effective SUP model reference and effort for
+	// display. Nil means unknown: the overlay says so rather than
+	// fabricating it.
+	supportInfo func() (model, effort string)
+
+	// supportCancel aborts the in-flight support turn, if any. Guarded by
+	// mu like cancelTurn.
+	supportCancel context.CancelFunc
 
 	// turnSeq issues turn identities. Guarded by mu: runTurn increments it
 	// off the update goroutine while cancelTurnNow reads state on it.
@@ -399,7 +409,7 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, p.waitForApproval()
 
 	case tickMsg:
-		if p.state.Status.Busy {
+		if p.state.Status.Busy || p.state.SupportBusy() {
 			p.state.Status.Spinner = AdvanceSpinner(p.state.Status.Spinner, len(spinnerFrames))
 		}
 		return p, tick()
@@ -443,7 +453,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil {
+	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.SupportPanel != nil {
 		return false
 	}
 	return s.Input == ""
@@ -465,6 +475,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	switch m.Button {
 	case tea.MouseButtonWheelUp:
+		if p.state.SupportPanel != nil {
+			p.state.Apply(SupportScrolled{Delta: mouseScrollLines})
+			return p, nil
+		}
 		if p.state.Plane != nil {
 			p.state.Apply(PlaneMoved{Delta: -1})
 			return p, nil
@@ -476,6 +490,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 		p.state.Apply(ScrollMoved{Delta: mouseScrollLines})
 		return p, nil
 	case tea.MouseButtonWheelDown:
+		if p.state.SupportPanel != nil {
+			p.state.Apply(SupportScrolled{Delta: -mouseScrollLines})
+			return p, nil
+		}
 		if p.state.Plane != nil {
 			p.state.Apply(PlaneMoved{Delta: 1})
 			return p, nil
@@ -549,11 +567,23 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if p.state.Plane != nil {
+		// The support overlay never stacks with the model control plane:
+		// /model is unavailable until support closes.
+		if p.state.SupportPanel != nil {
+			return p, nil
+		}
 		return p.handlePlaneKey(msg)
 	}
 
 	if p.state.Picker != nil {
 		return p.handlePickerKey(msg)
+	}
+
+	// The support overlay owns interaction while open: printable input
+	// goes to the support composer, and no workspace turn, slash command,
+	// or overlay can start underneath it.
+	if p.state.SupportPanel != nil {
+		return p.handleSupportKey(msg)
 	}
 
 	// Inline slash discovery owns its keys while visible: navigating,
@@ -646,15 +676,9 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.cancelOrQuit()
 
 	case "esc":
-		// Escape closes the ephemeral support surface when one is open and no
-		// turn is running: the surface must return the user to the previous
-		// interaction without touching the main task (§34).
-		if p.state.Support && !p.state.Status.Busy {
-			p.state.Apply(SupportClosed{})
-			return p, nil
-		}
 		// Escape backs out of a running turn the way ctrl+c does, but never
-		// quits: a stray keypress must not end the session.
+		// quits: a stray keypress must not end the session. (An open
+		// support overlay routes to its own handler before reaching here.)
 		if p.state.Status.Busy {
 			p.cancelTurnNow("cancelled")
 			return p, nil
@@ -849,6 +873,19 @@ func (p *Program) pageStep() int {
 	return 10
 }
 
+// supportPageStep scrolls the $sup response by half the dialog's content
+// height, so one page keeps context. Unknown sizes fall back to the
+// transcript step.
+func (p *Program) supportPageStep() int {
+	if p.state.Width > 0 && p.state.Height > 0 {
+		rect := SupportModalRect(p.state.Width, p.state.Height)
+		if contentH := rect.Height - 3; contentH > 4 {
+			return contentH / 2
+		}
+	}
+	return p.pageStep()
+}
+
 // runCommand dispatches a slash command.
 //
 // A command that ends the session returns tea.Quit; one that only changes state
@@ -883,6 +920,12 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return nil
 
 	case "model":
+		// No nested modals: /model stays unavailable until the support
+		// panel closes, so one overlay never stacks on another.
+		if p.state.SupportPanel != nil {
+			p.state.Apply(Notice{Text: "close support first (Esc) before /model"})
+			return nil
+		}
 		if len(command.Args) == 0 {
 			if p.modelControl.Assign != nil {
 				return p.openModelControl()
@@ -1120,11 +1163,54 @@ func (p *Program) cancelOrQuit() (tea.Model, tea.Cmd) {
 		p.closePicker()
 		return p, nil
 	}
+	// While the support overlay is open, ctrl+c cancels a running
+	// support turn or closes an idle panel. It never quits the session
+	// from behind the overlay and never touches the main turn.
+	if p.state.SupportPanel != nil {
+		if p.state.SupportBusy() {
+			p.cancelSupportNow("cancelled")
+			return p, nil
+		}
+		p.state.Apply(SupportClosed{})
+		return p, nil
+	}
 	if p.state.Status.Busy {
 		p.cancelTurnNow("cancelled")
 		return p, nil
 	}
 	return p, p.quitNow()
+}
+
+// cancelSupportNow aborts the in-flight support turn, if any.
+//
+// Cancellation is a single semantic transition: the reducer makes repeated
+// requests idempotent, so one Ctrl+C produces one terminal Cancelled state
+// and never a stream of duplicates. The spinner stops with the transition
+// itself, because the overlay derives it from the panel status rather than
+// from the loop unwinding.
+func (p *Program) cancelSupportNow(note string) {
+	p.mu.Lock()
+	cancel := p.supportCancel
+	p.mu.Unlock()
+
+	// Runs on the update goroutine, which owns the state: the read is
+	// direct, like every other state read here.
+	seq := 0
+	if p.state.SupportPanel != nil {
+		seq = p.state.SupportPanel.Seq
+	}
+	if seq == 0 {
+		seq = p.state.SupportSeq
+	}
+
+	if cancel != nil {
+		cancel()
+	}
+	text := note
+	if text == "" {
+		text = "cancelled"
+	}
+	p.state.Apply(SupportCancelledEvent{Seq: seq, Text: text})
 }
 
 // cancelTurnNow aborts the in-flight turn, if any.
@@ -1180,6 +1266,13 @@ func (p *Program) queue(text string) tea.Cmd {
 func (p *Program) switchWorkspace(name string) {
 	if p.workspace.Switch == nil {
 		p.state.Apply(Notice{Text: "workspace switching is unavailable"})
+		return
+	}
+	// A workspace switch underneath an open support panel would move the
+	// authority a running SUP turn executes under. Refused until the
+	// panel closes (Esc); the turn boundary rule stays intact.
+	if p.state.SupportPanel != nil {
+		p.state.Apply(Notice{Text: "close support first (Esc) before switching workspace"})
 		return
 	}
 	if p.state.Status.Busy {
@@ -1309,17 +1402,12 @@ func (p *Program) closePlane() {
 
 // handlePlaneKey routes keys to the open control plane.
 //
-// The interaction contract is focus-explicit and streamlined: Tab/Shift+Tab
-// cycle Provider -> Model -> Role -> Effort (search is reached by typing),
-// Enter advances Provider -> Model and assigns from Model/Effort, while Enter
-// on a role stages it and returns to model search so its replacement can be
-// picked. Typing anywhere in model mode focuses search and lands in the
-// query — no shortcut is needed to start filtering — and effort is a visible
-// control driven by navigation keys on its own stop, never by a printable
-// shortcut. There are no printable global shortcuts: with a text input on
-// screen, a letter key must never execute a command. The variant prompt is
-// the only popup: selecting a model assigns directly unless it needs a
-// variant choice, so there is never a role popup stacked on an effort popup.
+// The interaction contract is a linear, transactional flow. MODEL mode runs
+// model -> role -> effort -> apply; ROLES mode runs role -> model -> effort ->
+// apply. Every step owns only transient state: nothing is persisted until the
+// explicit Enter on the effort (or apply) step, and Esc backs out a step
+// without touching configuration. Tab switches between the MODEL and ROLES
+// modes. Search owns printable input, so no letter ever executes a command.
 func (p *Program) handlePlaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	plane := p.state.Plane
 	// An open variant prompt owns the keyboard: nothing behind it moves
@@ -1327,8 +1415,31 @@ func (p *Program) handlePlaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if plane.Variant != nil {
 		return p.handleVariantKey(msg)
 	}
+	switch plane.Stage {
+	case PlaneStageBrowse:
+		if plane.Mode == PlaneRoles {
+			return p.handleRoleBrowseKey(msg)
+		}
+		return p.handleModelBrowseKey(msg)
+	case PlaneStageModel:
+		return p.handleModelBrowseKey(msg)
+	default:
+		return p.handlePlaneStageKey(msg)
+	}
+}
+
+// handleModelBrowseKey drives the model list, shared by MODEL browsing and the
+// roles-flow model step. Enter confirms the highlighted model and advances the
+// flow; in roles mode it continues to effort, in model mode to role selection.
+func (p *Program) handleModelBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	plane := p.state.Plane
+	inFlow := plane.Stage == PlaneStageModel
 	switch msg.String() {
-	case "esc":
+	case "esc", "ctrl+c":
+		if inFlow {
+			p.state.Apply(PlaneStageCancelled{})
+			return p, nil
+		}
 		// Leaving search keeps the query; a second Esc clears it; a third
 		// closes. Closing never applies anything.
 		if plane.Focus == PlaneFocusSearch {
@@ -1341,64 +1452,41 @@ func (p *Program) handlePlaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		p.closePlane()
 		return p, nil
-	case "ctrl+c":
-		p.closePlane()
-		return p, nil
-	case "tab":
-		p.state.Apply(PlaneFocusMoved{Delta: 1})
-		return p, nil
-	case "shift+tab":
-		p.state.Apply(PlaneFocusMoved{Delta: -1})
+	case "tab", "shift+tab":
+		if inFlow {
+			// Mid-flow, Tab is not a step; keep the user where they are.
+			return p, nil
+		}
+		p.state.Apply(PlaneModeToggled{})
 		return p, nil
 	case "left", "ctrl+b":
 		if plane.Focus == PlaneFocusSearch {
-			// Text cursor in the input; focus stays where it is.
 			p.state.Apply(PlaneFilterCursorMoved{Delta: -1})
 			return p, nil
 		}
-		if plane.Focus == PlaneFocusEffort {
-			p.state.Apply(PlaneEffortCycled{Delta: -1})
-			return p, nil
+		if !inFlow {
+			p.state.Apply(PlaneFocusMoved{Delta: -1})
 		}
-		p.state.Apply(PlaneFocusMoved{Delta: -1})
 		return p, nil
 	case "right", "ctrl+f":
 		if plane.Focus == PlaneFocusSearch {
 			p.state.Apply(PlaneFilterCursorMoved{Delta: 1})
 			return p, nil
 		}
-		if plane.Focus == PlaneFocusEffort {
-			p.state.Apply(PlaneEffortCycled{Delta: 1})
-			return p, nil
+		if !inFlow {
+			p.state.Apply(PlaneFocusMoved{Delta: 1})
 		}
-		p.state.Apply(PlaneFocusMoved{Delta: 1})
 		return p, nil
 	case "up", "ctrl+p":
-		if plane.Focus == PlaneFocusEffort {
-			p.state.Apply(PlaneEffortCycled{Delta: -1})
-			return p, nil
-		}
 		p.state.Apply(PlaneMoved{Delta: -1})
 		return p, nil
 	case "down", "ctrl+n":
-		if plane.Focus == PlaneFocusEffort {
-			p.state.Apply(PlaneEffortCycled{Delta: 1})
-			return p, nil
-		}
 		p.state.Apply(PlaneMoved{Delta: 1})
 		return p, nil
 	case "pgup":
-		if plane.Focus == PlaneFocusEffort {
-			p.state.Apply(PlaneEffortCycled{Delta: -1})
-			return p, nil
-		}
 		p.state.Apply(PlanePaged{Delta: -1})
 		return p, nil
 	case "pgdown":
-		if plane.Focus == PlaneFocusEffort {
-			p.state.Apply(PlaneEffortCycled{Delta: 1})
-			return p, nil
-		}
 		p.state.Apply(PlanePaged{Delta: 1})
 		return p, nil
 	case "home", "ctrl+home":
@@ -1428,38 +1516,22 @@ func (p *Program) handlePlaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return p, nil
 	case "enter":
-		switch plane.Focus {
-		case PlaneFocusSearch:
-			// Accept the query and move to the results.
+		switch {
+		case inFlow:
+			p.choosePlaneModel()
+		case plane.Focus == PlaneFocusProviders, plane.Focus == PlaneFocusSearch:
+			// Start of the flow: move to the model list.
 			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
-			return p, nil
-		case PlaneFocusProviders:
-			// Start of the streamlined flow: Provider Enter moves to Model
-			// for selection.
-			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
-			return p, nil
-		case PlaneFocusRoles:
-			// Roles only display each role's current model: Enter stages
-			// the highlighted role and returns to model search so its
-			// replacement can be found, instead of assigning a hidden
-			// model highlight.
-			p.state.Apply(PlaneRoleStaged{})
-			return p, nil
 		default:
-			p.applyPlane()
-			return p, nil
+			p.stagePlaneModel()
 		}
+		return p, nil
 	case "ctrl+r":
 		if cmd := p.refreshPlaneCatalog(); cmd != nil {
 			return p, cmd
 		}
 		return p, nil
 	default:
-		// Space on the effort stop steps the visible radio.
-		if msg.Type == tea.KeySpace && plane.Focus == PlaneFocusEffort {
-			p.state.Apply(PlaneEffortCycled{Delta: 1})
-			return p, nil
-		}
 		if msg.Type != tea.KeyRunes && msg.Type != tea.KeySpace {
 			return p, nil
 		}
@@ -1472,17 +1544,122 @@ func (p *Program) handlePlaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// No shortcut is needed to search — typing is enough. A printable
 		// outside the input focuses search first and lands in the query, so
-		// it can never execute a command. Roles mode has no search box, so
-		// typing there stays a no-op rather than yanking the mode away.
+		// it can never execute a command.
 		if plane.Focus != PlaneFocusSearch {
-			if plane.Mode != PlaneModels {
-				return p, nil
-			}
 			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusSearch})
 		}
 		p.state.Apply(PlaneTyped{Text: text})
 		return p, nil
 	}
+}
+
+// handleRoleBrowseKey drives the ROLES list. Enter begins the roles-first
+// transaction for the highlighted role; Esc backs out to MODEL mode (a second
+// Esc then closes), preserving the top-level navigation.
+func (p *Program) handleRoleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		p.state.Apply(PlaneModeToggled{})
+		return p, nil
+	case "tab", "shift+tab":
+		p.state.Apply(PlaneModeToggled{})
+		return p, nil
+	case "up", "ctrl+p":
+		p.state.Apply(PlaneMoved{Delta: -1})
+		return p, nil
+	case "down", "ctrl+n":
+		p.state.Apply(PlaneMoved{Delta: 1})
+		return p, nil
+	case "pgup":
+		p.state.Apply(PlanePaged{Delta: -1})
+		return p, nil
+	case "pgdown":
+		p.state.Apply(PlanePaged{Delta: 1})
+		return p, nil
+	case "home", "ctrl+home":
+		p.state.Apply(PlaneTop{})
+		return p, nil
+	case "end", "ctrl+end":
+		p.state.Apply(PlaneBottom{})
+		return p, nil
+	case "enter":
+		p.state.Apply(PlaneRoleStaged{})
+		return p, nil
+	default:
+		// Roles mode has no search box; typing stays a no-op rather than
+		// yanking the mode away.
+		return p, nil
+	}
+}
+
+// handlePlaneStageKey drives the role, effort, and apply steps. Enter advances
+// or applies; Esc backs out one step.
+func (p *Program) handlePlaneStageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	plane := p.state.Plane
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		p.state.Apply(PlaneStageCancelled{})
+		return p, nil
+	case "up", "ctrl+p", "left", "ctrl+b":
+		p.state.Apply(PlaneMoved{Delta: -1})
+		return p, nil
+	case "down", "ctrl+n", "right", "ctrl+f":
+		p.state.Apply(PlaneMoved{Delta: 1})
+		return p, nil
+	case "pgup":
+		p.state.Apply(PlanePaged{Delta: -1})
+		return p, nil
+	case "pgdown":
+		p.state.Apply(PlanePaged{Delta: 1})
+		return p, nil
+	case "home", "ctrl+home":
+		p.state.Apply(PlaneTop{})
+		return p, nil
+	case "end", "ctrl+end":
+		p.state.Apply(PlaneBottom{})
+		return p, nil
+	case "enter":
+		if plane.Stage == PlaneStageRole {
+			p.state.Apply(PlaneRoleChosen{})
+			return p, nil
+		}
+		p.applyPlane()
+		return p, nil
+	default:
+		return p, nil
+	}
+}
+
+// stagePlaneModel begins the model-first transaction for the highlighted model.
+// A model that needs a variant choice opens that prompt first; nothing is
+// persisted either way.
+func (p *Program) stagePlaneModel() {
+	plane := p.state.Plane
+	model, ok := plane.ChosenModel()
+	if !ok {
+		p.state.Apply(PlaneAssigned{Notice: "no model selected"})
+		return
+	}
+	if plane.NeedsVariantChoice(model) {
+		p.state.Apply(PlaneVariantOpened{})
+		return
+	}
+	p.state.Apply(PlaneModelStaged{Model: model})
+}
+
+// choosePlaneModel confirms the highlighted model in the roles flow.
+func (p *Program) choosePlaneModel() {
+	plane := p.state.Plane
+	model, ok := plane.ChosenModel()
+	if !ok {
+		p.state.Apply(PlaneAssigned{Notice: "no model selected"})
+		return
+	}
+	if plane.NeedsVariantChoice(model) {
+		p.state.Apply(PlaneVariantOpened{})
+		return
+	}
+	p.state.Apply(PlaneModelChosen{})
 }
 
 // refreshPlaneCatalog issues a background refresh for an open plane, at most
@@ -1531,10 +1708,10 @@ func (p *Program) handleVariantKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// applyPlane applies the highlighted model and effort to the targeted role
-// through the caller's Assign hook, then records the outcome. When the
-// highlighted model supports variants, Enter opens the variant prompt
-// instead: nothing assigns until a specific variant is confirmed.
+// applyPlane applies the pending transaction through the caller's Assign hook,
+// then records the outcome. It only runs at the effort or apply step, so the
+// model and role are already resolved and nothing half-built reaches the
+// authority seam.
 func (p *Program) applyPlane() {
 	plane := p.state.Plane
 	if plane == nil {
@@ -1548,21 +1725,17 @@ func (p *Program) applyPlane() {
 		p.state.Apply(PlaneAssigned{Notice: "wait for the turn to finish before changing models"})
 		return
 	}
-	update, ok := plane.Assignment()
+	update, ok := plane.PendingAssignment()
 	if !ok {
 		p.state.Apply(PlaneAssigned{Notice: "no model selected"})
-		return
-	}
-	if model, ok := plane.ChosenModel(); ok && plane.NeedsVariantChoice(model) {
-		p.state.Apply(PlaneVariantOpened{})
 		return
 	}
 	p.assignPlane(update)
 }
 
-// confirmPlaneVariant applies the chosen variant row through the caller's
-// Assign hook. The variant id carries its suffix, so the persisted reference
-// names the exact endpoint the user picked.
+// confirmPlaneVariant commits the chosen variant row and advances the flow
+// through the same transaction: the variant id carries its suffix, its own
+// ladder is resolved fresh, and nothing is persisted until Apply.
 func (p *Program) confirmPlaneVariant() {
 	plane := p.state.Plane
 	if plane == nil || plane.Variant == nil {
@@ -1572,17 +1745,13 @@ func (p *Program) confirmPlaneVariant() {
 		p.state.Apply(PlaneAssigned{Notice: "wait for the turn to finish before changing models"})
 		return
 	}
-	update, ok := plane.VariantAssignment()
+	model, ok := plane.ChosenVariant()
 	if !ok {
 		p.state.Apply(PlaneVariantClosed{})
 		p.state.Apply(PlaneAssigned{Notice: "no variant selected"})
 		return
 	}
-	// The choice is made: close the prompt before assigning so the outcome
-	// notice owns the footer. A failed assignment leaves the model
-	// highlighted, and Enter reopens the prompt.
-	p.state.Apply(PlaneVariantClosed{})
-	p.assignPlane(update)
+	p.state.Apply(PlaneVariantConfirmed{Model: model})
 }
 
 // assignPlane sends one staged assignment through the caller's Assign hook
@@ -2035,14 +2204,22 @@ func tick() tea.Cmd {
 // which is the race this queue exists to prevent. When the turn ends, the
 // returned message drains the queue on the update goroutine.
 func (p *Program) submit(text string) tea.Cmd {
-	// $sup is routed to the ephemeral surface before it can become a turn:
+	// $sup is routed to the ephemeral overlay before it can become a turn:
 	// it must never persist, never touch history, and never reach the store
-	// (§10.2). A bare "$sup" closes the surface.
-	if question, ok := ParseSupport(text); ok && p.support != nil {
-		return func() tea.Msg {
-			p.runSupport(question)
-			return turnFinishedMsg{}
+	// (§10.2). A bare "$sup" opens the panel with input focus and starts
+	// no provider call; "$sup <request>" opens it and submits directly.
+	if question, ok := ParseSupport(text); ok {
+		if p.support == nil {
+			return func() tea.Msg {
+				p.runTurn(text)
+				return turnFinishedMsg{}
+			}
 		}
+		p.openSupport(question)
+		if strings.TrimSpace(question) == "" || p.state.SupportBusy() {
+			return nil
+		}
+		return p.startSupportRun(strings.TrimSpace(question))
 	}
 	return func() tea.Msg {
 		p.runTurn(text)
@@ -2050,24 +2227,218 @@ func (p *Program) submit(text string) tea.Cmd {
 	}
 }
 
-// runSupport executes one ephemeral $sup exchange.
+// supportIdentity reads the effective SUP model and effort for display.
+// Unknown stays unknown: the overlay says so rather than fabricating it.
+func (p *Program) supportIdentity() (model, effort string) {
+	if p.supportInfo == nil {
+		return "", ""
+	}
+	return p.supportInfo()
+}
+
+// openSupport opens the overlay, optionally seeding it for a direct submit.
+// Opening never invokes the provider: the call starts only when a
+// non-empty request is submitted. The invoking line leaves the main
+// composer: it belongs to the support input now, never to the next
+// workspace turn.
+func (p *Program) openSupport(question string) {
+	model, effort := p.supportIdentity()
+	p.state.Apply(SupportOpened{Model: model, Effort: effort})
+	p.state.Apply(InputChanged{Text: ""})
+	if trimmed := strings.TrimSpace(question); trimmed != "" && !p.state.SupportBusy() {
+		p.state.Apply(SupportInputChanged{Text: trimmed, Cursor: len([]rune(trimmed))})
+	}
+}
+
+// startSupportRun begins one support turn for a non-empty request. It runs
+// on the update goroutine: the Started event (with its sequence identity)
+// applies synchronously, and the provider call runs off-goroutine.
+func (p *Program) startSupportRun(request string) tea.Cmd {
+	if p.support == nil || p.state.SupportPanel == nil || p.state.SupportBusy() {
+		return nil
+	}
+	p.state.SupportSeq++
+	seq := p.state.SupportSeq
+	model, effort := p.supportIdentity()
+	p.state.Apply(SupportStarted{Seq: seq, Request: request, Model: model, Effort: effort})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p.mu.Lock()
+	p.supportCancel = cancel
+	p.mu.Unlock()
+
+	support := p.support
+	return func() tea.Msg {
+		p.runSupport(ctx, seq, request, support)
+		return turnFinishedMsg{}
+	}
+}
+
+// runSupport executes one ephemeral $sup exchange off the update goroutine.
 //
-// It runs off the update goroutine and publishes the exchange as view-only
-// entries. Nothing here touches p.history, the store, or the session: that
-// isolation is the whole contract of the surface (I6, I17).
-func (p *Program) runSupport(question string) {
-	if strings.TrimSpace(question) == "" {
-		p.publish(SupportClosed{})
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+// Nothing here touches p.history, the store, or the session: that isolation
+// is the whole contract of the surface (I6, I17). Answer chunks stream
+// into the overlay through SupportDelta; the terminal event carries the
+// turn's sequence so stale turns cannot mutate the panel.
+func (p *Program) runSupport(ctx context.Context, seq int, question string, support func(ctx context.Context, question string, onDelta func(string)) (string, error)) {
+	defer func() {
+		p.mu.Lock()
+		p.supportCancel = nil
+		p.mu.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	answer, err := p.support(ctx, question)
+	// Chunks stream into the overlay as they arrive; the completed answer
+	// then publishes only its unstreamed tail, so visible text is never
+	// duplicated. Transports that never token-stream publish everything
+	// in the terminal event.
+	var streamed string
+	answer, err := support(ctx, question, func(delta string) {
+		if delta == "" {
+			return
+		}
+		for _, chunk := range splitAssistantChunks(delta) {
+			if p.publishOK(SupportDelta{Seq: seq, Text: chunk}) {
+				streamed += chunk
+			}
+		}
+	})
 	if err != nil {
-		p.publish(Notice{Text: "$sup: " + err.Error()})
+		// A cancelled context is an interruption, not a failure: the
+		// single semantic cancellation already reached the panel through
+		// SupportCancelledEvent, so only real failures publish here. The
+		// reducer makes a duplicate cancellation a no-op either way.
+		if errors.Is(err, context.Canceled) {
+			p.publish(SupportCancelledEvent{Seq: seq, Text: "cancelled"})
+		} else {
+			p.publish(SupportFailedEvent{Seq: seq, Error: err.Error()})
+		}
 		return
 	}
-	p.publish(SupportTurn{Question: question, Answer: answer})
+	rest := answer
+	if streamed != "" {
+		if strings.HasPrefix(answer, streamed) {
+			rest = answer[len(streamed):]
+		} else if n := commonPrefixLen(answer, streamed); n > 0 {
+			rest = answer[n:]
+		}
+	}
+	p.publish(SupportDone{Seq: seq, Text: rest})
+}
+
+// handleSupportKey routes keys while the support overlay is open.
+//
+// The contract is focus-explicit with no printable shortcuts: while a turn
+// runs, only Ctrl+C (cancel) and Esc (cancel) own the keyboard; otherwise
+// every printable key — including s, c, r, e — is composer text. Enter
+// submits, Esc closes (or cancels when running), Ctrl+C cancels a running
+// turn, and Tab stays a no-op until another focusable control exists.
+func (p *Program) handleSupportKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	panel := p.state.SupportPanel
+	if panel == nil {
+		return p, nil
+	}
+	// The response viewport scrolls in every state, including mid-turn: a
+	// long streaming answer stays inspectable while it lands.
+	switch msg.String() {
+	case "pgup", "shift+up":
+		p.state.Apply(SupportScrolled{Delta: p.supportPageStep()})
+		return p, nil
+	case "pgdown", "shift+down":
+		p.state.Apply(SupportScrolled{Delta: -p.supportPageStep()})
+		return p, nil
+	case "ctrl+end":
+		p.state.Apply(SupportScrollToBottom{})
+		return p, nil
+	}
+	if panel.Status == SupportRunning {
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			p.cancelSupportNow("cancelled")
+			return p, nil
+		}
+		return p, nil
+	}
+	switch msg.String() {
+	case "enter":
+		text := strings.TrimSpace(panel.Input)
+		if text == "" {
+			return p, nil
+		}
+		return p, p.startSupportRun(text)
+	case "esc", "ctrl+c":
+		p.state.Apply(SupportClosed{})
+		return p, nil
+	case "alt+enter", "ctrl+j":
+		p.state.Apply(SupportInputChanged{
+			Text:   insertAt(panel.Input, panel.Cursor, "\n"),
+			Cursor: panel.Cursor + 1,
+		})
+		return p, nil
+	case "backspace", "ctrl+h":
+		text, cursor := deleteBefore(panel.Input, panel.Cursor)
+		p.state.Apply(SupportInputChanged{Text: text, Cursor: cursor})
+		return p, nil
+	case "delete", "ctrl+d":
+		text, cursor := deleteAt(panel.Input, panel.Cursor)
+		p.state.Apply(SupportInputChanged{Text: text, Cursor: cursor})
+		return p, nil
+	case "left", "ctrl+b":
+		p.state.Apply(SupportInputChanged{Text: panel.Input, Cursor: panel.Cursor - 1})
+		return p, nil
+	case "right", "ctrl+f":
+		p.state.Apply(SupportInputChanged{Text: panel.Input, Cursor: panel.Cursor + 1})
+		return p, nil
+	case "home", "ctrl+a":
+		p.state.Apply(SupportInputChanged{Text: panel.Input, Cursor: lineStart(panel.Input, panel.Cursor)})
+		return p, nil
+	case "end", "ctrl+e":
+		p.state.Apply(SupportInputChanged{Text: panel.Input, Cursor: lineEnd(panel.Input, panel.Cursor)})
+		return p, nil
+	case "ctrl+u":
+		text, cursor := killToStart(panel.Input, panel.Cursor)
+		p.state.Apply(SupportInputChanged{Text: text, Cursor: cursor})
+		return p, nil
+	case "ctrl+k":
+		text, _ := killToEnd(panel.Input, panel.Cursor)
+		p.state.Apply(SupportInputChanged{Text: text, Cursor: panel.Cursor})
+		return p, nil
+	case "ctrl+w":
+		text, cursor := killWordBack(panel.Input, panel.Cursor)
+		p.state.Apply(SupportInputChanged{Text: text, Cursor: cursor})
+		return p, nil
+	case "up", "ctrl+p":
+		if line, ok := lineAbove(panel.Input, panel.Cursor); ok {
+			p.state.Apply(SupportInputChanged{Text: panel.Input, Cursor: line})
+		}
+		return p, nil
+	case "down", "ctrl+n":
+		if line, ok := lineBelow(panel.Input, panel.Cursor); ok {
+			p.state.Apply(SupportInputChanged{Text: panel.Input, Cursor: line})
+		}
+		return p, nil
+	case "tab", "shift+tab":
+		// One focusable control exists (the input): Tab stays a no-op
+		// rather than yielding focus nowhere.
+		return p, nil
+	default:
+		// Every printable key is composer text. Space arrives as
+		// KeySpace, not KeyRunes: without this branch no space can ever
+		// be typed into the support input.
+		switch msg.Type {
+		case tea.KeyRunes, tea.KeySpace:
+			text := string(msg.Runes)
+			if msg.Type == tea.KeySpace {
+				text = " "
+			}
+			if text == "" {
+				return p, nil
+			}
+			composed := insertAt(panel.Input, panel.Cursor, text)
+			p.state.Apply(SupportInputChanged{Text: composed, Cursor: panel.Cursor + len([]rune(text))})
+		}
+		return p, nil
+	}
 }
 
 // drainQueue starts the oldest queued prompt. It runs on the update
@@ -2248,11 +2619,33 @@ func (p *Program) SetModelSwitcher(set func(id string) error, current func() str
 
 // SetSupportFunc installs the ephemeral $sup handler.
 //
-// The handler runs on the ASK authority's model and must not persist anything:
-// the program routes its exchange through view-only entries. A nil handler
-// leaves $sup unavailable, in which case it is treated as an ordinary prompt.
+// The handler runs on the SUP role's model and must not persist anything:
+// the program routes its exchange through the overlay, never the normal
+// transcript. A nil handler leaves $sup unavailable, in which case it is
+// treated as an ordinary prompt.
 func (p *Program) SetSupportFunc(support func(ctx context.Context, question string) (string, error)) {
+	if support == nil {
+		p.support = nil
+		return
+	}
+	p.support = func(ctx context.Context, question string, onDelta func(string)) (string, error) {
+		return support(ctx, question)
+	}
+}
+
+// SetSupportStreamFunc installs the streaming $sup handler. Chunks stream
+// into the overlay as they arrive; the returned string completes the turn
+// for transports that never token-stream. Same persistence contract as
+// SetSupportFunc.
+func (p *Program) SetSupportStreamFunc(support func(ctx context.Context, question string, onDelta func(string)) (string, error)) {
 	p.support = support
+}
+
+// SetSupportInfo installs the reporter behind the overlay's SUP identity
+// line. It must return the effective SUP model reference and effort from
+// the canonical configuration authority, so the display never goes stale.
+func (p *Program) SetSupportInfo(info func() (model, effort string)) {
+	p.supportInfo = info
 }
 
 // AttachSession wires the program to a persistent transcript.
