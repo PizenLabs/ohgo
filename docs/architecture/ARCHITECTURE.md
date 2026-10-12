@@ -24,7 +24,8 @@ cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
   │     │             task (task only when maxDepth > 1; wait shares bash's
   │     │             job table; artifact when a session is attached). task
   │     │             imports agent for the subagent spec.
-  │     ├─► prompt    System prompt assembly + AGENTS.md discovery.
+  │     ├─► prompt    System prompt assembly + AGENTS.md discovery (root
+  │     │             primary, <root>/.ohgo/AGENTS.md supplementary).
   │     ├─► project   Stable project identity + project-local metadata
   │     │             (project name, project worker identity) at
   │     │             <root>/.ohgo/project.yml.
@@ -53,7 +54,8 @@ cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
 
 Dependency arrows point one way: `catalog → ai` (type only), `ai → creds`
 (secrets only), `tools → agent` (subagent spec only), `workspace → agent`
-(tool admission only), `cmd → everything`. Nothing in `ai` imports `catalog`;
+(tool admission only), `prompt → project` (project root for `.ohgo/AGENTS.md`
+discovery), `cmd → everything`. Nothing in `ai` imports `catalog`;
 nothing in `agent` constructs HTTP; nothing outside `creds` reads a provider
 credential from env or shell. A cycle here is a bug, not a shortcut.
 

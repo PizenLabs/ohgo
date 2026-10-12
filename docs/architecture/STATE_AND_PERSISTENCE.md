@@ -64,11 +64,12 @@ artifacts  (id, session_id → sessions, artifact_id, kind, origin, payload, cre
 One machine-global database holds every project's sessions. Project association
 is the `project` column — logical ownership — not a database per project.
 
-### Project memory — human-authored
+### Project instructions — human-authored
 
 | Structure | Status |
 | --- | --- |
-| `AGENTS.md` (nearest, walked upward from root) | **exists**; read per turn by `prompt.ProjectContext`; human-authored, versioned, authoritative |
+| `<project>/AGENTS.md` (primary; nearest, walked upward from root) | **exists**; read first by `prompt.ProjectContext`; human-authored, versioned, authoritative |
+| `<project>/.ohgo/AGENTS.md` (optional, supplementary OHGO-local) | **read**; appended after the primary file; never written by OHGO |
 | project-memory database | **does not exist**; the `memory` package defines the promotion seam without storage |
 
 There is no LLM-authored durable project knowledge anywhere in the codebase.
@@ -155,6 +156,37 @@ Five scopes, plus the memory seam, no more:
 - **RUNTIME** — dies with the process.
 - **MEMORY SEAM** — decides what may become durable project knowledge; owns no storage.
 
+### Ownership contract
+
+The authoritative layout is fixed and minimal:
+
+```text
+Global state            ~/.ohgo/                     machine/user scope
+Project state           <project>/.ohgo/             one per checkout
+Project identity        <project>/.ohgo/project.yml  the sole authority
+Primary instructions    <project>/AGENTS.md          human-authored
+Supplementary instrs    <project>/.ohgo/AGENTS.md    optional, OHGO-local
+Session storage         ~/.ohgo/sessions.db          scoped by project_id
+Derived state           ~/.ohgo/cache, future index  disposable, rebuildable
+```
+
+Two separations carry the whole contract:
+
+```text
+global defaults   ≠   project authority
+    A name in ~/.ohgo/settings.json (`identity.name`) may seed the
+    initialization prompt. After initialization the project identity resolves
+    from project.yml only; global settings are never its runtime authority.
+
+project identity   ≠   project instructions
+    project.yml answers "what project is this / who works on it".
+    AGENTS.md answers "how should an agent operate here".
+    Neither is written into the other.
+```
+
+Rule of thumb: **put each piece of state in the smallest scope that owns it, and
+never let global state become an accidental authority for project-local state.**
+
 ---
 
 ## C. Ownership Matrix
@@ -233,13 +265,33 @@ Today that knowledge lives in **`AGENTS.md`**, and only there:
 - it is **read, never written** by the runtime: `prompt.ProjectContext` renders
   it into the system prompt each turn. No tool or model writes it.
 
-One caveat, recorded rather than hidden: `prompt.ProjectContext` walks **up**
-from the project root and takes the first `AGENTS.md` it finds, so a file in an
-ancestor directory (outside the project) can be read. That is intended for a
-monorepo whose root carries shared instructions, but it means "the nearest
-`AGENTS.md`" is not strictly confined to the project. A future project-memory
-store must be strictly project-local; an ancestor file is context, not project
-memory, and must never be written as a project fact.
+There are exactly two instruction locations, with a fixed, deterministic
+precedence:
+
+```text
+<project>/AGENTS.md            primary project instructions
+        │                      discovered first (nearest at or above the cwd)
+        ▼
+<project>/.ohgo/AGENTS.md      supplementary OHGO-local instructions
+                               appended after the primary file
+```
+
+The root file is the file users normally create and maintain; it is the primary
+project-level instruction contract. The optional `.ohgo/AGENTS.md` is
+OHGO-local supplementary instruction and is concatenated **after** the root
+file, so its presence can never silently discard the root instructions. There
+is no conflict-resolution system beyond that ordering: both files are rendered
+verbatim, root first. `.ohgo/AGENTS.md` is read from the project root, not from
+whatever directory the process started in.
+
+One caveat, recorded rather than hidden: the primary file is found by walking
+**up** from the working directory and taking the first `AGENTS.md`, so a file
+in an ancestor directory (outside the project) can be read when the project
+carries none. That is intended for a monorepo whose root carries shared
+instructions, but it means "the nearest `AGENTS.md`" is not strictly confined to
+the project. A future project-memory store must be strictly project-local; an
+ancestor file is context, not project memory, and must never be written as a
+project fact.
 
 Consequences:
 
@@ -448,6 +500,24 @@ Mutation checks: removing the `ErrUnconfirmed` branch fails
 | `startup.TestFastPathDoesNotRewriteProjectFile` | a complete project.yml is byte-identical on restart |
 | `cmd/ohgo.TestSessionContextResolvesProjectIdentity` | sessions stay project-scoped; A resolves Alice, never B's worker |
 
+### Instruction hierarchy tests (this slice)
+
+| Test | Contract it defends |
+| --- | --- |
+| `prompt.TestProjectContextReadsBothInstructionFiles` | root `AGENTS.md` is primary and present, `.ohgo/AGENTS.md` is supplementary, root read first |
+| `prompt.TestProjectContextReadsOhgoLocalAlone` | the optional `.ohgo/AGENTS.md` contributes when it is the only file |
+| `prompt.TestProjectContextReadsRootAlone` | a project with only the root file behaves as before; no empty supplementary section |
+| `prompt.TestProjectContextEmptyWhenNoInstructions` | an unconfigured project emits no instructions block |
+| `prompt.TestProjectContextAnchorsOhgoLocalAtProjectRoot` | `.ohgo/AGENTS.md` resolves at the project root from a nested working directory; nearest root `AGENTS.md` stays primary |
+
+Mutation checks: ignoring `.ohgo/AGENTS.md` fails
+`TestProjectContextReadsBothInstructionFiles` and
+`TestProjectContextReadsOhgoLocalAlone`; anchoring the supplementary file at the
+working directory instead of the project root fails
+`TestProjectContextAnchorsOhgoLocalAtProjectRoot`; discarding the root file when
+`.ohgo/AGENTS.md` exists fails the ordering assertion in
+`TestProjectContextReadsBothInstructionFiles`.
+
 Mutation checks: fast-pathing an incomplete project (ignoring `Identity.Complete`)
 fails `TestNeedsInitWithIncompleteProject` and
 `TestIncompleteProjectRecoveredWithoutChangingID`; re-minting the id whenever
@@ -503,6 +573,9 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
    left unchanged.
 7. **Delete the model cache** — `ohgo doctor` still reports the catalog and the
    session store; `cache/` stays absent until discovery refetches.
+8. **Instruction hierarchy** — a project with both `<project>/AGENTS.md` and
+   `<project>/.ohgo/AGENTS.md` submits the root instructions first and the
+   OHGO-local instructions after it; with only one present, that one is read.
 
 ---
 
@@ -529,6 +602,16 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
 14. No persistent state may have multiple competing owners.
 15. No speculative storage is introduced without a demonstrated lifecycle and
     consumer.
+16. Project identity and project instructions are separate authorities:
+    identity lives in `project.yml`, instructions in `AGENTS.md`; neither is
+    written into the other.
+17. Root `<project>/AGENTS.md` is the primary project instruction source and is
+    read first; `<project>/.ohgo/AGENTS.md` is optional supplementary
+    OHGO-local instruction, appended after it and never replacing it.
+18. Project discovery is read-only; only the explicit initialization gate may
+    create `<project>/.ohgo`.
+19. Initialization requires explicit user commitment; a cancelled
+    initialization leaves no partial project state.
 
 ## Explicit Non-Goals
 
