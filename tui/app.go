@@ -14,6 +14,7 @@ import (
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/session"
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -208,6 +209,15 @@ type Program struct {
 	// authority seam. The TUI never changes authority itself: it calls
 	// Switch, which owns validation, the runtime, persistence, and chrome.
 	workspace WorkspaceHooks
+
+	// wizard is the onboarding dialog for uninitialized projects, set by
+	// SetInitWizard. While non-nil it owns the keyboard and the middle of
+	// the screen; header and footer keep rendering from state. It is
+	// update-goroutine-owned, like pending and flow.
+	wizard *InitWizardModel
+	// wizardHooks commits or abandons the wizard's decisions. See
+	// InitWizardHooks for the goroutine contract.
+	wizardHooks InitWizardHooks
 }
 
 // WorkspaceHooks route workspace commands through their owner.
@@ -421,6 +431,16 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnFinishedMsg:
 		return p.drainQueue()
 
+	case cursor.BlinkMsg:
+		// The wizard's inputs blink through the same message the
+		// textinput runtime produces; anything else has no caret.
+		if p.wizard != nil && !p.wizard.Done() && !p.wizard.Canceled() {
+			updated, cmd := p.wizard.Update(msg)
+			p.wizard = updated
+			return p, cmd
+		}
+		return p, nil
+
 	case modelsRefreshedMsg:
 		return p.onModelsRefreshed(m)
 
@@ -474,6 +494,11 @@ func wheelScrolls(s State) bool {
 // re-enabled, wheel ticks scroll without touching prompt text, and every
 // other mouse message remains a no-op.
 func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if p.wizard != nil {
+		// Onboarding owns the keyboard and the canvas: a wheel tick must
+		// not scroll a transcript that is not on screen.
+		return p, nil
+	}
 	if m.Button != tea.MouseButtonWheelUp && m.Button != tea.MouseButtonWheelDown {
 		return p, nil
 	}
@@ -542,9 +567,14 @@ func (p *Program) apply(event Event) {
 
 // handleKey processes a keypress.
 //
-// While an approval prompt is open, keys answer it rather than compose a line:
-// a tool is blocked on that answer, so the prompt has to be modal.
+// The wizard owns the keyboard while open: onboarding must finish before
+// any turn, command, or overlay can start underneath it. While an approval
+// prompt is open, keys answer it rather than compose a line: a tool is
+// blocked on that answer, so the prompt has to be modal.
 func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if p.wizard != nil {
+		return p.handleWizardKey(msg)
+	}
 	if p.state.Pending != nil {
 		switch msg.String() {
 		case "up", "k", "shift+tab", "left", "h":
@@ -2210,10 +2240,15 @@ func (p *Program) answer(approved bool, reason string) (tea.Model, tea.Cmd) {
 
 // View implements tea.Model.
 //
-// In live mode it returns the live region only. The transcript itself is not
-// here: it has already left through print commands, and re-rendering it as a
-// frame would make the renderer own a second copy of the scrollback.
+// In live mode it returns the live region only, unless onboarding is open:
+// the wizard owns the screen until it commits, in every presentation mode.
+// The transcript itself is not here: it has already left through print
+// commands, and re-rendering it as a frame would make the renderer own a
+// second copy of the scrollback.
 func (p *Program) View() string {
+	if p.wizard != nil {
+		return p.renderWizardFrame()
+	}
 	if p.live != nil {
 		return p.live.view()
 	}

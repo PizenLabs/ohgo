@@ -520,6 +520,15 @@ func Ensure(dir string, deps Deps) (Result, error) {
 // default, else the OS account name. Every source is only a suggestion; the
 // human confirms the value that is persisted.
 func workerDefault(d Discovery, settings config.Settings) string {
+	return WorkerSuggestion(d, settings)
+}
+
+// WorkerSuggestion is the worker name the initialization prompts offer. It
+// is the shared source for the stdin gate and the TUI wizard, so both offer
+// the same default: recovery first, then the machine-global default, then
+// the OS account name. The value stays a suggestion until a human confirms
+// it.
+func WorkerSuggestion(d Discovery, settings config.Settings) string {
 	if name := d.Project.WorkerName(); name != "" {
 		return name
 	}
@@ -533,6 +542,13 @@ func workerDefault(d Discovery, settings config.Settings) string {
 // (recovery), else the directory name. It is never persisted without the human
 // confirming it.
 func projectDefault(d Discovery) string {
+	return ProjectSuggestion(d)
+}
+
+// ProjectSuggestion is the project name the initialization prompts offer.
+// It is the shared source for the stdin gate and the TUI wizard, so both
+// offer the same default.
+func ProjectSuggestion(d Discovery) string {
 	if name := strings.TrimSpace(d.Project.Name); name != "" {
 		return name
 	}
@@ -596,8 +612,23 @@ func gitAvailable(deps Deps) bool {
 	if deps.GitAvailable != nil {
 		return deps.GitAvailable()
 	}
+	return GitAvailable()
+}
+
+// GitAvailable reports whether the git binary resolves. The TUI wizard
+// checks it before honoring a "yes", exactly like the stdin gate, so both
+// paths degrade to "continuing without a repository" together.
+func GitAvailable() bool {
 	_, err := exec.LookPath("git")
 	return err == nil
+}
+
+// InitGit runs `git init` in dir without creating commits, branches, or
+// staging. It is the commit step the TUI wizard calls after collecting its
+// decisions, sharing the stdin gate's implementation so the two paths can
+// never drift.
+func InitGit(dir string) error {
+	return gitInit(dir)
 }
 
 // gitInit runs `git init` without creating commits, branches, or staging.

@@ -49,6 +49,9 @@ type Palette struct {
 	Quote       lipgloss.Style
 	Bullet      lipgloss.Style
 	Muted       lipgloss.Style
+	// Separator draws full-width rules (header divider, composer frames) in
+	// the dim slate chrome style, distinct from the muted body text.
+	Separator lipgloss.Style
 	// SupportHi highlights key entities inside the $sup answer viewport:
 	// bright cyan for concepts/technologies, amber for dates/specs.
 	// Main-chat markdown never uses them, so the overlay hierarchy stays
@@ -63,22 +66,27 @@ type Palette struct {
 // and code tokens reuse the same scale so prose and code read as one theme.
 // The question keeps a faint background block instead of a label prefix so
 // it reads apart from the answer.
+//
+// The chrome roles resolve through the semantic tokens in style.go: the
+// prompt cursor and focus accent share ColorPrimary with the header brand,
+// secondary context (status line, hints, labels) reads in ColorMuted, and
+// full-width rules draw in the dim slate.
 func DarkPalette() *Palette {
 	return &Palette{
 		User:         fg(darkAccent).Bold(true),
 		UserBG:       fg(darkText).Background(lipgloss.Color(darkUserBg)),
-		Assistant:    fg(darkText),
+		Assistant:    fg(ColorText),
 		ToolName:     fg(darkTool).Bold(true),
 		ToolDone:     fg(darkSuccess),
 		ToolError:    fg(darkDanger),
 		ToolRun:      fg(darkWarning),
 		Notice:       fg(darkMuted).Italic(true),
-		Status:       fg(darkMuted),
-		Prompt:       fg(darkAccent),
+		Status:       fg(ColorMuted),
+		Prompt:       fg(ColorPrimary),
 		Choice:       fg(darkText),
 		Selected:     fg(darkAccent).Bold(true),
 		Truncated:    fg(darkMuted),
-		Cursor:       fg(darkAccent).Reverse(true),
+		Cursor:       fg(ColorPrimary).Reverse(true),
 		Queued:       fg(darkMuted).Italic(true),
 		Code:         fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
 		CodeFence:    fg(darkMuted),
@@ -93,7 +101,8 @@ func DarkPalette() *Palette {
 		Italic:       lipgloss.NewStyle().Italic(true),
 		Quote:        fg(darkMuted).Italic(true),
 		Bullet:       fg(darkAccent),
-		Muted:        fg(darkMuted),
+		Muted:        fg(ColorMuted),
+		Separator:    fg(ColorDim),
 		SupportHi:    fg("87").Bold(true),
 		SupportHiAlt: fg("220").Bold(true),
 	}
@@ -133,6 +142,7 @@ func LightPalette() *Palette {
 		Quote:        fg(lightMuted).Italic(true),
 		Bullet:       fg(lightAccent),
 		Muted:        fg(lightMuted),
+		Separator:    fg(lightMuted),
 		SupportHi:    fg("30").Bold(true),
 		SupportHiAlt: fg("166").Bold(true),
 	}
@@ -248,30 +258,92 @@ func renderMini(state State, pal *Palette, layout Layout) string {
 	return sb.String()
 }
 
+// Header width tiers. These key off the terminal width, not the layout tier:
+// the header sheds detail earlier than the workbench drops columns, so a
+// mid-size terminal keeps full conversation chrome with a compact header.
+const (
+	// headerFullMin is the first terminal width that shows the full model
+	// id, the runtime phase, and the full connection detail.
+	headerFullMin = 81
+	// headerCompactMax is the last terminal width that shows connection
+	// state. Below it the header is brand, model, and phase only.
+	headerCompactMax = 54
+)
+
 // renderHeader draws product identity, the current model, the runtime phase,
 // and the connection state. It is the only place identity and phase appear:
 // the status line below carries workspace context, never a second copy.
 //
-// Wide shows everything; medium drops the connection detail to its state
-// word; narrow keeps identity, model, and phase only. Connection is words, not
-// color alone: a dot nobody can decode is decoration, not information.
+// The line reads `ohgo · model · phase · check`, each segment in its chrome
+// role: the brand in primary, the model in sage, an active phase in bold
+// accent (idle in muted), the check status in amber, and every separator in
+// dim slate. Phase and connection stay words, never colour alone.
+//
+// Width sheds detail, never rows: full terminals show the whole model id and
+// probe detail; medium terminals keep the state word and shorten the model;
+// compact terminals drop the connection tag. The model shortens
+// provider-prefix-first (openrouter/cohere/x becomes cohere/x) so the leaf
+// id — the part that orients — survives longest; a hard cell truncation is
+// the last resort. The composed plain line is budgeted before styling, so
+// ANSI never inflates the measurement and the header is always one row.
 func renderHeader(state State, pal *Palette, layout Layout) string {
-	ex := ExtrasFor(state.Theme)
+	chrome := ChromeFor(state.Theme)
 	runtime := DeriveRuntime(state)
 	marker := RuntimeMarker(runtime)
 	// Model ids and probe details arrive from catalogs and networks:
-	// untrusted, sanitized inline. The header is one row by contract, so
-	// the composed line is truncated to the viewport — an overlong model
-	// name must clip, never soft-wrap the terminal into an extra row.
+	// untrusted, sanitized inline.
 	model := sanitizeInline(state.Status.Model)
 	if model == "" {
 		model = "no model"
 	}
-	var text string
-	switch layout.Mode {
-	case LayoutNarrow:
-		text = fmt.Sprintf("ohgo %s %s · %s", marker, model, string(runtime))
-	case LayoutMedium:
+	phase := string(runtime)
+	tier := headerTier(state.Width)
+	conn, showConn := headerConn(state, tier)
+	width := displayWidth(state, layout)
+
+	modelShown := fitHeaderModel(model, width-headerChromeOverhead(marker, phase, conn, showConn))
+
+	phaseStyle := chrome.Idle
+	if headerRuntimeActive(runtime) {
+		phaseStyle = chrome.Active
+	}
+	var sb strings.Builder
+	sb.WriteString(chrome.Brand.Render("ohgo"))
+	sb.WriteString(" ")
+	sb.WriteString(phaseStyle.Render(marker))
+	sb.WriteString(" ")
+	sb.WriteString(chrome.Model.Render(modelShown))
+	sb.WriteString(chrome.Separator.Render(" · "))
+	sb.WriteString(phaseStyle.Render(phase))
+	if showConn {
+		sb.WriteString(chrome.Separator.Render(" · "))
+		sb.WriteString(chrome.Check.Render(conn))
+	}
+	return sb.String()
+}
+
+// headerTier resolves the header density from the terminal width. Unknown
+// (non-positive) widths render everything, matching the historical no-size
+// behaviour.
+func headerTier(width int) string {
+	switch {
+	case width <= 0 || width >= headerFullMin:
+		return "full"
+	case width <= headerCompactMax:
+		return "compact"
+	default:
+		return "medium"
+	}
+}
+
+// headerConn reports the connection text for a tier. Compact hides it: on a
+// narrow terminal the phase and the leaf model id matter, the probe words
+// do not. Full shows the probe detail; medium keeps the state word only.
+func headerConn(state State, tier string) (string, bool) {
+	if tier == "compact" {
+		return "", false
+	}
+	if tier == "medium" {
 		conn := "not checked"
 		if state.ConnDetail != "" {
 			if state.ConnOK {
@@ -280,23 +352,67 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 				conn = "not connected"
 			}
 		}
-		text = fmt.Sprintf("ohgo %s %s · %s · %s", marker, model, string(runtime), conn)
-	default:
-		conn := "○ not checked"
-		if state.ConnDetail != "" {
-			detail := sanitizeInline(state.ConnDetail)
-			if state.ConnOK {
-				conn = "● " + detail
-			} else {
-				conn = "○ " + detail
-			}
+		return conn, true
+	}
+	conn := "○ not checked"
+	if state.ConnDetail != "" {
+		detail := sanitizeInline(state.ConnDetail)
+		if state.ConnOK {
+			conn = "● " + detail
+		} else {
+			conn = "○ " + detail
 		}
-		text = fmt.Sprintf("ohgo %s %s · %s · %s", marker, model, string(runtime), conn)
 	}
-	if state.Width > 0 {
-		text = TruncateToWidth(text, displayWidth(state, layout))
+	return conn, true
+}
+
+// headerChromeOverhead counts every header cell except the model itself, so
+// the model receives exactly the remaining budget.
+func headerChromeOverhead(marker, phase, conn string, showConn bool) int {
+	n := CellWidth("ohgo " + marker + " " + " · " + phase)
+	if showConn {
+		n += CellWidth(" · " + conn)
 	}
-	return ex.Header.Render(text)
+	return n
+}
+
+// headerRuntimeActive reports the phase renders in the active style: anything
+// busier than idle. Shutting down reads as idle chrome; the word itself
+// carries the state.
+func headerRuntimeActive(runtime RuntimeState) bool {
+	switch runtime {
+	case RuntimeIdle, RuntimeShuttingDown:
+		return false
+	default:
+		return true
+	}
+}
+
+// fitHeaderModel shortens a model id to a cell budget, provider prefix first:
+// "openrouter/cohere/north" shortens to "cohere/north" before any character
+// is cut, so the leaf id survives longest. A non-positive budget yields the
+// empty string rather than an overflowing row.
+func fitHeaderModel(model string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	if CellWidth(model) <= budget {
+		return model
+	}
+	if short := compactModel(model); CellWidth(short) <= budget {
+		return short
+	}
+	return TruncateToWidth(compactModel(model), budget)
+}
+
+// compactModel drops the provider prefix from a model id:
+// "groq/deepseek-r1-distill" becomes "deepseek-r1-distill". Ids without a
+// prefix return unchanged.
+func compactModel(model string) string {
+	if i := strings.Index(model, "/"); i >= 0 && i+1 < len(model) {
+		return model[i+1:]
+	}
+	return model
 }
 
 // renderTranscriptArea writes the transcript, wrapped to the content width
@@ -492,9 +608,10 @@ func renderWelcome(state State, pal *Palette, layout Layout) string {
 		// The transcript area slices by lines; style after measuring so ANSI
 		// never inflates the viewport budget. Keep it quiet: identity first,
 		// decoration last.
+		chrome := ChromeFor(state.Theme)
 		var styled []string
 		for _, line := range strings.Split(surface, "\n") {
-			styled = append(styled, styleIdentityLine(line, pal))
+			styled = append(styled, styleIdentityLine(line, pal, chrome))
 		}
 		return strings.Join(styled, "\n") + "\n"
 	}
@@ -506,20 +623,94 @@ func shortenDisplayCwd(cwd string) string {
 	return shortenCwd(cwd, 48)
 }
 
-// styleIdentityLine keeps box borders muted and lets identity content read.
-func styleIdentityLine(line string, pal *Palette) string {
+// styleIdentityLine keeps box borders dim and lets identity content read.
+// Mode labels (ASK/BUILD/FUZZ) render in the accent badge style shared with
+// the header and footer, so the authority reads as one family across the
+// surface. Styling wraps measured cells, so widths never change.
+func styleIdentityLine(line string, pal *Palette, chrome *Chrome) string {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
 		return line
 	}
 	if strings.HasPrefix(trimmed, "┌") || strings.HasPrefix(trimmed, "└") ||
-		strings.HasPrefix(trimmed, "│") || strings.HasPrefix(trimmed, "─") {
-		return pal.Muted.Render(line)
+		strings.HasPrefix(trimmed, "─") {
+		return pal.Separator.Render(line)
 	}
 	if strings.HasPrefix(trimmed, "OHGO") {
 		return pal.Heading.Render(line)
 	}
-	return line
+	if strings.Contains(line, "│") {
+		if styled, ok := styleBoxedModes(line, pal, chrome); ok {
+			return styled
+		}
+		return pal.Muted.Render(line)
+	}
+	return styleModeBadges(line, pal, chrome)
+}
+
+// modeLabels are the authority names that render as accent badges.
+var modeLabels = map[string]bool{"ASK": true, "BUILD": true, "FUZZ": true}
+
+// leadingMode reports the authority label heading a cell, if any. The label
+// must be the whole first token: a description that merely starts with those
+// letters never matches.
+func leadingMode(cell string) (string, bool) {
+	rest := strings.TrimLeft(cell, " ")
+	for mode := range modeLabels {
+		if rest == mode || strings.HasPrefix(rest, mode+" ") {
+			return mode, true
+		}
+	}
+	return "", false
+}
+
+// styleBoxedModes accents the mode labels inside a boxed row, leaving every
+// other cell muted. It reports false when the row holds no label, so the
+// caller falls back to the plain muted row.
+func styleBoxedModes(line string, pal *Palette, chrome *Chrome) (string, bool) {
+	segs := strings.Split(line, "│")
+	if len(segs) < 3 {
+		return "", false
+	}
+	holds := false
+	for i := 1; i < len(segs)-1; i++ {
+		if _, ok := leadingMode(segs[i]); ok {
+			holds = true
+		}
+	}
+	if !holds {
+		return "", false
+	}
+	var sb strings.Builder
+	sb.WriteString(pal.Muted.Render(segs[0] + "│"))
+	for i := 1; i < len(segs)-1; i++ {
+		sb.WriteString(styleModeCell(segs[i], pal, chrome))
+		sb.WriteString(pal.Muted.Render("│"))
+	}
+	sb.WriteString(pal.Muted.Render(segs[len(segs)-1]))
+	return sb.String(), true
+}
+
+// styleModeCell accents a leading authority label and mutes the rest of the
+// cell. Cells without a label render muted wholesale.
+func styleModeCell(cell string, pal *Palette, chrome *Chrome) string {
+	mode, ok := leadingMode(cell)
+	if !ok {
+		return pal.Muted.Render(cell)
+	}
+	lead := cell[:len(cell)-len(strings.TrimLeft(cell, " "))]
+	rest := strings.TrimLeft(cell, " ")[len(mode):]
+	return pal.Muted.Render(lead) + chrome.Active.Render(mode) + pal.Muted.Render(rest)
+}
+
+// styleModeBadges accents a leading authority label on a borderless line.
+func styleModeBadges(line string, pal *Palette, chrome *Chrome) string {
+	mode, ok := leadingMode(line)
+	if !ok {
+		return line
+	}
+	rest := strings.TrimLeft(line, " ")[len(mode):]
+	return chrome.Active.Render(mode) + pal.Muted.Render(rest)
 }
 
 // splitLines splits rendered output into lines without a trailing empty.
@@ -849,8 +1040,9 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 }
 
 // composerRule draws one restrained horizontal rule framing the composer.
-// The accent marks that the composer owns the keyboard; any overlay,
-// approval, or secret entry quiets it so attention goes to the modal state.
+// The primary accent marks that the composer owns the keyboard; any overlay,
+// approval, or secret entry quiets it to the dim slate so attention goes to
+// the modal state.
 func composerRule(state State, pal *Palette, layout Layout) string {
 	width := separatorWidth(state, layout)
 	if width < 1 {
@@ -858,7 +1050,7 @@ func composerRule(state State, pal *Palette, layout Layout) string {
 	}
 	line := strings.Repeat("─", width)
 	if state.Picker != nil || state.Secret != nil || state.Pending != nil {
-		return pal.Muted.Render(line)
+		return pal.Separator.Render(line)
 	}
 	return ExtrasFor(state.Theme).Focus.Render(line)
 }
