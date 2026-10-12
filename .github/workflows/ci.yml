@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   check:
@@ -24,7 +25,13 @@ jobs:
       - name: Gofmt
         run: test -z "$(gofmt -l .)"
       - name: Test
-        run: go test ./...
+        run: go test -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+          use_oidc: true
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
