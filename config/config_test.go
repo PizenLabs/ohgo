@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -124,5 +125,51 @@ func TestSaveRoundTrips(t *testing.T) {
 	}
 	if got.Approvals["bash"] != "prompt" {
 		t.Errorf("approvals = %v, want bash:prompt", got.Approvals)
+	}
+}
+
+func TestUserDefaultsRoundTripsUnderLegacyKey(t *testing.T) {
+	// The machine-wide default name is global presentation metadata: it must
+	// survive a save/load cycle without disturbing the rest of the document.
+	// The on-disk key stays "identity" so files written by an earlier build
+	// remain readable.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	want := Default()
+	want.Model = "openai/gpt-5"
+	want.UserDefaults.Name = "Jack"
+	if err := Save(want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.GlobalName() != "Jack" {
+		t.Errorf("name = %q, want Jack", got.GlobalName())
+	}
+	if got.Model != "openai/gpt-5" {
+		t.Errorf("model = %q, want it preserved alongside the default name", got.Model)
+	}
+
+	// A settings file from an earlier build uses the same key.
+	raw, err := os.ReadFile(filepath.Join(home, ".ohgo", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"identity"`) {
+		t.Errorf("saved settings lost the legacy key: %s", raw)
+	}
+}
+
+func TestGlobalNameTrimsAndDefaultsEmpty(t *testing.T) {
+	if got := (Settings{}).GlobalName(); got != "" {
+		t.Errorf("empty settings: got %q, want empty", got)
+	}
+	s := Settings{}
+	s.UserDefaults.Name = "  Alex  "
+	if got := s.GlobalName(); got != "Alex" {
+		t.Errorf("got %q, want Alex", got)
 	}
 }

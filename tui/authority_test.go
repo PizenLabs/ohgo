@@ -21,8 +21,12 @@ func TestStatusShowsTheWorkspaceAuthority(t *testing.T) {
 	if !strings.Contains(out, "FUZZ") {
 		t.Fatalf("status does not name the workspace:\n%s", out)
 	}
-	if strings.Contains(out, "BUILD") {
-		t.Errorf("status invented a workspace:\n%s", out)
+	// The footer badge names the authority; the identity surface above it
+	// names every mode by design, so scope the negative assertion to the
+	// footer line carrying the session.
+	status := findStatusLine(t, out, "#4")
+	if strings.Contains(status, "BUILD") {
+		t.Errorf("status invented a workspace: %q", status)
 	}
 }
 

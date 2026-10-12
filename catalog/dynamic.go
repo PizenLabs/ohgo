@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/state"
 )
 
 // dynamicCacheTTL bounds how long a fetched roster is trusted. A day matches
@@ -20,6 +21,15 @@ import (
 // falls back to the stale file rather than failing, because yesterday's
 // roster answers "what can I call" far better than an error does.
 const dynamicCacheTTL = 24 * time.Hour
+
+// discoverCacheSchema is the on-disk shape version of a roster cache.
+//
+// It exists so a future change to the cached record can be detected instead of
+// decoded as valid-but-wrong: a cache written by a newer build is ignored and
+// refetched rather than trusted. A cache written before the field existed
+// (version 0) carries the same shape and is still read, so adding the field did
+// not invalidate an existing user's cache.
+const discoverCacheSchema = 1
 
 // openRouterDiscoveryNote: OpenRouter's /models answers the OpenAI-compatible
 // list shape with rich extensions (context_length, pricing per token,
@@ -312,18 +322,24 @@ func getJSON(ctx context.Context, client *http.Client, url, apiKey string, targe
 
 // discoverCache is the on-disk roster.
 type discoverCache struct {
-	FetchedAt time.Time `json:"fetched_at"`
-	Models    []record  `json:"models"`
+	// SchemaVersion is the shape version the file was written with. Zero is a
+	// file from before the field existed.
+	SchemaVersion int       `json:"schema_version"`
+	FetchedAt     time.Time `json:"fetched_at"`
+	Models        []record  `json:"models"`
 }
 
-// cachePath locates the roster file. Tests redirect HOME, which UserHomeDir
-// follows, so no extra seam is needed.
+// cacheSchemaCompatible reports whether a cache file's shape is one this build
+// can read. Zero (pre-version) and the current version are accepted; anything
+// else is treated as absent so it is refetched rather than mis-decoded.
+func cacheSchemaCompatible(version int) bool {
+	return version == 0 || version == discoverCacheSchema
+}
+
+// cachePath locates the roster file under the machine-level cache. Tests
+// redirect HOME, which UserHomeDir follows, so no extra seam is needed.
 func cachePath(provider string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", fmt.Errorf("catalog: locate home directory")
-	}
-	return filepath.Join(home, ".ohgo", "cache", provider+"-models.json"), nil
+	return state.Path("cache", provider+"-models.json")
 }
 
 // readCache returns a fresh roster, or nil when missing, stale, or broken.
@@ -340,6 +356,9 @@ func readCache(provider string) []record {
 	}
 	var cached discoverCache
 	if err := json.Unmarshal(raw, &cached); err != nil {
+		return nil
+	}
+	if !cacheSchemaCompatible(cached.SchemaVersion) {
 		return nil
 	}
 	if time.Since(cached.FetchedAt) > dynamicCacheTTL {
@@ -363,6 +382,9 @@ func readStaleCache(provider string) []record {
 	if err := json.Unmarshal(raw, &cached); err != nil {
 		return nil
 	}
+	if !cacheSchemaCompatible(cached.SchemaVersion) {
+		return nil
+	}
 	return cached.Models
 }
 
@@ -376,7 +398,11 @@ func writeCache(provider string, models []record) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
-	raw, err := json.Marshal(discoverCache{FetchedAt: time.Now(), Models: models})
+	raw, err := json.Marshal(discoverCache{
+		SchemaVersion: discoverCacheSchema,
+		FetchedAt:     time.Now(),
+		Models:        models,
+	})
 	if err != nil {
 		return
 	}
@@ -396,6 +422,9 @@ func CacheStatus(provider string) (count int, age time.Duration, fresh bool) {
 	}
 	var cached discoverCache
 	if err := json.Unmarshal(raw, &cached); err != nil {
+		return 0, 0, false
+	}
+	if !cacheSchemaCompatible(cached.SchemaVersion) {
 		return 0, 0, false
 	}
 	return len(cached.Models), time.Since(cached.FetchedAt), time.Since(cached.FetchedAt) <= dynamicCacheTTL

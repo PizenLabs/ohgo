@@ -19,6 +19,8 @@ import (
 	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/prompt"
 	"github.com/PizenLabs/ohgo/session"
+	"github.com/PizenLabs/ohgo/startup"
+	"github.com/PizenLabs/ohgo/state"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/PizenLabs/ohgo/tui"
 	"github.com/PizenLabs/ohgo/workspace"
@@ -118,12 +120,14 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 		opts.workspace = parsed
 	}
 
-	// Project identity is established lazily and best-effort: a read-only
-	// working tree must not stop a session, and the identity is not required
-	// for a session to run.
-	if identity, err := project.Ensure(opts.root); err != nil {
+	// Project identity is resolved here but never created: creation belongs
+	// to the startup flow (runSession/runOnce via startup.Ensure), which
+	// owns the Git and identity prompts. Auto-creating here would silently
+	// skip those prompts, so a missing identity simply leaves projectID
+	// empty until startup establishes it.
+	if identity, found, err := project.Load(opts.root); err != nil {
 		fmt.Fprintf(os.Stderr, "ohgo: %v\n", err)
-	} else {
+	} else if found {
 		opts.projectID = identity.ID
 	}
 
@@ -982,6 +986,21 @@ func runCmd() *cobra.Command {
 	}
 }
 
+// bootProject resolves the project identity for a one-shot run without ever
+// creating project state.
+//
+// It is the read-only counterpart to startup.Ensure: a command that cannot
+// show the initialization gate must not initialize silently, so an
+// uninitialized directory is a fact to report, not a directory to create.
+func bootProject(root string) (string, error) {
+	d := startup.Discover(root)
+	if !d.ProjectFound {
+		return "", fmt.Errorf(
+			"project not initialized in %s: run `ohgo` there to complete initialization", root)
+	}
+	return d.Project.ID, nil
+}
+
 // runOnce executes a single prompt.
 func runOnce(cmd *cobra.Command, text string) error {
 	opts, registry, err := resolveOptions(cmd)
@@ -989,6 +1008,17 @@ func runOnce(cmd *cobra.Command, text string) error {
 		return err
 	}
 	out := cmd.OutOrStdout()
+
+	// A one-shot run cannot satisfy the initialization gate: it never
+	// prompts. Discovery is therefore read-only and an uninitialized project
+	// is reported rather than created — creating .ohgo/ here would initialize
+	// as a side effect of running, exactly the bypass startup exists to
+	// prevent.
+	projectID, err := bootProject(opts.root)
+	if err != nil {
+		return err
+	}
+	opts.projectID = projectID
 
 	resumeID, _ := cmd.Flags().GetInt64("resume")
 	store, sess, closeStore, err := openSession(opts, resumeID)
@@ -1161,6 +1191,26 @@ func runSession(cmd *cobra.Command, args []string) error {
 	}
 	out := cmd.OutOrStdout()
 
+	// Startup owns project initialization, Git detection, and local
+	// identity. It runs before the runtime so the identity surface below is
+	// truthful, and it fast-paths when .ohgo/project.yml already exists.
+	//
+	// A cancel at the initialization gate is a clean exit, not an error: the
+	// user chose not to initialize, and nothing was created.
+	boot, err := startup.Ensure(opts.root, startup.Deps{
+		Stdin:  os.Stdin,
+		Stdout: out,
+	})
+	if errors.Is(err, startup.ErrCanceled) {
+		_, _ = fmt.Fprintln(out, "initialization canceled; nothing was created.")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	opts.settings = boot.Settings
+	opts.projectID = boot.Project.ID
+
 	resumeID, _ := cmd.Flags().GetInt64("resume")
 	store, sess, closeStore, err := openSession(opts, resumeID)
 	if err != nil {
@@ -1223,6 +1273,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		held := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
 		held.usage.SetCost(opts.model.Cost)
 		held.workspace = opts.authority().Label()
+		held.projectID = opts.projectID
 		held.support = surface
 		program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
 			return surface.ask(ctx, question, onDelta)
@@ -1342,7 +1393,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		if store != nil {
 			program.SetSessionBrowser(
 				func() ([]tui.SessionItem, error) {
-					list, err := store.List(50)
+					list, err := store.ListByProject(opts.projectID, 50)
 					if err != nil {
 						return nil, err
 					}
@@ -1397,6 +1448,16 @@ func runSession(cmd *cobra.Command, args []string) error {
 			WorkspaceAccent: style.Accent,
 			HasWorkspace:    true,
 		})
+		// The runtime identity surface shows who, where, and what state.
+		// All values come from startup's observed state, never invented.
+		branch, gitStatus := boot.Git.BranchStatus()
+		program.PublishIdentity(tui.IdentityUpdated{
+			User:      boot.Project.WorkerName(),
+			Greeting:  boot.Greeting,
+			GitBranch: branch,
+			GitStatus: gitStatus,
+			Ready:     "ready",
+		})
 
 		if opts.autoApprove {
 			loop.SetApprovalHook(func(ai.ToolCall, agent.Approval) (bool, string) { return true, "" })
@@ -1417,7 +1478,10 @@ func runSession(cmd *cobra.Command, args []string) error {
 		return program.Run()
 	}
 
-	_, _ = fmt.Fprintf(out, "ohgo %s \u00b7 %s/%s \u00b7 %s \u00b7 %s\n", version, opts.model.Provider, opts.model.ID, opts.authority().Label(), opts.root)
+	_, _ = fmt.Fprintf(out, "ohgo %s · %s/%s · %s · %s\n", version, opts.model.Provider, opts.model.ID, opts.authority().Label(), opts.root)
+	if boot.Greeting != "" {
+		_, _ = fmt.Fprintln(out, boot.Greeting)
+	}
 	_, _ = fmt.Fprintln(out, "Type your request, or /quit to exit.")
 
 	var history []agent.Message
@@ -1432,6 +1496,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	plain := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
 	plain.usage.SetCost(opts.model.Cost)
 	plain.workspace = opts.authority().Label()
+	plain.projectID = opts.projectID
 	plain.support = surface
 	return repl(plain, out, os.Stdin, history)
 }
@@ -1673,11 +1738,11 @@ func replHistoryPath() string {
 	if value, ok := os.LookupEnv("OHGO_HISTORY_FILE"); ok {
 		return strings.TrimSpace(value)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	path, err := state.Path("history")
+	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".ohgo", "history")
+	return path
 }
 
 // recordReplHistory appends one user line to the history file, best-effort.

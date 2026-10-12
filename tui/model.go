@@ -184,6 +184,17 @@ type Status struct {
 	// WorkspaceAccent is the semantic 256-color index for the workspace, from
 	// workspace.Style(). Empty falls back to a neutral accent.
 	WorkspaceAccent string
+	// User is the project worker display name from the project-local metadata.
+	// Empty hides it: the view never invents a name.
+	User string
+	// Greeting is the time-of-day greeting, e.g. "Good evening, Jack."
+	Greeting string
+	// GitBranch is the short branch name (or short SHA when detached).
+	GitBranch string
+	// GitStatus is the cleanliness summary, e.g. "clean" or "3 changed".
+	GitStatus string
+	// Ready is runtime readiness, e.g. "ready". Empty renders "ready".
+	Ready string
 }
 
 // Percent renders the context budget, or -1 when there is no window.
@@ -894,6 +905,28 @@ func (s *State) Apply(event Event) {
 		if e.HasWorkspace {
 			s.Status.Workspace = e.Workspace
 			s.Status.WorkspaceAccent = e.WorkspaceAccent
+		}
+		if e.HasUser {
+			s.Status.User = e.User
+		}
+		if e.HasGreeting {
+			s.Status.Greeting = e.Greeting
+		}
+		if e.HasGit {
+			s.Status.GitBranch = e.GitBranch
+			s.Status.GitStatus = e.GitStatus
+		}
+		if e.HasReady {
+			s.Status.Ready = e.Ready
+		}
+
+	case IdentityUpdated:
+		s.Status.User = e.User
+		s.Status.Greeting = e.Greeting
+		s.Status.GitBranch = e.GitBranch
+		s.Status.GitStatus = e.GitStatus
+		if e.Ready != "" {
+			s.Status.Ready = e.Ready
 		}
 
 	case QuitRequested:
@@ -2292,9 +2325,40 @@ type WorkspaceUpdated struct {
 	HasSession   bool
 	HasUsage     bool
 	HasWorkspace bool
+	// User is the local display name. HasUser marks it applies.
+	User    string
+	HasUser bool
+	// Greeting is the time-of-day greeting. HasGreeting marks it applies.
+	Greeting    string
+	HasGreeting bool
+	// GitBranch and GitStatus carry truthful repository state. HasGit marks
+	// they apply.
+	GitBranch string
+	GitStatus string
+	HasGit    bool
+	// Ready names runtime readiness. HasReady marks it applies.
+	Ready    string
+	HasReady bool
 }
 
 func (WorkspaceUpdated) eventKind() string { return "workspace_updated" }
+
+// IdentityUpdated carries the runtime identity facts: local display name,
+// greeting, git state, and readiness. It never touches the transcript.
+type IdentityUpdated struct {
+	// User is the local display name. Empty clears it.
+	User string
+	// Greeting is the time-of-day greeting.
+	Greeting string
+	// GitBranch is the short branch name.
+	GitBranch string
+	// GitStatus is the cleanliness summary.
+	GitStatus string
+	// Ready names runtime readiness.
+	Ready string
+}
+
+func (IdentityUpdated) eventKind() string { return "identity_updated" }
 
 // SupportStatus is where a support turn is in its lifecycle.
 type SupportStatus string

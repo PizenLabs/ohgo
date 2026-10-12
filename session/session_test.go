@@ -193,6 +193,36 @@ func TestStoreLimitsAndOrdersMessages(t *testing.T) {
 	}
 }
 
+func TestStoreListByProjectScopesSessions(t *testing.T) {
+	// One machine-global store holds every project's sessions, so project
+	// association must be a query, not a second database. A project's list
+	// must contain its own sessions and the unidentified legacy ones, but not
+	// another project's.
+	store := openTempStore(t)
+	if _, err := store.CreateWith(CreateOptions{Cwd: "/a", Model: "m", Project: "proj-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateWith(CreateOptions{Cwd: "/b", Model: "m", Project: "proj-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateWith(CreateOptions{Cwd: "/legacy", Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := store.ListByProject("proj-a", 10)
+	if err != nil {
+		t.Fatalf("ListByProject: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("proj-a list has %d sessions, want proj-a plus the unidentified one", len(list))
+	}
+	for _, sess := range list {
+		if sess.Project == "proj-b" {
+			t.Errorf("another project's session leaked into the list: %+v", sess)
+		}
+	}
+}
+
 func TestStoreListsSessionsNewestFirst(t *testing.T) {
 	store := openStore(t)
 	first, _ := store.Create("/tmp/a", "m1")
@@ -309,6 +339,43 @@ func TestStoreReopensPersistently(t *testing.T) {
 	}
 	if len(loaded) != 1 || loaded[0].Text != "remember me" {
 		t.Errorf("reopen lost the transcript: %+v", loaded)
+	}
+}
+
+func TestStoreSchemaExcludesProjectKnowledge(t *testing.T) {
+	// sessions.db is the session owner, not the project-memory or graph owner.
+	// A durable project fact or a code-intelligence table appearing here would
+	// be the "sessions.db → project-wide knowledge" collapse the boundary
+	// forbids: project knowledge must not be reachable only through a session,
+	// and source-derived structure must never live beside a transcript.
+	store := openStore(t)
+	rows, err := store.db.Query(`SELECT name FROM sqlite_master WHERE type = 'table'`)
+	if err != nil {
+		t.Fatalf("inspect schema: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	tables := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan table: %v", err)
+		}
+		tables[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate schema: %v", err)
+	}
+
+	for _, name := range []string{"sessions", "messages", "artifacts"} {
+		if !tables[name] {
+			t.Errorf("session table %q is missing", name)
+		}
+	}
+	for _, name := range []string{"memory", "facts", "knowledge", "graph", "nodes", "edges", "symbols", "embeddings"} {
+		if tables[name] {
+			t.Errorf("project knowledge table %q was created in the session store", name)
+		}
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/PizenLabs/ohgo/state"
 )
 
 // ErrNotFound means no configuration file exists at the expected location.
@@ -71,11 +73,29 @@ type Profile struct {
 	Effort string `json:"effort,omitempty"`
 }
 
+// UserDefaults is the machine-global human-defaults layer.
+//
+// It is not a project worker identity: a worker belongs to a project, and the
+// authoritative value lives in `<project>/.ohgo/project.yml`. Its Name is a
+// convenience default the initialization gate may offer when it asks for the
+// project worker name; the confirmed value is persisted project-locally.
+// Nothing in the initialization flow writes this field. It is never an
+// authorization credential and is never sent to providers.
+type UserDefaults struct {
+	// Name is the machine-wide default display name. Empty means unset.
+	Name string `json:"name,omitempty"`
+}
+
 // Settings is the user-facing configuration.
 //
 // Every field is optional: a zero Settings is a valid configuration that uses
 // the built-in defaults.
 type Settings struct {
+	// UserDefaults holds machine-wide human defaults. The JSON key stays
+	// "identity" so settings written by an earlier build remain readable; the
+	// value is only ever a suggested default, never a project's worker
+	// identity.
+	UserDefaults UserDefaults `json:"identity,omitempty"`
 	// Model is the default model as "provider/id", e.g. "anthropic/claude-sonnet-4-5".
 	Model string `json:"model,omitempty"`
 	// Models maps a workspace name ("ask", "fuzz", "build") to a
@@ -196,21 +216,18 @@ func Load(root string) (Settings, error) {
 }
 
 // Path returns the configuration file path for root.
+//
+// The root parameter is vestigial: settings are machine-scoped, so the file is
+// always ~/.ohgo/settings.json regardless of which project loaded it. It is
+// kept so callers that pass a root keep compiling, but no project-local
+// settings file exists.
 func Path(root string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("config: locate home directory: %w", err)
-	}
-	return filepath.Join(home, ".ohgo", "settings.json"), nil
+	return state.Path("settings.json")
 }
 
 // Dir returns the directory that holds ohgo state.
 func Dir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("config: locate home directory: %w", err)
-	}
-	return filepath.Join(home, ".ohgo"), nil
+	return state.Dir()
 }
 
 // Save writes settings to the configuration file for root.
@@ -261,6 +278,15 @@ func Save(settings Settings) error {
 		return fmt.Errorf("config: replace %s: %w", path, err)
 	}
 	return nil
+}
+
+// GlobalName returns the trimmed machine-wide default display name, or "" when
+// unset.
+//
+// It is a suggested default for the initialization gate's worker prompt, never
+// authoritative project worker identity.
+func (s Settings) GlobalName() string {
+	return strings.TrimSpace(s.UserDefaults.Name)
 }
 
 // ApprovalFor reports the approval policy for a tool.

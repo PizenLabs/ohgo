@@ -23,6 +23,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/PizenLabs/ohgo/state"
 )
 
 // ErrMissingCredential means no source held a credential for the provider.
@@ -272,11 +274,7 @@ type Store struct {
 
 // DefaultPath locates the credential file.
 func DefaultPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", errors.New("creds: locate home directory")
-	}
-	return filepath.Join(home, ".ohgo", "credentials.json"), nil
+	return state.Path("credentials.json")
 }
 
 // Open reads the store, treating a missing file as empty. A malformed file

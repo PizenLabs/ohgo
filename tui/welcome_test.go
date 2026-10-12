@@ -10,8 +10,12 @@ import (
 // pin the observable contract a user sees: it appears only on an empty
 // conversation, never pollutes persisted history, and never returns over a
 // resumed or in-progress transcript.
+//
+// The surface is a runtime identity surface: product identity, greeting,
+// model, workspace, git state, capability modes, and real affordances —
+// never marketing, tips, or invented state.
 
-const welcomeInvite = "Describe a task to begin."
+const welcomeInvite = "agent runtime for real codebases"
 
 func TestWelcomeShowsOnEmptyTranscriptWithoutPersisting(t *testing.T) {
 	s := New()
@@ -20,7 +24,12 @@ func TestWelcomeShowsOnEmptyTranscriptWithoutPersisting(t *testing.T) {
 
 	out := Render(s)
 	if !strings.Contains(out, welcomeInvite) {
-		t.Fatalf("empty render lacks the welcome invitation: %q", out)
+		t.Fatalf("empty render lacks the identity surface: %q", out)
+	}
+	for _, want := range []string{"OHGO", "ASK", "BUILD", "FUZZ", "/model", "/help", "groq/m"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("identity surface lacks %q: %q", want, out)
+		}
 	}
 	if strings.Contains(out, "not checked") && !strings.Contains(out, "ohgo") {
 		t.Fatalf("welcome render lost the header: %q", out)
@@ -105,19 +114,23 @@ func TestWelcomeIsCompactOnNarrowTerminals(t *testing.T) {
 	narrow.Status.Model = "groq/m"
 	narrow.Apply(TerminalResized{Width: 50, Height: 30})
 
-	wideIntro := strings.Index(Render(wide), "ohgo ·")
-	narrowIntro := strings.Index(Render(narrow), "ohgo ·")
-	if wideIntro < 0 || narrowIntro < 0 {
-		t.Fatal("intro line missing from one tier")
-	}
-	// The narrow welcome must keep the introduction and the /help pointer
-	// while dropping the examples, so it stays useful without crowding.
+	wideOut := Render(wide)
 	narrowOut := Render(narrow)
-	if !strings.Contains(narrowOut, welcomeInvite) || !strings.Contains(narrowOut, "/help") {
-		t.Errorf("narrow welcome lost essential content: %q", narrowOut)
+	// Both tiers keep the semantic content: identity, modes, affordances.
+	for _, out := range []string{wideOut, narrowOut} {
+		for _, want := range []string{"OHGO", "ASK", "BUILD", "FUZZ", "/help"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("tier lost essential content %q: %q", want, out)
+			}
+		}
 	}
-	if strings.Contains(narrowOut, "understand how this codebase") {
-		t.Errorf("narrow welcome kept the example list: %q", narrowOut)
+	// The wide tier boxes the composition; the narrow tier drops decoration
+	// rather than clipping content.
+	if !strings.Contains(wideOut, "┌") {
+		t.Errorf("wide identity surface lost its frame: %q", wideOut)
+	}
+	if strings.Contains(narrowOut, "┌") {
+		t.Errorf("narrow identity surface kept a frame that risks clipping: %q", narrowOut)
 	}
 }
 

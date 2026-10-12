@@ -319,6 +319,37 @@ func TestCacheStatusFreshness(t *testing.T) {
 	}
 }
 
+func TestCacheWithUnknownSchemaReadsAsAbsent(t *testing.T) {
+	// A cache written by a newer build must not be decoded as if this build
+	// understands it: the shape may have changed, so the file is ignored and
+	// discovery refetches. Trusting it would serve facts from a schema this
+	// binary cannot interpret.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".ohgo", "cache")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	future := fmt.Sprintf(
+		`{"schema_version":%d,"fetched_at":%q,"models":[{"id":"future/x","provider":"openrouter","contextWindow":1000,"maxTokens":10,"input":["text"]}]}`,
+		discoverCacheSchema+1, time.Now().Format(time.RFC3339Nano))
+	if err := os.WriteFile(filepath.Join(dir, "openrouter-models.json"), []byte(future), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if count, _, fresh := CacheStatus("openrouter"); fresh || count != 0 {
+		t.Errorf("future-schema cache = %d rows fresh=%v, want absent", count, fresh)
+	}
+	// The row must not surface through the merge either: an ignored file is
+	// ignored everywhere, not only in the status readout.
+	entries, _ := SnapshotAll()
+	for _, entry := range entries {
+		if entry.Model.ID == "future/x" {
+			t.Errorf("a future-schema cache row was trusted: %+v", entry)
+		}
+	}
+}
+
 func TestCorruptCacheReadsAsAbsent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

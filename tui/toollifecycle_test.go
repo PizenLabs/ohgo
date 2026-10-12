@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,12 +14,18 @@ import (
 
 // execTool runs through the real agent execute path and returns canned text,
 // so the TUI tests prove the bridge maps real progress to real blocks.
+//
+// The loop dispatches non-exclusive tools in a batch concurrently, so the
+// recorded calls must be guarded: an unguarded append is a data race even when
+// a test only cares that the calls arrived.
 type execTool struct {
 	name    string
 	text    string
 	isErr   bool
-	args    []map[string]any
 	updates []string
+
+	mu   sync.Mutex
+	args []map[string]any
 }
 
 func (t *execTool) Name() string        { return t.name }
@@ -29,7 +36,9 @@ func (t *execTool) Parameters() *jsonschema.Schema {
 func (t *execTool) Approval() agent.Approval      { return agent.Approval{Tier: agent.TierRead} }
 func (t *execTool) Exclusive(map[string]any) bool { return false }
 func (t *execTool) Execute(ctx agent.Context, args map[string]any) ResultAlias {
+	t.mu.Lock()
 	t.args = append(t.args, args)
+	t.mu.Unlock()
 	for _, u := range t.updates {
 		if ctx.OnProgress != nil {
 			ctx.OnProgress(agent.Result{Text: u})

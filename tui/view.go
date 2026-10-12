@@ -475,39 +475,51 @@ func boundedPreview(pending *PendingApproval, layout Layout) []string {
 	return kept
 }
 
-// renderWelcome draws the first-use introduction for an empty conversation.
+// renderWelcome draws the runtime identity surface for an empty
+// conversation.
 //
-// It is deliberately short and never persisted: a few lines that name the
-// product, invite a task, and offer at most three examples of real work. It
-// collapses to a two-line form on narrow terminals so it cannot crowd out the
-// composer, and it teaches nothing that /help and /commands do not already
-// cover — command discovery stays in one place.
+// It derives every value from state: local identity, greeting, model,
+// workspace, git state, and readiness. It is chrome, never an Entry, so it
+// vanishes the moment real content lands and never persists. Layout follows
+// the responsive tier: wide boxes a two-column composition, medium a dense
+// vertical stack, narrow a borderless compact form.
 func renderWelcome(state State, pal *Palette, layout Layout) string {
-	ex := ExtrasFor(state.Theme)
-	var sb strings.Builder
-	sb.WriteString(pal.Heading.Render("ohgo") + " " + ex.Hint.Render("· a coding agent for real codebases") + "\n")
-	sb.WriteString(ex.Hint.Render("Describe a task to begin.") + "\n")
-	if layout.Mode == LayoutNarrow || layout.Mode == LayoutMini {
-		sb.WriteString(ex.Hint.Render("Type /help for commands.") + "\n")
-		return sb.String()
+	facts := FactsFromStatus(state)
+	// Cwd arrives absolute; the surface shows the dense ~/ form.
+	facts.Cwd = shortenDisplayCwd(facts.Cwd)
+	surface := RenderIdentitySurface(facts, state.Width)
+	if state.Width > 0 {
+		// The transcript area slices by lines; style after measuring so ANSI
+		// never inflates the viewport budget. Keep it quiet: identity first,
+		// decoration last.
+		var styled []string
+		for _, line := range strings.Split(surface, "\n") {
+			styled = append(styled, styleIdentityLine(line, pal))
+		}
+		return strings.Join(styled, "\n") + "\n"
 	}
-	sb.WriteString("\n")
-	sb.WriteString(ex.Hint.Render("Try:") + "\n")
-	for _, example := range welcomeExamples {
-		sb.WriteString("  " + pal.Bullet.Render("•") + " " + ex.Hint.Render(example) + "\n")
-	}
-	sb.WriteString("\n")
-	sb.WriteString(ex.Hint.Render("Type /help for commands · /model to switch models.") + "\n")
-	return sb.String()
+	return surface + "\n"
 }
 
-// welcomeExamples are the at-most-three concrete tasks the first-use screen
-// offers. They are kept short so even a medium terminal fits them without
-// pushing the composer off screen.
-var welcomeExamples = []string{
-	"understand how this codebase is organised",
-	"implement a change and run the tests",
-	"investigate why a command or test is failing",
+// shortenDisplayCwd collapses $HOME to ~ for the identity surface.
+func shortenDisplayCwd(cwd string) string {
+	return shortenCwd(cwd, 48)
+}
+
+// styleIdentityLine keeps box borders muted and lets identity content read.
+func styleIdentityLine(line string, pal *Palette) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return line
+	}
+	if strings.HasPrefix(trimmed, "┌") || strings.HasPrefix(trimmed, "└") ||
+		strings.HasPrefix(trimmed, "│") || strings.HasPrefix(trimmed, "─") {
+		return pal.Muted.Render(line)
+	}
+	if strings.HasPrefix(trimmed, "OHGO") {
+		return pal.Heading.Render(line)
+	}
+	return line
 }
 
 // splitLines splits rendered output into lines without a trailing empty.

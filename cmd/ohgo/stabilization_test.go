@@ -17,6 +17,10 @@ import (
 func TestDoctorReportsAllChecks(t *testing.T) {
 	t.Setenv("OHGO_HISTORY_FILE", "")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	// Isolate HOME so the check reads default settings, not the developer's
+	// real ~/.ohgo/settings.json: a configured default model (e.g. groq/…)
+	// would make this test depend on the machine it runs on.
+	t.Setenv("HOME", t.TempDir())
 
 	cmd := rootCmd()
 	reports := collectDoctorReports(cmd)

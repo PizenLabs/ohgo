@@ -2169,6 +2169,12 @@ func (p *Program) PublishWorkspace(meta WorkspaceUpdated) {
 	p.state.Apply(meta)
 }
 
+// PublishIdentity records the runtime identity facts (user, greeting, git,
+// readiness) without touching the transcript. Safe before Run.
+func (p *Program) PublishIdentity(facts IdentityUpdated) {
+	p.state.Apply(facts)
+}
+
 // runOn invokes the command against a program.
 //
 // It exists so a test can exercise the dispatch table without a Bubble Tea

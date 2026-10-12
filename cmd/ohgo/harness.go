@@ -41,6 +41,10 @@ type harness struct {
 	settings *config.Settings
 	root     string
 	model    ai.Model
+	// projectID is the stable project identity the session belongs to, empty
+	// when unknown. It scopes the session browser to this project without
+	// changing physical storage, which stays one machine-global database.
+	projectID string
 	// workspace is the execution authority label, e.g. "BUILD". Empty when the
 	// caller did not supply one, in which case /status omits it rather than
 	// inventing an authority.
@@ -495,13 +499,15 @@ func (h *harness) ResumeSession(id int64) (history []agent.Message, notice strin
 	return history, fmt.Sprintf("resumed session %d (%d messages)", id, len(history)), nil
 }
 
-// ListSessions prints stored sessions newest-first for the REPL.
+// ListSessions prints stored sessions newest-first for the REPL, scoped to the
+// current project so sessions from another project do not masquerade as this
+// one's history.
 func (h *harness) ListSessions(out io.Writer) {
 	if h.store == nil {
 		_, _ = fmt.Fprintln(out, "no session store attached")
 		return
 	}
-	list, err := h.store.List(20)
+	list, err := h.store.ListByProject(h.projectID, 20)
 	if err != nil {
 		_, _ = fmt.Fprintf(out, "sessions: %v\n", err)
 		return
