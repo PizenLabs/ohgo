@@ -158,7 +158,9 @@ func Render(state State) string {
 	sb.WriteString(renderHeader(state, pal, layout) + "\n")
 	sb.WriteString(SeparatorLine(separatorWidth(state, layout), pal) + "\n")
 
-	if state.Picker != nil {
+	if state.Plane != nil {
+		renderPlaneArea(&sb, state, pal, layout)
+	} else if state.Picker != nil {
 		renderPickerArea(&sb, state, pal, layout)
 	} else {
 		renderTranscriptArea(&sb, state, pal, layout)
@@ -169,7 +171,7 @@ func Render(state State) string {
 	}
 
 	sb.WriteString(renderStatus(state, pal, layout))
-	if state.Picker == nil {
+	if state.Picker == nil && state.Plane == nil {
 		sb.WriteString("\n")
 		sb.WriteString(renderComposer(state, pal, layout))
 		if layout.ShowHints {

@@ -13,6 +13,64 @@ import (
 // ErrNotFound means no configuration file exists at the expected location.
 var ErrNotFound = errors.New("config: not found")
 
+// Role names a model profile: which model, and optionally which thinking
+// effort, serves a particular purpose.
+//
+// ASK, FUZZ and BUILD correspond to the three execution authorities
+// (workspace.Workspace); SUP and COMMIT are model roles with no authority of
+// their own. The role vocabulary lives here because a role is a configuration
+// concept — "which model serves this purpose" — not a runtime boundary.
+type Role string
+
+// The five roles. The first three mirror the workspaces; the last two are
+// deliberately not workspaces (a role must never be mistaken for an authority).
+const (
+	// RoleAsk is the read-only reasoning role.
+	RoleAsk Role = "ask"
+	// RoleFuzz is the exploratory role.
+	RoleFuzz Role = "fuzz"
+	// RoleBuild is the mutation-authority role.
+	RoleBuild Role = "build"
+	// RoleSup is the ephemeral support role (not a workspace).
+	RoleSup Role = "sup"
+	// RoleCommit is the commit-authoring role (not a workspace).
+	RoleCommit Role = "commit"
+)
+
+// RoleNames returns every role in canonical display order.
+func RoleNames() []Role { return []Role{RoleAsk, RoleFuzz, RoleBuild, RoleSup, RoleCommit} }
+
+// NormalizeRole lowercases and trims a role name for lookup, so "BUILD" and
+// " build " address the same profile.
+func NormalizeRole(name string) Role {
+	return Role(strings.ToLower(strings.TrimSpace(name)))
+}
+
+// ValidRole reports whether name is a known role.
+func ValidRole(name Role) bool {
+	switch name {
+	case RoleAsk, RoleFuzz, RoleBuild, RoleSup, RoleCommit:
+		return true
+	}
+	return false
+}
+
+// Profile is one role's durable model selection.
+//
+// A profile is deliberately a value, not a pointer: an absent role is the zero
+// Profile and falls through to the next precedence layer, which is the same
+// meaning as an empty field.
+type Profile struct {
+	// Model is the "provider/id" reference bound to the role. Empty means the
+	// role inherits the next layer (legacy workspace override, then global).
+	Model string `json:"model,omitempty"`
+	// Effort is the thinking effort level for the role. Empty means the
+	// global ReasoningEffort applies. It is only meaningful when the bound
+	// model actually exposes that effort; it is stored verbatim and validated
+	// against catalog metadata at the seam that owns that knowledge.
+	Effort string `json:"effort,omitempty"`
+}
+
 // Settings is the user-facing configuration.
 //
 // Every field is optional: a zero Settings is a valid configuration that uses
@@ -24,7 +82,15 @@ type Settings struct {
 	// "provider/id" override for that authority. A workspace with no entry
 	// falls back to Model, so configuring one workspace does not require
 	// configuring all three (§11, §12, I7).
+	//
+	// It predates Roles and remains the legacy read path: a file that only
+	// sets Models still resolves exactly as before. New writes go to Roles.
 	Models map[string]string `json:"models,omitempty"`
+	// Roles maps a role name to its model profile. It is the model-control
+	// plane's durable store and the canonical place interactive /model
+	// changes land. A role with no entry falls back to Models (legacy
+	// workspace overrides), then Model.
+	Roles map[string]Profile `json:"roles,omitempty"`
 	// MaxTokens caps each completion.
 	MaxTokens int `json:"maxTokens,omitempty"`
 	// Reasoning enables extended thinking by default.
@@ -82,6 +148,7 @@ func Default() Settings {
 		Reasoning:       false,
 		ReasoningEffort: "medium",
 		Approvals:       map[string]string{},
+		Roles:           map[string]Profile{},
 		Compaction:      defaultCompaction(),
 	}
 }
@@ -122,6 +189,9 @@ func Load(root string) (Settings, error) {
 	if settings.Approvals == nil {
 		settings.Approvals = map[string]string{}
 	}
+	if settings.Roles == nil {
+		settings.Roles = map[string]Profile{}
+	}
 	return settings, nil
 }
 
@@ -144,6 +214,11 @@ func Dir() (string, error) {
 }
 
 // Save writes settings to the configuration file for root.
+//
+// The write is atomic: data lands in a temporary file in the same directory and
+// is renamed over the destination. A crash or a concurrent reader therefore sees
+// either the old file or the new one, never a half-written document — which
+// matters because /model rewrites this file while a human may be editing it.
 func Save(settings Settings) error {
 	path, err := Path("")
 	if err != nil {
@@ -157,8 +232,33 @@ func Save(settings Settings) error {
 	if err != nil {
 		return fmt.Errorf("config: encode: %w", err)
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("config: write %s: %w", path, err)
+	data = append(data, '\n')
+
+	tmp, err := os.CreateTemp(dir, ".settings-*.json")
+	if err != nil {
+		return fmt.Errorf("config: create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	// Remove the temp file if anything below fails, so a failed save never
+	// leaves droppings in ~/.ohgo.
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("config: write temp file: %w", err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("config: set mode on temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("config: close temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return fmt.Errorf("config: replace %s: %w", path, err)
 	}
 	return nil
 }
@@ -200,6 +300,100 @@ func (s Settings) ModelFor(workspace string) (provider, id string, ok bool) {
 		}
 	}
 	return splitModel(s.Model)
+}
+
+// RoleModel returns the effective model reference and thinking effort for a
+// role, plus a source label naming which layer won.
+//
+// Precedence is role profile, then legacy workspace override, then the global
+// default. The source label is what lets the UI show the user *why* a role
+// resolves the way it does instead of hiding the layering:
+//
+//	"role"      the roles map carries this role
+//	"workspace" the legacy models map carries this role's workspace name
+//	"default"   the global model applies
+//	"builtin"   nothing configured; the caller falls back to the catalog default
+//
+// A role entry that carries only an effort contributes that effort while the
+// model still resolves through the lower layers, so setting effort alone never
+// silently unbinds a model.
+func (s Settings) RoleModel(role string) (model, effort, source string) {
+	key := strings.ToLower(strings.TrimSpace(role))
+	if key != "" {
+		if profile, found := s.Roles[key]; found {
+			profileEffort := strings.TrimSpace(profile.Effort)
+			if model := strings.TrimSpace(profile.Model); model != "" {
+				return model, profileEffort, "role"
+			}
+			// No model on the profile: an effort-only entry keeps its effort
+			// while the model resolves through the layers below.
+			if m, _, _, ok := s.lowerLayerModel(key); ok {
+				return m, profileEffort, "role"
+			}
+		}
+	}
+	if model, _, _, ok := s.lowerLayerModel(key); ok {
+		if _, found := s.Models[key]; found {
+			return model, "", "workspace"
+		}
+		return model, "", "default"
+	}
+	return "", "", "builtin"
+}
+
+// lowerLayerModel resolves the model below the role layer: the legacy
+// workspace override, then the global default.
+func (s Settings) lowerLayerModel(key string) (model, provider, id string, ok bool) {
+	if key != "" {
+		if value, found := s.Models[key]; found {
+			if p, i, ok := splitModel(value); ok {
+				return value, p, i, true
+			}
+		}
+	}
+	if p, i, ok := splitModel(s.Model); ok {
+		return s.Model, p, i, true
+	}
+	return "", "", "", false
+}
+
+// AssignRole records a role's model reference and thinking effort.
+//
+// An empty model leaves the existing model binding untouched, so changing only
+// the effort never unbinds a role; an empty effort clears it, returning the
+// role to the global default.
+func (s *Settings) AssignRole(role, model, effort string) {
+	key := strings.ToLower(strings.TrimSpace(role))
+	if key == "" {
+		return
+	}
+	if s.Roles == nil {
+		s.Roles = map[string]Profile{}
+	}
+	profile := s.Roles[key]
+	if trimmed := strings.TrimSpace(model); trimmed != "" {
+		profile.Model = trimmed
+	}
+	profile.Effort = strings.TrimSpace(effort)
+	s.Roles[key] = profile
+}
+
+// SetRoleModel binds a role to a model while preserving its configured effort.
+//
+// It is the switch-a-model path (the plain REPL's /model): changing which model
+// answers must not silently clear a thinking effort the user chose.
+func (s *Settings) SetRoleModel(role, model string) {
+	key := strings.ToLower(strings.TrimSpace(role))
+	trimmed := strings.TrimSpace(model)
+	if key == "" || trimmed == "" {
+		return
+	}
+	if s.Roles == nil {
+		s.Roles = map[string]Profile{}
+	}
+	profile := s.Roles[key]
+	profile.Model = trimmed
+	s.Roles[key] = profile
 }
 
 // normalizeWorkspaceKey lowercases and trims a workspace name for lookup, so

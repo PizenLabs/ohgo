@@ -230,6 +230,10 @@ type State struct {
 	Theme string
 	// Picker is the open selection overlay, or nil.
 	Picker *PickerState
+	// Plane is the open model control plane, or nil. It is the persistent
+	// split-pane surface behind /model; the single-overlay Picker remains for
+	// sessions, jobs, commands and the connect flow.
+	Plane *ModelPlaneState
 	// Secret is an open credential prompt, or nil. While set, the composer
 	// collects a masked secret for its handler instead of a prompt.
 	Secret *SecretState
@@ -448,6 +452,9 @@ func (s *State) Apply(event Event) {
 		if s.Picker != nil {
 			s.Picker.SetVisibleRows(pickerRowsFor(*s))
 		}
+		if s.Plane != nil {
+			s.Plane.SetVisibleRows(planeRowsFor(*s))
+		}
 
 	case ThemeChanged:
 		s.Theme = NormalizeTheme(e.Name)
@@ -530,9 +537,177 @@ func (s *State) Apply(event Event) {
 			}
 			s.Picker.ErrMsg = e.Err
 		}
+		if s.Plane != nil {
+			s.Plane.Loading = false
+			s.Plane.Refreshing = false
+			s.Plane.Stale = false
+			if len(e.Snapshot.Options) > 0 {
+				s.Plane.SetModels(e.Snapshot.Options)
+				if e.Snapshot.Origin != "" {
+					s.Plane.Origin = e.Snapshot.Origin
+				}
+			}
+			s.Plane.ErrMsg = e.Err
+			// A refresh replaces the rows the variant options point at, so
+			// an open prompt cannot survive it: cancel and say why rather
+			// than confirming a stale row.
+			if s.Plane.Variant != nil {
+				s.Plane.CancelVariant()
+				s.Plane.Notice = "catalog refreshed — choose the variant again"
+			}
+		}
 
 	case PickerClosed:
 		s.Picker = nil
+
+	case ModelPlaneOpened:
+		s.Plane = NewModelPlane(e)
+		// Size the list window from the modal interior immediately: a
+		// zero VisibleRows means "render everything", which would let the
+		// lists eat the detail block. The program's open path recomputes
+		// this too; doing it here keeps every opener correct.
+		s.Plane.SetVisibleRows(planeRowsFor(*s))
+
+	case ModelPlaneClosed:
+		s.Plane = nil
+
+	case PlaneMoved:
+		if s.Plane != nil {
+			if s.Plane.Variant != nil {
+				s.Plane.MoveVariant(e.Delta)
+			} else {
+				s.Plane.Move(e.Delta)
+			}
+		}
+
+	case PlanePaged:
+		if s.Plane != nil {
+			if s.Plane.Variant != nil {
+				s.Plane.EndVariant(e.Delta > 0)
+			} else {
+				s.Plane.Page(e.Delta)
+			}
+		}
+
+	case PlaneTop:
+		if s.Plane != nil {
+			if s.Plane.Variant != nil {
+				s.Plane.EndVariant(false)
+			} else {
+				s.Plane.Top()
+			}
+		}
+
+	case PlaneBottom:
+		if s.Plane != nil {
+			if s.Plane.Variant != nil {
+				s.Plane.EndVariant(true)
+			} else {
+				s.Plane.Bottom()
+			}
+		}
+
+	case PlaneFocusChanged:
+		if s.Plane != nil {
+			if e.Right {
+				s.Plane.FocusModels()
+			} else {
+				s.Plane.FocusProviders()
+			}
+		}
+
+	case PlaneFocusSet:
+		if s.Plane != nil {
+			s.Plane.setFocus(e.Focus)
+		}
+
+	case PlaneFocusMoved:
+		if s.Plane != nil {
+			if e.Delta < 0 {
+				for i := 0; i < -e.Delta; i++ {
+					s.Plane.PrevFocus()
+				}
+			} else {
+				for i := 0; i < e.Delta; i++ {
+					s.Plane.NextFocus()
+				}
+			}
+		}
+
+	case PlaneModeToggled:
+		if s.Plane != nil {
+			s.Plane.ToggleMode()
+		}
+
+	case PlaneFilterChanged:
+		if s.Plane != nil {
+			s.Plane.SetFilter(e.Text)
+		}
+
+	case PlaneTyped:
+		if s.Plane != nil {
+			s.Plane.InsertFilterText(e.Text)
+		}
+
+	case PlaneFilterBackspace:
+		if s.Plane != nil {
+			s.Plane.DeleteFilterBefore()
+		}
+
+	case PlaneFilterDelete:
+		if s.Plane != nil {
+			s.Plane.DeleteFilterAt()
+		}
+
+	case PlaneFilterCursorMoved:
+		if s.Plane != nil {
+			s.Plane.MoveFilterCursor(e.Delta)
+		}
+
+	case PlaneFilterCleared:
+		if s.Plane != nil {
+			s.Plane.ClearFilter()
+		}
+
+	case PlaneVariantOpened:
+		if s.Plane != nil {
+			s.Plane.OpenVariant()
+		}
+
+	case PlaneVariantMoved:
+		if s.Plane != nil {
+			s.Plane.MoveVariant(e.Delta)
+		}
+
+	case PlaneVariantClosed:
+		if s.Plane != nil {
+			s.Plane.CancelVariant()
+		}
+
+	case PlaneEffortCycled:
+		if s.Plane != nil {
+			s.Plane.CycleEffort(e.Delta)
+		}
+
+	case PlaneRoleCycled:
+		if s.Plane != nil {
+			s.Plane.NextRole(e.Delta)
+		}
+
+	case PlaneRoleStaged:
+		if s.Plane != nil {
+			s.Plane.StageRole()
+		}
+
+	case PlaneAssigned:
+		if s.Plane != nil {
+			s.Plane.ApplyAssignment(e.Result, e.Roles, e.Notice)
+		}
+
+	case PlaneRowsChanged:
+		if s.Plane != nil {
+			s.Plane.SetVisibleRows(e.Rows)
+		}
 
 	case SecretOpened:
 		s.Secret = &SecretState{Label: e.Label}
@@ -1438,6 +1613,161 @@ type PickerClosed struct{}
 
 func (PickerClosed) eventKind() string { return "picker_closed" }
 
+// ModelPlaneOpened opens the persistent split-pane model control surface.
+//
+// The caller owns the roster and the role list: it builds both from
+// authoritative metadata and the configuration authority, so the plane never
+// fabricates a model fact or a persistence decision.
+type ModelPlaneOpened struct {
+	// Providers is the provider pane, including the synthetic All row.
+	Providers []ProviderRow
+	// Models is the merged model roster.
+	Models []ModelOption
+	// Roles is the effective role configuration.
+	Roles []RoleAssignment
+	// ActiveRole is the role an Enter applies to in model mode.
+	ActiveRole string
+	// Loading reports the first roster has not arrived yet.
+	Loading bool
+	// Origin names the snapshot: "live", "cached", "bundled", "loading".
+	Origin string
+	// Stale reports cached rows shown while a refresh runs.
+	Stale bool
+}
+
+func (ModelPlaneOpened) eventKind() string { return "model_plane_opened" }
+
+// ModelPlaneClosed dismisses the control plane without applying anything.
+type ModelPlaneClosed struct{}
+
+func (ModelPlaneClosed) eventKind() string { return "model_plane_closed" }
+
+// PlaneMoved shifts the highlight in the focused pane. Positive goes down.
+type PlaneMoved struct{ Delta int }
+
+func (PlaneMoved) eventKind() string { return "plane_moved" }
+
+// PlanePaged shifts the highlight by approximately one viewport.
+type PlanePaged struct{ Delta int }
+
+func (PlanePaged) eventKind() string { return "plane_paged" }
+
+// PlaneTop parks the highlight on the first row of the focused pane.
+type PlaneTop struct{}
+
+func (PlaneTop) eventKind() string { return "plane_top" }
+
+// PlaneBottom parks the highlight on the last row of the focused pane.
+type PlaneBottom struct{}
+
+func (PlaneBottom) eventKind() string { return "plane_bottom" }
+
+// PlaneFocusChanged moves focus between the two panes. Right=true focuses the
+// right pane (models in model mode), false the left.
+type PlaneFocusChanged struct{ Right bool }
+
+func (PlaneFocusChanged) eventKind() string { return "plane_focus_changed" }
+
+// PlaneFocusSet moves the keyboard to an explicit control. Tab cycling and
+// programmatic focus both go through it so the mode stays in step.
+type PlaneFocusSet struct{ Focus PlaneFocus }
+
+func (PlaneFocusSet) eventKind() string { return "plane_focus_set" }
+
+// PlaneFocusMoved steps the keyboard through the Tab order. Positive goes
+// forward, negative goes back.
+type PlaneFocusMoved struct{ Delta int }
+
+func (PlaneFocusMoved) eventKind() string { return "plane_focus_moved" }
+
+// PlaneModeToggled swaps model browsing and role assignment.
+type PlaneModeToggled struct{}
+
+func (PlaneModeToggled) eventKind() string { return "plane_mode_toggled" }
+
+// PlaneFilterChanged replaces the query.
+type PlaneFilterChanged struct{ Text string }
+
+func (PlaneFilterChanged) eventKind() string { return "plane_filter_changed" }
+
+// PlaneTyped inserts text into the query at the cursor.
+type PlaneTyped struct{ Text string }
+
+func (PlaneTyped) eventKind() string { return "plane_typed" }
+
+// PlaneFilterBackspace deletes the rune before the query cursor.
+type PlaneFilterBackspace struct{}
+
+func (PlaneFilterBackspace) eventKind() string { return "plane_filter_backspace" }
+
+// PlaneFilterDelete deletes the rune under the query cursor.
+type PlaneFilterDelete struct{}
+
+func (PlaneFilterDelete) eventKind() string { return "plane_filter_delete" }
+
+// PlaneFilterCursorMoved shifts the query cursor.
+type PlaneFilterCursorMoved struct{ Delta int }
+
+func (PlaneFilterCursorMoved) eventKind() string { return "plane_filter_cursor_moved" }
+
+// PlaneFilterCleared empties the query.
+type PlaneFilterCleared struct{}
+
+func (PlaneFilterCleared) eventKind() string { return "plane_filter_cleared" }
+
+// PlaneVariantOpened starts the choose-a-variant prompt for the highlighted
+// model. It is a no-op when the model needs no choice.
+type PlaneVariantOpened struct{}
+
+func (PlaneVariantOpened) eventKind() string { return "plane_variant_opened" }
+
+// PlaneVariantMoved shifts the variant highlight. Positive goes down.
+type PlaneVariantMoved struct{ Delta int }
+
+func (PlaneVariantMoved) eventKind() string { return "plane_variant_moved" }
+
+// PlaneVariantClosed dismisses the variant prompt without choosing.
+type PlaneVariantClosed struct{}
+
+func (PlaneVariantClosed) eventKind() string { return "plane_variant_closed" }
+
+// PlaneEffortCycled moves the pending thinking effort among the highlighted
+// model's authoritative options.
+type PlaneEffortCycled struct{ Delta int }
+
+func (PlaneEffortCycled) eventKind() string { return "plane_effort_cycled" }
+
+// PlaneRoleCycled moves the active role in model mode.
+type PlaneRoleCycled struct{ Delta int }
+
+func (PlaneRoleCycled) eventKind() string { return "plane_role_cycled" }
+
+// PlaneRoleStaged stages the highlighted role as the assignment target and
+// returns to model browsing so its replacement can be searched for and
+// selected. It is the Roles-mode Enter contract.
+type PlaneRoleStaged struct{}
+
+func (PlaneRoleStaged) eventKind() string { return "plane_role_staged" }
+
+// PlaneAssigned records the outcome of an assignment attempt: the applied
+// role, the refreshed role roster, and a one-line notice (confirmation or
+// refusal).
+type PlaneAssigned struct {
+	// Result is the assignment that was applied.
+	Result RoleAssignment
+	// Roles is the refreshed effective role roster, or nil to leave it.
+	Roles []RoleAssignment
+	// Notice is the confirmation or refusal shown in the footer.
+	Notice string
+}
+
+func (PlaneAssigned) eventKind() string { return "plane_assigned" }
+
+// PlaneRowsChanged resizes the list window, e.g. after a resize.
+type PlaneRowsChanged struct{ Rows int }
+
+func (PlaneRowsChanged) eventKind() string { return "plane_rows_changed" }
+
 // HistoryReplaced swaps the transcript for replayed entries on resume.
 type HistoryReplaced struct {
 	// Entries is the replayed transcript, oldest first.
@@ -1563,6 +1893,30 @@ type ModelOption struct {
 	// Capabilities lists confirmed capabilities, e.g. "reasoning",
 	// "images". Absent means unconfirmed, never unsupported-by-default.
 	Capabilities []string
+	// MaxOutput is the model's maximum completion in tokens, or zero when
+	// unknown.
+	MaxOutput int
+	// CostInput, CostOutput, CostCacheRead and CostCacheWrite are the
+	// per-million-token USD schedule. They are meaningful only when
+	// PriceKnown is true; a zero under PriceKnown is a real zero (free),
+	// not a missing value.
+	CostInput      float64
+	CostOutput     float64
+	CostCacheRead  float64
+	CostCacheWrite float64
+	// InputModalities lists the content kinds the model accepts, e.g.
+	// "text", "image". Empty means unknown, never unsupported.
+	InputModalities []string
+	// ThinkingEfforts lists the effort levels the model exposes, in
+	// ascending cost order. Empty means no explicit ladder; Reasoning and
+	// ReasoningKnown then decide support.
+	ThinkingEfforts []string
+	// Reasoning reports the model accepts a thinking budget.
+	Reasoning bool
+	// ReasoningKnown reports Reasoning is authoritative. False means the
+	// source said nothing, so the UI renders "unknown", never
+	// "unsupported".
+	ReasoningKnown bool
 }
 
 // CatalogSnapshot is one model roster with freshness metadata.

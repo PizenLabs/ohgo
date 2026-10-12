@@ -431,6 +431,16 @@ func (l *Loop) SetModel(model ai.Model) {
 	l.cfg.ModelFn = nil
 }
 
+// SetReasoning changes the extended-thinking setting for subsequent requests.
+//
+// Like SetModel it must be called before Run, never during one: the effort is
+// read when the request is built, so changing it mid-turn would make the turn
+// inconsistent with itself. A role's thinking effort flows through here.
+func (l *Loop) SetReasoning(enabled bool, effort string) {
+	l.cfg.Reasoning = enabled
+	l.cfg.ReasoningEffort = effort
+}
+
 // convert turns agent messages into provider messages.
 func (l *Loop) convert(messages []Message) ([]ai.Message, error) {
 	if l.cfg.TransformContext != nil {

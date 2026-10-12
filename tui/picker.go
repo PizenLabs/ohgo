@@ -157,27 +157,37 @@ func (p *PickerState) Visible() []PickerItem {
 
 // matchItem reports whether every token matches the item.
 func matchItem(item PickerItem, tokens []string) bool {
+	return matchFields(item.searchText(), item.Provider, item.PriceKnown, item.Free, tokens)
+}
+
+// matchFields reports whether every query token matches a haystack, provider
+// identity, and pricing flags.
+//
+// It is the single owner of token semantics: a "provider:<name>" token pins a
+// provider, a "free" token matches verified zero pricing and falls back to the
+// text only when pricing is unknown (never presenting an unknown price as a
+// verified claim), and every other token must appear in the haystack. The
+// picker and the model control plane both route through it so a search cannot
+// mean one thing in one surface and something else in the other.
+func matchFields(hay, provider string, priceKnown, free bool, tokens []string) bool {
 	if len(tokens) == 0 {
 		return true
 	}
-	hay := item.searchText()
 	for _, tok := range tokens {
-		if provider, ok := strings.CutPrefix(tok, "provider:"); ok {
-			if !strings.EqualFold(item.Provider, provider) &&
-				!strings.Contains(strings.ToLower(item.Provider), provider) {
+		if pinned, ok := strings.CutPrefix(tok, "provider:"); ok {
+			if !strings.EqualFold(provider, pinned) &&
+				!strings.Contains(strings.ToLower(provider), pinned) {
 				return false
 			}
 			continue
 		}
 		if tok == "free" {
-			if item.PriceKnown {
-				if !item.Free {
+			if priceKnown {
+				if !free {
 					return false
 				}
 				continue
 			}
-			// Pricing unknown: fall back to the name heuristic without
-			// ever presenting it as verified.
 			if !strings.Contains(hay, "free") {
 				return false
 			}

@@ -160,11 +160,29 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 		opts.deadline = time.Now().Add(timeout)
 	}
 
-	if opts.effort == "" {
-		opts.effort = opts.settings.ReasoningEffort
+	// Effort precedence: --effort, then the role's configured effort, then the
+	// global default. An explicit effort turns thinking on; "off" turns it off
+	// outright. The global default alone does not enable thinking — that stays
+	// governed by the reasoning setting, so an untouched install behaves as
+	// before.
+	roleEffort := ""
+	if _, level, _ := opts.settings.RoleModel(opts.workspace.String()); level != "" {
+		roleEffort = level
 	}
-	if !opts.reasoning {
-		opts.reasoning = opts.settings.Reasoning
+	if opts.effort == "" {
+		opts.effort = roleEffort
+	}
+	switch opts.effort {
+	case tui.EffortOff:
+		opts.reasoning = false
+		opts.effort = ""
+	case "":
+		opts.effort = opts.settings.ReasoningEffort
+		if !opts.reasoning {
+			opts.reasoning = opts.settings.Reasoning
+		}
+	default:
+		opts.reasoning = true
 	}
 	return opts, registry, nil
 }
@@ -193,7 +211,15 @@ func resolveModel(settings config.Settings, flagModel, envModel string, resolve 
 // with resolveModel through resolveModelRef.
 func resolveWorkspaceModel(settings config.Settings, ws workspace.Workspace, flagModel, envModel string, resolve func(string) (ai.Model, error)) (ai.Model, error) {
 	return resolveModelRef(func() (string, string, bool) {
-		return settings.ModelFor(ws.String())
+		ref, _, _ := settings.RoleModel(ws.String())
+		if ref == "" {
+			return "", "", false
+		}
+		provider, id, ok := strings.Cut(ref, "/")
+		if !ok || provider == "" || id == "" {
+			return "", "", false
+		}
+		return provider, id, true
 	}, flagModel, envModel, resolve)
 }
 
@@ -422,16 +448,25 @@ func catalogSnapshot() tui.CatalogSnapshot {
 			bits = append(bits, strings.Join(caps, "+"))
 		}
 		options = append(options, tui.ModelOption{
-			ID:           id,
-			Provider:     model.Provider,
-			Title:        title + " (" + id + ")",
-			Detail:       strings.Join(bits, " · "),
-			Name:         model.Name,
-			Context:      model.ContextWindow,
-			PriceKnown:   entry.PriceKnown,
-			Free:         entry.Free,
-			Origin:       entry.Origin,
-			Capabilities: caps,
+			ID:              id,
+			Provider:        model.Provider,
+			Title:           title,
+			Detail:          strings.Join(bits, " · "),
+			Name:            model.Name,
+			Context:         model.ContextWindow,
+			PriceKnown:      entry.PriceKnown,
+			Free:            entry.Free,
+			Origin:          entry.Origin,
+			Capabilities:    caps,
+			MaxOutput:       model.MaxOutputTokens,
+			CostInput:       model.Cost.Input,
+			CostOutput:      model.Cost.Output,
+			CostCacheRead:   model.Cost.CacheRead,
+			CostCacheWrite:  model.Cost.CacheWrite,
+			InputModalities: append([]string(nil), model.InputModalities...),
+			ThinkingEfforts: thinkingEfforts(entry.Thinking),
+			Reasoning:       model.Reasoning,
+			ReasoningKnown:  entry.ReasoningKnown,
 		})
 	}
 	origin := "live"
@@ -1235,6 +1270,20 @@ func runSession(cmd *cobra.Command, args []string) error {
 				return refreshModelCatalog(held, seq)
 			},
 		})
+		// The model control plane: the provider pane, the role assignments,
+		// and the one seam /model writes through. The program owns none of
+		// this — it renders what the harness reports and hands edits back.
+		program.SetModelControl(tui.ModelControlHooks{
+			Providers: func() []tui.ProviderRow { return held.ProviderPaneRows() },
+			Roles:     func() []tui.RoleAssignment { return held.RoleAssignments() },
+			ActiveRole: func() string {
+				return strings.ToLower(opts.authority().String())
+			},
+			Assign: func(update tui.RoleAssignment) (tui.RoleAssignment, []tui.RoleAssignment, error) {
+				return held.AssignRole(update)
+			},
+			EffectiveWindow: func() int { return held.model.ContextWindow },
+		})
 		program.SetJobsLister(func() []tui.JobItem {
 			for _, tool := range loop.Tools() {
 				bash, ok := tool.(*tools.BashTool)
@@ -1408,7 +1457,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 					_, _ = fmt.Fprintln(out, "usage: /model provider/id — e.g. /model groq/llama-3.1-8b-instant")
 					continue
 				}
-				model, err := h.SwitchModel(context.Background(), command.Args[0])
+				model, err := h.SetModel(command.Args[0])
 				if err != nil {
 					_, _ = fmt.Fprintf(out, "unknown model %q: %v\nrun `ohgo models` to list them\n", command.Args[0], err)
 					continue

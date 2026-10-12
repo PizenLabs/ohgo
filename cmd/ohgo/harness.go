@@ -61,22 +61,205 @@ func newHarness(registry *ai.Registry, loop *agent.Loop, store *session.Store, s
 // ProviderRows lists every catalog provider with its credential status. No
 // network is touched: reachability is a probe, and probes run on demand
 // (see ProbeCurrent), never as a side effect of listing.
+//
+// Count is a fact about the merged roster (bundled plus cached live rows), and
+// Configured reports whether a credential resolves. Neither is a health claim.
 func (h *harness) ProviderRows() []tui.ProviderRow {
+	counts := map[string]int{}
+	if entries, _ := catalog.SnapshotAll(); len(entries) > 0 {
+		for _, entry := range entries {
+			counts[entry.Model.Provider]++
+		}
+	}
 	var rows []tui.ProviderRow
 	for _, name := range catalog.ProviderNames() {
-		row := tui.ProviderRow{ID: name, Name: providerDisplayName(name)}
+		row := tui.ProviderRow{ID: name, Name: providerDisplayName(name), Count: counts[name]}
 		_, source, err := h.registry.ResolveAPIKeySource(name)
 		switch {
 		case err == nil:
 			row.KeyDetail = source
+			row.Configured = true
 		case name == "ollama":
 			row.KeyDetail = "none required"
+			row.Configured = true
 		default:
 			row.KeyDetail = "missing: " + keyHint(err)
 		}
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// ProviderPaneRows is the model control plane's provider pane: the real
+// providers preceded by a synthetic All row that disables provider filtering,
+// so a single search can span the whole roster.
+func (h *harness) ProviderPaneRows() []tui.ProviderRow {
+	rows := h.ProviderRows()
+	total := 0
+	for _, row := range rows {
+		total += row.Count
+	}
+	all := tui.ProviderRow{ID: tui.AllProviders, Name: "All providers", Count: total}
+	return append([]tui.ProviderRow{all}, rows...)
+}
+
+// RoleAssignments reports the effective model profile for every role, with the
+// authoritative capability facts of each bound model. It is read-only: the
+// control plane renders it and hands edits back through AssignRole.
+func (h *harness) RoleAssignments() []tui.RoleAssignment {
+	facts := map[string]catalog.SnapshotEntry{}
+	for _, entry := range h.snapshotEntries() {
+		facts[entry.Model.Provider+"/"+entry.Model.ID] = entry
+	}
+	settings := h.settingsOrDefault()
+	var out []tui.RoleAssignment
+	for _, role := range config.RoleNames() {
+		ref, effort, source := settings.RoleModel(string(role))
+		out = append(out, h.roleAssignment(string(role), ref, effort, source, facts))
+	}
+	return out
+}
+
+// snapshotEntries returns the merged roster, tolerating an empty snapshot.
+func (h *harness) snapshotEntries() []catalog.SnapshotEntry {
+	entries, _ := catalog.SnapshotAll()
+	return entries
+}
+
+// roleAssignment builds one role's display row from its effective reference.
+func (h *harness) roleAssignment(role, ref, effort, source string, facts map[string]catalog.SnapshotEntry) tui.RoleAssignment {
+	assignment := tui.RoleAssignment{Role: role, Model: ref, Effort: effort, Source: source}
+	if strings.TrimSpace(ref) == "" {
+		assignment.Source = "builtin"
+	} else if provider, _, ok := strings.Cut(ref, "/"); ok {
+		assignment.Provider = provider
+		if entry, found := facts[ref]; found {
+			assignment.Name = entry.Model.Name
+			assignment.Efforts = thinkingEfforts(entry.Thinking)
+			assignment.Reasoning = entry.Model.Reasoning
+			assignment.ReasoningKnown = entry.ReasoningKnown
+		} else if model, err := catalog.Resolve(ref); err == nil {
+			assignment.Name = model.Name
+			assignment.Reasoning = model.Reasoning
+			assignment.ReasoningKnown = true
+			assignment.Efforts = thinkingEfforts(catalog.ThinkingFor(ref))
+		}
+	}
+	if h.sessionRole() == role && h.sess != nil {
+		assignment.SessionModel = h.sess.Model
+	}
+	return assignment
+}
+
+// sessionRole names the role the running session resolved, derived from the
+// workspace label so a resumed session's snapshot is attributed to the right
+// role.
+func (h *harness) sessionRole() string {
+	return strings.ToLower(strings.TrimSpace(h.workspace))
+}
+
+// AssignRole validates, persists, and (for the session's own role) applies a
+// role assignment. It is the single seam /model writes through: the plane
+// never touches configuration or the loop itself.
+//
+// Validation is against authoritative metadata: an effort the bound model does
+// not expose is refused rather than stored, so a persisted profile can never
+// ask a provider for something it rejects.
+func (h *harness) AssignRole(update tui.RoleAssignment) (tui.RoleAssignment, []tui.RoleAssignment, error) {
+	role := config.NormalizeRole(update.Role)
+	if !config.ValidRole(role) {
+		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("unknown role %q", update.Role)
+	}
+	if h.settings == nil {
+		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("configuration is unavailable")
+	}
+	ref := strings.TrimSpace(update.Model)
+	if ref == "" {
+		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("no model selected for %s", role)
+	}
+	model, err := dynamicResolver(context.Background(), h.registry)(ref)
+	if err != nil {
+		return tui.RoleAssignment{}, h.RoleAssignments(), err
+	}
+	canonical := model.Provider + "/" + model.ID
+	effort := strings.TrimSpace(update.Effort)
+	if effort != "" && effort != tui.EffortOff {
+		ladder := catalog.ThinkingFor(canonical)
+		if !ladder.Supports(effort) {
+			return tui.RoleAssignment{}, h.RoleAssignments(),
+				fmt.Errorf("%s does not expose thinking effort %q", canonical, effort)
+		}
+	}
+	h.settings.AssignRole(string(role), canonical, effort)
+	if err := config.Save(*h.settings); err != nil {
+		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("save configuration: %w", err)
+	}
+	if h.sessionRole() == string(role) {
+		h.applyModel(model)
+		enabled, level := h.reasoningFor(effort)
+		if h.loop != nil {
+			h.loop.SetReasoning(enabled, level)
+		}
+		h.recordSessionAuthority(model)
+	}
+	for _, assignment := range h.RoleAssignments() {
+		if assignment.Role == string(role) {
+			return assignment, h.RoleAssignments(), nil
+		}
+	}
+	return tui.RoleAssignment{Role: string(role), Model: canonical, Effort: effort}, h.RoleAssignments(), nil
+}
+
+// recordSessionAuthority updates the session's resolved-model snapshot after an
+// explicit reassignment of the session's own role, so the snapshot describes
+// what actually executes rather than what the configuration said at startup.
+// It mirrors applySessionAuthority: a storage failure is reported but never
+// fails the assignment, because the conversation is still correct in memory.
+func (h *harness) recordSessionAuthority(model ai.Model) {
+	effective := model.Provider + "/" + model.ID
+	if h.sess != nil {
+		h.sess.Model = effective
+	}
+	if h.store != nil && h.sess != nil {
+		if err := h.store.SetAuthority(h.sess.ID, strings.ToLower(h.workspace), effective); err != nil {
+			fmt.Fprintf(os.Stderr, "ohgo: could not record session authority: %v\n", err)
+		}
+	}
+}
+
+// reasoningFor maps a persisted effort to the loop's thinking settings. An
+// empty effort defers to the global default; "off" disables thinking outright.
+func (h *harness) reasoningFor(effort string) (bool, string) {
+	switch effort {
+	case tui.EffortOff:
+		return false, ""
+	case "":
+		settings := h.settingsOrDefault()
+		return settings.Reasoning, settings.ReasoningEffort
+	default:
+		return true, effort
+	}
+}
+
+// thinkingEfforts copies a catalog thinking ladder into the UI-shaped slice.
+func thinkingEfforts(thinking *catalog.Thinking) []string {
+	if thinking == nil {
+		return nil
+	}
+	return append([]string(nil), thinking.Efforts...)
+}
+
+// applyModel moves the loop, the ledger pricing, and the harness model
+// together. Splitting those updates would leave the status line naming a model
+// the loop is not calling, or value new tokens at old prices.
+func (h *harness) applyModel(model ai.Model) {
+	if h.loop != nil {
+		h.loop.SetModel(model)
+	}
+	h.model = model
+	if h.usage != nil {
+		h.usage.SetCost(model.Cost)
+	}
 }
 
 // providerDisplayName names a provider for humans from the catalog's own
@@ -177,14 +360,38 @@ func (h *harness) SwitchModel(ctx context.Context, ref string) (ai.Model, error)
 	if err != nil {
 		return ai.Model{}, err
 	}
-	// A nil loop serves tests that exercise resolution without a runtime;
-	// production always drives a real one.
-	if h.loop != nil {
-		h.loop.SetModel(model)
+	h.applyModel(model)
+	return model, nil
+}
+
+// SetModel switches models and records the choice in the session's role.
+//
+// It is the plain REPL's /model: it converges on the same configuration
+// authority the control plane writes through, so an interactive switch and a
+// hand-edited file agree. A harness without settings (a bare test harness)
+// still switches, it just has nowhere durable to record it.
+func (h *harness) SetModel(ref string) (ai.Model, error) {
+	resolve := catalog.Resolve
+	if h.registry != nil {
+		resolve = dynamicResolver(context.Background(), h.registry)
 	}
-	h.model = model
-	if h.usage != nil {
-		h.usage.SetCost(model.Cost)
+	model, err := resolve(ref)
+	if err != nil {
+		return ai.Model{}, err
+	}
+	h.applyModel(model)
+	if h.settings != nil {
+		role := h.sessionRole()
+		if !config.ValidRole(config.NormalizeRole(role)) {
+			role = string(config.RoleBuild)
+		}
+		h.settings.SetRoleModel(role, model.Provider+"/"+model.ID)
+		if err := config.Save(*h.settings); err != nil {
+			return model, fmt.Errorf("save configuration: %w", err)
+		}
+		if role == h.sessionRole() {
+			h.recordSessionAuthority(model)
+		}
 	}
 	return model, nil
 }

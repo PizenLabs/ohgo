@@ -171,6 +171,10 @@ type Program struct {
 	// background and reports through a Bubble Tea command, never blocking
 	// the event loop. Zero value degrades to the legacy listers below.
 	catalog CatalogHooks
+	// modelControl feeds and persists the /model control plane. Its zero
+	// value means the plane is unavailable and /model falls back to the
+	// picker; the program never owns durable configuration itself.
+	modelControl ModelControlHooks
 	// modelSeq is the latest catalog refresh generation. Older, slower
 	// responses carry a trailing Seq and are dropped, never applied.
 	modelSeq int
@@ -222,6 +226,38 @@ type CatalogHooks struct {
 // SetCatalogHooks installs live catalog sourcing behind the /model picker.
 func (p *Program) SetCatalogHooks(hooks CatalogHooks) {
 	p.catalog = hooks
+}
+
+// ModelControlHooks feed and persist the /model control plane.
+//
+// They are functions because the program owns neither the catalog, the
+// configuration authority, nor the runtime: the CLI does. Passing them in
+// keeps the TUI free of durable configuration, which is the whole point of the
+// split — an interactive change and a direct settings edit converge on the
+// same authority because both go through it.
+type ModelControlHooks struct {
+	// Providers lists the provider pane, including the synthetic All row.
+	Providers func() []ProviderRow
+	// Roles returns the effective role assignments to display.
+	Roles func() []RoleAssignment
+	// ActiveRole names the role an Enter applies to by default (normally the
+	// session's own role).
+	ActiveRole func() string
+	// Assign validates, persists through the configuration authority, and
+	// applies an assignment to the runtime when it targets the active role.
+	// It returns the applied assignment and the refreshed role roster, so the
+	// UI never guesses what was accepted.
+	Assign func(update RoleAssignment) (RoleAssignment, []RoleAssignment, error)
+	// EffectiveWindow reports the runtime context window after an apply, so
+	// the status line does not keep a stale budget. Optional.
+	EffectiveWindow func() int
+}
+
+// SetModelControl installs the model control plane behind /model. Without it,
+// /model falls back to the legacy picker, so a caller that has not wired the
+// plane keeps yesterday's behaviour rather than a broken surface.
+func (p *Program) SetModelControl(hooks ModelControlHooks) {
+	p.modelControl = hooks
 }
 
 // SetUsageLog installs the ledger behind /usage.
@@ -381,7 +417,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Secret != nil || s.Pending != nil {
+	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil {
 		return false
 	}
 	return s.Input == ""
@@ -403,6 +439,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	switch m.Button {
 	case tea.MouseButtonWheelUp:
+		if p.state.Plane != nil {
+			p.state.Apply(PlaneMoved{Delta: -1})
+			return p, nil
+		}
 		if p.state.Picker != nil {
 			p.state.Apply(PickerMoved{Delta: -1})
 			return p, nil
@@ -410,6 +450,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 		p.state.Apply(ScrollMoved{Delta: mouseScrollLines})
 		return p, nil
 	case tea.MouseButtonWheelDown:
+		if p.state.Plane != nil {
+			p.state.Apply(PlaneMoved{Delta: 1})
+			return p, nil
+		}
 		if p.state.Picker != nil {
 			p.state.Apply(PickerMoved{Delta: 1})
 			return p, nil
@@ -427,7 +471,8 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 // response must never overwrite newer rows. A failure keeps the cached rows
 // and records the reason on the picker.
 func (p *Program) onModelsRefreshed(m modelsRefreshedMsg) (tea.Model, tea.Cmd) {
-	if p.state.Picker == nil || p.state.Picker.Kind != PickerModels {
+	relevant := (p.state.Picker != nil && p.state.Picker.Kind == PickerModels) || p.state.Plane != nil
+	if !relevant {
 		return p, nil
 	}
 	if m.seq != p.modelSeq {
@@ -475,6 +520,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		return p, nil
+	}
+
+	if p.state.Plane != nil {
+		return p.handlePlaneKey(msg)
 	}
 
 	if p.state.Picker != nil {
@@ -805,6 +854,9 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	case "model":
 		if len(command.Args) == 0 {
+			if p.modelControl.Assign != nil {
+				return p.openModelControl()
+			}
 			return p.openModelPicker()
 		}
 		p.applyModelSwitch(strings.Join(command.Args, ""))
@@ -1030,6 +1082,10 @@ func (p *Program) jobDetail(id string) string {
 // The first ctrl+c never quits a working session: it stops the work. Only an
 // idle ctrl+c exits, so a reflex keypress cannot discard a session.
 func (p *Program) cancelOrQuit() (tea.Model, tea.Cmd) {
+	if p.state.Plane != nil {
+		p.closePlane()
+		return p, nil
+	}
 	if p.state.Picker != nil {
 		p.closePicker()
 		return p, nil
@@ -1136,6 +1192,382 @@ func (p *Program) openModelPicker() tea.Cmd {
 	return nil
 }
 
+// openModelControl opens the persistent split-pane control plane behind
+// /model. It builds the roster and role list from the caller's hooks and
+// never persists anything itself: choosing a role routes through Assign,
+// which owns validation, the configuration authority, and the runtime.
+func (p *Program) openModelControl() tea.Cmd {
+	snapshot, ok := p.modelSnapshot()
+	if !ok {
+		p.state.Apply(Notice{Text: "model: " + p.state.Status.Model})
+		return nil
+	}
+	active := ""
+	if p.currentModel != nil {
+		active = p.currentModel()
+	}
+	for i := range snapshot.Options {
+		snapshot.Options[i].Active = snapshot.Options[i].ID == active
+	}
+	var providers []ProviderRow
+	if p.modelControl.Providers != nil {
+		providers = p.modelControl.Providers()
+	}
+	var roles []RoleAssignment
+	if p.modelControl.Roles != nil {
+		roles = p.modelControl.Roles()
+	}
+	activeRole := ""
+	if p.modelControl.ActiveRole != nil {
+		activeRole = p.modelControl.ActiveRole()
+	}
+	loading := snapshot.Origin == "loading"
+	p.state.Apply(ModelPlaneOpened{
+		Providers:  providers,
+		Models:     snapshot.Options,
+		Roles:      roles,
+		ActiveRole: activeRole,
+		Loading:    loading,
+		Origin:     snapshot.Origin,
+		Stale:      snapshot.Stale,
+	})
+	if p.state.Plane != nil {
+		p.state.Plane.SetVisibleRows(planeRowsFor(p.state))
+	}
+	if snapshot.Stale || loading || snapshot.Origin == "bundled" || snapshot.Origin == "" {
+		return p.issueRefresh()
+	}
+	return nil
+}
+
+// closePlane dismisses the control plane without applying anything.
+func (p *Program) closePlane() {
+	p.state.Apply(ModelPlaneClosed{})
+}
+
+// handlePlaneKey routes keys to the open control plane.
+//
+// The interaction contract is focus-explicit and streamlined: Tab/Shift+Tab
+// cycle Provider -> Model -> Role -> Effort (search is reached by typing),
+// Enter advances Provider -> Model and assigns from Model/Effort, while Enter
+// on a role stages it and returns to model search so its replacement can be
+// picked. Typing anywhere in model mode focuses search and lands in the
+// query — no shortcut is needed to start filtering — and effort is a visible
+// control driven by navigation keys on its own stop, never by a printable
+// shortcut. There are no printable global shortcuts: with a text input on
+// screen, a letter key must never execute a command. The variant prompt is
+// the only popup: selecting a model assigns directly unless it needs a
+// variant choice, so there is never a role popup stacked on an effort popup.
+func (p *Program) handlePlaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	plane := p.state.Plane
+	// An open variant prompt owns the keyboard: nothing behind it moves
+	// until a variant is confirmed or the prompt is abandoned.
+	if plane.Variant != nil {
+		return p.handleVariantKey(msg)
+	}
+	switch msg.String() {
+	case "esc":
+		// Leaving search keeps the query; a second Esc clears it; a third
+		// closes. Closing never applies anything.
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
+			return p, nil
+		}
+		if plane.Filter != "" {
+			p.state.Apply(PlaneFilterCleared{})
+			return p, nil
+		}
+		p.closePlane()
+		return p, nil
+	case "ctrl+c":
+		p.closePlane()
+		return p, nil
+	case "tab":
+		p.state.Apply(PlaneFocusMoved{Delta: 1})
+		return p, nil
+	case "shift+tab":
+		p.state.Apply(PlaneFocusMoved{Delta: -1})
+		return p, nil
+	case "left", "ctrl+b":
+		if plane.Focus == PlaneFocusSearch {
+			// Text cursor in the input; focus stays where it is.
+			p.state.Apply(PlaneFilterCursorMoved{Delta: -1})
+			return p, nil
+		}
+		if plane.Focus == PlaneFocusEffort {
+			p.state.Apply(PlaneEffortCycled{Delta: -1})
+			return p, nil
+		}
+		p.state.Apply(PlaneFocusMoved{Delta: -1})
+		return p, nil
+	case "right", "ctrl+f":
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterCursorMoved{Delta: 1})
+			return p, nil
+		}
+		if plane.Focus == PlaneFocusEffort {
+			p.state.Apply(PlaneEffortCycled{Delta: 1})
+			return p, nil
+		}
+		p.state.Apply(PlaneFocusMoved{Delta: 1})
+		return p, nil
+	case "up", "ctrl+p":
+		if plane.Focus == PlaneFocusEffort {
+			p.state.Apply(PlaneEffortCycled{Delta: -1})
+			return p, nil
+		}
+		p.state.Apply(PlaneMoved{Delta: -1})
+		return p, nil
+	case "down", "ctrl+n":
+		if plane.Focus == PlaneFocusEffort {
+			p.state.Apply(PlaneEffortCycled{Delta: 1})
+			return p, nil
+		}
+		p.state.Apply(PlaneMoved{Delta: 1})
+		return p, nil
+	case "pgup":
+		if plane.Focus == PlaneFocusEffort {
+			p.state.Apply(PlaneEffortCycled{Delta: -1})
+			return p, nil
+		}
+		p.state.Apply(PlanePaged{Delta: -1})
+		return p, nil
+	case "pgdown":
+		if plane.Focus == PlaneFocusEffort {
+			p.state.Apply(PlaneEffortCycled{Delta: 1})
+			return p, nil
+		}
+		p.state.Apply(PlanePaged{Delta: 1})
+		return p, nil
+	case "home", "ctrl+home":
+		p.state.Apply(PlaneTop{})
+		return p, nil
+	case "end", "ctrl+end":
+		p.state.Apply(PlaneBottom{})
+		return p, nil
+	case "ctrl+a":
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterCursorMoved{Delta: -len([]rune(plane.Filter))})
+		}
+		return p, nil
+	case "ctrl+e":
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterCursorMoved{Delta: len([]rune(plane.Filter))})
+		}
+		return p, nil
+	case "backspace", "ctrl+h":
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterBackspace{})
+		}
+		return p, nil
+	case "delete", "ctrl+d":
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterDelete{})
+		}
+		return p, nil
+	case "enter":
+		switch plane.Focus {
+		case PlaneFocusSearch:
+			// Accept the query and move to the results.
+			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
+			return p, nil
+		case PlaneFocusProviders:
+			// Start of the streamlined flow: Provider Enter moves to Model
+			// for selection.
+			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
+			return p, nil
+		case PlaneFocusRoles:
+			// Roles only display each role's current model: Enter stages
+			// the highlighted role and returns to model search so its
+			// replacement can be found, instead of assigning a hidden
+			// model highlight.
+			p.state.Apply(PlaneRoleStaged{})
+			return p, nil
+		default:
+			p.applyPlane()
+			return p, nil
+		}
+	case "ctrl+r":
+		if cmd := p.refreshPlaneCatalog(); cmd != nil {
+			return p, cmd
+		}
+		return p, nil
+	default:
+		// Space on the effort stop steps the visible radio.
+		if msg.Type == tea.KeySpace && plane.Focus == PlaneFocusEffort {
+			p.state.Apply(PlaneEffortCycled{Delta: 1})
+			return p, nil
+		}
+		if msg.Type != tea.KeyRunes && msg.Type != tea.KeySpace {
+			return p, nil
+		}
+		text := string(msg.Runes)
+		if msg.Type == tea.KeySpace {
+			text = " "
+		}
+		if text == "" {
+			return p, nil
+		}
+		// No shortcut is needed to search — typing is enough. A printable
+		// outside the input focuses search first and lands in the query, so
+		// it can never execute a command. Roles mode has no search box, so
+		// typing there stays a no-op rather than yanking the mode away.
+		if plane.Focus != PlaneFocusSearch {
+			if plane.Mode != PlaneModels {
+				return p, nil
+			}
+			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusSearch})
+		}
+		p.state.Apply(PlaneTyped{Text: text})
+		return p, nil
+	}
+}
+
+// refreshPlaneCatalog issues a background refresh for an open plane, at most
+// one at a time.
+func (p *Program) refreshPlaneCatalog() tea.Cmd {
+	if p.state.Plane == nil || p.state.Plane.Refreshing {
+		return nil
+	}
+	return p.issueRefresh()
+}
+
+// handleVariantKey routes keys while the choose-a-variant prompt is open.
+//
+// The prompt is strictly modal: navigation moves the variant highlight,
+// Enter confirms it through the normal assignment seam, Esc abandons it.
+// Everything else — printable input, Tab, refresh — is ignored, so a choice
+// can never half-apply and search text can never leak into it.
+func (p *Program) handleVariantKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		p.state.Apply(PlaneVariantClosed{})
+		return p, nil
+	case "enter":
+		p.confirmPlaneVariant()
+		return p, nil
+	case "up", "ctrl+p":
+		p.state.Apply(PlaneVariantMoved{Delta: -1})
+		return p, nil
+	case "down", "ctrl+n":
+		p.state.Apply(PlaneVariantMoved{Delta: 1})
+		return p, nil
+	case "pgup":
+		p.state.Apply(PlanePaged{Delta: -1})
+		return p, nil
+	case "pgdown":
+		p.state.Apply(PlanePaged{Delta: 1})
+		return p, nil
+	case "home", "ctrl+home":
+		p.state.Apply(PlaneTop{})
+		return p, nil
+	case "end", "ctrl+end":
+		p.state.Apply(PlaneBottom{})
+		return p, nil
+	default:
+		return p, nil
+	}
+}
+
+// applyPlane applies the highlighted model and effort to the targeted role
+// through the caller's Assign hook, then records the outcome. When the
+// highlighted model supports variants, Enter opens the variant prompt
+// instead: nothing assigns until a specific variant is confirmed.
+func (p *Program) applyPlane() {
+	plane := p.state.Plane
+	if plane == nil {
+		return
+	}
+	// A running turn must stay consistent with itself: the loop reads its
+	// model and effort when it builds each request, so switching mid-turn
+	// could make one turn span two models. The change is refused at the busy
+	// boundary and the user is told why, rather than silently applied.
+	if p.state.Status.Busy {
+		p.state.Apply(PlaneAssigned{Notice: "wait for the turn to finish before changing models"})
+		return
+	}
+	update, ok := plane.Assignment()
+	if !ok {
+		p.state.Apply(PlaneAssigned{Notice: "no model selected"})
+		return
+	}
+	if model, ok := plane.ChosenModel(); ok && plane.NeedsVariantChoice(model) {
+		p.state.Apply(PlaneVariantOpened{})
+		return
+	}
+	p.assignPlane(update)
+}
+
+// confirmPlaneVariant applies the chosen variant row through the caller's
+// Assign hook. The variant id carries its suffix, so the persisted reference
+// names the exact endpoint the user picked.
+func (p *Program) confirmPlaneVariant() {
+	plane := p.state.Plane
+	if plane == nil || plane.Variant == nil {
+		return
+	}
+	if p.state.Status.Busy {
+		p.state.Apply(PlaneAssigned{Notice: "wait for the turn to finish before changing models"})
+		return
+	}
+	update, ok := plane.VariantAssignment()
+	if !ok {
+		p.state.Apply(PlaneVariantClosed{})
+		p.state.Apply(PlaneAssigned{Notice: "no variant selected"})
+		return
+	}
+	// The choice is made: close the prompt before assigning so the outcome
+	// notice owns the footer. A failed assignment leaves the model
+	// highlighted, and Enter reopens the prompt.
+	p.state.Apply(PlaneVariantClosed{})
+	p.assignPlane(update)
+}
+
+// assignPlane sends one staged assignment through the caller's Assign hook
+// and records the outcome. Both the direct path and the variant-confirm path
+// share it, so validation, persistence, and the status refresh cannot drift
+// apart.
+func (p *Program) assignPlane(update RoleAssignment) {
+	if p.modelControl.Assign == nil {
+		p.state.Apply(PlaneAssigned{Notice: "model configuration is unavailable"})
+		return
+	}
+	result, roles, err := p.modelControl.Assign(update)
+	if err != nil {
+		p.state.Apply(PlaneAssigned{Roles: roles, Notice: sanitizeInline(err.Error())})
+		return
+	}
+	notice := fmt.Sprintf("assigned %s to %s", describeAssignment(result), strings.ToUpper(result.Role))
+	p.state.Apply(PlaneAssigned{Result: result, Roles: roles, Notice: notice})
+
+	// Keep the status line in step with the runtime when the active role's
+	// model changed. The window is refreshed from the runtime when the caller
+	// supplies it, so the budget display is not left stale.
+	if p.modelControl.ActiveRole != nil && strings.EqualFold(result.Role, p.modelControl.ActiveRole()) {
+		if p.currentModel != nil {
+			p.state.Status.Model = p.currentModel()
+		}
+		if p.modelControl.EffectiveWindow != nil {
+			p.state.Status.ContextWindow = p.modelControl.EffectiveWindow()
+		}
+	}
+}
+
+// describeAssignment names an applied model for a confirmation line.
+func describeAssignment(result RoleAssignment) string {
+	name := result.Name
+	if name == "" {
+		name = result.Model
+	}
+	if name == "" {
+		name = "model"
+	}
+	if result.Effort != "" {
+		return name + " @" + result.Effort
+	}
+	return name
+}
+
 // modelSnapshot resolves the instant roster: live hooks first, the enriched
 // lister second, the legacy id list last.
 func (p *Program) modelSnapshot() (CatalogSnapshot, bool) {
@@ -1186,11 +1618,16 @@ func (p *Program) issueRefresh() tea.Cmd {
 	if p.catalog.Refresh == nil {
 		return nil
 	}
-	if p.state.Picker == nil || p.state.Picker.Kind != PickerModels {
+	if p.state.Picker == nil && p.state.Plane == nil {
 		return nil
 	}
 	p.modelSeq++
-	p.state.Picker.Refreshing = true
+	if p.state.Picker != nil {
+		p.state.Picker.Refreshing = true
+	}
+	if p.state.Plane != nil {
+		p.state.Plane.Refreshing = true
+	}
 	return p.catalog.Refresh(context.Background(), p.modelSeq)
 }
 

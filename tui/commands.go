@@ -10,7 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// ProviderRow is one provider for the /providers listing.
+// ProviderRow is one provider for the /providers listing and the model control
+// plane's provider pane.
 type ProviderRow struct {
 	// ID is the stable provider key.
 	ID string
@@ -19,6 +20,13 @@ type ProviderRow struct {
 	// KeyDetail names the credential source ("environment (X)", "credential
 	// file", "none required", "missing: set X") without secret bytes.
 	KeyDetail string
+	// Count is the number of models the merged catalog lists for this
+	// provider. It is a fact, not an estimate: it counts what the snapshot
+	// would show.
+	Count int
+	// Configured reports a credential resolves for this provider. It is not a
+	// health claim: reachability is a probe, and the plane never invents one.
+	Configured bool
 }
 
 // DoctorFunc runs diagnostics for /doctor.

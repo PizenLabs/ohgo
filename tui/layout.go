@@ -118,15 +118,15 @@ func ComputeLayout(s State) Layout {
 	// Drop it here rather than at render time: reserved and rendered rows have
 	// to agree or the frame stops filling the viewport. The dialog prints its
 	// own key line, so nothing is left untaught.
-	if mode == LayoutWide && s.Height >= 20 && s.Picker == nil && s.Pending == nil {
+	if mode == LayoutWide && s.Height >= 20 && s.Picker == nil && s.Plane == nil && s.Pending == nil {
 		hints = 1
 	}
 	composer, sugg := composerHeight(s, content, mode, hints)
-	// An open picker hides the composer (and its hints row belongs to the
-	// transcript chrome, not the picker): reserving rows for regions that
+	// An open overlay hides the composer (and its hints row belongs to the
+	// transcript chrome, not the overlay): reserving rows for regions that
 	// never render would short the viewport and unpin the status line.
-	// The picker area fills the released rows instead.
-	if s.Picker != nil {
+	// The overlay area fills the released rows instead.
+	if s.Picker != nil || s.Plane != nil {
 		composer = 0
 		sugg = 0
 	}
@@ -238,6 +238,60 @@ func pickerRowsFor(s State) int {
 	}
 	layout := ComputeLayout(s)
 	rows := layout.ConversationHeight - 3 // header + search + footer
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
+
+// planeDetailRows is the number of rows the model control plane reserves below
+// its list for the highlighted model's detail. It shrinks with the tier so a
+// narrow terminal still shows a usable list.
+func planeDetailRows(mode LayoutMode) int {
+	switch mode {
+	case LayoutWide:
+		return 9
+	case LayoutMedium:
+		return 6
+	default:
+		return 3
+	}
+}
+
+// planeRowsFor sizes the control plane's list window so the panes fill the
+// modal interior: the list gets whatever the taller pane's chrome does not
+// claim. The right pane's real detail length (not a tier constant) sizes it,
+// so a tall dialog shows long lists instead of empty padding, and the detail
+// block — role line and effort radio included — always fits alongside them.
+// Zero means unknown size, in which case everything renders.
+func planeRowsFor(s State) int {
+	if s.Height <= 0 {
+		return 0
+	}
+	rect := PlaneModalRect(s.Width, s.Height)
+	contentH := rect.Height - 4
+	if contentH < 1 {
+		contentH = 1
+	}
+	// Left chrome: heading, separator, search heading, search box, count,
+	// plus room for the overflow marker.
+	need := 6
+	if p := s.Plane; p != nil && p.Mode != PlaneRoles {
+		detailLen := len(planeModelDetail(p, PaletteFor(s.Theme), 80, 99))
+		// Right chrome: heading, separator, detail, plus the overflow
+		// marker when the list does not fit (one fewer list row keeps the
+		// detail — role line and effort radio — on screen).
+		need = 2 + detailLen
+		rows := contentH - need
+		if len(p.VisibleModels()) > rows && rows > 1 {
+			rows--
+		}
+		if rows < 1 {
+			rows = 1
+		}
+		return rows
+	}
+	rows := contentH - need
 	if rows < 1 {
 		rows = 1
 	}
