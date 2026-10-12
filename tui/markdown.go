@@ -62,6 +62,21 @@ func RenderMarkdownWrapped(text string, pal *Palette, width int) string {
 type blockRenderer struct {
 	pal   *Palette
 	width int
+	// support enables the $sup overlay hierarchy: entity highlights,
+	// trailing-colon section headers, and command pills. Main-chat
+	// rendering leaves it false so the transcript never changes.
+	support bool
+}
+
+// inline parses one line and, in support mode, highlights key entities
+// inside plain runs. Styled runs (code, bold, links) keep their own
+// meaning: a missed highlight is invisible, a wrong one misleads.
+func (r *blockRenderer) inline(text string) []chunk {
+	chunks := parseInline(text, r.pal)
+	if !r.support {
+		return chunks
+	}
+	return highlightSupportChunks(chunks, r.pal)
 }
 
 func (r *blockRenderer) render(text string) string {
@@ -166,7 +181,7 @@ func (r *blockRenderer) renderHeading(trimmed string) string {
 		level++
 	}
 	text := strings.TrimSpace(trimmed[level:])
-	chunks := parseInline(text, r.pal)
+	chunks := r.inline(text)
 	// Headers stratify down the forest scale so depth reads without
 	// parsing: bright emerald H1, sage H2, muted sage H3 and below.
 	outer := r.pal.Heading
@@ -412,7 +427,7 @@ func (r *blockRenderer) renderQuote(line string) string {
 	for strings.HasPrefix(inner, ">") {
 		inner = strings.TrimSpace(strings.TrimPrefix(inner, ">"))
 	}
-	chunks := parseInline(inner, r.pal)
+	chunks := r.inline(inner)
 	if w := r.wrapWidth(); w > 0 {
 		wrapped := wrapChunks(chunks, w, "│ ", "│ ", nil)
 		for i, wl := range wrapped {
@@ -495,7 +510,7 @@ func (r *blockRenderer) renderList(items []string) []string {
 		prefix := indent + "  " // placeholder replaced below
 		_ = prefix
 		first := indent + "• "
-		chunks := parseInline(body, r.pal)
+		chunks := r.inline(body)
 		if w := r.wrapWidth(); w > 0 {
 			cont := indent + "  "
 			if ordered {
@@ -531,7 +546,10 @@ func (r *blockRenderer) renderParagraph(src []string) []string {
 	if text == "" {
 		return []string{""}
 	}
-	chunks := parseInline(text, r.pal)
+	chunks := r.inline(text)
+	if r.support && isSupportSectionHeader(text) {
+		chunks = boldPlainChunks(chunks, r.pal)
+	}
 	if w := r.wrapWidth(); w > 0 {
 		return wrapChunks(chunks, w, "", "", nil)
 	}
@@ -722,7 +740,7 @@ func (r *blockRenderer) renderTable(lines []string, start int) ([]string, int) {
 		wrapped := make([][]string, ncols)
 		height := 1
 		for c, cell := range cells {
-			chunks := parseInline(cell, r.pal)
+			chunks := r.inline(cell)
 			lines := wrapChunks(chunks, colW[c], "", "", nil)
 			wrapped[c] = lines
 			if len(lines) > height {

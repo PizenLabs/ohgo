@@ -662,17 +662,26 @@ func TestOverlayCleanupOnCancelAndQuit(t *testing.T) {
 	if len(p.state.Queued) != 0 {
 		t.Errorf("Queued = %v, want cancellation to drop prompts typed against the abandoned turn", p.state.Queued)
 	}
+	if !p.state.Cancelled {
+		t.Error("no terminal cancellation recorded: want Cancelled, not a second notice")
+	}
+	if p.state.Status.Busy {
+		t.Error("spinner still claims working after cancellation")
+	}
 	found := false
-	timeout := time.After(2 * time.Second)
-	for !found {
-		select {
-		case event := <-p.events:
-			if notice, ok := event.(Notice); ok && strings.Contains(notice.Text, "cancelled") {
-				found = true
-			}
-		case <-timeout:
-			t.Fatal("no cancellation notice published")
+	for _, entry := range p.state.Entries {
+		if entry.Kind == EntryNotice && strings.Contains(entry.Notice, "cancelled") {
+			found = true
 		}
+	}
+	if !found {
+		t.Errorf("entries = %+v, want the single cancellation line", p.state.Entries)
+	}
+	// A second cancel is idempotent: no duplicate transition, no duplicate line.
+	before := len(p.state.Entries)
+	p.cancelTurnNow("cancelled")
+	if len(p.state.Entries) != before {
+		t.Errorf("entries grew on repeated cancel: want one semantic transition")
 	}
 	idle := NewProgram(nil, "test", 0)
 	_, cmd := idle.cancelOrQuit()

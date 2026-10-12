@@ -430,6 +430,18 @@ type SnapshotEntry struct {
 	// Origin names the freshest source behind the row: "live" (recently
 	// fetched), "cached" (stale disk roster), or "bundled" (shipped data).
 	Origin string
+	// Thinking is the effort ladder the source exposes, or nil when the
+	// source carries no explicit ladder. A nil ladder is *not* the same as
+	// "unsupported": ReasoningKnown decides that question.
+	Thinking *Thinking
+	// ReasoningKnown reports whether Model.Reasoning is authoritative.
+	//
+	// Bundled rows are curated facts, so their reasoning flag is a
+	// determination in both directions. A discovered row only ever asserts
+	// support (discovery sets Reasoning=true when a reasoning object is
+	// present); its absence is "unknown", never "unsupported". This is what
+	// lets the UI keep unsupported distinct from unknown.
+	ReasoningKnown bool
 }
 
 // freeRecord reports verified zero pricing: every known price leg is zero.
@@ -510,6 +522,10 @@ func SnapshotAll() (entries []SnapshotEntry, stale bool) {
 			continue
 		}
 		entry.Model = model
+		entry.Thinking = rec.Thinking
+		// A bundled row is curated, so its reasoning flag is a determination
+		// either way. A discovered row asserts support or says nothing.
+		entry.ReasoningKnown = entry.Origin == "bundled" || rec.Reasoning
 		entries = append(entries, entry)
 	}
 	sort.Slice(entries, func(i, j int) bool {

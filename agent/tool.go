@@ -89,6 +89,18 @@ type Context struct {
 	OnProgress func(Result)
 }
 
+// CapabilityReporter lets a tool refine the capability a specific invocation
+// exercises, when its declared Approval tier is only the default.
+//
+// The declared tier answers "what does this tool usually do"; this answers
+// "what does this call do". A shell tool is exec by default but writes a file
+// when its command redirects output, and the admission layer needs the
+// invocation-accurate answer to enforce a mutation boundary.
+type CapabilityReporter interface {
+	// Capability returns the tier for one invocation.
+	Capability(args map[string]any) Tier
+}
+
 // Tool is one capability the model can invoke.
 type Tool interface {
 	// Name is the wire name the model calls.

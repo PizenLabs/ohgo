@@ -34,6 +34,7 @@ func rootCmd() *cobra.Command {
 	}
 
 	root.PersistentFlags().StringP("model", "m", "", "model as provider/id, e.g. anthropic/claude-sonnet-4-5")
+	root.PersistentFlags().String("workspace", "", "execution authority: ask (read-only), fuzz (execute, no mutation), or build (mutation); default build")
 	root.PersistentFlags().Int64("resume", 0, "resume a saved session by id")
 	root.PersistentFlags().Bool("no-tui", false, "use the line REPL even on a terminal")
 	root.PersistentFlags().Bool("plain", false, "plain output: no colour, no full-screen UI")

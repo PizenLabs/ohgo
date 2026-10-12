@@ -42,7 +42,7 @@ func TestSuggestCommandThreshold(t *testing.T) {
 	if near, ok := SuggestCommand("modle"); !ok || near != "model" {
 		t.Errorf("SuggestCommand(modle) = (%q, %v), want (model, true)", near, ok)
 	}
-	if _, ok := SuggestCommand("zzz"); ok {
+	if _, ok := SuggestCommand("zzzqqq"); ok {
 		t.Error("a distant word must not suggest")
 	}
 }

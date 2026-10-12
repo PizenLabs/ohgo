@@ -457,13 +457,12 @@ Normal ASK session
 
 `$sup` does not create a fourth workspace.
 
-It is an ephemeral capability of ASK.
+It is an ephemeral interaction surface using the SUP model role.
 
 ```text
-ASK
- ├── normal conversation
- ├── planning
- └── $sup
+workspace (ASK / FUZZ / BUILD)
+ ├── normal conversation (workspace role model)
+ └── $sup (SUP role model, overlay only)
 ```
 
 ---
@@ -491,12 +490,18 @@ ESC returns the user to the previous interaction without changing the main task 
 By default:
 
 ```text
-$sup → ASK model
+$sup → SUP role
 ```
 
-A separate `$sup` model is not required for v1.
+The SUP role resolves through the canonical role chain (role profile, then
+legacy layers, then the catalog default) and is independently configurable
+via `/model`, exactly like ASK, FUZZ, BUILD, and COMMIT. An unconfigured
+SUP falls back through the existing role fallback semantics; the workspace
+model is never silently reused unless that fallback resolves to it.
 
-This keeps `$sup` an ASK capability rather than another model authority.
+SUP is a model role, not a workspace: `$sup` never changes the workspace
+authority, and the main footer keeps naming the workspace while support is
+open.
 
 ---
 

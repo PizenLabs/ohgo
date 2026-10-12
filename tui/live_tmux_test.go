@@ -59,9 +59,8 @@ func TestLiveSessionInsideTmux(t *testing.T) {
 		t.Fatalf("pipe: %v", err)
 	}
 	defer func() { _ = holdWriter.Close() }()
-	attach := exec.Command("/usr/bin/script", "-q", "/dev/null", "/bin/sh", "-c",
-		fmt.Sprintf("stty rows %d cols %d; exec %q -S %q -f /dev/null new-session -x %d -y %d -s %s %q -test.run TestLiveSessionInsideTmux -test.timeout 90s",
-			ptyRows, ptyCols, tmuxPath, sock, ptyCols, ptyRows, session, exe))
+	attach := scriptPTY(fmt.Sprintf("stty rows %d cols %d; exec %q -S %q -f /dev/null new-session -x %d -y %d -s %s %q -test.run TestLiveSessionInsideTmux -test.timeout 90s",
+		ptyRows, ptyCols, tmuxPath, sock, ptyCols, ptyRows, session, exe))
 	attach.Env = append(os.Environ(), "OHGO_LIVE_PTY_CHILD=1", "TERM=xterm-256color")
 	attach.Stdin = heldIn
 	// The client's output is pumped by os/exec on its own goroutine while the

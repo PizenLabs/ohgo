@@ -100,14 +100,22 @@ func TestCtrlCCancelsInsteadOfQuitting(t *testing.T) {
 	if p.state.Quit {
 		t.Error("a busy ctrl+c must cancel the turn, not discard the session")
 	}
-	select {
-	case event := <-p.events:
-		notice, ok := event.(Notice)
-		if !ok || notice.Text != "cancelled" {
-			t.Errorf("event = %#v, want the cancellation notice", event)
+	// Cancellation is a synchronous semantic transition: the reducer records
+	// one terminal Cancelled state and the footer converges to idle.
+	if !p.state.Cancelled {
+		t.Error("no cancellation recorded: want the terminal Cancelled state")
+	}
+	if p.state.Status.Busy {
+		t.Error("spinner still claims working after cancellation")
+	}
+	found := false
+	for _, entry := range p.state.Entries {
+		if entry.Kind == EntryNotice && strings.Contains(entry.Notice, "cancelled") {
+			found = true
 		}
-	case <-time.After(2 * time.Second):
-		t.Error("no cancellation notice published")
+	}
+	if !found {
+		t.Errorf("entries = %+v, want the single cancellation line", p.state.Entries)
 	}
 }
 
@@ -264,32 +272,51 @@ func TestCancelledStreamReportsInterruption(t *testing.T) {
 		t.Fatal("the cancelled turn never returned")
 	}
 
+	// One semantic cancellation: the synchronous transition records it in
+	// state, and the unwinding turn publishes at most one terminal event
+	// through the channel. Neither may report an error.
+	if !p.state.Cancelled {
+		t.Error("no cancellation recorded in state: want the terminal Cancelled state")
+	}
+	if p.state.Status.Busy {
+		t.Error("spinner still claims working after cancellation")
+	}
+	cancelled := 0
 	var notices []string
 	timeout := time.After(2 * time.Second)
+drain:
 	for {
 		select {
 		case event := <-p.events:
-			if notice, ok := event.(Notice); ok {
-				notices = append(notices, notice.Text)
+			switch e := event.(type) {
+			case Notice:
+				notices = append(notices, e.Text)
+			case TurnCancelled:
+				cancelled++
+			case AssistantDone:
+				// Terminal close; idempotent after cancellation.
 			}
 		case <-timeout:
-			goto checked
+			break drain
 		}
 	}
-checked:
 	for _, notice := range notices {
 		if strings.HasPrefix(notice, "error:") {
 			t.Errorf("notices = %v, want interruption, not an error report", notices)
 		}
 	}
+	if cancelled > 1 {
+		t.Errorf("TurnCancelled published %d times, want at most one terminal transition", cancelled)
+	}
+	// The synchronous path already recorded the single user-visible line.
 	found := false
-	for _, notice := range notices {
-		if notice == "turn cancelled" {
+	for _, entry := range p.state.Entries {
+		if entry.Kind == EntryNotice && entry.Notice == "cancelled" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("notices = %v, want the cancellation confirmed", notices)
+		t.Errorf("entries = %+v, want the single cancellation line", p.state.Entries)
 	}
 }
 

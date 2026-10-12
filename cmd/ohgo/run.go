@@ -16,10 +16,12 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/prompt"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/workspace"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -29,6 +31,12 @@ import (
 type options struct {
 	// root is the working directory for every tool and command.
 	root string
+	// workspace is the execution authority the session runs under. It decides
+	// capability policy, not presentation (§8).
+	workspace workspace.Workspace
+	// projectID is the stable project identity, empty when it could not be
+	// established.
+	projectID string
 	// model is the model to call.
 	model ai.Model
 	// maxTokens is the completion budget, already clamped to the model's
@@ -49,6 +57,19 @@ type options struct {
 	reasoning bool
 	// effort is the reasoning effort level.
 	effort string
+}
+
+// authority returns the workspace in force.
+//
+// An unset workspace defaults to BUILD. The CLI always resolves one through
+// workspace.Parse (where a typo is fatal), but a caller that predates
+// workspaces — or a test that builds options directly — keeps the authority it
+// always had rather than being silently denied everything.
+func (o options) authority() workspace.Workspace {
+	if o.workspace.Valid() {
+		return o.workspace
+	}
+	return workspace.Build
 }
 
 // resolveOptions builds options from the flags and environment, plus the
@@ -85,6 +106,27 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	opts.reasoning, _ = cmd.Flags().GetBool("reasoning")
 	opts.effort, _ = cmd.Flags().GetString("effort")
 
+	// The workspace is a runtime authority, resolved before the model because
+	// it participates in model selection (§11, §14). An unknown name is fatal,
+	// never a silent fallback to an authority the user did not choose.
+	opts.workspace = workspace.Build
+	if name := flagValue(cmd, "workspace"); name != "" {
+		parsed, err := workspace.Parse(name)
+		if err != nil {
+			return opts, nil, err
+		}
+		opts.workspace = parsed
+	}
+
+	// Project identity is established lazily and best-effort: a read-only
+	// working tree must not stop a session, and the identity is not required
+	// for a session to run.
+	if identity, err := project.Ensure(opts.root); err != nil {
+		fmt.Fprintf(os.Stderr, "ohgo: %v\n", err)
+	} else {
+		opts.projectID = identity.ID
+	}
+
 	// A model the user names is resolved through the catalog, and an unknown
 	// one is an error rather than a silent fallback: substituting a model would
 	// send their conversation to a provider they never chose.
@@ -93,7 +135,7 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	// providers may need it during resolution. Both registries read the same
 	// sources, so the one the loop later builds agrees with this one.
 	registry := ai.NewRegistry()
-	model, modelErr := resolveModel(opts.settings, flagValue(cmd, "model"), os.Getenv("OHGO_MODEL"),
+	model, modelErr := resolveWorkspaceModel(opts.settings, opts.workspace, flagValue(cmd, "model"), os.Getenv("OHGO_MODEL"),
 		dynamicResolver(context.Background(), registry))
 	if modelErr != nil {
 		return opts, nil, modelErr
@@ -118,16 +160,35 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 		opts.deadline = time.Now().Add(timeout)
 	}
 
-	if opts.effort == "" {
-		opts.effort = opts.settings.ReasoningEffort
+	// Effort precedence: --effort, then the role's configured effort, then the
+	// global default. An explicit effort turns thinking on; "off" turns it off
+	// outright. The global default alone does not enable thinking — that stays
+	// governed by the reasoning setting, so an untouched install behaves as
+	// before.
+	roleEffort := ""
+	if _, level, _ := opts.settings.RoleModel(opts.workspace.String()); level != "" {
+		roleEffort = level
 	}
-	if !opts.reasoning {
-		opts.reasoning = opts.settings.Reasoning
+	if opts.effort == "" {
+		opts.effort = roleEffort
+	}
+	switch opts.effort {
+	case tui.EffortOff:
+		opts.reasoning = false
+		opts.effort = ""
+	case "":
+		opts.effort = opts.settings.ReasoningEffort
+		if !opts.reasoning {
+			opts.reasoning = opts.settings.Reasoning
+		}
+	default:
+		opts.reasoning = true
 	}
 	return opts, registry, nil
 }
 
-// resolveModel picks the model for a run from the highest-precedence source.
+// resolveModel picks the model for a run from the highest-precedence source,
+// using the global default model from settings.
 //
 // Precedence is flag, then settings, then environment, then the catalog default.
 // Every source but the default must name a model the catalog knows: a silent
@@ -139,6 +200,34 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 // live discovery for dynamic providers, while tests pass catalog.Resolve to
 // stay offline and deterministic.
 func resolveModel(settings config.Settings, flagModel, envModel string, resolve func(string) (ai.Model, error)) (ai.Model, error) {
+	return resolveModelRef(settings.ModelID, flagModel, envModel, resolve)
+}
+
+// resolveWorkspaceModel is resolveModel with workspace-specific settings.
+//
+// The settings source is the workspace's effective model, which falls back to
+// the global default when the workspace has no override (§12, I7). Everything
+// else — flag and environment precedence, unknown-name refusal — is shared
+// with resolveModel through resolveModelRef.
+func resolveWorkspaceModel(settings config.Settings, ws workspace.Workspace, flagModel, envModel string, resolve func(string) (ai.Model, error)) (ai.Model, error) {
+	return resolveModelRef(func() (string, string, bool) {
+		ref, _, _ := settings.RoleModel(ws.String())
+		if ref == "" {
+			return "", "", false
+		}
+		provider, id, ok := strings.Cut(ref, "/")
+		if !ok || provider == "" || id == "" {
+			return "", "", false
+		}
+		return provider, id, true
+	}, flagModel, envModel, resolve)
+}
+
+// resolveModelRef resolves the model from the highest-precedence source.
+//
+// settingsModel is the configuration layer's contribution: the global default
+// for resolveModel, or a workspace override for resolveWorkspaceModel.
+func resolveModelRef(settingsModel func() (provider, id string, ok bool), flagModel, envModel string, resolve func(string) (ai.Model, error)) (ai.Model, error) {
 	model := catalog.Default()
 
 	if override := strings.TrimSpace(envModel); override != "" {
@@ -149,7 +238,7 @@ func resolveModel(settings config.Settings, flagModel, envModel string, resolve 
 		model = resolved
 	}
 
-	if provider, id, ok := settings.ModelID(); ok {
+	if provider, id, ok := settingsModel(); ok {
 		resolved, err := resolve(provider + "/" + id)
 		if err != nil {
 			return ai.Model{}, fmt.Errorf("settings model: %w", err)
@@ -359,16 +448,25 @@ func catalogSnapshot() tui.CatalogSnapshot {
 			bits = append(bits, strings.Join(caps, "+"))
 		}
 		options = append(options, tui.ModelOption{
-			ID:           id,
-			Provider:     model.Provider,
-			Title:        title + " (" + id + ")",
-			Detail:       strings.Join(bits, " · "),
-			Name:         model.Name,
-			Context:      model.ContextWindow,
-			PriceKnown:   entry.PriceKnown,
-			Free:         entry.Free,
-			Origin:       entry.Origin,
-			Capabilities: caps,
+			ID:              id,
+			Provider:        model.Provider,
+			Title:           title,
+			Detail:          strings.Join(bits, " · "),
+			Name:            model.Name,
+			Context:         model.ContextWindow,
+			PriceKnown:      entry.PriceKnown,
+			Free:            entry.Free,
+			Origin:          entry.Origin,
+			Capabilities:    caps,
+			MaxOutput:       model.MaxOutputTokens,
+			CostInput:       model.Cost.Input,
+			CostOutput:      model.Cost.Output,
+			CostCacheRead:   model.Cost.CacheRead,
+			CostCacheWrite:  model.Cost.CacheWrite,
+			InputModalities: append([]string(nil), model.InputModalities...),
+			ThinkingEfforts: thinkingEfforts(entry.Thinking),
+			Reasoning:       model.Reasoning,
+			ReasoningKnown:  entry.ReasoningKnown,
 		})
 	}
 	origin := "live"
@@ -564,6 +662,7 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 			Tools:      childToolSet(opts, parentTools, spec.Depth),
 			MaxTokens:  opts.maxTokens,
 			Reasoning:  opts.reasoning,
+			Admit:      admitFor(opts.authority()),
 			Compaction: compactionFromSettings(opts.settings),
 			Summarize:  newSummarizer(registry.StreamFn(), opts.model),
 		}
@@ -594,6 +693,16 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 	toolSet := buildTools(opts, registry)
 	if len(toolSet) == 0 {
 		return nil, agent.ErrNoTools
+	}
+
+	// The artifact tool is added only when there is somewhere to record to.
+	// Its authority is the workspace's: a FUZZ session can file a Finding but
+	// not author a Change, which is what makes the handoff contract real
+	// rather than a convention (§23, §27).
+	if store != nil && sess != nil {
+		toolSet = append(toolSet, tools.NewArtifactTool(func(a workspace.Artifact) error {
+			return store.SaveArtifact(sess.ID, a)
+		}, opts.authority()))
 	}
 
 	var extra string
@@ -633,6 +742,7 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		Reasoning:       opts.reasoning,
 		ReasoningEffort: opts.effort,
 		OnTurn:          onTurn,
+		Admit:           admitFor(opts.authority()),
 		Approve:         approve,
 		Compaction:      compactionFromSettings(opts.settings),
 		Summarize:       newSummarizer(registry.StreamFn(), opts.model),
@@ -669,6 +779,61 @@ func compactionFromSettings(settings config.Settings) agent.Compaction {
 		c.ThresholdPercent = *settings.Compaction.ThresholdPercent
 	}
 	return c
+}
+
+// admitFor builds the loop's runtime authority gate for a workspace.
+//
+// It is the one place the workspace policy is bound to the loop, shared by the
+// top level and by subagents: a delegated child must inherit the parent's
+// authority, or delegation would be a way around the boundary (§7, §37).
+func admitFor(ws workspace.Workspace) func(ai.ToolCall, agent.Tool) (bool, string) {
+	authority := workspace.Authority{Workspace: ws}
+	return func(call ai.ToolCall, tool agent.Tool) (bool, string) {
+		if err := authority.Admit(tool, call.Arguments); err != nil {
+			return false, err.Error()
+		}
+		return true, ""
+	}
+}
+
+// supportLoopBuilder returns a builder for the ephemeral $sup runtime.
+//
+// The model and effort resolve through the SUP role on every invocation,
+// so a /model reassignment applies to the next $sup with no restart. The
+// loop runs under ASK authority (read-only), so support can reason and
+// read but cannot mutate. It is built lazily on first use: resolving a
+// second model eagerly would cost a round trip for a capability most
+// sessions never invoke.
+func supportLoopBuilder(opts options, registry *ai.Registry, out io.Writer) func() (supportBundle, error) {
+	return func() (supportBundle, error) {
+		supModel, effort, err := resolveSupModel(opts.settings, dynamicResolver(context.Background(), registry))
+		if err != nil {
+			return supportBundle{}, err
+		}
+		supOpts := opts
+		supOpts.workspace = workspace.Ask
+		supOpts.model = supModel
+		supOpts.maxTokens = resolveMaxTokens(opts.settings, supModel)
+		enabled, level := supReasoning(effort)
+		supOpts.reasoning = enabled
+		supOpts.effort = level
+		// Support is read-only by construction (ASK authority), so read tools
+		// are auto-approved rather than parking a modal prompt on a query the
+		// user expects to be instant.
+		loop, err := buildLoop(supOpts, registry, out, nil, nil,
+			func(ai.ToolCall, agent.Approval) (bool, string) { return true, "" })
+		if err != nil {
+			return supportBundle{}, err
+		}
+		// The caller renders the exchange itself; the loop's turn hook would
+		// otherwise print raw text.
+		loop.SetTurnHook(nil)
+		return supportBundle{
+			loop:   loop,
+			ref:    supModel.Provider + "/" + supModel.ID,
+			effort: effort,
+		}, nil
+	}
 }
 
 // newSummarizer builds the compaction summarizer over a transport.
@@ -832,6 +997,12 @@ func runOnce(cmd *cobra.Command, text string) error {
 	}
 	defer closeStore()
 
+	if resumeID > 0 {
+		if err := applySessionAuthority(cmd, &opts, dynamicResolver(context.Background(), registry), store, sess); err != nil {
+			return err
+		}
+	}
+
 	var history []agent.Message
 	if sess != nil && resumeID > 0 {
 		history, err = loadHistory(store, sess)
@@ -882,12 +1053,64 @@ func openSession(opts options, resumeID int64) (*session.Store, *session.Session
 		return store, &sess, func() { _ = store.Close() }, nil
 	}
 
-	sess, err := store.Create(opts.root, opts.model.Provider+"/"+opts.model.ID)
+	sess, err := store.CreateWith(session.CreateOptions{
+		Cwd:       opts.root,
+		Model:     opts.model.Provider + "/" + opts.model.ID,
+		Workspace: opts.authority().String(),
+		Project:   opts.projectID,
+	})
 	if err != nil {
 		_ = store.Close()
 		return disabled(err)
 	}
 	return store, &sess, func() { _ = store.Close() }, nil
+}
+
+// applySessionAuthority restores a resumed session's effective workspace and
+// model, then records the result as the session's snapshot.
+//
+// A running/resumable session owns its resolved model identity (§13): if the
+// global configuration changed since the session was created, the session must
+// not silently switch models on restart (I8). An explicit flag or environment
+// override still wins, and is then written back so the snapshot stays truthful
+// (§31).
+//
+// resolve is a parameter rather than a registry so a test can drive it with
+// catalog.Resolve and stay offline.
+func applySessionAuthority(cmd *cobra.Command, opts *options, resolve func(string) (ai.Model, error), store *session.Store, sess *session.Session) error {
+	if sess == nil {
+		return nil
+	}
+	explicitWorkspace := flagValue(cmd, "workspace") != ""
+	explicitModel := flagValue(cmd, "model") != "" || strings.TrimSpace(os.Getenv("OHGO_MODEL")) != ""
+
+	if explicitWorkspace {
+		// The CLI already resolved and validated this; re-read it so the
+		// function is self-consistent rather than depending on the caller.
+		if ws, err := workspace.Parse(flagValue(cmd, "workspace")); err == nil {
+			opts.workspace = ws
+		}
+	} else if ws, err := workspace.Parse(sess.Workspace); err == nil {
+		opts.workspace = ws
+	}
+	if !explicitModel && strings.TrimSpace(sess.Model) != "" {
+		resolved, err := resolve(sess.Model)
+		if err != nil {
+			return fmt.Errorf("resume: session model %q: %w", sess.Model, err)
+		}
+		opts.model = resolved
+		opts.maxTokens = resolveMaxTokens(opts.settings, resolved)
+	}
+
+	// Snapshot the effective authority so a later run restores what actually
+	// executed rather than what the configuration happened to say this time.
+	effective := opts.model.Provider + "/" + opts.model.ID
+	if store != nil && (sess.Workspace != opts.authority().String() || sess.Model != effective) {
+		if err := store.SetAuthority(sess.ID, opts.authority().String(), effective); err != nil {
+			fmt.Fprintf(os.Stderr, "ohgo: could not record session authority: %v\n", err)
+		}
+	}
+	return nil
 }
 
 // loadHistory replays a stored transcript so a resumed session continues from
@@ -945,10 +1168,21 @@ func runSession(cmd *cobra.Command, args []string) error {
 	}
 	defer closeStore()
 
+	if resumeID > 0 {
+		if err := applySessionAuthority(cmd, &opts, dynamicResolver(context.Background(), registry), store, sess); err != nil {
+			return err
+		}
+	}
+
 	loop, err := buildLoop(opts, registry, out, store, sess, nil)
 	if err != nil {
 		return err
 	}
+
+	// One ephemeral surface serves both interfaces. It is created here, not in
+	// buildLoop, because it owns its own ASK-model loop and is deliberately
+	// absent from the session's persistence path.
+	surface := newSupportSurface(supportLoopBuilder(opts, registry, out))
 
 	// The full-screen UI needs the loop before it can supply its approval
 	// hook, so the routing happens here rather than inside buildLoop. A pipe or
@@ -988,6 +1222,12 @@ func runSession(cmd *cobra.Command, args []string) error {
 		// further down from the same pieces, so both agree.
 		held := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
 		held.usage.SetCost(opts.model.Cost)
+		held.workspace = opts.authority().Label()
+		held.support = surface
+		program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
+			return surface.ask(ctx, question, onDelta)
+		})
+		program.SetSupportInfo(held.SupportInfo)
 
 		// A resumed session replays its transcript, so the UI continues rather
 		// than restarts. Loading it here means a failure is fatal rather than a
@@ -1039,6 +1279,40 @@ func runSession(cmd *cobra.Command, args []string) error {
 			Snapshot: func() tui.CatalogSnapshot { return catalogSnapshot() },
 			Refresh: func(ctx context.Context, seq int) tea.Cmd {
 				return refreshModelCatalog(held, seq)
+			},
+		})
+		// The model control plane: the provider pane, the role assignments,
+		// and the one seam /model writes through. The program owns none of
+		// this — it renders what the harness reports and hands edits back.
+		program.SetModelControl(tui.ModelControlHooks{
+			Providers: func() []tui.ProviderRow { return held.ProviderPaneRows() },
+			Roles:     func() []tui.RoleAssignment { return held.RoleAssignments() },
+			ActiveRole: func() string {
+				return strings.ToLower(opts.authority().String())
+			},
+			Assign: func(update tui.RoleAssignment) (tui.RoleAssignment, []tui.RoleAssignment, error) {
+				return held.AssignRole(update)
+			},
+			EffectiveWindow: func() int { return held.model.ContextWindow },
+		})
+		// Workspace commands route through the harness seam: the program never
+		// owns authority, it asks the owner to move it at a turn boundary.
+		program.SetWorkspaceSwitcher(tui.WorkspaceHooks{
+			Current: func() string { return held.workspace },
+			Switch: func(name string) error {
+				ws, err := held.SwitchWorkspace(name)
+				if err != nil {
+					return err
+				}
+				opts.workspace = ws
+				style := ws.Style()
+				program.PublishWorkspace(tui.WorkspaceUpdated{
+					Workspace:       style.Label,
+					WorkspaceAccent: style.Accent,
+					HasWorkspace:    true,
+				})
+				program.PublishNotice("switched to " + style.Label)
+				return nil
 			},
 		})
 		program.SetJobsLister(func() []tui.JobItem {
@@ -1110,11 +1384,15 @@ func runSession(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(os.Stderr, "ohgo: could not save theme: %v\n", err)
 			}
 		})
+		style := opts.authority().Style()
 		program.PublishWorkspace(tui.WorkspaceUpdated{
-			Cwd:        opts.root,
-			HasCwd:     true,
-			HasSession: sess != nil,
-			Session:    sessionLabel(sess),
+			Cwd:             opts.root,
+			HasCwd:          true,
+			HasSession:      sess != nil,
+			Session:         sessionLabel(sess),
+			Workspace:       style.Label,
+			WorkspaceAccent: style.Accent,
+			HasWorkspace:    true,
 		})
 
 		if opts.autoApprove {
@@ -1136,7 +1414,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		return program.Run()
 	}
 
-	_, _ = fmt.Fprintf(out, "ohgo %s \u00b7 %s/%s \u00b7 %s\n", version, opts.model.Provider, opts.model.ID, opts.root)
+	_, _ = fmt.Fprintf(out, "ohgo %s \u00b7 %s/%s \u00b7 %s \u00b7 %s\n", version, opts.model.Provider, opts.model.ID, opts.authority().Label(), opts.root)
 	_, _ = fmt.Fprintln(out, "Type your request, or /quit to exit.")
 
 	var history []agent.Message
@@ -1150,6 +1428,8 @@ func runSession(cmd *cobra.Command, args []string) error {
 
 	plain := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
 	plain.usage.SetCost(opts.model.Cost)
+	plain.workspace = opts.authority().Label()
+	plain.support = surface
 	return repl(plain, out, os.Stdin, history)
 }
 
@@ -1208,7 +1488,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 					_, _ = fmt.Fprintln(out, "usage: /model provider/id — e.g. /model groq/llama-3.1-8b-instant")
 					continue
 				}
-				model, err := h.SwitchModel(context.Background(), command.Args[0])
+				model, err := h.SetModel(command.Args[0])
 				if err != nil {
 					_, _ = fmt.Fprintf(out, "unknown model %q: %v\nrun `ohgo models` to list them\n", command.Args[0], err)
 					continue
@@ -1301,8 +1581,19 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			case "jobs":
 				_, _ = fmt.Fprintln(out, h.JobsReport())
 				continue
+			case "ask", "fuzz", "build":
+				ws, err := h.SwitchWorkspace(command.Name)
+				if err != nil {
+					_, _ = fmt.Fprintf(out, "workspace: %v\n", err)
+					continue
+				}
+				_, _ = fmt.Fprintf(out, "switched to %s.\n", ws.Label())
+				continue
 			case "theme":
 				_, _ = fmt.Fprintln(out, "theme applies to the full-screen UI (dark or light via /theme there)")
+				continue
+			case "commands":
+				_, _ = fmt.Fprintln(out, tui.HelpText())
 				continue
 			default:
 				text := fmt.Sprintf("unknown command /%s — try /help", command.Name)
@@ -1312,6 +1603,24 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				_, _ = fmt.Fprintln(out, text)
 				continue
 			}
+		}
+
+		// $sup opens the ephemeral support surface: an isolated conversation
+		// that is never appended to the main history and never persisted
+		// (§10.2, I17). A bare "$sup" closes it.
+		if question, ok := tui.ParseSupport(text); ok {
+			if strings.TrimSpace(question) == "" {
+				h.CloseSupport()
+				_, _ = fmt.Fprintln(out, "support closed.")
+				continue
+			}
+			answer, err := h.Support(context.Background(), question)
+			if err != nil {
+				_, _ = fmt.Fprintf(out, "$sup: %v\n", err)
+				continue
+			}
+			_, _ = fmt.Fprintln(out, answer)
+			continue
 		}
 
 		// The prompt is appended to a history file best-effort, so a plain-REPL

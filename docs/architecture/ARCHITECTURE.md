@@ -10,6 +10,8 @@ cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
              Builds a shared harness (slash-command backend) used by both UIs.
   │ builds
   ├─► agent    The model/tool loop. Sees only ai.StreamFn, never HTTP.
+  │     ├─► workspace Execution authorities (ASK/FUZZ/BUILD): capability
+  │     │             policy, tool admission, semantic identity, artifacts.
   │     ├─► ai        Message model, three transports (Anthropic,
   │     │             OpenAI-compatible, Ollama native), Registry, probe.
   │     │             Imports creds for secrets, never catalog for facts.
@@ -20,25 +22,60 @@ cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
   │     │             Single owner of ProviderEnvVars; secrets never printed.
   │     ├─► tools     read write edit bash wait glob grep ls webfetch todo
   │     │             task (task only when maxDepth > 1; wait shares bash's
-  │     │             job table). task imports agent for the subagent spec.
+  │     │             job table; artifact when a session is attached). task
+  │     │             imports agent for the subagent spec.
   │     ├─► prompt    System prompt assembly + AGENTS.md discovery.
-  │     ├─► session   SQLite transcript store (pure Go, no cgo).
+  │     ├─► project   Stable project identity at <root>/.ohgo/project.yml.
+  │     ├─► session   SQLite transcript store (pure Go, no cgo), plus the
+  │     │             workspace/project/effective-model record and artifacts.
   │     ├─► tokens    Heuristic token estimator + Tokenizer seam.
   │     ├─► usage     (in agent/) Per-turn token/cost ledger.
   │     └─► tui       State machine (no TTY) + renderer + Bubble Tea bridge.
   ├─► vcs shell diff edit ast
   │           Ported Rust core: git awareness, shell parsing, Myers diff,
   │           fuzzy edit application, Go AST search. Pure Go, zero cgo.
-  ├─► config   ~/.ohgo/settings.json: model, tokens, reasoning, approvals,
-  │            theme, compaction. AutoApprove wins over Approvals.
+  ├─► config   ~/.ohgo/settings.json: model (+ per-workspace models), tokens,
+  │            reasoning, approvals, theme, compaction. AutoApprove wins over
+  │            Approvals. ModelFor(workspace) falls back to the global model.
   └─► jsonschema  Reflection-free validator for tool schemas.
 ```
 
 Dependency arrows point one way: `catalog → ai` (type only), `ai → creds`
-(secrets only), `tools → agent` (subagent spec only), `cmd → everything`.
-Nothing in `ai` imports `catalog`; nothing in `agent` constructs HTTP;
-nothing outside `creds` reads a provider credential from env or shell. A
-cycle here is a bug, not a shortcut.
+(secrets only), `tools → agent` (subagent spec only), `workspace → agent`
+(tool admission only), `cmd → everything`. Nothing in `ai` imports `catalog`;
+nothing in `agent` constructs HTTP; nothing outside `creds` reads a provider
+credential from env or shell. A cycle here is a bug, not a shortcut.
+
+## Authority
+
+The three workspaces are runtime authority boundaries, not UI modes. The
+authoritative path is `workspace → capability policy → tool admission →
+execution`:
+
+- `workspace` owns the policy. `Ask` reads only; `Fuzz` reads and executes but
+  cannot mutate; `Build` is the sole mutation authority. `Permits`/`Admit`
+  decide, and `Authority` binds them to the agent loop.
+- The loop consults `Config.Admit` **before** approval, so a forbidden call is
+  refused outright rather than offered to the user. The UI may display the
+  workspace; it cannot grant capability.
+- A tool may refine its capability per invocation through
+  `agent.CapabilityReporter`; `bash` uses this to classify a shell command as a
+  mutation (a real redirect, a mutating program, a mutating git subcommand) so
+  FUZZ cannot use the shell as a back door. The classifier is a strong default,
+  not a sandbox: an interpreter one-liner that writes a file is a documented
+  residual.
+- The session records its workspace, project identity, and effective model.
+  A resumed session restores its own snapshot rather than silently following a
+  changed configuration.
+- `$sup` is an ephemeral interaction surface on the SUP model role: a second
+  loop on the SUP-resolved model under read-only authority, whose
+  conversation is never persisted and never enters the main history.
+- Cross-workspace handoff is artifact-based: `workspace.Artifact` (plan,
+  finding, change, verification) is validated and persisted per session; the
+  `artifact` tool enforces that a workspace only authors its own kind.
+
+Semantic identity (`workspace.Style`) is teal/magenta/blue for ASK/FUZZ/BUILD,
+fixed across themes; it never participates in an authority decision.
 
 ## The turn
 
@@ -155,8 +192,9 @@ transport in this build), recorded in `TestExcludedProvidersAreDocumented`.
 
 Root runs the interactive session; subcommands: `run`, `sessions` (+
 `show`), `models [provider]`, `doctor`, `init`, `docs`, `version`. Flags:
-`--model`, `--resume`, `--dir`, `--no-tui`, `--plain`, `--no-tools`,
-`--yes`, `--reasoning`/`--effort`, `--max-depth`, `--deadline`.
+`--model`, `--workspace` (ask|fuzz|build), `--resume`, `--dir`, `--no-tui`,
+`--plain`, `--no-tools`, `--yes`, `--reasoning`/`--effort`, `--max-depth`,
+`--deadline`.
 
 Both interactive paths share one backend (`harness.go`): the full-screen
 UI and the plain REPL call the same code for `/model` (static then live
@@ -165,9 +203,12 @@ discovery), `/compact`, `/sessions`/`/resume`, `/jobs`, `/providers`,
 credential → validated model list → saved key + settings), `/disconnect`
 (file/explicit keys only; env/shell keys say where to unset). Presentation
 differs; decisions do not. Commands parse before anything reaches the
-model; a bare `/` is a path. Prompt history (`~/.ohgo/history`, last 1000,
-commands excluded, `OHGO_HISTORY_FILE` overrides, empty disables) is an
-audit trail, best-effort.
+model; a bare `/` is a path. `$sup <question>` opens the ephemeral support
+surface (a SUP-role interaction that is never persisted and never enters the
+main history); a bare `$sup` opens it with input focus and starts no
+provider call, and ESC closes it. Prompt history (`~/.ohgo/history`,
+last 1000, commands excluded, `OHGO_HISTORY_FILE` overrides, empty disables) is
+an audit trail, best-effort.
 
 `ohgo init` is a pure-planned wizard (`planInit`) writing
 `~/.ohgo/settings.json`; it never overwrites without `--force`. `ohgo

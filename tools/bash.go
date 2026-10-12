@@ -101,6 +101,21 @@ func (t *BashTool) Exclusive(args map[string]any) bool {
 	return !background
 }
 
+// Capability implements agent.CapabilityReporter for the admission layer.
+//
+// The tool's declared tier is exec, but a shell command can also mutate the
+// repository. Classifying the specific command lets the runtime refuse a
+// mutation attempted from a workspace that may execute but not change
+// (I3, §5.3). Malformed arguments classify as write, so a call that might
+// mutate is denied outside BUILD rather than admitted on a parsing failure.
+func (t *BashTool) Capability(args map[string]any) agent.Tier {
+	command, err := strArg(args, "command", "")
+	if err != nil || strings.TrimSpace(command) == "" {
+		return agent.TierWrite
+	}
+	return commandCapability(command)
+}
+
 // Execute implements agent.Tool.
 func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	if err := checkCancelled(ctx.Ctx); err != nil {

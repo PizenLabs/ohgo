@@ -48,6 +48,11 @@ type Entry struct {
 	Tool *ToolEntry
 	// Notice is set when Kind is EntryNotice.
 	Notice string
+	// SupportText is set when Kind is EntrySupport: the question when
+	// SupportIsQuestion, else the answer.
+	SupportText string
+	// SupportIsQuestion marks a support question entry rather than an answer.
+	SupportIsQuestion bool
 }
 
 // EntryKind discriminates an Entry.
@@ -63,6 +68,9 @@ const (
 	EntryTool EntryKind = "tool"
 	// EntryNotice is a system notice, e.g. a compaction.
 	EntryNotice EntryKind = "notice"
+	// EntrySupport is one turn of the ephemeral $sup surface. It is rendered
+	// but never persisted and never enters the model's context (§10.2, I17).
+	EntrySupport EntryKind = "support"
 )
 
 // ToolEntry is the live state of one tool call.
@@ -169,6 +177,13 @@ type Status struct {
 	// Empty hides it. The producer labels estimates; the view never invents
 	// numbers, and unknown values stay absent rather than rendering as zero.
 	UsageText string
+	// Workspace is the execution authority label, e.g. "BUILD". Empty hides
+	// it. It is authority identity, not decoration: it tells the user which
+	// boundary the session is running under.
+	Workspace string
+	// WorkspaceAccent is the semantic 256-color index for the workspace, from
+	// workspace.Style(). Empty falls back to a neutral accent.
+	WorkspaceAccent string
 }
 
 // Percent renders the context budget, or -1 when there is no window.
@@ -215,6 +230,10 @@ type State struct {
 	Theme string
 	// Picker is the open selection overlay, or nil.
 	Picker *PickerState
+	// Plane is the open model control plane, or nil. It is the persistent
+	// split-pane surface behind /model; the single-overlay Picker remains for
+	// sessions, jobs, commands and the connect flow.
+	Plane *ModelPlaneState
 	// Secret is an open credential prompt, or nil. While set, the composer
 	// collects a masked secret for its handler instead of a prompt.
 	Secret *SecretState
@@ -236,6 +255,25 @@ type State struct {
 	// closedAssistant marks that the trailing assistant entry has ended, so
 	// the next turn opens a new one.
 	closedAssistant bool
+	// Support reports that the ephemeral $sup surface is open. It is UI state
+	// only: the workspace and session authority are unchanged while it is set
+	// (§34). It is derived from SupportPanel: non-nil means open.
+	Support bool
+	// SupportPanel is the ephemeral support overlay. Non-nil while the
+	// surface is open; nil after close discards it. It never enters the
+	// normal transcript, history, or session.
+	SupportPanel *SupportPanel
+	// SupportSeq identifies the latest support turn. Support lifecycle
+	// events carry it so a late event from an old support turn cannot
+	// mutate the new one.
+	SupportSeq int
+	// TurnSeq identifies the latest turn. Lifecycle events carry it so a late
+	// event from an old turn cannot mutate the new one.
+	TurnSeq int
+	// Cancelled records the current turn reached its terminal cancellation
+	// state. It makes repeated cancels idempotent and lets late progress
+	// events be dropped instead of resurrecting Running.
+	Cancelled bool
 }
 
 // New returns an empty state.
@@ -250,6 +288,12 @@ func New() State {
 func (s *State) Apply(event Event) {
 	switch e := event.(type) {
 	case UserSubmitted:
+		seq := e.Seq
+		if seq == 0 {
+			seq = s.TurnSeq + 1
+		}
+		s.TurnSeq = seq
+		s.Cancelled = false
 		s.Entries = append(s.Entries, Entry{Kind: EntryUser, UserText: e.Text})
 		s.Input = ""
 		s.Cursor = 0
@@ -264,10 +308,19 @@ func (s *State) Apply(event Event) {
 		s.growScroll(countLines(e.Text))
 
 	case AssistantDelta:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
 		s.appendAssistant(e.Text)
 		s.growScroll(strings.Count(e.Text, "\n"))
 
 	case AssistantDone:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
 		// Close the trailing assistant entry: without this the next turn would
 		// append to it and the transcript would read as one continuous answer.
 		if open := s.openAssistant(); open >= 0 {
@@ -275,7 +328,41 @@ func (s *State) Apply(event Event) {
 		}
 		s.Status.Busy = false
 
+	case TurnCancelled:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
+		s.Cancelled = true
+		s.Status.Busy = false
+		s.Queued = nil
+		if open := s.openAssistant(); open >= 0 {
+			s.closedAssistant = true
+		}
+		for i := range s.Entries {
+			entry := &s.Entries[i]
+			if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.Status == ToolRunning {
+				entry.Tool.Status = ToolError
+				entry.Tool.Summary = "cancelled"
+				entry.Tool.Text = "cancelled"
+			}
+		}
+		text := e.Text
+		if text == "" {
+			text = "cancelled"
+		}
+		s.Entries = append(s.Entries, Entry{Kind: EntryNotice, Notice: text})
+		s.growScroll(countLines(text))
+
 	case ToolStarted:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
 		// A second announcement for the same call updates nothing: an
 		// empty partial report must never open a duplicate block next to
 		// the running one.
@@ -296,6 +383,12 @@ func (s *State) Apply(event Event) {
 		s.growScroll(1)
 
 	case ToolPreview:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
 		// A preview updates the summary of a *running* call only. Once a call
 		// has finished, a late preview would resurrect stale progress on top
 		// of the real outcome.
@@ -304,6 +397,12 @@ func (s *State) Apply(event Event) {
 		}
 
 	case ToolFinished:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
 		tool := s.tool(e.ID)
 		if tool == nil {
 			return
@@ -429,6 +528,9 @@ func (s *State) Apply(event Event) {
 		if s.Picker != nil {
 			s.Picker.SetVisibleRows(pickerRowsFor(*s))
 		}
+		if s.Plane != nil {
+			s.Plane.SetVisibleRows(planeRowsFor(*s))
+		}
 
 	case ThemeChanged:
 		s.Theme = NormalizeTheme(e.Name)
@@ -511,9 +613,204 @@ func (s *State) Apply(event Event) {
 			}
 			s.Picker.ErrMsg = e.Err
 		}
+		if s.Plane != nil {
+			s.Plane.Loading = false
+			s.Plane.Refreshing = false
+			s.Plane.Stale = false
+			if len(e.Snapshot.Options) > 0 {
+				s.Plane.SetModels(e.Snapshot.Options)
+				if e.Snapshot.Origin != "" {
+					s.Plane.Origin = e.Snapshot.Origin
+				}
+			}
+			s.Plane.ErrMsg = e.Err
+			// A refresh replaces the rows the variant options point at, so
+			// an open prompt cannot survive it: cancel and say why rather
+			// than confirming a stale row.
+			if s.Plane.Variant != nil {
+				s.Plane.CancelVariant()
+				s.Plane.Notice = "catalog refreshed — choose the variant again"
+			}
+		}
 
 	case PickerClosed:
 		s.Picker = nil
+
+	case ModelPlaneOpened:
+		s.Plane = NewModelPlane(e)
+		// Size the list window from the modal interior immediately: a
+		// zero VisibleRows means "render everything", which would let the
+		// lists eat the detail block. The program's open path recomputes
+		// this too; doing it here keeps every opener correct.
+		s.Plane.SetVisibleRows(planeRowsFor(*s))
+
+	case ModelPlaneClosed:
+		s.Plane = nil
+
+	case PlaneMoved:
+		if s.Plane != nil {
+			if s.Plane.Variant != nil {
+				s.Plane.MoveVariant(e.Delta)
+			} else {
+				s.Plane.Move(e.Delta)
+			}
+		}
+
+	case PlanePaged:
+		if s.Plane != nil {
+			if s.Plane.Variant != nil {
+				s.Plane.EndVariant(e.Delta > 0)
+			} else {
+				s.Plane.Page(e.Delta)
+			}
+		}
+
+	case PlaneTop:
+		if s.Plane != nil {
+			if s.Plane.Variant != nil {
+				s.Plane.EndVariant(false)
+			} else {
+				s.Plane.Top()
+			}
+		}
+
+	case PlaneBottom:
+		if s.Plane != nil {
+			if s.Plane.Variant != nil {
+				s.Plane.EndVariant(true)
+			} else {
+				s.Plane.Bottom()
+			}
+		}
+
+	case PlaneFocusChanged:
+		if s.Plane != nil {
+			if e.Right {
+				s.Plane.FocusModels()
+			} else {
+				s.Plane.FocusProviders()
+			}
+		}
+
+	case PlaneFocusSet:
+		if s.Plane != nil {
+			s.Plane.setFocus(e.Focus)
+		}
+
+	case PlaneFocusMoved:
+		if s.Plane != nil {
+			if e.Delta < 0 {
+				for i := 0; i < -e.Delta; i++ {
+					s.Plane.PrevFocus()
+				}
+			} else {
+				for i := 0; i < e.Delta; i++ {
+					s.Plane.NextFocus()
+				}
+			}
+		}
+
+	case PlaneModeToggled:
+		if s.Plane != nil {
+			s.Plane.ToggleMode()
+		}
+
+	case PlaneFilterChanged:
+		if s.Plane != nil {
+			s.Plane.SetFilter(e.Text)
+		}
+
+	case PlaneTyped:
+		if s.Plane != nil {
+			s.Plane.InsertFilterText(e.Text)
+		}
+
+	case PlaneFilterBackspace:
+		if s.Plane != nil {
+			s.Plane.DeleteFilterBefore()
+		}
+
+	case PlaneFilterDelete:
+		if s.Plane != nil {
+			s.Plane.DeleteFilterAt()
+		}
+
+	case PlaneFilterCursorMoved:
+		if s.Plane != nil {
+			s.Plane.MoveFilterCursor(e.Delta)
+		}
+
+	case PlaneFilterCleared:
+		if s.Plane != nil {
+			s.Plane.ClearFilter()
+		}
+
+	case PlaneVariantOpened:
+		if s.Plane != nil {
+			if model, ok := s.Plane.ChosenModel(); ok {
+				s.Plane.OpenVariant(model)
+			}
+		}
+
+	case PlaneVariantMoved:
+		if s.Plane != nil {
+			s.Plane.MoveVariant(e.Delta)
+		}
+
+	case PlaneVariantClosed:
+		if s.Plane != nil {
+			s.Plane.CancelVariant()
+		}
+
+	case PlaneEffortCycled:
+		if s.Plane != nil {
+			s.Plane.MoveEffort(e.Delta)
+		}
+
+	case PlaneRoleCycled:
+		if s.Plane != nil {
+			s.Plane.NextRole(e.Delta)
+		}
+
+	case PlaneRoleStaged:
+		if s.Plane != nil {
+			s.Plane.StageRole()
+		}
+
+	case PlaneModelStaged:
+		if s.Plane != nil {
+			s.Plane.beginModelFirst(e.Model)
+		}
+
+	case PlaneRoleChosen:
+		if s.Plane != nil {
+			s.Plane.chooseRole()
+		}
+
+	case PlaneModelChosen:
+		if s.Plane != nil {
+			s.Plane.chooseModel()
+		}
+
+	case PlaneStageCancelled:
+		if s.Plane != nil {
+			s.Plane.CancelStage()
+		}
+
+	case PlaneVariantConfirmed:
+		if s.Plane != nil {
+			s.Plane.ConfirmVariant(e.Model)
+		}
+
+	case PlaneAssigned:
+		if s.Plane != nil {
+			s.Plane.ApplyAssignment(e.Result, e.Roles, e.Notice)
+		}
+
+	case PlaneRowsChanged:
+		if s.Plane != nil {
+			s.Plane.SetVisibleRows(e.Rows)
+		}
 
 	case SecretOpened:
 		s.Secret = &SecretState{Label: e.Label}
@@ -539,9 +836,156 @@ func (s *State) Apply(event Event) {
 		if e.HasUsage {
 			s.Status.UsageText = e.UsageText
 		}
+		if e.HasWorkspace {
+			s.Status.Workspace = e.Workspace
+			s.Status.WorkspaceAccent = e.WorkspaceAccent
+		}
 
 	case QuitRequested:
 		s.Quit = true
+
+	case SupportTurn:
+		// Legacy single-event form: the exchange lands in the overlay as a
+		// finished turn. It never touches the normal transcript, history, or
+		// session (I17). EntrySupport entries are no longer produced: the
+		// panel is the surface, not the main viewport.
+		if s.SupportPanel == nil {
+			s.SupportSeq++
+			s.SupportPanel = &SupportPanel{Status: SupportIdle, Seq: s.SupportSeq}
+		}
+		s.SupportPanel.Request = e.Question
+		s.SupportPanel.Response = e.Answer
+		s.SupportPanel.Status = SupportCompleted
+		s.SupportPanel.Input = ""
+		s.SupportPanel.Cursor = 0
+		s.SupportPanel.Scroll = 0
+		s.Support = true
+		s.growScroll(countLines(e.Question) + countLines(e.Answer) + 2)
+
+	case SupportOpened:
+		if s.SupportPanel == nil {
+			s.SupportPanel = &SupportPanel{Status: SupportIdle}
+		}
+		if s.SupportPanel.Status == SupportRunning {
+			break
+		}
+		if e.Model != "" {
+			s.SupportPanel.Model = e.Model
+			s.SupportPanel.Effort = e.Effort
+		}
+		if s.SupportPanel.Status != SupportCompleted &&
+			s.SupportPanel.Status != SupportCancelled &&
+			s.SupportPanel.Status != SupportFailed {
+			s.SupportPanel.Status = SupportIdle
+		}
+		s.SupportPanel.Scroll = 0
+		s.Support = true
+
+	case SupportInputChanged:
+		if s.SupportPanel == nil || s.SupportPanel.Status == SupportRunning {
+			break
+		}
+		s.SupportPanel.Input = e.Text
+		s.SupportPanel.Cursor = clampCursor(e.Text, e.Cursor)
+
+	case SupportStarted:
+		seq := e.Seq
+		if seq == 0 {
+			s.SupportSeq++
+			seq = s.SupportSeq
+		} else if seq > s.SupportSeq {
+			s.SupportSeq = seq
+		}
+		if s.SupportPanel == nil {
+			s.SupportPanel = &SupportPanel{}
+		}
+		s.SupportPanel.Request = e.Request
+		s.SupportPanel.Response = ""
+		s.SupportPanel.Status = SupportRunning
+		s.SupportPanel.Seq = seq
+		s.SupportPanel.Model = e.Model
+		s.SupportPanel.Effort = e.Effort
+		s.SupportPanel.Error = ""
+		s.SupportPanel.Input = ""
+		s.SupportPanel.Cursor = 0
+		s.SupportPanel.Scroll = 0
+		s.Support = true
+		s.growScroll(countLines(e.Request) + 1)
+
+	case SupportDelta:
+		panel := s.SupportPanel
+		if panel == nil || e.Seq != panel.Seq || panel.Status != SupportRunning {
+			break
+		}
+		panel.Response += e.Text
+		s.growScroll(strings.Count(e.Text, "\n"))
+
+	case SupportDone:
+		panel := s.SupportPanel
+		if panel == nil || e.Seq != panel.Seq || panel.Status != SupportRunning {
+			break
+		}
+		if e.Text != "" {
+			panel.Response += e.Text
+		}
+		panel.Status = SupportCompleted
+
+	case SupportFailedEvent:
+		panel := s.SupportPanel
+		if panel == nil || e.Seq != panel.Seq || panel.Status != SupportRunning {
+			break
+		}
+		panel.Status = SupportFailed
+		panel.Error = e.Error
+
+	case SupportCancelledEvent:
+		panel := s.SupportPanel
+		if panel == nil || e.Seq != panel.Seq {
+			break
+		}
+		// Idempotent: the first cancellation wins; a terminal panel
+		// stays terminal without a second line.
+		if panel.Status != SupportRunning {
+			break
+		}
+		panel.Status = SupportCancelled
+		panel.Error = ""
+		if e.Text != "" && e.Text != "cancelled" {
+			panel.Response = e.Text
+		}
+
+	case SupportClosed:
+		// Closing discards the ephemeral panel outright: the surface must
+		// return the user to the previous interaction, not leave a transcript
+		// of a conversation that never happened.
+		kept := s.Entries[:0]
+		for _, entry := range s.Entries {
+			if entry.Kind != EntrySupport {
+				kept = append(kept, entry)
+			}
+		}
+		s.Entries = kept
+		s.SupportPanel = nil
+		s.Support = false
+
+	case SupportScrolled:
+		// The response viewport follows the transcript convention: an
+		// offset above the live edge, floored at zero. Overshoot parks
+		// at the oldest line in the view, which clamps to the content
+		// without mutating the stored offset.
+		if s.SupportPanel == nil {
+			break
+		}
+		s.SupportPanel.Scroll += e.Delta
+		if s.SupportPanel.Scroll < 0 {
+			s.SupportPanel.Scroll = 0
+		}
+
+	case SupportScrollToBottom:
+		if s.SupportPanel == nil {
+			break
+		}
+		s.SupportPanel.Scroll = 0
 
 	case Cleared:
 		// /clear drops the transcript so the next turn starts from nothing.
@@ -721,19 +1165,43 @@ func (s *State) AssistantText() string {
 type Event interface{ eventKind() string }
 
 // UserSubmitted is a line the user entered.
-type UserSubmitted struct{ Text string }
+type UserSubmitted struct {
+	Text string
+	// Seq identifies the turn. Zero means legacy callers without an id.
+	Seq int
+}
 
 func (UserSubmitted) eventKind() string { return "user_submitted" }
 
 // AssistantDelta is streamed model text.
-type AssistantDelta struct{ Text string }
+type AssistantDelta struct {
+	Text string
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
+}
 
 func (AssistantDelta) eventKind() string { return "assistant_delta" }
 
 // AssistantDone marks the end of a turn.
-type AssistantDone struct{}
+type AssistantDone struct {
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
+}
 
 func (AssistantDone) eventKind() string { return "assistant_done" }
+
+// TurnCancelled is the single semantic cancellation transition for a turn.
+// The reducer makes it idempotent: the first one wins, later duplicates and
+// stale turns are dropped, so the renderer naturally receives one terminal
+// cancellation state and the spinner projection converges to idle.
+type TurnCancelled struct {
+	// Seq identifies the turn. Zero means the current turn.
+	Seq int
+	// Text is the user-visible cancellation line. Empty renders "cancelled".
+	Text string
+}
+
+func (TurnCancelled) eventKind() string { return "turn_cancelled" }
 
 // ToolStarted announces a call beginning.
 //
@@ -744,6 +1212,8 @@ type ToolStarted struct {
 	Name    string
 	Summary string
 	At      time.Time
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
 }
 
 func (ToolStarted) eventKind() string { return "tool_started" }
@@ -752,6 +1222,8 @@ func (ToolStarted) eventKind() string { return "tool_started" }
 type ToolPreview struct {
 	ID      string
 	Summary string
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
 }
 
 func (ToolPreview) eventKind() string { return "tool_preview" }
@@ -769,6 +1241,8 @@ type ToolFinished struct {
 	IsError   bool
 	Truncated bool
 	At        time.Time
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
 }
 
 func (ToolFinished) eventKind() string { return "tool_finished" }
@@ -986,6 +1460,21 @@ func IsCommand(line string) bool {
 	return ok
 }
 
+// ParseSupport reports whether a line invokes the ephemeral support surface
+// and returns its question.
+//
+// $sup is a capability of ASK, not a workspace and not a slash command (§10.1,
+// I6): it is recognised separately so it can be routed to an isolated
+// conversation that never touches the main context. A bare "$sup" carries an
+// empty question, which the caller treats as "close the surface".
+func ParseSupport(line string) (question string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed != "$sup" && !strings.HasPrefix(trimmed, "$sup ") && !strings.HasPrefix(trimmed, "$sup\t") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, "$sup")), true
+}
+
 // CommandSpec describes one command for the help listing.
 type CommandSpec struct {
 	// Name is the command word.
@@ -994,34 +1483,49 @@ type CommandSpec struct {
 	Usage string
 	// Description is one line of help.
 	Description string
+	// Category groups the slash menu: WORKSPACE or CONTROL.
+	Category string
 	// Hidden keeps a command out of the listing, for aliases.
 	Hidden bool
 }
+
+// Slash command categories. Workspace commands change execution authority;
+// control commands drive the UI. The menu renders them as separate groups,
+// never one undifferentiated list.
+const (
+	// CommandGroupWorkspace holds /ask, /fuzz, /build.
+	CommandGroupWorkspace = "WORKSPACE"
+	// CommandGroupControl holds /model, /help and the rest.
+	CommandGroupControl = "CONTROL"
+)
 
 // Commands is the registry.
 //
 // It lives beside the state machine rather than in the UI so the help text and
 // the dispatch table cannot drift apart.
 var Commands = []CommandSpec{
-	{Name: "help", Usage: "help", Description: "list the available commands"},
-	{Name: "commands", Usage: "commands", Description: "search every command"},
-	{Name: "clear", Usage: "clear", Description: "clear the transcript and start a fresh context"},
-	{Name: "model", Usage: "model [provider/id]", Description: "browse or switch the model"},
-	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true},
-	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions"},
-	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true},
-	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs"},
-	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette"},
-	{Name: "connect", Usage: "connect", Description: "set up a provider connection"},
-	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential"},
-	{Name: "providers", Usage: "providers", Description: "list providers and credential status"},
-	{Name: "status", Usage: "status", Description: "show provider, model, context, and session"},
-	{Name: "usage", Usage: "usage", Description: "show token usage and cost"},
-	{Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools"},
-	{Name: "retry", Usage: "retry", Description: "re-send the last prompt"},
-	{Name: "compact", Usage: "compact", Description: "summarise context now"},
-	{Name: "quit", Usage: "quit", Description: "exit the session", Hidden: true},
-	{Name: "exit", Usage: "exit", Description: "exit the session", Hidden: true},
+	{Name: "ask", Usage: "ask", Description: "Ask / read-only", Category: CommandGroupWorkspace},
+	{Name: "fuzz", Usage: "fuzz", Description: "Explore / investigate", Category: CommandGroupWorkspace},
+	{Name: "build", Usage: "build", Description: "Build / modify", Category: CommandGroupWorkspace},
+	{Name: "help", Usage: "help", Description: "list the available commands", Category: CommandGroupControl},
+	{Name: "commands", Usage: "commands", Description: "search every command", Category: CommandGroupControl},
+	{Name: "clear", Usage: "clear", Description: "clear the transcript and start a fresh context", Category: CommandGroupControl},
+	{Name: "model", Usage: "model [provider/id]", Description: "browse or switch the model", Category: CommandGroupControl},
+	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
+	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions", Category: CommandGroupControl},
+	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
+	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
+	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette", Category: CommandGroupControl},
+	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
+	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
+	{Name: "providers", Usage: "providers", Description: "list providers and credential status", Category: CommandGroupControl},
+	{Name: "status", Usage: "status", Description: "show provider, model, context, and session", Category: CommandGroupControl},
+	{Name: "usage", Usage: "usage", Description: "show token usage and cost", Category: CommandGroupControl},
+	{Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
+	{Name: "retry", Usage: "retry", Description: "re-send the last prompt", Category: CommandGroupControl},
+	{Name: "compact", Usage: "compact", Description: "summarise context now", Category: CommandGroupControl},
+	{Name: "quit", Usage: "quit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
+	{Name: "exit", Usage: "exit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
 }
 
 // SuggestCommand names the closest known command to a typo, for the "did you
@@ -1085,14 +1589,29 @@ func LookupCommand(name string) (CommandSpec, bool) {
 func HelpText() string {
 	var sb strings.Builder
 	sb.WriteString("Commands:\n")
-	for _, spec := range Commands {
-		if spec.Hidden {
-			continue
+	for _, group := range []string{CommandGroupWorkspace, CommandGroupControl} {
+		sb.WriteString(group + "\n")
+		for _, spec := range Commands {
+			if spec.Hidden {
+				continue
+			}
+			if groupOf(spec) != group {
+				continue
+			}
+			fmt.Fprintf(&sb, "  /%-22s %s\n", spec.Usage, spec.Description)
 		}
-		fmt.Fprintf(&sb, "  /%-22s %s\n", spec.Usage, spec.Description)
 	}
 	sb.WriteString("\nAnything else is sent to the model.")
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// groupOf returns the menu group for a command. Empty categories from older
+// callers fall back to CONTROL so help never loses a row.
+func groupOf(spec CommandSpec) string {
+	if spec.Category == CommandGroupWorkspace {
+		return CommandGroupWorkspace
+	}
+	return CommandGroupControl
 }
 
 // Cleared is published when /clear wipes the transcript.
@@ -1192,7 +1711,7 @@ func slashWindow(s State) (shown []CommandSpec, start, cursor int, above, below 
 // layout reserves exactly what the view draws.
 func slashRows(s State) int {
 	shown, _, _, above, below := slashWindow(s)
-	n := len(shown)
+	n := len(shown) + slashGroupHeaders(shown)
 	if above {
 		n++
 	}
@@ -1200,6 +1719,27 @@ func slashRows(s State) int {
 		n++
 	}
 	return n
+}
+
+// slashGroupHeaders counts the group titles the suggestion list will render:
+// one per distinct category present in the visible window. The headers are
+// presentation only; selection still indexes the flat matches.
+func slashGroupHeaders(shown []CommandSpec) int {
+	seen := map[string]bool{}
+	n := 0
+	for _, spec := range shown {
+		group := groupOf(spec)
+		if !seen[group] {
+			seen[group] = true
+			n++
+		}
+	}
+	return n
+}
+
+// slashGroupOf returns the display group for one suggestion row.
+func slashGroupOf(spec CommandSpec) string {
+	return groupOf(spec)
 }
 
 // moveSlash shifts the suggestion highlight, wrapping at both ends.
@@ -1376,6 +1916,189 @@ type PickerClosed struct{}
 
 func (PickerClosed) eventKind() string { return "picker_closed" }
 
+// ModelPlaneOpened opens the persistent split-pane model control surface.
+//
+// The caller owns the roster and the role list: it builds both from
+// authoritative metadata and the configuration authority, so the plane never
+// fabricates a model fact or a persistence decision.
+type ModelPlaneOpened struct {
+	// Providers is the provider pane, including the synthetic All row.
+	Providers []ProviderRow
+	// Models is the merged model roster.
+	Models []ModelOption
+	// Roles is the effective role configuration.
+	Roles []RoleAssignment
+	// ActiveRole is the role an Enter applies to in model mode.
+	ActiveRole string
+	// Loading reports the first roster has not arrived yet.
+	Loading bool
+	// Origin names the snapshot: "live", "cached", "bundled", "loading".
+	Origin string
+	// Stale reports cached rows shown while a refresh runs.
+	Stale bool
+}
+
+func (ModelPlaneOpened) eventKind() string { return "model_plane_opened" }
+
+// ModelPlaneClosed dismisses the control plane without applying anything.
+type ModelPlaneClosed struct{}
+
+func (ModelPlaneClosed) eventKind() string { return "model_plane_closed" }
+
+// PlaneMoved shifts the highlight in the focused pane. Positive goes down.
+type PlaneMoved struct{ Delta int }
+
+func (PlaneMoved) eventKind() string { return "plane_moved" }
+
+// PlanePaged shifts the highlight by approximately one viewport.
+type PlanePaged struct{ Delta int }
+
+func (PlanePaged) eventKind() string { return "plane_paged" }
+
+// PlaneTop parks the highlight on the first row of the focused pane.
+type PlaneTop struct{}
+
+func (PlaneTop) eventKind() string { return "plane_top" }
+
+// PlaneBottom parks the highlight on the last row of the focused pane.
+type PlaneBottom struct{}
+
+func (PlaneBottom) eventKind() string { return "plane_bottom" }
+
+// PlaneFocusChanged moves focus between the two panes. Right=true focuses the
+// right pane (models in model mode), false the left.
+type PlaneFocusChanged struct{ Right bool }
+
+func (PlaneFocusChanged) eventKind() string { return "plane_focus_changed" }
+
+// PlaneFocusSet moves the keyboard to an explicit control. Tab cycling and
+// programmatic focus both go through it so the mode stays in step.
+type PlaneFocusSet struct{ Focus PlaneFocus }
+
+func (PlaneFocusSet) eventKind() string { return "plane_focus_set" }
+
+// PlaneFocusMoved steps the keyboard through the Tab order. Positive goes
+// forward, negative goes back.
+type PlaneFocusMoved struct{ Delta int }
+
+func (PlaneFocusMoved) eventKind() string { return "plane_focus_moved" }
+
+// PlaneModeToggled swaps model browsing and role assignment.
+type PlaneModeToggled struct{}
+
+func (PlaneModeToggled) eventKind() string { return "plane_mode_toggled" }
+
+// PlaneFilterChanged replaces the query.
+type PlaneFilterChanged struct{ Text string }
+
+func (PlaneFilterChanged) eventKind() string { return "plane_filter_changed" }
+
+// PlaneTyped inserts text into the query at the cursor.
+type PlaneTyped struct{ Text string }
+
+func (PlaneTyped) eventKind() string { return "plane_typed" }
+
+// PlaneFilterBackspace deletes the rune before the query cursor.
+type PlaneFilterBackspace struct{}
+
+func (PlaneFilterBackspace) eventKind() string { return "plane_filter_backspace" }
+
+// PlaneFilterDelete deletes the rune under the query cursor.
+type PlaneFilterDelete struct{}
+
+func (PlaneFilterDelete) eventKind() string { return "plane_filter_delete" }
+
+// PlaneFilterCursorMoved shifts the query cursor.
+type PlaneFilterCursorMoved struct{ Delta int }
+
+func (PlaneFilterCursorMoved) eventKind() string { return "plane_filter_cursor_moved" }
+
+// PlaneFilterCleared empties the query.
+type PlaneFilterCleared struct{}
+
+func (PlaneFilterCleared) eventKind() string { return "plane_filter_cleared" }
+
+// PlaneVariantOpened starts the choose-a-variant prompt for the highlighted
+// model. It is a no-op when the model needs no choice.
+type PlaneVariantOpened struct{}
+
+func (PlaneVariantOpened) eventKind() string { return "plane_variant_opened" }
+
+// PlaneVariantMoved shifts the variant highlight. Positive goes down.
+type PlaneVariantMoved struct{ Delta int }
+
+func (PlaneVariantMoved) eventKind() string { return "plane_variant_moved" }
+
+// PlaneVariantClosed dismisses the variant prompt without choosing.
+type PlaneVariantClosed struct{}
+
+func (PlaneVariantClosed) eventKind() string { return "plane_variant_closed" }
+
+// PlaneEffortCycled moves the pending thinking effort among the highlighted
+// model's authoritative options.
+type PlaneEffortCycled struct{ Delta int }
+
+func (PlaneEffortCycled) eventKind() string { return "plane_effort_cycled" }
+
+// PlaneRoleCycled moves the active role in model mode.
+type PlaneRoleCycled struct{ Delta int }
+
+func (PlaneRoleCycled) eventKind() string { return "plane_role_cycled" }
+
+// PlaneRoleStaged begins the roles-first transaction for the highlighted role:
+// the role is staged and the flow moves to model selection. It never assigns.
+type PlaneRoleStaged struct{}
+
+func (PlaneRoleStaged) eventKind() string { return "plane_role_staged" }
+
+// PlaneModelStaged begins the model-first transaction for a picked model: the
+// model is staged and the flow moves to role selection. It never assigns.
+type PlaneModelStaged struct{ Model ModelOption }
+
+func (PlaneModelStaged) eventKind() string { return "plane_model_staged" }
+
+// PlaneRoleChosen confirms the highlighted role in the role stage and advances
+// to the effort (or apply) step.
+type PlaneRoleChosen struct{}
+
+func (PlaneRoleChosen) eventKind() string { return "plane_role_chosen" }
+
+// PlaneModelChosen confirms the highlighted model in the roles-flow model step
+// and advances to the effort (or apply) step.
+type PlaneModelChosen struct{}
+
+func (PlaneModelChosen) eventKind() string { return "plane_model_chosen" }
+
+// PlaneStageCancelled backs out one step of the assignment transaction,
+// discarding transient state without persisting or closing.
+type PlaneStageCancelled struct{}
+
+func (PlaneStageCancelled) eventKind() string { return "plane_stage_cancelled" }
+
+// PlaneVariantConfirmed commits a chosen variant row and advances the flow.
+type PlaneVariantConfirmed struct{ Model ModelOption }
+
+func (PlaneVariantConfirmed) eventKind() string { return "plane_variant_confirmed" }
+
+// PlaneAssigned records the outcome of an assignment attempt: the applied
+// role, the refreshed role roster, and a one-line notice (confirmation or
+// refusal).
+type PlaneAssigned struct {
+	// Result is the assignment that was applied.
+	Result RoleAssignment
+	// Roles is the refreshed effective role roster, or nil to leave it.
+	Roles []RoleAssignment
+	// Notice is the confirmation or refusal shown in the footer.
+	Notice string
+}
+
+func (PlaneAssigned) eventKind() string { return "plane_assigned" }
+
+// PlaneRowsChanged resizes the list window, e.g. after a resize.
+type PlaneRowsChanged struct{ Rows int }
+
+func (PlaneRowsChanged) eventKind() string { return "plane_rows_changed" }
+
 // HistoryReplaced swaps the transcript for replayed entries on resume.
 type HistoryReplaced struct {
 	// Entries is the replayed transcript, oldest first.
@@ -1427,8 +2150,9 @@ type ProbeFinished struct {
 func (ProbeFinished) eventKind() string { return "probe_finished" }
 
 // WorkspaceUpdated carries out-of-band chrome metadata: working directory,
-// session label, and measured usage text. It never touches the transcript,
-// so a resize or a usage tick cannot duplicate requests or mutate history.
+// session label, measured usage text, and the execution authority. It never
+// touches the transcript, so a resize or a usage tick cannot duplicate
+// requests or mutate history.
 type WorkspaceUpdated struct {
 	// Cwd is the working directory for the status line. Empty leaves it.
 	Cwd string
@@ -1436,14 +2160,196 @@ type WorkspaceUpdated struct {
 	Session string
 	// UsageText is preformatted usage detail. Empty leaves it.
 	UsageText string
-	// HasCwd, HasSession, HasUsage mark which fields apply: an empty string
-	// can be a deliberate clear, not just an omission.
-	HasCwd     bool
-	HasSession bool
-	HasUsage   bool
+	// Workspace is the execution authority label, e.g. "BUILD".
+	Workspace string
+	// WorkspaceAccent is the semantic accent for the authority. The producer
+	// reads it from workspace.Style(), so the TUI never hardcodes a
+	// workspace colour (§9).
+	WorkspaceAccent string
+	// HasCwd, HasSession, HasUsage, HasWorkspace mark which fields apply: an
+	// empty string can be a deliberate clear, not just an omission.
+	HasCwd       bool
+	HasSession   bool
+	HasUsage     bool
+	HasWorkspace bool
 }
 
 func (WorkspaceUpdated) eventKind() string { return "workspace_updated" }
+
+// SupportStatus is where a support turn is in its lifecycle.
+type SupportStatus string
+
+// Support lifecycle states.
+const (
+	// SupportIdle means the panel is open for input with no turn in flight.
+	SupportIdle SupportStatus = "idle"
+	// SupportRunning means a support request is executing.
+	SupportRunning SupportStatus = "running"
+	// SupportCompleted means the support response finished.
+	SupportCompleted SupportStatus = "completed"
+	// SupportCancelled means the support turn was cancelled.
+	SupportCancelled SupportStatus = "cancelled"
+	// SupportFailed means the support turn ended in an error.
+	SupportFailed SupportStatus = "failed"
+)
+
+// SupportPanel is the ephemeral $sup overlay state.
+//
+// It owns the support interaction while open: its input, the in-flight or
+// finished response, and the effective SUP model identity the runtime
+// resolved. It is discarded on close and never enters the normal
+// transcript, history, or session.
+type SupportPanel struct {
+	// Input is the support request being composed.
+	Input string
+	// Cursor is the rune offset in Input where typing lands.
+	Cursor int
+	// Request is the submitted support question for the current turn.
+	Request string
+	// Response is the streamed support answer for the current turn.
+	Response string
+	// Status is the lifecycle position of the current turn.
+	Status SupportStatus
+	// Seq identifies the current support turn. Stale events are dropped.
+	Seq int
+	// Model is the effective SUP model reference, e.g. "provider/id".
+	Model string
+	// Effort is the effective thinking effort, or "" when unset.
+	Effort string
+	// Error carries a failure message when Status is SupportFailed.
+	Error string
+	// Scroll is the response viewport offset in lines above the live edge.
+	// Zero follows new output; positive looks back at older lines while
+	// streaming continues underneath. It is presentation-only and never
+	// enters the transcript, history, or session.
+	Scroll int
+}
+
+// SupportInputFocused reports whether the panel owns printable input: the
+// panel is open and no support turn is running.
+func (s *State) SupportInputFocused() bool {
+	if s.SupportPanel == nil {
+		return false
+	}
+	return s.SupportPanel.Status != SupportRunning
+}
+
+// SupportBusy reports whether a support turn is in flight.
+func (s *State) SupportBusy() bool {
+	return s.SupportPanel != nil && s.SupportPanel.Status == SupportRunning
+}
+
+// SupportOpened opens the ephemeral surface without starting a turn. A
+// bare "$sup" carries no request, so no provider call occurs yet.
+type SupportOpened struct {
+	// Model is the effective SUP model reference for display.
+	Model string
+	// Effort is the effective thinking effort for display.
+	Effort string
+}
+
+func (SupportOpened) eventKind() string { return "support_opened" }
+
+// SupportInputChanged sets the support composer's text and cursor.
+type SupportInputChanged struct {
+	// Text is the new support input.
+	Text string
+	// Cursor is the rune offset where typing lands.
+	Cursor int
+}
+
+func (SupportInputChanged) eventKind() string { return "support_input_changed" }
+
+// SupportStarted begins one support turn with its own sequence identity.
+type SupportStarted struct {
+	// Seq identifies the support turn.
+	Seq int
+	// Request is the submitted support question.
+	Request string
+	// Model is the effective SUP model reference.
+	Model string
+	// Effort is the effective thinking effort.
+	Effort string
+}
+
+func (SupportStarted) eventKind() string { return "support_started" }
+
+// SupportDelta streams one chunk of the support answer.
+type SupportDelta struct {
+	// Seq identifies the support turn.
+	Seq int
+	// Text is the chunk to append.
+	Text string
+}
+
+func (SupportDelta) eventKind() string { return "support_delta" }
+
+// SupportDone marks a support turn successfully completed.
+type SupportDone struct {
+	// Seq identifies the support turn.
+	Seq int
+	// Text is appended when the transport did not stream (empty otherwise).
+	Text string
+}
+
+func (SupportDone) eventKind() string { return "support_done" }
+
+// SupportFailedEvent marks a support turn failed with an error.
+type SupportFailedEvent struct {
+	// Seq identifies the support turn.
+	Seq int
+	// Error is the user-visible failure.
+	Error string
+}
+
+func (SupportFailedEvent) eventKind() string { return "support_failed" }
+
+// SupportCancelledEvent is the single semantic cancellation transition
+// for a support turn: the first one wins, later duplicates and stale
+// turns are dropped.
+type SupportCancelledEvent struct {
+	// Seq identifies the support turn.
+	Seq int
+	// Text is the user-visible cancellation line. Empty renders "cancelled".
+	Text string
+}
+
+func (SupportCancelledEvent) eventKind() string { return "support_cancelled" }
+
+// SupportTurn records one ephemeral $sup exchange. It never persists and never
+// enters the model's context (I17).
+//
+// It is the legacy single-event form: it opens the overlay (when needed)
+// with the finished exchange, so older callers keep working while the
+// interactive path streams through SupportStarted/SupportDelta/SupportDone.
+type SupportTurn struct {
+	// Question is what the user asked.
+	Question string
+	// Answer is the support model's reply.
+	Answer string
+}
+
+func (SupportTurn) eventKind() string { return "support_turn" }
+
+// SupportClosed dismisses the ephemeral surface, removing its entries.
+type SupportClosed struct{}
+
+func (SupportClosed) eventKind() string { return "support_closed" }
+
+// SupportScrolled moves the support response viewport. Positive Delta looks
+// back at older lines; negative returns toward the live edge. The view
+// clamps to the content, so overshoot simply parks at the oldest line.
+type SupportScrolled struct {
+	// Delta is the lines to move. Positive goes up (older).
+	Delta int
+}
+
+func (SupportScrolled) eventKind() string { return "support_scrolled" }
+
+// SupportScrollToBottom re-engages the support live edge.
+type SupportScrollToBottom struct{}
+
+func (SupportScrollToBottom) eventKind() string { return "support_scroll_to_bottom" }
 
 // ModelOption is one enriched model row for the picker. Detail lines are
 // built by the caller (which owns the catalog); the picker only renders
@@ -1477,6 +2383,30 @@ type ModelOption struct {
 	// Capabilities lists confirmed capabilities, e.g. "reasoning",
 	// "images". Absent means unconfirmed, never unsupported-by-default.
 	Capabilities []string
+	// MaxOutput is the model's maximum completion in tokens, or zero when
+	// unknown.
+	MaxOutput int
+	// CostInput, CostOutput, CostCacheRead and CostCacheWrite are the
+	// per-million-token USD schedule. They are meaningful only when
+	// PriceKnown is true; a zero under PriceKnown is a real zero (free),
+	// not a missing value.
+	CostInput      float64
+	CostOutput     float64
+	CostCacheRead  float64
+	CostCacheWrite float64
+	// InputModalities lists the content kinds the model accepts, e.g.
+	// "text", "image". Empty means unknown, never unsupported.
+	InputModalities []string
+	// ThinkingEfforts lists the effort levels the model exposes, in
+	// ascending cost order. Empty means no explicit ladder; Reasoning and
+	// ReasoningKnown then decide support.
+	ThinkingEfforts []string
+	// Reasoning reports the model accepts a thinking budget.
+	Reasoning bool
+	// ReasoningKnown reports Reasoning is authoritative. False means the
+	// source said nothing, so the UI renders "unknown", never
+	// "unsupported".
+	ReasoningKnown bool
 }
 
 // CatalogSnapshot is one model roster with freshness metadata.

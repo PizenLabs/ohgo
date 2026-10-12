@@ -65,6 +65,11 @@ func TestApprovalForReportsUnknownTool(t *testing.T) {
 }
 
 func TestLoadReturnsErrNotFoundForMissingFile(t *testing.T) {
+	// Load reads the real home directory, so the test must point HOME at an
+	// empty directory or a developer's own ~/.ohgo/settings.json decides the
+	// outcome.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	settings, err := Load(t.TempDir())
 	if err != ErrNotFound {
 		t.Fatalf("error = %v, want ErrNotFound", err)

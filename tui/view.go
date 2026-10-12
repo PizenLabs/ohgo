@@ -49,6 +49,12 @@ type Palette struct {
 	Quote       lipgloss.Style
 	Bullet      lipgloss.Style
 	Muted       lipgloss.Style
+	// SupportHi highlights key entities inside the $sup answer viewport:
+	// bright cyan for concepts/technologies, amber for dates/specs.
+	// Main-chat markdown never uses them, so the overlay hierarchy stays
+	// distinct without changing the transcript.
+	SupportHi    lipgloss.Style
+	SupportHiAlt lipgloss.Style
 }
 
 // DarkPalette is the default: muted surfaces with a single mint accent for
@@ -59,35 +65,37 @@ type Palette struct {
 // it reads apart from the answer.
 func DarkPalette() *Palette {
 	return &Palette{
-		User:        fg(darkAccent).Bold(true),
-		UserBG:      fg(darkText).Background(lipgloss.Color(darkUserBg)),
-		Assistant:   fg(darkText),
-		ToolName:    fg(darkTool).Bold(true),
-		ToolDone:    fg(darkSuccess),
-		ToolError:   fg(darkDanger),
-		ToolRun:     fg(darkWarning),
-		Notice:      fg(darkMuted).Italic(true),
-		Status:      fg(darkMuted),
-		Prompt:      fg(darkAccent),
-		Choice:      fg(darkText),
-		Selected:    fg(darkAccent).Bold(true),
-		Truncated:   fg(darkMuted),
-		Cursor:      fg(darkAccent).Reverse(true),
-		Queued:      fg(darkMuted).Italic(true),
-		Code:        fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
-		CodeFence:   fg(darkMuted),
-		Heading:     fg(darkH1).Bold(true),
-		Heading2:    fg(darkH2).Bold(true),
-		Heading3:    fg(darkH3).Bold(true),
-		CodeKeyword: fg(darkH1).Background(lipgloss.Color(darkCodeBg)).Bold(true),
-		CodeString:  fg(darkCodeStr).Background(lipgloss.Color(darkCodeBg)),
-		CodeComment: fg(darkMuted).Background(lipgloss.Color(darkCodeBg)).Italic(true),
-		CodeNumber:  fg(darkTool).Background(lipgloss.Color(darkCodeBg)),
-		Bold:        lipgloss.NewStyle().Bold(true),
-		Italic:      lipgloss.NewStyle().Italic(true),
-		Quote:       fg(darkMuted).Italic(true),
-		Bullet:      fg(darkAccent),
-		Muted:       fg(darkMuted),
+		User:         fg(darkAccent).Bold(true),
+		UserBG:       fg(darkText).Background(lipgloss.Color(darkUserBg)),
+		Assistant:    fg(darkText),
+		ToolName:     fg(darkTool).Bold(true),
+		ToolDone:     fg(darkSuccess),
+		ToolError:    fg(darkDanger),
+		ToolRun:      fg(darkWarning),
+		Notice:       fg(darkMuted).Italic(true),
+		Status:       fg(darkMuted),
+		Prompt:       fg(darkAccent),
+		Choice:       fg(darkText),
+		Selected:     fg(darkAccent).Bold(true),
+		Truncated:    fg(darkMuted),
+		Cursor:       fg(darkAccent).Reverse(true),
+		Queued:       fg(darkMuted).Italic(true),
+		Code:         fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
+		CodeFence:    fg(darkMuted),
+		Heading:      fg(darkH1).Bold(true),
+		Heading2:     fg(darkH2).Bold(true),
+		Heading3:     fg(darkH3).Bold(true),
+		CodeKeyword:  fg(darkH1).Background(lipgloss.Color(darkCodeBg)).Bold(true),
+		CodeString:   fg(darkCodeStr).Background(lipgloss.Color(darkCodeBg)),
+		CodeComment:  fg(darkMuted).Background(lipgloss.Color(darkCodeBg)).Italic(true),
+		CodeNumber:   fg(darkTool).Background(lipgloss.Color(darkCodeBg)),
+		Bold:         lipgloss.NewStyle().Bold(true),
+		Italic:       lipgloss.NewStyle().Italic(true),
+		Quote:        fg(darkMuted).Italic(true),
+		Bullet:       fg(darkAccent),
+		Muted:        fg(darkMuted),
+		SupportHi:    fg("87").Bold(true),
+		SupportHiAlt: fg("220").Bold(true),
 	}
 }
 
@@ -96,35 +104,37 @@ func DarkPalette() *Palette {
 // The question keeps its faint background block here as well.
 func LightPalette() *Palette {
 	return &Palette{
-		User:        fg(lightAccent).Bold(true),
-		UserBG:      fg(lightText).Background(lipgloss.Color(lightUserBg)),
-		Assistant:   fg(lightText),
-		ToolName:    fg(lightTool).Bold(true),
-		ToolDone:    fg(lightSuccess),
-		ToolError:   fg(lightDanger),
-		ToolRun:     fg(lightWarning),
-		Notice:      fg(lightMuted).Italic(true),
-		Status:      fg(lightMuted),
-		Prompt:      fg(lightAccent),
-		Choice:      fg(lightText),
-		Selected:    fg(lightAccent).Bold(true),
-		Truncated:   fg(lightMuted),
-		Cursor:      fg(lightAccent).Reverse(true),
-		Queued:      fg(lightMuted).Italic(true),
-		Code:        fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
-		CodeFence:   fg(lightMuted),
-		Heading:     fg(lightH1).Bold(true),
-		Heading2:    fg(lightH2).Bold(true),
-		Heading3:    fg(lightH3).Bold(true),
-		CodeKeyword: fg(lightH1).Background(lipgloss.Color(lightCodeBg)).Bold(true),
-		CodeString:  fg(lightCodeStr).Background(lipgloss.Color(lightCodeBg)),
-		CodeComment: fg(lightMuted).Background(lipgloss.Color(lightCodeBg)).Italic(true),
-		CodeNumber:  fg(lightTool).Background(lipgloss.Color(lightCodeBg)),
-		Bold:        lipgloss.NewStyle().Bold(true),
-		Italic:      lipgloss.NewStyle().Italic(true),
-		Quote:       fg(lightMuted).Italic(true),
-		Bullet:      fg(lightAccent),
-		Muted:       fg(lightMuted),
+		User:         fg(lightAccent).Bold(true),
+		UserBG:       fg(lightText).Background(lipgloss.Color(lightUserBg)),
+		Assistant:    fg(lightText),
+		ToolName:     fg(lightTool).Bold(true),
+		ToolDone:     fg(lightSuccess),
+		ToolError:    fg(lightDanger),
+		ToolRun:      fg(lightWarning),
+		Notice:       fg(lightMuted).Italic(true),
+		Status:       fg(lightMuted),
+		Prompt:       fg(lightAccent),
+		Choice:       fg(lightText),
+		Selected:     fg(lightAccent).Bold(true),
+		Truncated:    fg(lightMuted),
+		Cursor:       fg(lightAccent).Reverse(true),
+		Queued:       fg(lightMuted).Italic(true),
+		Code:         fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
+		CodeFence:    fg(lightMuted),
+		Heading:      fg(lightH1).Bold(true),
+		Heading2:     fg(lightH2).Bold(true),
+		Heading3:     fg(lightH3).Bold(true),
+		CodeKeyword:  fg(lightH1).Background(lipgloss.Color(lightCodeBg)).Bold(true),
+		CodeString:   fg(lightCodeStr).Background(lipgloss.Color(lightCodeBg)),
+		CodeComment:  fg(lightMuted).Background(lipgloss.Color(lightCodeBg)).Italic(true),
+		CodeNumber:   fg(lightTool).Background(lipgloss.Color(lightCodeBg)),
+		Bold:         lipgloss.NewStyle().Bold(true),
+		Italic:       lipgloss.NewStyle().Italic(true),
+		Quote:        fg(lightMuted).Italic(true),
+		Bullet:       fg(lightAccent),
+		Muted:        fg(lightMuted),
+		SupportHi:    fg("30").Bold(true),
+		SupportHiAlt: fg("166").Bold(true),
 	}
 }
 
@@ -158,7 +168,11 @@ func Render(state State) string {
 	sb.WriteString(renderHeader(state, pal, layout) + "\n")
 	sb.WriteString(SeparatorLine(separatorWidth(state, layout), pal) + "\n")
 
-	if state.Picker != nil {
+	if state.Plane != nil {
+		renderPlaneArea(&sb, state, pal, layout)
+	} else if state.SupportPanel != nil {
+		renderSupportArea(&sb, state, pal, layout)
+	} else if state.Picker != nil {
 		renderPickerArea(&sb, state, pal, layout)
 	} else {
 		renderTranscriptArea(&sb, state, pal, layout)
@@ -169,11 +183,18 @@ func Render(state State) string {
 	}
 
 	sb.WriteString(renderStatus(state, pal, layout))
-	if state.Picker == nil {
+	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil {
 		sb.WriteString("\n")
 		sb.WriteString(renderComposer(state, pal, layout))
 		if layout.ShowHints {
 			sb.WriteString("\n" + pal.Muted.Render(composerHintsFor(state)))
+		}
+	} else if state.SupportPanel != nil && state.Plane == nil && state.Picker == nil {
+		// The support overlay owns interaction while open: the main
+		// composer hides so a normal workspace turn cannot be submitted
+		// underneath it.
+		if layout.ShowHints {
+			sb.WriteString("\n" + pal.Muted.Render("support owns input · Enter submit · Esc close"))
 		}
 	}
 	return sb.String()
@@ -854,7 +875,7 @@ func renderSlashSuggestions(state State, pal *Palette, layout Layout) string {
 		}
 		for {
 			hideBelow = len(matches)-start-len(items) > 0
-			if len(items)+one(hideAbove)+one(hideBelow) <= budget {
+			if len(items)+slashGroupHeaders(items)+one(hideAbove)+one(hideBelow) <= budget {
 				break
 			}
 			if len(items) > 0 {
@@ -870,11 +891,26 @@ func renderSlashSuggestions(state State, pal *Palette, layout Layout) string {
 	if hideAbove {
 		rows = append(rows, pal.Muted.Render("  … more"))
 	}
+	current := strings.ToUpper(strings.TrimSpace(state.Status.Workspace))
+	lastGroup := ""
 	for i, spec := range items {
+		group := slashGroupOf(spec)
+		if group != lastGroup {
+			rows = append(rows, pal.Muted.Render(group))
+			lastGroup = group
+		}
 		name := "/" + spec.Name
 		line := name
-		if layout.ShowDetail && spec.Description != "" {
-			detail := TruncateToWidth(spec.Description, width-CellWidth(name)-6)
+		desc := spec.Description
+		if strings.EqualFold(spec.Name, current) && current != "" {
+			if desc != "" {
+				desc += " · current"
+			} else {
+				desc = "current"
+			}
+		}
+		if layout.ShowDetail && desc != "" {
+			detail := TruncateToWidth(desc, width-CellWidth(name)-6)
 			if detail != "" {
 				line += "  " + pal.Muted.Render(detail)
 			}
@@ -990,7 +1026,30 @@ func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, 
 			sb.WriteString(pal.Notice.Render(wl) + "\n")
 		}
 		sb.WriteString("\n")
+
+	case EntrySupport:
+		renderSupportEntry(sb, entry, pal, layout)
 	}
+}
+
+// renderSupportEntry renders one $sup exchange.
+//
+// The question carries a "$sup" marker and the answer renders through the
+// markdown layer, so the ephemeral surface reads as distinct from the main
+// conversation without depending on colour alone.
+func renderSupportEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout) {
+	if entry.SupportIsQuestion {
+		for _, line := range wrapPlain("$sup "+entry.SupportText, layout) {
+			sb.WriteString(pal.Notice.Render(line) + "\n")
+		}
+		sb.WriteString("\n")
+		return
+	}
+	rendered := RenderMarkdownWrapped(entry.SupportText, pal, textWidth(layout))
+	for _, wl := range strings.Split(rendered, "\n") {
+		sb.WriteString(wl + "\n")
+	}
+	sb.WriteString("\n")
 }
 
 // renderTool writes a tool call and, once finished, its outcome.
@@ -1237,11 +1296,35 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 	if status.Busy {
 		parts = append(parts, spinnerFrame(status.Spinner)+" working")
 	}
+	// SUP is a model role, not a workspace: the footer keeps naming the
+	// workspace authority while support is open. Support runtime state
+	// lives inside the overlay itself.
 	out := strings.Join(parts, "  ·  ")
 	if state.Width > 0 {
 		out = TruncateToWidth(out, state.Width-1)
 	}
-	return pal.Status.Render(out)
+	if status.Workspace == "" {
+		return pal.Status.Render(out)
+	}
+	// The authority badge leads the footer, in its own semantic accent. Plain
+	// cells are measured and truncated before styling, so ANSI never inflates
+	// the one-row budget.
+	badge := sanitizeInline(status.Workspace)
+	const sep = "  ·  "
+	if state.Width > 0 {
+		restBudget := state.Width - 1 - CellWidth(badge) - CellWidth(sep)
+		if restBudget < 0 {
+			// Too narrow for both: the authority identity is the part that
+			// must survive, so the context detail yields.
+			return WorkspaceBadge(status.WorkspaceAccent, TruncateToWidth(badge, state.Width-1))
+		}
+		out = TruncateToWidth(out, restBudget)
+	}
+	styled := WorkspaceBadge(status.WorkspaceAccent, badge)
+	if out == "" {
+		return styled
+	}
+	return styled + pal.Status.Render(sep+out)
 }
 
 // shortenCwd keeps the tail of a long path: the leaf directory is what
