@@ -189,6 +189,32 @@ type Program struct {
 	// means the surface is unavailable, in which case $sup is treated as an
 	// ordinary prompt. Its conversation never reaches the store or history.
 	support func(ctx context.Context, question string) (string, error)
+
+	// turnSeq issues turn identities. Guarded by mu: runTurn increments it
+	// off the update goroutine while cancelTurnNow reads state on it.
+	turnSeq int
+
+	// workspace hooks route /ask, /fuzz, /build through the CLI-owned
+	// authority seam. The TUI never changes authority itself: it calls
+	// Switch, which owns validation, the runtime, persistence, and chrome.
+	workspace WorkspaceHooks
+}
+
+// WorkspaceHooks route workspace commands through their owner.
+//
+// Current reports the workspace in force (e.g. "build"); Switch moves the
+// session to the named workspace at a turn boundary. Both are nil-safe: a
+// program built without them reports the feature unavailable.
+type WorkspaceHooks struct {
+	// Current names the workspace in force.
+	Current func() string
+	// Switch moves the session to the named workspace.
+	Switch func(name string) error
+}
+
+// SetWorkspaceSwitcher installs the owner behind /ask, /fuzz, /build.
+func (p *Program) SetWorkspaceSwitcher(hooks WorkspaceHooks) {
+	p.workspace = hooks
 }
 
 // modelsRefreshedMsg carries an async catalog refresh into Update.
@@ -836,6 +862,10 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 	case "quit", "exit":
 		return p.quitNow()
 
+	case "ask", "fuzz", "build":
+		p.switchWorkspace(command.Name)
+		return nil
+
 	case "help":
 		p.state.Apply(Notice{Text: HelpText()})
 		return nil
@@ -1104,6 +1134,12 @@ func (p *Program) cancelOrQuit() (tea.Model, tea.Cmd) {
 // cancellation would take effect never. Queued prompts are dropped with it:
 // they were typed against a turn the user just abandoned, and silently
 // starting one afterwards would undo the cancellation.
+//
+// Cancellation is a single semantic transition: the reducer makes repeated
+// requests idempotent, so one Ctrl+C produces one terminal Cancelled state
+// and one user-visible line, never a stream of duplicates. The spinner stops
+// with the transition itself, not when the loop unwinds, so the footer can
+// never report working after the turn has terminated.
 func (p *Program) cancelTurnNow(note string) {
 	p.mu.Lock()
 	cancel := p.cancelTurn
@@ -1115,11 +1151,14 @@ func (p *Program) cancelTurnNow(note string) {
 	if cancel != nil {
 		cancel()
 	}
+	text := note
 	if len(p.state.Queued) > 0 {
-		p.state.Apply(QueueCleared{})
-		note += " (queue cleared)"
+		text += " (queue cleared)"
 	}
-	p.publish(Notice{Text: note})
+	if text == "" {
+		text = "cancelled"
+	}
+	p.state.Apply(TurnCancelled{Seq: p.state.TurnSeq, Text: text})
 }
 
 // queue holds a prompt typed while a turn runs. Past the cap it refuses with
@@ -1132,6 +1171,29 @@ func (p *Program) queue(text string) tea.Cmd {
 	p.state.Apply(MessageQueued{Text: text})
 	p.state.Apply(InputChanged{Text: ""})
 	return nil
+}
+
+// switchWorkspace routes /ask, /fuzz, /build through the owner seam.
+//
+// The transition happens at a turn boundary: a running turn keeps the
+// authority it started under, so one execution never spans two workspaces.
+func (p *Program) switchWorkspace(name string) {
+	if p.workspace.Switch == nil {
+		p.state.Apply(Notice{Text: "workspace switching is unavailable"})
+		return
+	}
+	if p.state.Status.Busy {
+		p.state.Apply(Notice{Text: "wait for the turn to finish before switching workspace"})
+		return
+	}
+	if p.workspace.Current != nil && strings.EqualFold(p.workspace.Current(), name) {
+		p.state.Apply(Notice{Text: "already in " + strings.ToUpper(name)})
+		return
+	}
+	if err := p.workspace.Switch(name); err != nil {
+		p.state.Apply(Notice{Text: "workspace: " + err.Error()})
+		return
+	}
 }
 
 // It exists so a test can exercise the dispatch table without a Bubble Tea
@@ -1642,7 +1704,7 @@ func (p *Program) openCommandPalette(filter string) {
 		}
 		items = append(items, PickerItem{
 			Title:  "/" + spec.Name,
-			Detail: spec.Description,
+			Detail: groupOf(spec) + " · " + spec.Description,
 			Value:  spec.Name,
 		})
 	}
@@ -2024,7 +2086,11 @@ func (p *Program) drainQueue() (tea.Model, tea.Cmd) {
 // It never touches the queue: shifting state off the update goroutine would
 // race the renderer, so the shift waits for turnFinishedMsg.
 func (p *Program) runTurn(text string) {
-	p.publish(UserSubmitted{Text: text})
+	p.mu.Lock()
+	p.turnSeq++
+	seq := p.turnSeq
+	p.mu.Unlock()
+	p.publish(UserSubmitted{Text: text, Seq: seq})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p.mu.Lock()
@@ -2053,7 +2119,7 @@ func (p *Program) runTurn(text string) {
 			return
 		}
 		for _, chunk := range splitAssistantChunks(delta) {
-			if p.publishOK(AssistantDelta{Text: chunk}) {
+			if p.publishOK(AssistantDelta{Text: chunk, Seq: seq}) {
 				live.WriteString(chunk)
 			}
 		}
@@ -2069,6 +2135,7 @@ func (p *Program) runTurn(text string) {
 				IsError:   progress.Result.IsError,
 				Truncated: truncated,
 				At:        time.Now(),
+				Seq:       seq,
 			})
 		case agent.ProgressStarted:
 			// The announcement carries the call's arguments but no outcome
@@ -2079,11 +2146,13 @@ func (p *Program) runTurn(text string) {
 				Name:    progress.ToolName,
 				Summary: ToolSummaryForCall(progress.ToolName, progress.Args),
 				At:      time.Now(),
+				Seq:     seq,
 			})
 		default:
 			p.publish(ToolPreview{
 				ID:      progress.CallID,
 				Summary: oneLine(progress.Result.Text),
+				Seq:     seq,
 			})
 		}
 	})
@@ -2100,9 +2169,11 @@ func (p *Program) runTurn(text string) {
 
 	if err != nil {
 		// A cancelled turn is an interruption, not a failure: reporting
-		// it as an error would read as though something broke.
+		// it as an error would read as though something broke. The single
+		// semantic cancellation already reached the transcript through
+		// TurnCancelled, so only real failures publish here.
 		if errors.Is(err, context.Canceled) {
-			p.publish(Notice{Text: "turn cancelled"})
+			p.publish(TurnCancelled{Seq: seq, Text: "cancelled"})
 		} else {
 			p.publish(Notice{Text: "error: " + err.Error()})
 		}
@@ -2141,7 +2212,7 @@ func (p *Program) runTurn(text string) {
 				consumed += skip
 			}
 			for _, chunk := range splitAssistantChunks(rest) {
-				p.publish(AssistantDelta{Text: chunk})
+				p.publish(AssistantDelta{Text: chunk, Seq: seq})
 			}
 		}
 	}
@@ -2161,7 +2232,7 @@ func (p *Program) runTurn(text string) {
 			})
 		}
 	}
-	p.publish(AssistantDone{})
+	p.publish(AssistantDone{Seq: seq})
 }
 
 // persist appends one message to the transcript, if a session is attached.

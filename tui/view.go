@@ -856,7 +856,7 @@ func renderSlashSuggestions(state State, pal *Palette, layout Layout) string {
 		}
 		for {
 			hideBelow = len(matches)-start-len(items) > 0
-			if len(items)+one(hideAbove)+one(hideBelow) <= budget {
+			if len(items)+slashGroupHeaders(items)+one(hideAbove)+one(hideBelow) <= budget {
 				break
 			}
 			if len(items) > 0 {
@@ -872,11 +872,26 @@ func renderSlashSuggestions(state State, pal *Palette, layout Layout) string {
 	if hideAbove {
 		rows = append(rows, pal.Muted.Render("  … more"))
 	}
+	current := strings.ToUpper(strings.TrimSpace(state.Status.Workspace))
+	lastGroup := ""
 	for i, spec := range items {
+		group := slashGroupOf(spec)
+		if group != lastGroup {
+			rows = append(rows, pal.Muted.Render(group))
+			lastGroup = group
+		}
 		name := "/" + spec.Name
 		line := name
-		if layout.ShowDetail && spec.Description != "" {
-			detail := TruncateToWidth(spec.Description, width-CellWidth(name)-6)
+		desc := spec.Description
+		if strings.EqualFold(spec.Name, current) && current != "" {
+			if desc != "" {
+				desc += " · current"
+			} else {
+				desc = "current"
+			}
+		}
+		if layout.ShowDetail && desc != "" {
+			detail := TruncateToWidth(desc, width-CellWidth(name)-6)
 			if detail != "" {
 				line += "  " + pal.Muted.Render(detail)
 			}

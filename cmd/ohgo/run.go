@@ -1284,6 +1284,26 @@ func runSession(cmd *cobra.Command, args []string) error {
 			},
 			EffectiveWindow: func() int { return held.model.ContextWindow },
 		})
+		// Workspace commands route through the harness seam: the program never
+		// owns authority, it asks the owner to move it at a turn boundary.
+		program.SetWorkspaceSwitcher(tui.WorkspaceHooks{
+			Current: func() string { return held.workspace },
+			Switch: func(name string) error {
+				ws, err := held.SwitchWorkspace(name)
+				if err != nil {
+					return err
+				}
+				opts.workspace = ws
+				style := ws.Style()
+				program.PublishWorkspace(tui.WorkspaceUpdated{
+					Workspace:       style.Label,
+					WorkspaceAccent: style.Accent,
+					HasWorkspace:    true,
+				})
+				program.PublishNotice("switched to " + style.Label)
+				return nil
+			},
+		})
 		program.SetJobsLister(func() []tui.JobItem {
 			for _, tool := range loop.Tools() {
 				bash, ok := tool.(*tools.BashTool)
@@ -1550,8 +1570,19 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			case "jobs":
 				_, _ = fmt.Fprintln(out, h.JobsReport())
 				continue
+			case "ask", "fuzz", "build":
+				ws, err := h.SwitchWorkspace(command.Name)
+				if err != nil {
+					_, _ = fmt.Fprintf(out, "workspace: %v\n", err)
+					continue
+				}
+				_, _ = fmt.Fprintf(out, "switched to %s.\n", ws.Label())
+				continue
 			case "theme":
 				_, _ = fmt.Fprintln(out, "theme applies to the full-screen UI (dark or light via /theme there)")
+				continue
+			case "commands":
+				_, _ = fmt.Fprintln(out, tui.HelpText())
 				continue
 			default:
 				text := fmt.Sprintf("unknown command /%s — try /help", command.Name)

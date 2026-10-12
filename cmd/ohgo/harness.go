@@ -21,6 +21,7 @@ import (
 	"github.com/PizenLabs/ohgo/creds"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/workspace"
 )
 
 // harness is the shared backend behind slash commands in both interfaces.
@@ -693,6 +694,58 @@ func readSecret(out io.Writer, reader *bufio.Reader, in io.Reader, prompt string
 		return "", fmt.Errorf("read input: %w", err)
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// SwitchWorkspace moves the session to the named workspace at a turn boundary.
+//
+// It is the single owner of workspace transitions for both interfaces: the
+// plain REPL calls it directly and the full-screen UI reaches it through the
+// TUI workspace hook, so neither interface can drift. The transition updates
+// the runtime authority gate, the effective role model, and the session
+// snapshot together; the caller publishes chrome afterwards.
+func (h *harness) SwitchWorkspace(name string) (workspace.Workspace, error) {
+	ws, err := workspace.Parse(name)
+	if err != nil {
+		return "", err
+	}
+	// Resolve the role's effective model. Offline first: a configured role
+	// that the bundle knows switches instantly. Unknown ids keep the current
+	// model so a workspace switch never fails for a catalog reason — the
+	// authority still changes, which is the transition's contract.
+	if h.settings != nil {
+		if ref, effort, _ := h.settings.RoleModel(strings.ToLower(ws.String())); strings.TrimSpace(ref) != "" {
+			resolve := catalog.Resolve
+			if h.registry != nil {
+				resolve = dynamicResolver(context.Background(), h.registry)
+			}
+			if model, rerr := resolve(ref); rerr == nil {
+				h.applyModel(model)
+				enabled, level := h.reasoningFor(strings.TrimSpace(effort))
+				if h.loop != nil {
+					h.loop.SetReasoning(enabled, level)
+				}
+			}
+		} else {
+			enabled, level := h.reasoningFor("")
+			if h.loop != nil {
+				h.loop.SetReasoning(enabled, level)
+			}
+		}
+	}
+	if h.loop != nil {
+		h.loop.SetAdmitHook(admitFor(ws))
+	}
+	h.workspace = ws.Label()
+	if h.sess != nil {
+		h.sess.Workspace = ws.String()
+		h.sess.Model = h.model.Provider + "/" + h.model.ID
+	}
+	if h.store != nil && h.sess != nil {
+		if err := h.store.SetAuthority(h.sess.ID, ws.String(), h.model.Provider+"/"+h.model.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "ohgo: could not record session authority: %v\n", err)
+		}
+	}
+	return ws, nil
 }
 
 // atoi parses a menu number.

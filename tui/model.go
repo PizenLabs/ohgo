@@ -259,6 +259,13 @@ type State struct {
 	// only: the workspace and session authority are unchanged while it is set
 	// (§34).
 	Support bool
+	// TurnSeq identifies the latest turn. Lifecycle events carry it so a late
+	// event from an old turn cannot mutate the new one.
+	TurnSeq int
+	// Cancelled records the current turn reached its terminal cancellation
+	// state. It makes repeated cancels idempotent and lets late progress
+	// events be dropped instead of resurrecting Running.
+	Cancelled bool
 }
 
 // New returns an empty state.
@@ -273,6 +280,12 @@ func New() State {
 func (s *State) Apply(event Event) {
 	switch e := event.(type) {
 	case UserSubmitted:
+		seq := e.Seq
+		if seq == 0 {
+			seq = s.TurnSeq + 1
+		}
+		s.TurnSeq = seq
+		s.Cancelled = false
 		s.Entries = append(s.Entries, Entry{Kind: EntryUser, UserText: e.Text})
 		s.Input = ""
 		s.Cursor = 0
@@ -287,10 +300,19 @@ func (s *State) Apply(event Event) {
 		s.growScroll(countLines(e.Text))
 
 	case AssistantDelta:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
 		s.appendAssistant(e.Text)
 		s.growScroll(strings.Count(e.Text, "\n"))
 
 	case AssistantDone:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
 		// Close the trailing assistant entry: without this the next turn would
 		// append to it and the transcript would read as one continuous answer.
 		if open := s.openAssistant(); open >= 0 {
@@ -298,7 +320,41 @@ func (s *State) Apply(event Event) {
 		}
 		s.Status.Busy = false
 
+	case TurnCancelled:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
+		s.Cancelled = true
+		s.Status.Busy = false
+		s.Queued = nil
+		if open := s.openAssistant(); open >= 0 {
+			s.closedAssistant = true
+		}
+		for i := range s.Entries {
+			entry := &s.Entries[i]
+			if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.Status == ToolRunning {
+				entry.Tool.Status = ToolError
+				entry.Tool.Summary = "cancelled"
+				entry.Tool.Text = "cancelled"
+			}
+		}
+		text := e.Text
+		if text == "" {
+			text = "cancelled"
+		}
+		s.Entries = append(s.Entries, Entry{Kind: EntryNotice, Notice: text})
+		s.growScroll(countLines(text))
+
 	case ToolStarted:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
 		// A second announcement for the same call updates nothing: an
 		// empty partial report must never open a duplicate block next to
 		// the running one.
@@ -319,6 +375,12 @@ func (s *State) Apply(event Event) {
 		s.growScroll(1)
 
 	case ToolPreview:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
 		// A preview updates the summary of a *running* call only. Once a call
 		// has finished, a late preview would resurrect stale progress on top
 		// of the real outcome.
@@ -327,6 +389,12 @@ func (s *State) Apply(event Event) {
 		}
 
 	case ToolFinished:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
 		tool := s.tool(e.ID)
 		if tool == nil {
 			return
@@ -943,19 +1011,43 @@ func (s *State) AssistantText() string {
 type Event interface{ eventKind() string }
 
 // UserSubmitted is a line the user entered.
-type UserSubmitted struct{ Text string }
+type UserSubmitted struct {
+	Text string
+	// Seq identifies the turn. Zero means legacy callers without an id.
+	Seq int
+}
 
 func (UserSubmitted) eventKind() string { return "user_submitted" }
 
 // AssistantDelta is streamed model text.
-type AssistantDelta struct{ Text string }
+type AssistantDelta struct {
+	Text string
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
+}
 
 func (AssistantDelta) eventKind() string { return "assistant_delta" }
 
 // AssistantDone marks the end of a turn.
-type AssistantDone struct{}
+type AssistantDone struct {
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
+}
 
 func (AssistantDone) eventKind() string { return "assistant_done" }
+
+// TurnCancelled is the single semantic cancellation transition for a turn.
+// The reducer makes it idempotent: the first one wins, later duplicates and
+// stale turns are dropped, so the renderer naturally receives one terminal
+// cancellation state and the spinner projection converges to idle.
+type TurnCancelled struct {
+	// Seq identifies the turn. Zero means the current turn.
+	Seq int
+	// Text is the user-visible cancellation line. Empty renders "cancelled".
+	Text string
+}
+
+func (TurnCancelled) eventKind() string { return "turn_cancelled" }
 
 // ToolStarted announces a call beginning.
 //
@@ -966,6 +1058,8 @@ type ToolStarted struct {
 	Name    string
 	Summary string
 	At      time.Time
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
 }
 
 func (ToolStarted) eventKind() string { return "tool_started" }
@@ -974,6 +1068,8 @@ func (ToolStarted) eventKind() string { return "tool_started" }
 type ToolPreview struct {
 	ID      string
 	Summary string
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
 }
 
 func (ToolPreview) eventKind() string { return "tool_preview" }
@@ -991,6 +1087,8 @@ type ToolFinished struct {
 	IsError   bool
 	Truncated bool
 	At        time.Time
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
 }
 
 func (ToolFinished) eventKind() string { return "tool_finished" }
@@ -1231,34 +1329,49 @@ type CommandSpec struct {
 	Usage string
 	// Description is one line of help.
 	Description string
+	// Category groups the slash menu: WORKSPACE or CONTROL.
+	Category string
 	// Hidden keeps a command out of the listing, for aliases.
 	Hidden bool
 }
+
+// Slash command categories. Workspace commands change execution authority;
+// control commands drive the UI. The menu renders them as separate groups,
+// never one undifferentiated list.
+const (
+	// CommandGroupWorkspace holds /ask, /fuzz, /build.
+	CommandGroupWorkspace = "WORKSPACE"
+	// CommandGroupControl holds /model, /help and the rest.
+	CommandGroupControl = "CONTROL"
+)
 
 // Commands is the registry.
 //
 // It lives beside the state machine rather than in the UI so the help text and
 // the dispatch table cannot drift apart.
 var Commands = []CommandSpec{
-	{Name: "help", Usage: "help", Description: "list the available commands"},
-	{Name: "commands", Usage: "commands", Description: "search every command"},
-	{Name: "clear", Usage: "clear", Description: "clear the transcript and start a fresh context"},
-	{Name: "model", Usage: "model [provider/id]", Description: "browse or switch the model"},
-	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true},
-	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions"},
-	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true},
-	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs"},
-	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette"},
-	{Name: "connect", Usage: "connect", Description: "set up a provider connection"},
-	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential"},
-	{Name: "providers", Usage: "providers", Description: "list providers and credential status"},
-	{Name: "status", Usage: "status", Description: "show provider, model, context, and session"},
-	{Name: "usage", Usage: "usage", Description: "show token usage and cost"},
-	{Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools"},
-	{Name: "retry", Usage: "retry", Description: "re-send the last prompt"},
-	{Name: "compact", Usage: "compact", Description: "summarise context now"},
-	{Name: "quit", Usage: "quit", Description: "exit the session", Hidden: true},
-	{Name: "exit", Usage: "exit", Description: "exit the session", Hidden: true},
+	{Name: "ask", Usage: "ask", Description: "Ask / read-only", Category: CommandGroupWorkspace},
+	{Name: "fuzz", Usage: "fuzz", Description: "Explore / investigate", Category: CommandGroupWorkspace},
+	{Name: "build", Usage: "build", Description: "Build / modify", Category: CommandGroupWorkspace},
+	{Name: "help", Usage: "help", Description: "list the available commands", Category: CommandGroupControl},
+	{Name: "commands", Usage: "commands", Description: "search every command", Category: CommandGroupControl},
+	{Name: "clear", Usage: "clear", Description: "clear the transcript and start a fresh context", Category: CommandGroupControl},
+	{Name: "model", Usage: "model [provider/id]", Description: "browse or switch the model", Category: CommandGroupControl},
+	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
+	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions", Category: CommandGroupControl},
+	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
+	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
+	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette", Category: CommandGroupControl},
+	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
+	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
+	{Name: "providers", Usage: "providers", Description: "list providers and credential status", Category: CommandGroupControl},
+	{Name: "status", Usage: "status", Description: "show provider, model, context, and session", Category: CommandGroupControl},
+	{Name: "usage", Usage: "usage", Description: "show token usage and cost", Category: CommandGroupControl},
+	{Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
+	{Name: "retry", Usage: "retry", Description: "re-send the last prompt", Category: CommandGroupControl},
+	{Name: "compact", Usage: "compact", Description: "summarise context now", Category: CommandGroupControl},
+	{Name: "quit", Usage: "quit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
+	{Name: "exit", Usage: "exit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
 }
 
 // SuggestCommand names the closest known command to a typo, for the "did you
@@ -1322,14 +1435,29 @@ func LookupCommand(name string) (CommandSpec, bool) {
 func HelpText() string {
 	var sb strings.Builder
 	sb.WriteString("Commands:\n")
-	for _, spec := range Commands {
-		if spec.Hidden {
-			continue
+	for _, group := range []string{CommandGroupWorkspace, CommandGroupControl} {
+		sb.WriteString(group + "\n")
+		for _, spec := range Commands {
+			if spec.Hidden {
+				continue
+			}
+			if groupOf(spec) != group {
+				continue
+			}
+			fmt.Fprintf(&sb, "  /%-22s %s\n", spec.Usage, spec.Description)
 		}
-		fmt.Fprintf(&sb, "  /%-22s %s\n", spec.Usage, spec.Description)
 	}
 	sb.WriteString("\nAnything else is sent to the model.")
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// groupOf returns the menu group for a command. Empty categories from older
+// callers fall back to CONTROL so help never loses a row.
+func groupOf(spec CommandSpec) string {
+	if spec.Category == CommandGroupWorkspace {
+		return CommandGroupWorkspace
+	}
+	return CommandGroupControl
 }
 
 // Cleared is published when /clear wipes the transcript.
@@ -1429,7 +1557,7 @@ func slashWindow(s State) (shown []CommandSpec, start, cursor int, above, below 
 // layout reserves exactly what the view draws.
 func slashRows(s State) int {
 	shown, _, _, above, below := slashWindow(s)
-	n := len(shown)
+	n := len(shown) + slashGroupHeaders(shown)
 	if above {
 		n++
 	}
@@ -1437,6 +1565,27 @@ func slashRows(s State) int {
 		n++
 	}
 	return n
+}
+
+// slashGroupHeaders counts the group titles the suggestion list will render:
+// one per distinct category present in the visible window. The headers are
+// presentation only; selection still indexes the flat matches.
+func slashGroupHeaders(shown []CommandSpec) int {
+	seen := map[string]bool{}
+	n := 0
+	for _, spec := range shown {
+		group := groupOf(spec)
+		if !seen[group] {
+			seen[group] = true
+			n++
+		}
+	}
+	return n
+}
+
+// slashGroupOf returns the display group for one suggestion row.
+func slashGroupOf(spec CommandSpec) string {
+	return groupOf(spec)
 }
 
 // moveSlash shifts the suggestion highlight, wrapping at both ends.
