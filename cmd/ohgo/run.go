@@ -19,6 +19,8 @@ import (
 	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/prompt"
 	"github.com/PizenLabs/ohgo/session"
+	"github.com/PizenLabs/ohgo/startup"
+	"github.com/PizenLabs/ohgo/state"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/PizenLabs/ohgo/tui"
 	"github.com/PizenLabs/ohgo/workspace"
@@ -118,12 +120,14 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 		opts.workspace = parsed
 	}
 
-	// Project identity is established lazily and best-effort: a read-only
-	// working tree must not stop a session, and the identity is not required
-	// for a session to run.
-	if identity, err := project.Ensure(opts.root); err != nil {
+	// Project identity is resolved here but never created: creation belongs
+	// to the startup flow (runSession/runOnce via startup.Ensure), which
+	// owns the Git and identity prompts. Auto-creating here would silently
+	// skip those prompts, so a missing identity simply leaves projectID
+	// empty until startup establishes it.
+	if identity, found, err := project.Load(opts.root); err != nil {
 		fmt.Fprintf(os.Stderr, "ohgo: %v\n", err)
-	} else {
+	} else if found {
 		opts.projectID = identity.ID
 	}
 
@@ -982,6 +986,21 @@ func runCmd() *cobra.Command {
 	}
 }
 
+// bootProject resolves the project identity for a one-shot run without ever
+// creating project state.
+//
+// It is the read-only counterpart to startup.Ensure: a command that cannot
+// show the initialization gate must not initialize silently, so an
+// uninitialized directory is a fact to report, not a directory to create.
+func bootProject(root string) (string, error) {
+	d := startup.Discover(root)
+	if !d.ProjectFound {
+		return "", fmt.Errorf(
+			"project not initialized in %s: run `ohgo` there to complete initialization", root)
+	}
+	return d.Project.ID, nil
+}
+
 // runOnce executes a single prompt.
 func runOnce(cmd *cobra.Command, text string) error {
 	opts, registry, err := resolveOptions(cmd)
@@ -989,6 +1008,17 @@ func runOnce(cmd *cobra.Command, text string) error {
 		return err
 	}
 	out := cmd.OutOrStdout()
+
+	// A one-shot run cannot satisfy the initialization gate: it never
+	// prompts. Discovery is therefore read-only and an uninitialized project
+	// is reported rather than created — creating .ohgo/ here would initialize
+	// as a side effect of running, exactly the bypass startup exists to
+	// prevent.
+	projectID, err := bootProject(opts.root)
+	if err != nil {
+		return err
+	}
+	opts.projectID = projectID
 
 	resumeID, _ := cmd.Flags().GetInt64("resume")
 	store, sess, closeStore, err := openSession(opts, resumeID)
@@ -1020,25 +1050,37 @@ func runOnce(cmd *cobra.Command, text string) error {
 	return err
 }
 
-// openSession opens the store and either resumes or creates a session.
-//
-// A store that cannot be opened is not fatal: running without persistence is
-// better than refusing to run at all, so the failure is reported and nil is
-// returned. A resume id that does not exist *is* fatal, because silently
-// starting an empty session would look like the history was lost.
-func openSession(opts options, resumeID int64) (*session.Store, *session.Session, func(), error) {
-	disabled := func(err error) (*session.Store, *session.Session, func(), error) {
-		fmt.Fprintf(os.Stderr, "ohgo: sessions disabled: %v\n", err)
-		return nil, nil, func() {}, nil
-	}
-
+// openStore opens the session database without creating a session. A store
+// that cannot be opened is not fatal: running without persistence is better
+// than refusing to run at all, so the failure is reported and a nil store
+// is returned. It is the shared seam behind openSession and the onboarding
+// wizard, which must open the store before the project identity (and hence
+// the session) exists.
+func openStore() (*session.Store, func(), error) {
 	path, err := session.DefaultPath()
 	if err != nil {
-		return disabled(err)
+		fmt.Fprintf(os.Stderr, "ohgo: sessions disabled: %v\n", err)
+		return nil, func() {}, nil
 	}
 	store, err := session.Open(path)
 	if err != nil {
-		return disabled(err)
+		fmt.Fprintf(os.Stderr, "ohgo: sessions disabled: %v\n", err)
+		return nil, func() {}, nil
+	}
+	return store, func() { _ = store.Close() }, nil
+}
+
+// openSession opens the store and either resumes or creates a session.
+//
+// A resume id that does not exist *is* fatal, because silently
+// starting an empty session would look like the history was lost.
+func openSession(opts options, resumeID int64) (*session.Store, *session.Session, func(), error) {
+	store, closeStore, err := openStore()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if store == nil {
+		return nil, nil, closeStore, nil
 	}
 
 	if resumeID > 0 {
@@ -1061,7 +1103,8 @@ func openSession(opts options, resumeID int64) (*session.Store, *session.Session
 	})
 	if err != nil {
 		_ = store.Close()
-		return disabled(err)
+		fmt.Fprintf(os.Stderr, "ohgo: sessions disabled: %v\n", err)
+		return nil, nil, func() {}, nil
 	}
 	return store, &sess, func() { _ = store.Close() }, nil
 }
@@ -1161,6 +1204,35 @@ func runSession(cmd *cobra.Command, args []string) error {
 	}
 	out := cmd.OutOrStdout()
 
+	// The full-screen UI owns onboarding for an uninitialized project: raw
+	// stdin prompts would scroll the terminal and then jump into the
+	// alt-screen. The wizard collects the same three decisions in-canvas
+	// and commits through the same seams. Every other path keeps the
+	// stdin gate below, which fast-paths initialized projects either way.
+	if useInteractiveUI(cmd) && startup.NeedsInit(startup.Discover(opts.root)) {
+		return runSessionWizard(cmd, opts, registry, out)
+	}
+
+	// Startup owns project initialization, Git detection, and local
+	// identity. It runs before the runtime so the identity surface below is
+	// truthful, and it fast-paths when .ohgo/project.yml already exists.
+	//
+	// A cancel at the initialization gate is a clean exit, not an error: the
+	// user chose not to initialize, and nothing was created.
+	boot, err := startup.Ensure(opts.root, startup.Deps{
+		Stdin:  os.Stdin,
+		Stdout: out,
+	})
+	if errors.Is(err, startup.ErrCanceled) {
+		_, _ = fmt.Fprintln(out, "initialization canceled; nothing was created.")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	opts.settings = boot.Settings
+	opts.projectID = boot.Project.ID
+
 	resumeID, _ := cmd.Flags().GetInt64("resume")
 	store, sess, closeStore, err := openSession(opts, resumeID)
 	if err != nil {
@@ -1188,7 +1260,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	// hook, so the routing happens here rather than inside buildLoop. A pipe or
 	// a test never reaches this branch and keeps plain line output.
 	if useInteractiveUI(cmd) {
-		programOpts := []tui.ProgramOption{}
+		programOpts := []tui.ProgramOption{tui.WithVersion(version)}
 		// Precedence: flag, then settings, then the environment default. The
 		// environment matters because the wheel reaches the program by
 		// different routes in different terminals, and a multiplexer that does
@@ -1223,6 +1295,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		held := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
 		held.usage.SetCost(opts.model.Cost)
 		held.workspace = opts.authority().Label()
+		held.projectID = opts.projectID
 		held.support = surface
 		program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
 			return surface.ask(ctx, question, onDelta)
@@ -1294,6 +1367,9 @@ func runSession(cmd *cobra.Command, args []string) error {
 				return held.AssignRole(update)
 			},
 			EffectiveWindow: func() int { return held.model.ContextWindow },
+			SaveKey: func(provider, key string) error {
+				return held.SavePlaneKey(provider, key)
+			},
 		})
 		// Workspace commands route through the harness seam: the program never
 		// owns authority, it asks the owner to move it at a turn boundary.
@@ -1339,7 +1415,11 @@ func runSession(cmd *cobra.Command, args []string) error {
 		if store != nil {
 			program.SetSessionBrowser(
 				func() ([]tui.SessionItem, error) {
-					list, err := store.List(50)
+					// The browser reads the harness's project, not the
+					// startup snapshot: onboarding commits the identity
+					// after the browser is installed, and the listing must
+					// follow it.
+					list, err := store.ListByProject(held.projectID, 50)
 					if err != nil {
 						return nil, err
 					}
@@ -1394,6 +1474,16 @@ func runSession(cmd *cobra.Command, args []string) error {
 			WorkspaceAccent: style.Accent,
 			HasWorkspace:    true,
 		})
+		// The runtime identity surface shows who, where, and what state.
+		// All values come from startup's observed state, never invented.
+		branch, gitStatus := boot.Git.BranchStatus()
+		program.PublishIdentity(tui.IdentityUpdated{
+			User:      boot.Project.WorkerName(),
+			Greeting:  boot.Greeting,
+			GitBranch: branch,
+			GitStatus: gitStatus,
+			Ready:     "ready",
+		})
 
 		if opts.autoApprove {
 			loop.SetApprovalHook(func(ai.ToolCall, agent.Approval) (bool, string) { return true, "" })
@@ -1414,7 +1504,10 @@ func runSession(cmd *cobra.Command, args []string) error {
 		return program.Run()
 	}
 
-	_, _ = fmt.Fprintf(out, "ohgo %s \u00b7 %s/%s \u00b7 %s \u00b7 %s\n", version, opts.model.Provider, opts.model.ID, opts.authority().Label(), opts.root)
+	_, _ = fmt.Fprintf(out, "ohgo %s · %s/%s · %s · %s\n", version, opts.model.Provider, opts.model.ID, opts.authority().Label(), opts.root)
+	if boot.Greeting != "" {
+		_, _ = fmt.Fprintln(out, boot.Greeting)
+	}
 	_, _ = fmt.Fprintln(out, "Type your request, or /quit to exit.")
 
 	var history []agent.Message
@@ -1429,12 +1522,345 @@ func runSession(cmd *cobra.Command, args []string) error {
 	plain := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
 	plain.usage.SetCost(opts.model.Cost)
 	plain.workspace = opts.authority().Label()
+	plain.projectID = opts.projectID
 	plain.support = surface
 	return repl(plain, out, os.Stdin, history)
 }
 
-// repl drives the interactive session, accumulating history across turns.
+// runSessionWizard starts the full-screen UI with in-canvas onboarding.
 //
+// It is the TUI counterpart to startup.Ensure: the same three decisions in
+// the same order (Git, worker, project), collected by an InitWizardModel
+// instead of stdin prompts, and committed through the same seams
+// (startup.InitGit, project.EnsureWith). Nothing on disk changes before
+// Complete runs, so quitting the wizard leaves nothing created behind,
+// exactly like cancelling the stdin gate.
+//
+// The terminal is entered once: the wizard renders between the header and
+// footer of the same Program that serves the session, and completion drops
+// the modal onto the idle canvas without clearing or re-initializing the
+// screen. No os.Stdin read happens on this path.
+func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, out io.Writer) error {
+	d := startup.Discover(opts.root)
+
+	// The store opens before the project identity exists; the session is
+	// created in Complete, once the identity it belongs to is committed.
+	store, closeStore, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+
+	loop, err := buildLoop(opts, registry, out, store, nil, nil)
+	if err != nil {
+		return err
+	}
+
+	surface := newSupportSurface(supportLoopBuilder(opts, registry, out))
+
+	programOpts := []tui.ProgramOption{tui.WithVersion(version)}
+	mouse := opts.settings.Mouse
+	if flag := flagValue(cmd, "mouse"); flag != "" {
+		mouse = flag
+	}
+	if mouse == "" {
+		mouse = tui.MouseDefaultFor(os.Getenv("TMUX"))
+	}
+	if tui.NormalizeMouse(mouse) == tui.MouseReport {
+		programOpts = append(programOpts, tui.WithMouseReporting())
+	}
+	program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+
+	if live, _ := cmd.Flags().GetBool("live"); live {
+		return program.RunLive()
+	}
+
+	held := newHarness(registry, loop, store, nil, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
+	held.usage.SetCost(opts.model.Cost)
+	held.workspace = opts.authority().Label()
+	held.support = surface
+	program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
+		return surface.ask(ctx, question, onDelta)
+	})
+	program.SetSupportInfo(held.SupportInfo)
+
+	program.SetModelSwitcher(
+		func(id string) error {
+			_, err := held.SwitchModel(context.Background(), id)
+			return err
+		},
+		func() string {
+			return held.model.Provider + "/" + held.model.ID
+		},
+	)
+	program.SetUsageLog(held.usage)
+	program.SetCompactor(func(ctx context.Context, history []agent.Message) ([]agent.Message, string, error) {
+		return held.CompactHistory(ctx, history)
+	})
+	program.SetDoctorFunc(held.DoctorLines)
+	program.SetProvidersFunc(held.ProviderRows)
+	program.SetProbeFunc(func(ctx context.Context) tui.ProbeFinished {
+		return held.ProbeCurrent(ctx)
+	})
+	program.SetCredentialDeleter(func(provider string) (string, error) {
+		return held.Disconnect(provider)
+	})
+	program.SetConnectHooks(connectHooks(held))
+	program.SetModelLister(func() []string {
+		var ids []string
+		for _, model := range catalog.List() {
+			ids = append(ids, model.Provider+"/"+model.ID)
+		}
+		return ids
+	})
+	program.SetCatalogHooks(tui.CatalogHooks{
+		Snapshot: func() tui.CatalogSnapshot { return catalogSnapshot() },
+		Refresh: func(ctx context.Context, seq int) tea.Cmd {
+			return refreshModelCatalog(held, seq)
+		},
+	})
+	program.SetModelControl(tui.ModelControlHooks{
+		Providers: func() []tui.ProviderRow { return held.ProviderPaneRows() },
+		Roles:     func() []tui.RoleAssignment { return held.RoleAssignments() },
+		ActiveRole: func() string {
+			return strings.ToLower(opts.authority().String())
+		},
+		Assign: func(update tui.RoleAssignment) (tui.RoleAssignment, []tui.RoleAssignment, error) {
+			return held.AssignRole(update)
+		},
+		EffectiveWindow: func() int { return held.model.ContextWindow },
+		SaveKey: func(provider, key string) error {
+			return held.SavePlaneKey(provider, key)
+		},
+	})
+	program.SetWorkspaceSwitcher(tui.WorkspaceHooks{
+		Current: func() string { return held.workspace },
+		Switch: func(name string) error {
+			ws, err := held.SwitchWorkspace(name)
+			if err != nil {
+				return err
+			}
+			opts.workspace = ws
+			style := ws.Style()
+			program.PublishWorkspace(tui.WorkspaceUpdated{
+				Workspace:       style.Label,
+				WorkspaceAccent: style.Accent,
+				HasWorkspace:    true,
+			})
+			program.PublishNotice("switched to " + style.Label)
+			return nil
+		},
+	})
+	program.SetJobsLister(func() []tui.JobItem {
+		for _, tool := range loop.Tools() {
+			bash, ok := tool.(*tools.BashTool)
+			if !ok {
+				continue
+			}
+			var items []tui.JobItem
+			for _, job := range bash.Jobs().Snapshot() {
+				items = append(items, tui.JobItem{
+					ID:       job.ID,
+					Command:  job.Command,
+					Running:  job.Running,
+					ExitCode: job.ExitCode,
+					Elapsed:  job.Elapsed.Round(time.Millisecond).String(),
+					Tail:     job.OutputTail,
+				})
+			}
+			return items
+		}
+		return nil
+	})
+	if store != nil {
+		program.SetSessionBrowser(
+			func() ([]tui.SessionItem, error) {
+				list, err := store.ListByProject(held.projectID, 50)
+				if err != nil {
+					return nil, err
+				}
+				var items []tui.SessionItem
+				for _, sess := range list {
+					title := sess.Title
+					items = append(items, tui.SessionItem{
+						ID:      sess.ID,
+						Title:   title,
+						Model:   sess.Model,
+						Updated: sess.UpdatedAt.Format("2006-01-02 15:04"),
+						Cwd:     sess.Cwd,
+					})
+				}
+				return items, nil
+			},
+			func(id int64) (*session.Session, tui.OpenedSession, error) {
+				sess, err := store.Get(id)
+				if err != nil {
+					return nil, tui.OpenedSession{}, err
+				}
+				stored, err := store.Messages(id, 0)
+				if err != nil {
+					return nil, tui.OpenedSession{}, fmt.Errorf("load session %d: %w", id, err)
+				}
+				history, err := session.Replay(stored)
+				if err != nil {
+					return nil, tui.OpenedSession{}, fmt.Errorf("load session %d: %w", id, err)
+				}
+				return &sess, tui.OpenedSession{
+					History: history,
+					Entries: tui.EntriesFromMessages(history),
+					Notice:  fmt.Sprintf("resumed session %d (%d messages)", id, len(history)),
+				}, nil
+			},
+		)
+	}
+	program.SetTheme(opts.settings.Theme)
+	program.SetThemeChangedHandler(func(theme string) {
+		opts.settings.Theme = theme
+		if err := config.Save(opts.settings); err != nil {
+			fmt.Fprintf(os.Stderr, "ohgo: could not save theme: %v\n", err)
+		}
+	})
+	style := opts.authority().Style()
+	program.PublishWorkspace(tui.WorkspaceUpdated{
+		Cwd:             opts.root,
+		HasCwd:          true,
+		Workspace:       style.Label,
+		WorkspaceAccent: style.Accent,
+		HasWorkspace:    true,
+	})
+
+	resumeID, _ := cmd.Flags().GetInt64("resume")
+	program.SetInitWizard(
+		tui.NewInitWizard(!d.HasGit, startup.WorkerSuggestion(d, opts.settings), startup.ProjectSuggestion(d)),
+		tui.InitWizardHooks{Complete: wizardComplete(cmd, &opts, registry, d, store, held, program, resumeID)},
+	)
+
+	if opts.autoApprove {
+		loop.SetApprovalHook(func(ai.ToolCall, agent.Approval) (bool, string) { return true, "" })
+	} else {
+		loop.SetApprovalHook(program.ApprovalFunc())
+	}
+	loop.SetTurnHook(nil)
+	loop.SetCompactHook(func(result agent.CompactResult) {
+		program.PublishNotice(fmt.Sprintf("context compacted: %d messages summarised, %d retained",
+			result.Compacted, result.Retained))
+	})
+	return program.Run()
+}
+
+// wizardComplete commits one finished onboarding run. It collects the Git,
+// worker, and project decisions first and mutates disk only afterwards,
+// mirroring startup.Ensure: git init, then project.yml, then the session.
+// It runs on the Bubble Tea update goroutine (see InitWizardHooks), so it
+// attaches the session and publishes chrome directly. A failed commit
+// returns an error and the wizard reopens its final step for retry.
+func wizardComplete(cmd *cobra.Command, opts *options, registry *ai.Registry, d startup.Discovery, store *session.Store, held *harness, program *tui.Program, resumeID int64) func(tui.InitWizardDecision) (tui.IdentityUpdated, string, error) {
+	return func(dec tui.InitWizardDecision) (tui.IdentityUpdated, string, error) {
+		var notes []string
+		if dec.WantGit {
+			if !startup.GitAvailable() {
+				notes = append(notes, "git is unavailable; continuing without a repository.")
+			} else if err := startup.InitGit(d.Dir); err != nil {
+				notes = append(notes, fmt.Sprintf("git init failed: %v; continuing without a repository.", err))
+			}
+		}
+
+		identity, err := project.EnsureWith(d.Dir, project.Metadata{Name: dec.Project, Worker: dec.Worker})
+		if err != nil {
+			return tui.IdentityUpdated{}, "", fmt.Errorf("commit project: %w", err)
+		}
+		held.projectID = identity.ID
+		opts.projectID = identity.ID
+
+		branch, gitStatus := startup.DescribeGit(d.Dir).BranchStatus()
+		facts := tui.IdentityUpdated{
+			User:      identity.WorkerName(),
+			Greeting:  startup.Greeting(identity.WorkerName(), time.Now()),
+			GitBranch: branch,
+			GitStatus: gitStatus,
+			Ready:     "ready",
+		}
+
+		if store != nil && held.sess == nil {
+			if serr := attachWizardSession(cmd, opts, registry, store, held, program, identity.ID, resumeID); serr != nil {
+				return tui.IdentityUpdated{}, "", serr
+			}
+		}
+
+		notice := "runtime ready"
+		if name := identity.WorkerName(); name != "" {
+			notice = "Welcome, " + name + " — runtime ready"
+		}
+		if len(notes) > 0 {
+			notice = strings.Join(notes, "\n") + "\n" + notice
+		}
+		return facts, notice, nil
+	}
+}
+
+// attachWizardSession creates (or resumes) the session for a newly
+// onboarded project and wires it into the running program. The store
+// predates the project identity, so this runs at commit time rather than
+// before the UI starts.
+func attachWizardSession(cmd *cobra.Command, opts *options, registry *ai.Registry, store *session.Store, held *harness, program *tui.Program, projectID string, resumeID int64) error {
+	if resumeID > 0 {
+		sess, err := store.Get(resumeID)
+		if err != nil {
+			if errors.Is(err, session.ErrSessionNotFound) {
+				return fmt.Errorf("%w: %d", session.ErrSessionNotFound, resumeID)
+			}
+			return err
+		}
+		history, err := loadHistory(store, &sess)
+		if err != nil {
+			return err
+		}
+		if err := applySessionAuthority(cmd, opts, dynamicResolver(context.Background(), registry), store, &sess); err != nil {
+			return err
+		}
+		// The loop predates the authority restore, so it moves when the
+		// session names a different model than the resolved one.
+		if current := held.model.Provider + "/" + held.model.ID; current != opts.model.Provider+"/"+opts.model.ID {
+			if _, err := held.SwitchModel(context.Background(), opts.model.Provider+"/"+opts.model.ID); err != nil {
+				return fmt.Errorf("resume: session model: %w", err)
+			}
+		}
+		held.workspace = opts.authority().Label()
+		// The loop predates the authority restore, so its gate follows
+		// the restored workspace.
+		if held.loop != nil {
+			held.loop.SetAdmitHook(admitFor(opts.authority()))
+		}
+		sessCopy := sess
+		held.sess = &sessCopy
+		program.AttachSession(store, held.sess, history)
+		program.PublishWorkspace(tui.WorkspaceUpdated{
+			HasSession: true,
+			Session:    sessionLabel(held.sess),
+		})
+		return nil
+	}
+
+	sess, err := store.CreateWith(session.CreateOptions{
+		Cwd:       opts.root,
+		Model:     opts.model.Provider + "/" + opts.model.ID,
+		Workspace: opts.authority().String(),
+		Project:   projectID,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ohgo: sessions disabled: %v\n", err)
+		return nil
+	}
+	sessCopy := sess
+	held.sess = &sessCopy
+	program.AttachSession(store, held.sess, nil)
+	program.PublishWorkspace(tui.WorkspaceUpdated{
+		HasSession: true,
+		Session:    sessionLabel(held.sess),
+	})
+	return nil
+}
+
 // History is a parameter so a resumed session can be seeded from a stored
 // transcript. It is kept in the caller-owned slice rather than in the loop
 // because each Run is a turn, not a conversation: handing Run a single message
@@ -1670,11 +2096,11 @@ func replHistoryPath() string {
 	if value, ok := os.LookupEnv("OHGO_HISTORY_FILE"); ok {
 		return strings.TrimSpace(value)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	path, err := state.Path("history")
+	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".ohgo", "history")
+	return path
 }
 
 // recordReplHistory appends one user line to the history file, best-effort.

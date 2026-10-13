@@ -184,6 +184,38 @@ type Status struct {
 	// WorkspaceAccent is the semantic 256-color index for the workspace, from
 	// workspace.Style(). Empty falls back to a neutral accent.
 	WorkspaceAccent string
+	// User is the project worker display name from the project-local metadata.
+	// Empty hides it: the view never invents a name.
+	User string
+	// Greeting is the time-of-day greeting, e.g. "Good evening, Jack."
+	Greeting string
+	// GitBranch is the short branch name (or short SHA when detached).
+	GitBranch string
+	// GitStatus is the cleanliness summary, e.g. "clean" or "3 changed".
+	GitStatus string
+	// Ready is runtime readiness, e.g. "ready". Empty renders "ready".
+	Ready string
+	// Version is the binary version, e.g. "0.1.0-dev" or "v1.0.0". Empty
+	// hides it: the header and the welcome frame show no version rather
+	// than an invented one.
+	Version string
+}
+
+// VersionLabel normalizes a raw version for display alongside the brand.
+//
+// It trims surrounding space, reports "" for unknown, and ensures the
+// leading "v" ("1.0.0" becomes "v1.0.0", "v1.0.0" passes through), so every
+// surface spells the release the same way without each call site repeating
+// the rule.
+func VersionLabel(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if strings.HasPrefix(v, "v") {
+		return v
+	}
+	return "v" + v
 }
 
 // Percent renders the context budget, or -1 when there is no window.
@@ -270,10 +302,20 @@ type State struct {
 	// TurnSeq identifies the latest turn. Lifecycle events carry it so a late
 	// event from an old turn cannot mutate the new one.
 	TurnSeq int
+	// TurnStartedAt is when the current turn began, zero when unknown. It is
+	// the authoritative start for the model-phase activity line: elapsed time
+	// derives from it, never from render time, so the UI cannot invent a
+	// duration the runtime did not measure.
+	TurnStartedAt time.Time
 	// Cancelled records the current turn reached its terminal cancellation
 	// state. It makes repeated cancels idempotent and lets late progress
 	// events be dropped instead of resurrecting Running.
 	Cancelled bool
+	// OutputTokens counts estimated output tokens streamed this turn. It is
+	// reset on every new turn and recomputed from the trailing assistant
+	// text on each delta, so the activity line can report live progress
+	// without inventing telemetry the runtime did not measure.
+	OutputTokens int
 }
 
 // New returns an empty state.
@@ -294,6 +336,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.TurnSeq = seq
 		s.Cancelled = false
+		s.TurnStartedAt = e.At
 		s.Entries = append(s.Entries, Entry{Kind: EntryUser, UserText: e.Text})
 		s.Input = ""
 		s.Cursor = 0
@@ -305,6 +348,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.HistCursor = -1
 		s.HistDraft = ""
+		s.OutputTokens = 0
 		s.growScroll(countLines(e.Text))
 
 	case AssistantDelta:
@@ -315,6 +359,7 @@ func (s *State) Apply(event Event) {
 			return
 		}
 		s.appendAssistant(e.Text)
+		s.OutputTokens = s.currentOutputTokens()
 		s.growScroll(strings.Count(e.Text, "\n"))
 
 	case AssistantDone:
@@ -437,6 +482,7 @@ func (s *State) Apply(event Event) {
 		// transcript replaces the view outright.
 		s.Entries = append([]Entry(nil), e.Entries...)
 		s.closedAssistant = true
+		s.OutputTokens = 0
 
 	case ContextUpdated:
 		s.Status.ContextUsed = e.Used
@@ -807,6 +853,61 @@ func (s *State) Apply(event Event) {
 			s.Plane.ApplyAssignment(e.Result, e.Roles, e.Notice)
 		}
 
+	case PlaneAuthOpened:
+		if s.Plane != nil {
+			s.Plane.OpenAuth()
+		}
+
+	case PlaneAuthClosed:
+		if s.Plane != nil {
+			s.Plane.CloseAuth()
+		}
+
+	case PlaneAuthTyped:
+		if s.Plane != nil {
+			s.Plane.InsertAuthText(e.Text)
+		}
+
+	case PlaneAuthBackspace:
+		if s.Plane != nil {
+			s.Plane.DeleteAuthBefore()
+		}
+
+	case PlaneAuthDelete:
+		if s.Plane != nil {
+			s.Plane.DeleteAuthAt()
+		}
+
+	case PlaneAuthCursorMoved:
+		if s.Plane != nil {
+			s.Plane.MoveAuthCursor(e.Delta)
+		}
+
+	case PlaneAuthClearedToStart:
+		if s.Plane != nil {
+			s.Plane.ClearAuthToStart()
+		}
+
+	case PlaneAuthClearedToEnd:
+		if s.Plane != nil {
+			s.Plane.ClearAuthToEnd()
+		}
+
+	case PlaneAuthWordBack:
+		if s.Plane != nil {
+			s.Plane.DeleteAuthWordBack()
+		}
+
+	case PlaneAuthSaved:
+		if s.Plane != nil {
+			s.Plane.ApplyAuthSaved(e.Providers, e.Notice)
+		}
+
+	case PlaneAuthFailed:
+		if s.Plane != nil {
+			s.Plane.Notice = e.Notice
+		}
+
 	case PlaneRowsChanged:
 		if s.Plane != nil {
 			s.Plane.SetVisibleRows(e.Rows)
@@ -839,6 +940,28 @@ func (s *State) Apply(event Event) {
 		if e.HasWorkspace {
 			s.Status.Workspace = e.Workspace
 			s.Status.WorkspaceAccent = e.WorkspaceAccent
+		}
+		if e.HasUser {
+			s.Status.User = e.User
+		}
+		if e.HasGreeting {
+			s.Status.Greeting = e.Greeting
+		}
+		if e.HasGit {
+			s.Status.GitBranch = e.GitBranch
+			s.Status.GitStatus = e.GitStatus
+		}
+		if e.HasReady {
+			s.Status.Ready = e.Ready
+		}
+
+	case IdentityUpdated:
+		s.Status.User = e.User
+		s.Status.Greeting = e.Greeting
+		s.Status.GitBranch = e.GitBranch
+		s.Status.GitStatus = e.GitStatus
+		if e.Ready != "" {
+			s.Status.Ready = e.Ready
 		}
 
 	case QuitRequested:
@@ -1001,7 +1124,20 @@ func (s *State) Apply(event Event) {
 		s.Scroll = 0
 		s.Follow = true
 		s.closedAssistant = false
+		s.OutputTokens = 0
 	}
+}
+
+// currentOutputTokens estimates tokens for the trailing open assistant
+// entry. It recounts the whole entry rather than summing per-chunk estimates
+// so chunk-boundary rounding cannot inflate the total. Zero when no entry is
+// open: unknown stays absent rather than fabricated.
+func (s *State) currentOutputTokens() int {
+	idx := s.openAssistant()
+	if idx < 0 {
+		return s.OutputTokens
+	}
+	return tokens.Count(s.Entries[idx].AssistantText, tokens.ModeEstimate)
 }
 
 // growScroll keeps a scrolled-up viewport pinned while new output lands.
@@ -1169,6 +1305,10 @@ type UserSubmitted struct {
 	Text string
 	// Seq identifies the turn. Zero means legacy callers without an id.
 	Seq int
+	// At is when the turn actually began, the authoritative start for the
+	// model-phase activity line. Zero means unknown, and unknown shows no
+	// elapsed time rather than a fabricated one.
+	At time.Time
 }
 
 func (UserSubmitted) eventKind() string { return "user_submitted" }
@@ -2094,6 +2234,71 @@ type PlaneAssigned struct {
 
 func (PlaneAssigned) eventKind() string { return "plane_assigned" }
 
+// PlaneAuthOpened starts inline API-key entry for the highlighted provider.
+type PlaneAuthOpened struct{}
+
+func (PlaneAuthOpened) eventKind() string { return "plane_auth_opened" }
+
+// PlaneAuthClosed abandons key entry without saving.
+type PlaneAuthClosed struct{}
+
+func (PlaneAuthClosed) eventKind() string { return "plane_auth_closed" }
+
+// PlaneAuthTyped inserts text into the key entry at the cursor.
+type PlaneAuthTyped struct{ Text string }
+
+func (PlaneAuthTyped) eventKind() string { return "plane_auth_typed" }
+
+// PlaneAuthBackspace deletes the rune before the entry cursor.
+type PlaneAuthBackspace struct{}
+
+func (PlaneAuthBackspace) eventKind() string { return "plane_auth_backspace" }
+
+// PlaneAuthDelete deletes the rune under the entry cursor.
+type PlaneAuthDelete struct{}
+
+func (PlaneAuthDelete) eventKind() string { return "plane_auth_delete" }
+
+// PlaneAuthCursorMoved shifts the entry cursor. Positive goes right.
+type PlaneAuthCursorMoved struct{ Delta int }
+
+func (PlaneAuthCursorMoved) eventKind() string { return "plane_auth_cursor_moved" }
+
+// PlaneAuthClearedToStart deletes everything before the entry cursor.
+type PlaneAuthClearedToStart struct{}
+
+func (PlaneAuthClearedToStart) eventKind() string { return "plane_auth_cleared_to_start" }
+
+// PlaneAuthClearedToEnd deletes everything from the entry cursor onward.
+type PlaneAuthClearedToEnd struct{}
+
+func (PlaneAuthClearedToEnd) eventKind() string { return "plane_auth_cleared_to_end" }
+
+// PlaneAuthWordBack deletes the word before the entry cursor.
+type PlaneAuthWordBack struct{}
+
+func (PlaneAuthWordBack) eventKind() string { return "plane_auth_word_back" }
+
+// PlaneAuthSaved records a successful key save: the prompt closes, the
+// provider pane refreshes, and the footer confirms the provider.
+type PlaneAuthSaved struct {
+	// Providers is the refreshed provider pane, or nil to leave it.
+	Providers []ProviderRow
+	// Notice is the confirmation shown in the footer.
+	Notice string
+}
+
+func (PlaneAuthSaved) eventKind() string { return "plane_auth_saved" }
+
+// PlaneAuthFailed records a refused save. The prompt stays open so the key
+// can be corrected; only the footer notice changes.
+type PlaneAuthFailed struct {
+	// Notice is the refusal shown in the footer.
+	Notice string
+}
+
+func (PlaneAuthFailed) eventKind() string { return "plane_auth_failed" }
+
 // PlaneRowsChanged resizes the list window, e.g. after a resize.
 type PlaneRowsChanged struct{ Rows int }
 
@@ -2172,9 +2377,40 @@ type WorkspaceUpdated struct {
 	HasSession   bool
 	HasUsage     bool
 	HasWorkspace bool
+	// User is the local display name. HasUser marks it applies.
+	User    string
+	HasUser bool
+	// Greeting is the time-of-day greeting. HasGreeting marks it applies.
+	Greeting    string
+	HasGreeting bool
+	// GitBranch and GitStatus carry truthful repository state. HasGit marks
+	// they apply.
+	GitBranch string
+	GitStatus string
+	HasGit    bool
+	// Ready names runtime readiness. HasReady marks it applies.
+	Ready    string
+	HasReady bool
 }
 
 func (WorkspaceUpdated) eventKind() string { return "workspace_updated" }
+
+// IdentityUpdated carries the runtime identity facts: local display name,
+// greeting, git state, and readiness. It never touches the transcript.
+type IdentityUpdated struct {
+	// User is the local display name. Empty clears it.
+	User string
+	// Greeting is the time-of-day greeting.
+	Greeting string
+	// GitBranch is the short branch name.
+	GitBranch string
+	// GitStatus is the cleanliness summary.
+	GitStatus string
+	// Ready names runtime readiness.
+	Ready string
+}
+
+func (IdentityUpdated) eventKind() string { return "identity_updated" }
 
 // SupportStatus is where a support turn is in its lifecycle.
 type SupportStatus string

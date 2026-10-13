@@ -24,8 +24,19 @@ cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
   │     │             task (task only when maxDepth > 1; wait shares bash's
   │     │             job table; artifact when a session is attached). task
   │     │             imports agent for the subagent spec.
-  │     ├─► prompt    System prompt assembly + AGENTS.md discovery.
-  │     ├─► project   Stable project identity at <root>/.ohgo/project.yml.
+  │     ├─► prompt    System prompt assembly + AGENTS.md discovery (root
+  │     │             primary, <root>/.ohgo/AGENTS.md supplementary).
+  │     ├─► project   Stable project identity + project-local metadata
+  │     │             (project name, project worker identity) at
+  │     │             <root>/.ohgo/project.yml.
+  ├─► startup  Startup lifecycle. Discover is read-only and classifies a
+  │             directory UNINITIALIZED/INITIALIZED; Ensure is the sole
+  │             creation authority for <root>/.ohgo (Git + worker + project
+  │             name decisions first, mutation last; a cancel creates nothing).
+  │             The worker name is project-local, never written to settings.
+  ├─► state    Machine-level state location (~/.ohgo): the one owner for
+  │             every machine-scoped path (settings, credentials, cache,
+  │             sessions, history).
   │     ├─► session   SQLite transcript store (pure Go, no cgo), plus the
   │     │             workspace/project/effective-model record and artifacts.
   │     ├─► tokens    Heuristic token estimator + Tokenizer seam.
@@ -35,14 +46,16 @@ cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
   │           Ported Rust core: git awareness, shell parsing, Myers diff,
   │           fuzzy edit application, Go AST search. Pure Go, zero cgo.
   ├─► config   ~/.ohgo/settings.json: model (+ per-workspace models), tokens,
-  │            reasoning, approvals, theme, compaction. AutoApprove wins over
-  │            Approvals. ModelFor(workspace) falls back to the global model.
+  │            reasoning, approvals, theme, compaction, and machine-global
+  │            user defaults (identity.name). AutoApprove wins over Approvals.
+  │            ModelFor(workspace) falls back to the global model.
   └─► jsonschema  Reflection-free validator for tool schemas.
 ```
 
 Dependency arrows point one way: `catalog → ai` (type only), `ai → creds`
 (secrets only), `tools → agent` (subagent spec only), `workspace → agent`
-(tool admission only), `cmd → everything`. Nothing in `ai` imports `catalog`;
+(tool admission only), `prompt → project` (project root for `.ohgo/AGENTS.md`
+discovery), `cmd → everything`. Nothing in `ai` imports `catalog`;
 nothing in `agent` constructs HTTP; nothing outside `creds` reads a provider
 credential from env or shell. A cycle here is a bug, not a shortcut.
 
@@ -166,6 +179,36 @@ connection and one transaction per append (WAL on), which is what keeps
 pool. A store that will not open degrades to running without persistence;
 a resume id that does not exist is fatal, because an empty session would
 look like wiped history.
+
+## Startup and project creation authority
+
+`<root>/.ohgo/` is created by exactly one function, `startup.Ensure`, and only
+after the initialization gate has collected its decisions. The gate is
+explicit; no startup, discovery, option-resolution, runtime, or TUI path may
+create project-local state as a side effect.
+
+- `startup.Discover` is **read-only** and safe to call repeatedly. It reports
+  the project root, whether `.ohgo/` exists, whether `project.yml` is valid and
+  complete, whether the directory is a Git worktree, and a `State` of
+  `Uninitialized` or `Initialized` (`Invalid` distinguishes a broken `.ohgo/`
+  from a missing one). A valid-but-incomplete `project.yml` — an id/root-only
+  file from an earlier build — is `Uninitialized`: the gate owns completing it.
+- `startup.Ensure` fast-paths when `State == Initialized`; otherwise it enters
+  `Initializing`, prompts for the Git decision, the project worker name, and the
+  project name, and only then commits: `git init` (if confirmed) and the
+  project-local metadata to `<root>/.ohgo/project.yml` through
+  `project.EnsureWith` (atomic, id preserving). Decisions come first so a cancel
+  (`ErrCanceled`) leaves the directory exactly as it was found.
+- `resolveOptions` resolves project identity with `project.Load` (read-only),
+  never `project.Ensure`. `ohgo` runs the gate before constructing the runtime;
+  `ohgo run` cannot show the gate, so it discovers read-only and refuses an
+  uninitialized project rather than creating one.
+- The project worker identity and project name are project-local
+  (`<root>/.ohgo/project.yml`); Project A can name Alice while Project B on the
+  same machine names Bob. A machine-global `settings.json` `identity.name` is
+  only a suggested default for the gate's prompt and is never written by it.
+  Existing project ids are never regenerated on a normal restart, and changing
+  the name or worker never changes the id.
 
 ## Transports
 

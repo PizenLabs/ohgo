@@ -197,6 +197,12 @@ type ModelPlaneState struct {
 	// keyboard picks a variant row and nothing else assigns.
 	Variant *PlaneVariantState
 
+	// Auth is the open inline API-key prompt for one provider, or nil.
+	// While set the keyboard edits the masked key and nothing else
+	// assigns: Enter saves through the caller's credential seam, Esc
+	// abandons the input without touching configuration.
+	Auth *PlaneAuthState
+
 	// ActiveRole is the role the pending assignment targets.
 	ActiveRole string
 
@@ -397,6 +403,9 @@ func (p *ModelPlaneState) PrevFocus() {
 // FocusName reports the focused control for the footer and tests. An open
 // variant prompt owns the keyboard regardless of the underlying stage.
 func (p *ModelPlaneState) FocusName() string {
+	if p.Auth != nil {
+		return "auth"
+	}
 	if p.Variant != nil {
 		return "variant"
 	}
@@ -1188,4 +1197,190 @@ func clampIndex(index, n int) int {
 		return n - 1
 	}
 	return index
+}
+
+// PlaneAuthState is the inline API-key prompt for one provider. It holds
+// only transient entry state: the key is handed to the caller's credential
+// seam on Enter and never stored beyond the submit.
+type PlaneAuthState struct {
+	// Provider is the stable provider key the entry targets.
+	Provider string
+	// Display is the human name shown in the prompt title.
+	Display string
+	// Input is the pasted key. It renders masked and is cleared on close.
+	Input string
+	// Cursor is the rune offset in Input where typing lands.
+	Cursor int
+}
+
+// OpenAuth starts key entry for the highlighted provider. It reports false
+// — and changes nothing — when no provider is highlighted, when the All
+// scope row is highlighted, or when the provider needs no key. The refusal
+// lands in Notice so the footer explains why no prompt opened.
+func (p *ModelPlaneState) OpenAuth() bool {
+	row, ok := p.SelectedProvider()
+	if !ok || row.ID == AllProviders {
+		p.Notice = "select a provider first"
+		return false
+	}
+	if row.KeyDetail == "none required" {
+		p.Notice = row.Name + " needs no API key"
+		if p.Notice == " needs no API key" {
+			p.Notice = row.ID + " needs no API key"
+		}
+		return false
+	}
+	display := row.Name
+	if display == "" {
+		display = row.ID
+	}
+	p.Auth = &PlaneAuthState{Provider: row.ID, Display: display}
+	p.Notice = ""
+	return true
+}
+
+// CloseAuth abandons key entry, discarding the typed input.
+func (p *ModelPlaneState) CloseAuth() { p.Auth = nil }
+
+// InsertAuthText inserts s at the entry cursor.
+func (p *ModelPlaneState) InsertAuthText(s string) {
+	auth := p.Auth
+	if auth == nil || s == "" {
+		return
+	}
+	runes := []rune(auth.Input)
+	cur := auth.Cursor
+	if cur < 0 {
+		cur = 0
+	}
+	if cur > len(runes) {
+		cur = len(runes)
+	}
+	out := make([]rune, 0, len(runes)+len([]rune(s)))
+	out = append(out, runes[:cur]...)
+	out = append(out, []rune(s)...)
+	out = append(out, runes[cur:]...)
+	auth.Input = string(out)
+	auth.Cursor = cur + len([]rune(s))
+}
+
+// DeleteAuthBefore removes the rune before the entry cursor.
+func (p *ModelPlaneState) DeleteAuthBefore() {
+	auth := p.Auth
+	if auth == nil {
+		return
+	}
+	runes := []rune(auth.Input)
+	cur := auth.Cursor
+	if cur <= 0 || cur > len(runes) {
+		return
+	}
+	auth.Input = string(append(runes[:cur-1], runes[cur:]...))
+	auth.Cursor = cur - 1
+}
+
+// DeleteAuthAt removes the rune under the entry cursor.
+func (p *ModelPlaneState) DeleteAuthAt() {
+	auth := p.Auth
+	if auth == nil {
+		return
+	}
+	runes := []rune(auth.Input)
+	cur := auth.Cursor
+	if cur < 0 || cur >= len(runes) {
+		return
+	}
+	auth.Input = string(append(runes[:cur], runes[cur+1:]...))
+}
+
+// MoveAuthCursor shifts the entry cursor, clamped to the input.
+func (p *ModelPlaneState) MoveAuthCursor(delta int) {
+	auth := p.Auth
+	if auth == nil {
+		return
+	}
+	auth.Cursor = clampIndex(auth.Cursor+delta, len([]rune(auth.Input))+1)
+}
+
+// ClearAuthToStart deletes everything before the entry cursor.
+func (p *ModelPlaneState) ClearAuthToStart() {
+	auth := p.Auth
+	if auth == nil {
+		return
+	}
+	runes := []rune(auth.Input)
+	cur := auth.Cursor
+	if cur < 0 {
+		cur = 0
+	}
+	if cur > len(runes) {
+		cur = len(runes)
+	}
+	auth.Input = string(runes[cur:])
+	auth.Cursor = 0
+}
+
+// ClearAuthToEnd deletes everything from the entry cursor onward.
+func (p *ModelPlaneState) ClearAuthToEnd() {
+	auth := p.Auth
+	if auth == nil {
+		return
+	}
+	runes := []rune(auth.Input)
+	cur := auth.Cursor
+	if cur < 0 {
+		cur = 0
+	}
+	if cur > len(runes) {
+		cur = len(runes)
+	}
+	auth.Input = string(runes[:cur])
+}
+
+// DeleteAuthWordBack deletes the word before the entry cursor.
+func (p *ModelPlaneState) DeleteAuthWordBack() {
+	auth := p.Auth
+	if auth == nil {
+		return
+	}
+	runes := []rune(auth.Input)
+	cur := auth.Cursor
+	if cur <= 0 {
+		return
+	}
+	if cur > len(runes) {
+		cur = len(runes)
+	}
+	start := cur
+	for start > 0 && runes[start-1] == ' ' {
+		start--
+	}
+	for start > 0 && runes[start-1] != ' ' {
+		start--
+	}
+	auth.Input = string(append(runes[:start], runes[cur:]...))
+	auth.Cursor = start
+}
+
+// ApplyAuthSaved records a successful save: the prompt closes, the provider
+// pane refreshes from the caller-supplied roster, and the footer confirms
+// which provider now resolves a credential.
+func (p *ModelPlaneState) ApplyAuthSaved(providers []ProviderRow, notice string) {
+	p.Auth = nil
+	if providers != nil {
+		selected := ""
+		if row, ok := p.SelectedProvider(); ok {
+			selected = row.ID
+		}
+		p.Providers = append([]ProviderRow(nil), providers...)
+		p.ProviderCursor = 0
+		for i, row := range p.Providers {
+			if row.ID == selected {
+				p.ProviderCursor = i
+				break
+			}
+		}
+		p.ensureProviderVisible()
+	}
+	p.Notice = notice
 }

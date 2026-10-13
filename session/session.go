@@ -18,6 +18,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/state"
 	"github.com/PizenLabs/ohgo/workspace"
 	_ "modernc.org/sqlite"
 )
@@ -277,6 +278,35 @@ func (s *Store) List(limit int) ([]Session, error) {
 	}
 	defer func() { _ = rows.Close() }()
 
+	return scanSessions(rows)
+}
+
+// ListByProject returns the sessions belonging to one project, newest first.
+//
+// Sessions are stored in one machine-global database, so project association is
+// logical: this query is what makes "list this project's sessions" possible
+// without a second database. Sessions recorded before project identity existed
+// (project = ”) are included, because hiding an unidentified session from
+// every project would read as lost history; a session that names another
+// project is deliberately excluded and remains reachable by id.
+func (s *Store) ListByProject(project string, limit int) ([]Session, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title
+		 FROM sessions WHERE project = ? OR project = '' ORDER BY updated_at DESC LIMIT ?`,
+		project, limit)
+	if err != nil {
+		return nil, fmt.Errorf("session: list by project: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanSessions(rows)
+}
+
+// scanSessions drains session rows into values.
+func scanSessions(rows *sql.Rows) ([]Session, error) {
 	var out []Session
 	for rows.Next() {
 		sess, err := scanSession(rows)
@@ -683,11 +713,11 @@ func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
 	return out, rows.Err()
 }
 
-// configDir locates the directory holding ohgo state.
+// configDir locates the machine-level directory holding ohgo state.
+//
+// It delegates to state so the session database lives in exactly one place on
+// the machine; sessions are global across projects and outlive any project's
+// .ohgo directory.
 func configDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("session: locate home directory: %w", err)
-	}
-	return filepath.Join(home, ".ohgo"), nil
+	return state.Dir()
 }

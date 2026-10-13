@@ -36,4 +36,7 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: latest
-          args: run ./...
+          # The action injects the `run` subcommand itself; `args` must be the
+          # flags/packages only. Passing `run ./...` here yields
+          # `golangci-lint run run ./...`, which treats `run` as a package path.
+          args: ./...

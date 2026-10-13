@@ -6,9 +6,11 @@
 // `.ohgo/project.yml` (§17, I11) rather than in transient process state such
 // as the current working directory (§18).
 //
-// The file is the project-local boundary for OHGO metadata. It deliberately
-// does not duplicate the global session store: the identity is the only thing
-// persisted here.
+// The file is the project-local boundary for OHGO metadata. It carries the
+// project's stable identity, its human-readable name, and the human working
+// with *this* project. It deliberately does not duplicate the global session
+// store or the machine-global settings: a worker name belongs to the
+// project, so one machine can work as Alice in one project and Bob in another.
 package project
 
 import (
@@ -18,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/PizenLabs/ohgo/vcs"
 	"go.yaml.in/yaml/v3"
@@ -31,18 +34,67 @@ const (
 	FileName = "project.yml"
 )
 
-// Identity is a stable project identity.
+// Identity is a project's stable identity plus its project-local
+// initialization metadata.
 type Identity struct {
 	// ID is a generated identifier, unique per project and stable across
-	// restarts.
+	// restarts. It is the project's identity and never depends on the project
+	// name, the worker name, the directory name, the absolute path, or the
+	// Git remote.
 	ID string `yaml:"id"`
-	// Root is the project root the identity was anchored at.
+	// Name is the human-readable project name the initialization gate
+	// established. It is independent of ID: renaming the project must not
+	// change its identity.
+	Name string `yaml:"name,omitempty"`
+	// Root is the project root the identity was anchored at. It is metadata
+	// that tolerates going stale when the tree moves; it is not identity.
 	Root string `yaml:"root"`
+	// User is the project-local worker identity: the human working with this
+	// project. It is project-local, never machine-global, so two projects on
+	// one machine may name two different workers.
+	User User `yaml:"user,omitempty"`
+}
+
+// User is the human working with a project.
+type User struct {
+	// Name is the worker's display name for this project. Empty means the
+	// initialization gate has not established it yet.
+	Name string `yaml:"name,omitempty"`
+}
+
+// IsZero reports whether the worker record carries no name, so yaml omitempty
+// drops an unestablished worker instead of writing an empty `user: {}`.
+func (u User) IsZero() bool { return strings.TrimSpace(u.Name) == "" }
+
+// Metadata is the project-local initialization metadata the startup gate
+// collects from a human. Identity (ID, Root) is minted or preserved by the
+// project package; metadata is the part only a human decides.
+type Metadata struct {
+	// Name is the human-readable project name.
+	Name string
+	// Worker is the human working with this project.
+	Worker string
 }
 
 // Valid reports whether the identity has a non-empty id and root.
 func (i Identity) Valid() bool {
 	return i.ID != "" && i.Root != ""
+}
+
+// Complete reports whether the identity carries the project-local
+// initialization metadata this build requires: a project name and a worker
+// name.
+//
+// A file written by an earlier build has only id and root. It stays Valid —
+// its id must never change — but it is incomplete, and the initialization
+// gate owns completing it.
+func (i Identity) Complete() bool {
+	return i.Valid() && strings.TrimSpace(i.Name) != "" && !i.User.IsZero()
+}
+
+// WorkerName returns the project-local worker display name, trimmed.
+func (i Identity) WorkerName() string {
+	return strings.TrimSpace(i.User.Name)
 }
 
 // ErrNotFound means no project identity file exists yet.
@@ -82,6 +134,9 @@ func Path(root string) string {
 // error rather than a reason to regenerate: regenerating would change the
 // project's identity, which is exactly the instability this package exists to
 // prevent.
+//
+// An id/root-only file is found and Valid; whether it is Complete is a
+// separate question the initialization gate answers.
 func Load(dir string) (Identity, bool, error) {
 	root := Root(dir)
 	path := Path(root)
@@ -99,33 +154,55 @@ func Load(dir string) (Identity, bool, error) {
 	if !identity.Valid() {
 		return Identity{}, false, fmt.Errorf("%w: %s is missing id or root", ErrNotFound, path)
 	}
-	if identity.Root == "" {
-		identity.Root = root
-	}
 	return identity, true, nil
 }
 
 // Ensure returns the identity for a working directory, creating it when it
 // does not exist.
 //
+// It preserves an existing id and any existing project-local metadata. It does
+// not establish a project or worker name: only the initialization gate may do
+// that, through EnsureWith.
+func Ensure(dir string) (Identity, error) {
+	return EnsureWith(dir, Metadata{})
+}
+
+// EnsureWith returns the identity for a working directory, creating it when it
+// does not exist and preserving an existing id.
+//
+// Non-empty metadata fields supplied by the initialization gate are written
+// into the file; empty fields leave the existing value untouched. It is the
+// commit step of the initialization gate: recovering an id/root-only file adds
+// the missing metadata without changing the id, and an unchanged identity is
+// returned without a rewrite.
+//
 // Creation is atomic (write-temp-then-rename): a crash mid-write must not
 // leave a half-written identity file that a later run would refuse to read (or
 // worse, treat as a new project).
-func Ensure(dir string) (Identity, error) {
+func EnsureWith(dir string, meta Metadata) (Identity, error) {
 	root := Root(dir)
 	identity, found, err := Load(root)
 	if err != nil {
 		return Identity{}, err
 	}
-	if found {
-		return identity, nil
+	if !found {
+		id, err := newID()
+		if err != nil {
+			return Identity{}, err
+		}
+		identity = Identity{ID: id, Root: root}
 	}
 
-	id, err := newID()
-	if err != nil {
-		return Identity{}, err
+	original := identity
+	if name := strings.TrimSpace(meta.Name); name != "" {
+		identity.Name = name
 	}
-	identity = Identity{ID: id, Root: root}
+	if worker := strings.TrimSpace(meta.Worker); worker != "" {
+		identity.User.Name = worker
+	}
+	if found && identity == original {
+		return identity, nil
+	}
 	if err := write(root, identity); err != nil {
 		return Identity{}, err
 	}

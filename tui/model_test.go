@@ -221,6 +221,24 @@ func TestStatusPercentHandlesUnknownWindow(t *testing.T) {
 	}
 }
 
+// VersionLabel spells the release one way on every surface: trimmed,
+// v-prefixed, and empty for unknown so no chrome invents a release.
+func TestVersionLabelNormalizes(t *testing.T) {
+	cases := map[string]string{
+		"1.0.0":     "v1.0.0",
+		"v1.0.0":    "v1.0.0",
+		"0.1.0-dev": "v0.1.0-dev",
+		"  2.3.4  ": "v2.3.4",
+		"":          "",
+		"   ":       "",
+	}
+	for in, want := range cases {
+		if got := VersionLabel(in); got != want {
+			t.Errorf("VersionLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestUserSubmittedClearsInputAndMarksBusy(t *testing.T) {
 	state := New()
 	state.Apply(InputChanged{Text: "hello"})

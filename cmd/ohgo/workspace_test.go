@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/PizenLabs/ohgo/workspace"
@@ -38,8 +40,20 @@ func TestResolveOptionsReadsWorkspaceAndScopedModel(t *testing.T) {
 	if opts.model.ID != "claude-haiku-4-5" {
 		t.Errorf("model = %q, want the ask-specific model", opts.model.ID)
 	}
-	if opts.projectID == "" {
-		t.Error("project identity was not established")
+	// Project creation belongs to startup, not option resolution: a fresh
+	// directory resolves with no identity, and an initialized one loads it.
+	if opts.projectID != "" {
+		t.Error("project identity was invented for an uninitialized directory")
+	}
+	if _, err := project.Ensure(root); err != nil {
+		t.Fatalf("Ensure project: %v", err)
+	}
+	retry, _, err := resolveOptions(cmd)
+	if err != nil {
+		t.Fatalf("resolveOptions: %v", err)
+	}
+	if retry.projectID == "" {
+		t.Error("project identity was not loaded for an initialized directory")
 	}
 }
 
@@ -168,5 +182,28 @@ func TestApplySessionAuthorityHonoursExplicitOverrides(t *testing.T) {
 	}
 	if opts.model.ID != "gpt-5" {
 		t.Errorf("model = %q, want the explicit gpt-5", opts.model.ID)
+	}
+}
+
+func TestResolveOptionsDoesNotCreateProject(t *testing.T) {
+	// Option resolution is read-only for project state: creating .ohgo/
+	// here would let startup.Ensure fast-path over a project the user was
+	// never prompted to initialize, which is exactly the deleted-.ohgo
+	// bypass. Only startup.Ensure may create project state.
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+
+	cmd := &cobra.Command{Use: "ohgo"}
+	cmd.Flags().String("dir", root, "")
+
+	opts, _, err := resolveOptions(cmd)
+	if err != nil {
+		t.Fatalf("resolveOptions: %v", err)
+	}
+	if opts.projectID != "" {
+		t.Errorf("projectID = %q for an uninitialized directory, want empty", opts.projectID)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".ohgo")); !os.IsNotExist(err) {
+		t.Errorf(".ohgo was created during option resolution: %v", err)
 	}
 }

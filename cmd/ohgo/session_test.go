@@ -7,7 +7,11 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/session"
+	"github.com/PizenLabs/ohgo/startup"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -172,4 +176,187 @@ func pctPtr(f float64) *float64 {
 		return nil
 	}
 	return &f
+}
+
+// TestMachineStateSurvivesProjectDeletion pins the storage-scope boundary:
+// rm -rf .ohgo deletes project state, never machine state. Machine settings and
+// the session database live under HOME and must survive, while the project —
+// including its project-local worker identity — re-initializes on the next run.
+func TestMachineStateSurvivesProjectDeletion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// A genuinely machine-global setting, to prove it survives project deletion.
+	if err := config.Save(config.Settings{Model: "anthropic/claude-sonnet-4-5"}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := startup.Ensure(root, startup.Deps{
+		Stdin:  strings.NewReader("Alice\nproject-a\n"),
+		Stdout: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	if first.Project.ID == "" {
+		t.Fatal("no project identity was established")
+	}
+	if first.Project.WorkerName() != "Alice" || first.Project.Name != "project-a" {
+		t.Fatalf("project metadata = %+v, want Alice / project-a", first.Project)
+	}
+
+	sessionPath, err := session.DefaultPath()
+	if err != nil {
+		t.Fatalf("session path: %v", err)
+	}
+	store, err := session.Open(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.CreateWith(session.CreateOptions{
+		Cwd: root, Model: "anthropic/claude-sonnet-4-5", Project: first.Project.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := session.FromAgentMessage(agent.UserMessage{Text: "remember"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(sess.ID, stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(project.Root(root), project.DirName)); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := startup.Ensure(root, startup.Deps{
+		Stdin:  strings.NewReader("Bob\nproject-b\n"),
+		Stdout: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("second Ensure: %v", err)
+	}
+	if !second.CreatedProject {
+		t.Error("project did not re-initialize after .ohgo deletion")
+	}
+	if second.Project.WorkerName() != "Bob" {
+		t.Errorf("worker = %q, want the re-established Bob", second.Project.WorkerName())
+	}
+	if second.Project.ID == first.Project.ID {
+		t.Error("project identity was resurrected; deletion must mint a fresh one")
+	}
+
+	machine, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("machine settings lost after project deletion: %v", err)
+	}
+	if machine.Model != "anthropic/claude-sonnet-4-5" {
+		t.Errorf("machine setting = %q, want it to survive .ohgo deletion", machine.Model)
+	}
+	if machine.GlobalName() != "" {
+		t.Errorf("worker leaked into machine settings: %q", machine.GlobalName())
+	}
+
+	reopened, err := session.Open(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	got, err := reopened.Get(sess.ID)
+	if err != nil {
+		t.Fatalf("session lost after project deletion: %v", err)
+	}
+	if got.Project != first.Project.ID {
+		t.Errorf("session project = %q, want the original %q", got.Project, first.Project.ID)
+	}
+	msgs, err := reopened.Messages(sess.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Text != "remember" {
+		t.Errorf("session transcript lost after project deletion: %+v", msgs)
+	}
+}
+
+// TestSessionContextResolvesProjectIdentity pins the session/identity
+// boundary: a session is stored globally and scoped by project id, and the
+// project context it resolves is the current project's local identity — never
+// another project's worker.
+func TestSessionContextResolvesProjectIdentity(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	initProject := func(root, worker, name string) startup.Result {
+		t.Helper()
+		if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		res, err := startup.Ensure(root, startup.Deps{
+			Stdin:  strings.NewReader(worker + "\n" + name + "\n"),
+			Stdout: io.Discard,
+		})
+		if err != nil {
+			t.Fatalf("Ensure(%s): %v", root, err)
+		}
+		return res
+	}
+	a, b := t.TempDir(), t.TempDir()
+	fa := initProject(a, "Alice", "project-a")
+	fb := initProject(b, "Bob", "project-b")
+
+	path, err := session.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := session.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if _, err := store.CreateWith(session.CreateOptions{
+		Cwd: a, Model: "anthropic/claude-sonnet-4-5", Project: fa.Project.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateWith(session.CreateOptions{
+		Cwd: b, Model: "anthropic/claude-sonnet-4-5", Project: fb.Project.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each project's session list sees only its own session.
+	listA, err := store.ListByProject(fa.Project.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listA) != 1 || listA[0].Project != fa.Project.ID {
+		t.Fatalf("project A sessions = %+v, want only A's", listA)
+	}
+	listB, err := store.ListByProject(fb.Project.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listB) != 1 || listB[0].Project != fb.Project.ID {
+		t.Fatalf("project B sessions = %+v, want only B's", listB)
+	}
+
+	// The identity a session in A resolves is A's worker, not B's.
+	loaded, found, err := project.Load(a)
+	if err != nil || !found {
+		t.Fatalf("Load(A) = %v, %v, %v", loaded, found, err)
+	}
+	if loaded.WorkerName() != "Alice" {
+		t.Errorf("A resolves worker %q, want Alice", loaded.WorkerName())
+	}
+	if listA[0].Project == fb.Project.ID {
+		t.Error("A's session resolved project B's identity")
+	}
 }

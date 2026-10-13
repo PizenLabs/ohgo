@@ -41,6 +41,10 @@ type harness struct {
 	settings *config.Settings
 	root     string
 	model    ai.Model
+	// projectID is the stable project identity the session belongs to, empty
+	// when unknown. It scopes the session browser to this project without
+	// changing physical storage, which stays one machine-global database.
+	projectID string
 	// workspace is the execution authority label, e.g. "BUILD". Empty when the
 	// caller did not supply one, in which case /status omits it rather than
 	// inventing an authority.
@@ -495,13 +499,15 @@ func (h *harness) ResumeSession(id int64) (history []agent.Message, notice strin
 	return history, fmt.Sprintf("resumed session %d (%d messages)", id, len(history)), nil
 }
 
-// ListSessions prints stored sessions newest-first for the REPL.
+// ListSessions prints stored sessions newest-first for the REPL, scoped to the
+// current project so sessions from another project do not masquerade as this
+// one's history.
 func (h *harness) ListSessions(out io.Writer) {
 	if h.store == nil {
 		_, _ = fmt.Fprintln(out, "no session store attached")
 		return
 	}
-	list, err := h.store.List(20)
+	list, err := h.store.ListByProject(h.projectID, 20)
 	if err != nil {
 		_, _ = fmt.Fprintf(out, "sessions: %v\n", err)
 		return
@@ -560,6 +566,36 @@ func (h *harness) ModelList() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// SavePlaneKey persists an API key for the model control plane's inline
+// prompt. The key goes to the credential file (0600, never the shell) so a
+// later resolve sees it; the registry's explicit map is untouched so
+// /disconnect semantics stay intact. An empty key or a keyless provider is
+// refused rather than stored.
+func (h *harness) SavePlaneKey(provider, key string) error {
+	provider = strings.TrimSpace(provider)
+	key = strings.TrimSpace(key)
+	if provider == "" || provider == tui.AllProviders {
+		return fmt.Errorf("select a provider first")
+	}
+	if vars, ok := creds.ProviderEnvVars(provider); !ok {
+		return fmt.Errorf("unknown provider %q", provider)
+	} else if len(vars) == 0 {
+		return fmt.Errorf("%s needs no API key", provider)
+	}
+	if key == "" {
+		return fmt.Errorf("empty key: paste a key or press esc to cancel")
+	}
+	path, err := creds.DefaultPath()
+	if err != nil {
+		return err
+	}
+	store, err := creds.Open(path)
+	if err != nil {
+		return err
+	}
+	return store.Set(provider, key)
 }
 
 // SaveConnect persists a /connect outcome: the pasted key goes to the

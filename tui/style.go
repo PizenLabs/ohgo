@@ -68,6 +68,96 @@ func fg(token string) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(token))
 }
 
+// Semantic chrome tokens: a cohesive low-contrast dark palette
+// (Catppuccin / Forest Minimal inspired) for the header, footer, and composer
+// chrome.
+//
+// These are truecolor hex, unlike the 256-colour body tokens above: the
+// chrome targets modern terminals where the brand, model, and status segments
+// must read as distinct hues, while the transcript body keeps 256-colour
+// indexes for broad degrade. Every state that uses colour also carries a text
+// marker (● ○ ◐), so nothing depends on hue alone.
+const (
+	// ColorPrimary is subtle mint teal: the app name, the active cursor,
+	// and focused borders.
+	ColorPrimary = "#5FB3A1"
+	// ColorModel is muted sage green: the model name / active engine.
+	ColorModel = "#8FB08D"
+	// ColorStatus is muted amber: warnings and check-status indicators.
+	ColorStatus = "#C9A86A"
+	// ColorAccent is soft steel blue: mode badges and the active runtime.
+	ColorAccent = "#7AA8C9"
+	// ColorDim is slate gray: dot separators, dividers, and borders.
+	ColorDim = "#4C566A"
+	// ColorText is warm off-white: primary body text.
+	ColorText = "#C9C5BE"
+	// ColorMuted is muted gray: labels such as model, workspace, and git.
+	ColorMuted = "#6C7A89"
+)
+
+// Light-theme counterparts, darkened to read on a bright screen. The hues
+// stay in the same families so the chrome keeps one identity per role.
+const (
+	chromeLightPrimary = "#1F6F61"
+	chromeLightModel   = "#4E7A4C"
+	chromeLightStatus  = "#8A6D2B"
+	chromeLightAccent  = "#3E6E8E"
+	chromeLightDim     = "#8A93A3"
+)
+
+// Chrome carries the header/footer/composer styles resolved from the tokens
+// above: one named style per segment so render code never reaches for a raw
+// colour.
+type Chrome struct {
+	// Brand renders the app name.
+	Brand lipgloss.Style
+	// Version renders the release label beside the brand, e.g. "v1.0.0".
+	// It stays muted: identity first, release metadata second.
+	Version lipgloss.Style
+	// Model renders the model name / active engine.
+	Model lipgloss.Style
+	// Active renders the runtime phase and mode badges when active.
+	Active lipgloss.Style
+	// Idle renders the runtime phase when idle.
+	Idle lipgloss.Style
+	// Check renders the connection check status.
+	Check lipgloss.Style
+	// Separator renders dots, dividers, and border lines.
+	Separator lipgloss.Style
+	// Prompt renders the input cursor.
+	Prompt lipgloss.Style
+	// Context renders session and workspace context info.
+	Context lipgloss.Style
+}
+
+// ChromeFor resolves the chrome styles for a theme.
+func ChromeFor(theme string) *Chrome {
+	if NormalizeTheme(theme) == ThemeLight {
+		return &Chrome{
+			Brand:     fg(chromeLightPrimary).Bold(true),
+			Version:   fg(lightMuted),
+			Model:     fg(chromeLightModel),
+			Active:    fg(chromeLightAccent).Bold(true),
+			Idle:      fg(lightMuted),
+			Check:     fg(chromeLightStatus),
+			Separator: fg(chromeLightDim),
+			Prompt:    fg(chromeLightPrimary),
+			Context:   fg(lightMuted),
+		}
+	}
+	return &Chrome{
+		Brand:     fg(ColorPrimary).Bold(true),
+		Version:   fg(ColorMuted),
+		Model:     fg(ColorModel),
+		Active:    fg(ColorAccent).Bold(true),
+		Idle:      fg(ColorMuted),
+		Check:     fg(ColorStatus),
+		Separator: fg(ColorDim),
+		Prompt:    fg(ColorPrimary),
+		Context:   fg(ColorMuted),
+	}
+}
+
 // ExtraStyles carries the semantic chrome styles that sit above the base
 // message palette: separators, the header, severity signals, and key hints.
 //
@@ -101,7 +191,7 @@ func ExtrasFor(theme string) *ExtraStyles {
 	return &ExtraStyles{
 		Separator: fg(darkMuted),
 		Header:    fg(darkText).Bold(true),
-		Focus:     fg(darkAccent).Bold(true),
+		Focus:     fg(ColorPrimary).Bold(true),
 		Success:   fg(darkSuccess),
 		Warning:   fg(darkWarning),
 		Danger:    fg(darkDanger),
@@ -110,12 +200,13 @@ func ExtrasFor(theme string) *ExtraStyles {
 	}
 }
 
-// SeparatorLine draws a subtle rule across width cells.
+// SeparatorLine draws a subtle rule across width cells in the dim chrome
+// style, so the header divider and section borders share one slate line.
 func SeparatorLine(width int, pal *Palette) string {
 	if width < 1 {
 		return ""
 	}
-	return pal.Muted.Render(strings.Repeat("─", width))
+	return pal.Separator.Render(strings.Repeat("─", width))
 }
 
 // badgeNeutral is the fallback accent for an unlabelled workspace.
@@ -192,12 +283,7 @@ func DeriveRuntime(s State) RuntimeState {
 
 // hasRunningTool reports any tool still executing.
 func hasRunningTool(s State) bool {
-	for _, e := range s.Entries {
-		if e.Kind == EntryTool && e.Tool != nil && e.Tool.Status == ToolRunning {
-			return true
-		}
-	}
-	return false
+	return latestRunningTool(s) != nil
 }
 
 // hasAssistantText reports the trailing assistant entry holds streamed text.

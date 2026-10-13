@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/PizenLabs/ohgo/project"
 )
 
 // Identity is the fixed part of the system prompt.
@@ -70,16 +72,38 @@ var currentDate = func() string {
 	return time.Now().UTC().Format("2006-01-02")
 }
 
-// ProjectContext renders AGENTS.md-style project instructions found in root.
+// ProjectContext renders the project instruction files for root.
 //
-// The nearest AGENTS.md wins: a nested file usually documents the package the
-// user is actually working in.
+// The root AGENTS.md is the primary project instruction source and is read
+// first; the nearest one wins, because a nested file usually documents the
+// package the user is actually working in. The optional
+// <project>/.ohgo/AGENTS.md is supplementary OHGO-local instruction: it is
+// appended after the primary file and can never displace it. Both files are
+// human-authored and rendered verbatim; OHGO never writes either.
+//
+// The project root is resolved through project.Root, so the supplementary file
+// is the one belonging to the project the working directory sits in, not to
+// whatever directory the process happened to start from.
 func ProjectContext(root string) string {
-	dir := root
+	var blocks []string
+	if primary := nearestAgents(root); primary != "" {
+		blocks = append(blocks, "# Project instructions\n\n"+primary)
+	}
+	local := filepath.Join(project.Root(root), project.DirName, "AGENTS.md")
+	if data, err := os.ReadFile(local); err == nil {
+		if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
+			blocks = append(blocks, "# OHGO project instructions\n\n"+trimmed)
+		}
+	}
+	return strings.Join(blocks, "\n\n")
+}
+
+// nearestAgents returns the trimmed content of the nearest AGENTS.md at or
+// above dir, or "" when none exists. It never walks above the filesystem root.
+func nearestAgents(dir string) string {
 	for {
-		candidate := filepath.Join(dir, "AGENTS.md")
-		if data, err := os.ReadFile(candidate); err == nil {
-			return fmt.Sprintf("# Project instructions\n\n%s", strings.TrimSpace(string(data)))
+		if data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md")); err == nil {
+			return strings.TrimSpace(string(data))
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {

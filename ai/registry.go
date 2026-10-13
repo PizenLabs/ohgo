@@ -252,7 +252,7 @@ func (r *Registry) ProviderFor(model Model) (Provider, error) {
 		// priority. These are application constants, never user data.
 		if model.Provider == "openrouter" {
 			openai.ExtraHeaders = map[string]string{
-				"HTTP-Referer": "https://github.com/PizenLabs/ohgo",
+				"HTTP-Referer": "https://pizenlabs.dev/ohgo-web/",
 				"X-Title":      "ohgo",
 			}
 		}

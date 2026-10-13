@@ -51,6 +51,10 @@ type Layout struct {
 	HeaderLines   int
 	ComposerLines int
 	StatusLines   int
+	// ThinkingLines is the rows the projected activity line claims (0 or 1).
+	// Render emits exactly this many rows, so the transcript budget and the
+	// painted frame agree and the chrome never floats.
+	ThinkingLines int
 	// SlashLines is the suggestion rows the composer will render. It equals
 	// what slashBudget reserves: the renderer truncates to it, so reserved
 	// and rendered rows always agree even on viewports shorter than the
@@ -91,13 +95,14 @@ func ComputeLayout(s State) Layout {
 	mode := LayoutForMode(s.Width, s.Height)
 	if s.Width <= 0 || s.Height <= 0 {
 		return Layout{
-			Mode:         LayoutWide,
-			Width:        s.Width,
-			Height:       s.Height,
-			ContentWidth: 0, // zero means "do not wrap"
-			ShowDetail:   true,
-			ShowHints:    true,
-			SlashLines:   -1, // uncapped: render everything
+			Mode:          LayoutWide,
+			Width:         s.Width,
+			Height:        s.Height,
+			ContentWidth:  0, // zero means "do not wrap"
+			ShowDetail:    true,
+			ShowHints:     true,
+			SlashLines:    -1, // uncapped: render everything
+			ThinkingLines: thinkingRows(s),
 		}
 	}
 	content := s.Width - 2
@@ -130,7 +135,8 @@ func ComputeLayout(s State) Layout {
 		composer = 0
 		sugg = 0
 	}
-	chrome := header + status + hints + composer
+	thinking := thinkingRows(s)
+	chrome := header + status + hints + composer + thinking
 	conv := s.Height - chrome
 	if conv < 1 {
 		conv = 1
@@ -144,10 +150,34 @@ func ComputeLayout(s State) Layout {
 		HeaderLines:        header,
 		ComposerLines:      composer,
 		StatusLines:        status,
+		ThinkingLines:      thinking,
 		ShowDetail:         mode == LayoutWide || mode == LayoutMedium,
 		ShowHints:          hints > 0,
 		SlashLines:         sugg,
 	}
+}
+
+// thinkingMinHeight is the shortest viewport that still paints the activity
+// line. Below it the frame is at the tiny-viewport floor where regions already
+// concede rows, and the header still names the phase, so nothing is
+// misreported. Unknown sizes (zero) are unbudgeted and always paint it.
+const thinkingMinHeight = 10
+
+// thinkingRows is the rows the activity line claims: one while an activity is
+// active on the normal surface, none otherwise. A modal overlay owns the
+// screen, so the line stays out of that surface's budget rather than shrinking
+// a region it does not paint on; the header still carries the phase there.
+func thinkingRows(s State) int {
+	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil {
+		return 0
+	}
+	if s.Height > 0 && s.Height < thinkingMinHeight {
+		return 0
+	}
+	if ProjectThinking(s).Active {
+		return 1
+	}
+	return 0
 }
 
 // composerHeight sizes the composer in rows: the two framing rules plus
@@ -269,14 +299,20 @@ func planeRowsFor(s State) int {
 		return 0
 	}
 	rect := PlaneModalRect(s.Width, s.Height)
-	contentH := rect.Height - 4
+	// Borders (2) + footer (1); the top border carries the title and the
+	// divider above the footer claims one body row.
+	contentH := rect.Height - 3
 	if contentH < 1 {
 		contentH = 1
+	}
+	bodyH := contentH - 1
+	if bodyH < 1 {
+		bodyH = 1
 	}
 	if p := s.Plane; p != nil && p.Stage != PlaneStageBrowse {
 		// The assignment flow is a single bounded body: a title, the summary
 		// fields, a separator, then the step. The list gets whatever remains.
-		rows := contentH - 6
+		rows := bodyH - 6
 		if rows < 1 {
 			rows = 1
 		}
@@ -291,7 +327,7 @@ func planeRowsFor(s State) int {
 		// marker when the list does not fit (one fewer list row keeps the
 		// detail — role line and effort radio — on screen).
 		need = 2 + detailLen
-		rows := contentH - need
+		rows := bodyH - need
 		if len(p.VisibleModels()) > rows && rows > 1 {
 			rows--
 		}
@@ -300,7 +336,7 @@ func planeRowsFor(s State) int {
 		}
 		return rows
 	}
-	rows := contentH - need
+	rows := bodyH - need
 	if rows < 1 {
 		rows = 1
 	}
