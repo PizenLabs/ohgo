@@ -302,6 +302,11 @@ type State struct {
 	// TurnSeq identifies the latest turn. Lifecycle events carry it so a late
 	// event from an old turn cannot mutate the new one.
 	TurnSeq int
+	// TurnStartedAt is when the current turn began, zero when unknown. It is
+	// the authoritative start for the model-phase activity line: elapsed time
+	// derives from it, never from render time, so the UI cannot invent a
+	// duration the runtime did not measure.
+	TurnStartedAt time.Time
 	// Cancelled records the current turn reached its terminal cancellation
 	// state. It makes repeated cancels idempotent and lets late progress
 	// events be dropped instead of resurrecting Running.
@@ -326,6 +331,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.TurnSeq = seq
 		s.Cancelled = false
+		s.TurnStartedAt = e.At
 		s.Entries = append(s.Entries, Entry{Kind: EntryUser, UserText: e.Text})
 		s.Input = ""
 		s.Cursor = 0
@@ -1278,6 +1284,10 @@ type UserSubmitted struct {
 	Text string
 	// Seq identifies the turn. Zero means legacy callers without an id.
 	Seq int
+	// At is when the turn actually began, the authoritative start for the
+	// model-phase activity line. Zero means unknown, and unknown shows no
+	// elapsed time rather than a fabricated one.
+	At time.Time
 }
 
 func (UserSubmitted) eventKind() string { return "user_submitted" }

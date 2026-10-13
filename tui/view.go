@@ -192,6 +192,8 @@ func Render(state State) string {
 		renderApproval(&sb, state.Pending, pal, layout)
 	}
 
+	renderThinkingArea(&sb, state, pal, layout)
+
 	sb.WriteString(renderStatus(state, pal, layout))
 	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil {
 		sb.WriteString("\n")
@@ -1508,6 +1510,30 @@ func renderApproval(sb *strings.Builder, pending *PendingApproval, pal *Palette,
 	}
 }
 
+// renderThinkingArea writes the projected activity line, when one exists.
+//
+// The row is reserved by Layout.ThinkingLines, so the transcript budget already
+// excludes it and this must emit exactly that many rows. It renders the pure
+// projection and nothing else: it never mutates state, issues a command, or
+// decides for itself whether the runtime is working. Waiting reads muted so the
+// blocked-on-human state is visually distinct from active execution.
+func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout Layout) {
+	if layout.ThinkingLines == 0 {
+		return
+	}
+	ts := ProjectThinking(state)
+	style := pal.ToolRun
+	if ts.Phase == ThinkingWaiting {
+		style = pal.Muted
+	}
+	// now is read once here, at the single render seam, and handed to the
+	// otherwise clock-free renderer: elapsed derives from the activity's real
+	// start time, never from a counter.
+	for _, line := range RenderThinking(ts, time.Now(), displayWidth(state, layout)) {
+		sb.WriteString(style.Render(line) + "\n")
+	}
+}
+
 // renderStatus draws the contextual footer: working directory, session,
 // context budget, and measured usage.
 //
@@ -1546,12 +1572,11 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 			parts = append(parts, status.Session)
 		}
 	}
-	if status.Busy {
-		parts = append(parts, spinnerFrame(status.Spinner)+" working")
-	}
-	// SUP is a model role, not a workspace: the footer keeps naming the
-	// workspace authority while support is open. Support runtime state
-	// lives inside the overlay itself.
+	// The runtime phase is named once, in the header, and the live detail
+	// lives in the activity line; the footer stays context-only so a third
+	// "working" copy never competes with them. SUP is a model role, not a
+	// workspace: the footer keeps naming the workspace authority while
+	// support is open. Support runtime state lives inside the overlay.
 	out := strings.Join(parts, "  ·  ")
 	if state.Width > 0 {
 		out = TruncateToWidth(out, state.Width-1)

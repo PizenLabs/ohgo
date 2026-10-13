@@ -283,12 +283,7 @@ func DeriveRuntime(s State) RuntimeState {
 
 // hasRunningTool reports any tool still executing.
 func hasRunningTool(s State) bool {
-	for _, e := range s.Entries {
-		if e.Kind == EntryTool && e.Tool != nil && e.Tool.Status == ToolRunning {
-			return true
-		}
-	}
-	return false
+	return latestRunningTool(s) != nil
 }
 
 // hasAssistantText reports the trailing assistant entry holds streamed text.

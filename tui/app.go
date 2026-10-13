@@ -2646,7 +2646,7 @@ func (p *Program) runTurn(text string) {
 	p.turnSeq++
 	seq := p.turnSeq
 	p.mu.Unlock()
-	p.publish(UserSubmitted{Text: text, Seq: seq})
+	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p.mu.Lock()

@@ -35,6 +35,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -571,7 +572,15 @@ func liveSecretLines(s State, pal *Palette, layout Layout) []string {
 // what the composer already shows.
 func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	var parts []string
-	if runtime := DeriveRuntime(s); runtime != RuntimeIdle {
+	// The activity line is the same pure projection the full-screen surface
+	// paints, so both modes name the runtime state identically. The phase
+	// word remains the fallback for the one non-idle state the activity line
+	// deliberately does not claim: shutting down.
+	if ts := ProjectThinking(s); ts.Active {
+		if lines := RenderThinking(ts, time.Now(), 0); len(lines) > 0 {
+			parts = append(parts, lines[0])
+		}
+	} else if runtime := DeriveRuntime(s); runtime != RuntimeIdle {
 		parts = append(parts, RuntimeMarker(runtime)+" "+string(runtime))
 	}
 	if s.Status.Model != "" {
