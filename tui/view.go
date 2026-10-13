@@ -1528,8 +1528,17 @@ func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout L
 	}
 	// now is read once here, at the single render seam, and handed to the
 	// otherwise clock-free renderer: elapsed derives from the activity's real
-	// start time, never from a counter.
-	for _, line := range RenderThinking(ts, time.Now(), displayWidth(state, layout)) {
+	// start time, never from a counter. The spinner index is the shimmer
+	// frame; on terminals without TrueColor (or with reduced motion) the
+	// plain projection renders instead, so the line degrades to the standard
+	// palette without animation.
+	now := time.Now()
+	tick := state.Status.Spinner
+	lines := RenderThinking(ts, now, displayWidth(state, layout))
+	if shimmerSupported() {
+		lines = RenderThinkingTick(ts, now, tick, displayWidth(state, layout))
+	}
+	for _, line := range lines {
 		sb.WriteString(style.Render(line) + "\n")
 	}
 }

@@ -577,7 +577,12 @@ func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	// word remains the fallback for the one non-idle state the activity line
 	// deliberately does not claim: shutting down.
 	if ts := ProjectThinking(s); ts.Active {
-		if lines := RenderThinking(ts, time.Now(), 0); len(lines) > 0 {
+		now := time.Now()
+		lines := RenderThinking(ts, now, 0)
+		if shimmerSupported() {
+			lines = RenderThinkingTick(ts, now, s.Status.Spinner, 0)
+		}
+		if len(lines) > 0 {
 			parts = append(parts, lines[0])
 		}
 	} else if runtime := DeriveRuntime(s); runtime != RuntimeIdle {

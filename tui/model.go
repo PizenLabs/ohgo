@@ -311,6 +311,11 @@ type State struct {
 	// state. It makes repeated cancels idempotent and lets late progress
 	// events be dropped instead of resurrecting Running.
 	Cancelled bool
+	// OutputTokens counts estimated output tokens streamed this turn. It is
+	// reset on every new turn and recomputed from the trailing assistant
+	// text on each delta, so the activity line can report live progress
+	// without inventing telemetry the runtime did not measure.
+	OutputTokens int
 }
 
 // New returns an empty state.
@@ -343,6 +348,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.HistCursor = -1
 		s.HistDraft = ""
+		s.OutputTokens = 0
 		s.growScroll(countLines(e.Text))
 
 	case AssistantDelta:
@@ -353,6 +359,7 @@ func (s *State) Apply(event Event) {
 			return
 		}
 		s.appendAssistant(e.Text)
+		s.OutputTokens = s.currentOutputTokens()
 		s.growScroll(strings.Count(e.Text, "\n"))
 
 	case AssistantDone:
@@ -475,6 +482,7 @@ func (s *State) Apply(event Event) {
 		// transcript replaces the view outright.
 		s.Entries = append([]Entry(nil), e.Entries...)
 		s.closedAssistant = true
+		s.OutputTokens = 0
 
 	case ContextUpdated:
 		s.Status.ContextUsed = e.Used
@@ -1116,7 +1124,20 @@ func (s *State) Apply(event Event) {
 		s.Scroll = 0
 		s.Follow = true
 		s.closedAssistant = false
+		s.OutputTokens = 0
 	}
+}
+
+// currentOutputTokens estimates tokens for the trailing open assistant
+// entry. It recounts the whole entry rather than summing per-chunk estimates
+// so chunk-boundary rounding cannot inflate the total. Zero when no entry is
+// open: unknown stays absent rather than fabricated.
+func (s *State) currentOutputTokens() int {
+	idx := s.openAssistant()
+	if idx < 0 {
+		return s.OutputTokens
+	}
+	return tokens.Count(s.Entries[idx].AssistantText, tokens.ModeEstimate)
 }
 
 // growScroll keeps a scrolled-up viewport pinned while new output lands.

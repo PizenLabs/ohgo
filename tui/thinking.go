@@ -63,6 +63,10 @@ type ThinkingState struct {
 	// operation, so the line may advertise esc. Waiting for approval is not
 	// interruptible from the line: the approval dialog owns the keyboard.
 	Interruptible bool
+	// OutputTokens is the live estimated output count while streaming. Zero
+	// means unknown or nothing yet, in which case no token segment renders:
+	// the line never fabricates telemetry it did not count.
+	OutputTokens int
 }
 
 // ProjectThinking maps the authoritative runtime state to the activity line.
@@ -93,12 +97,15 @@ func ProjectThinking(s State) ThinkingState {
 	case RuntimeStreaming:
 		// Text is already visible, so the truthful word is "Responding…",
 		// not "Thinking…". The distinction already exists in DeriveRuntime.
+		// OutputTokens is the running estimate counted from streamed deltas
+		// in State.Apply, so the line reports what arrived, never a guess.
 		return ThinkingState{
 			Active:        true,
 			Phase:         ThinkingModel,
 			Label:         "Responding…",
 			StartedAt:     s.TurnStartedAt,
 			Interruptible: true,
+			OutputTokens:  s.OutputTokens,
 		}
 
 	case RuntimeWorking:
@@ -140,36 +147,135 @@ func latestRunningTool(s State) *ToolEntry {
 // inputs always produce the same output and tests need no wall clock. An
 // inactive state yields no lines; an active state yields exactly one. When
 // width is positive the line never exceeds it, and the head shortens before
-// the timer does, so the duration survives a narrow terminal.
+// the timer does, so the duration survives a narrow terminal. The token
+// segment renders only when OutputTokens is positive, so unknown stays absent
+// rather than fabricated. This entry point stays shimmer-free so plain-text
+// assertions keep working; animated callers use RenderThinkingTick.
 func RenderThinking(state ThinkingState, now time.Time, width int) []string {
+	return renderThinking(state, now, 0, false, width)
+}
+
+// RenderThinkingTick renders the activity line with a frame index for the
+// shimmer wave. It is pure like RenderThinking: tick is supplied rather than
+// read, so output is deterministic. Only the Responding label shimmers, so
+// Thinking, Running, and Waiting lines keep their stable text. Width handling
+// matches RenderThinking; a truncated shimmer degrades to plain text rather
+// than overflowing.
+func RenderThinkingTick(state ThinkingState, now time.Time, tick int, width int) []string {
+	return renderThinking(state, now, tick, true, width)
+}
+
+func renderThinking(state ThinkingState, now time.Time, tick int, shimmer bool, width int) []string {
+	return renderThinkingZoned(state, now, tick, shimmer, width, liveThinkingZones)
+}
+
+// thinkingZones maps each activity-line zone to its style, keeping color
+// decisions separate from layout math. Every field is a pure string
+// function, so tests can substitute markers and assert the exact zoning
+// while production resolves through the semantic chrome tokens in style.go.
+// No zone carries meaning by hue alone: the glyph and the words already name
+// the state, color only quiets the secondary segments.
+type thinkingZones struct {
+	// active styles the glyph and the head content while executing.
+	active func(string) string
+	// waiting styles the blocked-on-approval line, which must read as
+	// parked rather than live.
+	waiting func(string) string
+	// meta styles the token count: information that recedes instead of
+	// competing with the label.
+	meta func(string) string
+	// dim styles the · separators as clean punctuation.
+	dim func(string) string
+	// tail styles elapsed time and the esc hint as secondary system status.
+	tail func(string) string
+	// wave renders the animated label for the shimmer frame.
+	wave func(label string, tick int) string
+}
+
+// Thinking zone styles, resolved once from the chrome tokens: primary for
+// the live head, muted for parked text and token telemetry, dim slate for
+// punctuation and tail status.
+var (
+	thinkingActiveStyle  = fg(ColorPrimary)
+	thinkingWaitingStyle = fg(ColorMuted)
+	thinkingMetaStyle    = fg(ColorMuted)
+	thinkingDimStyle     = fg(ColorDim)
+	thinkingTailStyle    = fg(ColorDim)
+)
+
+// liveThinkingZones is the production zoning. Lipgloss resolves the profile
+// from the terminal, so colorless environments render plain text and every
+// stripped assertion keeps holding.
+var liveThinkingZones = thinkingZones{
+	active: func(s string) string { return thinkingActiveStyle.Render(s) },
+	waiting: func(s string) string {
+		return thinkingWaitingStyle.Render(s)
+	},
+	meta: func(s string) string { return thinkingMetaStyle.Render(s) },
+	dim:  func(s string) string { return thinkingDimStyle.Render(s) },
+	tail: func(s string) string { return thinkingTailStyle.Render(s) },
+	wave: ShimmerText,
+}
+
+func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer bool, width int, z thinkingZones) []string {
 	if !state.Active {
 		return nil
 	}
-	head := thinkingGlyph(state.Phase) + " " + state.Label
-	if state.Detail != "" {
-		head += " " + oneLine(state.Detail)
+	if state.Phase == ThinkingWaiting {
+		// Blocked on the user, not executing: the whole row parks in the
+		// muted zone with no timer and no interrupt hint.
+		return []string{formatThinkingLine(z.waiting(thinkingGlyph(state.Phase)), z.waiting(state.Label), "", width)}
 	}
-	tail := ""
+	// The shimmer wraps only label runes and its stripped width always
+	// equals the plain width, so the trailing metadata never shifts across
+	// ticks. Styles apply after the text blocks are built, so color codes
+	// never enter length math: CellWidth and TruncateToWidth strip them.
+	label := state.Label
+	if shimmer && state.Phase == ThinkingModel && label == "Responding…" {
+		label = z.wave(label, tick)
+	} else {
+		label = z.active(label)
+	}
+	content := label
+	if state.Detail != "" {
+		content += " " + z.active(oneLine(state.Detail))
+	}
+	if state.OutputTokens > 0 {
+		content += " " + z.dim("·") + " " + z.meta(formatOutputTokens(state.OutputTokens))
+	}
+	// Tail is elapsed time plus the interrupt hint. It yields last under
+	// truncation because it carries the live affordances.
+	var tailParts []string
 	if elapsed := elapsedLabel(state.StartedAt, now); elapsed != "" {
-		tail = elapsed
+		tailParts = append(tailParts, z.tail(elapsed))
 	}
 	// The interrupt hint is only ever emitted when the runtime proved the
 	// operation is interruptible, and it names the key the existing turn
 	// cancellation already uses.
 	if state.Interruptible {
-		if tail == "" {
-			tail = "esc"
-		} else {
-			tail += " · esc"
-		}
+		tailParts = append(tailParts, z.tail("esc"))
 	}
-	return []string{composeThinkingLine(head, tail, width)}
+	tail := strings.Join(tailParts, " "+z.dim("·")+" ")
+	return []string{formatThinkingLine(z.active(thinkingGlyph(state.Phase)), content, tail, width)}
 }
 
-// composeThinkingLine right-aligns the tail (elapsed, interrupt hint) and
-// trims the head to whatever the tail leaves, so a long tool summary yields
-// before the timer or the hint does.
-func composeThinkingLine(head, tail string, width int) string {
+// thinkingGap is the fixed breathing room between the head block and the
+// tail metadata. It never stretches: the line is a tight inline block, so a
+// wide terminal shows the same cohesive row as a narrow one instead of
+// pushing the timer to the far edge.
+const thinkingGap = "    "
+
+// formatThinkingLine joins glyph, content, and tail into one compact row.
+//
+// The head yields before the tail under truncation, so the timer and the esc
+// hint survive a narrow terminal while a long tool summary trims first. The
+// line is never padded to fill width: its cells are exactly the content plus
+// one fixed gap, keeping shimmer frames layout-stable.
+func formatThinkingLine(glyph, content, tail string, width int) string {
+	head := glyph
+	if content != "" {
+		head += " " + content
+	}
 	if tail == "" {
 		if width > 0 && CellWidth(head) > width {
 			return TruncateToWidth(head, width)
@@ -177,23 +283,30 @@ func composeThinkingLine(head, tail string, width int) string {
 		return head
 	}
 	if width <= 0 {
-		return head + "  " + tail
+		return head + thinkingGap + tail
 	}
-	budget := width - CellWidth(tail)
-	if budget < 0 {
-		budget = 0
+	if CellWidth(tail) > width {
+		// Even the metadata alone overflows: the head yields entirely
+		// rather than squeezing both sides into ellipses.
+		return TruncateToWidth(tail, width)
+	}
+	budget := width - CellWidth(tail) - CellWidth(thinkingGap)
+	if budget <= 0 {
+		return TruncateToWidth(tail, width)
 	}
 	if CellWidth(head) > budget {
 		head = TruncateToWidth(head, budget)
 	}
-	if gap := budget - CellWidth(head); gap > 0 {
-		head += strings.Repeat(" ", gap)
+	return head + thinkingGap + tail
+}
+
+// formatOutputTokens renders the live token segment. Non-positive counts
+// yield "", so unknown stays absent rather than rendering as zero.
+func formatOutputTokens(n int) string {
+	if n <= 0 {
+		return ""
 	}
-	line := head + tail
-	if CellWidth(line) > width {
-		line = TruncateToWidth(line, width)
-	}
-	return line
+	return fmt.Sprintf("%d tokens", n)
 }
 
 // thinkingGlyph is a static phase marker. It is presentation only: the phase

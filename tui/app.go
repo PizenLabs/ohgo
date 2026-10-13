@@ -51,12 +51,12 @@ type approvalPrompt struct{ request approvalRequest }
 // renderer; draining here serialises it.
 type turnFinishedMsg struct{}
 
-// tickMsg advances the spinner.
+// tickMsg advances the spinner and the thinking shimmer.
 type tickMsg time.Time
 
-// spinnerInterval bounds animation frame rate. Fast enough to look alive,
-// slow enough not to burn a core.
-const spinnerInterval = 250 * time.Millisecond
+// spinnerInterval bounds animation frame rate. 100ms keeps the shimmer wave
+// smooth without burning a core; the spinner shares the same tick.
+const spinnerInterval = 100 * time.Millisecond
 
 // Program drives the interactive session.
 //
