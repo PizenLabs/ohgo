@@ -91,7 +91,7 @@ func (t *WebFetchTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 	if err != nil {
 		return agent.ErrorResult("build request: %v", err)
 	}
-	req.Header.Set("User-Agent", "ohgo/0.1 (+https://github.com/PizenLabs/ohgo)")
+	req.Header.Set("User-Agent", "ohgo/0.1 (+https://pizenlabs.dev/ohgo-web/)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain,*/*")
 
 	resp, err := client.Do(req)
