@@ -342,13 +342,16 @@ func TestRuntimeDerivation(t *testing.T) {
 }
 
 func TestStatusShowsWorkspaceMeta(t *testing.T) {
+	// No middle status line: workspace meta lives once in the bottom hint
+	// bar (session, measured cost, path), not in a third copy between the
+	// transcript and the composer.
 	s := New()
 	s.Apply(WorkspaceUpdated{Cwd: "/home/user/project", HasCwd: true, Session: "#3", HasSession: true, UsageText: "1.2k tok", HasUsage: true})
 	s.Apply(TerminalResized{Width: 120, Height: 24})
 	out := Render(s)
 	for _, want := range []string{"project", "#3", "1.2k"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("status = %q, want %q shown", out, want)
+			t.Errorf("footer = %q, want %q shown", out, want)
 		}
 	}
 }

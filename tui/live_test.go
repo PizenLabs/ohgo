@@ -116,8 +116,8 @@ func TestLiveRegionOnlyHoldsLiveRows(t *testing.T) {
 
 	view := strings.Split(painter.view(), "\n")
 	last := strings.TrimSpace(ansi.Strip(view[len(view)-1]))
-	if !strings.HasPrefix(last, "enter send") {
-		t.Errorf("the bottom row is %q, want the composer hint row; the composer must own the last row", last)
+	if !strings.Contains(last, "? help") {
+		t.Errorf("the bottom row is %q, want the telemetry hint row; the composer must own the last row", last)
 	}
 	if len(view) > liveRows(p.state) {
 		t.Errorf("the frame holds %d rows, past the %d-row budget", len(view), liveRows(p.state))
@@ -350,7 +350,7 @@ func TestLiveForgetRestartsProgressAfterClear(t *testing.T) {
 	liveEvent(p, AssistantDone{})
 
 	view := ansi.Strip(painter.view())
-	if !strings.Contains(view, "enter send") {
+	if !strings.Contains(view, "? help") {
 		t.Errorf("the composer is missing after /clear:\n%s", view)
 	}
 	if painter.painted != len(p.state.Entries) {
@@ -425,7 +425,7 @@ func TestLiveApprovalOwnsTheLiveRegion(t *testing.T) {
 	if !strings.Contains(view, "rm -rf build") {
 		t.Errorf("the approval summary is missing:\n%s", view)
 	}
-	if strings.Contains(view, "enter send") {
+	if strings.Contains(view, "? help") {
 		t.Errorf("the composer is still live while the dialog owns the keyboard:\n%s", view)
 	}
 
@@ -433,7 +433,7 @@ func TestLiveApprovalOwnsTheLiveRegion(t *testing.T) {
 	p.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	p.pending = nil
 	liveEvent(p, ApprovalAnswered{})
-	if !strings.Contains(ansi.Strip(painter.view()), "enter send") {
+	if !strings.Contains(ansi.Strip(painter.view()), "? help") {
 		t.Errorf("the composer did not come back after the dialog closed:\n%s", ansi.Strip(painter.view()))
 	}
 }
@@ -500,7 +500,7 @@ func TestLiveResizeRewrapsOnlyTheLiveRegion(t *testing.T) {
 	}
 	// The composer is still the last thing on screen.
 	lines := strings.Split(rows, "\n")
-	if last := strings.TrimSpace(ansi.Strip(lines[len(lines)-1])); !strings.HasPrefix(last, "enter") {
+	if last := strings.TrimSpace(ansi.Strip(lines[len(lines)-1])); !strings.Contains(last, "? help") {
 		t.Errorf("the composer lost the bottom row after the resize: %q", last)
 	}
 }

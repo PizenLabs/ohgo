@@ -224,7 +224,7 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 	if state.Phase == ThinkingWaiting {
 		// Blocked on the user, not executing: the whole row parks in the
 		// muted zone with no timer and no interrupt hint.
-		return []string{formatThinkingLine(z.waiting(thinkingGlyph(state.Phase)), z.waiting(state.Label), "", width)}
+		return []string{formatThinkingLine(z.waiting(thinkingGlyph(state.Phase)), z.waiting(state.Label), "", width, z)}
 	}
 	// The shimmer wraps only label runes and its stripped width always
 	// equals the plain width, so the trailing metadata never shifts across
@@ -240,38 +240,42 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 	if state.Detail != "" {
 		content += " " + z.active(oneLine(state.Detail))
 	}
+	// Metadata is one parenthesised block directly above the composer
+	// divider: (↓tokens · elapsed · esc). Tokens carry the ↓ prefix so the
+	// count reads without colour; elapsed derives from the real start;
+	// esc appears only when the runtime proved interruptibility. Unknown
+	// stays absent rather than fabricated.
+	var metaParts []string
 	if state.OutputTokens > 0 {
-		content += " " + z.dim("·") + " " + z.meta(formatOutputTokens(state.OutputTokens))
+		metaParts = append(metaParts, z.meta(formatOutputTokens(state.OutputTokens)))
 	}
 	// Tail is elapsed time plus the interrupt hint. It yields last under
 	// truncation because it carries the live affordances.
-	var tailParts []string
 	if elapsed := elapsedLabel(state.StartedAt, now); elapsed != "" {
-		tailParts = append(tailParts, z.tail(elapsed))
+		metaParts = append(metaParts, z.tail(elapsed))
 	}
 	// The interrupt hint is only ever emitted when the runtime proved the
 	// operation is interruptible, and it names the key the existing turn
 	// cancellation already uses.
 	if state.Interruptible {
-		tailParts = append(tailParts, z.tail("esc"))
+		metaParts = append(metaParts, z.tail("esc"))
 	}
-	tail := strings.Join(tailParts, " "+z.dim("·")+" ")
-	return []string{formatThinkingLine(z.active(thinkingGlyph(state.Phase)), content, tail, width)}
+	tail := ""
+	if len(metaParts) > 0 {
+		tail = z.dim("(") + strings.Join(metaParts, " "+z.dim("·")+" ") + z.dim(")")
+	}
+	return []string{formatThinkingLine(z.active(thinkingGlyph(state.Phase)), content, tail, width, z)}
 }
 
-// thinkingGap is the fixed breathing room between the head block and the
-// tail metadata. It never stretches: the line is a tight inline block, so a
-// wide terminal shows the same cohesive row as a narrow one instead of
-// pushing the timer to the far edge.
-const thinkingGap = "    "
-
-// formatThinkingLine joins glyph, content, and tail into one compact row.
+// formatThinkingLine joins glyph, content, and parenthesised tail into one
+// compact row: "✳ Responding… · (↓248 tokens · 5s · esc)".
 //
 // The head yields before the tail under truncation, so the timer and the esc
 // hint survive a narrow terminal while a long tool summary trims first. The
+// separator " · " reads in the dim zone like every other punctuation, and the
 // line is never padded to fill width: its cells are exactly the content plus
-// one fixed gap, keeping shimmer frames layout-stable.
-func formatThinkingLine(glyph, content, tail string, width int) string {
+// the separator and tail, keeping shimmer frames layout-stable.
+func formatThinkingLine(glyph, content, tail string, width int, z thinkingZones) string {
 	head := glyph
 	if content != "" {
 		head += " " + content
@@ -282,31 +286,33 @@ func formatThinkingLine(glyph, content, tail string, width int) string {
 		}
 		return head
 	}
+	sep := " " + z.dim("·") + " "
 	if width <= 0 {
-		return head + thinkingGap + tail
+		return head + sep + tail
 	}
 	if CellWidth(tail) > width {
 		// Even the metadata alone overflows: the head yields entirely
 		// rather than squeezing both sides into ellipses.
 		return TruncateToWidth(tail, width)
 	}
-	budget := width - CellWidth(tail) - CellWidth(thinkingGap)
+	budget := width - CellWidth(tail) - CellWidth(sep)
 	if budget <= 0 {
 		return TruncateToWidth(tail, width)
 	}
 	if CellWidth(head) > budget {
 		head = TruncateToWidth(head, budget)
 	}
-	return head + thinkingGap + tail
+	return head + sep + tail
 }
 
-// formatOutputTokens renders the live token segment. Non-positive counts
-// yield "", so unknown stays absent rather than rendering as zero.
+// formatOutputTokens renders the live token segment with its ↓ prefix.
+// Non-positive counts yield "", so unknown stays absent rather than rendering
+// as zero.
 func formatOutputTokens(n int) string {
 	if n <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d tokens", n)
+	return fmt.Sprintf("↓%d tokens", n)
 }
 
 // thinkingGlyph is a static phase marker. It is presentation only: the phase

@@ -7,38 +7,144 @@ import (
 	"time"
 )
 
-// SessionShortcutBar is the fresh-session helper row: the two discovery paths
-// that cost nothing and always work. "? help" opens the command palette on an
-// empty composer and "^p settings" opens it too, so the hints never advertise
-// a key that does something else.
-const SessionShortcutBar = "enter send  ·  ? help  ·  ^p settings"
+// SessionShortcutBar is the right zone of the telemetry footer: the two
+// discovery paths that cost nothing and always work. "? help" opens the
+// command palette on an empty composer and "^p settings" opens it too, so the
+// hints never advertise a key that does something else.
+const SessionShortcutBar = "? help · ^p settings"
 
-// sessionTelemetry renders the active-session helper row: the measured token
-// totals and elapsed time, or "" when nothing has been measured yet.
+// sessionTelemetry renders the left zone of the telemetry footer: measured
+// session metrics and context, or "" when nothing has been measured yet.
 //
-// "enter send" leads so the row keeps teaching the one affordance the composer
-// always owns, matching the fresh bar's shape and the contract that the
-// composer's hint row is the frame's last line. Unknown counters stay absent
-// rather than rendering as "0 in / 0 out": the point of progressive disclosure
-// is that a fresh, unmeasured session shows nothing it did not measure.
+// Format is "↑<in> · ↓<out> (<ctx%>) · <cost> · <session> · <path>:<branch>",
+// with unknown counters absent rather than "0". The arrows read without
+// colour, the parenthesised context budget ties to the output count it
+// scopes, and the trailing session plus path:branch orients. A fresh,
+// unmeasured session shows nothing it did not measure here; the minimal
+// path-only row is owned by the hint bar, not here.
 func sessionTelemetry(state State) string {
 	if !state.SessionActive {
 		return ""
 	}
 	var parts []string
 	if state.SessionIn > 0 {
-		parts = append(parts, "in: "+formatTokens(state.SessionIn))
+		parts = append(parts, "↑"+formatTokens(state.SessionIn))
 	}
 	if state.SessionOut > 0 {
-		parts = append(parts, "out: "+formatTokens(state.SessionOut))
+		out := "↓" + formatTokens(state.SessionOut)
+		if pct := state.Status.Percent(); pct >= 0 {
+			out += fmt.Sprintf(" (%d%%)", pct)
+		}
+		parts = append(parts, out)
+	} else if pct := state.Status.Percent(); pct >= 0 {
+		parts = append(parts, fmt.Sprintf("(%d%%)", pct))
 	}
-	if state.SessionElapsed > 0 {
-		parts = append(parts, formatDurationText(state.SessionElapsed))
+	if strings.TrimSpace(state.Status.UsageText) != "" {
+		parts = append(parts, sanitizeInline(strings.TrimSpace(state.Status.UsageText)))
+	}
+	if session := sanitizeInline(strings.TrimSpace(state.Status.Session)); session != "" {
+		parts = append(parts, session)
+	}
+	if path := sessionPathBranch(state); path != "" {
+		parts = append(parts, path)
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	return "enter send · " + strings.Join(parts, " · ")
+	return strings.Join(parts, " · ")
+}
+
+// sessionPathBranch reports the essential workspace orientation for the
+// footer: shortened cwd plus ":branch" when a branch is known. Empty when
+// neither is known, so the footer stays clean rather than rendering a
+// placeholder. Both arrive from the environment and are sanitized inline so
+// the one-row footer never wraps or splits.
+func sessionPathBranch(state State) string {
+	cwd := shortenCwd(sanitizeInline(strings.TrimSpace(state.Status.Cwd)), 24)
+	branch := sanitizeInline(strings.TrimSpace(state.Status.GitBranch))
+	switch {
+	case cwd == "" && branch == "":
+		return ""
+	case cwd == "":
+		return branch
+	case branch == "":
+		return cwd
+	default:
+		return cwd + ":" + branch
+	}
+}
+
+// sessionBarRow joins the left telemetry zone and the right shortcut zone
+// into one footer row. When width is positive the right zone pins to the far
+// edge with blank padding; when the row cannot fit, the left yields first so
+// the shortcuts survive, and the whole row truncates to width rather than
+// wrapping. Non-positive widths join with " · " and never pad, for tests and
+// unknown viewports.
+func sessionBarRow(left, right string, width int) string {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" {
+		if width > 0 {
+			return TruncateToWidth(right, width)
+		}
+		return right
+	}
+	if right == "" {
+		if width > 0 {
+			return TruncateToWidth(left, width)
+		}
+		return left
+	}
+	if width <= 0 {
+		return left + " · " + right
+	}
+	gap := width - CellWidth(left) - CellWidth(right)
+	if gap < 2 {
+		// Too narrow for a split: the left yields first so the shortcuts
+		// and the path leaf survive. Keep the left whole when the right
+		// still keeps its "? help" head; otherwise the right alone wins
+		// over a sliver, and truncation is the last resort.
+		sep := " · "
+		if CellWidth(left)+CellWidth(sep) < width && width-CellWidth(left)-CellWidth(sep) >= CellWidth("? help") {
+			return left + sep + TruncateToWidth(right, width-CellWidth(left)-CellWidth(sep))
+		}
+		if CellWidth(right) <= width {
+			return TruncateToWidth(right, width)
+		}
+		return TruncateToWidth(left+sep+right, width)
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// idleHintZones reports the two footer zones for an idle composer: left
+// session metrics and context, right shortcuts.
+//
+// Fresh sessions (no prompt, no recallable history) show minimal path-only
+// left with the full "? help · ^p settings" right, because ^p genuinely opens
+// settings there. Once a prompt exists the left reveals full telemetry and the
+// right narrows to "? help": ^p returns to history recall, so advertising
+// settings would lie (see app.go ^p handling). Unknown counters stay absent;
+// an empty left keeps the footer clean rather than inventing zeros.
+func idleHintZones(state State) (left, right string) {
+	if telemetry := sessionTelemetry(state); telemetry != "" {
+		return telemetry, "? help"
+	}
+	if state.SessionActive || len(state.Submitted) > 0 {
+		return "", "? help"
+	}
+	// Fresh and unmeasured: only what is present and essential — session,
+	// measured cost, path — never invented zeros and never a 0% budget.
+	var parts []string
+	if usage := sanitizeInline(strings.TrimSpace(state.Status.UsageText)); usage != "" {
+		parts = append(parts, usage)
+	}
+	if session := sanitizeInline(strings.TrimSpace(state.Status.Session)); session != "" {
+		parts = append(parts, session)
+	}
+	if path := sessionPathBranch(state); path != "" {
+		parts = append(parts, path)
+	}
+	return strings.Join(parts, " · "), SessionShortcutBar
 }
 
 // formatTokens renders a token count compactly with one decimal under a

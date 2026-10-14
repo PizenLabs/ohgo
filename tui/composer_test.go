@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -94,5 +95,85 @@ func TestLineBelowFallsBackAtTheLastLine(t *testing.T) {
 	}
 	if pos, ok := lineBelow("abcdef\nxy", 4); !ok || pos != 9 {
 		t.Errorf("lineBelow = (%d, %v), want (9, true): column clamped to the short line", pos, ok)
+	}
+}
+
+// The composer affordance names the live authority in lowercase: typing lands
+// after "ask > ", "build > ", or "fuzz > ", never after a bare "> " once an
+// authority owns the session. An unset authority keeps the generic prompt.
+func TestComposerPrefixFollowsAuthority(t *testing.T) {
+	cases := map[string]string{
+		"ASK":   "ask > ",
+		"BUILD": "build > ",
+		"FUZZ":  "fuzz > ",
+		"ask":   "ask > ",
+		"":      "> ",
+		"other": "> ",
+	}
+	for workspace, want := range cases {
+		s := New()
+		s.Status.Workspace = workspace
+		if got := composerPrefix(s); got != want {
+			t.Errorf("workspace %q prefix = %q, want %q", workspace, got, want)
+		}
+	}
+	// The frame shows the same affordance the helper reports: stripped render
+	// output contains the mode prefix, so the cursor visibly sits after it.
+	s := New()
+	s.Status.Model = "m"
+	s.Apply(WorkspaceUpdated{Workspace: "BUILD", HasWorkspace: true})
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(ComposerChanged{Text: "hi", Cursor: 2})
+	if out := Render(s); !strings.Contains(out, "build > hi") {
+		t.Errorf("render lacks the live mode prefix:\n%s", out)
+	}
+}
+
+// Each authority keeps its own accent: ASK teal/primary, BUILD blue/accent,
+// FUZZ magenta. Sharing one style would make the boundary unreadable.
+func TestComposerPrefixStylesDifferPerMode(t *testing.T) {
+	pal := DarkPalette()
+	mk := func(workspace string) string {
+		s := New()
+		s.Status.Workspace = workspace
+		return colorName(composerPrefixStyle(s, pal).GetForeground())
+	}
+	ask, build, fuzz := mk("ASK"), mk("BUILD"), mk("FUZZ")
+	if ask != "#5FB3A1" {
+		t.Errorf("ASK prefix = %q, want the teal primary", ask)
+	}
+	if build != "#7AA8C9" {
+		t.Errorf("BUILD prefix = %q, want the blue accent", build)
+	}
+	if fuzz == ask || fuzz == build {
+		t.Errorf("FUZZ prefix = %q, want its own magenta, not ASK %q or BUILD %q", fuzz, ask, build)
+	}
+}
+
+// A wider mode prefix leaves fewer cells for text: the wrap budget subtracts
+// the live prefix width, so "build > " folds earlier than "> " without
+// overflowing, and the cursor marker survives the fold.
+func TestComposerWrapAccountsForPrefixWidth(t *testing.T) {
+	layout := Layout{ContentWidth: 20}
+	if got := composerTextWidthFor(State{Status: Status{Workspace: "BUILD"}}, layout); got != 12 {
+		t.Errorf("BUILD text width = %d, want 20-8=12", got)
+	}
+	if got := composerTextWidthFor(New(), layout); got != 18 {
+		t.Errorf("generic text width = %d, want 20-2=18", got)
+	}
+	s := New()
+	s.Status.Model = "m"
+	s.Apply(WorkspaceUpdated{Workspace: "BUILD", HasWorkspace: true})
+	s.Apply(TerminalResized{Width: 40, Height: 24})
+	long := strings.Repeat("a", 60)
+	s.Apply(ComposerChanged{Text: long, Cursor: len([]rune(long))})
+	out := Render(s)
+	if !strings.Contains(out, "build > ") || !strings.Contains(out, "▌") {
+		t.Fatalf("BUILD composer lost prefix or cursor:\n%s", out)
+	}
+	for i, line := range strings.Split(out, "\n") {
+		if CellWidth(line) > 40 {
+			t.Errorf("line %d = %d cells, want the widened prefix to wrap, not overflow", i, CellWidth(line))
+		}
 	}
 }

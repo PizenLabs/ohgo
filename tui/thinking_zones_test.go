@@ -25,7 +25,8 @@ func zoneMarkers() thinkingZones {
 
 // TestThinkingZonesSeparateLabelFromMetadata: the live label reads active,
 // tokens recede into the muted zone, and punctuation plus tail status sit in
-// the dim zone — never one flat block of color.
+// the dim zone — never one flat block of color. Metadata is one parenthesised
+// block: (↓tokens · elapsed · esc).
 func TestThinkingZonesSeparateLabelFromMetadata(t *testing.T) {
 	start := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	now := start.Add(5 * time.Second)
@@ -34,11 +35,11 @@ func TestThinkingZonesSeparateLabelFromMetadata(t *testing.T) {
 		StartedAt: start, Interruptible: true, OutputTokens: 248,
 	}
 	got := renderThinkingZoned(state, now, 0, false, 0, zoneMarkers())[0]
-	want := "[A]✳[/A] [A]Responding…[/A] [D]·[/D] [M]248 tokens[/M]    [T]5s[/T] [D]·[/D] [T]esc[/T]"
+	want := "[A]✳[/A] [A]Responding…[/A] [D]·[/D] [D]([/D][M]↓248 tokens[/M] [D]·[/D] [T]5s[/T] [D]·[/D] [T]esc[/T][D])[/D]"
 	if got != want {
 		t.Fatalf("zoned line = %q, want %q", got, want)
 	}
-	if stripped := stripZoneMarkers(got); stripped != "✳ Responding… · 248 tokens    5s · esc" {
+	if stripped := stripZoneMarkers(got); stripped != "✳ Responding… · (↓248 tokens · 5s · esc)" {
 		t.Fatalf("stripped line = %q, want the compact plain text", stripped)
 	}
 }
@@ -69,7 +70,8 @@ func TestThinkingZonesParkWaiting(t *testing.T) {
 }
 
 // TestThinkingZonesKeepToolDetailActive: the tool's own summary rides with
-// the active head while the timer stays tail status.
+// the active head while the timer stays tail status inside the parenthesised
+// block.
 func TestThinkingZonesKeepToolDetailActive(t *testing.T) {
 	start := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	state := ThinkingState{
@@ -78,7 +80,7 @@ func TestThinkingZonesKeepToolDetailActive(t *testing.T) {
 		Interruptible: true,
 	}
 	got := renderThinkingZoned(state, start, 0, false, 0, zoneMarkers())[0]
-	want := "[A]✳[/A] [A]Running[/A] [A]bash go test[/A]    [T]12s[/T] [D]·[/D] [T]esc[/T]"
+	want := "[A]✳[/A] [A]Running[/A] [A]bash go test[/A] [D]·[/D] [D]([/D][T]12s[/T] [D]·[/D] [T]esc[/T][D])[/D]"
 	if got != want {
 		t.Fatalf("zoned line = %q, want %q", got, want)
 	}

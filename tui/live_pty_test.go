@@ -106,7 +106,7 @@ func TestLiveSessionUnderARrealPTY(t *testing.T) {
 	}
 
 	// The session starts: a live region with a composer is the first thing.
-	waitFor("enter send", 20*time.Second)
+	waitFor("? help", 20*time.Second)
 
 	// Type a mouse-report-shaped string. Without mouse reporting it is prose,
 	// so it must come back byte for byte.

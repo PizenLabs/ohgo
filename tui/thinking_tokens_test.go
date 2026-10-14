@@ -106,9 +106,10 @@ func TestRenderThinkingTickKeepsWidth(t *testing.T) {
 	}
 }
 
-// TestFormatThinkingLineIsCompact: the row is a tight inline block joined by
-// one fixed gap, never padded to fill the terminal. A wide terminal shows
-// the same cohesive row as a narrow one.
+// TestFormatThinkingLineIsCompact: the row is a tight inline block with the
+// metadata parenthesised directly above the composer divider, never padded to
+// fill the terminal. A wide terminal shows the same cohesive row as a narrow
+// one.
 func TestFormatThinkingLineIsCompact(t *testing.T) {
 	start := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	now := start.Add(5 * time.Second)
@@ -116,7 +117,7 @@ func TestFormatThinkingLineIsCompact(t *testing.T) {
 		Active: true, Phase: ThinkingModel, Label: "Responding…",
 		StartedAt: start, Interruptible: true, OutputTokens: 248,
 	}
-	if got, want := RenderThinking(state, now, 0)[0], "✳ Responding… · 248 tokens    5s · esc"; got != want {
+	if got, want := RenderThinking(state, now, 0)[0], "✳ Responding… · (↓248 tokens · 5s · esc)"; got != want {
 		t.Fatalf("line = %q, want %q", got, want)
 	}
 	wide := RenderThinking(state, now, 80)[0]

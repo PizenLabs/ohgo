@@ -9,7 +9,7 @@ import (
 )
 
 // A fresh session shows the shortcut bar and no token counters: there is
-// nothing measured to report, so reporting "0 in / 0 out" would be a lie.
+// nothing measured to report, so reporting "↑0 / ↓0" would be a lie.
 func TestSessionBarHiddenOnFreshSession(t *testing.T) {
 	s := New()
 	s.Status.Model = "p/m"
@@ -18,6 +18,9 @@ func TestSessionBarHiddenOnFreshSession(t *testing.T) {
 	out := Render(s)
 	if strings.Contains(out, "in: ") || strings.Contains(out, "out: ") {
 		t.Fatalf("fresh session showed token counters:\n%s", out)
+	}
+	if strings.Contains(out, "↑") || strings.Contains(out, "↓") {
+		t.Fatalf("fresh session showed measured telemetry:\n%s", out)
 	}
 	if !strings.Contains(out, "? help") || !strings.Contains(out, "^p settings") {
 		t.Fatalf("fresh session lost the shortcut bar:\n%s", out)
@@ -28,7 +31,8 @@ func TestSessionBarHiddenOnFreshSession(t *testing.T) {
 }
 
 // The first executed prompt flips the helper row to measured telemetry, and
-// every segment reflects exactly what the runtime reported.
+// every segment reflects exactly what the runtime reported. Single-canvas:
+// left metrics (↑in · ↓out) plus right shortcuts (? help) in two zones.
 func TestSessionTelemetryVisibleAfterFirstRun(t *testing.T) {
 	s := New()
 	s.Status.Model = "p/m"
@@ -38,15 +42,17 @@ func TestSessionTelemetryVisibleAfterFirstRun(t *testing.T) {
 	s.Apply(SessionMetricsUpdated{Input: 1200, Output: 340, Elapsed: 3 * time.Second})
 
 	row := composerHintsFor(s)
-	for _, want := range []string{"in: 1.2k", "out: 340", "3s", "enter send"} {
+	for _, want := range []string{"↑1.2k", "↓340", "? help"} {
 		if !strings.Contains(row, want) {
 			t.Errorf("telemetry row = %q, want %q", row, want)
 		}
 	}
-	if strings.Contains(row, "? help") {
-		t.Errorf("telemetry did not replace the shortcut hints: %q", row)
+	for _, stale := range []string{"in: ", "out: ", "enter send", "^p settings"} {
+		if strings.Contains(row, stale) {
+			t.Errorf("telemetry row = %q, want no stale %q (left/right split)", row, stale)
+		}
 	}
-	if out := Render(s); !strings.Contains(out, "in: 1.2k") {
+	if out := Render(s); !strings.Contains(out, "↑1.2k") {
 		t.Fatalf("rendered frame lost the token counter:\n%s", out)
 	}
 }
@@ -83,8 +89,9 @@ func TestSessionTelemetryOmitsUnmeasuredCounters(t *testing.T) {
 }
 
 // The fresh shortcut bar's ^p must be true. On a session with nothing to
-// recall it opens the settings palette; once a prompt exists the bar shows
-// telemetry and ^p goes back to history recall.
+// recall it opens the settings palette; once a prompt exists the left shows
+// telemetry, the right narrows to "? help", and ^p goes back to history
+// recall.
 func TestCtrlPOpensSettingsOnlyOnAFreshSession(t *testing.T) {
 	fresh := NewProgram(nil, "test", 0)
 	keyPress(fresh, tea.KeyMsg{Type: tea.KeyCtrlP})
@@ -123,5 +130,60 @@ func TestFormatTokensCompacts(t *testing.T) {
 		if got := formatTokens(c.in); got != c.want {
 			t.Errorf("formatTokens(%d) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// The footer is two zones: left metrics/context, right shortcuts pinned to
+// the far edge. A wide frame pads between them; a narrow frame joins and
+// truncates rather than wrapping to a second row.
+func TestSessionBarSplitsTelemetryAndShortcuts(t *testing.T) {
+	left, right := "↑1.2k · ↓340", "? help · ^p settings"
+	row := sessionBarRow(left, right, 60)
+	if !strings.HasPrefix(row, left) || !strings.HasSuffix(row, right) {
+		t.Fatalf("split row = %q, want left leading and right trailing", row)
+	}
+	if got := CellWidth(row); got != 60 {
+		t.Errorf("split row is %d cells, want exactly the 60-cell frame", got)
+	}
+	narrow := sessionBarRow(left, right, 20)
+	if got := CellWidth(narrow); got > 20 {
+		t.Fatalf("narrow row is %d cells, want no overflow: %q", got, narrow)
+	}
+	if !strings.Contains(narrow, "? help") {
+		t.Errorf("narrow row = %q, want the shortcuts to survive the trim", narrow)
+	}
+	if got := sessionBarRow(left, right, 0); got != left+" · "+right {
+		t.Errorf("unbounded row = %q, want the joined zones", got)
+	}
+}
+
+// Fresh shows minimal path-only left with full shortcuts; active reveals full
+// telemetry and narrows the right so ^p never promises settings when it
+// recalls history. Either way the left never invents zeros.
+func TestIdleHintZonesKeepCtrlPTruthful(t *testing.T) {
+	fresh := New()
+	fresh.Apply(WorkspaceUpdated{Cwd: "/work/proj", HasCwd: true, GitBranch: "main", HasGit: true})
+	left, right := idleHintZones(fresh)
+	if right != SessionShortcutBar || !strings.Contains(right, "^p settings") {
+		t.Errorf("fresh right = %q, want the full shortcut bar", right)
+	}
+	if left == "" || !strings.Contains(left, "proj") {
+		t.Errorf("fresh left = %q, want minimal path info", left)
+	}
+
+	active := New()
+	active.Apply(UserSubmitted{Text: "go"})
+	active.Apply(AssistantDone{})
+	active.Apply(SessionMetricsUpdated{Input: 500, Output: 100})
+	active.Apply(WorkspaceUpdated{Cwd: "/work/proj", HasCwd: true, HasGit: false})
+	left, right = idleHintZones(active)
+	if !strings.Contains(left, "↑500") || !strings.Contains(left, "↓100") {
+		t.Errorf("active left = %q, want measured ↑/↓ telemetry", left)
+	}
+	if strings.Contains(right, "^p settings") {
+		t.Errorf("active right = %q, want no ^p promise once history exists", right)
+	}
+	if !strings.Contains(right, "? help") {
+		t.Errorf("active right = %q, want the help shortcut kept", right)
 	}
 }

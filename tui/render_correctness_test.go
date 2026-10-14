@@ -922,8 +922,10 @@ func TestLinkWithSpaceStaysLiteral(t *testing.T) {
 // The bottom chrome is pinned, never floating: driving the real Program
 // through submits, streaming deltas, queueing, approval, and resizes, every
 // frame must fill the viewport exactly, carry the session marker exactly
-// once (status never duplicated mid-screen), and show exactly the header
-// separator plus the two composer rules — no ghost chrome anywhere else.
+// once outside busy turns (while busy the hint row belongs to cancellation
+// keys, and the marker must never duplicate mid-screen), and show exactly
+// the header separator plus the two composer rules — no ghost chrome
+// anywhere else.
 func TestLiveProgramFramesHoldBottomChrome(t *testing.T) {
 	p := NewProgram(scriptedLoop(t, "answer"), "test-model", 100)
 	p.PublishWorkspace(WorkspaceUpdated{Cwd: "/work/project", HasCwd: true, Session: "#9", HasSession: true})
@@ -938,7 +940,7 @@ func TestLiveProgramFramesHoldBottomChrome(t *testing.T) {
 			t.Fatal("event channel empty: the frame was never driven")
 		}
 	}
-	check := func(label string, height, width, ruleWidth int) {
+	check := func(label string, height, width, ruleWidth, wantMarker int) {
 		t.Helper()
 		out := p.View()
 		lines := strings.Split(out, "\n")
@@ -953,33 +955,35 @@ func TestLiveProgramFramesHoldBottomChrome(t *testing.T) {
 		if !strings.Contains(lines[0], "ohgo") {
 			t.Errorf("%s: header left the top: %q", label, lines[0])
 		}
-		if got := strings.Count(out, "#9"); got != 1 {
-			t.Errorf("%s: session marker %d times, want exactly once (status duplicated?)", label, got)
+		if got := strings.Count(out, "#9"); got != wantMarker {
+			t.Errorf("%s: session marker %d times, want exactly %d", label, got, wantMarker)
 		}
 		if got := fullRules(out, ruleWidth); got != 3 {
 			t.Errorf("%s: %d full-width rules, want 3 (header + dual composer)", label, got)
 		}
 	}
 
-	check("idle", 24, 80, 79)
+	check("idle", 24, 80, 79, 1)
 	keyPress(p, runes("do it"))
-	check("typing", 24, 80, 79)
+	check("typing", 24, 80, 79, 1)
 	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter}) // starts the scripted turn
 	feed(UserSubmitted{Text: "do it"})
-	check("submitted-busy", 24, 80, 79)
+	// While busy the hint row belongs to cancellation keys, so the session
+	// marker yields until the turn ends; it must never duplicate, either.
+	check("submitted-busy", 24, 80, 79, 0)
 	feed(AssistantDelta{Text: "# Title\n\nSome **bold** text.\n"})
-	check("streaming", 24, 80, 79)
+	check("streaming", 24, 80, 79, 0)
 	feed(MessageQueued{Text: "later"})
 	keyPress(p, runes("x"))
-	check("queued-typing", 24, 80, 79)
+	check("queued-typing", 24, 80, 79, 0)
 	feed(AssistantDelta{Text: "More.\n\n- one\n- two\n"})
-	check("streaming-list", 24, 80, 79)
+	check("streaming-list", 24, 80, 79, 0)
 	p.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
-	check("resized", 20, 60, 59)
+	check("resized", 20, 60, 59, 0)
 	feed(AssistantDone{})
-	check("done", 20, 60, 59)
+	check("done", 20, 60, 59, 1)
 	feed(ApprovalAsked{ToolName: "bash", Summary: "run it", Choices: []string{"Yes", "No"}})
-	check("approval", 20, 60, 59)
+	check("approval", 20, 60, 59, 1)
 }
 
 // fullRules counts lines that are nothing but a full-width rule: the header
@@ -1000,9 +1004,9 @@ func fullRules(out string, width int) int {
 }
 
 // Scrolling must not unpin the chrome: a scrolled-up frame still fills the
-// viewport exactly, keeps the header on top, and keeps the status line glued
-// directly above the dual composer rules with the hint row last — the prompt
-// never drifts up into the transcript region.
+// viewport exactly, keeps the header on top, and keeps the hint bar pinned
+// last with the dual composer rules directly above it — the prompt never
+// drifts up into the transcript region.
 func TestScrolledFrameKeepsFooterPinned(t *testing.T) {
 	s := New()
 	s.Status.Model = "m"
@@ -1032,14 +1036,13 @@ func TestScrolledFrameKeepsFooterPinned(t *testing.T) {
 	if !strings.Contains(out, "lines above") {
 		t.Error("scrolled viewport lost its position marker")
 	}
-	// Bottom block is status, rule, composer, rule — in that order (80
-	// columns is the medium tier, which drops the hint row to keep the
-	// conversation's rows).
-	if !strings.Contains(lines[20], "#9") {
-		t.Errorf("line 20 = %q, want the status glued above the composer", lines[20])
+	// Bottom block is composer rule, composer, composer rule, hint bar — in
+	// that order, with the session footer pinned last.
+	if last := stripForTest(t, lines[20]); strings.Trim(last, "─") != "" || CellWidth(last) != 79 {
+		t.Errorf("line 20 = %q, want the composer's top rule above the prompt", last)
 	}
-	if last := stripForTest(t, lines[23]); strings.Trim(last, "─") != "" || CellWidth(last) != 79 {
-		t.Errorf("last line = %q, want the composer's bottom rule pinned last", last)
+	if last := stripForTest(t, lines[23]); !strings.Contains(last, "#9") {
+		t.Errorf("last line = %q, want the session footer pinned last", last)
 	}
 }
 

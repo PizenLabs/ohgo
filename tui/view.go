@@ -194,19 +194,32 @@ func Render(state State) string {
 
 	renderThinkingArea(&sb, state, pal, layout)
 
-	sb.WriteString(renderStatus(state, pal, layout))
 	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil {
-		sb.WriteString("\n")
+		// Main canvas. No middle status line while the hint bar owns the
+		// row (ShowHints): the header, composer prefix, and hint bar
+		// already own every fact it would repeat. A pending approval drops
+		// the hint row (the dialog owns the keys), so the status row holds
+		// its place there instead.
+		if !layout.ShowHints {
+			sb.WriteString(renderStatus(state, pal, layout))
+			sb.WriteString("\n")
+		}
 		sb.WriteString(renderComposer(state, pal, layout))
 		if layout.ShowHints {
-			sb.WriteString("\n" + pal.Muted.Render(composerHintsFor(state)))
+			sb.WriteString("\n" + pal.Muted.Render(composerHintBar(state, displayWidth(state, layout))))
 		}
-	} else if state.SupportPanel != nil && state.Plane == nil && state.Picker == nil {
-		// The support overlay owns interaction while open: the main
-		// composer hides so a normal workspace turn cannot be submitted
-		// underneath it.
-		if layout.ShowHints {
-			sb.WriteString("\n" + pal.Muted.Render("support owns input · Enter submit · Esc close"))
+	} else {
+		// Modal overlays hide the composer (and the hint bar with it): the
+		// status row stays as the single context row and the frame
+		// terminator, and the overlay area fills the released composer rows.
+		sb.WriteString(renderStatus(state, pal, layout))
+		if state.SupportPanel != nil && state.Plane == nil && state.Picker == nil {
+			// The support overlay owns interaction while open: the main
+			// composer hides so a normal workspace turn cannot be submitted
+			// underneath it.
+			if layout.ShowHints {
+				sb.WriteString("\n" + pal.Muted.Render("support owns input · Enter submit · Esc close"))
+			}
 		}
 	}
 	return sb.String()
@@ -221,11 +234,14 @@ func Render(state State) string {
 // here would contradict the key line it prints instead. ComputeLayout drops
 // the row in the same case, so the frame keeps its budget either way.
 //
-// Progressive disclosure: a fresh session teaches the two zero-cost discovery
-// paths, and the first executed prompt swaps them for the measured session
-// telemetry. The busy and slash-navigation rows stay authoritative while they
-// apply — they name keys the user needs this instant, so telemetry never
-// displaces them.
+// Progressive disclosure: a fresh session shows minimal path-only left with
+// the full shortcut right ("? help · ^p settings"); the first executed prompt
+// swaps the left for measured telemetry (↑in · ↓out (ctx%) · cost · path:branch)
+// and narrows the right to "? help" so ^p never promises settings when it
+// recalls history. The busy and slash-navigation rows stay authoritative while
+// they apply — they name keys the user needs this instant, so telemetry never
+// displaces them. This joined form is for tests and narrow fallbacks; the
+// frame renders the padded split via composerHintBar.
 func composerHintsFor(state State) string {
 	if state.Pending != nil {
 		return ""
@@ -236,16 +252,40 @@ func composerHintsFor(state State) string {
 	if state.Status.Busy {
 		return ComposerHints(true)
 	}
-	if telemetry := sessionTelemetry(state); telemetry != "" {
-		return telemetry
+	left, right := idleHintZones(state)
+	if left == "" {
+		return right
 	}
-	if state.SessionActive || len(state.Submitted) > 0 {
-		// An active-but-unmeasured session (or one with recallable history)
-		// has no telemetry to show and no promise that ^p opens settings, so
-		// fall back to the general idle hints rather than the fresh bar.
-		return ComposerHints(false)
+	if right == "" {
+		return left
 	}
-	return SessionShortcutBar
+	return left + " · " + right
+}
+
+// composerHintBar renders the same hint row as composerHintsFor but split
+// into left/right zones pinned to the frame edges when width allows. Slash
+// navigation and busy rows are transient and authoritative: they truncate to
+// width but never split, so the key the user needs this instant stays intact.
+// Idle telemetry splits via sessionBarRow: left metrics recede, right
+// shortcuts survive narrowing, and the row never wraps.
+func composerHintBar(state State, width int) string {
+	if state.Pending != nil {
+		return ""
+	}
+	if !state.SlashHide && len(SlashSuggestions(state.Input)) > 0 && state.Secret == nil {
+		if width > 0 {
+			return TruncateToWidth("↑↓ navigate · enter accept · esc dismiss · tab palette", width)
+		}
+		return "↑↓ navigate · enter accept · esc dismiss · tab palette"
+	}
+	if state.Status.Busy {
+		if width > 0 {
+			return TruncateToWidth(ComposerHints(true), width)
+		}
+		return ComposerHints(true)
+	}
+	left, right := idleHintZones(state)
+	return sessionBarRow(left, right, width)
 }
 
 // renderMini concedes a viewport too small for the workbench. It keeps the
@@ -268,11 +308,13 @@ func renderMini(state State, pal *Palette, layout Layout) string {
 		sb.WriteString(pal.Status.Render(fit(sanitizeInline(state.Status.Model))) + "\n")
 	}
 	if strings.TrimSpace(state.Input) != "" {
-		budget := state.Width - CellWidth("> ")
+		prefix := composerPrefix(state)
+		prefixStyle := composerPrefixStyle(state, pal)
+		budget := state.Width - CellWidth(prefix)
 		if budget < 1 {
 			budget = 1
 		}
-		sb.WriteString(pal.Prompt.Render("> ") + TruncateToWidth(sanitizeInline(strings.TrimSpace(state.Input)), budget) + "\n")
+		sb.WriteString(prefixStyle.Render(prefix) + TruncateToWidth(sanitizeInline(strings.TrimSpace(state.Input)), budget) + "\n")
 	}
 	sb.WriteString(pal.Muted.Render(fit("your input and history are preserved.")) + "\n")
 	return sb.String()
@@ -292,7 +334,7 @@ const (
 
 // renderHeader draws product identity, the current model, the runtime phase,
 // and the connection state. It is the only place identity and phase appear:
-// the status line below carries workspace context, never a second copy.
+// the hint bar below carries session metrics and path, never a second copy.
 //
 // The line reads `ohgo v1.0.0 · model · phase · check`, each segment in its
 // chrome role: the brand in primary, the release label muted beside it, the
@@ -574,8 +616,8 @@ func approvalBlank(pending *PendingApproval, layout Layout) bool {
 		hints = 1
 	}
 	// header + prompt + one preview row + choices + dialog hints + blank +
-	// status + composer + layout hints + one transcript row.
-	return layout.Height >= len(pending.Choices)+layout.ComposerLines+hints+8
+	// composer + layout hints + one transcript row.
+	return layout.Height >= len(pending.Choices)+layout.ComposerLines+hints+7
 }
 
 // boundedPreview wraps summary+reason and caps rows so the dialog never
@@ -1029,6 +1071,78 @@ func pickerFooter(picker *PickerState, layout Layout) string {
 	}
 }
 
+// composerPrefix reports the live input affordance for the current authority.
+//
+// It is the lowercase workspace label plus " > " ("ask > ", "build > ",
+// "fuzz > "), falling back to "> " when no authority is set. Lowercase keeps
+// the composer quiet next to the uppercase badge in the footer: the footer
+// names the boundary, the composer shows where typing lands. The workspace
+// label is producer-owned and already constrained to the three authorities,
+// so lowercasing cannot invent a new mode.
+func composerPrefix(state State) string {
+	switch strings.ToUpper(strings.TrimSpace(state.Status.Workspace)) {
+	case "ASK", "BUILD", "FUZZ":
+		return strings.ToLower(strings.TrimSpace(state.Status.Workspace)) + " > "
+	default:
+		return "> "
+	}
+}
+
+// composerPrefixStyle resolves the affordance colour per authority: ASK in
+// teal/primary, BUILD in blue/accent, FUZZ in magenta. ASK and BUILD resolve
+// through the theme-aware chrome so bright terminals keep the same hues in
+// their darkened forms; FUZZ uses the workspace magenta identity shared with
+// the footer badge. Unknown authorities degrade to the prompt style rather
+// than borrowing an authority's colour.
+func composerPrefixStyle(state State, pal *Palette) lipgloss.Style {
+	chrome := ChromeFor(state.Theme)
+	switch strings.ToUpper(strings.TrimSpace(state.Status.Workspace)) {
+	case "ASK":
+		return chrome.Prompt
+	case "BUILD":
+		return chrome.Active
+	case "FUZZ":
+		if NormalizeTheme(state.Theme) == ThemeLight {
+			return fg("164")
+		}
+		return fg("200")
+	default:
+		return pal.Prompt
+	}
+}
+
+// composerContPrefix aligns wrapped composer rows under the input text: spaces
+// exactly as wide as the live prefix, so a long line that folds keeps one
+// left edge no matter which authority owns it.
+func composerContPrefix(state State) string {
+	w := CellWidth(composerPrefix(state))
+	if w < 1 {
+		w = 2
+	}
+	return strings.Repeat(" ", w)
+}
+
+// composerTextWidthFor is the cells available for composer text after the live
+// prefix. It matches the budget the layout reserves so rendered rows and
+// reserved rows agree when the prefix widens from "> " to "build > ".
+func composerTextWidthFor(state State, layout Layout) int {
+	width := layout.ContentWidth
+	if width <= 0 {
+		width = 80
+	}
+	if width < 3 {
+		width = 3
+	}
+	pw := CellWidth(composerPrefix(state))
+	if pw < 1 {
+		pw = 2
+	}
+	if w := width - pw; w >= 1 {
+		return w
+	}
+	return 1
+}
+
 // renderComposer draws the multiline input framed by two restrained
 // horizontal rules, or the masked secret entry while one is open. Masking
 // renders bullets and never the key: shoulder-surfing a setup screen must
@@ -1074,7 +1188,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	// mapping preserved) while the stored input stays raw for editing.
 	// Layout reserves from the same sanitized text — see composerHeight.
 	clean, cleanCursor := sanitizeWithCursor(state.Input, state.Cursor)
-	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, composerWrapWidth(layout))
+	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, composerTextWidthFor(state, layout))
 
 	start := 0
 	if len(rows) > maxComposerRows {
@@ -1095,11 +1209,12 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 		if haveCursor && start+i == cursorRow {
 			text = insertAt(row, cursorRune, pal.Cursor.Render("▌"))
 		}
-		prefix := "  "
+		prefix := composerContPrefix(state)
+		prefixStyle := composerPrefixStyle(state, pal)
 		if i == 0 {
-			prefix = "> "
+			prefix = composerPrefix(state)
 		}
-		sb.WriteString("\n" + pal.Prompt.Render(prefix) + text)
+		sb.WriteString("\n" + prefixStyle.Render(prefix) + text)
 	}
 	if status := composerStateLine(state, pal, layout); status != "" {
 		sb.WriteString("\n" + status)
@@ -1226,9 +1341,10 @@ func secretMaskedRows(label, input string, wrapWidth int) []string {
 	return WrapToWidth(masked, wrapWidth)
 }
 
-// composerWrapWidth is the cells available for composer text after the two-cell
-// prompt/continuation prefix. It matches the budget the layout reserves so the
-// rendered rows and the reserved rows agree.
+// composerWrapWidth is the cells available for composer text after the legacy
+// two-cell prompt prefix. It is kept for the masked secret path, whose prefix
+// is the credential label rather than the mode affordance. Normal input uses
+// composerTextWidthFor, which subtracts the live mode prefix width instead.
 func composerWrapWidth(layout Layout) int {
 	width := layout.ContentWidth
 	if width <= 0 {
@@ -1538,7 +1654,10 @@ func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout L
 }
 
 // renderStatus draws the contextual footer: working directory, session,
-// context budget, and measured usage.
+// context budget, and measured usage. It serves modal chrome (overlays,
+// approvals) and the setup wizard; the main idle canvas leaves this row out
+// (header, composer prefix, and hint bar already own every fact it would
+// repeat) and gives the row to the transcript instead.
 //
 // It deliberately does not repeat the identity, model, or runtime phase shown
 // in the header — one fact, one home. Wide and medium tiers show the full

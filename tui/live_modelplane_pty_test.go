@@ -93,7 +93,7 @@ func TestLiveModelFlowUnderAPTY(t *testing.T) {
 	}
 
 	// The session starts: a composer is the first thing.
-	waitFor("enter send", 20*time.Second)
+	waitFor("? help", 20*time.Second)
 
 	// Open the control plane. It renders as a bounded dialog over the chrome.
 	write("/model")

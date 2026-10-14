@@ -109,7 +109,7 @@ func TestLiveSessionInsideTmux(t *testing.T) {
 	}
 
 	// The session starts: a live region with a composer is the first thing.
-	waitFor("enter send", 20*time.Second)
+	waitFor("? help", 20*time.Second)
 
 	// A prompt streams an answer carrying every markdown shape.
 	send("stream this")
