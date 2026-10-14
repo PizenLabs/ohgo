@@ -279,6 +279,10 @@ type State struct {
 	ConnDetail string
 	// Pending is a non-nil approval prompt.
 	Pending *PendingApproval
+	// QuitConfirm is a non-nil quit-confirmation prompt opened by /q. It
+	// reuses PendingApproval for its Yes/No choices so the conservative
+	// default and the no-wrap navigation match the tool approval dialog.
+	QuitConfirm *PendingApproval
 	// Quit is set once the session has been asked to exit.
 	Quit bool
 	// SlashCursor selects within the inline slash suggestions, when the
@@ -546,6 +550,22 @@ func (s *State) Apply(event Event) {
 
 	case ApprovalAnswered:
 		s.Pending = nil
+
+	case QuitConfirmOpened:
+		s.QuitConfirm = &PendingApproval{
+			ToolName: "quit",
+			Summary:  "Really quit?",
+			Choices:  append([]string(nil), quitConfirmChoices...),
+			Cursor:   defaultApprovalSelection(quitConfirmChoices),
+		}
+
+	case QuitConfirmMoved:
+		if s.QuitConfirm != nil {
+			s.QuitConfirm.Move(e.Delta)
+		}
+
+	case QuitConfirmClosed:
+		s.QuitConfirm = nil
 
 	case InputChanged:
 		s.Input = e.Text
@@ -997,6 +1017,7 @@ func (s *State) Apply(event Event) {
 
 	case QuitRequested:
 		s.Quit = true
+		s.QuitConfirm = nil
 
 	case SupportTurn:
 		// Legacy single-event form: the exchange lands in the overlay as a
@@ -1151,6 +1172,7 @@ func (s *State) Apply(event Event) {
 		// transcript instead of following it.
 		s.Entries = nil
 		s.Pending = nil
+		s.QuitConfirm = nil
 		s.Queued = nil
 		s.Scroll = 0
 		s.Follow = true
@@ -1497,6 +1519,27 @@ type ApprovalAnswered struct{}
 
 func (ApprovalAnswered) eventKind() string { return "approval_answered" }
 
+// quitConfirmChoices are the answers offered by the /q quit-confirmation
+// dialog. The last is the safest so the default cursor lands on it: quitting
+// must be a deliberate move off the resting place, never the resting place.
+var quitConfirmChoices = []string{"Yes", "No"}
+
+// QuitConfirmOpened asks whether the session should really exit. It is opened
+// by /q; confirming quits, dismissing stays.
+type QuitConfirmOpened struct{}
+
+func (QuitConfirmOpened) eventKind() string { return "quit_confirm_opened" }
+
+// QuitConfirmMoved shifts the quit-confirmation highlight. Positive goes down.
+type QuitConfirmMoved struct{ Delta int }
+
+func (QuitConfirmMoved) eventKind() string { return "quit_confirm_moved" }
+
+// QuitConfirmClosed dismisses the quit-confirmation prompt without exiting.
+type QuitConfirmClosed struct{}
+
+func (QuitConfirmClosed) eventKind() string { return "quit_confirm_closed" }
+
 // InputChanged sets the composed line.
 type InputChanged struct{ Text string }
 
@@ -1723,6 +1766,7 @@ var Commands = []CommandSpec{
 	{Name: "compact", Usage: "compact", Description: "summarise context now", Category: CommandGroupControl},
 	{Name: "quit", Usage: "quit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
 	{Name: "exit", Usage: "exit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
+	{Name: "q", Usage: "q", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
 }
 
 // SuggestCommand names the closest known command to a typo, for the "did you
@@ -1731,6 +1775,12 @@ var Commands = []CommandSpec{
 func SuggestCommand(name string) (string, bool) {
 	best, bestDist := "", 3
 	for _, spec := range Commands {
+		// Single-letter aliases match every single-letter typo at distance
+		// 1 and would hijack suggestions like /a (meant /ask) into /q, so
+		// they stay out of the hint while remaining runnable.
+		if len(spec.Name) <= 1 {
+			continue
+		}
 		if d := editDistance(name, spec.Name); d < bestDist {
 			best, bestDist = spec.Name, d
 		}

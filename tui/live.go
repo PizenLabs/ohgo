@@ -488,6 +488,8 @@ func expandedToolLines(s State, id string) []string {
 // matches the full-screen UI: one thing at a time owns the keyboard.
 func liveOverlay(s State, pal *Palette, layout Layout) []string {
 	switch {
+	case s.QuitConfirm != nil:
+		return liveQuitConfirmLines(s, pal, layout)
 	case s.Picker != nil:
 		return livePickerLines(s, pal, layout)
 	case s.Pending != nil:
@@ -547,6 +549,21 @@ func liveApprovalLines(s State, pal *Palette, layout Layout) []string {
 		// Keep the question and the choices; drop the middle of the preview.
 		kept := []string{lines[0]}
 		return append(kept, lines[len(lines)-(limit-1):]...)
+	}
+	return lines
+}
+
+// liveQuitConfirmLines renders the /q quit-confirmation popup, bounded to
+// the screen. It reuses the centered card so live and full-screen agree on
+// the border, the horizontal buttons, and the left/right hint.
+func liveQuitConfirmLines(s State, _ *Palette, layout Layout) []string {
+	if s.QuitConfirm == nil {
+		return nil
+	}
+	card := quitCard(s.QuitConfirm, quitCardWidth(displayWidth(s, layout)))
+	lines := splitLines(card)
+	if limit := liveRows(s); len(lines) > limit {
+		lines = lines[:limit]
 	}
 	return lines
 }
@@ -623,7 +640,7 @@ func liveComposerWidth(layout Layout) int {
 // is simply the last thing on screen, which is where the terminal already
 // puts it.
 func liveComposerLines(s State, pal *Palette, layout Layout) []string {
-	if s.Secret != nil || s.Picker != nil || s.Pending != nil {
+	if s.Secret != nil || s.Picker != nil || s.Pending != nil || s.QuitConfirm != nil {
 		return nil
 	}
 	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)

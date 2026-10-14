@@ -132,7 +132,7 @@ func ComputeLayout(s State) Layout {
 	// every tier: like the old status row it is the one context row narrow
 	// and medium screens get, so gating it on width would drop session and
 	// path exactly where space is scarcest.
-	if s.Picker == nil && s.Plane == nil && s.SupportPanel == nil && s.Pending == nil {
+	if s.Picker == nil && s.Plane == nil && s.SupportPanel == nil && s.Pending == nil && s.QuitConfirm == nil {
 		hints = 1
 	}
 	if hints == 0 {
@@ -145,8 +145,10 @@ func ComputeLayout(s State) Layout {
 	// An open overlay hides the composer (and its hints row belongs to the
 	// transcript chrome, not the overlay): reserving rows for regions that
 	// never render would short the viewport and unpin the footer.
-	// The overlay area fills the released rows instead.
-	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil {
+	// The overlay area fills the released rows instead. The quit popup is a
+	// centered modal like the plane and support surfaces, so it hides the
+	// composer the same way.
+	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.QuitConfirm != nil {
 		composer = 0
 		sugg = 0
 	}
@@ -273,7 +275,7 @@ func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (l
 // approval states live in the header, status, and modal (see
 // composerStateLine); only the queue needs this row.
 func composerStateRows(s State) int {
-	if s.Pending != nil {
+	if s.Pending != nil || s.QuitConfirm != nil {
 		return 0
 	}
 	if len(s.Queued) > 0 {

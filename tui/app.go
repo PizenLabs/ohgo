@@ -502,7 +502,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.SupportPanel != nil {
+	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil {
 		return false
 	}
 	return s.Input == ""
@@ -600,6 +600,40 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if p.wizard != nil {
 		return p.handleWizardKey(msg)
 	}
+	// Quit confirmation wins over a blocked tool: confirming /q must be able
+	// to deny the tool and exit, while dismissing leaves the tool waiting.
+	if p.state.QuitConfirm != nil {
+		switch msg.String() {
+		case "up", "k", "shift+tab", "left", "h":
+			p.state.Apply(QuitConfirmMoved{Delta: -1})
+			return p, nil
+		case "down", "j", "tab", "right", "l":
+			p.state.Apply(QuitConfirmMoved{Delta: 1})
+			return p, nil
+		case "enter":
+			if isAffirmative(p.state.QuitConfirm.Selected()) {
+				return p, p.quitNow()
+			}
+			p.state.Apply(QuitConfirmClosed{})
+			return p, nil
+		case "y", "Y":
+			return p, p.quitNow()
+		case "n", "N", "esc":
+			p.state.Apply(QuitConfirmClosed{})
+			return p, nil
+		case "ctrl+c":
+			// The reflex abort key must never quit: it dismisses the
+			// confirmation and, when a turn is running, cancels the work
+			// the same way an idle esc would.
+			p.state.Apply(QuitConfirmClosed{})
+			if p.state.Status.Busy {
+				p.cancelTurnNow("cancelled")
+			}
+			return p, nil
+		}
+		return p, nil
+	}
+
 	if p.state.Pending != nil {
 		switch msg.String() {
 		case "up", "k", "shift+tab", "left", "h":
@@ -649,7 +683,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// accepting, or dismissing suggestions must not leak into history,
 	// line movement, or submission. Tab is deliberately untouched: it
 	// keeps opening the full command palette, matching its contract.
-	if p.state.Secret == nil && p.state.Pending == nil &&
+	if p.state.Secret == nil && p.state.Pending == nil && p.state.QuitConfirm == nil &&
 		!p.state.SlashHide && len(SlashSuggestions(p.state.Input)) > 0 {
 		switch msg.String() {
 		case "up", "ctrl+p":
@@ -966,6 +1000,10 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 	case "quit", "exit":
 		return p.quitNow()
 
+	case "q":
+		p.openQuitConfirm()
+		return nil
+
 	case "ask", "fuzz", "build":
 		p.switchWorkspace(command.Name)
 		return nil
@@ -1225,6 +1263,15 @@ func (p *Program) jobDetail(id string) string {
 // The first ctrl+c never quits a working session: it stops the work. Only an
 // idle ctrl+c exits, so a reflex keypress cannot discard a session.
 func (p *Program) cancelOrQuit() (tea.Model, tea.Cmd) {
+	if p.state.QuitConfirm != nil {
+		// An open quit confirmation owns the abort key: dismiss it rather
+		// than quitting, cancelling a running turn the same way esc would.
+		p.state.Apply(QuitConfirmClosed{})
+		if p.state.Status.Busy {
+			p.cancelTurnNow("cancelled")
+		}
+		return p, nil
+	}
 	if p.state.Plane != nil {
 		p.closePlane()
 		return p, nil
@@ -2274,8 +2321,16 @@ func (p *Program) PublishIdentity(facts IdentityUpdated) {
 // runtime; the returned command would be a no-op there anyway.
 func (c Command) runOn(p *Program) { p.runCommand(c) }
 
+// openQuitConfirm asks whether the session should really exit. It is the /q
+// path: unlike /quit and /exit it never exits on its own, so a stray command
+// cannot discard the session. Confirming quits through quitNow, which denies
+// any blocked tool first.
+func (p *Program) openQuitConfirm() {
+	p.state.Apply(QuitConfirmOpened{})
+}
+
 // quitNow ends the session from any idle-state quit path (/quit, /exit,
-// ctrl+d, idle ctrl+c).
+// confirmed /q, ctrl+d, idle ctrl+c).
 //
 // A tool blocked in its approval prompt is denied first: without that the
 // tool waits on an answer channel no UI reads after shutdown, stranding its

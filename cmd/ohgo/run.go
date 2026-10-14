@@ -1964,7 +1964,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		// answer.
 		if command, ok := tui.ParseCommand(text); ok {
 			switch command.Name {
-			case "quit", "exit":
+			case "quit", "exit", "q":
 				return nil
 			case "help":
 				_, _ = fmt.Fprintln(out, tui.HelpText())

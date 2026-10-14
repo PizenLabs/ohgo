@@ -178,7 +178,9 @@ func Render(state State) string {
 	sb.WriteString(renderHeader(state, pal, layout) + "\n")
 	sb.WriteString(SeparatorLine(separatorWidth(state, layout), pal) + "\n")
 
-	if state.Plane != nil {
+	if state.QuitConfirm != nil {
+		renderQuitConfirmArea(&sb, state, pal, layout)
+	} else if state.Plane != nil {
 		renderPlaneArea(&sb, state, pal, layout)
 	} else if state.SupportPanel != nil {
 		renderSupportArea(&sb, state, pal, layout)
@@ -194,7 +196,7 @@ func Render(state State) string {
 
 	renderThinkingArea(&sb, state, pal, layout)
 
-	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil {
+	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.QuitConfirm == nil {
 		// Main canvas. No middle status line while the hint bar owns the
 		// row (ShowHints): the header, composer prefix, and hint bar
 		// already own every fact it would repeat. A pending approval drops
@@ -243,7 +245,7 @@ func Render(state State) string {
 // displaces them. This joined form is for tests and narrow fallbacks; the
 // frame renders the padded split via composerHintBar.
 func composerHintsFor(state State) string {
-	if state.Pending != nil {
+	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
 	if !state.SlashHide && len(SlashSuggestions(state.Input)) > 0 && state.Secret == nil {
@@ -269,7 +271,7 @@ func composerHintsFor(state State) string {
 // Idle telemetry splits via sessionBarRow: left metrics recede, right
 // shortcuts survive narrowing, and the row never wraps.
 func composerHintBar(state State, width int) string {
-	if state.Pending != nil {
+	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
 	if !state.SlashHide && len(SlashSuggestions(state.Input)) > 0 && state.Secret == nil {
@@ -594,7 +596,7 @@ func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout
 // ever rendered — never applied as an Entry — it cannot leak into the
 // persisted session or reappear over a resumed transcript.
 func showWelcome(state State) bool {
-	return len(state.Entries) == 0 && state.Picker == nil && state.Secret == nil && state.Pending == nil
+	return len(state.Entries) == 0 && state.Picker == nil && state.Secret == nil && state.Pending == nil && state.QuitConfirm == nil
 }
 
 // renderTranscriptBody renders every entry wrapped to the content width.
@@ -1251,7 +1253,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 // composerPrefixStyle so the frame and the "ask > "/"build > "/"fuzz > "
 // text read as one boundary.
 func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
-	if state.Picker != nil || state.Secret != nil || state.Pending != nil {
+	if state.Picker != nil || state.Secret != nil || state.Pending != nil || state.QuitConfirm != nil {
 		return pal.Separator
 	}
 	return composerPrefixStyle(state, pal).Bold(true)
@@ -1341,7 +1343,7 @@ func one(show bool) int {
 // Idleness stays quiet, and an approval modal owns its dialog, so both
 // yield no line at all.
 func composerStateLine(state State, pal *Palette, layout Layout) string {
-	if state.Pending != nil {
+	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
 	n := len(state.Queued)
@@ -1649,6 +1651,123 @@ func renderApproval(sb *strings.Builder, pending *PendingApproval, pal *Palette,
 	sb.WriteString(pal.Muted.Render("↑↓ move · enter confirm · y approve · n/esc deny") + "\n")
 	if approvalBlank(pending, layout) {
 		sb.WriteString("\n")
+	}
+}
+
+// quitCardWidth bounds the centered quit dialog: wide enough for the hint,
+// narrow enough to read as a popup with margins on roomy terminals.
+func quitCardWidth(termWidth int) int {
+	const maxCard = 52
+	const minCard = 30
+	if termWidth <= 0 {
+		return maxCard
+	}
+	w := termWidth - 8
+	if w > maxCard {
+		w = maxCard
+	}
+	if w < minCard {
+		w = termWidth - 4
+		if w < 10 {
+			w = 10
+		}
+		if w > termWidth {
+			w = termWidth
+		}
+	}
+	return w
+}
+
+// quitCard builds the centered bordered confirmation: title, horizontal
+// Yes/No buttons reusing the wizard badges, and a hint naming the left/right
+// keys. The selected button is flanked by ◀ ▶ so the choice never depends on
+// hue alone — a monochrome terminal still shows which option Enter confirms.
+func quitCard(confirm *PendingApproval, cardW int) string {
+	if confirm == nil {
+		return ""
+	}
+	if cardW < 10 {
+		cardW = 10
+	}
+	title := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardTeal)).Bold(true).
+		Render("Really quit?")
+	question := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardGrey)).
+		Render("Exit the session?")
+	yesActive := confirm.Cursor == 0
+	noActive := !yesActive
+	arrow := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardTeal)).Bold(true)
+	leftYes, rightYes := "  ", "  "
+	leftNo, rightNo := "  ", "  "
+	if yesActive {
+		leftYes = arrow.Render("◀ ")
+		rightYes = arrow.Render(" ▶")
+	}
+	if noActive {
+		leftNo = arrow.Render("◀ ")
+		rightNo = arrow.Render(" ▶")
+	}
+	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
+		leftYes, gitButton("Yes", yesActive), rightYes,
+		"   ",
+		leftNo, gitButton("No", noActive), rightNo,
+	)
+	hints := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardGrey)).
+		Render("←→ move · enter confirm · y quit · n/esc stay")
+	inner := lipgloss.JoinVertical(lipgloss.Left, title, question, "", buttons, "", hints)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(wizardTeal)).
+		Background(lipgloss.Color(wizardBG)).
+		Padding(1, 2).
+		Width(cardW).
+		Render(inner)
+}
+
+// renderQuitConfirmArea draws the /q exit-confirmation as a centered popup.
+// The dialog owns the conversation area while open (like the model plane and
+// support modals): the transcript hides behind it and returns untouched on
+// dismiss, so the popup reads as a notification rather than another
+// transcript row. It fills its budget exactly with blank padding around the
+// card, so reserved and rendered rows always agree.
+func renderQuitConfirmArea(sb *strings.Builder, state State, _ *Palette, layout Layout) {
+	confirm := state.QuitConfirm
+	if confirm == nil {
+		return
+	}
+	if state.Width <= 0 || state.Height <= 0 {
+		card := quitCard(confirm, quitCardWidth(0))
+		sb.WriteString(card)
+		if !strings.HasSuffix(card, "\n") {
+			sb.WriteString("\n")
+		}
+		return
+	}
+	avail := layout.ConversationHeight
+	if state.Pending != nil {
+		avail -= approvalLines(state.Pending, layout)
+	}
+	if avail < 0 {
+		avail = 0
+	}
+	width := state.Width
+	if width <= 0 {
+		width = 80
+	}
+	card := quitCard(confirm, quitCardWidth(width))
+	placed := lipgloss.Place(width, avail, lipgloss.Center, lipgloss.Center, card)
+	lines := strings.Split(placed, "\n")
+	if len(lines) > avail {
+		lines = lines[:avail]
+	}
+	for len(lines) < avail {
+		lines = append(lines, strings.Repeat(" ", width))
+	}
+	for _, line := range lines {
+		sb.WriteString(line + "\n")
 	}
 }
 
