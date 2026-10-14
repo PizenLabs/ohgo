@@ -141,6 +141,10 @@ type Program struct {
 	// "model switching is unavailable" rather than panicking on /model.
 	setModel     func(id string) error
 	currentModel func() string
+	// currentEffort reports the active thinking effort for the header badge.
+	// Nil means unknown: the badge reflects Status.Effort and any variant
+	// suffix in Status.Model rather than inventing a level.
+	currentEffort func() string
 
 	// listSessions, openSession, listModels and listJobs feed the selection
 	// overlays. Each nil-safe: without a provider the command reports the
@@ -1369,7 +1373,9 @@ func (p *Program) applyModelSwitch(id string) {
 		return
 	}
 	// The status line is read from state, so refreshing it here keeps the
-	// footer in step with what the loop will actually call.
+	// footer in step with what the loop will actually call. Effort stays as
+	// set: a bare id switch carries no level, so the existing badge (or a
+	// variant suffix in the new id) stands.
 	p.state.Status.Model = p.currentModel()
 }
 
@@ -1969,10 +1975,17 @@ func (p *Program) assignPlane(update RoleAssignment) {
 
 	// Keep the status line in step with the runtime when the active role's
 	// model changed. The window is refreshed from the runtime when the caller
-	// supplies it, so the budget display is not left stale.
+	// supplies it, so the budget display is not left stale. The effort badge
+	// follows the applied assignment; an empty level falls back to the live
+	// reporter (e.g. the effective default) rather than keeping a level the
+	// new model no longer carries.
 	if p.modelControl.ActiveRole != nil && strings.EqualFold(result.Role, p.modelControl.ActiveRole()) {
 		if p.currentModel != nil {
 			p.state.Status.Model = p.currentModel()
+		}
+		p.state.Status.Effort = NormalizeEffort(result.Effort)
+		if p.state.Status.Effort == "" && p.currentEffort != nil {
+			p.state.Status.Effort = NormalizeEffort(p.currentEffort())
 		}
 		if p.modelControl.EffectiveWindow != nil {
 			p.state.Status.ContextWindow = p.modelControl.EffectiveWindow()

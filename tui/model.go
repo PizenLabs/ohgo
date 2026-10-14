@@ -162,6 +162,10 @@ func (p *PendingApproval) Move(delta int) {
 type Status struct {
 	// Model is the model in use.
 	Model string
+	// Effort is the active thinking effort for the header badge, e.g. "max".
+	// Empty hides the badge: the view never invents a level, and "off"
+	// normalizes to empty since disabled thinking has no level to show.
+	Effort string
 	// ContextUsed and ContextWindow size the budget display.
 	ContextUsed   int
 	ContextWindow int
@@ -506,6 +510,9 @@ func (s *State) Apply(event Event) {
 	case ContextUpdated:
 		s.Status.ContextUsed = e.Used
 		s.Status.ContextWindow = e.Window
+
+	case ModelEffortUpdated:
+		s.Status.Effort = NormalizeEffort(e.Effort)
 
 	case SessionMetricsUpdated:
 		s.SessionIn = e.Input

@@ -1260,7 +1260,14 @@ func runSession(cmd *cobra.Command, args []string) error {
 	// hook, so the routing happens here rather than inside buildLoop. A pipe or
 	// a test never reaches this branch and keeps plain line output.
 	if useInteractiveUI(cmd) {
-		programOpts := []tui.ProgramOption{tui.WithVersion(version)}
+		// The header effort badge shows the active reasoning level, or hides
+		// when thinking is disabled: a default install (reasoning off) keeps
+		// the legacy header rather than inventing a level.
+		initialEffort := ""
+		if opts.reasoning {
+			initialEffort = opts.effort
+		}
+		programOpts := []tui.ProgramOption{tui.WithVersion(version), tui.WithEffort(initialEffort)}
 		// Precedence: flag, then settings, then the environment default. The
 		// environment matters because the wheel reaches the program by
 		// different routes in different terminals, and a multiplexer that does
@@ -1301,6 +1308,23 @@ func runSession(cmd *cobra.Command, args []string) error {
 			return surface.ask(ctx, question, onDelta)
 		})
 		program.SetSupportInfo(held.SupportInfo)
+
+		// The header effort badge follows the session role's effective level.
+		// The reporter reads the configuration authority (role effort, then
+		// the global default) through the same reasoning mapping the loop
+		// uses, so the badge and the request agree. Disabled thinking
+		// reports "" and the badge hides.
+		program.SetEffortProvider(func() string {
+			role := held.sessionRole()
+			if role == "" {
+				role = strings.ToLower(opts.authority().String())
+			}
+			enabled, level := held.reasoningFor(held.roleEffortFor(role))
+			if !enabled {
+				return ""
+			}
+			return level
+		})
 
 		// A resumed session replays its transcript, so the UI continues rather
 		// than restarts. Loading it here means a failure is fatal rather than a
@@ -1387,6 +1411,21 @@ func runSession(cmd *cobra.Command, args []string) error {
 					WorkspaceAccent: style.Accent,
 					HasWorkspace:    true,
 				})
+				// A workspace move rebinds the session's model and effort:
+				// the header follows the newly effective role rather than
+				// naming a model the loop no longer calls.
+				program.PublishModel(held.model.Provider + "/" + held.model.ID)
+				program.PublishEffort(func() string {
+					role := held.sessionRole()
+					if role == "" {
+						role = strings.ToLower(ws.String())
+					}
+					enabled, level := held.reasoningFor(held.roleEffortFor(role))
+					if !enabled {
+						return ""
+					}
+					return level
+				}())
 				program.PublishNotice("switched to " + style.Label)
 				return nil
 			},
@@ -1558,7 +1597,11 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 
 	surface := newSupportSurface(supportLoopBuilder(opts, registry, out))
 
-	programOpts := []tui.ProgramOption{tui.WithVersion(version)}
+	initialEffort := ""
+	if opts.reasoning {
+		initialEffort = opts.effort
+	}
+	programOpts := []tui.ProgramOption{tui.WithVersion(version), tui.WithEffort(initialEffort)}
 	mouse := opts.settings.Mouse
 	if flag := flagValue(cmd, "mouse"); flag != "" {
 		mouse = flag
@@ -1583,6 +1626,18 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		return surface.ask(ctx, question, onDelta)
 	})
 	program.SetSupportInfo(held.SupportInfo)
+
+	program.SetEffortProvider(func() string {
+		role := held.sessionRole()
+		if role == "" {
+			role = strings.ToLower(opts.authority().String())
+		}
+		enabled, level := held.reasoningFor(held.roleEffortFor(role))
+		if !enabled {
+			return ""
+		}
+		return level
+	})
 
 	program.SetModelSwitcher(
 		func(id string) error {
@@ -1647,6 +1702,18 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 				WorkspaceAccent: style.Accent,
 				HasWorkspace:    true,
 			})
+			program.PublishModel(held.model.Provider + "/" + held.model.ID)
+			program.PublishEffort(func() string {
+				role := held.sessionRole()
+				if role == "" {
+					role = strings.ToLower(ws.String())
+				}
+				enabled, level := held.reasoningFor(held.roleEffortFor(role))
+				if !enabled {
+					return ""
+				}
+				return level
+			}())
 			program.PublishNotice("switched to " + style.Label)
 			return nil
 		},

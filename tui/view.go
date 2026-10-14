@@ -356,10 +356,20 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	runtime := DeriveRuntime(state)
 	marker := RuntimeMarker(runtime)
 	// Model ids and probe details arrive from catalogs and networks:
-	// untrusted, sanitized inline.
-	model := sanitizeInline(state.Status.Model)
+	// untrusted, sanitized inline. Effort arrives from configuration with
+	// the same trust level, so it is sanitized the same way.
+	modelRaw := sanitizeInline(state.Status.Model)
+	effortRaw := sanitizeInline(state.Status.Effort)
+	model := modelRaw
 	if model == "" {
 		model = "no model"
+	}
+	baseModel, effectiveEffort := EffectiveModelEffort(model, effortRaw)
+	if modelRaw == "" {
+		// No model means no badge: an effort without an engine orients
+		// nowhere and would read as a claim about "no model".
+		effectiveEffort = ""
+		baseModel = model
 	}
 	// The release label arrives from build metadata: trusted but
 	// normalized and sanitized like any other chrome text.
@@ -369,7 +379,10 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	conn, showConn := headerConn(state, tier)
 	width := displayWidth(state, layout)
 
-	modelShown := fitHeaderModel(model, width-headerChromeOverhead(marker, phase, conn, showConn, version))
+	// The model segment shares one budget with its effort badge: the badge
+	// drops before the core id truncates, so narrowing sheds "◈ max" first
+	// and only then shortens the leaf.
+	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version))
 
 	phaseStyle := chrome.Idle
 	if headerRuntimeActive(runtime) {
@@ -384,6 +397,15 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	sb.WriteString(phaseStyle.Render(marker))
 	sb.WriteString(" ")
 	sb.WriteString(chrome.Model.Render(modelShown))
+	if effortShown != "" {
+		// The badge reads in the check amber for the glyph and muted
+		// context for the level, so it stays distinct from the sage model
+		// without competing with the active phase.
+		sb.WriteString(" ")
+		sb.WriteString(chrome.Check.Render("◈"))
+		sb.WriteString(" ")
+		sb.WriteString(chrome.Context.Render(effortShown))
+	}
 	sb.WriteString(chrome.Separator.Render(" · "))
 	sb.WriteString(phaseStyle.Render(phase))
 	if showConn {
