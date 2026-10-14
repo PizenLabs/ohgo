@@ -213,13 +213,19 @@ func Render(state State) string {
 }
 
 // composerHintsFor picks the hint row for the current interaction: slash
-// navigation while discovering commands, the busy set while a turn runs,
-// the idle set otherwise. Every hint shown must work.
+// navigation while discovering commands, the busy set while a turn runs, and
+// progressive disclosure while idle. Every hint shown must work.
 //
 // An open approval owns the interaction, so no composer hint is produced: the
 // dialog has captured enter, esc, and the scroll keys, and advertising them
 // here would contradict the key line it prints instead. ComputeLayout drops
 // the row in the same case, so the frame keeps its budget either way.
+//
+// Progressive disclosure: a fresh session teaches the two zero-cost discovery
+// paths, and the first executed prompt swaps them for the measured session
+// telemetry. The busy and slash-navigation rows stay authoritative while they
+// apply — they name keys the user needs this instant, so telemetry never
+// displaces them.
 func composerHintsFor(state State) string {
 	if state.Pending != nil {
 		return ""
@@ -227,7 +233,19 @@ func composerHintsFor(state State) string {
 	if !state.SlashHide && len(SlashSuggestions(state.Input)) > 0 && state.Secret == nil {
 		return "↑↓ navigate · enter accept · esc dismiss · tab palette"
 	}
-	return ComposerHints(state.Status.Busy)
+	if state.Status.Busy {
+		return ComposerHints(true)
+	}
+	if telemetry := sessionTelemetry(state); telemetry != "" {
+		return telemetry
+	}
+	if state.SessionActive || len(state.Submitted) > 0 {
+		// An active-but-unmeasured session (or one with recallable history)
+		// has no telemetry to show and no promise that ^p opens settings, so
+		// fall back to the general idle hints rather than the fresh bar.
+		return ComposerHints(false)
+	}
+	return SessionShortcutBar
 }
 
 // renderMini concedes a viewport too small for the workbench. It keeps the
@@ -1065,7 +1083,13 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	shown := rows[start:]
 
 	var sb strings.Builder
-	sb.WriteString(rule + "\n")
+	sb.WriteString(rule)
+	// The palette sits strictly above the input line it completes: the rule
+	// frames it, the input stays the live row below, and the closing rule
+	// still bounds the composer.
+	if suggest := renderSlashSuggestions(state, layout); suggest != "" {
+		sb.WriteString("\n" + suggest)
+	}
 	for i, row := range shown {
 		text := row
 		if haveCursor && start+i == cursorRow {
@@ -1075,13 +1099,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 		if i == 0 {
 			prefix = "> "
 		}
-		if i > 0 {
-			sb.WriteString("\n")
-		}
-		sb.WriteString(pal.Prompt.Render(prefix) + text)
-	}
-	if suggest := renderSlashSuggestions(state, pal, layout); suggest != "" {
-		sb.WriteString("\n" + suggest)
+		sb.WriteString("\n" + pal.Prompt.Render(prefix) + text)
 	}
 	if status := composerStateLine(state, pal, layout); status != "" {
 		sb.WriteString("\n" + status)
@@ -1106,31 +1124,35 @@ func composerRule(state State, pal *Palette, layout Layout) string {
 	return ExtrasFor(state.Theme).Focus.Render(line)
 }
 
-// renderSlashSuggestions draws the compact inline command picker for a
-// leading "/". It is built from the authoritative registry on every render,
-// shows short descriptions, filters as the user types, caps its rows, and
-// collapses descriptions on narrow terminals — never a second catalog.
-func renderSlashSuggestions(state State, pal *Palette, layout Layout) string {
+// renderSlashSuggestions draws the inline command palette for a leading "/".
+//
+// It is built from the authoritative registry on every render, filters as the
+// user types, and caps its rows so discovery never evicts the conversation.
+// Rows render through the shared palette builder with a fixed name column and
+// a rounded frame, so cycling the cursor or typing filter letters never shifts
+// the layout. The window is trimmed to the reserved budget, and the count
+// markers stay truthful about what is hidden; a negative budget means the size
+// is unknown (a test, or a terminal that never reported it) and everything
+// renders.
+func renderSlashSuggestions(state State, layout Layout) string {
 	shown, start, cursor, above, below := slashWindow(state)
 	if len(shown) == 0 {
 		return ""
 	}
-	width := displayWidth(state, layout)
 	matches := SlashSuggestions(state.Input)
-	// Fit the reserved budget: the window trims item rows from the bottom
-	// while the "more" marker absorbs the trimmed count, staying truthful
-	// about what is hidden. Negative budget means uncapped (unknown size).
 	items := append([]CommandSpec(nil), shown...)
 	hideAbove := above
 	hideBelow := below
 	if layout.SlashLines >= 0 {
 		budget := layout.SlashLines
-		if budget == 0 {
+		// The box needs both borders plus at least one content row; below
+		// that there is nothing to draw and the composer keeps its inputs.
+		if budget < paletteBorderRows+1 {
 			return ""
 		}
 		for {
 			hideBelow = len(matches)-start-len(items) > 0
-			if len(items)+slashGroupHeaders(items)+one(hideAbove)+one(hideBelow) <= budget {
+			if len(items)+slashGroupHeaders(items)+one(hideAbove)+one(hideBelow)+paletteBorderRows <= budget {
 				break
 			}
 			if len(items) > 0 {
@@ -1142,47 +1164,19 @@ func renderSlashSuggestions(state State, pal *Palette, layout Layout) string {
 			hideAbove = false
 		}
 	}
-	var rows []string
-	if hideAbove {
-		rows = append(rows, pal.Muted.Render("  … more"))
-	}
-	current := strings.ToUpper(strings.TrimSpace(state.Status.Workspace))
-	lastGroup := ""
-	for i, spec := range items {
-		group := slashGroupOf(spec)
-		if group != lastGroup {
-			rows = append(rows, pal.Muted.Render(group))
-			lastGroup = group
-		}
-		name := "/" + spec.Name
-		line := name
-		desc := spec.Description
-		if strings.EqualFold(spec.Name, current) && current != "" {
-			if desc != "" {
-				desc += " · current"
-			} else {
-				desc = "current"
-			}
-		}
-		if layout.ShowDetail && desc != "" {
-			detail := TruncateToWidth(desc, width-CellWidth(name)-6)
-			if detail != "" {
-				line += "  " + pal.Muted.Render(detail)
-			}
-		} else {
-			line = TruncateToWidth(line, width-2)
-		}
-		if start+i == cursor {
-			rows = append(rows, pal.Selected.Render("> "+stripANSI(line)))
-		} else {
-			rows = append(rows, "  "+line)
-		}
-	}
-	if hideBelow {
-		hidden := len(matches) - start - len(items)
-		rows = append(rows, pal.Muted.Render(fmt.Sprintf("  … %d more", hidden)))
-	}
-	return strings.Join(rows, "\n")
+	return renderPaletteBox(paletteRequest{
+		shown:      items,
+		cursor:     cursor,
+		startIndex: start,
+		total:      len(matches),
+		above:      hideAbove,
+		below:      hideBelow,
+		current:    strings.ToUpper(strings.TrimSpace(state.Status.Workspace)),
+		headers:    true,
+		width:      displayWidth(state, layout),
+		exactRows:  layout.SlashLines,
+		styles:     paletteStylesFor(state.Theme),
+	})
 }
 
 // one counts a marker row when its section shows.

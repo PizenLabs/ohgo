@@ -316,6 +316,19 @@ type State struct {
 	// text on each delta, so the activity line can report live progress
 	// without inventing telemetry the runtime did not measure.
 	OutputTokens int
+	// SessionActive reports that a prompt has run in this session. It gates
+	// progressive disclosure: while false the helper bar teaches the
+	// shortcuts; once true it shows the measured session telemetry instead.
+	SessionActive bool
+	// SessionIn and SessionOut are cumulative per-session token counts from
+	// the runtime's own ledger. Zero means unknown: the helper bar hides an
+	// unmeasured counter rather than rendering a fabricated "0 in / 0 out".
+	SessionIn  int
+	SessionOut int
+	// SessionElapsed is the measured session duration at the last telemetry
+	// sample. It is stored rather than read at render time so Render stays
+	// pure and deterministic.
+	SessionElapsed time.Duration
 }
 
 // New returns an empty state.
@@ -349,6 +362,9 @@ func (s *State) Apply(event Event) {
 		s.HistCursor = -1
 		s.HistDraft = ""
 		s.OutputTokens = 0
+		// The first prompt flips the helper bar from shortcuts to telemetry;
+		// a run that later clears returns it to the clean state.
+		s.SessionActive = true
 		s.growScroll(countLines(e.Text))
 
 	case AssistantDelta:
@@ -479,14 +495,22 @@ func (s *State) Apply(event Event) {
 
 	case HistoryReplaced:
 		// A resumed session continues rather than restarts: the replayed
-		// transcript replaces the view outright.
+		// transcript replaces the view outright. It is a fresh session
+		// boundary, so the progressive-disclosure telemetry restarts clean:
+		// the prior session's token counts and clock do not belong to it.
 		s.Entries = append([]Entry(nil), e.Entries...)
 		s.closedAssistant = true
 		s.OutputTokens = 0
+		s.resetSessionMetrics()
 
 	case ContextUpdated:
 		s.Status.ContextUsed = e.Used
 		s.Status.ContextWindow = e.Window
+
+	case SessionMetricsUpdated:
+		s.SessionIn = e.Input
+		s.SessionOut = e.Output
+		s.SessionElapsed = e.Elapsed
 
 	case Compacted:
 		// Compaction is announced as a notice, never silently: the user must
@@ -1125,7 +1149,18 @@ func (s *State) Apply(event Event) {
 		s.Follow = true
 		s.closedAssistant = false
 		s.OutputTokens = 0
+		s.resetSessionMetrics()
 	}
+}
+
+// resetSessionMetrics returns progressive disclosure to its clean state: no
+// active session and no token or duration telemetry. The helper bar falls
+// back to the shortcut hints rather than reporting zeros.
+func (s *State) resetSessionMetrics() {
+	s.SessionActive = false
+	s.SessionIn = 0
+	s.SessionOut = 0
+	s.SessionElapsed = 0
 }
 
 // currentOutputTokens estimates tokens for the trailing open assistant
@@ -1409,6 +1444,21 @@ type ContextUpdated struct {
 }
 
 func (ContextUpdated) eventKind() string { return "context_updated" }
+
+// SessionMetricsUpdated reports the cumulative per-session token telemetry and
+// elapsed duration from the runtime's ledger. The runtime owns the clock and
+// the usage accounting; the state stores what it measured rather than reading
+// the wall clock at render time, so Render stays pure. A zero field means
+// unknown, and the helper bar hides an unknown counter instead of showing 0.
+type SessionMetricsUpdated struct {
+	// Input and Output are cumulative tokens across the session.
+	Input  int
+	Output int
+	// Elapsed is the measured session duration.
+	Elapsed time.Duration
+}
+
+func (SessionMetricsUpdated) eventKind() string { return "session_metrics_updated" }
 
 // Compacted announces that history was summarised.
 type Compacted struct {
@@ -1783,9 +1833,10 @@ type SlashMoved struct{ Delta int }
 func (SlashMoved) eventKind() string { return "slash_moved" }
 
 // maxSlashRows bounds the inline command suggestions so discovery never
-// evicts the conversation. Render and layout share slashWindow, so reserved
-// and rendered rows always agree.
-const maxSlashRows = 5
+// evicts the conversation. It is the palette's own row cap, so the inline
+// overlay and the exported RenderSlashPalette never disagree. Render and
+// layout share slashWindow, so reserved and rendered rows always agree.
+const maxSlashRows = PaletteMaxRows
 
 // SlashActive reports whether the composer holds a completable slash line:
 // single-line input starting with "/". Multiline input stays prose.
@@ -1803,17 +1854,7 @@ func SlashSuggestions(input string) []CommandSpec {
 	if !SlashActive(input) {
 		return nil
 	}
-	filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(input, "/")))
-	var out []CommandSpec
-	for _, spec := range Commands {
-		if spec.Hidden {
-			continue
-		}
-		if filter == "" || strings.HasPrefix(strings.ToLower(spec.Name), filter) {
-			out = append(out, spec)
-		}
-	}
-	return out
+	return filterCommands(strings.TrimPrefix(input, "/"))
 }
 
 // slashWindow returns the visible suggestion window with its start offset
@@ -1830,27 +1871,49 @@ func slashWindow(s State) (shown []CommandSpec, start, cursor int, above, below 
 	if cursor < 0 || cursor >= len(matches) {
 		cursor = 0
 	}
+	shown, start, above, below = windowMatches(matches, cursor, maxSlashRows)
+	return shown, start, cursor, above, below
+}
+
+// windowMatches slices the visible window of a match list for an in-range
+// cursor: it follows the cursor so the highlight is always on a rendered row,
+// then clamps to keep the window inside the list. It returns the slice plus
+// whether rows hide above or below. The stateful renderer and the exported
+// palette share it, so "top matches" means the same thing everywhere.
+func windowMatches(matches []CommandSpec, cursor, max int) (shown []CommandSpec, start int, above, below bool) {
+	if len(matches) == 0 || max <= 0 {
+		return nil, 0, false, false
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(matches) {
+		cursor = len(matches) - 1
+	}
 	start = 0
-	if len(matches) > maxSlashRows {
-		start = cursor - maxSlashRows + 1
+	if len(matches) > max {
+		start = cursor - max + 1
 		if start < 0 {
 			start = 0
 		}
-		if start+maxSlashRows > len(matches) {
-			start = len(matches) - maxSlashRows
+		if start+max > len(matches) {
+			start = len(matches) - max
 		}
 	}
-	end := start + maxSlashRows
+	end := start + max
 	if end > len(matches) {
 		end = len(matches)
 	}
-	return matches[start:end], start, cursor, start > 0, end < len(matches)
+	return matches[start:end], start, start > 0, end < len(matches)
 }
 
 // slashRows counts the suggestion rows the composer will render, so the
 // layout reserves exactly what the view draws.
 func slashRows(s State) int {
 	shown, _, _, above, below := slashWindow(s)
+	if len(shown) == 0 {
+		return 0
+	}
 	n := len(shown) + slashGroupHeaders(shown)
 	if above {
 		n++
@@ -1858,7 +1921,9 @@ func slashRows(s State) int {
 	if below {
 		n++
 	}
-	return n
+	// The overlay renders inside a rounded box: the border claims one row on
+	// each side, so the reservation must carry it or the frame shorts.
+	return n + paletteBorderRows
 }
 
 // slashGroupHeaders counts the group titles the suggestion list will render:
@@ -1875,11 +1940,6 @@ func slashGroupHeaders(shown []CommandSpec) int {
 		}
 	}
 	return n
-}
-
-// slashGroupOf returns the display group for one suggestion row.
-func slashGroupOf(spec CommandSpec) string {
-	return groupOf(spec)
 }
 
 // moveSlash shifts the suggestion highlight, wrapping at both ends.

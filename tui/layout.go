@@ -235,6 +235,11 @@ func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (l
 			sugg = maxSugg
 		}
 	}
+	// A palette needs both borders plus one content row. Below that the
+	// renderer draws nothing, so reserving rows would short the frame.
+	if sugg > 0 && sugg < paletteBorderRows+1 {
+		sugg = 0
+	}
 	lines += sugg
 	if mode == LayoutMini {
 		// Mini never renders; keep the count sane for callers.

@@ -635,6 +635,12 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 	shown := rows[start:]
 
 	var out []string
+	// The palette sits strictly above the input line it completes. It is
+	// expanded into one element per row so liveChrome's row count matches
+	// what the painter erases and rewrites.
+	if suggest := renderSlashSuggestions(s, layout); suggest != "" {
+		out = append(out, strings.Split(suggest, "\n")...)
+	}
 	for i, row := range shown {
 		text := row
 		if haveCursor && start+i == cursorRow {
@@ -645,9 +651,6 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 			continue
 		}
 		out = append(out, "  "+text)
-	}
-	if suggest := renderSlashSuggestions(s, pal, layout); suggest != "" {
-		out = append(out, suggest)
 	}
 	if queued := composerStateLine(s, pal, layout); queued != "" {
 		out = append(out, queued)
@@ -671,7 +674,11 @@ func liveHintsFor(s State, layout Layout) string {
 	case s.Status.Busy:
 		choices = []string{"enter queue · esc cancel · alt+enter break", "enter queue · esc cancel"}
 	default:
-		choices = []string{"enter send · alt+enter break · / commands · ? help", "enter send · alt+enter break", "enter send"}
+		// Idle hints share composerHintsFor, so the live surface gets the
+		// same progressive disclosure: shortcuts fresh, telemetry once a
+		// prompt has run. The short fallbacks keep a narrow terminal in one
+		// row.
+		choices = []string{composerHintsFor(s), "enter send"}
 	}
 	width := displayWidth(s, layout)
 	for _, text := range choices {

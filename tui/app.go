@@ -116,6 +116,17 @@ type Program struct {
 	// mu guards history and cancelTurn across the update and turn goroutines.
 	mu sync.Mutex
 
+	// sessionStart, sessionIn, and sessionOut are the live session's
+	// progressive-disclosure telemetry: when the first turn began and the
+	// measured input/output tokens accumulated since. They are guarded by mu
+	// because the turn goroutine samples them while the update goroutine
+	// resets them at a session boundary (/clear, resume). Zero sessionStart
+	// means no turn has run; /usage remains the lifetime ledger and is
+	// deliberately not consulted here.
+	sessionStart time.Time
+	sessionIn    int
+	sessionOut   int
+
 	// window is the context window used for the budget display.
 	window int
 
@@ -805,6 +816,14 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "up", "ctrl+p":
+		// On a fresh session there is nothing to recall, so ^p is the
+		// settings/discovery hub the shortcut bar advertises. The moment a
+		// prompt exists (or history does) the bar stops promising it and the
+		// key returns to history recall, so the hint can never lie.
+		if msg.String() == "ctrl+p" && !p.state.SessionActive && len(p.state.Submitted) == 0 {
+			p.openSettingsPalette()
+			return p, nil
+		}
 		// The terminal cannot say which arrows it synthesised for the wheel,
 		// so the policy is state-based: the arrows belong to the transcript
 		// exactly when the composer has nothing to move a cursor within and
@@ -960,6 +979,9 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		}
 		p.mu.Lock()
 		p.history = nil
+		// A cleared session starts a fresh telemetry window: the helper bar
+		// returns to shortcuts and the next turn's counts begin at zero.
+		p.resetSessionTelemetryLocked()
 		p.mu.Unlock()
 		return nil
 
@@ -2040,6 +2062,21 @@ func (p *Program) issueRefresh() tea.Cmd {
 // navigation. Choosing one runs it; arguments are not collected here —
 // commands needing them report usage, matching their direct invocation.
 func (p *Program) openCommandPalette(filter string) {
+	p.openPalette("commands", filter)
+}
+
+// openSettingsPalette opens the same registry under the "settings" title,
+// reached from ^p on a fresh session. It is the configuration/discovery hub —
+// theme, model, connect, and providers all live here — so the shortcut bar's
+// "^p settings" hint points at a surface that actually exists.
+func (p *Program) openSettingsPalette() {
+	p.openPalette("settings", "")
+}
+
+// openPalette builds and opens the command list. Choosing an item runs it;
+// arguments are not collected here — commands needing them report usage,
+// matching their direct invocation.
+func (p *Program) openPalette(title, filter string) {
 	var items []PickerItem
 	for _, spec := range Commands {
 		if spec.Hidden {
@@ -2051,7 +2088,7 @@ func (p *Program) openCommandPalette(filter string) {
 			Value:  spec.Name,
 		})
 	}
-	p.state.Apply(PickerOpened{Kind: PickerCommands, Title: "commands", Items: items})
+	p.state.Apply(PickerOpened{Kind: PickerCommands, Title: title, Items: items})
 	if filter != "" {
 		p.state.Apply(PickerFilterChanged{Text: filter})
 	}
@@ -2106,6 +2143,9 @@ func (p *Program) resumeSession(item PickerItem) tea.Cmd {
 	}
 	p.mu.Lock()
 	p.history = append([]agent.Message(nil), opened.History...)
+	// A resumed session is a new telemetry window: the prior session's token
+	// counts and clock never carry over.
+	p.resetSessionTelemetryLocked()
 	p.mu.Unlock()
 	// The store is untouched: every session lives in the one database it
 	// already points at. Only the session pointer moves.
@@ -2722,6 +2762,9 @@ func (p *Program) runTurn(text string) {
 	if p.usage != nil {
 		p.usage.Add(turns)
 	}
+	// Progressive disclosure reads the live session's own accumulation, not
+	// the lifetime /usage ledger: a cleared or resumed session starts clean.
+	p.accumulateSessionMetrics(turns)
 
 	if err != nil {
 		// A cancelled turn is an interruption, not a failure: reporting
@@ -2789,6 +2832,38 @@ func (p *Program) runTurn(text string) {
 		}
 	}
 	p.publish(AssistantDone{Seq: seq})
+}
+
+// resetSessionTelemetryLocked zeroes the live session's progressive-disclosure
+// telemetry: no active clock and no token counts. The caller holds mu.
+func (p *Program) resetSessionTelemetryLocked() {
+	p.sessionStart = time.Time{}
+	p.sessionIn = 0
+	p.sessionOut = 0
+}
+
+// accumulateSessionMetrics folds one request's measured usage into the live
+// session and publishes the running totals. It runs on the turn goroutine, so
+// every read and write of the counters goes through mu. A provider that does
+// not report usage contributes nothing, and an all-zero session publishes no
+// event: unknown stays absent rather than rendering a fabricated "0 in / 0
+// out".
+func (p *Program) accumulateSessionMetrics(turns []agent.Turn) {
+	p.mu.Lock()
+	if p.sessionStart.IsZero() {
+		p.sessionStart = time.Now()
+	}
+	for _, turn := range turns {
+		p.sessionIn += turn.Assistant.Usage.Input
+		p.sessionOut += turn.Assistant.Usage.Output
+	}
+	in, out := p.sessionIn, p.sessionOut
+	elapsed := time.Since(p.sessionStart)
+	p.mu.Unlock()
+	if in == 0 && out == 0 {
+		return
+	}
+	p.publish(SessionMetricsUpdated{Input: in, Output: out, Elapsed: elapsed})
 }
 
 // persist appends one message to the transcript, if a session is attached.
