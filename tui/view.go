@@ -268,8 +268,8 @@ func composerHintsFor(state State) string {
 // into left/right zones pinned to the frame edges when width allows. Slash
 // navigation and busy rows are transient and authoritative: they truncate to
 // width but never split, so the key the user needs this instant stays intact.
-// Idle telemetry splits via sessionBarRow: left metrics recede, right
-// shortcuts survive narrowing, and the row never wraps.
+// Idle telemetry splits via sessionBarRow: left metrics survive, right
+// shortcuts yield first on narrowing, and the row never wraps.
 func composerHintBar(state State, width int) string {
 	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""

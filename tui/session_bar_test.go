@@ -134,8 +134,8 @@ func TestFormatTokensCompacts(t *testing.T) {
 }
 
 // The footer is two zones: left metrics/context, right shortcuts pinned to
-// the far edge. A wide frame pads between them; a narrow frame joins and
-// truncates rather than wrapping to a second row.
+// the far edge. A wide frame pads between them; a narrow frame keeps the
+// measured telemetry over shortcuts rather than wrapping to a second row.
 func TestSessionBarSplitsTelemetryAndShortcuts(t *testing.T) {
 	left, right := "↑1.2k · ↓340", "? help · ^p settings"
 	row := sessionBarRow(left, right, 60)
@@ -149,8 +149,8 @@ func TestSessionBarSplitsTelemetryAndShortcuts(t *testing.T) {
 	if got := CellWidth(narrow); got > 20 {
 		t.Fatalf("narrow row is %d cells, want no overflow: %q", got, narrow)
 	}
-	if !strings.Contains(narrow, "? help") {
-		t.Errorf("narrow row = %q, want the shortcuts to survive the trim", narrow)
+	if !strings.Contains(narrow, "↑1.2k") {
+		t.Errorf("narrow row = %q, want measured telemetry to survive the trim", narrow)
 	}
 	if got := sessionBarRow(left, right, 0); got != left+" · "+right {
 		t.Errorf("unbounded row = %q, want the joined zones", got)
@@ -186,4 +186,54 @@ func TestIdleHintZonesKeepCtrlPTruthful(t *testing.T) {
 	if !strings.Contains(right, "? help") {
 		t.Errorf("active right = %q, want the help shortcut kept", right)
 	}
+}
+
+// A split-pane minimum width keeps measured tokens and cost over the help
+// shortcut: at 40 columns the footer must still name what the session spent,
+// not just how to ask for help.
+func TestNarrowFooterKeepsTokensOverHelp(t *testing.T) {
+	left := "↑1.6k · ↓127 (0%) · $0.02 · #44 · …/test-web1:main"
+	right := "? help"
+	row := sessionBarRow(left, right, 39)
+	if got := CellWidth(row); got > 39 {
+		t.Fatalf("narrow row is %d cells, want no overflow: %q", got, row)
+	}
+	if !strings.Contains(row, "↑1.6k") || !strings.Contains(row, "↓127") {
+		t.Errorf("narrow row = %q, want the token counts kept", row)
+	}
+	if !strings.Contains(row, "$0.02") {
+		t.Errorf("narrow row = %q, want the cost kept over the shortcut", row)
+	}
+
+	s := New()
+	s.Status.Model = "p/m"
+	s.Apply(UserSubmitted{Text: "go"})
+	s.Apply(AssistantDone{})
+	s.Apply(SessionMetricsUpdated{Input: 1600, Output: 127})
+	s.Apply(WorkspaceUpdated{
+		Cwd: "/tmp/web-test4/test-web1", HasCwd: true,
+		Session: "#44", HasSession: true,
+		UsageText: "$0.02", HasUsage: true,
+		GitBranch: "main", HasGit: true,
+	})
+	s.Apply(TerminalResized{Width: 40, Height: 24})
+	out := Render(s)
+	footer := lastLine(out)
+	if !strings.Contains(footer, "↑1.6k") || !strings.Contains(footer, "↓127") {
+		t.Errorf("40-col footer = %q, want token counts visible at minimum size", footer)
+	}
+	if !strings.Contains(footer, "$0.02") {
+		t.Errorf("40-col footer = %q, want cost visible at minimum size", footer)
+	}
+	if got := CellWidth(footer); got > 40 {
+		t.Errorf("40-col footer is %d cells, want one row: %q", got, footer)
+	}
+}
+
+func lastLine(out string) string {
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	return lines[len(lines)-1]
 }

@@ -76,10 +76,10 @@ func sessionPathBranch(state State) string {
 
 // sessionBarRow joins the left telemetry zone and the right shortcut zone
 // into one footer row. When width is positive the right zone pins to the far
-// edge with blank padding; when the row cannot fit, the left yields first so
-// the shortcuts survive, and the whole row truncates to width rather than
-// wrapping. Non-positive widths join with " · " and never pad, for tests and
-// unknown viewports.
+// edge with blank padding; when the row cannot fit, the right yields first so
+// measured telemetry (token counts, cost) survives over shortcuts, and the
+// whole row truncates to width rather than wrapping. Non-positive widths join
+// with " · " and never pad, for tests and unknown viewports.
 func sessionBarRow(left, right string, width int) string {
 	left = strings.TrimSpace(left)
 	right = strings.TrimSpace(right)
@@ -100,18 +100,16 @@ func sessionBarRow(left, right string, width int) string {
 	}
 	gap := width - CellWidth(left) - CellWidth(right)
 	if gap < 2 {
-		// Too narrow for a split: the left yields first so the shortcuts
-		// and the path leaf survive. Keep the left whole when the right
-		// still keeps its "? help" head; otherwise the right alone wins
-		// over a sliver, and truncation is the last resort.
+		// Too narrow for a split: the left wins so token/cost telemetry
+		// stays visible in split-pane minimum sizes. Keep the left whole
+		// plus a truncated right when the "? help" head still fits;
+		// otherwise the left alone wins over a sliver, and truncation of
+		// the left (which keeps its token-first head) is the last resort.
 		sep := " · "
 		if CellWidth(left)+CellWidth(sep) < width && width-CellWidth(left)-CellWidth(sep) >= CellWidth("? help") {
 			return left + sep + TruncateToWidth(right, width-CellWidth(left)-CellWidth(sep))
 		}
-		if CellWidth(right) <= width {
-			return TruncateToWidth(right, width)
-		}
-		return TruncateToWidth(left+sep+right, width)
+		return TruncateToWidth(left, width)
 	}
 	return left + strings.Repeat(" ", gap) + right
 }
