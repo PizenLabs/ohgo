@@ -87,6 +87,9 @@ const (
 	ColorStatus = "#C9A86A"
 	// ColorAccent is soft steel blue: mode badges and the active runtime.
 	ColorAccent = "#7AA8C9"
+	// ColorFuzz is FUZZ's magenta workspace identity: semantic authority
+	// accent, not theme chrome, so it reads the same under every palette.
+	ColorFuzz = "#C678DD"
 	// ColorDim is slate gray: dot separators, dividers, and borders.
 	ColorDim = "#4C566A"
 	// ColorText is warm off-white: primary body text.

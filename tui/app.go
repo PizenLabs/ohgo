@@ -502,7 +502,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil {
+	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil {
 		return false
 	}
 	return s.Input == ""
@@ -666,6 +666,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		return p.handlePlaneKey(msg)
+	}
+
+	if p.state.Permissions != nil {
+		return p.handlePermissionsKey(msg)
 	}
 
 	if p.state.Picker != nil {
@@ -1006,6 +1010,10 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	case "ask", "fuzz", "build":
 		p.switchWorkspace(command.Name)
+		return nil
+
+	case "permissions", "mode":
+		p.openPermissions()
 		return nil
 
 	case "help":

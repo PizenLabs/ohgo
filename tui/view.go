@@ -180,6 +180,8 @@ func Render(state State) string {
 
 	if state.QuitConfirm != nil {
 		renderQuitConfirmArea(&sb, state, pal, layout)
+	} else if state.Permissions != nil {
+		renderPermissionsArea(&sb, state, pal, layout)
 	} else if state.Plane != nil {
 		renderPlaneArea(&sb, state, pal, layout)
 	} else if state.SupportPanel != nil {
@@ -196,7 +198,7 @@ func Render(state State) string {
 
 	renderThinkingArea(&sb, state, pal, layout)
 
-	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.QuitConfirm == nil {
+	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.QuitConfirm == nil && state.Permissions == nil {
 		// Main canvas. No middle status line while the hint bar owns the
 		// row (ShowHints): the header, composer prefix, and hint bar
 		// already own every fact it would repeat. A pending approval drops
@@ -596,7 +598,7 @@ func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout
 // ever rendered — never applied as an Entry — it cannot leak into the
 // persisted session or reappear over a resumed transcript.
 func showWelcome(state State) bool {
-	return len(state.Entries) == 0 && state.Picker == nil && state.Secret == nil && state.Pending == nil && state.QuitConfirm == nil
+	return len(state.Entries) == 0 && state.Picker == nil && state.Secret == nil && state.Pending == nil && state.QuitConfirm == nil && state.Permissions == nil
 }
 
 // renderTranscriptBody renders every entry wrapped to the content width.
@@ -1253,7 +1255,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 // composerPrefixStyle so the frame and the "ask > "/"build > "/"fuzz > "
 // text read as one boundary.
 func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
-	if state.Picker != nil || state.Secret != nil || state.Pending != nil || state.QuitConfirm != nil {
+	if state.Picker != nil || state.Secret != nil || state.Pending != nil || state.QuitConfirm != nil || state.Permissions != nil {
 		return pal.Separator
 	}
 	return composerPrefixStyle(state, pal).Bold(true)

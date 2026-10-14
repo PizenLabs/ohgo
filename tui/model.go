@@ -283,6 +283,11 @@ type State struct {
 	// reuses PendingApproval for its Yes/No choices so the conservative
 	// default and the no-wrap navigation match the tool approval dialog.
 	QuitConfirm *PendingApproval
+	// Permissions is the open authority selector, or nil. It is a modal
+	// overlay like the picker: while set it owns the keyboard and the middle
+	// of the screen, and confirming routes the chosen name through the
+	// workspace owner rather than changing authority here.
+	Permissions *PermissionsState
 	// Quit is set once the session has been asked to exit.
 	Quit bool
 	// SlashCursor selects within the inline slash suggestions, when the
@@ -566,6 +571,20 @@ func (s *State) Apply(event Event) {
 
 	case QuitConfirmClosed:
 		s.QuitConfirm = nil
+
+	case PermissionsOpened:
+		// The cursor parks on the authority in force, so Enter on an
+		// unchanged selection is a deliberate reaffirmation rather than a
+		// silent jump to another mode.
+		s.Permissions = &PermissionsState{Cursor: authorityIndexForLabel(s.Status.Workspace)}
+
+	case PermissionsMoved:
+		if s.Permissions != nil {
+			s.Permissions.Move(e.Delta)
+		}
+
+	case PermissionsClosed:
+		s.Permissions = nil
 
 	case InputChanged:
 		s.Input = e.Text
@@ -1173,6 +1192,7 @@ func (s *State) Apply(event Event) {
 		s.Entries = nil
 		s.Pending = nil
 		s.QuitConfirm = nil
+		s.Permissions = nil
 		s.Queued = nil
 		s.Scroll = 0
 		s.Follow = true
@@ -1540,6 +1560,23 @@ type QuitConfirmClosed struct{}
 
 func (QuitConfirmClosed) eventKind() string { return "quit_confirm_closed" }
 
+// PermissionsOpened opens the authority selector with the cursor parked on the
+// authority in force.
+type PermissionsOpened struct{}
+
+func (PermissionsOpened) eventKind() string { return "permissions_opened" }
+
+// PermissionsMoved shifts the authority highlight. Positive goes down; the
+// registry wraps at both ends.
+type PermissionsMoved struct{ Delta int }
+
+func (PermissionsMoved) eventKind() string { return "permissions_moved" }
+
+// PermissionsClosed dismisses the selector without changing authority.
+type PermissionsClosed struct{}
+
+func (PermissionsClosed) eventKind() string { return "permissions_closed" }
+
 // InputChanged sets the composed line.
 type InputChanged struct{ Text string }
 
@@ -1752,6 +1789,8 @@ var Commands = []CommandSpec{
 	{Name: "clear", Usage: "clear", Description: "clear the transcript and start a fresh context", Category: CommandGroupControl},
 	{Name: "model", Usage: "model [provider/id]", Description: "browse or switch the model", Category: CommandGroupControl},
 	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
+	{Name: "permissions", Usage: "permissions", Description: "choose the execution authority", Category: CommandGroupControl},
+	{Name: "mode", Usage: "mode", Description: "choose the execution authority", Hidden: true, Category: CommandGroupControl},
 	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions", Category: CommandGroupControl},
 	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
@@ -1775,6 +1814,13 @@ var Commands = []CommandSpec{
 func SuggestCommand(name string) (string, bool) {
 	best, bestDist := "", 3
 	for _, spec := range Commands {
+		// Hidden aliases stay out of discovery (see filterCommands), so they
+		// stay out of the suggestion too: hinting /mode for a typo would
+		// surface a name the palette deliberately hides, and a hidden alias
+		// can easily beat the command it aliases on distance.
+		if spec.Hidden {
+			continue
+		}
 		// Single-letter aliases match every single-letter typo at distance
 		// 1 and would hijack suggestions like /a (meant /ask) into /q, so
 		// they stay out of the hint while remaining runnable.
