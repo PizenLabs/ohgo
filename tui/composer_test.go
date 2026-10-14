@@ -177,3 +177,35 @@ func TestComposerWrapAccountsForPrefixWidth(t *testing.T) {
 		}
 	}
 }
+
+// The two lines framing the prompt share the workspace prefix colour so the
+// boundary reads as one: switching from ASK to BUILD to FUZZ must recolour
+// the frame, and a modal approval must quiet it back to the dim separator so
+// attention goes to the dialog.
+func TestComposerRuleFollowsWorkspacePrefix(t *testing.T) {
+	for _, theme := range []string{ThemeDark, ThemeLight} {
+		pal := PaletteFor(theme)
+		seen := map[string]string{}
+		for _, workspace := range []string{"ASK", "BUILD", "FUZZ"} {
+			s := New()
+			s.Theme = theme
+			s.Status.Workspace = workspace
+			ruleFg := colorName(composerRuleStyle(s, pal).GetForeground())
+			prefixFg := colorName(composerPrefixStyle(s, pal).GetForeground())
+			if ruleFg != prefixFg {
+				t.Errorf("%s %s: rule foreground = %q, want the prefix %q: the frame split from its prompt text", theme, workspace, ruleFg, prefixFg)
+			}
+			seen[workspace] = ruleFg
+		}
+		if seen["ASK"] == seen["BUILD"] || seen["ASK"] == seen["FUZZ"] || seen["BUILD"] == seen["FUZZ"] {
+			t.Errorf("%s: rule colours %v share a foreground: switching workspaces left the frame unchanged", theme, seen)
+		}
+		modal := New()
+		modal.Theme = theme
+		modal.Status.Workspace = "BUILD"
+		modal.Pending = &PendingApproval{ToolName: "bash", Summary: "run it", Choices: []string{"Yes", "No"}}
+		if got, want := colorName(composerRuleStyle(modal, pal).GetForeground()), colorName(pal.Separator.GetForeground()); got != want {
+			t.Errorf("%s: modal rule = %q, want the dim separator %q: approval lost focus to the composer frame", theme, got, want)
+		}
+	}
+}

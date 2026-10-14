@@ -1223,8 +1223,21 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	return sb.String()
 }
 
-// composerRule draws one restrained horizontal rule framing the composer.
-// The primary accent marks that the composer owns the keyboard; any overlay,
+// composerRuleStyle resolves the frame colour for the two lines around the
+// prompt: the live workspace accent while composing, the dim slate while a
+// modal state owns the keyboard. It shares its foreground with
+// composerPrefixStyle so the frame and the "ask > "/"build > "/"fuzz > "
+// text read as one boundary.
+func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
+	if state.Picker != nil || state.Secret != nil || state.Pending != nil {
+		return pal.Separator
+	}
+	return composerPrefixStyle(state, pal).Bold(true)
+}
+
+// composerRule draws one horizontal rule framing the composer in the live
+// workspace accent, so the two lines around the prompt read as the same
+// boundary as the "ask > "/"build > "/"fuzz > " prefix. Any overlay,
 // approval, or secret entry quiets it to the dim slate so attention goes to
 // the modal state.
 func composerRule(state State, pal *Palette, layout Layout) string {
@@ -1233,10 +1246,7 @@ func composerRule(state State, pal *Palette, layout Layout) string {
 		width = 1
 	}
 	line := strings.Repeat("─", width)
-	if state.Picker != nil || state.Secret != nil || state.Pending != nil {
-		return pal.Separator.Render(line)
-	}
-	return ExtrasFor(state.Theme).Focus.Render(line)
+	return composerRuleStyle(state, pal).Render(line)
 }
 
 // renderSlashSuggestions draws the inline command palette for a leading "/".
