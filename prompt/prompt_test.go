@@ -107,3 +107,19 @@ func TestProjectContextAnchorsOhgoLocalAtProjectRoot(t *testing.T) {
 		t.Errorf("the primary instructions must precede the supplementary ones:\n%s", got)
 	}
 }
+
+// A referenced file is rendered with its path and its exact bytes, so the model
+// can cite the source and reason over the real content. No files yields no
+// block rather than an empty header.
+func TestMentionContextRendersPathAndContent(t *testing.T) {
+	if got := MentionContext(nil); got != "" {
+		t.Fatalf("MentionContext(nil) = %q, want empty", got)
+	}
+	got := MentionContext([]ReferencedFile{{Path: "tui/app.go", Content: "package tui"}})
+	if !strings.Contains(got, `path="tui/app.go"`) {
+		t.Errorf("context = %q, want the path", got)
+	}
+	if !strings.Contains(got, "package tui") {
+		t.Errorf("context = %q, want the content verbatim", got)
+	}
+}

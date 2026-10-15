@@ -279,12 +279,26 @@ func TestCommandPaletteDiscoversAndRuns(t *testing.T) {
 	}
 }
 
-func TestSlashTabOpensPalette(t *testing.T) {
+func TestSlashTabAcceptsInlinePalette(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Apply(ComposerChanged{Text: "/mod", Cursor: 4})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyTab})
+	if p.state.Input != "/model " {
+		t.Errorf("input = %q, want tab to accept the highlighted inline command", p.state.Input)
+	}
+	if p.state.Picker != nil {
+		t.Errorf("picker = %+v, want tab to accept inline rather than open a modal", p.state.Picker)
+	}
+}
+
+func TestSlashTabOpensPaletteOffTrigger(t *testing.T) {
+	// With the palette dismissed (no trigger word under the cursor), tab on a
+	// slash line still reaches the searchable command modal.
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(ComposerChanged{Text: "/model ", Cursor: 7})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyTab})
 	if p.state.Picker == nil || p.state.Picker.Kind != PickerCommands {
-		t.Errorf("picker = %+v, want tab on a slash line to discover commands", p.state.Picker)
+		t.Errorf("picker = %+v, want tab off-trigger to open the command palette", p.state.Picker)
 	}
 }
 

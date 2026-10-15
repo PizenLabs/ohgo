@@ -4,8 +4,85 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// TestPaletteTokenDetectsTriggers pins the multi-trigger rule: "/", "@", and
+// "$" open the palette when they begin the word under the cursor. "/" and "$"
+// are line-level directives, so a mid-sentence token stays prose; "@" may
+// appear anywhere in a prompt.
+func TestPaletteTokenDetectsTriggers(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		cursor  int
+		trigger paletteTrigger
+		query   string
+		start   int
+		end     int
+		ok      bool
+	}{
+		{name: "command", input: "/mod", cursor: 4, trigger: paletteCommand, query: "mod", start: 0, end: 4, ok: true},
+		{name: "file", input: "@pkg/x", cursor: 6, trigger: paletteFile, query: "pkg/x", start: 0, end: 6, ok: true},
+		{name: "support", input: "$s", cursor: 2, trigger: paletteSupport, query: "s", start: 0, end: 2, ok: true},
+		{name: "file mid prompt", input: "see @src/", cursor: 9, trigger: paletteFile, query: "src/", start: 4, end: 9, ok: true},
+		{name: "at inside word", input: "foo@bar", cursor: 7, ok: false},
+		{name: "command mid prompt", input: "hello /mod", cursor: 10, ok: false},
+		{name: "support mid prompt", input: "hello $s", cursor: 8, ok: false},
+		{name: "cursor before trigger", input: "@x", cursor: 0, ok: false},
+		{name: "no trigger", input: "plain words", cursor: 5, ok: false},
+	}
+	for _, tt := range tests {
+		trigger, query, start, end, ok := paletteToken(tt.input, tt.cursor)
+		if ok != tt.ok {
+			t.Errorf("%s: ok = %v, want %v", tt.name, ok, tt.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if trigger != tt.trigger || query != tt.query || start != tt.start || end != tt.end {
+			t.Errorf("%s: got (%q,%q,%d,%d), want (%q,%q,%d,%d)",
+				tt.name, trigger, query, start, end, tt.trigger, tt.query, tt.start, tt.end)
+		}
+	}
+}
+
+// TestSupportTriggerRendersInlinePalette proves "$" opens the same inline
+// palette as "/" and "@", with the $sup shortcut and a SUPPORT header, and
+// never a modal picker.
+func TestSupportTriggerRendersInlinePalette(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 100, Height: 24})
+	p.state.Apply(ComposerChanged{Text: "$", Cursor: 1})
+	if p.state.Picker != nil {
+		t.Fatalf("picker = %+v, want no modal overlay for $", p.state.Picker)
+	}
+	out := Render(p.state)
+	if !strings.Contains(out, "SUPPORT") || !strings.Contains(out, "$sup") {
+		t.Errorf("inline palette missing the $sup shortcut:\n%s", out)
+	}
+}
+
+// TestSupportTriggerFilters proves a non-matching query closes the palette.
+func TestSupportTriggerFilters(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(ComposerChanged{Text: "$zzz", Cursor: 4})
+	if len(paletteEntriesFor(p.state)) != 0 {
+		t.Fatalf("entries = %+v, want none for a non-matching query", paletteEntriesFor(p.state))
+	}
+}
+
+// TestSupportSplicesOnAccept proves Enter/Tab splices "$sup" into the composer.
+func TestSupportSplicesOnAccept(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(ComposerChanged{Text: "$s", Cursor: 2})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if p.state.Input != "$sup " {
+		t.Fatalf("input = %q, want the $sup shortcut spliced", p.state.Input)
+	}
+}
 
 // The palette filters on a case-insensitive prefix of the command name, and
 // hidden aliases never appear: what the palette shows is what dispatch accepts.

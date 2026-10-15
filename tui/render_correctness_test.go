@@ -401,8 +401,8 @@ func TestSlashEnterCompletesThenRuns(t *testing.T) {
 	p.SetModelLister(func() []string { return []string{"openai/gpt", "model/m1"} })
 	p.state.Apply(ComposerChanged{Text: "/mod", Cursor: 4})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
-	if p.state.Input != "/model" {
-		t.Fatalf("input = %q, want Enter to complete the partial command first", p.state.Input)
+	if p.state.Input != "/model " {
+		t.Fatalf("input = %q, want Enter to complete the partial command and leave a trailing space", p.state.Input)
 	}
 	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
 	if p.state.Picker == nil {
@@ -413,9 +413,9 @@ func TestSlashEnterCompletesThenRuns(t *testing.T) {
 func TestSlashNavigationAndDismissKeepDraft(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Apply(ComposerChanged{Text: "/", Cursor: 1})
-	first := SlashSuggestions(p.state.Input)[p.state.SlashCursor]
+	first := SlashSuggestions(p.state.Input)[p.state.PaletteCursor]
 	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
-	second := SlashSuggestions(p.state.Input)[p.state.SlashCursor]
+	second := SlashSuggestions(p.state.Input)[p.state.PaletteCursor]
 	if first.Name == second.Name && len(SlashSuggestions("/")) > 1 {
 		t.Error("down did not move the inline highlight")
 	}

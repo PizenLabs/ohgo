@@ -301,13 +301,17 @@ type State struct {
 	Permissions *PermissionsState
 	// Quit is set once the session has been asked to exit.
 	Quit bool
-	// SlashCursor selects within the inline slash suggestions, when the
-	// composer holds a leading "/". It is derived UI cursor state, reset
-	// whenever the input text itself changes.
-	SlashCursor int
-	// SlashHide dismisses the inline suggestions while keeping the typed
-	// text (esc). Any input change shows them again.
-	SlashHide bool
+	// PaletteCursor selects within the inline palette (the "/" command,
+	// "@" file, and "$" support suggestions share one overlay). It is derived
+	// UI cursor state, reset whenever the input text itself changes.
+	PaletteCursor int
+	// PaletteHide dismisses the inline palette while keeping the typed text
+	// (esc). Any input change shows it again.
+	PaletteHide bool
+	// PaletteFiles is the workspace roster the "@" trigger completes against,
+	// installed by the owner. Paths are slash-relative; a trailing slash marks
+	// a directory. Empty disables file completion.
+	PaletteFiles []string
 	// closedAssistant marks that the trailing assistant entry has ended, so
 	// the next turn opens a new one.
 	closedAssistant bool
@@ -601,8 +605,8 @@ func (s *State) Apply(event Event) {
 	case InputChanged:
 		s.Input = e.Text
 		s.Cursor = len([]rune(e.Text))
-		s.SlashCursor = 0
-		s.SlashHide = false
+		s.PaletteCursor = 0
+		s.PaletteHide = false
 		s.prunePastes()
 		s.syncComposerScroll()
 
@@ -616,9 +620,12 @@ func (s *State) Apply(event Event) {
 		label := pasteChipLabel(chip)
 		s.setComposer(insertAt(s.Input, s.Cursor, label), s.Cursor+len([]rune(label)))
 
-	case SlashMoved:
-		s.SlashHide = false
-		s.moveSlash(e.Delta)
+	case PaletteMoved:
+		s.PaletteHide = false
+		s.movePalette(e.Delta)
+
+	case PaletteFilesLoaded:
+		s.PaletteFiles = append([]string(nil), e.Files...)
 
 	case HistoryMoved:
 		s.moveHistory(e.Delta)
@@ -1275,8 +1282,8 @@ func clampCursor(text string, pos int) int {
 func (s *State) setComposer(text string, cursor int) {
 	if s.Input != text {
 		// New text re-opens discovery and parks on the top match.
-		s.SlashCursor = 0
-		s.SlashHide = false
+		s.PaletteCursor = 0
+		s.PaletteHide = false
 	}
 	s.Input = text
 	s.Cursor = clampCursor(text, cursor)
@@ -1843,6 +1850,7 @@ var Commands = []CommandSpec{
 	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
 	{Name: "permissions", Usage: "permissions", Description: "choose the execution authority", Category: CommandGroupControl},
 	{Name: "mode", Usage: "mode", Description: "choose the execution authority", Hidden: true, Category: CommandGroupControl},
+	{Name: "sup", Usage: "sup [request]", Description: "ask $sup, the ephemeral support surface", Category: CommandGroupControl},
 	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions", Category: CommandGroupControl},
 	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
@@ -1993,16 +2001,17 @@ type HistoryMoved struct{ Delta int }
 
 func (HistoryMoved) eventKind() string { return "history_moved" }
 
-// SlashMoved shifts the inline slash-suggestion highlight. Positive goes down.
-type SlashMoved struct{ Delta int }
+// PaletteMoved shifts the inline palette highlight. Positive goes down.
+type PaletteMoved struct{ Delta int }
 
-func (SlashMoved) eventKind() string { return "slash_moved" }
+func (PaletteMoved) eventKind() string { return "palette_moved" }
 
-// maxSlashRows bounds the inline command suggestions so discovery never
-// evicts the conversation. It is the palette's own row cap, so the inline
-// overlay and the exported RenderSlashPalette never disagree. Render and
-// layout share slashWindow, so reserved and rendered rows always agree.
-const maxSlashRows = PaletteMaxRows
+// PaletteFilesLoaded installs the workspace roster the "@" trigger completes
+// against. It is applied once per session, when the first "@" token appears,
+// so a session that never references a file never pays for the walk.
+type PaletteFilesLoaded struct{ Files []string }
+
+func (PaletteFilesLoaded) eventKind() string { return "palette_files_loaded" }
 
 // SlashActive reports whether the composer holds a completable slash line:
 // single-line input starting with "/". Multiline input stays prose.
@@ -2015,7 +2024,8 @@ func SlashActive(input string) bool {
 
 // SlashSuggestions filters the authoritative command registry by the text
 // after the leading "/". Hidden aliases stay out, matching /help, so the
-// list can never drift from what dispatch accepts.
+// list can never drift from what dispatch accepts. It is the "/" trigger's
+// view of the unified palette, kept for callers that want commands only.
 func SlashSuggestions(input string) []CommandSpec {
 	if !SlashActive(input) {
 		return nil
@@ -2023,101 +2033,16 @@ func SlashSuggestions(input string) []CommandSpec {
 	return filterCommands(strings.TrimPrefix(input, "/"))
 }
 
-// slashWindow returns the visible suggestion window with its start offset
-// and clamped cursor, plus whether rows hide above or below. The window
-// follows the cursor so the highlight is always on a rendered row, never
-// scrolled off. Render and layout share it so reserved and rendered rows
-// always agree.
-func slashWindow(s State) (shown []CommandSpec, start, cursor int, above, below bool) {
-	matches := SlashSuggestions(s.Input)
-	if s.SlashHide || len(matches) == 0 {
-		return nil, 0, 0, false, false
-	}
-	cursor = s.SlashCursor
-	if cursor < 0 || cursor >= len(matches) {
-		cursor = 0
-	}
-	shown, start, above, below = windowMatches(matches, cursor, maxSlashRows)
-	return shown, start, cursor, above, below
-}
-
-// windowMatches slices the visible window of a match list for an in-range
-// cursor: it follows the cursor so the highlight is always on a rendered row,
-// then clamps to keep the window inside the list. It returns the slice plus
-// whether rows hide above or below. The stateful renderer and the exported
-// palette share it, so "top matches" means the same thing everywhere.
-func windowMatches(matches []CommandSpec, cursor, max int) (shown []CommandSpec, start int, above, below bool) {
-	if len(matches) == 0 || max <= 0 {
-		return nil, 0, false, false
-	}
-	if cursor < 0 {
-		cursor = 0
-	}
-	if cursor >= len(matches) {
-		cursor = len(matches) - 1
-	}
-	start = 0
-	if len(matches) > max {
-		start = cursor - max + 1
-		if start < 0 {
-			start = 0
-		}
-		if start+max > len(matches) {
-			start = len(matches) - max
-		}
-	}
-	end := start + max
-	if end > len(matches) {
-		end = len(matches)
-	}
-	return matches[start:end], start, start > 0, end < len(matches)
-}
-
-// slashRows counts the suggestion rows the composer will render, so the
-// layout reserves exactly what the view draws.
-func slashRows(s State) int {
-	shown, _, _, above, below := slashWindow(s)
-	if len(shown) == 0 {
-		return 0
-	}
-	n := len(shown) + slashGroupHeaders(shown)
-	if above {
-		n++
-	}
-	if below {
-		n++
-	}
-	// The overlay renders inside a rounded box: the border claims one row on
-	// each side, so the reservation must carry it or the frame shorts.
-	return n + paletteBorderRows
-}
-
-// slashGroupHeaders counts the group titles the suggestion list will render:
-// one per distinct category present in the visible window. The headers are
-// presentation only; selection still indexes the flat matches.
-func slashGroupHeaders(shown []CommandSpec) int {
-	seen := map[string]bool{}
-	n := 0
-	for _, spec := range shown {
-		group := groupOf(spec)
-		if !seen[group] {
-			seen[group] = true
-			n++
-		}
-	}
-	return n
-}
-
-// moveSlash shifts the suggestion highlight, wrapping at both ends.
-func (s *State) moveSlash(delta int) {
-	n := len(SlashSuggestions(s.Input))
+// movePalette shifts the inline palette highlight, wrapping at both ends.
+func (s *State) movePalette(delta int) {
+	n := len(paletteEntriesFor(*s))
 	if n == 0 {
-		s.SlashCursor = 0
+		s.PaletteCursor = 0
 		return
 	}
-	s.SlashCursor = (s.SlashCursor + delta) % n
-	if s.SlashCursor < 0 {
-		s.SlashCursor += n
+	s.PaletteCursor = (s.PaletteCursor + delta) % n
+	if s.PaletteCursor < 0 {
+		s.PaletteCursor += n
 	}
 }
 

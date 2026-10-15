@@ -653,7 +653,7 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 	// The palette sits strictly above the input line it completes. It is
 	// expanded into one element per row so liveChrome's row count matches
 	// what the painter erases and rewrites.
-	if suggest := renderSlashSuggestions(s, layout); suggest != "" {
+	if suggest := renderPaletteSuggestions(s, layout); suggest != "" {
 		out = append(out, strings.Split(suggest, "\n")...)
 	}
 	for i, row := range shown {
@@ -663,6 +663,7 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 		if isCursorRow {
 			rowCursor = cursorRune
 		}
+		text, rowCursor = highlightMentions(pal.Mention, text, rowCursor)
 		text, rowCursor = renderPasteChips(s.Pastes, pal.Chip, text, rowCursor)
 		if isCursorRow {
 			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
@@ -690,8 +691,8 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 func liveHintsFor(s State, layout Layout) string {
 	var choices []string
 	switch {
-	case !s.SlashHide && len(SlashSuggestions(s.Input)) > 0 && s.Secret == nil:
-		choices = []string{"↑↓ navigate · enter accept · esc dismiss", "↑↓ enter esc"}
+	case len(paletteEntriesFor(s)) > 0 && s.Secret == nil:
+		choices = []string{"↑↓ navigate · enter/tab accept · esc dismiss", "↑↓ enter esc"}
 	case s.Status.Busy:
 		choices = []string{"enter queue · esc cancel · alt+enter break", "enter queue · esc cancel"}
 	default:

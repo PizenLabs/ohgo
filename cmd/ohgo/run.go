@@ -592,6 +592,35 @@ func connectHooks(held *harness) tui.ConnectHooks {
 	}
 }
 
+// mentionLister builds the workspace roster offered by the "@" trigger. It
+// walks the project with the search tools' own ignore rules, so the inline
+// palette cannot suggest a path the read tool would refuse, and caps the roster
+// so a large tree cannot stall discovery. A trailing slash marks a folder.
+func mentionLister(root string) func() []string {
+	return func() []string {
+		paths := tools.WorkspaceMentions(context.Background(), root, 0)
+		out := make([]string, 0, len(paths))
+		for _, p := range paths {
+			if p.Dir {
+				out = append(out, p.Path+"/")
+				continue
+			}
+			out = append(out, p.Path)
+		}
+		return out
+	}
+}
+
+// mentionReader reads a workspace-relative file for "@" context injection,
+// with the same root containment the read tool enforces: a reference outside
+// the workspace, a directory, or an oversized file fails rather than attaching
+// the wrong bytes to the model request.
+func mentionReader(root string) func(path string) (string, error) {
+	return func(path string) (string, error) {
+		return tools.ReadWorkspaceFile(root, path)
+	}
+}
+
 // validateProvider checks a credential and lists models: probe first (cheap,
 // precise errors), discovery second. An empty key resolves the detected
 // credential, so choosing "use detected" never pastes anything anywhere.
@@ -1308,6 +1337,8 @@ func runSession(cmd *cobra.Command, args []string) error {
 			return surface.ask(ctx, question, onDelta)
 		})
 		program.SetSupportInfo(held.SupportInfo)
+		program.SetMentionLister(mentionLister(opts.root))
+		program.SetMentionReader(mentionReader(opts.root))
 
 		// The header effort badge follows the session role's effective level.
 		// The reporter reads the configuration authority (role effort, then
@@ -1626,6 +1657,8 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		return surface.ask(ctx, question, onDelta)
 	})
 	program.SetSupportInfo(held.SupportInfo)
+	program.SetMentionLister(mentionLister(opts.root))
+	program.SetMentionReader(mentionReader(opts.root))
 
 	program.SetEffortProvider(func() string {
 		role := held.sessionRole()

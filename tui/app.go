@@ -158,6 +158,18 @@ type Program struct {
 	// the caller, which owns the catalog. Preferred over listModels when set.
 	listModelOptions func() []ModelOption
 	listJobs         func() []JobItem
+	// listMentions lists workspace paths for the "@" trigger. Nil disables
+	// file completion, leaving "@" a literal character. It is called once per
+	// session, when the first "@" token appears.
+	listMentions func() []string
+	// readMention reads one workspace-relative file for "@" context
+	// injection. Nil disables context resolution, leaving "@" a pure
+	// completion affordance. It is called on the turn goroutine, once per
+	// reference per submitted prompt.
+	readMention func(path string) (string, error)
+	// mentionsLoaded records that the "@" roster was installed, so a session
+	// that references files walks the workspace at most once.
+	mentionsLoaded bool
 	// lastJobs remembers the listed jobs so choosing one can show its
 	// output. It is only touched from the update goroutine.
 	lastJobs []JobItem
@@ -717,26 +729,32 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.handleSupportKey(msg)
 	}
 
-	// Inline slash discovery owns its keys while visible: navigating,
-	// accepting, or dismissing suggestions must not leak into history,
-	// line movement, or submission. Tab is deliberately untouched: it
-	// keeps opening the full command palette, matching its contract.
+	// The "@" trigger needs its workspace roster before the palette can show
+	// file rows. Install it once, lazily, so a session that never references
+	// a file never walks the tree.
+	p.ensureMentionRoster()
+
+	// The inline palette owns its keys while visible: navigating, accepting,
+	// or dismissing suggestions must not leak into history, line movement, or
+	// submission. Enter and Tab both accept the highlighted row; the text is
+	// spliced into the composer, so the same keys mean the same thing for
+	// every trigger.
 	if p.state.Secret == nil && p.state.Pending == nil && p.state.QuitConfirm == nil &&
-		!p.state.SlashHide && len(SlashSuggestions(p.state.Input)) > 0 {
+		len(paletteEntriesFor(p.state)) > 0 {
 		switch msg.String() {
 		case "up", "ctrl+p":
-			p.state.Apply(SlashMoved{Delta: -1})
+			p.state.Apply(PaletteMoved{Delta: -1})
 			return p, nil
 		case "down", "ctrl+n":
-			p.state.Apply(SlashMoved{Delta: 1})
+			p.state.Apply(PaletteMoved{Delta: 1})
 			return p, nil
 		case "esc":
 			// Dismiss keeps the draft: the text stays, only the list hides
 			// until the next keystroke.
-			p.state.SlashHide = true
+			p.state.PaletteHide = true
 			return p, nil
-		case "enter":
-			return p.acceptSlash()
+		case "enter", "tab":
+			return p.acceptPalette()
 		}
 	}
 	// A secret prompt captures the composer: typing masks, enter submits to
@@ -996,34 +1014,61 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// text: it inserts verbatim at the cursor. The application must
 			// not second-guess prose that resembles protocol bytes.
 			composed := insertAt(p.state.Input, p.state.Cursor, text)
-			p.state.Apply(ComposerChanged{Text: composed, Cursor: p.state.Cursor + len([]rune(text))})
+			cursor := p.state.Cursor + len([]rune(text))
+			p.state.Apply(ComposerChanged{Text: composed, Cursor: cursor})
+			// The insertion may have just opened a trigger word (a typed or
+			// pasted "@"), so install the roster before the next render.
+			p.ensureMentionRoster()
 		}
 		return p, nil
 	}
 }
 
-// acceptSlash resolves Enter on a slash line: an exact known command (with
-// or without arguments) dispatches exactly like submitting it; a partial
-// line completes to the highlighted suggestion and stays in the composer
-// so a second Enter runs what the user has now seen.
-func (p *Program) acceptSlash() (tea.Model, tea.Cmd) {
-	matches := SlashSuggestions(p.state.Input)
-	if len(matches) == 0 {
+// ensureMentionRoster installs the "@" workspace roster the first time the
+// cursor enters an "@" token. It is idempotent: the walk runs at most once per
+// session, and a nil lister leaves "@" literal.
+func (p *Program) ensureMentionRoster() {
+	if p.mentionsLoaded || p.listMentions == nil {
+		return
+	}
+	trigger, _, _, _, ok := paletteToken(p.state.Input, p.state.Cursor)
+	if !ok || trigger != paletteFile {
+		return
+	}
+	p.mentionsLoaded = true
+	p.state.Apply(PaletteFilesLoaded{Files: p.listMentions()})
+}
+
+// acceptPalette resolves Enter or Tab on the inline palette: the highlighted
+// row's token is spliced into the composer over the trigger word.
+//
+// A "/" word that is already an exact known command dispatches exactly like
+// submitting it, so a second Enter still runs what the user has now seen. Every
+// other case completes the highlighted row and hides the palette until the next
+// keystroke, which re-opens it if the cursor is still inside a trigger word.
+func (p *Program) acceptPalette() (tea.Model, tea.Cmd) {
+	entries := paletteEntriesFor(p.state)
+	if len(entries) == 0 {
 		return p, nil
 	}
-	cur := p.state.SlashCursor
-	if cur < 0 || cur >= len(matches) {
-		cur = 0
+	trigger, _, start, end, ok := paletteToken(p.state.Input, p.state.Cursor)
+	if !ok {
+		return p, nil
 	}
-	typed := strings.TrimSpace(p.state.Input)
-	if command, ok := ParseCommand(typed); ok {
-		if _, known := LookupCommand(command.Name); known &&
-			(typed == "/"+command.Name || len(command.Args) > 0) {
-			return p, p.runCommand(command)
+	if trigger == paletteCommand {
+		if command, ok := ParseCommand(strings.TrimSpace(p.state.Input)); ok {
+			if _, known := LookupCommand(command.Name); known && len(command.Args) == 0 {
+				return p, p.runCommand(command)
+			}
 		}
 	}
-	completed := "/" + matches[cur].Name
-	p.state.Apply(ComposerChanged{Text: completed, Cursor: len([]rune(completed))})
+	cur := ClampPaletteCursor(p.state.PaletteCursor, len(entries))
+	text, cursor := SpliceToken(p.state.Input, start, end, entries[cur].Insert)
+	p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
+	// Hide until the next keystroke: the spliced token still holds the cursor,
+	// so without this the palette would immediately re-open over the row just
+	// accepted.
+	p.state.PaletteHide = true
 	return p, nil
 }
 
@@ -1073,6 +1118,25 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 	case "permissions", "mode":
 		p.openPermissions()
 		return nil
+
+	case "sup":
+		// /sup is the discoverable alias for the "$sup" ephemeral surface:
+		// it routes through the same overlay and never becomes a workspace
+		// turn. A missing handler reports unavailable rather than sending
+		// the literal text to the model.
+		if p.support == nil {
+			p.state.Apply(Notice{Text: "$sup is unavailable"})
+			return nil
+		}
+		text := "$sup"
+		if len(command.Args) > 0 {
+			text += " " + strings.Join(command.Args, " ")
+		}
+		if p.state.Status.Busy {
+			p.queue(text)
+			return nil
+		}
+		return p.submit(text)
 
 	case "help":
 		p.state.Apply(Notice{Text: HelpText()})
@@ -2887,6 +2951,18 @@ func (p *Program) runTurn(text string) {
 		}
 	})
 
+	// "@" references are attached to the request as real system context, not
+	// left as a UI decoration: the prompt's tokens resolve against the
+	// workspace here, once, so the model reasons over the actual bytes. The
+	// context is set every turn — including to nil — so a prompt with no
+	// reference never inherits the previous turn's files. A reference that
+	// cannot be read warns in the transcript rather than sending nothing.
+	contextText, warnings := mentionContext(text, p.readMention)
+	for _, warning := range warnings {
+		p.publish(Notice{Text: warning})
+	}
+	p.loop.SetSystemContext(systemContextBlocks(contextText))
+
 	turns, err := p.loop.Run(ctx, request)
 
 	p.mu.Lock()
@@ -3040,6 +3116,30 @@ func (p *Program) SetSupportStreamFunc(support func(ctx context.Context, questio
 // the canonical configuration authority, so the display never goes stale.
 func (p *Program) SetSupportInfo(info func() (model, effort string)) {
 	p.supportInfo = info
+}
+
+// SetMentionLister installs the workspace path source behind the "@" trigger.
+//
+// The lister returns the candidate roster once, when the cursor first enters an
+// "@" token; the inline palette filters it purely, so the lister must not
+// pre-filter. Paths are slash-relative and a trailing slash marks a folder.
+// A nil lister leaves "@" a literal character, which keeps the feature off for
+// embedders and tests that do not own a workspace.
+func (p *Program) SetMentionLister(lister func() []string) {
+	p.listMentions = lister
+}
+
+// SetMentionReader installs the workspace file reader behind "@" context
+// injection.
+//
+// It is the other half of the "@" contract: the lister offers paths to
+// complete, and the reader turns an accepted path into the bytes the model
+// receives. It must resolve within the workspace and return an error for a
+// missing, unreadable, or out-of-root path, which becomes an explicit warning
+// rather than silent empty context. A nil reader keeps "@" a pure UI
+// affordance for embedders and tests that do not own a workspace.
+func (p *Program) SetMentionReader(reader func(path string) (string, error)) {
+	p.readMention = reader
 }
 
 // AttachSession wires the program to a persistent transcript.

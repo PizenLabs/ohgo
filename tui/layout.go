@@ -55,11 +55,12 @@ type Layout struct {
 	// Render emits exactly this many rows, so the transcript budget and the
 	// painted frame agree and the chrome never floats.
 	ThinkingLines int
-	// SlashLines is the suggestion rows the composer will render. It equals
-	// what slashBudget reserves: the renderer truncates to it, so reserved
-	// and rendered rows always agree even on viewports shorter than the
-	// full suggestion window. Negative means uncapped (unknown size).
-	SlashLines int
+	// PaletteLines is the inline-palette suggestion rows the composer will
+	// render. It equals what composerHeight reserves: the renderer truncates
+	// to it, so reserved and rendered rows always agree even on viewports
+	// shorter than the full suggestion window. Negative means uncapped
+	// (unknown size).
+	PaletteLines int
 	// ShowDetail reports secondary metadata survives (context %, session,
 	// cwd). Narrow tiers drop it before touching conversation width.
 	ShowDetail bool
@@ -101,7 +102,7 @@ func ComputeLayout(s State) Layout {
 			ContentWidth:  0, // zero means "do not wrap"
 			ShowDetail:    true,
 			ShowHints:     true,
-			SlashLines:    -1, // uncapped: render everything
+			PaletteLines:  -1, // uncapped: render everything
 			ThinkingLines: thinkingRows(s),
 		}
 	}
@@ -170,7 +171,7 @@ func ComputeLayout(s State) Layout {
 		ThinkingLines:      thinking,
 		ShowDetail:         mode == LayoutWide || mode == LayoutMedium,
 		ShowHints:          hints > 0,
-		SlashLines:         sugg,
+		PaletteLines:       sugg,
 	}
 }
 
@@ -198,13 +199,13 @@ func thinkingRows(s State) int {
 }
 
 // composerHeight sizes the composer in rows: the two framing rules plus
-// hard-wrapped input lines, inline slash suggestions, and the interaction
+// hard-wrapped input lines, inline palette suggestions, and the interaction
 // state line. Bounded so a pasted novel cannot evict the conversation. It
 // uses the same wrap as renderComposer so the reserved rows and the rendered
 // rows agree. It also returns the suggestion rows, capped so the chrome
 // leaves the transcript at least one row: suggestions yield first — rules,
 // input, and state never shrink for them. The renderer truncates to the
-// same count via Layout.SlashLines.
+// same count via Layout.PaletteLines.
 func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (lines, sugg int) {
 	lines = 2 // the two framing rules
 	if s.Secret != nil {
@@ -245,7 +246,7 @@ func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (l
 		stateRows = 1
 		lines++
 	}
-	sugg = slashRows(s)
+	sugg = paletteRows(s)
 	if s.Height > 0 {
 		maxSugg := s.Height - 2 - 1 - hintRows - 2 - inputRows - stateRows - 1
 		if maxSugg < 0 {

@@ -32,6 +32,9 @@ type Palette struct {
 	// Chip renders a collapsed paste pill in the composer, distinct from the
 	// editable text around it without shouting.
 	Chip lipgloss.Style
+	// Mention renders a valid "@path" reference in the composer, so a file
+	// the prompt will actually attach stands out from surrounding prose.
+	Mention lipgloss.Style
 	// Markdown styles.
 	Code      lipgloss.Style
 	CodeFence lipgloss.Style
@@ -92,6 +95,7 @@ func DarkPalette() *Palette {
 		Cursor:       fg(ColorPrimary).Reverse(true),
 		Queued:       fg(darkMuted).Italic(true),
 		Chip:         fg(ColorAccent).Bold(true),
+		Mention:      fg(ColorPrimary).Bold(true),
 		Code:         fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
 		CodeFence:    fg(darkMuted),
 		Heading:      fg(darkH1).Bold(true),
@@ -133,6 +137,7 @@ func LightPalette() *Palette {
 		Cursor:       fg(lightAccent).Reverse(true),
 		Queued:       fg(lightMuted).Italic(true),
 		Chip:         fg(chromeLightAccent).Bold(true),
+		Mention:      fg(chromeLightPrimary).Bold(true),
 		Code:         fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
 		CodeFence:    fg(lightMuted),
 		Heading:      fg(lightH1).Bold(true),
@@ -255,8 +260,8 @@ func composerHintsFor(state State) string {
 	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
-	if !state.SlashHide && len(SlashSuggestions(state.Input)) > 0 && state.Secret == nil {
-		return "↑↓ navigate · enter accept · esc dismiss · tab palette"
+	if len(paletteEntriesFor(state)) > 0 && state.Secret == nil {
+		return "↑↓ navigate · enter/tab accept · esc dismiss"
 	}
 	if state.Status.Busy {
 		return ComposerHints(true)
@@ -281,11 +286,12 @@ func composerHintBar(state State, width int) string {
 	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
-	if !state.SlashHide && len(SlashSuggestions(state.Input)) > 0 && state.Secret == nil {
+	if len(paletteEntriesFor(state)) > 0 && state.Secret == nil {
+		const hint = "↑↓ navigate · enter/tab accept · esc dismiss"
 		if width > 0 {
-			return TruncateToWidth("↑↓ navigate · enter accept · esc dismiss · tab palette", width)
+			return TruncateToWidth(hint, width)
 		}
-		return "↑↓ navigate · enter accept · esc dismiss · tab palette"
+		return hint
 	}
 	if state.Status.Busy {
 		if width > 0 {
@@ -1231,7 +1237,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	// The palette sits strictly above the input line it completes: the rule
 	// frames it, the input stays the live row below, and the closing rule
 	// still bounds the composer.
-	if suggest := renderSlashSuggestions(state, layout); suggest != "" {
+	if suggest := renderPaletteSuggestions(state, layout); suggest != "" {
 		sb.WriteString("\n" + suggest)
 	}
 	for i, row := range shown {
@@ -1241,8 +1247,11 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 		if isCursorRow {
 			rowCursor = cursorRune
 		}
-		// Collapsed paste pills are styled in place; the cursor is remapped for
-		// the escape runes the styling adds.
+		// "@" references are highlighted first, on the plain row, so the
+		// scanner never has to step over another style's escapes; collapsed
+		// paste pills are then styled in place. Each styling step remaps the
+		// cursor for the escape runes it adds.
+		text, rowCursor = highlightMentions(pal.Mention, text, rowCursor)
 		text, rowCursor = renderPasteChips(state.Pastes, pal.Chip, text, rowCursor)
 		if isCursorRow {
 			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
@@ -1287,27 +1296,28 @@ func composerRule(state State, pal *Palette, layout Layout) string {
 	return composerRuleStyle(state, pal).Render(line)
 }
 
-// renderSlashSuggestions draws the inline command palette for a leading "/".
+// renderPaletteSuggestions draws the inline palette for the trigger word at
+// the cursor ("/" commands, "@" files, "$" support).
 //
-// It is built from the authoritative registry on every render, filters as the
-// user types, and caps its rows so discovery never evicts the conversation.
-// Rows render through the shared palette builder with a fixed name column and
-// a rounded frame, so cycling the cursor or typing filter letters never shifts
+// It is built from the trigger's registry on every render, filters as the user
+// types, and caps its rows so discovery never evicts the conversation. Rows
+// render through the shared palette builder with a fixed name column and a
+// rounded frame, so cycling the cursor or typing filter letters never shifts
 // the layout. The window is trimmed to the reserved budget, and the count
 // markers stay truthful about what is hidden; a negative budget means the size
 // is unknown (a test, or a terminal that never reported it) and everything
 // renders.
-func renderSlashSuggestions(state State, layout Layout) string {
-	shown, start, cursor, above, below := slashWindow(state)
+func renderPaletteSuggestions(state State, layout Layout) string {
+	shown, start, cursor, above, below := paletteWindow(state)
 	if len(shown) == 0 {
 		return ""
 	}
-	matches := SlashSuggestions(state.Input)
-	items := append([]CommandSpec(nil), shown...)
+	matches := paletteEntriesFor(state)
+	items := append([]paletteEntry(nil), shown...)
 	hideAbove := above
 	hideBelow := below
-	if layout.SlashLines >= 0 {
-		budget := layout.SlashLines
+	if layout.PaletteLines >= 0 {
+		budget := layout.PaletteLines
 		// The box needs both borders plus at least one content row; below
 		// that there is nothing to draw and the composer keeps its inputs.
 		if budget < paletteBorderRows+1 {
@@ -1315,7 +1325,7 @@ func renderSlashSuggestions(state State, layout Layout) string {
 		}
 		for {
 			hideBelow = len(matches)-start-len(items) > 0
-			if len(items)+slashGroupHeaders(items)+one(hideAbove)+one(hideBelow)+paletteBorderRows <= budget {
+			if len(items)+paletteGroupHeaders(items)+one(hideAbove)+one(hideBelow)+paletteBorderRows <= budget {
 				break
 			}
 			if len(items) > 0 {
@@ -1334,10 +1344,9 @@ func renderSlashSuggestions(state State, layout Layout) string {
 		total:      len(matches),
 		above:      hideAbove,
 		below:      hideBelow,
-		current:    strings.ToUpper(strings.TrimSpace(state.Status.Workspace)),
 		headers:    true,
 		width:      displayWidth(state, layout),
-		exactRows:  layout.SlashLines,
+		exactRows:  layout.PaletteLines,
 		styles:     paletteStylesFor(state.Theme),
 	})
 }

@@ -3,22 +3,31 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Slash palette geometry. The name column is fixed so a description always
+// Inline palette geometry. The name column is fixed so a description always
 // starts at the same cell: filtering, cycling the cursor, or switching the
 // active row never shifts the column, which is what makes the overlay read as
 // a table instead of jittering.
 const (
-	// PaletteNameCols is the fixed width of the command-name column, including
-	// the leading slash. Names are padded with spaces to this width so the
+	// PaletteNameCols is the fixed width of the entry-name column, including
+	// the trigger symbol. Names are padded with spaces to this width so the
 	// description column cannot move between rows.
 	PaletteNameCols = 18
 	// PaletteMaxRows bounds the selectable rows. Discovery shows the top
 	// matches only, so the palette never evicts the conversation behind it.
 	PaletteMaxRows = 6
+	// maxPaletteRows is the inline palette's own row cap. It equals
+	// PaletteMaxRows so the inline overlay and the exported
+	// RenderSlashPalette never disagree.
+	maxPaletteRows = PaletteMaxRows
+	// paletteFileMatchCap bounds the file match list before windowing. The
+	// visible window is smaller; the cap keeps ranking work bounded on a
+	// large workspace without changing what the window can show.
+	paletteFileMatchCap = 200
 	// paletteBorderRows is the rounded box's top and bottom border. The layout
 	// reservation and the renderer share it so reserved and painted rows agree.
 	paletteBorderRows = 2
@@ -30,6 +39,97 @@ const (
 	// itself stops being readable.
 	paletteMinInner = 8
 )
+
+// paletteTrigger names the character that opens an inline palette.
+type paletteTrigger byte
+
+const (
+	// paletteCommand is "/": the slash-command registry.
+	paletteCommand paletteTrigger = '/'
+	// paletteFile is "@": workspace files and folders.
+	paletteFile paletteTrigger = '@'
+	// paletteSupport is "$": the ephemeral support surface.
+	paletteSupport paletteTrigger = '$'
+)
+
+// paletteEntry is one inline suggestion row.
+//
+// Every trigger renders through this one shape, so the layout, the fixed name
+// column, the marker, and the section headers are identical whether the row is
+// a command, a file, or a support shortcut.
+type paletteEntry struct {
+	// Name is the display token including its trigger: "/model", "@src/",
+	// "$sup".
+	Name string
+	// Detail is the second column: a command's description, a path's type, or
+	// a shortcut's blurb. A command may carry a "· current" suffix.
+	Detail string
+	// Insert is the exact text spliced into the composer on accept.
+	Insert string
+	// Group is the section header. An empty group suppresses the header, so a
+	// single-group palette can omit it.
+	Group string
+}
+
+// paletteToken finds the trigger word that contains cursor.
+//
+// A trigger word is a whitespace-delimited token whose first rune is one of
+// "/", "@", or "$", with the cursor somewhere after the trigger. It returns the
+// trigger, the query between the trigger and the cursor, the rune span
+// [start,end) of the whole token, and whether a trigger is active.
+//
+// "/" and "$" are line-level directives: the parser only accepts them as the
+// first token of the line, so the palette stays off for a mid-sentence token
+// that could never dispatch. "@" references may appear anywhere in a prompt.
+func paletteToken(input string, cursor int) (trigger paletteTrigger, query string, start, end int, ok bool) {
+	runes := []rune(input)
+	cursor = clampRune(cursor, len(runes))
+	start = cursor
+	for start > 0 && !unicode.IsSpace(runes[start-1]) {
+		start--
+	}
+	if start >= len(runes) || cursor <= start {
+		return 0, "", 0, 0, false
+	}
+	switch runes[start] {
+	case '/':
+		trigger = paletteCommand
+	case '@':
+		trigger = paletteFile
+	case '$':
+		trigger = paletteSupport
+	default:
+		return 0, "", 0, 0, false
+	}
+	if trigger != paletteFile && strings.TrimSpace(string(runes[:start])) != "" {
+		return 0, "", 0, 0, false
+	}
+	end = cursor
+	for end < len(runes) && !unicode.IsSpace(runes[end]) {
+		end++
+	}
+	return trigger, string(runes[start+1 : cursor]), start, end, true
+}
+
+// SpliceToken replaces the token span [start,end) with text and returns the new
+// input plus the cursor placed just after the insertion, so the next typed
+// character continues the prompt rather than the completed token.
+func SpliceToken(input string, start, end int, text string) (string, int) {
+	runes := []rune(input)
+	start = clampRune(start, len(runes))
+	end = clampRune(end, len(runes))
+	if end < start {
+		end = start
+	}
+	out := string(runes[:start]) + text + string(runes[end:])
+	return out, start + len([]rune(text))
+}
+
+// supportShortcuts is the "$" trigger's registry. It is a slice rather than a
+// single constant so a future shortcut is one row, not a new branch.
+var supportShortcuts = []paletteEntry{
+	{Name: "$sup", Detail: "fast assistance", Insert: "$sup ", Group: "SUPPORT"},
+}
 
 // paletteStyles names the semantic styles the palette uses, resolved once per
 // theme so the row builder never reaches for a raw colour.
@@ -93,6 +193,108 @@ func filterCommands(query string) []CommandSpec {
 	return out
 }
 
+// commandEntries builds the "/" palette rows for a query. current names the
+// workspace whose command carries the "· current" marker.
+func commandEntries(query, current string) []paletteEntry {
+	var out []paletteEntry
+	for _, spec := range filterCommands(query) {
+		desc := spec.Description
+		if current != "" && strings.EqualFold(spec.Name, current) {
+			if desc != "" {
+				desc += " · current"
+			} else {
+				desc = "current"
+			}
+		}
+		out = append(out, paletteEntry{
+			Name:   "/" + spec.Name,
+			Detail: desc,
+			// A trailing space leaves room for an argument, an "@" reference,
+			// or a "$sup" request without backspacing over the command.
+			Insert: "/" + spec.Name + " ",
+			Group:  groupOf(spec),
+		})
+	}
+	return out
+}
+
+// fileEntries builds the "@" palette rows for a query. Prefix matches rank
+// above substring matches so typing a path segment surfaces that segment's
+// entries first; order is otherwise the roster's own (already sorted).
+func fileEntries(files []string, query string) []paletteEntry {
+	q := strings.ToLower(query)
+	var prefix, substring []paletteEntry
+	for _, path := range files {
+		lower := strings.ToLower(path)
+		switch {
+		case strings.HasPrefix(lower, q):
+			prefix = append(prefix, fileEntry(path))
+		case q != "" && strings.Contains(lower, q):
+			substring = append(substring, fileEntry(path))
+		}
+	}
+	out := append(prefix, substring...)
+	if len(out) > paletteFileMatchCap {
+		out = out[:paletteFileMatchCap]
+	}
+	return out
+}
+
+// fileEntry renders one workspace path row. A trailing slash marks a folder.
+//
+// A completed file gets a trailing space so the next word starts a new token
+// instead of gluing to the path ("@index.html check this"). A folder gets no
+// space: the user is still composing a path, so the next typed segment must
+// continue it ("@pkg/" + "util.go").
+func fileEntry(path string) paletteEntry {
+	detail := "file"
+	insert := "@" + path + " "
+	if strings.HasSuffix(path, "/") {
+		detail = "folder"
+		insert = "@" + path
+	}
+	return paletteEntry{Name: "@" + path, Detail: detail, Insert: insert, Group: "FILES"}
+}
+
+// filterSupport builds the "$" palette rows for a query.
+func filterSupport(query string) []paletteEntry {
+	q := strings.ToLower(strings.TrimPrefix(query, "$"))
+	var out []paletteEntry
+	for _, entry := range supportShortcuts {
+		name := strings.ToLower(strings.TrimPrefix(entry.Name, "$"))
+		if q == "" || strings.HasPrefix(name, q) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// paletteEntriesFor is the single source of the inline palette's rows.
+//
+// It reads the trigger word at the cursor and dispatches to the trigger's
+// registry. It returns nil when the palette is dismissed, when no trigger word
+// holds the cursor, or when nothing matches, which the caller treats as "no
+// overlay". Rendering and key handling both call it, so what is shown is
+// exactly what accept will splice.
+func paletteEntriesFor(s State) []paletteEntry {
+	if s.PaletteHide {
+		return nil
+	}
+	trigger, query, _, _, ok := paletteToken(s.Input, s.Cursor)
+	if !ok {
+		return nil
+	}
+	switch trigger {
+	case paletteCommand:
+		return commandEntries(query, strings.ToUpper(strings.TrimSpace(s.Status.Workspace)))
+	case paletteFile:
+		return fileEntries(s.PaletteFiles, query)
+	case paletteSupport:
+		return filterSupport(query)
+	}
+	return nil
+}
+
 // ClampPaletteCursor keeps a selection inside the filtered match list. An
 // empty list parks at zero; an overshooting index lands on the last match
 // rather than rendering no highlight at all.
@@ -106,13 +308,97 @@ func ClampPaletteCursor(cursor, matches int) int {
 	return cursor
 }
 
+// paletteWindow returns the visible suggestion window with its start offset
+// and clamped cursor, plus whether rows hide above or below. The window follows
+// the cursor so the highlight is always on a rendered row, never scrolled off.
+// Render and layout share it so reserved and rendered rows always agree.
+func paletteWindow(s State) (shown []paletteEntry, start, cursor int, above, below bool) {
+	matches := paletteEntriesFor(s)
+	if len(matches) == 0 {
+		return nil, 0, 0, false, false
+	}
+	cursor = s.PaletteCursor
+	if cursor < 0 || cursor >= len(matches) {
+		cursor = 0
+	}
+	shown, start, above, below = windowMatches(matches, cursor, maxPaletteRows)
+	return shown, start, cursor, above, below
+}
+
+// windowMatches slices the visible window of a match list for an in-range
+// cursor: it follows the cursor so the highlight is always on a rendered row,
+// then clamps to keep the window inside the list. It returns the slice plus
+// whether rows hide above or below. The stateful renderer and the exported
+// palette share it, so "top matches" means the same thing everywhere.
+func windowMatches(matches []paletteEntry, cursor, max int) (shown []paletteEntry, start int, above, below bool) {
+	if len(matches) == 0 || max <= 0 {
+		return nil, 0, false, false
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(matches) {
+		cursor = len(matches) - 1
+	}
+	start = 0
+	if len(matches) > max {
+		start = cursor - max + 1
+		if start < 0 {
+			start = 0
+		}
+		if start+max > len(matches) {
+			start = len(matches) - max
+		}
+	}
+	end := start + max
+	if end > len(matches) {
+		end = len(matches)
+	}
+	return matches[start:end], start, start > 0, end < len(matches)
+}
+
+// paletteRows counts the suggestion rows the composer will render, so the
+// layout reserves exactly what the view draws.
+func paletteRows(s State) int {
+	shown, _, _, above, below := paletteWindow(s)
+	if len(shown) == 0 {
+		return 0
+	}
+	n := len(shown) + paletteGroupHeaders(shown)
+	if above {
+		n++
+	}
+	if below {
+		n++
+	}
+	// The overlay renders inside a rounded box: the border claims one row on
+	// each side, so the reservation must carry it or the frame shorts.
+	return n + paletteBorderRows
+}
+
+// paletteGroupHeaders counts the group titles the suggestion list will render:
+// one per distinct group present in the visible window. The headers are
+// presentation only; selection still indexes the flat matches.
+func paletteGroupHeaders(shown []paletteEntry) int {
+	seen := map[string]bool{}
+	n := 0
+	for _, entry := range shown {
+		if entry.Group == "" || seen[entry.Group] {
+			continue
+		}
+		seen[entry.Group] = true
+		n++
+	}
+	return n
+}
+
 // paletteRequest is the renderer's input. It carries an already-windowed slice
 // plus the absolute indices needed for the overflow markers, so the stateful
 // renderer and the exported RenderSlashPalette share one row builder and
 // cannot drift.
 type paletteRequest struct {
 	// shown is the visible match slice, in registry order.
-	shown []CommandSpec
+	shown []paletteEntry
 	// cursor is the absolute index into the full match list.
 	cursor int
 	// startIndex is the absolute index of shown[0].
@@ -121,9 +407,7 @@ type paletteRequest struct {
 	total int
 	// above and below report rows hidden on either side of the window.
 	above, below bool
-	// current names the workspace to mark "· current" on its command.
-	current string
-	// headers renders the WORKSPACE/CONTROL group titles.
+	// headers renders the group titles.
 	headers bool
 	// width is the cells the whole box may occupy.
 	width int
@@ -139,24 +423,24 @@ type paletteRequest struct {
 // RenderSlashPalette renders the slash-command overlay for the text typed
 // after the leading "/".
 //
-// It is the palette's pure entry point: query, cursor, and width in, a string
-// out. The filter is a case-insensitive prefix match on the command name, the
-// cursor is clamped into range, and only the top PaletteMaxRows matches show.
-// Every row is padded to one content width, so cycling the cursor or typing
-// filter letters can never change the layout. It returns "" when nothing
-// matches, which the caller treats as "no overlay".
+// It is the "/" trigger's pure entry point: query, cursor, and width in, a
+// string out. The filter is a case-insensitive prefix match on the command
+// name, the cursor is clamped into range, and only the top PaletteMaxRows
+// matches show. Every row is padded to one content width, so cycling the
+// cursor or typing filter letters can never change the layout. It returns ""
+// when nothing matches, which the caller treats as "no overlay".
 func RenderSlashPalette(query string, cursor, width int) string {
-	matches := filterCommands(query)
-	if len(matches) == 0 {
+	entries := commandEntries(query, "")
+	if len(entries) == 0 {
 		return ""
 	}
-	cursor = ClampPaletteCursor(cursor, len(matches))
-	shown, start, above, below := windowMatches(matches, cursor, PaletteMaxRows)
+	cursor = ClampPaletteCursor(cursor, len(entries))
+	shown, start, above, below := windowMatches(entries, cursor, PaletteMaxRows)
 	return renderPaletteBox(paletteRequest{
 		shown:      shown,
 		cursor:     cursor,
 		startIndex: start,
-		total:      len(matches),
+		total:      len(entries),
 		above:      above,
 		below:      below,
 		headers:    true,
@@ -194,14 +478,12 @@ func renderPaletteBox(req paletteRequest) string {
 		lines = append(lines, req.styles.inactiveDesc.Render(padPaletteRow(fmt.Sprintf("… %d above", req.startIndex), inner)))
 	}
 	lastGroup := ""
-	for i, spec := range req.shown {
-		if req.headers {
-			if group := groupOf(spec); group != lastGroup {
-				lines = append(lines, req.styles.header.Render(padPaletteRow(group, inner)))
-				lastGroup = group
-			}
+	for i, entry := range req.shown {
+		if req.headers && entry.Group != "" && entry.Group != lastGroup {
+			lines = append(lines, req.styles.header.Render(padPaletteRow(entry.Group, inner)))
+			lastGroup = entry.Group
 		}
-		lines = append(lines, paletteItemRow(spec, req.startIndex+i == req.cursor, req.current, nameW, descW, inner, req.styles))
+		lines = append(lines, paletteItemRow(entry, req.startIndex+i == req.cursor, nameW, descW, inner, req.styles))
 	}
 	if req.below {
 		hidden := req.total - req.startIndex - len(req.shown)
@@ -226,10 +508,10 @@ func renderPaletteBox(req paletteRequest) string {
 	return box.Render(strings.Join(lines, "\n"))
 }
 
-// paletteItemRow renders one command row. The selection is carried by the
+// paletteItemRow renders one suggestion row. The selection is carried by the
 // marker glyph and by colour together: a monochrome terminal still shows which
 // row Enter would accept.
-func paletteItemRow(spec CommandSpec, selected bool, current string, nameW, descW, inner int, st paletteStyles) string {
+func paletteItemRow(entry paletteEntry, selected bool, nameW, descW, inner int, st paletteStyles) string {
 	marker := "  "
 	nameStyle := st.inactiveName
 	descStyle := st.inactiveDesc
@@ -238,19 +520,11 @@ func paletteItemRow(spec CommandSpec, selected bool, current string, nameW, desc
 		nameStyle = st.activeName
 		descStyle = st.activeDesc
 	}
-	name := padCells("/"+spec.Name, nameW)
+	name := padCells(entry.Name, nameW)
 	if CellWidth(name) > nameW {
 		name = TruncateToWidth(name, nameW)
 	}
-	desc := spec.Description
-	if current != "" && strings.EqualFold(spec.Name, current) {
-		if desc != "" {
-			desc += " · current"
-		} else {
-			desc = "current"
-		}
-	}
-	desc = TruncateToWidth(desc, descW)
+	desc := TruncateToWidth(entry.Detail, descW)
 	// Pad the description so the styled row is exactly `inner` cells wide.
 	gap := inner - paletteMarkerCols - nameW - 1 - CellWidth(desc)
 	if gap > 0 {

@@ -444,3 +444,44 @@ func TestSetTurnHookReplacesAndSilencesReports(t *testing.T) {
 		t.Errorf("hooks = (%d, %d), want the replacement alone at (1, 1)", first, second)
 	}
 }
+
+// Per-turn system context is appended after the loop's base system prompt, and
+// clearing it removes it on the next request. This is how referenced-file
+// context reaches the model without rebuilding the loop.
+func TestSystemContextAppendsAfterBaseSystem(t *testing.T) {
+	stream, requests := scriptedStream(
+		ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "ok"}}},
+		ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "ok"}}},
+	)
+	loop, err := New(Config{
+		Model:  ai.Model{ID: "m", Provider: "p"},
+		Stream: stream,
+		System: []ai.SystemPromptBlock{{Text: "base"}},
+		Tools:  []Tool{newScriptedTool("t", "x")},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	loop.SetSystemContext([]ai.SystemPromptBlock{{Text: "attached file"}})
+	if _, err := loop.Run(ctx, []Message{UserMessage{Text: "go"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	loop.SetSystemContext(nil)
+	if _, err := loop.Run(ctx, []Message{UserMessage{Text: "go"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := requests()
+	if len(got) != 2 {
+		t.Fatalf("requests = %d, want 2", len(got))
+	}
+	if len(got[0].System) != 2 || got[0].System[0].Text != "base" || got[0].System[1].Text != "attached file" {
+		t.Fatalf("first system = %+v, want base then context", got[0].System)
+	}
+	if len(got[1].System) != 1 || got[1].System[0].Text != "base" {
+		t.Fatalf("second system = %+v, want the base prompt alone after clearing", got[1].System)
+	}
+}

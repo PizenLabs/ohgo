@@ -17,11 +17,18 @@ import (
 // fails. If fullscreen slicing breaks, the fullscreen tests fail instead:
 // this test owns only the live boundary.
 func TestLiveCommittedTranscriptIgnoresScrollState(t *testing.T) {
+	// Fixed timestamps: the elapsed badge is derived from Started/Ended, and
+	// two independent time.Now() calls can straddle a millisecond boundary so
+	// one script shows "1ms" where the other shows nothing. The contract under
+	// test is scroll independence, not the clock, so both scripts share one
+	// deterministic pair.
+	startedAt := time.Unix(0, 0)
+	finishedAt := startedAt.Add(2 * time.Second)
 	script := func(p *Program) []string {
 		var history []string
 		history = append(history, liveEvent(p, UserSubmitted{Text: "what changed in auth?"})...)
-		history = append(history, liveEvent(p, ToolStarted{ID: "c1", Name: "grep", Summary: "grep auth", At: time.Now()})...)
-		history = append(history, liveEvent(p, ToolFinished{ID: "c1", Text: "auth/login.go:12: session check", At: time.Now()})...)
+		history = append(history, liveEvent(p, ToolStarted{ID: "c1", Name: "grep", Summary: "grep auth", At: startedAt})...)
+		history = append(history, liveEvent(p, ToolFinished{ID: "c1", Text: "auth/login.go:12: session check", At: finishedAt})...)
 		history = append(history, liveEvent(p, AssistantDelta{Text: "First paragraph.\n\nSecond paragraph.\n"})...)
 		return append(history, liveEvent(p, AssistantDone{})...)
 	}
@@ -37,8 +44,8 @@ func TestLiveCommittedTranscriptIgnoresScrollState(t *testing.T) {
 	scrolledHistory = append(scrolledHistory, liveEvent(scrolled, UserSubmitted{Text: "what changed in auth?"})...)
 	scrolled.state.Apply(ScrollMoved{Delta: 40})
 	scrolledHistory = append(scrolledHistory, scrolledPainter.render(scrolled.state)...)
-	scrolledHistory = append(scrolledHistory, liveEvent(scrolled, ToolStarted{ID: "c1", Name: "grep", Summary: "grep auth", At: time.Now()})...)
-	scrolledHistory = append(scrolledHistory, liveEvent(scrolled, ToolFinished{ID: "c1", Text: "auth/login.go:12: session check", At: time.Now()})...)
+	scrolledHistory = append(scrolledHistory, liveEvent(scrolled, ToolStarted{ID: "c1", Name: "grep", Summary: "grep auth", At: startedAt})...)
+	scrolledHistory = append(scrolledHistory, liveEvent(scrolled, ToolFinished{ID: "c1", Text: "auth/login.go:12: session check", At: finishedAt})...)
 	scrolled.state.Apply(ScrollMoved{Delta: 10})
 	scrolledHistory = append(scrolledHistory, scrolledPainter.render(scrolled.state)...)
 	scrolledHistory = append(scrolledHistory, liveEvent(scrolled, AssistantDelta{Text: "First paragraph.\n\nSecond paragraph.\n"})...)

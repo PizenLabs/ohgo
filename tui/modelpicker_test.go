@@ -289,6 +289,9 @@ func TestPickerCtrlCClosesImmediately(t *testing.T) {
 func TestPickerCloseRestoresSlashDraft(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Apply(ComposerChanged{Text: "/mod", Cursor: 4})
+	// Dismiss the inline palette so Tab reaches the searchable command modal
+	// (the inline palette owns Tab while it is visible).
+	p.state.PaletteHide = true
 	p.Update(keyMsg(tea.KeyTab))
 	if p.state.Picker == nil {
 		t.Fatal("no palette opened")
