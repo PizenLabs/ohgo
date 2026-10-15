@@ -822,7 +822,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "ctrl+c":
-		return p.cancelOrQuit()
+		return p.interruptOrClear()
 
 	case "esc":
 		// Escape backs out of a running turn the way ctrl+c does, but never
@@ -868,9 +868,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "delete", "ctrl+d":
-		// Ctrl+d on an empty composer quits, matching terminal convention;
-		// anywhere else it deletes the character ahead.
-		if msg.String() == "ctrl+d" && strings.TrimSpace(p.state.Input) == "" && !p.state.Status.Busy {
+		// Ctrl+d is EOF: with an empty composer and an idle runtime it ends
+		// the session the way a REPL does. With any draft present it stays
+		// delete-forward, so the chord can never silently discard typed text.
+		if msg.String() == "ctrl+d" && p.state.Input == "" && !p.state.Status.Busy {
 			return p, p.quitNow()
 		}
 		if text, cursor, _, ok := pasteDeleteAt(p.state.Pastes, p.state.Input, p.state.Cursor); ok {
@@ -1388,11 +1389,22 @@ func (p *Program) jobDetail(id string) string {
 	return id
 }
 
-// cancelOrQuit cancels a running turn, or quits when idle.
+// ctrlCExitHint is the deliberate-exit affordance shown when Ctrl+C has
+// nothing left to abort. It names the two chords that actually quit so the
+// user discovers them instead of losing a session to a reflex.
+const ctrlCExitHint = "Press Ctrl+D or type /exit to quit"
+
+// interruptOrClear handles ctrl+c at the composer.
 //
-// The first ctrl+c never quits a working session: it stops the work. Only an
-// idle ctrl+c exits, so a reflex keypress cannot discard a session.
-func (p *Program) cancelOrQuit() (tea.Model, tea.Cmd) {
+// The reflex abort key is layered from safest to most destructive, so a
+// single stray press can never discard a session:
+//
+//   - an open overlay closes and focus returns to the composer;
+//   - a running turn (or tool) is interrupted and the runtime returns to idle;
+//   - a non-empty composer is cleared to an empty prompt line;
+//   - only an already-empty, idle composer explains the deliberate exit
+//     chords instead of quitting.
+func (p *Program) interruptOrClear() (tea.Model, tea.Cmd) {
 	if p.state.QuitConfirm != nil {
 		// An open quit confirmation owns the abort key: dismiss it rather
 		// than quitting, cancelling a running turn the same way esc would.
@@ -1421,11 +1433,43 @@ func (p *Program) cancelOrQuit() (tea.Model, tea.Cmd) {
 		p.state.Apply(SupportClosed{})
 		return p, nil
 	}
+	// A running turn wins over typed text: the interrupt must reach the
+	// stream or tool, not just the buffer, so work can actually be stopped.
 	if p.state.Status.Busy {
 		p.cancelTurnNow("cancelled")
 		return p, nil
 	}
-	return p, p.quitNow()
+	// The inline palette is chrome over the composer: ctrl+c dismisses it
+	// the way esc does and keeps the draft rather than clearing it. A hidden
+	// palette already reports no rows, so an empty result falls through.
+	if len(paletteEntriesFor(p.state)) > 0 {
+		p.state.PaletteHide = true
+		return p, nil
+	}
+	if p.state.Input != "" {
+		// Clear the prompt buffer — paste pills included, since setComposer
+		// prunes chips whose labels vanish — leaving the cursor on an empty
+		// prompt line. Ctrl+C means "abandon what I'm typing", not "quit".
+		p.state.Apply(ComposerChanged{Text: "", Cursor: 0})
+		return p, nil
+	}
+	// Nothing left to abort. Teach the deliberate exit chords instead of
+	// quitting on a reflex; a repeated press must not stack the same hint.
+	if !p.lastEntryIsNotice(ctrlCExitHint) {
+		p.state.Apply(Notice{Text: ctrlCExitHint})
+	}
+	return p, nil
+}
+
+// lastEntryIsNotice reports whether the newest transcript entry is exactly
+// the given notice, so a repeated keypress cannot stack identical hints.
+func (p *Program) lastEntryIsNotice(text string) bool {
+	n := len(p.state.Entries)
+	if n == 0 {
+		return false
+	}
+	last := p.state.Entries[n-1]
+	return last.Kind == EntryNotice && last.Notice == text
 }
 
 // cancelSupportNow aborts the in-flight support turn, if any.
@@ -2460,7 +2504,7 @@ func (p *Program) openQuitConfirm() {
 }
 
 // quitNow ends the session from any idle-state quit path (/quit, /exit,
-// confirmed /q, ctrl+d, idle ctrl+c).
+// confirmed /q, ctrl+d on an empty composer).
 //
 // A tool blocked in its approval prompt is denied first: without that the
 // tool waits on an answer channel no UI reads after shutdown, stranding its

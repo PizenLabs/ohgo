@@ -683,13 +683,18 @@ func TestOverlayCleanupOnCancelAndQuit(t *testing.T) {
 	if len(p.state.Entries) != before {
 		t.Errorf("entries grew on repeated cancel: want one semantic transition")
 	}
+	// An idle ctrl+c with nothing to abort must not quit: it points at the
+	// deliberate exit chords instead, so a reflex keypress is safe.
 	idle := NewProgram(nil, "test", 0)
-	_, cmd := idle.cancelOrQuit()
-	if !idle.state.Quit {
-		t.Error("idle ctrl+c must set the quit flag for alt-screen teardown")
+	_, cmd := idle.interruptOrClear()
+	if idle.state.Quit {
+		t.Error("idle ctrl+c quit the session; it must only hint the exit chords")
 	}
-	if cmd == nil {
-		t.Error("idle ctrl+c must return tea.Quit so the runtime restores the terminal")
+	if cmd != nil {
+		t.Error("idle ctrl+c returned a command; nothing should quit or start work")
+	}
+	if !idle.lastEntryIsNotice(ctrlCExitHint) {
+		t.Errorf("entries = %+v, want the exit hint %q", idle.state.Entries, ctrlCExitHint)
 	}
 }
 

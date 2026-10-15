@@ -153,8 +153,10 @@ tables would let `bash` start jobs no `wait` could ever see.
   channels, so an answer reaches the exact tool that blocked.
 - Turns never overlap: a submit while busy queues (cap 5, refusal past it)
   and drains in order from the turn's end message on the update goroutine.
-  Ctrl+c cancels the turn (denying a blocking approval first, clearing the
-  abandoned queue, reporting interruption); only an idle Ctrl+c quits.
+  Ctrl+c never quits: it denies a blocking approval and cancels a running
+  turn (clearing the abandoned queue, reporting interruption), closes an
+  open overlay, clears a non-empty draft, and on an empty idle composer
+  points at the deliberate exit chords. Ctrl+d on an empty composer quits.
 
 ## Errors, by kind
 

@@ -121,7 +121,8 @@ transcript so the composer stays pinned to the bottom of the screen.
 Shortcuts that are shown always work: `enter` send (queues while busy),
 `alt+enter`/`ctrl+j` insert a break, `↑` recalls history on a single line,
 `pgup`/`pgdn` scroll, `esc` cancels a turn (never quits), `ctrl+c` cancels
-when busy or quits when idle, `ctrl+d` on an empty composer quits. Approval
+when busy, clears a non-empty draft, or points at the exit chords when idle
+(never quits), `ctrl+d` on an empty composer quits. Approval
 dialogs default to the conservative choice; closing, cancelling, or resizing
 never approves. Widths are measured in terminal cells (CJK/emoji/ANSI
 aware), long URLs and tool output wrap and bound rather than overflow.

@@ -138,11 +138,68 @@ func TestArrowKeysHopWrappedComposerRows(t *testing.T) {
 	}
 }
 
-func TestCtrlCQuitsOnlyWhenIdle(t *testing.T) {
+// Ctrl+C is "abandon what I'm typing", never "quit". With a draft present it
+// clears the buffer and parks the cursor on an empty prompt line.
+func TestCtrlCClearsDraftWithoutQuitting(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	keyPress(p, tea.KeyMsg{Type: tea.KeyCtrlC})
+	p.state.Apply(ComposerChanged{Text: "half a thought", Cursor: 5})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if p.state.Quit || cmd != nil {
+		t.Fatal("ctrl+c on a draft must clear it, not quit the session")
+	}
+	if p.state.Input != "" {
+		t.Errorf("input = %q, want the draft cleared", p.state.Input)
+	}
+	if p.state.Cursor != 0 {
+		t.Errorf("cursor = %d, want the cursor at the start of the empty prompt line", p.state.Cursor)
+	}
+}
+
+// With nothing typed and nothing running, Ctrl+C still must not quit: it names
+// the deliberate exit chords so a reflex press cannot drop a session.
+func TestCtrlCOnEmptyComposerHintsExitWithoutQuitting(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if p.state.Quit || cmd != nil {
+		t.Fatal("idle ctrl+c quit the session; it must only point at the exit chords")
+	}
+	if !p.lastEntryIsNotice(ctrlCExitHint) {
+		t.Errorf("entries = %+v, want the exit hint %q", p.state.Entries, ctrlCExitHint)
+	}
+}
+
+// Ctrl+D is EOF: on an empty, idle composer it quits for real, returning the
+// command the runtime needs to restore the terminal.
+func TestCtrlDQuitsOnEmptyComposer(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+
 	if !p.state.Quit {
-		t.Error("an idle ctrl+c must quit: there is nothing to cancel")
+		t.Error("ctrl+d on an empty composer must set the quit flag")
+	}
+	if cmd == nil {
+		t.Error("ctrl+d on an empty composer must return tea.Quit for teardown")
+	}
+}
+
+// A draft turns Ctrl+D back into delete-forward: the EOF chord may not discard
+// typed text.
+func TestCtrlDDeletesForwardWhenComposerHasText(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(ComposerChanged{Text: "abc", Cursor: 1})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+
+	if p.state.Quit || cmd != nil {
+		t.Fatal("ctrl+d with a draft must delete, not quit")
+	}
+	if p.state.Input != "ac" {
+		t.Errorf("input = %q, want the rune under the cursor deleted", p.state.Input)
 	}
 }
 
