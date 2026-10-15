@@ -29,6 +29,17 @@ func commandCapability(command string) agent.Tier {
 	return agent.TierExec
 }
 
+// CommandMutates reports whether a shell command provably changes the
+// workspace.
+//
+// It is the exported form of the admission classifier, so the "!" shell escape
+// gates on exactly the rule the bash tool's admission uses. Only one
+// classification exists; a second copy would be free to drift from what the
+// runtime actually enforces.
+func CommandMutates(command string) bool {
+	return commandWrites(command)
+}
+
 // commandWrites reports whether a shell command provably mutates the
 // filesystem or the repository.
 func commandWrites(command string) bool {

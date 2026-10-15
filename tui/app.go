@@ -13,6 +13,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
@@ -237,6 +238,22 @@ type Program struct {
 	// Switch, which owns validation, the runtime, persistence, and chrome.
 	workspace WorkspaceHooks
 
+	// shell wires the "!" escape: the process runner and the mutation
+	// classifier the ASK gate consults. Its zero value reports the feature
+	// unavailable rather than shelling out to an unwired process.
+	shell ShellHooks
+
+	// shellCancel aborts the in-flight escape, guarded by mu.
+	shellCancel context.CancelFunc
+	// shellCancelSeq is the run identity shellCancel belongs to, so a
+	// finishing run cannot clear a newer run's handle.
+	shellCancelSeq int
+	// shellSeq issues escape run identities. Guarded by mu.
+	shellSeq int
+	// pendingEscape is the command awaiting confirmation. It is owned by the
+	// update goroutine, like pending.
+	pendingEscape string
+
 	// wizard is the onboarding dialog for uninitialized projects, set by
 	// SetInitWizard. While non-nil it owns the keyboard and the middle of
 	// the screen; header and footer keep rendering from state. It is
@@ -262,6 +279,26 @@ type WorkspaceHooks struct {
 // SetWorkspaceSwitcher installs the owner behind /ask, /fuzz, /build.
 func (p *Program) SetWorkspaceSwitcher(hooks WorkspaceHooks) {
 	p.workspace = hooks
+}
+
+// ShellHooks wire the "!" escape to the local shell and to the authority
+// classifier.
+//
+// Both are functions because the TUI owns neither the process runner nor the
+// capability policy: the CLI does. A zero value disables the escape, which the
+// program reports rather than silently sending the line to the model.
+type ShellHooks struct {
+	// Run executes a command in the workspace and streams output chunks.
+	Run func(ctx context.Context, command string, onChunk func(string)) (exec.EscapeResult, error)
+	// Mutates reports whether a command provably changes the workspace. It
+	// gates the ASK confirmation; nil means "assume mutating", so ASK always
+	// asks rather than running a possible mutation unconfirmed.
+	Mutates func(command string) bool
+}
+
+// SetShellEscape installs the shell escape behind the "!" prefix.
+func (p *Program) SetShellEscape(hooks ShellHooks) {
+	p.shell = hooks
 }
 
 // modelsRefreshedMsg carries an async catalog refresh into Update.
@@ -696,9 +733,14 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p.answer(false, "denied by user")
 		case "ctrl+c":
 			// The reflex abort key must not be swallowed by this switch: the
-			// turn would stay parked on a question nobody can reach. Reuse the
-			// turn-cancel path, which denies the blocked tool before cancelling,
-			// so aborting can never approve the work it abandons.
+			// turn would stay parked on a question nobody can reach. A shell
+			// confirmation has no turn to cancel, so it is denied instead.
+			if p.pendingEscape != "" {
+				return p.answer(false, "cancelled")
+			}
+			// Reuse the turn-cancel path, which denies the blocked tool
+			// before cancelling, so aborting can never approve the work it
+			// abandons.
 			p.cancelTurnNow("cancelled")
 			return p, nil
 		}
@@ -740,7 +782,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// spliced into the composer, so the same keys mean the same thing for
 	// every trigger.
 	if p.state.Secret == nil && p.state.Pending == nil && p.state.QuitConfirm == nil &&
-		len(paletteEntriesFor(p.state)) > 0 {
+		paletteOwnsKeys(p.state) {
 		switch msg.String() {
 		case "up", "ctrl+p":
 			p.state.Apply(PaletteMoved{Delta: -1})
@@ -843,6 +885,11 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if command, ok := ParseCommand(text); ok {
 			return p, p.runCommand(command)
+		}
+		// A "!" line is a direct shell escape, not a model prompt: it runs
+		// in the workspace under the active authority.
+		if command, ok := exec.ParseEscape(text); ok {
+			return p, p.submitEscape(command)
 		}
 		if p.state.Status.Busy {
 			p.queue(text)
@@ -1433,6 +1480,13 @@ func (p *Program) interruptOrClear() (tea.Model, tea.Cmd) {
 		p.state.Apply(SupportClosed{})
 		return p, nil
 	}
+	// A running "!" escape is foreground work: the abort key stops it before
+	// reaching for typed text or the deliberate-exit hint. It is checked
+	// before the turn so the most recent foreground action stops first.
+	if p.state.runningShell() != nil {
+		p.cancelShellNow()
+		return p, nil
+	}
 	// A running turn wins over typed text: the interrupt must reach the
 	// stream or tool, not just the buffer, so work can actually be stopped.
 	if p.state.Status.Busy {
@@ -1442,7 +1496,7 @@ func (p *Program) interruptOrClear() (tea.Model, tea.Cmd) {
 	// The inline palette is chrome over the composer: ctrl+c dismisses it
 	// the way esc does and keeps the draft rather than clearing it. A hidden
 	// palette already reports no rows, so an empty result falls through.
-	if len(paletteEntriesFor(p.state)) > 0 {
+	if paletteOwnsKeys(p.state) {
 		p.state.PaletteHide = true
 		return p, nil
 	}
@@ -2511,20 +2565,39 @@ func (p *Program) openQuitConfirm() {
 // goroutine (and the turn holding it) until the process exits. Denial is the
 // same conservative answer n/esc gives, so quitting can never approve work.
 func (p *Program) quitNow() tea.Cmd {
-	if p.pending != nil {
+	if p.state.Pending != nil {
 		p.answer(false, "denied by user")
+	}
+	// A running escape must not outlive the UI: cancelling the context kills
+	// the child process instead of leaving it detached.
+	if p.state.runningShell() != nil {
+		p.cancelShellNow()
 	}
 	p.state.Apply(QuitRequested{})
 	return tea.Quit
 }
 
-// answer unblocks the tool that is waiting.
+// answer unblocks the tool that is waiting, or starts the confirmed shell
+// escape that asked.
 func (p *Program) answer(approved bool, reason string) (tea.Model, tea.Cmd) {
 	if p.pending != nil {
 		// A buffered reply channel means this never blocks the UI even if the
 		// tool has already given up.
 		p.pending.answer <- approvalAnswer{approved: approved, reason: reason}
 		p.pending = nil
+		p.state.Apply(ApprovalAnswered{})
+		return p, nil
+	}
+	// A shell escape awaiting confirmation carries no tool: on approval it
+	// starts, on denial it simply closes.
+	if p.pendingEscape != "" {
+		command := p.pendingEscape
+		p.pendingEscape = ""
+		p.state.Apply(ApprovalAnswered{})
+		if approved {
+			return p, p.startEscape(command)
+		}
+		return p, nil
 	}
 	p.state.Apply(ApprovalAnswered{})
 	return p, nil
@@ -2917,6 +2990,121 @@ func (p *Program) drainQueue() (tea.Model, tea.Cmd) {
 	next := p.state.Queued[0]
 	p.state.Apply(QueueShifted{})
 	return p, p.submit(next)
+}
+
+// shellSyntaxHint is shown when the composer submits a bare "!" with no
+// command: it teaches the syntax without running an empty shell.
+const shellSyntaxHint = "! <command> — run a shell command in the workspace"
+
+// submitEscape handles a "!<command>" line: it gates on the active authority
+// and either runs the command or opens the confirmation it needs.
+func (p *Program) submitEscape(command string) tea.Cmd {
+	if strings.TrimSpace(command) == "" {
+		p.state.Apply(Notice{Text: shellSyntaxHint})
+		return nil
+	}
+	if p.shell.Run == nil {
+		p.state.Apply(Notice{Text: "shell escape is unavailable"})
+		return nil
+	}
+	if p.state.runningShell() != nil {
+		p.state.Apply(Notice{Text: "a shell command is already running"})
+		return nil
+	}
+	// An unclassified command is treated as mutating: absent a classifier the
+	// safe assumption is that it changes something, so ASK confirms it.
+	mutating := true
+	if p.shell.Mutates != nil {
+		mutating = p.shell.Mutates(command)
+	}
+	if exec.Decide(p.state.Status.Workspace, mutating) == exec.Confirm {
+		return p.confirmEscape(command)
+	}
+	return p.startEscape(command)
+}
+
+// confirmEscape asks the user to approve a mutating command in ASK. It reuses
+// the approval modal, with a shell-specific header, so the keyboard contract
+// is identical to a tool approval.
+func (p *Program) confirmEscape(command string) tea.Cmd {
+	p.pendingEscape = command
+	p.state.Apply(ApprovalAsked{
+		ToolName: "shell",
+		Prompt:   "Run shell command",
+		Summary:  command,
+		Choices:  approvalChoices,
+	})
+	return nil
+}
+
+// startEscape launches an escape command off the update goroutine. The
+// command's output streams back as ShellDelta events and closes with a single
+// ShellFinished.
+func (p *Program) startEscape(command string) tea.Cmd {
+	run := p.shell.Run
+	if run == nil {
+		p.state.Apply(Notice{Text: "shell escape is unavailable"})
+		return nil
+	}
+	p.mu.Lock()
+	p.shellSeq++
+	seq := p.shellSeq
+	ctx, cancel := context.WithCancel(context.Background())
+	p.shellCancel = cancel
+	p.shellCancelSeq = seq
+	p.mu.Unlock()
+
+	p.state.Apply(InputChanged{Text: ""})
+	p.state.Apply(ShellStarted{Command: command, At: time.Now(), Seq: seq})
+	return func() tea.Msg {
+		p.runEscape(ctx, seq, command, run)
+		return nil
+	}
+}
+
+// runEscape executes one command and publishes its lifecycle. It runs off the
+// update goroutine; every state change leaves through the event channel.
+func (p *Program) runEscape(ctx context.Context, seq int, command string, run func(context.Context, string, func(string)) (exec.EscapeResult, error)) {
+	defer func() {
+		p.mu.Lock()
+		if p.shellCancelSeq == seq {
+			p.shellCancel = nil
+		}
+		p.mu.Unlock()
+	}()
+
+	result, err := run(ctx, command, func(chunk string) {
+		if chunk == "" {
+			return
+		}
+		p.publish(ShellDelta{Text: chunk, Seq: seq})
+	})
+	if err != nil {
+		text := err.Error()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			text = "cancelled"
+		}
+		p.publish(ShellFinished{ExitCode: -1, Err: text, At: time.Now(), Seq: seq})
+		return
+	}
+	p.publish(ShellFinished{
+		ExitCode:  result.ExitCode,
+		Duration:  result.Duration,
+		Truncated: result.Truncated,
+		At:        time.Now(),
+		Seq:       seq,
+	})
+}
+
+// cancelShellNow aborts the in-flight escape, if any. The worker's own
+// ShellFinished event marks the block, so nothing is synthesised here.
+func (p *Program) cancelShellNow() {
+	p.mu.Lock()
+	cancel := p.shellCancel
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // runTurn executes a single turn.

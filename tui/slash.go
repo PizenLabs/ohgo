@@ -50,6 +50,10 @@ const (
 	paletteFile paletteTrigger = '@'
 	// paletteSupport is "$": the ephemeral support surface.
 	paletteSupport paletteTrigger = '$'
+	// paletteEscape is "!": the direct shell escape. It is not a completion
+	// registry — its single row teaches the syntax — but it shares the
+	// palette so the hint appears in the same place as every other trigger.
+	paletteEscape paletteTrigger = '!'
 )
 
 // paletteEntry is one inline suggestion row.
@@ -98,6 +102,14 @@ func paletteToken(input string, cursor int) (trigger paletteTrigger, query strin
 		trigger = paletteFile
 	case '$':
 		trigger = paletteSupport
+	case '!':
+		// The escape is line-level: it must lead the line, and its "token"
+		// is only the marker, so accepting the hint can never erase a
+		// command already being typed.
+		if start != 0 {
+			return 0, "", 0, 0, false
+		}
+		return paletteEscape, string(runes[1:cursor]), 0, 1, true
 	default:
 		return 0, "", 0, 0, false
 	}
@@ -291,8 +303,47 @@ func paletteEntriesFor(s State) []paletteEntry {
 		return fileEntries(s.PaletteFiles, query)
 	case paletteSupport:
 		return filterSupport(query)
+	case paletteEscape:
+		return escapeEntries(query)
 	}
 	return nil
+}
+
+// shellEscapeHint is the palette row's description for the "!" trigger: it
+// teaches what the escape does before the user commits to a command.
+const shellEscapeHint = "Run shell command directly in workspace"
+
+// escapeEntries builds the "!" palette row for a query.
+//
+// The hint is shown only while the command is still empty: it teaches the
+// syntax, and once a real command is being typed it has nothing left to say.
+// The single row carries no group header, so the hint reads as one subtle line
+// rather than a section.
+func escapeEntries(query string) []paletteEntry {
+	if strings.TrimSpace(query) != "" {
+		return nil
+	}
+	return []paletteEntry{{
+		Name:   "! <command>",
+		Detail: shellEscapeHint,
+		// Accepting the hint leaves "! " so the cursor lands ready for the
+		// command, rather than quoting the placeholder literally.
+		Insert: "! ",
+	}}
+}
+
+// paletteOwnsKeys reports whether the visible palette should capture
+// navigation and accept keys.
+//
+// The "!" escape hint is display-only: it teaches the syntax and must not
+// swallow Enter, which belongs to submitting the typed line. Every completion
+// trigger owns its keys; the escape trigger does not.
+func paletteOwnsKeys(s State) bool {
+	if len(paletteEntriesFor(s)) == 0 {
+		return false
+	}
+	trigger, _, _, _, ok := paletteToken(s.Input, s.Cursor)
+	return ok && trigger != paletteEscape
 }
 
 // ClampPaletteCursor keeps a selection inside the filtered match list. An

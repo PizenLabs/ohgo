@@ -408,6 +408,9 @@ func firstUnstable(s State) int {
 		if e.Kind == EntryTool && e.Tool != nil && e.Tool.Status == ToolRunning {
 			first = i
 		}
+		if e.Kind == EntryShell && e.Shell != nil && e.Shell.Status == ShellRunning {
+			first = i
+		}
 	}
 	return first
 }
@@ -429,6 +432,14 @@ func liveEntryLines(s State, e Entry, pal *Palette, layout Layout) []string {
 		}
 		var b strings.Builder
 		renderTool(&b, e.Tool, pal, layout, spinnerFrame(s.Status.Spinner))
+		return splitLines(b.String())
+
+	case EntryShell:
+		if e.Shell == nil {
+			return nil
+		}
+		var b strings.Builder
+		renderShell(&b, e.Shell, pal, layout)
 		return splitLines(b.String())
 
 	case EntryNotice:

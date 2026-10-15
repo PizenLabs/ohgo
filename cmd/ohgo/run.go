@@ -16,6 +16,7 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/prompt"
 	"github.com/PizenLabs/ohgo/session"
@@ -829,6 +830,21 @@ func admitFor(ws workspace.Workspace) func(ai.ToolCall, agent.Tool) (bool, strin
 	}
 }
 
+// attachShellEscape wires the "!" escape to the local shell and to the same
+// mutation classifier the bash tool's admission uses.
+//
+// The runner is rooted at the workspace directory and runs through the
+// platform's shell; the classifier is the exported form of the admission rule,
+// so the ASK confirmation gate and the runtime authority cannot drift.
+func attachShellEscape(program *tui.Program, root string) {
+	program.SetShellEscape(tui.ShellHooks{
+		Run: func(ctx context.Context, command string, onChunk func(string)) (exec.EscapeResult, error) {
+			return exec.ShellRunner{Dir: root}.Run(ctx, command, onChunk)
+		},
+		Mutates: tools.CommandMutates,
+	})
+}
+
 // supportLoopBuilder returns a builder for the ephemeral $sup runtime.
 //
 // The model and effort resolve through the SUP role on every invocation,
@@ -1315,6 +1331,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 			programOpts = append(programOpts, tui.WithMouseReporting())
 		}
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+		attachShellEscape(program, opts.root)
 
 		// Output-first mode is a different interaction boundary, not a
 		// different program: the same loop, the same state machine, the same
@@ -1644,6 +1661,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		programOpts = append(programOpts, tui.WithMouseReporting())
 	}
 	program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+	attachShellEscape(program, opts.root)
 
 	if live, _ := cmd.Flags().GetBool("live"); live {
 		return program.RunLive()

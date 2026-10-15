@@ -46,6 +46,9 @@ type Entry struct {
 	AssistantText string
 	// Tool is set when Kind is EntryTool.
 	Tool *ToolEntry
+	// Shell is set when Kind is EntryShell: a "!" escape command and its
+	// streamed output.
+	Shell *ShellEntry
 	// Notice is set when Kind is EntryNotice.
 	Notice string
 	// SupportText is set when Kind is EntrySupport: the question when
@@ -66,6 +69,10 @@ const (
 	EntryAssistant EntryKind = "assistant"
 	// EntryTool is a tool call and its outcome.
 	EntryTool EntryKind = "tool"
+	// EntryShell is a "!" escape command and its streamed output. It is an
+	// interaction affordance, not a model turn, so it never enters history
+	// or the session store.
+	EntryShell EntryKind = "shell"
 	// EntryNotice is a system notice, e.g. a compaction.
 	EntryNotice EntryKind = "notice"
 	// EntrySupport is one turn of the ephemeral $sup surface. It is rendered
@@ -113,10 +120,56 @@ func (t *ToolEntry) Duration() time.Duration {
 	return end.Sub(t.StartedAt)
 }
 
+// ShellStatus is where a "!" escape command is in its lifecycle.
+type ShellStatus string
+
+// Shell lifecycle states. They mirror the tool lifecycle so the two blocks
+// read the same way.
+const (
+	// ShellRunning means the command is executing.
+	ShellRunning ShellStatus = "running"
+	// ShellDone means the command exited with status 0.
+	ShellDone ShellStatus = "done"
+	// ShellError means the command failed, was cancelled, or exited non-zero.
+	ShellError ShellStatus = "error"
+)
+
+// ShellEntry is the live state of one "!" escape command.
+//
+// It is deliberately not a ToolEntry: the escape is typed by the human, runs
+// outside the agent loop, and is never persisted or sent to the model, so it
+// shares the lifecycle vocabulary without sharing the tool's semantics.
+type ShellEntry struct {
+	// Command is the raw command as typed, without the leading "!".
+	Command string
+	// Output is the combined stdout and stderr streamed so far.
+	Output string
+	// Status is the lifecycle position.
+	Status ShellStatus
+	// ExitCode is the process exit status; -1 when unknown or aborted.
+	ExitCode int
+	// Err carries a start/cancel failure, empty on a normal exit.
+	Err string
+	// StartedAt and Duration bound execution. Duration is the engine's own
+	// measurement, so the rendered elapsed time is the process's, not the
+	// UI's render cadence.
+	StartedAt time.Time
+	Duration  time.Duration
+	// Truncated marks that Output hit the runner's cap.
+	Truncated bool
+	// Seq identifies the run, so a late chunk from an aborted command is
+	// dropped instead of appending to a newer block.
+	Seq int
+}
+
 // PendingApproval is a question the user must answer before a tool runs.
 type PendingApproval struct {
 	// ToolName is the tool that wants to run.
 	ToolName string
+	// Prompt, when non-empty, replaces the "Run this tool?" header and is
+	// rendered with the summary. It exists for the "!" shell escape, whose
+	// confirmation is not a tool invocation.
+	Prompt string
 	// Reason is why the prompt appears, when the tool declared one.
 	Reason string
 	// Summary describes what this particular call will do.
@@ -518,6 +571,40 @@ func (s *State) Apply(event Event) {
 			tool.Expanded = !tool.Expanded
 		}
 
+	case ShellStarted:
+		s.Entries = append(s.Entries, Entry{Kind: EntryShell, Shell: &ShellEntry{
+			Command:   e.Command,
+			Status:    ShellRunning,
+			Seq:       e.Seq,
+			StartedAt: e.At,
+		}})
+		s.growScroll(1)
+
+	case ShellDelta:
+		shell := s.shell(e.Seq)
+		if shell == nil || shell.Status != ShellRunning {
+			return
+		}
+		shell.Output += e.Text
+		s.growScroll(strings.Count(e.Text, "\n"))
+
+	case ShellFinished:
+		shell := s.shell(e.Seq)
+		if shell == nil {
+			return
+		}
+		shell.Duration = e.Duration
+		shell.ExitCode = e.ExitCode
+		shell.Truncated = e.Truncated
+		shell.Err = e.Err
+		switch {
+		case e.Err != "", e.ExitCode != 0:
+			shell.Status = ShellError
+		default:
+			shell.Status = ShellDone
+		}
+		s.growScroll(1)
+
 	case Notice:
 		s.Entries = append(s.Entries, Entry{Kind: EntryNotice, Notice: e.Text})
 		s.growScroll(countLines(e.Text))
@@ -558,6 +645,7 @@ func (s *State) Apply(event Event) {
 	case ApprovalAsked:
 		s.Pending = &PendingApproval{
 			ToolName: e.ToolName,
+			Prompt:   e.Prompt,
 			Reason:   e.Reason,
 			Summary:  e.Summary,
 			Choices:  e.Choices,
@@ -1400,6 +1488,33 @@ func (s *State) tool(id string) *ToolEntry {
 	return nil
 }
 
+// shell finds a "!" escape block by run sequence. A zero seq matches the most
+// recent block, for callers that do not track identity.
+func (s *State) shell(seq int) *ShellEntry {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		entry := &s.Entries[i]
+		if entry.Kind != EntryShell || entry.Shell == nil {
+			continue
+		}
+		if seq == 0 || entry.Shell.Seq == seq {
+			return entry.Shell
+		}
+	}
+	return nil
+}
+
+// runningShell returns the in-flight escape block, or nil. There is never
+// more than one: the program refuses a second while the first runs.
+func (s *State) runningShell() *ShellEntry {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		entry := &s.Entries[i]
+		if entry.Kind == EntryShell && entry.Shell != nil && entry.Shell.Status == ShellRunning {
+			return entry.Shell
+		}
+	}
+	return nil
+}
+
 // LatestToolID names the most recent tool block, or "" when there is none.
 //
 // Ctrl+O operates on this block: with no cursor model in the transcript,
@@ -1540,6 +1655,47 @@ type ToolToggled struct {
 
 func (ToolToggled) eventKind() string { return "tool_toggled" }
 
+// ShellStarted announces a "!" escape command beginning.
+type ShellStarted struct {
+	// Command is the raw command as typed, without the leading "!".
+	Command string
+	// At is when execution began.
+	At time.Time
+	// Seq identifies the run so a late chunk from an aborted command is
+	// dropped rather than appended to a newer block.
+	Seq int
+}
+
+func (ShellStarted) eventKind() string { return "shell_started" }
+
+// ShellDelta streams a chunk of combined command output.
+type ShellDelta struct {
+	// Text is the chunk appended to the running block.
+	Text string
+	// Seq identifies the run.
+	Seq int
+}
+
+func (ShellDelta) eventKind() string { return "shell_delta" }
+
+// ShellFinished records an escape command's outcome.
+type ShellFinished struct {
+	// ExitCode is the process exit status; -1 when unknown or aborted.
+	ExitCode int
+	// Duration is the engine's measured execution time.
+	Duration time.Duration
+	// Err carries a start or cancellation failure; empty on a normal exit.
+	Err string
+	// Truncated reports that the output hit the runner's cap.
+	Truncated bool
+	// At is when the command ended.
+	At time.Time
+	// Seq identifies the run.
+	Seq int
+}
+
+func (ShellFinished) eventKind() string { return "shell_finished" }
+
 // Notice adds a system line.
 type Notice struct{ Text string }
 
@@ -1581,9 +1737,12 @@ func (Compacted) eventKind() string { return "compacted" }
 // ApprovalAsked opens a prompt.
 type ApprovalAsked struct {
 	ToolName string
-	Reason   string
-	Summary  string
-	Choices  []string
+	// Prompt, when non-empty, replaces the "Run this tool?" header. It is
+	// used by the "!" shell escape, whose confirmation is not a tool call.
+	Prompt  string
+	Reason  string
+	Summary string
+	Choices []string
 }
 
 func (ApprovalAsked) eventKind() string { return "approval_asked" }

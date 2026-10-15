@@ -35,6 +35,12 @@ type Palette struct {
 	// Mention renders a valid "@path" reference in the composer, so a file
 	// the prompt will actually attach stands out from surrounding prose.
 	Mention lipgloss.Style
+	// ShellPrompt renders the "!" escape marker, and ShellCommand the escaped
+	// command text, so a direct shell block reads as distinct from a tool
+	// (whose badge carries the tool's identity colour) and from the user's
+	// own words.
+	ShellPrompt  lipgloss.Style
+	ShellCommand lipgloss.Style
 	// Markdown styles.
 	Code      lipgloss.Style
 	CodeFence lipgloss.Style
@@ -96,6 +102,8 @@ func DarkPalette() *Palette {
 		Queued:       fg(darkMuted).Italic(true),
 		Chip:         fg(ColorAccent).Bold(true),
 		Mention:      fg(ColorPrimary).Bold(true),
+		ShellPrompt:  fg(ColorPrimary).Bold(true),
+		ShellCommand: fg(darkText),
 		Code:         fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
 		CodeFence:    fg(darkMuted),
 		Heading:      fg(darkH1).Bold(true),
@@ -138,6 +146,8 @@ func LightPalette() *Palette {
 		Queued:       fg(lightMuted).Italic(true),
 		Chip:         fg(chromeLightAccent).Bold(true),
 		Mention:      fg(chromeLightPrimary).Bold(true),
+		ShellPrompt:  fg(chromeLightPrimary).Bold(true),
+		ShellCommand: fg(lightText),
 		Code:         fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
 		CodeFence:    fg(lightMuted),
 		Heading:      fg(lightH1).Bold(true),
@@ -260,7 +270,7 @@ func composerHintsFor(state State) string {
 	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
-	if len(paletteEntriesFor(state)) > 0 && state.Secret == nil {
+	if paletteOwnsKeys(state) && state.Secret == nil {
 		return "↑↓ navigate · enter/tab accept · esc dismiss"
 	}
 	if state.Status.Busy {
@@ -286,7 +296,7 @@ func composerHintBar(state State, width int) string {
 	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
-	if len(paletteEntriesFor(state)) > 0 && state.Secret == nil {
+	if paletteOwnsKeys(state) && state.Secret == nil {
 		const hint = "↑↓ navigate · enter/tab accept · esc dismiss"
 		if width > 0 {
 			return TruncateToWidth(hint, width)
@@ -661,6 +671,11 @@ func approvalBlank(pending *PendingApproval, layout Layout) bool {
 // exceeds the viewport. Excess collapses into a counted marker line rather
 // than pushing chrome off-screen or truncating the choices.
 func boundedPreview(pending *PendingApproval, layout Layout) []string {
+	// A shell confirmation renders its command on the prompt line; a second
+	// copy below would be noise, and the accounting must agree.
+	if pending.Prompt != "" {
+		return nil
+	}
 	var lines []string
 	width := dialogWidth(layout)
 	for _, text := range []string{pending.Summary, pending.Reason} {
@@ -1443,6 +1458,11 @@ func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, 
 			renderTool(sb, entry.Tool, pal, layout, frame)
 		}
 
+	case EntryShell:
+		if entry.Shell != nil {
+			renderShell(sb, entry.Shell, pal, layout)
+		}
+
 	case EntryNotice:
 		for _, wl := range wrapPlain(entry.Notice, layout) {
 			sb.WriteString(pal.Notice.Render(wl) + "\n")
@@ -1623,6 +1643,10 @@ func toolExpandable(tool *ToolEntry) bool {
 // toolOutputLimit bounds one tool's displayed outcome.
 const toolOutputLimit = 4000
 
+// shellMaxLines bounds the wrapped rows one "!" escape renders, so a long
+// stream never rebuilds thousands of lines on every frame.
+const shellMaxLines = 40
+
 // maxToolLines bounds rendered tool rows per call so one result cannot flood
 // the conversation. Wide shows more; narrow keeps the transcript scannable.
 func maxToolLines(layout Layout) int {
@@ -1645,6 +1669,90 @@ func (t *ToolEntry) elapsed() string {
 	return d.String()
 }
 
+// renderShell writes one "!" escape block: the echoed command, its streamed
+// output, and a truthful exit line.
+//
+// The leading "!" carries ColorPrimary so the escape reads as a deliberate
+// direct action, distinct from a tool badge and from the user's own words. The
+// exit status is text plus colour (✓/✗), so a monochrome terminal still shows
+// success or failure.
+func renderShell(sb *strings.Builder, shell *ShellEntry, pal *Palette, layout Layout) {
+	width := textWidth(layout)
+	if width <= 0 {
+		width = 80
+	}
+	// Truncate the plain command before styling so a cut keeps the marker and
+	// command colours instead of stripping the whole row to fit.
+	command := sanitizeInline(shell.Command)
+	budget := width - CellWidth("! ")
+	if budget < 1 {
+		budget = 1
+	}
+	header := pal.ShellPrompt.Render("! ") + pal.ShellCommand.Render(TruncateToWidth(command, budget))
+	sb.WriteString(header + "\n")
+
+	if body := strings.TrimRight(shell.Output, "\n"); strings.TrimSpace(body) != "" {
+		// Command output carries terminal colours and control bytes from the
+		// child process: keep the colours, neutralise the cursor control,
+		// then wrap what the terminal will actually lay out. Rendering is
+		// bounded like a tool result, so a long stream can never rebuild
+		// thousands of wrapped rows on every frame.
+		shown := 0
+		for _, line := range strings.Split(sanitizeBlock(body), "\n") {
+			for _, wl := range WrapToWidth(line, width) {
+				if shown >= shellMaxLines {
+					break
+				}
+				sb.WriteString(wl + "\n")
+				shown++
+			}
+			if shown >= shellMaxLines {
+				break
+			}
+		}
+		if shell.Truncated || shown >= shellMaxLines {
+			sb.WriteString(pal.Truncated.Render("… [output truncated]") + "\n")
+		}
+	}
+
+	switch shell.Status {
+	case ShellRunning:
+		sb.WriteString(pal.ToolRun.Render("● running…") + "\n")
+	default:
+		sb.WriteString(shellExitLine(shell, pal) + "\n")
+	}
+	sb.WriteString("\n")
+}
+
+// shellExitLine renders the terminal status row: a ✓/✗ marker, the exit code,
+// and the measured elapsed time. A cancellation or start failure names its
+// reason in place of a code.
+func shellExitLine(shell *ShellEntry, pal *Palette) string {
+	if shell.Err != "" {
+		return pal.ToolError.Render("✗ " + sanitizeInline(shell.Err))
+	}
+	style := pal.ToolDone
+	mark := "✓"
+	if shell.ExitCode != 0 {
+		style = pal.ToolError
+		mark = "✗"
+	}
+	line := style.Render(fmt.Sprintf("%s exit %d", mark, shell.ExitCode))
+	if elapsed := shellElapsed(shell); elapsed != "" {
+		line += pal.Status.Render(" · " + elapsed)
+	}
+	return line
+}
+
+// shellElapsed renders the engine's measured duration compactly, omitting an
+// unmeasured one rather than showing a zero.
+func shellElapsed(shell *ShellEntry) string {
+	if shell.Duration <= 0 {
+		return ""
+	}
+	return shell.Duration.Round(time.Millisecond).String()
+}
+
 // renderApproval draws the modal prompt with a bounded preview.
 //
 // The default cursor lands on the conservative choice (deny last). Closing,
@@ -1652,8 +1760,21 @@ func (t *ToolEntry) elapsed() string {
 // does, enforced by the Update handler, not by rendering.
 func renderApproval(sb *strings.Builder, pending *PendingApproval, pal *Palette, layout Layout) {
 	width := dialogWidth(layout)
-	line := pal.Prompt.Render("Run this tool?") + " " + pal.ToolName.Render(TruncateToWidth(pending.ToolName, width))
-	sb.WriteString(line + "\n")
+	if pending.Prompt != "" {
+		// A shell escape renders "Run shell command: <cmd>? [y/N]" on one
+		// row: the command is the whole question, so it needs no preview.
+		command := sanitizeInline(pending.Summary)
+		budget := width - CellWidth(pending.Prompt+": ") - CellWidth("? [y/N]")
+		if budget < 4 {
+			budget = 4
+		}
+		sb.WriteString(pal.Prompt.Render(pending.Prompt+": ") +
+			pal.ToolName.Render(TruncateToWidth(command, budget)) +
+			pal.Status.Render("? [y/N]") + "\n")
+	} else {
+		line := pal.Prompt.Render("Run this tool?") + " " + pal.ToolName.Render(TruncateToWidth(pending.ToolName, width))
+		sb.WriteString(line + "\n")
+	}
 	for _, wl := range boundedPreview(pending, layout) {
 		sb.WriteString(pal.Status.Render("  "+wl) + "\n")
 	}
