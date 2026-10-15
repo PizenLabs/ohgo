@@ -408,6 +408,9 @@ func firstUnstable(s State) int {
 		if e.Kind == EntryTool && e.Tool != nil && e.Tool.Status == ToolRunning {
 			first = i
 		}
+		if e.Kind == EntryShell && e.Shell != nil && e.Shell.Status == ShellRunning {
+			first = i
+		}
 	}
 	return first
 }
@@ -429,6 +432,14 @@ func liveEntryLines(s State, e Entry, pal *Palette, layout Layout) []string {
 		}
 		var b strings.Builder
 		renderTool(&b, e.Tool, pal, layout, spinnerFrame(s.Status.Spinner))
+		return splitLines(b.String())
+
+	case EntryShell:
+		if e.Shell == nil {
+			return nil
+		}
+		var b strings.Builder
+		renderShell(&b, e.Shell, pal, layout)
 		return splitLines(b.String())
 
 	case EntryNotice:
@@ -488,10 +499,12 @@ func expandedToolLines(s State, id string) []string {
 // matches the full-screen UI: one thing at a time owns the keyboard.
 func liveOverlay(s State, pal *Palette, layout Layout) []string {
 	switch {
+	case s.QuitConfirm != nil:
+		return liveQuitConfirmLines(s, pal, layout)
 	case s.Picker != nil:
 		return livePickerLines(s, pal, layout)
 	case s.Pending != nil:
-		return liveApprovalLines(s, pal, layout)
+		return liveApprovalLines(s, layout)
 	case s.Secret != nil:
 		return liveSecretLines(s, pal, layout)
 	}
@@ -537,16 +550,31 @@ func livePickerLines(s State, pal *Palette, layout Layout) []string {
 }
 
 // liveApprovalLines renders the approval prompt, bounded to the screen.
-func liveApprovalLines(s State, pal *Palette, layout Layout) []string {
+func liveApprovalLines(s State, layout Layout) []string {
 	var b strings.Builder
 	bounded := layout
 	bounded.Height = liveRows(s)
-	renderApproval(&b, s.Pending, pal, bounded)
+	renderApproval(&b, s.Pending, s.Theme, bounded)
 	lines := splitLines(b.String())
 	if limit := liveRows(s); len(lines) > limit {
 		// Keep the question and the choices; drop the middle of the preview.
 		kept := []string{lines[0]}
 		return append(kept, lines[len(lines)-(limit-1):]...)
+	}
+	return lines
+}
+
+// liveQuitConfirmLines renders the /q quit-confirmation popup, bounded to
+// the screen. It reuses the centered card so live and full-screen agree on
+// the border, the horizontal buttons, and the left/right hint.
+func liveQuitConfirmLines(s State, _ *Palette, layout Layout) []string {
+	if s.QuitConfirm == nil {
+		return nil
+	}
+	card := quitCard(s.QuitConfirm, quitCardWidth(displayWidth(s, layout)))
+	lines := splitLines(card)
+	if limit := liveRows(s); len(lines) > limit {
+		lines = lines[:limit]
 	}
 	return lines
 }
@@ -623,31 +651,39 @@ func liveComposerWidth(layout Layout) int {
 // is simply the last thing on screen, which is where the terminal already
 // puts it.
 func liveComposerLines(s State, pal *Palette, layout Layout) []string {
-	if s.Secret != nil || s.Picker != nil || s.Pending != nil {
+	if s.Secret != nil || s.Picker != nil || s.Pending != nil || s.QuitConfirm != nil {
 		return nil
 	}
 	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)
 	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, liveComposerWidth(layout))
-	start := 0
-	if len(rows) > maxComposerRows {
-		start = len(rows) - maxComposerRows
-	}
-	shown := rows[start:]
+	// Same cursor-following window as the framed composer: the caret must stay
+	// painted however far the input folds past the row cap.
+	shown, start := composerWindow(rows, cursorRow, s.ComposerScroll, maxComposerRows)
 
 	var out []string
+	// The palette sits strictly above the input line it completes. It is
+	// expanded into one element per row so liveChrome's row count matches
+	// what the painter erases and rewrites.
+	if suggest := renderPaletteSuggestions(s, layout); suggest != "" {
+		out = append(out, strings.Split(suggest, "\n")...)
+	}
 	for i, row := range shown {
 		text := row
-		if haveCursor && start+i == cursorRow {
-			text = insertAt(row, cursorRune, pal.Cursor.Render("▌"))
+		isCursorRow := haveCursor && start+i == cursorRow
+		rowCursor := -1
+		if isCursorRow {
+			rowCursor = cursorRune
+		}
+		text, rowCursor = highlightMentions(pal.Mention, text, rowCursor)
+		text, rowCursor = renderPasteChips(s.Pastes, pal.Chip, text, rowCursor)
+		if isCursorRow {
+			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
 		}
 		if i == 0 {
 			out = append(out, pal.Prompt.Render("> ")+text)
 			continue
 		}
 		out = append(out, "  "+text)
-	}
-	if suggest := renderSlashSuggestions(s, pal, layout); suggest != "" {
-		out = append(out, suggest)
 	}
 	if queued := composerStateLine(s, pal, layout); queued != "" {
 		out = append(out, queued)
@@ -666,12 +702,16 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 func liveHintsFor(s State, layout Layout) string {
 	var choices []string
 	switch {
-	case !s.SlashHide && len(SlashSuggestions(s.Input)) > 0 && s.Secret == nil:
-		choices = []string{"↑↓ navigate · enter accept · esc dismiss", "↑↓ enter esc"}
+	case len(paletteEntriesFor(s)) > 0 && s.Secret == nil:
+		choices = []string{"↑↓ navigate · enter/tab accept · esc dismiss", "↑↓ enter esc"}
 	case s.Status.Busy:
 		choices = []string{"enter queue · esc cancel · alt+enter break", "enter queue · esc cancel"}
 	default:
-		choices = []string{"enter send · alt+enter break · / commands · ? help", "enter send · alt+enter break", "enter send"}
+		// Idle hints share composerHintsFor, so the live surface gets the
+		// same progressive disclosure: shortcuts fresh, telemetry once a
+		// prompt has run. The short fallbacks keep a narrow terminal in one
+		// row.
+		choices = []string{composerHintsFor(s), "enter send"}
 	}
 	width := displayWidth(s, layout)
 	for _, text := range choices {

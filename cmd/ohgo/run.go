@@ -16,6 +16,7 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/prompt"
 	"github.com/PizenLabs/ohgo/session"
@@ -592,6 +593,35 @@ func connectHooks(held *harness) tui.ConnectHooks {
 	}
 }
 
+// mentionLister builds the workspace roster offered by the "@" trigger. It
+// walks the project with the search tools' own ignore rules, so the inline
+// palette cannot suggest a path the read tool would refuse, and caps the roster
+// so a large tree cannot stall discovery. A trailing slash marks a folder.
+func mentionLister(root string) func() []string {
+	return func() []string {
+		paths := tools.WorkspaceMentions(context.Background(), root, 0)
+		out := make([]string, 0, len(paths))
+		for _, p := range paths {
+			if p.Dir {
+				out = append(out, p.Path+"/")
+				continue
+			}
+			out = append(out, p.Path)
+		}
+		return out
+	}
+}
+
+// mentionReader reads a workspace-relative file for "@" context injection,
+// with the same root containment the read tool enforces: a reference outside
+// the workspace, a directory, or an oversized file fails rather than attaching
+// the wrong bytes to the model request.
+func mentionReader(root string) func(path string) (string, error) {
+	return func(path string) (string, error) {
+		return tools.ReadWorkspaceFile(root, path)
+	}
+}
+
 // validateProvider checks a credential and lists models: probe first (cheap,
 // precise errors), discovery second. An empty key resolves the detected
 // credential, so choosing "use detected" never pastes anything anywhere.
@@ -798,6 +828,21 @@ func admitFor(ws workspace.Workspace) func(ai.ToolCall, agent.Tool) (bool, strin
 		}
 		return true, ""
 	}
+}
+
+// attachShellEscape wires the "!" escape to the local shell and to the same
+// mutation classifier the bash tool's admission uses.
+//
+// The runner is rooted at the workspace directory and runs through the
+// platform's shell; the classifier is the exported form of the admission rule,
+// so the ASK confirmation gate and the runtime authority cannot drift.
+func attachShellEscape(program *tui.Program, root string) {
+	program.SetShellEscape(tui.ShellHooks{
+		Run: func(ctx context.Context, command string, onChunk func(string)) (exec.EscapeResult, error) {
+			return exec.ShellRunner{Dir: root}.Run(ctx, command, onChunk)
+		},
+		Mutates: tools.CommandMutates,
+	})
 }
 
 // supportLoopBuilder returns a builder for the ephemeral $sup runtime.
@@ -1260,7 +1305,14 @@ func runSession(cmd *cobra.Command, args []string) error {
 	// hook, so the routing happens here rather than inside buildLoop. A pipe or
 	// a test never reaches this branch and keeps plain line output.
 	if useInteractiveUI(cmd) {
-		programOpts := []tui.ProgramOption{tui.WithVersion(version)}
+		// The header effort badge shows the active reasoning level, or hides
+		// when thinking is disabled: a default install (reasoning off) keeps
+		// the legacy header rather than inventing a level.
+		initialEffort := ""
+		if opts.reasoning {
+			initialEffort = opts.effort
+		}
+		programOpts := []tui.ProgramOption{tui.WithVersion(version), tui.WithEffort(initialEffort)}
 		// Precedence: flag, then settings, then the environment default. The
 		// environment matters because the wheel reaches the program by
 		// different routes in different terminals, and a multiplexer that does
@@ -1279,6 +1331,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 			programOpts = append(programOpts, tui.WithMouseReporting())
 		}
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+		attachShellEscape(program, opts.root)
 
 		// Output-first mode is a different interaction boundary, not a
 		// different program: the same loop, the same state machine, the same
@@ -1301,6 +1354,25 @@ func runSession(cmd *cobra.Command, args []string) error {
 			return surface.ask(ctx, question, onDelta)
 		})
 		program.SetSupportInfo(held.SupportInfo)
+		program.SetMentionLister(mentionLister(opts.root))
+		program.SetMentionReader(mentionReader(opts.root))
+
+		// The header effort badge follows the session role's effective level.
+		// The reporter reads the configuration authority (role effort, then
+		// the global default) through the same reasoning mapping the loop
+		// uses, so the badge and the request agree. Disabled thinking
+		// reports "" and the badge hides.
+		program.SetEffortProvider(func() string {
+			role := held.sessionRole()
+			if role == "" {
+				role = strings.ToLower(opts.authority().String())
+			}
+			enabled, level := held.reasoningFor(held.roleEffortFor(role))
+			if !enabled {
+				return ""
+			}
+			return level
+		})
 
 		// A resumed session replays its transcript, so the UI continues rather
 		// than restarts. Loading it here means a failure is fatal rather than a
@@ -1387,6 +1459,21 @@ func runSession(cmd *cobra.Command, args []string) error {
 					WorkspaceAccent: style.Accent,
 					HasWorkspace:    true,
 				})
+				// A workspace move rebinds the session's model and effort:
+				// the header follows the newly effective role rather than
+				// naming a model the loop no longer calls.
+				program.PublishModel(held.model.Provider + "/" + held.model.ID)
+				program.PublishEffort(func() string {
+					role := held.sessionRole()
+					if role == "" {
+						role = strings.ToLower(ws.String())
+					}
+					enabled, level := held.reasoningFor(held.roleEffortFor(role))
+					if !enabled {
+						return ""
+					}
+					return level
+				}())
 				program.PublishNotice("switched to " + style.Label)
 				return nil
 			},
@@ -1558,7 +1645,11 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 
 	surface := newSupportSurface(supportLoopBuilder(opts, registry, out))
 
-	programOpts := []tui.ProgramOption{tui.WithVersion(version)}
+	initialEffort := ""
+	if opts.reasoning {
+		initialEffort = opts.effort
+	}
+	programOpts := []tui.ProgramOption{tui.WithVersion(version), tui.WithEffort(initialEffort)}
 	mouse := opts.settings.Mouse
 	if flag := flagValue(cmd, "mouse"); flag != "" {
 		mouse = flag
@@ -1570,6 +1661,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		programOpts = append(programOpts, tui.WithMouseReporting())
 	}
 	program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+	attachShellEscape(program, opts.root)
 
 	if live, _ := cmd.Flags().GetBool("live"); live {
 		return program.RunLive()
@@ -1583,6 +1675,20 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		return surface.ask(ctx, question, onDelta)
 	})
 	program.SetSupportInfo(held.SupportInfo)
+	program.SetMentionLister(mentionLister(opts.root))
+	program.SetMentionReader(mentionReader(opts.root))
+
+	program.SetEffortProvider(func() string {
+		role := held.sessionRole()
+		if role == "" {
+			role = strings.ToLower(opts.authority().String())
+		}
+		enabled, level := held.reasoningFor(held.roleEffortFor(role))
+		if !enabled {
+			return ""
+		}
+		return level
+	})
 
 	program.SetModelSwitcher(
 		func(id string) error {
@@ -1647,6 +1753,18 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 				WorkspaceAccent: style.Accent,
 				HasWorkspace:    true,
 			})
+			program.PublishModel(held.model.Provider + "/" + held.model.ID)
+			program.PublishEffort(func() string {
+				role := held.sessionRole()
+				if role == "" {
+					role = strings.ToLower(ws.String())
+				}
+				enabled, level := held.reasoningFor(held.roleEffortFor(role))
+				if !enabled {
+					return ""
+				}
+				return level
+			}())
 			program.PublishNotice("switched to " + style.Label)
 			return nil
 		},
@@ -1897,7 +2015,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		// answer.
 		if command, ok := tui.ParseCommand(text); ok {
 			switch command.Name {
-			case "quit", "exit":
+			case "quit", "exit", "q":
 				return nil
 			case "help":
 				_, _ = fmt.Fprintln(out, tui.HelpText())

@@ -346,7 +346,7 @@ func TestComposerHintsNeverAdvertiseKeysTheApprovalHasCaptured(t *testing.T) {
 			t.Errorf("the frame advertises %q while the open approval captures it:\n%s", captured, frame)
 		}
 	}
-	if !strings.Contains(frame, "Run this tool?") {
+	if !strings.Contains(frame, "Do you want to proceed?") {
 		t.Error("the approval dialog is missing from the frame")
 	}
 }
@@ -385,8 +385,13 @@ func TestScrollOvershootKeepsComposerPinned(t *testing.T) {
 	if len(rows) != 24 {
 		t.Fatalf("frame = %d rows, want the full 24-row viewport", len(rows))
 	}
-	if bottom := ansi.Strip(rows[23]); strings.Trim(bottom, "─") != "" {
-		t.Errorf("bottom row = %q, want the composer rule pinned to the viewport base", bottom)
+	// Bottom block is composer rule, composer, composer rule, hint bar: the
+	// telemetry footer stays pinned last so the prompt never drifts.
+	if bottom := ansi.Strip(rows[22]); strings.Trim(bottom, "─") != "" {
+		t.Errorf("row 22 = %q, want the composer rule above the pinned footer", bottom)
+	}
+	if bottom := ansi.Strip(rows[23]); !strings.Contains(bottom, "? help") {
+		t.Errorf("bottom row = %q, want the hint bar pinned to the viewport base", bottom)
 	}
 	var marker int
 	found := false

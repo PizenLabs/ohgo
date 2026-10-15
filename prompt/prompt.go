@@ -57,6 +57,34 @@ func BuildEnvironment(root string) string {
 	return sb.String()
 }
 
+// ReferencedFile is one file a user named with "@" in a prompt, with the
+// contents read from the workspace.
+type ReferencedFile struct {
+	// Path is the workspace-relative path exactly as written in the prompt.
+	Path string
+	// Content is the file's contents, verbatim.
+	Content string
+}
+
+// MentionContext renders the files a user referenced with "@" into one system
+// block, or "" when there are none.
+//
+// A reference is the user naming a file deliberately, so its bytes are attached
+// rather than left for the model to guess at with a tool call. The path is
+// carried in a tag so the model can cite the source and tell files apart.
+func MentionContext(files []ReferencedFile) string {
+	if len(files) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("# Referenced files\n\n")
+	sb.WriteString("The user referenced these files with @ in the current message. Their contents are included verbatim:\n")
+	for _, f := range files {
+		fmt.Fprintf(&sb, "\n<file path=%q>\n%s\n</file>\n", f.Path, f.Content)
+	}
+	return sb.String()
+}
+
 // ToolCatalog renders the tool roster for the model.
 func ToolCatalog(names []string) string {
 	if len(names) == 0 {

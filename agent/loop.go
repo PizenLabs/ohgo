@@ -45,6 +45,11 @@ type Config struct {
 	Stream ai.StreamFn
 	// System is the system prompt, in order.
 	System []ai.SystemPromptBlock
+	// SystemContext appends extra system-prompt blocks after System on every
+	// request. It is how a caller injects per-turn context — files the user
+	// referenced, for example — without rebuilding the loop. Set it with
+	// SetSystemContext before Run.
+	SystemContext []ai.SystemPromptBlock
 	// Tools are offered to the model.
 	Tools []Tool
 	// MaxTokens caps each completion.
@@ -355,7 +360,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 		stream, err := l.cfg.Stream(ctx, ai.Request{
 			Model:           l.model(),
 			Messages:        converted,
-			System:          l.cfg.System,
+			System:          l.system(),
 			Tools:           specs,
 			ToolChoice:      toolChoice,
 			MaxTokens:       l.cfg.MaxTokens,
@@ -419,6 +424,29 @@ func (l *Loop) model() ai.Model {
 		return l.cfg.ModelFn()
 	}
 	return l.cfg.Model
+}
+
+// system returns the system prompt for the next request: the base blocks with
+// any per-turn context appended. It copies rather than appending in place, so a
+// caller's System slice is never mutated and two requests cannot share backing
+// storage that one of them later overwrites.
+func (l *Loop) system() []ai.SystemPromptBlock {
+	if len(l.cfg.SystemContext) == 0 {
+		return l.cfg.System
+	}
+	out := make([]ai.SystemPromptBlock, 0, len(l.cfg.System)+len(l.cfg.SystemContext))
+	out = append(out, l.cfg.System...)
+	return append(out, l.cfg.SystemContext...)
+}
+
+// SetSystemContext installs extra system-prompt blocks appended after the
+// loop's base System on every subsequent request. It is how a caller injects
+// per-turn context — files the user referenced, for example — without rebuilding
+// the loop. Pass nil to clear it.
+//
+// It must be called before Run, never during one.
+func (l *Loop) SetSystemContext(blocks []ai.SystemPromptBlock) {
+	l.cfg.SystemContext = blocks
 }
 
 // SetModel switches the model for subsequent requests.

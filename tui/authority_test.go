@@ -6,8 +6,10 @@ import (
 )
 
 func TestStatusShowsTheWorkspaceAuthority(t *testing.T) {
-	// The authority is identity, not decoration: the footer must name the
-	// boundary the session runs under (§9).
+	// The authority is identity, not decoration: the canvas must name the
+	// boundary the session runs under (§9). Empty canvases name every mode
+	// in the welcome box; the composer prefix names the live one in
+	// lowercase once set.
 	s := New()
 	s.Status.Model = "groq/m"
 	s.Apply(TerminalResized{Width: 100, Height: 24})
@@ -21,9 +23,9 @@ func TestStatusShowsTheWorkspaceAuthority(t *testing.T) {
 	if !strings.Contains(out, "FUZZ") {
 		t.Fatalf("status does not name the workspace:\n%s", out)
 	}
-	// The footer badge names the authority; the identity surface above it
-	// names every mode by design, so scope the negative assertion to the
-	// footer line carrying the session.
+	// The footer line carrying the session must not invent another
+	// authority; the welcome box above it names every mode by design, so
+	// scope the negative assertion to the session line.
 	status := findStatusLine(t, out, "#4")
 	if strings.Contains(status, "BUILD") {
 		t.Errorf("status invented a workspace: %q", status)
@@ -42,8 +44,8 @@ func TestWorkspaceBadgeUsesItsAccent(t *testing.T) {
 }
 
 func TestWorkspaceFooterKeepsTheViewportBudget(t *testing.T) {
-	// The authority badge is prefixed onto the one-row footer; it must not push
-	// a line past the terminal width at any tier.
+	// The one-row telemetry footer (session, cost, path + shortcuts) must
+	// not push a line past the terminal width at any tier.
 	for _, width := range []int{120, 90, 70, 50} {
 		s := New()
 		s.Status.Model = "groq/m"

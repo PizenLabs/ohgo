@@ -13,14 +13,20 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Approval choices offered to the user. The last is the safest so the default
-// cursor lands on it.
-var approvalChoices = []string{"Yes", "No"}
+// Approval choices offered to the user.
+//
+// The conservative answer is listed last so the resting cursor lands on it:
+// Move clamps at the ends, so from the default no navigation key can reach an
+// affirmative answer without a deliberate move onto one. "Allow for entire
+// session" is a remembered affirmative, but it still demands that deliberate
+// move — it is never the resting place.
+var approvalChoices = []string{"Yes", sessionApprovalChoice, "No"}
 
 // approvalAnswer is one user decision, delivered back to a blocked tool.
 type approvalAnswer struct {
@@ -36,6 +42,9 @@ type approvalRequest struct {
 	toolName string
 	reason   string
 	summary  string
+	// mutating marks a state-changing call, so the dialog can accent a
+	// destructive boundary differently from a read one.
+	mutating bool
 	answer   chan approvalAnswer
 }
 
@@ -81,6 +90,12 @@ type Program struct {
 	// blocked, and it is only ever written from the update goroutine.
 	pending *approvalRequest
 
+	// sessionAllowed records tools the user approved for the whole session
+	// ("Allow for entire session"). It is written from the update goroutine
+	// and read from blocked tool goroutines in ApprovalFunc, so every access
+	// holds mu.
+	sessionAllowed map[string]struct{}
+
 	// done closes when Run returns. It bounds the approval bridge past
 	// shutdown: a tool reaching approval after the UI is gone gets a denial
 	// instead of waiting on an answer nobody will send. Never closed by hand;
@@ -116,6 +131,17 @@ type Program struct {
 	// mu guards history and cancelTurn across the update and turn goroutines.
 	mu sync.Mutex
 
+	// sessionStart, sessionIn, and sessionOut are the live session's
+	// progressive-disclosure telemetry: when the first turn began and the
+	// measured input/output tokens accumulated since. They are guarded by mu
+	// because the turn goroutine samples them while the update goroutine
+	// resets them at a session boundary (/clear, resume). Zero sessionStart
+	// means no turn has run; /usage remains the lifetime ledger and is
+	// deliberately not consulted here.
+	sessionStart time.Time
+	sessionIn    int
+	sessionOut   int
+
 	// window is the context window used for the budget display.
 	window int
 
@@ -130,6 +156,10 @@ type Program struct {
 	// "model switching is unavailable" rather than panicking on /model.
 	setModel     func(id string) error
 	currentModel func() string
+	// currentEffort reports the active thinking effort for the header badge.
+	// Nil means unknown: the badge reflects Status.Effort and any variant
+	// suffix in Status.Model rather than inventing a level.
+	currentEffort func() string
 
 	// listSessions, openSession, listModels and listJobs feed the selection
 	// overlays. Each nil-safe: without a provider the command reports the
@@ -143,6 +173,18 @@ type Program struct {
 	// the caller, which owns the catalog. Preferred over listModels when set.
 	listModelOptions func() []ModelOption
 	listJobs         func() []JobItem
+	// listMentions lists workspace paths for the "@" trigger. Nil disables
+	// file completion, leaving "@" a literal character. It is called once per
+	// session, when the first "@" token appears.
+	listMentions func() []string
+	// readMention reads one workspace-relative file for "@" context
+	// injection. Nil disables context resolution, leaving "@" a pure
+	// completion affordance. It is called on the turn goroutine, once per
+	// reference per submitted prompt.
+	readMention func(path string) (string, error)
+	// mentionsLoaded records that the "@" roster was installed, so a session
+	// that references files walks the workspace at most once.
+	mentionsLoaded bool
 	// lastJobs remembers the listed jobs so choosing one can show its
 	// output. It is only touched from the update goroutine.
 	lastJobs []JobItem
@@ -210,6 +252,22 @@ type Program struct {
 	// Switch, which owns validation, the runtime, persistence, and chrome.
 	workspace WorkspaceHooks
 
+	// shell wires the "!" escape: the process runner and the mutation
+	// classifier the ASK gate consults. Its zero value reports the feature
+	// unavailable rather than shelling out to an unwired process.
+	shell ShellHooks
+
+	// shellCancel aborts the in-flight escape, guarded by mu.
+	shellCancel context.CancelFunc
+	// shellCancelSeq is the run identity shellCancel belongs to, so a
+	// finishing run cannot clear a newer run's handle.
+	shellCancelSeq int
+	// shellSeq issues escape run identities. Guarded by mu.
+	shellSeq int
+	// pendingEscape is the command awaiting confirmation. It is owned by the
+	// update goroutine, like pending.
+	pendingEscape string
+
 	// wizard is the onboarding dialog for uninitialized projects, set by
 	// SetInitWizard. While non-nil it owns the keyboard and the middle of
 	// the screen; header and footer keep rendering from state. It is
@@ -235,6 +293,26 @@ type WorkspaceHooks struct {
 // SetWorkspaceSwitcher installs the owner behind /ask, /fuzz, /build.
 func (p *Program) SetWorkspaceSwitcher(hooks WorkspaceHooks) {
 	p.workspace = hooks
+}
+
+// ShellHooks wire the "!" escape to the local shell and to the authority
+// classifier.
+//
+// Both are functions because the TUI owns neither the process runner nor the
+// capability policy: the CLI does. A zero value disables the escape, which the
+// program reports rather than silently sending the line to the model.
+type ShellHooks struct {
+	// Run executes a command in the workspace and streams output chunks.
+	Run func(ctx context.Context, command string, onChunk func(string)) (exec.EscapeResult, error)
+	// Mutates reports whether a command provably changes the workspace. It
+	// gates the ASK confirmation; nil means "assume mutating", so ASK always
+	// asks rather than running a possible mutation unconfirmed.
+	Mutates func(command string) bool
+}
+
+// SetShellEscape installs the shell escape behind the "!" prefix.
+func (p *Program) SetShellEscape(hooks ShellHooks) {
+	p.shell = hooks
 }
 
 // modelsRefreshedMsg carries an async catalog refresh into Update.
@@ -371,12 +449,13 @@ func WithVersion(v string) ProgramOption {
 // NewProgram returns a program driving the given loop.
 func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOption) *Program {
 	p := &Program{
-		loop:      loop,
-		events:    make(chan Event, 256),
-		approvals: make(chan approvalRequest, 8),
-		done:      make(chan struct{}),
-		window:    window,
-		termOut:   os.Stdout,
+		loop:           loop,
+		events:         make(chan Event, 256),
+		approvals:      make(chan approvalRequest, 8),
+		sessionAllowed: make(map[string]struct{}),
+		done:           make(chan struct{}),
+		window:         window,
+		termOut:        os.Stdout,
 	}
 	// State first, options after: an option records into the state the
 	// program actually runs (model, version), rather than a zero value
@@ -428,6 +507,7 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ToolName: request.toolName,
 			Reason:   request.reason,
 			Summary:  request.summary,
+			Mutating: request.mutating,
 			Choices:  approvalChoices,
 		})
 		return p, p.waitForApproval()
@@ -487,10 +567,44 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.SupportPanel != nil {
+	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil {
 		return false
 	}
 	return s.Input == ""
+}
+
+// composerMoveWidth is the wrap width the active composer renderer folds to.
+// The full-screen composer subtracts the live mode prefix ("ask > " is wider
+// than "> "), while live mode draws a fixed two-cell prompt. Movement must use
+// the same width the visible rows used, or up/down hop rows that are not there.
+func (p *Program) composerMoveWidth() int {
+	layout := ComputeLayout(p.state)
+	if p.live != nil {
+		return liveComposerWidth(layout)
+	}
+	return composerTextWidthFor(p.state, layout)
+}
+
+// composerLineAbove moves the cursor one display row up, wrapping to the width
+// the active renderer uses. It reports false on the top row so the key handler
+// can fall back to history recall. A landing inside a chip label snaps to its
+// edge so a pill is never split.
+func (p *Program) composerLineAbove() (int, bool) {
+	pos, ok := lineAboveWrapped(p.state.Input, p.state.Cursor, p.composerMoveWidth())
+	if !ok {
+		return pos, false
+	}
+	return snapPasteBoundary(p.state.Pastes, p.state.Input, pos), true
+}
+
+// composerLineBelow moves the cursor one display row down, reporting false on
+// the bottom row.
+func (p *Program) composerLineBelow() (int, bool) {
+	pos, ok := lineBelowWrapped(p.state.Input, p.state.Cursor, p.composerMoveWidth())
+	if !ok {
+		return pos, false
+	}
+	return snapPasteBoundary(p.state.Pastes, p.state.Input, pos), true
 }
 
 // handleMouse routes wheel ticks to the scrollable region in focus: the
@@ -585,6 +699,40 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if p.wizard != nil {
 		return p.handleWizardKey(msg)
 	}
+	// Quit confirmation wins over a blocked tool: confirming /q must be able
+	// to deny the tool and exit, while dismissing leaves the tool waiting.
+	if p.state.QuitConfirm != nil {
+		switch msg.String() {
+		case "up", "k", "shift+tab", "left", "h":
+			p.state.Apply(QuitConfirmMoved{Delta: -1})
+			return p, nil
+		case "down", "j", "tab", "right", "l":
+			p.state.Apply(QuitConfirmMoved{Delta: 1})
+			return p, nil
+		case "enter":
+			if isAffirmative(p.state.QuitConfirm.Selected()) {
+				return p, p.quitNow()
+			}
+			p.state.Apply(QuitConfirmClosed{})
+			return p, nil
+		case "y", "Y":
+			return p, p.quitNow()
+		case "n", "N", "esc":
+			p.state.Apply(QuitConfirmClosed{})
+			return p, nil
+		case "ctrl+c":
+			// The reflex abort key must never quit: it dismisses the
+			// confirmation and, when a turn is running, cancels the work
+			// the same way an idle esc would.
+			p.state.Apply(QuitConfirmClosed{})
+			if p.state.Status.Busy {
+				p.cancelTurnNow("cancelled")
+			}
+			return p, nil
+		}
+		return p, nil
+	}
+
 	if p.state.Pending != nil {
 		switch msg.String() {
 		case "up", "k", "shift+tab", "left", "h":
@@ -594,16 +742,21 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(ApprovalMoved{Delta: 1})
 			return p, nil
 		case "enter":
-			return p.answer(isAffirmative(p.state.Pending.Selected()), "denied by user")
+			return p.answerSelection(p.state.Pending.Selected())
 		case "y", "Y":
 			return p.answer(true, "")
 		case "n", "N", "esc":
 			return p.answer(false, "denied by user")
 		case "ctrl+c":
 			// The reflex abort key must not be swallowed by this switch: the
-			// turn would stay parked on a question nobody can reach. Reuse the
-			// turn-cancel path, which denies the blocked tool before cancelling,
-			// so aborting can never approve the work it abandons.
+			// turn would stay parked on a question nobody can reach. A shell
+			// confirmation has no turn to cancel, so it is denied instead.
+			if p.pendingEscape != "" {
+				return p.answer(false, "cancelled")
+			}
+			// Reuse the turn-cancel path, which denies the blocked tool
+			// before cancelling, so aborting can never approve the work it
+			// abandons.
 			p.cancelTurnNow("cancelled")
 			return p, nil
 		}
@@ -619,6 +772,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.handlePlaneKey(msg)
 	}
 
+	if p.state.Permissions != nil {
+		return p.handlePermissionsKey(msg)
+	}
+
 	if p.state.Picker != nil {
 		return p.handlePickerKey(msg)
 	}
@@ -630,26 +787,32 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.handleSupportKey(msg)
 	}
 
-	// Inline slash discovery owns its keys while visible: navigating,
-	// accepting, or dismissing suggestions must not leak into history,
-	// line movement, or submission. Tab is deliberately untouched: it
-	// keeps opening the full command palette, matching its contract.
-	if p.state.Secret == nil && p.state.Pending == nil &&
-		!p.state.SlashHide && len(SlashSuggestions(p.state.Input)) > 0 {
+	// The "@" trigger needs its workspace roster before the palette can show
+	// file rows. Install it once, lazily, so a session that never references
+	// a file never walks the tree.
+	p.ensureMentionRoster()
+
+	// The inline palette owns its keys while visible: navigating, accepting,
+	// or dismissing suggestions must not leak into history, line movement, or
+	// submission. Enter and Tab both accept the highlighted row; the text is
+	// spliced into the composer, so the same keys mean the same thing for
+	// every trigger.
+	if p.state.Secret == nil && p.state.Pending == nil && p.state.QuitConfirm == nil &&
+		paletteOwnsKeys(p.state) {
 		switch msg.String() {
 		case "up", "ctrl+p":
-			p.state.Apply(SlashMoved{Delta: -1})
+			p.state.Apply(PaletteMoved{Delta: -1})
 			return p, nil
 		case "down", "ctrl+n":
-			p.state.Apply(SlashMoved{Delta: 1})
+			p.state.Apply(PaletteMoved{Delta: 1})
 			return p, nil
 		case "esc":
 			// Dismiss keeps the draft: the text stays, only the list hides
 			// until the next keystroke.
-			p.state.SlashHide = true
+			p.state.PaletteHide = true
 			return p, nil
-		case "enter":
-			return p.acceptSlash()
+		case "enter", "tab":
+			return p.acceptPalette()
 		}
 	}
 	// A secret prompt captures the composer: typing masks, enter submits to
@@ -717,7 +880,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "ctrl+c":
-		return p.cancelOrQuit()
+		return p.interruptOrClear()
 
 	case "esc":
 		// Escape backs out of a running turn the way ctrl+c does, but never
@@ -730,7 +893,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "enter":
-		text := strings.TrimSpace(p.state.Input)
+		text := strings.TrimSpace(expandPastes(p.state.Pastes, p.state.Input))
 		if text == "" {
 			// An empty line still advances queued work: the queue waits for a
 			// turn boundary, and this is one.
@@ -738,6 +901,11 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if command, ok := ParseCommand(text); ok {
 			return p, p.runCommand(command)
+		}
+		// A "!" line is a direct shell escape, not a model prompt: it runs
+		// in the workspace under the active authority.
+		if command, ok := exec.ParseEscape(text); ok {
+			return p, p.submitEscape(command)
 		}
 		if p.state.Status.Busy {
 			p.queue(text)
@@ -752,30 +920,41 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "backspace", "ctrl+h":
+		if text, cursor, _, ok := pasteDeleteBefore(p.state.Pastes, p.state.Input, p.state.Cursor); ok {
+			// A chip is one token: backspace removes the whole pill, and the
+			// payload is pruned with it.
+			p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
+			return p, nil
+		}
 		text, cursor := deleteBefore(p.state.Input, p.state.Cursor)
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 
 	case "delete", "ctrl+d":
-		// Ctrl+d on an empty composer quits, matching terminal convention;
-		// anywhere else it deletes the character ahead.
-		if msg.String() == "ctrl+d" && strings.TrimSpace(p.state.Input) == "" && !p.state.Status.Busy {
+		// Ctrl+d is EOF: with an empty composer and an idle runtime it ends
+		// the session the way a REPL does. With any draft present it stays
+		// delete-forward, so the chord can never silently discard typed text.
+		if msg.String() == "ctrl+d" && p.state.Input == "" && !p.state.Status.Busy {
 			return p, p.quitNow()
+		}
+		if text, cursor, _, ok := pasteDeleteAt(p.state.Pastes, p.state.Input, p.state.Cursor); ok {
+			p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
+			return p, nil
 		}
 		text, cursor := deleteAt(p.state.Input, p.state.Cursor)
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 
 	case "left", "ctrl+b":
-		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: p.state.Cursor - 1})
+		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: cursorLeftAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)})
 		return p, nil
 
 	case "right", "ctrl+f":
-		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: p.state.Cursor + 1})
+		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: cursorRightAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)})
 		return p, nil
 
 	case "home", "ctrl+a":
-		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: lineStart(p.state.Input, p.state.Cursor)})
+		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: lineStartAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)})
 		return p, nil
 
 	case "end", "ctrl+e":
@@ -786,36 +965,50 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(ScrollToBottom{})
 			return p, nil
 		}
-		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: lineEnd(p.state.Input, p.state.Cursor)})
+		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: lineEndAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)})
 		return p, nil
 
 	case "ctrl+u":
-		text, cursor := killToStart(p.state.Input, p.state.Cursor)
+		text, cursor := killToStartAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 
 	case "ctrl+k":
-		text, _ := killToEnd(p.state.Input, p.state.Cursor)
-		p.state.Apply(ComposerChanged{Text: text, Cursor: p.state.Cursor})
+		text, cursor := killToEndAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)
+		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 
 	case "ctrl+w":
-		text, cursor := killWordBack(p.state.Input, p.state.Cursor)
+		text, cursor := killWordBackAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 
 	case "up", "ctrl+p":
+		// On a fresh session there is nothing to recall, so ^p is the
+		// settings/discovery hub the shortcut bar advertises. The moment a
+		// prompt exists (or history does) the bar stops promising it and the
+		// key returns to history recall, so the hint can never lie.
+		if msg.String() == "ctrl+p" && !p.state.SessionActive && len(p.state.Submitted) == 0 {
+			p.openSettingsPalette()
+			return p, nil
+		}
 		// The terminal cannot say which arrows it synthesised for the wheel,
-		// so the policy is state-based: the arrows belong to the transcript
-		// exactly when the composer has nothing to move a cursor within and
-		// nothing to recall. Any text, or an overlay owning the keyboard, and
-		// the arrows go back to editing. History recall never moves: ctrl+p
-		// and ctrl+n reach it whether or not the wheel does.
+		// so the policy is state-based: an empty composer hands the arrows to
+		// the transcript — the state a reader is in — but only while there is
+		// nothing to recall. Once history exists the arrow recalls it, which
+		// is the reason most people reach for up in the first place. ctrl+p
+		// and ctrl+n reach history whether or not the wheel does.
 		if msg.String() == "up" && wheelScrolls(p.state) {
+			if len(p.state.Submitted) > 0 {
+				p.state.Apply(HistoryMoved{Delta: 1})
+				return p, nil
+			}
 			p.state.Apply(ScrollMoved{Delta: mouseScrollLines})
 			return p, nil
 		}
-		if line, ok := lineAbove(p.state.Input, p.state.Cursor); ok {
+		// Inside the text, up moves a display row; on the top row it falls
+		// back to history, so a multi-line draft never traps the cursor.
+		if line, ok := p.composerLineAbove(); ok {
 			p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: line})
 		} else {
 			p.state.Apply(HistoryMoved{Delta: 1})
@@ -827,7 +1020,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(ScrollMoved{Delta: -mouseScrollLines})
 			return p, nil
 		}
-		if line, ok := lineBelow(p.state.Input, p.state.Cursor); ok {
+		if line, ok := p.composerLineBelow(); ok {
 			p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: line})
 		} else {
 			p.state.Apply(HistoryMoved{Delta: -1})
@@ -873,38 +1066,73 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				p.openCommandPalette("")
 				return p, nil
 			}
+			// A large bracketed paste folds into one inline chip: the full
+			// payload is retained for submission while the composer stays a
+			// single row. Short pastes, and keystroke streams from terminals
+			// without bracketed paste, stay literal.
+			if shouldCollapsePaste(msg.Paste, text) {
+				p.state.Apply(PasteCollapsed{Text: text, Lines: pasteLineCount(text)})
+				return p, nil
+			}
 			// KeyRunes (typed or pasted, including bracketed pastes) is user
 			// text: it inserts verbatim at the cursor. The application must
 			// not second-guess prose that resembles protocol bytes.
 			composed := insertAt(p.state.Input, p.state.Cursor, text)
-			p.state.Apply(ComposerChanged{Text: composed, Cursor: p.state.Cursor + len([]rune(text))})
+			cursor := p.state.Cursor + len([]rune(text))
+			p.state.Apply(ComposerChanged{Text: composed, Cursor: cursor})
+			// The insertion may have just opened a trigger word (a typed or
+			// pasted "@"), so install the roster before the next render.
+			p.ensureMentionRoster()
 		}
 		return p, nil
 	}
 }
 
-// acceptSlash resolves Enter on a slash line: an exact known command (with
-// or without arguments) dispatches exactly like submitting it; a partial
-// line completes to the highlighted suggestion and stays in the composer
-// so a second Enter runs what the user has now seen.
-func (p *Program) acceptSlash() (tea.Model, tea.Cmd) {
-	matches := SlashSuggestions(p.state.Input)
-	if len(matches) == 0 {
+// ensureMentionRoster installs the "@" workspace roster the first time the
+// cursor enters an "@" token. It is idempotent: the walk runs at most once per
+// session, and a nil lister leaves "@" literal.
+func (p *Program) ensureMentionRoster() {
+	if p.mentionsLoaded || p.listMentions == nil {
+		return
+	}
+	trigger, _, _, _, ok := paletteToken(p.state.Input, p.state.Cursor)
+	if !ok || trigger != paletteFile {
+		return
+	}
+	p.mentionsLoaded = true
+	p.state.Apply(PaletteFilesLoaded{Files: p.listMentions()})
+}
+
+// acceptPalette resolves Enter or Tab on the inline palette: the highlighted
+// row's token is spliced into the composer over the trigger word.
+//
+// A "/" word that is already an exact known command dispatches exactly like
+// submitting it, so a second Enter still runs what the user has now seen. Every
+// other case completes the highlighted row and hides the palette until the next
+// keystroke, which re-opens it if the cursor is still inside a trigger word.
+func (p *Program) acceptPalette() (tea.Model, tea.Cmd) {
+	entries := paletteEntriesFor(p.state)
+	if len(entries) == 0 {
 		return p, nil
 	}
-	cur := p.state.SlashCursor
-	if cur < 0 || cur >= len(matches) {
-		cur = 0
+	trigger, _, start, end, ok := paletteToken(p.state.Input, p.state.Cursor)
+	if !ok {
+		return p, nil
 	}
-	typed := strings.TrimSpace(p.state.Input)
-	if command, ok := ParseCommand(typed); ok {
-		if _, known := LookupCommand(command.Name); known &&
-			(typed == "/"+command.Name || len(command.Args) > 0) {
-			return p, p.runCommand(command)
+	if trigger == paletteCommand {
+		if command, ok := ParseCommand(strings.TrimSpace(p.state.Input)); ok {
+			if _, known := LookupCommand(command.Name); known && len(command.Args) == 0 {
+				return p, p.runCommand(command)
+			}
 		}
 	}
-	completed := "/" + matches[cur].Name
-	p.state.Apply(ComposerChanged{Text: completed, Cursor: len([]rune(completed))})
+	cur := ClampPaletteCursor(p.state.PaletteCursor, len(entries))
+	text, cursor := SpliceToken(p.state.Input, start, end, entries[cur].Insert)
+	p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
+	// Hide until the next keystroke: the spliced token still holds the cursor,
+	// so without this the palette would immediately re-open over the row just
+	// accepted.
+	p.state.PaletteHide = true
 	return p, nil
 }
 
@@ -943,9 +1171,36 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 	case "quit", "exit":
 		return p.quitNow()
 
+	case "q":
+		p.openQuitConfirm()
+		return nil
+
 	case "ask", "fuzz", "build":
 		p.switchWorkspace(command.Name)
 		return nil
+
+	case "permissions", "mode":
+		p.openPermissions()
+		return nil
+
+	case "sup":
+		// /sup is the discoverable alias for the "$sup" ephemeral surface:
+		// it routes through the same overlay and never becomes a workspace
+		// turn. A missing handler reports unavailable rather than sending
+		// the literal text to the model.
+		if p.support == nil {
+			p.state.Apply(Notice{Text: "$sup is unavailable"})
+			return nil
+		}
+		text := "$sup"
+		if len(command.Args) > 0 {
+			text += " " + strings.Join(command.Args, " ")
+		}
+		if p.state.Status.Busy {
+			p.queue(text)
+			return nil
+		}
+		return p.submit(text)
 
 	case "help":
 		p.state.Apply(Notice{Text: HelpText()})
@@ -960,6 +1215,9 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		}
 		p.mu.Lock()
 		p.history = nil
+		// A cleared session starts a fresh telemetry window: the helper bar
+		// returns to shortcuts and the next turn's counts begin at zero.
+		p.resetSessionTelemetryLocked()
 		p.mu.Unlock()
 		return nil
 
@@ -1194,11 +1452,31 @@ func (p *Program) jobDetail(id string) string {
 	return id
 }
 
-// cancelOrQuit cancels a running turn, or quits when idle.
+// ctrlCExitHint is the deliberate-exit affordance shown when Ctrl+C has
+// nothing left to abort. It names the two chords that actually quit so the
+// user discovers them instead of losing a session to a reflex.
+const ctrlCExitHint = "Press Ctrl+D or type /exit to quit"
+
+// interruptOrClear handles ctrl+c at the composer.
 //
-// The first ctrl+c never quits a working session: it stops the work. Only an
-// idle ctrl+c exits, so a reflex keypress cannot discard a session.
-func (p *Program) cancelOrQuit() (tea.Model, tea.Cmd) {
+// The reflex abort key is layered from safest to most destructive, so a
+// single stray press can never discard a session:
+//
+//   - an open overlay closes and focus returns to the composer;
+//   - a running turn (or tool) is interrupted and the runtime returns to idle;
+//   - a non-empty composer is cleared to an empty prompt line;
+//   - only an already-empty, idle composer explains the deliberate exit
+//     chords instead of quitting.
+func (p *Program) interruptOrClear() (tea.Model, tea.Cmd) {
+	if p.state.QuitConfirm != nil {
+		// An open quit confirmation owns the abort key: dismiss it rather
+		// than quitting, cancelling a running turn the same way esc would.
+		p.state.Apply(QuitConfirmClosed{})
+		if p.state.Status.Busy {
+			p.cancelTurnNow("cancelled")
+		}
+		return p, nil
+	}
 	if p.state.Plane != nil {
 		p.closePlane()
 		return p, nil
@@ -1218,11 +1496,50 @@ func (p *Program) cancelOrQuit() (tea.Model, tea.Cmd) {
 		p.state.Apply(SupportClosed{})
 		return p, nil
 	}
+	// A running "!" escape is foreground work: the abort key stops it before
+	// reaching for typed text or the deliberate-exit hint. It is checked
+	// before the turn so the most recent foreground action stops first.
+	if p.state.runningShell() != nil {
+		p.cancelShellNow()
+		return p, nil
+	}
+	// A running turn wins over typed text: the interrupt must reach the
+	// stream or tool, not just the buffer, so work can actually be stopped.
 	if p.state.Status.Busy {
 		p.cancelTurnNow("cancelled")
 		return p, nil
 	}
-	return p, p.quitNow()
+	// The inline palette is chrome over the composer: ctrl+c dismisses it
+	// the way esc does and keeps the draft rather than clearing it. A hidden
+	// palette already reports no rows, so an empty result falls through.
+	if paletteOwnsKeys(p.state) {
+		p.state.PaletteHide = true
+		return p, nil
+	}
+	if p.state.Input != "" {
+		// Clear the prompt buffer — paste pills included, since setComposer
+		// prunes chips whose labels vanish — leaving the cursor on an empty
+		// prompt line. Ctrl+C means "abandon what I'm typing", not "quit".
+		p.state.Apply(ComposerChanged{Text: "", Cursor: 0})
+		return p, nil
+	}
+	// Nothing left to abort. Teach the deliberate exit chords instead of
+	// quitting on a reflex; a repeated press must not stack the same hint.
+	if !p.lastEntryIsNotice(ctrlCExitHint) {
+		p.state.Apply(Notice{Text: ctrlCExitHint})
+	}
+	return p, nil
+}
+
+// lastEntryIsNotice reports whether the newest transcript entry is exactly
+// the given notice, so a repeated keypress cannot stack identical hints.
+func (p *Program) lastEntryIsNotice(text string) bool {
+	n := len(p.state.Entries)
+	if n == 0 {
+		return false
+	}
+	last := p.state.Entries[n-1]
+	return last.Kind == EntryNotice && last.Notice == text
 }
 
 // cancelSupportNow aborts the in-flight support turn, if any.
@@ -1347,7 +1664,9 @@ func (p *Program) applyModelSwitch(id string) {
 		return
 	}
 	// The status line is read from state, so refreshing it here keeps the
-	// footer in step with what the loop will actually call.
+	// footer in step with what the loop will actually call. Effort stays as
+	// set: a bare id switch carries no level, so the existing badge (or a
+	// variant suffix in the new id) stands.
 	p.state.Status.Model = p.currentModel()
 }
 
@@ -1947,10 +2266,17 @@ func (p *Program) assignPlane(update RoleAssignment) {
 
 	// Keep the status line in step with the runtime when the active role's
 	// model changed. The window is refreshed from the runtime when the caller
-	// supplies it, so the budget display is not left stale.
+	// supplies it, so the budget display is not left stale. The effort badge
+	// follows the applied assignment; an empty level falls back to the live
+	// reporter (e.g. the effective default) rather than keeping a level the
+	// new model no longer carries.
 	if p.modelControl.ActiveRole != nil && strings.EqualFold(result.Role, p.modelControl.ActiveRole()) {
 		if p.currentModel != nil {
 			p.state.Status.Model = p.currentModel()
+		}
+		p.state.Status.Effort = NormalizeEffort(result.Effort)
+		if p.state.Status.Effort == "" && p.currentEffort != nil {
+			p.state.Status.Effort = NormalizeEffort(p.currentEffort())
 		}
 		if p.modelControl.EffectiveWindow != nil {
 			p.state.Status.ContextWindow = p.modelControl.EffectiveWindow()
@@ -2040,6 +2366,21 @@ func (p *Program) issueRefresh() tea.Cmd {
 // navigation. Choosing one runs it; arguments are not collected here —
 // commands needing them report usage, matching their direct invocation.
 func (p *Program) openCommandPalette(filter string) {
+	p.openPalette("commands", filter)
+}
+
+// openSettingsPalette opens the same registry under the "settings" title,
+// reached from ^p on a fresh session. It is the configuration/discovery hub —
+// theme, model, connect, and providers all live here — so the shortcut bar's
+// "^p settings" hint points at a surface that actually exists.
+func (p *Program) openSettingsPalette() {
+	p.openPalette("settings", "")
+}
+
+// openPalette builds and opens the command list. Choosing an item runs it;
+// arguments are not collected here — commands needing them report usage,
+// matching their direct invocation.
+func (p *Program) openPalette(title, filter string) {
 	var items []PickerItem
 	for _, spec := range Commands {
 		if spec.Hidden {
@@ -2051,7 +2392,7 @@ func (p *Program) openCommandPalette(filter string) {
 			Value:  spec.Name,
 		})
 	}
-	p.state.Apply(PickerOpened{Kind: PickerCommands, Title: "commands", Items: items})
+	p.state.Apply(PickerOpened{Kind: PickerCommands, Title: title, Items: items})
 	if filter != "" {
 		p.state.Apply(PickerFilterChanged{Text: filter})
 	}
@@ -2106,6 +2447,9 @@ func (p *Program) resumeSession(item PickerItem) tea.Cmd {
 	}
 	p.mu.Lock()
 	p.history = append([]agent.Message(nil), opened.History...)
+	// A resumed session is a new telemetry window: the prior session's token
+	// counts and clock never carry over.
+	p.resetSessionTelemetryLocked()
 	p.mu.Unlock()
 	// The store is untouched: every session lives in the one database it
 	// already points at. Only the session pointer moves.
@@ -2221,28 +2565,98 @@ func (p *Program) PublishIdentity(facts IdentityUpdated) {
 // runtime; the returned command would be a no-op there anyway.
 func (c Command) runOn(p *Program) { p.runCommand(c) }
 
+// openQuitConfirm asks whether the session should really exit. It is the /q
+// path: unlike /quit and /exit it never exits on its own, so a stray command
+// cannot discard the session. Confirming quits through quitNow, which denies
+// any blocked tool first.
+func (p *Program) openQuitConfirm() {
+	p.state.Apply(QuitConfirmOpened{})
+}
+
 // quitNow ends the session from any idle-state quit path (/quit, /exit,
-// ctrl+d, idle ctrl+c).
+// confirmed /q, ctrl+d on an empty composer).
 //
 // A tool blocked in its approval prompt is denied first: without that the
 // tool waits on an answer channel no UI reads after shutdown, stranding its
 // goroutine (and the turn holding it) until the process exits. Denial is the
 // same conservative answer n/esc gives, so quitting can never approve work.
 func (p *Program) quitNow() tea.Cmd {
-	if p.pending != nil {
+	if p.state.Pending != nil {
 		p.answer(false, "denied by user")
+	}
+	// A running escape must not outlive the UI: cancelling the context kills
+	// the child process instead of leaving it detached.
+	if p.state.runningShell() != nil {
+		p.cancelShellNow()
 	}
 	p.state.Apply(QuitRequested{})
 	return tea.Quit
 }
 
-// answer unblocks the tool that is waiting.
+// answerSelection resolves the highlighted approval answer.
+//
+// The session-wide choice is the only one that carries memory: it records the
+// tool (or the shell escape) as approved for the rest of the session and then
+// answers affirmative. Every other choice maps through the usual affirmative
+// test, so "No" still denies and a custom label still defaults to denial.
+func (p *Program) answerSelection(choice string) (tea.Model, tea.Cmd) {
+	if isSessionApprovalChoice(choice) {
+		switch {
+		case p.pending != nil:
+			p.allowForSession(p.pending.toolName)
+		case p.pendingEscape != "":
+			p.allowForSession(shellApprovalTool)
+		}
+		return p.answer(true, "")
+	}
+	return p.answer(isAffirmative(choice), "denied by user")
+}
+
+// sessionAllowedFor reports whether a tool was approved for the whole session.
+// ApprovalFunc reads it from a blocked tool's goroutine, so the map is guarded
+// by mu; a nil map (a Program built outside NewProgram) reads as empty.
+func (p *Program) sessionAllowedFor(tool string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.sessionAllowed[tool]
+	return ok
+}
+
+// allowForSession remembers a tool as approved for the rest of the session.
+// It is written from the update goroutine and read from tool goroutines.
+func (p *Program) allowForSession(tool string) {
+	if tool == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sessionAllowed == nil {
+		p.sessionAllowed = make(map[string]struct{})
+	}
+	p.sessionAllowed[tool] = struct{}{}
+}
+
+// answer unblocks the tool that is waiting, or starts the confirmed shell
+// escape that asked.
 func (p *Program) answer(approved bool, reason string) (tea.Model, tea.Cmd) {
 	if p.pending != nil {
 		// A buffered reply channel means this never blocks the UI even if the
 		// tool has already given up.
 		p.pending.answer <- approvalAnswer{approved: approved, reason: reason}
 		p.pending = nil
+		p.state.Apply(ApprovalAnswered{})
+		return p, nil
+	}
+	// A shell escape awaiting confirmation carries no tool: on approval it
+	// starts, on denial it simply closes.
+	if p.pendingEscape != "" {
+		command := p.pendingEscape
+		p.pendingEscape = ""
+		p.state.Apply(ApprovalAnswered{})
+		if approved {
+			return p, p.startEscape(command)
+		}
+		return p, nil
 	}
 	p.state.Apply(ApprovalAnswered{})
 	return p, nil
@@ -2637,6 +3051,122 @@ func (p *Program) drainQueue() (tea.Model, tea.Cmd) {
 	return p, p.submit(next)
 }
 
+// shellSyntaxHint is shown when the composer submits a bare "!" with no
+// command: it teaches the syntax without running an empty shell.
+const shellSyntaxHint = "! <command> — run a shell command in the workspace"
+
+// submitEscape handles a "!<command>" line: it gates on the active authority
+// and either runs the command or opens the confirmation it needs.
+func (p *Program) submitEscape(command string) tea.Cmd {
+	if strings.TrimSpace(command) == "" {
+		p.state.Apply(Notice{Text: shellSyntaxHint})
+		return nil
+	}
+	if p.shell.Run == nil {
+		p.state.Apply(Notice{Text: "shell escape is unavailable"})
+		return nil
+	}
+	if p.state.runningShell() != nil {
+		p.state.Apply(Notice{Text: "a shell command is already running"})
+		return nil
+	}
+	// An unclassified command is treated as mutating: absent a classifier the
+	// safe assumption is that it changes something, so ASK confirms it.
+	mutating := true
+	if p.shell.Mutates != nil {
+		mutating = p.shell.Mutates(command)
+	}
+	if exec.Decide(p.state.Status.Workspace, mutating) == exec.Confirm && !p.sessionAllowedFor(shellApprovalTool) {
+		return p.confirmEscape(command)
+	}
+	return p.startEscape(command)
+}
+
+// confirmEscape asks the user to approve a mutating command in ASK. It reuses
+// the approval modal, with a shell-specific header, so the keyboard contract
+// is identical to a tool approval.
+func (p *Program) confirmEscape(command string) tea.Cmd {
+	p.pendingEscape = command
+	p.state.Apply(ApprovalAsked{
+		ToolName: "shell",
+		Prompt:   "Run shell command",
+		Summary:  command,
+		Mutating: true,
+		Choices:  approvalChoices,
+	})
+	return nil
+}
+
+// startEscape launches an escape command off the update goroutine. The
+// command's output streams back as ShellDelta events and closes with a single
+// ShellFinished.
+func (p *Program) startEscape(command string) tea.Cmd {
+	run := p.shell.Run
+	if run == nil {
+		p.state.Apply(Notice{Text: "shell escape is unavailable"})
+		return nil
+	}
+	p.mu.Lock()
+	p.shellSeq++
+	seq := p.shellSeq
+	ctx, cancel := context.WithCancel(context.Background())
+	p.shellCancel = cancel
+	p.shellCancelSeq = seq
+	p.mu.Unlock()
+
+	p.state.Apply(InputChanged{Text: ""})
+	p.state.Apply(ShellStarted{Command: command, At: time.Now(), Seq: seq})
+	return func() tea.Msg {
+		p.runEscape(ctx, seq, command, run)
+		return nil
+	}
+}
+
+// runEscape executes one command and publishes its lifecycle. It runs off the
+// update goroutine; every state change leaves through the event channel.
+func (p *Program) runEscape(ctx context.Context, seq int, command string, run func(context.Context, string, func(string)) (exec.EscapeResult, error)) {
+	defer func() {
+		p.mu.Lock()
+		if p.shellCancelSeq == seq {
+			p.shellCancel = nil
+		}
+		p.mu.Unlock()
+	}()
+
+	result, err := run(ctx, command, func(chunk string) {
+		if chunk == "" {
+			return
+		}
+		p.publish(ShellDelta{Text: chunk, Seq: seq})
+	})
+	if err != nil {
+		text := err.Error()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			text = "cancelled"
+		}
+		p.publish(ShellFinished{ExitCode: -1, Err: text, At: time.Now(), Seq: seq})
+		return
+	}
+	p.publish(ShellFinished{
+		ExitCode:  result.ExitCode,
+		Duration:  result.Duration,
+		Truncated: result.Truncated,
+		At:        time.Now(),
+		Seq:       seq,
+	})
+}
+
+// cancelShellNow aborts the in-flight escape, if any. The worker's own
+// ShellFinished event marks the block, so nothing is synthesised here.
+func (p *Program) cancelShellNow() {
+	p.mu.Lock()
+	cancel := p.shellCancel
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // runTurn executes a single turn.
 //
 // It never touches the queue: shifting state off the update goroutine would
@@ -2713,6 +3243,18 @@ func (p *Program) runTurn(text string) {
 		}
 	})
 
+	// "@" references are attached to the request as real system context, not
+	// left as a UI decoration: the prompt's tokens resolve against the
+	// workspace here, once, so the model reasons over the actual bytes. The
+	// context is set every turn — including to nil — so a prompt with no
+	// reference never inherits the previous turn's files. A reference that
+	// cannot be read warns in the transcript rather than sending nothing.
+	contextText, warnings := mentionContext(text, p.readMention)
+	for _, warning := range warnings {
+		p.publish(Notice{Text: warning})
+	}
+	p.loop.SetSystemContext(systemContextBlocks(contextText))
+
 	turns, err := p.loop.Run(ctx, request)
 
 	p.mu.Lock()
@@ -2722,6 +3264,9 @@ func (p *Program) runTurn(text string) {
 	if p.usage != nil {
 		p.usage.Add(turns)
 	}
+	// Progressive disclosure reads the live session's own accumulation, not
+	// the lifetime /usage ledger: a cleared or resumed session starts clean.
+	p.accumulateSessionMetrics(turns)
 
 	if err != nil {
 		// A cancelled turn is an interruption, not a failure: reporting
@@ -2791,6 +3336,38 @@ func (p *Program) runTurn(text string) {
 	p.publish(AssistantDone{Seq: seq})
 }
 
+// resetSessionTelemetryLocked zeroes the live session's progressive-disclosure
+// telemetry: no active clock and no token counts. The caller holds mu.
+func (p *Program) resetSessionTelemetryLocked() {
+	p.sessionStart = time.Time{}
+	p.sessionIn = 0
+	p.sessionOut = 0
+}
+
+// accumulateSessionMetrics folds one request's measured usage into the live
+// session and publishes the running totals. It runs on the turn goroutine, so
+// every read and write of the counters goes through mu. A provider that does
+// not report usage contributes nothing, and an all-zero session publishes no
+// event: unknown stays absent rather than rendering a fabricated "0 in / 0
+// out".
+func (p *Program) accumulateSessionMetrics(turns []agent.Turn) {
+	p.mu.Lock()
+	if p.sessionStart.IsZero() {
+		p.sessionStart = time.Now()
+	}
+	for _, turn := range turns {
+		p.sessionIn += turn.Assistant.Usage.Input
+		p.sessionOut += turn.Assistant.Usage.Output
+	}
+	in, out := p.sessionIn, p.sessionOut
+	elapsed := time.Since(p.sessionStart)
+	p.mu.Unlock()
+	if in == 0 && out == 0 {
+		return
+	}
+	p.publish(SessionMetricsUpdated{Input: in, Output: out, Elapsed: elapsed})
+}
+
 // persist appends one message to the transcript, if a session is attached.
 
 // SetModelSwitcher installs the handlers behind /model.
@@ -2831,6 +3408,30 @@ func (p *Program) SetSupportStreamFunc(support func(ctx context.Context, questio
 // the canonical configuration authority, so the display never goes stale.
 func (p *Program) SetSupportInfo(info func() (model, effort string)) {
 	p.supportInfo = info
+}
+
+// SetMentionLister installs the workspace path source behind the "@" trigger.
+//
+// The lister returns the candidate roster once, when the cursor first enters an
+// "@" token; the inline palette filters it purely, so the lister must not
+// pre-filter. Paths are slash-relative and a trailing slash marks a folder.
+// A nil lister leaves "@" a literal character, which keeps the feature off for
+// embedders and tests that do not own a workspace.
+func (p *Program) SetMentionLister(lister func() []string) {
+	p.listMentions = lister
+}
+
+// SetMentionReader installs the workspace file reader behind "@" context
+// injection.
+//
+// It is the other half of the "@" contract: the lister offers paths to
+// complete, and the reader turns an accepted path into the bytes the model
+// receives. It must resolve within the workspace and return an error for a
+// missing, unreadable, or out-of-root path, which becomes an explicit warning
+// rather than silent empty context. A nil reader keeps "@" a pure UI
+// affordance for embedders and tests that do not own a workspace.
+func (p *Program) SetMentionReader(reader func(path string) (string, error)) {
+	p.readMention = reader
 }
 
 // AttachSession wires the program to a persistent transcript.
@@ -2945,11 +3546,19 @@ func (p *Program) publishOK(event Event) bool {
 // denial the turn can complete beats a goroutine that never returns.
 func (p *Program) ApprovalFunc() func(call ai.ToolCall, approval agent.Approval) (bool, string) {
 	return func(call ai.ToolCall, approval agent.Approval) (bool, string) {
+		// A tool approved "for entire session" never re-enters the dialog:
+		// the remembered answer is the whole point of that choice.
+		if p.sessionAllowedFor(call.Name) {
+			return true, ""
+		}
 		answer := make(chan approvalAnswer, 1)
 		request := approvalRequest{
 			toolName: call.Name,
 			reason:   approval.Reason,
 			summary:  ToolSummaryForCall(call.Name, call.Arguments),
+			// Anything but an explicit read is treated as state-changing:
+			// an undeclared tier must never look harmless in the dialog.
+			mutating: approval.Tier != agent.TierRead,
 			answer:   answer,
 		}
 		select {
@@ -2973,4 +3582,21 @@ func isAffirmative(choice string) bool {
 		return true
 	}
 	return false
+}
+
+// shellApprovalTool is the name the "!" escape's confirmation is remembered
+// under when the user allows it for the whole session. It matches the ToolName
+// confirmEscape publishes so one choice covers the escape either way.
+const shellApprovalTool = "shell"
+
+// sessionApprovalChoice is the remembered affirmative offered by the approval
+// dialog. It is matched exactly: a tool that offers a differently worded
+// choice must not accidentally grant session-wide approval.
+const sessionApprovalChoice = "Allow for entire session"
+
+// isSessionApprovalChoice reports whether a choice grants session-wide
+// approval. It is whitespace- and case-insensitive so the key handler and the
+// dialog agree on the label they render.
+func isSessionApprovalChoice(choice string) bool {
+	return strings.EqualFold(strings.TrimSpace(choice), sessionApprovalChoice)
 }

@@ -29,6 +29,18 @@ type Palette struct {
 	Truncated lipgloss.Style
 	Cursor    lipgloss.Style
 	Queued    lipgloss.Style
+	// Chip renders a collapsed paste pill in the composer, distinct from the
+	// editable text around it without shouting.
+	Chip lipgloss.Style
+	// Mention renders a valid "@path" reference in the composer, so a file
+	// the prompt will actually attach stands out from surrounding prose.
+	Mention lipgloss.Style
+	// ShellPrompt renders the "!" escape marker, and ShellCommand the escaped
+	// command text, so a direct shell block reads as distinct from a tool
+	// (whose badge carries the tool's identity colour) and from the user's
+	// own words.
+	ShellPrompt  lipgloss.Style
+	ShellCommand lipgloss.Style
 	// Markdown styles.
 	Code      lipgloss.Style
 	CodeFence lipgloss.Style
@@ -88,6 +100,10 @@ func DarkPalette() *Palette {
 		Truncated:    fg(darkMuted),
 		Cursor:       fg(ColorPrimary).Reverse(true),
 		Queued:       fg(darkMuted).Italic(true),
+		Chip:         fg(ColorAccent).Bold(true),
+		Mention:      fg(ColorPrimary).Bold(true),
+		ShellPrompt:  fg(ColorPrimary).Bold(true),
+		ShellCommand: fg(darkText),
 		Code:         fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
 		CodeFence:    fg(darkMuted),
 		Heading:      fg(darkH1).Bold(true),
@@ -128,6 +144,10 @@ func LightPalette() *Palette {
 		Truncated:    fg(lightMuted),
 		Cursor:       fg(lightAccent).Reverse(true),
 		Queued:       fg(lightMuted).Italic(true),
+		Chip:         fg(chromeLightAccent).Bold(true),
+		Mention:      fg(chromeLightPrimary).Bold(true),
+		ShellPrompt:  fg(chromeLightPrimary).Bold(true),
+		ShellCommand: fg(lightText),
 		Code:         fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
 		CodeFence:    fg(lightMuted),
 		Heading:      fg(lightH1).Bold(true),
@@ -178,7 +198,11 @@ func Render(state State) string {
 	sb.WriteString(renderHeader(state, pal, layout) + "\n")
 	sb.WriteString(SeparatorLine(separatorWidth(state, layout), pal) + "\n")
 
-	if state.Plane != nil {
+	if state.QuitConfirm != nil {
+		renderQuitConfirmArea(&sb, state, pal, layout)
+	} else if state.Permissions != nil {
+		renderPermissionsArea(&sb, state, pal, layout)
+	} else if state.Plane != nil {
 		renderPlaneArea(&sb, state, pal, layout)
 	} else if state.SupportPanel != nil {
 		renderSupportArea(&sb, state, pal, layout)
@@ -189,45 +213,104 @@ func Render(state State) string {
 	}
 
 	if state.Pending != nil {
-		renderApproval(&sb, state.Pending, pal, layout)
+		renderApproval(&sb, state.Pending, state.Theme, layout)
 	}
 
 	renderThinkingArea(&sb, state, pal, layout)
 
-	sb.WriteString(renderStatus(state, pal, layout))
-	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil {
-		sb.WriteString("\n")
+	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.QuitConfirm == nil && state.Permissions == nil {
+		// Main canvas. No middle status line while the hint bar owns the
+		// row (ShowHints): the header, composer prefix, and hint bar
+		// already own every fact it would repeat. A pending approval drops
+		// the hint row (the dialog owns the keys), so the status row holds
+		// its place there instead.
+		if !layout.ShowHints {
+			sb.WriteString(renderStatus(state, pal, layout))
+			sb.WriteString("\n")
+		}
 		sb.WriteString(renderComposer(state, pal, layout))
 		if layout.ShowHints {
-			sb.WriteString("\n" + pal.Muted.Render(composerHintsFor(state)))
+			sb.WriteString("\n" + pal.Muted.Render(composerHintBar(state, displayWidth(state, layout))))
 		}
-	} else if state.SupportPanel != nil && state.Plane == nil && state.Picker == nil {
-		// The support overlay owns interaction while open: the main
-		// composer hides so a normal workspace turn cannot be submitted
-		// underneath it.
-		if layout.ShowHints {
-			sb.WriteString("\n" + pal.Muted.Render("support owns input · Enter submit · Esc close"))
+	} else {
+		// Modal overlays hide the composer (and the hint bar with it): the
+		// status row stays as the single context row and the frame
+		// terminator, and the overlay area fills the released composer rows.
+		sb.WriteString(renderStatus(state, pal, layout))
+		if state.SupportPanel != nil && state.Plane == nil && state.Picker == nil {
+			// The support overlay owns interaction while open: the main
+			// composer hides so a normal workspace turn cannot be submitted
+			// underneath it.
+			if layout.ShowHints {
+				sb.WriteString("\n" + pal.Muted.Render("support owns input · Enter submit · Esc close"))
+			}
 		}
 	}
 	return sb.String()
 }
 
 // composerHintsFor picks the hint row for the current interaction: slash
-// navigation while discovering commands, the busy set while a turn runs,
-// the idle set otherwise. Every hint shown must work.
+// navigation while discovering commands, the busy set while a turn runs, and
+// progressive disclosure while idle. Every hint shown must work.
 //
 // An open approval owns the interaction, so no composer hint is produced: the
 // dialog has captured enter, esc, and the scroll keys, and advertising them
 // here would contradict the key line it prints instead. ComputeLayout drops
 // the row in the same case, so the frame keeps its budget either way.
+//
+// Progressive disclosure: a fresh session shows minimal path-only left with
+// the full shortcut right ("? help · ^p settings"); the first executed prompt
+// swaps the left for measured telemetry (↑in · ↓out (ctx%) · cost · path:branch)
+// and narrows the right to "? help" so ^p never promises settings when it
+// recalls history. The busy and slash-navigation rows stay authoritative while
+// they apply — they name keys the user needs this instant, so telemetry never
+// displaces them. This joined form is for tests and narrow fallbacks; the
+// frame renders the padded split via composerHintBar.
 func composerHintsFor(state State) string {
-	if state.Pending != nil {
+	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
-	if !state.SlashHide && len(SlashSuggestions(state.Input)) > 0 && state.Secret == nil {
-		return "↑↓ navigate · enter accept · esc dismiss · tab palette"
+	if paletteOwnsKeys(state) && state.Secret == nil {
+		return "↑↓ navigate · enter/tab accept · esc dismiss"
 	}
-	return ComposerHints(state.Status.Busy)
+	if state.Status.Busy {
+		return ComposerHints(true)
+	}
+	left, right := idleHintZones(state)
+	if left == "" {
+		return right
+	}
+	if right == "" {
+		return left
+	}
+	return left + " · " + right
+}
+
+// composerHintBar renders the same hint row as composerHintsFor but split
+// into left/right zones pinned to the frame edges when width allows. Slash
+// navigation and busy rows are transient and authoritative: they truncate to
+// width but never split, so the key the user needs this instant stays intact.
+// Idle telemetry splits via sessionBarRow: left metrics survive, right
+// shortcuts yield first on narrowing, and the row never wraps.
+func composerHintBar(state State, width int) string {
+	if state.Pending != nil || state.QuitConfirm != nil {
+		return ""
+	}
+	if paletteOwnsKeys(state) && state.Secret == nil {
+		const hint = "↑↓ navigate · enter/tab accept · esc dismiss"
+		if width > 0 {
+			return TruncateToWidth(hint, width)
+		}
+		return hint
+	}
+	if state.Status.Busy {
+		if width > 0 {
+			return TruncateToWidth(ComposerHints(true), width)
+		}
+		return ComposerHints(true)
+	}
+	left, right := idleHintZones(state)
+	return sessionBarRow(left, right, width)
 }
 
 // renderMini concedes a viewport too small for the workbench. It keeps the
@@ -250,11 +333,13 @@ func renderMini(state State, pal *Palette, layout Layout) string {
 		sb.WriteString(pal.Status.Render(fit(sanitizeInline(state.Status.Model))) + "\n")
 	}
 	if strings.TrimSpace(state.Input) != "" {
-		budget := state.Width - CellWidth("> ")
+		prefix := composerPrefix(state)
+		prefixStyle := composerPrefixStyle(state, pal)
+		budget := state.Width - CellWidth(prefix)
 		if budget < 1 {
 			budget = 1
 		}
-		sb.WriteString(pal.Prompt.Render("> ") + TruncateToWidth(sanitizeInline(strings.TrimSpace(state.Input)), budget) + "\n")
+		sb.WriteString(prefixStyle.Render(prefix) + TruncateToWidth(sanitizeInline(strings.TrimSpace(state.Input)), budget) + "\n")
 	}
 	sb.WriteString(pal.Muted.Render(fit("your input and history are preserved.")) + "\n")
 	return sb.String()
@@ -274,7 +359,7 @@ const (
 
 // renderHeader draws product identity, the current model, the runtime phase,
 // and the connection state. It is the only place identity and phase appear:
-// the status line below carries workspace context, never a second copy.
+// the hint bar below carries session metrics and path, never a second copy.
 //
 // The line reads `ohgo v1.0.0 · model · phase · check`, each segment in its
 // chrome role: the brand in primary, the release label muted beside it, the
@@ -296,10 +381,20 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	runtime := DeriveRuntime(state)
 	marker := RuntimeMarker(runtime)
 	// Model ids and probe details arrive from catalogs and networks:
-	// untrusted, sanitized inline.
-	model := sanitizeInline(state.Status.Model)
+	// untrusted, sanitized inline. Effort arrives from configuration with
+	// the same trust level, so it is sanitized the same way.
+	modelRaw := sanitizeInline(state.Status.Model)
+	effortRaw := sanitizeInline(state.Status.Effort)
+	model := modelRaw
 	if model == "" {
 		model = "no model"
+	}
+	baseModel, effectiveEffort := EffectiveModelEffort(model, effortRaw)
+	if modelRaw == "" {
+		// No model means no badge: an effort without an engine orients
+		// nowhere and would read as a claim about "no model".
+		effectiveEffort = ""
+		baseModel = model
 	}
 	// The release label arrives from build metadata: trusted but
 	// normalized and sanitized like any other chrome text.
@@ -309,7 +404,10 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	conn, showConn := headerConn(state, tier)
 	width := displayWidth(state, layout)
 
-	modelShown := fitHeaderModel(model, width-headerChromeOverhead(marker, phase, conn, showConn, version))
+	// The model segment shares one budget with its effort badge: the badge
+	// drops before the core id truncates, so narrowing sheds "◈ max" first
+	// and only then shortens the leaf.
+	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version))
 
 	phaseStyle := chrome.Idle
 	if headerRuntimeActive(runtime) {
@@ -324,6 +422,15 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	sb.WriteString(phaseStyle.Render(marker))
 	sb.WriteString(" ")
 	sb.WriteString(chrome.Model.Render(modelShown))
+	if effortShown != "" {
+		// The badge reads in the check amber for the glyph and muted
+		// context for the level, so it stays distinct from the sage model
+		// without competing with the active phase.
+		sb.WriteString(" ")
+		sb.WriteString(chrome.Check.Render("◈"))
+		sb.WriteString(" ")
+		sb.WriteString(chrome.Context.Render(effortShown))
+	}
 	sb.WriteString(chrome.Separator.Render(" · "))
 	sb.WriteString(phaseStyle.Render(phase))
 	if showConn {
@@ -512,7 +619,7 @@ func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout
 // ever rendered — never applied as an Entry — it cannot leak into the
 // persisted session or reappear over a resumed transcript.
 func showWelcome(state State) bool {
-	return len(state.Entries) == 0 && state.Picker == nil && state.Secret == nil && state.Pending == nil
+	return len(state.Entries) == 0 && state.Picker == nil && state.Secret == nil && state.Pending == nil && state.QuitConfirm == nil && state.Permissions == nil
 }
 
 // renderTranscriptBody renders every entry wrapped to the content width.
@@ -523,86 +630,6 @@ func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 		renderEntry(&body, entry, pal, layout, frame)
 	}
 	return body.String()
-}
-
-// approvalLines counts the rendered approval block, bounded to the viewport.
-func approvalLines(pending *PendingApproval, layout Layout) int {
-	detail := len(boundedPreview(pending, layout))
-	// prompt + preview + choices + hints, plus the blank separator when it
-	// fits (see approvalBlank). Every row must be claimed here or the total
-	// exceeds the viewport.
-	return 1 + detail + len(pending.Choices) + 1 + approvalBlankRows(pending, layout)
-}
-
-// approvalBlankRows is 1 when the separator blank after the dialog fits and
-// 0 when yielding it keeps the choices on screen. Render and accounting
-// share it so the reserved rows and the rendered rows always agree.
-func approvalBlankRows(pending *PendingApproval, layout Layout) int {
-	if approvalBlank(pending, layout) {
-		return 1
-	}
-	return 0
-}
-
-// approvalBlank reports whether the separator blank after the dialog fits.
-// On viewports too short for the chrome plus the dialog minimum it yields,
-// so the choices stay on screen instead of the spacing.
-func approvalBlank(pending *PendingApproval, layout Layout) bool {
-	if layout.Height <= 0 {
-		return true
-	}
-	hints := 0
-	if layout.ShowHints {
-		hints = 1
-	}
-	// header + prompt + one preview row + choices + dialog hints + blank +
-	// status + composer + layout hints + one transcript row.
-	return layout.Height >= len(pending.Choices)+layout.ComposerLines+hints+8
-}
-
-// boundedPreview wraps summary+reason and caps rows so the dialog never
-// exceeds the viewport. Excess collapses into a counted marker line rather
-// than pushing chrome off-screen or truncating the choices.
-func boundedPreview(pending *PendingApproval, layout Layout) []string {
-	var lines []string
-	width := dialogWidth(layout)
-	for _, text := range []string{pending.Summary, pending.Reason} {
-		if text == "" {
-			continue
-		}
-		// Approval text echoes tool arguments: untrusted, sanitized before
-		// wrapping so measurement matches terminal layout.
-		lines = append(lines, WrapToWidth(sanitizeInline(text), width)...)
-	}
-	max := len(lines)
-	if layout.Height > 0 {
-		// The preview gets whatever the chrome does not claim: header,
-		// status, the composer block, the prompt/choices/hint rows, and
-		// the blank separator. Deriving it from the computed layout
-		// keeps the dialog bounded on short viewports instead of
-		// overflowing them.
-		max = layout.Height - len(pending.Choices) - layout.HeaderLines - layout.StatusLines - layout.ComposerLines - 3
-		if max < 1 {
-			max = 1
-		}
-		if max > 10 {
-			max = 10
-		}
-	} else if max > 10 {
-		max = 10
-	}
-	if len(lines) <= max {
-		return lines
-	}
-	// A one-row budget shows the first row alone: the counted marker would
-	// cost the very row it complains about. Choices stay fully visible,
-	// which is the safety-critical part of the dialog.
-	if max <= 1 {
-		return lines[:1]
-	}
-	kept := append([]string(nil), lines[:max]...)
-	kept = append(kept, fmt.Sprintf("… %d more lines", len(lines)-max))
-	return kept
 }
 
 // renderWelcome draws the runtime identity surface for an empty
@@ -1011,6 +1038,78 @@ func pickerFooter(picker *PickerState, layout Layout) string {
 	}
 }
 
+// composerPrefix reports the live input affordance for the current authority.
+//
+// It is the lowercase workspace label plus " > " ("ask > ", "build > ",
+// "fuzz > "), falling back to "> " when no authority is set. Lowercase keeps
+// the composer quiet next to the uppercase badge in the footer: the footer
+// names the boundary, the composer shows where typing lands. The workspace
+// label is producer-owned and already constrained to the three authorities,
+// so lowercasing cannot invent a new mode.
+func composerPrefix(state State) string {
+	switch strings.ToUpper(strings.TrimSpace(state.Status.Workspace)) {
+	case "ASK", "BUILD", "FUZZ":
+		return strings.ToLower(strings.TrimSpace(state.Status.Workspace)) + " > "
+	default:
+		return "> "
+	}
+}
+
+// composerPrefixStyle resolves the affordance colour per authority: ASK in
+// teal/primary, BUILD in blue/accent, FUZZ in magenta. ASK and BUILD resolve
+// through the theme-aware chrome so bright terminals keep the same hues in
+// their darkened forms; FUZZ uses the workspace magenta identity shared with
+// the footer badge. Unknown authorities degrade to the prompt style rather
+// than borrowing an authority's colour.
+func composerPrefixStyle(state State, pal *Palette) lipgloss.Style {
+	chrome := ChromeFor(state.Theme)
+	switch strings.ToUpper(strings.TrimSpace(state.Status.Workspace)) {
+	case "ASK":
+		return chrome.Prompt
+	case "BUILD":
+		return chrome.Active
+	case "FUZZ":
+		if NormalizeTheme(state.Theme) == ThemeLight {
+			return fg("164")
+		}
+		return fg("200")
+	default:
+		return pal.Prompt
+	}
+}
+
+// composerContPrefix aligns wrapped composer rows under the input text: spaces
+// exactly as wide as the live prefix, so a long line that folds keeps one
+// left edge no matter which authority owns it.
+func composerContPrefix(state State) string {
+	w := CellWidth(composerPrefix(state))
+	if w < 1 {
+		w = 2
+	}
+	return strings.Repeat(" ", w)
+}
+
+// composerTextWidthFor is the cells available for composer text after the live
+// prefix. It matches the budget the layout reserves so rendered rows and
+// reserved rows agree when the prefix widens from "> " to "build > ".
+func composerTextWidthFor(state State, layout Layout) int {
+	width := layout.ContentWidth
+	if width <= 0 {
+		width = 80
+	}
+	if width < 3 {
+		width = 3
+	}
+	pw := CellWidth(composerPrefix(state))
+	if pw < 1 {
+		pw = 2
+	}
+	if w := width - pw; w >= 1 {
+		return w
+	}
+	return 1
+}
+
 // renderComposer draws the multiline input framed by two restrained
 // horizontal rules, or the masked secret entry while one is open. Masking
 // renders bullets and never the key: shoulder-surfing a setup screen must
@@ -1056,32 +1155,43 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	// mapping preserved) while the stored input stays raw for editing.
 	// Layout reserves from the same sanitized text — see composerHeight.
 	clean, cleanCursor := sanitizeWithCursor(state.Input, state.Cursor)
-	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, composerWrapWidth(layout))
+	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, composerTextWidthFor(state, layout))
 
-	start := 0
-	if len(rows) > maxComposerRows {
-		start = len(rows) - maxComposerRows
-	}
-	shown := rows[start:]
+	// The window follows the cursor, not the tail: with more display rows than
+	// the cap, a fixed tail slice would scroll the caret off-screen the moment
+	// Alt+Enter (or a fold) pushed it above the last maxComposerRows rows.
+	shown, start := composerWindow(rows, cursorRow, state.ComposerScroll, maxComposerRows)
 
 	var sb strings.Builder
-	sb.WriteString(rule + "\n")
+	sb.WriteString(rule)
+	// The palette sits strictly above the input line it completes: the rule
+	// frames it, the input stays the live row below, and the closing rule
+	// still bounds the composer.
+	if suggest := renderPaletteSuggestions(state, layout); suggest != "" {
+		sb.WriteString("\n" + suggest)
+	}
 	for i, row := range shown {
 		text := row
-		if haveCursor && start+i == cursorRow {
-			text = insertAt(row, cursorRune, pal.Cursor.Render("▌"))
+		isCursorRow := haveCursor && start+i == cursorRow
+		rowCursor := -1
+		if isCursorRow {
+			rowCursor = cursorRune
 		}
-		prefix := "  "
+		// "@" references are highlighted first, on the plain row, so the
+		// scanner never has to step over another style's escapes; collapsed
+		// paste pills are then styled in place. Each styling step remaps the
+		// cursor for the escape runes it adds.
+		text, rowCursor = highlightMentions(pal.Mention, text, rowCursor)
+		text, rowCursor = renderPasteChips(state.Pastes, pal.Chip, text, rowCursor)
+		if isCursorRow {
+			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
+		}
+		prefix := composerContPrefix(state)
+		prefixStyle := composerPrefixStyle(state, pal)
 		if i == 0 {
-			prefix = "> "
+			prefix = composerPrefix(state)
 		}
-		if i > 0 {
-			sb.WriteString("\n")
-		}
-		sb.WriteString(pal.Prompt.Render(prefix) + text)
-	}
-	if suggest := renderSlashSuggestions(state, pal, layout); suggest != "" {
-		sb.WriteString("\n" + suggest)
+		sb.WriteString("\n" + prefixStyle.Render(prefix) + text)
 	}
 	if status := composerStateLine(state, pal, layout); status != "" {
 		sb.WriteString("\n" + status)
@@ -1090,8 +1200,21 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	return sb.String()
 }
 
-// composerRule draws one restrained horizontal rule framing the composer.
-// The primary accent marks that the composer owns the keyboard; any overlay,
+// composerRuleStyle resolves the frame colour for the two lines around the
+// prompt: the live workspace accent while composing, the dim slate while a
+// modal state owns the keyboard. It shares its foreground with
+// composerPrefixStyle so the frame and the "ask > "/"build > "/"fuzz > "
+// text read as one boundary.
+func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
+	if state.Picker != nil || state.Secret != nil || state.Pending != nil || state.QuitConfirm != nil || state.Permissions != nil {
+		return pal.Separator
+	}
+	return composerPrefixStyle(state, pal).Bold(true)
+}
+
+// composerRule draws one horizontal rule framing the composer in the live
+// workspace accent, so the two lines around the prompt read as the same
+// boundary as the "ask > "/"build > "/"fuzz > " prefix. Any overlay,
 // approval, or secret entry quiets it to the dim slate so attention goes to
 // the modal state.
 func composerRule(state State, pal *Palette, layout Layout) string {
@@ -1100,37 +1223,39 @@ func composerRule(state State, pal *Palette, layout Layout) string {
 		width = 1
 	}
 	line := strings.Repeat("─", width)
-	if state.Picker != nil || state.Secret != nil || state.Pending != nil {
-		return pal.Separator.Render(line)
-	}
-	return ExtrasFor(state.Theme).Focus.Render(line)
+	return composerRuleStyle(state, pal).Render(line)
 }
 
-// renderSlashSuggestions draws the compact inline command picker for a
-// leading "/". It is built from the authoritative registry on every render,
-// shows short descriptions, filters as the user types, caps its rows, and
-// collapses descriptions on narrow terminals — never a second catalog.
-func renderSlashSuggestions(state State, pal *Palette, layout Layout) string {
-	shown, start, cursor, above, below := slashWindow(state)
+// renderPaletteSuggestions draws the inline palette for the trigger word at
+// the cursor ("/" commands, "@" files, "$" support).
+//
+// It is built from the trigger's registry on every render, filters as the user
+// types, and caps its rows so discovery never evicts the conversation. Rows
+// render through the shared palette builder with a fixed name column and a
+// rounded frame, so cycling the cursor or typing filter letters never shifts
+// the layout. The window is trimmed to the reserved budget, and the count
+// markers stay truthful about what is hidden; a negative budget means the size
+// is unknown (a test, or a terminal that never reported it) and everything
+// renders.
+func renderPaletteSuggestions(state State, layout Layout) string {
+	shown, start, cursor, above, below := paletteWindow(state)
 	if len(shown) == 0 {
 		return ""
 	}
-	width := displayWidth(state, layout)
-	matches := SlashSuggestions(state.Input)
-	// Fit the reserved budget: the window trims item rows from the bottom
-	// while the "more" marker absorbs the trimmed count, staying truthful
-	// about what is hidden. Negative budget means uncapped (unknown size).
-	items := append([]CommandSpec(nil), shown...)
+	matches := paletteEntriesFor(state)
+	items := append([]paletteEntry(nil), shown...)
 	hideAbove := above
 	hideBelow := below
-	if layout.SlashLines >= 0 {
-		budget := layout.SlashLines
-		if budget == 0 {
+	if layout.PaletteLines >= 0 {
+		budget := layout.PaletteLines
+		// The box needs both borders plus at least one content row; below
+		// that there is nothing to draw and the composer keeps its inputs.
+		if budget < paletteBorderRows+1 {
 			return ""
 		}
 		for {
 			hideBelow = len(matches)-start-len(items) > 0
-			if len(items)+slashGroupHeaders(items)+one(hideAbove)+one(hideBelow) <= budget {
+			if len(items)+paletteGroupHeaders(items)+one(hideAbove)+one(hideBelow)+paletteBorderRows <= budget {
 				break
 			}
 			if len(items) > 0 {
@@ -1142,47 +1267,18 @@ func renderSlashSuggestions(state State, pal *Palette, layout Layout) string {
 			hideAbove = false
 		}
 	}
-	var rows []string
-	if hideAbove {
-		rows = append(rows, pal.Muted.Render("  … more"))
-	}
-	current := strings.ToUpper(strings.TrimSpace(state.Status.Workspace))
-	lastGroup := ""
-	for i, spec := range items {
-		group := slashGroupOf(spec)
-		if group != lastGroup {
-			rows = append(rows, pal.Muted.Render(group))
-			lastGroup = group
-		}
-		name := "/" + spec.Name
-		line := name
-		desc := spec.Description
-		if strings.EqualFold(spec.Name, current) && current != "" {
-			if desc != "" {
-				desc += " · current"
-			} else {
-				desc = "current"
-			}
-		}
-		if layout.ShowDetail && desc != "" {
-			detail := TruncateToWidth(desc, width-CellWidth(name)-6)
-			if detail != "" {
-				line += "  " + pal.Muted.Render(detail)
-			}
-		} else {
-			line = TruncateToWidth(line, width-2)
-		}
-		if start+i == cursor {
-			rows = append(rows, pal.Selected.Render("> "+stripANSI(line)))
-		} else {
-			rows = append(rows, "  "+line)
-		}
-	}
-	if hideBelow {
-		hidden := len(matches) - start - len(items)
-		rows = append(rows, pal.Muted.Render(fmt.Sprintf("  … %d more", hidden)))
-	}
-	return strings.Join(rows, "\n")
+	return renderPaletteBox(paletteRequest{
+		shown:      items,
+		cursor:     cursor,
+		startIndex: start,
+		total:      len(matches),
+		above:      hideAbove,
+		below:      hideBelow,
+		headers:    true,
+		width:      displayWidth(state, layout),
+		exactRows:  layout.PaletteLines,
+		styles:     paletteStylesFor(state.Theme),
+	})
 }
 
 // one counts a marker row when its section shows.
@@ -1200,7 +1296,7 @@ func one(show bool) int {
 // Idleness stays quiet, and an approval modal owns its dialog, so both
 // yield no line at all.
 func composerStateLine(state State, pal *Palette, layout Layout) string {
-	if state.Pending != nil {
+	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
 	n := len(state.Queued)
@@ -1232,9 +1328,10 @@ func secretMaskedRows(label, input string, wrapWidth int) []string {
 	return WrapToWidth(masked, wrapWidth)
 }
 
-// composerWrapWidth is the cells available for composer text after the two-cell
-// prompt/continuation prefix. It matches the budget the layout reserves so the
-// rendered rows and the reserved rows agree.
+// composerWrapWidth is the cells available for composer text after the legacy
+// two-cell prompt prefix. It is kept for the masked secret path, whose prefix
+// is the credential label rather than the mode affordance. Normal input uses
+// composerTextWidthFor, which subtracts the live mode prefix width instead.
 func composerWrapWidth(layout Layout) int {
 	width := layout.ContentWidth
 	if width <= 0 {
@@ -1274,6 +1371,11 @@ func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, 
 	case EntryTool:
 		if entry.Tool != nil {
 			renderTool(sb, entry.Tool, pal, layout, frame)
+		}
+
+	case EntryShell:
+		if entry.Shell != nil {
+			renderShell(sb, entry.Shell, pal, layout)
 		}
 
 	case EntryNotice:
@@ -1456,6 +1558,10 @@ func toolExpandable(tool *ToolEntry) bool {
 // toolOutputLimit bounds one tool's displayed outcome.
 const toolOutputLimit = 4000
 
+// shellMaxLines bounds the wrapped rows one "!" escape renders, so a long
+// stream never rebuilds thousands of lines on every frame.
+const shellMaxLines = 40
+
 // maxToolLines bounds rendered tool rows per call so one result cannot flood
 // the conversation. Wide shows more; narrow keeps the transcript scannable.
 func maxToolLines(layout Layout) int {
@@ -1478,35 +1584,204 @@ func (t *ToolEntry) elapsed() string {
 	return d.String()
 }
 
-// renderApproval draws the modal prompt with a bounded preview.
+// renderShell writes one "!" escape block: the echoed command, its streamed
+// output, and a truthful exit line.
 //
-// The default cursor lands on the conservative choice (deny last). Closing,
-// cancelling, or resizing never approves: only an explicit affirmative key
-// does, enforced by the Update handler, not by rendering.
-func renderApproval(sb *strings.Builder, pending *PendingApproval, pal *Palette, layout Layout) {
-	width := dialogWidth(layout)
-	line := pal.Prompt.Render("Run this tool?") + " " + pal.ToolName.Render(TruncateToWidth(pending.ToolName, width))
-	sb.WriteString(line + "\n")
-	for _, wl := range boundedPreview(pending, layout) {
-		sb.WriteString(pal.Status.Render("  "+wl) + "\n")
+// The leading "!" carries ColorPrimary so the escape reads as a deliberate
+// direct action, distinct from a tool badge and from the user's own words. The
+// exit status is text plus colour (✓/✗), so a monochrome terminal still shows
+// success or failure.
+func renderShell(sb *strings.Builder, shell *ShellEntry, pal *Palette, layout Layout) {
+	width := textWidth(layout)
+	if width <= 0 {
+		width = 80
+	}
+	// Truncate the plain command before styling so a cut keeps the marker and
+	// command colours instead of stripping the whole row to fit.
+	command := sanitizeInline(shell.Command)
+	budget := width - CellWidth("! ")
+	if budget < 1 {
+		budget = 1
+	}
+	header := pal.ShellPrompt.Render("! ") + pal.ShellCommand.Render(TruncateToWidth(command, budget))
+	sb.WriteString(header + "\n")
+
+	if body := strings.TrimRight(shell.Output, "\n"); strings.TrimSpace(body) != "" {
+		// Command output carries terminal colours and control bytes from the
+		// child process: keep the colours, neutralise the cursor control,
+		// then wrap what the terminal will actually lay out. Rendering is
+		// bounded like a tool result, so a long stream can never rebuild
+		// thousands of wrapped rows on every frame.
+		shown := 0
+		for _, line := range strings.Split(sanitizeBlock(body), "\n") {
+			for _, wl := range WrapToWidth(line, width) {
+				if shown >= shellMaxLines {
+					break
+				}
+				sb.WriteString(wl + "\n")
+				shown++
+			}
+			if shown >= shellMaxLines {
+				break
+			}
+		}
+		if shell.Truncated || shown >= shellMaxLines {
+			sb.WriteString(pal.Truncated.Render("… [output truncated]") + "\n")
+		}
 	}
 
-	for i, choice := range pending.Choices {
-		marker := "  "
-		style := pal.Choice
-		if i == pending.Cursor {
-			marker = "> "
-			style = pal.Selected
-		}
-		def := ""
-		if i == len(pending.Choices)-1 {
-			def = pal.Muted.Render(" (default)")
-		}
-		sb.WriteString(marker + style.Render(choice) + def + "\n")
+	switch shell.Status {
+	case ShellRunning:
+		sb.WriteString(pal.ToolRun.Render("● running…") + "\n")
+	default:
+		sb.WriteString(shellExitLine(shell, pal) + "\n")
 	}
-	sb.WriteString(pal.Muted.Render("↑↓ move · enter confirm · y approve · n/esc deny") + "\n")
-	if approvalBlank(pending, layout) {
-		sb.WriteString("\n")
+	sb.WriteString("\n")
+}
+
+// shellExitLine renders the terminal status row: a ✓/✗ marker, the exit code,
+// and the measured elapsed time. A cancellation or start failure names its
+// reason in place of a code.
+func shellExitLine(shell *ShellEntry, pal *Palette) string {
+	if shell.Err != "" {
+		return pal.ToolError.Render("✗ " + sanitizeInline(shell.Err))
+	}
+	style := pal.ToolDone
+	mark := "✓"
+	if shell.ExitCode != 0 {
+		style = pal.ToolError
+		mark = "✗"
+	}
+	line := style.Render(fmt.Sprintf("%s exit %d", mark, shell.ExitCode))
+	if elapsed := shellElapsed(shell); elapsed != "" {
+		line += pal.Status.Render(" · " + elapsed)
+	}
+	return line
+}
+
+// shellElapsed renders the engine's measured duration compactly, omitting an
+// unmeasured one rather than showing a zero.
+func shellElapsed(shell *ShellEntry) string {
+	if shell.Duration <= 0 {
+		return ""
+	}
+	return shell.Duration.Round(time.Millisecond).String()
+}
+
+// quitCardWidth bounds the centered quit dialog: wide enough for the hint,
+// narrow enough to read as a popup with margins on roomy terminals.
+func quitCardWidth(termWidth int) int {
+	const maxCard = 52
+	const minCard = 30
+	if termWidth <= 0 {
+		return maxCard
+	}
+	w := termWidth - 8
+	if w > maxCard {
+		w = maxCard
+	}
+	if w < minCard {
+		w = termWidth - 4
+		if w < 10 {
+			w = 10
+		}
+		if w > termWidth {
+			w = termWidth
+		}
+	}
+	return w
+}
+
+// quitCard builds the centered bordered confirmation: title, horizontal
+// Yes/No buttons reusing the wizard badges, and a hint naming the left/right
+// keys. The selected button is flanked by ◀ ▶ so the choice never depends on
+// hue alone — a monochrome terminal still shows which option Enter confirms.
+func quitCard(confirm *PendingApproval, cardW int) string {
+	if confirm == nil {
+		return ""
+	}
+	if cardW < 10 {
+		cardW = 10
+	}
+	title := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardTeal)).Bold(true).
+		Render("Really quit?")
+	question := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardGrey)).
+		Render("Exit the session?")
+	yesActive := confirm.Cursor == 0
+	noActive := !yesActive
+	arrow := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardTeal)).Bold(true)
+	leftYes, rightYes := "  ", "  "
+	leftNo, rightNo := "  ", "  "
+	if yesActive {
+		leftYes = arrow.Render("◀ ")
+		rightYes = arrow.Render(" ▶")
+	}
+	if noActive {
+		leftNo = arrow.Render("◀ ")
+		rightNo = arrow.Render(" ▶")
+	}
+	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
+		leftYes, gitButton("Yes", yesActive), rightYes,
+		"   ",
+		leftNo, gitButton("No", noActive), rightNo,
+	)
+	hints := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardGrey)).
+		Render("←→ move · enter confirm · y quit · n/esc stay")
+	inner := lipgloss.JoinVertical(lipgloss.Left, title, question, "", buttons, "", hints)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(wizardTeal)).
+		Background(lipgloss.Color(wizardBG)).
+		Padding(1, 2).
+		Width(cardW).
+		Render(inner)
+}
+
+// renderQuitConfirmArea draws the /q exit-confirmation as a centered popup.
+// The dialog owns the conversation area while open (like the model plane and
+// support modals): the transcript hides behind it and returns untouched on
+// dismiss, so the popup reads as a notification rather than another
+// transcript row. It fills its budget exactly with blank padding around the
+// card, so reserved and rendered rows always agree.
+func renderQuitConfirmArea(sb *strings.Builder, state State, _ *Palette, layout Layout) {
+	confirm := state.QuitConfirm
+	if confirm == nil {
+		return
+	}
+	if state.Width <= 0 || state.Height <= 0 {
+		card := quitCard(confirm, quitCardWidth(0))
+		sb.WriteString(card)
+		if !strings.HasSuffix(card, "\n") {
+			sb.WriteString("\n")
+		}
+		return
+	}
+	avail := layout.ConversationHeight
+	if state.Pending != nil {
+		avail -= approvalLines(state.Pending, layout)
+	}
+	if avail < 0 {
+		avail = 0
+	}
+	width := state.Width
+	if width <= 0 {
+		width = 80
+	}
+	card := quitCard(confirm, quitCardWidth(width))
+	placed := lipgloss.Place(width, avail, lipgloss.Center, lipgloss.Center, card)
+	lines := strings.Split(placed, "\n")
+	if len(lines) > avail {
+		lines = lines[:avail]
+	}
+	for len(lines) < avail {
+		lines = append(lines, strings.Repeat(" ", width))
+	}
+	for _, line := range lines {
+		sb.WriteString(line + "\n")
 	}
 }
 
@@ -1544,7 +1819,10 @@ func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout L
 }
 
 // renderStatus draws the contextual footer: working directory, session,
-// context budget, and measured usage.
+// context budget, and measured usage. It serves modal chrome (overlays,
+// approvals) and the setup wizard; the main idle canvas leaves this row out
+// (header, composer prefix, and hint bar already own every fact it would
+// repeat) and gives the row to the transcript instead.
 //
 // It deliberately does not repeat the identity, model, or runtime phase shown
 // in the header — one fact, one home. Wide and medium tiers show the full

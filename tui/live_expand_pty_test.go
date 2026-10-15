@@ -158,7 +158,7 @@ func TestLiveExpandUnderARealPTY(t *testing.T) {
 			needle, path, tail(raw))
 	}
 
-	waitFor("enter send", 20*time.Second)
+	waitFor("? help", 20*time.Second)
 	write("run both demo tools\r")
 
 	// Both blocks seal collapsed: compact outcomes, no raw bodies.

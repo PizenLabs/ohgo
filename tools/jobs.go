@@ -27,6 +27,20 @@ const (
 	// Output wakes on this granularity rather than instantly; 50 ms is
 	// invisible next to model latencies and avoids a busy loop.
 	waitPollInterval = 50 * time.Millisecond
+	// exitSettleWindow bounds how long a wait that just received output gives
+	// the reaper to record the exit before reporting the job as still running.
+	//
+	// os/exec copies a command's final bytes before Wait returns, and the
+	// reaper records the exit only after Wait, so output and completion are
+	// observed in either order. Without this settle, a fast command is
+	// intermittently reported with its output but no exit code — the exact
+	// failure a loaded machine widens. The window is paid only when output
+	// arrives while the job is not yet marked finished.
+	exitSettleWindow = 50 * time.Millisecond
+	// exitSettleStep is how often the settle window re-checks the exit, so a
+	// completed job is reported as soon as the reaper runs rather than at the
+	// end of the window.
+	exitSettleStep = 5 * time.Millisecond
 )
 
 // BackgroundJobs is the table of detached shell jobs for one tool set.
@@ -286,6 +300,27 @@ func (t *BackgroundJobs) consumeLocked(job *backgroundJob) jobSnapshot {
 		job.truncationNoticed = true
 	}
 	return snap
+}
+
+// completion reports a job's exit fields without consuming its output.
+//
+// It lets a waiter upgrade a snapshot taken moments before the reaper recorded
+// the exit, so output and completion can be reported in the same result. The
+// second return is false when the job is unknown or still running.
+func (t *BackgroundJobs) completion(id string) (jobSnapshot, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	job, ok := t.jobs[id]
+	if !ok || !job.done {
+		return jobSnapshot{}, false
+	}
+	return jobSnapshot{
+		ok:       true,
+		done:     true,
+		exitCode: job.exitCode,
+		timedOut: job.timedOut,
+		elapsed:  job.finishedAt.Sub(job.startedAt),
+	}, true
 }
 
 // anySnapshot describes the oldest job worth reporting on: the oldest with

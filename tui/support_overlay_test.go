@@ -122,6 +122,59 @@ func TestSupportEmptyOpensWithoutProvider(t *testing.T) {
 	p.state.Apply(InputChanged{Text: ""})
 }
 
+// TestSupSlashCommandOpensSurface proves /sup is the discoverable alias for
+// the ephemeral surface: it routes through the same overlay and never becomes
+// a workspace turn.
+func TestSupSlashCommandOpensSurface(t *testing.T) {
+	called := 0
+	p := NewProgram(nil, "test", 0)
+	p.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
+		called++
+		return "answer", nil
+	})
+	p.SetSupportInfo(func() (string, string) { return "m", "minimal" })
+
+	// A bare /sup opens the panel without a provider call.
+	p.state.Apply(InputChanged{Text: "/sup"})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if p.state.SupportPanel == nil {
+		t.Fatal("bare /sup did not open the support panel")
+	}
+	if called != 0 {
+		t.Fatalf("bare /sup called the provider %d times, want 0", called)
+	}
+	p.state.Apply(SupportClosed{})
+
+	// /sup <request> submits directly.
+	p.state.Apply(InputChanged{Text: "/sup explain this"})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
+	panel := p.state.SupportPanel
+	if panel == nil || panel.Status != SupportRunning || panel.Request != "explain this" {
+		t.Fatalf("panel = %+v, want a running turn for the request", panel)
+	}
+}
+
+// TestSupSlashCommandWithoutSurfaceReports proves a program with no support
+// handler reports the surface unavailable rather than sending "$sup" to the
+// model as a normal prompt.
+func TestSupSlashCommandWithoutSurfaceReports(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(InputChanged{Text: "/sup"})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if p.state.SupportPanel != nil {
+		t.Fatal("a missing handler still opened the panel")
+	}
+	found := false
+	for _, e := range p.state.Entries {
+		if e.Kind == EntryNotice && strings.Contains(e.Notice, "$sup is unavailable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("entries = %+v, want an unavailable notice", p.state.Entries)
+	}
+}
+
 // TestSupportDirectSubmitStartsTurn proves "$sup <request>" opens the panel
 // and submits directly without an extra keystroke.
 func TestSupportDirectSubmitStartsTurn(t *testing.T) {

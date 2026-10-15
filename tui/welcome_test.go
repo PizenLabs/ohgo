@@ -134,10 +134,10 @@ func TestWelcomeIsCompactOnNarrowTerminals(t *testing.T) {
 	}
 }
 
-// Header owns identity, model, and phase; the status line owns workspace
-// context. Neither may repeat the other.
+// Header owns identity, model, and phase; the bottom hint bar owns session
+// metrics and path. Neither may repeat the other.
 
-func TestHeaderAndStatusDoNotDuplicateIdentity(t *testing.T) {
+func TestHeaderAndFooterDoNotDuplicateIdentity(t *testing.T) {
 	s := New()
 	s.Status.Model = "groq/some-model"
 	s.Status.ContextUsed = 50
@@ -155,15 +155,18 @@ func TestHeaderAndStatusDoNotDuplicateIdentity(t *testing.T) {
 	if !strings.Contains(header, "working") {
 		t.Errorf("header = %q, want the runtime phase there", header)
 	}
-	status := findStatusLine(t, out, "#3")
-	if strings.Contains(status, "groq/some-model") {
-		t.Errorf("status = %q, want no duplicate model", status)
+	// The footer only claims its row once the turn ends: while busy the
+	// hint row belongs to cancellation keys, never to telemetry.
+	s.Apply(AssistantDone{})
+	footer := findStatusLine(t, Render(s), "#3")
+	if strings.Contains(footer, "groq/some-model") {
+		t.Errorf("footer = %q, want no duplicate model", footer)
 	}
-	if strings.Contains(strings.ToLower(status), "ohgo") {
-		t.Errorf("status = %q, want no duplicate identity", status)
+	if strings.Contains(strings.ToLower(footer), "ohgo") {
+		t.Errorf("footer = %q, want no duplicate identity", footer)
 	}
-	if !strings.Contains(status, "context 50%") {
-		t.Errorf("status = %q, want the context budget", status)
+	if !strings.Contains(footer, "(50%)") {
+		t.Errorf("footer = %q, want the context budget", footer)
 	}
 }
 

@@ -55,11 +55,12 @@ type Layout struct {
 	// Render emits exactly this many rows, so the transcript budget and the
 	// painted frame agree and the chrome never floats.
 	ThinkingLines int
-	// SlashLines is the suggestion rows the composer will render. It equals
-	// what slashBudget reserves: the renderer truncates to it, so reserved
-	// and rendered rows always agree even on viewports shorter than the
-	// full suggestion window. Negative means uncapped (unknown size).
-	SlashLines int
+	// PaletteLines is the inline-palette suggestion rows the composer will
+	// render. It equals what composerHeight reserves: the renderer truncates
+	// to it, so reserved and rendered rows always agree even on viewports
+	// shorter than the full suggestion window. Negative means uncapped
+	// (unknown size).
+	PaletteLines int
 	// ShowDetail reports secondary metadata survives (context %, session,
 	// cwd). Narrow tiers drop it before touching conversation width.
 	ShowDetail bool
@@ -89,7 +90,7 @@ func LayoutForMode(width, height int) LayoutMode {
 // ComputeLayout derives geometry from state and terminal size.
 //
 // The conversation receives whatever the chrome does not claim; the composer
-// stays visible; header and status stay compact. Dialogs are bounded by the
+// stays visible; header and hint bar stay compact. Dialogs are bounded by the
 // caller against ConversationHeight so they never exceed the viewport.
 func ComputeLayout(s State) Layout {
 	mode := LayoutForMode(s.Width, s.Height)
@@ -101,7 +102,7 @@ func ComputeLayout(s State) Layout {
 			ContentWidth:  0, // zero means "do not wrap"
 			ShowDetail:    true,
 			ShowHints:     true,
-			SlashLines:    -1, // uncapped: render everything
+			PaletteLines:  -1, // uncapped: render everything
 			ThinkingLines: thinkingRows(s),
 		}
 	}
@@ -116,22 +117,39 @@ func ComputeLayout(s State) Layout {
 		}
 	}
 	header := 2 // header line + separator
-	status := 1
+	// No middle status row on the main canvas: the header owns identity,
+	// the composer prefix owns the authority, and the hint bar owns metrics
+	// and path. Reserving a row for a line that never renders would short
+	// the viewport by one.
+	status := 0
 	hints := 0
 	// An open approval captures enter, esc, alt+enter, and the scroll keys, so
 	// the composer hint row would advertise bindings the dialog has taken over.
 	// Drop it here rather than at render time: reserved and rendered rows have
 	// to agree or the frame stops filling the viewport. The dialog prints its
 	// own key line, so nothing is left untaught.
-	if mode == LayoutWide && s.Height >= 20 && s.Picker == nil && s.Plane == nil && s.SupportPanel == nil && s.Pending == nil {
+	//
+	// The bottom telemetry footer renders wherever the composer does, on
+	// every tier: like the old status row it is the one context row narrow
+	// and medium screens get, so gating it on width would drop session and
+	// path exactly where space is scarcest.
+	if s.Picker == nil && s.Plane == nil && s.SupportPanel == nil && s.Pending == nil && s.QuitConfirm == nil && s.Permissions == nil {
 		hints = 1
+	}
+	if hints == 0 {
+		// Modal or approval: the hint bar is gone (the dialog or overlay
+		// owns the keys), so the status row holds the single context row
+		// and keeps reserved == rendered.
+		status = 1
 	}
 	composer, sugg := composerHeight(s, content, mode, hints)
 	// An open overlay hides the composer (and its hints row belongs to the
 	// transcript chrome, not the overlay): reserving rows for regions that
-	// never render would short the viewport and unpin the status line.
-	// The overlay area fills the released rows instead.
-	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil {
+	// never render would short the viewport and unpin the footer.
+	// The overlay area fills the released rows instead. The quit popup is a
+	// centered modal like the plane and support surfaces, so it hides the
+	// composer the same way.
+	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.QuitConfirm != nil || s.Permissions != nil {
 		composer = 0
 		sugg = 0
 	}
@@ -153,7 +171,7 @@ func ComputeLayout(s State) Layout {
 		ThinkingLines:      thinking,
 		ShowDetail:         mode == LayoutWide || mode == LayoutMedium,
 		ShowHints:          hints > 0,
-		SlashLines:         sugg,
+		PaletteLines:       sugg,
 	}
 }
 
@@ -168,7 +186,7 @@ const thinkingMinHeight = 10
 // screen, so the line stays out of that surface's budget rather than shrinking
 // a region it does not paint on; the header still carries the phase there.
 func thinkingRows(s State) int {
-	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil {
+	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.Permissions != nil {
 		return 0
 	}
 	if s.Height > 0 && s.Height < thinkingMinHeight {
@@ -181,13 +199,13 @@ func thinkingRows(s State) int {
 }
 
 // composerHeight sizes the composer in rows: the two framing rules plus
-// hard-wrapped input lines, inline slash suggestions, and the interaction
+// hard-wrapped input lines, inline palette suggestions, and the interaction
 // state line. Bounded so a pasted novel cannot evict the conversation. It
 // uses the same wrap as renderComposer so the reserved rows and the rendered
 // rows agree. It also returns the suggestion rows, capped so the chrome
 // leaves the transcript at least one row: suggestions yield first — rules,
 // input, and state never shrink for them. The renderer truncates to the
-// same count via Layout.SlashLines.
+// same count via Layout.PaletteLines.
 func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (lines, sugg int) {
 	lines = 2 // the two framing rules
 	if s.Secret != nil {
@@ -204,9 +222,12 @@ func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (l
 	text := s.Input
 	if text != "" {
 		// Same sanitized text the renderer folds: pasted escapes must not
-		// change the reserved row count behind the view's back.
+		// change the reserved row count behind the view's back. The wrap
+		// budget subtracts the live mode prefix ("ask > " is wider than
+		// "> "), matching composerTextWidthFor so reserved and rendered rows
+		// agree.
 		clean, _ := sanitizeWithCursor(text, 0)
-		wrapWidth := contentWidth - 2
+		wrapWidth := contentWidth - CellWidth(composerPrefix(s))
 		if wrapWidth < 1 {
 			wrapWidth = 1
 		}
@@ -225,7 +246,7 @@ func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (l
 		stateRows = 1
 		lines++
 	}
-	sugg = slashRows(s)
+	sugg = paletteRows(s)
 	if s.Height > 0 {
 		maxSugg := s.Height - 2 - 1 - hintRows - 2 - inputRows - stateRows - 1
 		if maxSugg < 0 {
@@ -234,6 +255,11 @@ func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (l
 		if sugg > maxSugg {
 			sugg = maxSugg
 		}
+	}
+	// A palette needs both borders plus one content row. Below that the
+	// renderer draws nothing, so reserving rows would short the frame.
+	if sugg > 0 && sugg < paletteBorderRows+1 {
+		sugg = 0
 	}
 	lines += sugg
 	if mode == LayoutMini {
@@ -250,7 +276,7 @@ func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (l
 // approval states live in the header, status, and modal (see
 // composerStateLine); only the queue needs this row.
 func composerStateRows(s State) int {
-	if s.Pending != nil {
+	if s.Pending != nil || s.QuitConfirm != nil {
 		return 0
 	}
 	if len(s.Queued) > 0 {

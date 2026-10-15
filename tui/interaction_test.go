@@ -8,8 +8,10 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/session"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // keyPress drives one key through Update, discarding the command: these tests
@@ -85,11 +87,121 @@ func TestUpMovesWithinMultiline(t *testing.T) {
 	}
 }
 
-func TestCtrlCQuitsOnlyWhenIdle(t *testing.T) {
+// Once a prompt exists, up on an empty composer recalls history instead of
+// scrolling: that is the reason most people reach for the key. Overshooting
+// the oldest entry clamps, and down walks back to the stashed draft.
+func TestArrowUpRecallsHistoryOnceOneExists(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	keyPress(p, tea.KeyMsg{Type: tea.KeyCtrlC})
+	p.state.Apply(UserSubmitted{Text: "first"})
+	p.state.Apply(UserSubmitted{Text: "second"})
+	p.state.Apply(InputChanged{Text: ""})
+
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Input != "second" {
+		t.Fatalf("first up = %q, want the most recent prompt", p.state.Input)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Input != "first" {
+		t.Fatalf("second up = %q, want the older prompt", p.state.Input)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Input != "first" {
+		t.Errorf("third up = %q, want it clamped at the oldest prompt", p.state.Input)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	if p.state.Input != "second" {
+		t.Errorf("down = %q, want the newer prompt", p.state.Input)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	if p.state.Input != "" {
+		t.Errorf("down past the newest = %q, want the draft restored", p.state.Input)
+	}
+}
+
+// The composer folds to the live terminal width, so vertical movement must
+// hop between the wrapped rows the user sees. A single 20-rune line on a
+// 12-column terminal is three display rows of eight, eight, and four.
+func TestArrowKeysHopWrappedComposerRows(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 12, Height: 24})
+	p.state.Apply(ComposerChanged{Text: strings.Repeat("a", 20), Cursor: 19})
+
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Cursor != 11 {
+		t.Fatalf("up = %d, want the previous wrapped row (11)", p.state.Cursor)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Cursor != 3 {
+		t.Fatalf("up again = %d, want the first wrapped row (3)", p.state.Cursor)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	if p.state.Cursor != 11 {
+		t.Errorf("down = %d, want the wrapped row below (11)", p.state.Cursor)
+	}
+}
+
+// Ctrl+C is "abandon what I'm typing", never "quit". With a draft present it
+// clears the buffer and parks the cursor on an empty prompt line.
+func TestCtrlCClearsDraftWithoutQuitting(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(ComposerChanged{Text: "half a thought", Cursor: 5})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if p.state.Quit || cmd != nil {
+		t.Fatal("ctrl+c on a draft must clear it, not quit the session")
+	}
+	if p.state.Input != "" {
+		t.Errorf("input = %q, want the draft cleared", p.state.Input)
+	}
+	if p.state.Cursor != 0 {
+		t.Errorf("cursor = %d, want the cursor at the start of the empty prompt line", p.state.Cursor)
+	}
+}
+
+// With nothing typed and nothing running, Ctrl+C still must not quit: it names
+// the deliberate exit chords so a reflex press cannot drop a session.
+func TestCtrlCOnEmptyComposerHintsExitWithoutQuitting(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if p.state.Quit || cmd != nil {
+		t.Fatal("idle ctrl+c quit the session; it must only point at the exit chords")
+	}
+	if !p.lastEntryIsNotice(ctrlCExitHint) {
+		t.Errorf("entries = %+v, want the exit hint %q", p.state.Entries, ctrlCExitHint)
+	}
+}
+
+// Ctrl+D is EOF: on an empty, idle composer it quits for real, returning the
+// command the runtime needs to restore the terminal.
+func TestCtrlDQuitsOnEmptyComposer(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+
 	if !p.state.Quit {
-		t.Error("an idle ctrl+c must quit: there is nothing to cancel")
+		t.Error("ctrl+d on an empty composer must set the quit flag")
+	}
+	if cmd == nil {
+		t.Error("ctrl+d on an empty composer must return tea.Quit for teardown")
+	}
+}
+
+// A draft turns Ctrl+D back into delete-forward: the EOF chord may not discard
+// typed text.
+func TestCtrlDDeletesForwardWhenComposerHasText(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(ComposerChanged{Text: "abc", Cursor: 1})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+
+	if p.state.Quit || cmd != nil {
+		t.Fatal("ctrl+d with a draft must delete, not quit")
+	}
+	if p.state.Input != "ac" {
+		t.Errorf("input = %q, want the rune under the cursor deleted", p.state.Input)
 	}
 }
 
@@ -453,5 +565,239 @@ func TestWindowSizeReachesState(t *testing.T) {
 	p.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
 	if p.state.Width != 90 || p.state.Height != 25 {
 		t.Errorf("size = %dx%d, want 90x25", p.state.Width, p.state.Height)
+	}
+}
+
+// shellStub builds shell hooks around a scripted runner. The runner streams
+// result.Output through onChunk so the test exercises the same streaming path
+// a real command would.
+func shellStub(result exec.EscapeResult, err error, mutates func(string) bool) ShellHooks {
+	return ShellHooks{
+		Run: func(ctx context.Context, command string, onChunk func(string)) (exec.EscapeResult, error) {
+			if result.Output != "" {
+				onChunk(result.Output)
+			}
+			return result, err
+		},
+		Mutates: mutates,
+	}
+}
+
+// drainShellEvents applies the events the escape worker published, standing in
+// for the Bubble Tea runtime that would normally consume them.
+func drainShellEvents(p *Program) {
+	for {
+		select {
+		case event := <-p.events:
+			p.state.Apply(event)
+		default:
+			return
+		}
+	}
+}
+
+func TestShellEscapeRunsAndStreamsInBuild(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.SetShellEscape(shellStub(
+		exec.EscapeResult{Output: "hello\n", ExitCode: 0, Duration: 12 * time.Millisecond},
+		nil, func(string) bool { return true }))
+	p.state.Apply(WorkspaceUpdated{Workspace: "BUILD", HasWorkspace: true})
+	p.state.Apply(InputChanged{Text: "!echo hello"})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("a BUILD escape must run without confirmation")
+	}
+	if p.state.Pending != nil {
+		t.Fatal("BUILD must not ask for confirmation")
+	}
+	cmd()
+	drainShellEvents(p)
+
+	entry := p.state.shell(1)
+	if entry == nil {
+		t.Fatalf("entries = %+v, want a shell block", p.state.Entries)
+	}
+	if entry.Command != "echo hello" || entry.Status != ShellDone || entry.ExitCode != 0 {
+		t.Errorf("shell = %+v, want echo hello done exit 0", entry)
+	}
+	if entry.Output != "hello\n" {
+		t.Errorf("output = %q, want the streamed chunk", entry.Output)
+	}
+	if entry.Duration != 12*time.Millisecond {
+		t.Errorf("duration = %v, want the engine's measured elapsed time", entry.Duration)
+	}
+	if p.state.Input != "" {
+		t.Errorf("input = %q, want the composer cleared", p.state.Input)
+	}
+}
+
+func TestShellEscapeAsksBeforeMutatingInAsk(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	ran := false
+	p.SetShellEscape(ShellHooks{
+		Run: func(ctx context.Context, command string, onChunk func(string)) (exec.EscapeResult, error) {
+			ran = true
+			return exec.EscapeResult{ExitCode: 0}, nil
+		},
+		Mutates: func(string) bool { return true },
+	})
+	p.state.Apply(WorkspaceUpdated{Workspace: "ASK", HasWorkspace: true})
+	p.state.Apply(InputChanged{Text: "!rm -rf build"})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if ran {
+		t.Fatal("a mutating ASK escape ran before confirmation")
+	}
+	if cmd != nil {
+		t.Error("opening a confirmation must not start the command")
+	}
+	if p.state.Pending == nil {
+		t.Fatal("no confirmation prompt opened for a mutating ASK escape")
+	}
+	if p.state.Pending.Prompt != "Run shell command" {
+		t.Errorf("prompt = %q, want the shell confirmation header", p.state.Pending.Prompt)
+	}
+	if p.state.runningShell() != nil || p.state.shell(0) != nil {
+		t.Fatal("no shell block may open before confirmation")
+	}
+
+	// Approving starts it.
+	_, cmd = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil {
+		t.Fatal("approving must start the command")
+	}
+	cmd()
+	drainShellEvents(p)
+	if !ran {
+		t.Error("approving did not run the command")
+	}
+	if p.state.Pending != nil {
+		t.Error("the confirmation must close on approval")
+	}
+}
+
+func TestShellEscapeDeniedInAskDoesNotRun(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	ran := false
+	p.SetShellEscape(ShellHooks{
+		Run: func(ctx context.Context, command string, onChunk func(string)) (exec.EscapeResult, error) {
+			ran = true
+			return exec.EscapeResult{}, nil
+		},
+		Mutates: func(string) bool { return true },
+	})
+	p.state.Apply(WorkspaceUpdated{Workspace: "ASK", HasWorkspace: true})
+	p.state.Apply(InputChanged{Text: "!rm -rf build"})
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if cmd != nil {
+		t.Error("denying must not return a command")
+	}
+	if ran {
+		t.Error("a denied escape ran")
+	}
+	if p.state.Pending != nil {
+		t.Error("the confirmation must close on denial")
+	}
+	if p.state.shell(0) != nil {
+		t.Error("a denied escape must not open a shell block")
+	}
+}
+
+func TestShellEscapeReadOnlyRunsDirectlyInAsk(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.SetShellEscape(shellStub(exec.EscapeResult{Output: "ok\n"}, nil, func(string) bool { return false }))
+	p.state.Apply(WorkspaceUpdated{Workspace: "ASK", HasWorkspace: true})
+	p.state.Apply(InputChanged{Text: "!ls"})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || p.state.Pending != nil {
+		t.Fatal("a read-only ASK escape must run without confirmation")
+	}
+}
+
+func TestShellEscapeEmptyCommandShowsSyntaxHint(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.SetShellEscape(shellStub(exec.EscapeResult{}, nil, func(string) bool { return false }))
+	p.state.Apply(WorkspaceUpdated{Workspace: "BUILD", HasWorkspace: true})
+	p.state.Apply(InputChanged{Text: "!"})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Error(`a bare "!" must not run a shell`)
+	}
+	if p.state.shell(0) != nil {
+		t.Error(`a bare "!" must not open a shell block`)
+	}
+	if !p.lastEntryIsNotice(shellSyntaxHint) {
+		t.Errorf("entries = %+v, want the syntax hint", p.state.Entries)
+	}
+}
+
+func TestShellEscapePaletteHintIsDisplayOnly(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(InputChanged{Text: "!"})
+
+	entries := paletteEntriesFor(p.state)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want one escape hint", entries)
+	}
+	if entries[0].Name != "! <command>" || entries[0].Detail != shellEscapeHint {
+		t.Errorf("entry = %+v, want the escape hint row", entries[0])
+	}
+	// The hint must not capture Enter: submitting "!" still has to reach the
+	// escape parser and report its syntax.
+	if paletteOwnsKeys(p.state) {
+		t.Error("the escape hint must not own the keyboard")
+	}
+}
+
+func TestShellEscapePaletteHintRenders(t *testing.T) {
+	s := New()
+	s.Width, s.Height = 80, 24
+	s.Apply(InputChanged{Text: "!"})
+	out := ansi.Strip(Render(s))
+	if !strings.Contains(out, "! <command>") || !strings.Contains(out, shellEscapeHint) {
+		t.Errorf("render missing the escape hint:\n%s", out)
+	}
+}
+
+func TestShellEscapeRendersCommandOutputAndExit(t *testing.T) {
+	s := New()
+	s.Width, s.Height = 80, 24
+	s.Entries = []Entry{{Kind: EntryShell, Shell: &ShellEntry{
+		Command: "git status", Output: "On branch main\n", Status: ShellDone, ExitCode: 0, Duration: 12 * time.Millisecond,
+	}}}
+	out := ansi.Strip(Render(s))
+	for _, want := range []string{"! git status", "On branch main", "exit 0", "12ms"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestShellEscapeRendersFailureWithMarker(t *testing.T) {
+	s := New()
+	s.Width, s.Height = 80, 24
+	s.Entries = []Entry{{Kind: EntryShell, Shell: &ShellEntry{
+		Command: "false", Status: ShellError, ExitCode: 1, Duration: 3 * time.Millisecond,
+	}}}
+	out := ansi.Strip(Render(s))
+	if !strings.Contains(out, "✗ exit 1") {
+		t.Errorf("render missing the failure marker:\n%s", out)
+	}
+}
+
+func TestShellEscapeConfirmationRendersShellPrompt(t *testing.T) {
+	s := New()
+	s.Width, s.Height = 80, 24
+	s.Apply(ApprovalAsked{ToolName: "shell", Prompt: "Run shell command", Summary: "rm -rf x", Choices: approvalChoices})
+	out := ansi.Strip(Render(s))
+	for _, want := range []string{"Tool Execution Approval", "Run shell command", "rm -rf x", "Do you want to proceed?"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("shell confirmation missing %q:\n%s", want, out)
+		}
 	}
 }

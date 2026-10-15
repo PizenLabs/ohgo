@@ -46,6 +46,9 @@ type Entry struct {
 	AssistantText string
 	// Tool is set when Kind is EntryTool.
 	Tool *ToolEntry
+	// Shell is set when Kind is EntryShell: a "!" escape command and its
+	// streamed output.
+	Shell *ShellEntry
 	// Notice is set when Kind is EntryNotice.
 	Notice string
 	// SupportText is set when Kind is EntrySupport: the question when
@@ -66,6 +69,10 @@ const (
 	EntryAssistant EntryKind = "assistant"
 	// EntryTool is a tool call and its outcome.
 	EntryTool EntryKind = "tool"
+	// EntryShell is a "!" escape command and its streamed output. It is an
+	// interaction affordance, not a model turn, so it never enters history
+	// or the session store.
+	EntryShell EntryKind = "shell"
 	// EntryNotice is a system notice, e.g. a compaction.
 	EntryNotice EntryKind = "notice"
 	// EntrySupport is one turn of the ephemeral $sup surface. It is rendered
@@ -113,14 +120,65 @@ func (t *ToolEntry) Duration() time.Duration {
 	return end.Sub(t.StartedAt)
 }
 
+// ShellStatus is where a "!" escape command is in its lifecycle.
+type ShellStatus string
+
+// Shell lifecycle states. They mirror the tool lifecycle so the two blocks
+// read the same way.
+const (
+	// ShellRunning means the command is executing.
+	ShellRunning ShellStatus = "running"
+	// ShellDone means the command exited with status 0.
+	ShellDone ShellStatus = "done"
+	// ShellError means the command failed, was cancelled, or exited non-zero.
+	ShellError ShellStatus = "error"
+)
+
+// ShellEntry is the live state of one "!" escape command.
+//
+// It is deliberately not a ToolEntry: the escape is typed by the human, runs
+// outside the agent loop, and is never persisted or sent to the model, so it
+// shares the lifecycle vocabulary without sharing the tool's semantics.
+type ShellEntry struct {
+	// Command is the raw command as typed, without the leading "!".
+	Command string
+	// Output is the combined stdout and stderr streamed so far.
+	Output string
+	// Status is the lifecycle position.
+	Status ShellStatus
+	// ExitCode is the process exit status; -1 when unknown or aborted.
+	ExitCode int
+	// Err carries a start/cancel failure, empty on a normal exit.
+	Err string
+	// StartedAt and Duration bound execution. Duration is the engine's own
+	// measurement, so the rendered elapsed time is the process's, not the
+	// UI's render cadence.
+	StartedAt time.Time
+	Duration  time.Duration
+	// Truncated marks that Output hit the runner's cap.
+	Truncated bool
+	// Seq identifies the run, so a late chunk from an aborted command is
+	// dropped instead of appending to a newer block.
+	Seq int
+}
+
 // PendingApproval is a question the user must answer before a tool runs.
 type PendingApproval struct {
 	// ToolName is the tool that wants to run.
 	ToolName string
+	// Prompt, when non-empty, is a shell-specific label shown above the call
+	// in the dialog. It exists for the "!" shell escape, whose confirmation
+	// is not a tool invocation.
+	Prompt string
 	// Reason is why the prompt appears, when the tool declared one.
 	Reason string
 	// Summary describes what this particular call will do.
 	Summary string
+	// Mutating marks a call that changes state (write, exec, destructive)
+	// rather than reading. It is presentation only: it selects the frame
+	// accent (rose vs amber), never the answer. The producer derives it from
+	// the tool's declared tier, so the renderer never guesses from a name.
+	Mutating bool
 	// Choices are the offered answers.
 	Choices []string
 	// Cursor is the highlighted choice index.
@@ -162,6 +220,10 @@ func (p *PendingApproval) Move(delta int) {
 type Status struct {
 	// Model is the model in use.
 	Model string
+	// Effort is the active thinking effort for the header badge, e.g. "max".
+	// Empty hides the badge: the view never invents a level, and "off"
+	// normalizes to empty since disabled thinking has no level to show.
+	Effort string
 	// ContextUsed and ContextWindow size the budget display.
 	ContextUsed   int
 	ContextWindow int
@@ -239,12 +301,23 @@ type State struct {
 	Input string
 	// Cursor is the rune offset in Input where typing lands.
 	Cursor int
+	// ComposerScroll is the first display row of the composer's visible
+	// window. It tracks the cursor when the input folds past maxComposerRows,
+	// so the block cursor is always painted; zero shows the top rows.
+	ComposerScroll int
 	// Submitted remembers past prompts for history recall, oldest first.
 	Submitted []string
 	// HistCursor selects a Submitted entry, or -1 for the live input.
 	HistCursor int
 	// HistDraft stashes the live input while history is being browsed.
 	HistDraft string
+	// Pastes holds the payloads behind collapsed paste chips in Input. A chip
+	// renders inline as "[Paste #N - K lines]" while its full text waits here
+	// for submission; the payload is released once its label leaves Input.
+	Pastes []PasteChip
+	// NextPasteID numbers the next collapsed paste. It never reuses an id, so
+	// a stale label can never resurrect a deleted payload.
+	NextPasteID int
 	// Queued holds prompts typed while a turn runs, in order. They submit
 	// automatically when the turn completes.
 	Queued []string
@@ -275,15 +348,28 @@ type State struct {
 	ConnDetail string
 	// Pending is a non-nil approval prompt.
 	Pending *PendingApproval
+	// QuitConfirm is a non-nil quit-confirmation prompt opened by /q. It
+	// reuses PendingApproval for its Yes/No choices so the conservative
+	// default and the no-wrap navigation match the tool approval dialog.
+	QuitConfirm *PendingApproval
+	// Permissions is the open authority selector, or nil. It is a modal
+	// overlay like the picker: while set it owns the keyboard and the middle
+	// of the screen, and confirming routes the chosen name through the
+	// workspace owner rather than changing authority here.
+	Permissions *PermissionsState
 	// Quit is set once the session has been asked to exit.
 	Quit bool
-	// SlashCursor selects within the inline slash suggestions, when the
-	// composer holds a leading "/". It is derived UI cursor state, reset
-	// whenever the input text itself changes.
-	SlashCursor int
-	// SlashHide dismisses the inline suggestions while keeping the typed
-	// text (esc). Any input change shows them again.
-	SlashHide bool
+	// PaletteCursor selects within the inline palette (the "/" command,
+	// "@" file, and "$" support suggestions share one overlay). It is derived
+	// UI cursor state, reset whenever the input text itself changes.
+	PaletteCursor int
+	// PaletteHide dismisses the inline palette while keeping the typed text
+	// (esc). Any input change shows it again.
+	PaletteHide bool
+	// PaletteFiles is the workspace roster the "@" trigger completes against,
+	// installed by the owner. Paths are slash-relative; a trailing slash marks
+	// a directory. Empty disables file completion.
+	PaletteFiles []string
 	// closedAssistant marks that the trailing assistant entry has ended, so
 	// the next turn opens a new one.
 	closedAssistant bool
@@ -316,6 +402,19 @@ type State struct {
 	// text on each delta, so the activity line can report live progress
 	// without inventing telemetry the runtime did not measure.
 	OutputTokens int
+	// SessionActive reports that a prompt has run in this session. It gates
+	// progressive disclosure: while false the helper bar teaches the
+	// shortcuts; once true it shows the measured session telemetry instead.
+	SessionActive bool
+	// SessionIn and SessionOut are cumulative per-session token counts from
+	// the runtime's own ledger. Zero means unknown: the helper bar hides an
+	// unmeasured counter rather than rendering a fabricated "0 in / 0 out".
+	SessionIn  int
+	SessionOut int
+	// SessionElapsed is the measured session duration at the last telemetry
+	// sample. It is stored rather than read at render time so Render stays
+	// pure and deterministic.
+	SessionElapsed time.Duration
 }
 
 // New returns an empty state.
@@ -340,6 +439,7 @@ func (s *State) Apply(event Event) {
 		s.Entries = append(s.Entries, Entry{Kind: EntryUser, UserText: e.Text})
 		s.Input = ""
 		s.Cursor = 0
+		s.Pastes = nil
 		s.Status.Busy = true
 		// The prompt joins recallable history. Consecutive duplicates are
 		// collapsed so holding enter does not flood the history.
@@ -349,6 +449,9 @@ func (s *State) Apply(event Event) {
 		s.HistCursor = -1
 		s.HistDraft = ""
 		s.OutputTokens = 0
+		// The first prompt flips the helper bar from shortcuts to telemetry;
+		// a run that later clears returns it to the clean state.
+		s.SessionActive = true
 		s.growScroll(countLines(e.Text))
 
 	case AssistantDelta:
@@ -473,20 +576,65 @@ func (s *State) Apply(event Event) {
 			tool.Expanded = !tool.Expanded
 		}
 
+	case ShellStarted:
+		s.Entries = append(s.Entries, Entry{Kind: EntryShell, Shell: &ShellEntry{
+			Command:   e.Command,
+			Status:    ShellRunning,
+			Seq:       e.Seq,
+			StartedAt: e.At,
+		}})
+		s.growScroll(1)
+
+	case ShellDelta:
+		shell := s.shell(e.Seq)
+		if shell == nil || shell.Status != ShellRunning {
+			return
+		}
+		shell.Output += e.Text
+		s.growScroll(strings.Count(e.Text, "\n"))
+
+	case ShellFinished:
+		shell := s.shell(e.Seq)
+		if shell == nil {
+			return
+		}
+		shell.Duration = e.Duration
+		shell.ExitCode = e.ExitCode
+		shell.Truncated = e.Truncated
+		shell.Err = e.Err
+		switch {
+		case e.Err != "", e.ExitCode != 0:
+			shell.Status = ShellError
+		default:
+			shell.Status = ShellDone
+		}
+		s.growScroll(1)
+
 	case Notice:
 		s.Entries = append(s.Entries, Entry{Kind: EntryNotice, Notice: e.Text})
 		s.growScroll(countLines(e.Text))
 
 	case HistoryReplaced:
 		// A resumed session continues rather than restarts: the replayed
-		// transcript replaces the view outright.
+		// transcript replaces the view outright. It is a fresh session
+		// boundary, so the progressive-disclosure telemetry restarts clean:
+		// the prior session's token counts and clock do not belong to it.
 		s.Entries = append([]Entry(nil), e.Entries...)
 		s.closedAssistant = true
 		s.OutputTokens = 0
+		s.resetSessionMetrics()
 
 	case ContextUpdated:
 		s.Status.ContextUsed = e.Used
 		s.Status.ContextWindow = e.Window
+
+	case ModelEffortUpdated:
+		s.Status.Effort = NormalizeEffort(e.Effort)
+
+	case SessionMetricsUpdated:
+		s.SessionIn = e.Input
+		s.SessionOut = e.Output
+		s.SessionElapsed = e.Elapsed
 
 	case Compacted:
 		// Compaction is announced as a notice, never silently: the user must
@@ -502,8 +650,10 @@ func (s *State) Apply(event Event) {
 	case ApprovalAsked:
 		s.Pending = &PendingApproval{
 			ToolName: e.ToolName,
+			Prompt:   e.Prompt,
 			Reason:   e.Reason,
 			Summary:  e.Summary,
+			Mutating: e.Mutating,
 			Choices:  e.Choices,
 			Cursor:   defaultApprovalSelection(e.Choices),
 		}
@@ -516,29 +666,60 @@ func (s *State) Apply(event Event) {
 	case ApprovalAnswered:
 		s.Pending = nil
 
+	case QuitConfirmOpened:
+		s.QuitConfirm = &PendingApproval{
+			ToolName: "quit",
+			Summary:  "Really quit?",
+			Choices:  append([]string(nil), quitConfirmChoices...),
+			Cursor:   defaultApprovalSelection(quitConfirmChoices),
+		}
+
+	case QuitConfirmMoved:
+		if s.QuitConfirm != nil {
+			s.QuitConfirm.Move(e.Delta)
+		}
+
+	case QuitConfirmClosed:
+		s.QuitConfirm = nil
+
+	case PermissionsOpened:
+		// The cursor parks on the authority in force, so Enter on an
+		// unchanged selection is a deliberate reaffirmation rather than a
+		// silent jump to another mode.
+		s.Permissions = &PermissionsState{Cursor: authorityIndexForLabel(s.Status.Workspace)}
+
+	case PermissionsMoved:
+		if s.Permissions != nil {
+			s.Permissions.Move(e.Delta)
+		}
+
+	case PermissionsClosed:
+		s.Permissions = nil
+
 	case InputChanged:
 		s.Input = e.Text
 		s.Cursor = len([]rune(e.Text))
-		s.SlashCursor = 0
-		s.SlashHide = false
+		s.PaletteCursor = 0
+		s.PaletteHide = false
+		s.prunePastes()
+		s.syncComposerScroll()
 
 	case ComposerChanged:
-		if s.Input != e.Text {
-			// New text re-opens discovery and parks on the top match.
-			s.SlashCursor = 0
-			s.SlashHide = false
-		}
-		s.Input = e.Text
-		s.Cursor = clampCursor(e.Text, e.Cursor)
-		// Typing over a recalled entry leaves history: the draft stays saved
-		// until the prompt submits or history is re-entered.
-		if s.HistCursor >= 0 {
-			s.HistCursor = -1
-		}
+		s.setComposer(e.Text, e.Cursor)
 
-	case SlashMoved:
-		s.SlashHide = false
-		s.moveSlash(e.Delta)
+	case PasteCollapsed:
+		s.NextPasteID++
+		chip := PasteChip{ID: s.NextPasteID, Payload: e.Text, Lines: e.Lines}
+		s.Pastes = append(s.Pastes, chip)
+		label := pasteChipLabel(chip)
+		s.setComposer(insertAt(s.Input, s.Cursor, label), s.Cursor+len([]rune(label)))
+
+	case PaletteMoved:
+		s.PaletteHide = false
+		s.movePalette(e.Delta)
+
+	case PaletteFilesLoaded:
+		s.PaletteFiles = append([]string(nil), e.Files...)
 
 	case HistoryMoved:
 		s.moveHistory(e.Delta)
@@ -577,6 +758,9 @@ func (s *State) Apply(event Event) {
 		if s.Plane != nil {
 			s.Plane.SetVisibleRows(planeRowsFor(*s))
 		}
+		// The fold width changes with the terminal, so the visible window must
+		// be recomputed or a resize could scroll the caret out of view.
+		s.syncComposerScroll()
 
 	case ThemeChanged:
 		s.Theme = NormalizeTheme(e.Name)
@@ -966,6 +1150,7 @@ func (s *State) Apply(event Event) {
 
 	case QuitRequested:
 		s.Quit = true
+		s.QuitConfirm = nil
 
 	case SupportTurn:
 		// Legacy single-event form: the exchange lands in the overlay as a
@@ -1120,12 +1305,25 @@ func (s *State) Apply(event Event) {
 		// transcript instead of following it.
 		s.Entries = nil
 		s.Pending = nil
+		s.QuitConfirm = nil
+		s.Permissions = nil
 		s.Queued = nil
 		s.Scroll = 0
 		s.Follow = true
 		s.closedAssistant = false
 		s.OutputTokens = 0
+		s.resetSessionMetrics()
 	}
+}
+
+// resetSessionMetrics returns progressive disclosure to its clean state: no
+// active session and no token or duration telemetry. The helper bar falls
+// back to the shortcut hints rather than reporting zeros.
+func (s *State) resetSessionMetrics() {
+	s.SessionActive = false
+	s.SessionIn = 0
+	s.SessionOut = 0
+	s.SessionElapsed = 0
 }
 
 // currentOutputTokens estimates tokens for the trailing open assistant
@@ -1171,6 +1369,43 @@ func clampCursor(text string, pos int) int {
 	return pos
 }
 
+// setComposer is the single write path for the composed text and cursor.
+// Editing over a recalled entry leaves history and abandons the stashed draft
+// (there is no way back to it once it is edited), and any change prunes paste
+// chips whose labels no longer appear so payloads never outlive their pills.
+func (s *State) setComposer(text string, cursor int) {
+	if s.Input != text {
+		// New text re-opens discovery and parks on the top match.
+		s.PaletteCursor = 0
+		s.PaletteHide = false
+	}
+	s.Input = text
+	s.Cursor = clampCursor(text, cursor)
+	if s.HistCursor >= 0 {
+		// Editing a recalled entry returns to live input: the stashed draft is
+		// abandoned and can never be restored, so it must not keep a paste
+		// payload alive.
+		s.HistCursor = -1
+		s.HistDraft = ""
+	}
+	s.prunePastes()
+	s.syncComposerScroll()
+}
+
+// syncComposerScroll advances the composer's visible window to the cursor,
+// folding the input the way the full-screen renderer does. The live renderer
+// clamps to its own width at paint time, so a width mismatch can only fail to
+// advance the stored window — it can never hide the cursor.
+func (s *State) syncComposerScroll() {
+	layout := ComputeLayout(*s)
+	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)
+	rows, cursorRow, _, have := layoutComposer(clean, cleanCursor, composerTextWidthFor(*s, layout))
+	if !have {
+		cursorRow = 0
+	}
+	s.ComposerScroll = composerScrollOffset(s.ComposerScroll, cursorRow, len(rows), maxComposerRows)
+}
+
 // moveHistory browses recallable prompts. Positive delta goes older.
 //
 // The live input is stashed as a draft on entry and restored when browsing
@@ -1202,11 +1437,13 @@ func (s *State) moveHistory(delta int) {
 			s.HistCursor = -1
 			s.Input = s.HistDraft
 			s.Cursor = len([]rune(s.Input))
+			s.syncComposerScroll()
 			return
 		}
 	}
 	s.Input = s.Submitted[s.HistCursor]
 	s.Cursor = len([]rune(s.Input))
+	s.syncComposerScroll()
 }
 
 // defaultApprovalSelection picks the safest choice, which is the last one.
@@ -1252,6 +1489,33 @@ func (s *State) tool(id string) *ToolEntry {
 		entry := &s.Entries[i]
 		if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.ID == id {
 			return entry.Tool
+		}
+	}
+	return nil
+}
+
+// shell finds a "!" escape block by run sequence. A zero seq matches the most
+// recent block, for callers that do not track identity.
+func (s *State) shell(seq int) *ShellEntry {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		entry := &s.Entries[i]
+		if entry.Kind != EntryShell || entry.Shell == nil {
+			continue
+		}
+		if seq == 0 || entry.Shell.Seq == seq {
+			return entry.Shell
+		}
+	}
+	return nil
+}
+
+// runningShell returns the in-flight escape block, or nil. There is never
+// more than one: the program refuses a second while the first runs.
+func (s *State) runningShell() *ShellEntry {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		entry := &s.Entries[i]
+		if entry.Kind == EntryShell && entry.Shell != nil && entry.Shell.Status == ShellRunning {
+			return entry.Shell
 		}
 	}
 	return nil
@@ -1397,6 +1661,47 @@ type ToolToggled struct {
 
 func (ToolToggled) eventKind() string { return "tool_toggled" }
 
+// ShellStarted announces a "!" escape command beginning.
+type ShellStarted struct {
+	// Command is the raw command as typed, without the leading "!".
+	Command string
+	// At is when execution began.
+	At time.Time
+	// Seq identifies the run so a late chunk from an aborted command is
+	// dropped rather than appended to a newer block.
+	Seq int
+}
+
+func (ShellStarted) eventKind() string { return "shell_started" }
+
+// ShellDelta streams a chunk of combined command output.
+type ShellDelta struct {
+	// Text is the chunk appended to the running block.
+	Text string
+	// Seq identifies the run.
+	Seq int
+}
+
+func (ShellDelta) eventKind() string { return "shell_delta" }
+
+// ShellFinished records an escape command's outcome.
+type ShellFinished struct {
+	// ExitCode is the process exit status; -1 when unknown or aborted.
+	ExitCode int
+	// Duration is the engine's measured execution time.
+	Duration time.Duration
+	// Err carries a start or cancellation failure; empty on a normal exit.
+	Err string
+	// Truncated reports that the output hit the runner's cap.
+	Truncated bool
+	// At is when the command ended.
+	At time.Time
+	// Seq identifies the run.
+	Seq int
+}
+
+func (ShellFinished) eventKind() string { return "shell_finished" }
+
 // Notice adds a system line.
 type Notice struct{ Text string }
 
@@ -1409,6 +1714,21 @@ type ContextUpdated struct {
 }
 
 func (ContextUpdated) eventKind() string { return "context_updated" }
+
+// SessionMetricsUpdated reports the cumulative per-session token telemetry and
+// elapsed duration from the runtime's ledger. The runtime owns the clock and
+// the usage accounting; the state stores what it measured rather than reading
+// the wall clock at render time, so Render stays pure. A zero field means
+// unknown, and the helper bar hides an unknown counter instead of showing 0.
+type SessionMetricsUpdated struct {
+	// Input and Output are cumulative tokens across the session.
+	Input  int
+	Output int
+	// Elapsed is the measured session duration.
+	Elapsed time.Duration
+}
+
+func (SessionMetricsUpdated) eventKind() string { return "session_metrics_updated" }
 
 // Compacted announces that history was summarised.
 type Compacted struct {
@@ -1423,8 +1743,15 @@ func (Compacted) eventKind() string { return "compacted" }
 // ApprovalAsked opens a prompt.
 type ApprovalAsked struct {
 	ToolName string
-	Reason   string
-	Summary  string
+	// Prompt, when non-empty, is a shell-specific label shown above the call.
+	// It is used by the "!" shell escape, whose confirmation is not a tool
+	// call.
+	Prompt  string
+	Reason  string
+	Summary string
+	// Mutating marks a call that changes state; the dialog accents a
+	// destructive boundary differently from a read one.
+	Mutating bool
 	Choices  []string
 }
 
@@ -1439,6 +1766,44 @@ func (ApprovalMoved) eventKind() string { return "approval_moved" }
 type ApprovalAnswered struct{}
 
 func (ApprovalAnswered) eventKind() string { return "approval_answered" }
+
+// quitConfirmChoices are the answers offered by the /q quit-confirmation
+// dialog. The last is the safest so the default cursor lands on it: quitting
+// must be a deliberate move off the resting place, never the resting place.
+var quitConfirmChoices = []string{"Yes", "No"}
+
+// QuitConfirmOpened asks whether the session should really exit. It is opened
+// by /q; confirming quits, dismissing stays.
+type QuitConfirmOpened struct{}
+
+func (QuitConfirmOpened) eventKind() string { return "quit_confirm_opened" }
+
+// QuitConfirmMoved shifts the quit-confirmation highlight. Positive goes down.
+type QuitConfirmMoved struct{ Delta int }
+
+func (QuitConfirmMoved) eventKind() string { return "quit_confirm_moved" }
+
+// QuitConfirmClosed dismisses the quit-confirmation prompt without exiting.
+type QuitConfirmClosed struct{}
+
+func (QuitConfirmClosed) eventKind() string { return "quit_confirm_closed" }
+
+// PermissionsOpened opens the authority selector with the cursor parked on the
+// authority in force.
+type PermissionsOpened struct{}
+
+func (PermissionsOpened) eventKind() string { return "permissions_opened" }
+
+// PermissionsMoved shifts the authority highlight. Positive goes down; the
+// registry wraps at both ends.
+type PermissionsMoved struct{ Delta int }
+
+func (PermissionsMoved) eventKind() string { return "permissions_moved" }
+
+// PermissionsClosed dismisses the selector without changing authority.
+type PermissionsClosed struct{}
+
+func (PermissionsClosed) eventKind() string { return "permissions_closed" }
 
 // InputChanged sets the composed line.
 type InputChanged struct{ Text string }
@@ -1652,6 +2017,9 @@ var Commands = []CommandSpec{
 	{Name: "clear", Usage: "clear", Description: "clear the transcript and start a fresh context", Category: CommandGroupControl},
 	{Name: "model", Usage: "model [provider/id]", Description: "browse or switch the model", Category: CommandGroupControl},
 	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
+	{Name: "permissions", Usage: "permissions", Description: "choose the execution authority", Category: CommandGroupControl},
+	{Name: "mode", Usage: "mode", Description: "choose the execution authority", Hidden: true, Category: CommandGroupControl},
+	{Name: "sup", Usage: "sup [request]", Description: "ask $sup, the ephemeral support surface", Category: CommandGroupControl},
 	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions", Category: CommandGroupControl},
 	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
@@ -1666,6 +2034,7 @@ var Commands = []CommandSpec{
 	{Name: "compact", Usage: "compact", Description: "summarise context now", Category: CommandGroupControl},
 	{Name: "quit", Usage: "quit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
 	{Name: "exit", Usage: "exit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
+	{Name: "q", Usage: "q", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
 }
 
 // SuggestCommand names the closest known command to a typo, for the "did you
@@ -1674,6 +2043,19 @@ var Commands = []CommandSpec{
 func SuggestCommand(name string) (string, bool) {
 	best, bestDist := "", 3
 	for _, spec := range Commands {
+		// Hidden aliases stay out of discovery (see filterCommands), so they
+		// stay out of the suggestion too: hinting /mode for a typo would
+		// surface a name the palette deliberately hides, and a hidden alias
+		// can easily beat the command it aliases on distance.
+		if spec.Hidden {
+			continue
+		}
+		// Single-letter aliases match every single-letter typo at distance
+		// 1 and would hijack suggestions like /a (meant /ask) into /q, so
+		// they stay out of the hint while remaining runnable.
+		if len(spec.Name) <= 1 {
+			continue
+		}
 		if d := editDistance(name, spec.Name); d < bestDist {
 			best, bestDist = spec.Name, d
 		}
@@ -1772,20 +2154,33 @@ type ComposerChanged struct {
 
 func (ComposerChanged) eventKind() string { return "composer_changed" }
 
+// PasteCollapsed folds a large multi-line paste into an inline chip. The
+// payload is retained for submission and the label is inserted at the cursor.
+type PasteCollapsed struct {
+	// Text is the paste's full payload.
+	Text string
+	// Lines is the logical line count shown in the label.
+	Lines int
+}
+
+func (PasteCollapsed) eventKind() string { return "paste_collapsed" }
+
 // HistoryMoved browses recallable prompts. Positive delta goes older.
 type HistoryMoved struct{ Delta int }
 
 func (HistoryMoved) eventKind() string { return "history_moved" }
 
-// SlashMoved shifts the inline slash-suggestion highlight. Positive goes down.
-type SlashMoved struct{ Delta int }
+// PaletteMoved shifts the inline palette highlight. Positive goes down.
+type PaletteMoved struct{ Delta int }
 
-func (SlashMoved) eventKind() string { return "slash_moved" }
+func (PaletteMoved) eventKind() string { return "palette_moved" }
 
-// maxSlashRows bounds the inline command suggestions so discovery never
-// evicts the conversation. Render and layout share slashWindow, so reserved
-// and rendered rows always agree.
-const maxSlashRows = 5
+// PaletteFilesLoaded installs the workspace roster the "@" trigger completes
+// against. It is applied once per session, when the first "@" token appears,
+// so a session that never references a file never pays for the walk.
+type PaletteFilesLoaded struct{ Files []string }
+
+func (PaletteFilesLoaded) eventKind() string { return "palette_files_loaded" }
 
 // SlashActive reports whether the composer holds a completable slash line:
 // single-line input starting with "/". Multiline input stays prose.
@@ -1798,100 +2193,25 @@ func SlashActive(input string) bool {
 
 // SlashSuggestions filters the authoritative command registry by the text
 // after the leading "/". Hidden aliases stay out, matching /help, so the
-// list can never drift from what dispatch accepts.
+// list can never drift from what dispatch accepts. It is the "/" trigger's
+// view of the unified palette, kept for callers that want commands only.
 func SlashSuggestions(input string) []CommandSpec {
 	if !SlashActive(input) {
 		return nil
 	}
-	filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(input, "/")))
-	var out []CommandSpec
-	for _, spec := range Commands {
-		if spec.Hidden {
-			continue
-		}
-		if filter == "" || strings.HasPrefix(strings.ToLower(spec.Name), filter) {
-			out = append(out, spec)
-		}
-	}
-	return out
+	return filterCommands(strings.TrimPrefix(input, "/"))
 }
 
-// slashWindow returns the visible suggestion window with its start offset
-// and clamped cursor, plus whether rows hide above or below. The window
-// follows the cursor so the highlight is always on a rendered row, never
-// scrolled off. Render and layout share it so reserved and rendered rows
-// always agree.
-func slashWindow(s State) (shown []CommandSpec, start, cursor int, above, below bool) {
-	matches := SlashSuggestions(s.Input)
-	if s.SlashHide || len(matches) == 0 {
-		return nil, 0, 0, false, false
-	}
-	cursor = s.SlashCursor
-	if cursor < 0 || cursor >= len(matches) {
-		cursor = 0
-	}
-	start = 0
-	if len(matches) > maxSlashRows {
-		start = cursor - maxSlashRows + 1
-		if start < 0 {
-			start = 0
-		}
-		if start+maxSlashRows > len(matches) {
-			start = len(matches) - maxSlashRows
-		}
-	}
-	end := start + maxSlashRows
-	if end > len(matches) {
-		end = len(matches)
-	}
-	return matches[start:end], start, cursor, start > 0, end < len(matches)
-}
-
-// slashRows counts the suggestion rows the composer will render, so the
-// layout reserves exactly what the view draws.
-func slashRows(s State) int {
-	shown, _, _, above, below := slashWindow(s)
-	n := len(shown) + slashGroupHeaders(shown)
-	if above {
-		n++
-	}
-	if below {
-		n++
-	}
-	return n
-}
-
-// slashGroupHeaders counts the group titles the suggestion list will render:
-// one per distinct category present in the visible window. The headers are
-// presentation only; selection still indexes the flat matches.
-func slashGroupHeaders(shown []CommandSpec) int {
-	seen := map[string]bool{}
-	n := 0
-	for _, spec := range shown {
-		group := groupOf(spec)
-		if !seen[group] {
-			seen[group] = true
-			n++
-		}
-	}
-	return n
-}
-
-// slashGroupOf returns the display group for one suggestion row.
-func slashGroupOf(spec CommandSpec) string {
-	return groupOf(spec)
-}
-
-// moveSlash shifts the suggestion highlight, wrapping at both ends.
-func (s *State) moveSlash(delta int) {
-	n := len(SlashSuggestions(s.Input))
+// movePalette shifts the inline palette highlight, wrapping at both ends.
+func (s *State) movePalette(delta int) {
+	n := len(paletteEntriesFor(*s))
 	if n == 0 {
-		s.SlashCursor = 0
+		s.PaletteCursor = 0
 		return
 	}
-	s.SlashCursor = (s.SlashCursor + delta) % n
-	if s.SlashCursor < 0 {
-		s.SlashCursor += n
+	s.PaletteCursor = (s.PaletteCursor + delta) % n
+	if s.PaletteCursor < 0 {
+		s.PaletteCursor += n
 	}
 }
 
