@@ -645,11 +645,9 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 	}
 	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)
 	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, liveComposerWidth(layout))
-	start := 0
-	if len(rows) > maxComposerRows {
-		start = len(rows) - maxComposerRows
-	}
-	shown := rows[start:]
+	// Same cursor-following window as the framed composer: the caret must stay
+	// painted however far the input folds past the row cap.
+	shown, start := composerWindow(rows, cursorRow, s.ComposerScroll, maxComposerRows)
 
 	var out []string
 	// The palette sits strictly above the input line it completes. It is

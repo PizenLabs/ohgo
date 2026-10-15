@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // The composer helpers are pure (text, cursor) functions: every case below
@@ -262,4 +265,136 @@ func TestComposerRuleFollowsWorkspacePrefix(t *testing.T) {
 			t.Errorf("%s: modal rule = %q, want the dim separator %q: approval lost focus to the composer frame", theme, got, want)
 		}
 	}
+}
+
+// composerScrollOffset is the cursor-following window: the caret row is always
+// inside [offset, offset+maxRows), and the window does not jitter while the
+// caret moves within it. Each case also asserts the contract, so a bad table
+// entry cannot pass by matching a stale want.
+func TestComposerScrollOffsetKeepsCursorInWindow(t *testing.T) {
+	cases := []struct {
+		name              string
+		prev, cursor, all int
+		max               int
+		want              int
+	}{
+		{"content fits", 0, 2, 3, 6, 0},
+		{"at the bottom edge", 0, 5, 6, 6, 0},
+		{"one past the bottom", 0, 6, 7, 6, 1},
+		{"deep overflow", 0, 10, 12, 6, 5},
+		{"inside the window stays", 5, 10, 12, 6, 5},
+		{"within the window does not jitter", 5, 7, 12, 6, 5},
+		{"above the top scrolls down", 5, 3, 12, 6, 3},
+		{"previous offset past the end clamps", 99, 10, 12, 6, 6},
+		{"two-row window", 0, 2, 3, 2, 1},
+		{"three-row window", 0, 3, 4, 3, 1},
+		{"zero max rows still shows one", 0, 4, 9, 0, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := composerScrollOffset(tc.prev, tc.cursor, tc.all, tc.max)
+			if got != tc.want {
+				t.Fatalf("offset = %d, want %d", got, tc.want)
+			}
+			window := tc.max
+			if window < 1 {
+				window = 1
+			}
+			if got > tc.cursor || tc.cursor >= got+window {
+				t.Fatalf("cursor row %d is outside the window [%d,%d)", tc.cursor, got, got+window)
+			}
+		})
+	}
+}
+
+// Alt+Enter grows the input past the visible cap. The window must follow the
+// caret; a fixed tail slice would hide it as soon as it moved above the last
+// maxComposerRows rows.
+func TestAltEnterOverflowKeepsCursorVisible(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 80, Height: 24})
+	lines := maxComposerRows + 1
+	var want strings.Builder
+	for i := 0; i < lines; i++ {
+		if i > 0 {
+			keyPress(p, tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+			want.WriteByte('\n')
+		}
+		keyPress(p, runes(fmt.Sprintf("r%d", i)))
+		fmt.Fprintf(&want, "r%d", i)
+	}
+	if p.state.Input != want.String() {
+		t.Fatalf("input = %q, want %q", p.state.Input, want.String())
+	}
+	if p.state.ComposerScroll != 1 {
+		t.Errorf("ComposerScroll = %d, want 1: the top row scrolled off to keep r%d visible", p.state.ComposerScroll, lines-1)
+	}
+	out := Render(p.state)
+	if got := strings.Count(out, "▌"); got != 1 {
+		t.Fatalf("rendered %d cursor markers, want exactly one:\n%s", got, out)
+	}
+	if strings.Contains(out, "r0") {
+		t.Errorf("render still shows the scrolled-off top row:\n%s", out)
+	}
+	assertCursorOnRow(t, p.state, fmt.Sprintf("r%d", lines-1))
+
+	// Walk the caret back to the first row: it now sits above the tail window,
+	// the exact place a fixed tail slice would stop painting it.
+	for i := 0; i < lines-1; i++ {
+		keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	}
+	if p.state.ComposerScroll != 0 {
+		t.Errorf("ComposerScroll = %d, want 0 with the caret on the first row", p.state.ComposerScroll)
+	}
+	assertCursorOnRow(t, p.state, "r0")
+	if tail := fmt.Sprintf("r%d", lines-1); strings.Contains(Render(p.state), tail) {
+		t.Errorf("render shows %s, want the window scrolled down with the caret", tail)
+	}
+}
+
+// The arrows move the caret through the wrapped rows; the window only scrolls
+// when the caret would leave it, so navigating inside the window is stable.
+func TestComposerScrollTracksArrowNavigation(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 80, Height: 24})
+	text := "r0\nr1\nr2\nr3\nr4\nr5\nr6\nr7"
+	p.state.Apply(ComposerChanged{Text: text, Cursor: len([]rune(text))})
+	if p.state.ComposerScroll != 2 {
+		t.Fatalf("ComposerScroll = %d, want 2 at the tail of eight rows", p.state.ComposerScroll)
+	}
+	// Six rows up lands on row 1, one above the old window top (2).
+	for i := 0; i < 6; i++ {
+		keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	}
+	if p.state.ComposerScroll != 1 {
+		t.Fatalf("ComposerScroll = %d, want 1 after rising to row 1", p.state.ComposerScroll)
+	}
+	assertCursorOnRow(t, p.state, "r1")
+	// Six rows down returns to the tail and the window follows back to 2.
+	for i := 0; i < 6; i++ {
+		keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if p.state.ComposerScroll != 2 {
+		t.Fatalf("ComposerScroll = %d, want 2 back at the tail", p.state.ComposerScroll)
+	}
+	assertCursorOnRow(t, p.state, "r7")
+}
+
+// assertCursorOnRow pins the cursor's visible row: exactly one block cursor is
+// painted, and it rides the expected input row.
+func assertCursorOnRow(t *testing.T, s State, row string) {
+	t.Helper()
+	out := Render(s)
+	if got := strings.Count(out, "▌"); got != 1 {
+		t.Fatalf("rendered %d cursor markers, want exactly one:\n%s", got, out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "▌") {
+			if !strings.Contains(line, row) {
+				t.Fatalf("cursor line = %q, want it on the %q row", line, row)
+			}
+			return
+		}
+	}
+	t.Fatalf("no cursor line found:\n%s", out)
 }

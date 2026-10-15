@@ -81,6 +81,49 @@ func layoutComposer(text string, cursor, width int) (rows []string, cursorRow, c
 	return rows, cursorRow, cursorRune, haveCursor
 }
 
+// composerScrollOffset advances a visible-row window so the cursor's display
+// row stays painted. prev is the window shown on the previous frame, so the
+// window follows the cursor with hysteresis: moving inside the window does not
+// jitter, and crossing an edge scrolls exactly far enough to re-enter.
+//
+// The contract is offset <= cursorRow < offset+maxRows. Crossing the bottom
+// scrolls the top text up (the caret line stays fully visible); rising above
+// the top scrolls it back down. The window is clamped to the content, so it can
+// never be positioned past the last row and emit blanks where text belongs.
+func composerScrollOffset(prev, cursorRow, total, maxRows int) int {
+	if maxRows < 1 {
+		maxRows = 1
+	}
+	maxOffset := total - maxRows
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	offset := clampRune(prev, maxOffset)
+	if cursorRow < offset {
+		offset = cursorRow
+	}
+	if cursorRow >= offset+maxRows {
+		offset = cursorRow - maxRows + 1
+	}
+	return clampRune(offset, maxOffset)
+}
+
+// composerWindow slices formatted display rows to the visible window so the
+// cursor row is always painted. It returns the rows to render and the window's
+// first-row offset, the value the next frame folds back in as prev. An empty
+// slice has no cursor row, so the window is the empty slice.
+func composerWindow(rows []string, cursorRow, prev, maxRows int) ([]string, int) {
+	if len(rows) == 0 {
+		return rows, 0
+	}
+	offset := composerScrollOffset(prev, cursorRow, len(rows), maxRows)
+	end := offset + maxRows
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end], offset
+}
+
 // insertAt inserts s at the rune offset.
 func insertAt(text string, cursor int, s string) string {
 	runes := []rune(text)

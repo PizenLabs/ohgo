@@ -872,7 +872,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "home", "ctrl+a":
-		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: lineStart(p.state.Input, p.state.Cursor)})
+		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: lineStartAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)})
 		return p, nil
 
 	case "end", "ctrl+e":
@@ -883,21 +883,21 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(ScrollToBottom{})
 			return p, nil
 		}
-		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: lineEnd(p.state.Input, p.state.Cursor)})
+		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: lineEndAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)})
 		return p, nil
 
 	case "ctrl+u":
-		text, cursor := killToStart(p.state.Input, p.state.Cursor)
+		text, cursor := killToStartAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 
 	case "ctrl+k":
-		text, _ := killToEnd(p.state.Input, p.state.Cursor)
-		p.state.Apply(ComposerChanged{Text: text, Cursor: p.state.Cursor})
+		text, cursor := killToEndAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)
+		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 
 	case "ctrl+w":
-		text, cursor := killWordBack(p.state.Input, p.state.Cursor)
+		text, cursor := killWordBackAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 

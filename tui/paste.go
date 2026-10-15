@@ -200,6 +200,98 @@ func snapPasteBoundary(pastes []PasteChip, text string, cursor int) int {
 	return cursor
 }
 
+// pasteSpanIn returns the [start, end) rune span of the chip label strictly
+// containing cursor, if the cursor was stranded inside one. A cursor on a
+// label's edge is outside every span.
+func pasteSpanIn(pastes []PasteChip, runes []rune, cursor int) (start, end int, ok bool) {
+	for i := 0; i < len(runes); {
+		if _, length, found := pasteLabelAt(pastes, runes, i); found {
+			if cursor > i && cursor < i+length {
+				return i, i + length, true
+			}
+			i += length
+			continue
+		}
+		i++
+	}
+	return 0, 0, false
+}
+
+// snapPasteBoundaryForward moves a cursor stranded strictly inside a chip label
+// to the label's end, so a line-end move never splits a pill. A cursor outside
+// every label is returned unchanged.
+func snapPasteBoundaryForward(pastes []PasteChip, text string, cursor int) int {
+	runes := []rune(text)
+	cursor = clampRune(cursor, len(runes))
+	if _, end, ok := pasteSpanIn(pastes, runes, cursor); ok {
+		return end
+	}
+	return cursor
+}
+
+// expandPasteSpanStart moves start left to the head of any chip label it cuts
+// through. A word kill scans by whitespace, and a label contains spaces, so
+// without this it would stop mid-pill and leave a half-label behind; pulling
+// start back consumes the whole label instead.
+func expandPasteSpanStart(pastes []PasteChip, runes []rune, start int) int {
+	for i := 0; i < len(runes); {
+		if _, length, ok := pasteLabelAt(pastes, runes, i); ok {
+			if i < start && start < i+length {
+				start = i
+			}
+			i += length
+			continue
+		}
+		i++
+	}
+	return start
+}
+
+// killToStartAtomic is killToStart with chip labels treated as atomic: a cursor
+// stranded inside a pill snaps out, and a boundary inside one is pulled to the
+// pill's head, so a kill removes a whole label or none of it.
+func killToStartAtomic(pastes []PasteChip, text string, cursor int) (string, int) {
+	runes := []rune(text)
+	cursor = snapPasteBoundary(pastes, text, clampRune(cursor, len(runes)))
+	start := expandPasteSpanStart(pastes, runes, lineStart(text, cursor))
+	return string(append(runes[:start], runes[cursor:]...)), start
+}
+
+// killToEndAtomic is killToEnd with chip labels treated as atomic: the kill
+// stops at a label's edge rather than slicing it, and a cursor inside a pill
+// snaps out first.
+func killToEndAtomic(pastes []PasteChip, text string, cursor int) (string, int) {
+	runes := []rune(text)
+	cursor = snapPasteBoundary(pastes, text, clampRune(cursor, len(runes)))
+	end := lineEnd(text, cursor)
+	if _, spanEnd, ok := pasteSpanIn(pastes, runes, end); ok {
+		end = spanEnd
+	}
+	return string(append(runes[:cursor], runes[end:]...)), cursor
+}
+
+// killWordBackAtomic is killWordBack that treats a chip label as one word: a
+// label's spaces no longer fool the scan into deleting only its tail.
+func killWordBackAtomic(pastes []PasteChip, text string, cursor int) (string, int) {
+	runes := []rune(text)
+	cursor = snapPasteBoundary(pastes, text, clampRune(cursor, len(runes)))
+	_, newCursor := killWordBack(text, cursor)
+	newCursor = expandPasteSpanStart(pastes, runes, newCursor)
+	return string(append(runes[:newCursor], runes[cursor:]...)), newCursor
+}
+
+// lineStartAtomic is lineStart that never parks the cursor inside a pill: a
+// line start landing inside a label snaps to the label's head.
+func lineStartAtomic(pastes []PasteChip, text string, cursor int) int {
+	return snapPasteBoundary(pastes, text, lineStart(text, cursor))
+}
+
+// lineEndAtomic is lineEnd that never parks the cursor inside a pill: a line
+// end landing inside a label snaps past it to the label's tail.
+func lineEndAtomic(pastes []PasteChip, text string, cursor int) int {
+	return snapPasteBoundaryForward(pastes, text, lineEnd(text, cursor))
+}
+
 // renderPasteChips replaces each chip label in one rendered composer row with
 // a styled pill, returning the row and cursor adjusted for the escape runes
 // the styling added. The cursor is a rune index; editing snaps it to a label's

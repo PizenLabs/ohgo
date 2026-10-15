@@ -1221,11 +1221,10 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	clean, cleanCursor := sanitizeWithCursor(state.Input, state.Cursor)
 	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, composerTextWidthFor(state, layout))
 
-	start := 0
-	if len(rows) > maxComposerRows {
-		start = len(rows) - maxComposerRows
-	}
-	shown := rows[start:]
+	// The window follows the cursor, not the tail: with more display rows than
+	// the cap, a fixed tail slice would scroll the caret off-screen the moment
+	// Alt+Enter (or a fold) pushed it above the last maxComposerRows rows.
+	shown, start := composerWindow(rows, cursorRow, state.ComposerScroll, maxComposerRows)
 
 	var sb strings.Builder
 	sb.WriteString(rule)

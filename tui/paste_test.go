@@ -219,3 +219,100 @@ func TestLiveMovementUsesTheLiveComposerWidth(t *testing.T) {
 		t.Errorf("live up = (%d, %v), want (6, true): live folds at 8 cells, not the BUILD prefix width", pos, ok)
 	}
 }
+
+// A word kill scans by whitespace, and a chip label contains spaces, so without
+// chip awareness it would stop mid-pill and orphan half a label. The whole pill
+// must go as one token.
+func TestKillCommandsConsumeAWholeChip(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	keyPress(p, runes("read "))
+	keyPress(p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb\nc\nd"), Paste: true})
+	keyPress(p, runes(" tail"))
+
+	keyPress(p, tea.KeyMsg{Type: tea.KeyCtrlW})
+	if !strings.Contains(p.state.Input, "[Paste #1 - 4 lines]") || len(p.state.Pastes) != 1 {
+		t.Fatalf("ctrl+w over the tail split the chip: input = %q pastes = %+v", p.state.Input, p.state.Pastes)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyCtrlW})
+	if p.state.Input != "read " {
+		t.Errorf("input = %q, want the whole chip removed as one word", p.state.Input)
+	}
+	if len(p.state.Pastes) != 0 {
+		t.Errorf("pastes = %+v, want the payload released with the label", p.state.Pastes)
+	}
+	if strings.Contains(p.state.Input, "Paste") {
+		t.Errorf("input = %q, want no orphaned half-label left", p.state.Input)
+	}
+}
+
+// Every kill must remove a whole label or none of it, even from a cursor a
+// malformed state could strand inside a pill.
+func TestChipAwareEditsNeverLeaveAHalfLabel(t *testing.T) {
+	chip := PasteChip{ID: 1, Payload: "a\nb\nc\nd", Lines: 4}
+	label := pasteChipLabel(chip)
+	text := "xy " + label + " z"
+	start := len([]rune("xy "))
+	end := start + len([]rune(label))
+	inside := start + 2
+
+	killers := []struct {
+		name string
+		fn   func([]PasteChip, string, int) (string, int)
+	}{
+		{"ctrl+u", killToStartAtomic},
+		{"ctrl+k", killToEndAtomic},
+		{"ctrl+w", killWordBackAtomic},
+	}
+	for _, kill := range killers {
+		for _, cur := range []int{start, inside, end} {
+			out, got := kill.fn([]PasteChip{chip}, text, cur)
+			if got < 0 || got > len([]rune(out)) {
+				t.Errorf("%s at %d: cursor %d is outside %q", kill.name, cur, got, out)
+			}
+			if partialLabel(out, label) {
+				t.Errorf("%s at %d left a half-label: %q", kill.name, cur, out)
+			}
+		}
+	}
+	// Home and End never park the cursor inside a label, so a pill stays whole.
+	if got := lineStartAtomic([]PasteChip{chip}, text, inside); got != 0 {
+		t.Errorf("home from inside a pill = %d, want the line start", got)
+	}
+	if got := lineEndAtomic([]PasteChip{chip}, text, inside); got != len([]rune(text)) {
+		t.Errorf("end from inside a pill = %d, want the line end", got)
+	}
+}
+
+// A forward snap moves a stranded cursor to a label's tail; Home uses the
+// backward snap and End the forward one, so neither splits a pill.
+func TestSnapPasteBoundaryForwardReachesThePillTail(t *testing.T) {
+	chip := PasteChip{ID: 1, Payload: "p", Lines: 1}
+	label := pasteChipLabel(chip)
+	text := "x" + label + "y"
+	start := 1
+	end := 1 + len([]rune(label))
+	if got := snapPasteBoundaryForward([]PasteChip{chip}, text, start+2); got != end {
+		t.Errorf("forward snap inside = %d, want the label tail %d", got, end)
+	}
+	if got := snapPasteBoundaryForward([]PasteChip{chip}, text, end); got != end {
+		t.Errorf("forward snap on the edge = %d, want it unchanged", got)
+	}
+}
+
+// partialLabel reports a label's run split across out: the whole label is
+// absent, yet a run of it survives as an orphaned half-pill.
+func partialLabel(out, label string) bool {
+	if strings.Contains(out, label) {
+		return false
+	}
+	runes := []rune(label)
+	const minRun = 5
+	for n := len(runes) - 1; n >= minRun; n-- {
+		for i := 0; i+n <= len(runes); i++ {
+			if strings.Contains(out, string(runes[i:i+n])) {
+				return true
+			}
+		}
+	}
+	return false
+}

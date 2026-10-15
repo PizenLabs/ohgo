@@ -243,6 +243,10 @@ type State struct {
 	Input string
 	// Cursor is the rune offset in Input where typing lands.
 	Cursor int
+	// ComposerScroll is the first display row of the composer's visible
+	// window. It tracks the cursor when the input folds past maxComposerRows,
+	// so the block cursor is always painted; zero shows the top rows.
+	ComposerScroll int
 	// Submitted remembers past prompts for history recall, oldest first.
 	Submitted []string
 	// HistCursor selects a Submitted entry, or -1 for the live input.
@@ -600,6 +604,7 @@ func (s *State) Apply(event Event) {
 		s.SlashCursor = 0
 		s.SlashHide = false
 		s.prunePastes()
+		s.syncComposerScroll()
 
 	case ComposerChanged:
 		s.setComposer(e.Text, e.Cursor)
@@ -652,6 +657,9 @@ func (s *State) Apply(event Event) {
 		if s.Plane != nil {
 			s.Plane.SetVisibleRows(planeRowsFor(*s))
 		}
+		// The fold width changes with the terminal, so the visible window must
+		// be recomputed or a resize could scroll the caret out of view.
+		s.syncComposerScroll()
 
 	case ThemeChanged:
 		s.Theme = NormalizeTheme(e.Name)
@@ -1280,6 +1288,21 @@ func (s *State) setComposer(text string, cursor int) {
 		s.HistDraft = ""
 	}
 	s.prunePastes()
+	s.syncComposerScroll()
+}
+
+// syncComposerScroll advances the composer's visible window to the cursor,
+// folding the input the way the full-screen renderer does. The live renderer
+// clamps to its own width at paint time, so a width mismatch can only fail to
+// advance the stored window — it can never hide the cursor.
+func (s *State) syncComposerScroll() {
+	layout := ComputeLayout(*s)
+	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)
+	rows, cursorRow, _, have := layoutComposer(clean, cleanCursor, composerTextWidthFor(*s, layout))
+	if !have {
+		cursorRow = 0
+	}
+	s.ComposerScroll = composerScrollOffset(s.ComposerScroll, cursorRow, len(rows), maxComposerRows)
 }
 
 // moveHistory browses recallable prompts. Positive delta goes older.
@@ -1313,11 +1336,13 @@ func (s *State) moveHistory(delta int) {
 			s.HistCursor = -1
 			s.Input = s.HistDraft
 			s.Cursor = len([]rune(s.Input))
+			s.syncComposerScroll()
 			return
 		}
 	}
 	s.Input = s.Submitted[s.HistCursor]
 	s.Cursor = len([]rune(s.Input))
+	s.syncComposerScroll()
 }
 
 // defaultApprovalSelection picks the safest choice, which is the last one.
