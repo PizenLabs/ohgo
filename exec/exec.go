@@ -28,6 +28,12 @@ const EscapePrefix = '!'
 // never grow the transcript without bound.
 const MaxOutput = 256 * 1024
 
+// cancelGrace bounds how long Run waits for the output pipes to close after a
+// cancellation kills the process group. It is a safety net: the group kill
+// normally closes them at once, but a stuck descendant must not pin Wait open
+// past the context deadline.
+const cancelGrace = time.Second
+
 // ParseEscape reports whether line is a shell escape and returns the command
 // that follows the leading "!".
 //
@@ -122,6 +128,12 @@ func (r ShellRunner) Run(ctx context.Context, command string, onChunk func(strin
 	if r.Dir != "" {
 		proc.Dir = r.Dir
 	}
+	// The shell forks its command, so the default single-process kill would
+	// leave grandchildren running and, worse, holding the output pipes open
+	// so Run outlives its context. Signal the group and bound the wait.
+	setProcessGroup(proc)
+	proc.Cancel = func() error { return killProcessGroup(proc) }
+	proc.WaitDelay = cancelGrace
 
 	max := r.MaxOutput
 	if max <= 0 {
