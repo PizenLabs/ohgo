@@ -213,7 +213,7 @@ func Render(state State) string {
 	}
 
 	if state.Pending != nil {
-		renderApproval(&sb, state.Pending, pal, layout)
+		renderApproval(&sb, state.Pending, state.Theme, layout)
 	}
 
 	renderThinkingArea(&sb, state, pal, layout)
@@ -630,91 +630,6 @@ func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 		renderEntry(&body, entry, pal, layout, frame)
 	}
 	return body.String()
-}
-
-// approvalLines counts the rendered approval block, bounded to the viewport.
-func approvalLines(pending *PendingApproval, layout Layout) int {
-	detail := len(boundedPreview(pending, layout))
-	// prompt + preview + choices + hints, plus the blank separator when it
-	// fits (see approvalBlank). Every row must be claimed here or the total
-	// exceeds the viewport.
-	return 1 + detail + len(pending.Choices) + 1 + approvalBlankRows(pending, layout)
-}
-
-// approvalBlankRows is 1 when the separator blank after the dialog fits and
-// 0 when yielding it keeps the choices on screen. Render and accounting
-// share it so the reserved rows and the rendered rows always agree.
-func approvalBlankRows(pending *PendingApproval, layout Layout) int {
-	if approvalBlank(pending, layout) {
-		return 1
-	}
-	return 0
-}
-
-// approvalBlank reports whether the separator blank after the dialog fits.
-// On viewports too short for the chrome plus the dialog minimum it yields,
-// so the choices stay on screen instead of the spacing.
-func approvalBlank(pending *PendingApproval, layout Layout) bool {
-	if layout.Height <= 0 {
-		return true
-	}
-	hints := 0
-	if layout.ShowHints {
-		hints = 1
-	}
-	// header + prompt + one preview row + choices + dialog hints + blank +
-	// composer + layout hints + one transcript row.
-	return layout.Height >= len(pending.Choices)+layout.ComposerLines+hints+7
-}
-
-// boundedPreview wraps summary+reason and caps rows so the dialog never
-// exceeds the viewport. Excess collapses into a counted marker line rather
-// than pushing chrome off-screen or truncating the choices.
-func boundedPreview(pending *PendingApproval, layout Layout) []string {
-	// A shell confirmation renders its command on the prompt line; a second
-	// copy below would be noise, and the accounting must agree.
-	if pending.Prompt != "" {
-		return nil
-	}
-	var lines []string
-	width := dialogWidth(layout)
-	for _, text := range []string{pending.Summary, pending.Reason} {
-		if text == "" {
-			continue
-		}
-		// Approval text echoes tool arguments: untrusted, sanitized before
-		// wrapping so measurement matches terminal layout.
-		lines = append(lines, WrapToWidth(sanitizeInline(text), width)...)
-	}
-	max := len(lines)
-	if layout.Height > 0 {
-		// The preview gets whatever the chrome does not claim: header,
-		// status, the composer block, the prompt/choices/hint rows, and
-		// the blank separator. Deriving it from the computed layout
-		// keeps the dialog bounded on short viewports instead of
-		// overflowing them.
-		max = layout.Height - len(pending.Choices) - layout.HeaderLines - layout.StatusLines - layout.ComposerLines - 3
-		if max < 1 {
-			max = 1
-		}
-		if max > 10 {
-			max = 10
-		}
-	} else if max > 10 {
-		max = 10
-	}
-	if len(lines) <= max {
-		return lines
-	}
-	// A one-row budget shows the first row alone: the counted marker would
-	// cost the very row it complains about. Choices stay fully visible,
-	// which is the safety-critical part of the dialog.
-	if max <= 1 {
-		return lines[:1]
-	}
-	kept := append([]string(nil), lines[:max]...)
-	kept = append(kept, fmt.Sprintf("… %d more lines", len(lines)-max))
-	return kept
 }
 
 // renderWelcome draws the runtime identity surface for an empty
@@ -1751,51 +1666,6 @@ func shellElapsed(shell *ShellEntry) string {
 		return ""
 	}
 	return shell.Duration.Round(time.Millisecond).String()
-}
-
-// renderApproval draws the modal prompt with a bounded preview.
-//
-// The default cursor lands on the conservative choice (deny last). Closing,
-// cancelling, or resizing never approves: only an explicit affirmative key
-// does, enforced by the Update handler, not by rendering.
-func renderApproval(sb *strings.Builder, pending *PendingApproval, pal *Palette, layout Layout) {
-	width := dialogWidth(layout)
-	if pending.Prompt != "" {
-		// A shell escape renders "Run shell command: <cmd>? [y/N]" on one
-		// row: the command is the whole question, so it needs no preview.
-		command := sanitizeInline(pending.Summary)
-		budget := width - CellWidth(pending.Prompt+": ") - CellWidth("? [y/N]")
-		if budget < 4 {
-			budget = 4
-		}
-		sb.WriteString(pal.Prompt.Render(pending.Prompt+": ") +
-			pal.ToolName.Render(TruncateToWidth(command, budget)) +
-			pal.Status.Render("? [y/N]") + "\n")
-	} else {
-		line := pal.Prompt.Render("Run this tool?") + " " + pal.ToolName.Render(TruncateToWidth(pending.ToolName, width))
-		sb.WriteString(line + "\n")
-	}
-	for _, wl := range boundedPreview(pending, layout) {
-		sb.WriteString(pal.Status.Render("  "+wl) + "\n")
-	}
-
-	for i, choice := range pending.Choices {
-		marker := "  "
-		style := pal.Choice
-		if i == pending.Cursor {
-			marker = "> "
-			style = pal.Selected
-		}
-		def := ""
-		if i == len(pending.Choices)-1 {
-			def = pal.Muted.Render(" (default)")
-		}
-		sb.WriteString(marker + style.Render(choice) + def + "\n")
-	}
-	sb.WriteString(pal.Muted.Render("↑↓ move · enter confirm · y approve · n/esc deny") + "\n")
-	if approvalBlank(pending, layout) {
-		sb.WriteString("\n")
-	}
 }
 
 // quitCardWidth bounds the centered quit dialog: wide enough for the hint,

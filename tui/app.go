@@ -19,9 +19,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Approval choices offered to the user. The last is the safest so the default
-// cursor lands on it.
-var approvalChoices = []string{"Yes", "No"}
+// Approval choices offered to the user.
+//
+// The conservative answer is listed last so the resting cursor lands on it:
+// Move clamps at the ends, so from the default no navigation key can reach an
+// affirmative answer without a deliberate move onto one. "Allow for entire
+// session" is a remembered affirmative, but it still demands that deliberate
+// move — it is never the resting place.
+var approvalChoices = []string{"Yes", sessionApprovalChoice, "No"}
 
 // approvalAnswer is one user decision, delivered back to a blocked tool.
 type approvalAnswer struct {
@@ -37,6 +42,9 @@ type approvalRequest struct {
 	toolName string
 	reason   string
 	summary  string
+	// mutating marks a state-changing call, so the dialog can accent a
+	// destructive boundary differently from a read one.
+	mutating bool
 	answer   chan approvalAnswer
 }
 
@@ -81,6 +89,12 @@ type Program struct {
 	// pending is the approval currently being shown. It is nil when no tool is
 	// blocked, and it is only ever written from the update goroutine.
 	pending *approvalRequest
+
+	// sessionAllowed records tools the user approved for the whole session
+	// ("Allow for entire session"). It is written from the update goroutine
+	// and read from blocked tool goroutines in ApprovalFunc, so every access
+	// holds mu.
+	sessionAllowed map[string]struct{}
 
 	// done closes when Run returns. It bounds the approval bridge past
 	// shutdown: a tool reaching approval after the UI is gone gets a denial
@@ -435,12 +449,13 @@ func WithVersion(v string) ProgramOption {
 // NewProgram returns a program driving the given loop.
 func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOption) *Program {
 	p := &Program{
-		loop:      loop,
-		events:    make(chan Event, 256),
-		approvals: make(chan approvalRequest, 8),
-		done:      make(chan struct{}),
-		window:    window,
-		termOut:   os.Stdout,
+		loop:           loop,
+		events:         make(chan Event, 256),
+		approvals:      make(chan approvalRequest, 8),
+		sessionAllowed: make(map[string]struct{}),
+		done:           make(chan struct{}),
+		window:         window,
+		termOut:        os.Stdout,
 	}
 	// State first, options after: an option records into the state the
 	// program actually runs (model, version), rather than a zero value
@@ -492,6 +507,7 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ToolName: request.toolName,
 			Reason:   request.reason,
 			Summary:  request.summary,
+			Mutating: request.mutating,
 			Choices:  approvalChoices,
 		})
 		return p, p.waitForApproval()
@@ -726,7 +742,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(ApprovalMoved{Delta: 1})
 			return p, nil
 		case "enter":
-			return p.answer(isAffirmative(p.state.Pending.Selected()), "denied by user")
+			return p.answerSelection(p.state.Pending.Selected())
 		case "y", "Y":
 			return p.answer(true, "")
 		case "n", "N", "esc":
@@ -2577,6 +2593,49 @@ func (p *Program) quitNow() tea.Cmd {
 	return tea.Quit
 }
 
+// answerSelection resolves the highlighted approval answer.
+//
+// The session-wide choice is the only one that carries memory: it records the
+// tool (or the shell escape) as approved for the rest of the session and then
+// answers affirmative. Every other choice maps through the usual affirmative
+// test, so "No" still denies and a custom label still defaults to denial.
+func (p *Program) answerSelection(choice string) (tea.Model, tea.Cmd) {
+	if isSessionApprovalChoice(choice) {
+		switch {
+		case p.pending != nil:
+			p.allowForSession(p.pending.toolName)
+		case p.pendingEscape != "":
+			p.allowForSession(shellApprovalTool)
+		}
+		return p.answer(true, "")
+	}
+	return p.answer(isAffirmative(choice), "denied by user")
+}
+
+// sessionAllowedFor reports whether a tool was approved for the whole session.
+// ApprovalFunc reads it from a blocked tool's goroutine, so the map is guarded
+// by mu; a nil map (a Program built outside NewProgram) reads as empty.
+func (p *Program) sessionAllowedFor(tool string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.sessionAllowed[tool]
+	return ok
+}
+
+// allowForSession remembers a tool as approved for the rest of the session.
+// It is written from the update goroutine and read from tool goroutines.
+func (p *Program) allowForSession(tool string) {
+	if tool == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sessionAllowed == nil {
+		p.sessionAllowed = make(map[string]struct{})
+	}
+	p.sessionAllowed[tool] = struct{}{}
+}
+
 // answer unblocks the tool that is waiting, or starts the confirmed shell
 // escape that asked.
 func (p *Program) answer(approved bool, reason string) (tea.Model, tea.Cmd) {
@@ -3017,7 +3076,7 @@ func (p *Program) submitEscape(command string) tea.Cmd {
 	if p.shell.Mutates != nil {
 		mutating = p.shell.Mutates(command)
 	}
-	if exec.Decide(p.state.Status.Workspace, mutating) == exec.Confirm {
+	if exec.Decide(p.state.Status.Workspace, mutating) == exec.Confirm && !p.sessionAllowedFor(shellApprovalTool) {
 		return p.confirmEscape(command)
 	}
 	return p.startEscape(command)
@@ -3032,6 +3091,7 @@ func (p *Program) confirmEscape(command string) tea.Cmd {
 		ToolName: "shell",
 		Prompt:   "Run shell command",
 		Summary:  command,
+		Mutating: true,
 		Choices:  approvalChoices,
 	})
 	return nil
@@ -3486,11 +3546,19 @@ func (p *Program) publishOK(event Event) bool {
 // denial the turn can complete beats a goroutine that never returns.
 func (p *Program) ApprovalFunc() func(call ai.ToolCall, approval agent.Approval) (bool, string) {
 	return func(call ai.ToolCall, approval agent.Approval) (bool, string) {
+		// A tool approved "for entire session" never re-enters the dialog:
+		// the remembered answer is the whole point of that choice.
+		if p.sessionAllowedFor(call.Name) {
+			return true, ""
+		}
 		answer := make(chan approvalAnswer, 1)
 		request := approvalRequest{
 			toolName: call.Name,
 			reason:   approval.Reason,
 			summary:  ToolSummaryForCall(call.Name, call.Arguments),
+			// Anything but an explicit read is treated as state-changing:
+			// an undeclared tier must never look harmless in the dialog.
+			mutating: approval.Tier != agent.TierRead,
 			answer:   answer,
 		}
 		select {
@@ -3514,4 +3582,21 @@ func isAffirmative(choice string) bool {
 		return true
 	}
 	return false
+}
+
+// shellApprovalTool is the name the "!" escape's confirmation is remembered
+// under when the user allows it for the whole session. It matches the ToolName
+// confirmEscape publishes so one choice covers the escape either way.
+const shellApprovalTool = "shell"
+
+// sessionApprovalChoice is the remembered affirmative offered by the approval
+// dialog. It is matched exactly: a tool that offers a differently worded
+// choice must not accidentally grant session-wide approval.
+const sessionApprovalChoice = "Allow for entire session"
+
+// isSessionApprovalChoice reports whether a choice grants session-wide
+// approval. It is whitespace- and case-insensitive so the key handler and the
+// dialog agree on the label they render.
+func isSessionApprovalChoice(choice string) bool {
+	return strings.EqualFold(strings.TrimSpace(choice), sessionApprovalChoice)
 }

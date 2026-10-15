@@ -346,7 +346,7 @@ func TestComposerHintsNeverAdvertiseKeysTheApprovalHasCaptured(t *testing.T) {
 			t.Errorf("the frame advertises %q while the open approval captures it:\n%s", captured, frame)
 		}
 	}
-	if !strings.Contains(frame, "Run this tool?") {
+	if !strings.Contains(frame, "Do you want to proceed?") {
 		t.Error("the approval dialog is missing from the frame")
 	}
 }

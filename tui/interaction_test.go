@@ -795,7 +795,9 @@ func TestShellEscapeConfirmationRendersShellPrompt(t *testing.T) {
 	s.Width, s.Height = 80, 24
 	s.Apply(ApprovalAsked{ToolName: "shell", Prompt: "Run shell command", Summary: "rm -rf x", Choices: approvalChoices})
 	out := ansi.Strip(Render(s))
-	if !strings.Contains(out, "Run shell command: rm -rf x? [y/N]") {
-		t.Errorf("render missing the shell confirmation line:\n%s", out)
+	for _, want := range []string{"Tool Execution Approval", "Run shell command", "rm -rf x", "Do you want to proceed?"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("shell confirmation missing %q:\n%s", want, out)
+		}
 	}
 }

@@ -419,7 +419,7 @@ func TestLiveApprovalOwnsTheLiveRegion(t *testing.T) {
 	})
 
 	view := ansi.Strip(painter.view())
-	if !strings.Contains(view, "Run this tool?") {
+	if !strings.Contains(view, "Do you want to proceed?") {
 		t.Fatalf("the approval dialog is missing:\n%s", view)
 	}
 	if !strings.Contains(view, "rm -rf build") {

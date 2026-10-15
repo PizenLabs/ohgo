@@ -554,7 +554,7 @@ func TestRepeatedApprovalsNeverDuplicateChrome(t *testing.T) {
 		if got := len(strings.Split(out, "\n")); got != 24 {
 			t.Fatalf("cycle %d: %d lines, want 24", i, got)
 		}
-		if got := strings.Count(out, "Run this tool?"); got != 1 {
+		if got := strings.Count(out, "Do you want to proceed?"); got != 1 {
 			t.Fatalf("cycle %d: approval prompt %d times, want exactly once", i, got)
 		}
 		if got := strings.Count(out, "#9"); got != 1 {

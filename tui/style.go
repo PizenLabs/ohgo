@@ -96,6 +96,14 @@ const (
 	ColorText = "#C9C5BE"
 	// ColorMuted is muted gray: labels such as model, workspace, and git.
 	ColorMuted = "#6C7A89"
+	// ColorMutedAmber is warm muted amber, the approval frame accent for a
+	// read or inspect call: the action is side-effect free, so the boundary
+	// reads as a checkpoint rather than a hazard. It shares the status amber,
+	// so the two amber roles stay one value.
+	ColorMutedAmber = ColorStatus
+	// ColorRose is warm burnt rose, the approval frame accent for a call that
+	// mutates or destroys: the boundary reads as a hazard before the text is.
+	ColorRose = "#CD694A"
 )
 
 // Light-theme counterparts, darkened to read on a bright screen. The hues

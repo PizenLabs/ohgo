@@ -149,7 +149,7 @@ func TestLiveSessionInsideTmux(t *testing.T) {
 	// keyboard under a multiplexer.
 	send("run the demo tool")
 	send("Enter")
-	waitFor("Run this tool?", 20*time.Second)
+	waitFor("Do you want to proceed?", 20*time.Second)
 	send("y")
 	waitFor("demo tool finished", 20*time.Second)
 

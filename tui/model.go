@@ -166,14 +166,19 @@ type ShellEntry struct {
 type PendingApproval struct {
 	// ToolName is the tool that wants to run.
 	ToolName string
-	// Prompt, when non-empty, replaces the "Run this tool?" header and is
-	// rendered with the summary. It exists for the "!" shell escape, whose
-	// confirmation is not a tool invocation.
+	// Prompt, when non-empty, is a shell-specific label shown above the call
+	// in the dialog. It exists for the "!" shell escape, whose confirmation
+	// is not a tool invocation.
 	Prompt string
 	// Reason is why the prompt appears, when the tool declared one.
 	Reason string
 	// Summary describes what this particular call will do.
 	Summary string
+	// Mutating marks a call that changes state (write, exec, destructive)
+	// rather than reading. It is presentation only: it selects the frame
+	// accent (rose vs amber), never the answer. The producer derives it from
+	// the tool's declared tier, so the renderer never guesses from a name.
+	Mutating bool
 	// Choices are the offered answers.
 	Choices []string
 	// Cursor is the highlighted choice index.
@@ -648,6 +653,7 @@ func (s *State) Apply(event Event) {
 			Prompt:   e.Prompt,
 			Reason:   e.Reason,
 			Summary:  e.Summary,
+			Mutating: e.Mutating,
 			Choices:  e.Choices,
 			Cursor:   defaultApprovalSelection(e.Choices),
 		}
@@ -1737,12 +1743,16 @@ func (Compacted) eventKind() string { return "compacted" }
 // ApprovalAsked opens a prompt.
 type ApprovalAsked struct {
 	ToolName string
-	// Prompt, when non-empty, replaces the "Run this tool?" header. It is
-	// used by the "!" shell escape, whose confirmation is not a tool call.
+	// Prompt, when non-empty, is a shell-specific label shown above the call.
+	// It is used by the "!" shell escape, whose confirmation is not a tool
+	// call.
 	Prompt  string
 	Reason  string
 	Summary string
-	Choices []string
+	// Mutating marks a call that changes state; the dialog accents a
+	// destructive boundary differently from a read one.
+	Mutating bool
+	Choices  []string
 }
 
 func (ApprovalAsked) eventKind() string { return "approval_asked" }

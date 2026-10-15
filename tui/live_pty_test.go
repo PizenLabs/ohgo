@@ -127,7 +127,7 @@ func TestLiveSessionUnderARrealPTY(t *testing.T) {
 
 	// A second prompt asks for a tool call, which blocks on an approval.
 	write("run the demo tool\r")
-	waitFor("Run this tool?", 20*time.Second)
+	waitFor("Do you want to proceed?", 20*time.Second)
 	write("y")
 
 	// The outcome lands, then the second answer streams.

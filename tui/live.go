@@ -504,7 +504,7 @@ func liveOverlay(s State, pal *Palette, layout Layout) []string {
 	case s.Picker != nil:
 		return livePickerLines(s, pal, layout)
 	case s.Pending != nil:
-		return liveApprovalLines(s, pal, layout)
+		return liveApprovalLines(s, layout)
 	case s.Secret != nil:
 		return liveSecretLines(s, pal, layout)
 	}
@@ -550,11 +550,11 @@ func livePickerLines(s State, pal *Palette, layout Layout) []string {
 }
 
 // liveApprovalLines renders the approval prompt, bounded to the screen.
-func liveApprovalLines(s State, pal *Palette, layout Layout) []string {
+func liveApprovalLines(s State, layout Layout) []string {
 	var b strings.Builder
 	bounded := layout
 	bounded.Height = liveRows(s)
-	renderApproval(&b, s.Pending, pal, bounded)
+	renderApproval(&b, s.Pending, s.Theme, bounded)
 	lines := splitLines(b.String())
 	if limit := liveRows(s); len(lines) > limit {
 		// Keep the question and the choices; drop the middle of the preview.
