@@ -98,6 +98,60 @@ func TestLineBelowFallsBackAtTheLastLine(t *testing.T) {
 	}
 }
 
+// Vertical movement follows the wrapped display rows, not just logical lines:
+// a single long line that folds across three rows is three up/down hops, and
+// only the top and bottom rows fall back to history.
+func TestVerticalMovementFollowsWrappedRows(t *testing.T) {
+	text := "abcdefghij" // folded to 4 cells: abcd / efgh / ij
+	if pos, ok := lineAboveWrapped(text, 9, 4); !ok || pos != 5 {
+		t.Errorf("up from the wrapped tail = (%d, %v), want (5, true)", pos, ok)
+	}
+	if pos, ok := lineAboveWrapped(text, 5, 4); !ok || pos != 1 {
+		t.Errorf("up across a wrapped row = (%d, %v), want (1, true)", pos, ok)
+	}
+	if _, ok := lineAboveWrapped(text, 1, 4); ok {
+		t.Error("up on the top display row reported a move; the caller falls back to history")
+	}
+	if pos, ok := lineBelowWrapped(text, 1, 4); !ok || pos != 5 {
+		t.Errorf("down across a wrapped row = (%d, %v), want (5, true)", pos, ok)
+	}
+	if _, ok := lineBelowWrapped(text, 9, 4); ok {
+		t.Error("down on the bottom display row reported a move")
+	}
+}
+
+// A wrapped row shorter than the one above clamps the column instead of
+// pulling the cursor past its end, matching the logical-line behaviour.
+func TestVerticalMovementClampsToShortWrappedRows(t *testing.T) {
+	text := "abcdefghij" // abcd / efgh / ij
+	if pos, ok := lineBelowWrapped(text, 3, 4); !ok || pos != 7 {
+		t.Errorf("down from column 3 = (%d, %v), want (7, true)", pos, ok)
+	}
+	// The last row holds two runes: column 3 clamps to its end (offset 10).
+	if pos, ok := lineBelowWrapped(text, 7, 4); !ok || pos != 10 {
+		t.Errorf("down into the short row = (%d, %v), want (10, true): column clamped", pos, ok)
+	}
+}
+
+// An explicit newline is a row boundary too: movement crosses from the tail of
+// one wrapped block into the next without treating the whole buffer as one
+// line.
+func TestVerticalMovementCrossesWrappedAndNewlineRows(t *testing.T) {
+	text := "hello world\nxy" // width 6 -> "hello " / "world" / "xy"
+	if pos, ok := lineAboveWrapped(text, 8, 6); !ok || pos != 2 {
+		t.Errorf("up from inside the wrapped row = (%d, %v), want (2, true)", pos, ok)
+	}
+	if pos, ok := lineAboveWrapped(text, 12, 6); !ok || pos != 6 {
+		t.Errorf("up out of the new line = (%d, %v), want (6, true)", pos, ok)
+	}
+	if _, ok := lineAboveWrapped(text, 0, 6); ok {
+		t.Error("up on the first row reported a move")
+	}
+	if pos, ok := lineBelowWrapped(text, 2, 6); !ok || pos != 8 {
+		t.Errorf("down across the wrapped row = (%d, %v), want (8, true)", pos, ok)
+	}
+}
+
 // The composer affordance names the live authority in lowercase: typing lands
 // after "ask > ", "build > ", or "fuzz > ", never after a bare "> " once an
 // authority owns the session. An unset authority keeps the generic prompt.

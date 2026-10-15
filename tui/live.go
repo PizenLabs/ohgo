@@ -660,8 +660,14 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 	}
 	for i, row := range shown {
 		text := row
-		if haveCursor && start+i == cursorRow {
-			text = insertAt(row, cursorRune, pal.Cursor.Render("▌"))
+		isCursorRow := haveCursor && start+i == cursorRow
+		rowCursor := -1
+		if isCursorRow {
+			rowCursor = cursorRune
+		}
+		text, rowCursor = renderPasteChips(s.Pastes, pal.Chip, text, rowCursor)
+		if isCursorRow {
+			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
 		}
 		if i == 0 {
 			out = append(out, pal.Prompt.Render("> ")+text)

@@ -85,6 +85,59 @@ func TestUpMovesWithinMultiline(t *testing.T) {
 	}
 }
 
+// Once a prompt exists, up on an empty composer recalls history instead of
+// scrolling: that is the reason most people reach for the key. Overshooting
+// the oldest entry clamps, and down walks back to the stashed draft.
+func TestArrowUpRecallsHistoryOnceOneExists(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(UserSubmitted{Text: "first"})
+	p.state.Apply(UserSubmitted{Text: "second"})
+	p.state.Apply(InputChanged{Text: ""})
+
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Input != "second" {
+		t.Fatalf("first up = %q, want the most recent prompt", p.state.Input)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Input != "first" {
+		t.Fatalf("second up = %q, want the older prompt", p.state.Input)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Input != "first" {
+		t.Errorf("third up = %q, want it clamped at the oldest prompt", p.state.Input)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	if p.state.Input != "second" {
+		t.Errorf("down = %q, want the newer prompt", p.state.Input)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	if p.state.Input != "" {
+		t.Errorf("down past the newest = %q, want the draft restored", p.state.Input)
+	}
+}
+
+// The composer folds to the live terminal width, so vertical movement must
+// hop between the wrapped rows the user sees. A single 20-rune line on a
+// 12-column terminal is three display rows of eight, eight, and four.
+func TestArrowKeysHopWrappedComposerRows(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 12, Height: 24})
+	p.state.Apply(ComposerChanged{Text: strings.Repeat("a", 20), Cursor: 19})
+
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Cursor != 11 {
+		t.Fatalf("up = %d, want the previous wrapped row (11)", p.state.Cursor)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Cursor != 3 {
+		t.Fatalf("up again = %d, want the first wrapped row (3)", p.state.Cursor)
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	if p.state.Cursor != 11 {
+		t.Errorf("down = %d, want the wrapped row below (11)", p.state.Cursor)
+	}
+}
+
 func TestCtrlCQuitsOnlyWhenIdle(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	keyPress(p, tea.KeyMsg{Type: tea.KeyCtrlC})

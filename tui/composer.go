@@ -166,54 +166,99 @@ func killWordBack(text string, cursor int) (string, int) {
 	return string(append(runes[:cursor], runes[rest:]...)), cursor
 }
 
-// lineAbove moves the cursor to the same column of the previous logical line,
-// reporting false at the first line so the caller can fall back to history.
-func lineAbove(text string, cursor int) (int, bool) {
+// composerRow is one display row of the composer: the rune offset in the
+// source text where it begins and how many source runes it holds. Newlines
+// belong to no row, so a cursor sitting on a newline maps to the row it ends.
+type composerRow struct {
+	start  int
+	length int
+}
+
+// composerRowSpans partitions text into display rows exactly as composerRows
+// wraps them, so a cursor mapped to a row here agrees with what the renderer
+// painted. The wrapping rule is identical: a rune that would overflow the
+// width starts the next row, and an empty logical line still occupies a row.
+func composerRowSpans(text string, width int) []composerRow {
+	if width < 1 {
+		width = 1
+	}
+	var spans []composerRow
+	offset := 0
+	for _, line := range strings.Split(text, "\n") {
+		runes := []rune(line)
+		rowStart, rowLen, rowW := offset, 0, 0
+		for i := 0; i < len(runes); i++ {
+			rw := runewidth.RuneWidth(runes[i])
+			if rowW+rw > width && rowLen > 0 {
+				spans = append(spans, composerRow{start: rowStart, length: rowLen})
+				rowStart, rowLen, rowW = offset+i, 0, 0
+			}
+			rowLen++
+			rowW += rw
+		}
+		spans = append(spans, composerRow{start: rowStart, length: rowLen})
+		offset += len(runes) + 1
+	}
+	return spans
+}
+
+// lineVertical moves the cursor to the same column of the display row above
+// (dir -1) or below (dir +1). It reports false at the top or bottom row so
+// the caller can fall back to history recall. The column is clamped to the
+// target row, so a short wrapped row does not pull the cursor past its end.
+func lineVertical(text string, cursor, width, dir int) (int, bool) {
 	runes := []rune(text)
 	cursor = clampRune(cursor, len(runes))
-	start := lineStart(text, cursor)
-	if start == 0 {
-		return cursor, false
-	}
-	col := cursor - start
-	prevEnd := start - 1
-	prevStart := 0
-	for i := prevEnd - 1; i >= 0; i-- {
-		if runes[i] == '\n' {
-			prevStart = i + 1
+	spans := composerRowSpans(text, width)
+	row, col := 0, 0
+	placed := false
+	for i, span := range spans {
+		if cursor >= span.start && cursor <= span.start+span.length {
+			row, col = i, cursor-span.start
+			placed = true
 			break
 		}
 	}
-	width := prevEnd - prevStart
-	if col > width {
-		col = width
+	if !placed {
+		last := spans[len(spans)-1]
+		row, col = len(spans)-1, last.length
 	}
-	return prevStart + col, true
+	target := row + dir
+	if target < 0 || target >= len(spans) {
+		return cursor, false
+	}
+	span := spans[target]
+	if col > span.length {
+		col = span.length
+	}
+	return span.start + col, true
+}
+
+// lineAboveWrapped moves the cursor one display row up, so vertical movement
+// follows the wrapped text the user sees rather than only its logical lines.
+func lineAboveWrapped(text string, cursor, width int) (int, bool) {
+	return lineVertical(text, cursor, width, -1)
+}
+
+// lineBelowWrapped moves the cursor one display row down, wrapping-aware.
+func lineBelowWrapped(text string, cursor, width int) (int, bool) {
+	return lineVertical(text, cursor, width, +1)
+}
+
+// composerNoWrapWidth is wider than any logical line can be, so the
+// logical-line helpers below reduce to the wrapped ones with one row per line.
+const composerNoWrapWidth = 1 << 30
+
+// lineAbove moves the cursor to the same column of the previous logical line,
+// reporting false at the first line so the caller can fall back to history.
+func lineAbove(text string, cursor int) (int, bool) {
+	return lineVertical(text, cursor, composerNoWrapWidth, -1)
 }
 
 // lineBelow moves the cursor to the same column of the next logical line,
 // reporting false at the last line.
 func lineBelow(text string, cursor int) (int, bool) {
-	runes := []rune(text)
-	cursor = clampRune(cursor, len(runes))
-	end := lineEnd(text, cursor)
-	if end >= len(runes) {
-		return cursor, false
-	}
-	col := cursor - lineStart(text, cursor)
-	nextStart := end + 1
-	nextEnd := len(runes)
-	for i := nextStart; i < len(runes); i++ {
-		if runes[i] == '\n' {
-			nextEnd = i
-			break
-		}
-	}
-	width := nextEnd - nextStart
-	if col > width {
-		col = width
-	}
-	return nextStart + col, true
+	return lineVertical(text, cursor, composerNoWrapWidth, +1)
 }
 
 func clampRune(pos, length int) int {

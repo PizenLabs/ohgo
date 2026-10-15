@@ -29,6 +29,9 @@ type Palette struct {
 	Truncated lipgloss.Style
 	Cursor    lipgloss.Style
 	Queued    lipgloss.Style
+	// Chip renders a collapsed paste pill in the composer, distinct from the
+	// editable text around it without shouting.
+	Chip lipgloss.Style
 	// Markdown styles.
 	Code      lipgloss.Style
 	CodeFence lipgloss.Style
@@ -88,6 +91,7 @@ func DarkPalette() *Palette {
 		Truncated:    fg(darkMuted),
 		Cursor:       fg(ColorPrimary).Reverse(true),
 		Queued:       fg(darkMuted).Italic(true),
+		Chip:         fg(ColorAccent).Bold(true),
 		Code:         fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
 		CodeFence:    fg(darkMuted),
 		Heading:      fg(darkH1).Bold(true),
@@ -128,6 +132,7 @@ func LightPalette() *Palette {
 		Truncated:    fg(lightMuted),
 		Cursor:       fg(lightAccent).Reverse(true),
 		Queued:       fg(lightMuted).Italic(true),
+		Chip:         fg(chromeLightAccent).Bold(true),
 		Code:         fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
 		CodeFence:    fg(lightMuted),
 		Heading:      fg(lightH1).Bold(true),
@@ -1232,8 +1237,16 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	}
 	for i, row := range shown {
 		text := row
-		if haveCursor && start+i == cursorRow {
-			text = insertAt(row, cursorRune, pal.Cursor.Render("▌"))
+		isCursorRow := haveCursor && start+i == cursorRow
+		rowCursor := -1
+		if isCursorRow {
+			rowCursor = cursorRune
+		}
+		// Collapsed paste pills are styled in place; the cursor is remapped for
+		// the escape runes the styling adds.
+		text, rowCursor = renderPasteChips(state.Pastes, pal.Chip, text, rowCursor)
+		if isCursorRow {
+			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
 		}
 		prefix := composerContPrefix(state)
 		prefixStyle := composerPrefixStyle(state, pal)

@@ -508,6 +508,40 @@ func wheelScrolls(s State) bool {
 	return s.Input == ""
 }
 
+// composerMoveWidth is the wrap width the active composer renderer folds to.
+// The full-screen composer subtracts the live mode prefix ("ask > " is wider
+// than "> "), while live mode draws a fixed two-cell prompt. Movement must use
+// the same width the visible rows used, or up/down hop rows that are not there.
+func (p *Program) composerMoveWidth() int {
+	layout := ComputeLayout(p.state)
+	if p.live != nil {
+		return liveComposerWidth(layout)
+	}
+	return composerTextWidthFor(p.state, layout)
+}
+
+// composerLineAbove moves the cursor one display row up, wrapping to the width
+// the active renderer uses. It reports false on the top row so the key handler
+// can fall back to history recall. A landing inside a chip label snaps to its
+// edge so a pill is never split.
+func (p *Program) composerLineAbove() (int, bool) {
+	pos, ok := lineAboveWrapped(p.state.Input, p.state.Cursor, p.composerMoveWidth())
+	if !ok {
+		return pos, false
+	}
+	return snapPasteBoundary(p.state.Pastes, p.state.Input, pos), true
+}
+
+// composerLineBelow moves the cursor one display row down, reporting false on
+// the bottom row.
+func (p *Program) composerLineBelow() (int, bool) {
+	pos, ok := lineBelowWrapped(p.state.Input, p.state.Cursor, p.composerMoveWidth())
+	if !ok {
+		return pos, false
+	}
+	return snapPasteBoundary(p.state.Pastes, p.state.Input, pos), true
+}
+
 // handleMouse routes wheel ticks to the scrollable region in focus: the
 // picker selection while one is open, the transcript otherwise. Press,
 // release, and motion are deliberately ignored and never move state.
@@ -783,7 +817,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "enter":
-		text := strings.TrimSpace(p.state.Input)
+		text := strings.TrimSpace(expandPastes(p.state.Pastes, p.state.Input))
 		if text == "" {
 			// An empty line still advances queued work: the queue waits for a
 			// turn boundary, and this is one.
@@ -805,6 +839,12 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "backspace", "ctrl+h":
+		if text, cursor, _, ok := pasteDeleteBefore(p.state.Pastes, p.state.Input, p.state.Cursor); ok {
+			// A chip is one token: backspace removes the whole pill, and the
+			// payload is pruned with it.
+			p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
+			return p, nil
+		}
 		text, cursor := deleteBefore(p.state.Input, p.state.Cursor)
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
@@ -815,16 +855,20 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+d" && strings.TrimSpace(p.state.Input) == "" && !p.state.Status.Busy {
 			return p, p.quitNow()
 		}
+		if text, cursor, _, ok := pasteDeleteAt(p.state.Pastes, p.state.Input, p.state.Cursor); ok {
+			p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
+			return p, nil
+		}
 		text, cursor := deleteAt(p.state.Input, p.state.Cursor)
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 
 	case "left", "ctrl+b":
-		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: p.state.Cursor - 1})
+		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: cursorLeftAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)})
 		return p, nil
 
 	case "right", "ctrl+f":
-		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: p.state.Cursor + 1})
+		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: cursorRightAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)})
 		return p, nil
 
 	case "home", "ctrl+a":
@@ -867,16 +911,22 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		// The terminal cannot say which arrows it synthesised for the wheel,
-		// so the policy is state-based: the arrows belong to the transcript
-		// exactly when the composer has nothing to move a cursor within and
-		// nothing to recall. Any text, or an overlay owning the keyboard, and
-		// the arrows go back to editing. History recall never moves: ctrl+p
-		// and ctrl+n reach it whether or not the wheel does.
+		// so the policy is state-based: an empty composer hands the arrows to
+		// the transcript — the state a reader is in — but only while there is
+		// nothing to recall. Once history exists the arrow recalls it, which
+		// is the reason most people reach for up in the first place. ctrl+p
+		// and ctrl+n reach history whether or not the wheel does.
 		if msg.String() == "up" && wheelScrolls(p.state) {
+			if len(p.state.Submitted) > 0 {
+				p.state.Apply(HistoryMoved{Delta: 1})
+				return p, nil
+			}
 			p.state.Apply(ScrollMoved{Delta: mouseScrollLines})
 			return p, nil
 		}
-		if line, ok := lineAbove(p.state.Input, p.state.Cursor); ok {
+		// Inside the text, up moves a display row; on the top row it falls
+		// back to history, so a multi-line draft never traps the cursor.
+		if line, ok := p.composerLineAbove(); ok {
 			p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: line})
 		} else {
 			p.state.Apply(HistoryMoved{Delta: 1})
@@ -888,7 +938,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(ScrollMoved{Delta: -mouseScrollLines})
 			return p, nil
 		}
-		if line, ok := lineBelow(p.state.Input, p.state.Cursor); ok {
+		if line, ok := p.composerLineBelow(); ok {
 			p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: line})
 		} else {
 			p.state.Apply(HistoryMoved{Delta: -1})
@@ -932,6 +982,14 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// help must never steal a question mark being typed.
 			if text == "?" && strings.TrimSpace(p.state.Input) == "" && p.state.Secret == nil {
 				p.openCommandPalette("")
+				return p, nil
+			}
+			// A large bracketed paste folds into one inline chip: the full
+			// payload is retained for submission while the composer stays a
+			// single row. Short pastes, and keystroke streams from terminals
+			// without bracketed paste, stay literal.
+			if shouldCollapsePaste(msg.Paste, text) {
+				p.state.Apply(PasteCollapsed{Text: text, Lines: pasteLineCount(text)})
 				return p, nil
 			}
 			// KeyRunes (typed or pasted, including bracketed pastes) is user

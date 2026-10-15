@@ -249,6 +249,13 @@ type State struct {
 	HistCursor int
 	// HistDraft stashes the live input while history is being browsed.
 	HistDraft string
+	// Pastes holds the payloads behind collapsed paste chips in Input. A chip
+	// renders inline as "[Paste #N - K lines]" while its full text waits here
+	// for submission; the payload is released once its label leaves Input.
+	Pastes []PasteChip
+	// NextPasteID numbers the next collapsed paste. It never reuses an id, so
+	// a stale label can never resurrect a deleted payload.
+	NextPasteID int
 	// Queued holds prompts typed while a turn runs, in order. They submit
 	// automatically when the turn completes.
 	Queued []string
@@ -366,6 +373,7 @@ func (s *State) Apply(event Event) {
 		s.Entries = append(s.Entries, Entry{Kind: EntryUser, UserText: e.Text})
 		s.Input = ""
 		s.Cursor = 0
+		s.Pastes = nil
 		s.Status.Busy = true
 		// The prompt joins recallable history. Consecutive duplicates are
 		// collapsed so holding enter does not flood the history.
@@ -591,20 +599,17 @@ func (s *State) Apply(event Event) {
 		s.Cursor = len([]rune(e.Text))
 		s.SlashCursor = 0
 		s.SlashHide = false
+		s.prunePastes()
 
 	case ComposerChanged:
-		if s.Input != e.Text {
-			// New text re-opens discovery and parks on the top match.
-			s.SlashCursor = 0
-			s.SlashHide = false
-		}
-		s.Input = e.Text
-		s.Cursor = clampCursor(e.Text, e.Cursor)
-		// Typing over a recalled entry leaves history: the draft stays saved
-		// until the prompt submits or history is re-entered.
-		if s.HistCursor >= 0 {
-			s.HistCursor = -1
-		}
+		s.setComposer(e.Text, e.Cursor)
+
+	case PasteCollapsed:
+		s.NextPasteID++
+		chip := PasteChip{ID: s.NextPasteID, Payload: e.Text, Lines: e.Lines}
+		s.Pastes = append(s.Pastes, chip)
+		label := pasteChipLabel(chip)
+		s.setComposer(insertAt(s.Input, s.Cursor, label), s.Cursor+len([]rune(label)))
 
 	case SlashMoved:
 		s.SlashHide = false
@@ -1253,6 +1258,28 @@ func clampCursor(text string, pos int) int {
 		return n
 	}
 	return pos
+}
+
+// setComposer is the single write path for the composed text and cursor.
+// Editing over a recalled entry leaves history and abandons the stashed draft
+// (there is no way back to it once it is edited), and any change prunes paste
+// chips whose labels no longer appear so payloads never outlive their pills.
+func (s *State) setComposer(text string, cursor int) {
+	if s.Input != text {
+		// New text re-opens discovery and parks on the top match.
+		s.SlashCursor = 0
+		s.SlashHide = false
+	}
+	s.Input = text
+	s.Cursor = clampCursor(text, cursor)
+	if s.HistCursor >= 0 {
+		// Editing a recalled entry returns to live input: the stashed draft is
+		// abandoned and can never be restored, so it must not keep a paste
+		// payload alive.
+		s.HistCursor = -1
+		s.HistDraft = ""
+	}
+	s.prunePastes()
 }
 
 // moveHistory browses recallable prompts. Positive delta goes older.
@@ -1924,6 +1951,17 @@ type ComposerChanged struct {
 }
 
 func (ComposerChanged) eventKind() string { return "composer_changed" }
+
+// PasteCollapsed folds a large multi-line paste into an inline chip. The
+// payload is retained for submission and the label is inserted at the cursor.
+type PasteCollapsed struct {
+	// Text is the paste's full payload.
+	Text string
+	// Lines is the logical line count shown in the label.
+	Lines int
+}
+
+func (PasteCollapsed) eventKind() string { return "paste_collapsed" }
 
 // HistoryMoved browses recallable prompts. Positive delta goes older.
 type HistoryMoved struct{ Delta int }
