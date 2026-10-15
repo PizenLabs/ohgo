@@ -122,7 +122,7 @@ func (t *WaitTool) pollOne(jobID string) (agent.Result, bool) {
 	if !snap.ok {
 		return agent.ErrorResult("unknown background job %q", jobID), true
 	}
-	return renderWait(jobID, snap)
+	return t.renderWait(jobID, snap)
 }
 
 // pollAny checks the whole table. done reports the wait is over either way.
@@ -141,7 +141,7 @@ func (t *WaitTool) pollAny() (agent.Result, bool) {
 	case any.id == "":
 		return agent.ErrorResult("no background jobs: start one with bash first"), true
 	}
-	return renderWait(any.id, any.jobSnapshot)
+	return t.renderWait(any.id, any.jobSnapshot)
 }
 
 // onTimeout reports what arrived before the deadline.
@@ -184,10 +184,32 @@ func (t *WaitTool) onTimeout(jobID string) agent.Result {
 }
 
 // renderWait shapes one poll into a result.
-func renderWait(id string, snap jobSnapshot) (agent.Result, bool) {
+//
+// When output arrives from a job not yet marked finished, the exit may be
+// recorded moments later: os/exec copies the final bytes before Wait returns,
+// and the reaper records the exit after. The settle gives the reaper a bounded
+// window so a completed job reports its exit code in the same result, while a
+// genuinely running job still reports "still running" with its output.
+func (t *WaitTool) renderWait(id string, snap jobSnapshot) (agent.Result, bool) {
 	if snap.text == "" && !snap.done {
 		// Still running with nothing new: keep blocking.
 		return agent.Result{}, false
+	}
+	if !snap.done && snap.text != "" {
+		deadline := time.Now().Add(exitSettleWindow)
+		for {
+			if done, ok := t.jobs.completion(id); ok {
+				snap.done = done.done
+				snap.exitCode = done.exitCode
+				snap.timedOut = done.timedOut
+				snap.elapsed = done.elapsed
+				break
+			}
+			if !time.Now().Before(deadline) {
+				break
+			}
+			time.Sleep(exitSettleStep)
+		}
 	}
 	return renderFinished(id, snap), true
 }

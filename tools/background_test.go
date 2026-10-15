@@ -9,6 +9,39 @@ import (
 	"github.com/PizenLabs/ohgo/agent"
 )
 
+// TestWaitReportsCompletionWhenOutputPrecedesExit reproduces the ordering that
+// caused a fast job to be reported as still running: os/exec flushes the final
+// bytes before Wait returns, and the reaper records the exit only after, so a
+// waiter can see output while the job is not yet marked finished. The wait must
+// still report the exit code in that result rather than "still running".
+func TestWaitReportsCompletionWhenOutputPrecedesExit(t *testing.T) {
+	jobs := NewBackgroundJobs()
+	wait := NewWaitTool(jobs)
+
+	id, err := jobs.reserve("echo hi")
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	jobs.append(id, []byte("hi\n"))
+	// Record the exit only after the output is already visible, mimicking a
+	// loaded machine where the reaper goroutine is slow to run.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		jobs.finish(id, 0, false)
+	}()
+
+	result := wait.Execute(bgCtx(), map[string]any{"jobId": id, "timeout": float64(5000)})
+	if result.IsError {
+		t.Fatalf("wait: %s", result.Text)
+	}
+	if !strings.Contains(result.Text, "hi") {
+		t.Errorf("result = %q, want the job's output", result.Text)
+	}
+	if !strings.Contains(result.Text, "finished") || !strings.Contains(result.Text, "exit code 0") {
+		t.Errorf("result = %q, want the exit reported with the output", result.Text)
+	}
+}
+
 // bgCtx is a context with no deadline, for jobs that must outlive the call.
 func bgCtx() agent.Context {
 	return agent.Context{Ctx: context.Background()}
