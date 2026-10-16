@@ -899,6 +899,16 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return p, nil
 
+	case "ctrl+s":
+		// Ctrl+S opens $sup without going through the composer, so a prompt
+		// already being written is never repurposed as a command. The draft
+		// survives: the chord never clears the main input (see
+		// openSupportChord). Raw mode disables IXON, so the chord arrives as
+		// a key event rather than a terminal XOFF; a terminal that still
+		// traps flow control needs `stty -ixon` to deliver it.
+		p.openSupportChord()
+		return p, nil
+
 	case "ctrl+c":
 		return p.interruptOrClear()
 
@@ -2870,6 +2880,23 @@ func (p *Program) openSupport(question string) {
 	if trimmed := strings.TrimSpace(question); trimmed != "" && !p.state.SupportBusy() {
 		p.state.Apply(SupportInputChanged{Text: trimmed, Cursor: len([]rune(trimmed))})
 	}
+}
+
+// openSupportChord opens the ephemeral $sup surface from the Ctrl+S chord.
+//
+// It differs from the "$sup"/"/sup" line in one deliberate way: the chord
+// fires while a prompt is still being composed, so it must not consume or
+// clear the main composer — the user keeps the draft they were writing. The
+// overlay opens with input focus and starts no provider call until a request
+// is submitted. A missing handler reports the surface unavailable, matching
+// /sup, rather than opening an overlay that could never answer.
+func (p *Program) openSupportChord() {
+	if p.support == nil {
+		p.state.Apply(Notice{Text: "$sup is unavailable"})
+		return
+	}
+	model, effort := p.supportIdentity()
+	p.state.Apply(SupportOpened{Model: model, Effort: effort})
 }
 
 // startSupportRun begins one support turn for a non-empty request. It runs

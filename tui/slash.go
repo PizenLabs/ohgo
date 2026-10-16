@@ -138,9 +138,11 @@ func SpliceToken(input string, start, end int, text string) (string, int) {
 }
 
 // supportShortcuts is the "$" trigger's registry. It is a slice rather than a
-// single constant so a future shortcut is one row, not a new branch.
+// single constant so a future shortcut is one row, not a new branch. The
+// detail names the Ctrl+S chord so the surface is discoverable without
+// typing the trigger first.
 var supportShortcuts = []paletteEntry{
-	{Name: "$sup", Detail: "fast assistance", Insert: "$sup ", Group: "SUPPORT"},
+	{Name: "$sup", Detail: "fast assistance · Ctrl+S", Insert: "$sup ", Group: "SUPPORT"},
 }
 
 // paletteStyles names the semantic styles the palette uses, resolved once per

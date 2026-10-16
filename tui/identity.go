@@ -41,7 +41,7 @@ var capabilityModes = []struct{ name, desc string }{
 // not exist.
 var triggerShortcuts = []string{
 	"/model  choose model    /help  commands",
-	"@files  attach files    $sup   quick answers",
+	"@files  attach files    $sup   quick answers (Ctrl+S)",
 }
 
 // RenderIdentitySurface renders the runtime identity surface for facts at
