@@ -4,69 +4,26 @@ import (
 	"strings"
 )
 
-// IdentityFacts is the truthful runtime state the identity surface shows.
+// IdentityFacts is the truthful runtime state the quickstart surface shows.
 //
-// Every field is display-ready plain text derived from actual state: the
-// project worker display name, the greeting for it, the model reference, the
-// workspace label, the working directory, and the git line. Empty means
-// unknown and renders as an explicit placeholder, never as invented state.
+// It is deliberately narrow. The top bar owns the runtime facts — model,
+// workspace, working directory, git state, and readiness — so this surface
+// carries only what is ephemeral and unowned: who is being greeted, and by
+// name. Empty means unknown and renders as product identity rather than
+// invented state.
 type IdentityFacts struct {
 	// User is the project worker display name, "" when unset.
 	User string
 	// Greeting is the time-of-day greeting, e.g. "Good evening, Jack."
 	Greeting string
-	// Model is the model reference, e.g. "openrouter/qwen3-coder".
-	Model string
-	// Workspace is the authority label, e.g. "BUILD".
-	Workspace string
-	// Cwd is the working directory, already shortened for display.
-	Cwd string
-	// Git is the one-line git state, e.g. "main · clean".
-	Git string
-	// Ready is runtime readiness, e.g. "ready".
-	Ready string
-	// Version is the release label for the frame title, e.g. "v1.0.0".
-	// Empty renders a bare "ohgo" frame with no invented release.
-	Version string
 }
 
 // FactsFromStatus derives the identity facts from rendered state.
 func FactsFromStatus(s State) IdentityFacts {
 	return IdentityFacts{
-		User:      s.Status.User,
-		Greeting:  s.Status.Greeting,
-		Model:     s.Status.Model,
-		Workspace: s.Status.Workspace,
-		Cwd:       s.Status.Cwd,
-		Git:       gitLine(s),
-		Ready:     readyLine(s),
-		Version:   VersionLabel(s.Status.Version),
+		User:     s.Status.User,
+		Greeting: s.Status.Greeting,
 	}
-}
-
-func gitLine(s State) string {
-	branch := strings.TrimSpace(s.Status.GitBranch)
-	status := strings.TrimSpace(s.Status.GitStatus)
-	switch {
-	case branch == "" && status == "":
-		return ""
-	case status == "":
-		return branch
-	case branch == "":
-		return status
-	default:
-		return branch + " · " + status
-	}
-}
-
-func readyLine(s State) string {
-	if strings.TrimSpace(s.Status.Ready) != "" {
-		return strings.TrimSpace(s.Status.Ready)
-	}
-	if s.Status.Busy {
-		return "working"
-	}
-	return "ready"
 }
 
 // capabilityModes are OHGO's three interaction/authority modes. They are
@@ -78,16 +35,25 @@ var capabilityModes = []struct{ name, desc string }{
 	{"FUZZ", "$sup · fast assistance"},
 }
 
+// triggerShortcuts are the affordances the empty screen teaches. They are a
+// pure function of the product, never of state: the same three triggers on
+// every fresh session, so the surface never advertises a shortcut that does
+// not exist.
+var triggerShortcuts = []string{
+	"/model  choose model    /help  commands",
+	"@files  attach files    $sup   quick answers (Ctrl+S)",
+}
+
 // RenderIdentitySurface renders the runtime identity surface for facts at
 // width. It is pure: semantic sections first, then a density policy per
 // tier, then truncation so no line exceeds width and no border breaks.
 //
 // Tiers mirror LayoutForMode: wide (>=100) and medium (70-99) box the same
-// clean vertical stack — identity, meta, capability modes grouped together,
-// then affordances — narrow (<70) drops the border and keeps content over
-// decoration. Non-positive widths render the stack unboxed. There are no
-// inner divider rules: the outer frame is the only box drawing, so the modes
-// read as one group rather than two split panes.
+// clean vertical stack — identity, capability modes grouped together, then
+// the trigger shortcuts — narrow (<70) drops the border and keeps content
+// over decoration. Non-positive widths render the stack unboxed. There are
+// no inner divider rules: the outer frame is the only box drawing, so the
+// modes read as one group rather than two split panes.
 func RenderIdentitySurface(f IdentityFacts, width int) string {
 	if width <= 0 {
 		return renderIdentityStack(f, 0)
@@ -117,13 +83,9 @@ func renderIdentityBoxed(f IdentityFacts, width int) string {
 		return renderIdentityStack(f, width)
 	}
 	content := identityContentLines(f)
-	// The frame names the release beside the brand ("ohgo v1.0.0"), sized
-	// from the label so the border never breaks; unknown versions keep the
-	// bare title.
-	title := "─ ohgo ─"
-	if v := sanitizeInline(f.Version); v != "" {
-		title = "─ ohgo " + v + " ─"
-	}
+	// The frame labels the surface, not the release: the top bar already
+	// brands the version, so the box legend stays the same on every build.
+	title := "─ Quickstart ─"
 	var sb strings.Builder
 	sb.WriteString(fitOne("┌"+title+strings.Repeat("─", max(0, inner-CellWidth(title)))+"┐", width) + "\n")
 	sb.WriteString(fitOne("│"+strings.Repeat(" ", inner)+"│", width) + "\n")
@@ -135,10 +97,11 @@ func renderIdentityBoxed(f IdentityFacts, width int) string {
 	return sb.String()
 }
 
-// identityContentLines builds the semantic sections: identity header, runtime
-// meta, capability modes grouped together, affordances. One vertical stack at
-// every width: modes are never split across columns, and there are no inner
-// divider rules — the outer frame carries the only box drawing.
+// identityContentLines builds the semantic sections: identity header,
+// capability modes grouped together, then the trigger shortcuts. One vertical
+// stack at every width: modes are never split across columns, the top bar's
+// runtime metadata is never repeated here, and there are no inner divider
+// rules — the outer frame carries the only box drawing.
 func identityContentLines(f IdentityFacts) []string {
 	var lines []string
 	title := "OHGO"
@@ -152,35 +115,11 @@ func identityContentLines(f IdentityFacts) []string {
 	}
 	lines = append(lines, "agent runtime for real codebases")
 	lines = append(lines, "")
-	model := f.Model
-	if model == "" {
-		model = "no model"
-	}
-	git := f.Git
-	if git == "" {
-		git = "git unavailable"
-	}
-	cwd := f.Cwd
-	if cwd == "" {
-		cwd = "no workspace"
-	}
-	ready := f.Ready
-	if ready == "" {
-		ready = "ready"
-	}
-	// Stacked meta: one fact per line so terminals truncate
-	// values, never whole facts. Capability modes stay grouped together,
-	// then the affordance line — no columns, no inner rules.
-	lines = append(lines, "model      "+model)
-	lines = append(lines, "git        "+git)
-	lines = append(lines, "workspace  "+cwd)
-	lines = append(lines, "status     "+ready)
-	lines = append(lines, "")
 	for _, m := range capabilityModes {
 		lines = append(lines, padCells(m.name, 9)+m.desc)
 	}
 	lines = append(lines, "")
-	lines = append(lines, "/model    choose model        /help    commands")
+	lines = append(lines, triggerShortcuts...)
 	return lines
 }
 

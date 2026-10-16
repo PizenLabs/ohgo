@@ -88,10 +88,19 @@ Reads, edits, and runs code in your repository through eleven tools
 persistence, context compaction, subagent delegation (`--max-depth`),
 a wall-clock run budget (`--deadline`), and per-tool approval prompts.
 
-In-session commands: `/help /commands /clear /model [provider/id] /models /sessions /jobs /theme [dark|light] /connect /disconnect [provider] /providers /status /usage /doctor /retry /compact /quit`. The REPL and the full-screen UI share the same backend, so every command means the same thing in both.
+In-session commands: `/help /commands /clear /model [provider/id] /models /sessions /jobs /theme [dark|light] /connect /disconnect [provider] /providers /status /usage /doctor /diff [target] /retry /compact /quit`. The REPL and the full-screen UI share the same backend, so every command means the same thing in both.
 Mid-session `/model` resolves through the same catalog as `ohgo models`,
 so a listed model is always switchable. `/commands` (or Tab on a `/`-line)
 opens a searchable command palette; every row runs the command it names.
+
+`/diff` opens an interactive diff inspector: a hierarchical changed-file tree
+with `A`/`M`/`D` badges, a `+X -Y` stats bar, and per-file hunks with
+word-level highlighting. It fetches only the file list and counts on open and
+loads each file's hunks on demand (cached), so a large changeset opens
+instantly. `/diff` compares the working tree against `HEAD`, `/diff <target>`
+compares it against a revision, and `/diff <base>..<target>` compares two
+revisions. Keys: `tab` focus · `j`/`k` move · `enter` open · `/` filter ·
+`esc` close.
 
 ## Terminal workspace
 

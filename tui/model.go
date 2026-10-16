@@ -16,6 +16,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/tokens"
+	diffview "github.com/PizenLabs/ohgo/tui/diff"
 )
 
 // ToolStatus is where a tool call is in its lifecycle.
@@ -357,6 +358,11 @@ type State struct {
 	// of the screen, and confirming routes the chosen name through the
 	// workspace owner rather than changing authority here.
 	Permissions *PermissionsState
+	// Diff is the open interactive diff inspector, or nil. It is a full-screen
+	// modal overlay: while set it owns the keyboard and the pane area, and it
+	// reads the repository through its own on-demand git driver. It never
+	// enters the transcript, history, or session.
+	Diff *diffview.Model
 	// Quit is set once the session has been asked to exit.
 	Quit bool
 	// PaletteCursor selects within the inline palette (the "/" command,
@@ -764,6 +770,12 @@ func (s *State) Apply(event Event) {
 
 	case ThemeChanged:
 		s.Theme = NormalizeTheme(e.Name)
+
+	case DiffOpened:
+		s.Diff = e.Model
+
+	case DiffClosed:
+		s.Diff = nil
 
 	case PickerOpened:
 		s.Picker = NewPicker(e.Kind, e.Title, e.Items)
@@ -1805,6 +1817,22 @@ type PermissionsClosed struct{}
 
 func (PermissionsClosed) eventKind() string { return "permissions_closed" }
 
+// DiffOpened installs the interactive diff inspector as the active overlay.
+// The model owns its own repository reads; the program only routes keys and
+// paints its View while it is set.
+type DiffOpened struct {
+	// Model is the inspector to show. A nil model is ignored by the overlay
+	// render, so a caller must always pass a constructed one.
+	Model *diffview.Model
+}
+
+func (DiffOpened) eventKind() string { return "diff_opened" }
+
+// DiffClosed dismisses the inspector and returns the screen to the transcript.
+type DiffClosed struct{}
+
+func (DiffClosed) eventKind() string { return "diff_closed" }
+
 // InputChanged sets the composed line.
 type InputChanged struct{ Text string }
 
@@ -2030,6 +2058,7 @@ var Commands = []CommandSpec{
 	{Name: "status", Usage: "status", Description: "show provider, model, context, and session", Category: CommandGroupControl},
 	{Name: "usage", Usage: "usage", Description: "show token usage and cost", Category: CommandGroupControl},
 	{Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
+	{Name: "diff", Usage: "diff [target]", Description: "inspect the working-tree diff", Category: CommandGroupControl},
 	{Name: "retry", Usage: "retry", Description: "re-send the last prompt", Category: CommandGroupControl},
 	{Name: "compact", Usage: "compact", Description: "summarise context now", Category: CommandGroupControl},
 	{Name: "quit", Usage: "quit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},

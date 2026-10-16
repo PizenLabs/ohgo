@@ -6,19 +6,17 @@ import (
 )
 
 // The identity surface is a semantic composition, not hard-coded strings:
-// the same facts render boxed two-column on wide terminals, boxed stacked
-// on medium, and borderless on narrow — without overflow, clipping, or
-// invented state.
+// the same facts render boxed on wide and medium terminals and borderless on
+// narrow — without overflow, clipping, or invented state.
+//
+// It is intentionally a *quickstart*, not a status board: the top bar owns
+// the runtime facts (model, workspace, cwd, git, readiness), so the surface
+// carries only the greeting, the authority modes, and the trigger shortcuts.
 
 func identityTestFacts() IdentityFacts {
 	return IdentityFacts{
-		User:      "Jack",
-		Greeting:  "Good evening, Jack.",
-		Model:     "openrouter/qwen3-coder",
-		Workspace: "BUILD",
-		Cwd:       "~/pizenlabs/ohgo",
-		Git:       "main · clean",
-		Ready:     "ready",
+		User:     "Jack",
+		Greeting: "Good evening, Jack.",
 	}
 }
 
@@ -26,7 +24,7 @@ func TestIdentitySurfaceKeepsSemanticsAcrossWidths(t *testing.T) {
 	facts := identityTestFacts()
 	for _, width := range []int{120, 85, 50} {
 		out := RenderIdentitySurface(facts, width)
-		for _, want := range []string{"OHGO", "Good evening, Jack.", "openrouter/qwen3-coder", "~/pizenlabs/ohgo", "main · clean", "ASK", "BUILD", "FUZZ", "/model", "/help"} {
+		for _, want := range []string{"OHGO", "Good evening, Jack.", "ASK", "BUILD", "FUZZ", "/model", "/help", "@files", "$sup"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("width %d: surface lacks %q:\n%s", width, want, out)
 			}
@@ -66,16 +64,15 @@ func TestIdentitySurfaceNarrowDropsChromeNotContent(t *testing.T) {
 	}
 }
 
-func TestIdentitySurfaceShowsUnknownStateExplicitly(t *testing.T) {
-	out := RenderIdentitySurface(IdentityFacts{}, 120)
-	for _, want := range []string{"no model", "no workspace", "git unavailable"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("surface hides unknown state, want %q:\n%s", want, out)
+// The surface must not duplicate the top bar: model, workspace, git state,
+// and readiness have one home, and it is the header. A duplicated fact is
+// worse than a missing one because the two can disagree.
+func TestIdentitySurfaceLeavesRuntimeMetadataToTheHeader(t *testing.T) {
+	out := RenderIdentitySurface(identityTestFacts(), 120)
+	for _, duplicated := range []string{"model      ", "git        ", "workspace  ", "status     ", "no workspace", "git unavailable", "no model"} {
+		if strings.Contains(out, duplicated) {
+			t.Errorf("surface duplicated top-bar metadata %q:\n%s", duplicated, out)
 		}
-	}
-	// Unknown must never render as a healthy claim.
-	if strings.Contains(out, "clean") {
-		t.Errorf("surface claims clean with no git state: %q", out)
 	}
 }
 
@@ -120,26 +117,23 @@ func TestIdentitySurfaceWideHasNoInnerSplit(t *testing.T) {
 	}
 }
 
-// The welcome frame titles the release beside the brand; an unknown release
-// keeps the bare frame with no invented version.
-func TestIdentitySurfaceFrameTitlesTheRelease(t *testing.T) {
-	facts := identityTestFacts()
-	facts.Version = "v1.0.0"
-	if out := RenderIdentitySurface(facts, 120); !strings.Contains(out, "─ ohgo v1.0.0 ─") {
-		t.Errorf("wide surface lacks the release title:\n%s", out)
-	}
-	if out := RenderIdentitySurface(identityTestFacts(), 120); !strings.Contains(out, "┌─ ohgo ─") {
-		t.Errorf("bare surface lost its frame title:\n%s", out)
+// The frame labels the surface as a quickstart on every build; the release
+// is the top bar's fact, so the welcome box never brands a version.
+func TestIdentitySurfaceFrameTitlesTheQuickstart(t *testing.T) {
+	if out := RenderIdentitySurface(identityTestFacts(), 120); !strings.Contains(out, "─ Quickstart ─") {
+		t.Errorf("wide surface lacks the quickstart title:\n%s", out)
 	}
 }
 
-// FactsFromStatus normalizes the release once, so the header and the frame
-// cannot spell it differently.
-func TestFactsFromStatusCarriesVersion(t *testing.T) {
+// FactsFromStatus carries the ephemeral greeting facts and nothing the top
+// bar already owns.
+func TestFactsFromStatusCarriesGreeting(t *testing.T) {
 	s := New()
-	s.Status.Version = "1.0.0"
-	if got := FactsFromStatus(s).Version; got != "v1.0.0" {
-		t.Errorf("facts version = %q, want %q", got, "v1.0.0")
+	s.Status.User = "Jack"
+	s.Status.Greeting = "Good evening, Jack."
+	facts := FactsFromStatus(s)
+	if facts.User != "Jack" || facts.Greeting != "Good evening, Jack." {
+		t.Errorf("facts = %+v, want the user and greeting", facts)
 	}
 }
 
@@ -158,21 +152,21 @@ func TestIdentityUpdatedAppliesWithoutTouchingTranscript(t *testing.T) {
 		t.Errorf("identity leaked %d entries into the transcript", len(s.Entries))
 	}
 	facts := FactsFromStatus(s)
-	if facts.Git != "main · clean" {
-		t.Errorf("git line = %q, want %q", facts.Git, "main · clean")
+	if facts.Greeting != "Good evening, Jack." {
+		t.Errorf("greeting = %q, want %q", facts.Greeting, "Good evening, Jack.")
 	}
 }
 
 func TestWelcomeRendersGreetingFromState(t *testing.T) {
 	s := New()
-	s.Status.Model = "groq/m"
 	s.Apply(IdentityUpdated{User: "Jack", Greeting: "Good evening, Jack.", GitBranch: "main", GitStatus: "clean", Ready: "ready"})
 	s.Apply(TerminalResized{Width: 100, Height: 30})
-	out := Render(s)
-	for _, want := range []string{"Good evening, Jack.", "groq/m", "main · clean"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("welcome lacks %q:\n%s", want, out)
-		}
+	out := renderWelcome(s, DarkPalette(), ComputeLayout(s))
+	if !strings.Contains(out, "Good evening, Jack.") {
+		t.Errorf("welcome lost the greeting:\n%s", out)
+	}
+	if strings.Contains(out, "main · clean") {
+		t.Errorf("welcome duplicated the top-bar git state:\n%s", out)
 	}
 }
 

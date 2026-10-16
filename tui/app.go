@@ -536,6 +536,7 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		p.state.Apply(TerminalResized{Width: m.Width, Height: m.Height})
+		p.syncDiffSize()
 		return p, nil
 
 	case tea.MouseMsg:
@@ -548,6 +549,12 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		return p.handleMouse(m)
+	}
+	// Anything else may belong to the inspector's asynchronous fetches. It is
+	// forwarded only while the inspector is open, so a stray message for a
+	// closed model is dropped.
+	if p.state.Diff != nil {
+		return p.handleDiffMsg(msg)
 	}
 	return p, nil
 }
@@ -567,7 +574,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil {
+	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil {
 		return false
 	}
 	return s.Input == ""
@@ -625,6 +632,15 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.Button != tea.MouseButtonWheelUp && m.Button != tea.MouseButtonWheelDown {
 		return p, nil
+	}
+	// The inspector owns the wheel while it is open: a tick moves the tree
+	// selection or scrolls the hunk viewport, never the hidden transcript.
+	if p.state.Diff != nil {
+		keyType := tea.KeyDown
+		if m.Button == tea.MouseButtonWheelUp {
+			keyType = tea.KeyUp
+		}
+		return p.handleDiffKey(tea.KeyMsg{Type: keyType})
 	}
 	switch m.Button {
 	case tea.MouseButtonWheelUp:
@@ -763,6 +779,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 
+	if p.state.Diff != nil {
+		return p.handleDiffKey(msg)
+	}
+
 	if p.state.Plane != nil {
 		// The support overlay never stacks with the model control plane:
 		// /model is unavailable until support closes.
@@ -877,6 +897,16 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return p, nil
+
+	case "ctrl+s":
+		// Ctrl+S opens $sup without going through the composer, so a prompt
+		// already being written is never repurposed as a command. The draft
+		// survives: the chord never clears the main input (see
+		// openSupportChord). Raw mode disables IXON, so the chord arrives as
+		// a key event rather than a terminal XOFF; a terminal that still
+		// traps flow control needs `stty -ixon` to deliver it.
+		p.openSupportChord()
 		return p, nil
 
 	case "ctrl+c":
@@ -1271,6 +1301,9 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 	case "doctor":
 		p.runDoctor()
 		return nil
+
+	case "diff":
+		return p.openDiff(command.Args)
 
 	case "retry":
 		return p.retryLast()
@@ -2847,6 +2880,23 @@ func (p *Program) openSupport(question string) {
 	if trimmed := strings.TrimSpace(question); trimmed != "" && !p.state.SupportBusy() {
 		p.state.Apply(SupportInputChanged{Text: trimmed, Cursor: len([]rune(trimmed))})
 	}
+}
+
+// openSupportChord opens the ephemeral $sup surface from the Ctrl+S chord.
+//
+// It differs from the "$sup"/"/sup" line in one deliberate way: the chord
+// fires while a prompt is still being composed, so it must not consume or
+// clear the main composer — the user keeps the draft they were writing. The
+// overlay opens with input focus and starts no provider call until a request
+// is submitted. A missing handler reports the surface unavailable, matching
+// /sup, rather than opening an overlay that could never answer.
+func (p *Program) openSupportChord() {
+	if p.support == nil {
+		p.state.Apply(Notice{Text: "$sup is unavailable"})
+		return
+	}
+	model, effort := p.supportIdentity()
+	p.state.Apply(SupportOpened{Model: model, Effort: effort})
 }
 
 // startSupportRun begins one support turn for a non-empty request. It runs

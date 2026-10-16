@@ -123,3 +123,21 @@ func TestMentionContextRendersPathAndContent(t *testing.T) {
 		t.Errorf("context = %q, want the content verbatim", got)
 	}
 }
+
+// The identity block is the contract that keeps the first turn from turning
+// into a brochure: a plain greeting must not produce a self-introduction, a
+// tool roster, or a capability list. Each assertion pins one clause the model
+// would otherwise be free to ignore.
+func TestIdentityForbidsSelfIntroduction(t *testing.T) {
+	lower := strings.ToLower(Identity)
+	for _, want := range []string{
+		"task execution engine",
+		"do not introduce yourself",
+		"never open with a self-introduction",
+		"do not list tools",
+	} {
+		if !strings.Contains(lower, want) {
+			t.Errorf("identity does not forbid boilerplate (%q):\n%s", want, Identity)
+		}
+	}
+}
