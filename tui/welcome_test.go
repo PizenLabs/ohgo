@@ -26,7 +26,7 @@ func TestWelcomeShowsOnEmptyTranscriptWithoutPersisting(t *testing.T) {
 	if !strings.Contains(out, welcomeInvite) {
 		t.Fatalf("empty render lacks the identity surface: %q", out)
 	}
-	for _, want := range []string{"OHGO", "ASK", "BUILD", "FUZZ", "/model", "/help", "groq/m"} {
+	for _, want := range []string{"OHGO", "Quickstart", "ASK", "BUILD", "FUZZ", "/model", "/help", "@files", "$sup", "groq/m"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("identity surface lacks %q: %q", want, out)
 		}
@@ -40,6 +40,39 @@ func TestWelcomeShowsOnEmptyTranscriptWithoutPersisting(t *testing.T) {
 	}
 	if s.AssistantText() != "" {
 		t.Errorf("assistant text = %q, want the welcome never treated as a reply", s.AssistantText())
+	}
+}
+
+// The welcome is a quickstart, not a second status board: the model and git
+// state it used to repeat are the header's facts, and a duplicate can drift
+// from the real one.
+func TestWelcomeOmitsHeaderMetadata(t *testing.T) {
+	s := New()
+	s.Status.Model = "groq/m"
+	s.Apply(IdentityUpdated{User: "Jack", Greeting: "Good evening, Jack.", GitBranch: "main", GitStatus: "clean", Ready: "ready"})
+	s.Apply(TerminalResized{Width: 100, Height: 24})
+
+	welcome := renderWelcome(s, DarkPalette(), ComputeLayout(s))
+	for _, gone := range []string{"groq/m", "main · clean", "no model", "git unavailable"} {
+		if strings.Contains(welcome, gone) {
+			t.Errorf("welcome repeated header metadata %q:\n%s", gone, welcome)
+		}
+	}
+}
+
+// SessionActive is the lifecycle gate: the first submitted prompt ends the
+// welcome even if the transcript is momentarily empty, so the surface cannot
+// outlive the session it introduces.
+func TestWelcomeRequiresAnInactiveSession(t *testing.T) {
+	s := New()
+	s.Status.Model = "groq/m"
+	s.Apply(TerminalResized{Width: 100, Height: 24})
+	if !showWelcome(s) {
+		t.Fatal("welcome must show before any prompt")
+	}
+	s.SessionActive = true
+	if showWelcome(s) {
+		t.Error("welcome survived SessionActive=true")
 	}
 }
 

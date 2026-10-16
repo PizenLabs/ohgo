@@ -614,12 +614,14 @@ func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout
 // showWelcome reports whether the empty-conversation introduction belongs.
 //
 // It is derived, never stored: the welcome is chrome for "nothing has happened
-// yet", so it appears exactly when the transcript is empty and vanishes the
-// moment real content lands or an overlay owns the screen. Because it is only
-// ever rendered — never applied as an Entry — it cannot leak into the
-// persisted session or reappear over a resumed transcript.
+// yet", so it appears exactly when no prompt has run and the transcript is
+// empty, and vanishes the moment real content lands or an overlay owns the
+// screen. SessionActive is the lifecycle gate: the first submitted prompt
+// flips it, so the surface is gone even before the transcript renders. Because
+// it is only ever rendered — never applied as an Entry — it cannot leak into
+// the persisted session or reappear over a resumed transcript.
 func showWelcome(state State) bool {
-	return len(state.Entries) == 0 && state.Picker == nil && state.Secret == nil && state.Pending == nil && state.QuitConfirm == nil && state.Permissions == nil
+	return !state.SessionActive && len(state.Entries) == 0 && state.Picker == nil && state.Secret == nil && state.Pending == nil && state.QuitConfirm == nil && state.Permissions == nil
 }
 
 // renderTranscriptBody renders every entry wrapped to the content width.
@@ -635,15 +637,14 @@ func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 // renderWelcome draws the runtime identity surface for an empty
 // conversation.
 //
-// It derives every value from state: local identity, greeting, model,
-// workspace, git state, and readiness. It is chrome, never an Entry, so it
-// vanishes the moment real content lands and never persists. Layout follows
-// the responsive tier: wide boxes a two-column composition, medium a dense
-// vertical stack, narrow a borderless compact form.
+// It derives only the ephemeral facts from state: the local identity and the
+// greeting. The model, workspace, working directory, git state, and readiness
+// live in the top bar; repeating them here would double a fact the user can
+// already see. It is chrome, never an Entry, so it vanishes the moment real
+// content lands and never persists. Layout follows the responsive tier: wide
+// and medium box the composition, narrow renders it borderless.
 func renderWelcome(state State, pal *Palette, layout Layout) string {
 	facts := FactsFromStatus(state)
-	// Cwd arrives absolute; the surface shows the dense ~/ form.
-	facts.Cwd = shortenDisplayCwd(facts.Cwd)
 	surface := RenderIdentitySurface(facts, state.Width)
 	if state.Width > 0 {
 		// The transcript area slices by lines; style after measuring so ANSI
@@ -657,11 +658,6 @@ func renderWelcome(state State, pal *Palette, layout Layout) string {
 		return strings.Join(styled, "\n") + "\n"
 	}
 	return surface + "\n"
-}
-
-// shortenDisplayCwd collapses $HOME to ~ for the identity surface.
-func shortenDisplayCwd(cwd string) string {
-	return shortenCwd(cwd, 48)
 }
 
 // styleIdentityLine keeps box borders dim and lets identity content read.
