@@ -501,6 +501,8 @@ func liveOverlay(s State, pal *Palette, layout Layout) []string {
 	switch {
 	case s.QuitConfirm != nil:
 		return liveQuitConfirmLines(s, pal, layout)
+	case s.Diff != nil:
+		return liveDiffLines(s)
 	case s.Picker != nil:
 		return livePickerLines(s, pal, layout)
 	case s.Pending != nil:
@@ -509,6 +511,16 @@ func liveOverlay(s State, pal *Palette, layout Layout) []string {
 		return liveSecretLines(s, pal, layout)
 	}
 	return nil
+}
+
+// liveDiffLines renders the inspector in output-first mode. The model already
+// bounds its own frame to the budget the program set (see syncDiffSize), so the
+// rows are taken as-is.
+func liveDiffLines(s State) []string {
+	if s.Diff == nil {
+		return nil
+	}
+	return splitLines(s.Diff.View())
 }
 
 // livePickerLines renders the selection overlay. The question is the one row

@@ -536,6 +536,7 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		p.state.Apply(TerminalResized{Width: m.Width, Height: m.Height})
+		p.syncDiffSize()
 		return p, nil
 
 	case tea.MouseMsg:
@@ -548,6 +549,12 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		return p.handleMouse(m)
+	}
+	// Anything else may belong to the inspector's asynchronous fetches. It is
+	// forwarded only while the inspector is open, so a stray message for a
+	// closed model is dropped.
+	if p.state.Diff != nil {
+		return p.handleDiffMsg(msg)
 	}
 	return p, nil
 }
@@ -567,7 +574,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil {
+	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil {
 		return false
 	}
 	return s.Input == ""
@@ -625,6 +632,15 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.Button != tea.MouseButtonWheelUp && m.Button != tea.MouseButtonWheelDown {
 		return p, nil
+	}
+	// The inspector owns the wheel while it is open: a tick moves the tree
+	// selection or scrolls the hunk viewport, never the hidden transcript.
+	if p.state.Diff != nil {
+		keyType := tea.KeyDown
+		if m.Button == tea.MouseButtonWheelUp {
+			keyType = tea.KeyUp
+		}
+		return p.handleDiffKey(tea.KeyMsg{Type: keyType})
 	}
 	switch m.Button {
 	case tea.MouseButtonWheelUp:
@@ -761,6 +777,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		return p, nil
+	}
+
+	if p.state.Diff != nil {
+		return p.handleDiffKey(msg)
 	}
 
 	if p.state.Plane != nil {
@@ -1271,6 +1291,9 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 	case "doctor":
 		p.runDoctor()
 		return nil
+
+	case "diff":
+		return p.openDiff(command.Args)
 
 	case "retry":
 		return p.retryLast()
