@@ -505,6 +505,31 @@ open.
 
 ---
 
+## 10.4 `$sup` Is Context-Light
+
+`$sup` is a dedicated, ephemeral answer path, not a reduced workspace. Its
+request carries:
+
+```text
+minimal system instruction
+user query
+```
+
+and nothing else. It receives no repository or workspace context, no file or
+symbol context, no tool definitions, no execution state, and none of the main
+session's history. Being inside a repository does not cause repository context
+to be attached. It sends its request through the shared provider transport on
+the SUP role model, so transport, credentials, model selection, and streaming
+are unchanged; only the context semantics are smaller.
+
+A greeting or other empty query may be answered locally, so the cheapest
+questions spend no provider request at all.
+
+The surface keeps its own transient conversation, which is still never
+persisted and never enters the main history (§10.2).
+
+---
+
 # 11. Model Binding
 
 OHGO supports workspace-specific model selection.
@@ -1502,7 +1527,6 @@ Activities:
     analyze
     plan
     review
-    $sup
 
 
 FUZZ

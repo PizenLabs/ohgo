@@ -495,28 +495,12 @@ func (l *Loop) convert(messages []Message) ([]ai.Message, error) {
 
 // drain consumes a stream to completion and returns the assembled message.
 //
-// Visible text deltas are forwarded to OnTextDelta while the stream is still
-// open, in order, so a UI can reveal the answer as it is generated. The
-// loop's contract is still the completed message: a nil hook only skips the
-// forwarding, and every other event is discarded on purpose.
+// It forwards visible text to the loop's OnTextDelta hook through the shared
+// ai.DrainStream, so the loop and any other consumer (the $sup answer surface)
+// cannot drift on what draining a stream means: the loop's contract is still
+// the completed message.
 func (l *Loop) drain(ctx context.Context, stream *ai.Stream) (ai.AssistantMessage, error) {
-	if stream == nil {
-		return ai.AssistantMessage{}, errors.New("agent: nil stream")
-	}
-	hook := l.cfg.OnTextDelta
-	for event := range stream.Events {
-		// Draining is required: the producer blocks on an unbuffered send
-		// otherwise, and the stream would never finish.
-		if delta, ok := event.(ai.EventTextDelta); ok && hook != nil && delta.Delta != "" {
-			hook(delta.Delta)
-		}
-		select {
-		case <-ctx.Done():
-			return ai.AssistantMessage{}, ctx.Err()
-		default:
-		}
-	}
-	return stream.Result()
+	return ai.DrainStream(ctx, stream, l.cfg.OnTextDelta)
 }
 
 // dispatch runs a batch of tool calls.

@@ -6,19 +6,35 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/prompt"
 )
 
-// supportBundle is one resolved SUP runtime: the loop plus the canonical
-// identity it was built from.
+// supMaxTokens bounds one $sup completion.
+//
+// The system prompt asks for the shortest answer that fully answers the
+// question (~128 tokens); this cap is a guardrail against a runaway reply, not
+// the target. It is deliberately far below the model's coding-agent ceiling —
+// an answer surface has no file writes or long plans to fit.
+const supMaxTokens = 1024
+
+// supportBundle is one resolved $sup invocation target: the shared provider
+// transport plus the model and effort to send through it.
+//
+// It carries a transport function rather than a built agent loop because $sup
+// is an answer surface, not a workspace: no tools, no repository context, no
+// execution semantics. A loop would be dead weight between the question and the
+// provider (§1, §4).
 type supportBundle struct {
-	loop *agent.Loop
-	// ref is the canonical "provider/id" the loop calls.
+	// stream opens one completion through the shared provider abstraction.
+	stream ai.StreamFn
+	// model is the resolved SUP-role model the request is sent to.
+	model ai.Model
+	// ref is the canonical "provider/id" the request is sent to.
 	ref string
-	// effort is the thinking effort the loop runs with ("", "off", or a
+	// effort is the thinking effort the request runs with ("", "off", or a
 	// ladder level).
 	effort string
 }
@@ -27,19 +43,22 @@ type supportBundle struct {
 //
 // $sup is an interaction surface on the SUP model role, not a workspace
 // (§10.1): the surface creates no authority and never changes the workspace
-// the session runs under. The loop runs under ASK authority (read-only),
-// but its model and effort resolve through the SUP role. Messages live only
-// here — they are never appended to the main history and never written to
-// the session store — so a support exchange cannot pollute the main task
-// context (§10.2, I17).
+// the session runs under. It is a dedicated, context-light semantic path — a
+// minimal system instruction plus the query, sent straight through the shared
+// provider transport (§1). It gets no repository, workspace, tool, or main
+// history context (§2, §3, §4), and an exchange cannot pollute the main task
+// context because it is never appended to the main history or the session
+// store (§10.2, I17).
 //
 // The bundle is resolved on every ask rather than cached, so a /model
 // reassignment of SUP applies to the next $sup invocation with no restart.
 type supportSurface struct {
 	build func() (supportBundle, error)
 
-	mu   sync.Mutex
-	msgs []agent.Message
+	mu sync.Mutex
+	// msgs is the surface's own ephemeral thread. It is the only history $sup
+	// sees: never the main conversation, and it is discarded on close.
+	msgs []ai.Message
 }
 
 // newSupportSurface wraps a bundle builder.
@@ -57,39 +76,69 @@ func (s *supportSurface) ask(ctx context.Context, question string, onDelta func(
 	if s == nil {
 		return "", fmt.Errorf("support is unavailable")
 	}
+	// A greeting or acknowledgement carries no question, so it is answered
+	// locally without spending a provider request (§7). Canned exchanges are
+	// not appended to the thread: they are not model turns, and keeping them
+	// would grow the one context $sup does own.
+	if answer, ok := supCanned(question); ok {
+		return answer, nil
+	}
 	bundle, err := s.build()
 	if err != nil {
 		return "", err
 	}
-	if onDelta != nil {
-		bundle.loop.SetTextDeltaHook(func(delta string) {
-			if delta != "" {
-				onDelta(delta)
-			}
-		})
-	} else {
-		bundle.loop.SetTextDeltaHook(nil)
-	}
 
 	s.mu.Lock()
-	request := append(append([]agent.Message(nil), s.msgs...), agent.UserMessage{Text: question})
+	request := append(append([]ai.Message(nil), s.msgs...), supUserMessage(question))
 	s.mu.Unlock()
 
-	turns, err := bundle.loop.Run(ctx, request)
+	enabled, level := supReasoning(bundle.effort)
+	stream, err := bundle.stream(ctx, ai.Request{
+		Model:           bundle.model,
+		System:          []ai.SystemPromptBlock{{Text: prompt.Sup}},
+		Messages:        request,
+		MaxTokens:       supMaxTokens,
+		Reasoning:       enabled,
+		ReasoningEffort: level,
+	})
+	if err != nil {
+		return "", err
+	}
+	answer, err := ai.DrainStream(ctx, stream, onDelta)
 	if err != nil {
 		return "", err
 	}
 
-	var answer strings.Builder
 	s.mu.Lock()
-	for _, turn := range turns {
-		s.msgs = append(s.msgs, agent.AssistantMessage{Message: turn.Assistant})
-		if text := turn.Assistant.Text(); text != "" {
-			answer.WriteString(text)
-		}
-	}
+	s.msgs = append(s.msgs, supUserMessage(question), answer)
 	s.mu.Unlock()
-	return answer.String(), nil
+	return answer.Text(), nil
+}
+
+// supUserMessage wraps a question as the provider user turn.
+func supUserMessage(question string) ai.UserMessage {
+	return ai.UserMessage{Content: []ai.ContentBlock{ai.TextContent{Text: question}}}
+}
+
+// supCanned returns a local answer for a greeting or acknowledgement, and
+// whether the query matched.
+//
+// $sup is a quick-answer surface and these queries ask nothing, so sending them
+// to a provider spends a request to be told hello. The table is a fixed literal
+// set matched on the normalized whole query — deliberately not an intent
+// classifier, embedding lookup, or rule engine (§7). Anything unlisted reaches
+// the model unchanged.
+func supCanned(query string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(query)) {
+	case "hi", "hello", "hey":
+		return "Hi.", true
+	case "thanks", "thank you", "thx":
+		return "You're welcome.", true
+	case "ok", "okay":
+		return "Got it.", true
+	default:
+		return "", false
+	}
 }
 
 // close discards the ephemeral conversation.

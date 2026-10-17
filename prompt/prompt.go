@@ -36,6 +36,17 @@ Guidelines:
   "hello", reply in one short sentence and wait: do not list tools,
   capabilities, or example tasks, and do not explain what you can help with.`
 
+// Sup is the system prompt for the ephemeral $sup answer surface.
+//
+// It is deliberately tiny and boring. $sup is a quick-answer surface, not a
+// workspace: it is handed no repository, environment, project, tool, or history
+// context (§2, §4), so the only thing left to state is the answer contract.
+// Keep this small — it is the entire system prompt for the request.
+const Sup = `You are ohgo's quick-answer assistant.
+Answer the user's question directly and concisely.
+Do not inspect the repository. Do not perform tasks or execute actions.
+Prefer the shortest answer that fully answers the question.`
+
 // Build assembles the system prompt blocks for one session.
 func Build(root string, extra string) []string {
 	var blocks []string
