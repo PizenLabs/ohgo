@@ -38,6 +38,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // Row budgets for the live region.
@@ -503,6 +504,8 @@ func liveOverlay(s State, pal *Palette, layout Layout) []string {
 		return liveQuitConfirmLines(s, pal, layout)
 	case s.Diff != nil:
 		return liveDiffLines(s)
+	case s.StatusModal != nil:
+		return liveStatusModalLines(s, pal, layout)
 	case s.Picker != nil:
 		return livePickerLines(s, pal, layout)
 	case s.Pending != nil:
@@ -521,6 +524,25 @@ func liveDiffLines(s State) []string {
 		return nil
 	}
 	return splitLines(s.Diff.View())
+}
+
+// liveStatusModalLines renders the /status card in output-first mode. It is
+// centered horizontally and bounded to the live region so the card never
+// overflows the screen.
+func liveStatusModalLines(s State, pal *Palette, layout Layout) []string {
+	if s.StatusModal == nil {
+		return nil
+	}
+	width := displayWidth(s, layout)
+	limit := liveRows(s)
+	card := RenderStatusModal(*s.StatusModal, pal, statusCardWidth(width), limit)
+	cardLines := splitLines(card)
+	placed := lipgloss.Place(width, len(cardLines), lipgloss.Center, lipgloss.Top, card)
+	lines := splitLines(placed)
+	if limit > 0 && len(lines) > limit {
+		lines = lines[:limit]
+	}
+	return lines
 }
 
 // livePickerLines renders the selection overlay. The question is the one row

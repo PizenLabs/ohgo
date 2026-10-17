@@ -155,14 +155,16 @@ func TestLiveSessionInsideTmux(t *testing.T) {
 
 	send("/status")
 	send("Enter")
-	waitFor("model: pty/pty-demo", 20*time.Second)
+	waitFor("WORKSPACE STATUS", 20*time.Second)
 
 	// The pane capture is the terminal emulator's own screen, so this is where
 	// a duplicated line would surface: the painter must have appended every
 	// scrollback line exactly once, because no later frame can take one back.
 	assertNothingPaintedTwice(t, pane(80))
 
-	// Quitting ends the child, which ends the pane, which ends the session.
+	// The status card owns the keyboard while open, so dismiss it first. Then
+	// quitting ends the child, the pane, and the session.
+	send("Escape")
 	send("C-d")
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {

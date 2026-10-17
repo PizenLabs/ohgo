@@ -255,21 +255,33 @@ func TestProvidersListsKeyStatus(t *testing.T) {
 	}
 }
 
-func TestStatusReportsLocalState(t *testing.T) {
+// /status opens a modal card instead of printing a transcript notice, and the
+// card reports the local facts the session observed.
+func TestStatusOpensTheCard(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Status.Model = "groq/m"
-	p.state.Status.ContextUsed = 50
-	p.state.Status.ContextWindow = 100
+	p.state.Status.Cwd = "/work/proj"
+	p.state.Status.Workspace = "BUILD"
+	p.state.Status.GitBranch = "main"
+	p.state.Status.GitKnown = true
+	p.state.Status.GitUntracked = 5
+	p.state.SessionIn = 1000
+	p.state.SessionOut = 2000
+
 	Command{Name: "status"}.runOn(p)
-	var text string
+
+	if p.state.StatusModal == nil {
+		t.Fatal("/status did not open the modal")
+	}
 	for _, entry := range p.state.Entries {
 		if entry.Kind == EntryNotice {
-			text += entry.Notice
+			t.Errorf("status leaked into the transcript: %q", entry.Notice)
 		}
 	}
-	for _, want := range []string{"groq/m", "50%", "theme:"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("status = %q, want %q", text, want)
+	out := stripANSI(Render(p.state))
+	for _, want := range []string{"WORKSPACE STATUS", "groq/m", "/work/proj", "main · dirty", "5 untracked", "BUILD · Interactive", "↑1k"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status card = %q, want %q", out, want)
 		}
 	}
 }

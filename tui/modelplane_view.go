@@ -151,10 +151,11 @@ func planeModalTitle(plane *ModelPlaneState) string {
 	}
 }
 
-// planeTitleBorder draws the top border with the centered mode title in the
-// ASK teal accent. The border itself is the title row, which returns one
-// vertical cell to the model list and the metadata grid.
-func planeTitleBorder(interior int, title string) string {
+// modalTitleBorder draws a modal's top border with a centered title in the
+// ASK cyan accent. The border itself is the title row, so it returns one
+// vertical cell to the body. The model control plane and the /status card
+// share it so their frames read as one family.
+func modalTitleBorder(interior int, title string) string {
 	title = sanitizeInline(title)
 	const prefix = " "
 	const suffix = " "
@@ -377,7 +378,7 @@ func renderPlaneModal(plane *ModelPlaneState, pal *Palette, state State, layout 
 	divider := pal.Muted.Render(TruncateToWidth(" "+strings.Repeat("─", maxInt(interior-2, 1))+" ", interior))
 
 	out := make([]string, 0, rect.Height)
-	out = append(out, planeTitleBorder(interior, planeModalTitle(plane)))
+	out = append(out, modalTitleBorder(interior, planeModalTitle(plane)))
 	for _, line := range body {
 		// Body rows carry their own styling; pad with plain spaces so the
 		// outer borders land in the same column on every row.

@@ -60,8 +60,8 @@ func (p *Program) openDiff(args []string) tea.Cmd {
 // otherOverlayOpen reports whether a modal that owns the keyboard is up.
 func (p *Program) otherOverlayOpen() bool {
 	return p.state.Picker != nil || p.state.Plane != nil || p.state.SupportPanel != nil ||
-		p.state.Permissions != nil || p.state.QuitConfirm != nil || p.state.Pending != nil ||
-		p.state.Secret != nil
+		p.state.Permissions != nil || p.state.StatusModal != nil || p.state.QuitConfirm != nil ||
+		p.state.Pending != nil || p.state.Secret != nil
 }
 
 // closeDiff dismisses the inspector.

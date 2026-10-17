@@ -201,6 +201,10 @@ type Program struct {
 	providers ProvidersFunc
 	// probe checks the current endpoint for /providers. Nil skips probing.
 	probe ProbeFunc
+	// symbolStatus reports the optional code-index status for the /status
+	// card's SYMBOL ENGINE section. Nil (the default) hides the section so
+	// the card never invents an engine that is not wired.
+	symbolStatus func() StatusEngine
 	// deleter removes saved credentials for /disconnect. Nil means unavailable.
 	deleter CredentialDeleter
 	// connect drives the /connect setup flow. Zero value reports each step
@@ -411,6 +415,13 @@ func (p *Program) SetProvidersFunc(providers ProvidersFunc) {
 // SetProbeFunc installs the endpoint check behind /providers.
 func (p *Program) SetProbeFunc(probe ProbeFunc) {
 	p.probe = probe
+}
+
+// SetSymbolStatusFunc installs the optional code-index status reporter behind
+// the /status card's SYMBOL ENGINE section. Nil (the default) hides the
+// section: an engine the runtime does not have is never claimed.
+func (p *Program) SetSymbolStatusFunc(status func() StatusEngine) {
+	p.symbolStatus = status
 }
 
 // SetCredentialDeleter installs removal behind /disconnect.
@@ -794,6 +805,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if p.state.Permissions != nil {
 		return p.handlePermissionsKey(msg)
+	}
+
+	if p.state.StatusModal != nil {
+		return p.handleStatusKey(msg)
 	}
 
 	if p.state.Picker != nil {
@@ -1291,7 +1306,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return nil
 
 	case "status":
-		p.state.Apply(Notice{Text: p.statusReport()})
+		p.openStatus()
 		return nil
 
 	case "usage":

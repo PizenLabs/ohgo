@@ -1569,7 +1569,14 @@ func runSession(cmd *cobra.Command, args []string) error {
 			Greeting:  boot.Greeting,
 			GitBranch: branch,
 			GitStatus: gitStatus,
-			Ready:     "ready",
+			// The measured counts let /status name which kind of change is
+			// present; Known marks them real so an unknown status never
+			// renders as a clean tree.
+			GitStaged:    boot.Git.Summary.Staged,
+			GitModified:  boot.Git.Summary.Unstaged,
+			GitUntracked: boot.Git.Summary.Untracked,
+			GitKnown:     boot.Git.Known,
+			Ready:        "ready",
 		})
 
 		if opts.autoApprove {
@@ -1890,13 +1897,18 @@ func wizardComplete(cmd *cobra.Command, opts *options, registry *ai.Registry, d 
 		held.projectID = identity.ID
 		opts.projectID = identity.ID
 
-		branch, gitStatus := startup.DescribeGit(d.Dir).BranchStatus()
+		git := startup.DescribeGit(d.Dir)
+		branch, gitStatus := git.BranchStatus()
 		facts := tui.IdentityUpdated{
-			User:      identity.WorkerName(),
-			Greeting:  startup.Greeting(identity.WorkerName(), time.Now()),
-			GitBranch: branch,
-			GitStatus: gitStatus,
-			Ready:     "ready",
+			User:         identity.WorkerName(),
+			Greeting:     startup.Greeting(identity.WorkerName(), time.Now()),
+			GitBranch:    branch,
+			GitStatus:    gitStatus,
+			GitStaged:    git.Summary.Staged,
+			GitModified:  git.Summary.Unstaged,
+			GitUntracked: git.Summary.Untracked,
+			GitKnown:     git.Known,
+			Ready:        "ready",
 		}
 
 		if store != nil && held.sess == nil {

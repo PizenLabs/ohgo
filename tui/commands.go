@@ -72,48 +72,6 @@ type connectFlow struct {
 	keyIsNew bool
 }
 
-// statusReport renders /status from local state: no network, no providers,
-// nothing that can fail.
-func (p *Program) statusReport() string {
-	p.mu.Lock()
-	turns := len(p.history)
-	p.mu.Unlock()
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "model: %s\n", p.state.Status.Model)
-	if pct := p.state.Status.Percent(); pct >= 0 {
-		fmt.Fprintf(&sb, "context: %d%% of %s tokens\n", pct, formatCount(p.state.Status.ContextWindow))
-	} else {
-		sb.WriteString("context: unknown window\n")
-	}
-	fmt.Fprintf(&sb, "turns: %d", turns)
-	if p.state.Status.Session != "" {
-		fmt.Fprintf(&sb, " · session %s", p.state.Status.Session)
-	} else if p.session != nil {
-		fmt.Fprintf(&sb, " · session #%d", p.session.ID)
-	}
-	if p.state.Status.Cwd != "" {
-		fmt.Fprintf(&sb, " · %s", p.state.Status.Cwd)
-	}
-	if p.state.Status.UsageText != "" {
-		fmt.Fprintf(&sb, "\nusage: %s", p.state.Status.UsageText)
-	}
-	if len(p.state.Queued) > 0 {
-		fmt.Fprintf(&sb, " · %d queued", len(p.state.Queued))
-	}
-	if p.state.Status.Busy {
-		sb.WriteString(" · working")
-	}
-	fmt.Fprintf(&sb, "\ntheme: %s", NormalizeTheme(p.state.Theme))
-	if p.state.ConnDetail != "" {
-		state := "not connected"
-		if p.state.ConnOK {
-			state = "connected"
-		}
-		fmt.Fprintf(&sb, "\nconnection: %s (%s)", state, p.state.ConnDetail)
-	}
-	return sb.String()
-}
-
 // formatCount renders large token counts compactly.
 func formatCount(n int) string {
 	if n >= 1_000_000 {
