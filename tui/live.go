@@ -510,12 +510,14 @@ func liveOverlay(s State, pal *Palette, layout Layout) []string {
 		return liveUsageModalLines(s, pal, layout)
 	case s.SessionModal != nil:
 		return liveSessionManagerLines(s, pal, layout)
+	case s.ConnectModal != nil:
+		return liveConnectModalLines(s, pal, layout)
+	case s.ConnectKey != nil:
+		return liveConnectKeyLines(s, pal, layout)
 	case s.Picker != nil:
 		return livePickerLines(s, pal, layout)
 	case s.Pending != nil:
 		return liveApprovalLines(s, layout)
-	case s.Secret != nil:
-		return liveSecretLines(s, pal, layout)
 	}
 	return nil
 }
@@ -561,6 +563,17 @@ func liveSessionManagerLines(s State, pal *Palette, layout Layout) []string {
 	}
 	return liveModalCardLinesWidth(s, pal, layout, sessionCardWidth, func(width, height int) string {
 		return RenderSessionManager(*s.SessionModal, pal, width, height)
+	})
+}
+
+// liveConnectModalLines renders the Provider Manager in output-first mode with
+// the same centering and bound as the other working modals.
+func liveConnectModalLines(s State, pal *Palette, layout Layout) []string {
+	if s.ConnectModal == nil {
+		return nil
+	}
+	return liveModalCardLinesWidth(s, pal, layout, connectCardWidth, func(width, height int) string {
+		return RenderConnectModal(*s.ConnectModal, pal, width, height)
 	})
 }
 
@@ -654,20 +667,15 @@ func liveQuitConfirmLines(s State, _ *Palette, layout Layout) []string {
 	return lines
 }
 
-// liveSecretLines renders masked credential entry. Only bullets ever reach the
-// terminal.
-func liveSecretLines(s State, pal *Palette, layout Layout) []string {
-	masked := strings.Repeat("•", len([]rune(s.Input)))
-	rows, _, _, _ := layoutComposer(masked, -1, liveComposerWidth(layout))
-	out := make([]string, 0, len(rows)+2)
-	for i, row := range rows {
-		if i == 0 {
-			out = append(out, pal.Prompt.Render(s.Secret.Label+": ")+row)
-			continue
-		}
-		out = append(out, pal.Prompt.Render("  ")+row)
+// liveConnectKeyLines renders the /connect API-key modal in output-first mode
+// with the same centering and bound as the other working modals.
+func liveConnectKeyLines(s State, pal *Palette, layout Layout) []string {
+	if s.ConnectKey == nil {
+		return nil
 	}
-	return append(out, pal.Cursor.Render("▌"), pal.Muted.Render("enter submits · esc cancels"))
+	return liveModalCardLinesWidth(s, pal, layout, connectCardWidth, func(width, height int) string {
+		return RenderConnectKeyModal(*s.ConnectKey, pal, width, height)
+	})
 }
 
 // liveStatusLine is the one-line runtime footer. It names the phase in words
@@ -726,7 +734,7 @@ func liveComposerWidth(layout Layout) int {
 // is simply the last thing on screen, which is where the terminal already
 // puts it.
 func liveComposerLines(s State, pal *Palette, layout Layout) []string {
-	if s.Secret != nil || s.Picker != nil || s.Pending != nil || s.QuitConfirm != nil {
+	if s.ConnectKey != nil || s.Picker != nil || s.Pending != nil || s.QuitConfirm != nil {
 		return nil
 	}
 	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)
@@ -777,7 +785,7 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 func liveHintsFor(s State, layout Layout) string {
 	var choices []string
 	switch {
-	case len(paletteEntriesFor(s)) > 0 && s.Secret == nil:
+	case len(paletteEntriesFor(s)) > 0 && s.ConnectKey == nil:
 		choices = []string{"↑↓ navigate · enter/tab accept · esc dismiss", "↑↓ enter esc"}
 	case s.Status.Busy:
 		choices = []string{"enter queue · esc cancel · alt+enter break", "enter queue · esc cancel"}

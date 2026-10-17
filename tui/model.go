@@ -348,9 +348,11 @@ type State struct {
 	// split-pane surface behind /model; the single-overlay Picker remains for
 	// sessions, jobs, commands and the connect flow.
 	Plane *ModelPlaneState
-	// Secret is an open credential prompt, or nil. While set, the composer
-	// collects a masked secret for its handler instead of a prompt.
-	Secret *SecretState
+	// ConnectKey is the open /connect API-key modal, or nil. It is a working
+	// modal like the Provider Manager: it owns the keyboard, edits a masked
+	// buffer, and reports validation in place. The buffer never enters the
+	// transcript, history, or a session.
+	ConnectKey *ConnectKeyView
 	// ConnOK and ConnDetail report the last connection probe. Unknown until
 	// the first probe: the UI never blocks startup on network.
 	ConnOK     bool
@@ -380,6 +382,11 @@ type State struct {
 	// key, moves its own cursor, and dispatches write actions through the
 	// program. It never enters the transcript, history, or session itself.
 	SessionModal *SessionManagerState
+	// ConnectModal is the open /connect Provider Manager, or nil. It is a
+	// working modal like the Session Manager: it owns the keyboard, moves its
+	// own cursor, and starts the guided setup for the highlighted provider. It
+	// never enters the transcript, history, or session itself.
+	ConnectModal *ConnectView
 	// Diff is the open interactive diff inspector, or nil. It is a full-screen
 	// modal overlay: while set it owns the keyboard and the pane area, and it
 	// reads the repository through its own on-demand git driver. It never
@@ -816,6 +823,35 @@ func (s *State) Apply(event Event) {
 			s.SessionModal.Notice = e.Text
 		}
 
+	case ConnectModalOpened:
+		// The roster is a snapshot taken when the modal opened, so a later
+		// catalog change cannot make a printed row stale underneath it.
+		view := e.View
+		s.ConnectModal = &view
+
+	case ConnectModalClosed:
+		s.ConnectModal = nil
+
+	case ConnectModalMoved:
+		if s.ConnectModal != nil {
+			s.ConnectModal.Move(e.Delta)
+		}
+
+	case ConnectModalPaged:
+		if s.ConnectModal != nil {
+			s.ConnectModal.Page(e.Delta)
+		}
+
+	case ConnectModalTop:
+		if s.ConnectModal != nil {
+			s.ConnectModal.Top()
+		}
+
+	case ConnectModalBottom:
+		if s.ConnectModal != nil {
+			s.ConnectModal.Bottom()
+		}
+
 	case InputChanged:
 		s.Input = e.Text
 		s.Cursor = len([]rune(e.Text))
@@ -880,6 +916,9 @@ func (s *State) Apply(event Event) {
 		}
 		if s.SessionModal != nil {
 			s.SessionModal.SetVisibleRows(sessionManagerVisibleRows(*s))
+		}
+		if s.ConnectModal != nil {
+			s.ConnectModal.SetVisibleRows(connectVisibleRows(*s))
 		}
 		// The fold width changes with the terminal, so the visible window must
 		// be recomputed or a resize could scroll the caret out of view.
@@ -1226,15 +1265,30 @@ func (s *State) Apply(event Event) {
 			s.Plane.SetVisibleRows(e.Rows)
 		}
 
-	case SecretOpened:
-		s.Secret = &SecretState{Label: e.Label}
-		s.Input = ""
-		s.Cursor = 0
+	case ConnectKeyOpened:
+		// A fresh buffer: the previous provider's key is never carried over.
+		view := e.View
+		s.ConnectKey = &view
 
-	case SecretClosed:
-		s.Secret = nil
-		s.Input = ""
-		s.Cursor = 0
+	case ConnectKeyClosed:
+		s.ConnectKey = nil
+
+	case ConnectKeyChanged:
+		if s.ConnectKey != nil {
+			s.ConnectKey.Key = e.Key
+		}
+
+	case ConnectKeyValidating:
+		if s.ConnectKey != nil {
+			s.ConnectKey.Validating = true
+			s.ConnectKey.Error = ""
+		}
+
+	case ConnectKeyFailed:
+		if s.ConnectKey != nil {
+			s.ConnectKey.Validating = false
+			s.ConnectKey.Error = e.Error
+		}
 
 	case ProbeFinished:
 		s.ConnOK = e.OK
@@ -1447,6 +1501,8 @@ func (s *State) Apply(event Event) {
 		s.StatusModal = nil
 		s.UsageModal = nil
 		s.SessionModal = nil
+		s.ConnectModal = nil
+		s.ConnectKey = nil
 		s.Queued = nil
 		s.Scroll = 0
 		s.Follow = true
@@ -2054,6 +2110,43 @@ func (SessionManagerModeCancelled) eventKind() string { return "session_manager_
 type SessionManagerNoticed struct{ Text string }
 
 func (SessionManagerNoticed) eventKind() string { return "session_manager_noticed" }
+
+// ConnectModalOpened shows the /connect Provider Manager with a roster
+// snapshot. The view is copied, so the roster is a stable read of the moment it
+// opened.
+type ConnectModalOpened struct {
+	// View is the roster snapshot the manager renders.
+	View ConnectView
+}
+
+func (ConnectModalOpened) eventKind() string { return "connect_modal_opened" }
+
+// ConnectModalClosed dismisses the Provider Manager without acting.
+type ConnectModalClosed struct{}
+
+func (ConnectModalClosed) eventKind() string { return "connect_modal_closed" }
+
+// ConnectModalMoved shifts the roster highlight. Positive goes down; the list
+// wraps at both ends.
+type ConnectModalMoved struct{ Delta int }
+
+func (ConnectModalMoved) eventKind() string { return "connect_modal_moved" }
+
+// ConnectModalPaged shifts the roster highlight by approximately one viewport
+// without wrapping.
+type ConnectModalPaged struct{ Delta int }
+
+func (ConnectModalPaged) eventKind() string { return "connect_modal_paged" }
+
+// ConnectModalTop parks the highlight on the first provider.
+type ConnectModalTop struct{}
+
+func (ConnectModalTop) eventKind() string { return "connect_modal_top" }
+
+// ConnectModalBottom parks the highlight on the last provider.
+type ConnectModalBottom struct{}
+
+func (ConnectModalBottom) eventKind() string { return "connect_modal_bottom" }
 
 // DiffOpened installs the interactive diff inspector as the active overlay.
 // The model owns its own repository reads; the program only routes keys and
@@ -2897,24 +2990,36 @@ type HistoryReplaced struct {
 
 func (HistoryReplaced) eventKind() string { return "history_replaced" }
 
-// SecretState is an open credential prompt. While set, the composer collects
-// a secret instead of a prompt: input renders masked, and submit delivers to
-// the secret handler rather than the model. A secret must never become a
-// UserSubmitted entry, or it would persist into history and transcripts.
-type SecretState struct {
-	// Label tells what the secret is for, e.g. "API key for OpenRouter".
-	Label string
+// ConnectKeyOpened opens the /connect API-key modal over a provider snapshot.
+// The view is copied, so the modal works on a stable read of the provider.
+type ConnectKeyOpened struct {
+	// View is the credential modal state to show.
+	View ConnectKeyView
 }
 
-// SecretOpened starts credential entry.
-type SecretOpened struct{ Label string }
+func (ConnectKeyOpened) eventKind() string { return "connect_key_opened" }
 
-func (SecretOpened) eventKind() string { return "secret_opened" }
+// ConnectKeyClosed dismisses the API-key modal without submitting.
+type ConnectKeyClosed struct{}
 
-// SecretClosed abandons credential entry without submitting.
-type SecretClosed struct{}
+func (ConnectKeyClosed) eventKind() string { return "connect_key_closed" }
 
-func (SecretClosed) eventKind() string { return "secret_closed" }
+// ConnectKeyChanged replaces the masked credential buffer.
+type ConnectKeyChanged struct{ Key string }
+
+func (ConnectKeyChanged) eventKind() string { return "connect_key_changed" }
+
+// ConnectKeyValidating marks the credential check in flight, locking the
+// field and clearing any prior failure.
+type ConnectKeyValidating struct{}
+
+func (ConnectKeyValidating) eventKind() string { return "connect_key_validating" }
+
+// ConnectKeyFailed reports a rejected credential in place, so the modal stays
+// open and the key can be fixed without redoing the flow.
+type ConnectKeyFailed struct{ Error string }
+
+func (ConnectKeyFailed) eventKind() string { return "connect_key_failed" }
 
 // DoctorLine is one diagnostic row for the /doctor overlay output.
 type DoctorLine struct {

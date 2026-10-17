@@ -591,7 +591,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil {
+	if s.Picker != nil || s.Plane != nil || s.ConnectKey != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil {
 		return false
 	}
 	return s.Input == ""
@@ -825,6 +825,14 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.handleSessionManagerKey(msg)
 	}
 
+	if p.state.ConnectModal != nil {
+		return p.handleConnectKey(msg)
+	}
+
+	if p.state.ConnectKey != nil {
+		return p.handleConnectKeyEntry(msg)
+	}
+
 	if p.state.Picker != nil {
 		return p.handlePickerKey(msg)
 	}
@@ -846,7 +854,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// submission. Enter and Tab both accept the highlighted row; the text is
 	// spliced into the composer, so the same keys mean the same thing for
 	// every trigger.
-	if p.state.Secret == nil && p.state.Pending == nil && p.state.QuitConfirm == nil &&
+	if p.state.ConnectKey == nil && p.state.Pending == nil && p.state.QuitConfirm == nil &&
 		paletteOwnsKeys(p.state) {
 		switch msg.String() {
 		case "up", "ctrl+p":
@@ -862,38 +870,6 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, nil
 		case "enter", "tab":
 			return p.acceptPalette()
-		}
-	}
-	// A secret prompt captures the composer: typing masks, enter submits to
-	// the setup flow, escape abandons it. Nothing typed here may become a
-	// prompt — that path would persist the key into history.
-	if p.state.Secret != nil {
-		switch msg.String() {
-		case "enter":
-			text := p.state.Input
-			p.state.Apply(SecretClosed{})
-			p.submitSecret(text)
-			return p, nil
-		case "esc", "ctrl+c":
-			p.state.Apply(SecretClosed{})
-			p.flow = nil
-			return p, nil
-		case "backspace", "ctrl+h":
-			if runes := []rune(p.state.Input); len(runes) > 0 {
-				p.state.Apply(ComposerChanged{Text: string(runes[:len(runes)-1]), Cursor: len(runes) - 1})
-			}
-			return p, nil
-		default:
-			switch msg.Type {
-			case tea.KeyRunes, tea.KeySpace:
-				chunk := string(msg.Runes)
-				if msg.Type == tea.KeySpace {
-					chunk = " "
-				}
-				text := p.state.Input + chunk
-				p.state.Apply(ComposerChanged{Text: text, Cursor: len([]rune(text))})
-			}
-			return p, nil
 		}
 	}
 
@@ -1121,7 +1097,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// "?" on an empty composer opens contextual help from the
 			// authoritative registry. While composing it stays literal:
 			// help must never steal a question mark being typed.
-			if text == "?" && strings.TrimSpace(p.state.Input) == "" && p.state.Secret == nil {
+			if text == "?" && strings.TrimSpace(p.state.Input) == "" && p.state.ConnectKey == nil {
 				p.openCommandPalette("")
 				return p, nil
 			}
@@ -1318,7 +1294,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return p.compactNow()
 
 	case "connect":
-		p.openConnectPicker()
+		p.openConnectManager()
 		return nil
 
 	case "disconnect":
@@ -1457,12 +1433,6 @@ func (p *Program) choosePicker() (tea.Model, tea.Cmd) {
 		return p, p.runCommand(Command{Name: item.Value, Raw: "/" + item.Value})
 	case PickerJobs:
 		p.state.Apply(Notice{Text: p.jobDetail(item.Value)})
-		return p, nil
-	case "connect":
-		p.continueConnect(item)
-		return p, nil
-	case "connect-src":
-		p.continueConnectSource(item)
 		return p, nil
 	case "connect-models":
 		p.finishConnect(item)

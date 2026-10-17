@@ -602,14 +602,14 @@ func TestMouseWheelScrollsWithoutTyping(t *testing.T) {
 // insertion path, so mouse-shaped text is preserved there too: a pasted
 // secret containing "[<" must not be silently rewritten, and a picker
 // search for protocol documentation must match literally.
-func TestSecretAndPickerPreserveMouseLikeText(t *testing.T) {
+func TestConnectKeyAndPickerPreserveMouseLikeText(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	p.state.Apply(SecretOpened{Label: "API key"})
+	p.state.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
 	keyPress(p, runes("[<64;67;30M"))
-	if p.state.Input != "[<64;67;30M" {
-		t.Errorf("secret prompt rewrote pasted text: input %q", p.state.Input)
+	if p.state.ConnectKey == nil || p.state.ConnectKey.Key != "[<64;67;30M" {
+		t.Errorf("key modal rewrote pasted text: %+v", p.state.ConnectKey)
 	}
-	p.state.Apply(SecretClosed{})
+	p.state.Apply(ConnectKeyClosed{})
 	p.flow = nil
 
 	Command{Name: "commands"}.runOn(p)

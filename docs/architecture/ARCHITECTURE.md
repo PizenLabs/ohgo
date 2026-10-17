@@ -244,8 +244,10 @@ Root runs the interactive session; subcommands: `run`, `sessions` (+
 Both interactive paths share one backend (`harness.go`): the full-screen
 UI and the plain REPL call the same code for `/model` (static then live
 discovery), `/compact`, `/sessions`/`/resume`, `/jobs`, `/usage`,
-`/status`, `/doctor`, `/connect` (numbered wizard: provider →
-credential → validated model list → saved key + settings), `/disconnect`
+`/status`, `/doctor`, `/connect` (a Provider Manager modal browses the
+credential roster, an API-key modal collects the credential — pasted or
+detected — then a wizard: validated model list → saved key + settings),
+`/disconnect`
 (file/explicit keys only; env/shell keys say where to unset). Presentation
 differs; decisions do not. Commands parse before anything reaches the
 model; a bare `/` is a path. `$sup <question>` opens the ephemeral support
@@ -277,11 +279,11 @@ Derived display phases
 approval, shutting down) are computed per render, never stored.
 
 - `tui/model.go`: the state machine — composer, viewport (scroll + sticky
-  follow), queue, overlays, sessions (Session Manager) and
-  models/jobs/commands/connect pickers, theme, workspace, probe/doctor/usage
-  wiring. Slash discovery state (`SlashCursor`, `SlashHide`, `SlashMoved`)
-  filters the authoritative `Commands` registry inline — never a second
-  catalog.
+  follow), queue, overlays, sessions (Session Manager) and providers (Connect
+  Provider Manager and its API-key modal) plus the models/jobs/commands
+  pickers, theme, workspace, probe/doctor/usage wiring. Slash discovery state
+  (`SlashCursor`, `SlashHide`, `SlashMoved`) filters the authoritative
+  `Commands` registry inline — never a second catalog.
 - `tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,
   prompt history with draft preservation.
 - `tui/entries.go`: transcript entries rebuilt from replayed messages (tool

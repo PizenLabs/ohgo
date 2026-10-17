@@ -10,13 +10,17 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// ProviderRow is one provider for the /usage inspector's provider roster and
-// the model control plane's provider pane.
+// ProviderRow is one provider for the /usage inspector's provider roster, the
+// model control plane's provider pane, and the /connect Provider Manager.
 type ProviderRow struct {
 	// ID is the stable provider key.
 	ID string
 	// Name is the display name.
 	Name string
+	// Driver names the wire protocol the provider is reached through, e.g.
+	// "Anthropic Messages" or "OpenAI Chat". It is a display fact the producer
+	// resolves; empty renders as unknown rather than a guessed transport.
+	Driver string
 	// KeyDetail names the credential source ("environment (X)", "credential
 	// file", "none required", "missing: set X") without secret bytes.
 	KeyDetail string
@@ -51,11 +55,10 @@ type CredentialDeleter func(provider string) (string, error)
 // ConnectHooks drives the /connect setup flow. Each hook is nil-safe: a
 // missing hook reports the step unavailable rather than panicking.
 type ConnectHooks struct {
-	// Providers lists setup candidates with status details.
-	Providers func() []PickerItem
-	// Sources lists credential choices for a provider. Values are opaque
-	// handles: "new" pastes a key, anything else reuses a detected source.
-	Sources func(provider string) []PickerItem
+	// Providers lists setup candidates with credential status. It feeds the
+	// Provider Manager's roster, so each row carries the display name, the
+	// wire protocol, and whether a credential resolves.
+	Providers func() []ProviderRow
 	// Validate checks a credential (empty key means the detected one) and
 	// returns the model ids to choose from.
 	Validate func(ctx context.Context, provider, key string) (models []string, detail string, err error)
@@ -64,12 +67,10 @@ type ConnectHooks struct {
 }
 
 // connectFlow tracks an in-progress setup. It lives on the Program and is
-// touched only from the update goroutine, except ValidationFinished pairing
-// which matches on provider+key rather than shared memory.
+// touched only from the update goroutine.
 type connectFlow struct {
 	provider string
 	key      string
-	keyIsNew bool
 }
 
 // formatCount renders large token counts compactly.
@@ -192,87 +193,14 @@ func (p *Program) disconnect(args []string) {
 	p.state.Apply(Notice{Text: outcome})
 }
 
-// openConnectPicker starts guided setup with the provider list.
-func (p *Program) openConnectPicker() {
-	if p.connect.Providers == nil {
-		p.state.Apply(Notice{Text: "guided setup is unavailable"})
-		return
-	}
-	items := p.connect.Providers()
-	if len(items) == 0 {
-		p.state.Apply(Notice{Text: "no providers known"})
-		return
-	}
-	p.flow = nil
-	p.state.Apply(PickerOpened{Kind: "connect", Title: "connect a provider", Items: items})
-}
-
-// continueConnect advances the setup flow after a provider is chosen.
-func (p *Program) continueConnect(item PickerItem) {
-	provider := item.Value
-	if provider == "" {
-		provider = item.Title
-	}
-	p.flow = &connectFlow{provider: provider}
-	if p.connect.Sources == nil {
-		p.state.Apply(Notice{Text: "credential setup is unavailable"})
-		p.flow = nil
-		return
-	}
-	items := p.connect.Sources(provider)
-	if len(items) == 0 {
-		p.state.Apply(Notice{Text: "no credential sources for " + provider})
-		p.flow = nil
-		return
-	}
-	p.state.Apply(PickerOpened{Kind: "connect-src", Title: "credential for " + provider, Items: items})
-}
-
-// continueConnectSource handles a credential-source choice: "new" opens
-// masked entry, anything else validates the detected credential.
-func (p *Program) continueConnectSource(item PickerItem) {
-	if p.flow == nil {
-		return
-	}
-	if item.Value == "new" {
-		// The picker closes first: two overlays would fight over the keys,
-		// and the masked entry needs the composer row back.
-		p.state.Apply(PickerClosed{})
-		p.state.Apply(SecretOpened{Label: "API key for " + p.flow.provider})
-		return
-	}
-	p.startValidation(p.flow.provider, "", false)
-}
-
-// submitSecret delivers masked input to the connect flow. It is the only path
-// that consumes composer text without creating a prompt: a secret must never
-// become a UserSubmitted entry.
-func (p *Program) submitSecret(text string) {
-	if p.flow == nil {
-		p.state.Apply(SecretClosed{})
-		return
-	}
-	if strings.TrimSpace(text) == "" {
-		p.state.Apply(Notice{Text: "empty key: paste a key or press esc to cancel"})
-		return
-	}
-	provider := p.flow.provider
-	p.flow.key = strings.TrimSpace(text)
-	p.flow.keyIsNew = true
-	p.state.Apply(SecretClosed{})
-	p.startValidation(provider, p.flow.key, true)
-}
-
 // startValidation checks a credential off the update goroutine and publishes
-// the outcome. The notice keeps the transcript honest about the wait: a
-// silent 20 seconds reads as a hang.
+// the outcome. The modal owns the wait state; nothing is written to the
+// transcript, so a secret can never be echoed there.
 func (p *Program) startValidation(provider, key string, isNew bool) {
 	if p.connect.Validate == nil {
-		p.state.Apply(Notice{Text: "credential validation is unavailable"})
-		p.flow = nil
+		p.state.Apply(ConnectKeyFailed{Error: "credential validation is unavailable"})
 		return
 	}
-	p.state.Apply(Notice{Text: "validating " + provider + "…"})
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -287,19 +215,18 @@ func (p *Program) startValidation(provider, key string, isNew bool) {
 
 // onValidationFinished pairs an async result with its flow. A stale result
 // from an abandoned attempt is dropped, never applied: opening a picker for
-// a provider the user already left would be a trap.
+// a provider the user already left would be a trap. A failure stays in the
+// key modal so the credential can be fixed without redoing the flow.
 func (p *Program) onValidationFinished(result ValidationFinished) {
 	if p.flow == nil || p.flow.provider != result.Provider {
 		return
 	}
 	if result.Err != "" {
-		p.state.Apply(Notice{Text: "connect: " + result.Err})
-		p.flow = nil
+		p.state.Apply(ConnectKeyFailed{Error: result.Err})
 		return
 	}
 	if len(result.Models) == 0 {
-		p.state.Apply(Notice{Text: "connect: no models listed for " + result.Provider})
-		p.flow = nil
+		p.state.Apply(ConnectKeyFailed{Error: "no models listed for " + result.Provider})
 		return
 	}
 	items := make([]PickerItem, 0, len(result.Models))
@@ -309,6 +236,7 @@ func (p *Program) onValidationFinished(result ValidationFinished) {
 	if result.Detail != "" {
 		p.state.Apply(Notice{Text: result.Detail})
 	}
+	p.state.Apply(ConnectKeyClosed{})
 	p.state.Apply(PickerOpened{Kind: "connect-models", Title: "default model", Items: items})
 }
 

@@ -825,11 +825,13 @@ func TestViewportExactAcrossModesAndStates(t *testing.T) {
 			s.Apply(MessageQueued{Text: "x"})
 			s.Apply(ComposerChanged{Text: "typing", Cursor: 6})
 		}
-		cases["secret"] = func(s *State) { s.Apply(SecretOpened{Label: "key"}) }
-		cases["secret-long"] = func(s *State) {
-			s.Apply(SecretOpened{Label: "key"})
+		cases["connect-key"] = func(s *State) {
+			s.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
+		}
+		cases["connect-key-long"] = func(s *State) {
+			s.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
 			long := strings.Repeat("k", 200)
-			s.Apply(ComposerChanged{Text: long, Cursor: len([]rune(long))})
+			s.Apply(ConnectKeyChanged{Key: long})
 		}
 		for name, setup := range cases {
 			s := mk()

@@ -74,7 +74,7 @@ func TestLiveViewRequestsNoMouseModeAndNoAltScreen(t *testing.T) {
 	liveEvent(p, ApprovalAnswered{})
 	p.state.Apply(PickerOpened{Kind: PickerCommands, Title: "commands", Items: nil})
 	liveEvent(p, Notice{Text: "pickers live too"})
-	p.state.Apply(SecretOpened{Label: "key"})
+	p.state.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
 
 	view := painter.view()
 	for _, seq := range mouseModeSequences {

@@ -48,11 +48,11 @@ func TestSuggestCommandThreshold(t *testing.T) {
 	}
 }
 
-// Secret entry masks and never becomes a prompt.
+// The API-key modal masks and never becomes a prompt.
 
-func TestSecretEntryMasksInput(t *testing.T) {
+func TestConnectKeyEntryMasksInput(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	p.state.Apply(SecretOpened{Label: "API key"})
+	p.state.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter", Name: "OpenRouter"}}})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("sk-secret")})
 	out := Render(p.state)
 	if strings.Contains(out, "sk-secret") {
@@ -63,7 +63,7 @@ func TestSecretEntryMasksInput(t *testing.T) {
 	}
 }
 
-func TestSecretSubmitReachesHandlerNotHistory(t *testing.T) {
+func TestConnectKeySubmitReachesHandlerNotHistory(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	var mu sync.Mutex
 	validated := ""
@@ -76,7 +76,7 @@ func TestSecretSubmitReachesHandlerNotHistory(t *testing.T) {
 		},
 	})
 	p.flow = &connectFlow{provider: "openrouter"}
-	p.state.Apply(SecretOpened{Label: "label"})
+	p.state.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter", Name: "OpenRouter"}}})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("sk-1")})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
 	// Validation runs async: poll rather than asserting before it lands.
@@ -98,37 +98,37 @@ func TestSecretSubmitReachesHandlerNotHistory(t *testing.T) {
 	if len(p.history) != 0 {
 		t.Error("a secret reached the conversation history")
 	}
-	if p.state.Secret != nil {
-		t.Error("the secret prompt stayed open after submit")
+	if p.state.ConnectKey == nil || !p.state.ConnectKey.Validating {
+		t.Error("the key modal must stay open and show the check in flight")
 	}
 }
 
-func TestSecretEscapeAbandons(t *testing.T) {
+func TestConnectKeyCancelAbandons(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.flow = &connectFlow{provider: "openrouter"}
-	p.state.Apply(SecretOpened{Label: "label"})
+	p.state.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("sk-")})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyEsc})
-	if p.state.Secret != nil || p.state.Input != "" {
-		t.Error("escape must close the secret prompt and clear it")
+	if p.state.ConnectKey != nil {
+		t.Error("escape must close the key modal")
 	}
 	if p.flow != nil {
 		t.Error("escape must abandon the setup flow")
 	}
 }
 
-// Connect flow: provider → source → validate → model → save.
+// Connect flow: provider → API key → validate → model → save.
 
 func stubConnectHooks() ConnectHooks {
 	return ConnectHooks{
-		Providers: func() []PickerItem {
-			return []PickerItem{{Title: "OpenRouter", Detail: "no key", Value: "openrouter"}}
-		},
-		Sources: func(provider string) []PickerItem {
-			return []PickerItem{
-				{Title: "Paste a new key", Value: "new"},
-				{Title: "Use detected credential", Detail: "environment (K)", Value: "known"},
-			}
+		Providers: func() []ProviderRow {
+			return []ProviderRow{{
+				ID:         "openrouter",
+				Name:       "OpenRouter",
+				Driver:     "OpenAI Chat",
+				KeyDetail:  "environment (OPENROUTER_API_KEY)",
+				Configured: true,
+			}}
 		},
 		Validate: func(ctx context.Context, provider, key string) ([]string, string, error) {
 			if key == "bad" {
@@ -151,17 +151,22 @@ func TestConnectFullFlowSaves(t *testing.T) {
 	p.SetModelSwitcher(func(id string) error { return nil }, func() string { return "openrouter/m/one" })
 
 	Command{Name: "connect"}.runOn(p)
-	if p.state.Picker == nil {
-		t.Fatal("no provider picker")
+	if p.state.ConnectModal == nil {
+		t.Fatal("no provider manager opened")
+	}
+	if p.state.Picker != nil {
+		t.Error("the provider manager must not fall back to the flat picker")
 	}
 	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter}) // choose openrouter
-	if p.state.Picker == nil || p.state.Picker.Kind != "connect-src" {
-		t.Fatal("no source picker after provider choice")
+	if p.state.ConnectModal != nil {
+		t.Error("the provider manager must close after choosing")
 	}
-	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
-	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter}) // choose "known"
-	// Validation runs async and the sources picker closed with the choice:
-	// drain events until the model picker opens or the deadline passes.
+	if p.state.ConnectKey == nil {
+		t.Fatal("no API-key modal after provider choice")
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter}) // validate the detected credential
+	// Validation runs async: drain events until the model picker opens or the
+	// deadline passes.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if p.state.Picker != nil && p.state.Picker.Kind == "connect-models" {
@@ -185,11 +190,12 @@ func TestConnectFullFlowSaves(t *testing.T) {
 	}
 }
 
-func TestConnectValidationFailureReports(t *testing.T) {
+func TestConnectValidationFailureReportsInPlace(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	hooks := stubConnectHooks()
-	p.SetConnectHooks(hooks)
-	p.flow = &connectFlow{provider: "openrouter", key: "bad", keyIsNew: true}
+	p.SetConnectHooks(stubConnectHooks())
+	p.flow = &connectFlow{provider: "openrouter", key: "bad"}
+	p.state.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
+	p.state.Apply(ConnectKeyValidating{})
 	p.startValidation("openrouter", "bad", true)
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -205,17 +211,17 @@ func TestConnectValidationFailureReports(t *testing.T) {
 		}
 	}
 checked:
-	found := false
-	for _, entry := range p.state.Entries {
-		if entry.Kind == EntryNotice && strings.Contains(entry.Notice, "rejected") {
-			found = true
-		}
+	if p.state.ConnectKey == nil {
+		t.Fatal("the key modal closed on a rejected credential")
 	}
-	if !found {
-		t.Errorf("entries = %+v, want the rejection named", p.state.Entries)
+	if !strings.Contains(p.state.ConnectKey.Error, "rejected") {
+		t.Errorf("modal error = %q, want the rejection named in place", p.state.ConnectKey.Error)
 	}
-	if p.flow != nil {
-		t.Error("a failed validation must abandon the flow")
+	if p.state.ConnectKey.Validating {
+		t.Error("a finished check left the field locked")
+	}
+	if p.flow == nil {
+		t.Error("a rejected key must keep the flow so it can be fixed and retried")
 	}
 }
 

@@ -568,21 +568,8 @@ func formatTokens(n int) string {
 // connectHooks builds the guided-setup providers from the harness.
 func connectHooks(held *harness) tui.ConnectHooks {
 	return tui.ConnectHooks{
-		Providers: func() []tui.PickerItem {
-			var items []tui.PickerItem
-			for _, row := range held.ProviderRows() {
-				items = append(items, tui.PickerItem{Title: row.Name, Detail: row.ID + " · " + row.KeyDetail, Value: row.ID})
-			}
-			return items
-		},
-		Sources: func(provider string) []tui.PickerItem {
-			items := []tui.PickerItem{
-				{Title: "Paste a new key", Detail: "stored only if you save it", Value: "new"},
-			}
-			if _, source, err := held.registry.ResolveAPIKeySource(provider); err == nil {
-				items = append(items, tui.PickerItem{Title: "Use detected credential", Detail: source, Value: "known"})
-			}
-			return items
+		Providers: func() []tui.ProviderRow {
+			return held.ProviderRows()
 		},
 		Validate: func(ctx context.Context, provider, key string) ([]string, string, error) {
 			return held.validateProvider(ctx, provider, key)
@@ -637,17 +624,7 @@ func (h *harness) validateProvider(ctx context.Context, provider, key string) ([
 	if override, ok := h.registry.BaseURLOverride(provider); ok {
 		baseURL = override
 	}
-	var api ai.API
-	switch provider {
-	case "ollama", "ollama-cloud":
-		api = ai.APIOllamaChat
-	default:
-		if provider == "anthropic" {
-			api = ai.APIAnthropicMessages
-		} else {
-			api = ai.APIOpenAIChatCompletions
-		}
-	}
+	api := providerAPI(provider)
 	probe := ai.ProbeProvider(ctx, nil, api, baseURL, key)
 	if !probe.Reachable || !probe.Authenticated {
 		return nil, "", fmt.Errorf("%s", probe.Detail)
