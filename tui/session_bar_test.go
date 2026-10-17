@@ -95,11 +95,8 @@ func TestSessionTelemetryOmitsUnmeasuredCounters(t *testing.T) {
 func TestCtrlPOpensSettingsOnlyOnAFreshSession(t *testing.T) {
 	fresh := NewProgram(nil, "test", 0)
 	keyPress(fresh, tea.KeyMsg{Type: tea.KeyCtrlP})
-	if fresh.state.Picker == nil || fresh.state.Picker.Kind != PickerCommands {
-		t.Fatalf("^p on a fresh session opened %+v, want the settings palette", fresh.state.Picker)
-	}
-	if fresh.state.Picker.Title != "settings" {
-		t.Errorf("palette title = %q, want settings", fresh.state.Picker.Title)
+	if fresh.state.HelpModal == nil {
+		t.Fatalf("^p on a fresh session opened %+v, want the command & help center", fresh.state.HelpModal)
 	}
 
 	used := NewProgram(nil, "test", 0)
@@ -107,7 +104,7 @@ func TestCtrlPOpensSettingsOnlyOnAFreshSession(t *testing.T) {
 	used.state.Apply(AssistantDone{})
 	used.state.Apply(InputChanged{Text: ""})
 	keyPress(used, tea.KeyMsg{Type: tea.KeyCtrlP})
-	if used.state.Picker != nil {
+	if used.state.HelpModal != nil {
 		t.Error("^p hijacked history recall on an active session")
 	}
 	if used.state.Input != "earlier" {

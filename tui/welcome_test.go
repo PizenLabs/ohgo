@@ -125,10 +125,10 @@ func TestWelcomeSuppressedBehindOverlays(t *testing.T) {
 		t.Errorf("welcome showed behind a picker: %q", out)
 	}
 
-	secret := base
-	secret.Apply(SecretOpened{Label: "API key"})
-	if out := Render(secret); strings.Contains(out, welcomeInvite) {
-		t.Errorf("welcome showed behind a secret prompt: %q", out)
+	key := base
+	key.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
+	if out := Render(key); strings.Contains(out, welcomeInvite) {
+		t.Errorf("welcome showed behind the key modal: %q", out)
 	}
 
 	approval := base

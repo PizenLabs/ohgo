@@ -453,7 +453,7 @@ func TestSessionsCommandNeedsAProvider(t *testing.T) {
 	}
 }
 
-func TestSessionPickerResumeReplacesHistory(t *testing.T) {
+func TestSessionManagerResumeReplacesHistory(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.SetSessionBrowser(
 		func() ([]SessionItem, error) {
@@ -473,8 +473,11 @@ func TestSessionPickerResumeReplacesHistory(t *testing.T) {
 	)
 	p.state.Apply(UserSubmitted{Text: "current"})
 	Command{Name: "sessions"}.runOn(p)
-	if p.state.Picker == nil {
-		t.Fatal("no picker opened")
+	if p.state.SessionModal == nil {
+		t.Fatal("no session manager opened")
+	}
+	if p.state.Picker != nil {
+		t.Error("the session manager must not fall back to the flat picker")
 	}
 	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -484,8 +487,8 @@ func TestSessionPickerResumeReplacesHistory(t *testing.T) {
 	if len(p.state.Entries) != 2 { // replayed user + resume notice
 		t.Errorf("entries = %+v, want replay plus notice", p.state.Entries)
 	}
-	if p.state.Picker != nil {
-		t.Error("the picker must close after choosing")
+	if p.state.SessionModal != nil {
+		t.Error("the session manager must close after choosing")
 	}
 }
 

@@ -78,7 +78,12 @@ func (h *harness) ProviderRows() []tui.ProviderRow {
 	}
 	var rows []tui.ProviderRow
 	for _, name := range catalog.ProviderNames() {
-		row := tui.ProviderRow{ID: name, Name: providerDisplayName(name), Count: counts[name]}
+		row := tui.ProviderRow{
+			ID:     name,
+			Name:   providerDisplayName(name),
+			Driver: providerDriver(name),
+			Count:  counts[name],
+		}
 		_, source, err := h.registry.ResolveAPIKeySource(name)
 		switch {
 		case err == nil:
@@ -93,6 +98,35 @@ func (h *harness) ProviderRows() []tui.ProviderRow {
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// providerDriver labels the wire protocol a provider is reached through, the
+// same protocol providerAPI routes requests to. It is display-only: the roster
+// shows the transport so a user can tell an Anthropic endpoint from an
+// OpenAI-compatible one at a glance.
+func providerDriver(provider string) string {
+	switch providerAPI(provider) {
+	case ai.APIAnthropicMessages:
+		return "Anthropic Messages"
+	case ai.APIOllamaChat:
+		return "Ollama Chat"
+	default:
+		return "OpenAI Chat"
+	}
+}
+
+// providerAPI resolves the wire protocol for a provider: the same selection
+// validateProvider probes with, kept in one place so the roster's TYPE column
+// and the connect probe can never disagree about how a provider is reached.
+func providerAPI(provider string) ai.API {
+	switch provider {
+	case "ollama", "ollama-cloud":
+		return ai.APIOllamaChat
+	case "anthropic":
+		return ai.APIAnthropicMessages
+	default:
+		return ai.APIOpenAIChatCompletions
+	}
 }
 
 // ProviderPaneRows is the model control plane's provider pane: the real

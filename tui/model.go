@@ -346,11 +346,13 @@ type State struct {
 	Picker *PickerState
 	// Plane is the open model control plane, or nil. It is the persistent
 	// split-pane surface behind /model; the single-overlay Picker remains for
-	// sessions, jobs, commands and the connect flow.
+	// sessions, jobs, and the connect flow.
 	Plane *ModelPlaneState
-	// Secret is an open credential prompt, or nil. While set, the composer
-	// collects a masked secret for its handler instead of a prompt.
-	Secret *SecretState
+	// ConnectKey is the open /connect API-key modal, or nil. It is a working
+	// modal like the Provider Manager: it owns the keyboard, edits a masked
+	// buffer, and reports validation in place. The buffer never enters the
+	// transcript, history, or a session.
+	ConnectKey *ConnectKeyView
 	// ConnOK and ConnDetail report the last connection probe. Unknown until
 	// the first probe: the UI never blocks startup on network.
 	ConnOK     bool
@@ -375,6 +377,22 @@ type State struct {
 	// read-only modal family as StatusModal: any key dismisses it, and it
 	// never enters the transcript, history, or session.
 	UsageModal *UsageView
+	// SessionModal is the open /sessions Session Manager, or nil. Unlike the
+	// read-only cards it owns a working roster: while set it captures every
+	// key, moves its own cursor, and dispatches write actions through the
+	// program. It never enters the transcript, history, or session itself.
+	SessionModal *SessionManagerState
+	// HelpModal is the open Command & Help Center, or nil. It is the single
+	// surface behind /help, /commands, the "?" shortcut, and ^p on a fresh
+	// session. It is a working modal like the Session Manager: it owns the
+	// keyboard, filters its roster live, and runs the highlighted command. It
+	// never enters the transcript, history, or session itself.
+	HelpModal *HelpCenterState
+	// ConnectModal is the open /connect Provider Manager, or nil. It is a
+	// working modal like the Session Manager: it owns the keyboard, moves its
+	// own cursor, and starts the guided setup for the highlighted provider. It
+	// never enters the transcript, history, or session itself.
+	ConnectModal *ConnectView
 	// Diff is the open interactive diff inspector, or nil. It is a full-screen
 	// modal overlay: while set it owns the keyboard and the pane area, and it
 	// reads the repository through its own on-demand git driver. It never
@@ -737,6 +755,172 @@ func (s *State) Apply(event Event) {
 	case UsageModalClosed:
 		s.UsageModal = nil
 
+	case SessionManagerOpened:
+		// The roster is a snapshot taken when the modal opened, so a later
+		// store change cannot make a printed row stale underneath it.
+		view := e.View
+		s.SessionModal = &view
+
+	case SessionManagerClosed:
+		s.SessionModal = nil
+
+	case SessionManagerMoved:
+		if s.SessionModal != nil {
+			s.SessionModal.Move(e.Delta)
+		}
+
+	case SessionManagerPaged:
+		if s.SessionModal != nil {
+			s.SessionModal.Page(e.Delta)
+		}
+
+	case SessionManagerTop:
+		if s.SessionModal != nil {
+			s.SessionModal.Top()
+		}
+
+	case SessionManagerBottom:
+		if s.SessionModal != nil {
+			s.SessionModal.Bottom()
+		}
+
+	case SessionManagerReloaded:
+		if s.SessionModal != nil {
+			s.SessionModal.SetItems(e.Items)
+			s.SessionModal.Mode = SessionBrowse
+			s.SessionModal.Rename = ""
+			s.SessionModal.ConfirmID = 0
+			s.SessionModal.Confirm = ""
+			s.SessionModal.Notice = e.Notice
+		}
+
+	case SessionManagerRenameStarted:
+		if s.SessionModal != nil {
+			if item, ok := s.SessionModal.Selected(); ok {
+				s.SessionModal.Mode = SessionRename
+				s.SessionModal.Rename = item.Title
+				s.SessionModal.Notice = ""
+			}
+		}
+
+	case SessionManagerRenameChanged:
+		if s.SessionModal != nil {
+			s.SessionModal.Rename = e.Text
+		}
+
+	case SessionManagerConfirmAsked:
+		if s.SessionModal != nil && e.ID != 0 {
+			s.SessionModal.Mode = SessionConfirm
+			s.SessionModal.ConfirmID = e.ID
+			s.SessionModal.Confirm = e.Action
+			s.SessionModal.Notice = ""
+		}
+
+	case SessionManagerModeCancelled:
+		if s.SessionModal != nil {
+			s.SessionModal.Mode = SessionBrowse
+			s.SessionModal.Rename = ""
+			s.SessionModal.ConfirmID = 0
+			s.SessionModal.Confirm = ""
+		}
+
+	case SessionManagerNoticed:
+		if s.SessionModal != nil {
+			s.SessionModal.Notice = e.Text
+		}
+
+	case HelpCenterOpened:
+		// The roster is a snapshot taken when the modal opened, so a later
+		// registry change cannot make a printed row stale underneath it.
+		view := e.View
+		s.HelpModal = &view
+		// Size the roster window from the modal interior immediately: a zero
+		// VisibleRows means "render everything", which would let the table eat
+		// the action hint below it.
+		s.HelpModal.VisibleRows = helpCenterVisibleRows(*s)
+
+	case HelpCenterClosed:
+		s.HelpModal = nil
+
+	case HelpCenterMoved:
+		if s.HelpModal != nil {
+			s.HelpModal.Move(e.Delta)
+		}
+
+	case HelpCenterViewSwitched:
+		if s.HelpModal != nil {
+			s.HelpModal.SwitchView(e.Delta)
+		}
+
+	case HelpCenterPaged:
+		if s.HelpModal != nil {
+			s.HelpModal.Page(e.Delta)
+		}
+
+	case HelpCenterTop:
+		if s.HelpModal != nil {
+			s.HelpModal.Top()
+		}
+
+	case HelpCenterBottom:
+		if s.HelpModal != nil {
+			s.HelpModal.Bottom()
+		}
+
+	case HelpCenterTyped:
+		if s.HelpModal != nil {
+			s.HelpModal.InsertFilterText(e.Text)
+		}
+
+	case HelpCenterBackspaced:
+		if s.HelpModal != nil {
+			s.HelpModal.DeleteFilterBefore()
+		}
+
+	case HelpCenterDeleted:
+		if s.HelpModal != nil {
+			s.HelpModal.DeleteFilterAt()
+		}
+
+	case HelpCenterFilterCursorMoved:
+		if s.HelpModal != nil {
+			s.HelpModal.MoveFilterCursor(e.Delta)
+		}
+
+	case HelpCenterFilterCleared:
+		if s.HelpModal != nil {
+			s.HelpModal.ClearFilter()
+		}
+
+	case ConnectModalOpened:
+		// The roster is a snapshot taken when the modal opened, so a later
+		// catalog change cannot make a printed row stale underneath it.
+		view := e.View
+		s.ConnectModal = &view
+
+	case ConnectModalClosed:
+		s.ConnectModal = nil
+
+	case ConnectModalMoved:
+		if s.ConnectModal != nil {
+			s.ConnectModal.Move(e.Delta)
+		}
+
+	case ConnectModalPaged:
+		if s.ConnectModal != nil {
+			s.ConnectModal.Page(e.Delta)
+		}
+
+	case ConnectModalTop:
+		if s.ConnectModal != nil {
+			s.ConnectModal.Top()
+		}
+
+	case ConnectModalBottom:
+		if s.ConnectModal != nil {
+			s.ConnectModal.Bottom()
+		}
+
 	case InputChanged:
 		s.Input = e.Text
 		s.Cursor = len([]rune(e.Text))
@@ -798,6 +982,15 @@ func (s *State) Apply(event Event) {
 		}
 		if s.Plane != nil {
 			s.Plane.SetVisibleRows(planeRowsFor(*s))
+		}
+		if s.SessionModal != nil {
+			s.SessionModal.SetVisibleRows(sessionManagerVisibleRows(*s))
+		}
+		if s.HelpModal != nil {
+			s.HelpModal.VisibleRows = helpCenterVisibleRows(*s)
+		}
+		if s.ConnectModal != nil {
+			s.ConnectModal.SetVisibleRows(connectVisibleRows(*s))
 		}
 		// The fold width changes with the terminal, so the visible window must
 		// be recomputed or a resize could scroll the caret out of view.
@@ -1144,15 +1337,30 @@ func (s *State) Apply(event Event) {
 			s.Plane.SetVisibleRows(e.Rows)
 		}
 
-	case SecretOpened:
-		s.Secret = &SecretState{Label: e.Label}
-		s.Input = ""
-		s.Cursor = 0
+	case ConnectKeyOpened:
+		// A fresh buffer: the previous provider's key is never carried over.
+		view := e.View
+		s.ConnectKey = &view
 
-	case SecretClosed:
-		s.Secret = nil
-		s.Input = ""
-		s.Cursor = 0
+	case ConnectKeyClosed:
+		s.ConnectKey = nil
+
+	case ConnectKeyChanged:
+		if s.ConnectKey != nil {
+			s.ConnectKey.Key = e.Key
+		}
+
+	case ConnectKeyValidating:
+		if s.ConnectKey != nil {
+			s.ConnectKey.Validating = true
+			s.ConnectKey.Error = ""
+		}
+
+	case ConnectKeyFailed:
+		if s.ConnectKey != nil {
+			s.ConnectKey.Validating = false
+			s.ConnectKey.Error = e.Error
+		}
 
 	case ProbeFinished:
 		s.ConnOK = e.OK
@@ -1364,6 +1572,10 @@ func (s *State) Apply(event Event) {
 		s.Permissions = nil
 		s.StatusModal = nil
 		s.UsageModal = nil
+		s.SessionModal = nil
+		s.HelpModal = nil
+		s.ConnectModal = nil
+		s.ConnectKey = nil
 		s.Queued = nil
 		s.Scroll = 0
 		s.Follow = true
@@ -1892,6 +2104,192 @@ type UsageModalClosed struct{}
 
 func (UsageModalClosed) eventKind() string { return "usage_modal_closed" }
 
+// SessionManagerOpened shows the Session Manager with a roster snapshot. The
+// view is copied, so the roster is a stable read of the moment it opened.
+type SessionManagerOpened struct {
+	// View is the roster snapshot the manager renders.
+	View SessionManagerState
+}
+
+func (SessionManagerOpened) eventKind() string { return "session_manager_opened" }
+
+// SessionManagerClosed dismisses the Session Manager without acting.
+type SessionManagerClosed struct{}
+
+func (SessionManagerClosed) eventKind() string { return "session_manager_closed" }
+
+// SessionManagerMoved shifts the roster highlight. Positive goes down; the
+// list wraps at both ends.
+type SessionManagerMoved struct{ Delta int }
+
+func (SessionManagerMoved) eventKind() string { return "session_manager_moved" }
+
+// SessionManagerPaged shifts the roster highlight by approximately one
+// viewport without wrapping.
+type SessionManagerPaged struct{ Delta int }
+
+func (SessionManagerPaged) eventKind() string { return "session_manager_paged" }
+
+// SessionManagerTop parks the highlight on the first session.
+type SessionManagerTop struct{}
+
+func (SessionManagerTop) eventKind() string { return "session_manager_top" }
+
+// SessionManagerBottom parks the highlight on the last session.
+type SessionManagerBottom struct{}
+
+func (SessionManagerBottom) eventKind() string { return "session_manager_bottom" }
+
+// SessionManagerReloaded replaces the roster after a write action, preserving
+// the highlight by id when the selected session survives.
+type SessionManagerReloaded struct {
+	// Items is the fresh roster.
+	Items []SessionItem
+	// Notice reports the action that caused the reload.
+	Notice string
+}
+
+func (SessionManagerReloaded) eventKind() string { return "session_manager_reloaded" }
+
+// SessionManagerRenameStarted enters the inline rename editor, seeded with the
+// highlighted session's current title.
+type SessionManagerRenameStarted struct{}
+
+func (SessionManagerRenameStarted) eventKind() string { return "session_manager_rename_started" }
+
+// SessionManagerRenameChanged replaces the rename buffer.
+type SessionManagerRenameChanged struct{ Text string }
+
+func (SessionManagerRenameChanged) eventKind() string { return "session_manager_rename_changed" }
+
+// SessionManagerConfirmAsked opens a destructive-action confirmation for one
+// session.
+type SessionManagerConfirmAsked struct {
+	// ID is the session the action targets.
+	ID int64
+	// Action names the action and its consequence in words.
+	Action string
+}
+
+func (SessionManagerConfirmAsked) eventKind() string { return "session_manager_confirm_asked" }
+
+// SessionManagerModeCancelled returns the modal to browsing, discarding any
+// in-progress rename or confirmation.
+type SessionManagerModeCancelled struct{}
+
+func (SessionManagerModeCancelled) eventKind() string { return "session_manager_mode_cancelled" }
+
+// SessionManagerNoticed records an action outcome without changing the roster.
+type SessionManagerNoticed struct{ Text string }
+
+func (SessionManagerNoticed) eventKind() string { return "session_manager_noticed" }
+
+// HelpCenterOpened shows the Command & Help Center with a registry snapshot.
+// The view is copied, so the roster is a stable read of the moment it opened.
+type HelpCenterOpened struct {
+	// View is the command snapshot the modal renders.
+	View HelpCenterState
+}
+
+func (HelpCenterOpened) eventKind() string { return "help_center_opened" }
+
+// HelpCenterClosed dismisses the Command & Help Center without acting.
+type HelpCenterClosed struct{}
+
+func (HelpCenterClosed) eventKind() string { return "help_center_closed" }
+
+// HelpCenterMoved shifts the command highlight. Positive goes down; the list
+// wraps at both ends.
+type HelpCenterMoved struct{ Delta int }
+
+func (HelpCenterMoved) eventKind() string { return "help_center_moved" }
+
+// HelpCenterViewSwitched cycles the active tab by delta, wrapping both ways.
+// Each tab keeps its own query and highlight, so the switch is non-destructive.
+type HelpCenterViewSwitched struct{ Delta int }
+
+func (HelpCenterViewSwitched) eventKind() string { return "help_center_view_switched" }
+
+// HelpCenterPaged shifts the command highlight by approximately one viewport
+// without wrapping.
+type HelpCenterPaged struct{ Delta int }
+
+func (HelpCenterPaged) eventKind() string { return "help_center_paged" }
+
+// HelpCenterTop parks the highlight on the first command.
+type HelpCenterTop struct{}
+
+func (HelpCenterTop) eventKind() string { return "help_center_top" }
+
+// HelpCenterBottom parks the highlight on the last command.
+type HelpCenterBottom struct{}
+
+func (HelpCenterBottom) eventKind() string { return "help_center_bottom" }
+
+// HelpCenterTyped inserts text into the search box at the cursor.
+type HelpCenterTyped struct{ Text string }
+
+func (HelpCenterTyped) eventKind() string { return "help_center_typed" }
+
+// HelpCenterBackspaced deletes the rune before the search cursor.
+type HelpCenterBackspaced struct{}
+
+func (HelpCenterBackspaced) eventKind() string { return "help_center_backspaced" }
+
+// HelpCenterDeleted deletes the rune under the search cursor.
+type HelpCenterDeleted struct{}
+
+func (HelpCenterDeleted) eventKind() string { return "help_center_deleted" }
+
+// HelpCenterFilterCursorMoved shifts the search cursor. It never changes the
+// highlight.
+type HelpCenterFilterCursorMoved struct{ Delta int }
+
+func (HelpCenterFilterCursorMoved) eventKind() string { return "help_center_filter_cursor_moved" }
+
+// HelpCenterFilterCleared empties the search box and restores the highlight to
+// the top of the full roster.
+type HelpCenterFilterCleared struct{}
+
+func (HelpCenterFilterCleared) eventKind() string { return "help_center_filter_cleared" }
+
+// ConnectModalOpened shows the /connect Provider Manager with a roster
+// snapshot. The view is copied, so the roster is a stable read of the moment it
+// opened.
+type ConnectModalOpened struct {
+	// View is the roster snapshot the manager renders.
+	View ConnectView
+}
+
+func (ConnectModalOpened) eventKind() string { return "connect_modal_opened" }
+
+// ConnectModalClosed dismisses the Provider Manager without acting.
+type ConnectModalClosed struct{}
+
+func (ConnectModalClosed) eventKind() string { return "connect_modal_closed" }
+
+// ConnectModalMoved shifts the roster highlight. Positive goes down; the list
+// wraps at both ends.
+type ConnectModalMoved struct{ Delta int }
+
+func (ConnectModalMoved) eventKind() string { return "connect_modal_moved" }
+
+// ConnectModalPaged shifts the roster highlight by approximately one viewport
+// without wrapping.
+type ConnectModalPaged struct{ Delta int }
+
+func (ConnectModalPaged) eventKind() string { return "connect_modal_paged" }
+
+// ConnectModalTop parks the highlight on the first provider.
+type ConnectModalTop struct{}
+
+func (ConnectModalTop) eventKind() string { return "connect_modal_top" }
+
+// ConnectModalBottom parks the highlight on the last provider.
+type ConnectModalBottom struct{}
+
+func (ConnectModalBottom) eventKind() string { return "connect_modal_bottom" }
+
 // DiffOpened installs the interactive diff inspector as the active overlay.
 // The model owns its own repository reads; the program only routes keys and
 // paints its View while it is set.
@@ -2115,14 +2513,14 @@ var Commands = []CommandSpec{
 	{Name: "ask", Usage: "ask", Description: "Ask / read-only", Category: CommandGroupWorkspace},
 	{Name: "fuzz", Usage: "fuzz", Description: "Explore / investigate", Category: CommandGroupWorkspace},
 	{Name: "build", Usage: "build", Description: "Build / modify", Category: CommandGroupWorkspace},
-	{Name: "help", Usage: "help", Description: "list the available commands", Category: CommandGroupControl},
-	{Name: "commands", Usage: "commands", Description: "search every command", Category: CommandGroupControl},
+	{Name: "help", Usage: "help", Description: "open the command & help center", Category: CommandGroupControl},
+	{Name: "commands", Usage: "commands", Description: "open the command & help center", Category: CommandGroupControl},
 	{Name: "clear", Usage: "clear", Description: "clear the transcript and start a fresh context", Category: CommandGroupControl},
 	{Name: "model", Usage: "model [provider/id]", Description: "browse or switch the model", Category: CommandGroupControl},
 	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
 	{Name: "permissions", Usage: "permissions", Description: "choose the execution authority", Category: CommandGroupControl},
 	{Name: "mode", Usage: "mode", Description: "choose the execution authority", Hidden: true, Category: CommandGroupControl},
-	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions", Category: CommandGroupControl},
+	{Name: "sessions", Usage: "sessions", Description: "manage saved sessions: resume, new, rename, archive, delete", Category: CommandGroupControl},
 	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
 	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette", Category: CommandGroupControl},
@@ -2209,7 +2607,10 @@ func LookupCommand(name string) (CommandSpec, bool) {
 	return CommandSpec{}, false
 }
 
-// HelpText renders the command listing for /help.
+// HelpText renders the command listing for the plain-text REPL's /help and
+// /commands. The full-screen UI no longer prints this into the transcript: it
+// opens the Command & Help Center instead, so the same registry is presented
+// as a navigable, filterable modal.
 func HelpText() string {
 	var sb strings.Builder
 	sb.WriteString("Commands:\n")
@@ -2734,24 +3135,36 @@ type HistoryReplaced struct {
 
 func (HistoryReplaced) eventKind() string { return "history_replaced" }
 
-// SecretState is an open credential prompt. While set, the composer collects
-// a secret instead of a prompt: input renders masked, and submit delivers to
-// the secret handler rather than the model. A secret must never become a
-// UserSubmitted entry, or it would persist into history and transcripts.
-type SecretState struct {
-	// Label tells what the secret is for, e.g. "API key for OpenRouter".
-	Label string
+// ConnectKeyOpened opens the /connect API-key modal over a provider snapshot.
+// The view is copied, so the modal works on a stable read of the provider.
+type ConnectKeyOpened struct {
+	// View is the credential modal state to show.
+	View ConnectKeyView
 }
 
-// SecretOpened starts credential entry.
-type SecretOpened struct{ Label string }
+func (ConnectKeyOpened) eventKind() string { return "connect_key_opened" }
 
-func (SecretOpened) eventKind() string { return "secret_opened" }
+// ConnectKeyClosed dismisses the API-key modal without submitting.
+type ConnectKeyClosed struct{}
 
-// SecretClosed abandons credential entry without submitting.
-type SecretClosed struct{}
+func (ConnectKeyClosed) eventKind() string { return "connect_key_closed" }
 
-func (SecretClosed) eventKind() string { return "secret_closed" }
+// ConnectKeyChanged replaces the masked credential buffer.
+type ConnectKeyChanged struct{ Key string }
+
+func (ConnectKeyChanged) eventKind() string { return "connect_key_changed" }
+
+// ConnectKeyValidating marks the credential check in flight, locking the
+// field and clearing any prior failure.
+type ConnectKeyValidating struct{}
+
+func (ConnectKeyValidating) eventKind() string { return "connect_key_validating" }
+
+// ConnectKeyFailed reports a rejected credential in place, so the modal stays
+// open and the key can be fixed without redoing the flow.
+type ConnectKeyFailed struct{ Error string }
+
+func (ConnectKeyFailed) eventKind() string { return "connect_key_failed" }
 
 // DoctorLine is one diagnostic row for the /doctor overlay output.
 type DoctorLine struct {

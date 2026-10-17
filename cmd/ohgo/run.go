@@ -568,21 +568,8 @@ func formatTokens(n int) string {
 // connectHooks builds the guided-setup providers from the harness.
 func connectHooks(held *harness) tui.ConnectHooks {
 	return tui.ConnectHooks{
-		Providers: func() []tui.PickerItem {
-			var items []tui.PickerItem
-			for _, row := range held.ProviderRows() {
-				items = append(items, tui.PickerItem{Title: row.Name, Detail: row.ID + " · " + row.KeyDetail, Value: row.ID})
-			}
-			return items
-		},
-		Sources: func(provider string) []tui.PickerItem {
-			items := []tui.PickerItem{
-				{Title: "Paste a new key", Detail: "stored only if you save it", Value: "new"},
-			}
-			if _, source, err := held.registry.ResolveAPIKeySource(provider); err == nil {
-				items = append(items, tui.PickerItem{Title: "Use detected credential", Detail: source, Value: "known"})
-			}
-			return items
+		Providers: func() []tui.ProviderRow {
+			return held.ProviderRows()
 		},
 		Validate: func(ctx context.Context, provider, key string) ([]string, string, error) {
 			return held.validateProvider(ctx, provider, key)
@@ -637,17 +624,7 @@ func (h *harness) validateProvider(ctx context.Context, provider, key string) ([
 	if override, ok := h.registry.BaseURLOverride(provider); ok {
 		baseURL = override
 	}
-	var api ai.API
-	switch provider {
-	case "ollama", "ollama-cloud":
-		api = ai.APIOllamaChat
-	default:
-		if provider == "anthropic" {
-			api = ai.APIAnthropicMessages
-		} else {
-			api = ai.APIOpenAIChatCompletions
-		}
-	}
+	api := providerAPI(provider)
 	probe := ai.ProbeProvider(ctx, nil, api, baseURL, key)
 	if !probe.Reachable || !probe.Authenticated {
 		return nil, "", fmt.Errorf("%s", probe.Detail)
@@ -1154,6 +1131,87 @@ func openSession(opts options, resumeID int64) (*session.Store, *session.Session
 	return store, &sess, func() { _ = store.Close() }, nil
 }
 
+// installSessionManager wires the /sessions Session Manager: the roster
+// listing, the resume opener, and the write actions (new, rename, archive,
+// delete). A nil store installs nothing, so the command reports itself
+// unavailable rather than panicking.
+func installSessionManager(program *tui.Program, store *session.Store, held *harness, opts options) {
+	if store == nil {
+		return
+	}
+	program.SetSessionBrowser(
+		func() ([]tui.SessionItem, error) {
+			// The browser reads the harness's project, not the startup
+			// snapshot: onboarding commits the identity after the browser is
+			// installed, and the listing must follow it.
+			list, err := store.ListByProject(held.projectID, 50)
+			if err != nil {
+				return nil, err
+			}
+			ids := make([]int64, 0, len(list))
+			for _, sess := range list {
+				ids = append(ids, sess.ID)
+			}
+			stats, err := store.Stats(ids)
+			if err != nil {
+				return nil, err
+			}
+			items := make([]tui.SessionItem, 0, len(list))
+			for _, sess := range list {
+				stat := stats[sess.ID]
+				items = append(items, tui.SessionItem{
+					ID:      sess.ID,
+					Title:   sess.Title,
+					Model:   sess.Model,
+					Updated: sess.UpdatedAt.Format("2006-01-02 15:04"),
+					Cwd:     sess.Cwd,
+					Tokens:  stat.Tokens,
+					Prompt:  stat.Prompt,
+				})
+			}
+			return items, nil
+		},
+		func(id int64) (*session.Session, tui.OpenedSession, error) {
+			sess, err := store.Get(id)
+			if err != nil {
+				return nil, tui.OpenedSession{}, err
+			}
+			stored, err := store.Messages(id, 0)
+			if err != nil {
+				return nil, tui.OpenedSession{}, fmt.Errorf("load session %d: %w", id, err)
+			}
+			history, err := session.Replay(stored)
+			if err != nil {
+				return nil, tui.OpenedSession{}, fmt.Errorf("load session %d: %w", id, err)
+			}
+			return &sess, tui.OpenedSession{
+				History: history,
+				Entries: tui.EntriesFromMessages(history),
+				Notice:  fmt.Sprintf("resumed session %d (%d messages)", id, len(history)),
+			}, nil
+		},
+	)
+	program.SetSessionActions(tui.SessionActions{
+		New: func() (*session.Session, tui.OpenedSession, error) {
+			sess, err := store.CreateWith(session.CreateOptions{
+				Cwd:       opts.root,
+				Model:     held.model.Provider + "/" + held.model.ID,
+				Workspace: opts.authority().String(),
+				Project:   held.projectID,
+			})
+			if err != nil {
+				return nil, tui.OpenedSession{}, err
+			}
+			return &sess, tui.OpenedSession{
+				Notice: fmt.Sprintf("started new session %d", sess.ID),
+			}, nil
+		},
+		Rename:  func(id int64, title string) error { return store.SetTitle(id, title) },
+		Archive: func(id int64) error { return store.SetArchived(id, true) },
+		Delete:  func(id int64) error { return store.Delete(id) },
+	})
+}
+
 // applySessionAuthority restores a resumed session's effective workspace and
 // model, then records the result as the session's snapshot.
 //
@@ -1500,49 +1558,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 			return nil
 		})
 		if store != nil {
-			program.SetSessionBrowser(
-				func() ([]tui.SessionItem, error) {
-					// The browser reads the harness's project, not the
-					// startup snapshot: onboarding commits the identity
-					// after the browser is installed, and the listing must
-					// follow it.
-					list, err := store.ListByProject(held.projectID, 50)
-					if err != nil {
-						return nil, err
-					}
-					var items []tui.SessionItem
-					for _, sess := range list {
-						title := sess.Title
-						items = append(items, tui.SessionItem{
-							ID:      sess.ID,
-							Title:   title,
-							Model:   sess.Model,
-							Updated: sess.UpdatedAt.Format("2006-01-02 15:04"),
-							Cwd:     sess.Cwd,
-						})
-					}
-					return items, nil
-				},
-				func(id int64) (*session.Session, tui.OpenedSession, error) {
-					sess, err := store.Get(id)
-					if err != nil {
-						return nil, tui.OpenedSession{}, err
-					}
-					stored, err := store.Messages(id, 0)
-					if err != nil {
-						return nil, tui.OpenedSession{}, fmt.Errorf("load session %d: %w", id, err)
-					}
-					history, err := session.Replay(stored)
-					if err != nil {
-						return nil, tui.OpenedSession{}, fmt.Errorf("load session %d: %w", id, err)
-					}
-					return &sess, tui.OpenedSession{
-						History: history,
-						Entries: tui.EntriesFromMessages(history),
-						Notice:  fmt.Sprintf("resumed session %d (%d messages)", id, len(history)),
-					}, nil
-				},
-			)
+			installSessionManager(program, store, held, opts)
 		}
 		program.SetTheme(opts.settings.Theme)
 		program.SetThemeChangedHandler(func(theme string) {
@@ -1798,45 +1814,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		return nil
 	})
 	if store != nil {
-		program.SetSessionBrowser(
-			func() ([]tui.SessionItem, error) {
-				list, err := store.ListByProject(held.projectID, 50)
-				if err != nil {
-					return nil, err
-				}
-				var items []tui.SessionItem
-				for _, sess := range list {
-					title := sess.Title
-					items = append(items, tui.SessionItem{
-						ID:      sess.ID,
-						Title:   title,
-						Model:   sess.Model,
-						Updated: sess.UpdatedAt.Format("2006-01-02 15:04"),
-						Cwd:     sess.Cwd,
-					})
-				}
-				return items, nil
-			},
-			func(id int64) (*session.Session, tui.OpenedSession, error) {
-				sess, err := store.Get(id)
-				if err != nil {
-					return nil, tui.OpenedSession{}, err
-				}
-				stored, err := store.Messages(id, 0)
-				if err != nil {
-					return nil, tui.OpenedSession{}, fmt.Errorf("load session %d: %w", id, err)
-				}
-				history, err := session.Replay(stored)
-				if err != nil {
-					return nil, tui.OpenedSession{}, fmt.Errorf("load session %d: %w", id, err)
-				}
-				return &sess, tui.OpenedSession{
-					History: history,
-					Entries: tui.EntriesFromMessages(history),
-					Notice:  fmt.Sprintf("resumed session %d (%d messages)", id, len(history)),
-				}, nil
-			},
-		)
+		installSessionManager(program, store, held, opts)
 	}
 	program.SetTheme(opts.settings.Theme)
 	program.SetThemeChangedHandler(func(theme string) {

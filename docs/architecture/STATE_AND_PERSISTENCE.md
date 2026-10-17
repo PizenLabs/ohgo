@@ -56,7 +56,7 @@ a project's worker, and the gate never writes it.
 ### Session scope — `sessions.db`
 
 ```text
-sessions   (id, created_at, updated_at, cwd, model, workspace, project, title)
+sessions   (id, created_at, updated_at, cwd, model, workspace, project, title, archived)
 messages   (id, session_id → sessions, seq, role, payload, created_at)
 artifacts  (id, session_id → sessions, artifact_id, kind, origin, payload, created_at)
 ```

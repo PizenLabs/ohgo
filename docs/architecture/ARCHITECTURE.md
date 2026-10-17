@@ -244,8 +244,10 @@ Root runs the interactive session; subcommands: `run`, `sessions` (+
 Both interactive paths share one backend (`harness.go`): the full-screen
 UI and the plain REPL call the same code for `/model` (static then live
 discovery), `/compact`, `/sessions`/`/resume`, `/jobs`, `/usage`,
-`/status`, `/doctor`, `/connect` (numbered wizard: provider →
-credential → validated model list → saved key + settings), `/disconnect`
+`/status`, `/doctor`, `/connect` (a Provider Manager modal browses the
+credential roster, an API-key modal collects the credential — pasted or
+detected — then a wizard: validated model list → saved key + settings),
+`/disconnect`
 (file/explicit keys only; env/shell keys say where to unset). Presentation
 differs; decisions do not. Commands parse before anything reaches the
 model; a bare `/` is a path. `$sup <question>` opens the ephemeral support
@@ -277,9 +279,11 @@ Derived display phases
 approval, shutting down) are computed per render, never stored.
 
 - `tui/model.go`: the state machine — composer, viewport (scroll + sticky
-  follow), queue, overlays, sessions/models/jobs/commands/connect pickers,
-  theme, workspace, probe/doctor/usage wiring. Slash discovery state
-  (`SlashCursor`, `SlashHide`, `SlashMoved`) filters the authoritative
+  follow), queue, overlays, sessions (Session Manager) and providers (Connect
+  Provider Manager and its API-key modal) plus the models/jobs pickers and the
+  two-tab Command & Help Center (Commands / Shortcuts), theme, workspace,
+  probe/doctor/usage wiring. Slash
+  discovery state filters the authoritative
   `Commands` registry inline — never a second catalog.
 - `tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,
   prompt history with draft preservation.
@@ -328,8 +332,8 @@ approval, shutting down) are computed per render, never stored.
   tiny screens rather than overflowing.
   The composer is two restrained rules around the input with an inline
   slash-suggestion list and a queued-prompts line (busy and approval live
-  in the header, status, and modal — never restated under the input). `?` on an empty composer opens command
-  help from the registry; while composing it stays literal. Overlays take
+  in the header, status, and modal — never restated under the input). `?` on an empty composer opens the
+  Command & Help Center from the registry; while composing it stays literal. Overlays take
   over (transcript + composer hidden) so streaming output never fights a
   moving cursor.
 - `tui/commands.go`: the shared `/` registry (`ParseCommand`, `HelpText`,

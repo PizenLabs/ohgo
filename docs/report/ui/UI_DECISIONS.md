@@ -123,7 +123,7 @@ composer is empty and no overlay owns the keyboard — the state a reader is in.
 - **History recall is not lost.** `ctrl+p`/`ctrl+n` were already bound to the
   same handlers and still reach it, including the return-to-draft step;
   `TestHistoryRecallMovesToTheCtrlBindingsOnAnIdleComposer` pins both directions.
-- With text in the composer, or an open picker/approval/secret, the arrows keep
+- With text in the composer, or an open picker/approval/key modal, the arrows keep
   their editing and overlay behaviour untouched.
 
 `TestUpFallsBackToHistoryOnASingleLine` asserted the old alias and was rewritten.

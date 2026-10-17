@@ -34,8 +34,6 @@ const (
 	PickerModels = "models"
 	// PickerJobs inspects background jobs.
 	PickerJobs = "jobs"
-	// PickerCommands discovers slash commands.
-	PickerCommands = "commands"
 )
 
 // PickerItem is one choice in a selection overlay.
@@ -519,7 +517,10 @@ func optionsToItems(options []ModelOption) []PickerItem {
 	return items
 }
 
-// SessionItem is one stored session for the picker.
+// SessionItem is one stored session for the picker and the Session Manager.
+//
+// The optional fields are producer-owned: the Session Manager renders what it
+// is given and keeps an unmeasured fact absent rather than inventing one.
 type SessionItem struct {
 	// ID is the database identifier.
 	ID int64
@@ -531,6 +532,20 @@ type SessionItem struct {
 	Updated string
 	// Cwd is the working directory.
 	Cwd string
+	// Active marks the session the program currently has loaded. It drives
+	// the Session Manager's STATUS column.
+	Active bool
+	// Dirty reports the session's working tree held uncommitted changes when
+	// the roster was listed.
+	Dirty bool
+	// DirtyKnown distinguishes a measured clean tree from an unmeasured one:
+	// an unknown row renders a neutral marker, never a fabricated "clean".
+	DirtyKnown bool
+	// Tokens is the token count reconstructed from the stored transcript, or
+	// zero when the provider did not measure one.
+	Tokens int
+	// Prompt is the latest user prompt, or empty when not loaded.
+	Prompt string
 }
 
 // JobItem is one background job for the picker.

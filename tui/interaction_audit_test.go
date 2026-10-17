@@ -581,20 +581,20 @@ func TestMouseWheelScrollsWithoutTyping(t *testing.T) {
 	}
 
 	Command{Name: "commands"}.runOn(p)
-	if p.state.Picker == nil {
-		t.Fatal("no picker opened")
+	if p.state.HelpModal == nil {
+		t.Fatal("no help center opened")
 	}
 	// Dispatch clears the composer; the wheel must still type nothing.
 	if p.state.Input != "" {
 		t.Fatalf("command dispatch left input %q, want cleared", p.state.Input)
 	}
-	at := p.state.Picker.Cursor
+	at := p.state.HelpModal.Command.Cursor
 	p.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
-	if p.state.Picker.Cursor == at && len(p.state.Picker.Filtered()) > 1 {
-		t.Error("wheel down over a picker left the selection still")
+	if p.state.HelpModal.Command.Cursor == at && len(p.state.HelpModal.ActiveItems()) > 1 {
+		t.Error("wheel down over the help center left the selection still")
 	}
 	if p.state.Input != "" {
-		t.Errorf("wheel over a picker typed into the composer: input %q", p.state.Input)
+		t.Errorf("wheel over the help center typed into the composer: input %q", p.state.Input)
 	}
 }
 
@@ -602,22 +602,22 @@ func TestMouseWheelScrollsWithoutTyping(t *testing.T) {
 // insertion path, so mouse-shaped text is preserved there too: a pasted
 // secret containing "[<" must not be silently rewritten, and a picker
 // search for protocol documentation must match literally.
-func TestSecretAndPickerPreserveMouseLikeText(t *testing.T) {
+func TestConnectKeyAndPickerPreserveMouseLikeText(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	p.state.Apply(SecretOpened{Label: "API key"})
+	p.state.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
 	keyPress(p, runes("[<64;67;30M"))
-	if p.state.Input != "[<64;67;30M" {
-		t.Errorf("secret prompt rewrote pasted text: input %q", p.state.Input)
+	if p.state.ConnectKey == nil || p.state.ConnectKey.Key != "[<64;67;30M" {
+		t.Errorf("key modal rewrote pasted text: %+v", p.state.ConnectKey)
 	}
-	p.state.Apply(SecretClosed{})
+	p.state.Apply(ConnectKeyClosed{})
 	p.flow = nil
 
 	Command{Name: "commands"}.runOn(p)
-	if p.state.Picker == nil {
-		t.Fatal("no picker opened")
+	if p.state.HelpModal == nil {
+		t.Fatal("no help center opened")
 	}
 	p.Update(runes("[<64;67;30M"))
-	if p.state.Picker.Filter != "[<64;67;30M" {
-		t.Errorf("picker query rewrote typed text: %q", p.state.Picker.Filter)
+	if p.state.HelpModal.Command.Filter != "[<64;67;30M" {
+		t.Errorf("help query rewrote typed text: %q", p.state.HelpModal.Command.Filter)
 	}
 }

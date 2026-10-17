@@ -289,18 +289,18 @@ func TestPickerCtrlCClosesImmediately(t *testing.T) {
 func TestPickerCloseRestoresSlashDraft(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Apply(ComposerChanged{Text: "/mod", Cursor: 4})
-	// Dismiss the inline palette so Tab reaches the searchable command modal
+	// Dismiss the inline palette so Tab reaches the command & help center
 	// (the inline palette owns Tab while it is visible).
 	p.state.PaletteHide = true
 	p.Update(keyMsg(tea.KeyTab))
-	if p.state.Picker == nil {
-		t.Fatal("no palette opened")
+	if p.state.HelpModal == nil {
+		t.Fatal("no help center opened")
 	}
 	// First esc clears the carried filter; second closes and restores.
 	p.Update(keyMsg(tea.KeyEsc))
 	p.Update(keyMsg(tea.KeyEsc))
-	if p.state.Picker != nil {
-		t.Fatal("palette did not close")
+	if p.state.HelpModal != nil {
+		t.Fatal("help center did not close")
 	}
 	if p.state.Input != "/mod" {
 		t.Errorf("input = %q, want the typed slash text restored", p.state.Input)

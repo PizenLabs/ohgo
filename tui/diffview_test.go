@@ -138,7 +138,7 @@ func TestDiffEscClearsFilterBeforeClosing(t *testing.T) {
 // /diff must not stack a second modal on top of one already owning the keys.
 func TestDiffDeclinesWhenAnotherOverlayIsOpen(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	p.state.Apply(PickerOpened{Kind: PickerCommands, Title: "commands"})
+	p.state.Apply(PickerOpened{Kind: PickerJobs, Title: "commands"})
 	p.openDiff(nil)
 	if p.state.Diff != nil {
 		t.Fatal("diff opened over another modal")

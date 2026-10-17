@@ -133,7 +133,7 @@ func ComputeLayout(s State) Layout {
 	// every tier: like the old status row it is the one context row narrow
 	// and medium screens get, so gating it on width would drop session and
 	// path exactly where space is scarcest.
-	if s.Picker == nil && s.Plane == nil && s.SupportPanel == nil && s.StatusModal == nil && s.UsageModal == nil && s.Pending == nil && s.QuitConfirm == nil && s.Permissions == nil && s.Diff == nil {
+	if s.Picker == nil && s.Plane == nil && s.SupportPanel == nil && s.StatusModal == nil && s.UsageModal == nil && s.SessionModal == nil && s.HelpModal == nil && s.ConnectModal == nil && s.ConnectKey == nil && s.Pending == nil && s.QuitConfirm == nil && s.Permissions == nil && s.Diff == nil {
 		hints = 1
 	}
 	if hints == 0 {
@@ -149,7 +149,7 @@ func ComputeLayout(s State) Layout {
 	// The overlay area fills the released rows instead. The quit popup is a
 	// centered modal like the plane and support surfaces, so it hides the
 	// composer the same way.
-	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.StatusModal != nil || s.UsageModal != nil || s.QuitConfirm != nil || s.Permissions != nil || s.Diff != nil {
+	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.StatusModal != nil || s.UsageModal != nil || s.SessionModal != nil || s.HelpModal != nil || s.ConnectModal != nil || s.ConnectKey != nil || s.QuitConfirm != nil || s.Permissions != nil || s.Diff != nil {
 		composer = 0
 		sugg = 0
 	}
@@ -186,7 +186,7 @@ const thinkingMinHeight = 10
 // screen, so the line stays out of that surface's budget rather than shrinking
 // a region it does not paint on; the header still carries the phase there.
 func thinkingRows(s State) int {
-	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.Permissions != nil || s.StatusModal != nil || s.UsageModal != nil || s.Diff != nil {
+	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.Permissions != nil || s.StatusModal != nil || s.UsageModal != nil || s.SessionModal != nil || s.HelpModal != nil || s.ConnectModal != nil || s.ConnectKey != nil || s.Diff != nil {
 		return 0
 	}
 	if s.Height > 0 && s.Height < thinkingMinHeight {
@@ -208,16 +208,6 @@ func thinkingRows(s State) int {
 // same count via Layout.PaletteLines.
 func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (lines, sugg int) {
 	lines = 2 // the two framing rules
-	if s.Secret != nil {
-		// contentWidth is clamped to at least 10 wherever this runs, so
-		// contentWidth-2 is exactly what composerWrapWidth yields there.
-		masked := len(secretMaskedRows(s.Secret.Label, s.Input, contentWidth-2))
-		if masked > maxComposerRows {
-			masked = maxComposerRows
-		}
-		lines += masked + 1 // masked block + hint
-		return lines, 0
-	}
 	inputRows := 1
 	text := s.Input
 	if text != "" {

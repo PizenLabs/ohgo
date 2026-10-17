@@ -212,6 +212,14 @@ func Render(state State) string {
 		renderStatusArea(&sb, state, pal, layout)
 	} else if state.UsageModal != nil {
 		renderUsageArea(&sb, state, pal, layout)
+	} else if state.SessionModal != nil {
+		renderSessionArea(&sb, state, pal, layout)
+	} else if state.HelpModal != nil {
+		renderHelpArea(&sb, state, pal, layout)
+	} else if state.ConnectModal != nil {
+		renderConnectArea(&sb, state, pal, layout)
+	} else if state.ConnectKey != nil {
+		renderConnectKeyArea(&sb, state, pal, layout)
 	} else if state.Picker != nil {
 		renderPickerArea(&sb, state, pal, layout)
 	} else {
@@ -224,7 +232,7 @@ func Render(state State) string {
 
 	renderThinkingArea(&sb, state, pal, layout)
 
-	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.QuitConfirm == nil && state.Permissions == nil && state.Diff == nil {
+	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Permissions == nil && state.Diff == nil {
 		// Main canvas. No middle status line while the hint bar owns the
 		// row (ShowHints): the header, composer prefix, and hint bar
 		// already own every fact it would repeat. A pending approval drops
@@ -276,7 +284,7 @@ func composerHintsFor(state State) string {
 	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
-	if paletteOwnsKeys(state) && state.Secret == nil {
+	if paletteOwnsKeys(state) && state.ConnectKey == nil {
 		return "↑↓ navigate · enter/tab accept · esc dismiss"
 	}
 	if state.Status.Busy {
@@ -302,7 +310,7 @@ func composerHintBar(state State, width int) string {
 	if state.Pending != nil || state.QuitConfirm != nil {
 		return ""
 	}
-	if paletteOwnsKeys(state) && state.Secret == nil {
+	if paletteOwnsKeys(state) && state.ConnectKey == nil {
 		const hint = "↑↓ navigate · enter/tab accept · esc dismiss"
 		if width > 0 {
 			return TruncateToWidth(hint, width)
@@ -627,7 +635,7 @@ func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout
 // it is only ever rendered — never applied as an Entry — it cannot leak into
 // the persisted session or reappear over a resumed transcript.
 func showWelcome(state State) bool {
-	return !state.SessionActive && len(state.Entries) == 0 && state.Picker == nil && state.Secret == nil && state.Pending == nil && state.QuitConfirm == nil && state.Permissions == nil && state.StatusModal == nil && state.UsageModal == nil && state.Diff == nil
+	return !state.SessionActive && len(state.Entries) == 0 && state.Picker == nil && state.ConnectKey == nil && state.Pending == nil && state.QuitConfirm == nil && state.Permissions == nil && state.StatusModal == nil && state.UsageModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.Diff == nil
 }
 
 // renderTranscriptBody renders every entry wrapped to the content width.
@@ -1130,28 +1138,6 @@ func composerTextWidthFor(state State, layout Layout) int {
 // conversation.
 func renderComposer(state State, pal *Palette, layout Layout) string {
 	rule := composerRule(state, pal, layout)
-	if state.Secret != nil {
-		wrapped := secretMaskedRows(state.Secret.Label, state.Input, composerWrapWidth(layout))
-		// A pasted credential can be arbitrarily long: show the tail so the
-		// masked block can never push chrome off-screen. Only bullets ever
-		// render — content stays masked on every row.
-		if len(wrapped) > maxComposerRows {
-			wrapped = wrapped[len(wrapped)-maxComposerRows:]
-		}
-		var sb strings.Builder
-		sb.WriteString(rule + "\n")
-		for i, wl := range wrapped {
-			if i == 0 {
-				sb.WriteString(pal.Prompt.Render(state.Secret.Label+": ") + wl)
-			} else {
-				sb.WriteString("\n" + pal.Prompt.Render("  ") + wl)
-			}
-		}
-		sb.WriteString(pal.Cursor.Render("▌"))
-		sb.WriteString("\n" + rule)
-		sb.WriteString("\n" + pal.Muted.Render("enter submits · esc cancels"))
-		return sb.String()
-	}
 
 	// Pasted input can carry terminal escapes: sanitize for display (cursor
 	// mapping preserved) while the stored input stays raw for editing.
@@ -1208,7 +1194,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 // composerPrefixStyle so the frame and the "ask > "/"build > "/"fuzz > "
 // text read as one boundary.
 func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
-	if state.Picker != nil || state.Secret != nil || state.Pending != nil || state.QuitConfirm != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.Diff != nil {
+	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.ConnectModal != nil || state.Diff != nil {
 		return pal.Separator
 	}
 	return composerPrefixStyle(state, pal).Bold(true)
@@ -1314,35 +1300,6 @@ func composerStateLine(state State, pal *Palette, layout Layout) string {
 		return pal.Queued.Render(label)
 	}
 	return pal.Queued.Render(label + " · " + first)
-}
-
-// secretMaskedRows folds the masked credential block identically for render
-// and layout: wrapWidth is the composer text width (after the prompt
-// prefix), and the label takes its share. Sharing it keeps reserved and
-// rendered rows in agreement no matter how long the pasted input is.
-func secretMaskedRows(label, input string, wrapWidth int) []string {
-	if w := wrapWidth - CellWidth(label) - 2; w > 0 {
-		wrapWidth = w
-	} else {
-		wrapWidth = 1
-	}
-	masked := strings.Repeat("•", len([]rune(input)))
-	return WrapToWidth(masked, wrapWidth)
-}
-
-// composerWrapWidth is the cells available for composer text after the legacy
-// two-cell prompt prefix. It is kept for the masked secret path, whose prefix
-// is the credential label rather than the mode affordance. Normal input uses
-// composerTextWidthFor, which subtracts the live mode prefix width instead.
-func composerWrapWidth(layout Layout) int {
-	width := layout.ContentWidth
-	if width <= 0 {
-		width = 80
-	}
-	if width < 3 {
-		width = 3
-	}
-	return width - 2
 }
 
 // renderEntry writes one transcript entry, wrapped to the content width.

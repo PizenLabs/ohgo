@@ -9,8 +9,8 @@ import (
 
 // SessionShortcutBar is the right zone of the telemetry footer: the two
 // discovery paths that cost nothing and always work. "? help" opens the
-// command palette on an empty composer and "^p settings" opens it too, so the
-// hints never advertise a key that does something else.
+// Command & Help Center on an empty composer and "^p settings" opens it too, so
+// the hints never advertise a key that does something else.
 const SessionShortcutBar = "? help · ^p settings"
 
 // sessionTelemetry renders the left zone of the telemetry footer: measured

@@ -131,7 +131,7 @@ decides by state:
 | --- | --- |
 | idle, empty composer | scroll the transcript (the reading state) |
 | text in the composer | move the cursor / recall history, unchanged |
-| picker, approval, secret open | belong to the overlay, unchanged |
+| picker, approval, key modal open | belong to the overlay, unchanged |
 
 History recall stays on `ctrl+p` / `ctrl+n` in every state.
 

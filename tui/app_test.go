@@ -403,7 +403,7 @@ func TestRunCommandDispatchesKnownCommands(t *testing.T) {
 		command Command
 		want    string
 	}{
-		{"help", Command{Name: "help"}, "Commands:"},
+		{"help opens the help center", Command{Name: "help"}, ""},
 		{"clear", Command{Name: "clear"}, ""},
 		{"model without args reports the current one", Command{Name: "model"}, "test-model"},
 		{"unknown", Command{Name: "modle"}, "unknown command"},
@@ -417,6 +417,19 @@ func TestRunCommandDispatchesKnownCommands(t *testing.T) {
 			cmd := tc.command
 			cmd.runOn(p)
 
+			if tc.command.Name == "help" {
+				if p.state.HelpModal == nil {
+					t.Fatalf("/help did not open the command & help center")
+				}
+				// The old plain-text listing must never reach the transcript
+				// again; the modal is the only presentation now.
+				for _, entry := range p.state.Entries {
+					if entry.Kind == EntryNotice && strings.Contains(entry.Notice, "Commands:") {
+						t.Errorf("/help polluted the transcript: %q", entry.Notice)
+					}
+				}
+				return
+			}
 			if tc.want == "" {
 				return
 			}

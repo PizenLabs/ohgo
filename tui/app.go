@@ -167,7 +167,11 @@ type Program struct {
 	// program owns neither the session store, the catalog, nor the tool set.
 	listSessions func() ([]SessionItem, error)
 	openSession  func(id int64) (*session.Session, OpenedSession, error)
-	listModels   func() []string
+	// sessionActions are the Session Manager's write operations. Every field
+	// is nil-safe: a missing hook reports the action unavailable rather than
+	// pretending it succeeded.
+	sessionActions SessionActions
+	listModels     func() []string
 	// listModelOptions is the enriched roster behind the /model picker:
 	// native ids plus preformatted context/price/capability detail built by
 	// the caller, which owns the catalog. Preferred over listModels when set.
@@ -226,8 +230,9 @@ type Program struct {
 	// modelSeq is the latest catalog refresh generation. Older, slower
 	// responses carry a trailing Seq and are dropped, never applied.
 	modelSeq int
-	// pickerRestore holds composer text to put back when a picker opened
-	// over typing (slash-tab discovery) closes without choosing.
+	// pickerRestore holds composer text to put back when a modal opened over
+	// typing (slash-tab discovery: the picker or the Command & Help Center)
+	// closes without choosing.
 	pickerRestore string
 	// pickerRestoreSet marks pickerRestore as deliberate: an empty restore
 	// is still a restore, distinct from "no restore".
@@ -587,7 +592,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.Secret != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil {
+	if s.Picker != nil || s.Plane != nil || s.ConnectKey != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil || s.HelpModal != nil {
 		return false
 	}
 	return s.Input == ""
@@ -665,6 +670,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(PlaneMoved{Delta: -1})
 			return p, nil
 		}
+		if p.state.HelpModal != nil {
+			p.state.Apply(HelpCenterMoved{Delta: -1})
+			return p, nil
+		}
 		if p.state.Picker != nil {
 			p.state.Apply(PickerMoved{Delta: -1})
 			return p, nil
@@ -678,6 +687,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		if p.state.Plane != nil {
 			p.state.Apply(PlaneMoved{Delta: 1})
+			return p, nil
+		}
+		if p.state.HelpModal != nil {
+			p.state.Apply(HelpCenterMoved{Delta: 1})
 			return p, nil
 		}
 		if p.state.Picker != nil {
@@ -817,6 +830,22 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.handleUsageKey(msg)
 	}
 
+	if p.state.SessionModal != nil {
+		return p.handleSessionManagerKey(msg)
+	}
+
+	if p.state.ConnectModal != nil {
+		return p.handleConnectKey(msg)
+	}
+
+	if p.state.ConnectKey != nil {
+		return p.handleConnectKeyEntry(msg)
+	}
+
+	if p.state.HelpModal != nil {
+		return p.handleHelpCenterKey(msg)
+	}
+
 	if p.state.Picker != nil {
 		return p.handlePickerKey(msg)
 	}
@@ -838,7 +867,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// submission. Enter and Tab both accept the highlighted row; the text is
 	// spliced into the composer, so the same keys mean the same thing for
 	// every trigger.
-	if p.state.Secret == nil && p.state.Pending == nil && p.state.QuitConfirm == nil &&
+	if p.state.ConnectKey == nil && p.state.Pending == nil && p.state.QuitConfirm == nil &&
 		paletteOwnsKeys(p.state) {
 		switch msg.String() {
 		case "up", "ctrl+p":
@@ -854,38 +883,6 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, nil
 		case "enter", "tab":
 			return p.acceptPalette()
-		}
-	}
-	// A secret prompt captures the composer: typing masks, enter submits to
-	// the setup flow, escape abandons it. Nothing typed here may become a
-	// prompt — that path would persist the key into history.
-	if p.state.Secret != nil {
-		switch msg.String() {
-		case "enter":
-			text := p.state.Input
-			p.state.Apply(SecretClosed{})
-			p.submitSecret(text)
-			return p, nil
-		case "esc", "ctrl+c":
-			p.state.Apply(SecretClosed{})
-			p.flow = nil
-			return p, nil
-		case "backspace", "ctrl+h":
-			if runes := []rune(p.state.Input); len(runes) > 0 {
-				p.state.Apply(ComposerChanged{Text: string(runes[:len(runes)-1]), Cursor: len(runes) - 1})
-			}
-			return p, nil
-		default:
-			switch msg.Type {
-			case tea.KeyRunes, tea.KeySpace:
-				chunk := string(msg.Runes)
-				if msg.Type == tea.KeySpace {
-					chunk = " "
-				}
-				text := p.state.Input + chunk
-				p.state.Apply(ComposerChanged{Text: text, Cursor: len([]rune(text))})
-			}
-			return p, nil
 		}
 	}
 
@@ -1040,7 +1037,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// prompt exists (or history does) the bar stops promising it and the
 		// key returns to history recall, so the hint can never lie.
 		if msg.String() == "ctrl+p" && !p.state.SessionActive && len(p.state.Submitted) == 0 {
-			p.openSettingsPalette()
+			p.openHelpCenter("")
 			return p, nil
 		}
 		// The terminal cannot say which arrows it synthesised for the wheel,
@@ -1096,7 +1093,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.pickerRestore = p.state.Input
 			p.pickerRestoreSet = true
 			p.state.Apply(InputChanged{Text: ""})
-			p.openCommandPalette(filter)
+			p.openHelpCenter(filter)
 			return p, nil
 		}
 		return p, nil
@@ -1113,8 +1110,8 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// "?" on an empty composer opens contextual help from the
 			// authoritative registry. While composing it stays literal:
 			// help must never steal a question mark being typed.
-			if text == "?" && strings.TrimSpace(p.state.Input) == "" && p.state.Secret == nil {
-				p.openCommandPalette("")
+			if text == "?" && strings.TrimSpace(p.state.Input) == "" && p.state.ConnectKey == nil {
+				p.openHelpCenter("")
 				return p, nil
 			}
 			// A large bracketed paste folds into one inline chip: the full
@@ -1235,7 +1232,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return nil
 
 	case "help":
-		p.state.Apply(Notice{Text: HelpText()})
+		p.openHelpCenter("")
 		return nil
 
 	case "clear":
@@ -1270,7 +1267,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return nil
 
 	case "sessions", "resume":
-		p.openSessionPicker()
+		p.openSessionManager()
 		return nil
 
 	case "jobs":
@@ -1285,7 +1282,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return p.openModelPicker()
 
 	case "commands":
-		p.openCommandPalette("")
+		p.openHelpCenter("")
 		return nil
 
 	case "status":
@@ -1310,7 +1307,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return p.compactNow()
 
 	case "connect":
-		p.openConnectPicker()
+		p.openConnectManager()
 		return nil
 
 	case "disconnect":
@@ -1444,17 +1441,8 @@ func (p *Program) choosePicker() (tea.Model, tea.Cmd) {
 	case PickerModels:
 		p.applyModelSwitch(item.Value)
 		return p, nil
-	case PickerCommands:
-		p.state.Apply(InputChanged{Text: ""})
-		return p, p.runCommand(Command{Name: item.Value, Raw: "/" + item.Value})
 	case PickerJobs:
 		p.state.Apply(Notice{Text: p.jobDetail(item.Value)})
-		return p, nil
-	case "connect":
-		p.continueConnect(item)
-		return p, nil
-	case "connect-src":
-		p.continueConnectSource(item)
 		return p, nil
 	case "connect-models":
 		p.finishConnect(item)
@@ -1510,6 +1498,10 @@ func (p *Program) interruptOrClear() (tea.Model, tea.Cmd) {
 	}
 	if p.state.Plane != nil {
 		p.closePlane()
+		return p, nil
+	}
+	if p.state.HelpModal != nil {
+		p.closeHelpCenter()
 		return p, nil
 	}
 	if p.state.Picker != nil {
@@ -2393,45 +2385,9 @@ func (p *Program) issueRefresh() tea.Cmd {
 	return p.catalog.Refresh(context.Background(), p.modelSeq)
 }
 
-// openCommandPalette lists every slash command for discovery and keyboard
-// navigation. Choosing one runs it; arguments are not collected here —
-// commands needing them report usage, matching their direct invocation.
-func (p *Program) openCommandPalette(filter string) {
-	p.openPalette("commands", filter)
-}
-
-// openSettingsPalette opens the same registry under the "settings" title,
-// reached from ^p on a fresh session. It is the configuration/discovery hub —
-// theme, model, connect, and providers all live here — so the shortcut bar's
-// "^p settings" hint points at a surface that actually exists.
-func (p *Program) openSettingsPalette() {
-	p.openPalette("settings", "")
-}
-
-// openPalette builds and opens the command list. Choosing an item runs it;
-// arguments are not collected here — commands needing them report usage,
-// matching their direct invocation.
-func (p *Program) openPalette(title, filter string) {
-	var items []PickerItem
-	for _, spec := range Commands {
-		if spec.Hidden {
-			continue
-		}
-		items = append(items, PickerItem{
-			Title:  "/" + spec.Name,
-			Detail: groupOf(spec) + " · " + spec.Description,
-			Value:  spec.Name,
-		})
-	}
-	p.state.Apply(PickerOpened{Kind: PickerCommands, Title: title, Items: items})
-	if filter != "" {
-		p.state.Apply(PickerFilterChanged{Text: filter})
-	}
-}
-
-// openSessionPicker lists stored sessions for resume. The program owns
-// neither the store nor the replay, so both arrive as functions.
-func (p *Program) openSessionPicker() {
+// openSessionManager opens the Session Manager over the stored sessions. The
+// program owns neither the store nor the replay, so both arrive as functions.
+func (p *Program) openSessionManager() {
 	if p.listSessions == nil || p.openSession == nil {
 		p.state.Apply(Notice{Text: "session browsing is unavailable"})
 		return
@@ -2445,45 +2401,74 @@ func (p *Program) openSessionPicker() {
 		p.state.Apply(Notice{Text: "no saved sessions yet"})
 		return
 	}
-	var items []PickerItem
-	for _, sess := range list {
-		title := fmt.Sprintf("#%d %s", sess.ID, sess.Title)
-		if sess.Title == "" {
-			title = fmt.Sprintf("#%d %s", sess.ID, sess.Model)
-		}
-		items = append(items, PickerItem{
-			Title:  title,
-			Detail: sess.Updated + " · " + sess.Cwd,
-			Value:  fmt.Sprintf("%d", sess.ID),
-		})
+	list = p.markActiveSession(list)
+	view := SessionManagerState{
+		Items:    list,
+		ActiveID: p.activeSessionID(),
 	}
-	p.state.Apply(PickerOpened{Kind: PickerSessions, Title: "sessions", Items: items})
+	// Size the roster window against the modal layout (composer and hints
+	// hidden) rather than the surface being replaced, so the highlight stays
+	// on screen without a resize.
+	probe := p.state
+	probe.SessionModal = &view
+	view.VisibleRows = sessionManagerVisibleRows(probe)
+	// Park the highlight on the loaded session so the manager opens oriented
+	// on where the user already is; fall back to the top when it is absent.
+	for i, item := range list {
+		if item.ID == view.ActiveID {
+			view.Cursor = i
+			break
+		}
+	}
+	view.EnsureVisible()
+	p.state.Apply(SessionManagerOpened{View: view})
 }
 
-// resumeSession switches the program to a stored session.
-//
-// History is replaced, never merged: the resumed conversation continues from
-// where it left off, and mixing in the current one would send a transcript
-// the model never saw.
+// activeSessionID returns the loaded session's id, or zero when none.
+func (p *Program) activeSessionID() int64 {
+	if p.session == nil {
+		return 0
+	}
+	return p.session.ID
+}
+
+// resumeSession switches the program to a stored session chosen from the
+// picker.
 func (p *Program) resumeSession(item PickerItem) tea.Cmd {
 	var id int64
 	if _, err := fmt.Sscanf(item.Value, "%d", &id); err != nil {
 		p.state.Apply(Notice{Text: "sessions: bad session id " + item.Value})
 		return nil
 	}
+	return p.resumeSessionByID(id)
+}
+
+// resumeSessionByID switches the program to a stored session.
+//
+// History is replaced, never merged: the resumed conversation continues from
+// where it left off, and mixing in the current one would send a transcript
+// the model never saw.
+func (p *Program) resumeSessionByID(id int64) tea.Cmd {
 	sess, opened, err := p.openSession(id)
 	if err != nil {
 		p.state.Apply(Notice{Text: "sessions: " + err.Error()})
 		return nil
 	}
+	p.adoptSession(sess, opened)
+	return nil
+}
+
+// adoptSession installs a session as the live conversation: its history, its
+// replayed transcript, and a fresh telemetry window. The store is untouched —
+// every session lives in the one database the program already points at, so
+// only the session pointer moves.
+func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	p.mu.Lock()
 	p.history = append([]agent.Message(nil), opened.History...)
-	// A resumed session is a new telemetry window: the prior session's token
-	// counts and clock never carry over.
+	// A resumed or new session is a fresh telemetry window: the prior
+	// session's token counts and clock never carry over.
 	p.resetSessionTelemetryLocked()
 	p.mu.Unlock()
-	// The store is untouched: every session lives in the one database it
-	// already points at. Only the session pointer moves.
 	p.session = sess
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
 	if p.live != nil {
@@ -2492,7 +2477,6 @@ func (p *Program) resumeSession(item PickerItem) tea.Cmd {
 	if opened.Notice != "" {
 		p.state.Apply(Notice{Text: opened.Notice})
 	}
-	return nil
 }
 
 // openJobsView lists background jobs. Choosing one shows its latest output;
@@ -2546,6 +2530,29 @@ func (p *Program) applyThemeCommand(args []string) {
 func (p *Program) SetSessionBrowser(list func() ([]SessionItem, error), open func(id int64) (*session.Session, OpenedSession, error)) {
 	p.listSessions = list
 	p.openSession = open
+}
+
+// SessionActions are the Session Manager's write operations. Every field is
+// nil-safe: a missing hook reports the action unavailable rather than
+// pretending it succeeded.
+type SessionActions struct {
+	// New creates and opens a fresh session, returning what resuming it would
+	// hand the program. Nil disables the "n" key.
+	New func() (*session.Session, OpenedSession, error)
+	// Rename relabels a session. Nil disables the "r" key.
+	Rename func(id int64, title string) error
+	// Archive hides a session from the default roster without deleting it.
+	// Nil disables the "a" key.
+	Archive func(id int64) error
+	// Delete removes a session and its transcript. Nil disables the "d" key.
+	Delete func(id int64) error
+}
+
+// SetSessionActions installs the Session Manager's write operations. It is
+// separate from SetSessionBrowser so a caller can offer browsing without
+// exposing destructive actions.
+func (p *Program) SetSessionActions(actions SessionActions) {
+	p.sessionActions = actions
 }
 
 // SetModelLister installs the model list behind the /model picker.

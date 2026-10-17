@@ -423,7 +423,7 @@ func TestSlashNavigationAndDismissKeepDraft(t *testing.T) {
 	if p.state.Input != "/" {
 		t.Errorf("input = %q, want esc to keep the draft while dismissing", p.state.Input)
 	}
-	if out := Render(p.state); strings.Contains(out, "/help") && strings.Contains(out, "list the available commands") {
+	if out := Render(p.state); strings.Contains(out, "open the command & help center") {
 		t.Error("dismissed suggestions still render")
 	}
 	// Unknown slash still reports instead of reaching the model.
@@ -443,8 +443,8 @@ func TestSlashNavigationAndDismissKeepDraft(t *testing.T) {
 func TestQuestionMarkOpensHelpWhenEmpty(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	keyPress(p, runes("?"))
-	if p.state.Picker == nil || p.state.Picker.Kind != PickerCommands {
-		t.Errorf("picker = %+v, want ? on an empty composer to open command help", p.state.Picker)
+	if p.state.HelpModal == nil {
+		t.Errorf("help modal = %+v, want ? on an empty composer to open the command & help center", p.state.HelpModal)
 	}
 	if p.state.Input != "" {
 		t.Errorf("input = %q, want ? consumed as help, not typed", p.state.Input)
@@ -455,7 +455,7 @@ func TestQuestionMarkStaysLiteralWhileComposing(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Apply(ComposerChanged{Text: "really", Cursor: 6})
 	keyPress(p, runes("?"))
-	if p.state.Picker != nil {
+	if p.state.HelpModal != nil {
 		t.Error("? stole input from an active composer to open help")
 	}
 	if p.state.Input != "really?" {
@@ -825,11 +825,13 @@ func TestViewportExactAcrossModesAndStates(t *testing.T) {
 			s.Apply(MessageQueued{Text: "x"})
 			s.Apply(ComposerChanged{Text: "typing", Cursor: 6})
 		}
-		cases["secret"] = func(s *State) { s.Apply(SecretOpened{Label: "key"}) }
-		cases["secret-long"] = func(s *State) {
-			s.Apply(SecretOpened{Label: "key"})
+		cases["connect-key"] = func(s *State) {
+			s.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
+		}
+		cases["connect-key-long"] = func(s *State) {
+			s.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
 			long := strings.Repeat("k", 200)
-			s.Apply(ComposerChanged{Text: long, Cursor: len([]rune(long))})
+			s.Apply(ConnectKeyChanged{Key: long})
 		}
 		for name, setup := range cases {
 			s := mk()
@@ -845,7 +847,7 @@ func TestViewportExactAcrossModesAndStates(t *testing.T) {
 			for i := 0; i < n; i++ {
 				items = append(items, PickerItem{Title: "item", Value: "v"})
 			}
-			s.Apply(PickerOpened{Kind: PickerCommands, Title: "c", Items: items})
+			s.Apply(PickerOpened{Kind: PickerJobs, Title: "c", Items: items})
 			if got := len(strings.Split(Render(s), "\n")); got != h {
 				t.Errorf("picker n=%d %dx%d rendered %d lines, want exactly %d", n, w, h, got, h)
 			}
