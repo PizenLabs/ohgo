@@ -508,6 +508,8 @@ func liveOverlay(s State, pal *Palette, layout Layout) []string {
 		return liveStatusModalLines(s, pal, layout)
 	case s.UsageModal != nil:
 		return liveUsageModalLines(s, pal, layout)
+	case s.SessionModal != nil:
+		return liveSessionManagerLines(s, pal, layout)
 	case s.Picker != nil:
 		return livePickerLines(s, pal, layout)
 	case s.Pending != nil:
@@ -546,8 +548,19 @@ func liveUsageModalLines(s State, pal *Palette, layout Layout) []string {
 	if s.UsageModal == nil {
 		return nil
 	}
-	return liveModalCardLines(s, pal, layout, func(width, height int) string {
+	return liveModalCardLinesWidth(s, pal, layout, statusCardWidth, func(width, height int) string {
 		return RenderUsageModal(*s.UsageModal, pal, width, height)
+	})
+}
+
+// liveSessionManagerLines renders the Session Manager in output-first mode
+// with the same centering and bound as the read-only cards.
+func liveSessionManagerLines(s State, pal *Palette, layout Layout) []string {
+	if s.SessionModal == nil {
+		return nil
+	}
+	return liveModalCardLinesWidth(s, pal, layout, sessionCardWidth, func(width, height int) string {
+		return RenderSessionManager(*s.SessionModal, pal, width, height)
 	})
 }
 
@@ -555,9 +568,15 @@ func liveUsageModalLines(s State, pal *Palette, layout Layout) []string {
 // it to the region's height, so a card taller than the viewport never pushes
 // the scrollback.
 func liveModalCardLines(s State, pal *Palette, layout Layout, build func(width, height int) string) []string {
+	return liveModalCardLinesWidth(s, pal, layout, statusCardWidth, build)
+}
+
+// liveModalCardLinesWidth is liveModalCardLines with an explicit width
+// resolver, so a card with a wider preferred frame keeps its own clamp.
+func liveModalCardLinesWidth(s State, pal *Palette, layout Layout, widthFn func(int) int, build func(width, height int) string) []string {
 	width := displayWidth(s, layout)
 	limit := liveRows(s)
-	card := build(statusCardWidth(width), limit)
+	card := build(widthFn(width), limit)
 	cardLines := splitLines(card)
 	placed := lipgloss.Place(width, len(cardLines), lipgloss.Center, lipgloss.Top, card)
 	lines := splitLines(placed)

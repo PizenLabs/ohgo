@@ -133,7 +133,7 @@ func ComputeLayout(s State) Layout {
 	// every tier: like the old status row it is the one context row narrow
 	// and medium screens get, so gating it on width would drop session and
 	// path exactly where space is scarcest.
-	if s.Picker == nil && s.Plane == nil && s.SupportPanel == nil && s.StatusModal == nil && s.UsageModal == nil && s.Pending == nil && s.QuitConfirm == nil && s.Permissions == nil && s.Diff == nil {
+	if s.Picker == nil && s.Plane == nil && s.SupportPanel == nil && s.StatusModal == nil && s.UsageModal == nil && s.SessionModal == nil && s.Pending == nil && s.QuitConfirm == nil && s.Permissions == nil && s.Diff == nil {
 		hints = 1
 	}
 	if hints == 0 {
@@ -149,7 +149,7 @@ func ComputeLayout(s State) Layout {
 	// The overlay area fills the released rows instead. The quit popup is a
 	// centered modal like the plane and support surfaces, so it hides the
 	// composer the same way.
-	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.StatusModal != nil || s.UsageModal != nil || s.QuitConfirm != nil || s.Permissions != nil || s.Diff != nil {
+	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.StatusModal != nil || s.UsageModal != nil || s.SessionModal != nil || s.QuitConfirm != nil || s.Permissions != nil || s.Diff != nil {
 		composer = 0
 		sugg = 0
 	}
@@ -186,7 +186,7 @@ const thinkingMinHeight = 10
 // screen, so the line stays out of that surface's budget rather than shrinking
 // a region it does not paint on; the header still carries the phase there.
 func thinkingRows(s State) int {
-	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.Permissions != nil || s.StatusModal != nil || s.UsageModal != nil || s.Diff != nil {
+	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.Permissions != nil || s.StatusModal != nil || s.UsageModal != nil || s.SessionModal != nil || s.Diff != nil {
 		return 0
 	}
 	if s.Height > 0 && s.Height < thinkingMinHeight {

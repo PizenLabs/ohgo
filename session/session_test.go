@@ -399,3 +399,86 @@ func TestOpenIsIdempotentOnAnExistingDatabase(t *testing.T) {
 		t.Fatalf("second open failed: %v", err)
 	}
 }
+
+// Archiving hides a session from the default rosters without deleting it:
+// Get still resolves it, so an archived conversation stays resumable by id.
+func TestStoreArchiveHidesWithoutDeleting(t *testing.T) {
+	store := openStore(t)
+	sess, err := store.CreateWith(CreateOptions{Cwd: "/w", Model: "m", Project: "proj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetArchived(sess.ID, true); err != nil {
+		t.Fatalf("SetArchived: %v", err)
+	}
+
+	list, err := store.List(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Errorf("List returned %d sessions, want the archived one hidden", len(list))
+	}
+	byProject, err := store.ListByProject("proj", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byProject) != 0 {
+		t.Errorf("ListByProject returned %d sessions, want the archived one hidden", len(byProject))
+	}
+	got, err := store.Get(sess.ID)
+	if err != nil {
+		t.Fatalf("archived session is no longer reachable: %v", err)
+	}
+	if !got.Archived {
+		t.Error("the archived flag did not persist")
+	}
+}
+
+func TestStoreArchiveReportsMissingSession(t *testing.T) {
+	store := openStore(t)
+	if err := store.SetArchived(4242, true); err == nil {
+		t.Fatal("expected archiving an unknown session to fail")
+	}
+}
+
+// Stats reconstructs the roster summary from the stored transcript: the
+// message count, an estimated token total, and the latest user prompt.
+func TestStoreStats(t *testing.T) {
+	store := openStore(t)
+	first, _ := store.Create("/w", "m")
+	second, _ := store.Create("/w", "m")
+
+	appendMsg := func(id int64, msg agent.Message) {
+		t.Helper()
+		stored, err := FromAgentMessage(msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Append(id, stored); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendMsg(first.ID, agent.UserMessage{Text: "first prompt"})
+	appendMsg(first.ID, agent.AssistantMessage{Message: ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "an answer"}}}})
+	appendMsg(first.ID, agent.UserMessage{Text: "second prompt"})
+	appendMsg(second.ID, agent.UserMessage{Text: "only"})
+
+	stats, err := store.Stats([]int64{first.ID, second.ID})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if got := stats[first.ID]; got.Messages != 3 || got.Prompt != "second prompt" || got.Tokens <= 0 {
+		t.Errorf("first stats = %+v, want 3 messages, the last prompt, and tokens", got)
+	}
+	if got := stats[second.ID]; got.Messages != 1 || got.Prompt != "only" {
+		t.Errorf("second stats = %+v, want 1 message and its prompt", got)
+	}
+	if _, ok := stats[999]; ok {
+		t.Error("an unrequested session appeared in the stats")
+	}
+	// No ids is a cheap no-op, not a query with an empty IN clause.
+	if out, err := store.Stats(nil); err != nil || out != nil {
+		t.Errorf("Stats(nil) = %v, %v; want nil, nil", out, err)
+	}
+}

@@ -159,6 +159,14 @@ func RenderStatusModal(view StatusView, pal *Palette, width, height int) string 
 // footer bar, the footer key line, and the closing border. The /status and
 // /usage cards share it so their frames read as one family.
 func renderModalFrame(title string, content []string, pal *Palette, interior int) string {
+	return renderModalFrameWithFooter(title, content, statusFooterBar(pal, interior), pal, interior)
+}
+
+// renderModalFrameWithFooter is renderModalFrame with an explicit footer bar,
+// so a working modal (the Session Manager) can name its own action keys while
+// keeping the identical frame. The footer is truncated to the interior before
+// padding, so an over-long line can never break the border alignment.
+func renderModalFrameWithFooter(title string, content []string, footer string, pal *Palette, interior int) string {
 	out := make([]string, 0, len(content)+4)
 	out = append(out, modalTitleBorder(interior, title))
 	for _, line := range content {
@@ -168,7 +176,7 @@ func renderModalFrame(title string, content []string, pal *Palette, interior int
 		out = append(out, "│"+TruncateToWidth(line, interior)+"│")
 	}
 	out = append(out, "│"+statusFooterRule(pal, interior)+"│")
-	out = append(out, "│"+padRight(statusFooterBar(pal, interior), interior)+"│")
+	out = append(out, "│"+padRight(TruncateToWidth(footer, interior), interior)+"│")
 	out = append(out, "└"+strings.Repeat("─", interior)+"┘")
 	return strings.Join(out, "\n")
 }
@@ -437,8 +445,15 @@ func renderStatusArea(sb *strings.Builder, state State, pal *Palette, layout Lay
 // build receives the card width and the available height so each card keeps
 // its own bounded frame.
 func renderCardArea(sb *strings.Builder, state State, layout Layout, build func(width, height int) string) {
+	renderCardAreaWidth(sb, state, layout, statusCardWidth, build)
+}
+
+// renderCardAreaWidth is renderCardArea with an explicit width resolver, so a
+// card with a wider preferred frame (the Session Manager's roster) can keep
+// its own responsive clamp while sharing the centering contract.
+func renderCardAreaWidth(sb *strings.Builder, state State, layout Layout, widthFn func(int) int, build func(width, height int) string) {
 	if state.Width <= 0 || state.Height <= 0 {
-		card := build(statusCardWidth(state.Width), 0)
+		card := build(widthFn(state.Width), 0)
 		sb.WriteString(card)
 		if !strings.HasSuffix(card, "\n") {
 			sb.WriteString("\n")
@@ -453,7 +468,7 @@ func renderCardArea(sb *strings.Builder, state State, layout Layout, build func(
 		avail = 0
 	}
 	width := state.Width
-	card := build(statusCardWidth(width), avail)
+	card := build(widthFn(width), avail)
 	placed := lipgloss.Place(width, avail, lipgloss.Center, lipgloss.Center, card)
 	lines := strings.Split(placed, "\n")
 	if len(lines) > avail {

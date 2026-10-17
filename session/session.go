@@ -14,11 +14,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/state"
+	"github.com/PizenLabs/ohgo/tokens"
 	"github.com/PizenLabs/ohgo/workspace"
 	_ "modernc.org/sqlite"
 )
@@ -39,7 +41,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     model      TEXT NOT NULL,
     workspace  TEXT NOT NULL DEFAULT 'build',
     project    TEXT NOT NULL DEFAULT '',
-    title      TEXT NOT NULL DEFAULT ''
+    title      TEXT NOT NULL DEFAULT '',
+    archived   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -183,6 +186,8 @@ type Session struct {
 	Project string
 	// Title is a human-readable label, derived from the first turn.
 	Title string
+	// Archived hides the session from the default roster without deleting it.
+	Archived bool
 }
 
 // CreateOptions describes a new session.
@@ -261,17 +266,18 @@ func (s *Store) SetAuthority(id int64, workspace, model string) error {
 // Get returns one session by id.
 func (s *Store) Get(id int64) (Session, error) {
 	row := s.db.QueryRow(
-		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title FROM sessions WHERE id = ?`, id)
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived FROM sessions WHERE id = ?`, id)
 	return scanSession(row)
 }
 
-// List returns sessions newest first.
+// List returns non-archived sessions newest first.
 func (s *Store) List(limit int) ([]Session, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	rows, err := s.db.Query(
-		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title FROM sessions ORDER BY updated_at DESC LIMIT ?`,
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived
+		 FROM sessions WHERE archived = 0 ORDER BY updated_at DESC LIMIT ?`,
 		limit)
 	if err != nil {
 		return nil, fmt.Errorf("session: list: %w", err)
@@ -281,7 +287,8 @@ func (s *Store) List(limit int) ([]Session, error) {
 	return scanSessions(rows)
 }
 
-// ListByProject returns the sessions belonging to one project, newest first.
+// ListByProject returns the non-archived sessions belonging to one project,
+// newest first.
 //
 // Sessions are stored in one machine-global database, so project association is
 // logical: this query is what makes "list this project's sessions" possible
@@ -294,8 +301,9 @@ func (s *Store) ListByProject(project string, limit int) ([]Session, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(
-		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title
-		 FROM sessions WHERE project = ? OR project = '' ORDER BY updated_at DESC LIMIT ?`,
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived
+		 FROM sessions WHERE (project = ? OR project = '') AND archived = 0
+		 ORDER BY updated_at DESC LIMIT ?`,
 		project, limit)
 	if err != nil {
 		return nil, fmt.Errorf("session: list by project: %w", err)
@@ -414,6 +422,89 @@ func (s *Store) SetTitle(sessionID int64, title string) error {
 		return fmt.Errorf("%w: session %d", ErrSessionNotFound, sessionID)
 	}
 	return nil
+}
+
+// SetArchived hides a session from the default roster (archived = true) or
+// restores it. It never deletes the transcript, so an archived conversation
+// stays resumable by id.
+func (s *Store) SetArchived(sessionID int64, archived bool) error {
+	value := 0
+	if archived {
+		value = 1
+	}
+	result, err := s.db.Exec(`UPDATE sessions SET archived = ? WHERE id = ?`, value, sessionID)
+	if err != nil {
+		return fmt.Errorf("session: set archived: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("session: confirm archived: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: session %d", ErrSessionNotFound, sessionID)
+	}
+	return nil
+}
+
+// Stat is a lightweight per-session summary for the Session Manager roster.
+//
+// It is deliberately partial: the stored transcript carries no usage record,
+// so Tokens is reconstructed from stored text, not a measured bill.
+type Stat struct {
+	// Messages is the stored message count.
+	Messages int
+	// Tokens is the estimated token count reconstructed from stored text.
+	Tokens int
+	// Prompt is the latest user prompt, or empty when none was recorded.
+	Prompt string
+}
+
+// Stats returns per-session summaries for the given ids in one pass. Sessions
+// with no stored messages are omitted from the result; the caller keeps its
+// own zero value for them.
+func (s *Store) Stats(ids []int64) (map[int64]Stat, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `SELECT session_id, payload FROM messages WHERE session_id IN (` +
+		strings.Join(placeholders, ",") + `) ORDER BY session_id, seq`
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("session: stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[int64]Stat, len(ids))
+	for rows.Next() {
+		var (
+			id      int64
+			payload string
+		)
+		if err := rows.Scan(&id, &payload); err != nil {
+			return nil, fmt.Errorf("session: scan stat: %w", err)
+		}
+		var msg StoredMessage
+		if err := json.Unmarshal([]byte(payload), &msg); err != nil {
+			return nil, fmt.Errorf("session: decode stat: %w", err)
+		}
+		stat := out[id]
+		stat.Messages++
+		stat.Tokens += tokens.Count(msg.Text, tokens.ModeEstimate)
+		if msg.Role == "user" && strings.TrimSpace(msg.Text) != "" {
+			stat.Prompt = msg.Text
+		}
+		out[id] = stat
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Delete removes a session and its transcript.
@@ -634,13 +725,15 @@ func scanSession(row rowScanner) (Session, error) {
 		sess      Session
 		createdAt string
 		updatedAt string
+		archived  int
 	)
-	if err := row.Scan(&sess.ID, &createdAt, &updatedAt, &sess.Cwd, &sess.Model, &sess.Workspace, &sess.Project, &sess.Title); err != nil {
+	if err := row.Scan(&sess.ID, &createdAt, &updatedAt, &sess.Cwd, &sess.Model, &sess.Workspace, &sess.Project, &sess.Title, &archived); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrSessionNotFound
 		}
 		return Session{}, fmt.Errorf("session: scan: %w", err)
 	}
+	sess.Archived = archived != 0
 	created, err := time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
 		return Session{}, fmt.Errorf("session: parse created_at %q: %w", createdAt, err)
@@ -675,6 +768,7 @@ func migrate(db *sql.DB) error {
 	}{
 		{"workspace", `ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT '` + DefaultWorkspace + `'`},
 		{"project", `ALTER TABLE sessions ADD COLUMN project TEXT NOT NULL DEFAULT ''`},
+		{"archived", `ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, add := range additions {
 		if columns[add.name] {

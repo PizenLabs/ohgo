@@ -167,7 +167,11 @@ type Program struct {
 	// program owns neither the session store, the catalog, nor the tool set.
 	listSessions func() ([]SessionItem, error)
 	openSession  func(id int64) (*session.Session, OpenedSession, error)
-	listModels   func() []string
+	// sessionActions are the Session Manager's write operations. Every field
+	// is nil-safe: a missing hook reports the action unavailable rather than
+	// pretending it succeeded.
+	sessionActions SessionActions
+	listModels     func() []string
 	// listModelOptions is the enriched roster behind the /model picker:
 	// native ids plus preformatted context/price/capability detail built by
 	// the caller, which owns the catalog. Preferred over listModels when set.
@@ -817,6 +821,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.handleUsageKey(msg)
 	}
 
+	if p.state.SessionModal != nil {
+		return p.handleSessionManagerKey(msg)
+	}
+
 	if p.state.Picker != nil {
 		return p.handlePickerKey(msg)
 	}
@@ -1270,7 +1278,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return nil
 
 	case "sessions", "resume":
-		p.openSessionPicker()
+		p.openSessionManager()
 		return nil
 
 	case "jobs":
@@ -2429,9 +2437,9 @@ func (p *Program) openPalette(title, filter string) {
 	}
 }
 
-// openSessionPicker lists stored sessions for resume. The program owns
-// neither the store nor the replay, so both arrive as functions.
-func (p *Program) openSessionPicker() {
+// openSessionManager opens the Session Manager over the stored sessions. The
+// program owns neither the store nor the replay, so both arrive as functions.
+func (p *Program) openSessionManager() {
 	if p.listSessions == nil || p.openSession == nil {
 		p.state.Apply(Notice{Text: "session browsing is unavailable"})
 		return
@@ -2445,45 +2453,74 @@ func (p *Program) openSessionPicker() {
 		p.state.Apply(Notice{Text: "no saved sessions yet"})
 		return
 	}
-	var items []PickerItem
-	for _, sess := range list {
-		title := fmt.Sprintf("#%d %s", sess.ID, sess.Title)
-		if sess.Title == "" {
-			title = fmt.Sprintf("#%d %s", sess.ID, sess.Model)
-		}
-		items = append(items, PickerItem{
-			Title:  title,
-			Detail: sess.Updated + " · " + sess.Cwd,
-			Value:  fmt.Sprintf("%d", sess.ID),
-		})
+	list = p.markActiveSession(list)
+	view := SessionManagerState{
+		Items:    list,
+		ActiveID: p.activeSessionID(),
 	}
-	p.state.Apply(PickerOpened{Kind: PickerSessions, Title: "sessions", Items: items})
+	// Size the roster window against the modal layout (composer and hints
+	// hidden) rather than the surface being replaced, so the highlight stays
+	// on screen without a resize.
+	probe := p.state
+	probe.SessionModal = &view
+	view.VisibleRows = sessionManagerVisibleRows(probe)
+	// Park the highlight on the loaded session so the manager opens oriented
+	// on where the user already is; fall back to the top when it is absent.
+	for i, item := range list {
+		if item.ID == view.ActiveID {
+			view.Cursor = i
+			break
+		}
+	}
+	view.EnsureVisible()
+	p.state.Apply(SessionManagerOpened{View: view})
 }
 
-// resumeSession switches the program to a stored session.
-//
-// History is replaced, never merged: the resumed conversation continues from
-// where it left off, and mixing in the current one would send a transcript
-// the model never saw.
+// activeSessionID returns the loaded session's id, or zero when none.
+func (p *Program) activeSessionID() int64 {
+	if p.session == nil {
+		return 0
+	}
+	return p.session.ID
+}
+
+// resumeSession switches the program to a stored session chosen from the
+// picker.
 func (p *Program) resumeSession(item PickerItem) tea.Cmd {
 	var id int64
 	if _, err := fmt.Sscanf(item.Value, "%d", &id); err != nil {
 		p.state.Apply(Notice{Text: "sessions: bad session id " + item.Value})
 		return nil
 	}
+	return p.resumeSessionByID(id)
+}
+
+// resumeSessionByID switches the program to a stored session.
+//
+// History is replaced, never merged: the resumed conversation continues from
+// where it left off, and mixing in the current one would send a transcript
+// the model never saw.
+func (p *Program) resumeSessionByID(id int64) tea.Cmd {
 	sess, opened, err := p.openSession(id)
 	if err != nil {
 		p.state.Apply(Notice{Text: "sessions: " + err.Error()})
 		return nil
 	}
+	p.adoptSession(sess, opened)
+	return nil
+}
+
+// adoptSession installs a session as the live conversation: its history, its
+// replayed transcript, and a fresh telemetry window. The store is untouched —
+// every session lives in the one database the program already points at, so
+// only the session pointer moves.
+func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	p.mu.Lock()
 	p.history = append([]agent.Message(nil), opened.History...)
-	// A resumed session is a new telemetry window: the prior session's token
-	// counts and clock never carry over.
+	// A resumed or new session is a fresh telemetry window: the prior
+	// session's token counts and clock never carry over.
 	p.resetSessionTelemetryLocked()
 	p.mu.Unlock()
-	// The store is untouched: every session lives in the one database it
-	// already points at. Only the session pointer moves.
 	p.session = sess
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
 	if p.live != nil {
@@ -2492,7 +2529,6 @@ func (p *Program) resumeSession(item PickerItem) tea.Cmd {
 	if opened.Notice != "" {
 		p.state.Apply(Notice{Text: opened.Notice})
 	}
-	return nil
 }
 
 // openJobsView lists background jobs. Choosing one shows its latest output;
@@ -2546,6 +2582,29 @@ func (p *Program) applyThemeCommand(args []string) {
 func (p *Program) SetSessionBrowser(list func() ([]SessionItem, error), open func(id int64) (*session.Session, OpenedSession, error)) {
 	p.listSessions = list
 	p.openSession = open
+}
+
+// SessionActions are the Session Manager's write operations. Every field is
+// nil-safe: a missing hook reports the action unavailable rather than
+// pretending it succeeded.
+type SessionActions struct {
+	// New creates and opens a fresh session, returning what resuming it would
+	// hand the program. Nil disables the "n" key.
+	New func() (*session.Session, OpenedSession, error)
+	// Rename relabels a session. Nil disables the "r" key.
+	Rename func(id int64, title string) error
+	// Archive hides a session from the default roster without deleting it.
+	// Nil disables the "a" key.
+	Archive func(id int64) error
+	// Delete removes a session and its transcript. Nil disables the "d" key.
+	Delete func(id int64) error
+}
+
+// SetSessionActions installs the Session Manager's write operations. It is
+// separate from SetSessionBrowser so a caller can offer browsing without
+// exposing destructive actions.
+func (p *Program) SetSessionActions(actions SessionActions) {
+	p.sessionActions = actions
 }
 
 // SetModelLister installs the model list behind the /model picker.

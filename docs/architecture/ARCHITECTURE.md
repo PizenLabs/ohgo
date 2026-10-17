@@ -277,10 +277,11 @@ Derived display phases
 approval, shutting down) are computed per render, never stored.
 
 - `tui/model.go`: the state machine — composer, viewport (scroll + sticky
-  follow), queue, overlays, sessions/models/jobs/commands/connect pickers,
-  theme, workspace, probe/doctor/usage wiring. Slash discovery state
-  (`SlashCursor`, `SlashHide`, `SlashMoved`) filters the authoritative
-  `Commands` registry inline — never a second catalog.
+  follow), queue, overlays, sessions (Session Manager) and
+  models/jobs/commands/connect pickers, theme, workspace, probe/doctor/usage
+  wiring. Slash discovery state (`SlashCursor`, `SlashHide`, `SlashMoved`)
+  filters the authoritative `Commands` registry inline — never a second
+  catalog.
 - `tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,
   prompt history with draft preservation.
 - `tui/entries.go`: transcript entries rebuilt from replayed messages (tool

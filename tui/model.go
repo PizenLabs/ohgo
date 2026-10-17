@@ -375,6 +375,11 @@ type State struct {
 	// read-only modal family as StatusModal: any key dismisses it, and it
 	// never enters the transcript, history, or session.
 	UsageModal *UsageView
+	// SessionModal is the open /sessions Session Manager, or nil. Unlike the
+	// read-only cards it owns a working roster: while set it captures every
+	// key, moves its own cursor, and dispatches write actions through the
+	// program. It never enters the transcript, history, or session itself.
+	SessionModal *SessionManagerState
 	// Diff is the open interactive diff inspector, or nil. It is a full-screen
 	// modal overlay: while set it owns the keyboard and the pane area, and it
 	// reads the repository through its own on-demand git driver. It never
@@ -737,6 +742,80 @@ func (s *State) Apply(event Event) {
 	case UsageModalClosed:
 		s.UsageModal = nil
 
+	case SessionManagerOpened:
+		// The roster is a snapshot taken when the modal opened, so a later
+		// store change cannot make a printed row stale underneath it.
+		view := e.View
+		s.SessionModal = &view
+
+	case SessionManagerClosed:
+		s.SessionModal = nil
+
+	case SessionManagerMoved:
+		if s.SessionModal != nil {
+			s.SessionModal.Move(e.Delta)
+		}
+
+	case SessionManagerPaged:
+		if s.SessionModal != nil {
+			s.SessionModal.Page(e.Delta)
+		}
+
+	case SessionManagerTop:
+		if s.SessionModal != nil {
+			s.SessionModal.Top()
+		}
+
+	case SessionManagerBottom:
+		if s.SessionModal != nil {
+			s.SessionModal.Bottom()
+		}
+
+	case SessionManagerReloaded:
+		if s.SessionModal != nil {
+			s.SessionModal.SetItems(e.Items)
+			s.SessionModal.Mode = SessionBrowse
+			s.SessionModal.Rename = ""
+			s.SessionModal.ConfirmID = 0
+			s.SessionModal.Confirm = ""
+			s.SessionModal.Notice = e.Notice
+		}
+
+	case SessionManagerRenameStarted:
+		if s.SessionModal != nil {
+			if item, ok := s.SessionModal.Selected(); ok {
+				s.SessionModal.Mode = SessionRename
+				s.SessionModal.Rename = item.Title
+				s.SessionModal.Notice = ""
+			}
+		}
+
+	case SessionManagerRenameChanged:
+		if s.SessionModal != nil {
+			s.SessionModal.Rename = e.Text
+		}
+
+	case SessionManagerConfirmAsked:
+		if s.SessionModal != nil && e.ID != 0 {
+			s.SessionModal.Mode = SessionConfirm
+			s.SessionModal.ConfirmID = e.ID
+			s.SessionModal.Confirm = e.Action
+			s.SessionModal.Notice = ""
+		}
+
+	case SessionManagerModeCancelled:
+		if s.SessionModal != nil {
+			s.SessionModal.Mode = SessionBrowse
+			s.SessionModal.Rename = ""
+			s.SessionModal.ConfirmID = 0
+			s.SessionModal.Confirm = ""
+		}
+
+	case SessionManagerNoticed:
+		if s.SessionModal != nil {
+			s.SessionModal.Notice = e.Text
+		}
+
 	case InputChanged:
 		s.Input = e.Text
 		s.Cursor = len([]rune(e.Text))
@@ -798,6 +877,9 @@ func (s *State) Apply(event Event) {
 		}
 		if s.Plane != nil {
 			s.Plane.SetVisibleRows(planeRowsFor(*s))
+		}
+		if s.SessionModal != nil {
+			s.SessionModal.SetVisibleRows(sessionManagerVisibleRows(*s))
 		}
 		// The fold width changes with the terminal, so the visible window must
 		// be recomputed or a resize could scroll the caret out of view.
@@ -1364,6 +1446,7 @@ func (s *State) Apply(event Event) {
 		s.Permissions = nil
 		s.StatusModal = nil
 		s.UsageModal = nil
+		s.SessionModal = nil
 		s.Queued = nil
 		s.Scroll = 0
 		s.Follow = true
@@ -1892,6 +1975,86 @@ type UsageModalClosed struct{}
 
 func (UsageModalClosed) eventKind() string { return "usage_modal_closed" }
 
+// SessionManagerOpened shows the Session Manager with a roster snapshot. The
+// view is copied, so the roster is a stable read of the moment it opened.
+type SessionManagerOpened struct {
+	// View is the roster snapshot the manager renders.
+	View SessionManagerState
+}
+
+func (SessionManagerOpened) eventKind() string { return "session_manager_opened" }
+
+// SessionManagerClosed dismisses the Session Manager without acting.
+type SessionManagerClosed struct{}
+
+func (SessionManagerClosed) eventKind() string { return "session_manager_closed" }
+
+// SessionManagerMoved shifts the roster highlight. Positive goes down; the
+// list wraps at both ends.
+type SessionManagerMoved struct{ Delta int }
+
+func (SessionManagerMoved) eventKind() string { return "session_manager_moved" }
+
+// SessionManagerPaged shifts the roster highlight by approximately one
+// viewport without wrapping.
+type SessionManagerPaged struct{ Delta int }
+
+func (SessionManagerPaged) eventKind() string { return "session_manager_paged" }
+
+// SessionManagerTop parks the highlight on the first session.
+type SessionManagerTop struct{}
+
+func (SessionManagerTop) eventKind() string { return "session_manager_top" }
+
+// SessionManagerBottom parks the highlight on the last session.
+type SessionManagerBottom struct{}
+
+func (SessionManagerBottom) eventKind() string { return "session_manager_bottom" }
+
+// SessionManagerReloaded replaces the roster after a write action, preserving
+// the highlight by id when the selected session survives.
+type SessionManagerReloaded struct {
+	// Items is the fresh roster.
+	Items []SessionItem
+	// Notice reports the action that caused the reload.
+	Notice string
+}
+
+func (SessionManagerReloaded) eventKind() string { return "session_manager_reloaded" }
+
+// SessionManagerRenameStarted enters the inline rename editor, seeded with the
+// highlighted session's current title.
+type SessionManagerRenameStarted struct{}
+
+func (SessionManagerRenameStarted) eventKind() string { return "session_manager_rename_started" }
+
+// SessionManagerRenameChanged replaces the rename buffer.
+type SessionManagerRenameChanged struct{ Text string }
+
+func (SessionManagerRenameChanged) eventKind() string { return "session_manager_rename_changed" }
+
+// SessionManagerConfirmAsked opens a destructive-action confirmation for one
+// session.
+type SessionManagerConfirmAsked struct {
+	// ID is the session the action targets.
+	ID int64
+	// Action names the action and its consequence in words.
+	Action string
+}
+
+func (SessionManagerConfirmAsked) eventKind() string { return "session_manager_confirm_asked" }
+
+// SessionManagerModeCancelled returns the modal to browsing, discarding any
+// in-progress rename or confirmation.
+type SessionManagerModeCancelled struct{}
+
+func (SessionManagerModeCancelled) eventKind() string { return "session_manager_mode_cancelled" }
+
+// SessionManagerNoticed records an action outcome without changing the roster.
+type SessionManagerNoticed struct{ Text string }
+
+func (SessionManagerNoticed) eventKind() string { return "session_manager_noticed" }
+
 // DiffOpened installs the interactive diff inspector as the active overlay.
 // The model owns its own repository reads; the program only routes keys and
 // paints its View while it is set.
@@ -2122,7 +2285,7 @@ var Commands = []CommandSpec{
 	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
 	{Name: "permissions", Usage: "permissions", Description: "choose the execution authority", Category: CommandGroupControl},
 	{Name: "mode", Usage: "mode", Description: "choose the execution authority", Hidden: true, Category: CommandGroupControl},
-	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions", Category: CommandGroupControl},
+	{Name: "sessions", Usage: "sessions", Description: "manage saved sessions: resume, new, rename, archive, delete", Category: CommandGroupControl},
 	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
 	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette", Category: CommandGroupControl},
