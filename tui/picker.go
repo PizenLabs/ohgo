@@ -34,8 +34,6 @@ const (
 	PickerModels = "models"
 	// PickerJobs inspects background jobs.
 	PickerJobs = "jobs"
-	// PickerCommands discovers slash commands.
-	PickerCommands = "commands"
 )
 
 // PickerItem is one choice in a selection overlay.

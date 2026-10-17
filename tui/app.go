@@ -230,8 +230,9 @@ type Program struct {
 	// modelSeq is the latest catalog refresh generation. Older, slower
 	// responses carry a trailing Seq and are dropped, never applied.
 	modelSeq int
-	// pickerRestore holds composer text to put back when a picker opened
-	// over typing (slash-tab discovery) closes without choosing.
+	// pickerRestore holds composer text to put back when a modal opened over
+	// typing (slash-tab discovery: the picker or the Command & Help Center)
+	// closes without choosing.
 	pickerRestore string
 	// pickerRestoreSet marks pickerRestore as deliberate: an empty restore
 	// is still a restore, distinct from "no restore".
@@ -591,7 +592,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.ConnectKey != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil {
+	if s.Picker != nil || s.Plane != nil || s.ConnectKey != nil || s.Pending != nil || s.QuitConfirm != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil || s.HelpModal != nil {
 		return false
 	}
 	return s.Input == ""
@@ -669,6 +670,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(PlaneMoved{Delta: -1})
 			return p, nil
 		}
+		if p.state.HelpModal != nil {
+			p.state.Apply(HelpCenterMoved{Delta: -1})
+			return p, nil
+		}
 		if p.state.Picker != nil {
 			p.state.Apply(PickerMoved{Delta: -1})
 			return p, nil
@@ -682,6 +687,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		if p.state.Plane != nil {
 			p.state.Apply(PlaneMoved{Delta: 1})
+			return p, nil
+		}
+		if p.state.HelpModal != nil {
+			p.state.Apply(HelpCenterMoved{Delta: 1})
 			return p, nil
 		}
 		if p.state.Picker != nil {
@@ -831,6 +840,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if p.state.ConnectKey != nil {
 		return p.handleConnectKeyEntry(msg)
+	}
+
+	if p.state.HelpModal != nil {
+		return p.handleHelpCenterKey(msg)
 	}
 
 	if p.state.Picker != nil {
@@ -1024,7 +1037,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// prompt exists (or history does) the bar stops promising it and the
 		// key returns to history recall, so the hint can never lie.
 		if msg.String() == "ctrl+p" && !p.state.SessionActive && len(p.state.Submitted) == 0 {
-			p.openSettingsPalette()
+			p.openHelpCenter("")
 			return p, nil
 		}
 		// The terminal cannot say which arrows it synthesised for the wheel,
@@ -1080,7 +1093,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.pickerRestore = p.state.Input
 			p.pickerRestoreSet = true
 			p.state.Apply(InputChanged{Text: ""})
-			p.openCommandPalette(filter)
+			p.openHelpCenter(filter)
 			return p, nil
 		}
 		return p, nil
@@ -1098,7 +1111,7 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// authoritative registry. While composing it stays literal:
 			// help must never steal a question mark being typed.
 			if text == "?" && strings.TrimSpace(p.state.Input) == "" && p.state.ConnectKey == nil {
-				p.openCommandPalette("")
+				p.openHelpCenter("")
 				return p, nil
 			}
 			// A large bracketed paste folds into one inline chip: the full
@@ -1219,7 +1232,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return nil
 
 	case "help":
-		p.state.Apply(Notice{Text: HelpText()})
+		p.openHelpCenter("")
 		return nil
 
 	case "clear":
@@ -1269,7 +1282,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		return p.openModelPicker()
 
 	case "commands":
-		p.openCommandPalette("")
+		p.openHelpCenter("")
 		return nil
 
 	case "status":
@@ -1428,9 +1441,6 @@ func (p *Program) choosePicker() (tea.Model, tea.Cmd) {
 	case PickerModels:
 		p.applyModelSwitch(item.Value)
 		return p, nil
-	case PickerCommands:
-		p.state.Apply(InputChanged{Text: ""})
-		return p, p.runCommand(Command{Name: item.Value, Raw: "/" + item.Value})
 	case PickerJobs:
 		p.state.Apply(Notice{Text: p.jobDetail(item.Value)})
 		return p, nil
@@ -1488,6 +1498,10 @@ func (p *Program) interruptOrClear() (tea.Model, tea.Cmd) {
 	}
 	if p.state.Plane != nil {
 		p.closePlane()
+		return p, nil
+	}
+	if p.state.HelpModal != nil {
+		p.closeHelpCenter()
 		return p, nil
 	}
 	if p.state.Picker != nil {
@@ -2369,42 +2383,6 @@ func (p *Program) issueRefresh() tea.Cmd {
 		p.state.Plane.Refreshing = true
 	}
 	return p.catalog.Refresh(context.Background(), p.modelSeq)
-}
-
-// openCommandPalette lists every slash command for discovery and keyboard
-// navigation. Choosing one runs it; arguments are not collected here —
-// commands needing them report usage, matching their direct invocation.
-func (p *Program) openCommandPalette(filter string) {
-	p.openPalette("commands", filter)
-}
-
-// openSettingsPalette opens the same registry under the "settings" title,
-// reached from ^p on a fresh session. It is the configuration/discovery hub —
-// theme, model, connect, and providers all live here — so the shortcut bar's
-// "^p settings" hint points at a surface that actually exists.
-func (p *Program) openSettingsPalette() {
-	p.openPalette("settings", "")
-}
-
-// openPalette builds and opens the command list. Choosing an item runs it;
-// arguments are not collected here — commands needing them report usage,
-// matching their direct invocation.
-func (p *Program) openPalette(title, filter string) {
-	var items []PickerItem
-	for _, spec := range Commands {
-		if spec.Hidden {
-			continue
-		}
-		items = append(items, PickerItem{
-			Title:  "/" + spec.Name,
-			Detail: groupOf(spec) + " · " + spec.Description,
-			Value:  spec.Name,
-		})
-	}
-	p.state.Apply(PickerOpened{Kind: PickerCommands, Title: title, Items: items})
-	if filter != "" {
-		p.state.Apply(PickerFilterChanged{Text: filter})
-	}
 }
 
 // openSessionManager opens the Session Manager over the stored sessions. The

@@ -346,7 +346,7 @@ type State struct {
 	Picker *PickerState
 	// Plane is the open model control plane, or nil. It is the persistent
 	// split-pane surface behind /model; the single-overlay Picker remains for
-	// sessions, jobs, commands and the connect flow.
+	// sessions, jobs, and the connect flow.
 	Plane *ModelPlaneState
 	// ConnectKey is the open /connect API-key modal, or nil. It is a working
 	// modal like the Provider Manager: it owns the keyboard, edits a masked
@@ -382,6 +382,12 @@ type State struct {
 	// key, moves its own cursor, and dispatches write actions through the
 	// program. It never enters the transcript, history, or session itself.
 	SessionModal *SessionManagerState
+	// HelpModal is the open Command & Help Center, or nil. It is the single
+	// surface behind /help, /commands, the "?" shortcut, and ^p on a fresh
+	// session. It is a working modal like the Session Manager: it owns the
+	// keyboard, filters its roster live, and runs the highlighted command. It
+	// never enters the transcript, history, or session itself.
+	HelpModal *HelpCenterState
 	// ConnectModal is the open /connect Provider Manager, or nil. It is a
 	// working modal like the Session Manager: it owns the keyboard, moves its
 	// own cursor, and starts the guided setup for the highlighted provider. It
@@ -823,6 +829,69 @@ func (s *State) Apply(event Event) {
 			s.SessionModal.Notice = e.Text
 		}
 
+	case HelpCenterOpened:
+		// The roster is a snapshot taken when the modal opened, so a later
+		// registry change cannot make a printed row stale underneath it.
+		view := e.View
+		s.HelpModal = &view
+		// Size the roster window from the modal interior immediately: a zero
+		// VisibleRows means "render everything", which would let the table eat
+		// the action hint below it.
+		s.HelpModal.VisibleRows = helpCenterVisibleRows(*s)
+
+	case HelpCenterClosed:
+		s.HelpModal = nil
+
+	case HelpCenterMoved:
+		if s.HelpModal != nil {
+			s.HelpModal.Move(e.Delta)
+		}
+
+	case HelpCenterViewSwitched:
+		if s.HelpModal != nil {
+			s.HelpModal.SwitchView(e.Delta)
+		}
+
+	case HelpCenterPaged:
+		if s.HelpModal != nil {
+			s.HelpModal.Page(e.Delta)
+		}
+
+	case HelpCenterTop:
+		if s.HelpModal != nil {
+			s.HelpModal.Top()
+		}
+
+	case HelpCenterBottom:
+		if s.HelpModal != nil {
+			s.HelpModal.Bottom()
+		}
+
+	case HelpCenterTyped:
+		if s.HelpModal != nil {
+			s.HelpModal.InsertFilterText(e.Text)
+		}
+
+	case HelpCenterBackspaced:
+		if s.HelpModal != nil {
+			s.HelpModal.DeleteFilterBefore()
+		}
+
+	case HelpCenterDeleted:
+		if s.HelpModal != nil {
+			s.HelpModal.DeleteFilterAt()
+		}
+
+	case HelpCenterFilterCursorMoved:
+		if s.HelpModal != nil {
+			s.HelpModal.MoveFilterCursor(e.Delta)
+		}
+
+	case HelpCenterFilterCleared:
+		if s.HelpModal != nil {
+			s.HelpModal.ClearFilter()
+		}
+
 	case ConnectModalOpened:
 		// The roster is a snapshot taken when the modal opened, so a later
 		// catalog change cannot make a printed row stale underneath it.
@@ -916,6 +985,9 @@ func (s *State) Apply(event Event) {
 		}
 		if s.SessionModal != nil {
 			s.SessionModal.SetVisibleRows(sessionManagerVisibleRows(*s))
+		}
+		if s.HelpModal != nil {
+			s.HelpModal.VisibleRows = helpCenterVisibleRows(*s)
 		}
 		if s.ConnectModal != nil {
 			s.ConnectModal.SetVisibleRows(connectVisibleRows(*s))
@@ -1501,6 +1573,7 @@ func (s *State) Apply(event Event) {
 		s.StatusModal = nil
 		s.UsageModal = nil
 		s.SessionModal = nil
+		s.HelpModal = nil
 		s.ConnectModal = nil
 		s.ConnectKey = nil
 		s.Queued = nil
@@ -2111,6 +2184,75 @@ type SessionManagerNoticed struct{ Text string }
 
 func (SessionManagerNoticed) eventKind() string { return "session_manager_noticed" }
 
+// HelpCenterOpened shows the Command & Help Center with a registry snapshot.
+// The view is copied, so the roster is a stable read of the moment it opened.
+type HelpCenterOpened struct {
+	// View is the command snapshot the modal renders.
+	View HelpCenterState
+}
+
+func (HelpCenterOpened) eventKind() string { return "help_center_opened" }
+
+// HelpCenterClosed dismisses the Command & Help Center without acting.
+type HelpCenterClosed struct{}
+
+func (HelpCenterClosed) eventKind() string { return "help_center_closed" }
+
+// HelpCenterMoved shifts the command highlight. Positive goes down; the list
+// wraps at both ends.
+type HelpCenterMoved struct{ Delta int }
+
+func (HelpCenterMoved) eventKind() string { return "help_center_moved" }
+
+// HelpCenterViewSwitched cycles the active tab by delta, wrapping both ways.
+// Each tab keeps its own query and highlight, so the switch is non-destructive.
+type HelpCenterViewSwitched struct{ Delta int }
+
+func (HelpCenterViewSwitched) eventKind() string { return "help_center_view_switched" }
+
+// HelpCenterPaged shifts the command highlight by approximately one viewport
+// without wrapping.
+type HelpCenterPaged struct{ Delta int }
+
+func (HelpCenterPaged) eventKind() string { return "help_center_paged" }
+
+// HelpCenterTop parks the highlight on the first command.
+type HelpCenterTop struct{}
+
+func (HelpCenterTop) eventKind() string { return "help_center_top" }
+
+// HelpCenterBottom parks the highlight on the last command.
+type HelpCenterBottom struct{}
+
+func (HelpCenterBottom) eventKind() string { return "help_center_bottom" }
+
+// HelpCenterTyped inserts text into the search box at the cursor.
+type HelpCenterTyped struct{ Text string }
+
+func (HelpCenterTyped) eventKind() string { return "help_center_typed" }
+
+// HelpCenterBackspaced deletes the rune before the search cursor.
+type HelpCenterBackspaced struct{}
+
+func (HelpCenterBackspaced) eventKind() string { return "help_center_backspaced" }
+
+// HelpCenterDeleted deletes the rune under the search cursor.
+type HelpCenterDeleted struct{}
+
+func (HelpCenterDeleted) eventKind() string { return "help_center_deleted" }
+
+// HelpCenterFilterCursorMoved shifts the search cursor. It never changes the
+// highlight.
+type HelpCenterFilterCursorMoved struct{ Delta int }
+
+func (HelpCenterFilterCursorMoved) eventKind() string { return "help_center_filter_cursor_moved" }
+
+// HelpCenterFilterCleared empties the search box and restores the highlight to
+// the top of the full roster.
+type HelpCenterFilterCleared struct{}
+
+func (HelpCenterFilterCleared) eventKind() string { return "help_center_filter_cleared" }
+
 // ConnectModalOpened shows the /connect Provider Manager with a roster
 // snapshot. The view is copied, so the roster is a stable read of the moment it
 // opened.
@@ -2371,8 +2513,8 @@ var Commands = []CommandSpec{
 	{Name: "ask", Usage: "ask", Description: "Ask / read-only", Category: CommandGroupWorkspace},
 	{Name: "fuzz", Usage: "fuzz", Description: "Explore / investigate", Category: CommandGroupWorkspace},
 	{Name: "build", Usage: "build", Description: "Build / modify", Category: CommandGroupWorkspace},
-	{Name: "help", Usage: "help", Description: "list the available commands", Category: CommandGroupControl},
-	{Name: "commands", Usage: "commands", Description: "search every command", Category: CommandGroupControl},
+	{Name: "help", Usage: "help", Description: "open the command & help center", Category: CommandGroupControl},
+	{Name: "commands", Usage: "commands", Description: "open the command & help center", Category: CommandGroupControl},
 	{Name: "clear", Usage: "clear", Description: "clear the transcript and start a fresh context", Category: CommandGroupControl},
 	{Name: "model", Usage: "model [provider/id]", Description: "browse or switch the model", Category: CommandGroupControl},
 	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
@@ -2465,7 +2607,10 @@ func LookupCommand(name string) (CommandSpec, bool) {
 	return CommandSpec{}, false
 }
 
-// HelpText renders the command listing for /help.
+// HelpText renders the command listing for the plain-text REPL's /help and
+// /commands. The full-screen UI no longer prints this into the transcript: it
+// opens the Command & Help Center instead, so the same registry is presented
+// as a navigable, filterable modal.
 func HelpText() string {
 	var sb strings.Builder
 	sb.WriteString("Commands:\n")

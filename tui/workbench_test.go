@@ -264,18 +264,18 @@ func TestApprovalShowsPreviewAndShortcuts(t *testing.T) {
 func TestCommandPaletteDiscoversAndRuns(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	Command{Name: "commands"}.runOn(p)
-	if p.state.Picker == nil || p.state.Picker.Kind != PickerCommands {
-		t.Fatalf("picker = %+v, want the command palette", p.state.Picker)
+	if p.state.HelpModal == nil {
+		t.Fatalf("help modal = %+v, want /commands to open the command & help center", p.state.HelpModal)
 	}
 	keyPress(p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("the")})
 	found := false
-	for _, item := range p.state.Picker.Visible() {
-		if item.Value == "theme" {
+	for _, item := range p.state.HelpModal.ActiveItems() {
+		if item.Name == "theme" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("visible = %+v, want filtering to find /theme", p.state.Picker.Visible())
+		t.Errorf("filtered = %+v, want filtering to find /theme", p.state.HelpModal.ActiveItems())
 	}
 }
 
@@ -297,8 +297,8 @@ func TestSlashTabOpensPaletteOffTrigger(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Apply(ComposerChanged{Text: "/model ", Cursor: 7})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyTab})
-	if p.state.Picker == nil || p.state.Picker.Kind != PickerCommands {
-		t.Errorf("picker = %+v, want tab off-trigger to open the command palette", p.state.Picker)
+	if p.state.HelpModal == nil {
+		t.Errorf("help modal = %+v, want tab off-trigger to open the command & help center", p.state.HelpModal)
 	}
 }
 

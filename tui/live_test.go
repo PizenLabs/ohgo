@@ -72,7 +72,7 @@ func TestLiveViewRequestsNoMouseModeAndNoAltScreen(t *testing.T) {
 	p.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	p.pending = nil
 	liveEvent(p, ApprovalAnswered{})
-	p.state.Apply(PickerOpened{Kind: PickerCommands, Title: "commands", Items: nil})
+	p.state.Apply(PickerOpened{Kind: PickerJobs, Title: "jobs", Items: nil})
 	liveEvent(p, Notice{Text: "pickers live too"})
 	p.state.Apply(ConnectKeyOpened{View: ConnectKeyView{Provider: ProviderRow{ID: "openrouter"}}})
 

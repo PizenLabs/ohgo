@@ -581,20 +581,20 @@ func TestMouseWheelScrollsWithoutTyping(t *testing.T) {
 	}
 
 	Command{Name: "commands"}.runOn(p)
-	if p.state.Picker == nil {
-		t.Fatal("no picker opened")
+	if p.state.HelpModal == nil {
+		t.Fatal("no help center opened")
 	}
 	// Dispatch clears the composer; the wheel must still type nothing.
 	if p.state.Input != "" {
 		t.Fatalf("command dispatch left input %q, want cleared", p.state.Input)
 	}
-	at := p.state.Picker.Cursor
+	at := p.state.HelpModal.Command.Cursor
 	p.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
-	if p.state.Picker.Cursor == at && len(p.state.Picker.Filtered()) > 1 {
-		t.Error("wheel down over a picker left the selection still")
+	if p.state.HelpModal.Command.Cursor == at && len(p.state.HelpModal.ActiveItems()) > 1 {
+		t.Error("wheel down over the help center left the selection still")
 	}
 	if p.state.Input != "" {
-		t.Errorf("wheel over a picker typed into the composer: input %q", p.state.Input)
+		t.Errorf("wheel over the help center typed into the composer: input %q", p.state.Input)
 	}
 }
 
@@ -613,11 +613,11 @@ func TestConnectKeyAndPickerPreserveMouseLikeText(t *testing.T) {
 	p.flow = nil
 
 	Command{Name: "commands"}.runOn(p)
-	if p.state.Picker == nil {
-		t.Fatal("no picker opened")
+	if p.state.HelpModal == nil {
+		t.Fatal("no help center opened")
 	}
 	p.Update(runes("[<64;67;30M"))
-	if p.state.Picker.Filter != "[<64;67;30M" {
-		t.Errorf("picker query rewrote typed text: %q", p.state.Picker.Filter)
+	if p.state.HelpModal.Command.Filter != "[<64;67;30M" {
+		t.Errorf("help query rewrote typed text: %q", p.state.HelpModal.Command.Filter)
 	}
 }
