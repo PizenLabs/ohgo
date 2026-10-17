@@ -46,7 +46,7 @@ func TestCtrlSOpensSupportAndKeepsDraft(t *testing.T) {
 }
 
 // Without a handler the chord reports the surface unavailable rather than
-// opening an overlay that could never answer, matching /sup.
+// opening an overlay that could never answer.
 func TestCtrlSWithoutSupportReportsUnavailable(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Apply(InputChanged{Text: "draft"})

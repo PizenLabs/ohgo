@@ -38,6 +38,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // Row budgets for the live region.
@@ -503,6 +504,10 @@ func liveOverlay(s State, pal *Palette, layout Layout) []string {
 		return liveQuitConfirmLines(s, pal, layout)
 	case s.Diff != nil:
 		return liveDiffLines(s)
+	case s.StatusModal != nil:
+		return liveStatusModalLines(s, pal, layout)
+	case s.UsageModal != nil:
+		return liveUsageModalLines(s, pal, layout)
 	case s.Picker != nil:
 		return livePickerLines(s, pal, layout)
 	case s.Pending != nil:
@@ -521,6 +526,45 @@ func liveDiffLines(s State) []string {
 		return nil
 	}
 	return splitLines(s.Diff.View())
+}
+
+// liveStatusModalLines renders the /status card in output-first mode. It is
+// centered horizontally and bounded to the live region so the card never
+// overflows the screen.
+func liveStatusModalLines(s State, pal *Palette, layout Layout) []string {
+	if s.StatusModal == nil {
+		return nil
+	}
+	return liveModalCardLines(s, pal, layout, func(width, height int) string {
+		return RenderStatusModal(*s.StatusModal, pal, width, height)
+	})
+}
+
+// liveUsageModalLines renders the /usage inspector in output-first mode with
+// the same centering and bound as the status card.
+func liveUsageModalLines(s State, pal *Palette, layout Layout) []string {
+	if s.UsageModal == nil {
+		return nil
+	}
+	return liveModalCardLines(s, pal, layout, func(width, height int) string {
+		return RenderUsageModal(*s.UsageModal, pal, width, height)
+	})
+}
+
+// liveModalCardLines centers a card horizontally in the live region and trims
+// it to the region's height, so a card taller than the viewport never pushes
+// the scrollback.
+func liveModalCardLines(s State, pal *Palette, layout Layout, build func(width, height int) string) []string {
+	width := displayWidth(s, layout)
+	limit := liveRows(s)
+	card := build(statusCardWidth(width), limit)
+	cardLines := splitLines(card)
+	placed := lipgloss.Place(width, len(cardLines), lipgloss.Center, lipgloss.Top, card)
+	lines := splitLines(placed)
+	if limit > 0 && len(lines) > limit {
+		lines = lines[:limit]
+	}
+	return lines
 }
 
 // livePickerLines renders the selection overlay. The question is the one row

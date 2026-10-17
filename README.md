@@ -55,7 +55,7 @@ transport), Google Gemini (no `google-generative-ai` transport), AWS Bedrock
 
 Credentials resolve in order: explicit request key, `~/.ohgo/credentials.json`
 (0600, written only when you save), environment, then parsed shell startup
-files (read as text, never executed). `ohgo doctor` and `/providers` show
+files (read as text, never executed). `ohgo doctor` and `/usage` show
 which source won — values are never printed.
 
 Shell completion and reference docs ship with the binary:
@@ -88,7 +88,7 @@ Reads, edits, and runs code in your repository through eleven tools
 persistence, context compaction, subagent delegation (`--max-depth`),
 a wall-clock run budget (`--deadline`), and per-tool approval prompts.
 
-In-session commands: `/help /commands /clear /model [provider/id] /models /sessions /jobs /theme [dark|light] /connect /disconnect [provider] /providers /status /usage /doctor /diff [target] /retry /compact /quit`. The REPL and the full-screen UI share the same backend, so every command means the same thing in both.
+In-session commands: `/help /commands /clear /model [provider/id] /models /sessions /jobs /theme [dark|light] /connect /disconnect [provider] /status /usage /doctor /diff [target] /retry /compact /quit`. The REPL and the full-screen UI share the same backend, so every command means the same thing in both. `/status` reports the workspace and session; `/usage` opens the usage and provider inspector.
 Mid-session `/model` resolves through the same catalog as `ohgo models`,
 so a listed model is always switchable. `/commands` (or Tab on a `/`-line)
 opens a searchable command palette; every row runs the command it names.

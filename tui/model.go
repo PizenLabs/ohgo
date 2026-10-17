@@ -256,6 +256,14 @@ type Status struct {
 	GitBranch string
 	// GitStatus is the cleanliness summary, e.g. "clean" or "3 changed".
 	GitStatus string
+	// GitStaged, GitModified, and GitUntracked are the repository status
+	// counts when GitKnown is set. They let /status name which kind of change
+	// is present; unknown counts stay zero and GitKnown false, so the card
+	// never fabricates a clean tree from a failed status read.
+	GitStaged    int
+	GitModified  int
+	GitUntracked int
+	GitKnown     bool
 	// Ready is runtime readiness, e.g. "ready". Empty renders "ready".
 	Ready string
 	// Version is the binary version, e.g. "0.1.0-dev" or "v1.0.0". Empty
@@ -358,6 +366,15 @@ type State struct {
 	// of the screen, and confirming routes the chosen name through the
 	// workspace owner rather than changing authority here.
 	Permissions *PermissionsState
+	// StatusModal is the open /status card, or nil. It is a read-only modal:
+	// while set it owns the keyboard and the middle of the screen, and any
+	// key dismisses it back to the composer. It is a snapshot taken when the
+	// card opened, so it never enters the transcript, history, or session.
+	StatusModal *StatusView
+	// UsageModal is the open /usage inspector, or nil. It is the same
+	// read-only modal family as StatusModal: any key dismisses it, and it
+	// never enters the transcript, history, or session.
+	UsageModal *UsageView
 	// Diff is the open interactive diff inspector, or nil. It is a full-screen
 	// modal overlay: while set it owns the keyboard and the pane area, and it
 	// reads the repository through its own on-demand git driver. It never
@@ -701,6 +718,24 @@ func (s *State) Apply(event Event) {
 
 	case PermissionsClosed:
 		s.Permissions = nil
+
+	case StatusModalOpened:
+		// The card renders a snapshot, so a later state change cannot make a
+		// fact it already printed stale underneath it.
+		view := e.View
+		s.StatusModal = &view
+
+	case StatusModalClosed:
+		s.StatusModal = nil
+
+	case UsageModalOpened:
+		// Same snapshot contract as the status card: the facts are frozen at
+		// open, so nothing already printed can go stale underneath it.
+		view := e.View
+		s.UsageModal = &view
+
+	case UsageModalClosed:
+		s.UsageModal = nil
 
 	case InputChanged:
 		s.Input = e.Text
@@ -1146,6 +1181,10 @@ func (s *State) Apply(event Event) {
 		if e.HasGit {
 			s.Status.GitBranch = e.GitBranch
 			s.Status.GitStatus = e.GitStatus
+			s.Status.GitStaged = e.GitStaged
+			s.Status.GitModified = e.GitModified
+			s.Status.GitUntracked = e.GitUntracked
+			s.Status.GitKnown = e.GitKnown
 		}
 		if e.HasReady {
 			s.Status.Ready = e.Ready
@@ -1156,6 +1195,10 @@ func (s *State) Apply(event Event) {
 		s.Status.Greeting = e.Greeting
 		s.Status.GitBranch = e.GitBranch
 		s.Status.GitStatus = e.GitStatus
+		s.Status.GitStaged = e.GitStaged
+		s.Status.GitModified = e.GitModified
+		s.Status.GitUntracked = e.GitUntracked
+		s.Status.GitKnown = e.GitKnown
 		if e.Ready != "" {
 			s.Status.Ready = e.Ready
 		}
@@ -1319,6 +1362,8 @@ func (s *State) Apply(event Event) {
 		s.Pending = nil
 		s.QuitConfirm = nil
 		s.Permissions = nil
+		s.StatusModal = nil
+		s.UsageModal = nil
 		s.Queued = nil
 		s.Scroll = 0
 		s.Follow = true
@@ -1817,6 +1862,36 @@ type PermissionsClosed struct{}
 
 func (PermissionsClosed) eventKind() string { return "permissions_closed" }
 
+// StatusModalOpened shows the /status card with a snapshot of the facts to
+// report. The view is copied, so the card is a stable read of the moment it
+// opened.
+type StatusModalOpened struct {
+	// View is the snapshot the card renders.
+	View StatusView
+}
+
+func (StatusModalOpened) eventKind() string { return "status_modal_opened" }
+
+// StatusModalClosed dismisses the status card.
+type StatusModalClosed struct{}
+
+func (StatusModalClosed) eventKind() string { return "status_modal_closed" }
+
+// UsageModalOpened shows the /usage inspector with a snapshot of the ledger
+// and provider roster. The view is copied, so the card is a stable read of the
+// moment it opened.
+type UsageModalOpened struct {
+	// View is the snapshot the card renders.
+	View UsageView
+}
+
+func (UsageModalOpened) eventKind() string { return "usage_modal_opened" }
+
+// UsageModalClosed dismisses the usage inspector.
+type UsageModalClosed struct{}
+
+func (UsageModalClosed) eventKind() string { return "usage_modal_closed" }
+
 // DiffOpened installs the interactive diff inspector as the active overlay.
 // The model owns its own repository reads; the program only routes keys and
 // paints its View while it is set.
@@ -2047,16 +2122,14 @@ var Commands = []CommandSpec{
 	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
 	{Name: "permissions", Usage: "permissions", Description: "choose the execution authority", Category: CommandGroupControl},
 	{Name: "mode", Usage: "mode", Description: "choose the execution authority", Hidden: true, Category: CommandGroupControl},
-	{Name: "sup", Usage: "sup [request]", Description: "ask $sup, the ephemeral support surface", Category: CommandGroupControl},
 	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions", Category: CommandGroupControl},
 	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
 	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette", Category: CommandGroupControl},
 	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
 	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
-	{Name: "providers", Usage: "providers", Description: "list providers and credential status", Category: CommandGroupControl},
-	{Name: "status", Usage: "status", Description: "show provider, model, context, and session", Category: CommandGroupControl},
-	{Name: "usage", Usage: "usage", Description: "show token usage and cost", Category: CommandGroupControl},
+	{Name: "status", Usage: "status", Description: "show workspace, session, and authority status", Category: CommandGroupControl},
+	{Name: "usage", Usage: "usage", Description: "inspect token usage, cost, and providers", Category: CommandGroupControl},
 	{Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
 	{Name: "diff", Usage: "diff [target]", Description: "inspect the working-tree diff", Category: CommandGroupControl},
 	{Name: "retry", Usage: "retry", Description: "re-send the last prompt", Category: CommandGroupControl},
@@ -2733,10 +2806,16 @@ type WorkspaceUpdated struct {
 	Greeting    string
 	HasGreeting bool
 	// GitBranch and GitStatus carry truthful repository state. HasGit marks
-	// they apply.
-	GitBranch string
-	GitStatus string
-	HasGit    bool
+	// they apply. GitStaged, GitModified, and GitUntracked carry the counts
+	// when GitKnown is set; an unknown status leaves GitKnown false so the
+	// card reports the summary line alone rather than inventing zeros.
+	GitBranch    string
+	GitStatus    string
+	GitStaged    int
+	GitModified  int
+	GitUntracked int
+	GitKnown     bool
+	HasGit       bool
 	// Ready names runtime readiness. HasReady marks it applies.
 	Ready    string
 	HasReady bool
@@ -2755,6 +2834,13 @@ type IdentityUpdated struct {
 	GitBranch string
 	// GitStatus is the cleanliness summary.
 	GitStatus string
+	// GitStaged, GitModified, and GitUntracked are the status counts;
+	// GitKnown marks them measured. Unknown counts stay zero so /status never
+	// reports a fabricated clean tree.
+	GitStaged    int
+	GitModified  int
+	GitUntracked int
+	GitKnown     bool
 	// Ready names runtime readiness.
 	Ready string
 }

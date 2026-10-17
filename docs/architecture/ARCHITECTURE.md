@@ -229,7 +229,7 @@ groq, together, fireworks, deepseek, cerebras, mistral, plus OpenRouter
 (with attribution headers) and the OpenCode gateways (zen/go); the
 per-provider work is a base URL and a credential name. `ai.ProbeProvider`
 checks reachability + authentication without spending a completion and backs
-`/connect` validation, `/providers`, `/status`, and the TUI probe view.
+`/connect` validation, `/usage`, `/status`, and the TUI probe view.
 `xai` and Responses-only model lines are excluded on purpose (no Responses
 transport in this build), recorded in `TestExcludedProvidersAreDocumented`.
 
@@ -243,15 +243,16 @@ Root runs the interactive session; subcommands: `run`, `sessions` (+
 
 Both interactive paths share one backend (`harness.go`): the full-screen
 UI and the plain REPL call the same code for `/model` (static then live
-discovery), `/compact`, `/sessions`/`/resume`, `/jobs`, `/providers`,
-`/status`, `/usage`, `/doctor`, `/connect` (numbered wizard: provider →
+discovery), `/compact`, `/sessions`/`/resume`, `/jobs`, `/usage`,
+`/status`, `/doctor`, `/connect` (numbered wizard: provider →
 credential → validated model list → saved key + settings), `/disconnect`
 (file/explicit keys only; env/shell keys say where to unset). Presentation
 differs; decisions do not. Commands parse before anything reaches the
 model; a bare `/` is a path. `$sup <question>` opens the ephemeral support
 surface (a SUP-role interaction that is never persisted and never enters the
 main history); a bare `$sup` opens it with input focus and starts no
-provider call, and ESC closes it. Prompt history (`~/.ohgo/history`,
+provider call, and ESC closes it. The `$sup` trigger and the `Ctrl+S` chord
+are the support surface's only entries. Prompt history (`~/.ohgo/history`,
 last 1000, commands excluded, `OHGO_HISTORY_FILE` overrides, empty disables) is
 an audit trail, best-effort.
 
@@ -277,7 +278,7 @@ approval, shutting down) are computed per render, never stored.
 
 - `tui/model.go`: the state machine — composer, viewport (scroll + sticky
   follow), queue, overlays, sessions/models/jobs/commands/connect pickers,
-  theme, workspace, probe/doctor/providers wiring. Slash discovery state
+  theme, workspace, probe/doctor/usage wiring. Slash discovery state
   (`SlashCursor`, `SlashHide`, `SlashMoved`) filters the authoritative
   `Commands` registry inline — never a second catalog.
 - `tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,

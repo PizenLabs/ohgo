@@ -197,10 +197,15 @@ type Program struct {
 	compactor Compactor
 	// doctor runs diagnostics for /doctor. Nil means unavailable.
 	doctor DoctorFunc
-	// providers lists credential status for /providers. Nil means unavailable.
+	// providers lists credential status for the /usage inspector. Nil means
+	// the provider roster renders as unknown.
 	providers ProvidersFunc
-	// probe checks the current endpoint for /providers. Nil skips probing.
+	// probe checks the current endpoint when /usage opens. Nil skips probing.
 	probe ProbeFunc
+	// symbolStatus reports the optional code-index status for the /status
+	// card's SYMBOL ENGINE section. Nil (the default) hides the section so
+	// the card never invents an engine that is not wired.
+	symbolStatus func() StatusEngine
 	// deleter removes saved credentials for /disconnect. Nil means unavailable.
 	deleter CredentialDeleter
 	// connect drives the /connect setup flow. Zero value reports each step
@@ -403,14 +408,22 @@ func (p *Program) SetDoctorFunc(doctor DoctorFunc) {
 	p.doctor = doctor
 }
 
-// SetProvidersFunc installs the credential table behind /providers.
+// SetProvidersFunc installs the credential roster behind the /usage
+// inspector's provider status section.
 func (p *Program) SetProvidersFunc(providers ProvidersFunc) {
 	p.providers = providers
 }
 
-// SetProbeFunc installs the endpoint check behind /providers.
+// SetProbeFunc installs the endpoint check that /usage runs when it opens.
 func (p *Program) SetProbeFunc(probe ProbeFunc) {
 	p.probe = probe
+}
+
+// SetSymbolStatusFunc installs the optional code-index status reporter behind
+// the /status card's SYMBOL ENGINE section. Nil (the default) hides the
+// section: an engine the runtime does not have is never claimed.
+func (p *Program) SetSymbolStatusFunc(status func() StatusEngine) {
+	p.symbolStatus = status
 }
 
 // SetCredentialDeleter installs removal behind /disconnect.
@@ -794,6 +807,14 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if p.state.Permissions != nil {
 		return p.handlePermissionsKey(msg)
+	}
+
+	if p.state.StatusModal != nil {
+		return p.handleStatusKey(msg)
+	}
+
+	if p.state.UsageModal != nil {
+		return p.handleUsageKey(msg)
 	}
 
 	if p.state.Picker != nil {
@@ -1213,25 +1234,6 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		p.openPermissions()
 		return nil
 
-	case "sup":
-		// /sup is the discoverable alias for the "$sup" ephemeral surface:
-		// it routes through the same overlay and never becomes a workspace
-		// turn. A missing handler reports unavailable rather than sending
-		// the literal text to the model.
-		if p.support == nil {
-			p.state.Apply(Notice{Text: "$sup is unavailable"})
-			return nil
-		}
-		text := "$sup"
-		if len(command.Args) > 0 {
-			text += " " + strings.Join(command.Args, " ")
-		}
-		if p.state.Status.Busy {
-			p.queue(text)
-			return nil
-		}
-		return p.submit(text)
-
 	case "help":
 		p.state.Apply(Notice{Text: HelpText()})
 		return nil
@@ -1286,16 +1288,12 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		p.openCommandPalette("")
 		return nil
 
-	case "providers":
-		p.showProviders()
-		return nil
-
 	case "status":
-		p.state.Apply(Notice{Text: p.statusReport()})
+		p.openStatus()
 		return nil
 
 	case "usage":
-		p.showUsage()
+		p.openUsage()
 		return nil
 
 	case "doctor":
@@ -2884,12 +2882,12 @@ func (p *Program) openSupport(question string) {
 
 // openSupportChord opens the ephemeral $sup surface from the Ctrl+S chord.
 //
-// It differs from the "$sup"/"/sup" line in one deliberate way: the chord
-// fires while a prompt is still being composed, so it must not consume or
-// clear the main composer — the user keeps the draft they were writing. The
-// overlay opens with input focus and starts no provider call until a request
-// is submitted. A missing handler reports the surface unavailable, matching
-// /sup, rather than opening an overlay that could never answer.
+// It differs from the "$sup" line in one deliberate way: the chord fires while
+// a prompt is still being composed, so it must not consume or clear the main
+// composer — the user keeps the draft they were writing. The overlay opens
+// with input focus and starts no provider call until a request is submitted.
+// A missing handler reports the surface unavailable rather than opening an
+// overlay that could never answer.
 func (p *Program) openSupportChord() {
 	if p.support == nil {
 		p.state.Apply(Notice{Text: "$sup is unavailable"})

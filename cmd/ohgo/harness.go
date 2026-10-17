@@ -323,12 +323,28 @@ func (h *harness) StatusReport(history []agent.Message, queued int, theme string
 	return sb.String()
 }
 
-// UsageReport renders /usage from the shared ledger.
+// UsageReport renders /usage from the shared ledger plus the provider roster,
+// mirroring the full-screen inspector's two sections so both interfaces agree
+// on what the command reports.
 func (h *harness) UsageReport() string {
+	var sb strings.Builder
 	if h.usage == nil {
-		return "usage tracking is unavailable"
+		sb.WriteString("usage tracking is unavailable")
+	} else {
+		sb.WriteString(h.usage.Report(false))
 	}
-	return h.usage.Report(false)
+	rows := h.ProviderRows()
+	if len(rows) > 0 {
+		sb.WriteString("\nproviders:")
+		for _, row := range rows {
+			marker, status := "[×]", "missing API key"
+			if row.Configured {
+				marker, status = "[✓]", "configured"
+			}
+			fmt.Fprintf(&sb, "\n  %s %-14s %s", marker, row.ID, status)
+		}
+	}
+	return sb.String()
 }
 
 // DoctorLines runs the same diagnostics as `ohgo doctor`, minus the workdir

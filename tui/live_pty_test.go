@@ -134,10 +134,15 @@ func TestLiveSessionUnderARrealPTY(t *testing.T) {
 	waitFor("demo tool finished", 20*time.Second)
 	waitFor("tool ran and the answer", 20*time.Second)
 
-	// A slash command works in live mode too.
+	// A slash command works in live mode too: /status opens the card as an
+	// overlay rather than printing a transcript line.
 	write("/status\r")
-	waitFor("model: pty/pty-demo", 20*time.Second)
+	waitFor("WORKSPACE STATUS", 20*time.Second)
 
+	// The card owns the keyboard, so dismiss it before quitting: ctrl+d would
+	// otherwise only close the card. "q" closes it without an esc prefix that
+	// could merge with the following ctrl+d into one alt chord.
+	write("q")
 	write("\x04") // ctrl+d quits an idle session
 	_ = stdin.Close()
 

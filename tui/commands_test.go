@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/ai"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -231,15 +232,13 @@ func TestConnectStaleValidationDropped(t *testing.T) {
 
 // Providers, status, usage, doctor, retry, compact, disconnect.
 
-func TestProvidersListsKeyStatus(t *testing.T) {
+// /providers is retired: its roster lives in the /usage inspector now, so the
+// old command must not remain as a shadow path with its own output format.
+func TestProvidersCommandRetired(t *testing.T) {
+	if _, ok := LookupCommand("providers"); ok {
+		t.Fatal("/providers is still registered")
+	}
 	p := NewProgram(nil, "test", 0)
-	p.state.Status.Model = "groq/m"
-	p.SetProvidersFunc(func() []ProviderRow {
-		return []ProviderRow{
-			{ID: "groq", Name: "Groq", KeyDetail: "environment (GROQ_API_KEY)"},
-			{ID: "ollama", Name: "Ollama (local)", KeyDetail: "none required"},
-		}
-	})
 	Command{Name: "providers"}.runOn(p)
 	var text string
 	for _, entry := range p.state.Entries {
@@ -247,56 +246,109 @@ func TestProvidersListsKeyStatus(t *testing.T) {
 			text += entry.Notice
 		}
 	}
-	if !strings.Contains(text, "groq") || !strings.Contains(text, "GROQ_API_KEY") {
-		t.Errorf("providers = %q, want ids with key sources, never values", text)
-	}
-	if !strings.Contains(text, "> groq") {
-		t.Errorf("providers = %q, want the active provider marked", text)
+	if !strings.Contains(text, "unknown command /providers") {
+		t.Errorf("notice = %q, want the command reported unknown", text)
 	}
 }
 
-func TestStatusReportsLocalState(t *testing.T) {
+// /status opens a modal card instead of printing a transcript notice, and the
+// card reports the local facts the session observed.
+func TestStatusOpensTheCard(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Status.Model = "groq/m"
-	p.state.Status.ContextUsed = 50
-	p.state.Status.ContextWindow = 100
+	p.state.Status.Cwd = "/work/proj"
+	p.state.Status.Workspace = "BUILD"
+	p.state.Status.GitBranch = "main"
+	p.state.Status.GitKnown = true
+	p.state.Status.GitUntracked = 5
+	p.state.SessionIn = 1000
+	p.state.SessionOut = 2000
+
 	Command{Name: "status"}.runOn(p)
-	var text string
+
+	if p.state.StatusModal == nil {
+		t.Fatal("/status did not open the modal")
+	}
 	for _, entry := range p.state.Entries {
 		if entry.Kind == EntryNotice {
-			text += entry.Notice
+			t.Errorf("status leaked into the transcript: %q", entry.Notice)
 		}
 	}
-	for _, want := range []string{"groq/m", "50%", "theme:"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("status = %q, want %q", text, want)
+	out := stripANSI(Render(p.state))
+	for _, want := range []string{"WORKSPACE STATUS", "groq/m", "/work/proj", "main · dirty", "5 untracked", "BUILD · Interactive", "↑1k"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status card = %q, want %q", out, want)
 		}
 	}
 }
 
-func TestUsageNeedsALedger(t *testing.T) {
-	p := NewProgram(nil, "test", 0)
-	Command{Name: "usage"}.runOn(p)
-	found := false
-	for _, entry := range p.state.Entries {
-		if entry.Kind == EntryNotice && strings.Contains(entry.Notice, "unavailable") {
-			found = true
+// /usage opens the inspector rather than printing a transcript notice, and the
+// card reports the ledger and the provider roster in one surface.
+func TestUsageOpensInspector(t *testing.T) {
+	p := NewProgram(nil, "test", 200_000)
+	p.state.Status.Model = "openrouter/anthropic/claude-sonnet-4-5"
+	p.SetProvidersFunc(func() []ProviderRow {
+		return []ProviderRow{
+			{ID: "openrouter", Name: "OpenRouter", Configured: true},
+			{ID: "gemini", Name: "Gemini"},
 		}
-	}
-	if !found {
-		t.Error("want the missing ledger reported, not a panic")
-	}
+	})
+	log := &agent.UsageLog{}
+	log.SetCost(ai.Cost{Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75})
+	log.Add([]agent.Turn{{Assistant: ai.AssistantMessage{Usage: ai.Usage{
+		Input: 1_000_000, Output: 1_000_000, CacheRead: 1_000_000, CacheWrite: 1_000_000, Total: 3_000_000,
+	}}}})
+	p.SetUsageLog(log)
 
-	p.SetUsageLog(&agent.UsageLog{})
 	Command{Name: "usage"}.runOn(p)
-	found = false
+
+	if p.state.UsageModal == nil {
+		t.Fatal("/usage did not open the inspector")
+	}
 	for _, entry := range p.state.Entries {
-		if entry.Kind == EntryNotice && strings.Contains(entry.Notice, "no turns yet") {
-			found = true
+		if entry.Kind == EntryNotice {
+			t.Errorf("usage leaked into the transcript: %q", entry.Notice)
 		}
 	}
-	if !found {
-		t.Errorf("entries = %+v, want the empty ledger", p.state.Entries)
+	out := stripANSI(Render(p.state))
+	for _, want := range []string{
+		"USAGE & PROVIDER INSPECTOR",
+		"USAGE INSPECTOR",
+		"openrouter/anthropic/claude-sonnet-4-5",
+		"200k",
+		"Last Input", "Last Output", "Cache Read", "Cache Write", "Total Tokens",
+		"Total Cost", "Session Cost",
+		"PROVIDER STATUS",
+		"[✓] openrouter — configured (active)",
+		"[×] gemini — missing API key",
+		"Provider switching is automatic via /models.",
+		"Esc / q", "close modal",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("usage card = %q, want %q", out, want)
+		}
+	}
+}
+
+// A missing ledger still opens the inspector: the provider roster is useful
+// without token telemetry, and the usage block must say so rather than panic
+// or fabricate zeros.
+func TestUsageInspectorWithoutLedger(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Status.Model = "groq/llama"
+	p.SetProvidersFunc(func() []ProviderRow {
+		return []ProviderRow{{ID: "groq", Name: "Groq", Configured: true}}
+	})
+	Command{Name: "usage"}.runOn(p)
+
+	if p.state.UsageModal == nil {
+		t.Fatal("/usage did not open the inspector without a ledger")
+	}
+	out := stripANSI(Render(p.state))
+	for _, want := range []string{"USAGE INSPECTOR", "no requests measured yet", "[✓] groq — configured (active)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("usage card = %q, want %q", out, want)
+		}
 	}
 }
 
