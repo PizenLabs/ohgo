@@ -506,6 +506,8 @@ func liveOverlay(s State, pal *Palette, layout Layout) []string {
 		return liveDiffLines(s)
 	case s.StatusModal != nil:
 		return liveStatusModalLines(s, pal, layout)
+	case s.UsageModal != nil:
+		return liveUsageModalLines(s, pal, layout)
 	case s.Picker != nil:
 		return livePickerLines(s, pal, layout)
 	case s.Pending != nil:
@@ -533,9 +535,29 @@ func liveStatusModalLines(s State, pal *Palette, layout Layout) []string {
 	if s.StatusModal == nil {
 		return nil
 	}
+	return liveModalCardLines(s, pal, layout, func(width, height int) string {
+		return RenderStatusModal(*s.StatusModal, pal, width, height)
+	})
+}
+
+// liveUsageModalLines renders the /usage inspector in output-first mode with
+// the same centering and bound as the status card.
+func liveUsageModalLines(s State, pal *Palette, layout Layout) []string {
+	if s.UsageModal == nil {
+		return nil
+	}
+	return liveModalCardLines(s, pal, layout, func(width, height int) string {
+		return RenderUsageModal(*s.UsageModal, pal, width, height)
+	})
+}
+
+// liveModalCardLines centers a card horizontally in the live region and trims
+// it to the region's height, so a card taller than the viewport never pushes
+// the scrollback.
+func liveModalCardLines(s State, pal *Palette, layout Layout, build func(width, height int) string) []string {
 	width := displayWidth(s, layout)
 	limit := liveRows(s)
-	card := RenderStatusModal(*s.StatusModal, pal, statusCardWidth(width), limit)
+	card := build(statusCardWidth(width), limit)
 	cardLines := splitLines(card)
 	placed := lipgloss.Place(width, len(cardLines), lipgloss.Center, lipgloss.Top, card)
 	lines := splitLines(placed)

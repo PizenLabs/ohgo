@@ -1193,11 +1193,17 @@ const gridGapWidth = 4
 
 // padDetailLabel pads a grid label to a stable column with its · separator.
 func padDetailLabel(label string) string {
-	const labelW = 8
-	if CellWidth(label) >= labelW {
+	return padModalLabel(label, detailFieldLabelWidth)
+}
+
+// padModalLabel pads a modal field label to a stable column with its " · "
+// separator. A label wider than the column keeps its own width so it is never
+// truncated; the shared callers agree on the column so values line up.
+func padModalLabel(label string, width int) string {
+	if CellWidth(label) >= width {
 		return label + " · "
 	}
-	return label + strings.Repeat(" ", labelW-CellWidth(label)) + "· "
+	return label + strings.Repeat(" ", width-CellWidth(label)) + "· "
 }
 
 // planeInputCell renders the text input modality, or unknown when unlisted.

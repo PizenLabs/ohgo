@@ -115,11 +115,16 @@ func statusCardWidth(termWidth int) int {
 	return width
 }
 
-// statusValueCol is the cell the value column opens at: the field indent plus
-// the shared padded label (label column followed by " · "). Deriving it from
-// padDetailLabel keeps the field rows and the model detail grid on one axis.
-func statusValueCol() int {
-	return statusFieldIndent + CellWidth(padDetailLabel(""))
+// detailFieldLabelWidth is the label column shared by the field rows and the
+// model detail grid.
+const detailFieldLabelWidth = 8
+
+// modalValueCol is the cell a value column opens at for a padded label of the
+// given text width: the field indent, the label itself, and the " · "
+// separator. It lets a wider inspector (the usage modal) reuse the field
+// wrapping while keeping every label on one axis.
+func modalValueCol(labelWidth int) int {
+	return statusFieldIndent + labelWidth + 2
 }
 
 // RenderStatusModal composes the /status card as an ANSI string.
@@ -146,8 +151,16 @@ func RenderStatusModal(view StatusView, pal *Palette, width, height int) string 
 	if height > 0 {
 		content = fitStatusRows(content, height-4)
 	}
+	return renderModalFrame(statusModalTitle, content, pal, interior)
+}
+
+// renderModalFrame wraps a modal body in the shared card frame: a
+// border-embedded title, interior-padded body rows, an inset rule above the
+// footer bar, the footer key line, and the closing border. The /status and
+// /usage cards share it so their frames read as one family.
+func renderModalFrame(title string, content []string, pal *Palette, interior int) string {
 	out := make([]string, 0, len(content)+4)
-	out = append(out, modalTitleBorder(interior, statusModalTitle))
+	out = append(out, modalTitleBorder(interior, title))
 	for _, line := range content {
 		if gap := interior - CellWidth(line); gap > 0 {
 			line += strings.Repeat(" ", gap)
@@ -243,7 +256,15 @@ func statusField(label, value string, pal *Palette, interior int) []string {
 // renders every wrapped row; a positive cap keeps the head and appends an
 // ellipsis marker so a truncated value reads as elided rather than ended.
 func statusFieldCapped(label, value string, pal *Palette, interior, maxRows int) []string {
-	col := statusValueCol()
+	return modalField(label, value, pal, interior, maxRows, detailFieldLabelWidth)
+}
+
+// modalField renders one label/value row for a modal card, wrapping the value
+// onto the value column. labelWidth fixes the label column so values align
+// across every section; the /status card uses the detail-grid width and the
+// usage inspector a wider column for its longer metric names.
+func modalField(label, value string, pal *Palette, interior, maxRows, labelWidth int) []string {
+	col := modalValueCol(labelWidth)
 	valueW := interior - col
 	if valueW < 4 {
 		valueW = 4
@@ -259,7 +280,7 @@ func statusFieldCapped(label, value string, pal *Palette, interior, maxRows int)
 	for i, part := range parts {
 		prefix := strings.Repeat(" ", col)
 		if i == 0 {
-			prefix = strings.Repeat(" ", statusFieldIndent) + pal.Muted.Render(padDetailLabel(label))
+			prefix = strings.Repeat(" ", statusFieldIndent) + pal.Muted.Render(padModalLabel(label, labelWidth))
 		}
 		out = append(out, prefix+pal.Choice.Render(part))
 	}
@@ -405,8 +426,19 @@ func renderStatusArea(sb *strings.Builder, state State, pal *Palette, layout Lay
 	if view == nil {
 		return
 	}
+	renderCardArea(sb, state, layout, func(width, height int) string {
+		return RenderStatusModal(*view, pal, width, height)
+	})
+}
+
+// renderCardArea centers a modal card over the workbench. The header and
+// status chrome keep rendering around it and the conversation underneath is
+// untouched: dismissing returns to the previous surface with nothing lost.
+// build receives the card width and the available height so each card keeps
+// its own bounded frame.
+func renderCardArea(sb *strings.Builder, state State, layout Layout, build func(width, height int) string) {
 	if state.Width <= 0 || state.Height <= 0 {
-		card := RenderStatusModal(*view, pal, statusCardWidth(state.Width), 0)
+		card := build(statusCardWidth(state.Width), 0)
 		sb.WriteString(card)
 		if !strings.HasSuffix(card, "\n") {
 			sb.WriteString("\n")
@@ -421,7 +453,7 @@ func renderStatusArea(sb *strings.Builder, state State, pal *Palette, layout Lay
 		avail = 0
 	}
 	width := state.Width
-	card := RenderStatusModal(*view, pal, statusCardWidth(width), avail)
+	card := build(statusCardWidth(width), avail)
 	placed := lipgloss.Place(width, avail, lipgloss.Center, lipgloss.Center, card)
 	lines := strings.Split(placed, "\n")
 	if len(lines) > avail {

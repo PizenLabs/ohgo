@@ -10,8 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// ProviderRow is one provider for the /providers listing and the model control
-// plane's provider pane.
+// ProviderRow is one provider for the /usage inspector's provider roster and
+// the model control plane's provider pane.
 type ProviderRow struct {
 	// ID is the stable provider key.
 	ID string
@@ -32,7 +32,7 @@ type ProviderRow struct {
 // DoctorFunc runs diagnostics for /doctor.
 type DoctorFunc func() []DoctorLine
 
-// ProvidersFunc lists providers with credential status for /providers.
+// ProvidersFunc lists providers with credential status for /usage.
 type ProvidersFunc func() []ProviderRow
 
 // ProbeFunc checks the current endpoint in the background. It runs off the
@@ -81,15 +81,6 @@ func formatCount(n int) string {
 		return fmt.Sprintf("%dk", n/1_000)
 	}
 	return fmt.Sprintf("%d", n)
-}
-
-// showUsage reports the accumulated ledger, or its absence.
-func (p *Program) showUsage() {
-	if p.usage == nil {
-		p.state.Apply(Notice{Text: "usage tracking is unavailable"})
-		return
-	}
-	p.state.Apply(Notice{Text: p.usage.Report(false)})
 }
 
 // runDoctor prints the diagnostic rows. The rows arrive pre-scrubbed: Doctor
@@ -168,42 +159,6 @@ func (p *Program) compactNow() tea.Cmd {
 		p.publish(HistoryReplaced{Entries: EntriesFromMessages(compacted)})
 		p.publish(Notice{Text: "compacted: " + summary})
 		return nil
-	}
-}
-
-// showProviders prints credential status per provider and kicks a background
-// probe of the current endpoint. The table answers instantly from local
-// sources; the probe follows as a notice because network must never block
-// the event loop.
-func (p *Program) showProviders() {
-	if p.providers == nil {
-		p.state.Apply(Notice{Text: "provider listing is unavailable"})
-		return
-	}
-	rows := p.providers()
-	if len(rows) == 0 {
-		p.state.Apply(Notice{Text: "no providers known"})
-		return
-	}
-	var sb strings.Builder
-	for _, row := range rows {
-		marker := "  "
-		if row.ID == currentProvider(p.state.Status.Model) {
-			marker = "> "
-		}
-		fmt.Fprintf(&sb, "%s%-14s %s\n", marker, row.ID, row.KeyDetail)
-	}
-	p.state.Apply(Notice{Text: strings.TrimRight(sb.String(), "\n")})
-	if p.probe != nil {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			result := p.probe(ctx)
-			p.publish(ProbeFinished{OK: result.OK, Detail: result.Detail})
-			if result.Detail != "" {
-				p.publish(Notice{Text: "endpoint: " + result.Detail})
-			}
-		}()
 	}
 }
 

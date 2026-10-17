@@ -2056,14 +2056,6 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 					_, _ = fmt.Fprintln(out, "  "+id)
 				}
 				continue
-			case "providers":
-				for _, row := range h.ProviderRows() {
-					_, _ = fmt.Fprintf(out, "  %-14s %s\n", row.ID, row.KeyDetail)
-				}
-				_, _ = fmt.Fprintln(out, "probing current endpoint…")
-				probe := h.ProbeCurrent(context.Background())
-				_, _ = fmt.Fprintf(out, "endpoint: %s\n", probe.Detail)
-				continue
 			case "status":
 				_, _ = fmt.Fprintln(out, h.StatusReport(history, 0, "full-screen UI only", false))
 				continue

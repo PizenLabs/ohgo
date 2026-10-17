@@ -56,6 +56,52 @@ func TestUsageLogEmptyReportsNoTurns(t *testing.T) {
 	}
 }
 
+// The ledger keeps the most recent measured request separately from the
+// running totals, so an inspector can report last-request cache reads and
+// writes without re-deriving them from the transcript.
+func TestUsageLogKeepsLastRequestAndCacheTotals(t *testing.T) {
+	log := &UsageLog{}
+	log.Add([]Turn{
+		{Assistant: ai.AssistantMessage{Usage: ai.Usage{Input: 10, Output: 5, CacheRead: 2, CacheWrite: 1, Total: 17}}},
+		{Assistant: ai.AssistantMessage{Usage: ai.Usage{Input: 20, Output: 8, CacheRead: 4, CacheWrite: 3, Total: 32}}},
+	})
+	turns, input, output, cacheRead, cacheWrite := log.Totals()
+	if turns != 2 || input != 30 || output != 13 || cacheRead != 6 || cacheWrite != 4 {
+		t.Errorf("totals = %d/%d/%d/%d/%d, want 2/30/13/6/4", turns, input, output, cacheRead, cacheWrite)
+	}
+	last, ok := log.Last()
+	if !ok || last.Input != 20 || last.CacheRead != 4 || last.Total != 32 {
+		t.Errorf("last = (%+v, %v), want the newest measured request", last, ok)
+	}
+}
+
+// An unmeasured turn never becomes the "last request": a silent provider is
+// not a zero measurement.
+func TestUsageLogSkipsUnmeasuredLastRequest(t *testing.T) {
+	log := &UsageLog{}
+	log.Add([]Turn{{Assistant: ai.AssistantMessage{}}})
+	if _, ok := log.Last(); ok {
+		t.Error("a silent turn became the last request")
+	}
+}
+
+// CostOf prices arbitrary counters against the recorded schedule, letting the
+// live session's cost share the ledger's price authority.
+func TestUsageLogCostOf(t *testing.T) {
+	log := &UsageLog{}
+	log.SetCost(ai.Cost{Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75})
+	if !log.CostKnown() {
+		t.Error("a recorded schedule reported unknown")
+	}
+	want := (1_000_000*3.0 + 1_000_000*15.0 + 1_000_000*0.3 + 1_000_000*3.75) / 1_000_000
+	if got := log.CostOf(1_000_000, 1_000_000, 1_000_000, 1_000_000); got != want {
+		t.Errorf("CostOf = %v, want %v", got, want)
+	}
+	if (&UsageLog{}).CostKnown() {
+		t.Error("an empty schedule reported known")
+	}
+}
+
 func TestLastUserTextFindsTheLatestPrompt(t *testing.T) {
 	history := []Message{
 		UserMessage{Text: "first"},

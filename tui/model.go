@@ -371,6 +371,10 @@ type State struct {
 	// key dismisses it back to the composer. It is a snapshot taken when the
 	// card opened, so it never enters the transcript, history, or session.
 	StatusModal *StatusView
+	// UsageModal is the open /usage inspector, or nil. It is the same
+	// read-only modal family as StatusModal: any key dismisses it, and it
+	// never enters the transcript, history, or session.
+	UsageModal *UsageView
 	// Diff is the open interactive diff inspector, or nil. It is a full-screen
 	// modal overlay: while set it owns the keyboard and the pane area, and it
 	// reads the repository through its own on-demand git driver. It never
@@ -723,6 +727,15 @@ func (s *State) Apply(event Event) {
 
 	case StatusModalClosed:
 		s.StatusModal = nil
+
+	case UsageModalOpened:
+		// Same snapshot contract as the status card: the facts are frozen at
+		// open, so nothing already printed can go stale underneath it.
+		view := e.View
+		s.UsageModal = &view
+
+	case UsageModalClosed:
+		s.UsageModal = nil
 
 	case InputChanged:
 		s.Input = e.Text
@@ -1350,6 +1363,7 @@ func (s *State) Apply(event Event) {
 		s.QuitConfirm = nil
 		s.Permissions = nil
 		s.StatusModal = nil
+		s.UsageModal = nil
 		s.Queued = nil
 		s.Scroll = 0
 		s.Follow = true
@@ -1863,6 +1877,21 @@ type StatusModalClosed struct{}
 
 func (StatusModalClosed) eventKind() string { return "status_modal_closed" }
 
+// UsageModalOpened shows the /usage inspector with a snapshot of the ledger
+// and provider roster. The view is copied, so the card is a stable read of the
+// moment it opened.
+type UsageModalOpened struct {
+	// View is the snapshot the card renders.
+	View UsageView
+}
+
+func (UsageModalOpened) eventKind() string { return "usage_modal_opened" }
+
+// UsageModalClosed dismisses the usage inspector.
+type UsageModalClosed struct{}
+
+func (UsageModalClosed) eventKind() string { return "usage_modal_closed" }
+
 // DiffOpened installs the interactive diff inspector as the active overlay.
 // The model owns its own repository reads; the program only routes keys and
 // paints its View while it is set.
@@ -2093,16 +2122,14 @@ var Commands = []CommandSpec{
 	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
 	{Name: "permissions", Usage: "permissions", Description: "choose the execution authority", Category: CommandGroupControl},
 	{Name: "mode", Usage: "mode", Description: "choose the execution authority", Hidden: true, Category: CommandGroupControl},
-	{Name: "sup", Usage: "sup [request]", Description: "ask $sup, the ephemeral support surface", Category: CommandGroupControl},
 	{Name: "sessions", Usage: "sessions", Description: "browse and resume saved sessions", Category: CommandGroupControl},
 	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
 	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette", Category: CommandGroupControl},
 	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
 	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
-	{Name: "providers", Usage: "providers", Description: "list providers and credential status", Category: CommandGroupControl},
-	{Name: "status", Usage: "status", Description: "show provider, model, context, and session", Category: CommandGroupControl},
-	{Name: "usage", Usage: "usage", Description: "show token usage and cost", Category: CommandGroupControl},
+	{Name: "status", Usage: "status", Description: "show workspace, session, and authority status", Category: CommandGroupControl},
+	{Name: "usage", Usage: "usage", Description: "inspect token usage, cost, and providers", Category: CommandGroupControl},
 	{Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
 	{Name: "diff", Usage: "diff [target]", Description: "inspect the working-tree diff", Category: CommandGroupControl},
 	{Name: "retry", Usage: "retry", Description: "re-send the last prompt", Category: CommandGroupControl},
