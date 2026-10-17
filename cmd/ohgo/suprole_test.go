@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"strings"
 	"testing"
 
@@ -29,9 +28,9 @@ func TestSupResolvesSupRoleNotWorkspace(t *testing.T) {
 	settings := config.Default()
 	settings.Model = supSonnet
 	settings.AssignRole("sup", supHaiku, "")
-	bundle, err := supportLoopBuilder(mkOpts(settings), registry, io.Discard)()
+	bundle, err := supportBuilder(mkOpts(settings), registry)()
 	if err != nil {
-		t.Fatalf("supportLoopBuilder: %v", err)
+		t.Fatalf("supportBuilder: %v", err)
 	}
 	if bundle.ref != supHaiku {
 		t.Errorf("support model = %q, want the SUP role %q", bundle.ref, supHaiku)
@@ -42,9 +41,9 @@ func TestSupResolvesSupRoleNotWorkspace(t *testing.T) {
 	settings = config.Default()
 	settings.Model = supSonnet
 	settings.AssignRole("ask", supHaiku, "")
-	bundle, err = supportLoopBuilder(mkOpts(settings), registry, io.Discard)()
+	bundle, err = supportBuilder(mkOpts(settings), registry)()
 	if err != nil {
-		t.Fatalf("supportLoopBuilder: %v", err)
+		t.Fatalf("supportBuilder: %v", err)
 	}
 	if bundle.ref != supSonnet {
 		t.Errorf("support model = %q, want the SUP fallback %q, not the ASK model", bundle.ref, supSonnet)
@@ -59,9 +58,9 @@ func TestSupEffortFollowsSupRole(t *testing.T) {
 	settings.Model = supSonnet
 	settings.AssignRole("sup", supHaiku, "minimal")
 	opts := options{root: t.TempDir(), model: catalog.MustResolve(supSonnet), settings: settings, autoApprove: true, effort: "high", reasoning: true}
-	bundle, err := supportLoopBuilder(opts, registry, io.Discard)()
+	bundle, err := supportBuilder(opts, registry)()
 	if err != nil {
-		t.Fatalf("supportLoopBuilder: %v", err)
+		t.Fatalf("supportBuilder: %v", err)
 	}
 	if bundle.effort != "minimal" {
 		t.Errorf("support effort = %q, want the SUP role effort %q", bundle.effort, "minimal")
@@ -77,9 +76,9 @@ func TestSupRejectsUnknownEffort(t *testing.T) {
 	settings.Model = supSonnet
 	settings.AssignRole("sup", supSonnet, "bogus-effort")
 	opts := options{root: t.TempDir(), model: catalog.MustResolve(supSonnet), settings: settings, autoApprove: true}
-	_, err := supportLoopBuilder(opts, registry, io.Discard)()
+	_, err := supportBuilder(opts, registry)()
 	if err == nil || !strings.Contains(err.Error(), "bogus-effort") {
-		t.Fatalf("supportLoopBuilder err = %v, want a refusal naming the effort", err)
+		t.Fatalf("supportBuilder err = %v, want a refusal naming the effort", err)
 	}
 }
 
@@ -136,7 +135,7 @@ func TestSupRebuildsAfterRoleChange(t *testing.T) {
 	settings.Model = supSonnet
 	h := newHarness(registry, nil, nil, nil, nil, &settings, t.TempDir(), catalog.MustResolve(supSonnet))
 	opts := options{root: t.TempDir(), model: catalog.MustResolve(supSonnet), settings: settings, autoApprove: true}
-	build := supportLoopBuilder(opts, registry, io.Discard)
+	build := supportBuilder(opts, registry)
 
 	first, err := build()
 	if err != nil {
@@ -151,7 +150,7 @@ func TestSupRebuildsAfterRoleChange(t *testing.T) {
 	// The harness owns a copy of the settings struct, so hand the builder
 	// the updated authority the same way runSession does.
 	opts.settings = settings
-	build = supportLoopBuilder(opts, registry, io.Discard)
+	build = supportBuilder(opts, registry)
 	second, err := build()
 	if err != nil {
 		t.Fatalf("second build: %v", err)

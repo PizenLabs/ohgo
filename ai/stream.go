@@ -190,6 +190,31 @@ func (s *Stream) Result() (AssistantMessage, error) {
 	return s.msg, s.err
 }
 
+// DrainStream consumes a stream to completion and returns the assembled message.
+//
+// Visible text deltas are forwarded to onDelta in order as they arrive, while
+// the stream is still open, so a consumer can reveal the answer as it is
+// generated; a nil onDelta only skips the forwarding. Draining is mandatory: a
+// producer blocks when the event channel fills, so every caller must range over
+// Events even when it only wants the final message. Result is consulted after
+// the channel closes, which is what makes the returned message authoritative.
+func DrainStream(ctx context.Context, stream *Stream, onDelta func(string)) (AssistantMessage, error) {
+	if stream == nil {
+		return AssistantMessage{}, errors.New("ai: nil stream")
+	}
+	for event := range stream.Events {
+		if delta, ok := event.(EventTextDelta); ok && onDelta != nil && delta.Delta != "" {
+			onDelta(delta.Delta)
+		}
+		select {
+		case <-ctx.Done():
+			return AssistantMessage{}, ctx.Err()
+		default:
+		}
+	}
+	return stream.Result()
+}
+
 // ToolSpec describes one tool as sent to the model.
 type ToolSpec struct {
 	Name        string `json:"name"`

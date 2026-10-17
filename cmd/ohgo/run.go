@@ -822,40 +822,25 @@ func attachShellEscape(program *tui.Program, root string) {
 	})
 }
 
-// supportLoopBuilder returns a builder for the ephemeral $sup runtime.
+// supportBuilder returns a builder for the ephemeral $sup runtime.
 //
-// The model and effort resolve through the SUP role on every invocation,
-// so a /model reassignment applies to the next $sup with no restart. The
-// loop runs under ASK authority (read-only), so support can reason and
-// read but cannot mutate. It is built lazily on first use: resolving a
-// second model eagerly would cost a round trip for a capability most
-// sessions never invoke.
-func supportLoopBuilder(opts options, registry *ai.Registry, out io.Writer) func() (supportBundle, error) {
+// The model and effort resolve through the SUP role on every invocation, so a
+// /model reassignment applies to the next $sup with no restart. The runtime is
+// only the shared provider transport plus the resolved model: $sup is an answer
+// surface, so it is built without the agent loop, the tool set, the repository
+// context, and the compaction machinery the workspaces carry (§1, §2, §4).
+//
+// It is built lazily on first use: resolving a second model eagerly would cost
+// a round trip for a capability most sessions never invoke.
+func supportBuilder(opts options, registry *ai.Registry) func() (supportBundle, error) {
 	return func() (supportBundle, error) {
 		supModel, effort, err := resolveSupModel(opts.settings, dynamicResolver(context.Background(), registry))
 		if err != nil {
 			return supportBundle{}, err
 		}
-		supOpts := opts
-		supOpts.workspace = workspace.Ask
-		supOpts.model = supModel
-		supOpts.maxTokens = resolveMaxTokens(opts.settings, supModel)
-		enabled, level := supReasoning(effort)
-		supOpts.reasoning = enabled
-		supOpts.effort = level
-		// Support is read-only by construction (ASK authority), so read tools
-		// are auto-approved rather than parking a modal prompt on a query the
-		// user expects to be instant.
-		loop, err := buildLoop(supOpts, registry, out, nil, nil,
-			func(ai.ToolCall, agent.Approval) (bool, string) { return true, "" })
-		if err != nil {
-			return supportBundle{}, err
-		}
-		// The caller renders the exchange itself; the loop's turn hook would
-		// otherwise print raw text.
-		loop.SetTurnHook(nil)
 		return supportBundle{
-			loop:   loop,
+			stream: registry.StreamFn(),
+			model:  supModel,
 			ref:    supModel.Provider + "/" + supModel.ID,
 			effort: effort,
 		}, nil
@@ -1355,9 +1340,9 @@ func runSession(cmd *cobra.Command, args []string) error {
 	}
 
 	// One ephemeral surface serves both interfaces. It is created here, not in
-	// buildLoop, because it owns its own ASK-model loop and is deliberately
+	// buildLoop, because it owns its own SUP-role runtime and is deliberately
 	// absent from the session's persistence path.
-	surface := newSupportSurface(supportLoopBuilder(opts, registry, out))
+	surface := newSupportSurface(supportBuilder(opts, registry))
 
 	// The full-screen UI needs the loop before it can supply its approval
 	// hook, so the routing happens here rather than inside buildLoop. A pipe or
@@ -1666,7 +1651,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		return err
 	}
 
-	surface := newSupportSurface(supportLoopBuilder(opts, registry, out))
+	surface := newSupportSurface(supportBuilder(opts, registry))
 
 	initialEffort := ""
 	if opts.reasoning {

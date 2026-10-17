@@ -80,9 +80,11 @@ execution`:
 - The session records its workspace, project identity, and effective model.
   A resumed session restores its own snapshot rather than silently following a
   changed configuration.
-- `$sup` is an ephemeral interaction surface on the SUP model role: a second
-  loop on the SUP-resolved model under read-only authority, whose
-  conversation is never persisted and never enters the main history.
+- `$sup` is an ephemeral, context-light answer surface on the SUP model role: a
+  dedicated path that sends a minimal system instruction plus the query through
+  the shared provider transport, with no tools, no repository context, and no
+  agent loop. Its conversation is never persisted and never enters the main
+  history.
 - Cross-workspace handoff is artifact-based: `workspace.Artifact` (plan,
   finding, change, verification) is validated and persisted per session; the
   `artifact` tool enforces that a workspace only authors its own kind.

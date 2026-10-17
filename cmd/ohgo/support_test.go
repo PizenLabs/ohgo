@@ -45,7 +45,7 @@ func TestSupIsEphemeralAndDoesNotPersist(t *testing.T) {
 		loop:    loop,
 		store:   store,
 		sess:    &sess,
-		support: newSupportSurface(supportLoopBuilder(opts, registry, io.Discard)),
+		support: newSupportSurface(supportBuilder(opts, registry)),
 	}
 
 	var out strings.Builder
@@ -79,7 +79,7 @@ func TestSupportSurfaceKeepsItsOwnConversation(t *testing.T) {
 	registry.SetBaseURL("anthropic", server.URL)
 	opts := options{root: t.TempDir(), model: catalog.MustResolve("anthropic/claude-sonnet-4-5"), settings: config.Default(), autoApprove: true}
 
-	surface := newSupportSurface(supportLoopBuilder(opts, registry, io.Discard))
+	surface := newSupportSurface(supportBuilder(opts, registry))
 	if _, err := surface.ask(t.Context(), "first", nil); err != nil {
 		t.Fatalf("first ask: %v", err)
 	}
