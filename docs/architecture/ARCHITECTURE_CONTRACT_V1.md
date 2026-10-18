@@ -1778,3 +1778,108 @@ The project owns its identity.
 The human remains in control.
 
 And the existing execution engine remains the foundation until an audit proves that a seam must change.
+
+---
+
+# 47. Intent-Aware Workspace Transitions (implemented)
+
+The authority model above is realised by a deterministic, model-free intent
+router and a runtime gate. This section records the implemented behaviour; the
+detailed reference is [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
+
+## 47.1 Intent
+
+Each user request is classified into one of three semantic intents:
+
+```text
+READ         → ASK semantics
+EXECUTE      → BUILD semantics
+INVESTIGATE  → FUZZ semantics
+```
+
+Classification is by requested capability, not grammar
+(`workspace.Classify`). There is no model, embedding, or planner. Ambiguity
+resolves to READ, the lowest authority, so a misclassification can only reduce
+authority.
+
+## 47.2 Transition table
+
+```text
+ACTIVE       INTENT          RESULT
+──────────────────────────────────────────────────────────────
+ASK          READ            ASK
+ASK          EXECUTE         REFUSED — explicit BUILD switch required
+ASK          INVESTIGATE     REFUSED — explicit FUZZ switch required
+BUILD        READ            ASK semantics, BUILD remains active
+BUILD        EXECUTE         BUILD
+BUILD        INVESTIGATE     FUZZ semantics, BUILD remains active
+FUZZ         READ            ASK semantics, FUZZ remains active
+FUZZ         INVESTIGATE     FUZZ
+FUZZ         EXECUTE         REFUSED — explicit BUILD switch required
+```
+
+## 47.3 Delegation
+
+Informational delegation is temporary. The active workspace and the turn
+handler are distinct: BUILD/FUZZ delegate a READ turn to ASK semantics, then
+return. Delegation may only narrow authority, never widen it. The active
+workspace is never changed by a route; only an explicit user switch changes it.
+
+## 47.4 Enforcement
+
+`workspace.Permits`/`Admit` remains the capability decision. The
+`authorityGate` in `cmd/ohgo` is the session's single live authority, read at
+call time by the loop's `Config.Admit` hook and by the subagent spawner, so a
+delegated turn's narrowing covers anything it delegates. A refused route never
+reaches the model. Prompts (`prompt.WorkspaceContract`) explain the mode but
+are not the boundary.
+
+## 47.5 Additional invariants
+
+### I21 — ASK never escalates implicitly to BUILD or FUZZ
+
+### I22 — Delegation only narrows authority
+
+### I23 — A FUZZ finding does not authorize BUILD mutation
+
+### I24 — The active workspace and the turn handler are distinct
+
+### I25 — The turn handler is derived per turn and is never persisted as the active workspace
+
+### I26 — Intent classification is deterministic and model-free; ambiguity resolves downward
+
+## 47.6 UI projection
+
+The UI consumes the route result; it never classifies a request or moves the
+active workspace. Two distinct states are rendered together:
+
+```text
+Workspace         persistent authority boundary
+Turn intent       requested capability
+Turn handler      semantic handler for this turn
+Effective auth    authority available this turn
+```
+
+Canonical example:
+
+```text
+BUILD workspace
+    ↓
+"What is Go?"
+    ↓
+READ intent
+    ↓
+ASK handler
+    ↓
+READ authority
+    ↓
+answer
+    ↓
+turn state cleared
+    ↓
+BUILD workspace remains active
+```
+
+The composer prefix shows `build · ask/read` for the turn's duration and then
+returns to `build`. The UI must never represent turn delegation as an implicit
+workspace transition.

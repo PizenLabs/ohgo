@@ -124,6 +124,33 @@ func (op Operation) mutation() bool {
 	return false
 }
 
+// Encompasses reports whether w holds at least other's authority.
+//
+// The three authorities form a strict chain — ASK ⊂ FUZZ ⊂ BUILD — because
+// each workspace's permitted operations are a superset of the one below it.
+// The comparison is used only to refuse: a transition policy may propose a
+// workspace its current one does not encompass, so prediction confidence can
+// never widen authority (I8, I9). It never grants anything.
+func (w Workspace) Encompasses(other Workspace) bool {
+	rank, otherRank := authorityRank(w), authorityRank(other)
+	return rank > 0 && otherRank > 0 && rank >= otherRank
+}
+
+// authorityRank orders the authorities from least to most powerful. An
+// unresolved workspace ranks zero so it encompasses nothing and is
+// encompassed by nothing.
+func authorityRank(w Workspace) int {
+	switch w {
+	case Ask:
+		return 1
+	case Fuzz:
+		return 2
+	case Build:
+		return 3
+	}
+	return 0
+}
+
 // Permits reports whether the workspace may perform op.
 //
 // An unrecognised operation is denied: a capability the policy cannot

@@ -277,7 +277,7 @@ func DeriveRuntime(s State) RuntimeState {
 	if s.Quit {
 		return RuntimeShuttingDown
 	}
-	if s.Pending != nil || s.QuitConfirm != nil {
+	if s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil {
 		return RuntimeAwaitingApproval
 	}
 	if hasRunningTool(s) {
