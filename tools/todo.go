@@ -265,6 +265,23 @@ func NewTodoTool() *TodoTool {
 // concurrent calls must not interleave.
 func (t *TodoTool) Exclusive(map[string]any) bool { return true }
 
+// Snapshot returns a deep copy of the current list.
+//
+// It is the read seam for a projection (the task continuity layer records a
+// durable snapshot without becoming a second mutation owner): the copy means a
+// caller iterating it cannot race an in-flight todo call.
+func (t *TodoTool) Snapshot() TodoList {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	out := TodoList{Phases: make([]Phase, 0, len(t.list.Phases))}
+	for _, phase := range t.list.Phases {
+		copied := Phase{Name: phase.Name, Tasks: append([]Task(nil), phase.Tasks...)}
+		out.Phases = append(out.Phases, copied)
+	}
+	return out
+}
+
 // Execute implements agent.Tool.
 func (t *TodoTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	if err := checkCancelled(ctx.Ctx); err != nil {

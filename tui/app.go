@@ -286,6 +286,13 @@ type Program struct {
 	// wizardHooks commits or abandons the wizard's decisions. See
 	// InitWizardHooks for the goroutine contract.
 	wizardHooks InitWizardHooks
+
+	// task is the durable task continuity layer, nil-safe. When set, runTurn
+	// records lifecycle boundaries (turn start, interruption, completion,
+	// failure) and the transcript projects the task state. It is bookkeeping
+	// only: the loop remains the execution owner and the task layer grants no
+	// authority (see TaskHooks).
+	task TaskHooks
 }
 
 // WorkspaceHooks route workspace commands through their owner.
@@ -3414,6 +3421,13 @@ func (p *Program) runTurn(text string) {
 	}
 	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), Turn: turn})
 
+	// A turn is a task boundary: record (or resume) the durable task before
+	// any provider call, so an interruption during this turn has something to
+	// checkpoint. Bookkeeping only — it neither gates nor authorizes the turn.
+	if p.task.Begin != nil {
+		p.PublishTask(p.task.Begin(text))
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	p.mu.Lock()
 	p.cancelTurn = cancel
@@ -3459,6 +3473,12 @@ func (p *Program) runTurn(text string) {
 				At:        time.Now(),
 				Seq:       seq,
 			})
+			// A todo mutation is a meaningful task boundary: checkpoint it so
+			// an interruption afterwards recovers the real progress. The todo
+			// tool owns the list; the task layer only records its snapshot.
+			if progress.ToolName == "todo" {
+				p.SyncTask()
+			}
 		case agent.ProgressStarted:
 			// The announcement carries the call's arguments but no outcome
 			// yet, so the block opens with what the call will do rather
@@ -3489,7 +3509,18 @@ func (p *Program) runTurn(text string) {
 	for _, warning := range warnings {
 		p.publish(Notice{Text: warning})
 	}
-	p.loop.SetSystemContext(systemContextBlocks(contextText))
+	// Context is reconstructed, not replayed: the mention context plus the
+	// deterministic task orientation. Both are set every turn — including to
+	// nil — so a prompt never inherits the previous turn's context.
+	blocks := systemContextBlocks(contextText)
+	if p.task.Context != nil {
+		if taskContext := p.task.Context(); len(taskContext) > 0 {
+			blocks = append(blocks, ai.SystemPromptBlock{
+				Text: "Task continuity:\n\n" + strings.Join(taskContext, "\n"),
+			})
+		}
+	}
+	p.loop.SetSystemContext(blocks)
 
 	turns, err := p.loop.Run(ctx, request)
 
@@ -3513,6 +3544,29 @@ func (p *Program) runTurn(text string) {
 			p.publish(TurnCancelled{Seq: seq, Text: "cancelled"})
 		} else {
 			p.publish(Notice{Text: "error: " + err.Error()})
+		}
+	}
+
+	// Record the task outcome at the turn boundary. An interruption pauses at
+	// a recoverable checkpoint and is never reported as completed; a deadline
+	// that stopped mid-work is likewise recoverable, not success; only a run
+	// whose final turn stopped calling tools is a completed turn.
+	switch {
+	case err == nil && turnCompleted(turns):
+		if p.task.Complete != nil {
+			p.PublishTask(p.task.Complete())
+		}
+	case err == nil:
+		if p.task.Pause != nil {
+			p.PublishTask(p.task.Pause("deadline reached"))
+		}
+	case errors.Is(err, context.Canceled):
+		if p.task.Pause != nil {
+			p.PublishTask(p.task.Pause("interrupted"))
+		}
+	default:
+		if p.task.Fail != nil {
+			p.PublishTask(p.task.Fail(err.Error()))
 		}
 	}
 
@@ -3717,6 +3771,19 @@ func (p *Program) persist(msg agent.Message) {
 // outcomes) never writes to the terminal directly.
 func (p *Program) PublishNotice(text string) {
 	p.publish(Notice{Text: text})
+}
+
+// turnCompleted reports whether a run ended because the model stopped calling
+// tools, rather than because a deadline stopped it mid-work.
+//
+// The loop returns nil error both when the model finishes and when its budget
+// expires, so the error alone cannot tell success from a recoverable stop. The
+// final turn's shape can: a completed run ends on a turn with no tool calls.
+func turnCompleted(turns []agent.Turn) bool {
+	if len(turns) == 0 {
+		return false
+	}
+	return len(turns[len(turns)-1].Results) == 0
 }
 
 // rebase rebuilds history from the request that was sent plus the new turns.

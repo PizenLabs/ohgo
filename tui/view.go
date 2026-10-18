@@ -1361,6 +1361,12 @@ func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, 
 		}
 		sb.WriteString("\n")
 
+	case EntryTask:
+		for _, line := range taskLines(entry.Task, pal, layout) {
+			sb.WriteString(line + "\n")
+		}
+		sb.WriteString("\n")
+
 	case EntrySupport:
 		renderSupportEntry(sb, entry, pal, layout)
 	}

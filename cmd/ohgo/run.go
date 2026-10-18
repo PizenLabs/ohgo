@@ -1477,6 +1477,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		}
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
 		attachShellEscape(program, opts.root)
+		installTaskContinuity(program, opts.root, loop.Tools())
 
 		// Output-first mode is a different interaction boundary, not a
 		// different program: the same loop, the same state machine, the same
@@ -1700,6 +1701,10 @@ func runSession(cmd *cobra.Command, args []string) error {
 		loop.SetCompactHook(func(result agent.CompactResult) {
 			program.PublishNotice(fmt.Sprintf("context compacted: %d messages summarised, %d retained",
 				result.Compacted, result.Retained))
+			// Compaction rebuilds context; the checkpoint must survive it
+			// unchanged. Syncing re-records the same task state, so a crash
+			// between compaction and the next turn resumes the same task.
+			program.SyncTask()
 		})
 		return program.Run()
 	}
@@ -1776,6 +1781,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	}
 	program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
 	attachShellEscape(program, opts.root)
+	installTaskContinuity(program, opts.root, loop.Tools())
 
 	if live, _ := cmd.Flags().GetBool("live"); live {
 		return program.RunLive()
@@ -1941,6 +1947,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	loop.SetCompactHook(func(result agent.CompactResult) {
 		program.PublishNotice(fmt.Sprintf("context compacted: %d messages summarised, %d retained",
 			result.Compacted, result.Retained))
+		program.SyncTask()
 	})
 	return program.Run()
 }

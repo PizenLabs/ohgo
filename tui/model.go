@@ -52,6 +52,9 @@ type Entry struct {
 	Shell *ShellEntry
 	// Notice is set when Kind is EntryNotice.
 	Notice string
+	// Task is set when Kind is EntryTask: the compact projection of the
+	// durable task state.
+	Task *TaskProjection
 	// SupportText is set when Kind is EntrySupport: the question when
 	// SupportIsQuestion, else the answer.
 	SupportText string
@@ -76,6 +79,10 @@ const (
 	EntryShell EntryKind = "shell"
 	// EntryNotice is a system notice, e.g. a compaction.
 	EntryNotice EntryKind = "notice"
+	// EntryTask is the compact projection of durable task state. It is a
+	// projection, never an owner: it carries no execution authority and the
+	// task domain remains the single source of truth.
+	EntryTask EntryKind = "task"
 	// EntrySupport is one turn of the ephemeral $sup surface. It is rendered
 	// but never persisted and never enters the model's context (§10.2, I17).
 	EntrySupport EntryKind = "support"
@@ -757,6 +764,23 @@ func (s *State) Apply(event Event) {
 	case Notice:
 		s.Entries = append(s.Entries, Entry{Kind: EntryNotice, Notice: e.Text})
 		s.growScroll(countLines(e.Text))
+
+	case TaskProjected:
+		// The projection replaces the current task block in place, so a long
+		// turn does not stack a fresh panel on every todo change. A dropped
+		// empty projection keeps the previous one rather than blanking it.
+		if e.Projection.ID == "" {
+			return
+		}
+		projection := e.Projection
+		for i := len(s.Entries) - 1; i >= 0; i-- {
+			if s.Entries[i].Kind == EntryTask {
+				s.Entries[i].Task = &projection
+				return
+			}
+		}
+		s.Entries = append(s.Entries, Entry{Kind: EntryTask, Task: &projection})
+		s.growScroll(len(projection.Items) + 2)
 
 	case HistoryReplaced:
 		// A resumed session continues rather than restarts: the replayed
