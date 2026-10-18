@@ -500,6 +500,8 @@ func expandedToolLines(s State, id string) []string {
 // matches the full-screen UI: one thing at a time owns the keyboard.
 func liveOverlay(s State, pal *Palette, layout Layout) []string {
 	switch {
+	case s.Transition != nil:
+		return liveTransitionLines(s)
 	case s.QuitConfirm != nil:
 		return liveQuitConfirmLines(s, pal, layout)
 	case s.Diff != nil:
@@ -680,6 +682,21 @@ func liveQuitConfirmLines(s State, _ *Palette, layout Layout) []string {
 	return lines
 }
 
+// liveTransitionLines renders the workspace-transition decision in
+// output-first mode, bounded to the screen. It reuses the centered card so
+// live and full-screen agree on the border, the buttons, and the key line.
+func liveTransitionLines(s State) []string {
+	if s.Transition == nil {
+		return nil
+	}
+	card := transitionCard(s.Transition, transitionCardWidth(s.Width))
+	lines := splitLines(card)
+	if limit := liveRows(s); len(lines) > limit {
+		lines = lines[:limit]
+	}
+	return lines
+}
+
 // liveConnectKeyLines renders the /connect API-key modal in output-first mode
 // with the same centering and bound as the other working modals.
 func liveConnectKeyLines(s State, pal *Palette, layout Layout) []string {
@@ -747,7 +764,7 @@ func liveComposerWidth(layout Layout) int {
 // is simply the last thing on screen, which is where the terminal already
 // puts it.
 func liveComposerLines(s State, pal *Palette, layout Layout) []string {
-	if s.ConnectKey != nil || s.Picker != nil || s.HelpModal != nil || s.Pending != nil || s.QuitConfirm != nil {
+	if s.ConnectKey != nil || s.Picker != nil || s.HelpModal != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil {
 		return nil
 	}
 	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)

@@ -49,6 +49,10 @@ type harness struct {
 	// caller did not supply one, in which case /status omits it rather than
 	// inventing an authority.
 	workspace string
+	// gate is the live authority shared with the loop and any subagent. Nil
+	// for a harness built without one (a bare test), in which case authority
+	// is applied by replacing the loop's admission hook directly.
+	gate *authorityGate
 	// support is the ephemeral $sup surface. Nil means $sup is unavailable.
 	support *supportSurface
 }
@@ -840,9 +844,7 @@ func (h *harness) SwitchWorkspace(name string) (workspace.Workspace, error) {
 			}
 		}
 	}
-	if h.loop != nil {
-		h.loop.SetAdmitHook(admitFor(ws))
-	}
+	h.applyAuthority(ws)
 	h.workspace = ws.Label()
 	if h.sess != nil {
 		h.sess.Workspace = ws.String()
@@ -854,6 +856,52 @@ func (h *harness) SwitchWorkspace(name string) (workspace.Workspace, error) {
 		}
 	}
 	return ws, nil
+}
+
+// activeWorkspace parses the harness's workspace label.
+//
+// An unset or unknown label resolves to BUILD, mirroring options.authority():
+// a harness that predates workspaces keeps the authority it always had rather
+// than being silently denied everything. Production always sets the label.
+func (h *harness) activeWorkspace() workspace.Workspace {
+	if ws, err := workspace.Parse(h.workspace); err == nil {
+		return ws
+	}
+	return workspace.Build
+}
+
+// applyAuthority installs ws as the runtime authority.
+//
+// With a gate it moves the single live authority the loop and any subagent
+// read. Without one (a bare test harness) it replaces the loop's admission
+// hook, which is the closest equivalent.
+func (h *harness) applyAuthority(ws workspace.Workspace) {
+	if h.gate != nil {
+		h.gate.Set(ws)
+		return
+	}
+	if h.loop != nil {
+		h.loop.SetAdmitHook(admitFor(ws))
+	}
+}
+
+// RouteTurn classifies a request against the active workspace and installs the
+// turn's authority.
+//
+// It is the runtime's intent router: it computes the semantic handler for the
+// request and, when the request is permitted, narrows the live authority to
+// that handler for the turn. It never changes the active workspace — a
+// delegated turn is temporary and the originating workspace remains
+// authoritative (§9, §10).
+//
+// A refused route installs nothing: an ASK request to mutate leaves ASK in
+// force and returns the refusal for the caller to show.
+func (h *harness) RouteTurn(text string) workspace.Route {
+	route := workspace.RouteTurn(h.activeWorkspace(), text)
+	if route.Allowed() {
+		h.applyAuthority(route.Handler)
+	}
+	return route
 }
 
 // atoi parses a menu number.

@@ -45,6 +45,12 @@ type Config struct {
 	Stream ai.StreamFn
 	// System is the system prompt, in order.
 	System []ai.SystemPromptBlock
+	// SystemFn resolves the system prompt per request. When set it overrides
+	// System, so a caller whose base prompt depends on live runtime state
+	// (the active workspace, for example) does not have to rebuild the loop
+	// to change it. The returned slice is used as-is; the loop never mutates
+	// it.
+	SystemFn func() []ai.SystemPromptBlock
 	// SystemContext appends extra system-prompt blocks after System on every
 	// request. It is how a caller injects per-turn context — files the user
 	// referenced, for example — without rebuilding the loop. Set it with
@@ -431,11 +437,15 @@ func (l *Loop) model() ai.Model {
 // caller's System slice is never mutated and two requests cannot share backing
 // storage that one of them later overwrites.
 func (l *Loop) system() []ai.SystemPromptBlock {
-	if len(l.cfg.SystemContext) == 0 {
-		return l.cfg.System
+	base := l.cfg.System
+	if l.cfg.SystemFn != nil {
+		base = l.cfg.SystemFn()
 	}
-	out := make([]ai.SystemPromptBlock, 0, len(l.cfg.System)+len(l.cfg.SystemContext))
-	out = append(out, l.cfg.System...)
+	if len(l.cfg.SystemContext) == 0 {
+		return base
+	}
+	out := make([]ai.SystemPromptBlock, 0, len(base)+len(l.cfg.SystemContext))
+	out = append(out, base...)
 	return append(out, l.cfg.SystemContext...)
 }
 

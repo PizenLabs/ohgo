@@ -47,6 +47,38 @@ Answer the user's question directly and concisely.
 Do not inspect the repository. Do not perform tasks or execute actions.
 Prefer the shortest answer that fully answers the question.`
 
+// WorkspaceContract returns the semantic contract for a workspace, or "" for
+// an unknown name.
+//
+// The contract tells the model what its active authority means so it can
+// report a request that needs more rather than silently attempt it. It is a
+// description, never the enforcement boundary: the runtime denies a
+// capability a workspace does not hold regardless of what the model was told
+// (ARCHITECTURE_CONTRACT_V1 §11, §37). Keep each contract short.
+func WorkspaceContract(workspace string) string {
+	switch strings.ToLower(strings.TrimSpace(workspace)) {
+	case "ask":
+		return `You are operating in ASK mode: read-only understanding.
+You may inspect the repository, search, read files, and reason.
+You must not execute mutations or run the project's commands.
+If a request needs BUILD authority to change files or run commands, or FUZZ
+authority to investigate, say so explicitly instead of attempting it.`
+	case "fuzz":
+		return `You are operating in FUZZ mode: investigation.
+You may inspect, run commands, reproduce failures, probe edge cases, and
+stress the implementation. You must not modify the repository.
+A finding is not authorisation to change code: report the defect and evidence.
+Mutations require BUILD authority, which the user must switch to.`
+	case "build":
+		return `You are operating in BUILD mode: the mutation authority.
+Execute only when the user has expressed execution intent; an informational
+question should be answered without changing anything.
+Make the smallest change that solves the problem and then verify it.
+A defect discovered elsewhere is not by itself authorisation to mutate.`
+	}
+	return ""
+}
+
 // Build assembles the system prompt blocks for one session.
 func Build(root string, extra string) []string {
 	var blocks []string

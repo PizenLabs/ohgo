@@ -198,7 +198,9 @@ func Render(state State) string {
 	sb.WriteString(renderHeader(state, pal, layout) + "\n")
 	sb.WriteString(SeparatorLine(separatorWidth(state, layout), pal) + "\n")
 
-	if state.QuitConfirm != nil {
+	if state.Transition != nil {
+		renderTransitionArea(&sb, state, pal, layout)
+	} else if state.QuitConfirm != nil {
 		renderQuitConfirmArea(&sb, state, pal, layout)
 	} else if state.Diff != nil {
 		renderDiffArea(&sb, state, pal, layout)
@@ -232,7 +234,7 @@ func Render(state State) string {
 
 	renderThinkingArea(&sb, state, pal, layout)
 
-	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Permissions == nil && state.Diff == nil {
+	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Transition == nil && state.Permissions == nil && state.Diff == nil {
 		// Main canvas. No middle status line while the hint bar owns the
 		// row (ShowHints): the header, composer prefix, and hint bar
 		// already own every fact it would repeat. A pending approval drops
@@ -281,7 +283,7 @@ func Render(state State) string {
 // displaces them. This joined form is for tests and narrow fallbacks; the
 // frame renders the padded split via composerHintBar.
 func composerHintsFor(state State) string {
-	if state.Pending != nil || state.QuitConfirm != nil {
+	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil {
 		return ""
 	}
 	if paletteOwnsKeys(state) && state.ConnectKey == nil {
@@ -307,7 +309,7 @@ func composerHintsFor(state State) string {
 // Idle telemetry splits via sessionBarRow: left metrics survive, right
 // shortcuts yield first on narrowing, and the row never wraps.
 func composerHintBar(state State, width int) string {
-	if state.Pending != nil || state.QuitConfirm != nil {
+	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil {
 		return ""
 	}
 	if paletteOwnsKeys(state) && state.ConnectKey == nil {
@@ -635,7 +637,7 @@ func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout
 // it is only ever rendered — never applied as an Entry — it cannot leak into
 // the persisted session or reappear over a resumed transcript.
 func showWelcome(state State) bool {
-	return !state.SessionActive && len(state.Entries) == 0 && state.Picker == nil && state.ConnectKey == nil && state.Pending == nil && state.QuitConfirm == nil && state.Permissions == nil && state.StatusModal == nil && state.UsageModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.Diff == nil
+	return !state.SessionActive && len(state.Entries) == 0 && state.Picker == nil && state.ConnectKey == nil && state.Pending == nil && state.QuitConfirm == nil && state.Transition == nil && state.Permissions == nil && state.StatusModal == nil && state.UsageModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.Diff == nil
 }
 
 // renderTranscriptBody renders every entry wrapped to the content width.
@@ -1057,12 +1059,28 @@ func pickerFooter(picker *PickerState, layout Layout) string {
 // label is producer-owned and already constrained to the three authorities,
 // so lowercasing cannot invent a new mode.
 func composerPrefix(state State) string {
-	switch strings.ToUpper(strings.TrimSpace(state.Status.Workspace)) {
+	active := strings.TrimSpace(state.Status.Workspace)
+	switch strings.ToUpper(active) {
 	case "ASK", "BUILD", "FUZZ":
-		return strings.ToLower(strings.TrimSpace(state.Status.Workspace)) + " > "
 	default:
 		return "> "
 	}
+	label := strings.ToLower(active)
+	// A delegated turn appends the ephemeral handler after the persistent
+	// workspace ("build · ask/read > "), so the two facts are visible at once
+	// and the workspace never appears to have moved. An undeligated turn adds
+	// nothing: the workspace prefix already states how it is answered.
+	if turn := state.Status.Turn; turn.Active {
+		handler := strings.TrimSpace(turn.Handler)
+		if handler != "" && !strings.EqualFold(handler, active) {
+			suffix := strings.ToLower(handler)
+			if intent := strings.TrimSpace(turn.Intent); intent != "" {
+				suffix += "/" + strings.ToLower(intent)
+			}
+			return label + " · " + suffix + " > "
+		}
+	}
+	return label + " > "
 }
 
 // composerPrefixStyle resolves the affordance colour per authority: ASK in
@@ -1194,7 +1212,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 // composerPrefixStyle so the frame and the "ask > "/"build > "/"fuzz > "
 // text read as one boundary.
 func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
-	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.ConnectModal != nil || state.Diff != nil {
+	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.ConnectModal != nil || state.Diff != nil {
 		return pal.Separator
 	}
 	return composerPrefixStyle(state, pal).Bold(true)
@@ -1284,7 +1302,7 @@ func one(show bool) int {
 // Idleness stays quiet, and an approval modal owns its dialog, so both
 // yield no line at all.
 func composerStateLine(state State, pal *Palette, layout Layout) string {
-	if state.Pending != nil || state.QuitConfirm != nil {
+	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil {
 		return ""
 	}
 	n := len(state.Queued)
@@ -1698,6 +1716,138 @@ func quitCard(confirm *PendingApproval, cardW int) string {
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
+}
+
+// transitionCardWidth bounds the centered transition dialog: wide enough for
+// the hint, narrow enough to read as a popup with margins on roomy terminals.
+func transitionCardWidth(termWidth int) int {
+	const maxCard = 56
+	const minCard = 32
+	if termWidth <= 0 {
+		return maxCard
+	}
+	w := termWidth - 8
+	if w > maxCard {
+		w = maxCard
+	}
+	if w < minCard {
+		w = termWidth - 4
+		if w < 12 {
+			w = 12
+		}
+		if w > termWidth {
+			w = termWidth
+		}
+	}
+	return w
+}
+
+// transitionCard builds the centered workspace-transition dialog: the
+// question, the reason, the two workspace choices, and the key line.
+//
+// Each choice carries its own workspace's semantic accent, so ASK, BUILD, and
+// FUZZ keep the identity they have everywhere else in the UI. The selected
+// choice is flanked by ◀ ▶, so the decision never depends on hue alone. The
+// dialog contains no percentage: Strength is an evidence level, and the copy
+// names it in words rather than implying a calibrated score (I12).
+func transitionCard(prompt *TransitionPrompt, cardW int) string {
+	if prompt == nil {
+		return ""
+	}
+	if cardW < 12 {
+		cardW = 12
+	}
+	title := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(prompt.ProposedAccent)).Bold(true).
+		Render(prompt.Question)
+	reason := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardGrey)).
+		Render(prompt.Reason)
+	arrow := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(prompt.ProposedAccent)).Bold(true)
+	keepActive := prompt.Selection == 0
+	switchActive := !keepActive
+	leftKeep, rightKeep := "  ", "  "
+	leftSwitch, rightSwitch := "  ", "  "
+	if keepActive {
+		leftKeep, rightKeep = arrow.Render("◀ "), arrow.Render(" ▶")
+	}
+	if switchActive {
+		leftSwitch, rightSwitch = arrow.Render("◀ "), arrow.Render(" ▶")
+	}
+	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
+		leftKeep, transitionButton("Keep "+prompt.Current, prompt.CurrentAccent, keepActive), rightKeep,
+		"   ",
+		leftSwitch, transitionButton(prompt.Proposed, prompt.ProposedAccent, switchActive), rightSwitch,
+	)
+	hints := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardGrey)).
+		Render("Enter to confirm · Esc keeps " + prompt.Current)
+	inner := lipgloss.JoinVertical(lipgloss.Left, title, reason, "", buttons, "", hints)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(prompt.ProposedAccent)).
+		Background(lipgloss.Color(wizardBG)).
+		Padding(1, 2).
+		Width(cardW).
+		Render(inner)
+}
+
+// transitionButton renders one workspace choice: its own accent when
+// highlighted, a quiet grey label otherwise.
+func transitionButton(label, accent string, active bool) string {
+	text := "[ " + label + " ]"
+	if active {
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color(accent)).Bold(true).
+			Render(text)
+	}
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardGrey)).
+		Render(text)
+}
+
+// renderTransitionArea draws the workspace-transition decision as a centered
+// popup. Like the quit confirmation it owns the conversation area while open
+// and returns it untouched on resolution, so the prompt reads as a decision
+// surface rather than another transcript row. It fills its budget exactly, so
+// reserved and rendered rows agree.
+func renderTransitionArea(sb *strings.Builder, state State, _ *Palette, layout Layout) {
+	prompt := state.Transition
+	if prompt == nil {
+		return
+	}
+	if state.Width <= 0 || state.Height <= 0 {
+		card := transitionCard(prompt, transitionCardWidth(0))
+		sb.WriteString(card)
+		if !strings.HasSuffix(card, "\n") {
+			sb.WriteString("\n")
+		}
+		return
+	}
+	avail := layout.ConversationHeight
+	if state.Pending != nil {
+		avail -= approvalLines(state.Pending, layout)
+	}
+	if avail < 0 {
+		avail = 0
+	}
+	width := state.Width
+	if width <= 0 {
+		width = 80
+	}
+	card := transitionCard(prompt, transitionCardWidth(width))
+	placed := lipgloss.Place(width, avail, lipgloss.Center, lipgloss.Center, card)
+	lines := strings.Split(placed, "\n")
+	if len(lines) > avail {
+		lines = lines[:avail]
+	}
+	for len(lines) < avail {
+		lines = append(lines, strings.Repeat(" ", width))
+	}
+	for _, line := range lines {
+		sb.WriteString(line + "\n")
+	}
 }
 
 // renderQuitConfirmArea draws the /q exit-confirmation as a centered popup.

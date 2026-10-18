@@ -37,6 +37,10 @@ type options struct {
 	// workspace is the execution authority the session runs under. It decides
 	// capability policy, not presentation (§8).
 	workspace workspace.Workspace
+	// gate is the live authority the loop and any subagent read at call time.
+	// It is non-nil once resolveOptions has run; tests that build options
+	// directly leave it nil and fall back to workspace.
+	gate *authorityGate
 	// projectID is the stable project identity, empty when it could not be
 	// established.
 	projectID string
@@ -64,15 +68,33 @@ type options struct {
 
 // authority returns the workspace in force.
 //
-// An unset workspace defaults to BUILD. The CLI always resolves one through
-// workspace.Parse (where a typo is fatal), but a caller that predates
-// workspaces — or a test that builds options directly — keeps the authority it
-// always had rather than being silently denied everything.
+// The live gate wins when one is installed: it is what a workspace switch or a
+// delegated turn moves. An unset workspace defaults to BUILD. The CLI always
+// resolves one through workspace.Parse (where a typo is fatal), but a caller
+// that predates workspaces — or a test that builds options directly — keeps the
+// authority it always had rather than being silently denied everything.
 func (o options) authority() workspace.Workspace {
+	if o.gate != nil {
+		if ws := o.gate.Workspace(); ws.Valid() {
+			return ws
+		}
+	}
 	if o.workspace.Valid() {
 		return o.workspace
 	}
 	return workspace.Build
+}
+
+// setAuthority records the session's active workspace on both the value and
+// the live gate, so option resolution, session restore, and workspace switches
+// agree on one authority (§30).
+func (o *options) setAuthority(ws workspace.Workspace) {
+	o.workspace = ws
+	if o.gate == nil {
+		o.gate = newAuthorityGate(ws)
+		return
+	}
+	o.gate.Set(ws)
 }
 
 // resolveOptions builds options from the flags and environment, plus the
@@ -112,13 +134,13 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	// The workspace is a runtime authority, resolved before the model because
 	// it participates in model selection (§11, §14). An unknown name is fatal,
 	// never a silent fallback to an authority the user did not choose.
-	opts.workspace = workspace.Build
+	opts.setAuthority(workspace.Build)
 	if name := flagValue(cmd, "workspace"); name != "" {
 		parsed, err := workspace.Parse(name)
 		if err != nil {
 			return opts, nil, err
 		}
-		opts.workspace = parsed
+		opts.setAuthority(parsed)
 	}
 
 	// Project identity is resolved here but never created: creation belongs
@@ -673,7 +695,7 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 			Tools:      childToolSet(opts, parentTools, spec.Depth),
 			MaxTokens:  opts.maxTokens,
 			Reasoning:  opts.reasoning,
-			Admit:      admitFor(opts.authority()),
+			Admit:      opts.admit(),
 			Compaction: compactionFromSettings(opts.settings),
 			Summarize:  newSummarizer(registry.StreamFn(), opts.model),
 		}
@@ -716,15 +738,24 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		}, opts.authority()))
 	}
 
-	var extra string
-	if project := prompt.ProjectContext(opts.root); project != "" {
-		extra = project
-	}
-	if opts.settings.SystemPrompt != "" {
-		if extra != "" {
-			extra += "\n\n"
+	// The workspace contract is composed into the prompt on every request
+	// rather than at construction, so a workspace switch is reflected
+	// immediately. It explains the mode; it is not the enforcement boundary.
+	// The project context is read once because it changes on disk, not on a
+	// request.
+	projectContext := prompt.ProjectContext(opts.root)
+	systemPrompt := func() []ai.SystemPromptBlock {
+		var parts []string
+		if contract := prompt.WorkspaceContract(opts.authority().String()); contract != "" {
+			parts = append(parts, contract)
 		}
-		extra += opts.settings.SystemPrompt
+		if projectContext != "" {
+			parts = append(parts, projectContext)
+		}
+		if opts.settings.SystemPrompt != "" {
+			parts = append(parts, opts.settings.SystemPrompt)
+		}
+		return promptBlocks(opts, strings.Join(parts, "\n\n"))
 	}
 
 	if approve == nil && !opts.autoApprove {
@@ -746,14 +777,14 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 	loop, err := agent.New(agent.Config{
 		Model:           opts.model,
 		Stream:          registry.StreamFn(),
-		System:          promptBlocks(opts, extra),
+		SystemFn:        systemPrompt,
 		Tools:           toolSet,
 		MaxTokens:       opts.maxTokens,
 		Deadline:        opts.deadline,
 		Reasoning:       opts.reasoning,
 		ReasoningEffort: opts.effort,
 		OnTurn:          onTurn,
-		Admit:           admitFor(opts.authority()),
+		Admit:           opts.admit(),
 		Approve:         approve,
 		Compaction:      compactionFromSettings(opts.settings),
 		Summarize:       newSummarizer(registry.StreamFn(), opts.model),
@@ -805,6 +836,64 @@ func admitFor(ws workspace.Workspace) func(ai.ToolCall, agent.Tool) (bool, strin
 		}
 		return true, ""
 	}
+}
+
+// turnAuthority projects a harness route into the TUI's turn decision.
+//
+// It is the one place the router's vocabulary is translated for the UI, so the
+// full-screen path and the plain REPL cannot disagree about what a route
+// means.
+func turnAuthority(held *harness, text string) tui.TurnAuthority {
+	route := held.RouteTurn(text)
+	return tui.TurnAuthority{
+		Active:    route.Active.Label(),
+		Handler:   route.Handler.Label(),
+		Intent:    strings.ToUpper(string(route.Intent)),
+		Effective: route.Effective().Label(),
+		Delegated: route.Delegated(),
+		Blocked:   !route.Allowed(),
+		Reason:    route.Message(),
+	}
+}
+
+// turnTransition projects a workspace-transition proposal into the TUI's
+// decision shape, or reports that the policy wants no proposal.
+//
+// It is deliberately side-effect-free, unlike turnAuthority: prediction runs
+// before the turn is decided, so it must not install the handler or move the
+// gate. The accepted transition is applied later, through Switch. It is the
+// single place the workspace package's policy vocabulary is translated for the
+// UI, so both full-screen entry points agree.
+func turnTransition(held *harness, text string) (tui.TurnTransition, bool) {
+	active := held.activeWorkspace()
+	proposal, ok := workspace.ProposeTransition(active, workspace.ClassifyPrediction(text))
+	if !ok {
+		return tui.TurnTransition{}, false
+	}
+	current, proposed := proposal.Current.Style(), proposal.Proposed.Style()
+	return tui.TurnTransition{
+		Current:        current.Label,
+		Proposed:       proposed.Label,
+		CurrentAccent:  current.Accent,
+		ProposedAccent: proposed.Accent,
+		Intent:         strings.ToUpper(string(proposal.Intent)),
+		Strength:       string(proposal.Strength),
+		Question:       proposal.Question(),
+		Reason:         proposal.Reason,
+	}, true
+}
+
+// admit returns the loop's runtime gate, resolving the authority at call time.
+//
+// It is admitFor against the live options rather than a captured workspace, so
+// a workspace switch or a delegated turn narrows authority without rebuilding
+// the loop. A test that builds options without a gate falls back to the
+// resolved workspace, preserving the pre-router behavior.
+func (o options) admit() func(ai.ToolCall, agent.Tool) (bool, string) {
+	if o.gate != nil {
+		return o.gate.Admit
+	}
+	return admitFor(o.authority())
 }
 
 // attachShellEscape wires the "!" escape to the local shell and to the same
@@ -1040,6 +1129,19 @@ func runOnce(cmd *cobra.Command, text string) error {
 		}
 	}
 
+	// The one-shot path routes the same way an interactive turn does: a
+	// request the active workspace may not answer is refused before the model
+	// is called, never handed to it to attempt (§3, §11).
+	route := workspace.RouteTurn(opts.authority(), text)
+	if !route.Allowed() {
+		_, _ = fmt.Fprintln(out, route.Message())
+		return nil
+	}
+	if route.Notice() != "" {
+		_, _ = fmt.Fprintln(out, route.Notice())
+	}
+	opts.gate.Set(route.Handler)
+
 	var history []agent.Message
 	if sess != nil && resumeID > 0 {
 		history, err = loadHistory(store, sess)
@@ -1219,10 +1321,10 @@ func applySessionAuthority(cmd *cobra.Command, opts *options, resolve func(strin
 		// The CLI already resolved and validated this; re-read it so the
 		// function is self-consistent rather than depending on the caller.
 		if ws, err := workspace.Parse(flagValue(cmd, "workspace")); err == nil {
-			opts.workspace = ws
+			opts.setAuthority(ws)
 		}
 	} else if ws, err := workspace.Parse(sess.Workspace); err == nil {
-		opts.workspace = ws
+		opts.setAuthority(ws)
 	}
 	if !explicitModel && strings.TrimSpace(sess.Model) != "" {
 		resolved, err := resolve(sess.Model)
@@ -1391,6 +1493,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		held := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
 		held.usage.SetCost(opts.model.Cost)
 		held.workspace = opts.authority().Label()
+		held.gate = opts.gate
 		held.projectID = opts.projectID
 		held.support = surface
 		program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
@@ -1495,7 +1598,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 				if err != nil {
 					return err
 				}
-				opts.workspace = ws
+				opts.setAuthority(ws)
 				style := ws.Style()
 				program.PublishWorkspace(tui.WorkspaceUpdated{
 					Workspace:       style.Label,
@@ -1520,6 +1623,8 @@ func runSession(cmd *cobra.Command, args []string) error {
 				program.PublishNotice("switched to " + style.Label)
 				return nil
 			},
+			PrepareTurn: func(text string) tui.TurnAuthority { return turnAuthority(held, text) },
+			Predict:     func(text string) (tui.TurnTransition, bool) { return turnTransition(held, text) },
 		})
 		program.SetJobsLister(func() []tui.JobItem {
 			for _, tool := range loop.Tools() {
@@ -1617,6 +1722,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	plain := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
 	plain.usage.SetCost(opts.model.Cost)
 	plain.workspace = opts.authority().Label()
+	plain.gate = opts.gate
 	plain.projectID = opts.projectID
 	plain.support = surface
 	return repl(plain, out, os.Stdin, history)
@@ -1678,6 +1784,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	held := newHarness(registry, loop, store, nil, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
 	held.usage.SetCost(opts.model.Cost)
 	held.workspace = opts.authority().Label()
+	held.gate = opts.gate
 	held.support = surface
 	program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
 		return surface.ask(ctx, question, onDelta)
@@ -1754,7 +1861,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 			if err != nil {
 				return err
 			}
-			opts.workspace = ws
+			opts.setAuthority(ws)
 			style := ws.Style()
 			program.PublishWorkspace(tui.WorkspaceUpdated{
 				Workspace:       style.Label,
@@ -1776,6 +1883,8 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 			program.PublishNotice("switched to " + style.Label)
 			return nil
 		},
+		PrepareTurn: func(text string) tui.TurnAuthority { return turnAuthority(held, text) },
+		Predict:     func(text string) (tui.TurnTransition, bool) { return turnTransition(held, text) },
 	})
 	program.SetJobsLister(func() []tui.JobItem {
 		for _, tool := range loop.Tools() {
@@ -1921,9 +2030,7 @@ func attachWizardSession(cmd *cobra.Command, opts *options, registry *ai.Registr
 		held.workspace = opts.authority().Label()
 		// The loop predates the authority restore, so its gate follows
 		// the restored workspace.
-		if held.loop != nil {
-			held.loop.SetAdmitHook(admitFor(opts.authority()))
-		}
+		held.applyAuthority(opts.authority())
 		sessCopy := sess
 		held.sess = &sessCopy
 		program.AttachSession(store, held.sess, history)
@@ -2132,6 +2239,21 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			}
 			_, _ = fmt.Fprintln(out, answer)
 			continue
+		}
+
+		// The intent router decides this turn's authority before the model is
+		// asked: a request the active workspace may not answer is refused
+		// here rather than offered to a model that cannot execute it (§3,
+		// §11). The active workspace is never changed by the route.
+		if h.loop != nil {
+			route := h.RouteTurn(text)
+			if !route.Allowed() {
+				_, _ = fmt.Fprintln(out, route.Message())
+				continue
+			}
+			if route.Notice() != "" {
+				_, _ = fmt.Fprintln(out, route.Notice())
+			}
 		}
 
 		// The prompt is appended to a history file best-effort, so a plain-REPL

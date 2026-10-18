@@ -217,6 +217,82 @@ func (p *PendingApproval) Move(delta int) {
 	p.Cursor = next
 }
 
+// TransitionPrompt is a pending workspace-transition proposal: a request the
+// classifier placed in a lower-authority workspace, awaiting the user's
+// decision.
+//
+// It owns the keyboard while set, so no turn can start until it is resolved
+// and nothing the model could do is attributed to the proposed workspace
+// before the user accepts (I2, I4-I6). It is ephemeral: it never enters the
+// transcript, history, or session, and it carries no probability — Strength
+// is the classifier's evidence level (I12).
+type TransitionPrompt struct {
+	// Text is the turn awaiting the decision. It is replayed under whichever
+	// workspace the decision leaves in force.
+	Text string
+	// Current and Proposed are workspace labels, e.g. "BUILD" and "ASK".
+	Current  string
+	Proposed string
+	// CurrentAccent and ProposedAccent are the semantic accents for the two
+	// workspaces, from the producer. They are presentation only.
+	CurrentAccent  string
+	ProposedAccent string
+	// Intent is the classified request, e.g. "READ".
+	Intent string
+	// Strength is the classifier's evidence level, retained for diagnostics
+	// and tests. It is deliberately not rendered: the dialog explains the
+	// request in words, because a level is not a calibrated score and a
+	// percentage would be fabricated (I12).
+	Strength string
+	// Question is the heading, e.g. "Switch to ASK?".
+	Question string
+	// Reason is the one-line explanation under the heading.
+	Reason string
+	// Selection is the highlighted choice: 0 keeps the current workspace
+	// (the conservative default), 1 accepts the proposed one.
+	Selection int
+}
+
+// Selected reports whether the proposed transition is highlighted. The
+// default is false: Enter alone never changes authority (I2).
+func (t *TransitionPrompt) Selected() bool { return t.Selection == 1 }
+
+// Move shifts the highlight, stopping at either end. Like PendingApproval it
+// deliberately does not wrap, so an extra keypress cannot land on the
+// authority-changing choice by accident.
+func (t *TransitionPrompt) Move(delta int) {
+	next := t.Selection + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > 1 {
+		next = 1
+	}
+	t.Selection = next
+}
+
+// TurnSemantics is the UI projection of one turn's route.
+//
+// It exists only while that turn runs. Active mirrors the session's persistent
+// workspace so a test can assert the route did not move it; Workspace, Handler,
+// Intent, and Effective are the route's own labels. The renderer derives the
+// delegated indicator from Handler versus the persistent Workspace, so a route
+// can never make the UI claim the session switched authority.
+type TurnSemantics struct {
+	// Active reports that a route was supplied for the turn.
+	Active bool
+	// Workspace is the route's view of the persistent workspace label.
+	Workspace string
+	// Handler is the workspace whose semantics answer this turn.
+	Handler string
+	// Intent is the classified request.
+	Intent string
+	// Effective is the authority actually available to this turn.
+	Effective string
+	// Delegated reports the handler narrows the persistent workspace.
+	Delegated bool
+}
+
 // Status is the persistent footer.
 type Status struct {
 	// Model is the model in use.
@@ -247,6 +323,11 @@ type Status struct {
 	// WorkspaceAccent is the semantic 256-color index for the workspace, from
 	// workspace.Style(). Empty falls back to a neutral accent.
 	WorkspaceAccent string
+	// Turn is the ephemeral route projection for the turn in flight, zero when
+	// idle. It is cleared by the turn's terminal event and never copied into
+	// Workspace: delegation changes how one turn is handled, not the session's
+	// authority boundary.
+	Turn TurnSemantics
 	// User is the project worker display name from the project-local metadata.
 	// Empty hides it: the view never invents a name.
 	User string
@@ -363,6 +444,12 @@ type State struct {
 	// reuses PendingApproval for its Yes/No choices so the conservative
 	// default and the no-wrap navigation match the tool approval dialog.
 	QuitConfirm *PendingApproval
+	// Transition is a pending workspace-transition proposal, or nil. While
+	// set it owns the keyboard and the decision surface: no turn may start
+	// until the user accepts or rejects it, so no provider request, tool, or
+	// mutation runs while it is unresolved (I4-I6). It is ephemeral and never
+	// enters the transcript, history, or session.
+	Transition *TransitionPrompt
 	// Permissions is the open authority selector, or nil. It is a modal
 	// overlay like the picker: while set it owns the keyboard and the middle
 	// of the screen, and confirming routes the chosen name through the
@@ -477,6 +564,11 @@ func (s *State) Apply(event Event) {
 		s.TurnSeq = seq
 		s.Cancelled = false
 		s.TurnStartedAt = e.At
+		s.Status.Turn = e.Turn
+		// A resolved decision never outlives the turn it was made for: a new
+		// turn supersedes any proposal still held (I: stale state cannot
+		// survive into another turn).
+		s.Transition = nil
 		s.Entries = append(s.Entries, Entry{Kind: EntryUser, UserText: e.Text})
 		s.Input = ""
 		s.Cursor = 0
@@ -507,6 +599,10 @@ func (s *State) Apply(event Event) {
 		s.growScroll(strings.Count(e.Text, "\n"))
 
 	case AssistantDone:
+		// A turn boundary supersedes any pending proposal. A proposal can
+		// never be open while a turn runs, so this only ever drops state a
+		// resolved decision should already have cleared.
+		s.Transition = nil
 		if e.Seq != 0 && e.Seq != s.TurnSeq {
 			return
 		}
@@ -516,8 +612,14 @@ func (s *State) Apply(event Event) {
 			s.closedAssistant = true
 		}
 		s.Status.Busy = false
+		// The route applied to this turn only. Clearing it returns the UI to
+		// the persistent workspace; the next turn is routed independently.
+		s.Status.Turn = TurnSemantics{}
 
 	case TurnCancelled:
+		// The same turn-boundary rule as AssistantDone: a cancellation can
+		// never race an open proposal, because no turn runs while one is open.
+		s.Transition = nil
 		if e.Seq != 0 && e.Seq != s.TurnSeq {
 			return
 		}
@@ -526,6 +628,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.Cancelled = true
 		s.Status.Busy = false
+		s.Status.Turn = TurnSemantics{}
 		s.Queued = nil
 		if open := s.openAssistant(); open >= 0 {
 			s.closedAssistant = true
@@ -663,6 +766,8 @@ func (s *State) Apply(event Event) {
 		s.Entries = append([]Entry(nil), e.Entries...)
 		s.closedAssistant = true
 		s.OutputTokens = 0
+		s.Status.Turn = TurnSemantics{}
+		s.Transition = nil
 		s.resetSessionMetrics()
 
 	case ContextUpdated:
@@ -722,6 +827,30 @@ func (s *State) Apply(event Event) {
 
 	case QuitConfirmClosed:
 		s.QuitConfirm = nil
+
+	case TransitionProposed:
+		// The highlight opens on "keep current", so a stray Enter reaffirms
+		// the workspace instead of moving authority (I2).
+		s.Transition = &TransitionPrompt{
+			Text:           e.Text,
+			Current:        e.Current,
+			Proposed:       e.Proposed,
+			CurrentAccent:  e.CurrentAccent,
+			ProposedAccent: e.ProposedAccent,
+			Intent:         e.Intent,
+			Strength:       e.Strength,
+			Question:       e.Question,
+			Reason:         e.Reason,
+			Selection:      0,
+		}
+
+	case TransitionMoved:
+		if s.Transition != nil {
+			s.Transition.Move(e.Delta)
+		}
+
+	case TransitionResolved:
+		s.Transition = nil
 
 	case PermissionsOpened:
 		// The cursor parks on the authority in force, so Enter on an
@@ -1379,6 +1508,12 @@ func (s *State) Apply(event Event) {
 		if e.HasWorkspace {
 			s.Status.Workspace = e.Workspace
 			s.Status.WorkspaceAccent = e.WorkspaceAccent
+			// An explicit switch supersedes any turn projection: the new
+			// workspace owns the next turn, and no delegated indicator may
+			// outlive the session authority it described.
+			s.Status.Turn = TurnSemantics{}
+			// The workspace moved, so a proposal naming the old one is stale.
+			s.Transition = nil
 		}
 		if e.HasUser {
 			s.Status.User = e.User
@@ -1414,6 +1549,7 @@ func (s *State) Apply(event Event) {
 	case QuitRequested:
 		s.Quit = true
 		s.QuitConfirm = nil
+		s.Transition = nil
 
 	case SupportTurn:
 		// Legacy single-event form: the exchange lands in the overlay as a
@@ -1569,6 +1705,7 @@ func (s *State) Apply(event Event) {
 		s.Entries = nil
 		s.Pending = nil
 		s.QuitConfirm = nil
+		s.Transition = nil
 		s.Permissions = nil
 		s.StatusModal = nil
 		s.UsageModal = nil
@@ -1842,6 +1979,10 @@ type UserSubmitted struct {
 	// model-phase activity line. Zero means unknown, and unknown shows no
 	// elapsed time rather than a fabricated one.
 	At time.Time
+	// Turn is the route projection for this turn. Zero preserves the
+	// pre-router behavior: the active workspace handles the turn and no
+	// delegated indicator is shown.
+	Turn TurnSemantics
 }
 
 func (UserSubmitted) eventKind() string { return "user_submitted" }
@@ -2056,6 +2197,45 @@ func (QuitConfirmMoved) eventKind() string { return "quit_confirm_moved" }
 type QuitConfirmClosed struct{}
 
 func (QuitConfirmClosed) eventKind() string { return "quit_confirm_closed" }
+
+// TransitionProposed opens the workspace-transition decision surface for a
+// request the classifier placed in a lower-authority workspace. Opening it
+// changes no authority: that waits for the user's answer (I2, I4-I6).
+type TransitionProposed struct {
+	// Text is the turn awaiting the decision.
+	Text string
+	// Current and Proposed are workspace labels, e.g. "BUILD" and "ASK".
+	Current  string
+	Proposed string
+	// CurrentAccent and ProposedAccent are the semantics accents from the
+	// producer (workspace.Style()), never invented here.
+	CurrentAccent  string
+	ProposedAccent string
+	// Intent is the classified request, e.g. "READ".
+	Intent string
+	// Strength is the classifier's evidence level, e.g. "strong". It is a
+	// level, never a percentage (I12).
+	Strength string
+	// Question is the heading, e.g. "Switch to ASK?".
+	Question string
+	// Reason is the one-line explanation under the heading.
+	Reason string
+}
+
+func (TransitionProposed) eventKind() string { return "transition_proposed" }
+
+// TransitionMoved shifts the transition highlight. Positive moves toward the
+// proposed workspace.
+type TransitionMoved struct{ Delta int }
+
+func (TransitionMoved) eventKind() string { return "transition_moved" }
+
+// TransitionResolved clears the transition prompt. It is published exactly
+// once per proposal, on accept, reject, or cancel, so the surface can never
+// outlive the decision that consumed it.
+type TransitionResolved struct{}
+
+func (TransitionResolved) eventKind() string { return "transition_resolved" }
 
 // PermissionsOpened opens the authority selector with the cursor parked on the
 // authority in force.

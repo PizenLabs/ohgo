@@ -11,7 +11,8 @@ cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
   │ builds
   ├─► agent    The model/tool loop. Sees only ai.StreamFn, never HTTP.
   │     ├─► workspace Execution authorities (ASK/FUZZ/BUILD): capability
-  │     │             policy, tool admission, semantic identity, artifacts.
+  │     │             policy, tool admission, intent routing, semantic
+  │     │             identity, artifacts.
   │     ├─► ai        Message model, three transports (Anthropic,
   │     │             OpenAI-compatible, Ollama native), Registry, probe.
   │     │             Imports creds for secrets, never catalog for facts.
@@ -88,6 +89,30 @@ execution`:
 - Cross-workspace handoff is artifact-based: `workspace.Artifact` (plan,
   finding, change, verification) is validated and persisted per session; the
   `artifact` tool enforces that a workspace only authors its own kind.
+
+### Intent-aware turns
+
+Authority is a runtime property, not a construction-time constant. Each turn
+is classified by a deterministic, model-free classifier
+(`workspace.Classify` → `READ` / `EXECUTE` / `INVESTIGATE`) and routed through
+an explicit transition table (`workspace.RouteTurn`). The `authorityGate` in
+`cmd/ohgo` is the single live authority that both the loop's admission hook
+and any subagent read at call time:
+
+- BUILD and FUZZ answer an informational READ turn with ASK semantics for that
+  turn only. The active workspace is unchanged, and the turn is projected
+  truthfully as `BUILD · ASK / READ` in the composer prefix for the turn's
+  duration, then cleared. The UI never represents delegation as a workspace
+  switch.
+- ASK + EXECUTE or ASK + INVESTIGATE is refused before the model is called;
+  the user must switch workspace explicitly.
+- FUZZ + EXECUTE is refused likewise: a discovered defect is never BUILD
+  authority.
+- Delegation may only narrow authority. Removing or changing the mode prompt
+  does not widen it — the gate denies the call regardless.
+
+The full matrix, state model, and invariants are in
+[`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
 
 Semantic identity (`workspace.Style`) is teal/magenta/blue for ASK/FUZZ/BUILD,
 fixed across themes; it never participates in an authority decision.
