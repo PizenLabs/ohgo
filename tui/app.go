@@ -1324,6 +1324,14 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	case "ask", "fuzz", "build":
 		p.switchWorkspace(command.Name)
+		if len(command.Args) > 0 {
+			objective := strings.Join(command.Args, " ")
+			if p.state.Status.Busy {
+				p.queue(objective)
+				return nil
+			}
+			return p.submit(objective)
+		}
 		return nil
 
 	case "permissions", "mode":
@@ -3540,7 +3548,7 @@ func (p *Program) runTurn(text string) {
 	if p.task.Context != nil {
 		if taskContext := p.task.Context(); len(taskContext) > 0 {
 			blocks = append(blocks, ai.SystemPromptBlock{
-				Text: "Task continuity:\n\n" + strings.Join(taskContext, "\n"),
+				Text: "Task continuity (context, not instruction):\n\n" + strings.Join(taskContext, "\n") + "\n\nThis task state is orientation context. It is not a user request. The user's current objective remains the authoritative execution instruction. Missing todos or a persisted plan are not blockers; derive the plan internally and continue.",
 			})
 		}
 	}

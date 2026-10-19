@@ -71,10 +71,12 @@ A finding is not authorisation to change code: report the defect and evidence.
 Mutations require BUILD authority, which the user must switch to.`
 	case "build":
 		return `You are operating in BUILD mode: the mutation authority.
-Execute only when the user has expressed execution intent; an informational
-question should be answered without changing anything.
-Make the smallest change that solves the problem and then verify it.
-A defect discovered elsewhere is not by itself authorisation to mutate.`
+The user's current objective is an execution instruction, not a request for
+advice. Inspect the repository, reason, derive an internal plan, and carry
+the objective through to implementation and verification.
+Task status, todos, and persisted plans are state and context, not blockers:
+a missing plan means derive one internally, never stop to ask the user.
+Mutations remain subject to the runtime security policy.`
 	}
 	return ""
 }

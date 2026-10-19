@@ -132,11 +132,11 @@ func ClassifyPrediction(text string) Prediction {
 
 	// The evidence each intent actually has, independent of precedence.
 	read := evidenceNone
-	if readHeads[head] {
+	if headMatches(readHeads, head) {
 		read = evidenceHead
 	}
-	investigate := phraseEvidence(investigateHeads[head], containsPhrase(request, investigatePhrases))
-	execute := phraseEvidence(executeHeads[head], containsPhrase(request, executePhrases))
+	investigate := phraseEvidence(headMatches(investigateHeads, head), containsPhrase(request, investigatePhrases))
+	execute := phraseEvidence(headMatches(executeHeads, head), containsPhrase(request, executePhrases))
 
 	// Precedence: a question head is informational; investigate before
 	// execute (FUZZ is the lower authority when a request asks for both); an
@@ -481,4 +481,52 @@ var executePhrases = []string{
 	"make the change", "make the fix", "make it work",
 	"commit the", "revert the", "replace the", "replace it", "patch the",
 	"bump the", "compile the", "build the", "install the", "migrate the",
+}
+
+// headMatches reports whether token is a recognised head verb, including
+// common inflected forms (plurals, past tense, gerunds/participles) of the
+// heads in the set. The inflections are derived, not enumerated, so a new
+// head verb gains its forms automatically and no verb is special-cased.
+func headMatches(heads map[string]bool, token string) bool {
+	if heads[token] {
+		return true
+	}
+	for head := range heads {
+		for _, form := range headForms(head) {
+			if form == token {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// headForms returns the inflected forms of a head verb that the classifier
+// treats as the same intent-bearing verb.
+func headForms(head string) []string {
+	forms := []string{head}
+	forms = append(forms, head+"s", head+"es")
+	forms = append(forms, head+"ed", head+"d")
+	forms = append(forms, head+"ing")
+	if strings.HasSuffix(head, "e") && len(head) > 1 {
+		forms = append(forms, head[:len(head)-1]+"ing")
+	}
+	// Double the final consonant for short vowel-consonant verbs such as
+	// run -> running, so gerund objectives are not missed.
+	if len(head) >= 3 {
+		last := head[len(head)-1]
+		mid := head[len(head)-2]
+		if isVowel(mid) && !isVowel(last) && last != 'w' && last != 'x' && last != 'y' {
+			forms = append(forms, head+string(last)+"ing")
+		}
+	}
+	return forms
+}
+
+func isVowel(r byte) bool {
+	switch r {
+	case 'a', 'e', 'i', 'o', 'u':
+		return true
+	}
+	return false
 }

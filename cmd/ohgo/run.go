@@ -2272,6 +2272,9 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 					continue
 				}
 				_, _ = fmt.Fprintf(out, "switched to %s.\n", ws.Label())
+				if len(command.Args) > 0 {
+					pending = strings.Join(command.Args, " ")
+				}
 				continue
 			case "theme":
 				_, _ = fmt.Fprintln(out, "theme applies to the full-screen UI (dark or light via /theme there)")
