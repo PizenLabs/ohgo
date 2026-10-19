@@ -19,6 +19,7 @@ import (
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/prompt"
+	"github.com/PizenLabs/ohgo/security"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/startup"
 	"github.com/PizenLabs/ohgo/state"
@@ -41,6 +42,10 @@ type options struct {
 	// It is non-nil once resolveOptions has run; tests that build options
 	// directly leave it nil and fall back to workspace.
 	gate *authorityGate
+	// security is the runtime's authorization boundary. It is installed on the
+	// loop and inherited by subagents, so every executable capability passes
+	// through one decision. Nil until buildLoop (or a TUI caller) creates it.
+	security *securityGate
 	// projectID is the stable project identity, empty when it could not be
 	// established.
 	projectID string
@@ -696,6 +701,7 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 			MaxTokens:  opts.maxTokens,
 			Reasoning:  opts.reasoning,
 			Admit:      opts.admit(),
+			Authorize:  opts.security,
 			Compaction: compactionFromSettings(opts.settings),
 			Summarize:  newSummarizer(registry.StreamFn(), opts.model),
 		}
@@ -723,6 +729,23 @@ func childToolSet(opts options, parentTools []agent.Tool, depth int) []agent.Too
 
 // buildLoop constructs the agent loop for a session.
 func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *session.Store, sess *session.Session, approve func(ai.ToolCall, agent.Approval) (bool, string)) (*agent.Loop, error) {
+	// The security boundary is built before the tools so the subagent spawner
+	// can inherit the same gate: a delegated child must cross the same
+	// boundary as its parent, not a fresh one.
+	if approve == nil && !opts.autoApprove {
+		approve = func(call ai.ToolCall, approval agent.Approval) (bool, string) {
+			return approveToolCall(out, opts, call, approval)
+		}
+	}
+	if opts.security == nil {
+		opts.security = opts.newSecurityGate(approve)
+	} else if approve != nil {
+		opts.security.SetAsk(approve)
+	}
+	if sess != nil {
+		opts.security.SetSession(fmt.Sprintf("%d", sess.ID))
+	}
+
 	toolSet := buildTools(opts, registry)
 	if len(toolSet) == 0 {
 		return nil, agent.ErrNoTools
@@ -758,12 +781,6 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		return promptBlocks(opts, strings.Join(parts, "\n\n"))
 	}
 
-	if approve == nil && !opts.autoApprove {
-		approve = func(call ai.ToolCall, approval agent.Approval) (bool, string) {
-			return approveToolCall(out, opts, call, approval)
-		}
-	}
-
 	var onTurn func(agent.Turn)
 	if store != nil && sess != nil {
 		onTurn = func(turn agent.Turn) {
@@ -784,10 +801,13 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		Reasoning:       opts.reasoning,
 		ReasoningEffort: opts.effort,
 		OnTurn:          onTurn,
-		Admit:           opts.admit(),
-		Approve:         approve,
-		Compaction:      compactionFromSettings(opts.settings),
-		Summarize:       newSummarizer(registry.StreamFn(), opts.model),
+		// The security boundary replaces the legacy admit/approve pair. The
+		// gate performs the authority check, the policy decision, and (for an
+		// APPROVE) the human approval, so there is exactly one path to
+		// execution.
+		Authorize:  opts.security,
+		Compaction: compactionFromSettings(opts.settings),
+		Summarize:  newSummarizer(registry.StreamFn(), opts.model),
 		OnCompact: func(result agent.CompactResult) {
 			_, _ = fmt.Fprintf(out, "[compacted %d messages into %d tokens; %d retained]\n",
 				result.Compacted, result.AfterTokens, result.Retained)
@@ -902,13 +922,27 @@ func (o options) admit() func(ai.ToolCall, agent.Tool) (bool, string) {
 // The runner is rooted at the workspace directory and runs through the
 // platform's shell; the classifier is the exported form of the admission rule,
 // so the ASK confirmation gate and the runtime authority cannot drift.
-func attachShellEscape(program *tui.Program, root string) {
-	program.SetShellEscape(tui.ShellHooks{
+func attachShellEscape(program *tui.Program, root string, gate *securityGate) {
+	hooks := tui.ShellHooks{
 		Run: func(ctx context.Context, command string, onChunk func(string)) (exec.EscapeResult, error) {
 			return exec.ShellRunner{Dir: root}.Run(ctx, command, onChunk)
 		},
 		Mutates: tools.CommandMutates,
-	})
+	}
+	if gate != nil {
+		hooks.Authorize = func(command string) (bool, bool, string) {
+			decision := gate.EvaluateCommand(command)
+			switch decision.Outcome {
+			case security.OutcomeDeny:
+				return false, false, decision.Reason
+			case security.OutcomeApprove:
+				return true, true, ""
+			default:
+				return true, false, ""
+			}
+		}
+	}
+	program.SetShellEscape(hooks)
 }
 
 // supportBuilder returns a builder for the ephemeral $sup runtime.
@@ -1436,6 +1470,12 @@ func runSession(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// The gate is built here, before the loop, because the full-screen UI
+	// installs its approval callback after the program exists. The plain REPL
+	// keeps the stdin approver as the default.
+	opts.security = opts.newSecurityGate(func(call ai.ToolCall, approval agent.Approval) (bool, string) {
+		return approveToolCall(out, opts, call, approval)
+	})
 	loop, err := buildLoop(opts, registry, out, store, sess, nil)
 	if err != nil {
 		return err
@@ -1476,8 +1516,17 @@ func runSession(cmd *cobra.Command, args []string) error {
 			programOpts = append(programOpts, tui.WithMouseReporting())
 		}
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
-		attachShellEscape(program, opts.root)
-		installTaskContinuity(program, opts.root, loop.Tools())
+		attachShellEscape(program, opts.root, opts.security)
+		controller := installTaskContinuity(program, opts.root, loop.Tools())
+		// A grant is bound to the task it was approved for, when the task layer
+		// knows one. The task remains authoritative for continuity; the gate
+		// only reads its identity.
+		opts.security.SetTaskSource(func() string {
+			if current, ok := controller.Current(); ok {
+				return current.ID
+			}
+			return ""
+		})
 
 		// Output-first mode is a different interaction boundary, not a
 		// different program: the same loop, the same state machine, the same
@@ -1495,6 +1544,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		held.usage.SetCost(opts.model.Cost)
 		held.workspace = opts.authority().Label()
 		held.gate = opts.gate
+		held.security = opts.security
 		held.projectID = opts.projectID
 		held.support = surface
 		program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
@@ -1686,13 +1736,13 @@ func runSession(cmd *cobra.Command, args []string) error {
 			Ready:        "ready",
 		})
 
-		if opts.autoApprove {
-			loop.SetApprovalHook(func(ai.ToolCall, agent.Approval) (bool, string) { return true, "" })
-		} else {
-			// The hook belongs to the program that is actually running. Wiring
-			// it anywhere else deadlocks: the tool would block on an answer
-			// channel no UI is reading.
-			loop.SetApprovalHook(program.ApprovalFunc())
+		if !opts.autoApprove {
+			// The trusted approval interaction belongs to the program that is
+			// actually running. Wiring it anywhere else deadlocks: the tool
+			// would block on an answer channel no UI is reading. The policy
+			// still runs for every call; this only supplies the human answer
+			// for an APPROVE decision.
+			opts.security.SetAsk(program.ApprovalFunc())
 		}
 		// The program owns turn output and persistence here (transcript via
 		// events, store via runTurn): the loop's hooks must stay silent, or
@@ -1728,6 +1778,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	plain.usage.SetCost(opts.model.Cost)
 	plain.workspace = opts.authority().Label()
 	plain.gate = opts.gate
+	plain.security = opts.security
 	plain.projectID = opts.projectID
 	plain.support = surface
 	return repl(plain, out, os.Stdin, history)
@@ -1757,6 +1808,9 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	}
 	defer closeStore()
 
+	// The gate is created before the loop so the wizard's program can install
+	// its approval callback once it exists.
+	opts.security = opts.newSecurityGate(nil)
 	loop, err := buildLoop(opts, registry, out, store, nil, nil)
 	if err != nil {
 		return err
@@ -1780,8 +1834,14 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		programOpts = append(programOpts, tui.WithMouseReporting())
 	}
 	program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
-	attachShellEscape(program, opts.root)
-	installTaskContinuity(program, opts.root, loop.Tools())
+	attachShellEscape(program, opts.root, opts.security)
+	controller := installTaskContinuity(program, opts.root, loop.Tools())
+	opts.security.SetTaskSource(func() string {
+		if current, ok := controller.Current(); ok {
+			return current.ID
+		}
+		return ""
+	})
 
 	if live, _ := cmd.Flags().GetBool("live"); live {
 		return program.RunLive()
@@ -1791,6 +1851,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	held.usage.SetCost(opts.model.Cost)
 	held.workspace = opts.authority().Label()
 	held.gate = opts.gate
+	held.security = opts.security
 	held.support = surface
 	program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
 		return surface.ask(ctx, question, onDelta)
@@ -1938,10 +1999,8 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		tui.InitWizardHooks{Complete: wizardComplete(cmd, &opts, registry, d, store, held, program, resumeID)},
 	)
 
-	if opts.autoApprove {
-		loop.SetApprovalHook(func(ai.ToolCall, agent.Approval) (bool, string) { return true, "" })
-	} else {
-		loop.SetApprovalHook(program.ApprovalFunc())
+	if !opts.autoApprove {
+		opts.security.SetAsk(program.ApprovalFunc())
 	}
 	loop.SetTurnHook(nil)
 	loop.SetCompactHook(func(result agent.CompactResult) {

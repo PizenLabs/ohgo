@@ -53,6 +53,10 @@ type harness struct {
 	// for a harness built without one (a bare test), in which case authority
 	// is applied by replacing the loop's admission hook directly.
 	gate *authorityGate
+	// security is the loop's authorization boundary. A workspace switch moves
+	// its fallback authority when there is no live gate, so the switch reaches
+	// the policy even in a bare harness.
+	security *securityGate
 	// support is the ephemeral $sup surface. Nil means $sup is unavailable.
 	support *supportSurface
 }
@@ -879,6 +883,9 @@ func (h *harness) applyAuthority(ws workspace.Workspace) {
 	if h.gate != nil {
 		h.gate.Set(ws)
 		return
+	}
+	if h.security != nil {
+		h.security.SetFallback(ws)
 	}
 	if h.loop != nil {
 		h.loop.SetAdmitHook(admitFor(ws))

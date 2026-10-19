@@ -161,10 +161,16 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		GetSteeringMessages: nil,
 		BeforeToolCall:      parent.BeforeToolCall,
 		AfterToolCall:       parent.AfterToolCall,
-		Approve:             parent.Approve,
-		Compaction:          parent.Compaction,
-		Summarize:           parent.Summarize,
-		OnCompact:           parent.OnCompact,
+		// Admission and approval are inherited, never defaulted: a child that
+		// lost the parent's authority seam would be a way around the security
+		// boundary. A delegated turn narrows what the child may do, never
+		// widens it.
+		Admit:      parent.Admit,
+		Approve:    parent.Approve,
+		Authorize:  parent.Authorize,
+		Compaction: parent.Compaction,
+		Summarize:  parent.Summarize,
+		OnCompact:  parent.OnCompact,
 		// Progress and turns are the parent's concern; a child that emitted
 		// them would double-count into a UI that is already showing the
 		// parent's turn.

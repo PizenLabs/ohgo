@@ -40,6 +40,46 @@ func CommandMutates(command string) bool {
 	return commandWrites(command)
 }
 
+// CommandDestructive reports whether a shell command is destructive or
+// system-level, which the security layer classifies as high risk.
+//
+// It is conservative in the safe direction: a command this classifier does not
+// recognise is merely medium risk, while one it does recognise is surfaced as
+// high risk in the approval decision. It never decides authorization itself —
+// risk is an input to policy, not a decision.
+func CommandDestructive(command string) bool {
+	for _, segment := range shellSegments(command) {
+		words := shellWords(segment)
+		program, args := programAndArgs(words)
+		if program == "" {
+			continue
+		}
+		if destructiveProgram(path.Base(program), args) {
+			return true
+		}
+	}
+	return false
+}
+
+// destructiveProgram reports whether a program is destructive or system-level.
+func destructiveProgram(program string, args []string) bool {
+	switch program {
+	case "rm", "rmdir", "shred", "dd", "truncate", "mknod",
+		"mkfs", "wipefs", "fdisk", "parted",
+		"shutdown", "reboot", "halt", "poweroff",
+		"kill", "killall", "pkill",
+		"chmod", "chown", "chgrp",
+		"systemctl", "launchctl", "docker", "kubectl":
+		return true
+	case "git":
+		switch firstNonFlag(args) {
+		case "clean", "reset", "push", "filter-branch", "gc", "prune", "rebase":
+			return true
+		}
+	}
+	return false
+}
+
 // commandWrites reports whether a shell command provably mutates the
 // filesystem or the repository.
 func commandWrites(command string) bool {

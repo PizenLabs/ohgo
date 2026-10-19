@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/security"
 )
 
 // ErrNoTools means the loop was started with an empty tool set.
@@ -33,6 +34,12 @@ type ToolOutcome struct {
 	ToolName string
 	// Result is the tool's return value.
 	Result Result
+	// Authorization is the security decision that admitted this call, when an
+	// authorizer was installed. It is kept separate from Result so an
+	// authorization is never mistaken for an execution outcome: a denied call
+	// carries a decision and no execution, while an authorized call that then
+	// failed carries both.
+	Authorization *security.Decision
 }
 
 // Config configures a Loop.
@@ -87,14 +94,19 @@ type Config struct {
 	OnTextDelta func(delta string)
 	// Admit decides whether a call is permitted at all, before approval.
 	//
-	// It is the runtime authority seam: the workspace capability policy is
-	// enforced here, below the UI and above execution, so no model output and
-	// no UI state can grant a capability (I5, I14). A nil Admit admits every
-	// call, which preserves the pre-authority behavior for callers that do not
-	// install one.
+	// It is the legacy runtime authority seam, superseded by Authorize. When
+	// Authorize is set the loop uses it exclusively; Admit and Approve are
+	// consulted only when Authorize is nil, so a caller can migrate one seam at
+	// a time without changing behavior. A nil Admit admits every call.
 	Admit func(call ai.ToolCall, tool Tool) (bool, string)
 	// Approve decides whether a call may run without prompting.
 	Approve func(call ai.ToolCall, approval Approval) (bool, string)
+	// Authorize is the security boundary. When set it is the only admission
+	// path: the loop evaluates every call, executes only on AUTO, obtains a
+	// grant for APPROVE through the same authorizer, and refuses DENY. Because
+	// the loop owns that sequence, no tool, UI, or model output can reach
+	// execution without a decision.
+	Authorize Authorizer
 	// Compaction configures context reduction. The zero value disables it.
 	Compaction Compaction
 	// Summarize replaces the compacted prefix during compaction. Required when
@@ -276,6 +288,23 @@ func (l *Loop) SetApprovalHook(approve func(call ai.ToolCall, approval Approval)
 func (l *Loop) SetAdmitHook(admit func(call ai.ToolCall, tool Tool) (bool, string)) {
 	l.cfg.Admit = admit
 }
+
+// SetAuthorizeHook installs the security boundary after construction.
+//
+// It exists for the same construction-order reason as SetApprovalHook: the
+// host that owns the policy (and the human interaction behind APPROVE) may be
+// built after the loop, but it must be installed before Run. It must never be
+// called during a run.
+func (l *Loop) SetAuthorizeHook(authorizer Authorizer) {
+	l.cfg.Authorize = authorizer
+}
+
+// Authorizer returns the installed security boundary, or nil.
+//
+// The host that installed it also needs to reach it later (a UI sets the
+// approval callback once it exists), so the loop exposes the seam rather than
+// forcing the host to keep a second reference that could drift.
+func (l *Loop) Authorizer() Authorizer { return l.cfg.Authorize }
 
 // SetTurnHook installs the per-turn reporter after construction, or nil to
 // silence turn reports.
@@ -637,26 +666,39 @@ func (l *Loop) execute(
 		}
 	}
 
-	// Authority is consulted before approval: a call the workspace forbids is
-	// refused outright, never offered to the user as something they could
-	// approve. That order is what stops conversation or a model explanation
-	// from standing in for a capability (§27, §37).
-	if l.cfg.Admit != nil {
-		if admitted, reason := l.cfg.Admit(call, tool); !admitted {
-			if reason == "" {
-				reason = "capability denied"
-			}
-			return fail(reason)
+	// The security boundary runs immediately before execution. When an
+	// authorizer is installed it is the only admission path: DENY never
+	// executes, APPROVE must produce a grant that a fresh evaluation confirms,
+	// and AUTO executes directly. The loop owns that sequence, so nothing
+	// downstream can skip it.
+	var decision *security.Decision
+	if l.cfg.Authorize != nil {
+		resolved, failure, ok := l.authorize(call, tool)
+		if !ok {
+			return fail(failure)
 		}
-	}
-
-	if l.cfg.Approve != nil {
-		approved, reason := l.cfg.Approve(call, tool.Approval())
-		if !approved {
-			if reason == "" {
-				reason = "denied by user"
+		decision = &resolved
+	} else {
+		// Legacy seams, used only when no authorizer is installed. Authority is
+		// still consulted before approval: a call the workspace forbids is
+		// refused outright, never offered to the user as something they could
+		// approve (§27, §37).
+		if l.cfg.Admit != nil {
+			if admitted, reason := l.cfg.Admit(call, tool); !admitted {
+				if reason == "" {
+					reason = "capability denied"
+				}
+				return fail(reason)
 			}
-			return fail(reason)
+		}
+		if l.cfg.Approve != nil {
+			approved, reason := l.cfg.Approve(call, tool.Approval())
+			if !approved {
+				if reason == "" {
+					reason = "denied by user"
+				}
+				return fail(reason)
+			}
 		}
 	}
 
@@ -724,7 +766,54 @@ func (l *Loop) execute(
 		})
 	}
 
-	return ToolOutcome{CallID: call.ID, ToolName: call.Name, Result: result}
+	return ToolOutcome{CallID: call.ID, ToolName: call.Name, Result: result, Authorization: decision}
+}
+
+// authorize runs the security sequence for one call and reports the failure
+// text when the call may not execute.
+//
+// The order enforces the invariants directly: a DENY is terminal and returns
+// without any execution; an APPROVE must yield a grant and then a fresh
+// evaluation must confirm AUTO, so an approval that no longer matches the
+// operation cannot execute. When no approver is installed an APPROVE fails
+// closed rather than executing unapproved.
+func (l *Loop) authorize(call ai.ToolCall, tool Tool) (security.Decision, string, bool) {
+	decision := l.cfg.Authorize.Evaluate(call, tool)
+	switch decision.Outcome {
+	case security.OutcomeAuto:
+		return decision, "", true
+	case security.OutcomeDeny:
+		return decision, refusalText("authorization denied", decision), false
+	case security.OutcomeApprove:
+		if _, ok := l.cfg.Authorize.Approve(call, decision); !ok {
+			return decision, refusalText("approval rejected", decision), false
+		}
+		confirmed := l.cfg.Authorize.Evaluate(call, tool)
+		if confirmed.Outcome != security.OutcomeAuto {
+			return confirmed, refusalText("authorization changed after approval", confirmed), false
+		}
+		return confirmed, "", true
+	default:
+		return decision, "authorization denied: unknown security outcome", false
+	}
+}
+
+// refusalText renders a security refusal.
+//
+// The wording keeps a security outcome distinct from an execution failure: the
+// model is told the call was not authorized, and which rule refused it, rather
+// than being handed a generic tool error it might retry blindly.
+func refusalText(prefix string, decision security.Decision) string {
+	if decision.Rule == "" && decision.Reason == "" {
+		return prefix
+	}
+	if decision.Rule == "" {
+		return fmt.Sprintf("%s: %s", prefix, decision.Reason)
+	}
+	if decision.Reason == "" {
+		return fmt.Sprintf("%s (%s)", prefix, decision.Rule)
+	}
+	return fmt.Sprintf("%s (%s): %s", prefix, decision.Rule, decision.Reason)
 }
 
 func sorted(values []string) []string {

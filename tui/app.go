@@ -383,6 +383,12 @@ type ShellHooks struct {
 	// gates the ASK confirmation; nil means "assume mutating", so ASK always
 	// asks rather than running a possible mutation unconfirmed.
 	Mutates func(command string) bool
+	// Authorize is the security decision for a human-initiated command. When
+	// set it replaces the Mutates/Decide path: allowed=false refuses with the
+	// reason, confirm=true asks the human, and allowed=true/confirm=false runs
+	// directly. The escape therefore crosses the same boundary as a tool call
+	// instead of executing beside it.
+	Authorize func(command string) (allowed bool, confirm bool, reason string)
 }
 
 // SetShellEscape installs the shell escape behind the "!" prefix.
@@ -3284,8 +3290,26 @@ func (p *Program) submitEscape(command string) tea.Cmd {
 		p.state.Apply(Notice{Text: "a shell command is already running"})
 		return nil
 	}
-	// An unclassified command is treated as mutating: absent a classifier the
-	// safe assumption is that it changes something, so ASK confirms it.
+	// The security boundary decides first when one is installed: a denied
+	// command never runs, and an approved one uses the same confirmation
+	// dialog a tool approval does.
+	if p.shell.Authorize != nil {
+		allowed, confirm, reason := p.shell.Authorize(command)
+		if !allowed {
+			if strings.TrimSpace(reason) == "" {
+				reason = "command denied"
+			}
+			p.state.Apply(Notice{Text: reason})
+			return nil
+		}
+		if confirm && !p.sessionAllowedFor(shellApprovalTool) {
+			return p.confirmEscape(command)
+		}
+		return p.startEscape(command)
+	}
+	// Fallback for a caller that installs no boundary (tests): an unclassified
+	// command is treated as mutating, so ASK always asks rather than running a
+	// possible mutation unconfirmed.
 	mutating := true
 	if p.shell.Mutates != nil {
 		mutating = p.shell.Mutates(command)

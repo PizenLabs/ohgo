@@ -115,6 +115,12 @@ const (
 	OpMove Operation = "move"
 )
 
+// Mutates reports whether an operation changes the repository.
+//
+// It is the exported form of the mutation test, so the security layer can
+// classify a request as state-changing without duplicating the rule.
+func (op Operation) Mutates() bool { return op.mutation() }
+
 // mutation reports whether an operation changes the repository.
 func (op Operation) mutation() bool {
 	switch op {
