@@ -53,6 +53,14 @@ type Approval struct {
 	Reason string
 	// Policy overrides the gate's default for this tier when set.
 	Policy ApprovalPolicy
+	// Preview is the human-readable intended mutation, when available.
+	Preview string
+	// Diff mirrors Preview.
+	Diff string
+	// MutationPreview is the structured intended mutation.
+	MutationPreview MutationPreview
+	// PreviewMutation mirrors MutationPreview.
+	PreviewMutation MutationPreview
 }
 
 // Result is what a tool returns.

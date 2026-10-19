@@ -692,7 +692,23 @@ func (l *Loop) execute(
 			}
 		}
 		if l.cfg.Approve != nil {
-			approved, reason := l.cfg.Approve(call, tool.Approval())
+			approval := tool.Approval()
+			// Generate mutation visibility before prompting, when the tool can
+			// describe its mutation. A mutation that cannot be previewed fails
+			// closed rather than being approved on metadata alone.
+			if previewer, ok := tool.(MutationPreviewer); ok {
+				preview, applicable, err := previewer.MutationPreview(args)
+				if applicable {
+					if err != nil {
+						return fail(fmt.Sprintf("mutation preview unavailable: %v", err))
+					}
+					approval.Preview = preview.Diff
+					approval.Diff = preview.Diff
+					approval.MutationPreview = preview
+					approval.PreviewMutation = preview
+				}
+			}
+			approved, reason := l.cfg.Approve(call, approval)
 			if !approved {
 				if reason == "" {
 					reason = "denied by user"

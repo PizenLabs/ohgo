@@ -391,6 +391,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewReadTool(opts.root),
 		tools.NewWriteTool(opts.root),
 		tools.NewEditTool(opts.root),
+		tools.NewDeleteTool(opts.root),
 		bash,
 		tools.NewWaitTool(bash.Jobs()),
 		tools.NewGlobTool(opts.root),

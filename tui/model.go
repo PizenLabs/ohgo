@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/tokens"
 	diffview "github.com/PizenLabs/ohgo/tui/diff"
@@ -182,6 +183,9 @@ type PendingApproval struct {
 	Reason string
 	// Summary describes what this particular call will do.
 	Summary string
+	// MutationPreview is the dedicated mutation preview, rendered separately
+	// from Reason.
+	MutationPreview agent.MutationPreview
 	// Mutating marks a call that changes state (write, exec, destructive)
 	// rather than reading. It is presentation only: it selects the frame
 	// accent (rose vs amber), never the answer. The producer derives it from
@@ -819,13 +823,14 @@ func (s *State) Apply(event Event) {
 
 	case ApprovalAsked:
 		s.Pending = &PendingApproval{
-			ToolName: e.ToolName,
-			Prompt:   e.Prompt,
-			Reason:   e.Reason,
-			Summary:  e.Summary,
-			Mutating: e.Mutating,
-			Choices:  e.Choices,
-			Cursor:   defaultApprovalSelection(e.Choices),
+			ToolName:        e.ToolName,
+			Prompt:          e.Prompt,
+			Reason:          e.Reason,
+			Summary:         e.Summary,
+			MutationPreview: e.MutationPreview,
+			Mutating:        e.Mutating,
+			Choices:         e.Choices,
+			Cursor:          defaultApprovalSelection(e.Choices),
 		}
 
 	case ApprovalMoved:
@@ -2180,9 +2185,10 @@ type ApprovalAsked struct {
 	// Prompt, when non-empty, is a shell-specific label shown above the call.
 	// It is used by the "!" shell escape, whose confirmation is not a tool
 	// call.
-	Prompt  string
-	Reason  string
-	Summary string
+	Prompt          string
+	Reason          string
+	Summary         string
+	MutationPreview agent.MutationPreview
 	// Mutating marks a call that changes state; the dialog accents a
 	// destructive boundary differently from a read one.
 	Mutating bool

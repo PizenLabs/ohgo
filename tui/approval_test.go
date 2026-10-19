@@ -7,7 +7,9 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 // approvalState parks a dark-theme state on an approval at the given size.
@@ -206,5 +208,35 @@ func TestApprovalSessionChoiceRemembersTheTool(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("a session-approved tool still blocked on a prompt")
+	}
+}
+
+// Diff approval previews carry green/red ANSI styling on +/- lines.
+func TestApprovalDiffPreviewStylesAdditionsAndDeletions(t *testing.T) {
+	prev := termenv.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(ApprovalAsked{
+		ToolName: "write",
+		Summary:  "write /tmp/x",
+		Mutating: true,
+		Choices:  approvalChoices,
+		MutationPreview: agent.MutationPreview{
+			Operation: agent.MutationModify,
+			Diff:      "+ added line\n- removed line\n@@ -1,1 +1,1 @@",
+		},
+	})
+	out := Render(s)
+	if !strings.Contains(out, "166;227;161") {
+		t.Errorf("approval preview lacks green ANSI styling for + lines:\n%s", ansi.Strip(out))
+	}
+	if !strings.Contains(out, "243;139;168") {
+		t.Errorf("approval preview lacks red ANSI styling for - lines:\n%s", ansi.Strip(out))
+	}
+	if !strings.Contains(out, "137;220;235") {
+		t.Errorf("approval preview lacks cyan ANSI styling for @@ lines:\n%s", ansi.Strip(out))
 	}
 }

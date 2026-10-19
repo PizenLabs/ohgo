@@ -130,12 +130,30 @@ func (t *EditTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		// trust in every other edit.
 		text += fmt.Sprintf(" Matched approximately (confidence %.2f).", match.Confidence)
 	}
+
+	op := agent.MutationModify
+	binary := !isTextContent(original) || !isTextContent(updated)
+	p := makePreview(raw, op, original, updated, binary)
+	ev := evidenceFromPreview(p, "success")
 	return agent.Result{
 		Text: text,
 		Details: map[string]any{
-			"path":       raw,
-			"line":       line,
-			"confidence": match.Confidence,
+			"path":              raw,
+			"line":              line,
+			"confidence":        match.Confidence,
+			"operation":         string(op),
+			"mutation":          string(op),
+			"mutation_type":     string(op),
+			"type":              string(op),
+			"op":                string(op),
+			"diff":              p.Diff,
+			"delta":             p.Delta,
+			"content_delta":     p.Delta,
+			"binary":            p.Binary,
+			"unsupported":       p.Unsupported,
+			"result":            "success",
+			"status":            "success",
+			"mutation_evidence": ev,
 		},
 	}
 }

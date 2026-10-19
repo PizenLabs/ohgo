@@ -128,22 +128,51 @@ func ClassifyPrediction(text string) Prediction {
 	if request == "" {
 		return Prediction{Intent: IntentRead, Strength: StrengthAmbiguous}
 	}
-	head, _, _ := strings.Cut(request, " ")
+	clauses := splitClauses(request)
 
 	// The evidence each intent actually has, independent of precedence.
+	// A request is evaluated as a whole objective, not only by its first
+	// verb: a leading read/discovery clause must not mask a later explicit
+	// mutation clause ("check this project and write README.md"). Clause
+	// heads are therefore considered for the mutation/investigation intents,
+	// while a read signal is taken only from the leading clause so an
+	// informational opener is not fabricated from a later noun phrase.
 	read := evidenceNone
-	if headMatches(readHeads, head) {
+	if len(clauses) > 0 && headMatches(readHeads, firstToken(clauses[0])) {
 		read = evidenceHead
 	}
-	investigate := phraseEvidence(headMatches(investigateHeads, head), containsPhrase(request, investigatePhrases))
-	execute := phraseEvidence(headMatches(executeHeads, head), containsPhrase(request, executePhrases))
+	investigateHead := false
+	executeHead := false
+	for _, clause := range clauses {
+		token := firstToken(clause)
+		if headMatches(investigateHeads, token) {
+			investigateHead = true
+		}
+		if headMatches(executeHeads, token) {
+			executeHead = true
+		}
+	}
+	investigate := phraseEvidence(investigateHead, containsPhrase(request, investigatePhrases))
+	execute := phraseEvidence(executeHead, containsPhrase(request, executePhrases))
 
-	// Precedence: a question head is informational; investigate before
-	// execute (FUZZ is the lower authority when a request asks for both); an
-	// unmatched request narrows to READ.
+	// Precedence: investigate before execute (FUZZ is the lower authority
+	// when a request asks for both); an explicit mutation clause overrides a
+	// leading read/discovery clause, but a read opener still beats a merely
+	// corroborating execution phrase; an unmatched request narrows to READ.
 	winner := evidenceNone
 	intent := IntentRead
+	// Precedence combines the authority rules without a cycle: an explicit
+	// mutation clause beats a leading read/discovery clause, but a mixed
+	// investigate signal still lowers authority to FUZZ; a read opener with
+	// no mutation clause keeps READ, even over an incidental investigative
+	// phrase such as "edge case".
 	switch {
+	case executeHead:
+		if investigate != evidenceNone {
+			intent, winner = IntentInvestigate, investigate
+		} else {
+			intent, winner = IntentExecute, execute
+		}
 	case read != evidenceNone:
 		intent, winner = IntentRead, read
 	case investigate != evidenceNone:
@@ -529,4 +558,37 @@ func isVowel(r byte) bool {
 		return true
 	}
 	return false
+}
+
+// splitClauses breaks a normalized request into its coordinated objectives so
+// a later mutation clause is visible even when the first clause is a
+// read/discovery verb. Splitting is deliberately limited to explicit
+// coordinators: a bare "and" inside a noun phrase is still a coordinator, but
+// subordination ("how to ...") is not split, so informational requests keep
+// their read opener.
+func splitClauses(request string) []string {
+	replaced := request
+	for _, sep := range []string{" and ", " then ", " plus ", " & "} {
+		replaced = strings.ReplaceAll(replaced, sep, ",")
+	}
+	parts := strings.Split(replaced, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	if len(out) == 0 {
+		return []string{request}
+	}
+	return out
+}
+
+// firstToken returns the first whitespace-delimited token of s.
+func firstToken(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }

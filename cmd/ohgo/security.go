@@ -162,11 +162,45 @@ func (g *securityGate) Approve(call ai.ToolCall, decision security.Decision) (se
 	ask := g.ask
 	g.mu.Unlock()
 
+	// Generate the mutation preview from the trusted execution layer before
+	// any human interaction. A mutation that cannot be previewed fails closed
+	// rather than being approved on metadata alone.
+	preview, applicable, err := tools.MutationPreviewForTool(call.Name, g.root, call.Arguments)
+	if applicable && err != nil {
+		return security.Grant{}, false
+	}
+	if !applicable {
+		// Non-file mutations (for example a shell command) have no textual
+		// diff to show; record the command as the preview so the prompt is
+		// never empty for a mutating operation.
+		if decision.Mutates {
+			summary := ""
+			if cmd, ok := call.Arguments["command"].(string); ok {
+				summary = cmd
+			}
+			if summary == "" {
+				summary = call.Name
+			}
+			preview = agent.MutationPreview{
+				Path:         call.Name,
+				Operation:    agent.MutationModify,
+				MutationType: agent.MutationModify,
+				Type:         agent.MutationModify,
+				Op:           agent.MutationModify,
+				Diff:         summary,
+				Delta:        summary,
+				Content:      summary,
+				Text:         summary,
+				Unsupported:  true,
+			}
+		}
+	}
+
 	if !auto {
 		if ask == nil {
 			return security.Grant{}, false
 		}
-		approved, _ := ask(call, approvalFor(decision))
+		approved, _ := ask(call, approvalFor(decision, preview))
 		if !approved {
 			return security.Grant{}, false
 		}
@@ -282,7 +316,7 @@ func workspaceOf(a security.Authority) workspace.Workspace {
 // The UI is a projection of the decision, never the policy: it receives the
 // capability, scope, risk, and reason the runtime computed, so a human approves
 // what the runtime will actually do.
-func approvalFor(decision security.Decision) agent.Approval {
+func approvalFor(decision security.Decision, preview agent.MutationPreview) agent.Approval {
 	tier := agent.TierRead
 	switch decision.Capability {
 	case security.CapabilityWrite:
@@ -298,7 +332,22 @@ func approvalFor(decision security.Decision) agent.Approval {
 	fmt.Fprintf(&b, "scope: %s\n", scopeLabel(decision.Scope))
 	fmt.Fprintf(&b, "risk: %s\n", decision.Risk)
 	fmt.Fprintf(&b, "reason: %s", decision.Reason)
-	return agent.Approval{Tier: tier, Reason: b.String(), Policy: agent.PolicyPrompt}
+	// Normalize alias fields on the preview.
+	preview.MutationType = preview.Operation
+	preview.Type = preview.Operation
+	preview.Op = preview.Operation
+	preview.Delta = preview.Diff
+	preview.Content = preview.Diff
+	preview.Text = preview.Diff
+	return agent.Approval{
+		Tier:            tier,
+		Reason:          b.String(),
+		Policy:          agent.PolicyPrompt,
+		Preview:         preview.Diff,
+		Diff:            preview.Diff,
+		MutationPreview: preview,
+		PreviewMutation: preview,
+	}
 }
 
 // scopeLabel renders a scope for the approval prompt.

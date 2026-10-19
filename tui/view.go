@@ -61,6 +61,15 @@ type Palette struct {
 	Quote       lipgloss.Style
 	Bullet      lipgloss.Style
 	Muted       lipgloss.Style
+	// DiffAdd styles lines an edit introduced, in diff previews (approval
+	// cards and inline diffs).
+	DiffAdd lipgloss.Style
+	// DiffDelete styles lines an edit removed, in diff previews.
+	DiffDelete lipgloss.Style
+	// Cyan is a context colour for hunk headers and metadata.
+	Cyan lipgloss.Style
+	// Comment styles secondary/explanatory text.
+	Comment lipgloss.Style
 	// Separator draws full-width rules (header divider, composer frames) in
 	// the dim slate chrome style, distinct from the muted body text.
 	Separator lipgloss.Style
@@ -118,6 +127,10 @@ func DarkPalette() *Palette {
 		Quote:        fg(darkMuted).Italic(true),
 		Bullet:       fg(darkAccent),
 		Muted:        fg(ColorMuted),
+		DiffAdd:      fg("#a6e3a1"),
+		DiffDelete:   fg("#f38ba8"),
+		Cyan:         fg("#89dceb"),
+		Comment:      fg(ColorMuted).Italic(true),
 		Separator:    fg(ColorDim),
 		SupportHi:    fg("87").Bold(true),
 		SupportHiAlt: fg("220").Bold(true),
@@ -162,6 +175,10 @@ func LightPalette() *Palette {
 		Quote:        fg(lightMuted).Italic(true),
 		Bullet:       fg(lightAccent),
 		Muted:        fg(lightMuted),
+		DiffAdd:      fg("#a6e3a1"),
+		DiffDelete:   fg("#f38ba8"),
+		Cyan:         fg("#89dceb"),
+		Comment:      fg(lightMuted).Italic(true),
 		Separator:    fg(lightMuted),
 		SupportHi:    fg("30").Bold(true),
 		SupportHiAlt: fg("166").Bold(true),

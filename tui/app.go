@@ -42,6 +42,7 @@ type approvalRequest struct {
 	toolName string
 	reason   string
 	summary  string
+	preview  agent.MutationPreview
 	// mutating marks a state-changing call, so the dialog can accent a
 	// destructive boundary differently from a read one.
 	mutating bool
@@ -593,11 +594,12 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		request := m.request
 		p.pending = &request
 		p.state.Apply(ApprovalAsked{
-			ToolName: request.toolName,
-			Reason:   request.reason,
-			Summary:  request.summary,
-			Mutating: request.mutating,
-			Choices:  approvalChoices,
+			ToolName:        request.toolName,
+			Reason:          request.reason,
+			Summary:         request.summary,
+			MutationPreview: request.preview,
+			Mutating:        request.mutating,
+			Choices:         approvalChoices,
 		})
 		return p, p.waitForApproval()
 
@@ -3891,6 +3893,7 @@ func (p *Program) ApprovalFunc() func(call ai.ToolCall, approval agent.Approval)
 			toolName: call.Name,
 			reason:   approval.Reason,
 			summary:  ToolSummaryForCall(call.Name, call.Arguments),
+			preview:  approval.MutationPreview,
 			// Anything but an explicit read is treated as state-changing:
 			// an undeclared tier must never look harmless in the dialog.
 			mutating: approval.Tier != agent.TierRead,
