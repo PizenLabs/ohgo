@@ -198,7 +198,7 @@ type recordingTool struct {
 func (t *recordingTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	start := time.Now()
 	result := t.Tool.Execute(ctx, args)
-	t.rec.record(t.Tool.Name(), args, result, start)
+	t.rec.record(t.Name(), args, result, start)
 	return result
 }
 
@@ -259,10 +259,6 @@ func (r *recorder) snapshot() []CallRecord {
 	out := make([]CallRecord, len(r.calls))
 	copy(out, r.calls)
 	return out
-}
-
-func (r *recorder) elapsed() time.Duration {
-	return time.Since(r.start)
 }
 
 // surfacedFiles extracts the file paths a tool result put in front of the
@@ -697,7 +693,7 @@ func lenientAnswer(text, root string) finalAnswer {
 		for _, field := range strings.Fields(line) {
 			field = strings.Trim(field, "`'\"(),;.")
 			path, rest, ok := strings.Cut(field, ":")
-			if !ok || !(strings.HasSuffix(path, ".go") || strings.HasSuffix(path, ".md") || path == "Makefile") {
+			if !ok || (!strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, ".md") && path != "Makefile") {
 				continue
 			}
 			path = normalizePath(path, root)
@@ -864,15 +860,6 @@ func lineOverlaps(expected Target, reported ReportedTarget, tolerance int) bool 
 	return reported.StartLine <= stop && end >= start
 }
 
-// accumulate folds one run into a model-independent aggregate.
-func accumulate(runs []Run, key func(Run) string) map[string][]Run {
-	out := map[string][]Run{}
-	for _, run := range runs {
-		out[key(run)] = append(out[key(run)], run)
-	}
-	return out
-}
-
 func median(values []int) float64 {
 	if len(values) == 0 {
 		return 0
@@ -884,17 +871,6 @@ func median(values []int) float64 {
 		return float64(sorted[mid-1]+sorted[mid]) / 2
 	}
 	return float64(sorted[mid])
-}
-
-func mean(values []int) float64 {
-	if len(values) == 0 {
-		return 0
-	}
-	sum := 0
-	for _, value := range values {
-		sum += value
-	}
-	return float64(sum) / float64(len(values))
 }
 
 func writeJSON(path string, value any) error {

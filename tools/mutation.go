@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -20,13 +19,6 @@ func isTextContent(s string) bool {
 		return false
 	}
 	return utf8.ValidString(s)
-}
-
-func isTextBytes(b []byte) bool {
-	if bytes.Contains(b, []byte{0}) {
-		return false
-	}
-	return utf8.Valid(b)
 }
 
 func makePreview(path string, op agent.MutationOp, oldText, newText string, binary bool) agent.MutationPreview {
@@ -202,6 +194,5 @@ const (
 )
 
 var _ = evidenceFromPreview
-var _ = bytes.Contains
 var _ = strings.Contains
 var _ = fmt.Sprintf
