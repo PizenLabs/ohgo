@@ -54,6 +54,10 @@ type Index struct {
 	mu       sync.Mutex
 	files    map[string]fileRecord
 	snapshot map[string]fileSig
+	// unreadable holds the repository-relative directories and files the last
+	// build could not inspect. Their contents are unknown, so they are counted
+	// as unparsed: a lookup must not present their absence as a fact.
+	unreadable map[string]bool
 }
 
 // NewIndex builds a fresh symbol index rooted at root.
@@ -67,10 +71,11 @@ func NewIndex(root string) (*Index, error) {
 		walkRoot = resolved
 	}
 	idx := &Index{
-		Root:     absRoot,
-		walkRoot: walkRoot,
-		files:    map[string]fileRecord{},
-		snapshot: map[string]fileSig{},
+		Root:       absRoot,
+		walkRoot:   walkRoot,
+		files:      map[string]fileRecord{},
+		snapshot:   map[string]fileSig{},
+		unreadable: map[string]bool{},
 	}
 	if err := idx.build(); err != nil {
 		return nil, err
@@ -90,6 +95,7 @@ func (idx *Index) build() error {
 func (idx *Index) buildLocked() error {
 	sigs := map[string]fileSig{}
 	records := map[string]fileRecord{}
+	unreadable := map[string]bool{}
 	backend := GoBackend{}
 
 	err := filepath.WalkDir(idx.walkRoot, func(path string, entry os.DirEntry, walkErr error) error {
@@ -97,6 +103,7 @@ func (idx *Index) buildLocked() error {
 			if path == idx.walkRoot {
 				return walkErr
 			}
+			unreadable[relKey(idx.walkRoot, path)] = true
 			return nil
 		}
 		if entry.IsDir() {
@@ -108,11 +115,15 @@ func (idx *Index) buildLocked() error {
 		if !strings.EqualFold(filepath.Ext(path), ".go") {
 			return nil
 		}
+		rel := relKey(idx.walkRoot, path)
 		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
+		if err != nil {
+			unreadable[rel] = true
 			return nil
 		}
-		rel := filepath.ToSlash(mustRelPath(idx.walkRoot, path))
+		if !info.Mode().IsRegular() {
+			return nil
+		}
 		sig := fileSig{size: info.Size(), mtime: info.ModTime().UnixNano()}
 		sigs[rel] = sig
 
@@ -141,7 +152,13 @@ func (idx *Index) buildLocked() error {
 	}
 	idx.files = records
 	idx.snapshot = sigs
+	idx.unreadable = unreadable
 	return nil
+}
+
+// relKey is the repository-relative, slash-separated key for a path under root.
+func relKey(root, path string) string {
+	return filepath.ToSlash(mustRelPath(root, path))
 }
 
 // shouldSkipIndexDir reports directories that are never useful to index.
@@ -173,11 +190,19 @@ func (idx *Index) staleLocked() (bool, error) {
 	// comparison below finds changes and additions; allocating a second
 	// path map on every query would churn memory for no extra signal.
 	current := 0
+	seenUnreadable := 0
 	changed := false
 	err := filepath.WalkDir(idx.walkRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if path == idx.walkRoot {
 				return walkErr
+			}
+			// A newly unreadable entry is a change; one already recorded is
+			// not, so a persistently unreadable directory does not force a
+			// full re-parse on every query.
+			seenUnreadable++
+			if !idx.unreadable[relKey(idx.walkRoot, path)] {
+				changed = true
 			}
 			return nil
 		}
@@ -190,12 +215,19 @@ func (idx *Index) staleLocked() (bool, error) {
 		if !strings.EqualFold(filepath.Ext(path), ".go") {
 			return nil
 		}
+		rel := relKey(idx.walkRoot, path)
 		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
+		if err != nil {
+			seenUnreadable++
+			if !idx.unreadable[rel] {
+				changed = true
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
 			return nil
 		}
 		current++
-		rel := filepath.ToSlash(mustRelPath(idx.walkRoot, path))
 		sig := fileSig{size: info.Size(), mtime: info.ModTime().UnixNano()}
 		old, ok := idx.snapshot[rel]
 		if !ok || old != sig {
@@ -207,6 +239,11 @@ func (idx *Index) staleLocked() (bool, error) {
 		return false, fmt.Errorf("ast: inspect %q: %w", idx.Root, err)
 	}
 	if current != len(idx.snapshot) {
+		changed = true
+	}
+	// An entry recorded as unreadable that is no longer seen (deleted or
+	// renamed) must also trigger a rebuild, or its failure would linger.
+	if seenUnreadable != len(idx.unreadable) {
 		changed = true
 	}
 	return changed, nil
@@ -252,18 +289,19 @@ func (idx *Index) Symbols() ([]Match, error) {
 	return out, nil
 }
 
-// ParseFailures reports how many files in the current index snapshot failed
-// to parse. It does not refresh the index; callers that need freshness run a
-// query first.
+// ParseFailures reports how many entries in the current index snapshot could
+// not be indexed: files that failed to parse or read, and directories that
+// could not be listed. It does not refresh the index; callers that need
+// freshness run a query first.
 //
-// A parse failure is isolated to its file: its neighbours stay searchable.
+// A failure is isolated to its entry: its neighbours stay searchable.
 // Callers surface this count so a partial result is never mistaken for a
 // complete one.
 func (idx *Index) ParseFailures() int {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	count := 0
+	count := len(idx.unreadable)
 	for _, rec := range idx.files {
 		if rec.err != nil {
 			count++

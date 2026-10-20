@@ -436,6 +436,45 @@ func TestIndexSurvivesMalformedSource(t *testing.T) {
 	}
 }
 
+func TestIndexReportsUnreadableDirectoryAndRecovers(t *testing.T) {
+	// An unlistable directory must surface as a counted failure. Silently
+	// skipping it would turn "cannot see" into a clean not_found. Once the
+	// directory is readable again the index must pick its symbols up.
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	root := indexFixture(t, map[string]string{
+		"a.go":        "package p\n\nfunc Alpha() {}\n",
+		"locked/b.go": "package p\n\nfunc Beta() {}\n",
+	})
+	locked := filepath.Join(root, "locked")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	idx := mustIndex(t, root)
+	if lookupCount(t, idx, "Alpha") != 1 {
+		t.Error("an unreadable sibling hid a readable symbol")
+	}
+	if lookupCount(t, idx, "Beta") != 0 {
+		t.Error("symbols from an unreadable directory were returned")
+	}
+	if got := idx.ParseFailures(); got != 1 {
+		t.Errorf("ParseFailures = %d, want 1 for the unreadable directory", got)
+	}
+
+	if err := os.Chmod(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if lookupCount(t, idx, "Beta") != 1 {
+		t.Error("recovered directory was not re-indexed")
+	}
+	if got := idx.ParseFailures(); got != 0 {
+		t.Errorf("ParseFailures = %d after recovery, want 0", got)
+	}
+}
+
 func TestIndexFileEnforcesContainment(t *testing.T) {
 	root := indexFixture(t, map[string]string{
 		"a.go": "package main\n\nfunc alpha() {}\n",
