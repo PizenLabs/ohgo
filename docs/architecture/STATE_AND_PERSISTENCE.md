@@ -79,7 +79,7 @@ The only durable knowledge about a project is a file a human wrote.
 
 | Structure | Status |
 | --- | --- |
-| `ast` package | a **stateless** per-file searcher (`go/ast`); no index, no graph, no storage |
+| `ast` package | an **in-process, rebuildable** symbol index (`ast.Index`, `go/ast`); no graph, no storage — derived state only, source tree stays authoritative |
 | `graph.db` | **does not exist**; the lifecycle is defined below, the store is deferred |
 
 ### Runtime scope

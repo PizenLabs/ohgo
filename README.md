@@ -83,10 +83,11 @@ variable — and nothing else fails silently because of it.
 
 ## What it does
 
-Reads, edits, and runs code in your repository through eleven tools
-(`read write edit bash wait glob grep ls webfetch todo task`), with session
-persistence, context compaction, subagent delegation (`--max-depth`),
-a wall-clock run budget (`--deadline`), and per-tool approval prompts.
+Reads, edits, and runs code in your repository through a focused tool set
+(`read write edit delete bash wait glob grep ls symbols webfetch todo task`),
+with session persistence, context compaction, subagent delegation
+(`--max-depth`), a wall-clock run budget (`--deadline`), and per-tool approval
+prompts.
 
 In-session commands: `/help /commands /clear /model [provider/id] /models /sessions /jobs /theme [dark|light] /connect /disconnect [provider] /status /usage /doctor /diff [target] /retry /compact /quit`. The REPL and the full-screen UI share the same backend, so every command means the same thing in both. `/status` reports the workspace and session; `/usage` opens the usage and provider inspector.
 Mid-session `/model` resolves through the same catalog as `ohgo models`,

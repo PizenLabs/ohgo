@@ -397,6 +397,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewGlobTool(opts.root),
 		tools.NewGrepTool(opts.root),
 		tools.NewLsTool(opts.root),
+		tools.NewSymbolsTool(opts.root),
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}
