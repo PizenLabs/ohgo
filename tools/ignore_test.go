@@ -71,6 +71,55 @@ func TestIgnorerAnchorsPatternsWithSlash(t *testing.T) {
 	}
 }
 
+func TestIgnorerAnchorsBarePatternToBase(t *testing.T) {
+	// "/ohgo" is the repository's root binary. It must not match the
+	// "cmd/ohgo" directory: a bare anchored pattern matches from the base,
+	// not at any depth.
+	ig := newTestIgnorer("/ohgo\n")
+	if !ig.ignored("ohgo", false) {
+		t.Error("the anchored root file was not excluded")
+	}
+	if ig.ignored("cmd/ohgo", true) {
+		t.Error("an anchored root file name matched a nested directory")
+	}
+	if ig.ignored("cmd/ohgo/run.go", false) {
+		t.Error("an anchored root file name matched a nested source file")
+	}
+	if !ig.ignored("ohgo/cache", true) {
+		t.Error("a directory matched by the anchored name did not exclude its contents")
+	}
+}
+
+func TestIgnorerAnchorsBarePatternInsideNestedBase(t *testing.T) {
+	ig := &ignorer{root: "/"}
+	ig.appendFile("cmd", "/ohgo\n")
+	if !ig.ignored("cmd/ohgo", true) {
+		t.Error("the nested anchored file was not excluded")
+	}
+	if ig.ignored("other/ohgo", true) {
+		t.Error("the nested anchored rule leaked outside its base")
+	}
+}
+
+func TestGrepDoesNotLetAnchoredRootRuleHideNestedSource(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		".gitignore":      "/ohgo\n",
+		"ohgo":            "needle in the ignored root binary\n",
+		"cmd/ohgo/run.go": "needle in a nested source file\n",
+	})
+	text, result := grepText(t, NewGrepTool(root), map[string]any{"pattern": "needle"})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "cmd/ohgo/run.go") {
+		t.Errorf("the nested source file was hidden by the anchored root rule: %s", text)
+	}
+	if strings.Contains(text, "ohgo:\n") {
+		t.Errorf("the anchored root file was not ignored: %s", text)
+	}
+}
+
 func TestIgnorerAppliesNegationLast(t *testing.T) {
 	ig := newTestIgnorer("*.go\n!keep.go\n")
 	if !ig.ignored("drop.go", false) {

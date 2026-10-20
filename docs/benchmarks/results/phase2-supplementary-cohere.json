@@ -1,0 +1,3603 @@
+{
+  "metadata": {
+    "benchmark_revision": "phase2-baseline+rescored",
+    "harness_version": "phase2-v1",
+    "task_hash": "414012543e4c10121d3e1ffd6c24ed4c6107c74dcd8134406ae0a2181f1b68bb",
+    "started_at": "2026-10-20T08:21:43.301588Z",
+    "finished_at": "2026-10-20T08:30:44.671601Z",
+    "repository": "/Users/anvndev/Documents/Project/OpenSource/PizenLabs/ohgo",
+    "repository_revision": "53bc07b2e850720e331e5fdcdf6ed0fa256402d7",
+    "fixture_files": 319,
+    "fixture_go_files": 295,
+    "model": "cohere/north-mini-code:free",
+    "provider": "openrouter",
+    "api": "openai-chat-completions",
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0,
+    "max_turns": 16,
+    "max_tokens": 2048,
+    "timeout_seconds": 180,
+    "concurrency": 1,
+    "repeats": 1,
+    "tracks": [
+      "A-lexical",
+      "B-structural",
+      "C-hybrid"
+    ],
+    "excluded_paths": [
+      "docs/report",
+      "docs/benchmarks",
+      "AGENTS.md",
+      "MEMORY.md",
+      "PROGRESS.md",
+      "PORT.md",
+      "README.md"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "A1-exact-new-symbols-tool",
+      "category": "A_EXACT",
+      "prompt": "Find the declaration of `NewSymbolsTool`. Report its repository-relative file, symbol name, and full line range.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "tools/symbols.go",
+          "symbol": "NewSymbolsTool",
+          "start_line": 39,
+          "end_line": 85
+        }
+      ],
+      "notes": "An exported constructor with a unique name; the lexical baseline is also strong here."
+    },
+    {
+      "id": "B1-ambiguous-classify",
+      "category": "B_AMBIGUOUS",
+      "prompt": "Find every declaration named exactly `Classify` in the repository. Report all of them; do not choose one. If more than one exists, preserve the ambiguity.",
+      "expected_status": "ambiguous",
+      "targets": [
+        {
+          "path": "startup/startup.go",
+          "symbol": "Classify",
+          "start_line": 106,
+          "end_line": 111
+        },
+        {
+          "path": "workspace/intent.go",
+          "symbol": "Classify",
+          "start_line": 118,
+          "end_line": 118
+        }
+      ],
+      "notes": "Two unrelated Classify functions; ClassifyPrediction and ClassifyRisk are decoys."
+    },
+    {
+      "id": "B3-ambiguous-execute-methods",
+      "category": "B_AMBIGUOUS",
+      "prompt": "List every method named exactly `Execute` declared in package `tools`. Exclude functions and any name that merely contains `Execute`. Report each method with its file and line range.",
+      "expected_status": "ambiguous",
+      "targets": [
+        {
+          "path": "tools/artifact.go",
+          "symbol": "ArtifactTool.Execute",
+          "start_line": 78,
+          "end_line": 125
+        },
+        {
+          "path": "tools/bash.go",
+          "symbol": "BashTool.Execute",
+          "start_line": 120,
+          "end_line": 238
+        },
+        {
+          "path": "tools/delete.go",
+          "symbol": "DeleteTool.Execute",
+          "start_line": 38,
+          "end_line": 81
+        },
+        {
+          "path": "tools/edit.go",
+          "symbol": "EditTool.Execute",
+          "start_line": 50,
+          "end_line": 159
+        },
+        {
+          "path": "tools/glob.go",
+          "symbol": "GlobTool.Execute",
+          "start_line": 126,
+          "end_line": 253
+        },
+        {
+          "path": "tools/grep.go",
+          "symbol": "GrepTool.Execute",
+          "start_line": 126,
+          "end_line": 288
+        },
+        {
+          "path": "tools/ls.go",
+          "symbol": "LsTool.Execute",
+          "start_line": 60,
+          "end_line": 171
+        },
+        {
+          "path": "tools/read.go",
+          "symbol": "ReadTool.Execute",
+          "start_line": 62,
+          "end_line": 152
+        },
+        {
+          "path": "tools/read.go",
+          "symbol": "WriteTool.Execute",
+          "start_line": 187,
+          "end_line": 249
+        },
+        {
+          "path": "tools/symbols.go",
+          "symbol": "SymbolsTool.Execute",
+          "start_line": 106,
+          "end_line": 323
+        },
+        {
+          "path": "tools/task.go",
+          "symbol": "TaskTool.Execute",
+          "start_line": 106,
+          "end_line": 183
+        },
+        {
+          "path": "tools/todo.go",
+          "symbol": "TodoTool.Execute",
+          "start_line": 286,
+          "end_line": 335
+        },
+        {
+          "path": "tools/wait.go",
+          "symbol": "WaitTool.Execute",
+          "start_line": 69,
+          "end_line": 117
+        },
+        {
+          "path": "tools/webfetch.go",
+          "symbol": "WebFetchTool.Execute",
+          "start_line": 64,
+          "end_line": 160
+        }
+      ],
+      "notes": "14 methods across 12 files; package tools has 459 declarations, so the result requires scoping/pagination rather than one exact lookup."
+    },
+    {
+      "id": "D1-mod-provider-env-table",
+      "category": "D_MODIFICATION",
+      "prompt": "A new provider needs to be added to the credential-discovery table so its environment variable can be found. Where should that mapping be added? Report the file and the declaration that owns the table.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "creds/creds.go",
+          "symbol": "providerEnvVars",
+          "accept_symbols": [
+            "ProviderEnvVars"
+          ],
+          "start_line": 50,
+          "end_line": 67
+        }
+      ],
+      "notes": "The edit surface is the providerEnvVars map; the accessor is an acceptable equivalent."
+    },
+    {
+      "id": "E2-cross-lookup-def-and-caller",
+      "category": "E_CROSS_FILE",
+      "prompt": "Where is `Index.Lookup` defined, and which tool method calls it to answer a symbol lookup? Report both locations.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "ast/index.go",
+          "symbol": "Index.Lookup",
+          "start_line": 276,
+          "end_line": 293
+        },
+        {
+          "path": "tools/symbols.go",
+          "symbol": "SymbolsTool.Execute",
+          "start_line": 106,
+          "end_line": 323
+        }
+      ],
+      "notes": "The structural layer and its single model-facing caller."
+    },
+    {
+      "id": "F3-negative-grep-symbol",
+      "category": "F_NEGATIVE",
+      "prompt": "Does a declaration named exactly `Grep` exist? (`GrepTool`, `NewGrepTool`, and `GrepTimeout` are different names.) If no declaration has that exact name, report not_found.",
+      "expected_status": "not_found",
+      "targets": null,
+      "negative_names": [
+        "Grep"
+      ],
+      "notes": "Lexical search returns many hits; no declaration has the exact requested name."
+    },
+    {
+      "id": "H1-lexical-error-text",
+      "category": "H_LEXICAL",
+      "prompt": "Find where the error message text `agent: no tools registered` is defined. Report the file, declaration, and line.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "agent/loop.go",
+          "symbol": "ErrNoTools",
+          "start_line": 16,
+          "end_line": 16
+        }
+      ],
+      "notes": "A string literal; a structural symbol lookup cannot find it from the text alone."
+    },
+    {
+      "id": "H4-lexical-doc-line",
+      "category": "H_LEXICAL",
+      "prompt": "Find the line in the architecture documentation that says `Single owner of ProviderEnvVars`. Report the file and line.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "docs/architecture/ARCHITECTURE.md",
+          "start_line": 23,
+          "end_line": 23,
+          "contains": "Single owner of ProviderEnvVars"
+        }
+      ],
+      "notes": "Non-Go documentation; a Go symbol index cannot represent it."
+    }
+  ],
+  "runs": [
+    {
+      "task_id": "A1-exact-new-symbols-tool",
+      "category": "A_EXACT",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "no_answer",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 16,
+      "tool_calls": 16,
+      "discovery_calls": 2,
+      "files_opened": 1,
+      "lines_inspected": 270,
+      "context_bytes": 11470,
+      "candidate_files": 2,
+      "irrelevant_candidates": 1,
+      "reported_candidates": 3,
+      "input_tokens": 37925,
+      "output_tokens": 838,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 3595,
+      "time_to_all_targets_ms": 3595,
+      "duration_ms": 39499,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "NewSymbolsTool"
+          },
+          "is_error": false,
+          "duration_ms": 20,
+          "offset_ms": 3595,
+          "result_bytes": 1693,
+          "result_lines": 28,
+          "candidate_files": [
+            "tools/symbols.go",
+            "tools/symbols_test.go"
+          ],
+          "reported_file_total": 2,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 30,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 6624,
+          "result_bytes": 979,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "limit": 10,
+            "offset": 35,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 8860,
+          "result_bytes": 488,
+          "result_lines": 12,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 10,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "grep",
+          "args": {
+            "pattern": "^func NewSymbolsTool"
+          },
+          "is_error": false,
+          "duration_ms": 19,
+          "offset_ms": 14654,
+          "result_bytes": 90,
+          "result_lines": 4,
+          "candidate_files": [
+            "tools/symbols.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 4,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 38,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 15583,
+          "result_bytes": 1031,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 58,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 16428,
+          "result_bytes": 810,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 6,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 78,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 17894,
+          "result_bytes": 604,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 7,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 85,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 20784,
+          "result_bytes": 573,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 8,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 1,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 27733,
+          "result_bytes": 443,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 9,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 30,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 28605,
+          "result_bytes": 979,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 10,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 80,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 31470,
+          "result_bytes": 595,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 11,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 84,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 32195,
+          "result_bytes": 584,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 12,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 1,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 33605,
+          "result_bytes": 443,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 13,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 30,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 34649,
+          "result_bytes": 979,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 14,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 80,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 38384,
+          "result_bytes": 595,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 15,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 84,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 39500,
+          "result_bytes": 584,
+          "result_lines": 22,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "A1-exact-new-symbols-tool",
+      "category": "A_EXACT",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 50,
+      "context_bytes": 2147,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 2506,
+      "output_tokens": 343,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 2242,
+      "time_to_all_targets_ms": 2242,
+      "duration_ms": 5768,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "tools/symbols.go",
+          "symbol": "NewSymbolsTool",
+          "start_line": 39,
+          "end_line": 85
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"tools/symbols.go\",\"symbol\":\"NewSymbolsTool\",\"start_line\":39,\"end_line\":85}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "NewSymbolsTool"
+          },
+          "is_error": false,
+          "duration_ms": 104,
+          "offset_ms": 2242,
+          "result_bytes": 144,
+          "result_lines": 9,
+          "candidate_files": [
+            "tools/symbols.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 39,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 3598,
+          "result_bytes": 2003,
+          "result_lines": 52,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "A1-exact-new-symbols-tool",
+      "category": "A_EXACT",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 50,
+      "context_bytes": 2147,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 3538,
+      "output_tokens": 424,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 1622,
+      "time_to_all_targets_ms": 1622,
+      "duration_ms": 28500,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "tools/symbols.go",
+          "symbol": "NewSymbolsTool",
+          "start_line": 39,
+          "end_line": 85
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"tools/symbols.go\",\"symbol\":\"NewSymbolsTool\",\"start_line\":39,\"end_line\":85}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "NewSymbolsTool"
+          },
+          "is_error": false,
+          "duration_ms": 100,
+          "offset_ms": 1622,
+          "result_bytes": 144,
+          "result_lines": 9,
+          "candidate_files": [
+            "tools/symbols.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 39,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 2907,
+          "result_bytes": 2003,
+          "result_lines": 52,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "B1-ambiguous-classify",
+      "category": "B_AMBIGUOUS",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "status_mismatch",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 9,
+      "tool_calls": 8,
+      "discovery_calls": 5,
+      "files_opened": 3,
+      "lines_inspected": 30,
+      "context_bytes": 6019,
+      "candidate_files": 10,
+      "irrelevant_candidates": 8,
+      "reported_candidates": 13,
+      "input_tokens": 16851,
+      "output_tokens": 1879,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 6702,
+      "time_to_all_targets_ms": 6702,
+      "duration_ms": 43742,
+      "matched_targets": 2,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 2,
+      "targets_reported": [
+        {
+          "path": "startup/startup.go",
+          "symbol": "Classify",
+          "start_line": 106,
+          "end_line": 106
+        },
+        {
+          "path": "workspace/intent.go",
+          "symbol": "Classify",
+          "start_line": 118,
+          "end_line": 118
+        }
+      ],
+      "final_text": "Based on my search through the repository, I found exactly 2 declarations named exactly `Classify`:\n\n1. In `startup/startup.go` at line 106: `func Classify(d Discovery) State {`\n2. In `workspace/intent.go` at line 118: `func Classify(text string) Intent { return ClassifyPrediction(text).Intent }`\n\nThese are both function declarations. There are no type definitions, variables, or constants named exactly `Classify`.\n\nFINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"startup/startup.go\",\"symbol\":\"Classify\",\"start_line\":106,\"end_line\":106},{\"path\":\"workspace/intent.go\",\"symbol\":\"Classify\",\"start_line\":118,\"end_line\":118}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "Classify"
+          },
+          "is_error": false,
+          "duration_ms": 25,
+          "offset_ms": 6702,
+          "result_bytes": 3994,
+          "result_lines": 70,
+          "candidate_files": [
+            "docs/architecture/ARCHITECTURE.md",
+            "docs/architecture/ARCHITECTURE_CONTRACT_V1.md",
+            "docs/architecture/WORKSPACE_AUTHORITY.md",
+            "security/scope.go",
+            "security/security_test.go",
+            "startup/startup.go",
+            "tools/bash.go",
+            "workspace/intent.go",
+            "workspace/intent_test.go",
+            "workspace/transition_test.go"
+          ],
+          "reported_file_total": 10,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "^\\s*func Classify"
+          },
+          "is_error": false,
+          "duration_ms": 17,
+          "offset_ms": 13354,
+          "result_bytes": 351,
+          "result_lines": 11,
+          "candidate_files": [
+            "security/scope.go",
+            "startup/startup.go",
+            "workspace/intent.go"
+          ],
+          "reported_file_total": 3,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "^\\s*type.*Classify"
+          },
+          "is_error": false,
+          "duration_ms": 27,
+          "offset_ms": 17056,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 3,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "^\\s*var Classify"
+          },
+          "is_error": false,
+          "duration_ms": 21,
+          "offset_ms": 18025,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 4,
+          "tool": "read",
+          "args": {
+            "limit": 10,
+            "offset": 115,
+            "path": "workspace/intent.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 21509,
+          "result_bytes": 666,
+          "result_lines": 12,
+          "opened_file": "workspace/intent.go",
+          "lines_inspected": 10,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "read",
+          "args": {
+            "limit": 10,
+            "offset": 100,
+            "path": "startup/startup.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 22282,
+          "result_bytes": 487,
+          "result_lines": 12,
+          "opened_file": "startup/startup.go",
+          "lines_inspected": 10,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        },
+        {
+          "index": 6,
+          "tool": "read",
+          "args": {
+            "limit": 10,
+            "offset": 100,
+            "path": "security/scope.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 22979,
+          "result_bytes": 470,
+          "result_lines": 12,
+          "opened_file": "security/scope.go",
+          "lines_inspected": 10,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        },
+        {
+          "index": 7,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "^\\s*const Classify"
+          },
+          "is_error": false,
+          "duration_ms": 20,
+          "offset_ms": 31362,
+          "result_bytes": 17,
+          "result_lines": 1
+        }
+      ]
+    },
+    {
+      "task_id": "B1-ambiguous-classify",
+      "category": "B_AMBIGUOUS",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "ambiguous",
+      "answer_format": "json",
+      "turns": 2,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 278,
+      "candidate_files": 2,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 2,
+      "input_tokens": 1349,
+      "output_tokens": 384,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 4333,
+      "time_to_all_targets_ms": 4333,
+      "duration_ms": 11891,
+      "matched_targets": 2,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 2,
+      "targets_reported": [
+        {
+          "path": "startup/startup.go",
+          "symbol": "Classify",
+          "start_line": 106,
+          "end_line": 111
+        },
+        {
+          "path": "workspace/intent.go",
+          "symbol": "Classify",
+          "start_line": 118,
+          "end_line": 118
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"ambiguous\",\"targets\":[{\"path\":\"startup/startup.go\",\"symbol\":\"Classify\",\"start_line\":106,\"end_line\":111},{\"path\":\"workspace/intent.go\",\"symbol\":\"Classify\",\"start_line\":118,\"end_line\":118}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Classify"
+          },
+          "is_error": false,
+          "duration_ms": 91,
+          "offset_ms": 4333,
+          "result_bytes": 278,
+          "result_lines": 15,
+          "candidate_files": [
+            "startup/startup.go",
+            "workspace/intent.go"
+          ],
+          "reported_file_total": 2,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "B1-ambiguous-classify",
+      "category": "B_AMBIGUOUS",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "ambiguous",
+      "answer_format": "json",
+      "turns": 2,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 278,
+      "candidate_files": 2,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 2,
+      "input_tokens": 2037,
+      "output_tokens": 293,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 6372,
+      "time_to_all_targets_ms": 6372,
+      "duration_ms": 8399,
+      "matched_targets": 2,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 2,
+      "targets_reported": [
+        {
+          "path": "startup/startup.go",
+          "symbol": "Classify",
+          "start_line": 106,
+          "end_line": 111
+        },
+        {
+          "path": "workspace/intent.go",
+          "symbol": "Classify",
+          "start_line": 118,
+          "end_line": 118
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"ambiguous\",\"targets\":[{\"path\":\"startup/startup.go\",\"symbol\":\"Classify\",\"start_line\":106,\"end_line\":111},{\"path\":\"workspace/intent.go\",\"symbol\":\"Classify\",\"start_line\":118,\"end_line\":118}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Classify"
+          },
+          "is_error": false,
+          "duration_ms": 106,
+          "offset_ms": 6372,
+          "result_bytes": 278,
+          "result_lines": 15,
+          "candidate_files": [
+            "startup/startup.go",
+            "workspace/intent.go"
+          ],
+          "reported_file_total": 2,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "B3-ambiguous-execute-methods",
+      "category": "B_AMBIGUOUS",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "no_answer",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 5,
+      "tool_calls": 4,
+      "discovery_calls": 4,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 11894,
+      "candidate_files": 60,
+      "irrelevant_candidates": 49,
+      "reported_candidates": 63,
+      "input_tokens": 7805,
+      "output_tokens": 2381,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 4,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 10059,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 37436,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "hidden": false
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 2839,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "ls",
+          "args": {
+            "path": "tools"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 6251,
+          "result_bytes": 677,
+          "result_lines": 32,
+          "candidate_files": [
+            "tools/10745",
+            "tools/10864",
+            "tools/11682",
+            "tools/12429",
+            "tools/12587",
+            "tools/12674",
+            "tools/13088",
+            "tools/15129",
+            "tools/15256",
+            "tools/15799",
+            "tools/17666",
+            "tools/19636",
+            "tools/2195",
+            "tools/3019",
+            "tools/3096",
+            "tools/3701",
+            "tools/3763",
+            "tools/3915",
+            "tools/4071",
+            "tools/4593",
+            "tools/5144",
+            "tools/5212",
+            "tools/5961",
+            "tools/6135",
+            "tools/6638",
+            "tools/6669",
+            "tools/7422",
+            "tools/7911",
+            "tools/8124",
+            "tools/8858",
+            "tools/9625",
+            "tools/tools"
+          ],
+          "reported_file_total": 32
+        },
+        {
+          "index": 2,
+          "tool": "grep",
+          "args": {
+            "path": "tools",
+            "pattern": "func Execute\\("
+          },
+          "is_error": false,
+          "duration_ms": 5,
+          "offset_ms": 8586,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 3,
+          "tool": "grep",
+          "args": {
+            "path": "tools",
+            "pattern": "\\bExecute\\b"
+          },
+          "is_error": false,
+          "duration_ms": 7,
+          "offset_ms": 10059,
+          "result_bytes": 10865,
+          "result_lines": 170,
+          "candidate_files": [
+            "tools/artifact.go",
+            "tools/artifact_test.go",
+            "tools/background_test.go",
+            "tools/bash.go",
+            "tools/bench_test.go",
+            "tools/delete.go",
+            "tools/edit.go",
+            "tools/glob.go",
+            "tools/glob_test.go",
+            "tools/grep.go",
+            "tools/ignore_test.go",
+            "tools/ls.go",
+            "tools/phase1_test.go",
+            "tools/read.go",
+            "tools/symbols.go",
+            "tools/symbols_test.go",
+            "tools/task.go",
+            "tools/task_test.go",
+            "tools/todo.go",
+            "tools/todo_test.go"
+          ],
+          "reported_file_total": 23,
+          "revealed_targets": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "B3-ambiguous-execute-methods",
+      "category": "B_AMBIGUOUS",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "false_negative",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 9,
+      "tool_calls": 8,
+      "discovery_calls": 2,
+      "files_opened": 6,
+      "lines_inspected": 297,
+      "context_bytes": 36109,
+      "candidate_files": 16,
+      "irrelevant_candidates": 10,
+      "reported_candidates": 459,
+      "input_tokens": 73213,
+      "output_tokens": 1243,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 4695,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 20915,
+      "matched_targets": 6,
+      "missing_targets": 8,
+      "extra_targets": 0,
+      "line_exact": 6,
+      "targets_reported": [
+        {
+          "path": "tools/artifact.go",
+          "symbol": "ArtifactTool.Execute",
+          "start_line": 78,
+          "end_line": 125
+        },
+        {
+          "path": "tools/bash.go",
+          "symbol": "BashTool.Execute",
+          "start_line": 120,
+          "end_line": 238
+        },
+        {
+          "path": "tools/delete.go",
+          "symbol": "DeleteTool.Execute",
+          "start_line": 38,
+          "end_line": 81
+        },
+        {
+          "path": "tools/edit.go",
+          "symbol": "EditTool.Execute",
+          "start_line": 50,
+          "end_line": 159
+        },
+        {
+          "path": "tools/glob.go",
+          "symbol": "GlobTool.Execute",
+          "start_line": 126,
+          "end_line": 253
+        },
+        {
+          "path": "tools/grep.go",
+          "symbol": "GrepTool.Execute",
+          "start_line": 126,
+          "end_line": 288
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"tools/artifact.go\",\"symbol\":\"ArtifactTool.Execute\",\"start_line\":78,\"end_line\":125},{\"path\":\"tools/bash.go\",\"symbol\":\"BashTool.Execute\",\"start_line\":120,\"end_line\":238},{\"path\":\"tools/delete.go\",\"symbol\":\"DeleteTool.Execute\",\"start_line\":38,\"end_line\":81},{\"path\":\"tools/edit.go\",\"symbol\":\"EditTool.Execute\",\"start_line\":50,\"end_line\":159},{\"path\":\"tools/glob.go\",\"symbol\":\"GlobTool.Execute\",\"start_line\":126,\"end_line\":253},{\"path\":\"tools/grep.go\",\"symbol\":\"GrepTool.Execute\",\"start_line\":126,\"end_line\":288}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "limit": 200,
+            "package": "tools",
+            "symbol": "Execute"
+          },
+          "is_error": false,
+          "duration_ms": 111,
+          "offset_ms": 3207,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 1,
+          "tool": "symbols",
+          "args": {
+            "limit": 200,
+            "package": "tools"
+          },
+          "is_error": false,
+          "duration_ms": 6,
+          "offset_ms": 4695,
+          "result_bytes": 26029,
+          "result_lines": 1205,
+          "candidate_files": [
+            "tools/artifact.go",
+            "tools/artifact_test.go",
+            "tools/background_test.go",
+            "tools/base.go",
+            "tools/bash.go",
+            "tools/bench_test.go",
+            "tools/capability.go",
+            "tools/capability_test.go",
+            "tools/delete.go",
+            "tools/edit.go",
+            "tools/glob.go",
+            "tools/glob_test.go",
+            "tools/grep.go",
+            "tools/ignore.go",
+            "tools/ignore_test.go",
+            "tools/jobs.go"
+          ],
+          "reported_file_total": 459,
+          "revealed_targets": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 75,
+            "path": "tools/artifact.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 12225,
+          "result_bytes": 1816,
+          "result_lines": 52,
+          "opened_file": "tools/artifact.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 115,
+            "path": "tools/bash.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 13342,
+          "result_bytes": 1641,
+          "result_lines": 52,
+          "opened_file": "tools/bash.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 4,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 35,
+            "path": "tools/delete.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 14200,
+          "result_bytes": 1595,
+          "result_lines": 47,
+          "opened_file": "tools/delete.go",
+          "lines_inspected": 47,
+          "revealed_targets": [
+            2
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 45,
+            "path": "tools/edit.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 15081,
+          "result_bytes": 1683,
+          "result_lines": 52,
+          "opened_file": "tools/edit.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            3
+          ]
+        },
+        {
+          "index": 6,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 120,
+            "path": "tools/glob.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 16286,
+          "result_bytes": 1687,
+          "result_lines": 52,
+          "opened_file": "tools/glob.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            4
+          ]
+        },
+        {
+          "index": 7,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 120,
+            "path": "tools/grep.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 17436,
+          "result_bytes": 1622,
+          "result_lines": 52,
+          "opened_file": "tools/grep.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            5
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "B3-ambiguous-execute-methods",
+      "category": "B_AMBIGUOUS",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "status_mismatch",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 4,
+      "tool_calls": 3,
+      "discovery_calls": 3,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 60925,
+      "candidate_files": 31,
+      "irrelevant_candidates": 18,
+      "reported_candidates": 1377,
+      "input_tokens": 47572,
+      "output_tokens": 1004,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 3,
+      "time_to_first_target_ms": 2750,
+      "time_to_all_targets_ms": 6830,
+      "duration_ms": 14536,
+      "matched_targets": 14,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 14,
+      "targets_reported": [
+        {
+          "path": "tools/artifact.go",
+          "symbol": "ArtifactTool.Execute",
+          "start_line": 78,
+          "end_line": 125
+        },
+        {
+          "path": "tools/bash.go",
+          "symbol": "BashTool.Execute",
+          "start_line": 120,
+          "end_line": 238
+        },
+        {
+          "path": "tools/delete.go",
+          "symbol": "DeleteTool.Execute",
+          "start_line": 38,
+          "end_line": 81
+        },
+        {
+          "path": "tools/edit.go",
+          "symbol": "EditTool.Execute",
+          "start_line": 50,
+          "end_line": 159
+        },
+        {
+          "path": "tools/glob.go",
+          "symbol": "GlobTool.Execute",
+          "start_line": 126,
+          "end_line": 253
+        },
+        {
+          "path": "tools/grep.go",
+          "symbol": "GrepTool.Execute",
+          "start_line": 126,
+          "end_line": 288
+        },
+        {
+          "path": "tools/ls.go",
+          "symbol": "LsTool.Execute",
+          "start_line": 60,
+          "end_line": 171
+        },
+        {
+          "path": "tools/read.go",
+          "symbol": "ReadTool.Execute",
+          "start_line": 62,
+          "end_line": 152
+        },
+        {
+          "path": "tools/read.go",
+          "symbol": "WriteTool.Execute",
+          "start_line": 187,
+          "end_line": 249
+        },
+        {
+          "path": "tools/symbols.go",
+          "symbol": "SymbolsTool.Execute",
+          "start_line": 106,
+          "end_line": 323
+        },
+        {
+          "path": "tools/task.go",
+          "symbol": "TaskTool.Execute",
+          "start_line": 106,
+          "end_line": 183
+        },
+        {
+          "path": "tools/todo.go",
+          "symbol": "TodoTool.Execute",
+          "start_line": 286,
+          "end_line": 335
+        },
+        {
+          "path": "tools/wait.go",
+          "symbol": "WaitTool.Execute",
+          "start_line": 69,
+          "end_line": 117
+        },
+        {
+          "path": "tools/webfetch.go",
+          "symbol": "WebFetchTool.Execute",
+          "start_line": 64,
+          "end_line": 160
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"tools/artifact.go\",\"symbol\":\"ArtifactTool.Execute\",\"start_line\":78,\"end_line\":125},{\"path\":\"tools/bash.go\",\"symbol\":\"BashTool.Execute\",\"start_line\":120,\"end_line\":238},{\"path\":\"tools/delete.go\",\"symbol\":\"DeleteTool.Execute\",\"start_line\":38,\"end_line\":81},{\"path\":\"tools/edit.go\",\"symbol\":\"EditTool.Execute\",\"start_line\":50,\"end_line\":159},{\"path\":\"tools/glob.go\",\"symbol\":\"GlobTool.Execute\",\"start_line\":126,\"end_line\":253},{\"path\":\"tools/grep.go\",\"symbol\":\"GrepTool.Execute\",\"start_line\":126,\"end_line\":288},{\"path\":\"tools/ls.go\",\"symbol\":\"LsTool.Execute\",\"start_line\":60,\"end_line\":171},{\"path\":\"tools/read.go\",\"symbol\":\"ReadTool.Execute\",\"start_line\":62,\"end_line\":152},{\"path\":\"tools/read.go\",\"symbol\":\"WriteTool.Execute\",\"start_line\":187,\"end_line\":249},{\"path\":\"tools/symbols.go\",\"symbol\":\"SymbolsTool.Execute\",\"start_line\":106,\"end_line\":323},{\"path\":\"tools/task.go\",\"symbol\":\"TaskTool.Execute\",\"start_line\":106,\"end_line\":183},{\"path\":\"tools/todo.go\",\"symbol\":\"TodoTool.Execute\",\"start_line\":286,\"end_line\":335},{\"path\":\"tools/wait.go\",\"symbol\":\"WaitTool.Execute\",\"start_line\":69,\"end_line\":117},{\"path\":\"tools/webfetch.go\",\"symbol\":\"WebFetchTool.Execute\",\"start_line\":64,\"end_line\":160}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "limit": 200,
+            "package": "tools"
+          },
+          "is_error": false,
+          "duration_ms": 121,
+          "offset_ms": 2750,
+          "result_bytes": 26029,
+          "result_lines": 1205,
+          "candidate_files": [
+            "tools/artifact.go",
+            "tools/artifact_test.go",
+            "tools/background_test.go",
+            "tools/base.go",
+            "tools/bash.go",
+            "tools/bench_test.go",
+            "tools/capability.go",
+            "tools/capability_test.go",
+            "tools/delete.go",
+            "tools/edit.go",
+            "tools/glob.go",
+            "tools/glob_test.go",
+            "tools/grep.go",
+            "tools/ignore.go",
+            "tools/ignore_test.go",
+            "tools/jobs.go"
+          ],
+          "reported_file_total": 459,
+          "revealed_targets": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "symbols",
+          "args": {
+            "limit": 200,
+            "package": "tools",
+            "skip": 200
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 4934,
+          "result_bytes": 26647,
+          "result_lines": 1206,
+          "candidate_files": [
+            "tools/jobs.go",
+            "tools/ls.go",
+            "tools/mention.go",
+            "tools/mention_test.go",
+            "tools/mutation.go",
+            "tools/phase1_test.go",
+            "tools/read.go",
+            "tools/symbols.go",
+            "tools/symbols_test.go",
+            "tools/task.go",
+            "tools/task_test.go",
+            "tools/todo.go",
+            "tools/todo_test.go"
+          ],
+          "reported_file_total": 459,
+          "revealed_targets": [
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "symbols",
+          "args": {
+            "limit": 200,
+            "package": "tools",
+            "skip": 400
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 6830,
+          "result_bytes": 8249,
+          "result_lines": 360,
+          "candidate_files": [
+            "tools/todo_test.go",
+            "tools/tools_test.go",
+            "tools/wait.go",
+            "tools/webfetch.go"
+          ],
+          "reported_file_total": 459,
+          "revealed_targets": [
+            12,
+            13
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "D1-mod-provider-env-table",
+      "category": "D_MODIFICATION",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 5,
+      "tool_calls": 4,
+      "discovery_calls": 2,
+      "files_opened": 1,
+      "lines_inspected": 511,
+      "context_bytes": 25459,
+      "candidate_files": 20,
+      "irrelevant_candidates": 19,
+      "reported_candidates": 33,
+      "input_tokens": 18787,
+      "output_tokens": 1044,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 2215,
+      "time_to_all_targets_ms": 2215,
+      "duration_ms": 17157,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "creds/creds.go",
+          "symbol": "providerEnvVars",
+          "start_line": 50,
+          "end_line": 67
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"creds/creds.go\",\"symbol\":\"providerEnvVars\",\"start_line\":50,\"end_line\":67}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "pattern": "credential-discovery"
+          },
+          "is_error": false,
+          "duration_ms": 22,
+          "offset_ms": 1116,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "pattern": "credential"
+          },
+          "is_error": false,
+          "duration_ms": 20,
+          "offset_ms": 2215,
+          "result_bytes": 7018,
+          "result_lines": 125,
+          "candidate_files": [
+            "ai/anthropic.go",
+            "ai/live_test.go",
+            "ai/ollama.go",
+            "ai/ollama_test.go",
+            "ai/openai.go",
+            "ai/probe.go",
+            "ai/probe_test.go",
+            "ai/registry.go",
+            "ai/registry_creds_test.go",
+            "ai/registry_test.go",
+            "ai/stream.go",
+            "catalog/catalog_test.go",
+            "catalog/dynamic.go",
+            "catalog/snapshot_test.go",
+            "config/config.go",
+            "creds/creds.go",
+            "creds/creds_test.go",
+            "docs/architecture/ARCHITECTURE.md",
+            "docs/architecture/ARCHITECTURE_CONTRACT_V1.md",
+            "docs/architecture/STATE_AND_PERSISTENCE.md"
+          ],
+          "reported_file_total": 33,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "path": "creds/creds.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 4111,
+          "result_bytes": 17081,
+          "result_lines": 481,
+          "opened_file": "creds/creds.go",
+          "lines_inspected": 481,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 45,
+            "path": "creds/creds.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 11521,
+          "result_bytes": 1343,
+          "result_lines": 32,
+          "opened_file": "creds/creds.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "D1-mod-provider-env-table",
+      "category": "D_MODIFICATION",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 6,
+      "tool_calls": 5,
+      "discovery_calls": 4,
+      "files_opened": 1,
+      "lines_inspected": 481,
+      "context_bytes": 17536,
+      "candidate_files": 11,
+      "irrelevant_candidates": 11,
+      "reported_candidates": 11,
+      "input_tokens": 9261,
+      "output_tokens": 950,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 5,
+      "calls_to_all_targets": 5,
+      "time_to_first_target_ms": 8637,
+      "time_to_all_targets_ms": 8637,
+      "duration_ms": 36341,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "creds/creds.go",
+          "symbol": "providerEnvVars",
+          "start_line": 50,
+          "end_line": 67
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"creds/creds.go\",\"symbol\":\"providerEnvVars\",\"start_line\":50,\"end_line\":67}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 1433,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "symbols",
+          "args": {
+            "symbol": "credential"
+          },
+          "is_error": false,
+          "duration_ms": 102,
+          "offset_ms": 5331,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 2,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Credential"
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 6568,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 3,
+          "tool": "ls",
+          "args": {
+            "path": "creds"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 7754,
+          "result_bytes": 48,
+          "result_lines": 3,
+          "candidate_files": [
+            "creds/15266",
+            "creds/7992",
+            "creds/creds"
+          ],
+          "reported_file_total": 3
+        },
+        {
+          "index": 4,
+          "tool": "read",
+          "args": {
+            "path": "creds/creds.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 8637,
+          "result_bytes": 17081,
+          "result_lines": 481,
+          "opened_file": "creds/creds.go",
+          "lines_inspected": 481,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "D1-mod-provider-env-table",
+      "category": "D_MODIFICATION",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 4,
+      "tool_calls": 3,
+      "discovery_calls": 2,
+      "files_opened": 1,
+      "lines_inspected": 481,
+      "context_bytes": 17817,
+      "candidate_files": 14,
+      "irrelevant_candidates": 13,
+      "reported_candidates": 14,
+      "input_tokens": 9265,
+      "output_tokens": 790,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 6741,
+      "time_to_all_targets_ms": 6741,
+      "duration_ms": 36958,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "creds/creds.go",
+          "symbol": "providerEnvVars",
+          "start_line": 50,
+          "end_line": 67
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"creds/creds.go\",\"symbol\":\"providerEnvVars\",\"start_line\":50,\"end_line\":67}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "hidden": true
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 2278,
+          "result_bytes": 413,
+          "result_lines": 39,
+          "candidate_files": [
+            ".",
+            "104",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "309",
+            "357",
+            "402",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 11
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "credential.*discovery|discovery.*credential"
+          },
+          "is_error": false,
+          "duration_ms": 34,
+          "offset_ms": 6741,
+          "result_bytes": 323,
+          "result_lines": 10,
+          "candidate_files": [
+            "ai/probe.go",
+            "catalog/catalog_test.go",
+            "creds/creds.go"
+          ],
+          "reported_file_total": 3,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "path": "creds/creds.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 7636,
+          "result_bytes": 17081,
+          "result_lines": 481,
+          "opened_file": "creds/creds.go",
+          "lines_inspected": 481,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "E2-cross-lookup-def-and-caller",
+      "category": "E_CROSS_FILE",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "wrong_target",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 9,
+      "tool_calls": 8,
+      "discovery_calls": 2,
+      "files_opened": 2,
+      "lines_inspected": 190,
+      "context_bytes": 6876,
+      "candidate_files": 3,
+      "irrelevant_candidates": 1,
+      "reported_candidates": 3,
+      "input_tokens": 15322,
+      "output_tokens": 1207,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 3650,
+      "time_to_all_targets_ms": 3650,
+      "duration_ms": 28160,
+      "matched_targets": 1,
+      "missing_targets": 1,
+      "extra_targets": 1,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "ast/index.go",
+          "symbol": "Lookup",
+          "start_line": 276,
+          "end_line": 276
+        },
+        {
+          "path": "tools/symbols.go",
+          "symbol": "Lookup",
+          "start_line": 184,
+          "end_line": 184
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"ast/index.go\",\"symbol\":\"Lookup\",\"start_line\":276,\"end_line\":276},{\"path\":\"tools/symbols.go\",\"symbol\":\"Lookup\",\"start_line\":184,\"end_line\":184}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "pattern": "Index\\.Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 18,
+          "offset_ms": 1768,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "pattern": "\\bLookup\\b"
+          },
+          "is_error": false,
+          "duration_ms": 35,
+          "offset_ms": 3650,
+          "result_bytes": 1348,
+          "result_lines": 31,
+          "candidate_files": [
+            "ast/index.go",
+            "ast/index_test.go",
+            "tools/symbols.go"
+          ],
+          "reported_file_total": 3,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 270,
+            "path": "ast/index.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 8677,
+          "result_bytes": 540,
+          "result_lines": 22,
+          "opened_file": "ast/index.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 175,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 10081,
+          "result_bytes": 974,
+          "result_lines": 32,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 4,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 276,
+            "path": "ast/index.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 12216,
+          "result_bytes": 818,
+          "result_lines": 32,
+          "opened_file": "ast/index.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 150,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 17780,
+          "result_bytes": 1583,
+          "result_lines": 52,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 6,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 1,
+            "path": "ast/index.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 20305,
+          "result_bytes": 786,
+          "result_lines": 32,
+          "opened_file": "ast/index.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 7,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 1,
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 21595,
+          "result_bytes": 810,
+          "result_lines": 32,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "E2-cross-lookup-def-and-caller",
+      "category": "E_CROSS_FILE",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "no_answer",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 16,
+      "tool_calls": 16,
+      "discovery_calls": 15,
+      "files_opened": 1,
+      "lines_inspected": 20,
+      "context_bytes": 1180,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 13481,
+      "output_tokens": 528,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 1550,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 25637,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Index.Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 103,
+          "offset_ms": 1550,
+          "result_bytes": 140,
+          "result_lines": 9,
+          "candidate_files": [
+            "ast/index.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 2583,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 2,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 5,
+          "offset_ms": 4207,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 3,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 2,
+          "offset_ms": 5120,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 4,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 276,
+            "path": "ast/index.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 6343,
+          "result_bytes": 536,
+          "result_lines": 22,
+          "opened_file": "ast/index.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 6,
+          "offset_ms": 7443,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 6,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 3,
+          "offset_ms": 8387,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 7,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 3,
+          "offset_ms": 9237,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 8,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 2,
+          "offset_ms": 12653,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 9,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 5,
+          "offset_ms": 13272,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 10,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 6,
+          "offset_ms": 14639,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 11,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 2,
+          "offset_ms": 15513,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 12,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 5,
+          "offset_ms": 20143,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 13,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 21178,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 14,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 24566,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 15,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 3,
+          "offset_ms": 25637,
+          "result_bytes": 36,
+          "result_lines": 2
+        }
+      ]
+    },
+    {
+      "task_id": "E2-cross-lookup-def-and-caller",
+      "category": "E_CROSS_FILE",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 7,
+      "tool_calls": 6,
+      "discovery_calls": 4,
+      "files_opened": 2,
+      "lines_inspected": 737,
+      "context_bytes": 23599,
+      "candidate_files": 3,
+      "irrelevant_candidates": 1,
+      "reported_candidates": 4,
+      "input_tokens": 27388,
+      "output_tokens": 523,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 4,
+      "time_to_first_target_ms": 15198,
+      "time_to_all_targets_ms": 27253,
+      "duration_ms": 40871,
+      "matched_targets": 2,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 2,
+      "targets_reported": [
+        {
+          "path": "ast/index.go",
+          "symbol": "Lookup",
+          "start_line": 276,
+          "end_line": 293
+        },
+        {
+          "path": "tools/symbols.go",
+          "symbol": "Execute",
+          "start_line": 184,
+          "end_line": 184
+        }
+      ],
+      "final_text": "The `Index.Lookup` method is defined in `ast/index.go` at line 276, and the tool method that calls it to answer a symbol lookup is in `tools/symbols.go` at line 184.\n\nFINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"ast/index.go\",\"symbol\":\"Lookup\",\"start_line\":276,\"end_line\":293},{\"path\":\"tools/symbols.go\",\"symbol\":\"Execute\",\"start_line\":184,\"end_line\":184}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "pattern": "Index\\.Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 21,
+          "offset_ms": 7378,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "pattern": "type Index"
+          },
+          "is_error": false,
+          "duration_ms": 22,
+          "offset_ms": 15198,
+          "result_bytes": 58,
+          "result_lines": 4,
+          "candidate_files": [
+            "ast/index.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "path": "ast/index.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 15948,
+          "result_bytes": 12083,
+          "result_lines": 392,
+          "opened_file": "ast/index.go",
+          "lines_inspected": 392,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "grep",
+          "args": {
+            "pattern": "\\.Lookup\\("
+          },
+          "is_error": false,
+          "duration_ms": 22,
+          "offset_ms": 27253,
+          "result_bytes": 449,
+          "result_lines": 14,
+          "candidate_files": [
+            "ast/index_test.go",
+            "tools/symbols.go"
+          ],
+          "reported_file_total": 2,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 4,
+          "tool": "read",
+          "args": {
+            "path": "tools/symbols.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 28741,
+          "result_bytes": 10896,
+          "result_lines": 345,
+          "opened_file": "tools/symbols.go",
+          "lines_inspected": 345,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "grep",
+          "args": {
+            "pattern": "func \\(idx \\*Index\\) Lookup"
+          },
+          "is_error": false,
+          "duration_ms": 36,
+          "offset_ms": 31299,
+          "result_bytes": 96,
+          "result_lines": 4,
+          "candidate_files": [
+            "ast/index.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "F3-negative-grep-symbol",
+      "category": "F_NEGATIVE",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct_not_found",
+      "status_reported": "not_found",
+      "answer_format": "json",
+      "turns": 6,
+      "tool_calls": 5,
+      "discovery_calls": 4,
+      "files_opened": 1,
+      "lines_inspected": 556,
+      "context_bytes": 17915,
+      "candidate_files": 10,
+      "irrelevant_candidates": 10,
+      "reported_candidates": 11,
+      "input_tokens": 15271,
+      "output_tokens": 823,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 0,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 0,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 23547,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "final_text": "FINAL: {\"status\":\"not_found\",\"targets\":[]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "hidden": false
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 9047,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "^\\s*(type|var|const|func)\\s+Grep\\b"
+          },
+          "is_error": false,
+          "duration_ms": 21,
+          "offset_ms": 10168,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 2,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "^\\s*(type|var|const|func)\\s+Grep"
+          },
+          "is_error": false,
+          "duration_ms": 22,
+          "offset_ms": 11206,
+          "result_bytes": 62,
+          "result_lines": 4,
+          "candidate_files": [
+            "tools/grep.go"
+          ],
+          "reported_file_total": 1
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "path": "tools/grep.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 11992,
+          "result_bytes": 17244,
+          "result_lines": 556,
+          "opened_file": "tools/grep.go",
+          "lines_inspected": 556
+        },
+        {
+          "index": 4,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "Grep\\b"
+          },
+          "is_error": false,
+          "duration_ms": 19,
+          "offset_ms": 18251,
+          "result_bytes": 257,
+          "result_lines": 8,
+          "candidate_files": [
+            "tools/bench_test.go",
+            "tools/grep.go"
+          ],
+          "reported_file_total": 2
+        }
+      ]
+    },
+    {
+      "task_id": "F3-negative-grep-symbol",
+      "category": "F_NEGATIVE",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct_not_found",
+      "status_reported": "not_found",
+      "answer_format": "json",
+      "turns": 2,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 36,
+      "candidate_files": 0,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 0,
+      "input_tokens": 1297,
+      "output_tokens": 174,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 0,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 0,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 4425,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "final_text": "FINAL: {\"status\":\"not_found\",\"targets\":[]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Grep"
+          },
+          "is_error": false,
+          "duration_ms": 107,
+          "offset_ms": 1502,
+          "result_bytes": 36,
+          "result_lines": 2
+        }
+      ]
+    },
+    {
+      "task_id": "F3-negative-grep-symbol",
+      "category": "F_NEGATIVE",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct_not_found",
+      "status_reported": "not_found",
+      "answer_format": "json",
+      "turns": 5,
+      "tool_calls": 4,
+      "discovery_calls": 3,
+      "files_opened": 1,
+      "lines_inspected": 556,
+      "context_bytes": 24210,
+      "candidate_files": 6,
+      "irrelevant_candidates": 6,
+      "reported_candidates": 5757,
+      "input_tokens": 16302,
+      "output_tokens": 869,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 0,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 0,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 18808,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "final_text": "FINAL: {\"status\":\"not_found\",\"targets\":[]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Grep"
+          },
+          "is_error": false,
+          "duration_ms": 80,
+          "offset_ms": 1887,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 1,
+          "tool": "symbols",
+          "args": {
+            "limit": 50
+          },
+          "is_error": false,
+          "duration_ms": 8,
+          "offset_ms": 5542,
+          "result_bytes": 6917,
+          "result_lines": 305,
+          "candidate_files": [
+            "agent/admit_test.go",
+            "agent/authorize.go",
+            "agent/authorize_test.go",
+            "agent/compaction.go",
+            "agent/compaction_integration_test.go"
+          ],
+          "reported_file_total": 5756
+        },
+        {
+          "index": 2,
+          "tool": "glob",
+          "args": {
+            "pattern": "**/*grep*"
+          },
+          "is_error": false,
+          "duration_ms": 5,
+          "offset_ms": 7209,
+          "result_bytes": 13,
+          "result_lines": 1,
+          "candidate_files": [
+            "tools/grep.go"
+          ],
+          "reported_file_total": 1
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "path": "tools/grep.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 8493,
+          "result_bytes": 17244,
+          "result_lines": 556,
+          "opened_file": "tools/grep.go",
+          "lines_inspected": 556
+        }
+      ]
+    },
+    {
+      "task_id": "H1-lexical-error-text",
+      "category": "H_LEXICAL",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 884,
+      "context_bytes": 33138,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 11044,
+      "output_tokens": 536,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 2802,
+      "time_to_all_targets_ms": 2802,
+      "duration_ms": 19932,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "agent/loop.go",
+          "symbol": "ErrNoTools",
+          "start_line": 16,
+          "end_line": 16
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"agent/loop.go\",\"symbol\":\"ErrNoTools\",\"start_line\":16,\"end_line\":16}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "pattern": "agent: no tools registered"
+          },
+          "is_error": false,
+          "duration_ms": 29,
+          "offset_ms": 2802,
+          "result_bytes": 97,
+          "result_lines": 4,
+          "candidate_files": [
+            "agent/loop.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "path": "agent/loop.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 11917,
+          "result_bytes": 33041,
+          "result_lines": 884,
+          "opened_file": "agent/loop.go",
+          "lines_inspected": 884,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H1-lexical-error-text",
+      "category": "H_LEXICAL",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 10,
+      "tool_calls": 9,
+      "discovery_calls": 5,
+      "files_opened": 4,
+      "lines_inspected": 1083,
+      "context_bytes": 41759,
+      "candidate_files": 30,
+      "irrelevant_candidates": 30,
+      "reported_candidates": 30,
+      "input_tokens": 21885,
+      "output_tokens": 575,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 9,
+      "calls_to_all_targets": 9,
+      "time_to_first_target_ms": 15963,
+      "time_to_all_targets_ms": 15963,
+      "duration_ms": 24446,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "agent/loop.go",
+          "symbol": "ErrNoTools",
+          "start_line": 16,
+          "end_line": 16
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"agent/loop.go\",\"symbol\":\"ErrNoTools\",\"start_line\":16,\"end_line\":16}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 2243,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "ls",
+          "args": {
+            "path": "agent"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 4795,
+          "result_bytes": 536,
+          "result_lines": 22,
+          "candidate_files": [
+            "agent/10016",
+            "agent/10049",
+            "agent/11844",
+            "agent/12245",
+            "agent/13746",
+            "agent/15635",
+            "agent/1757",
+            "agent/1960",
+            "agent/2506",
+            "agent/2790",
+            "agent/29614",
+            "agent/4447",
+            "agent/4808",
+            "agent/517",
+            "agent/5185",
+            "agent/5309",
+            "agent/6248",
+            "agent/6571",
+            "agent/7537",
+            "agent/7606",
+            "agent/9352",
+            "agent/agent"
+          ],
+          "reported_file_total": 22
+        },
+        {
+          "index": 2,
+          "tool": "symbols",
+          "args": {
+            "symbol": "agent: no tools registered"
+          },
+          "is_error": false,
+          "duration_ms": 124,
+          "offset_ms": 6861,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "path": "agent"
+          },
+          "is_error": true,
+          "duration_ms": 0,
+          "offset_ms": 7661,
+          "result_bytes": 34,
+          "result_lines": 1,
+          "opened_file": "agent"
+        },
+        {
+          "index": 4,
+          "tool": "symbols",
+          "args": {
+            "symbol": "no tools registered"
+          },
+          "is_error": false,
+          "duration_ms": 3,
+          "offset_ms": 8904,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 5,
+          "tool": "symbols",
+          "args": {
+            "symbol": "tools registered"
+          },
+          "is_error": false,
+          "duration_ms": 3,
+          "offset_ms": 13537,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 6,
+          "tool": "read",
+          "args": {
+            "path": "agent/authorize.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 14688,
+          "result_bytes": 1861,
+          "result_lines": 38,
+          "opened_file": "agent/authorize.go",
+          "lines_inspected": 38
+        },
+        {
+          "index": 7,
+          "tool": "read",
+          "args": {
+            "path": "agent/tool.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 15284,
+          "result_bytes": 5844,
+          "result_lines": 161,
+          "opened_file": "agent/tool.go",
+          "lines_inspected": 161
+        },
+        {
+          "index": 8,
+          "tool": "read",
+          "args": {
+            "path": "agent/loop.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 15963,
+          "result_bytes": 33041,
+          "result_lines": 884,
+          "opened_file": "agent/loop.go",
+          "lines_inspected": 884,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H1-lexical-error-text",
+      "category": "H_LEXICAL",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 884,
+      "context_bytes": 33138,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 11722,
+      "output_tokens": 380,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 958,
+      "time_to_all_targets_ms": 958,
+      "duration_ms": 6864,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "agent/loop.go",
+          "symbol": "ErrNoTools",
+          "start_line": 16,
+          "end_line": 16
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"agent/loop.go\",\"symbol\":\"ErrNoTools\",\"start_line\":16,\"end_line\":16}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "pattern": "agent: no tools registered"
+          },
+          "is_error": false,
+          "duration_ms": 21,
+          "offset_ms": 958,
+          "result_bytes": 97,
+          "result_lines": 4,
+          "candidate_files": [
+            "agent/loop.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "path": "agent/loop.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 1937,
+          "result_bytes": 33041,
+          "result_lines": 884,
+          "opened_file": "agent/loop.go",
+          "lines_inspected": 884,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H4-lexical-doc-line",
+      "category": "H_LEXICAL",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 4,
+      "tool_calls": 3,
+      "discovery_calls": 2,
+      "files_opened": 1,
+      "lines_inspected": 416,
+      "context_bytes": 26260,
+      "candidate_files": 9,
+      "irrelevant_candidates": 8,
+      "reported_candidates": 9,
+      "input_tokens": 9468,
+      "output_tokens": 578,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 7713,
+      "time_to_all_targets_ms": 7713,
+      "duration_ms": 15143,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "docs/architecture/ARCHITECTURE.md",
+          "symbol": "Single owner of ProviderEnvVars",
+          "start_line": 23,
+          "end_line": 23
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"docs/architecture/ARCHITECTURE.md\",\"symbol\":\"Single owner of ProviderEnvVars\",\"start_line\":23,\"end_line\":23}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 1279,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "pattern": "Single owner of ProviderEnvVars"
+          },
+          "is_error": false,
+          "duration_ms": 17,
+          "offset_ms": 7713,
+          "result_bytes": 141,
+          "result_lines": 4,
+          "candidate_files": [
+            "docs/architecture/ARCHITECTURE.md"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "path": "docs/architecture/ARCHITECTURE.md"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 10643,
+          "result_bytes": 25784,
+          "result_lines": 416,
+          "opened_file": "docs/architecture/ARCHITECTURE.md",
+          "lines_inspected": 416,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H4-lexical-doc-line",
+      "category": "H_LEXICAL",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 5,
+      "tool_calls": 4,
+      "discovery_calls": 3,
+      "files_opened": 1,
+      "lines_inspected": 416,
+      "context_bytes": 26286,
+      "candidate_files": 14,
+      "irrelevant_candidates": 14,
+      "reported_candidates": 14,
+      "input_tokens": 9761,
+      "output_tokens": 301,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 4,
+      "calls_to_all_targets": 4,
+      "time_to_first_target_ms": 13317,
+      "time_to_all_targets_ms": 13317,
+      "duration_ms": 16546,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "docs/architecture/ARCHITECTURE.md",
+          "symbol": "Single owner of ProviderEnvVars",
+          "start_line": 23,
+          "end_line": 23
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"docs/architecture/ARCHITECTURE.md\",\"symbol\":\"Single owner of ProviderEnvVars\",\"start_line\":23,\"end_line\":23}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 2248,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "ls",
+          "args": {
+            "path": "docs"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 3295,
+          "result_bytes": 18,
+          "result_lines": 2,
+          "candidate_files": [
+            "docs/docs"
+          ],
+          "reported_file_total": 1
+        },
+        {
+          "index": 2,
+          "tool": "ls",
+          "args": {
+            "path": "docs/architecture"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 3994,
+          "result_bytes": 149,
+          "result_lines": 5,
+          "candidate_files": [
+            "docs/architecture/18610",
+            "docs/architecture/24229",
+            "docs/architecture/32078",
+            "docs/architecture/35293",
+            "docs/architecture/docs/architecture"
+          ],
+          "reported_file_total": 5
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "path": "docs/architecture/ARCHITECTURE.md"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 13317,
+          "result_bytes": 25784,
+          "result_lines": 416,
+          "opened_file": "docs/architecture/ARCHITECTURE.md",
+          "lines_inspected": 416,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H4-lexical-doc-line",
+      "category": "H_LEXICAL",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 2,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 141,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 1966,
+      "output_tokens": 493,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 11758,
+      "time_to_all_targets_ms": 11758,
+      "duration_ms": 15827,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "docs/architecture/ARCHITECTURE.md",
+          "symbol": "Single owner of ProviderEnvVars",
+          "start_line": 23,
+          "end_line": 23
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"docs/architecture/ARCHITECTURE.md\",\"symbol\":\"Single owner of ProviderEnvVars\",\"start_line\":23,\"end_line\":23}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "pattern": "Single owner of ProviderEnvVars"
+          },
+          "is_error": false,
+          "duration_ms": 21,
+          "offset_ms": 11758,
+          "result_bytes": 141,
+          "result_lines": 4,
+          "candidate_files": [
+            "docs/architecture/ARCHITECTURE.md"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    }
+  ]
+}
