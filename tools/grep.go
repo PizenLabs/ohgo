@@ -120,6 +120,9 @@ type grepFile struct {
 	matches []grepMatch
 	// truncated is true when the per-file cap cut results short.
 	truncated bool
+	// partial is true when the search window or a scan error ended the file
+	// before its end, so matches beyond that point were never examined.
+	partial bool
 }
 
 // Execute implements agent.Tool.
@@ -169,7 +172,7 @@ func (t *GrepTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	// Resolve the search scope: a file narrows to that file, a directory walks.
 	scope := t.Root
 	singleFile := false
-	partialNote := ""
+	var notes []string
 	if raw, ok := args["path"]; ok && raw != nil {
 		path, err := strArg(args, "path", "")
 		if err != nil {
@@ -187,9 +190,9 @@ func (t *GrepTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 			scope = resolved
 			singleFile = !info.IsDir()
 			if singleFile && info.Size() > GrepMaxFileBytes {
-				partialNote = fmt.Sprintf(
+				notes = append(notes, fmt.Sprintf(
 					"note: %s exceeds the %d MiB search window; matches past it are not shown",
-					relativeToRoot(t.Root, scope), GrepMaxFileBytes/(1024*1024))
+					relativeToRoot(t.Root, scope), GrepMaxFileBytes/(1024*1024)))
 			}
 		}
 	}
@@ -218,20 +221,40 @@ func (t *GrepTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		}
 	}
 
+	scanned := t.search(searchCtx, files, matcher, perFile)
+	if err := checkCancelled(ctx.Ctx); err != nil {
+		return agent.ErrorResult("%v", err)
+	}
+	if searchCtx.Err() != nil {
+		notes = append(notes, fmt.Sprintf("note: search stopped after %s; results are partial", timeout))
+	}
 	withMatches := make([]*grepFile, 0)
-	for _, file := range t.search(searchCtx, files, matcher, perFile) {
+	windowed := 0
+	for _, file := range scanned {
+		if file.partial && !singleFile {
+			windowed++
+		}
 		if len(file.matches) > 0 {
 			withMatches = append(withMatches, file)
 		}
+	}
+	if windowed > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"note: %d file(s) exceed the %d MiB search window; matches past it are not shown",
+			windowed, GrepMaxFileBytes/(1024*1024)))
 	}
 	sortGrepFiles(withMatches)
 
 	totalFiles := len(withMatches)
 	if totalFiles == 0 {
+		text := "No matches found."
+		if len(notes) > 0 {
+			text += "\n\n" + strings.Join(notes, "\n")
+		}
 		return agent.Result{
-			Text:    "No matches found.",
+			Text:    text,
 			Details: map[string]any{"files": 0, "pattern": pattern},
-			Useless: true,
+			Useless: len(notes) == 0,
 		}
 	}
 
@@ -272,8 +295,8 @@ func (t *GrepTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 
 	text := strings.TrimRight(sb.String(), "\n")
-	if partialNote != "" {
-		text += "\n\n" + partialNote
+	for _, note := range notes {
+		text += "\n\n" + note
 	}
 	text += "\n\n" + summary
 
@@ -394,7 +417,7 @@ dispatch:
 		mu.Lock()
 		stop := done
 		mu.Unlock()
-		if stop {
+		if stop || ctx.Err() != nil {
 			break dispatch
 		}
 		select {
@@ -435,8 +458,11 @@ func (t *GrepTool) scanFile(ctx context.Context, path string, matcher *lineMatch
 		reader = bufio.NewReaderSize(&ioLimitReader{file, GrepMaxFileBytes}, 64*1024)
 	}
 
+	// A line may be as long as the window itself. A smaller cap would end the
+	// scan at the first minified or generated line and silently drop the rest
+	// of the file.
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), GrepMaxLineLength*4)
+	scanner.Buffer(make([]byte, 0, 64*1024), GrepMaxFileBytes)
 
 	out := &grepFile{rel: path}
 	lineNum := 0
@@ -460,7 +486,8 @@ func (t *GrepTool) scanFile(ctx context.Context, path string, matcher *lineMatch
 		}
 		out.matches = append(out.matches, grepMatch{rel: path, line: lineNum, text: text})
 	}
-	if len(out.matches) == 0 {
+	out.partial = info.Size() > GrepMaxFileBytes || scanner.Err() != nil
+	if len(out.matches) == 0 && !out.partial {
 		return nil
 	}
 	return out

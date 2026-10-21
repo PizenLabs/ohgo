@@ -221,3 +221,25 @@ A capability expansion is justified only if the baseline shows:
 A lexical task that structural discovery cannot answer is **not** evidence for
 expanding `symbols`. It is evidence that the agent should choose the cheaper
 mechanism, which is exactly what the hybrid track tests.
+
+## Amendment A1 — completion protocol (2026-10-21)
+
+The sections above are unchanged. This amendment records how the blocked cells
+were completed and does not alter the frozen protocol.
+
+- **Reruns.** Blocked cells were rerun with the same task hash, revision,
+  model, temperature, turn, token, and timeout settings. Pacing used
+  `-min-interval 4s` or `5s` and `-retries 10`. Provider errors (HTTP 429) were
+  never admitted to the dataset.
+- **Fix-affected cells.** Cells whose recorded lexical calls change output under
+  the anchored `.gitignore` fix (`fd68257`) were replaced only by valid post-fix
+  reruns, as identified by replaying every recorded lexical call. See
+  `docs/benchmarks/results/phase2-fix-impact.json`.
+- **Variance.** Two fix-affected cells were repeated twice on the same binary to
+  estimate run-to-run variance (`phase2-variance-A.json`).
+- **Merge.** `docs/benchmarks/phase2_final_merge.py` builds
+  `phase2-final-valid-runs.json`. It refuses any source whose task hash,
+  revision, model, provider, or temperature differs.
+- **Analysis.** `docs/benchmarks/phase2_final_analysis.py` computes the final
+  metrics. Results are in `phase2-final-analysis.json` and discussed in
+  `docs/report/FINAL_CLOSURE.md`.

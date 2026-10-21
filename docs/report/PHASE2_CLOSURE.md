@@ -316,3 +316,30 @@ intent → the right mechanism → the right coordinate → minimum evidence
 ```
 
 not a general-purpose repository-intelligence platform.
+
+---
+
+## Completion Addendum (2026-10-21)
+
+The verdict above is the historical HOLD at 53 valid cells. It is kept unchanged. The completed benchmark is recorded in `docs/report/FINAL_CLOSURE.md`, with the merged dataset in `docs/benchmarks/results/phase2-final-valid-runs.json`.
+
+What changed:
+
+- **All 81 cells are valid.** The 28 blocked cells were rerun with the same task hash, revision, model, and settings. The blocks were per-minute rate limits (HTTP 429, `free-models-per-min`), not daily quota. Pacing resolved them.
+- **The `.gitignore` fix was re-examined.** Replaying the 145 recorded lexical calls before and after the fix changed 19 calls across 9 runs. Those 9 runs were rerun on the post-fix binary and replaced, never mixed. Two outcomes changed: B1(A) and D3(A). B1(A) is unstable across repeats on the same binary, so the net effect is not separable from noise.
+- **Two more lexical defects were fixed** (`tools/grep.go`): silent truncation on lines of 64 KiB or more, and silent partial results on window overflow or timeout. Each has a regression test. Neither changes any recorded fixture result.
+
+Corrections to the claims above:
+
+- The statement that the hybrid "closes the cross-file gap" is withdrawn. Over 27 tasks the hybrid solves 1 of 3 cross-file tasks (E2). Structural and lexical solve none.
+- The 17-task paired medians above are reproduced exactly (input tokens 15,271 / 7,704 / 9,091). They describe a subset defined by which cells were blocked, not a random sample.
+
+Final measured position, all 27 tasks (medians):
+
+| Track | Correct | Turns | Discovery calls | Candidates (irrelevant) | Input tokens |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A — lexical | 17/27 | 7 | 4 | 12 (11) | 11,126 |
+| B — structural | 20/27 | 3 | 1 | 2 (0) | 5,110 |
+| C — hybrid | 21/27 | 3 | 2 | 2 (1) | 5,032 |
+
+Structural discovery is substantially cheaper and at least as correct on declaration tasks. Lexical discovery is necessary for text tasks (H: 5/5 lexical vs 3/5 structural). The B-vs-C correctness difference is one task, within observed variance. Cross-file relations remain unsolved and are the only category that motivates future work, as a separately scoped hypothesis.

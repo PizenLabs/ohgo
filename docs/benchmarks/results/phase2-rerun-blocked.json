@@ -1,0 +1,3396 @@
+{
+  "metadata": {
+    "benchmark_revision": "phase2-baseline",
+    "harness_version": "phase2-v1",
+    "task_hash": "414012543e4c10121d3e1ffd6c24ed4c6107c74dcd8134406ae0a2181f1b68bb",
+    "started_at": "2026-10-21T04:55:15.20412Z",
+    "finished_at": "2026-10-21T05:12:46.566411Z",
+    "repository": "/Users/anvndev/Documents/Project/OpenSource/PizenLabs/ohgo",
+    "repository_revision": "53bc07b2e850720e331e5fdcdf6ed0fa256402d7",
+    "fixture_files": 319,
+    "fixture_go_files": 295,
+    "model": "cohere/north-mini-code:free",
+    "provider": "openrouter",
+    "api": "openai-chat-completions",
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0,
+    "max_turns": 16,
+    "max_tokens": 2048,
+    "timeout_seconds": 240,
+    "concurrency": 1,
+    "repeats": 1,
+    "tracks": [
+      "A-lexical",
+      "B-structural",
+      "C-hybrid"
+    ],
+    "excluded_paths": [
+      "docs/report",
+      "docs/benchmarks",
+      "AGENTS.md",
+      "MEMORY.md",
+      "PROGRESS.md",
+      "PORT.md",
+      "README.md"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "E3-cross-close-def-and-run-path",
+      "category": "E_CROSS_FILE",
+      "prompt": "Where is `Store.Close` defined, and where is it called in the one-shot run path? Report both locations.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "session/session.go",
+          "symbol": "Store.Close",
+          "start_line": 147,
+          "end_line": 152
+        },
+        {
+          "path": "cmd/ohgo/run.go",
+          "symbol": "runOnce",
+          "start_line": 1137,
+          "end_line": 1196
+        }
+      ],
+      "notes": "runOnce defers the closeStore closure, so the call is one hop away from session.Store.Close."
+    },
+    {
+      "id": "F1-negative-find-references",
+      "category": "F_NEGATIVE",
+      "prompt": "Does a function named `FindReferences` exist anywhere in this repository? If not, report not_found. Do not report similarly named functions.",
+      "expected_status": "not_found",
+      "targets": null,
+      "negative_names": [
+        "FindReferences"
+      ],
+      "notes": "A plausible capability name that does not exist in the frozen tree."
+    },
+    {
+      "id": "F2-negative-call-graph",
+      "category": "F_NEGATIVE",
+      "prompt": "Does a type named `CallGraph` exist? Report not_found if no declaration has that exact name.",
+      "expected_status": "not_found",
+      "targets": null,
+      "negative_names": [
+        "CallGraph"
+      ],
+      "notes": "A plausible repository-intelligence type that is absent."
+    },
+    {
+      "id": "G1-noise-classify-risk",
+      "category": "G_NOISE",
+      "prompt": "Find the declaration named exactly `ClassifyRisk`. Report the file, symbol, and line range.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "security/scope.go",
+          "symbol": "ClassifyRisk",
+          "start_line": 111,
+          "end_line": 132
+        }
+      ],
+      "notes": "Classify, ClassifyPrediction, and ClassifyRisk compete lexically."
+    },
+    {
+      "id": "G2-noise-prompt-identity",
+      "category": "G_NOISE",
+      "prompt": "Find the `Identity` declaration in package `prompt` (the system-prompt constant), not the `Identity` types in other packages. Report the file, symbol, and line range.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "prompt/prompt.go",
+          "symbol": "Identity",
+          "start_line": 20,
+          "end_line": 38
+        }
+      ],
+      "notes": "Three declarations named Identity exist in different packages."
+    },
+    {
+      "id": "G3-noise-all-load",
+      "category": "G_NOISE",
+      "prompt": "Find every declaration named exactly `Load`. Report all of them; preserve ambiguity if there is more than one.",
+      "expected_status": "ambiguous",
+      "targets": [
+        {
+          "path": "config/config.go",
+          "symbol": "Load",
+          "start_line": 192,
+          "end_line": 216
+        },
+        {
+          "path": "project/project.go",
+          "symbol": "Load",
+          "start_line": 140,
+          "end_line": 158
+        }
+      ],
+      "notes": "Two unrelated Load functions."
+    },
+    {
+      "id": "H2-lexical-todo-literal",
+      "category": "H_LEXICAL",
+      "prompt": "Find where the string literal `TODO` is used to label an open task in the task view. Report the file, enclosing function, and line.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "task/view.go",
+          "symbol": "renderTodoContext",
+          "start_line": 124,
+          "end_line": 144
+        }
+      ],
+      "notes": "The line is inside a rendering function; the TODO text is a string literal."
+    },
+    {
+      "id": "H3-lexical-json-field",
+      "category": "H_LEXICAL",
+      "prompt": "Find the struct field that serializes as the JSON key `tool_choice` in the OpenAI request body. Report the file, enclosing type, and line.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "ai/openai.go",
+          "symbol": "openAIRequest",
+          "start_line": 39,
+          "end_line": 50
+        }
+      ],
+      "notes": "A JSON struct tag, not a symbol name."
+    },
+    {
+      "id": "H5-lexical-makefile-target",
+      "category": "H_LEXICAL",
+      "prompt": "Find the Makefile target that runs the race-enabled test suite. Report the file and line.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "Makefile",
+          "start_line": 49,
+          "end_line": 49,
+          "contains": "race:"
+        }
+      ],
+      "notes": "Build configuration outside Go syntax."
+    }
+  ],
+  "runs": [
+    {
+      "task_id": "E3-cross-close-def-and-run-path",
+      "category": "E_CROSS_FILE",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "provider_error",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 4,
+      "tool_calls": 4,
+      "discovery_calls": 3,
+      "files_opened": 1,
+      "lines_inspected": 30,
+      "context_bytes": 3653,
+      "candidate_files": 28,
+      "irrelevant_candidates": 26,
+      "reported_candidates": 52,
+      "input_tokens": 4060,
+      "output_tokens": 295,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 3,
+      "calls_to_all_targets": 3,
+      "time_to_first_target_ms": 16350,
+      "time_to_all_targets_ms": 16350,
+      "duration_ms": 53091,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "limit": 100
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 7680,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "pattern": "Store\\.Close"
+          },
+          "is_error": false,
+          "duration_ms": 17,
+          "offset_ms": 9188,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 2,
+          "tool": "grep",
+          "args": {
+            "pattern": "func.*Close"
+          },
+          "is_error": false,
+          "duration_ms": 27,
+          "offset_ms": 16350,
+          "result_bytes": 2498,
+          "result_lines": 82,
+          "candidate_files": [
+            "ai/anthropic.go",
+            "ai/ollama.go",
+            "ai/openai.go",
+            "ai/probe.go",
+            "catalog/dynamic.go",
+            "cmd/ohgo/harness_test.go",
+            "cmd/ohgo/main.go",
+            "cmd/ohgo/modelplane_test.go",
+            "cmd/ohgo/resume_test.go",
+            "cmd/ohgo/run.go",
+            "cmd/ohgo/security_test.go",
+            "cmd/ohgo/session_test.go",
+            "cmd/ohgo/support.go",
+            "cmd/ohgo/support_test.go",
+            "cmd/ohgo/wizard_test.go",
+            "cmd/ohgo/workspace_test.go",
+            "edit/edit_test.go",
+            "session/migration_test.go",
+            "session/session.go",
+            "session/session_test.go"
+          ],
+          "reported_file_total": 44,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 140,
+            "path": "session/session.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 21007,
+          "result_bytes": 803,
+          "result_lines": 32,
+          "opened_file": "session/session.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ],
+      "error": "agent: open stream: ai: provider returned HTTP 429: {\"error\":{\"message\":\"Rate limit exceeded: free-models-per-min. \",\"code\":429,\"metadata\":{\"headers\":{\"X-RateLimit-Limit\":\"20\",\"X-RateLimit-Remaining\":\"0\",\"X-RateLimit-Reset\":\"1792558560000\"},\"limit_source\":\"openrouter_free_tier_per_minute\",\"remedy_hint\":\"Slow down requests to free models, or retry after the per-minute window resets.\",\"provider_name\":null}},\"user_id\":\"user_30E48tqmm3xmYpbcTUDBYF8JWhB\"}"
+    },
+    {
+      "task_id": "E3-cross-close-def-and-run-path",
+      "category": "E_CROSS_FILE",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "provider_error",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 7,
+      "tool_calls": 7,
+      "discovery_calls": 7,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 365,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 4796,
+      "output_tokens": 276,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 2034,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 86519,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Store.Close"
+          },
+          "is_error": false,
+          "duration_ms": 99,
+          "offset_ms": 2034,
+          "result_bytes": 149,
+          "result_lines": 9,
+          "candidate_files": [
+            "session/session.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 6845,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 2,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 3,
+          "offset_ms": 11522,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 3,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 2,
+          "offset_ms": 16037,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 4,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 41948,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 5,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 6,
+          "offset_ms": 44985,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 6,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 53877,
+          "result_bytes": 36,
+          "result_lines": 2
+        }
+      ],
+      "error": "agent: open stream: ai: provider returned HTTP 429: {\"error\":{\"message\":\"Rate limit exceeded: free-models-per-min. \",\"code\":429,\"metadata\":{\"headers\":{\"X-RateLimit-Limit\":\"20\",\"X-RateLimit-Remaining\":\"0\",\"X-RateLimit-Reset\":\"1792558680000\"},\"limit_source\":\"openrouter_free_tier_per_minute\",\"remedy_hint\":\"Slow down requests to free models, or retry after the per-minute window resets.\",\"provider_name\":null}},\"user_id\":\"user_30E48tqmm3xmYpbcTUDBYF8JWhB\"}"
+    },
+    {
+      "task_id": "E3-cross-close-def-and-run-path",
+      "category": "E_CROSS_FILE",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "wrong_target",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 10,
+      "tool_calls": 9,
+      "discovery_calls": 4,
+      "files_opened": 2,
+      "lines_inspected": 250,
+      "context_bytes": 14140,
+      "candidate_files": 32,
+      "irrelevant_candidates": 30,
+      "reported_candidates": 62,
+      "input_tokens": 28868,
+      "output_tokens": 1392,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 3120,
+      "time_to_all_targets_ms": 7080,
+      "duration_ms": 72600,
+      "matched_targets": 1,
+      "missing_targets": 1,
+      "extra_targets": 1,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "session/session.go",
+          "symbol": "Store.Close",
+          "start_line": 147,
+          "end_line": 152
+        },
+        {
+          "path": "cmd/ohgo/run.go",
+          "symbol": "closeStore",
+          "start_line": 1160,
+          "end_line": 1160
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"session/session.go\",\"symbol\":\"Store.Close\",\"start_line\":147,\"end_line\":152},{\"path\":\"cmd/ohgo/run.go\",\"symbol\":\"closeStore\",\"start_line\":1160,\"end_line\":1160}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Store.Close"
+          },
+          "is_error": false,
+          "duration_ms": 112,
+          "offset_ms": 3120,
+          "result_bytes": 149,
+          "result_lines": 9,
+          "candidate_files": [
+            "session/session.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "pattern": "\\.Close\\(\\)"
+          },
+          "is_error": false,
+          "duration_ms": 22,
+          "offset_ms": 7080,
+          "result_bytes": 2545,
+          "result_lines": 98,
+          "candidate_files": [
+            "ai/anthropic.go",
+            "ai/live_test.go",
+            "ai/ollama.go",
+            "ai/openai.go",
+            "ai/probe.go",
+            "ai/probe_test.go",
+            "ai/registry_test.go",
+            "ai/sse.go",
+            "catalog/capability_test.go",
+            "catalog/dynamic.go",
+            "catalog/dynamic_test.go",
+            "catalog/snapshot_test.go",
+            "cmd/ohgo/doctor.go",
+            "cmd/ohgo/harness_test.go",
+            "cmd/ohgo/integration_test.go",
+            "cmd/ohgo/main.go",
+            "cmd/ohgo/modelplane_test.go",
+            "cmd/ohgo/modelswitch_test.go",
+            "cmd/ohgo/resume_test.go",
+            "cmd/ohgo/run.go"
+          ],
+          "reported_file_total": 43,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 140,
+            "path": "session/session.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 14014,
+          "result_bytes": 577,
+          "result_lines": 22,
+          "opened_file": "session/session.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "grep",
+          "args": {
+            "pattern": "store\\.Close\\(\\)"
+          },
+          "is_error": false,
+          "duration_ms": 24,
+          "offset_ms": 21697,
+          "result_bytes": 1602,
+          "result_lines": 57,
+          "candidate_files": [
+            "cmd/ohgo/doctor.go",
+            "cmd/ohgo/harness_test.go",
+            "cmd/ohgo/main.go",
+            "cmd/ohgo/modelplane_test.go",
+            "cmd/ohgo/resume_test.go",
+            "cmd/ohgo/run.go",
+            "cmd/ohgo/session_test.go",
+            "cmd/ohgo/support_test.go",
+            "cmd/ohgo/wizard_test.go",
+            "cmd/ohgo/workspace_test.go",
+            "session/migration_test.go",
+            "session/session_test.go",
+            "tui/app_test.go",
+            "tui/render_correctness_test.go"
+          ],
+          "reported_file_total": 14,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 4,
+          "tool": "grep",
+          "args": {
+            "pattern": "one-shot|one shot"
+          },
+          "is_error": false,
+          "duration_ms": 20,
+          "offset_ms": 22989,
+          "result_bytes": 653,
+          "result_lines": 16,
+          "candidate_files": [
+            "cmd/ohgo/boot_test.go",
+            "cmd/ohgo/run.go",
+            "cmd/ohgo/security_test.go",
+            "security/policy.go"
+          ],
+          "reported_file_total": 4,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "read",
+          "args": {
+            "limit": 100,
+            "offset": 1100,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 30094,
+          "result_bytes": 3516,
+          "result_lines": 102,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 100,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 6,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 1190,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 34831,
+          "result_bytes": 1992,
+          "result_lines": 52,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 7,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 1220,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 40033,
+          "result_bytes": 2029,
+          "result_lines": 52,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 8,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 1155,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 61511,
+          "result_bytes": 1077,
+          "result_lines": 32,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "F1-negative-find-references",
+      "category": "F_NEGATIVE",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "provider_error",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 1,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 335,
+      "candidate_files": 8,
+      "irrelevant_candidates": 8,
+      "reported_candidates": 8,
+      "input_tokens": 745,
+      "output_tokens": 58,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 0,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 0,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 35640,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "limit": 100
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 1480,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        }
+      ],
+      "error": "agent: open stream: ai: provider returned HTTP 429: {\"error\":{\"message\":\"Rate limit exceeded: free-models-per-min. \",\"code\":429,\"metadata\":{\"headers\":{\"X-RateLimit-Limit\":\"20\",\"X-RateLimit-Remaining\":\"0\",\"X-RateLimit-Reset\":\"1792558800000\"},\"limit_source\":\"openrouter_free_tier_per_minute\",\"remedy_hint\":\"Slow down requests to free models, or retry after the per-minute window resets.\",\"provider_name\":null}},\"user_id\":\"user_30E48tqmm3xmYpbcTUDBYF8JWhB\"}"
+    },
+    {
+      "task_id": "F1-negative-find-references",
+      "category": "F_NEGATIVE",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct_not_found",
+      "status_reported": "not_found",
+      "answer_format": "json",
+      "turns": 2,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 36,
+      "candidate_files": 0,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 0,
+      "input_tokens": 1265,
+      "output_tokens": 339,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 0,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 0,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 13436,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "final_text": "{\"status\":\"not_found\",\"targets\":[]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "FindReferences"
+          },
+          "is_error": false,
+          "duration_ms": 89,
+          "offset_ms": 9767,
+          "result_bytes": 36,
+          "result_lines": 2
+        }
+      ]
+    },
+    {
+      "task_id": "F1-negative-find-references",
+      "category": "F_NEGATIVE",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct_not_found",
+      "status_reported": "not_found",
+      "answer_format": "json",
+      "turns": 4,
+      "tool_calls": 3,
+      "discovery_calls": 3,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 70,
+      "candidate_files": 0,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 0,
+      "input_tokens": 3925,
+      "output_tokens": 494,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 0,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 0,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 21487,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "final_text": "FINAL: {\"status\":\"not_found\",\"targets\":[]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "pattern": "FindReferences"
+          },
+          "is_error": false,
+          "duration_ms": 34,
+          "offset_ms": 4887,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "case": false,
+            "pattern": "FindReferences"
+          },
+          "is_error": false,
+          "duration_ms": 27,
+          "offset_ms": 9415,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 2,
+          "tool": "symbols",
+          "args": {
+            "symbol": "FindReferences"
+          },
+          "is_error": false,
+          "duration_ms": 88,
+          "offset_ms": 13619,
+          "result_bytes": 36,
+          "result_lines": 2
+        }
+      ]
+    },
+    {
+      "task_id": "F2-negative-call-graph",
+      "category": "F_NEGATIVE",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct_not_found",
+      "status_reported": "not_found",
+      "answer_format": "json",
+      "turns": 8,
+      "tool_calls": 7,
+      "discovery_calls": 7,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 4486,
+      "candidate_files": 208,
+      "irrelevant_candidates": 208,
+      "reported_candidates": 208,
+      "input_tokens": 10222,
+      "output_tokens": 252,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 0,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 0,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 48638,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "final_text": "FINAL: {\"status\":\"not_found\",\"targets\":[]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "limit": 100
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 4278,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "pattern": "type CallGraph"
+          },
+          "is_error": false,
+          "duration_ms": 29,
+          "offset_ms": 12888,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 2,
+          "tool": "grep",
+          "args": {
+            "pattern": "\\bCallGraph\\b"
+          },
+          "is_error": false,
+          "duration_ms": 31,
+          "offset_ms": 14121,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 3,
+          "tool": "grep",
+          "args": {
+            "pattern": "CallGraph"
+          },
+          "is_error": false,
+          "duration_ms": 25,
+          "offset_ms": 26153,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 4,
+          "tool": "glob",
+          "args": {
+            "pattern": "**/*.go"
+          },
+          "is_error": false,
+          "duration_ms": 8,
+          "offset_ms": 26852,
+          "result_bytes": 4066,
+          "result_lines": 202,
+          "candidate_files": [
+            "agent/admit_test.go",
+            "agent/authorize.go",
+            "agent/authorize_test.go",
+            "agent/compaction.go",
+            "agent/compaction_integration_test.go",
+            "agent/compaction_test.go",
+            "agent/concurrency_test.go",
+            "agent/deadline_test.go",
+            "agent/history.go",
+            "agent/loop.go",
+            "agent/loop_test.go",
+            "agent/message.go",
+            "agent/mutation.go",
+            "agent/progress_test.go",
+            "agent/subagent.go",
+            "agent/subagent_e2e_test.go",
+            "agent/subagent_test.go",
+            "agent/tool.go",
+            "agent/toollifecycle_test.go",
+            "agent/usage.go",
+            "agent/usage_test.go",
+            "ai/anthropic.go",
+            "ai/anthropic_test.go",
+            "ai/drain_test.go",
+            "ai/live_test.go",
+            "ai/model.go",
+            "ai/ollama.go",
+            "ai/ollama_test.go",
+            "ai/openai.go",
+            "ai/openai_test.go",
+            "ai/probe.go",
+            "ai/probe_test.go",
+            "ai/registry.go",
+            "ai/registry_creds_test.go",
+            "ai/registry_test.go",
+            "ai/sse.go",
+            "ai/sse_test.go",
+            "ai/stream.go",
+            "ai/testing_test.go",
+            "ai/types.go",
+            "ast/ast.go",
+            "ast/ast_test.go",
+            "ast/index.go",
+            "ast/index_test.go",
+            "catalog/capability_test.go",
+            "catalog/catalog.go",
+            "catalog/catalog_test.go",
+            "catalog/dynamic.go",
+            "catalog/dynamic_test.go",
+            "catalog/snapshot_test.go",
+            "cmd/ohgo/authority.go",
+            "cmd/ohgo/authority_route_test.go",
+            "cmd/ohgo/boot_test.go",
+            "cmd/ohgo/catalog_test.go",
+            "cmd/ohgo/docs.go",
+            "cmd/ohgo/doctor.go",
+            "cmd/ohgo/harness.go",
+            "cmd/ohgo/harness_test.go",
+            "cmd/ohgo/init.go",
+            "cmd/ohgo/integration_test.go",
+            "cmd/ohgo/main.go",
+            "cmd/ohgo/mention_test.go",
+            "cmd/ohgo/modelassignment_test.go",
+            "cmd/ohgo/modelplane_test.go",
+            "cmd/ohgo/modelswitch_test.go",
+            "cmd/ohgo/packaging_test.go",
+            "cmd/ohgo/phase1closure_test.go",
+            "cmd/ohgo/planeauth_test.go",
+            "cmd/ohgo/resume_test.go",
+            "cmd/ohgo/run.go",
+            "cmd/ohgo/security.go",
+            "cmd/ohgo/security_integration_test.go",
+            "cmd/ohgo/security_test.go",
+            "cmd/ohgo/session_test.go",
+            "cmd/ohgo/stabilization_test.go",
+            "cmd/ohgo/subagent_test.go",
+            "cmd/ohgo/sup_context_test.go",
+            "cmd/ohgo/support.go",
+            "cmd/ohgo/support_test.go",
+            "cmd/ohgo/suprole_test.go",
+            "cmd/ohgo/taskcontinuity.go",
+            "cmd/ohgo/taskcontinuity_test.go",
+            "cmd/ohgo/transition_test.go",
+            "cmd/ohgo/wire_test.go",
+            "cmd/ohgo/wizard_test.go",
+            "cmd/ohgo/workspace_switch_test.go",
+            "cmd/ohgo/workspace_test.go",
+            "config/config.go",
+            "config/config_test.go",
+            "config/models_test.go",
+            "config/role_test.go",
+            "creds/creds.go",
+            "creds/creds_test.go",
+            "diff/diff_test.go",
+            "diff/hunks.go",
+            "diff/myers.go",
+            "edit/batch.go",
+            "edit/batch_test.go",
+            "edit/edit_test.go",
+            "edit/fuzzy.go",
+            "edit/search.go",
+            "exec/exec.go",
+            "exec/exec_test.go",
+            "exec/proc_unix.go",
+            "exec/proc_windows.go",
+            "jsonschema/pattern.go",
+            "jsonschema/schema.go",
+            "jsonschema/schema_test.go",
+            "memory/memory.go",
+            "memory/memory_test.go",
+            "project/project.go",
+            "project/project_test.go",
+            "prompt/prompt.go",
+            "prompt/prompt_test.go",
+            "security/policy.go",
+            "security/scope.go",
+            "security/security.go",
+            "security/security_test.go",
+            "session/artifact_test.go",
+            "session/migration_test.go",
+            "session/session.go",
+            "session/session_test.go",
+            "shell/decode.go",
+            "shell/minimizer.go",
+            "shell/shell_test.go",
+            "startup/startup.go",
+            "startup/startup_test.go",
+            "state/state.go",
+            "state/state_test.go",
+            "task/controller.go",
+            "task/controller_test.go",
+            "task/markdown.go",
+            "task/markdown_test.go",
+            "task/progress.go",
+            "task/progress_test.go",
+            "task/task.go",
+            "task/task_test.go",
+            "task/view.go",
+            "tokens/tokens.go",
+            "tools/artifact.go",
+            "tools/artifact_test.go",
+            "tools/background_test.go",
+            "tools/base.go",
+            "tools/bash.go",
+            "tools/bench_test.go",
+            "tools/capability.go",
+            "tools/capability_test.go",
+            "tools/delete.go",
+            "tools/edit.go",
+            "tools/glob.go",
+            "tools/glob_test.go",
+            "tools/grep.go",
+            "tools/ignore.go",
+            "tools/ignore_test.go",
+            "tools/jobs.go",
+            "tools/ls.go",
+            "tools/mention.go",
+            "tools/mention_test.go",
+            "tools/mutation.go",
+            "tools/phase1_test.go",
+            "tools/read.go",
+            "tools/symbols.go",
+            "tools/symbols_test.go",
+            "tools/task.go",
+            "tools/task_test.go",
+            "tools/todo.go",
+            "tools/todo_test.go",
+            "tools/tools_test.go",
+            "tools/wait.go",
+            "tools/webfetch.go",
+            "tui/app.go",
+            "tui/app_test.go",
+            "tui/approval.go",
+            "tui/approval_test.go",
+            "tui/authority_test.go",
+            "tui/commands.go",
+            "tui/commands_test.go",
+            "tui/composer.go",
+            "tui/composer_test.go",
+            "tui/connectkeyview.go",
+            "tui/connectkeyview_test.go",
+            "tui/connectview.go",
+            "tui/connectview_test.go",
+            "tui/diff.go",
+            "tui/diff/diff_test.go",
+            "tui/diff/git.go",
+            "tui/diff/model.go",
+            "tui/diff/parser.go",
+            "tui/diff/tree.go",
+            "tui/diff/view.go",
+            "tui/diff_test.go",
+            "tui/diffview.go",
+            "tui/diffview_test.go",
+            "tui/effort.go",
+            "tui/effort_test.go",
+            "tui/enhancements_test.go",
+            "tui/entries.go",
+            "tui/entries_test.go",
+            "tui/header_chrome_test.go",
+            "tui/helpview.go"
+          ],
+          "reported_file_total": 200
+        },
+        {
+          "index": 5,
+          "tool": "grep",
+          "args": {
+            "pattern": "type CallGraph"
+          },
+          "is_error": false,
+          "duration_ms": 23,
+          "offset_ms": 32202,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 6,
+          "tool": "grep",
+          "args": {
+            "pattern": "CallGraph"
+          },
+          "is_error": false,
+          "duration_ms": 24,
+          "offset_ms": 40013,
+          "result_bytes": 17,
+          "result_lines": 1
+        }
+      ]
+    },
+    {
+      "task_id": "F2-negative-call-graph",
+      "category": "F_NEGATIVE",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct_not_found",
+      "status_reported": "not_found",
+      "answer_format": "json",
+      "turns": 2,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 36,
+      "candidate_files": 0,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 0,
+      "input_tokens": 1251,
+      "output_tokens": 140,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 0,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 0,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 8997,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "final_text": "FINAL: {\"status\":\"not_found\",\"targets\":[]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "CallGraph"
+          },
+          "is_error": false,
+          "duration_ms": 103,
+          "offset_ms": 3939,
+          "result_bytes": 36,
+          "result_lines": 2
+        }
+      ]
+    },
+    {
+      "task_id": "F2-negative-call-graph",
+      "category": "F_NEGATIVE",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct_not_found",
+      "status_reported": "not_found",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 2,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 53,
+      "candidate_files": 0,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 0,
+      "input_tokens": 2920,
+      "output_tokens": 227,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 0,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 0,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 18961,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "final_text": "FINAL: {\"status\":\"not_found\",\"targets\":[]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "CallGraph"
+          },
+          "is_error": false,
+          "duration_ms": 100,
+          "offset_ms": 9923,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "pattern": "CallGraph"
+          },
+          "is_error": false,
+          "duration_ms": 17,
+          "offset_ms": 14861,
+          "result_bytes": 17,
+          "result_lines": 1
+        }
+      ]
+    },
+    {
+      "task_id": "G1-noise-classify-risk",
+      "category": "G_NOISE",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "no_answer",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 16,
+      "tool_calls": 16,
+      "discovery_calls": 7,
+      "files_opened": 2,
+      "lines_inspected": 481,
+      "context_bytes": 19263,
+      "candidate_files": 12,
+      "irrelevant_candidates": 11,
+      "reported_candidates": 16,
+      "input_tokens": 59003,
+      "output_tokens": 703,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 10065,
+      "time_to_all_targets_ms": 10065,
+      "duration_ms": 92911,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 5282,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "path": ".",
+            "pattern": "ClassifyRisk"
+          },
+          "is_error": false,
+          "duration_ms": 18,
+          "offset_ms": 10065,
+          "result_bytes": 685,
+          "result_lines": 14,
+          "candidate_files": [
+            "cmd/ohgo/security.go",
+            "security/scope.go",
+            "security/security_test.go"
+          ],
+          "reported_file_total": 3,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "path": "security/scope.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 17279,
+          "result_bytes": 4541,
+          "result_lines": 132,
+          "opened_file": "security/scope.go",
+          "lines_inspected": 132,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "grep",
+          "args": {
+            "path": ".",
+            "pattern": "^func ClassifyRisk"
+          },
+          "is_error": false,
+          "duration_ms": 19,
+          "offset_ms": 25818,
+          "result_bytes": 125,
+          "result_lines": 4,
+          "candidate_files": [
+            "security/scope.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 4,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 105,
+            "path": "security/scope.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 26741,
+          "result_bytes": 897,
+          "result_lines": 28,
+          "opened_file": "security/scope.go",
+          "lines_inspected": 28,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "grep",
+          "args": {
+            "path": ".",
+            "pattern": "^type Risk"
+          },
+          "is_error": false,
+          "duration_ms": 17,
+          "offset_ms": 32149,
+          "result_bytes": 63,
+          "result_lines": 4,
+          "candidate_files": [
+            "security/security.go"
+          ],
+          "reported_file_total": 1
+        },
+        {
+          "index": 6,
+          "tool": "read",
+          "args": {
+            "path": "security/security.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 37104,
+          "result_bytes": 9458,
+          "result_lines": 237,
+          "opened_file": "security/security.go",
+          "lines_inspected": 237
+        },
+        {
+          "index": 7,
+          "tool": "grep",
+          "args": {
+            "path": ".",
+            "pattern": "^func ClassifyRisk"
+          },
+          "is_error": false,
+          "duration_ms": 25,
+          "offset_ms": 42429,
+          "result_bytes": 125,
+          "result_lines": 4,
+          "candidate_files": [
+            "security/scope.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 8,
+          "tool": "read",
+          "args": {
+            "limit": 25,
+            "offset": 105,
+            "path": "security/scope.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 47311,
+          "result_bytes": 895,
+          "result_lines": 27,
+          "opened_file": "security/scope.go",
+          "lines_inspected": 25,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 9,
+          "tool": "read",
+          "args": {
+            "limit": 10,
+            "offset": 130,
+            "path": "security/scope.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 55636,
+          "result_bytes": 33,
+          "result_lines": 3,
+          "opened_file": "security/scope.go",
+          "lines_inspected": 3,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 10,
+          "tool": "grep",
+          "args": {
+            "path": ".",
+            "pattern": "^func ClassifyRisk"
+          },
+          "is_error": false,
+          "duration_ms": 22,
+          "offset_ms": 57884,
+          "result_bytes": 125,
+          "result_lines": 4,
+          "candidate_files": [
+            "security/scope.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 11,
+          "tool": "read",
+          "args": {
+            "limit": 25,
+            "offset": 105,
+            "path": "security/scope.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 62004,
+          "result_bytes": 895,
+          "result_lines": 27,
+          "opened_file": "security/scope.go",
+          "lines_inspected": 25,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 12,
+          "tool": "read",
+          "args": {
+            "limit": 10,
+            "offset": 130,
+            "path": "security/scope.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 69565,
+          "result_bytes": 33,
+          "result_lines": 3,
+          "opened_file": "security/scope.go",
+          "lines_inspected": 3,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 13,
+          "tool": "grep",
+          "args": {
+            "path": ".",
+            "pattern": "^func ClassifyRisk"
+          },
+          "is_error": false,
+          "duration_ms": 22,
+          "offset_ms": 74295,
+          "result_bytes": 125,
+          "result_lines": 4,
+          "candidate_files": [
+            "security/scope.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 14,
+          "tool": "read",
+          "args": {
+            "limit": 25,
+            "offset": 105,
+            "path": "security/scope.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 85522,
+          "result_bytes": 895,
+          "result_lines": 27,
+          "opened_file": "security/scope.go",
+          "lines_inspected": 25,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 15,
+          "tool": "read",
+          "args": {
+            "limit": 10,
+            "offset": 130,
+            "path": "security/scope.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 92911,
+          "result_bytes": 33,
+          "result_lines": 3,
+          "opened_file": "security/scope.go",
+          "lines_inspected": 3,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "G1-noise-classify-risk",
+      "category": "G_NOISE",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 2,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 148,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 1285,
+      "output_tokens": 229,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 14044,
+      "time_to_all_targets_ms": 14044,
+      "duration_ms": 21454,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "security/scope.go",
+          "symbol": "ClassifyRisk",
+          "start_line": 111,
+          "end_line": 132
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"security/scope.go\",\"symbol\":\"ClassifyRisk\",\"start_line\":111,\"end_line\":132}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "ClassifyRisk"
+          },
+          "is_error": false,
+          "duration_ms": 107,
+          "offset_ms": 14044,
+          "result_bytes": 148,
+          "result_lines": 9,
+          "candidate_files": [
+            "security/scope.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "G1-noise-classify-risk",
+      "category": "G_NOISE",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 2,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 148,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 1973,
+      "output_tokens": 136,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 3674,
+      "time_to_all_targets_ms": 3674,
+      "duration_ms": 18751,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "security/scope.go",
+          "symbol": "ClassifyRisk",
+          "start_line": 111,
+          "end_line": 132
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"security/scope.go\",\"symbol\":\"ClassifyRisk\",\"start_line\":111,\"end_line\":132}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "ClassifyRisk"
+          },
+          "is_error": false,
+          "duration_ms": 96,
+          "offset_ms": 3674,
+          "result_bytes": 148,
+          "result_lines": 9,
+          "candidate_files": [
+            "security/scope.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "G2-noise-prompt-identity",
+      "category": "G_NOISE",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 7,
+      "tool_calls": 6,
+      "discovery_calls": 3,
+      "files_opened": 1,
+      "lines_inspected": 245,
+      "context_bytes": 11641,
+      "candidate_files": 12,
+      "irrelevant_candidates": 11,
+      "reported_candidates": 12,
+      "input_tokens": 15982,
+      "output_tokens": 765,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 3,
+      "calls_to_all_targets": 3,
+      "time_to_first_target_ms": 15244,
+      "time_to_all_targets_ms": 15244,
+      "duration_ms": 44434,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "prompt/prompt.go",
+          "symbol": "Identity",
+          "start_line": 20,
+          "end_line": 38
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"prompt/prompt.go\",\"symbol\":\"Identity\",\"start_line\":20,\"end_line\":38}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 1567,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "ls",
+          "args": {
+            "path": "prompt"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 13410,
+          "result_bytes": 51,
+          "result_lines": 3,
+          "candidate_files": [
+            "prompt/5317",
+            "prompt/8557",
+            "prompt/prompt"
+          ],
+          "reported_file_total": 3
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "path": "prompt/prompt.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 15244,
+          "result_bytes": 9288,
+          "result_lines": 210,
+          "opened_file": "prompt/prompt.go",
+          "lines_inspected": 210,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "grep",
+          "args": {
+            "path": ".",
+            "pattern": "^\\s*const\\s+Identity\\s+="
+          },
+          "is_error": false,
+          "duration_ms": 25,
+          "offset_ms": 25628,
+          "result_bytes": 121,
+          "result_lines": 4,
+          "candidate_files": [
+            "prompt/prompt.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 4,
+          "tool": "read",
+          "args": {
+            "limit": 25,
+            "offset": 15,
+            "path": "prompt/prompt.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 32089,
+          "result_bytes": 1227,
+          "result_lines": 27,
+          "opened_file": "prompt/prompt.go",
+          "lines_inspected": 25,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "read",
+          "args": {
+            "limit": 10,
+            "offset": 38,
+            "path": "prompt/prompt.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 40203,
+          "result_bytes": 619,
+          "result_lines": 12,
+          "opened_file": "prompt/prompt.go",
+          "lines_inspected": 10,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "G2-noise-prompt-identity",
+      "category": "G_NOISE",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 20,
+      "context_bytes": 1259,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 2274,
+      "output_tokens": 395,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 4035,
+      "time_to_all_targets_ms": 4035,
+      "duration_ms": 18300,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "prompt/prompt.go",
+          "symbol": "Identity",
+          "start_line": 20,
+          "end_line": 38
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"prompt/prompt.go\",\"symbol\":\"Identity\",\"start_line\":20,\"end_line\":38}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "package": "prompt",
+            "symbol": "Identity"
+          },
+          "is_error": false,
+          "duration_ms": 121,
+          "offset_ms": 4035,
+          "result_bytes": 140,
+          "result_lines": 9,
+          "candidate_files": [
+            "prompt/prompt.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 20,
+            "path": "prompt/prompt.go"
+          },
+          "is_error": false,
+          "duration_ms": 2,
+          "offset_ms": 7171,
+          "result_bytes": 1119,
+          "result_lines": 22,
+          "opened_file": "prompt/prompt.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "G2-noise-prompt-identity",
+      "category": "G_NOISE",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 20,
+      "context_bytes": 4092,
+      "candidate_files": 2,
+      "irrelevant_candidates": 1,
+      "reported_candidates": 22,
+      "input_tokens": 5032,
+      "output_tokens": 431,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 11988,
+      "time_to_all_targets_ms": 11988,
+      "duration_ms": 21781,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "prompt/prompt.go",
+          "symbol": "Identity",
+          "start_line": 20,
+          "end_line": 38
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"prompt/prompt.go\",\"symbol\":\"Identity\",\"start_line\":20,\"end_line\":38}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "limit": 50,
+            "package": "prompt"
+          },
+          "is_error": false,
+          "duration_ms": 104,
+          "offset_ms": 11988,
+          "result_bytes": 2973,
+          "result_lines": 135,
+          "candidate_files": [
+            "prompt/prompt.go",
+            "prompt/prompt_test.go"
+          ],
+          "reported_file_total": 22,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 20,
+            "path": "prompt/prompt.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 14674,
+          "result_bytes": 1119,
+          "result_lines": 22,
+          "opened_file": "prompt/prompt.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "G3-noise-all-load",
+      "category": "G_NOISE",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "provider_error",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 1,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 335,
+      "candidate_files": 8,
+      "irrelevant_candidates": 8,
+      "reported_candidates": 8,
+      "input_tokens": 739,
+      "output_tokens": 72,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 0,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 0,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 35668,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "hidden": false,
+            "limit": 100
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 1672,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        }
+      ],
+      "error": "agent: open stream: ai: provider returned HTTP 429: {\"error\":{\"message\":\"Rate limit exceeded: free-models-per-min. \",\"code\":429,\"metadata\":{\"headers\":{\"X-RateLimit-Limit\":\"20\",\"X-RateLimit-Remaining\":\"0\",\"X-RateLimit-Reset\":\"1792559160000\"},\"limit_source\":\"openrouter_free_tier_per_minute\",\"remedy_hint\":\"Slow down requests to free models, or retry after the per-minute window resets.\",\"provider_name\":null}},\"user_id\":\"user_30E48tqmm3xmYpbcTUDBYF8JWhB\"}"
+    },
+    {
+      "task_id": "G3-noise-all-load",
+      "category": "G_NOISE",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "ambiguous",
+      "answer_format": "json",
+      "turns": 2,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 264,
+      "candidate_files": 2,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 2,
+      "input_tokens": 1323,
+      "output_tokens": 217,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 3908,
+      "time_to_all_targets_ms": 3908,
+      "duration_ms": 8844,
+      "matched_targets": 2,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 2,
+      "targets_reported": [
+        {
+          "path": "config/config.go",
+          "symbol": "Load",
+          "start_line": 192,
+          "end_line": 216
+        },
+        {
+          "path": "project/project.go",
+          "symbol": "Load",
+          "start_line": 140,
+          "end_line": 158
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"ambiguous\",\"targets\":[{\"path\":\"config/config.go\",\"symbol\":\"Load\",\"start_line\":192,\"end_line\":216},{\"path\":\"project/project.go\",\"symbol\":\"Load\",\"start_line\":140,\"end_line\":158}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Load"
+          },
+          "is_error": false,
+          "duration_ms": 118,
+          "offset_ms": 3908,
+          "result_bytes": 264,
+          "result_lines": 15,
+          "candidate_files": [
+            "config/config.go",
+            "project/project.go"
+          ],
+          "reported_file_total": 2,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "G3-noise-all-load",
+      "category": "G_NOISE",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "ambiguous",
+      "answer_format": "json",
+      "turns": 2,
+      "tool_calls": 1,
+      "discovery_calls": 1,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 264,
+      "candidate_files": 2,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 2,
+      "input_tokens": 2011,
+      "output_tokens": 228,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 2993,
+      "time_to_all_targets_ms": 2993,
+      "duration_ms": 10994,
+      "matched_targets": 2,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 2,
+      "targets_reported": [
+        {
+          "path": "config/config.go",
+          "symbol": "Load",
+          "start_line": 192,
+          "end_line": 216
+        },
+        {
+          "path": "project/project.go",
+          "symbol": "Load",
+          "start_line": 140,
+          "end_line": 158
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"ambiguous\",\"targets\":[{\"path\":\"config/config.go\",\"symbol\":\"Load\",\"start_line\":192,\"end_line\":216},{\"path\":\"project/project.go\",\"symbol\":\"Load\",\"start_line\":140,\"end_line\":158}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Load"
+          },
+          "is_error": false,
+          "duration_ms": 97,
+          "offset_ms": 2993,
+          "result_bytes": 264,
+          "result_lines": 15,
+          "candidate_files": [
+            "config/config.go",
+            "project/project.go"
+          ],
+          "reported_file_total": 2,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H2-lexical-todo-literal",
+      "category": "H_LEXICAL",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 160,
+      "context_bytes": 5683,
+      "candidate_files": 4,
+      "irrelevant_candidates": 3,
+      "reported_candidates": 4,
+      "input_tokens": 3932,
+      "output_tokens": 1017,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 17548,
+      "time_to_all_targets_ms": 17548,
+      "duration_ms": 43488,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "task/view.go",
+          "symbol": "renderTodoContext",
+          "start_line": 130,
+          "end_line": 130
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"task/view.go\",\"symbol\":\"renderTodoContext\",\"start_line\":130,\"end_line\":130}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "TODO"
+          },
+          "is_error": false,
+          "duration_ms": 38,
+          "offset_ms": 17548,
+          "result_bytes": 494,
+          "result_lines": 16,
+          "candidate_files": [
+            "task/task.go",
+            "task/task_test.go",
+            "task/view.go",
+            "tools/capability_test.go"
+          ],
+          "reported_file_total": 4,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "path": "task/view.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 24362,
+          "result_bytes": 5189,
+          "result_lines": 160,
+          "opened_file": "task/view.go",
+          "lines_inspected": 160,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H2-lexical-todo-literal",
+      "category": "H_LEXICAL",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "no_answer",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 16,
+      "tool_calls": 16,
+      "discovery_calls": 5,
+      "files_opened": 3,
+      "lines_inspected": 1317,
+      "context_bytes": 47273,
+      "candidate_files": 19,
+      "irrelevant_candidates": 19,
+      "reported_candidates": 19,
+      "input_tokens": 122518,
+      "output_tokens": 1920,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 3,
+      "calls_to_all_targets": 3,
+      "time_to_first_target_ms": 24674,
+      "time_to_all_targets_ms": 24674,
+      "duration_ms": 122004,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 15405,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "ls",
+          "args": {
+            "path": "task"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 18834,
+          "result_bytes": 214,
+          "result_lines": 10,
+          "candidate_files": [
+            "task/10792",
+            "task/13278",
+            "task/3815",
+            "task/4658",
+            "task/5621",
+            "task/5752",
+            "task/7065",
+            "task/8080",
+            "task/8815",
+            "task/task"
+          ],
+          "reported_file_total": 10
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "path": "task/view.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 24674,
+          "result_bytes": 5189,
+          "result_lines": 160,
+          "opened_file": "task/view.go",
+          "lines_inspected": 160,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "path": "task/task.go"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 34680,
+          "result_bytes": 14801,
+          "result_lines": 408,
+          "opened_file": "task/task.go",
+          "lines_inspected": 408
+        },
+        {
+          "index": 4,
+          "tool": "symbols",
+          "args": {
+            "symbol": "TODO"
+          },
+          "is_error": false,
+          "duration_ms": 128,
+          "offset_ms": 48501,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 5,
+          "tool": "read",
+          "args": {
+            "limit": 200,
+            "offset": 1,
+            "path": "task/task.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 55929,
+          "result_bytes": 7826,
+          "result_lines": 202,
+          "opened_file": "task/task.go",
+          "lines_inspected": 200
+        },
+        {
+          "index": 6,
+          "tool": "read",
+          "args": {
+            "limit": 200,
+            "offset": 201,
+            "path": "task/task.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 64572,
+          "result_bytes": 6774,
+          "result_lines": 202,
+          "opened_file": "task/task.go",
+          "lines_inspected": 200
+        },
+        {
+          "index": 7,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 400,
+            "path": "task/task.go"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 65694,
+          "result_bytes": 266,
+          "result_lines": 9,
+          "opened_file": "task/task.go",
+          "lines_inspected": 9
+        },
+        {
+          "index": 8,
+          "tool": "symbols",
+          "args": {
+            "path": "task",
+            "symbol": "TODO"
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 79145,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 9,
+          "tool": "symbols",
+          "args": {
+            "path": "task",
+            "symbol": "TodoTodo"
+          },
+          "is_error": false,
+          "duration_ms": 9,
+          "offset_ms": 80952,
+          "result_bytes": 134,
+          "result_lines": 9,
+          "candidate_files": [
+            "task/task.go"
+          ],
+          "reported_file_total": 1
+        },
+        {
+          "index": 10,
+          "tool": "read",
+          "args": {
+            "limit": 10,
+            "offset": 75,
+            "path": "task/task.go"
+          },
+          "is_error": false,
+          "duration_ms": 6,
+          "offset_ms": 86540,
+          "result_bytes": 443,
+          "result_lines": 12,
+          "opened_file": "task/task.go",
+          "lines_inspected": 10
+        },
+        {
+          "index": 11,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 120,
+            "path": "task/view.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 99597,
+          "result_bytes": 991,
+          "result_lines": 32,
+          "opened_file": "task/view.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 12,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 1,
+            "path": "task/controller.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 100471,
+          "result_bytes": 1643,
+          "result_lines": 52,
+          "opened_file": "task/controller.go",
+          "lines_inspected": 50
+        },
+        {
+          "index": 13,
+          "tool": "read",
+          "args": {
+            "limit": 100,
+            "offset": 50,
+            "path": "task/controller.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 105550,
+          "result_bytes": 3597,
+          "result_lines": 102,
+          "opened_file": "task/controller.go",
+          "lines_inspected": 100
+        },
+        {
+          "index": 14,
+          "tool": "read",
+          "args": {
+            "limit": 100,
+            "offset": 150,
+            "path": "task/controller.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 110878,
+          "result_bytes": 3380,
+          "result_lines": 102,
+          "opened_file": "task/controller.go",
+          "lines_inspected": 100
+        },
+        {
+          "index": 15,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 245,
+            "path": "task/controller.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 122005,
+          "result_bytes": 1608,
+          "result_lines": 52,
+          "opened_file": "task/controller.go",
+          "lines_inspected": 50
+        }
+      ]
+    },
+    {
+      "task_id": "H2-lexical-todo-literal",
+      "category": "H_LEXICAL",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 160,
+      "context_bytes": 5683,
+      "candidate_files": 4,
+      "irrelevant_candidates": 3,
+      "reported_candidates": 4,
+      "input_tokens": 4610,
+      "output_tokens": 909,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 5517,
+      "time_to_all_targets_ms": 5517,
+      "duration_ms": 33092,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "task/view.go",
+          "symbol": "renderTodoContext",
+          "start_line": 124,
+          "end_line": 144
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"task/view.go\",\"symbol\":\"renderTodoContext\",\"start_line\":124,\"end_line\":144}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "pattern": "TODO"
+          },
+          "is_error": false,
+          "duration_ms": 27,
+          "offset_ms": 5517,
+          "result_bytes": 494,
+          "result_lines": 16,
+          "candidate_files": [
+            "task/task.go",
+            "task/task_test.go",
+            "task/view.go",
+            "tools/capability_test.go"
+          ],
+          "reported_file_total": 4,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "path": "task/view.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 14012,
+          "result_bytes": 5189,
+          "result_lines": 160,
+          "opened_file": "task/view.go",
+          "lines_inspected": 160,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H3-lexical-json-field",
+      "category": "H_LEXICAL",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 4,
+      "tool_calls": 3,
+      "discovery_calls": 2,
+      "files_opened": 1,
+      "lines_inspected": 535,
+      "context_bytes": 18085,
+      "candidate_files": 11,
+      "irrelevant_candidates": 10,
+      "reported_candidates": 11,
+      "input_tokens": 8236,
+      "output_tokens": 712,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 14719,
+      "time_to_all_targets_ms": 14719,
+      "duration_ms": 60740,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "ai/openai.go",
+          "symbol": "openAIRequest",
+          "start_line": 45,
+          "end_line": 45
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"ai/openai.go\",\"symbol\":\"openAIRequest\",\"start_line\":45,\"end_line\":45}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 13312,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "pattern": "tool_choice"
+          },
+          "is_error": false,
+          "duration_ms": 33,
+          "offset_ms": 14719,
+          "result_bytes": 281,
+          "result_lines": 10,
+          "candidate_files": [
+            "ai/anthropic.go",
+            "ai/openai.go",
+            "catalog/dynamic_test.go"
+          ],
+          "reported_file_total": 3,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "path": "ai/openai.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 28241,
+          "result_bytes": 17469,
+          "result_lines": 535,
+          "opened_file": "ai/openai.go",
+          "lines_inspected": 535,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H3-lexical-json-field",
+      "category": "H_LEXICAL",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "provider_error",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 7,
+      "tool_calls": 7,
+      "discovery_calls": 4,
+      "files_opened": 2,
+      "lines_inspected": 758,
+      "context_bytes": 26340,
+      "candidate_files": 28,
+      "irrelevant_candidates": 28,
+      "reported_candidates": 48,
+      "input_tokens": 27007,
+      "output_tokens": 1232,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 3,
+      "calls_to_all_targets": 3,
+      "time_to_first_target_ms": 12759,
+      "time_to_all_targets_ms": 12759,
+      "duration_ms": 74887,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 4463,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "ls",
+          "args": {
+            "path": "ai"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 6372,
+          "result_bytes": 438,
+          "result_lines": 20,
+          "candidate_files": [
+            "ai/1027",
+            "ai/10351",
+            "ai/14807",
+            "ai/15438",
+            "ai/17463",
+            "ai/1780",
+            "ai/1839",
+            "ai/1856",
+            "ai/1976",
+            "ai/2879",
+            "ai/4480",
+            "ai/4591",
+            "ai/5135",
+            "ai/6022",
+            "ai/6892",
+            "ai/8912",
+            "ai/9282",
+            "ai/9443",
+            "ai/9968",
+            "ai/ai"
+          ],
+          "reported_file_total": 20
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "path": "ai/openai.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 12759,
+          "result_bytes": 17469,
+          "result_lines": 535,
+          "opened_file": "ai/openai.go",
+          "lines_inspected": 535,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "symbols",
+          "args": {
+            "symbol": "tool_choice"
+          },
+          "is_error": false,
+          "duration_ms": 89,
+          "offset_ms": 26256,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 4,
+          "tool": "ls",
+          "args": {
+            "path": "ai"
+          },
+          "is_error": false,
+          "duration_ms": 2,
+          "offset_ms": 31203,
+          "result_bytes": 438,
+          "result_lines": 20,
+          "candidate_files": [
+            "ai/1027",
+            "ai/10351",
+            "ai/14807",
+            "ai/15438",
+            "ai/17463",
+            "ai/1780",
+            "ai/1839",
+            "ai/1856",
+            "ai/1976",
+            "ai/2879",
+            "ai/4480",
+            "ai/4591",
+            "ai/5135",
+            "ai/6022",
+            "ai/6892",
+            "ai/8912",
+            "ai/9282",
+            "ai/9443",
+            "ai/9968",
+            "ai/ai"
+          ],
+          "reported_file_total": 20
+        },
+        {
+          "index": 5,
+          "tool": "read",
+          "args": {
+            "path": "ai/types.go"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 34373,
+          "result_bytes": 6725,
+          "result_lines": 203,
+          "opened_file": "ai/types.go",
+          "lines_inspected": 203
+        },
+        {
+          "index": 6,
+          "tool": "read",
+          "args": {
+            "limit": 20,
+            "offset": 38,
+            "path": "ai/openai.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 44416,
+          "result_bytes": 899,
+          "result_lines": 22,
+          "opened_file": "ai/openai.go",
+          "lines_inspected": 20,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ],
+      "error": "agent: open stream: ai: provider returned HTTP 429: {\"error\":{\"message\":\"Rate limit exceeded: free-models-per-min. \",\"code\":429,\"metadata\":{\"headers\":{\"X-RateLimit-Limit\":\"20\",\"X-RateLimit-Remaining\":\"0\",\"X-RateLimit-Reset\":\"1792559520000\"},\"limit_source\":\"openrouter_free_tier_per_minute\",\"remedy_hint\":\"Slow down requests to free models, or retry after the per-minute window resets.\",\"provider_name\":null}},\"user_id\":\"user_30E48tqmm3xmYpbcTUDBYF8JWhB\"}"
+    },
+    {
+      "task_id": "H3-lexical-json-field",
+      "category": "H_LEXICAL",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "wrong_target",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 535,
+      "context_bytes": 17750,
+      "candidate_files": 3,
+      "irrelevant_candidates": 2,
+      "reported_candidates": 3,
+      "input_tokens": 7856,
+      "output_tokens": 754,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 1,
+      "time_to_first_target_ms": 7796,
+      "time_to_all_targets_ms": 7796,
+      "duration_ms": 23305,
+      "matched_targets": 0,
+      "missing_targets": 1,
+      "extra_targets": 1,
+      "line_exact": 0,
+      "targets_reported": [
+        {
+          "path": "ai/openai.go",
+          "symbol": "ToolChoice",
+          "start_line": 45,
+          "end_line": 45
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"ai/openai.go\",\"symbol\":\"ToolChoice\",\"start_line\":45,\"end_line\":45}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "grep",
+          "args": {
+            "pattern": "tool_choice"
+          },
+          "is_error": false,
+          "duration_ms": 39,
+          "offset_ms": 7796,
+          "result_bytes": 281,
+          "result_lines": 10,
+          "candidate_files": [
+            "ai/anthropic.go",
+            "ai/openai.go",
+            "catalog/dynamic_test.go"
+          ],
+          "reported_file_total": 3,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "path": "ai/openai.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 11071,
+          "result_bytes": 17469,
+          "result_lines": 535,
+          "opened_file": "ai/openai.go",
+          "lines_inspected": 535,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H5-lexical-makefile-target",
+      "category": "H_LEXICAL",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 72,
+      "context_bytes": 2242,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 2952,
+      "output_tokens": 393,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 6040,
+      "time_to_all_targets_ms": 6040,
+      "duration_ms": 26092,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "Makefile",
+          "symbol": "race",
+          "start_line": 49,
+          "end_line": 49
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"Makefile\",\"symbol\":\"race\",\"start_line\":49,\"end_line\":49}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "glob",
+          "args": {
+            "pattern": "Makefile"
+          },
+          "is_error": false,
+          "duration_ms": 6,
+          "offset_ms": 997,
+          "result_bytes": 8,
+          "result_lines": 1,
+          "candidate_files": [
+            "Makefile"
+          ],
+          "reported_file_total": 1
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "path": "Makefile"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 6040,
+          "result_bytes": 2234,
+          "result_lines": 72,
+          "opened_file": "Makefile",
+          "lines_inspected": 72,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H5-lexical-makefile-target",
+      "category": "H_LEXICAL",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 72,
+      "context_bytes": 2569,
+      "candidate_files": 8,
+      "irrelevant_candidates": 8,
+      "reported_candidates": 8,
+      "input_tokens": 2798,
+      "output_tokens": 415,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 12570,
+      "time_to_all_targets_ms": 12570,
+      "duration_ms": 17376,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "Makefile",
+          "symbol": "race",
+          "start_line": 49,
+          "end_line": 50
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"Makefile\",\"symbol\":\"race\",\"start_line\":49,\"end_line\":50}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 2051,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "path": "Makefile"
+          },
+          "is_error": false,
+          "duration_ms": 2,
+          "offset_ms": 12570,
+          "result_bytes": 2234,
+          "result_lines": 72,
+          "opened_file": "Makefile",
+          "lines_inspected": 72,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "H5-lexical-makefile-target",
+      "category": "H_LEXICAL",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": true,
+      "outcome": "correct",
+      "status_reported": "exact",
+      "answer_format": "json",
+      "turns": 3,
+      "tool_calls": 2,
+      "discovery_calls": 1,
+      "files_opened": 1,
+      "lines_inspected": 72,
+      "context_bytes": 2242,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 3630,
+      "output_tokens": 607,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 6188,
+      "time_to_all_targets_ms": 6188,
+      "duration_ms": 17842,
+      "matched_targets": 1,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 1,
+      "targets_reported": [
+        {
+          "path": "Makefile",
+          "symbol": "race",
+          "start_line": 49,
+          "end_line": 49
+        }
+      ],
+      "final_text": "FINAL: {\"status\":\"exact\",\"targets\":[{\"path\":\"Makefile\",\"symbol\":\"race\",\"start_line\":49,\"end_line\":49}]}",
+      "calls": [
+        {
+          "index": 0,
+          "tool": "glob",
+          "args": {
+            "pattern": "Makefile"
+          },
+          "is_error": false,
+          "duration_ms": 19,
+          "offset_ms": 1950,
+          "result_bytes": 8,
+          "result_lines": 1,
+          "candidate_files": [
+            "Makefile"
+          ],
+          "reported_file_total": 1
+        },
+        {
+          "index": 1,
+          "tool": "read",
+          "args": {
+            "path": "Makefile"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 6188,
+          "result_bytes": 2234,
+          "result_lines": 72,
+          "opened_file": "Makefile",
+          "lines_inspected": 72,
+          "revealed_targets": [
+            0
+          ]
+        }
+      ]
+    }
+  ]
+}
