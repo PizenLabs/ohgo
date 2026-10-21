@@ -76,6 +76,7 @@ func (t *DeleteTool) Execute(ctx agent.Context, args map[string]any) agent.Resul
 	}
 	return agent.Result{
 		Text:    fmt.Sprintf("Deleted %s.", raw),
+		Mutates: true,
 		Details: details,
 	}
 }

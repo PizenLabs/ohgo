@@ -15,6 +15,7 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/session"
+	"github.com/PizenLabs/ohgo/workspace"
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -3581,26 +3582,29 @@ func (p *Program) runTurn(text string) {
 		}
 	}
 
-	// Record the task outcome at the turn boundary. An interruption pauses at
-	// a recoverable checkpoint and is never reported as completed; a deadline
-	// that stopped mid-work is likewise recoverable, not success; only a run
-	// whose final turn stopped calling tools is a completed turn.
-	switch {
-	case err == nil && turnCompleted(turns):
+	// Record the task outcome at the turn boundary from runtime evidence, not
+	// from the model's stop alone. A clean finish is not proof that a requested
+	// change happened or that it was verified; a failure is not erased by a
+	// plausible closing sentence.
+	action, reason := turnTaskOutcome(err, turns, workspace.RequestsMutation(text))
+	switch action {
+	case taskActionComplete:
 		if p.task.Complete != nil {
 			p.PublishTask(p.task.Complete())
 		}
-	case err == nil:
-		if p.task.Pause != nil {
-			p.PublishTask(p.task.Pause("deadline reached"))
+	case taskActionReview:
+		if p.task.NeedsReview != nil {
+			p.PublishTask(p.task.NeedsReview(reason))
+		} else if p.task.Pause != nil {
+			p.PublishTask(p.task.Pause(reason))
 		}
-	case errors.Is(err, context.Canceled):
+	case taskActionPause:
 		if p.task.Pause != nil {
-			p.PublishTask(p.task.Pause("interrupted"))
+			p.PublishTask(p.task.Pause(reason))
 		}
-	default:
+	case taskActionFail:
 		if p.task.Fail != nil {
-			p.PublishTask(p.task.Fail(err.Error()))
+			p.PublishTask(p.task.Fail(reason))
 		}
 	}
 
@@ -3805,19 +3809,6 @@ func (p *Program) persist(msg agent.Message) {
 // outcomes) never writes to the terminal directly.
 func (p *Program) PublishNotice(text string) {
 	p.publish(Notice{Text: text})
-}
-
-// turnCompleted reports whether a run ended because the model stopped calling
-// tools, rather than because a deadline stopped it mid-work.
-//
-// The loop returns nil error both when the model finishes and when its budget
-// expires, so the error alone cannot tell success from a recoverable stop. The
-// final turn's shape can: a completed run ends on a turn with no tool calls.
-func turnCompleted(turns []agent.Turn) bool {
-	if len(turns) == 0 {
-		return false
-	}
-	return len(turns[len(turns)-1].Results) == 0
 }
 
 // rebase rebuilds history from the request that was sent plus the new turns.

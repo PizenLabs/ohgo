@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/spf13/cobra"
@@ -44,6 +45,7 @@ func rootCmd() *cobra.Command {
 	root.PersistentFlags().Bool("reasoning", false, "enable extended thinking")
 	root.PersistentFlags().String("effort", "", "reasoning effort: minimal, low, medium, high")
 	root.PersistentFlags().Int("max-depth", 1, "subagent nesting depth, counting this agent (1 disables delegation)")
+	root.PersistentFlags().Int("max-turns", agent.DefaultMaxTurns, "maximum model turns per run (0 uses the default)")
 	root.PersistentFlags().Duration("deadline", 0, "wall-clock budget for the whole run, e.g. 10m (0 = no limit)")
 	root.PersistentFlags().String("mouse", "", "wheel handling in the full-screen UI: select (default, keeps drag-copy) or report (works inside tmux, needs Shift/Option to select)")
 	root.PersistentFlags().Bool("live", false, "output-first UI: ohgo writes the transcript and the terminal owns scrolling, selection and copy")

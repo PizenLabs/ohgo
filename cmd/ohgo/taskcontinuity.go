@@ -37,6 +37,10 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			recorded, err := controller.Pause(reason)
 			return taskProjection(recorded, err)
 		},
+		NeedsReview: func(reason string) tui.TaskProjection {
+			recorded, err := controller.NeedsReview(reason)
+			return taskProjection(recorded, err)
+		},
 		Complete: func() tui.TaskProjection {
 			recorded, err := controller.Complete()
 			return taskProjection(recorded, err)

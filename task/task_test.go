@@ -64,6 +64,30 @@ func TestInterruptedTaskCannotCompleteDirectly(t *testing.T) {
 	}
 }
 
+// NEEDS_REVIEW is a non-terminal verdict. It must not be completed in place:
+// the next turn has to resume and produce the missing evidence.
+func TestNeedsReviewCannotCompleteDirectly(t *testing.T) {
+	task, err := New("objective")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := task.NeedsReview(time.Now()); err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+	if task.Status != StatusNeedsReview {
+		t.Fatalf("status = %s, want NEEDS_REVIEW", task.Status)
+	}
+	if err := task.Complete(time.Now()); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Complete after NEEDS_REVIEW = %v, want ErrInvalidTransition", err)
+	}
+	if err := task.Resume(time.Now()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if task.Status != StatusRunning {
+		t.Fatalf("status after resume = %s, want RUNNING", task.Status)
+	}
+}
+
 // Terminal states are absorbing: resuming a completed task in place would
 // silently reopen finished work under the same identity.
 func TestTerminalStatesAreAbsorbing(t *testing.T) {

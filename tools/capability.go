@@ -15,13 +15,11 @@ import (
 // boundary must see that: FUZZ may run a build but must not rewrite a file
 // (§5.2, §5.3). This classification is conservative on purpose.
 //
-// It classifies as write only what it can prove mutates: output redirected to
-// a real file, a mutating program, or a mutating git subcommand. Everything
-// else stays exec and is permitted wherever execution is permitted. A shell
-// can still mutate through an unclassified path (an interpreter one-liner that
-// writes a file), which is why §37 calls a model-generated shell command
-// untrusted: this is a strong default, not a sandbox, and it is documented as
-// such rather than overstated.
+// It is a risk and evidence input, not the no-mutation boundary. The security
+// decision carries a ReadOnly bit derived from the authority, and the bash tool
+// enforces it with an OS sandbox; that is what stops a program this classifier
+// does not recognise. A classifier can never be the whole boundary for an
+// arbitrary command.
 func commandCapability(command string) agent.Tier {
 	if commandWrites(command) {
 		return agent.TierWrite

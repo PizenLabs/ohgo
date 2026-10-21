@@ -101,6 +101,22 @@ func TestAuthorizeAutoExecutes(t *testing.T) {
 	}
 }
 
+// The read-only bit is part of the authorization decision, not a tool
+// convention. The loop must hand it to the tool so an execution boundary can
+// enforce it.
+func TestAuthorizeReadOnlyReachesTheTool(t *testing.T) {
+	tool := newScriptedTool("bash", "ran")
+	authorizer := &scriptedAuthorizer{decisions: []security.Decision{{
+		Outcome: security.OutcomeAuto, ReadOnly: true,
+	}}}
+	runWithAuthorizer(t, tool, authorizer)
+
+	modes := tool.readOnlyModes()
+	if len(modes) != 1 || !modes[0] {
+		t.Fatalf("tool read-only modes = %v, want [true]", modes)
+	}
+}
+
 func TestAuthorizeDenyNeverExecutes(t *testing.T) {
 	tool := newScriptedTool("write", "wrote")
 	authorizer := &scriptedAuthorizer{decisions: []security.Decision{{

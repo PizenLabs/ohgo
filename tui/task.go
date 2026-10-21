@@ -53,6 +53,9 @@ type TaskHooks struct {
 	Sync func() TaskProjection
 	// Pause records an interruption and returns the paused projection.
 	Pause func(reason string) TaskProjection
+	// NeedsReview records that the turn ended without enough runtime evidence
+	// to claim completion, and returns the reviewable projection.
+	NeedsReview func(reason string) TaskProjection
 	// Complete records a successful end and returns the projection.
 	Complete func() TaskProjection
 	// Fail records an execution failure and returns the projection.

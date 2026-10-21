@@ -97,6 +97,54 @@ func TestControllerCompletionRequiresAllWorkDone(t *testing.T) {
 	}
 }
 
+// A turn that ends without completion evidence is reviewable, not complete.
+// The state is non-terminal so the next turn can resume the same task and
+// supply the missing verification.
+func TestControllerNeedsReviewIsResumable(t *testing.T) {
+	store := NewStore(t.TempDir())
+	controller := NewController(store, nil)
+	begun, err := controller.Begin("fix the parser")
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	review, err := controller.NeedsReview("change was not verified")
+	if err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+	if review.Status != StatusNeedsReview {
+		t.Fatalf("status = %s, want NEEDS_REVIEW", review.Status)
+	}
+	if review.Status.IsTerminal() {
+		t.Fatal("NEEDS_REVIEW is terminal; the task could never be resolved")
+	}
+
+	// The checkpoint must survive a restart in the reviewable state, not be
+	// normalized back to RUNNING or mistaken for a completion.
+	reopened := NewController(store, nil)
+	restored, found, err := reopened.Restore()
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if !found {
+		t.Fatal("review checkpoint not found")
+	}
+	if restored.Status != StatusNeedsReview {
+		t.Fatalf("restored status = %s, want NEEDS_REVIEW", restored.Status)
+	}
+
+	resumed, err := reopened.Begin("verify the fix")
+	if err != nil {
+		t.Fatalf("Begin resume: %v", err)
+	}
+	if resumed.ID != begun.ID {
+		t.Fatalf("resume created a new task: %q -> %q", begun.ID, resumed.ID)
+	}
+	if resumed.Status != StatusRunning {
+		t.Fatalf("resumed status = %s, want RUNNING", resumed.Status)
+	}
+}
+
 // A checkpoint left RUNNING is evidence the process stopped, not that the task
 // finished. Recovery must pause it and never claim success.
 func TestControllerRecoversCrashedTaskAsPaused(t *testing.T) {

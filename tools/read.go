@@ -226,7 +226,8 @@ func (t *WriteTool) Execute(ctx agent.Context, args map[string]any) agent.Result
 	p := makePreview(raw, op, oldContent, content, binary)
 	ev := evidenceFromPreview(p, "success")
 	return agent.Result{
-		Text: fmt.Sprintf("Wrote %d bytes to %s.", len(content), raw),
+		Text:    fmt.Sprintf("Wrote %d bytes to %s.", len(content), raw),
+		Mutates: true,
 		Details: map[string]any{
 			"path":              raw,
 			"bytes":             len(content),

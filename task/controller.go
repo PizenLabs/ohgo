@@ -78,9 +78,9 @@ func (c *Controller) Begin(objective string) (Task, error) {
 	now := c.now().UTC()
 	switch {
 	case c.task.ID != "" && !c.task.Status.IsTerminal():
-		// A paused or pending task resumes with its identity intact; a
-		// running one continues (a turn boundary, not a new task).
-		if c.task.Status == StatusPaused || c.task.Status == StatusPending {
+		// A paused, reviewable, or pending task resumes with its identity
+		// intact; a running one continues (a turn boundary, not a new task).
+		if c.task.Status == StatusPaused || c.task.Status == StatusPending || c.task.Status == StatusNeedsReview {
 			if err := c.task.Start(now); err != nil {
 				return Task{}, err
 			}
@@ -167,6 +167,30 @@ func (c *Controller) Complete() (Task, error) {
 		return c.task.Clone(), err
 	}
 	c.lastAction = "completed"
+	return c.task.Clone(), c.persist()
+}
+
+// NeedsReview records that a turn ended without enough runtime evidence to
+// claim the objective was reached.
+//
+// It is deliberately distinct from PAUSED (an interruption) and FAILED (an
+// unrecoverable error): the work may be fine, but the runtime did not observe
+// the change or its verification. A later turn resumes the same task and can
+// supply the missing evidence.
+func (c *Controller) NeedsReview(reason string) (Task, error) {
+	if err := c.ensureLoaded(); err != nil {
+		return Task{}, err
+	}
+	if c.task.ID == "" || c.task.Status.IsTerminal() {
+		return c.task.Clone(), nil
+	}
+	c.syncTodos()
+	if c.task.Status != StatusNeedsReview {
+		if err := c.task.NeedsReview(c.now().UTC()); err != nil {
+			return c.task.Clone(), err
+		}
+	}
+	c.lastAction = firstNonEmpty(reason, "needs review")
 	return c.task.Clone(), c.persist()
 }
 

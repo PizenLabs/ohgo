@@ -38,6 +38,11 @@ const (
 	// StatusPaused means execution stopped at a recoverable checkpoint and the
 	// task can be resumed. It is not terminal.
 	StatusPaused Status = "PAUSED"
+	// StatusNeedsReview means the turn ended without enough runtime evidence
+	// to claim the objective was reached: a change was not verified, a tool
+	// failure was not recovered, or a requested change was never observed. It
+	// is not terminal; a later turn may supply the missing evidence.
+	StatusNeedsReview Status = "NEEDS_REVIEW"
 	// StatusCompleted means the task reached its objective. Terminal.
 	StatusCompleted Status = "COMPLETED"
 	// StatusFailed means the task hit an unrecoverable execution error.
@@ -61,7 +66,8 @@ func (s Status) IsTerminal() bool {
 // Valid reports whether the status is one this package defines.
 func (s Status) Valid() bool {
 	switch s {
-	case StatusPending, StatusRunning, StatusPaused, StatusCompleted, StatusFailed, StatusCancelled:
+	case StatusPending, StatusRunning, StatusPaused, StatusNeedsReview,
+		StatusCompleted, StatusFailed, StatusCancelled:
 		return true
 	default:
 		return false
@@ -251,9 +257,14 @@ func canTransition(from, to Status) bool {
 	case StatusPending:
 		return to == StatusRunning || to == StatusCancelled
 	case StatusRunning:
-		return to == StatusPaused || to == StatusCompleted || to == StatusFailed || to == StatusCancelled
+		return to == StatusPaused || to == StatusNeedsReview ||
+			to == StatusCompleted || to == StatusFailed || to == StatusCancelled
 	case StatusPaused:
-		return to == StatusRunning || to == StatusCancelled || to == StatusFailed
+		return to == StatusRunning || to == StatusNeedsReview ||
+			to == StatusCancelled || to == StatusFailed
+	case StatusNeedsReview:
+		return to == StatusRunning || to == StatusPaused ||
+			to == StatusCancelled || to == StatusFailed
 	default:
 		// Terminal states absorb every transition.
 		return false
@@ -271,6 +282,10 @@ func (t *Task) Pause(at time.Time) error { return t.transition(StatusPaused, at)
 
 // Resume moves a paused task back to RUNNING, preserving its identity.
 func (t *Task) Resume(at time.Time) error { return t.transition(StatusRunning, at) }
+
+// NeedsReview records that a turn ended without enough evidence to claim
+// completion. It is not a failure and not a completion.
+func (t *Task) NeedsReview(at time.Time) error { return t.transition(StatusNeedsReview, at) }
 
 // Complete marks the task finished. It is the only path to COMPLETED, and the
 // caller is responsible for having actual completion evidence: an interruption

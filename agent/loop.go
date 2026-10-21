@@ -15,6 +15,20 @@ import (
 // ErrNoTools means the loop was started with an empty tool set.
 var ErrNoTools = errors.New("agent: no tools registered")
 
+// ErrTurnLimit means the run reached its model-turn budget before the model
+// stopped calling tools. It is a recoverable stop, not a failure of the work:
+// the turns completed so far are returned intact and the task can resume.
+var ErrTurnLimit = errors.New("agent: turn limit reached")
+
+// DefaultMaxTurns bounds a run when the caller does not choose a budget.
+//
+// The deadline bounds money spent on wall-clock time; this bounds the number
+// of model turns independently, so a model that keeps proposing tool calls
+// cannot run forever when no deadline was set. One hundred turns is well above
+// the 5/10/20/50-turn workloads the runtime is expected to serve, and still
+// small enough that a runaway loop is visible rather than open-ended.
+const DefaultMaxTurns = 100
+
 // Turn is one request/response cycle.
 type Turn struct {
 	// Assistant is the message the model produced.
@@ -120,6 +134,11 @@ type Config struct {
 	// nil error, because a deadline is a budget being spent rather than a
 	// failure.
 	Deadline time.Time
+	// MaxTurns bounds the number of model turns in one run. Zero uses
+	// DefaultMaxTurns. Reaching the cap returns ErrTurnLimit with the turns
+	// completed so far, so a model that never stops proposing tools cannot run
+	// unbounded even when no deadline was configured.
+	MaxTurns int
 	// OnToolProgress reports partial and final outcomes for a tool call.
 	//
 	// It is how a long-running command streams output into a UI. Without it a
@@ -235,6 +254,9 @@ func New(cfg Config) (*Loop, error) {
 	}
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = defaultMaxTokens
+	}
+	if cfg.MaxTurns <= 0 {
+		cfg.MaxTurns = DefaultMaxTurns
 	}
 	// Compaction without a summarizer would leave context growing until the
 	// provider rejects the request, so refuse the misconfiguration here rather
@@ -366,6 +388,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return turns, err
+		}
+		if len(turns) >= l.cfg.MaxTurns {
+			return turns, ErrTurnLimit
 		}
 
 		// The deadline bounds wall-clock time, not a turn count.
@@ -666,6 +691,13 @@ func (l *Loop) execute(
 		}
 	}
 
+	// A cancellation that landed while arguments were being validated or a
+	// human was being asked must not start the tool. The check is repeated
+	// after authorization because approval can block indefinitely.
+	if err := ctx.Err(); err != nil {
+		return fail(err.Error())
+	}
+
 	// The security boundary runs immediately before execution. When an
 	// authorizer is installed it is the only admission path: DENY never
 	// executes, APPROVE must produce a grant that a fresh evaluation confirms,
@@ -724,6 +756,10 @@ func (l *Loop) execute(
 		CallID:    call.ID,
 		ToolName:  call.Name,
 		SessionID: l.cfg.SessionID,
+		ReadOnly:  decision != nil && decision.ReadOnly,
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err.Error())
 	}
 
 	if l.cfg.OnToolProgress != nil {

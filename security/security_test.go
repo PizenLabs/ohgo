@@ -213,6 +213,33 @@ func TestPolicyDeniesMutationWithoutWriteAuthority(t *testing.T) {
 	}
 }
 
+// The read-only bit follows the authority, not the command text. Even an
+// execution the classifier believes is harmless is marked read-only under an
+// authority that cannot write, because the classifier cannot prove the absence
+// of a mutation.
+func TestPolicyMarksExecReadOnlyWithoutWriteAuthority(t *testing.T) {
+	fuzz := fakeAuthority{name: "fuzz", caps: map[Capability]bool{CapabilityRead: true, CapabilityExec: true}}
+	req := Request{
+		Capability: CapabilityExec,
+		Scope:      Scope{Class: ScopeInside, Path: "/w"},
+		Risk:       RiskMedium,
+		Mutates:    false,
+	}
+	d := (Policy{}).Evaluate(req, fuzz, nil)
+	if !d.ReadOnly {
+		t.Fatalf("FUZZ exec decision was not marked read-only: %+v", d)
+	}
+	if d.Outcome != OutcomeApprove {
+		t.Fatalf("outcome = %s, want APPROVE", d.Outcome)
+	}
+
+	build := buildAuthority()
+	d = (Policy{}).Evaluate(req, build, nil)
+	if d.ReadOnly {
+		t.Fatalf("BUILD exec decision was marked read-only: %+v", d)
+	}
+}
+
 func TestPolicyDeniesWithNilAuthority(t *testing.T) {
 	d := (Policy{}).Evaluate(lowReadRequest(), nil, nil)
 	if d.Outcome != OutcomeDeny {

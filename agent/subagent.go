@@ -84,6 +84,11 @@ type SubagentSpec struct {
 	// rather than silently filtered, because silently dropping a tool the task
 	// needs would make the child fail for a reason it cannot see.
 	ReadOnly bool
+	// MutationIntent reports that the assignment clearly asks for a repository
+	// change. The child's completion verdict uses it to require an observed
+	// change; the parent supplies it because intent classification belongs to
+	// the workspace layer, not the agent loop.
+	MutationIntent bool
 }
 
 // SubagentResult is what a child agent produced.
@@ -98,6 +103,14 @@ type SubagentResult struct {
 	ToolCalls int
 	// ReadOnly reports whether the child could only observe.
 	ReadOnly bool
+	// Completion is the child's evidence-based completion verdict. A parent
+	// must not inherit a clean-looking answer when the child's own objective
+	// was not met.
+	Completion Completion
+	// Mutated reports that the child changed the workspace.
+	Mutated bool
+	// Verified reports that the child successfully verified its last change.
+	Verified bool
 }
 
 // RunSubagent runs a child loop derived from a parent configuration.
@@ -171,6 +184,13 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		Compaction: parent.Compaction,
 		Summarize:  parent.Summarize,
 		OnCompact:  parent.OnCompact,
+		// The parent's wall-clock budget bounds the whole delegated tree. A
+		// child that dropped it would keep spending provider calls after the
+		// user's --deadline had already expired.
+		Deadline: parent.Deadline,
+		// The turn budget is inherited for the same reason: delegation must
+		// not be a way around the bound that keeps a single run finite.
+		MaxTurns: parent.MaxTurns,
 		// Progress and turns are the parent's concern; a child that emitted
 		// them would double-count into a UI that is already showing the
 		// parent's turn.
@@ -198,15 +218,26 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 			text = t
 		}
 	}
+	completion := EvaluateCompletion(turns, spec.MutationIntent)
+	mutated, verified := CompletionEvidence(turns, spec.MutationIntent)
 	if text == "" {
-		return SubagentResult{Turns: turns, ToolCalls: toolCalls}, ErrNoSubagentResult
+		return SubagentResult{
+			Turns:      turns,
+			ToolCalls:  toolCalls,
+			Completion: completion,
+			Mutated:    mutated,
+			Verified:   verified,
+		}, ErrNoSubagentResult
 	}
 
 	return SubagentResult{
-		Text:      text,
-		Turns:     turns,
-		ToolCalls: toolCalls,
-		ReadOnly:  IsReadOnly(tools),
+		Text:       text,
+		Turns:      turns,
+		ToolCalls:  toolCalls,
+		ReadOnly:   IsReadOnly(tools),
+		Completion: completion,
+		Mutated:    mutated,
+		Verified:   verified,
 	}, nil
 }
 

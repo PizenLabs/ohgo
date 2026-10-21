@@ -149,6 +149,39 @@ func TestGateDeniesMutationOutsideAuthority(t *testing.T) {
 	}
 }
 
+// An execution the classifier does not recognise as mutating is still marked
+// read-only under FUZZ. The mark is what the bash tool turns into an OS
+// sandbox, so the boundary does not depend on the classifier being right.
+func TestGateMarksFuzzExecReadOnly(t *testing.T) {
+	gate, root := gateFor(t, workspace.Fuzz, nil)
+	d := gate.Evaluate(secBashCall(`python3 -c "open('f','w')"`), tools.NewBashTool(root))
+	if d.Outcome != security.OutcomeApprove {
+		t.Fatalf("outcome = %s, want APPROVE", d.Outcome)
+	}
+	if !d.ReadOnly {
+		t.Fatalf("FUZZ exec was not marked read-only: %+v", d)
+	}
+
+	build, buildRoot := gateFor(t, workspace.Build, nil)
+	d = build.Evaluate(secBashCall("go test ./..."), tools.NewBashTool(buildRoot))
+	if d.ReadOnly {
+		t.Fatalf("BUILD exec was marked read-only: %+v", d)
+	}
+}
+
+// The human shell escape crosses the same decision, so a read-only authority
+// also sandboxes it.
+func TestGateMarksFuzzEscapeReadOnly(t *testing.T) {
+	fuzz, _ := gateFor(t, workspace.Fuzz, nil)
+	if d := fuzz.EvaluateCommand(`python3 -c "open('f','w')"`); !d.ReadOnly {
+		t.Fatalf("FUZZ escape was not marked read-only: %+v", d)
+	}
+	build, _ := gateFor(t, workspace.Build, nil)
+	if d := build.EvaluateCommand("go test ./..."); d.ReadOnly {
+		t.Fatalf("BUILD escape was marked read-only: %+v", d)
+	}
+}
+
 func TestGateApproveRecordsANarrowGrant(t *testing.T) {
 	gate, root := gateFor(t, workspace.Build, func(ai.ToolCall, agent.Approval) (bool, string) {
 		return true, ""

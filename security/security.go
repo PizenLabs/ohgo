@@ -173,6 +173,11 @@ type Decision struct {
 	// Mutates echoes whether the operation can change state, so a UI can
 	// accent a mutation without re-deriving it from the tool name.
 	Mutates bool
+	// ReadOnly marks an execution decision that must run behind a read-only
+	// workspace boundary. It is derived from the authority in force, not from
+	// the command text: an authority that cannot write cannot be trusted to
+	// recognise every mutating command.
+	ReadOnly bool
 	// Reason is the human-readable explanation.
 	Reason string
 	// Rule is the machine-readable policy rule that produced the outcome.

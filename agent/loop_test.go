@@ -14,6 +14,7 @@ type scriptedTool struct {
 	name      string
 	result    Result
 	calls     []map[string]any
+	readOnly  []bool
 	mu        sync.Mutex
 	exclusive bool
 }
@@ -34,8 +35,16 @@ func (t *scriptedTool) Exclusive(map[string]any) bool { return t.exclusive }
 func (t *scriptedTool) Execute(ctx Context, args map[string]any) Result {
 	t.mu.Lock()
 	t.calls = append(t.calls, args)
+	t.readOnly = append(t.readOnly, ctx.ReadOnly)
 	t.mu.Unlock()
 	return t.result
+}
+
+// readOnlyModes returns the authorization mode of every call, in call order.
+func (t *scriptedTool) readOnlyModes() []bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]bool(nil), t.readOnly...)
 }
 
 // invoked returns the arguments of every call, in call order.

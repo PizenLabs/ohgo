@@ -136,7 +136,8 @@ func (t *EditTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	p := makePreview(raw, op, original, updated, binary)
 	ev := evidenceFromPreview(p, "success")
 	return agent.Result{
-		Text: text,
+		Text:    text,
+		Mutates: true,
 		Details: map[string]any{
 			"path":              raw,
 			"line":              line,

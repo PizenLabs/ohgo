@@ -81,6 +81,11 @@ func (Policy) Evaluate(req Request, auth Authority, grant *Grant) Decision {
 		return deny(decision, RuleOutsideWorkspace,
 			"the target is outside the workspace")
 	}
+	// An execution authority that cannot write gets a read-only execution
+	// decision. This is deliberately independent of req.Mutates: command-text
+	// classification is a risk input, never the boundary that keeps an
+	// arbitrary program from writing.
+	decision.ReadOnly = req.Capability == CapabilityExec && !auth.Permits(CapabilityWrite)
 	if grant != nil && grant.Covers(req, time.Now()) {
 		decision.Outcome = OutcomeAuto
 		decision.Rule = RuleGrant

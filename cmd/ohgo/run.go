@@ -56,6 +56,9 @@ type options struct {
 	maxTokens int
 	// maxDepth is how many levels of subagent may nest, counting this agent.
 	maxDepth int
+	// maxTurns bounds the model turns in one run. Zero means the agent
+	// package's default.
+	maxTurns int
 	// deadline bounds the whole run in wall-clock time. The zero value is no
 	// limit.
 	deadline time.Time
@@ -181,6 +184,13 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	opts.maxDepth = 1
 	if depth, _ := cmd.Flags().GetInt("max-depth"); depth > 0 {
 		opts.maxDepth = depth
+	}
+
+	// The turn cap is independent of the wall-clock deadline: a model that
+	// keeps proposing tools is bounded even when the user set no deadline.
+	opts.maxTurns = agent.DefaultMaxTurns
+	if turns, _ := cmd.Flags().GetInt("max-turns"); turns > 0 {
+		opts.maxTurns = turns
 	}
 
 	// A wall-clock deadline bounds the whole run, because every loop iteration
@@ -696,16 +706,29 @@ func (f spawnFunc) Spawn(ctx context.Context, spec agent.SubagentSpec) (agent.Su
 // a request.
 func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent.Tool) tools.Spawner {
 	return spawnFunc(func(ctx context.Context, spec agent.SubagentSpec) (agent.SubagentResult, error) {
+		// A child must never run with a nil authorizer. Production installs one
+		// before building tools; this fallback keeps a direct caller (a test or
+		// an embedding host) fail-closed instead of silently admitting every
+		// call through the legacy path.
+		gate := opts.security
+		if gate == nil {
+			gate = opts.newSecurityGate(nil)
+		}
 		parent := agent.Config{
 			Model:      opts.model,
 			Stream:     registry.StreamFn(),
-			Tools:      childToolSet(opts, parentTools, spec.Depth),
+			Tools:      childToolSet(opts, registry, parentTools, spec.Depth),
 			MaxTokens:  opts.maxTokens,
 			Reasoning:  opts.reasoning,
 			Admit:      opts.admit(),
-			Authorize:  opts.security,
+			Authorize:  gate,
 			Compaction: compactionFromSettings(opts.settings),
 			Summarize:  newSummarizer(registry.StreamFn(), opts.model),
+			// The spawner is a separate parent config from the top-level loop,
+			// so every bound the user set must be copied here too. Omitting the
+			// deadline would make the D-2 inheritance fix vacuous in production.
+			Deadline: opts.deadline,
+			MaxTurns: opts.maxTurns,
 		}
 		return agent.RunSubagent(ctx, parent, spec)
 	})
@@ -718,15 +741,16 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 //
 // The task tool is omitted when the child sits at the cap. A bound checked at
 // call time instead would be a rule someone can bypass; one baked into the tool
-// set cannot be.
-func childToolSet(opts options, parentTools []agent.Tool, depth int) []agent.Tool {
+// set cannot be. Below the cap the task tool must carry a real spawner: a
+// nil spawner would offer the child a tool that can only fail.
+func childToolSet(opts options, registry *ai.Registry, parentTools []agent.Tool, depth int) []agent.Tool {
 	if depth+1 >= opts.maxDepth {
 		return parentTools
 	}
 	out := make([]agent.Tool, 0, len(parentTools)+1)
 	out = append(out, parentTools...)
 	return append(out, tools.NewTaskTool(
-		nil, depth, opts.maxDepth, buildSubagentPrompt(opts)))
+		newSubagentSpawner(opts, registry, parentTools), depth, opts.maxDepth, buildSubagentPrompt(opts)))
 }
 
 // buildLoop constructs the agent loop for a session.
@@ -800,6 +824,7 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		Tools:           toolSet,
 		MaxTokens:       opts.maxTokens,
 		Deadline:        opts.deadline,
+		MaxTurns:        opts.maxTurns,
 		Reasoning:       opts.reasoning,
 		ReasoningEffort: opts.effort,
 		OnTurn:          onTurn,
@@ -927,7 +952,14 @@ func (o options) admit() func(ai.ToolCall, agent.Tool) (bool, string) {
 func attachShellEscape(program *tui.Program, root string, gate *securityGate) {
 	hooks := tui.ShellHooks{
 		Run: func(ctx context.Context, command string, onChunk func(string)) (exec.EscapeResult, error) {
-			return exec.ShellRunner{Dir: root}.Run(ctx, command, onChunk)
+			// The escape's execution boundary is the same authority decision
+			// that admitted it. A human in ASK or FUZZ may execute, but the
+			// command runs read-only there however it is spelled.
+			readOnly := false
+			if gate != nil {
+				readOnly = gate.EvaluateCommand(command).ReadOnly
+			}
+			return exec.ShellRunner{Dir: root, ReadOnly: readOnly}.Run(ctx, command, onChunk)
 		},
 		Mutates: tools.CommandMutates,
 	}

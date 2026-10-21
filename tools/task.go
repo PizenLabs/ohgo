@@ -6,6 +6,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/workspace"
 )
 
 // Spawner runs a subagent.
@@ -152,10 +153,11 @@ func (t *TaskTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 
 	spec := agent.SubagentSpec{
-		Task:     prompt,
-		System:   system,
-		Depth:    t.Depth + 1,
-		ReadOnly: readOnly,
+		Task:           prompt,
+		System:         system,
+		Depth:          t.Depth + 1,
+		ReadOnly:       readOnly,
+		MutationIntent: !readOnly && workspace.RequestsMutation(prompt),
 	}
 
 	result, err := t.Spawn.Spawn(ctx.Ctx, spec)
@@ -179,7 +181,25 @@ func (t *TaskTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	if meta := describeRun(result); meta != "" {
 		body += "\n\n" + meta
 	}
-	return agent.Result{Text: body, Details: result}
+
+	out := agent.Result{
+		Text:     body,
+		Details:  result,
+		Mutates:  result.Mutated,
+		Verifies: result.Verified,
+	}
+	// A child that stopped without completion evidence is not a successful
+	// delegation. The parent sees the child's answer plus an explicit error, so
+	// it cannot inherit a clean-looking result and call the objective done.
+	if result.Completion.State != "" && !result.Completion.Complete() {
+		reason := result.Completion.Reason
+		if reason == "" {
+			reason = "subagent finished without completion evidence"
+		}
+		out.IsError = true
+		out.Text = body + "\n\n[subagent needs review: " + reason + "]"
+	}
+	return out
 }
 
 // describeRun summarises what the child did.

@@ -68,6 +68,116 @@ func TestClassifyPrefersInvestigationOverExecution(t *testing.T) {
 	}
 }
 
+// A read opener must not hide a later mutation clause joined by a sequencing
+// word. Without this, "inspect X and then add Y" runs as a read-only turn and
+// the requested change is silently never attempted.
+func TestClassifyKeepsMutationAfterSequencedReadClause(t *testing.T) {
+	for _, text := range []string{
+		"Inspect the server and then add a timeout.",
+		"Inspect the server, and then add a timeout.",
+	} {
+		if got := Classify(text); got != IntentExecute {
+			t.Errorf("Classify(%q) = %s, want %s", text, got, IntentExecute)
+		}
+	}
+}
+
+// The mutation vocabulary is finite and deliberate. These are the forms the
+// contract promises to recognise; a regression here means a clear change
+// request is silently routed to READ.
+func TestClassifyCoversMutationVocabulary(t *testing.T) {
+	for _, text := range []string{
+		"Fix the parser.",
+		"Add a timeout.",
+		"Change the retry count.",
+		"Update the README.",
+		"Remove the dead branch.",
+		"Delete the stale file.",
+		"Write the migration.",
+		"Create a new handler.",
+		"Implement the cache.",
+		"Refactor the loop.",
+		"Rename the field.",
+		"Clean up the imports.",
+		"Tidy up the imports.",
+		"Make sure the server times out after 5s.",
+		"Ensure the server times out after 5s.",
+		"Organize the package.",
+	} {
+		if got := Classify(text); got != IntentExecute {
+			t.Errorf("Classify(%q) = %s, want %s", text, got, IntentExecute)
+		}
+	}
+}
+
+// A mutation clause after a read opener is still the objective, including when
+// the clause's mutation signal is a phrase rather than a leading verb.
+func TestClassifyPreservesCompoundMutationVocabulary(t *testing.T) {
+	for _, text := range []string{
+		"Inspect the server and then change the timeout.",
+		"Check the parser, then update the tests.",
+		"Review the module and fix the leak.",
+		"Inspect the server and make sure it times out.",
+		"Check the imports, then tidy them up.",
+		"Review the package, and ensure it compiles.",
+	} {
+		if got := Classify(text); got != IntentExecute {
+			t.Errorf("Classify(%q) = %s, want %s", text, got, IntentExecute)
+		}
+	}
+}
+
+// A question that merely mentions a mutation phrase stays informational. The
+// contract must not invent a change request from explanatory language.
+func TestClassifyDoesNotPromoteInformationalMutationPhrases(t *testing.T) {
+	for _, text := range []string{
+		"Explain how to make sure the server times out.",
+		"What does tidy up mean here?",
+		"How do I fix this?",
+		"Why does clean up fail?",
+		"Show me how to update the config.",
+	} {
+		if got := Classify(text); got != IntentRead {
+			t.Errorf("Classify(%q) = %s, want %s", text, got, IntentRead)
+		}
+	}
+}
+
+// RequestsMutation is the completion contract, so it is narrower than routing:
+// running tests is execution, not a repository change.
+func TestRequestsMutationIsFiniteAndClauseAware(t *testing.T) {
+	yes := []string{
+		"Fix the parser.",
+		"Tidy up the imports.",
+		"Make sure the server times out.",
+		"Ensure the server times out.",
+		"Inspect the server and then add a timeout.",
+		"Check the imports, then tidy them up.",
+		"Review the module and fix the leak.",
+		"Can you clean up the dead code?",
+	}
+	for _, text := range yes {
+		if !RequestsMutation(text) {
+			t.Errorf("RequestsMutation(%q) = false, want true", text)
+		}
+	}
+
+	no := []string{
+		"Run the tests.",
+		"Explain how to make sure the server times out.",
+		"What does tidy up mean here?",
+		"How do I fix this?",
+		"Try to break the parser.",
+		"Summarize the change.",
+		"",
+	}
+	for _, text := range no {
+		if RequestsMutation(text) {
+			t.Errorf("RequestsMutation(%q) = true, want false", text)
+		}
+	}
+}
+
 func TestIntentHandlerMapsToAuthority(t *testing.T) {
 	cases := map[Intent]Workspace{
 		IntentRead:        Ask,
