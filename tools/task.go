@@ -2,10 +2,12 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/workspace"
 )
 
@@ -165,7 +167,14 @@ func (t *TaskTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		// The child's error is passed through rather than wrapped into a
 		// generic failure: the parent needs to know whether to retry, narrow
 		// the task, or give up, and those need the original reason.
-		return agent.ErrorResult("task: subagent failed: %v", err)
+		out := agent.ErrorResult("task: subagent failed: %v", err)
+		var exhausted *budget.ExhaustedError
+		if errors.As(err, &exhausted) {
+			// A child that ran out of the shared grant is a resource stop for
+			// the tree, not an ordinary tool failure the parent might ignore.
+			out.Exhausted = exhausted
+		}
+		return out
 	}
 	if strings.TrimSpace(result.Text) == "" {
 		// Whitespace is not an answer. Accepting it would hand the parent a
@@ -183,10 +192,11 @@ func (t *TaskTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 
 	out := agent.Result{
-		Text:     body,
-		Details:  result,
-		Mutates:  result.Mutated,
-		Verifies: result.Verified,
+		Text:         body,
+		Details:      result,
+		Mutates:      result.Mutated,
+		Verifies:     result.Verified,
+		Verification: result.Verification,
 	}
 	// A child that stopped without completion evidence is not a successful
 	// delegation. The parent sees the child's answer plus an explicit error, so

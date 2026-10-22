@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/contract"
 )
 
 // ReadOnlyToolNames is the set of built-in tools whose approval tier is "read".
@@ -89,6 +91,14 @@ type SubagentSpec struct {
 	// change; the parent supplies it because intent classification belongs to
 	// the workspace layer, not the agent loop.
 	MutationIntent bool
+	// Contract is the bounded completion contract for this assignment, when
+	// the spawner captured one. It replaces MutationIntent for the verdict.
+	Contract *contract.IntentContract
+	// Snapshot is the child's pre-run target evidence.
+	Snapshot *TargetSnapshot
+	// Resolver locates the contract's symbols and packages after the child
+	// runs. It is the same structural index the parent already owns.
+	Resolver StructuralResolver
 }
 
 // SubagentResult is what a child agent produced.
@@ -111,6 +121,13 @@ type SubagentResult struct {
 	Mutated bool
 	// Verified reports that the child successfully verified its last change.
 	Verified bool
+	// Verification records the scopes the child's successful checks covered,
+	// so the parent's scoped verification requirement can be satisfied by the
+	// child's real command rather than by an unscoped boolean.
+	Verification *VerificationEvidence
+	// Budget is the shared root grant after the child ran. It is a snapshot,
+	// never a fresh budget: the parent and child consumed the same instance.
+	Budget budget.Snapshot
 }
 
 // RunSubagent runs a child loop derived from a parent configuration.
@@ -156,6 +173,28 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		maxTokens = parent.MaxTokens
 	}
 
+	// A direct RunSubagent caller may not have built a root grant. Normalise
+	// one here from the parent's own bounds so the child still shares a root
+	// rather than receiving an independent counter it could reset. Production
+	// always supplies an explicit holder shared with the parent loop.
+	if parent.Budget == nil {
+		turns := parent.MaxTurns
+		if turns <= 0 {
+			turns = DefaultMaxTurns
+		}
+		parent.Budget = budget.New(budget.Limits{
+			Turns:      turns,
+			ModelCalls: turns,
+			Deadline:   parent.Deadline,
+		})
+	}
+	// Delegation is a resource of the same tree, not a free escape from it.
+	// Admit before constructing or running the child; a refused admission
+	// produces no child at all.
+	if err := parent.Budget.Admit(budget.DimensionChildren); err != nil {
+		return SubagentResult{}, fmt.Errorf("agent: subagent: %w", err)
+	}
+
 	child := Config{
 		Model:           parent.Model,
 		ModelFn:         parent.ModelFn,
@@ -191,6 +230,9 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		// The turn budget is inherited for the same reason: delegation must
 		// not be a way around the bound that keeps a single run finite.
 		MaxTurns: parent.MaxTurns,
+		// The same root grant, never a copy with reset counters. Every child
+		// and grandchild is therefore visible in the root's aggregate.
+		Budget: parent.Budget,
 		// Progress and turns are the parent's concern; a child that emitted
 		// them would double-count into a UI that is already showing the
 		// parent's turn.
@@ -218,27 +260,93 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 			text = t
 		}
 	}
-	completion := EvaluateCompletion(turns, spec.MutationIntent)
+	var completion Completion
+	if spec.Contract != nil {
+		completion = EvaluateTaskCompletion(CompletionInput{
+			Turns:    turns,
+			Contract: *spec.Contract,
+			Snapshot: spec.Snapshot,
+			Resolver: spec.Resolver,
+		})
+	} else {
+		completion = EvaluateCompletion(turns, spec.MutationIntent)
+	}
 	mutated, verified := CompletionEvidence(turns, spec.MutationIntent)
+	verification := verificationFromTurns(turns)
 	if text == "" {
 		return SubagentResult{
-			Turns:      turns,
-			ToolCalls:  toolCalls,
-			Completion: completion,
-			Mutated:    mutated,
-			Verified:   verified,
+			Turns:        turns,
+			ToolCalls:    toolCalls,
+			Completion:   completion,
+			Mutated:      mutated,
+			Verified:     verified,
+			Verification: verification,
+			Budget:       parent.Budget.Snapshot(),
 		}, ErrNoSubagentResult
 	}
 
 	return SubagentResult{
-		Text:       text,
-		Turns:      turns,
-		ToolCalls:  toolCalls,
-		ReadOnly:   IsReadOnly(tools),
-		Completion: completion,
-		Mutated:    mutated,
-		Verified:   verified,
+		Text:         text,
+		Turns:        turns,
+		ToolCalls:    toolCalls,
+		ReadOnly:     IsReadOnly(tools),
+		Completion:   completion,
+		Mutated:      mutated,
+		Verified:     verified,
+		Verification: verification,
+		Budget:       parent.Budget.Snapshot(),
 	}, nil
+}
+
+// verificationFromTurns collects the successful check scopes a child produced.
+// It is the child's evidence passed to the parent, not a claim the parent makes
+// up from the child's answer.
+func verificationFromTurns(turns []Turn) *VerificationEvidence {
+	var (
+		command string
+		check   contract.VerificationCheck
+		mixed   bool
+		scopes  []VerificationScope
+		seen    = map[VerificationScope]bool{}
+	)
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if !outcome.Result.Verifies || outcome.Result.Verification == nil {
+				continue
+			}
+			if command == "" {
+				command = outcome.Result.Verification.Command
+			}
+			recordCheck := outcome.Result.Verification.EffectiveCheck()
+			if recordCheck != contract.CheckAny {
+				switch {
+				case check == "" || check == contract.CheckAny:
+					check = recordCheck
+				case check != recordCheck:
+					mixed = true
+				}
+			}
+			for _, scope := range outcome.Result.Verification.Scopes {
+				if !seen[scope] {
+					seen[scope] = true
+					scopes = append(scopes, scope)
+				}
+			}
+		}
+	}
+	if command == "" && len(scopes) == 0 {
+		return nil
+	}
+	if mixed {
+		// Mixed check kinds cannot be represented as one evidence kind; the
+		// conservative value is Any, which does not satisfy a specific check
+		// requirement.
+		check = contract.CheckAny
+	}
+	if check == "" {
+		check = contract.CheckAny
+	}
+	return &VerificationEvidence{Command: command, Check: check, Scopes: scopes}
 }
 
 func firstNonEmpty(values ...string) string {

@@ -10,8 +10,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/jsonschema"
 )
 
@@ -85,9 +87,19 @@ type Result struct {
 	// (tests, build, vet). It is evidence for completion, not authority: a
 	// verification cannot grant a capability or stand in for a mutation.
 	Verifies bool
+	// Verification records what the successful check actually covered. It is
+	// nil for a verifying tool that cannot report a command scope (a delegated
+	// child, for example), which satisfies a generic requirement but not a
+	// target-scoped one.
+	Verification *VerificationEvidence
 	// Useless marks a result that adds nothing to context and may be elided by
 	// compaction (zero matches, a timeout). Ignored when IsError is set.
 	Useless bool
+	// Exhausted is set when the tool refused work because the root budget
+	// could not admit it. The loop records it as a resource stop after the
+	// turn, so a budget refusal inside a tool is visible to the root instead
+	// of looking like an ordinary tool error.
+	Exhausted *budget.ExhaustedError
 }
 
 // ErrorResult builds an error result from a formatted message.
@@ -114,6 +126,14 @@ type Context struct {
 	ReadOnly bool
 	// OnProgress lets a long tool publish partial output.
 	OnProgress func(Result)
+	// Budget is the root-owned grant shared by this execution tree. It is
+	// how a tool that starts detached work (a background job) charges that
+	// work to the same root as the turn that requested it. Nil means the
+	// caller installed no tree budget.
+	Budget *budget.Budget
+	// Deadline is the effective root deadline, inherited from the budget and
+	// the run. Detached work must not be scheduled past it.
+	Deadline time.Time
 }
 
 // CapabilityReporter lets a tool refine the capability a specific invocation
