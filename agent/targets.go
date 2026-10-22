@@ -729,9 +729,7 @@ func allowedTargetScope(snapshot *TargetSnapshot) (map[string]bool, []string) {
 				files[state.Location.Path] = true
 			}
 		case contract.TargetPackage:
-			for _, dir := range packageDirectoriesFromFiles(entry.Files) {
-				dirs = append(dirs, dir)
-			}
+			dirs = append(dirs, packageDirectoriesFromFiles(entry.Files)...)
 		}
 	}
 	sort.Strings(dirs)
