@@ -112,3 +112,12 @@ tools behind the real security gate. Results are written to
 H0 is the frozen `EvaluateCompletion` applied to the same recorded turns; H1 is
 `EvaluateTaskCompletion`. No run is repeated between the two evaluations, so the
 only difference is the completion contract, not model or tool variance.
+
+## 6. Closure note
+
+The 23 cases above are unchanged by the closure audit. Two additional
+contracts discovered during closure — verification scope relative to the
+command's effective working directory, and cancellation during post-run
+evidence — are covered by separate regression tests in `tools`, `agent`, and
+`tui`; they are not silently added to this matrix or used to change its
+expected states.

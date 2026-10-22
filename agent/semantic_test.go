@@ -35,6 +35,25 @@ func TestEvaluateTaskCompletionAcceptsVerifiedTarget(t *testing.T) {
 	}
 }
 
+// A create request satisfied by creating a different file is not completion,
+// even when the requested target was absent and the check passes.
+func TestEvaluateTaskCompletionRejectsUnrelatedCreate(t *testing.T) {
+	root := t.TempDir()
+	intent := pathContract("new.md", contract.ChangeCreate,
+		contract.VerificationRequirement{Kind: contract.VerifyAny})
+	snapshot := CaptureTargets(root, intent, nil)
+	writeTarget(t, root, "other.md", "new\n")
+
+	verdict := evaluate(root, intent, nil, snapshot, []Turn{
+		{Results: []ToolOutcome{mutationOutcome(root, "other.md")}},
+		{Results: []ToolOutcome{verificationOutcome(VerificationScope{All: true})}},
+		cleanStop(),
+	})
+	if verdict.Complete() {
+		t.Fatal("an unrelated create was reported complete")
+	}
+}
+
 // A successful check does not cover a change to a different file.
 func TestEvaluateTaskCompletionRejectsWrongTarget(t *testing.T) {
 	root := t.TempDir()
@@ -241,6 +260,27 @@ func TestEvaluateTaskCompletionAcceptsInformationalAnswer(t *testing.T) {
 	verdict := evaluate("", intent, nil, nil, []Turn{cleanStop()})
 	if !verdict.Complete() {
 		t.Fatalf("informational answer was not complete: %s", verdict.Reason)
+	}
+}
+
+// A cancelled check is not a passing check, even when the target did change.
+func TestEvaluateTaskCompletionRejectsCancelledVerification(t *testing.T) {
+	root := t.TempDir()
+	writeTarget(t, root, "note.txt", "old\n")
+	intent := pathContract("note.txt", contract.ChangeModify,
+		contract.VerificationRequirement{Kind: contract.VerifyAny})
+	snapshot := CaptureTargets(root, intent, nil)
+	writeTarget(t, root, "note.txt", "new\n")
+
+	verdict := evaluate(root, intent, nil, snapshot, []Turn{
+		{Results: []ToolOutcome{mutationOutcome(root, "note.txt")}},
+		{Results: []ToolOutcome{{ToolName: "bash", Result: Result{
+			Text: "command cancelled", IsError: true, Mutates: false, Executes: true,
+		}}}},
+		cleanStop(),
+	})
+	if verdict.Complete() {
+		t.Fatal("a cancelled verification was accepted as completion")
 	}
 }
 

@@ -154,7 +154,10 @@ same cached `ast.Index` the model queries.
 
 A successful command is evidence only for what it actually checked:
 
-- the command's package/path scope is recorded by the bash tool;
+- the command's package/path scope is recorded by the bash tool relative to
+  the directory the command actually ran in;
+- a check that changes directory outside the workspace is not evidence for a
+  workspace target;
 - the command's check kind is recorded (`test`, `build`, `vet`, `any`);
 - a test covers a build requirement, a build does not cover a test requirement;
 - a check in another package does not cover the target package;
@@ -221,7 +224,10 @@ other error             → Fail
 ```
 
 Cancellation and turn-limit errors short-circuit before the post-run
-verification read.
+verification read. A cancellation that lands after the loop returned but while
+post-run evidence is still being read is also observable: the TUI keeps the
+cancel handle installed through the task transition and maps a complete verdict
+to Pause when the turn context is cancelled.
 
 ## 7. Benchmark
 
@@ -311,6 +317,16 @@ The latency is dominated by the real `go test` commands, not by verification.
 | Q create target | COMPLETED | COMPLETED | target absent before, present after |
 | R pure answer | COMPLETED | COMPLETED | informational |
 
+Closure-audit cases outside the 23-case benchmark:
+
+| Case | Expected | H1 result | Regression test |
+|---|---|---|---|
+| foreign module via `cd`, local tests fail | REVIEW | REVIEW | `TestSemanticIntegrationRejectsForeignDirectoryVerification` |
+| `cd` inside workspace, relative scope | COMPLETED | COMPLETED | `TestVerificationEvidenceRebasesDirectoryChanges` |
+| cancel during post-run evidence read | PAUSE | PAUSE | `TestRunTurnPausesWhenCancelledDuringPostRunVerification` |
+| cancelled verification command | REVIEW | REVIEW | `TestEvaluateTaskCompletionRejectsCancelledVerification` |
+| create request, unrelated file created | REVIEW | REVIEW | `TestEvaluateTaskCompletionRejectsUnrelatedCreate` |
+
 Each critical protection was broken intentionally and its test observed red:
 
 | Protection removed | Observed red test |
@@ -322,6 +338,8 @@ Each critical protection was broken intentionally and its test observed red:
 | path target extraction | `TestBuildIntentContractCarriesTargetAndVerificationScope` |
 | child contract path | `TestRunSubagentRejectsWrongContractTarget` |
 | child verification propagation | `TestTaskToolCarriesChildVerificationScope` |
+| verification working-directory resolution | `TestSemanticIntegrationRejectsForeignDirectoryVerification` |
+| post-run cancellation guard | `TestRunTurnPausesWhenCancelledDuringPostRunVerification` |
 | structural check + fallback semantic guard | benchmark reported `H1 false completions = 2` |
 
 ## 9. Defects Found
@@ -338,6 +356,8 @@ Each critical protection was broken intentionally and its test observed red:
 | D4-8 | "Run the tests" completed without running them. | Execution objectives had no verification requirement. | High (false completion) |
 | D4-9 | A delegated child could change the wrong target and still inherit success. | Child completion was contract-blind. | High (false completion) |
 | D4-10 | Target capture had no cancellation boundary and no total read cap. | New verification path was initially unbounded. | Medium (resource/cancellation) |
+| D4-11 | A check run in another module via `cd` was recorded as covering the workspace package with the same relative name. | Verification scope was parsed from arguments without the command's effective working directory. | High (false completion) |
+| D4-12 | A cancel during post-run evidence read marked the UI cancelled but still transitioned the task to COMPLETED. | The TUI dropped its cancel handle before the task transition. | High (state safety) |
 
 ## 10. Defects Fixed
 
@@ -350,6 +370,8 @@ Each critical protection was broken intentionally and its test observed red:
 | D4-8 | Execution objective requires its named check. | `TestEvaluateTaskCompletionRejectsMissingExecutionCheck`, benchmark N |
 | D4-9 | `SubagentSpec` carries contract/snapshot/resolver; `RunSubagent` uses `EvaluateTaskCompletion`; child verification scopes propagate. | `TestRunSubagentRejectsWrongContractTarget`, `TestRunSubagentUsesTheIntentContract`, `TestTaskToolCarriesChildVerificationScope` |
 | D4-10 | `CaptureTargetsContext`; total read cap; TUI short-circuits cancellation before post-run reads. | `TestCaptureTargetsHonoursCancellation`, `TestTargetSnapshotBoundsTotalBytes`, `TestTurnTaskOutcomePausesOnCancellation` |
+| D4-11 | `VerificationForIn` walks the shell command's directory changes, rebases relative scopes onto the workspace, and returns no evidence for a check outside it. | `TestVerificationEvidenceRebasesDirectoryChanges`, `TestSemanticIntegrationRejectsForeignDirectoryVerification` |
+| D4-12 | The TUI keeps the cancel handle installed through the task transition and treats a cancelled context as Pause, never Complete. | `TestRunTurnPausesWhenCancelledDuringPostRunVerification` |
 
 ## 11. Regression
 
@@ -451,6 +473,19 @@ Before/after:
     `ast.Index` build itself is not interruptible.
 13. **Contract extraction is finite.** A phrasing outside the deterministic
     vocabulary can become `Ambiguous`/review; it is never guessed.
+14. **Test flags are not interpreted.** `VerificationFor` records the command
+    kind and package scope, not whether a filter such as `-run '^$'`, `-exec`,
+    or an environment setting caused the test binary to run no tests. A
+    successful command of the required kind and scope is accepted.
+15. **Directory resolution is lexical and deliberately small.** `cd`/`pushd`
+    to a known directory is rebased; `popd`, dynamic paths, and shell
+    expansions are unscoped and reviewable. Symlinks are not resolved, so a
+    symlinked directory that escapes the workspace is not detected by this
+    lexical check.
+16. **Non-Go checks carry no package scope.** A recognized non-Go check
+    (`pytest`, `npm test`, …) can satisfy an unscoped requirement but cannot
+    prove coverage of a Go target; a Go target therefore needs a Go check or a
+    repo-wide check.
 
 ## 14. Deferred Work
 
@@ -484,6 +519,26 @@ The evidence does **not** support calling semantic correctness solved. The
 remaining limitations are explicit, bounded, and do not weaken the Phase 3
 authority, sandbox, cancellation, or turn-limit guarantees.
 
+## 16. Closure Audit Addendum
+
+The closure audit re-read the implementation rather than the report, reran the
+23-case benchmark on the final tree, and probed two paths the matrix did not
+cover. Both were real contract gaps and were fixed before freeze.
+
+| ID | Finding | Resolution |
+|---|---|---|
+| D4-11 | `cd <other-module> && go test ./tools` was recorded as covering the workspace's `tools` package because scopes were parsed without the command's working directory. | `VerificationForIn` rebases relative scopes through `cd`/`pushd`; a check outside the workspace, or an unresolvable directory, is not verification. |
+| D4-12 | A cancel during post-run evidence read set the UI to Cancelled but still allowed the task transition to Complete. | The TUI keeps the cancel handle through the transition and treats a cancelled turn context as Pause. |
+
+The 23 benchmark cases were not changed. The final tree reproduces the
+committed result exactly: H0 10 true / 11 false completions, H1 10 true / 0
+false completions, 0 false reviews, 13 correct reviews, 56.5% review rate.
+Only wall-clock timings differ between runs.
+
+The new checks add one path resolution per shell command and a directory walk
+over the command's segments; the completion microbenchmarks are unchanged
+within run-to-run noise. This is not a production-scale performance claim.
+
 ---
 
 ## Evidence classification
@@ -497,6 +552,10 @@ authority, sandbox, cancellation, or turn-limit guarantees.
 - correct completion cases remain complete (10/10) with 0 false reviews;
 - no additional model calls, tool calls, or model-context bytes;
 - the same completion evaluator is used by the TUI and delegated children;
+- verification scope is relative to the command's effective directory, and a
+  check in a foreign module is not evidence for the workspace;
+- a cancellation during the post-run evidence read pauses the task instead of
+  completing it;
 - Phase 1–3 suites, race tests, and authority/cancellation tests remain green.
 
 **IMPLEMENTED BUT LIMITED**
@@ -505,11 +564,15 @@ authority, sandbox, cancellation, or turn-limit guarantees.
 - symbol targets verify declaration ranges, not whole-file intent;
 - package targets use declaration-bearing files;
 - shell mutation attribution is textual and partial;
-- targetless behavioural objectives are bounded conservatively.
+- targetless behavioural objectives are bounded conservatively;
+- verification command flags and environment are not interpreted;
+- directory resolution is lexical and does not model `popd` or symlinks.
 
 **NOT PROVEN**
 
 - content-level semantic correctness (values, invariants, prose intent);
+- whether a test command actually exercised the relevant tests when flags
+  filtered them;
 - open-world natural-language intent extraction;
 - production-scale latency and index-build behaviour;
 - LLM-assessed semantic alignment (not implemented in Phase 4).

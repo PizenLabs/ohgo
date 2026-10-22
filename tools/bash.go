@@ -248,7 +248,7 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 			},
 		}
 	}
-	verification := VerificationFor(command)
+	verification := VerificationForIn(t.Root, command)
 	return agent.Result{
 		Text:         text,
 		Mutates:      mutates,

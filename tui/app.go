@@ -3579,10 +3579,6 @@ func (p *Program) runTurn(text string) {
 
 	turns, err := p.loop.Run(ctx, request)
 
-	p.mu.Lock()
-	p.cancelTurn = nil
-	p.mu.Unlock()
-
 	if p.usage != nil {
 		p.usage.Add(turns)
 	}
@@ -3608,8 +3604,21 @@ func (p *Program) runTurn(text string) {
 	// verification covered it; a failure is not erased by a plausible closing
 	// sentence.
 	action, reason := turnTaskOutcome(err, turns, intent, targetSnapshot, p.completionResolver)
+	// Cancellation can land after Run returned but while post-run evidence is
+	// still being read. The handle stays installed until the transition, so
+	// ctx.Err is observable here; verified work is still not completed after
+	// the user cancelled the turn.
+	if action == taskActionComplete && ctx.Err() != nil {
+		action, reason = taskActionPause, "interrupted"
+	}
 	switch action {
 	case taskActionComplete:
+		if ctx.Err() != nil {
+			if p.task.Pause != nil {
+				p.PublishTask(p.task.Pause("interrupted"))
+			}
+			break
+		}
 		if p.task.Complete != nil {
 			p.PublishTask(p.task.Complete())
 		}
@@ -3629,9 +3638,12 @@ func (p *Program) runTurn(text string) {
 		}
 	}
 
+	// The turn has made its terminal transition. Keeping the handle installed
+	// until now is what lets a cancel during post-run evidence reach ctx.Err.
+	p.mu.Lock()
+	p.cancelTurn = nil
 	// Rebase from the request actually sent: appending to the old history
 	// would reintroduce anything a compaction just removed.
-	p.mu.Lock()
 	p.history = rebase(request, turns)
 	p.mu.Unlock()
 

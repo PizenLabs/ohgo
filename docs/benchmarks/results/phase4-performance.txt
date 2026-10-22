@@ -70,3 +70,11 @@ average latency        454.524 ms
 
 The end-to-end latency is dominated by the real `go test` commands in the
 fixture; the verification overhead is the microbenchmark values above.
+
+Closure addendum
+----------------
+The final tree resolves a shell command's effective directory for verification
+scope. This adds one path resolution and a small segment walk per bash call; it
+does not change the contract/capture/completion microbenchmarks or the 23-case
+aggregate. The closure rerun reproduced the same case states and metrics; only
+timings varied. These are synthetic measurements, not production-scale claims.

@@ -141,6 +141,9 @@ func TestTargetSnapshotChecksPathDirections(t *testing.T) {
 		{"revert", "old\n", "old\n", false, contract.ChangeModify, TargetUnchanged},
 		{"delete-still-present", "old\n", "new\n", false, contract.ChangeDelete, TargetWrongOperation},
 		{"modify-removed", "old\n", "", true, contract.ChangeModify, TargetWrongOperation},
+		{"modify-absent", "", "new\n", false, contract.ChangeModify, TargetMissing},
+		{"create-existing", "old\n", "new\n", false, contract.ChangeCreate, TargetWrongOperation},
+		{"any-change", "old\n", "new\n", false, contract.ChangeAny, TargetSatisfied},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

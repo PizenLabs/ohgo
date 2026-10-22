@@ -1,7 +1,7 @@
 # Phase 4 Audit — Semantic Verification
 
 > **Date:** 2026-10-22
-> **Frozen baseline:** `6974185` (tree identical to current `HEAD`)
+> **Frozen baseline:** `6974185` (tree identical to `723b35d`, the Phase 3 parent of Phase 4)
 > **Method:** source read, no implementation assumptions.
 
 ## 1. Current completion paths
