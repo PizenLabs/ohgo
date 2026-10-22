@@ -32,6 +32,17 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 	switch {
 	case errors.Is(err, context.Canceled):
 		return taskActionPause, "interrupted"
+	case errors.Is(err, context.DeadlineExceeded):
+		completion := agent.EvaluateBudgetCompletion(agent.CompletionInput{
+			Turns:    turns,
+			Contract: intent,
+			Snapshot: snapshot,
+			Resolver: resolver,
+		}, true)
+		if completion.Complete() {
+			return taskActionComplete, ""
+		}
+		return taskActionPause, "deadline reached"
 	case errors.Is(err, budget.ErrExhausted):
 		// Budget exhaustion is a resource stop, not a verdict. Phase 4
 		// completion evidence remains authoritative: a tree that stopped

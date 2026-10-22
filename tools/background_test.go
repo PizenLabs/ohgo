@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +20,7 @@ func TestWaitReportsCompletionWhenOutputPrecedesExit(t *testing.T) {
 	jobs := NewBackgroundJobs()
 	wait := NewWaitTool(jobs)
 
-	id, err := jobs.reserve("echo hi")
+	id, err := jobs.reserve("echo hi", false, "")
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
@@ -56,6 +58,82 @@ func spawnPair(root string) (*BashTool, *WaitTool) {
 
 func bgArgs(command string) map[string]any {
 	return map[string]any{"command": command, "background": true}
+}
+
+// Starting a mutating command is not observing a mutation. The spawn result is
+// execution evidence only; the job's terminal state is what wait reports.
+func TestBackgroundSpawnReportsExecutesNotMutates(t *testing.T) {
+	bash, _ := spawnPair(t.TempDir())
+	result := bash.Execute(bgCtx(), bgArgs("echo changed > note.txt"))
+	if result.IsError {
+		t.Fatalf("spawn: %s", result.Text)
+	}
+	if result.Mutates {
+		t.Fatal("a spawn claimed a mutation before the process ran")
+	}
+	if !result.Executes {
+		t.Fatal("a spawned process was not reported as started")
+	}
+	if result.Finished {
+		t.Fatal("a spawn claimed the process reached a terminal state")
+	}
+}
+
+// A failed background command is an error, not a successful observation.
+func TestWaitReportsFailedJobAsError(t *testing.T) {
+	bash, wait := spawnPair(t.TempDir())
+	if spawned := bash.Execute(bgCtx(), bgArgs("exit 7")); spawned.IsError {
+		t.Fatalf("spawn: %s", spawned.Text)
+	}
+	result := wait.Execute(bgCtx(), map[string]any{"jobId": "job-1", "timeout": float64(10000)})
+	if !result.IsError {
+		t.Fatalf("a non-zero job was reported as success: %q", result.Text)
+	}
+	if result.Executes != true || result.Finished != true {
+		t.Fatalf("finished failed job evidence = %+v", result)
+	}
+	if !strings.Contains(result.Text, "exit code 7") {
+		t.Errorf("result = %q, want the exit code", result.Text)
+	}
+}
+
+// A successful background check is verification evidence only after wait
+// observes the exit; the same Phase 4 command classifier decides.
+func TestWaitReportsSuccessfulVerification(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/bgcheck\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bash, wait := spawnPair(root)
+	if spawned := bash.Execute(bgCtx(), bgArgs("go build ./...")); spawned.IsError {
+		t.Fatalf("spawn: %s", spawned.Text)
+	}
+	result := wait.Execute(bgCtx(), map[string]any{"jobId": "job-1", "timeout": float64(60000)})
+	if result.IsError {
+		t.Fatalf("wait: %s", result.Text)
+	}
+	if !result.Verifies || result.Verification == nil {
+		t.Fatalf("successful background check carried no verification: %+v", result)
+	}
+}
+
+// A running job contributes no mutation or verification evidence, even when it
+// was classified as mutating or its command looks like a check.
+func TestWaitOnRunningJobIsNotCompletionEvidence(t *testing.T) {
+	bash, wait := spawnPair(t.TempDir())
+	if spawned := bash.Execute(bgCtx(), bgArgs("echo started; sleep 30")); spawned.IsError {
+		t.Fatalf("spawn: %s", spawned.Text)
+	}
+	result := wait.Execute(bgCtx(), map[string]any{"jobId": "job-1", "timeout": float64(100)})
+	if result.IsError {
+		t.Fatalf("wait on a running job: %s", result.Text)
+	}
+	if result.Mutates || result.Verifies || result.Finished {
+		t.Fatalf("a running job carried terminal evidence: %+v", result)
+	}
 }
 
 // TestBashBackgroundReturnsImmediately is the capability this increment buys:
@@ -211,8 +289,8 @@ func TestBackgroundTimeoutKillsARunaway(t *testing.T) {
 	}
 
 	result := wait.Execute(bgCtx(), map[string]any{"jobId": "job-1", "timeout": float64(10000)})
-	if result.IsError {
-		t.Fatalf("wait: %s", result.Text)
+	if !result.IsError {
+		t.Fatalf("a timed-out job was reported as success: %q", result.Text)
 	}
 	if !strings.Contains(result.Text, "killed after its timeout") {
 		t.Errorf("result = %q, want the kill stated", result.Text)

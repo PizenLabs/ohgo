@@ -19,6 +19,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/contract"
 )
 
 // Status is where a task is in its lifecycle.
@@ -141,6 +144,19 @@ type Task struct {
 	NextAction string `json:"nextAction,omitempty"`
 	// Status is the lifecycle position.
 	Status Status `json:"status"`
+	// Contract is the completion contract the task was started under. It is
+	// authoritative across resumes: a later prompt cannot silently replace it,
+	// and completion evaluates the new turn's evidence against this contract.
+	Contract *contract.IntentContract `json:"contract,omitempty"`
+	// Snapshot is the pre-run target evidence captured for the contract. It is
+	// what lets a resumed mutation task recognize a change made before the
+	// review boundary instead of recapturing the already-changed file as its
+	// baseline. It is evidence, never authority. The type is the one Phase 4
+	// owns; persisting it here avoids a second, drifting snapshot definition.
+	Snapshot *agent.TargetSnapshot `json:"snapshot,omitempty"`
+	// ReviewReason explains why the task entered NEEDS_REVIEW. It is durable
+	// so a resume or a restart does not lose the evidence boundary.
+	ReviewReason string `json:"reviewReason,omitempty"`
 	// UpdatedAt is when the task last changed. It is the checkpoint ordering
 	// key: a write carrying an older stamp must never overwrite a newer one.
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -152,6 +168,12 @@ var ErrInvalidTransition = errors.New("task: invalid status transition")
 
 // ErrInvalidTask means a task is missing a field the contract requires.
 var ErrInvalidTask = errors.New("task: invalid task")
+
+// ErrObjectiveConflict means a new request does not match the non-terminal
+// task's persisted contract. The caller must ask the human to continue the
+// existing task or abandon it explicitly; silently attaching a different
+// objective would let the old task inherit unrelated evidence.
+var ErrObjectiveConflict = errors.New("task: new objective conflicts with the active task")
 
 // Validate reports whether the task satisfies the contract a checkpoint needs.
 func (t Task) Validate() error {
@@ -197,6 +219,37 @@ func (t Task) Clone() Task {
 	out.Constraints = append([]string(nil), t.Constraints...)
 	out.Findings = append([]string(nil), t.Findings...)
 	out.Todos = append([]Todo(nil), t.Todos...)
+	if t.Contract != nil {
+		cloned := cloneContract(*t.Contract)
+		out.Contract = &cloned
+	}
+	if t.Snapshot != nil {
+		cloned := cloneSnapshot(*t.Snapshot)
+		out.Snapshot = &cloned
+	}
+	return out
+}
+
+// cloneContract deep-copies the slices a persisted contract owns.
+func cloneContract(in contract.IntentContract) contract.IntentContract {
+	out := in
+	out.Targets = append([]contract.Target(nil), in.Targets...)
+	out.ExpectedChanges = append([]contract.ExpectedChange(nil), in.ExpectedChanges...)
+	out.Verification = append([]contract.VerificationRequirement(nil), in.Verification...)
+	out.Issues = append([]string(nil), in.Issues...)
+	return out
+}
+
+// cloneSnapshot deep-copies the target evidence a checkpoint retains.
+func cloneSnapshot(in agent.TargetSnapshot) agent.TargetSnapshot {
+	out := in
+	out.Issues = append([]string(nil), in.Issues...)
+	out.Entries = make([]agent.TargetSnapshotEntry, len(in.Entries))
+	for i, entry := range in.Entries {
+		out.Entries[i] = entry
+		out.Entries[i].Files = append([]agent.FileState(nil), entry.Files...)
+		out.Entries[i].Symbols = append([]agent.SymbolState(nil), entry.Symbols...)
+	}
 	return out
 }
 

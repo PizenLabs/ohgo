@@ -195,12 +195,15 @@ cmd/ohgo
     └── harness.RouteTurn                         delegated turns
 
 agent.Loop.execute
-  Config.Admit(call, tool)  consulted BEFORE approval and execution
-    └── workspace.Authority.Admit → Workspace.Permits(Operation)
+  Config.Authorize(call, tool)  the production admission path
+    └── securityGate.Evaluate → workspace.Authority.Admit
+          └── Workspace.Permits(Operation)
 ```
 
 - `workspace.Permits` / `workspace.Admit` is the capability decision. An
-  unrecognised operation is denied.
+  unrecognised operation is denied. The loop's production authorizer is
+  `Config.Authorize` (`securityGate`); `Config.Admit`/`Config.Approve` remain
+  only as the legacy fallback when no authorizer is installed.
 - `authorityGate` is the only mutable authority. Because the loop's admission
   hook and the subagent spawner both read the gate at call time, a delegated
   turn's narrowing applies to anything the turn delegates.

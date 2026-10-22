@@ -21,10 +21,10 @@ cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
   │     │             ai.Model values; imports ai for the type only.
   │     ├─► creds     Credential chain: explicit → file → env → shell text.
   │     │             Single owner of ProviderEnvVars; secrets never printed.
-  │     ├─► tools     read write edit bash wait glob grep ls webfetch todo
-  │     │             task (task only when maxDepth > 1; wait shares bash's
-  │     │             job table; artifact when a session is attached). task
-  │     │             imports agent for the subagent spec.
+  │     ├─► tools     read write edit delete bash wait glob grep ls symbols
+  │     │             graph refs webfetch todo task (task only when maxDepth > 1;
+  │     │             wait shares bash's job table; artifact when a session is
+  │     │             attached). task imports agent for the subagent spec.
   │     ├─► prompt    System prompt assembly + AGENTS.md discovery (root
   │     │             primary, <root>/.ohgo/AGENTS.md supplementary).
   │     ├─► project   Stable project identity + project-local metadata
@@ -60,6 +60,26 @@ discovery), `cmd → everything`. Nothing in `ai` imports `catalog`;
 nothing in `agent` constructs HTTP; nothing outside `creds` reads a provider
 credential from env or shell. A cycle here is a bug, not a shortcut.
 
+## Repository intelligence
+
+`symbols`, `graph`, and `refs` are three read-only surfaces over one
+`tools.StructuralSource` and one `ast.Index`. One `GoBackend.Parse` pass
+produces symbol coordinates, package imports, resolved references, and static
+direct-call sites. There is no second parser, index, daemon, or graph database.
+
+- `symbols` returns exact declaration coordinates.
+- `graph` returns bounded package/import relationships with `file:line`
+  witnesses and explicit external/unresolved/ambiguous states.
+- `refs` returns package-scope symbol references and statically provable direct
+  callers/callees. Method dispatch, function values, dot imports, reflection,
+  and unresolved targets are counted as unknown or returned as `unsupported`;
+  they are never guessed. Callers/callees traversal is bounded by depth, node,
+  edge, and work limits, is cycle-safe, and is cancellation-aware.
+
+All three share the same freshness check, workspace path containment, authority
+admission, tool-call budget, and child tool set. Their evidence is advisory: it
+cannot mutate, execute, grant authority, or complete a task.
+
 ## Authority
 
 The three workspaces are runtime authority boundaries, not UI modes. The
@@ -69,9 +89,13 @@ execution`:
 - `workspace` owns the policy. `Ask` reads only; `Fuzz` reads and executes but
   cannot mutate; `Build` is the sole mutation authority. `Permits`/`Admit`
   decide, and `Authority` binds them to the agent loop.
-- The loop consults `Config.Admit` **before** approval, so a forbidden call is
-  refused outright rather than offered to the user. The UI may display the
-  workspace; it cannot grant capability.
+- Production installs `Config.Authorize` (`securityGate`) as the **only**
+  admission path. The loop evaluates every call through it before execution:
+  DENY is terminal, APPROVE requires a fresh confirming evaluation, and AUTO
+  executes directly. The legacy `Admit`/`Approve` pair remains only for
+  embedders that supply no authorizer; it is not the production path. A
+  forbidden call is refused outright rather than offered to the user. The UI
+  may display the workspace; it cannot grant capability.
 - A tool may refine its capability per invocation through
   `agent.CapabilityReporter`; `bash` uses this to classify a shell command as a
   mutation (a real redirect, a mutating program, a mutating git subcommand) so
@@ -139,6 +163,41 @@ re-appending to a pre-compaction list would resurrect summarised context.
 Compaction itself is injected, never constructed in the loop: `New` fails
 without a summarizer when compaction is enabled, and the summarizer takes
 its `StreamFn` as a parameter so tests substitute a stub.
+
+## Completion, task state, and exit status
+
+Completion is a state transition, not the model's stop reason. The one
+authoritative evaluator is `agent.EvaluateTaskCompletion`; every production
+path that reports a task outcome calls it with the contract built from the
+user's request before execution and the evidence the runtime observed.
+
+- **Evidence.** A mutation objective needs an observed target change and a
+  successful verification after it. A checkless execution objective needs a
+  process that reached a successful terminal state (`Executes` + `Finished`);
+  a started background spawn is not evidence. An informational objective needs
+  non-empty visible assistant text in the final turn. Empty or whitespace text
+  is `NEEDS_REVIEW`. The evaluator does not judge answer relevance.
+- **TUI task path.** `task.Begin` persists the contract, the pre-run target
+  snapshot, and later the review reason. `NEEDS_REVIEW` is non-terminal. A
+  continuation reuses the persisted contract and snapshot; a materially
+  different prompt is refused until the human runs `/task cancel` or
+  `/task accept`. Both close the task as `CANCELLED`; neither claims the old
+  objective completed, and the next prompt starts a new identity.
+- **Stateless paths.** `ohgo run` and the plain REPL use the same evaluator and
+  print one verdict: `COMPLETED`, `NEEDS_REVIEW: reason`, `PAUSED: reason`,
+  `FAILED: reason`, or `CANCELLED: reason`. They do not create a durable task.
+  `ohgo run` exits `0` completed, `2` review, `3` paused, `1` failed, and `130`
+  cancelled. The REPL prints the verdict and continues.
+- **Background evidence.** A spawn reports `Executes` but not `Finished` and
+  not `Mutates`. `wait` reports a finished job as `IsError` when it timed out
+  or exited non-zero, reports a mutating job's mutation, and reports
+  verification only for a successful recognised check. An un-awaited job is
+  outside the completion boundary.
+- **Cancellation.** The TUI turn owns one atomic terminal claim shared by
+  Ctrl+C and the post-run transition. A cancellation that wins turns the
+  action into `PAUSE`; a completion claim that wins first is not rewritten.
+  Graph traversal checks cancellation every 256 edge inspections and returns
+  the context error, never a truncated success.
 
 ## Subagents
 

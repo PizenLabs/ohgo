@@ -81,8 +81,15 @@ type Result struct {
 	// Executes reports that the tool started an arbitrary process. Such a
 	// process may have changed the workspace even when the runtime cannot prove
 	// it, so a mutation objective treats a successful execution as requiring a
-	// later verification. It is not a claim that a change happened.
+	// later verification. It is not a claim that a change happened, and it is
+	// not completion evidence on its own: a background spawn is started but
+	// unfinished.
 	Executes bool
+	// Finished reports that the process described by Executes reached a
+	// terminal state. For a background job, only the wait result that observes
+	// the exit sets it; the spawn does not. Completion requires a finished,
+	// successful execution, never merely a started one.
+	Finished bool
 	// Verifies reports that the execution successfully checked the workspace
 	// (tests, build, vet). It is evidence for completion, not authority: a
 	// verification cannot grant a capability or stand in for a mutation.

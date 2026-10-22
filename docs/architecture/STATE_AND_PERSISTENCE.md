@@ -348,8 +348,10 @@ Storage policy, when implemented:
   startup path;
 - corruption must never prevent opening the project (treat as absent, rebuild);
 - no coupling to providers or LLM code, and no conversation history inside it;
-- the graph answers *what symbols exist, where a function is defined, what calls
-  it, what a package depends on* — never what the user decided.
+- the graph answers *what symbols exist, where a function is defined, what
+  packages depend on what, and — for statically provable direct calls — who
+  calls a function or what it calls*; dynamic dispatch, function values, and
+  reflection remain explicitly unknown. It never answers what the user decided.
 
 `graph.db` and `memory.db` stay separate even though both are project-local:
 derived structure and durable knowledge recover differently.

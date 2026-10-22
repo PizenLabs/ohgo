@@ -6,6 +6,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/task"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/PizenLabs/ohgo/tui"
@@ -33,9 +34,27 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		controller.SetBudgetLimits(holder.Get().Limits())
 	}
 	hooks := tui.TaskHooks{
-		Begin: func(objective string) tui.TaskProjection {
-			recorded, err := controller.Begin(objective)
+		Begin: func(intent contract.IntentContract, snapshot *agent.TargetSnapshot) tui.TaskProjection {
+			recorded, err := controller.Begin(intent, snapshot)
 			return taskProjection(recorded, err)
+		},
+		Current: func() (tui.TaskResume, bool) {
+			current, ok := controller.Current()
+			if !ok {
+				return tui.TaskResume{}, false
+			}
+			resume := tui.TaskResume{
+				ID:           current.ID,
+				Status:       string(current.Status),
+				Objective:    current.Objective,
+				ReviewReason: current.ReviewReason,
+			}
+			if current.Contract != nil {
+				resume.Contract = *current.Contract
+				resume.HasContract = true
+			}
+			resume.Snapshot = current.Snapshot
+			return resume, true
 		},
 		Sync: func() tui.TaskProjection {
 			recorded, err := controller.Sync()
@@ -55,6 +74,14 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		},
 		Fail: func(reason string) tui.TaskProjection {
 			recorded, err := controller.Fail(reason)
+			return taskProjection(recorded, err)
+		},
+		Cancel: func(reason string) tui.TaskProjection {
+			recorded, err := controller.Cancel(reason)
+			return taskProjection(recorded, err)
+		},
+		AcceptReview: func(reason string) tui.TaskProjection {
+			recorded, err := controller.Cancel(reason)
 			return taskProjection(recorded, err)
 		},
 		Context: controller.Context,

@@ -924,7 +924,7 @@ func p5CaseChildSuccessAfterExhaustion(t *testing.T) phase5CaseResult {
 func p5CaseResume(t *testing.T) phase5CaseResult {
 	controller := task.NewController(task.NewStore(t.TempDir()), nil)
 	controller.SetBudgetLimits(budget.Limits{Turns: 2, ToolCalls: 4})
-	if _, err := controller.Begin("resume task"); err != nil {
+	if _, err := controller.Begin(contract.IntentContract{Objective: "resume task", Kind: contract.ObjectiveInformational}, nil); err != nil {
 		t.Fatal(err)
 	}
 	grant := controller.RunBudget()
@@ -939,7 +939,7 @@ func p5CaseResume(t *testing.T) phase5CaseResult {
 	if _, _, err := reopened.Restore(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reopened.Begin("continue"); err != nil {
+	if _, err := reopened.Begin(contract.IntentContract{Objective: "resume task", Kind: contract.ObjectiveInformational}, nil); err != nil {
 		t.Fatal(err)
 	}
 	state, found := reopened.BudgetState()
@@ -955,7 +955,7 @@ func p5CaseResume(t *testing.T) phase5CaseResult {
 func p5CaseResumeKeepsUsage(t *testing.T) phase5CaseResult {
 	controller := task.NewController(task.NewStore(t.TempDir()), nil)
 	controller.SetBudgetLimits(budget.Limits{Turns: 10})
-	if _, err := controller.Begin("resume task"); err != nil {
+	if _, err := controller.Begin(contract.IntentContract{Objective: "resume task", Kind: contract.ObjectiveInformational}, nil); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
@@ -971,7 +971,7 @@ func p5CaseResumeKeepsUsage(t *testing.T) phase5CaseResult {
 	if _, _, err := reopened.Restore(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reopened.Begin("continue"); err != nil {
+	if _, err := reopened.Begin(contract.IntentContract{Objective: "resume task", Kind: contract.ObjectiveInformational}, nil); err != nil {
 		t.Fatal(err)
 	}
 	state, found := reopened.BudgetState()

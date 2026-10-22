@@ -3,10 +3,13 @@ package task
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/contract"
 )
 
 // Source supplies the current todo snapshot from the runtime's single todo
@@ -113,30 +116,43 @@ func (c *Controller) Restore() (Task, bool, error) {
 	return c.task.Clone(), true, nil
 }
 
-// Begin records that a turn is starting with this objective.
+// Begin records that a turn is starting with this contract and pre-run target
+// evidence.
 //
 // It continues the current task when one is resumable (a paused task resumes
 // with its identity intact) and creates a new one when there is none or when
 // the previous task is terminal. It never turns an interruption into a fresh,
 // unrelated task.
-func (c *Controller) Begin(objective string) (Task, error) {
+//
+// A non-terminal task's contract is immutable. The incoming contract must be
+// the one already persisted; a different objective is refused with
+// ErrObjectiveConflict so the caller must ask the human to continue or abandon
+// the task explicitly. The incoming snapshot is used only when the task is new:
+// a resume keeps the original pre-run baseline, because recapturing an already
+// changed file would erase the evidence the contract was built on.
+func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.TargetSnapshot) (Task, error) {
 	if err := c.ensureLoaded(); err != nil {
 		return Task{}, err
 	}
-	objective = strings.TrimSpace(objective)
+	objective := strings.TrimSpace(intent.Objective)
 
 	now := c.now().UTC()
 	switch {
 	case c.task.ID != "" && !c.task.Status.IsTerminal():
+		if c.task.Contract == nil {
+			return Task{}, fmt.Errorf("%w: %q has no persisted completion contract; cancel or replace it explicitly",
+				ErrObjectiveConflict, c.task.Objective)
+		}
+		if !reflect.DeepEqual(*c.task.Contract, intent) {
+			return Task{}, fmt.Errorf("%w: persisted %q, requested %q",
+				ErrObjectiveConflict, c.task.Contract.Objective, objective)
+		}
 		// A paused, reviewable, or pending task resumes with its identity
 		// intact; a running one continues (a turn boundary, not a new task).
 		if c.task.Status == StatusPaused || c.task.Status == StatusPending || c.task.Status == StatusNeedsReview {
 			if err := c.task.Start(now); err != nil {
 				return Task{}, err
 			}
-		}
-		if objective != "" && objective != c.task.Objective {
-			c.task.NextAction = objective
 		}
 		if c.budgetState == nil {
 			c.budgetState = &budget.State{Limits: c.budgetLimits}
@@ -148,6 +164,12 @@ func (c *Controller) Begin(objective string) (Task, error) {
 			return Task{}, err
 		}
 		created.UpdatedAt = now
+		cloned := cloneContract(intent)
+		created.Contract = &cloned
+		if snapshot != nil {
+			clonedSnapshot := cloneSnapshot(*snapshot)
+			created.Snapshot = &clonedSnapshot
+		}
 		c.task = created
 		// A new task owns a new ledger. Its identity is new, so there is no
 		// prior consumption to carry forward.
@@ -241,6 +263,9 @@ func (c *Controller) NeedsReview(reason string) (Task, error) {
 		return c.task.Clone(), nil
 	}
 	c.syncTodos()
+	if reviewed := strings.TrimSpace(reason); reviewed != "" {
+		c.task.ReviewReason = reviewed
+	}
 	if c.task.Status != StatusNeedsReview {
 		if err := c.task.NeedsReview(c.now().UTC()); err != nil {
 			return c.task.Clone(), err
@@ -310,6 +335,12 @@ func (c *Controller) ensureLoaded() error {
 		return nil
 	}
 	c.task = NormalizeRecovered(snap.Task)
+	// A non-terminal task from a version-1 checkpoint has no contract. It
+	// cannot be completed, and it must not be silently rebound to whatever the
+	// next prompt says; say why so the human can cancel or replace it.
+	if !c.task.Status.IsTerminal() && c.task.Contract == nil && c.task.ReviewReason == "" {
+		c.task.ReviewReason = "the persisted task has no completion contract; it can be cancelled or replaced, not completed"
+	}
 	if stored := snap.Progress.Budget; stored != nil {
 		state := *stored
 		if c.budgetState == nil {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/task"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/PizenLabs/ohgo/tui"
@@ -77,7 +78,7 @@ func TestInstallTaskContinuityWritesAndRecoversArtifacts(t *testing.T) {
 	program := tui.NewProgram(nil, "test", 0)
 	controller := installTaskContinuity(program, root, []agent.Tool{tools.NewTodoTool()})
 
-	if _, err := controller.Begin("ship phase 1"); err != nil {
+	if _, err := controller.Begin(contract.IntentContract{Objective: "ship phase 1", Kind: contract.ObjectiveInformational}, nil); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	if _, err := controller.Pause("interrupted by user"); err != nil {

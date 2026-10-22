@@ -9,6 +9,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -93,7 +94,7 @@ func TestRunTurnPausesTaskOnInterruption(t *testing.T) {
 	}
 	p := NewProgram(loop, "test", 0)
 	p.SetTaskHooks(TaskHooks{
-		Begin: func(string) TaskProjection {
+		Begin: func(contract.IntentContract, *agent.TargetSnapshot) TaskProjection {
 			close(begun)
 			return TaskProjection{ID: "t1", Status: "RUNNING"}
 		},
@@ -156,7 +157,9 @@ func TestRunTurnCompletesTaskOnFinalTurn(t *testing.T) {
 	}
 	p := NewProgram(loop, "test", 0)
 	p.SetTaskHooks(TaskHooks{
-		Begin: func(string) TaskProjection { return TaskProjection{ID: "t1", Status: "RUNNING"} },
+		Begin: func(contract.IntentContract, *agent.TargetSnapshot) TaskProjection {
+			return TaskProjection{ID: "t1", Status: "RUNNING"}
+		},
 		Complete: func() TaskProjection {
 			mu.Lock()
 			completed = true
@@ -177,6 +180,149 @@ func TestRunTurnCompletesTaskOnFinalTurn(t *testing.T) {
 	defer mu.Unlock()
 	if !completed {
 		t.Error("a run whose final turn stopped calling tools did not complete the task")
+	}
+}
+
+// A continuation of a review task is judged against the persisted contract, not
+// the continuation prompt. A clean informational answer cannot complete a
+// mutation objective that still has no observed change.
+func TestResumedReviewUsesPersistedContract(t *testing.T) {
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content: []ai.ContentBlock{ai.TextContent{Text: "explained"}},
+			}), nil
+		},
+		Tools: []agent.Tool{&idleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	persisted := contract.IntentContract{
+		Objective: "fix note.txt",
+		Kind:      contract.ObjectiveMutation,
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "note.txt"}},
+		Verification: []contract.VerificationRequirement{{
+			Kind: contract.VerifyAny,
+		}},
+	}
+	var (
+		mu        sync.Mutex
+		begunWith contract.IntentContract
+		completed bool
+		reviewed  string
+		began     bool
+	)
+	p.SetTaskHooks(TaskHooks{
+		Current: func() (TaskResume, bool) {
+			return TaskResume{
+				ID:          "t1",
+				Status:      "NEEDS_REVIEW",
+				Objective:   persisted.Objective,
+				Contract:    persisted,
+				HasContract: true,
+				Snapshot:    &agent.TargetSnapshot{Root: t.TempDir()},
+			}, true
+		},
+		Begin: func(intent contract.IntentContract, _ *agent.TargetSnapshot) TaskProjection {
+			mu.Lock()
+			began = true
+			begunWith = intent
+			mu.Unlock()
+			return TaskProjection{ID: "t1", Status: "RUNNING"}
+		},
+		Complete: func() TaskProjection {
+			mu.Lock()
+			completed = true
+			mu.Unlock()
+			return TaskProjection{ID: "t1", Status: "COMPLETED"}
+		},
+		NeedsReview: func(reason string) TaskProjection {
+			mu.Lock()
+			reviewed = reason
+			mu.Unlock()
+			return TaskProjection{ID: "t1", Status: "NEEDS_REVIEW"}
+		},
+	})
+
+	p.runTurn("continue")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !began {
+		t.Fatal("the continuation did not begin the task")
+	}
+	if begunWith.Objective != persisted.Objective || begunWith.Kind != persisted.Kind {
+		t.Fatalf("continuation used %+v, want the persisted contract", begunWith)
+	}
+	if completed {
+		t.Fatal("a mutation review task completed on an informational answer")
+	}
+	if reviewed == "" {
+		t.Fatal("the unresolved task was not left in review")
+	}
+}
+
+// A prompt with a different objective is refused before the model runs; it is
+// not silently attached to the review task.
+func TestResumedReviewRefusesDifferentObjective(t *testing.T) {
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			t.Fatal("the model was called for a refused continuation")
+			return nil, nil
+		},
+		Tools: []agent.Tool{&idleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	p.SetTaskHooks(TaskHooks{
+		Current: func() (TaskResume, bool) {
+			return TaskResume{
+				ID: "t1", Status: "NEEDS_REVIEW", Objective: "fix note.txt", HasContract: true,
+				Contract: contract.IntentContract{
+					Objective: "fix note.txt",
+					Kind:      contract.ObjectiveMutation,
+					Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "note.txt"}},
+				},
+			}, true
+		},
+		Begin: func(contract.IntentContract, *agent.TargetSnapshot) TaskProjection {
+			t.Fatal("a different objective was attached to the review task")
+			return TaskProjection{}
+		},
+	})
+
+	p.runTurn("what does this project do?")
+}
+
+// /task cancel is the explicit abandonment path: it never reports completion.
+func TestTaskCommandCancelDoesNotComplete(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	var completed, cancelled bool
+	p.SetTaskHooks(TaskHooks{
+		Current: func() (TaskResume, bool) {
+			return TaskResume{ID: "t1", Status: "NEEDS_REVIEW", Objective: "fix note.txt"}, true
+		},
+		Cancel: func(string) TaskProjection {
+			cancelled = true
+			return TaskProjection{ID: "t1", Status: "CANCELLED"}
+		},
+		Complete: func() TaskProjection {
+			completed = true
+			return TaskProjection{ID: "t1", Status: "COMPLETED"}
+		},
+	})
+	p.taskCommand([]string{"cancel"})
+	if !cancelled {
+		t.Fatal("/task cancel did not close the task")
+	}
+	if completed {
+		t.Fatal("/task cancel claimed completion")
 	}
 }
 
@@ -224,7 +370,9 @@ func TestRunTurnInjectsTaskContext(t *testing.T) {
 	}
 	p := NewProgram(loop, "test", 0)
 	p.SetTaskHooks(TaskHooks{
-		Begin:   func(string) TaskProjection { return TaskProjection{ID: "t1", Status: "RUNNING"} },
+		Begin: func(contract.IntentContract, *agent.TargetSnapshot) TaskProjection {
+			return TaskProjection{ID: "t1", Status: "RUNNING"}
+		},
 		Context: func() []string { return []string{"Objective: ship phase 1", "Next action: run tests"} },
 	})
 

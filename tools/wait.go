@@ -231,17 +231,39 @@ func renderFinished(id string, snap jobSnapshot) agent.Result {
 		} else {
 			fmt.Fprintf(&sb, "[job %s finished, exit code %d, %s]", id, snap.exitCode, snap.elapsed.Round(time.Millisecond))
 		}
-		if strings.TrimSpace(snap.text) == "" {
-			return agent.Result{Text: sb.String(), Useless: true}
-		}
-		return agent.Result{
-			Text: sb.String(),
+		// A finished job is execution evidence even when it failed; only a
+		// successful terminal state is completion evidence. A timed-out or
+		// non-zero exit must be an error, never a successful observation.
+		failed := snap.timedOut || snap.exitCode != 0
+		result := agent.Result{
+			Text:     sb.String(),
+			IsError:  failed,
+			Executes: true,
+			Finished: true,
+			// The process ran to a terminal state. A mutating command may
+			// have changed the workspace even when it then failed; a
+			// successful one certainly requires later verification.
+			Mutates: snap.mutates,
 			Details: map[string]any{
 				"job":      id,
 				"done":     true,
 				"exitCode": snap.exitCode,
+				"timedOut": snap.timedOut,
 			},
 		}
+		if !failed {
+			// Verification is the same Phase 4 evidence a foreground check
+			// produces: only a recognised, successful command counts, never a
+			// name or a bare zero exit.
+			if verification := VerificationForIn(snap.root, snap.command); verification != nil {
+				result.Verifies = true
+				result.Verification = verification
+			}
+		}
+		if strings.TrimSpace(snap.text) == "" && !failed {
+			result.Useless = true
+		}
+		return result
 	}
 	if sb.Len() > 0 {
 		sb.WriteString("\n\n")

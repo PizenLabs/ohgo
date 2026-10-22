@@ -30,7 +30,13 @@ repository-relative coordinate
   path · package · symbol · kind · start_line · end_line
 ```
 
-- `cmd/ohgo/buildTools` registers exactly one structural tool: `symbols`.
+- **Historical note (Phase 6):** this section describes the Phase 1 tree. The
+  "exactly one structural tool" claim was true then; Phase 6 added `graph` as
+  a second read-only wire surface over the same `ast.Index` and the same
+  `StructuralSource`. The invariant that remains current is one structural
+  source and one parse, not one wire tool.
+- At the time of Phase 1, `cmd/ohgo/buildTools` registered exactly one
+  structural tool: `symbols`.
 - `SymbolsTool` lazily creates and owns one `*ast.Index`; the handle is
   mutex-guarded because the agent can issue tool calls concurrently.
 - `ast.Index` owns all freshness policy. Query entry points revalidate a

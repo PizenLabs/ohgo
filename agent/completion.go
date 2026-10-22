@@ -102,6 +102,10 @@ func CompletionEvidence(turns []Turn, mutationIntent bool) (mutated, verifiedAft
 }
 
 type completionEvidence struct {
+	// executed is a process that reached a successful terminal state, or a
+	// successful verification (which is itself execution evidence). A started
+	// but unfinished background job is not evidence.
+	executed bool
 	// mutated is a definite change: a write/edit/delete, or a shell command
 	// classified as mutating.
 	mutated bool
@@ -154,7 +158,14 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 				// repository. A mutation objective must verify after it.
 				evidence.lastPotentialMutation = position
 			}
+			if outcome.Result.Executes && outcome.Result.Finished {
+				evidence.executed = true
+			}
 			if outcome.Result.Verifies {
+				// A successful check proves a process ran and completed even
+				// when the tool cannot report an Executes/Finished pair (a
+				// delegated child, for example).
+				evidence.executed = true
 				evidence.lastVerification = position
 				evidence.verifications = append(evidence.verifications, verificationRecord{
 					position: position,
@@ -275,6 +286,17 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	}
 	if intent.Kind == contract.ObjectiveMutation && !evidence.mutated {
 		return needsReview("the request asked for a repository change but no change was observed")
+	}
+	if intent.Kind == contract.ObjectiveExecution && len(intent.Verification) == 0 && !evidence.executed {
+		// A clean model stop is not execution evidence. A started background
+		// job is not finished execution evidence either: its outcome is only
+		// known when wait observes it.
+		return needsReview("the request asked for execution but no successful execution was observed")
+	}
+	if intent.Kind == contract.ObjectiveInformational && strings.TrimSpace(last.Assistant.Text()) == "" {
+		// An empty answer is not an answer. The rule is deliberately only
+		// "visible text exists": judging relevance would require an LLM judge.
+		return needsReview("the request asked for an answer but the final assistant message was empty")
 	}
 	if evidence.lastVerification < evidence.lastPotentialMutation {
 		return needsReview("the repository change or execution was not followed by a successful verification")

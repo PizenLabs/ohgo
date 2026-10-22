@@ -1,11 +1,21 @@
 package task
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/contract"
 )
+
+// testIntent is the smallest complete contract the controller needs; the
+// completion rules themselves are tested in the agent package.
+func testIntent(objective string) contract.IntentContract {
+	return contract.IntentContract{Objective: objective, Kind: contract.ObjectiveInformational}
+}
 
 // A paused turn is resumed, not replaced: the next turn continues the same
 // task identity.
@@ -14,7 +24,7 @@ func TestControllerPauseThenResumeContinuesSameTask(t *testing.T) {
 	store := NewStore(root)
 	controller := NewController(store, nil)
 
-	begun, err := controller.Begin("ship phase 1")
+	begun, err := controller.Begin(testIntent("ship phase 1"), nil)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -52,7 +62,7 @@ func TestControllerPauseThenResumeContinuesSameTask(t *testing.T) {
 		t.Fatalf("restored status = %s, want PAUSED", restored.Status)
 	}
 
-	resumed, err := reopened.Begin("continue")
+	resumed, err := reopened.Begin(testIntent("ship phase 1"), nil)
 	if err != nil {
 		t.Fatalf("Begin resume: %v", err)
 	}
@@ -72,7 +82,7 @@ func TestControllerCompletionRequiresAllWorkDone(t *testing.T) {
 		{Label: "validate", Status: TodoTodo},
 	}
 	controller := NewController(NewStore(t.TempDir()), func() []Todo { return todos })
-	if _, err := controller.Begin("objective"); err != nil {
+	if _, err := controller.Begin(testIntent("objective"), nil); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 
@@ -103,7 +113,7 @@ func TestControllerCompletionRequiresAllWorkDone(t *testing.T) {
 func TestControllerNeedsReviewIsResumable(t *testing.T) {
 	store := NewStore(t.TempDir())
 	controller := NewController(store, nil)
-	begun, err := controller.Begin("fix the parser")
+	begun, err := controller.Begin(testIntent("fix the parser"), nil)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -133,7 +143,7 @@ func TestControllerNeedsReviewIsResumable(t *testing.T) {
 		t.Fatalf("restored status = %s, want NEEDS_REVIEW", restored.Status)
 	}
 
-	resumed, err := reopened.Begin("verify the fix")
+	resumed, err := reopened.Begin(testIntent("fix the parser"), nil)
 	if err != nil {
 		t.Fatalf("Begin resume: %v", err)
 	}
@@ -180,7 +190,7 @@ func TestControllerRecoversCrashedTaskAsPaused(t *testing.T) {
 func TestControllerCheckpointRecordsLastAction(t *testing.T) {
 	store := NewStore(t.TempDir())
 	controller := NewController(store, nil)
-	if _, err := controller.Begin("objective"); err != nil {
+	if _, err := controller.Begin(testIntent("objective"), nil); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	if _, err := controller.Pause("interrupted by user"); err != nil {
@@ -206,7 +216,7 @@ func TestControllerCheckpointRecordsLastAction(t *testing.T) {
 func TestControllerSyncKeepsTodoIDsByLabel(t *testing.T) {
 	todos := []Todo{{Label: "a", Status: TodoTodo}, {Label: "b", Status: TodoTodo}}
 	controller := NewController(NewStore(t.TempDir()), func() []Todo { return todos })
-	if _, err := controller.Begin("objective"); err != nil {
+	if _, err := controller.Begin(testIntent("objective"), nil); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	first := controller.task.Todos[0].ID
@@ -218,11 +228,149 @@ func TestControllerSyncKeepsTodoIDsByLabel(t *testing.T) {
 	}
 }
 
+// The completion contract, pre-run target evidence, and review reason survive a
+// restart. Without them a resumed task has no boundary to be judged against.
+func TestControllerPersistsContractSnapshotAndReviewReason(t *testing.T) {
+	store := NewStore(t.TempDir())
+	controller := NewController(store, nil)
+	intent := contract.IntentContract{
+		Objective: "fix note.txt",
+		Kind:      contract.ObjectiveMutation,
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "note.txt"}},
+		Verification: []contract.VerificationRequirement{{
+			Kind: contract.VerifyAny,
+		}},
+	}
+	snapshot := &agent.TargetSnapshot{
+		Root: "/tmp/workspace",
+		Entries: []agent.TargetSnapshotEntry{{
+			Target:   contract.Target{Kind: contract.TargetPath, Value: "note.txt"},
+			Resolved: true,
+			Files:    []agent.FileState{{Path: "note.txt", Exists: true, Hash: "before"}},
+		}},
+	}
+	if _, err := controller.Begin(intent, snapshot); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := controller.NeedsReview("the change was not verified"); err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+
+	reopened := NewController(store, nil)
+	restored, found, err := reopened.Restore()
+	if err != nil || !found {
+		t.Fatalf("Restore = %v, found=%v", err, found)
+	}
+	if restored.Contract == nil || restored.Contract.Objective != intent.Objective {
+		t.Fatalf("contract lost: %+v", restored.Contract)
+	}
+	if restored.Snapshot == nil || len(restored.Snapshot.Entries) != 1 ||
+		restored.Snapshot.Entries[0].Files[0].Hash != "before" {
+		t.Fatalf("snapshot lost: %+v", restored.Snapshot)
+	}
+	if restored.ReviewReason != "the change was not verified" {
+		t.Fatalf("review reason = %q", restored.ReviewReason)
+	}
+	if _, err := reopened.Begin(intent, nil); err != nil {
+		t.Fatalf("resume with the persisted contract: %v", err)
+	}
+}
+
+// A continuation cannot silently acquire a different objective. The human must
+// cancel or replace the task first.
+func TestControllerRefusesDifferentContractOnResume(t *testing.T) {
+	controller := NewController(NewStore(t.TempDir()), nil)
+	first := testIntent("fix the parser")
+	if _, err := controller.Begin(first, nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := controller.NeedsReview("not verified"); err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+
+	second := testIntent("write a different feature")
+	if _, err := controller.Begin(second, nil); !errors.Is(err, ErrObjectiveConflict) {
+		t.Fatalf("Begin different contract = %v, want ErrObjectiveConflict", err)
+	}
+	current, ok := controller.Current()
+	if !ok || current.Status != StatusNeedsReview {
+		t.Fatalf("conflict changed task state: %+v (found=%v)", current, ok)
+	}
+	if current.Contract == nil || current.Contract.Objective != first.Objective {
+		t.Fatalf("conflict replaced the contract: %+v", current.Contract)
+	}
+}
+
+// A version-1 review checkpoint has no contract. It must not be silently bound
+// to the next prompt, and completion must remain impossible until replacement.
+func TestControllerRefusesLegacyReviewWithoutContract(t *testing.T) {
+	store := NewStore(t.TempDir())
+	legacy := Task{
+		ID:        "legacy",
+		Objective: "fix the parser",
+		Status:    StatusNeedsReview,
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := store.Save(legacy); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	controller := NewController(store, nil)
+	restored, found, err := controller.Restore()
+	if err != nil || !found {
+		t.Fatalf("Restore = %v, found=%v", err, found)
+	}
+	if restored.Contract != nil {
+		t.Fatal("a legacy task acquired a contract on restore")
+	}
+	if restored.ReviewReason == "" {
+		t.Fatal("a legacy review task has no reported reason")
+	}
+	if _, err := controller.Begin(testIntent("continue"), nil); !errors.Is(err, ErrObjectiveConflict) {
+		t.Fatalf("Begin legacy = %v, want ErrObjectiveConflict", err)
+	}
+}
+
+// The explicit human route: cancel the review, then start a new task with a
+// new identity and its own contract. The old objective is never marked done.
+func TestControllerReviewCanBeCancelledAndReplaced(t *testing.T) {
+	controller := NewController(NewStore(t.TempDir()), nil)
+	first := testIntent("fix the parser")
+	begun, err := controller.Begin(first, nil)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := controller.NeedsReview("not verified"); err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+	closed, err := controller.Cancel("abandoned by user")
+	if err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if closed.Status != StatusCancelled {
+		t.Fatalf("closed status = %s, want CANCELLED (never COMPLETED)", closed.Status)
+	}
+
+	second := testIntent("write a different feature")
+	replaced, err := controller.Begin(second, nil)
+	if err != nil {
+		t.Fatalf("Begin replacement: %v", err)
+	}
+	if replaced.ID == begun.ID {
+		t.Fatal("replacement reused the abandoned task identity")
+	}
+	if replaced.Status != StatusRunning {
+		t.Fatalf("replacement status = %s, want RUNNING", replaced.Status)
+	}
+	if replaced.Contract == nil || replaced.Contract.Objective != second.Objective {
+		t.Fatalf("replacement contract = %+v", replaced.Contract)
+	}
+}
+
 // Reconstructed context must carry orientation, and must stay bounded: the
 // point is semantic continuity, not a transcript dump.
 func TestControllerContextCarriesOrientationAndStaysBounded(t *testing.T) {
 	controller := NewController(NewStore(t.TempDir()), nil)
-	if _, err := controller.Begin("ship phase 1"); err != nil {
+	if _, err := controller.Begin(testIntent("ship phase 1"), nil); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	controller.task.Constraints = []string{"one loop"}
@@ -253,7 +401,7 @@ func TestControllerContextCarriesOrientationAndStaysBounded(t *testing.T) {
 // Failure and cancellation are distinct outcomes and must not collapse.
 func TestControllerFailAndCancelAreDistinct(t *testing.T) {
 	failed := NewController(NewStore(t.TempDir()), nil)
-	if _, err := failed.Begin("a"); err != nil {
+	if _, err := failed.Begin(testIntent("a"), nil); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	failedTask, err := failed.Fail("provider exploded")
@@ -265,7 +413,7 @@ func TestControllerFailAndCancelAreDistinct(t *testing.T) {
 	}
 
 	cancelled := NewController(NewStore(t.TempDir()), nil)
-	if _, err := cancelled.Begin("b"); err != nil {
+	if _, err := cancelled.Begin(testIntent("b"), nil); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	cancelledTask, err := cancelled.Cancel("user asked")
@@ -285,7 +433,7 @@ func TestControllerFailAndCancelAreDistinct(t *testing.T) {
 func TestControllerSyncLeavesTerminalTaskAlone(t *testing.T) {
 	todos := []Todo{{Label: "done item", Status: TodoDone}}
 	controller := NewController(NewStore(t.TempDir()), func() []Todo { return todos })
-	if _, err := controller.Begin("objective"); err != nil {
+	if _, err := controller.Begin(testIntent("objective"), nil); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 	if _, err := controller.Complete(); err != nil {

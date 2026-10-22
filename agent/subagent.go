@@ -29,6 +29,9 @@ var ReadOnlyToolNames = map[string]bool{
 	"recall":  true,
 	"reflect": true,
 	"retain":  true,
+	"symbols": true,
+	"graph":   true,
+	"refs":    true,
 }
 
 // IsReadOnly reports whether a tool set can only observe.
@@ -119,6 +122,10 @@ type SubagentResult struct {
 	Completion Completion
 	// Mutated reports that the child changed the workspace.
 	Mutated bool
+	// Executed reports that the child ran a process to a successful terminal
+	// state. It lets a parent's execution objective inherit observed child
+	// execution instead of treating the child's answer as proof it ran.
+	Executed bool
 	// Verified reports that the child successfully verified its last change.
 	Verified bool
 	// Verification records the scopes the child's successful checks covered,
@@ -271,7 +278,10 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 	} else {
 		completion = EvaluateCompletion(turns, spec.MutationIntent)
 	}
-	mutated, verified := CompletionEvidence(turns, spec.MutationIntent)
+	evidence := scanCompletionEvidence(turns, spec.MutationIntent)
+	mutated := evidence.mutated
+	verified := evidence.mutated && evidence.lastVerification >= evidence.lastPotentialMutation
+	executed := evidence.executed
 	verification := verificationFromTurns(turns)
 	if text == "" {
 		return SubagentResult{
@@ -279,6 +289,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 			ToolCalls:    toolCalls,
 			Completion:   completion,
 			Mutated:      mutated,
+			Executed:     executed,
 			Verified:     verified,
 			Verification: verification,
 			Budget:       parent.Budget.Snapshot(),
@@ -292,6 +303,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		ReadOnly:     IsReadOnly(tools),
 		Completion:   completion,
 		Mutated:      mutated,
+		Executed:     executed,
 		Verified:     verified,
 		Verification: verification,
 		Budget:       parent.Budget.Snapshot(),

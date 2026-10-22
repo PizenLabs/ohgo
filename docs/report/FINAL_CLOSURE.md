@@ -7,6 +7,13 @@
 - **Final dataset:** `docs/benchmarks/results/phase2-final-valid-runs.json`
 - **Final analysis:** `docs/benchmarks/results/phase2-final-analysis.json`, computed by `docs/benchmarks/phase2_final_analysis.py`
 
+> **Historical note (Phase 6):** statements below about "one structural tool"
+> describe the Phase 1/2 tree. Phase 6 added `graph` as a second read-only wire
+> surface over the same `ast.Index`/`StructuralSource`; the Phase 5/6 debt
+> closure added `refs` as a third. The one-source and one-parse invariants
+> remain current. See
+> [`PHASE7_CLOSURE.md`](PHASE7_CLOSURE.md).
+
 ## 1. Executive Verdict
 
 **PASS WITH LIMITATIONS — the repository-discovery foundation is sound for the demonstrated scope.**

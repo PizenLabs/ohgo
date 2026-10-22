@@ -563,6 +563,14 @@ func (l *Loop) SetBudget(b *budget.Budget) {
 // Budget returns the grant this loop is currently enforcing.
 func (l *Loop) Budget() *budget.Budget { return l.budget }
 
+// Deadline returns the effective wall-clock bound for the run.
+//
+// A headless caller uses it to distinguish a run that stopped because the
+// deadline expired from one whose model simply stopped: the loop returns the
+// same nil error for both, and only the caller can turn the former into an
+// honest PAUSED verdict.
+func (l *Loop) Deadline() time.Time { return l.deadline() }
+
 // deadline returns the effective wall-clock bound: the stricter of the legacy
 // per-run deadline and the root budget's deadline. One absolute instant is
 // shared down the tree, so a child cannot extend it.

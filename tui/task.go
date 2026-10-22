@@ -3,7 +3,9 @@ package tui
 import (
 	"strings"
 
+	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/contract"
 )
 
 // Task state values the task domain projects. They are duplicated here as
@@ -43,6 +45,22 @@ type TaskProjection struct {
 	Err string
 }
 
+// TaskResume is the durable state a new prompt must be checked against.
+//
+// HasContract distinguishes "this task was started under the Phase 7 contract
+// schema" from a version-1 checkpoint: the latter has no evidence boundary and
+// cannot be resumed into a completion. The projection is read-only; the
+// controller remains the owner.
+type TaskResume struct {
+	ID           string
+	Status       string
+	Objective    string
+	ReviewReason string
+	Contract     contract.IntentContract
+	HasContract  bool
+	Snapshot     *agent.TargetSnapshot
+}
+
 // TaskHooks wire the durable task continuity layer into the program.
 //
 // Every field is nil-safe: a program built without them runs exactly as before,
@@ -50,9 +68,12 @@ type TaskProjection struct {
 // program never imports the task domain and the task domain never reaches into
 // the UI.
 type TaskHooks struct {
-	// Begin records that a turn is starting with this objective, creating or
-	// resuming the task, and returns its projection.
-	Begin func(objective string) TaskProjection
+	// Begin records that a turn is starting with this contract and pre-run
+	// snapshot, creating or resuming the task, and returns its projection.
+	Begin func(contract.IntentContract, *agent.TargetSnapshot) TaskProjection
+	// Current returns the active task's persisted boundary, if any. The
+	// controller remains the owner.
+	Current func() (TaskResume, bool)
 	// Sync refreshes and checkpoints the current task, returning a projection.
 	Sync func() TaskProjection
 	// Pause records an interruption and returns the paused projection.
@@ -64,6 +85,13 @@ type TaskHooks struct {
 	Complete func() TaskProjection
 	// Fail records an execution failure and returns the projection.
 	Fail func(reason string) TaskProjection
+	// Cancel closes the task as deliberately abandoned. It never claims the
+	// objective was completed.
+	Cancel func(reason string) TaskProjection
+	// AcceptReview closes a review task as accepted-without-completion. It is
+	// the explicit human replacement path: the next prompt starts a new task
+	// identity instead of inheriting the old contract.
+	AcceptReview func(reason string) TaskProjection
 	// Context returns deterministic orientation blocks for the current task.
 	Context func() []string
 	// RunBudget returns the fresh root grant for one turn. The host installs
@@ -102,6 +130,113 @@ func (p *Program) SyncTask() {
 		return
 	}
 	p.PublishTask(p.task.Sync())
+}
+
+// taskCommand handles /task status|cancel|accept.
+//
+// It is the explicit human decision the review boundary requires. Cancel and
+// accept both close the task as CANCELLED: neither claims the objective was
+// completed, and the next prompt starts a new task identity instead of
+// inheriting the old contract.
+func (p *Program) taskCommand(args []string) {
+	action := "status"
+	if len(args) > 0 {
+		action = strings.ToLower(args[0])
+	}
+	if p.state.Status.Busy {
+		p.state.Apply(Notice{Text: "cancel the running turn before changing the task"})
+		return
+	}
+	if p.task.Current == nil {
+		p.state.Apply(Notice{Text: "task continuity is unavailable"})
+		return
+	}
+	current, ok := p.task.Current()
+	if !ok {
+		p.state.Apply(Notice{Text: "no task is active"})
+		return
+	}
+
+	switch action {
+	case "status":
+		text := "task " + current.Status + ": " + current.Objective
+		if current.ReviewReason != "" {
+			text += "\nneeds review: " + current.ReviewReason
+		}
+		p.state.Apply(Notice{Text: text})
+	case "cancel", "accept":
+		if taskStatusTerminal(current.Status) {
+			p.state.Apply(Notice{Text: "task is already " + current.Status})
+			return
+		}
+		if action == "accept" {
+			if p.task.AcceptReview == nil {
+				p.state.Apply(Notice{Text: "review acceptance is unavailable"})
+				return
+			}
+			p.PublishTask(p.task.AcceptReview("reviewed and closed by user without a completion claim"))
+			p.state.Apply(Notice{Text: "review closed without completion; the next prompt starts a new task"})
+			return
+		}
+		if p.task.Cancel == nil {
+			p.state.Apply(Notice{Text: "task cancellation is unavailable"})
+			return
+		}
+		p.PublishTask(p.task.Cancel("cancelled by user"))
+		p.state.Apply(Notice{Text: "task cancelled; the next prompt starts a new task"})
+	default:
+		p.state.Apply(Notice{Text: "usage: /task [status|cancel|accept]"})
+	}
+}
+
+// taskStatusTerminal reports whether the task's status absorbs further work.
+func taskStatusTerminal(status string) bool {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "COMPLETED", "FAILED", "CANCELLED":
+		return true
+	default:
+		return false
+	}
+}
+
+// continuationPrompt recognizes a deliberate continuation of the open task.
+//
+// It is a finite vocabulary, not natural-language understanding: the hard
+// safety rule is that completion still uses the persisted contract. This only
+// decides whether an obviously-continuing prompt may attach to it without an
+// extra human step.
+func continuationPrompt(text string) bool {
+	normalized := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(text))), " ")
+	switch normalized {
+	case "continue", "continue.", "go on", "keep going", "resume", "resume.",
+		"retry", "retry.", "try again", "finish", "finish it", "carry on",
+		"verify", "verify the fix", "verify the change", "run the check",
+		"run the verification", "run the tests", "run the test":
+		return true
+	}
+	return false
+}
+
+// contractCompatible reports whether a new prompt's contract is the same work
+// as the persisted one. Targets must be a subset: a prompt may narrow the
+// existing objective, but naming a new coordinate is a different task.
+func contractCompatible(next, persisted contract.IntentContract) bool {
+	if next.Kind != persisted.Kind {
+		return false
+	}
+	for _, target := range next.Targets {
+		found := false
+		for _, existing := range persisted.Targets {
+			if existing == target {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // taskGlyph maps a projection state to its single status marker. One glyph

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -15,6 +16,12 @@ import (
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
+		var exit *headlessExit
+		if errors.As(err, &exit) {
+			// The verdict line already reached stdout. Only the process status
+			// is left to communicate.
+			os.Exit(exit.outcome.exitCode())
+		}
 		fmt.Fprintf(os.Stderr, "ohgo: %v\n", err)
 		os.Exit(1)
 	}

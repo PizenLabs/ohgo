@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,10 +16,32 @@ type fileSig struct {
 	mtime int64
 }
 
+// moduleSig is the freshness fingerprint for go.mod. It is separate from the
+// Go-file snapshot because the symbol index deliberately ignores non-Go
+// changes; a module path change still invalidates every graph edge, so graph
+// queries must observe it.
+type moduleSig struct {
+	exists bool
+	size   int64
+	mtime  int64
+}
+
 // fileRecord is the parsed result for one repository-relative file.
 type fileRecord struct {
+	// packageName is the package clause observed in this file.
+	packageName string
+	// symbols are the file's declarations, in coordinate order.
 	symbols []Match
-	err     error
+	// imports are the file's import declarations. They are relationship data,
+	// never exposed through the symbol taxonomy, and are cleared after the
+	// package graph and symbol graph have consumed them.
+	imports []Import
+	// references and calls are the raw syntactic relationship projection.
+	// They are resolved once after every file is parsed and cleared so the
+	// resident index keeps only answered coordinates.
+	references []rawReference
+	calls      []rawCall
+	err        error
 }
 
 // indexedKinds is the Phase 1 symbol taxonomy.
@@ -58,6 +81,19 @@ type Index struct {
 	// build could not inspect. Their contents are unknown, so they are counted
 	// as unparsed: a lookup must not present their absence as a fact.
 	unreadable map[string]bool
+	// modulePath is the module clause from go.mod, empty when absent or
+	// unparseable. The graph cannot prove a module-local edge without it.
+	modulePath string
+	// moduleSig fingerprints go.mod so a graph query observes a module-path
+	// change even though that file is not part of the Go-file snapshot.
+	moduleSig moduleSig
+	// graph is the package/import projection of the same parse. It is
+	// rebuilt with the snapshot, never independently.
+	graph *packageGraph
+	// symbolGraph is the resolved reference and direct-call projection of
+	// the same parse. It shares the records and package graph above; it is
+	// not a second parser or index.
+	symbolGraph *symbolGraph
 }
 
 // NewIndex builds a fresh symbol index rooted at root.
@@ -93,12 +129,27 @@ func (idx *Index) build() error {
 // buildLocked is build with idx.mu held, so a freshness check and the
 // subsequent rebuild observe one consistent snapshot.
 func (idx *Index) buildLocked() error {
+	return idx.buildLockedCtx(context.Background())
+}
+
+// buildLockedCtx is buildLocked with cancellation checks between files.
+//
+// A cancelled build returns the context error without publishing the partial
+// maps. The previous snapshot remains in place but the caller that requested
+// the refresh receives an error, so it cannot answer from stale coordinates.
+func (idx *Index) buildLockedCtx(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sigs := map[string]fileSig{}
 	records := map[string]fileRecord{}
 	unreadable := map[string]bool{}
 	backend := GoBackend{}
 
 	err := filepath.WalkDir(idx.walkRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			if path == idx.walkRoot {
 				return walkErr
@@ -127,13 +178,13 @@ func (idx *Index) buildLocked() error {
 		sig := fileSig{size: info.Size(), mtime: info.ModTime().UnixNano()}
 		sigs[rel] = sig
 
-		matches, perr := backend.Search(path, Options{Kinds: indexedKinds})
+		structure, perr := backend.Parse(path, Options{Kinds: indexedKinds, Relationships: true})
 		if perr != nil {
 			records[rel] = fileRecord{err: perr}
 			return nil
 		}
-		syms := make([]Match, 0, len(matches))
-		for _, m := range matches {
+		syms := make([]Match, 0, len(structure.Symbols))
+		for _, m := range structure.Symbols {
 			m.Path = rel
 			// The index is a coordinate store, not a source cache. Doc and
 			// Signature duplicate source text; a lookup that needs them can
@@ -144,16 +195,81 @@ func (idx *Index) buildLocked() error {
 			syms = append(syms, m)
 		}
 		sortSymbols(syms)
-		records[rel] = fileRecord{symbols: syms}
+		records[rel] = fileRecord{
+			packageName: structure.Package,
+			symbols:     syms,
+			imports:     structure.Imports,
+			references:  structure.references,
+			calls:       structure.calls,
+		}
 		return nil
 	})
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("ast: index %q: %w", idx.Root, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// go.mod is not part of the Go-file snapshot. Read it with the same build
+	// so the graph's edges and the module path it resolved against agree.
+	modulePath, moduleSig := readModule(idx.walkRoot)
+	graph := buildPackageGraph(records, modulePath)
+	symbolGraph, err := buildSymbolGraph(ctx, records, modulePath, graph)
+	if err != nil {
+		return err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	idx.files = records
 	idx.snapshot = sigs
 	idx.unreadable = unreadable
+	idx.modulePath = modulePath
+	idx.moduleSig = moduleSig
+	idx.graph = graph
+	idx.symbolGraph = symbolGraph
 	return nil
+}
+
+// readModule returns the module path from go.mod and a fingerprint of the
+// file. An absent or malformed go.mod yields an empty path, which the graph
+// query reports as an error rather than inventing local edges.
+func readModule(root string) (string, moduleSig) {
+	path := filepath.Join(root, "go.mod")
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", moduleSig{}
+	}
+	sig := moduleSig{exists: true, size: info.Size(), mtime: info.ModTime().UnixNano()}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", sig
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || fields[0] != "module" {
+			continue
+		}
+		path := strings.Trim(fields[1], `"`)
+		if path != "" {
+			return path, sig
+		}
+	}
+	return "", sig
+}
+
+// moduleFingerprint returns the current go.mod fingerprint.
+func moduleFingerprint(root string) moduleSig {
+	info, err := os.Stat(filepath.Join(root, "go.mod"))
+	if err != nil || !info.Mode().IsRegular() {
+		return moduleSig{}
+	}
+	return moduleSig{exists: true, size: info.Size(), mtime: info.ModTime().UnixNano()}
 }
 
 // relKey is the repository-relative, slash-separated key for a path under root.
@@ -186,6 +302,11 @@ func (idx *Index) Stale() bool {
 
 // staleLocked compares the tree to the snapshot with idx.mu held.
 func (idx *Index) staleLocked() (bool, error) {
+	return idx.staleLockedCtx(context.Background())
+}
+
+// staleLockedCtx is staleLocked with cancellation checks during the stat walk.
+func (idx *Index) staleLockedCtx(ctx context.Context) (bool, error) {
 	// Only a count is needed for deletion detection. The per-file
 	// comparison below finds changes and additions; allocating a second
 	// path map on every query would churn memory for no extra signal.
@@ -193,6 +314,9 @@ func (idx *Index) staleLocked() (bool, error) {
 	seenUnreadable := 0
 	changed := false
 	err := filepath.WalkDir(idx.walkRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			if path == idx.walkRoot {
 				return walkErr
@@ -236,6 +360,9 @@ func (idx *Index) staleLocked() (bool, error) {
 		return nil
 	})
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
 		return false, fmt.Errorf("ast: inspect %q: %w", idx.Root, err)
 	}
 	if current != len(idx.snapshot) {
@@ -259,18 +386,40 @@ func (idx *Index) ensureFresh() error {
 	return idx.refreshLocked()
 }
 
+// ensureFreshGraph refreshes the snapshot for a graph query.
+//
+// It adds the go.mod fingerprint to the Go-file check: the symbol index
+// deliberately ignores non-Go changes, but a module-path change invalidates
+// every graph edge. A cancellation during the stat walk or rebuild is returned
+// as the context error, never as a partial success.
+func (idx *Index) ensureFreshGraph(ctx context.Context) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	return idx.refreshGraphLocked(ctx, true)
+}
+
 // refreshLocked rebuilds only when the snapshot differs from the tree. The
 // check and the rebuild share one lock so concurrent queries cannot each
 // decide the tree changed and re-parse the repository in turn.
 func (idx *Index) refreshLocked() error {
-	stale, err := idx.staleLocked()
+	return idx.refreshGraphLocked(context.Background(), false)
+}
+
+// refreshGraphLocked is refreshLocked with optional go.mod freshness and
+// cancellation. watchModule=false preserves the frozen symbol freshness
+// contract.
+func (idx *Index) refreshGraphLocked(ctx context.Context, watchModule bool) error {
+	stale, err := idx.staleLockedCtx(ctx)
 	if err != nil {
 		return err
+	}
+	if !stale && watchModule && moduleFingerprint(idx.walkRoot) != idx.moduleSig {
+		stale = true
 	}
 	if !stale {
 		return nil
 	}
-	return idx.buildLocked()
+	return idx.buildLockedCtx(ctx)
 }
 
 // Symbols returns every indexed symbol in deterministic order.
@@ -300,14 +449,7 @@ func (idx *Index) Symbols() ([]Match, error) {
 func (idx *Index) ParseFailures() int {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-
-	count := len(idx.unreadable)
-	for _, rec := range idx.files {
-		if rec.err != nil {
-			count++
-		}
-	}
-	return count
+	return idx.parseFailuresLocked()
 }
 
 // Lookup returns symbols whose name or qualified name exactly matches name.

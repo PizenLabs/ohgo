@@ -6,6 +6,13 @@
 > **Benchmark spec:** [`../benchmarks/PHASE4_SPEC.md`](../benchmarks/PHASE4_SPEC.md)
 > **Final closure audit:** [`PHASE4_FINAL_CLOSURE.md`](PHASE4_FINAL_CLOSURE.md)
 > **Verdict:** **PASS WITH LIMITATIONS**
+>
+> **Post-Phase-7 note:** this report describes the Phase 4 tree, where
+> completion was authoritative only in the TUI task path and writable
+> children. Phase 7 routes `ohgo run` and the plain REPL through the same
+> evaluator (`cmd/ohgo/outcome.go`) and adds execution/empty-answer evidence
+> rules and a persisted task contract. See
+> [`PHASE7_CLOSURE.md`](PHASE7_CLOSURE.md).
 
 ## 1. Verdict
 

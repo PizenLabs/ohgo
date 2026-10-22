@@ -1,0 +1,875 @@
+{
+  "metadata": {
+    "benchmark_revision": "phase6-v1",
+    "mode": "deterministic-static-tool-probes",
+    "model": "none (tool-level capability probe; no provider calls)",
+    "generated_at": "2026-10-22T13:49:37.437242Z",
+    "fixture_files": 53,
+    "fixture_go_files": 52,
+    "task_hash": "4a9b38c1db67a5ad51d2b346b511fe8303f4228bf9f20a99b639e492777976a6",
+    "stale_probe": true,
+    "notes": "H0 uses read/glob/grep/ls/symbols; H1 uses the same tools plus graph. Both plans are the minimal correct query plan for the task, not a model transcript. Lexical decoys prove whether a plan reports relationships it cannot prove."
+  },
+  "tasks": [
+    {
+      "ID": "A-direct-symbol",
+      "Category": "A_DIRECT_SYMBOL",
+      "Prompt": "Find the declaration of NewAPI in package internal/api. Report its path, symbol, and line range.",
+      "Kind": "symbol",
+      "Package": "api",
+      "Depth": 1,
+      "ExpectedStatus": "ok",
+      "ExpectedPkgs": null,
+      "ExpectedEdges": null,
+      "CheckEdges": false,
+      "Target": {
+        "Path": "internal/api/api.go",
+        "Symbol": "NewAPI",
+        "StartLine": 0,
+        "EndLine": 0
+      }
+    },
+    {
+      "ID": "B-direct-imports",
+      "Category": "B_DEPENDENCY",
+      "Prompt": "Which packages does internal/api import directly inside this module?",
+      "Kind": "imports",
+      "Package": "internal/api",
+      "Depth": 2,
+      "ExpectedStatus": "ok",
+      "ExpectedPkgs": [
+        "internal/model",
+        "internal/store"
+      ],
+      "ExpectedEdges": [
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ]
+      ],
+      "CheckEdges": true,
+      "Target": null
+    },
+    {
+      "ID": "C-reverse-imports",
+      "Category": "C_REVERSE_DEPENDENCY",
+      "Prompt": "Which packages import internal/model directly?",
+      "Kind": "imported_by",
+      "Package": "internal/model",
+      "Depth": 1,
+      "ExpectedStatus": "ok",
+      "ExpectedPkgs": [
+        "internal/api",
+        "internal/legacy",
+        "internal/store"
+      ],
+      "ExpectedEdges": [
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/legacy",
+          "internal/model"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ]
+      ],
+      "CheckEdges": true,
+      "Target": null
+    },
+    {
+      "ID": "D-change-impact",
+      "Category": "D_CHANGE_IMPACT",
+      "Prompt": "If internal/model changes, which packages are candidate affected areas through transitive imports?",
+      "Kind": "impact",
+      "Package": "internal/model",
+      "Depth": 4,
+      "ExpectedStatus": "ok",
+      "ExpectedPkgs": [
+        "cmd/app",
+        "internal/api",
+        "internal/legacy",
+        "internal/store",
+        "internal/worker"
+      ],
+      "ExpectedEdges": [
+        [
+          "cmd/app",
+          "internal/api"
+        ],
+        [
+          "cmd/app",
+          "internal/store"
+        ],
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ],
+        [
+          "internal/legacy",
+          "internal/model"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ],
+        [
+          "internal/worker",
+          "internal/api"
+        ]
+      ],
+      "CheckEdges": false,
+      "Target": null
+    },
+    {
+      "ID": "E-verification-targets",
+      "Category": "E_VERIFICATION_TARGETING",
+      "Prompt": "After a change to internal/model, which package scopes should be considered for verification?",
+      "Kind": "verify",
+      "Package": "internal/model",
+      "Depth": 4,
+      "ExpectedStatus": "ok",
+      "ExpectedPkgs": [
+        "cmd/app",
+        "internal/api",
+        "internal/legacy",
+        "internal/store",
+        "internal/worker"
+      ],
+      "ExpectedEdges": [
+        [
+          "cmd/app",
+          "internal/api"
+        ],
+        [
+          "cmd/app",
+          "internal/store"
+        ],
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ],
+        [
+          "internal/legacy",
+          "internal/model"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ],
+        [
+          "internal/worker",
+          "internal/api"
+        ]
+      ],
+      "CheckEdges": false,
+      "Target": null
+    },
+    {
+      "ID": "F-multihop",
+      "Category": "F_MULTIHOP",
+      "Prompt": "Starting at cmd/app, which packages are reachable within two imports and which edges connect them?",
+      "Kind": "reach",
+      "Package": "cmd/app",
+      "Depth": 2,
+      "ExpectedStatus": "ok",
+      "ExpectedPkgs": [
+        "internal/api",
+        "internal/model",
+        "internal/store"
+      ],
+      "ExpectedEdges": [
+        [
+          "cmd/app",
+          "internal/api"
+        ],
+        [
+          "cmd/app",
+          "internal/store"
+        ],
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ]
+      ],
+      "CheckEdges": true,
+      "Target": null
+    },
+    {
+      "ID": "G-negative-relationship",
+      "Category": "G_NEGATIVE",
+      "Prompt": "Does internal/isolated import internal/model? Report the package relationship only if it exists.",
+      "Kind": "negative",
+      "Package": "internal/isolated",
+      "Depth": 1,
+      "ExpectedStatus": "ok",
+      "ExpectedPkgs": [],
+      "ExpectedEdges": null,
+      "CheckEdges": false,
+      "Target": null
+    },
+    {
+      "ID": "H-ambiguous-package",
+      "Category": "H_AMBIGUOUS",
+      "Prompt": "Resolve the package named same. If more than one directory has that package name, preserve the ambiguity.",
+      "Kind": "ambiguous",
+      "Package": "same",
+      "Depth": 1,
+      "ExpectedStatus": "ambiguous",
+      "ExpectedPkgs": [
+        "dup/one",
+        "dup/two"
+      ],
+      "ExpectedEdges": null,
+      "CheckEdges": false,
+      "Target": null
+    }
+  ],
+  "runs": [
+    {
+      "task_id": "A-direct-symbol",
+      "category": "A_DIRECT_SYMBOL",
+      "track": "H0-existing",
+      "success": true,
+      "outcome": "correct",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 0,
+      "context_bytes": 136,
+      "result_lines": 9,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 2,
+      "packages": null,
+      "edges": null,
+      "target_matched": true
+    },
+    {
+      "task_id": "A-direct-symbol",
+      "category": "A_DIRECT_SYMBOL",
+      "track": "H1-graph",
+      "success": true,
+      "outcome": "correct",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 0,
+      "context_bytes": 136,
+      "result_lines": 9,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 2,
+      "packages": null,
+      "edges": null,
+      "target_matched": true
+    },
+    {
+      "task_id": "B-direct-imports",
+      "category": "B_DEPENDENCY",
+      "track": "H0-existing",
+      "success": true,
+      "outcome": "correct",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 0,
+      "context_bytes": 195,
+      "result_lines": 8,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 1,
+      "packages": [
+        "internal/model",
+        "internal/store"
+      ],
+      "edges": [
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ]
+      ]
+    },
+    {
+      "task_id": "B-direct-imports",
+      "category": "B_DEPENDENCY",
+      "track": "H1-graph",
+      "success": true,
+      "outcome": "correct",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 1,
+      "context_bytes": 885,
+      "result_lines": 44,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 1,
+      "packages": [
+        "internal/model",
+        "internal/store"
+      ],
+      "edges": [
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ]
+      ]
+    },
+    {
+      "task_id": "C-reverse-imports",
+      "category": "C_REVERSE_DEPENDENCY",
+      "track": "H0-existing",
+      "success": false,
+      "outcome": "false_positive",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 0,
+      "context_bytes": 309,
+      "result_lines": 13,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 15,
+      "packages": [
+        "internal/api",
+        "internal/isolated",
+        "internal/legacy",
+        "internal/store"
+      ],
+      "edges": [
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/isolated",
+          "internal/model"
+        ],
+        [
+          "internal/legacy",
+          "internal/model"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ]
+      ],
+      "extra_packages": [
+        "internal/isolated"
+      ],
+      "extra_edges": [
+        "internal/isolated-\u003einternal/model"
+      ]
+    },
+    {
+      "task_id": "C-reverse-imports",
+      "category": "C_REVERSE_DEPENDENCY",
+      "track": "H1-graph",
+      "success": true,
+      "outcome": "correct",
+      "status": "truncated",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 1,
+      "context_bytes": 1011,
+      "result_lines": 51,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 4,
+      "packages": [
+        "internal/api",
+        "internal/legacy",
+        "internal/store"
+      ],
+      "edges": [
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/legacy",
+          "internal/model"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ]
+      ]
+    },
+    {
+      "task_id": "D-change-impact",
+      "category": "D_CHANGE_IMPACT",
+      "track": "H0-existing",
+      "success": false,
+      "outcome": "false_positive",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 0,
+      "context_bytes": 3194,
+      "result_lines": 147,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 8,
+      "packages": [
+        "cmd/app",
+        "internal/api",
+        "internal/isolated",
+        "internal/legacy",
+        "internal/store",
+        "internal/worker"
+      ],
+      "edges": [
+        [
+          "cmd/app",
+          "internal/api"
+        ],
+        [
+          "cmd/app",
+          "internal/store"
+        ],
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ],
+        [
+          "internal/isolated",
+          "internal/model"
+        ],
+        [
+          "internal/legacy",
+          "internal/model"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ],
+        [
+          "internal/worker",
+          "internal/api"
+        ]
+      ],
+      "extra_packages": [
+        "internal/isolated"
+      ],
+      "extra_edges": [
+        "internal/isolated-\u003einternal/model"
+      ]
+    },
+    {
+      "task_id": "D-change-impact",
+      "category": "D_CHANGE_IMPACT",
+      "track": "H1-graph",
+      "success": true,
+      "outcome": "correct",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 1,
+      "context_bytes": 1691,
+      "result_lines": 79,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 1,
+      "packages": [
+        "cmd/app",
+        "internal/api",
+        "internal/legacy",
+        "internal/store",
+        "internal/worker"
+      ],
+      "edges": [
+        [
+          "cmd/app",
+          "internal/api"
+        ],
+        [
+          "cmd/app",
+          "internal/store"
+        ],
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ],
+        [
+          "internal/legacy",
+          "internal/model"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ],
+        [
+          "internal/worker",
+          "internal/api"
+        ]
+      ]
+    },
+    {
+      "task_id": "E-verification-targets",
+      "category": "E_VERIFICATION_TARGETING",
+      "track": "H0-existing",
+      "success": false,
+      "outcome": "false_positive",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 0,
+      "context_bytes": 3194,
+      "result_lines": 147,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 5,
+      "packages": [
+        "cmd/app",
+        "internal/api",
+        "internal/isolated",
+        "internal/legacy",
+        "internal/store",
+        "internal/worker"
+      ],
+      "edges": [
+        [
+          "cmd/app",
+          "internal/api"
+        ],
+        [
+          "cmd/app",
+          "internal/store"
+        ],
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ],
+        [
+          "internal/isolated",
+          "internal/model"
+        ],
+        [
+          "internal/legacy",
+          "internal/model"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ],
+        [
+          "internal/worker",
+          "internal/api"
+        ]
+      ],
+      "extra_packages": [
+        "internal/isolated"
+      ],
+      "extra_edges": [
+        "internal/isolated-\u003einternal/model"
+      ]
+    },
+    {
+      "task_id": "E-verification-targets",
+      "category": "E_VERIFICATION_TARGETING",
+      "track": "H1-graph",
+      "success": true,
+      "outcome": "correct",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 1,
+      "context_bytes": 1691,
+      "result_lines": 79,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 2,
+      "packages": [
+        "cmd/app",
+        "internal/api",
+        "internal/legacy",
+        "internal/store",
+        "internal/worker"
+      ],
+      "edges": [
+        [
+          "cmd/app",
+          "internal/api"
+        ],
+        [
+          "cmd/app",
+          "internal/store"
+        ],
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ],
+        [
+          "internal/legacy",
+          "internal/model"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ],
+        [
+          "internal/worker",
+          "internal/api"
+        ]
+      ]
+    },
+    {
+      "task_id": "F-multihop",
+      "category": "F_MULTIHOP",
+      "track": "H0-existing",
+      "success": true,
+      "outcome": "correct",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 0,
+      "context_bytes": 3194,
+      "result_lines": 147,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 10,
+      "packages": [
+        "internal/api",
+        "internal/model",
+        "internal/store"
+      ],
+      "edges": [
+        [
+          "cmd/app",
+          "internal/api"
+        ],
+        [
+          "cmd/app",
+          "internal/store"
+        ],
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ]
+      ]
+    },
+    {
+      "task_id": "F-multihop",
+      "category": "F_MULTIHOP",
+      "track": "H1-graph",
+      "success": true,
+      "outcome": "correct",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 1,
+      "context_bytes": 1222,
+      "result_lines": 59,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 2,
+      "packages": [
+        "internal/api",
+        "internal/model",
+        "internal/store"
+      ],
+      "edges": [
+        [
+          "cmd/app",
+          "internal/api"
+        ],
+        [
+          "cmd/app",
+          "internal/store"
+        ],
+        [
+          "internal/api",
+          "internal/model"
+        ],
+        [
+          "internal/api",
+          "internal/store"
+        ],
+        [
+          "internal/store",
+          "internal/model"
+        ]
+      ]
+    },
+    {
+      "task_id": "G-negative-relationship",
+      "category": "G_NEGATIVE",
+      "track": "H0-existing",
+      "success": false,
+      "outcome": "false_positive",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 0,
+      "context_bytes": 98,
+      "result_lines": 4,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 1,
+      "packages": [
+        "internal/isolated"
+      ],
+      "edges": [
+        [
+          "internal/isolated",
+          "internal/model"
+        ]
+      ],
+      "extra_packages": [
+        "internal/isolated"
+      ],
+      "extra_edges": [
+        "internal/isolated-\u003einternal/model"
+      ]
+    },
+    {
+      "task_id": "G-negative-relationship",
+      "category": "G_NEGATIVE",
+      "track": "H1-graph",
+      "success": true,
+      "outcome": "correct",
+      "status": "ok",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 1,
+      "context_bytes": 290,
+      "result_lines": 17,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 2,
+      "packages": [],
+      "edges": null
+    },
+    {
+      "task_id": "H-ambiguous-package",
+      "category": "H_AMBIGUOUS",
+      "track": "H0-existing",
+      "success": true,
+      "outcome": "correct",
+      "status": "ambiguous",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 0,
+      "context_bytes": 460,
+      "result_lines": 27,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 1,
+      "packages": [
+        "dup/one",
+        "dup/two"
+      ],
+      "edges": null
+    },
+    {
+      "task_id": "H-ambiguous-package",
+      "category": "H_AMBIGUOUS",
+      "track": "H1-graph",
+      "success": true,
+      "outcome": "correct",
+      "status": "ambiguous",
+      "turns": 0,
+      "model_calls": 0,
+      "tool_calls": 1,
+      "graph_queries": 1,
+      "context_bytes": 214,
+      "result_lines": 14,
+      "files_opened": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "duration_ms": 2,
+      "packages": [
+        "dup/one",
+        "dup/two"
+      ],
+      "edges": null
+    }
+  ]
+}

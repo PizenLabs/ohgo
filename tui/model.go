@@ -2733,6 +2733,7 @@ var Commands = []CommandSpec{
 	{Name: "sessions", Usage: "sessions", Description: "manage saved sessions: resume, new, rename, archive, delete", Category: CommandGroupControl},
 	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
+	{Name: "task", Usage: "task [status|cancel|accept]", Description: "inspect, abandon, or accept the active task review", Category: CommandGroupControl},
 	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette", Category: CommandGroupControl},
 	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
 	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},

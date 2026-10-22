@@ -14,6 +14,15 @@ func toolOutcome(name string, result Result) ToolOutcome {
 
 func cleanStop() Turn { return Turn{Assistant: ai.AssistantMessage{}} }
 
+// answerTurn is a clean stop that carries visible assistant text. Informational
+// completion requires an answer, not just a stopped model.
+func answerTurn(text string) Turn {
+	return Turn{Assistant: ai.AssistantMessage{
+		Content:    []ai.ContentBlock{ai.TextContent{Text: text}},
+		StopReason: ai.StopEndTurn,
+	}}
+}
+
 func TestEvaluateCompletionRejectsMutationWithoutVerification(t *testing.T) {
 	turns := []Turn{
 		{Results: []ToolOutcome{toolOutcome("edit", Result{Text: "edited", Mutates: true})}},
