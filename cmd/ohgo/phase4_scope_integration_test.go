@@ -10,6 +10,23 @@ import (
 	"github.com/PizenLabs/ohgo/workspace"
 )
 
+// A check that changes into a workspace subdirectory is evidence for that
+// subdirectory, not for the module root. The rebased scope must satisfy the
+// target and preserve a correct completion.
+func TestSemanticIntegrationAcceptsInsideDirectoryVerification(t *testing.T) {
+	root := phase4Fixture(t, false)
+	_, resolver := phase4Loop(t, root, scriptedCompletionStream(stopMessage()))
+	request := "Fix GrepTool in tools/grep.go so `go test ./tools` passes."
+	verdict := runPhase4(t, root, resolver, request, scriptedCompletionStream(
+		completionEditCall("tools/grep.go", "bug", "fixed"),
+		completionBashCall("cd tools && go test ./..."),
+		stopMessage(),
+	))
+	if !verdict.Complete() {
+		t.Fatalf("an inside-directory check was not complete: %s", verdict.Reason)
+	}
+}
+
 // A check executed in another module via "cd" says nothing about this
 // workspace, even when the relative package name is the same. A wrong local
 // change must not inherit the foreign module's passing test.
