@@ -37,7 +37,8 @@ type Kind string
 
 // Declaration kinds.
 const (
-	// KindFunc is a function or method declaration.
+	// KindFunc is a function declaration. A KindFunc filter also matches
+	// methods for backward compatibility; use KindMethod for methods only.
 	KindFunc Kind = "func"
 	// KindType is a type declaration.
 	KindType Kind = "type"
@@ -47,6 +48,10 @@ const (
 	KindConst Kind = "const"
 	// KindImport is an import declaration.
 	KindImport Kind = "import"
+	// KindMethod is a method declaration.
+	KindMethod Kind = "method"
+	// KindPackage is a package declaration.
+	KindPackage Kind = "package"
 )
 
 // Match is one located declaration.
@@ -55,6 +60,10 @@ type Match struct {
 	Kind Kind
 	// Name is the declared identifier, empty for an import.
 	Name string
+	// QualifiedName is the deterministic qualified coordinate for the symbol.
+	QualifiedName string
+	// Package is the Go package name the declaration belongs to.
+	Package string
 	// Path is the file the declaration was found in.
 	Path string
 	// Line is the 1-based line the declaration starts on.
@@ -162,19 +171,35 @@ func (GoBackend) Search(path string, opts Options) ([]Match, error) {
 	}
 
 	var matches []Match
+
+	// A package declaration is a first-class symbol: it anchors every other
+	// declaration in the file and is what a package-level query resolves to.
+	if kindAllowed(opts, KindPackage) {
+		matches = append(matches, Match{
+			Kind:      KindPackage,
+			Name:      file.Name.Name,
+			Package:   file.Name.Name,
+			Path:      path,
+			Line:      fset.Position(file.Package).Line,
+			EndLine:   fset.Position(file.Name.End()).Line,
+			Signature: "package " + file.Name.Name,
+		})
+	}
+
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
-			if !wantKind(opts, KindFunc) {
+			m := goFuncMatch(fset, path, d)
+			if !kindAllowed(opts, m.Kind) {
 				continue
 			}
-			matches = append(matches, goFuncMatch(fset, path, d))
+			matches = append(matches, m)
 
 		case *ast.GenDecl:
 			for _, spec := range d.Specs {
 				switch s := spec.(type) {
 				case *ast.TypeSpec:
-					if wantKind(opts, KindType) {
+					if kindAllowed(opts, KindType) {
 						matches = append(matches, goSpecMatch(fset, path, KindType, s, d))
 					}
 				case *ast.ValueSpec:
@@ -182,7 +207,7 @@ func (GoBackend) Search(path string, opts Options) ([]Match, error) {
 					if d.Tok == token.CONST {
 						kind = KindConst
 					}
-					if !wantKind(opts, kind) {
+					if !kindAllowed(opts, kind) {
 						continue
 					}
 					for _, name := range s.Names {
@@ -193,7 +218,7 @@ func (GoBackend) Search(path string, opts Options) ([]Match, error) {
 						matches = append(matches, goNamedMatch(fset, path, kind, name.Name, s, d))
 					}
 				case *ast.ImportSpec:
-					if wantKind(opts, KindImport) {
+					if kindAllowed(opts, KindImport) {
 						matches = append(matches, goImportMatch(fset, path, s))
 					}
 				}
@@ -201,10 +226,34 @@ func (GoBackend) Search(path string, opts Options) ([]Match, error) {
 
 		}
 	}
+
+	// Populate package and qualified coordinates deterministically. The
+	// package clause is the authority for the package name; never fabricate
+	// one when it is missing.
+	for i := range matches {
+		if matches[i].Package == "" {
+			matches[i].Package = file.Name.Name
+		}
+		if matches[i].Kind == KindPackage {
+			matches[i].QualifiedName = matches[i].Package
+			continue
+		}
+		if matches[i].QualifiedName == "" {
+			if matches[i].Package != "" {
+				matches[i].QualifiedName = matches[i].Package + "." + matches[i].Name
+			} else {
+				matches[i].QualifiedName = matches[i].Name
+			}
+		}
+	}
 	return matches, nil
 }
 
-func wantKind(opts Options, kind Kind) bool {
+// kindAllowed reports whether a declaration kind passes the filter.
+//
+// A filter for KindFunc also matches methods, preserving the pre-method
+// taxonomy for callers that asked for functions before KindMethod existed.
+func kindAllowed(opts Options, kind Kind) bool {
 	if len(opts.Kinds) == 0 {
 		return true
 	}
@@ -212,13 +261,18 @@ func wantKind(opts Options, kind Kind) bool {
 		if want == kind {
 			return true
 		}
+		if want == KindFunc && kind == KindMethod {
+			return true
+		}
 	}
 	return false
 }
 
 func goFuncMatch(fset *token.FileSet, path string, decl *ast.FuncDecl) Match {
+	kind := KindFunc
 	name := decl.Name.Name
 	if decl.Recv != nil && len(decl.Recv.List) > 0 {
+		kind = KindMethod
 		// A method is qualified by its receiver, because a bare method name is
 		// ambiguous across types.
 		if receiver := typeName(decl.Recv.List[0].Type); receiver != "" {
@@ -232,7 +286,7 @@ func goFuncMatch(fset *token.FileSet, path string, decl *ast.FuncDecl) Match {
 	}
 
 	return Match{
-		Kind:      KindFunc,
+		Kind:      kind,
 		Name:      name,
 		Path:      path,
 		Line:      fset.Position(decl.Pos()).Line,
@@ -246,6 +300,8 @@ func goFuncMatch(fset *token.FileSet, path string, decl *ast.FuncDecl) Match {
 func typeName(expr ast.Expr) string {
 	switch t := expr.(type) {
 	case *ast.StarExpr:
+		return typeName(t.X)
+	case *ast.ParenExpr:
 		return typeName(t.X)
 	case *ast.Ident:
 		return t.Name

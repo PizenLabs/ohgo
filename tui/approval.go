@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/agent"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -46,6 +47,7 @@ const (
 	approvalRowPrompt approvalRowKind = iota
 	approvalRowCommand
 	approvalRowReason
+	approvalRowPreview
 	approvalRowQuestion
 	approvalRowSpacer
 	approvalRowChoice
@@ -61,6 +63,7 @@ const (
 	dropSpacerBottom
 	dropShellPrompt
 	dropReason
+	dropPreview
 	dropFooter
 	dropQuestion
 	dropCommand
@@ -145,6 +148,48 @@ func approvalPlan(pending *PendingApproval, layout Layout) []approvalRow {
 	if reason := strings.TrimSpace(sanitizeInline(pending.Reason)); reason != "" {
 		for _, line := range WrapToWidth(reason, body) {
 			rows = append(rows, approvalRow{kind: approvalRowReason, text: line, drop: dropReason})
+		}
+	}
+	// Dedicated mutation preview block, separate from Reason. Bounded so a
+	// large file cannot make the dialog unbounded.
+	preview := pending.MutationPreview
+	op := preview.Operation
+	if op == "" {
+		op = agent.MutationOp("MUTATION")
+	}
+	if preview.Diff != "" || preview.Unsupported || preview.Path != "" {
+		header := fmt.Sprintf("Preview · %s", op)
+		rows = append(rows, approvalRow{kind: approvalRowPreview, text: header, drop: protectedRow})
+		text := preview.Diff
+		if text == "" {
+			if preview.Unsupported {
+				text = "(no textual preview available)"
+			} else {
+				text = "(no changes)"
+			}
+		}
+		text = sanitizeBlock(text)
+		lines := strings.Split(text, "\n")
+		const maxPreviewLines = 16
+		if len(lines) > maxPreviewLines {
+			lines = append(lines[:maxPreviewLines], "... (truncated)")
+		}
+		// Byte bound as a backstop.
+		var bounded []string
+		bytes := 0
+		const maxPreviewBytes = 4000
+		for _, line := range lines {
+			if bytes+len(line) > maxPreviewBytes && len(bounded) > 0 {
+				bounded = append(bounded, "... (truncated)")
+				break
+			}
+			bounded = append(bounded, line)
+			bytes += len(line) + 1
+		}
+		for _, line := range bounded {
+			for _, wrapped := range WrapToWidth(line, body) {
+				rows = append(rows, approvalRow{kind: approvalRowPreview, text: wrapped, drop: dropPreview})
+			}
 		}
 	}
 	rows = append(rows, approvalRow{kind: approvalRowQuestion, text: approvalQuestion, drop: dropQuestion})
@@ -333,6 +378,20 @@ func approvalRowStyle(row approvalRow, pending *PendingApproval, border string, 
 		return approvalIndent + row.text, fg(ColorText).Bold(true)
 	case approvalRowReason:
 		return approvalIndent + row.text, fg(ColorMuted)
+	case approvalRowPreview:
+		if strings.HasPrefix(row.text, "Preview ·") {
+			return approvalIndent + row.text, fg(border).Bold(true)
+		}
+		pal := PaletteFor(theme)
+		switch {
+		case strings.HasPrefix(row.text, "+"):
+			return approvalIndent + row.text, pal.DiffAdd
+		case strings.HasPrefix(row.text, "-"):
+			return approvalIndent + row.text, pal.DiffDelete
+		case strings.HasPrefix(row.text, "@@"):
+			return approvalIndent + row.text, pal.Cyan
+		}
+		return approvalIndent + row.text, fg(ColorText)
 	case approvalRowQuestion:
 		return approvalIndent + row.text, fg(ColorText)
 	case approvalRowFooter:

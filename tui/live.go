@@ -450,6 +450,12 @@ func liveEntryLines(s State, e Entry, pal *Palette, layout Layout) []string {
 			out = append(out, pal.Notice.Render(l))
 		}
 		return append(out, "")
+
+	case EntryTask:
+		if e.Task == nil {
+			return nil
+		}
+		return append(taskLines(e.Task, pal, layout), "")
 	}
 	return nil
 }

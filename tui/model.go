@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/tokens"
 	diffview "github.com/PizenLabs/ohgo/tui/diff"
@@ -52,6 +53,9 @@ type Entry struct {
 	Shell *ShellEntry
 	// Notice is set when Kind is EntryNotice.
 	Notice string
+	// Task is set when Kind is EntryTask: the compact projection of the
+	// durable task state.
+	Task *TaskProjection
 	// SupportText is set when Kind is EntrySupport: the question when
 	// SupportIsQuestion, else the answer.
 	SupportText string
@@ -76,6 +80,10 @@ const (
 	EntryShell EntryKind = "shell"
 	// EntryNotice is a system notice, e.g. a compaction.
 	EntryNotice EntryKind = "notice"
+	// EntryTask is the compact projection of durable task state. It is a
+	// projection, never an owner: it carries no execution authority and the
+	// task domain remains the single source of truth.
+	EntryTask EntryKind = "task"
 	// EntrySupport is one turn of the ephemeral $sup surface. It is rendered
 	// but never persisted and never enters the model's context (§10.2, I17).
 	EntrySupport EntryKind = "support"
@@ -175,6 +183,9 @@ type PendingApproval struct {
 	Reason string
 	// Summary describes what this particular call will do.
 	Summary string
+	// MutationPreview is the dedicated mutation preview, rendered separately
+	// from Reason.
+	MutationPreview agent.MutationPreview
 	// Mutating marks a call that changes state (write, exec, destructive)
 	// rather than reading. It is presentation only: it selects the frame
 	// accent (rose vs amber), never the answer. The producer derives it from
@@ -758,6 +769,23 @@ func (s *State) Apply(event Event) {
 		s.Entries = append(s.Entries, Entry{Kind: EntryNotice, Notice: e.Text})
 		s.growScroll(countLines(e.Text))
 
+	case TaskProjected:
+		// The projection replaces the current task block in place, so a long
+		// turn does not stack a fresh panel on every todo change. A dropped
+		// empty projection keeps the previous one rather than blanking it.
+		if e.Projection.ID == "" {
+			return
+		}
+		projection := e.Projection
+		for i := len(s.Entries) - 1; i >= 0; i-- {
+			if s.Entries[i].Kind == EntryTask {
+				s.Entries[i].Task = &projection
+				return
+			}
+		}
+		s.Entries = append(s.Entries, Entry{Kind: EntryTask, Task: &projection})
+		s.growScroll(len(projection.Items) + 2)
+
 	case HistoryReplaced:
 		// A resumed session continues rather than restarts: the replayed
 		// transcript replaces the view outright. It is a fresh session
@@ -795,13 +823,14 @@ func (s *State) Apply(event Event) {
 
 	case ApprovalAsked:
 		s.Pending = &PendingApproval{
-			ToolName: e.ToolName,
-			Prompt:   e.Prompt,
-			Reason:   e.Reason,
-			Summary:  e.Summary,
-			Mutating: e.Mutating,
-			Choices:  e.Choices,
-			Cursor:   defaultApprovalSelection(e.Choices),
+			ToolName:        e.ToolName,
+			Prompt:          e.Prompt,
+			Reason:          e.Reason,
+			Summary:         e.Summary,
+			MutationPreview: e.MutationPreview,
+			Mutating:        e.Mutating,
+			Choices:         e.Choices,
+			Cursor:          defaultApprovalSelection(e.Choices),
 		}
 
 	case ApprovalMoved:
@@ -2156,9 +2185,10 @@ type ApprovalAsked struct {
 	// Prompt, when non-empty, is a shell-specific label shown above the call.
 	// It is used by the "!" shell escape, whose confirmation is not a tool
 	// call.
-	Prompt  string
-	Reason  string
-	Summary string
+	Prompt          string
+	Reason          string
+	Summary         string
+	MutationPreview agent.MutationPreview
 	// Mutating marks a call that changes state; the dialog accents a
 	// destructive boundary differently from a read one.
 	Mutating bool

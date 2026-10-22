@@ -19,6 +19,7 @@ import (
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/prompt"
+	"github.com/PizenLabs/ohgo/security"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/startup"
 	"github.com/PizenLabs/ohgo/state"
@@ -41,6 +42,10 @@ type options struct {
 	// It is non-nil once resolveOptions has run; tests that build options
 	// directly leave it nil and fall back to workspace.
 	gate *authorityGate
+	// security is the runtime's authorization boundary. It is installed on the
+	// loop and inherited by subagents, so every executable capability passes
+	// through one decision. Nil until buildLoop (or a TUI caller) creates it.
+	security *securityGate
 	// projectID is the stable project identity, empty when it could not be
 	// established.
 	projectID string
@@ -51,6 +56,9 @@ type options struct {
 	maxTokens int
 	// maxDepth is how many levels of subagent may nest, counting this agent.
 	maxDepth int
+	// maxTurns bounds the model turns in one run. Zero means the agent
+	// package's default.
+	maxTurns int
 	// deadline bounds the whole run in wall-clock time. The zero value is no
 	// limit.
 	deadline time.Time
@@ -176,6 +184,13 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	opts.maxDepth = 1
 	if depth, _ := cmd.Flags().GetInt("max-depth"); depth > 0 {
 		opts.maxDepth = depth
+	}
+
+	// The turn cap is independent of the wall-clock deadline: a model that
+	// keeps proposing tools is bounded even when the user set no deadline.
+	opts.maxTurns = agent.DefaultMaxTurns
+	if turns, _ := cmd.Flags().GetInt("max-turns"); turns > 0 {
+		opts.maxTurns = turns
 	}
 
 	// A wall-clock deadline bounds the whole run, because every loop iteration
@@ -386,11 +401,13 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewReadTool(opts.root),
 		tools.NewWriteTool(opts.root),
 		tools.NewEditTool(opts.root),
+		tools.NewDeleteTool(opts.root),
 		bash,
 		tools.NewWaitTool(bash.Jobs()),
 		tools.NewGlobTool(opts.root),
 		tools.NewGrepTool(opts.root),
 		tools.NewLsTool(opts.root),
+		tools.NewSymbolsTool(opts.root),
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}
@@ -689,15 +706,29 @@ func (f spawnFunc) Spawn(ctx context.Context, spec agent.SubagentSpec) (agent.Su
 // a request.
 func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent.Tool) tools.Spawner {
 	return spawnFunc(func(ctx context.Context, spec agent.SubagentSpec) (agent.SubagentResult, error) {
+		// A child must never run with a nil authorizer. Production installs one
+		// before building tools; this fallback keeps a direct caller (a test or
+		// an embedding host) fail-closed instead of silently admitting every
+		// call through the legacy path.
+		gate := opts.security
+		if gate == nil {
+			gate = opts.newSecurityGate(nil)
+		}
 		parent := agent.Config{
 			Model:      opts.model,
 			Stream:     registry.StreamFn(),
-			Tools:      childToolSet(opts, parentTools, spec.Depth),
+			Tools:      childToolSet(opts, registry, parentTools, spec.Depth),
 			MaxTokens:  opts.maxTokens,
 			Reasoning:  opts.reasoning,
 			Admit:      opts.admit(),
+			Authorize:  gate,
 			Compaction: compactionFromSettings(opts.settings),
 			Summarize:  newSummarizer(registry.StreamFn(), opts.model),
+			// The spawner is a separate parent config from the top-level loop,
+			// so every bound the user set must be copied here too. Omitting the
+			// deadline would make the D-2 inheritance fix vacuous in production.
+			Deadline: opts.deadline,
+			MaxTurns: opts.maxTurns,
 		}
 		return agent.RunSubagent(ctx, parent, spec)
 	})
@@ -710,19 +741,37 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 //
 // The task tool is omitted when the child sits at the cap. A bound checked at
 // call time instead would be a rule someone can bypass; one baked into the tool
-// set cannot be.
-func childToolSet(opts options, parentTools []agent.Tool, depth int) []agent.Tool {
+// set cannot be. Below the cap the task tool must carry a real spawner: a
+// nil spawner would offer the child a tool that can only fail.
+func childToolSet(opts options, registry *ai.Registry, parentTools []agent.Tool, depth int) []agent.Tool {
 	if depth+1 >= opts.maxDepth {
 		return parentTools
 	}
 	out := make([]agent.Tool, 0, len(parentTools)+1)
 	out = append(out, parentTools...)
 	return append(out, tools.NewTaskTool(
-		nil, depth, opts.maxDepth, buildSubagentPrompt(opts)))
+		newSubagentSpawner(opts, registry, parentTools), depth, opts.maxDepth, buildSubagentPrompt(opts)))
 }
 
 // buildLoop constructs the agent loop for a session.
 func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *session.Store, sess *session.Session, approve func(ai.ToolCall, agent.Approval) (bool, string)) (*agent.Loop, error) {
+	// The security boundary is built before the tools so the subagent spawner
+	// can inherit the same gate: a delegated child must cross the same
+	// boundary as its parent, not a fresh one.
+	if approve == nil && !opts.autoApprove {
+		approve = func(call ai.ToolCall, approval agent.Approval) (bool, string) {
+			return approveToolCall(out, opts, call, approval)
+		}
+	}
+	if opts.security == nil {
+		opts.security = opts.newSecurityGate(approve)
+	} else if approve != nil {
+		opts.security.SetAsk(approve)
+	}
+	if sess != nil {
+		opts.security.SetSession(fmt.Sprintf("%d", sess.ID))
+	}
+
 	toolSet := buildTools(opts, registry)
 	if len(toolSet) == 0 {
 		return nil, agent.ErrNoTools
@@ -758,12 +807,6 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		return promptBlocks(opts, strings.Join(parts, "\n\n"))
 	}
 
-	if approve == nil && !opts.autoApprove {
-		approve = func(call ai.ToolCall, approval agent.Approval) (bool, string) {
-			return approveToolCall(out, opts, call, approval)
-		}
-	}
-
 	var onTurn func(agent.Turn)
 	if store != nil && sess != nil {
 		onTurn = func(turn agent.Turn) {
@@ -781,13 +824,17 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		Tools:           toolSet,
 		MaxTokens:       opts.maxTokens,
 		Deadline:        opts.deadline,
+		MaxTurns:        opts.maxTurns,
 		Reasoning:       opts.reasoning,
 		ReasoningEffort: opts.effort,
 		OnTurn:          onTurn,
-		Admit:           opts.admit(),
-		Approve:         approve,
-		Compaction:      compactionFromSettings(opts.settings),
-		Summarize:       newSummarizer(registry.StreamFn(), opts.model),
+		// The security boundary replaces the legacy admit/approve pair. The
+		// gate performs the authority check, the policy decision, and (for an
+		// APPROVE) the human approval, so there is exactly one path to
+		// execution.
+		Authorize:  opts.security,
+		Compaction: compactionFromSettings(opts.settings),
+		Summarize:  newSummarizer(registry.StreamFn(), opts.model),
 		OnCompact: func(result agent.CompactResult) {
 			_, _ = fmt.Fprintf(out, "[compacted %d messages into %d tokens; %d retained]\n",
 				result.Compacted, result.AfterTokens, result.Retained)
@@ -902,13 +949,34 @@ func (o options) admit() func(ai.ToolCall, agent.Tool) (bool, string) {
 // The runner is rooted at the workspace directory and runs through the
 // platform's shell; the classifier is the exported form of the admission rule,
 // so the ASK confirmation gate and the runtime authority cannot drift.
-func attachShellEscape(program *tui.Program, root string) {
-	program.SetShellEscape(tui.ShellHooks{
+func attachShellEscape(program *tui.Program, root string, gate *securityGate) {
+	hooks := tui.ShellHooks{
 		Run: func(ctx context.Context, command string, onChunk func(string)) (exec.EscapeResult, error) {
-			return exec.ShellRunner{Dir: root}.Run(ctx, command, onChunk)
+			// The escape's execution boundary is the same authority decision
+			// that admitted it. A human in ASK or FUZZ may execute, but the
+			// command runs read-only there however it is spelled.
+			readOnly := false
+			if gate != nil {
+				readOnly = gate.EvaluateCommand(command).ReadOnly
+			}
+			return exec.ShellRunner{Dir: root, ReadOnly: readOnly}.Run(ctx, command, onChunk)
 		},
 		Mutates: tools.CommandMutates,
-	})
+	}
+	if gate != nil {
+		hooks.Authorize = func(command string) (bool, bool, string) {
+			decision := gate.EvaluateCommand(command)
+			switch decision.Outcome {
+			case security.OutcomeDeny:
+				return false, false, decision.Reason
+			case security.OutcomeApprove:
+				return true, true, ""
+			default:
+				return true, false, ""
+			}
+		}
+	}
+	program.SetShellEscape(hooks)
 }
 
 // supportBuilder returns a builder for the ephemeral $sup runtime.
@@ -1436,6 +1504,12 @@ func runSession(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// The gate is built here, before the loop, because the full-screen UI
+	// installs its approval callback after the program exists. The plain REPL
+	// keeps the stdin approver as the default.
+	opts.security = opts.newSecurityGate(func(call ai.ToolCall, approval agent.Approval) (bool, string) {
+		return approveToolCall(out, opts, call, approval)
+	})
 	loop, err := buildLoop(opts, registry, out, store, sess, nil)
 	if err != nil {
 		return err
@@ -1476,7 +1550,17 @@ func runSession(cmd *cobra.Command, args []string) error {
 			programOpts = append(programOpts, tui.WithMouseReporting())
 		}
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
-		attachShellEscape(program, opts.root)
+		attachShellEscape(program, opts.root, opts.security)
+		controller := installTaskContinuity(program, opts.root, loop.Tools())
+		// A grant is bound to the task it was approved for, when the task layer
+		// knows one. The task remains authoritative for continuity; the gate
+		// only reads its identity.
+		opts.security.SetTaskSource(func() string {
+			if current, ok := controller.Current(); ok {
+				return current.ID
+			}
+			return ""
+		})
 
 		// Output-first mode is a different interaction boundary, not a
 		// different program: the same loop, the same state machine, the same
@@ -1494,6 +1578,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		held.usage.SetCost(opts.model.Cost)
 		held.workspace = opts.authority().Label()
 		held.gate = opts.gate
+		held.security = opts.security
 		held.projectID = opts.projectID
 		held.support = surface
 		program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
@@ -1685,13 +1770,13 @@ func runSession(cmd *cobra.Command, args []string) error {
 			Ready:        "ready",
 		})
 
-		if opts.autoApprove {
-			loop.SetApprovalHook(func(ai.ToolCall, agent.Approval) (bool, string) { return true, "" })
-		} else {
-			// The hook belongs to the program that is actually running. Wiring
-			// it anywhere else deadlocks: the tool would block on an answer
-			// channel no UI is reading.
-			loop.SetApprovalHook(program.ApprovalFunc())
+		if !opts.autoApprove {
+			// The trusted approval interaction belongs to the program that is
+			// actually running. Wiring it anywhere else deadlocks: the tool
+			// would block on an answer channel no UI is reading. The policy
+			// still runs for every call; this only supplies the human answer
+			// for an APPROVE decision.
+			opts.security.SetAsk(program.ApprovalFunc())
 		}
 		// The program owns turn output and persistence here (transcript via
 		// events, store via runTurn): the loop's hooks must stay silent, or
@@ -1700,6 +1785,10 @@ func runSession(cmd *cobra.Command, args []string) error {
 		loop.SetCompactHook(func(result agent.CompactResult) {
 			program.PublishNotice(fmt.Sprintf("context compacted: %d messages summarised, %d retained",
 				result.Compacted, result.Retained))
+			// Compaction rebuilds context; the checkpoint must survive it
+			// unchanged. Syncing re-records the same task state, so a crash
+			// between compaction and the next turn resumes the same task.
+			program.SyncTask()
 		})
 		return program.Run()
 	}
@@ -1723,6 +1812,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	plain.usage.SetCost(opts.model.Cost)
 	plain.workspace = opts.authority().Label()
 	plain.gate = opts.gate
+	plain.security = opts.security
 	plain.projectID = opts.projectID
 	plain.support = surface
 	return repl(plain, out, os.Stdin, history)
@@ -1752,6 +1842,9 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	}
 	defer closeStore()
 
+	// The gate is created before the loop so the wizard's program can install
+	// its approval callback once it exists.
+	opts.security = opts.newSecurityGate(nil)
 	loop, err := buildLoop(opts, registry, out, store, nil, nil)
 	if err != nil {
 		return err
@@ -1775,7 +1868,14 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		programOpts = append(programOpts, tui.WithMouseReporting())
 	}
 	program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
-	attachShellEscape(program, opts.root)
+	attachShellEscape(program, opts.root, opts.security)
+	controller := installTaskContinuity(program, opts.root, loop.Tools())
+	opts.security.SetTaskSource(func() string {
+		if current, ok := controller.Current(); ok {
+			return current.ID
+		}
+		return ""
+	})
 
 	if live, _ := cmd.Flags().GetBool("live"); live {
 		return program.RunLive()
@@ -1785,6 +1885,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	held.usage.SetCost(opts.model.Cost)
 	held.workspace = opts.authority().Label()
 	held.gate = opts.gate
+	held.security = opts.security
 	held.support = surface
 	program.SetSupportStreamFunc(func(ctx context.Context, question string, onDelta func(string)) (string, error) {
 		return surface.ask(ctx, question, onDelta)
@@ -1932,15 +2033,14 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		tui.InitWizardHooks{Complete: wizardComplete(cmd, &opts, registry, d, store, held, program, resumeID)},
 	)
 
-	if opts.autoApprove {
-		loop.SetApprovalHook(func(ai.ToolCall, agent.Approval) (bool, string) { return true, "" })
-	} else {
-		loop.SetApprovalHook(program.ApprovalFunc())
+	if !opts.autoApprove {
+		opts.security.SetAsk(program.ApprovalFunc())
 	}
 	loop.SetTurnHook(nil)
 	loop.SetCompactHook(func(result agent.CompactResult) {
 		program.PublishNotice(fmt.Sprintf("context compacted: %d messages summarised, %d retained",
 			result.Compacted, result.Retained))
+		program.SyncTask()
 	})
 	return program.Run()
 }
@@ -2206,6 +2306,9 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 					continue
 				}
 				_, _ = fmt.Fprintf(out, "switched to %s.\n", ws.Label())
+				if len(command.Args) > 0 {
+					pending = strings.Join(command.Args, " ")
+				}
 				continue
 			case "theme":
 				_, _ = fmt.Fprintln(out, "theme applies to the full-screen UI (dark or light via /theme there)")

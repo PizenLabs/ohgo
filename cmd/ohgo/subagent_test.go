@@ -2,17 +2,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/tools"
+	"github.com/PizenLabs/ohgo/workspace"
 )
 
 // anthropicTextStream is a completed assistant text turn in Anthropic SSE form.
@@ -223,7 +229,7 @@ func TestChildToolSetBoundsTheTreeStructurally(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := testOptions(t, t.TempDir(), tc.maxDepth)
-			got := hasTool(childToolSet(opts, parent, tc.depth), "task")
+			got := hasTool(childToolSet(opts, ai.NewRegistry(), parent, tc.depth), "task")
 			if got != tc.want {
 				t.Errorf("child at depth %d of %d has a task tool: %v, want %v",
 					tc.depth, tc.maxDepth, got, tc.want)
@@ -239,9 +245,31 @@ func TestChildToolSetDoesNotMutateTheParent(t *testing.T) {
 	parent := buildTools(opts, ai.NewRegistry())
 	before := len(parent)
 
-	_ = childToolSet(opts, parent, 1)
+	_ = childToolSet(opts, ai.NewRegistry(), parent, 1)
 	if len(parent) != before {
 		t.Fatalf("the parent tool set grew from %d to %d", before, len(parent))
+	}
+}
+
+// A child below the cap must be able to delegate. Before the fix it was
+// offered a task tool with no spawner, so every nested delegation failed with
+// "no subagent spawner configured" while the bound looked correct.
+func TestChildTaskToolBelowCapHasASpawner(t *testing.T) {
+	opts := testOptions(t, t.TempDir(), 3)
+	set := childToolSet(opts, ai.NewRegistry(), nil, 1)
+
+	var task *tools.TaskTool
+	for _, tool := range set {
+		if tt, ok := tool.(*tools.TaskTool); ok {
+			task = tt
+		}
+	}
+	if task == nil {
+		t.Fatal("a child below the cap has no task tool")
+	}
+	result := task.Execute(agent.Context{Ctx: context.Background()}, map[string]any{"prompt": "inspect src"})
+	if strings.Contains(result.Text, "no subagent spawner configured") {
+		t.Fatalf("the nested delegation was refused without a spawner: %q", result.Text)
 	}
 }
 
@@ -317,5 +345,205 @@ func TestDefaultMaxDepthDisablesDelegation(t *testing.T) {
 		if hasTool(buildTools(testOptions(t, t.TempDir(), depth), ai.NewRegistry()), "task") {
 			t.Errorf("a depth of %d offered delegation", depth)
 		}
+	}
+}
+
+// nestedServer answers a three-level delegation by reading the assignment in
+// each child's system prompt. It is the real provider transport (Anthropic SSE
+// over HTTP) with a scripted model, not a live external API call.
+type nestedServer struct {
+	*httptest.Server
+	mu     sync.Mutex
+	counts map[string]int
+	bodies map[string][]string
+}
+
+func newNestedServer(t *testing.T) *nestedServer {
+	t.Helper()
+	srv := &nestedServer{counts: map[string]int{}, bodies: map[string][]string{}}
+	srv.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf, _ := io.ReadAll(r.Body)
+		body := string(buf)
+
+		level := "parent"
+		switch {
+		case strings.Contains(body, `Your assignment:\nlevel-two`):
+			level = "two"
+		case strings.Contains(body, `Your assignment:\nlevel-one`):
+			level = "one"
+		}
+
+		srv.mu.Lock()
+		srv.counts[level]++
+		count := srv.counts[level]
+		srv.bodies[level] = append(srv.bodies[level], body)
+		srv.mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch {
+		case level == "parent" && count == 1:
+			_, _ = io.WriteString(w, anthropicToolCallStream("parent-call", "task",
+				`{"prompt":"level-one: inspect the module"}`))
+		case level == "one" && count == 1:
+			_, _ = io.WriteString(w, anthropicToolCallStream("one-call", "task",
+				`{"prompt":"level-two: inspect deeper"}`))
+		case level == "two":
+			_, _ = io.WriteString(w, anthropicTextStream("level two done"))
+		case level == "one":
+			_, _ = io.WriteString(w, anthropicTextStream("level one done"))
+		default:
+			_, _ = io.WriteString(w, anthropicTextStream("parent done"))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func (s *nestedServer) count(level string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts[level]
+}
+
+func (s *nestedServer) bodyAt(level string, i int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i >= len(s.bodies[level]) {
+		return ""
+	}
+	return s.bodies[level][i]
+}
+
+// Nested delegation is exercised through the provider transport at three
+// levels. The grandchild must run, its answer must reach the child, and the
+// child's answer must reach the parent.
+func TestNestedDelegationRunsThreeLevels(t *testing.T) {
+	server := newNestedServer(t)
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	opts := testOptions(t, t.TempDir(), 3)
+	registry := ai.NewRegistry()
+	registry.SetBaseURL("anthropic", server.URL)
+	loop, err := buildLoop(opts, registry, io.Discard, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("buildLoop: %v", err)
+	}
+
+	if _, err := loop.Run(context.Background(), []agent.Message{agent.UserMessage{Text: "delegate deeply"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := server.count("parent"); got != 2 {
+		t.Errorf("parent requests = %d, want 2", got)
+	}
+	if got := server.count("one"); got != 2 {
+		t.Errorf("level-one requests = %d, want 2", got)
+	}
+	if got := server.count("two"); got != 1 {
+		t.Errorf("level-two requests = %d, want 1 (the grandchild never ran)", got)
+	}
+	if body := server.bodyAt("one", 1); !strings.Contains(body, "level two done") {
+		t.Errorf("the grandchild's answer did not reach the child: %s", body)
+	}
+	if body := server.bodyAt("parent", 1); !strings.Contains(body, "level one done") {
+		t.Errorf("the child's answer did not reach the parent: %s", body)
+	}
+}
+
+// The production spawner must copy the parent's deadline. The D-2 fix in
+// RunSubagent is vacuous if the spawner's own parent config has a zero deadline.
+func TestSpawnerPropagatesTheParentDeadline(t *testing.T) {
+	server := newContractServer(t)
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	opts := testOptions(t, t.TempDir(), 2)
+	opts.deadline = time.Now().Add(-time.Second)
+	opts.security = opts.newSecurityGate(nil)
+	registry := ai.NewRegistry()
+	registry.SetBaseURL("anthropic", server.URL)
+	spawner := newSubagentSpawner(opts, registry, nil)
+
+	_, err := spawner.Spawn(context.Background(), agent.SubagentSpec{
+		Task:   "inspect src",
+		System: []ai.SystemPromptBlock{{Text: "you are a researcher"}},
+	})
+	if !errors.Is(err, agent.ErrNoSubagentResult) {
+		t.Fatalf("spawn err = %v, want ErrNoSubagentResult (the child produced no output)", err)
+	}
+	_, children := server.counts()
+	if children != 0 {
+		t.Fatalf("the child made %d provider calls after the deadline expired, want 0", children)
+	}
+}
+
+// A child inherits the parent's FUZZ authority. A write attempted by the child
+// is refused by the same security gate, and the child's reviewable result does
+// not let the parent claim success.
+func TestChildInheritsFuzzAuthority(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		parents int
+		child   int
+		bodies  []string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf, _ := io.ReadAll(r.Body)
+		body := string(buf)
+		isChild := strings.Contains(body, subagentPromptMarker)
+		mu.Lock()
+		if isChild {
+			child++
+		} else {
+			parents++
+		}
+		bodies = append(bodies, body)
+		childCount := child
+		parentCount := parents
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch {
+		case isChild && childCount == 1:
+			_, _ = io.WriteString(w, anthropicToolCallStream("write-call", "write",
+				`{"path":"created.txt","content":"child wrote this"}`))
+		case isChild:
+			_, _ = io.WriteString(w, anthropicTextStream("I could not write the file."))
+		case parentCount == 1:
+			_, _ = io.WriteString(w, anthropicToolCallStream("parent-call", "task",
+				`{"prompt":"write created.txt with the child content"}`))
+		default:
+			_, _ = io.WriteString(w, anthropicTextStream("parent done"))
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	root := t.TempDir()
+	opts := testOptions(t, root, 2)
+	opts.setAuthority(workspace.Fuzz)
+	registry := ai.NewRegistry()
+	registry.SetBaseURL("anthropic", server.URL)
+	loop, err := buildLoop(opts, registry, io.Discard, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("buildLoop: %v", err)
+	}
+	if _, err := loop.Run(context.Background(), []agent.Message{agent.UserMessage{Text: "delegate the write"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "created.txt")); err == nil {
+		t.Fatal("a child in FUZZ wrote a file through the inherited authority")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if child < 2 {
+		t.Fatalf("child requests = %d, want at least 2", child)
+	}
+	joined := strings.Join(bodies, "\n")
+	if !strings.Contains(joined, "not permitted") {
+		t.Errorf("the child's write refusal was not observable: %s", joined)
+	}
+	if !strings.Contains(joined, "subagent needs review") {
+		t.Errorf("the parent did not receive a reviewable child result: %s", joined)
 	}
 }

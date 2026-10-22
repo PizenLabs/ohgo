@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/PizenLabs/ohgo/sandbox"
 )
 
 // Background job tuning, shared with tests.
@@ -240,7 +242,10 @@ func (t *BackgroundJobs) kill(id string) bool {
 	if cmd == nil || cmd.Process == nil {
 		return false
 	}
-	return cmd.Process.Kill() == nil
+	// Kill the process group: the shell's children may still be writing when
+	// only the shell is killed, and a background job that outlives its timeout
+	// is exactly the leak the timeout exists to prevent.
+	return sandbox.Kill(cmd) == nil
 }
 
 // jobSnapshot is what one locked inspection of a job yields.

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PizenLabs/ohgo/sandbox"
 )
 
 func TestParseEscape(t *testing.T) {
@@ -142,5 +144,54 @@ func TestRunRejectsAnEmptyCommand(t *testing.T) {
 	runner := ShellRunner{Dir: t.TempDir()}
 	if _, err := runner.Run(context.Background(), "   ", nil); err == nil {
 		t.Error("Run(\"   \") = nil error, want an empty-command refusal")
+	}
+}
+
+// The human shell escape uses the same authority-derived read-only boundary as
+// the model's bash tool. A command spelled to write must not change the
+// workspace, even though the classifier does not recognise the program.
+func TestReadOnlyEscapeCannotMutate(t *testing.T) {
+	if !sandbox.ReadOnlySupported() {
+		t.Skip("no enforceable read-only sandbox on this platform")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := ShellRunner{Dir: dir, ReadOnly: true}
+	_, _ = runner.Run(context.Background(), `python3 -c "open('file.txt','w').write('hacked')"`, nil)
+
+	data, err := os.ReadFile(filepath.Join(dir, "file.txt"))
+	if err != nil {
+		t.Fatalf("the protected file disappeared: %v", err)
+	}
+	if string(data) != "original" {
+		t.Fatalf("a read-only escape mutated the workspace: %q", data)
+	}
+}
+
+func TestReadOnlyEscapeStillReads(t *testing.T) {
+	if !sandbox.ReadOnlySupported() {
+		t.Skip("no enforceable read-only sandbox on this platform")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := (ShellRunner{Dir: dir, ReadOnly: true}).Run(context.Background(), "cat file.txt", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(result.Output, "original") {
+		t.Fatalf("read-only escape did not return the file: %q", result.Output)
+	}
+}
+
+func TestReadOnlyEscapeRequiresARoot(t *testing.T) {
+	_, err := (ShellRunner{ReadOnly: true}).Run(context.Background(), "true", nil)
+	if !errors.Is(err, sandbox.ErrNoRoot) {
+		t.Fatalf("err = %v, want sandbox.ErrNoRoot", err)
 	}
 }

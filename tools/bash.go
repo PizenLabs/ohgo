@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/sandbox"
 )
 
 // Bash limits, shared with tests.
@@ -108,6 +109,10 @@ func (t *BashTool) Exclusive(args map[string]any) bool {
 // mutation attempted from a workspace that may execute but not change
 // (I3, §5.3). Malformed arguments classify as write, so a call that might
 // mutate is denied outside BUILD rather than admitted on a parsing failure.
+//
+// A command classified exec is still not proof of read-only behaviour. The
+// authorization decision's ReadOnly bit is what the tool enforces with an OS
+// sandbox; this method only improves the risk and mutation evidence.
 func (t *BashTool) Capability(args map[string]any) agent.Tier {
 	command, err := strArg(args, "command", "")
 	if err != nil || strings.TrimSpace(command) == "" {
@@ -144,10 +149,12 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		timeout = requested
 	}
 
+	mutates := t.Capability(args) == agent.TierWrite && !ctx.ReadOnly
+
 	if background, err := boolArg(args, "background", false); err != nil {
 		return agent.ErrorResult("%v", err)
 	} else if background {
-		return t.spawnBackground(command, timeout)
+		return t.spawnBackground(command, timeout, ctx.ReadOnly, mutates)
 	}
 
 	// The request context is the parent so a run-level abort still kills the
@@ -155,8 +162,18 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	runCtx, cancel := context.WithTimeout(ctx.Ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
-	cmd.Dir = t.Root
+	cmd, err := sandbox.Command(runCtx, sandbox.Spec{
+		Argv:     []string{"sh", "-c", command},
+		Dir:      t.Root,
+		Root:     t.Root,
+		ReadOnly: ctx.ReadOnly,
+	})
+	if err != nil {
+		// A read-only authority that cannot be enforced is refused, never
+		// downgraded to an unguarded run.
+		return agent.ErrorResult("command refused: %v", err)
+	}
+	sandbox.Configure(cmd)
 	if len(t.Env) > 0 {
 		cmd.Env = append(os.Environ(), t.Env...)
 	}
@@ -199,15 +216,17 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		// Success.
 	case runCtx.Err() != nil:
 		// A killed process reports exit -1, so the context state is the only
-		// way to tell a timeout from a genuine non-zero exit.
+		// way to tell a timeout from a genuine non-zero exit. A command that
+		// was classified as mutating may have changed the workspace before it
+		// was killed, so the evidence still requires verification.
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			return agent.ErrorResult("command timed out after %s", timeout)
+			return agent.Result{Text: fmt.Sprintf("command timed out after %s", timeout), IsError: true, Mutates: mutates, Executes: true}
 		}
-		return agent.ErrorResult("command cancelled")
+		return agent.Result{Text: "command cancelled", IsError: true, Mutates: mutates, Executes: true}
 	case errors.As(runErr, &exitErr):
 		exitCode = exitErr.ExitCode()
 	default:
-		return agent.ErrorResult("run command: %v", runErr)
+		return agent.Result{Text: fmt.Sprintf("run command: %v", runErr), IsError: true, Mutates: mutates, Executes: true}
 	}
 
 	text := fmt.Sprintf("$ %s\n\n%s", command, strings.TrimRight(combined, "\n"))
@@ -218,8 +237,10 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 
 	if exitCode != 0 {
 		return agent.Result{
-			Text:    text,
-			IsError: true,
+			Text:     text,
+			IsError:  true,
+			Mutates:  mutates,
+			Executes: true,
 			Details: map[string]any{
 				"command":  command,
 				"exitCode": exitCode,
@@ -228,7 +249,10 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		}
 	}
 	return agent.Result{
-		Text: text,
+		Text:     text,
+		Mutates:  mutates,
+		Executes: true,
+		Verifies: IsVerificationCommand(command),
 		Details: map[string]any{
 			"command":  command,
 			"exitCode": 0,
@@ -245,15 +269,26 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 // context on purpose — binding it would kill the job when the turn ends,
 // which is exactly when background work must survive — so jobs live until
 // they exit, are killed by their timeout, or the ohgo process ends.
-func (t *BashTool) spawnBackground(command string, timeout time.Duration) agent.Result {
+func (t *BashTool) spawnBackground(command string, timeout time.Duration, readOnly, mutates bool) agent.Result {
 	jobs := t.Jobs()
 	id, err := jobs.reserve(command)
 	if err != nil {
 		return agent.ErrorResult("%v", err)
 	}
 
-	cmd := exec.Command("sh", "-c", command)
-	cmd.Dir = t.Root
+	// Background work is detached from the request context on purpose, but it
+	// must not escape the read-only boundary the turn was authorized under.
+	cmd, err := sandbox.Command(context.Background(), sandbox.Spec{
+		Argv:     []string{"sh", "-c", command},
+		Dir:      t.Root,
+		Root:     t.Root,
+		ReadOnly: readOnly,
+	})
+	if err != nil {
+		jobs.discard(id)
+		return agent.ErrorResult("command refused: %v", err)
+	}
+	sandbox.Configure(cmd)
 	if len(t.Env) > 0 {
 		cmd.Env = append(os.Environ(), t.Env...)
 	}
@@ -293,6 +328,11 @@ func (t *BashTool) spawnBackground(command string, timeout time.Duration) agent.
 	return agent.Result{
 		Text: fmt.Sprintf("$ %s\n\n[background job %s started, pid %d — killed after %s if still running; use wait to collect output]",
 			command, id, pid, timeout),
+		// A background command has not been observed to finish, so it cannot
+		// verify anything. If it was classified as mutating, completion must
+		// still require a later verification.
+		Mutates:  mutates,
+		Executes: true,
 		Details: map[string]any{
 			"job":     id,
 			"command": command,

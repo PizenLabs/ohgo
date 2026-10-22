@@ -151,7 +151,16 @@ func (r ignoreRule) appliesTo(rel string) bool {
 		rel = strings.TrimPrefix(rel, r.base+"/")
 	}
 	if r.anchored {
-		return matchPath(r.pattern, rel)
+		// Anchoring is relative to the ignore file's base. Match the pattern
+		// against that many leading segments, so "/ohgo" excludes the root
+		// binary but not "cmd/ohgo". Matching every segment here made the
+		// anchor meaningless and silently hid an entire source subtree.
+		patternSegments := strings.Split(r.pattern, "/")
+		pathSegments := strings.Split(rel, "/")
+		if len(pathSegments) < len(patternSegments) {
+			return false
+		}
+		return matchSegments(patternSegments, pathSegments[:len(patternSegments)])
 	}
 	// An unanchored pattern matches at any depth, so walk the path's
 	// suffixes rather than requiring an exact hit.

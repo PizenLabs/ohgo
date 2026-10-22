@@ -172,6 +172,86 @@ func TestTaskToolPassesBackgroundSeparated(t *testing.T) {
 	}
 }
 
+// A child that stopped without completion evidence must not look successful
+// to the parent, even when it produced a confident answer.
+func TestTaskToolReportsNeedsReviewAsAnError(t *testing.T) {
+	spawner := &scriptedSpawner{result: agent.SubagentResult{
+		Text:     "I changed the parser.",
+		Mutated:  true,
+		Verified: false,
+		Completion: agent.Completion{
+			State:  agent.CompletionNeedsReview,
+			Reason: "the repository change was not followed by a successful verification",
+		},
+	}}
+	result := testTaskTool(spawner).Execute(
+		agent.Context{Ctx: context.Background()}, taskArgs("fix the parser"))
+
+	if !result.IsError {
+		t.Fatal("an unverified child result was reported as a success")
+	}
+	if !strings.Contains(result.Text, "needs review") {
+		t.Errorf("result = %q, want the review reason", result.Text)
+	}
+	if !result.Mutates {
+		t.Error("the child's mutation evidence was dropped")
+	}
+	if result.Verifies {
+		t.Error("an unverified child was marked as verified")
+	}
+}
+
+// A verified child result carries its evidence into the parent's completion
+// decision.
+func TestTaskToolPropagatesVerifiedEvidence(t *testing.T) {
+	spawner := &scriptedSpawner{result: agent.SubagentResult{
+		Text:     "I changed the parser and the tests pass.",
+		Mutated:  true,
+		Verified: true,
+		Completion: agent.Completion{
+			State: agent.CompletionComplete,
+		},
+	}}
+	result := testTaskTool(spawner).Execute(
+		agent.Context{Ctx: context.Background()}, taskArgs("fix the parser"))
+
+	if result.IsError {
+		t.Fatalf("a verified child was reported as an error: %s", result.Text)
+	}
+	if !result.Mutates || !result.Verifies {
+		t.Fatalf("evidence = (mutates %v, verifies %v), want both true", result.Mutates, result.Verifies)
+	}
+}
+
+// The child's completion contract needs to know whether the assignment asked
+// for a change. The task tool derives that from the same finite vocabulary the
+// workspace router uses.
+func TestTaskToolClassifiesMutationIntent(t *testing.T) {
+	cases := []struct {
+		prompt   string
+		readOnly bool
+		want     bool
+	}{
+		{"fix the parser", false, true},
+		{"tidy up the imports", false, true},
+		{"review src/auth", false, false},
+		{"run the tests", false, false},
+		{"fix the parser", true, false},
+	}
+	for _, tc := range cases {
+		spawner := &scriptedSpawner{result: agent.SubagentResult{Text: "ok"}}
+		args := taskArgs(tc.prompt)
+		if tc.readOnly {
+			args["readOnly"] = true
+		}
+		_ = testTaskTool(spawner).Execute(agent.Context{Ctx: context.Background()}, args)
+		if spawner.spec.MutationIntent != tc.want {
+			t.Errorf("prompt %q readOnly=%v mutation intent = %v, want %v",
+				tc.prompt, tc.readOnly, spawner.spec.MutationIntent, tc.want)
+		}
+	}
+}
+
 func runTaskWithArgs(t *testing.T, spawner Spawner, args map[string]any) (agent.Result, error) {
 	t.Helper()
 	result := testTaskTool(spawner).Execute(agent.Context{Ctx: context.Background()}, args)

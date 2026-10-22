@@ -15,13 +15,11 @@ import (
 // boundary must see that: FUZZ may run a build but must not rewrite a file
 // (§5.2, §5.3). This classification is conservative on purpose.
 //
-// It classifies as write only what it can prove mutates: output redirected to
-// a real file, a mutating program, or a mutating git subcommand. Everything
-// else stays exec and is permitted wherever execution is permitted. A shell
-// can still mutate through an unclassified path (an interpreter one-liner that
-// writes a file), which is why §37 calls a model-generated shell command
-// untrusted: this is a strong default, not a sandbox, and it is documented as
-// such rather than overstated.
+// It is a risk and evidence input, not the no-mutation boundary. The security
+// decision carries a ReadOnly bit derived from the authority, and the bash tool
+// enforces it with an OS sandbox; that is what stops a program this classifier
+// does not recognise. A classifier can never be the whole boundary for an
+// arbitrary command.
 func commandCapability(command string) agent.Tier {
 	if commandWrites(command) {
 		return agent.TierWrite
@@ -38,6 +36,46 @@ func commandCapability(command string) agent.Tier {
 // runtime actually enforces.
 func CommandMutates(command string) bool {
 	return commandWrites(command)
+}
+
+// CommandDestructive reports whether a shell command is destructive or
+// system-level, which the security layer classifies as high risk.
+//
+// It is conservative in the safe direction: a command this classifier does not
+// recognise is merely medium risk, while one it does recognise is surfaced as
+// high risk in the approval decision. It never decides authorization itself —
+// risk is an input to policy, not a decision.
+func CommandDestructive(command string) bool {
+	for _, segment := range shellSegments(command) {
+		words := shellWords(segment)
+		program, args := programAndArgs(words)
+		if program == "" {
+			continue
+		}
+		if destructiveProgram(path.Base(program), args) {
+			return true
+		}
+	}
+	return false
+}
+
+// destructiveProgram reports whether a program is destructive or system-level.
+func destructiveProgram(program string, args []string) bool {
+	switch program {
+	case "rm", "rmdir", "shred", "dd", "truncate", "mknod",
+		"mkfs", "wipefs", "fdisk", "parted",
+		"shutdown", "reboot", "halt", "poweroff",
+		"kill", "killall", "pkill",
+		"chmod", "chown", "chgrp",
+		"systemctl", "launchctl", "docker", "kubectl":
+		return true
+	case "git":
+		switch firstNonFlag(args) {
+		case "clean", "reset", "push", "filter-branch", "gc", "prune", "rebase":
+			return true
+		}
+	}
+	return false
 }
 
 // commandWrites reports whether a shell command provably mutates the

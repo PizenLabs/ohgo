@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // connectViewFixture is a populated roster for the Provider Manager render
@@ -83,6 +85,28 @@ func TestRenderConnectModalShowsRosterAndConfig(t *testing.T) {
 	}
 	if !strings.Contains(selectedRow, "Anthropic") {
 		t.Errorf("cursor is not on the selected provider: %q", selectedRow)
+	}
+}
+
+// The highlighted row carries the green cursor and the shared row tint: both
+// are rendered with the UserBG background, so the selection reads as one line
+// and the credential glyph keeps its colour instead of collapsing to plain
+// text.
+func TestConnectSelectedRowUsesGreenCursorAndTint(t *testing.T) {
+	// The renderer disables colour when stdout is not a terminal; pin a
+	// profile so the style contract is observable, restoring it after.
+	prev := termenv.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(prev)
+
+	pal := DarkPalette()
+	bg := pal.UserBG.GetBackground()
+	out := RenderConnectModal(connectViewFixture(), pal, 92, 0)
+	if !strings.Contains(out, pal.Selected.Background(bg).Render("> ")) {
+		t.Error("selected row does not carry the green cursor with the row tint")
+	}
+	if !strings.Contains(out, pal.ToolDone.Background(bg).Render(connectCell("[✓]", connectColStatus))) {
+		t.Error("the configured credential glyph lost its colour on the selected row")
 	}
 }
 

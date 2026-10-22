@@ -4,11 +4,71 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/jsonschema"
 )
+
+// A subagent must not start a provider call once the parent's wall-clock
+// budget has expired. Before the fix the child dropped the deadline and kept
+// calling the model, so --deadline bounded only the parent's own turns.
+func TestRunSubagentHonoursParentDeadline(t *testing.T) {
+	calls := 0
+	stream := func(ctx context.Context, req ai.Request) (*ai.Stream, error) {
+		calls++
+		return ai.NewCompletedStream(ai.AssistantMessage{}), nil
+	}
+	parent := Config{
+		Model:    ai.Model{ID: "m", Provider: "p"},
+		Stream:   stream,
+		Tools:    []Tool{namedTool("read")},
+		Deadline: time.Now().Add(-time.Second),
+	}
+
+	_, _ = RunSubagent(context.Background(), parent, SubagentSpec{
+		Task:   "summarise src/auth",
+		System: []ai.SystemPromptBlock{{Text: "you are a read-only researcher"}},
+		Tools:  []Tool{namedTool("read")},
+	})
+
+	if calls != 0 {
+		t.Fatalf("the child made %d provider calls after the parent deadline expired, want 0", calls)
+	}
+}
+
+// Cancelling the parent must cancel the child's in-flight provider call. A
+// child that ignored the context would keep spending after the user stopped the
+// turn.
+func TestRunSubagentHonoursCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	var once sync.Once
+	stream := func(streamCtx context.Context, _ ai.Request) (*ai.Stream, error) {
+		once.Do(func() { close(started) })
+		<-streamCtx.Done()
+		return nil, streamCtx.Err()
+	}
+	parent := Config{
+		Model:  ai.Model{ID: "m", Provider: "p"},
+		Stream: stream,
+		Tools:  []Tool{namedTool("read")},
+	}
+	go func() {
+		<-started
+		cancel()
+	}()
+
+	_, err := RunSubagent(ctx, parent, SubagentSpec{
+		Task:   "summarise src/auth",
+		System: []ai.SystemPromptBlock{{Text: "you are a read-only researcher"}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
 
 // stubTool is a minimal Tool for policy tests.
 //

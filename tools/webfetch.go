@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/security"
 )
 
 // WebFetch limits.
@@ -48,6 +49,15 @@ func NewWebFetchTool() *WebFetchTool {
 		agent.Approval{Tier: agent.TierRead, Reason: "sends a request to a remote host"},
 	)
 	return tool
+}
+
+// SecurityCapability implements agent.CapabilityNamer.
+//
+// Its declared tier is read, but a network fetch is not a filesystem read: the
+// security boundary must see egress as its own capability so policy can treat
+// it as such.
+func (t *WebFetchTool) SecurityCapability() security.Capability {
+	return security.CapabilityNetwork
 }
 
 // Execute implements agent.Tool.

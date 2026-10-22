@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/PizenLabs/ohgo/sandbox"
 )
 
 // EscapePrefix is the character that opens a shell escape.
@@ -27,12 +29,6 @@ const EscapePrefix = '!'
 // more is truncated at a rune boundary and flagged, so a runaway stream can
 // never grow the transcript without bound.
 const MaxOutput = 256 * 1024
-
-// cancelGrace bounds how long Run waits for the output pipes to close after a
-// cancellation kills the process group. It is a safety net: the group kill
-// normally closes them at once, but a stuck descendant must not pin Wait open
-// past the context deadline.
-const cancelGrace = time.Second
 
 // ParseEscape reports whether line is a shell escape and returns the command
 // that follows the leading "!".
@@ -62,10 +58,11 @@ const (
 
 // Decide classifies an escape command under an authority mode.
 //
-// BUILD and FUZZ are execution authorities, so the command runs directly. ASK
-// is read-only, so a command that provably mutates the workspace must be
-// confirmed by the human who typed it, while a read-only command runs
-// directly. An unset or unknown authority follows ASK: mutation needs a human.
+// BUILD and FUZZ are execution authorities, so the fallback path does not ask
+// for a confirmation. That is not a mutation licence: the caller still applies
+// the authority-derived read-only boundary when it runs the command. This
+// helper exists for a host with no security gate installed (tests), and only
+// decides whether a prompt is needed.
 func Decide(mode string, mutating bool) Action {
 	switch strings.ToUpper(strings.TrimSpace(mode)) {
 	case "BUILD", "FUZZ":
@@ -104,6 +101,11 @@ type ShellRunner struct {
 	Shell string
 	// MaxOutput caps captured bytes. Zero means MaxOutput.
 	MaxOutput int
+	// ReadOnly runs the command behind the platform's read-only workspace
+	// boundary. It is set from the authority decision, never from the command
+	// text: a human escape in ASK or FUZZ may read the repository but cannot
+	// change it, whatever program the command names.
+	ReadOnly bool
 }
 
 // Run executes command, invoking onChunk for each chunk of output as it
@@ -124,16 +126,19 @@ func (r ShellRunner) Run(ctx context.Context, command string, onChunk func(strin
 	}
 
 	shell, flag := r.shell()
-	proc := exec.CommandContext(ctx, shell, flag, command)
-	if r.Dir != "" {
-		proc.Dir = r.Dir
+	proc, err := sandbox.Command(ctx, sandbox.Spec{
+		Argv:     []string{shell, flag, command},
+		Dir:      r.Dir,
+		Root:     r.Dir,
+		ReadOnly: r.ReadOnly,
+	})
+	if err != nil {
+		return result, err
 	}
 	// The shell forks its command, so the default single-process kill would
 	// leave grandchildren running and, worse, holding the output pipes open
 	// so Run outlives its context. Signal the group and bound the wait.
-	setProcessGroup(proc)
-	proc.Cancel = func() error { return killProcessGroup(proc) }
-	proc.WaitDelay = cancelGrace
+	sandbox.Configure(proc)
 
 	max := r.MaxOutput
 	if max <= 0 {

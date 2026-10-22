@@ -231,14 +231,14 @@ func TestSearchRejectsBrokenSource(t *testing.T) {
 	}
 }
 
-func TestSearchFindsNothingInAnEmptyFile(t *testing.T) {
+func TestSearchFindsPackageInAnEmptyFile(t *testing.T) {
 	path := goFixture(t, "package empty\n")
 	matches, err := GoBackend{}.Search(path, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 0 {
-		t.Errorf("matches = %+v, want none", matches)
+	if len(matches) != 1 || matches[0].Kind != KindPackage {
+		t.Errorf("matches = %+v, want one package declaration", matches)
 	}
 }
 

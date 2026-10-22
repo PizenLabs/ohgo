@@ -368,63 +368,45 @@ func connectTableHeader(cols connectTableColumns, pal *Palette, interior int) st
 
 // renderConnectTableRow renders one roster row. The highlighted row carries a
 // green cursor and a faint background so the selection is unmistakable; the
-// credential state carries its own coloured glyph independently.
+// credential state keeps its own coloured glyph independently.
+//
+// Every cell and the gaps between them take the tint background, derived from
+// the UserBG token rather than a second literal, so the highlighted row reads
+// as one selected line instead of a cursor beside an unrelated highlight.
 func renderConnectTableRow(cols connectTableColumns, view ConnectView, row ProviderRow, index int, pal *Palette, interior int) string {
 	selected := index == view.Cursor
 	marker := "  "
 	markerStyle := pal.Muted
+	nameStyle := pal.Choice
+	metaStyle := pal.Muted
+	gapStyle := lipgloss.NewStyle()
+	status, statusStyle := connectStatusCell(row, pal)
 	if selected {
 		marker = "> "
-		markerStyle = pal.Selected
-	}
-	status, statusStyle := connectStatusCell(row, pal)
-	name := connectProviderName(row)
-	driver := connectDriverText(row)
-	details := connectDetailText(row)
-
-	if selected {
-		// The whole row shares one background, so the cells are built plain
-		// and the line is styled once.
-		plain := connectRowPlain(cols, marker, status, name, driver, details)
-		return pal.UserBG.Render(padRight(plain, interior))
+		bg := pal.UserBG.GetBackground()
+		markerStyle = pal.Selected.Background(bg)
+		statusStyle = statusStyle.Background(bg)
+		nameStyle = pal.Choice.Background(bg)
+		metaStyle = pal.Muted.Background(bg)
+		gapStyle = pal.UserBG
 	}
 
+	gap := gapStyle.Render(strings.Repeat(" ", connectColGap))
 	var b strings.Builder
-	b.WriteString(connectCell(markerStyle.Render(marker), connectColCursor))
-	b.WriteString(strings.Repeat(" ", connectColGap))
-	b.WriteString(connectCell(statusStyle.Render(status), connectColStatus))
-	b.WriteString(strings.Repeat(" ", connectColGap))
-	b.WriteString(connectCell(pal.Choice.Render(TruncateToWidth(name, cols.provider)), cols.provider))
+	b.WriteString(markerStyle.Render(connectCell(marker, connectColCursor)))
+	b.WriteString(gap)
+	b.WriteString(statusStyle.Render(connectCell(status, connectColStatus)))
+	b.WriteString(gap)
+	b.WriteString(nameStyle.Render(connectCell(connectProviderName(row), cols.provider)))
 	if cols.driver {
-		b.WriteString(strings.Repeat(" ", connectColGap))
-		b.WriteString(connectCell(pal.Muted.Render(TruncateToWidth(driver, connectColDriver)), connectColDriver))
+		b.WriteString(gap)
+		b.WriteString(metaStyle.Render(connectCell(connectDriverText(row), connectColDriver)))
 	}
 	if cols.details {
-		b.WriteString(strings.Repeat(" ", connectColGap))
-		b.WriteString(connectCell(pal.Muted.Render(TruncateToWidth(details, connectColDetails)), connectColDetails))
+		b.WriteString(gap)
+		b.WriteString(metaStyle.Render(connectCell(connectDetailText(row), connectColDetails)))
 	}
 	return TruncateToWidth(b.String(), interior)
-}
-
-// connectRowPlain builds the unstyled row text at exact column widths. It is
-// the backing text for the selected row, whose background cannot survive
-// nested style resets.
-func connectRowPlain(cols connectTableColumns, marker, status, name, driver, details string) string {
-	var b strings.Builder
-	b.WriteString(connectCell(marker, connectColCursor))
-	b.WriteString(strings.Repeat(" ", connectColGap))
-	b.WriteString(connectCell(status, connectColStatus))
-	b.WriteString(strings.Repeat(" ", connectColGap))
-	b.WriteString(connectCell(name, cols.provider))
-	if cols.driver {
-		b.WriteString(strings.Repeat(" ", connectColGap))
-		b.WriteString(connectCell(driver, connectColDriver))
-	}
-	if cols.details {
-		b.WriteString(strings.Repeat(" ", connectColGap))
-		b.WriteString(connectCell(details, connectColDetails))
-	}
-	return b.String()
 }
 
 // connectProviderPair renders a provider as "Name (id)", collapsing to one

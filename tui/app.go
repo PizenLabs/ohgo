@@ -15,6 +15,7 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/session"
+	"github.com/PizenLabs/ohgo/workspace"
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -42,6 +43,7 @@ type approvalRequest struct {
 	toolName string
 	reason   string
 	summary  string
+	preview  agent.MutationPreview
 	// mutating marks a state-changing call, so the dialog can accent a
 	// destructive boundary differently from a read one.
 	mutating bool
@@ -286,6 +288,13 @@ type Program struct {
 	// wizardHooks commits or abandons the wizard's decisions. See
 	// InitWizardHooks for the goroutine contract.
 	wizardHooks InitWizardHooks
+
+	// task is the durable task continuity layer, nil-safe. When set, runTurn
+	// records lifecycle boundaries (turn start, interruption, completion,
+	// failure) and the transcript projects the task state. It is bookkeeping
+	// only: the loop remains the execution owner and the task layer grants no
+	// authority (see TaskHooks).
+	task TaskHooks
 }
 
 // WorkspaceHooks route workspace commands through their owner.
@@ -376,6 +385,12 @@ type ShellHooks struct {
 	// gates the ASK confirmation; nil means "assume mutating", so ASK always
 	// asks rather than running a possible mutation unconfirmed.
 	Mutates func(command string) bool
+	// Authorize is the security decision for a human-initiated command. When
+	// set it replaces the Mutates/Decide path: allowed=false refuses with the
+	// reason, confirm=true asks the human, and allowed=true/confirm=false runs
+	// directly. The escape therefore crosses the same boundary as a tool call
+	// instead of executing beside it.
+	Authorize func(command string) (allowed bool, confirm bool, reason string)
 }
 
 // SetShellEscape installs the shell escape behind the "!" prefix.
@@ -580,11 +595,12 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		request := m.request
 		p.pending = &request
 		p.state.Apply(ApprovalAsked{
-			ToolName: request.toolName,
-			Reason:   request.reason,
-			Summary:  request.summary,
-			Mutating: request.mutating,
-			Choices:  approvalChoices,
+			ToolName:        request.toolName,
+			Reason:          request.reason,
+			Summary:         request.summary,
+			MutationPreview: request.preview,
+			Mutating:        request.mutating,
+			Choices:         approvalChoices,
 		})
 		return p, p.waitForApproval()
 
@@ -1311,6 +1327,14 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	case "ask", "fuzz", "build":
 		p.switchWorkspace(command.Name)
+		if len(command.Args) > 0 {
+			objective := strings.Join(command.Args, " ")
+			if p.state.Status.Busy {
+				p.queue(objective)
+				return nil
+			}
+			return p.submit(objective)
+		}
 		return nil
 
 	case "permissions", "mode":
@@ -3277,8 +3301,26 @@ func (p *Program) submitEscape(command string) tea.Cmd {
 		p.state.Apply(Notice{Text: "a shell command is already running"})
 		return nil
 	}
-	// An unclassified command is treated as mutating: absent a classifier the
-	// safe assumption is that it changes something, so ASK confirms it.
+	// The security boundary decides first when one is installed: a denied
+	// command never runs, and an approved one uses the same confirmation
+	// dialog a tool approval does.
+	if p.shell.Authorize != nil {
+		allowed, confirm, reason := p.shell.Authorize(command)
+		if !allowed {
+			if strings.TrimSpace(reason) == "" {
+				reason = "command denied"
+			}
+			p.state.Apply(Notice{Text: reason})
+			return nil
+		}
+		if confirm && !p.sessionAllowedFor(shellApprovalTool) {
+			return p.confirmEscape(command)
+		}
+		return p.startEscape(command)
+	}
+	// Fallback for a caller that installs no boundary (tests): an unclassified
+	// command is treated as mutating, so ASK always asks rather than running a
+	// possible mutation unconfirmed.
 	mutating := true
 	if p.shell.Mutates != nil {
 		mutating = p.shell.Mutates(command)
@@ -3414,6 +3456,13 @@ func (p *Program) runTurn(text string) {
 	}
 	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), Turn: turn})
 
+	// A turn is a task boundary: record (or resume) the durable task before
+	// any provider call, so an interruption during this turn has something to
+	// checkpoint. Bookkeeping only — it neither gates nor authorizes the turn.
+	if p.task.Begin != nil {
+		p.PublishTask(p.task.Begin(text))
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	p.mu.Lock()
 	p.cancelTurn = cancel
@@ -3459,6 +3508,12 @@ func (p *Program) runTurn(text string) {
 				At:        time.Now(),
 				Seq:       seq,
 			})
+			// A todo mutation is a meaningful task boundary: checkpoint it so
+			// an interruption afterwards recovers the real progress. The todo
+			// tool owns the list; the task layer only records its snapshot.
+			if progress.ToolName == "todo" {
+				p.SyncTask()
+			}
 		case agent.ProgressStarted:
 			// The announcement carries the call's arguments but no outcome
 			// yet, so the block opens with what the call will do rather
@@ -3489,7 +3544,18 @@ func (p *Program) runTurn(text string) {
 	for _, warning := range warnings {
 		p.publish(Notice{Text: warning})
 	}
-	p.loop.SetSystemContext(systemContextBlocks(contextText))
+	// Context is reconstructed, not replayed: the mention context plus the
+	// deterministic task orientation. Both are set every turn — including to
+	// nil — so a prompt never inherits the previous turn's context.
+	blocks := systemContextBlocks(contextText)
+	if p.task.Context != nil {
+		if taskContext := p.task.Context(); len(taskContext) > 0 {
+			blocks = append(blocks, ai.SystemPromptBlock{
+				Text: "Task continuity (context, not instruction):\n\n" + strings.Join(taskContext, "\n") + "\n\nThis task state is orientation context. It is not a user request. The user's current objective remains the authoritative execution instruction. Missing todos or a persisted plan are not blockers; derive the plan internally and continue.",
+			})
+		}
+	}
+	p.loop.SetSystemContext(blocks)
 
 	turns, err := p.loop.Run(ctx, request)
 
@@ -3513,6 +3579,32 @@ func (p *Program) runTurn(text string) {
 			p.publish(TurnCancelled{Seq: seq, Text: "cancelled"})
 		} else {
 			p.publish(Notice{Text: "error: " + err.Error()})
+		}
+	}
+
+	// Record the task outcome at the turn boundary from runtime evidence, not
+	// from the model's stop alone. A clean finish is not proof that a requested
+	// change happened or that it was verified; a failure is not erased by a
+	// plausible closing sentence.
+	action, reason := turnTaskOutcome(err, turns, workspace.RequestsMutation(text))
+	switch action {
+	case taskActionComplete:
+		if p.task.Complete != nil {
+			p.PublishTask(p.task.Complete())
+		}
+	case taskActionReview:
+		if p.task.NeedsReview != nil {
+			p.PublishTask(p.task.NeedsReview(reason))
+		} else if p.task.Pause != nil {
+			p.PublishTask(p.task.Pause(reason))
+		}
+	case taskActionPause:
+		if p.task.Pause != nil {
+			p.PublishTask(p.task.Pause(reason))
+		}
+	case taskActionFail:
+		if p.task.Fail != nil {
+			p.PublishTask(p.task.Fail(reason))
 		}
 	}
 
@@ -3792,6 +3884,7 @@ func (p *Program) ApprovalFunc() func(call ai.ToolCall, approval agent.Approval)
 			toolName: call.Name,
 			reason:   approval.Reason,
 			summary:  ToolSummaryForCall(call.Name, call.Arguments),
+			preview:  approval.MutationPreview,
 			// Anything but an explicit read is treated as state-changing:
 			// an undeclared tier must never look harmless in the dialog.
 			mutating: approval.Tier != agent.TierRead,

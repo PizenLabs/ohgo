@@ -1,0 +1,710 @@
+{
+  "metadata": {
+    "benchmark_revision": "phase2-baseline",
+    "harness_version": "phase2-v1",
+    "task_hash": "414012543e4c10121d3e1ffd6c24ed4c6107c74dcd8134406ae0a2181f1b68bb",
+    "started_at": "2026-10-21T05:23:34.221869Z",
+    "finished_at": "2026-10-21T05:25:41.697905Z",
+    "repository": "/Users/anvndev/Documents/Project/OpenSource/PizenLabs/ohgo",
+    "repository_revision": "53bc07b2e850720e331e5fdcdf6ed0fa256402d7",
+    "fixture_files": 319,
+    "fixture_go_files": 295,
+    "model": "cohere/north-mini-code:free",
+    "provider": "openrouter",
+    "api": "openai-chat-completions",
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0,
+    "max_turns": 16,
+    "max_tokens": 2048,
+    "timeout_seconds": 240,
+    "concurrency": 1,
+    "repeats": 1,
+    "tracks": [
+      "C-hybrid"
+    ],
+    "excluded_paths": [
+      "docs/report",
+      "docs/benchmarks",
+      "AGENTS.md",
+      "MEMORY.md",
+      "PROGRESS.md",
+      "PORT.md",
+      "README.md"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "D2-mod-tool-registration",
+      "category": "D_MODIFICATION",
+      "prompt": "Where is the tool set assembled when a session starts? A newly added tool must be registered there. Report the file and the enclosing function.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "cmd/ohgo/run.go",
+          "symbol": "buildTools",
+          "start_line": 382,
+          "end_line": 413
+        }
+      ],
+      "notes": "The assembly point; a registration change is a single edit surface."
+    },
+    {
+      "id": "E1-cross-grep-def-and-registration",
+      "category": "E_CROSS_FILE",
+      "prompt": "Where is `GrepTool.Execute` defined, and where is `GrepTool` registered in the agent's tool set? Report both locations.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "tools/grep.go",
+          "symbol": "GrepTool.Execute",
+          "start_line": 126,
+          "end_line": 288
+        },
+        {
+          "path": "cmd/ohgo/run.go",
+          "symbol": "buildTools",
+          "start_line": 382,
+          "end_line": 413
+        }
+      ],
+      "notes": "Definition and registration are in different packages."
+    }
+  ],
+  "runs": [
+    {
+      "task_id": "D2-mod-tool-registration",
+      "category": "D_MODIFICATION",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "no_answer",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 16,
+      "tool_calls": 16,
+      "discovery_calls": 9,
+      "files_opened": 2,
+      "lines_inspected": 2220,
+      "context_bytes": 94976,
+      "candidate_files": 27,
+      "irrelevant_candidates": 26,
+      "reported_candidates": 31,
+      "input_tokens": 334313,
+      "output_tokens": 912,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 2,
+      "calls_to_all_targets": 2,
+      "time_to_first_target_ms": 5813,
+      "time_to_all_targets_ms": 5813,
+      "duration_ms": 64060,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "path": "."
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 1657,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "case": true,
+            "pattern": "tool set|session starts|register.*tool|assemble.*tool"
+          },
+          "is_error": false,
+          "duration_ms": 50,
+          "offset_ms": 5813,
+          "result_bytes": 2826,
+          "result_lines": 70,
+          "candidate_files": [
+            "agent/loop.go",
+            "agent/subagent.go",
+            "agent/subagent_e2e_test.go",
+            "agent/subagent_test.go",
+            "ai/ollama.go",
+            "cmd/ohgo/doctor.go",
+            "cmd/ohgo/phase1closure_test.go",
+            "cmd/ohgo/run.go",
+            "cmd/ohgo/stabilization_test.go",
+            "cmd/ohgo/subagent_test.go",
+            "docs/architecture/ARCHITECTURE.md",
+            "tools/base.go",
+            "tools/jobs.go",
+            "tools/task_test.go",
+            "tui/app.go",
+            "tui/live_modelplane_pty_test.go",
+            "tui/live_pty_test.go",
+            "tui/live_tmux_test.go"
+          ],
+          "reported_file_total": 18,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 2,
+          "tool": "read",
+          "args": {
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 9465,
+          "result_bytes": 81003,
+          "result_lines": 2002,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 2000,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "grep",
+          "args": {
+            "path": "cmd/ohgo/run.go",
+            "pattern": "func buildTools"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 16092,
+          "result_bytes": 110,
+          "result_lines": 4,
+          "candidate_files": [
+            "cmd/ohgo/run.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 4,
+          "tool": "read",
+          "args": {
+            "limit": 60,
+            "offset": 382,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 17543,
+          "result_bytes": 2565,
+          "result_lines": 62,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 60,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "read",
+          "args": {
+            "limit": 40,
+            "offset": 382,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 26496,
+          "result_bytes": 1677,
+          "result_lines": 42,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 40,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 6,
+          "tool": "grep",
+          "args": {
+            "pattern": "newSubagentSpawner"
+          },
+          "is_error": false,
+          "duration_ms": 34,
+          "offset_ms": 27876,
+          "result_bytes": 277,
+          "result_lines": 6,
+          "candidate_files": [
+            "cmd/ohgo/run.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 7,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 689,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 32009,
+          "result_bytes": 1502,
+          "result_lines": 32,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 8,
+          "tool": "grep",
+          "args": {
+            "pattern": "func buildLoop"
+          },
+          "is_error": false,
+          "duration_ms": 18,
+          "offset_ms": 36063,
+          "result_bytes": 235,
+          "result_lines": 4,
+          "candidate_files": [
+            "cmd/ohgo/run.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 9,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 733,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 40541,
+          "result_bytes": 1451,
+          "result_lines": 32,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 10,
+          "tool": "grep",
+          "args": {
+            "pattern": "func newSecurityGate"
+          },
+          "is_error": false,
+          "duration_ms": 33,
+          "offset_ms": 45485,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 11,
+          "tool": "grep",
+          "args": {
+            "pattern": "type options"
+          },
+          "is_error": false,
+          "duration_ms": 16,
+          "offset_ms": 48110,
+          "result_bytes": 63,
+          "result_lines": 4,
+          "candidate_files": [
+            "cmd/ohgo/run.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 12,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 35,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 51678,
+          "result_bytes": 1450,
+          "result_lines": 32,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 13,
+          "tool": "grep",
+          "args": {
+            "pattern": "func newSecurityGate"
+          },
+          "is_error": false,
+          "duration_ms": 28,
+          "offset_ms": 56242,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 14,
+          "tool": "grep",
+          "args": {
+            "pattern": "type securityGate"
+          },
+          "is_error": false,
+          "duration_ms": 28,
+          "offset_ms": 59605,
+          "result_bytes": 73,
+          "result_lines": 4,
+          "candidate_files": [
+            "cmd/ohgo/security.go"
+          ],
+          "reported_file_total": 1
+        },
+        {
+          "index": 15,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 66,
+            "path": "cmd/ohgo/security.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 64061,
+          "result_bytes": 1375,
+          "result_lines": 32,
+          "opened_file": "cmd/ohgo/security.go",
+          "lines_inspected": 30
+        }
+      ]
+    },
+    {
+      "task_id": "E1-cross-grep-def-and-registration",
+      "category": "E_CROSS_FILE",
+      "track": "C-hybrid",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "no_answer",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 16,
+      "tool_calls": 16,
+      "discovery_calls": 15,
+      "files_opened": 1,
+      "lines_inspected": 556,
+      "context_bytes": 19050,
+      "candidate_files": 47,
+      "irrelevant_candidates": 46,
+      "reported_candidates": 47,
+      "input_tokens": 82682,
+      "output_tokens": 289,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 3,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 11314,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 63413,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "hidden": true
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 4854,
+          "result_bytes": 413,
+          "result_lines": 39,
+          "candidate_files": [
+            ".",
+            "104",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "309",
+            "357",
+            "402",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 11
+        },
+        {
+          "index": 1,
+          "tool": "ls",
+          "args": {
+            "path": "tools"
+          },
+          "is_error": false,
+          "duration_ms": 1,
+          "offset_ms": 7543,
+          "result_bytes": 677,
+          "result_lines": 32,
+          "candidate_files": [
+            "tools/10745",
+            "tools/10864",
+            "tools/11682",
+            "tools/12429",
+            "tools/12587",
+            "tools/12674",
+            "tools/13088",
+            "tools/15129",
+            "tools/15256",
+            "tools/15799",
+            "tools/17666",
+            "tools/19636",
+            "tools/2195",
+            "tools/3019",
+            "tools/3096",
+            "tools/3701",
+            "tools/3763",
+            "tools/3915",
+            "tools/4071",
+            "tools/4593",
+            "tools/5144",
+            "tools/5212",
+            "tools/5961",
+            "tools/6135",
+            "tools/6638",
+            "tools/6669",
+            "tools/7422",
+            "tools/7911",
+            "tools/8124",
+            "tools/8858",
+            "tools/9625",
+            "tools/tools"
+          ],
+          "reported_file_total": 32
+        },
+        {
+          "index": 2,
+          "tool": "grep",
+          "args": {
+            "path": "tools",
+            "pattern": "type GrepTool"
+          },
+          "is_error": false,
+          "duration_ms": 9,
+          "offset_ms": 11314,
+          "result_bytes": 252,
+          "result_lines": 7,
+          "candidate_files": [
+            "tools/grep.go",
+            "tools/symbols_test.go"
+          ],
+          "reported_file_total": 2,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "path": "tools/grep.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 15250,
+          "result_bytes": 17244,
+          "result_lines": 556,
+          "opened_file": "tools/grep.go",
+          "lines_inspected": 556,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 4,
+          "tool": "grep",
+          "args": {
+            "pattern": "Register.*GrepTool|tools\\.Register"
+          },
+          "is_error": false,
+          "duration_ms": 41,
+          "offset_ms": 19640,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 5,
+          "tool": "grep",
+          "args": {
+            "pattern": "func init\\(\\)"
+          },
+          "is_error": false,
+          "duration_ms": 41,
+          "offset_ms": 24464,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 6,
+          "tool": "grep",
+          "args": {
+            "pattern": "agent\\.Register"
+          },
+          "is_error": false,
+          "duration_ms": 41,
+          "offset_ms": 28918,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 7,
+          "tool": "grep",
+          "args": {
+            "pattern": "tools\\.Register"
+          },
+          "is_error": false,
+          "duration_ms": 53,
+          "offset_ms": 31322,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 8,
+          "tool": "grep",
+          "args": {
+            "pattern": "Register.*Tool"
+          },
+          "is_error": false,
+          "duration_ms": 41,
+          "offset_ms": 35330,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 9,
+          "tool": "grep",
+          "args": {
+            "pattern": "Register"
+          },
+          "is_error": false,
+          "duration_ms": 43,
+          "offset_ms": 39642,
+          "result_bytes": 277,
+          "result_lines": 8,
+          "candidate_files": [
+            "ast/ast.go",
+            "tui/permissions_test.go"
+          ],
+          "reported_file_total": 2
+        },
+        {
+          "index": 10,
+          "tool": "grep",
+          "args": {
+            "pattern": "agent\\.Register"
+          },
+          "is_error": false,
+          "duration_ms": 16,
+          "offset_ms": 43806,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 11,
+          "tool": "grep",
+          "args": {
+            "pattern": "tools\\.Register"
+          },
+          "is_error": false,
+          "duration_ms": 47,
+          "offset_ms": 47340,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 12,
+          "tool": "grep",
+          "args": {
+            "pattern": "Register.*GrepTool"
+          },
+          "is_error": false,
+          "duration_ms": 43,
+          "offset_ms": 51463,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 13,
+          "tool": "grep",
+          "args": {
+            "pattern": "GrepTool.*Register"
+          },
+          "is_error": false,
+          "duration_ms": 34,
+          "offset_ms": 55522,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 14,
+          "tool": "grep",
+          "args": {
+            "pattern": "Register.*Tool.*Grep"
+          },
+          "is_error": false,
+          "duration_ms": 31,
+          "offset_ms": 59317,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 15,
+          "tool": "grep",
+          "args": {
+            "pattern": "Register.*agent"
+          },
+          "is_error": false,
+          "duration_ms": 42,
+          "offset_ms": 63413,
+          "result_bytes": 17,
+          "result_lines": 1
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,571 @@
+{
+  "metadata": {
+    "benchmark_revision": "phase2-baseline",
+    "harness_version": "phase2-v1",
+    "task_hash": "414012543e4c10121d3e1ffd6c24ed4c6107c74dcd8134406ae0a2181f1b68bb",
+    "started_at": "2026-10-21T05:13:09.41272Z",
+    "finished_at": "2026-10-21T05:15:52.170069Z",
+    "repository": "/Users/anvndev/Documents/Project/OpenSource/PizenLabs/ohgo",
+    "repository_revision": "53bc07b2e850720e331e5fdcdf6ed0fa256402d7",
+    "fixture_files": 319,
+    "fixture_go_files": 295,
+    "model": "cohere/north-mini-code:free",
+    "provider": "openrouter",
+    "api": "openai-chat-completions",
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0,
+    "max_turns": 16,
+    "max_tokens": 2048,
+    "timeout_seconds": 240,
+    "concurrency": 1,
+    "repeats": 1,
+    "tracks": [
+      "A-lexical",
+      "B-structural"
+    ],
+    "excluded_paths": [
+      "docs/report",
+      "docs/benchmarks",
+      "AGENTS.md",
+      "MEMORY.md",
+      "PROGRESS.md",
+      "PORT.md",
+      "README.md"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "E3-cross-close-def-and-run-path",
+      "category": "E_CROSS_FILE",
+      "prompt": "Where is `Store.Close` defined, and where is it called in the one-shot run path? Report both locations.",
+      "expected_status": "exact",
+      "targets": [
+        {
+          "path": "session/session.go",
+          "symbol": "Store.Close",
+          "start_line": 147,
+          "end_line": 152
+        },
+        {
+          "path": "cmd/ohgo/run.go",
+          "symbol": "runOnce",
+          "start_line": 1137,
+          "end_line": 1196
+        }
+      ],
+      "notes": "runOnce defers the closeStore closure, so the call is one hop away from session.Store.Close."
+    }
+  ],
+  "runs": [
+    {
+      "task_id": "E3-cross-close-def-and-run-path",
+      "category": "E_CROSS_FILE",
+      "track": "A-lexical",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "no_answer",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 12,
+      "tool_calls": 11,
+      "discovery_calls": 5,
+      "files_opened": 2,
+      "lines_inspected": 410,
+      "context_bytes": 19686,
+      "candidate_files": 33,
+      "irrelevant_candidates": 31,
+      "reported_candidates": 70,
+      "input_tokens": 38530,
+      "output_tokens": 3083,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 3,
+      "calls_to_all_targets": 3,
+      "time_to_first_target_ms": 9676,
+      "time_to_all_targets_ms": 9676,
+      "duration_ms": 89436,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "ls",
+          "args": {
+            "limit": 100
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 2398,
+          "result_bytes": 335,
+          "result_lines": 35,
+          "candidate_files": [
+            ".",
+            "11329",
+            "1489",
+            "1904",
+            "2028",
+            "357",
+            "492",
+            "9786"
+          ],
+          "reported_file_total": 8
+        },
+        {
+          "index": 1,
+          "tool": "grep",
+          "args": {
+            "pattern": "Store\\.Close"
+          },
+          "is_error": false,
+          "duration_ms": 31,
+          "offset_ms": 7024,
+          "result_bytes": 17,
+          "result_lines": 1
+        },
+        {
+          "index": 2,
+          "tool": "grep",
+          "args": {
+            "pattern": "func.*Close"
+          },
+          "is_error": false,
+          "duration_ms": 22,
+          "offset_ms": 9676,
+          "result_bytes": 2498,
+          "result_lines": 82,
+          "candidate_files": [
+            "ai/anthropic.go",
+            "ai/ollama.go",
+            "ai/openai.go",
+            "ai/probe.go",
+            "catalog/dynamic.go",
+            "cmd/ohgo/harness_test.go",
+            "cmd/ohgo/main.go",
+            "cmd/ohgo/modelplane_test.go",
+            "cmd/ohgo/resume_test.go",
+            "cmd/ohgo/run.go",
+            "cmd/ohgo/security_test.go",
+            "cmd/ohgo/session_test.go",
+            "cmd/ohgo/support.go",
+            "cmd/ohgo/support_test.go",
+            "cmd/ohgo/wizard_test.go",
+            "cmd/ohgo/workspace_test.go",
+            "edit/edit_test.go",
+            "session/migration_test.go",
+            "session/session.go",
+            "session/session_test.go"
+          ],
+          "reported_file_total": 44,
+          "revealed_targets": [
+            0,
+            1
+          ]
+        },
+        {
+          "index": 3,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 140,
+            "path": "session/session.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 14287,
+          "result_bytes": 803,
+          "result_lines": 32,
+          "opened_file": "session/session.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 4,
+          "tool": "grep",
+          "args": {
+            "pattern": "one-shot"
+          },
+          "is_error": false,
+          "duration_ms": 21,
+          "offset_ms": 19142,
+          "result_bytes": 653,
+          "result_lines": 16,
+          "candidate_files": [
+            "cmd/ohgo/boot_test.go",
+            "cmd/ohgo/run.go",
+            "cmd/ohgo/security_test.go",
+            "security/policy.go"
+          ],
+          "reported_file_total": 4,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 5,
+          "tool": "read",
+          "args": {
+            "limit": 100,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 20755,
+          "result_bytes": 3604,
+          "result_lines": 102,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 100,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 6,
+          "tool": "read",
+          "args": {
+            "limit": 100,
+            "offset": 1100,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 25720,
+          "result_bytes": 3516,
+          "result_lines": 102,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 100,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 7,
+          "tool": "read",
+          "args": {
+            "limit": 100,
+            "offset": 1195,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 41362,
+          "result_bytes": 3826,
+          "result_lines": 102,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 100,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 8,
+          "tool": "grep",
+          "args": {
+            "pattern": "store\\.Close\\(\\)"
+          },
+          "is_error": false,
+          "duration_ms": 29,
+          "offset_ms": 48489,
+          "result_bytes": 1602,
+          "result_lines": 57,
+          "candidate_files": [
+            "cmd/ohgo/doctor.go",
+            "cmd/ohgo/harness_test.go",
+            "cmd/ohgo/main.go",
+            "cmd/ohgo/modelplane_test.go",
+            "cmd/ohgo/resume_test.go",
+            "cmd/ohgo/run.go",
+            "cmd/ohgo/session_test.go",
+            "cmd/ohgo/support_test.go",
+            "cmd/ohgo/wizard_test.go",
+            "cmd/ohgo/workspace_test.go",
+            "session/migration_test.go",
+            "session/session_test.go",
+            "tui/app_test.go",
+            "tui/render_correctness_test.go"
+          ],
+          "reported_file_total": 14,
+          "revealed_targets": [
+            1
+          ]
+        },
+        {
+          "index": 9,
+          "tool": "read",
+          "args": {
+            "limit": 30,
+            "offset": 140,
+            "path": "session/session.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 56686,
+          "result_bytes": 803,
+          "result_lines": 32,
+          "opened_file": "session/session.go",
+          "lines_inspected": 30,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 10,
+          "tool": "read",
+          "args": {
+            "limit": 50,
+            "offset": 1220,
+            "path": "cmd/ohgo/run.go"
+          },
+          "is_error": false,
+          "duration_ms": 0,
+          "offset_ms": 62198,
+          "result_bytes": 2029,
+          "result_lines": 52,
+          "opened_file": "cmd/ohgo/run.go",
+          "lines_inspected": 50,
+          "revealed_targets": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "E3-cross-close-def-and-run-path",
+      "category": "E_CROSS_FILE",
+      "track": "B-structural",
+      "model": "openrouter/cohere/north-mini-code:free",
+      "repeat": 0,
+      "success": false,
+      "outcome": "no_answer",
+      "status_reported": "",
+      "answer_format": "missing",
+      "turns": 16,
+      "tool_calls": 16,
+      "discovery_calls": 16,
+      "files_opened": 0,
+      "lines_inspected": 0,
+      "context_bytes": 689,
+      "candidate_files": 1,
+      "irrelevant_candidates": 0,
+      "reported_candidates": 1,
+      "input_tokens": 11798,
+      "output_tokens": 331,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls_to_first_target": 1,
+      "calls_to_all_targets": 0,
+      "time_to_first_target_ms": 1615,
+      "time_to_all_targets_ms": 0,
+      "duration_ms": 73317,
+      "matched_targets": 0,
+      "missing_targets": 0,
+      "extra_targets": 0,
+      "line_exact": 0,
+      "calls": [
+        {
+          "index": 0,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Store.Close"
+          },
+          "is_error": false,
+          "duration_ms": 105,
+          "offset_ms": 1615,
+          "result_bytes": 149,
+          "result_lines": 9,
+          "candidate_files": [
+            "session/session.go"
+          ],
+          "reported_file_total": 1,
+          "revealed_targets": [
+            0
+          ]
+        },
+        {
+          "index": 1,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 6271,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 2,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 2,
+          "offset_ms": 9252,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 3,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 5,
+          "offset_ms": 12856,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 4,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 8,
+          "offset_ms": 18898,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 5,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 6,
+          "offset_ms": 21045,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 6,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 5,
+          "offset_ms": 26900,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 7,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 7,
+          "offset_ms": 28794,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 8,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 9,
+          "offset_ms": 35820,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 9,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 6,
+          "offset_ms": 38786,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 10,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 4,
+          "offset_ms": 47136,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 11,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 10,
+          "offset_ms": 47999,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 12,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 10,
+          "offset_ms": 51788,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 13,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 7,
+          "offset_ms": 68463,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 14,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 2,
+          "offset_ms": 69256,
+          "result_bytes": 36,
+          "result_lines": 2
+        },
+        {
+          "index": 15,
+          "tool": "symbols",
+          "args": {
+            "symbol": "Close"
+          },
+          "is_error": false,
+          "duration_ms": 6,
+          "offset_ms": 73318,
+          "result_bytes": 36,
+          "result_lines": 2
+        }
+      ]
+    }
+  ]
+}

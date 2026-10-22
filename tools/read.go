@@ -206,6 +206,15 @@ func (t *WriteTool) Execute(ctx agent.Context, args map[string]any) agent.Result
 		return agent.ErrorResult("resolve path: %v", err)
 	}
 
+	oldContent := ""
+	op := agent.MutationCreate
+	if data, err := os.ReadFile(path); err == nil {
+		op = agent.MutationModify
+		oldContent = string(data)
+	} else if !os.IsNotExist(err) {
+		return agent.ErrorResult("read %q: %v", raw, err)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return agent.ErrorResult("create parent directory: %v", err)
 	}
@@ -213,12 +222,29 @@ func (t *WriteTool) Execute(ctx agent.Context, args map[string]any) agent.Result
 		return agent.ErrorResult("write %q: %v", raw, err)
 	}
 
+	binary := !isTextContent(oldContent) || !isTextContent(content)
+	p := makePreview(raw, op, oldContent, content, binary)
+	ev := evidenceFromPreview(p, "success")
 	return agent.Result{
-		Text: fmt.Sprintf("Wrote %d bytes to %s.", len(content), raw),
+		Text:    fmt.Sprintf("Wrote %d bytes to %s.", len(content), raw),
+		Mutates: true,
 		Details: map[string]any{
-			"path":  raw,
-			"bytes": len(content),
-			"lines": strings.Count(content, "\n") + 1,
+			"path":              raw,
+			"bytes":             len(content),
+			"lines":             strings.Count(content, "\n") + 1,
+			"operation":         string(op),
+			"mutation":          string(op),
+			"mutation_type":     string(op),
+			"type":              string(op),
+			"op":                string(op),
+			"diff":              p.Diff,
+			"delta":             p.Delta,
+			"content_delta":     p.Delta,
+			"binary":            p.Binary,
+			"unsupported":       p.Unsupported,
+			"result":            "success",
+			"status":            "success",
+			"mutation_evidence": ev,
 		},
 	}
 }

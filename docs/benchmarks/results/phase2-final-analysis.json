@@ -1,0 +1,708 @@
+{
+ "dataset": {
+  "valid_cells": 81,
+  "planned_cells": 81,
+  "pre_fix_cells": 44,
+  "post_fix_cells": 37,
+  "outcome_distribution": {
+   "correct": 49,
+   "no_answer": 18,
+   "status_mismatch": 1,
+   "wrong_target": 4,
+   "correct_not_found": 9
+  }
+ },
+ "all_27_tasks": {
+  "A-lexical": {
+   "runs": 27,
+   "correct": 17,
+   "correct_rate": 0.63,
+   "false_positive_runs": 1,
+   "false_negative_runs": 1,
+   "wrong_target": 1,
+   "no_answer": 9,
+   "not_found_correct": "3/3",
+   "ambiguity_correct": "0/3",
+   "exact_coordinates_on_correct": 14,
+   "efficiency": {
+    "turns": {
+     "n": 27,
+     "q1": 4.0,
+     "median": 7.0,
+     "q3": 16.0,
+     "min": 3,
+     "max": 16
+    },
+    "discovery_calls": {
+     "n": 27,
+     "q1": 2.0,
+     "median": 4.0,
+     "q3": 6.5,
+     "min": 1,
+     "max": 14
+    },
+    "candidate_files": {
+     "n": 27,
+     "q1": 9.5,
+     "median": 12.0,
+     "q3": 29.5,
+     "min": 1,
+     "max": 208
+    },
+    "irrelevant_candidates": {
+     "n": 27,
+     "q1": 8.5,
+     "median": 11.0,
+     "q3": 28.0,
+     "min": 0,
+     "max": 208
+    },
+    "files_opened": {
+     "n": 27,
+     "q1": 1.0,
+     "median": 1.0,
+     "q3": 2.0,
+     "min": 0,
+     "max": 9
+    },
+    "lines_inspected": {
+     "n": 27,
+     "q1": 115.0,
+     "median": 280.0,
+     "q3": 508.0,
+     "min": 0,
+     "max": 3281
+    },
+    "context_bytes": {
+     "n": 27,
+     "q1": 5569.5,
+     "median": 15303.0,
+     "q3": 19730.5,
+     "min": 920,
+     "max": 128180
+    },
+    "input_tokens": {
+     "n": 27,
+     "q1": 8242.0,
+     "median": 11126.0,
+     "q3": 39438.5,
+     "min": 2611,
+     "max": 325231
+    },
+    "output_tokens": {
+     "n": 27,
+     "q1": 526.0,
+     "median": 703.0,
+     "q3": 927.0,
+     "min": 252,
+     "max": 3083
+    },
+    "duration_ms": {
+     "n": 27,
+     "q1": 20575.5,
+     "median": 43488.0,
+     "q3": 61324.5,
+     "min": 6269,
+     "max": 92911
+    }
+   },
+   "precision": {
+    "candidate_files_total": 836,
+    "irrelevant_candidates_total": 796,
+    "relevant_candidates_total": 40,
+    "ambiguous_status_runs": 0,
+    "truncated_status_runs": 0
+   }
+  },
+  "B-structural": {
+   "runs": 27,
+   "correct": 20,
+   "correct_rate": 0.741,
+   "false_positive_runs": 1,
+   "false_negative_runs": 1,
+   "wrong_target": 1,
+   "no_answer": 6,
+   "not_found_correct": "3/3",
+   "ambiguity_correct": "2/3",
+   "exact_coordinates_on_correct": 17,
+   "efficiency": {
+    "turns": {
+     "n": 27,
+     "q1": 2.5,
+     "median": 3.0,
+     "q3": 10.5,
+     "min": 2,
+     "max": 16
+    },
+    "discovery_calls": {
+     "n": 27,
+     "q1": 1.0,
+     "median": 1.0,
+     "q3": 5.0,
+     "min": 1,
+     "max": 16
+    },
+    "candidate_files": {
+     "n": 27,
+     "q1": 1.0,
+     "median": 2.0,
+     "q3": 23.5,
+     "min": 0,
+     "max": 63
+    },
+    "irrelevant_candidates": {
+     "n": 27,
+     "q1": 0.0,
+     "median": 0.0,
+     "q3": 18.5,
+     "min": 0,
+     "max": 62
+    },
+    "files_opened": {
+     "n": 27,
+     "q1": 0.0,
+     "median": 1.0,
+     "q3": 1.0,
+     "min": 0,
+     "max": 10
+    },
+    "lines_inspected": {
+     "n": 27,
+     "q1": 0.0,
+     "median": 50.0,
+     "q3": 448.5,
+     "min": 0,
+     "max": 3031
+    },
+    "context_bytes": {
+     "n": 27,
+     "q1": 439.5,
+     "median": 2147.0,
+     "q3": 18579.5,
+     "min": 36,
+     "max": 115275
+    },
+    "input_tokens": {
+     "n": 27,
+     "q1": 1709.0,
+     "median": 5110.0,
+     "q3": 17683.0,
+     "min": 1251,
+     "max": 204276
+    },
+    "output_tokens": {
+     "n": 27,
+     "q1": 330.5,
+     "median": 431.0,
+     "q3": 603.0,
+     "min": 140,
+     "max": 1920
+    },
+    "duration_ms": {
+     "n": 27,
+     "q1": 10543.5,
+     "median": 18300.0,
+     "q3": 39884.5,
+     "min": 4425,
+     "max": 122004
+    }
+   },
+   "precision": {
+    "candidate_files_total": 349,
+    "irrelevant_candidates_total": 319,
+    "relevant_candidates_total": 30,
+    "ambiguous_status_runs": 2,
+    "truncated_status_runs": 0
+   }
+  },
+  "C-hybrid": {
+   "runs": 27,
+   "correct": 21,
+   "correct_rate": 0.778,
+   "false_positive_runs": 2,
+   "false_negative_runs": 2,
+   "wrong_target": 2,
+   "no_answer": 3,
+   "not_found_correct": "3/3",
+   "ambiguity_correct": "2/3",
+   "exact_coordinates_on_correct": 18,
+   "efficiency": {
+    "turns": {
+     "n": 27,
+     "q1": 3.0,
+     "median": 3.0,
+     "q3": 5.5,
+     "min": 2,
+     "max": 16
+    },
+    "discovery_calls": {
+     "n": 27,
+     "q1": 1.0,
+     "median": 2.0,
+     "q3": 3.0,
+     "min": 1,
+     "max": 15
+    },
+    "candidate_files": {
+     "n": 27,
+     "q1": 1.0,
+     "median": 2.0,
+     "q3": 8.5,
+     "min": 0,
+     "max": 47
+    },
+    "irrelevant_candidates": {
+     "n": 27,
+     "q1": 0.0,
+     "median": 1.0,
+     "q3": 8.0,
+     "min": 0,
+     "max": 46
+    },
+    "files_opened": {
+     "n": 27,
+     "q1": 0.0,
+     "median": 1.0,
+     "q3": 1.0,
+     "min": 0,
+     "max": 3
+    },
+    "lines_inspected": {
+     "n": 27,
+     "q1": 0.0,
+     "median": 72.0,
+     "q3": 444.5,
+     "min": 0,
+     "max": 2220
+    },
+    "context_bytes": {
+     "n": 27,
+     "q1": 271.0,
+     "median": 4092.0,
+     "q3": 18400.0,
+     "min": 53,
+     "max": 94976
+    },
+    "input_tokens": {
+     "n": 27,
+     "q1": 3010.5,
+     "median": 5032.0,
+     "q3": 14012.0,
+     "min": 1966,
+     "max": 334313
+    },
+    "output_tokens": {
+     "n": 27,
+     "q1": 364.0,
+     "median": 494.0,
+     "q3": 775.5,
+     "min": 136,
+     "max": 1657
+    },
+    "duration_ms": {
+     "n": 27,
+     "q1": 11374.5,
+     "median": 18808.0,
+     "q3": 28198.5,
+     "min": 3835,
+     "max": 72600
+    }
+   },
+   "precision": {
+    "candidate_files_total": 228,
+    "irrelevant_candidates_total": 188,
+    "relevant_candidates_total": 40,
+    "ambiguous_status_runs": 2,
+    "truncated_status_runs": 0
+   }
+  }
+ },
+ "original_17_tasks": {
+  "A-lexical": {
+   "runs": 17,
+   "correct": 10,
+   "correct_rate": 0.588,
+   "false_positive_runs": 1,
+   "false_negative_runs": 1,
+   "wrong_target": 1,
+   "no_answer": 6,
+   "not_found_correct": "1/1",
+   "ambiguity_correct": "0/2",
+   "exact_coordinates_on_correct": 9,
+   "efficiency": {
+    "turns": {
+     "n": 17,
+     "q1": 4.0,
+     "median": 6.0,
+     "q3": 16.0,
+     "min": 3,
+     "max": 16
+    },
+    "discovery_calls": {
+     "n": 17,
+     "q1": 2.0,
+     "median": 4.0,
+     "q3": 6.0,
+     "min": 1,
+     "max": 14
+    },
+    "candidate_files": {
+     "n": 17,
+     "q1": 9.0,
+     "median": 12.0,
+     "q3": 26.0,
+     "min": 1,
+     "max": 62
+    },
+    "irrelevant_candidates": {
+     "n": 17,
+     "q1": 8.0,
+     "median": 10.0,
+     "q3": 25.0,
+     "min": 0,
+     "max": 49
+    },
+    "files_opened": {
+     "n": 17,
+     "q1": 1.0,
+     "median": 1.0,
+     "q3": 2.0,
+     "min": 1,
+     "max": 9
+    },
+    "lines_inspected": {
+     "n": 17,
+     "q1": 210.0,
+     "median": 305.0,
+     "q3": 624.0,
+     "min": 10,
+     "max": 3281
+    },
+    "context_bytes": {
+     "n": 17,
+     "q1": 12075.0,
+     "median": 17648.0,
+     "q3": 26761.0,
+     "min": 920,
+     "max": 128180
+    },
+    "input_tokens": {
+     "n": 17,
+     "q1": 8248.0,
+     "median": 15271.0,
+     "q3": 45901.0,
+     "min": 2611,
+     "max": 325231
+    },
+    "output_tokens": {
+     "n": 17,
+     "q1": 578.0,
+     "median": 685.0,
+     "q3": 963.0,
+     "min": 389,
+     "max": 1807
+    },
+    "duration_ms": {
+     "n": 17,
+     "q1": 18351.0,
+     "median": 21421.0,
+     "q3": 48870.0,
+     "min": 6269,
+     "max": 74701
+    }
+   },
+   "precision": {
+    "candidate_files_total": 305,
+    "irrelevant_candidates_total": 275,
+    "relevant_candidates_total": 30,
+    "ambiguous_status_runs": 0,
+    "truncated_status_runs": 0
+   }
+  },
+  "B-structural": {
+   "runs": 17,
+   "correct": 13,
+   "correct_rate": 0.765,
+   "false_positive_runs": 0,
+   "false_negative_runs": 0,
+   "wrong_target": 0,
+   "no_answer": 4,
+   "not_found_correct": "1/1",
+   "ambiguity_correct": "1/2",
+   "exact_coordinates_on_correct": 12,
+   "efficiency": {
+    "turns": {
+     "n": 17,
+     "q1": 3.0,
+     "median": 4.0,
+     "q3": 11.0,
+     "min": 2,
+     "max": 16
+    },
+    "discovery_calls": {
+     "n": 17,
+     "q1": 1.0,
+     "median": 2.0,
+     "q3": 6.0,
+     "min": 1,
+     "max": 15
+    },
+    "candidate_files": {
+     "n": 17,
+     "q1": 1.0,
+     "median": 11.0,
+     "q3": 31.0,
+     "min": 0,
+     "max": 63
+    },
+    "irrelevant_candidates": {
+     "n": 17,
+     "q1": 0.0,
+     "median": 11.0,
+     "q3": 30.0,
+     "min": 0,
+     "max": 62
+    },
+    "files_opened": {
+     "n": 17,
+     "q1": 1.0,
+     "median": 1.0,
+     "q3": 1.0,
+     "min": 0,
+     "max": 10
+    },
+    "lines_inspected": {
+     "n": 17,
+     "q1": 10.0,
+     "median": 210.0,
+     "q3": 481.0,
+     "min": 0,
+     "max": 3031
+    },
+    "context_bytes": {
+     "n": 17,
+     "q1": 690.0,
+     "median": 9674.0,
+     "q3": 26286.0,
+     "min": 36,
+     "max": 115275
+    },
+    "input_tokens": {
+     "n": 17,
+     "q1": 2129.0,
+     "median": 7704.0,
+     "q3": 22414.0,
+     "min": 1284,
+     "max": 204276
+    },
+    "output_tokens": {
+     "n": 17,
+     "q1": 359.0,
+     "median": 524.0,
+     "q3": 683.0,
+     "min": 174,
+     "max": 1473
+    },
+    "duration_ms": {
+     "n": 17,
+     "q1": 10461.0,
+     "median": 16546.0,
+     "q3": 41402.0,
+     "min": 4425,
+     "max": 61801
+    }
+   },
+   "precision": {
+    "candidate_files_total": 288,
+    "irrelevant_candidates_total": 264,
+    "relevant_candidates_total": 24,
+    "ambiguous_status_runs": 1,
+    "truncated_status_runs": 0
+   }
+  },
+  "C-hybrid": {
+   "runs": 17,
+   "correct": 13,
+   "correct_rate": 0.765,
+   "false_positive_runs": 0,
+   "false_negative_runs": 0,
+   "wrong_target": 0,
+   "no_answer": 3,
+   "not_found_correct": "1/1",
+   "ambiguity_correct": "1/2",
+   "exact_coordinates_on_correct": 12,
+   "efficiency": {
+    "turns": {
+     "n": 17,
+     "q1": 3.0,
+     "median": 4.0,
+     "q3": 7.0,
+     "min": 2,
+     "max": 16
+    },
+    "discovery_calls": {
+     "n": 17,
+     "q1": 1.0,
+     "median": 2.0,
+     "q3": 4.0,
+     "min": 1,
+     "max": 15
+    },
+    "candidate_files": {
+     "n": 17,
+     "q1": 1.0,
+     "median": 3.0,
+     "q3": 15.0,
+     "min": 1,
+     "max": 47
+    },
+    "irrelevant_candidates": {
+     "n": 17,
+     "q1": 0.0,
+     "median": 1.0,
+     "q3": 10.0,
+     "min": 0,
+     "max": 46
+    },
+    "files_opened": {
+     "n": 17,
+     "q1": 0.0,
+     "median": 1.0,
+     "q3": 1.0,
+     "min": 0,
+     "max": 3
+    },
+    "lines_inspected": {
+     "n": 17,
+     "q1": 0.0,
+     "median": 100.0,
+     "q3": 556.0,
+     "min": 0,
+     "max": 2220
+    },
+    "context_bytes": {
+     "n": 17,
+     "q1": 601.0,
+     "median": 10112.0,
+     "q3": 23599.0,
+     "min": 140,
+     "max": 94976
+    },
+    "input_tokens": {
+     "n": 17,
+     "q1": 3101.0,
+     "median": 9091.0,
+     "q3": 27388.0,
+     "min": 1966,
+     "max": 334313
+    },
+    "output_tokens": {
+     "n": 17,
+     "q1": 367.0,
+     "median": 523.0,
+     "q3": 797.0,
+     "min": 262,
+     "max": 1657
+    },
+    "duration_ms": {
+     "n": 17,
+     "q1": 7601.0,
+     "median": 15590.0,
+     "q3": 40871.0,
+     "min": 3835,
+     "max": 64060
+    }
+   },
+   "precision": {
+    "candidate_files_total": 182,
+    "irrelevant_candidates_total": 152,
+    "relevant_candidates_total": 30,
+    "ambiguous_status_runs": 1,
+    "truncated_status_runs": 0
+   }
+  }
+ },
+ "fix_affected_cells": [
+  {
+   "task": "A1-exact-new-symbols-tool",
+   "track": "A-lexical",
+   "pre_fix": "correct",
+   "post_fix": "correct",
+   "pre_fix_candidates": 2,
+   "post_fix_candidates": 3,
+   "outcome_changed": false
+  },
+  {
+   "task": "A2-exact-index-lookup",
+   "track": "A-lexical",
+   "pre_fix": "correct",
+   "post_fix": "correct",
+   "pre_fix_candidates": 20,
+   "post_fix_candidates": 21,
+   "outcome_changed": false
+  },
+  {
+   "task": "B1-ambiguous-classify",
+   "track": "A-lexical",
+   "pre_fix": "correct",
+   "post_fix": "no_answer",
+   "pre_fix_candidates": 10,
+   "post_fix_candidates": 12,
+   "outcome_changed": true
+  },
+  {
+   "task": "D2-mod-tool-registration",
+   "track": "A-lexical",
+   "pre_fix": "no_answer",
+   "post_fix": "no_answer",
+   "pre_fix_candidates": 23,
+   "post_fix_candidates": 11,
+   "outcome_changed": false
+  },
+  {
+   "task": "D2-mod-tool-registration",
+   "track": "C-hybrid",
+   "pre_fix": "no_answer",
+   "post_fix": "no_answer",
+   "pre_fix_candidates": 45,
+   "post_fix_candidates": 27,
+   "outcome_changed": false
+  },
+  {
+   "task": "D3-mod-grep-single-file-cap",
+   "track": "A-lexical",
+   "pre_fix": "no_answer",
+   "post_fix": "correct",
+   "pre_fix_candidates": 37,
+   "post_fix_candidates": 30,
+   "outcome_changed": true
+  },
+  {
+   "task": "D4-mod-prompt-identity",
+   "track": "A-lexical",
+   "pre_fix": "correct",
+   "post_fix": "correct",
+   "pre_fix_candidates": 21,
+   "post_fix_candidates": 26,
+   "outcome_changed": false
+  },
+  {
+   "task": "E1-cross-grep-def-and-registration",
+   "track": "A-lexical",
+   "pre_fix": "no_answer",
+   "post_fix": "no_answer",
+   "pre_fix_candidates": 46,
+   "post_fix_candidates": 47,
+   "outcome_changed": false
+  },
+  {
+   "task": "E1-cross-grep-def-and-registration",
+   "track": "C-hybrid",
+   "pre_fix": "no_answer",
+   "post_fix": "no_answer",
+   "pre_fix_candidates": 27,
+   "post_fix_candidates": 47,
+   "outcome_changed": false
+  }
+ ]
+}

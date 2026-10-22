@@ -53,6 +53,14 @@ type Approval struct {
 	Reason string
 	// Policy overrides the gate's default for this tier when set.
 	Policy ApprovalPolicy
+	// Preview is the human-readable intended mutation, when available.
+	Preview string
+	// Diff mirrors Preview.
+	Diff string
+	// MutationPreview is the structured intended mutation.
+	MutationPreview MutationPreview
+	// PreviewMutation mirrors MutationPreview.
+	PreviewMutation MutationPreview
 }
 
 // Result is what a tool returns.
@@ -63,6 +71,20 @@ type Result struct {
 	Details any
 	// IsError marks a non-throwing failure.
 	IsError bool
+	// Mutates reports that the execution definitely changed the workspace. It
+	// is set by the tool implementation from what it actually did, never from
+	// model text, and is the runtime evidence completion uses to decide whether
+	// a change still needs verification.
+	Mutates bool
+	// Executes reports that the tool started an arbitrary process. Such a
+	// process may have changed the workspace even when the runtime cannot prove
+	// it, so a mutation objective treats a successful execution as requiring a
+	// later verification. It is not a claim that a change happened.
+	Executes bool
+	// Verifies reports that the execution successfully checked the workspace
+	// (tests, build, vet). It is evidence for completion, not authority: a
+	// verification cannot grant a capability or stand in for a mutation.
+	Verifies bool
 	// Useless marks a result that adds nothing to context and may be elided by
 	// compaction (zero matches, a timeout). Ignored when IsError is set.
 	Useless bool
@@ -85,6 +107,11 @@ type Context struct {
 	SessionID string
 	// Approve reports whether the caller pre-approved this invocation.
 	Approved bool
+	// ReadOnly reports that the authorization decision forbids workspace
+	// writes. An execution tool must enforce it independently of its
+	// arguments, or refuse to run. It is derived from the authority in force,
+	// not from a command-text guess.
+	ReadOnly bool
 	// OnProgress lets a long tool publish partial output.
 	OnProgress func(Result)
 }

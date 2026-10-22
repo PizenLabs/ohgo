@@ -128,22 +128,66 @@ func ClassifyPrediction(text string) Prediction {
 	if request == "" {
 		return Prediction{Intent: IntentRead, Strength: StrengthAmbiguous}
 	}
-	head, _, _ := strings.Cut(request, " ")
+	clauses := splitClauses(request)
 
 	// The evidence each intent actually has, independent of precedence.
+	// A request is evaluated as a whole objective, not only by its first
+	// verb: a leading read/discovery clause must not mask a later explicit
+	// mutation clause ("check this project and write README.md"). Clause
+	// heads are therefore considered for the mutation/investigation intents,
+	// while a read signal is taken only from the leading clause so an
+	// informational opener is not fabricated from a later noun phrase.
 	read := evidenceNone
-	if readHeads[head] {
+	if len(clauses) > 0 && headMatches(readHeads, firstToken(clauses[0])) {
 		read = evidenceHead
 	}
-	investigate := phraseEvidence(investigateHeads[head], containsPhrase(request, investigatePhrases))
-	execute := phraseEvidence(executeHeads[head], containsPhrase(request, executePhrases))
+	investigateHead := false
+	executeHead := false
+	// executeClause records a mutation-bearing phrase in a later clause. A
+	// read opener must not hide "inspect X and make sure Y": the phrase is the
+	// only mutation signal in that clause, so a head-only rule would drop it.
+	executeClause := false
+	for i, clause := range clauses {
+		token := firstToken(clause)
+		if headMatches(investigateHeads, token) {
+			investigateHead = true
+		}
+		if headMatches(executeHeads, token) {
+			executeHead = true
+		}
+		if i > 0 && !headMatches(readHeads, token) && containsPhrase(clause, executePhrases) {
+			executeClause = true
+		}
+	}
+	investigate := phraseEvidence(investigateHead, containsPhrase(request, investigatePhrases))
+	execute := phraseEvidence(executeHead, containsPhrase(request, executePhrases) || executeClause)
 
-	// Precedence: a question head is informational; investigate before
-	// execute (FUZZ is the lower authority when a request asks for both); an
-	// unmatched request narrows to READ.
+	// Precedence: investigate before execute (FUZZ is the lower authority
+	// when a request asks for both); an explicit mutation clause overrides a
+	// leading read/discovery clause, but a read opener still beats a merely
+	// corroborating execution phrase; an unmatched request narrows to READ.
 	winner := evidenceNone
 	intent := IntentRead
+	// Precedence combines the authority rules without a cycle: an explicit
+	// mutation clause beats a leading read/discovery clause, but a mixed
+	// investigate signal still lowers authority to FUZZ; a read opener with
+	// no mutation clause keeps READ, even over an incidental investigative
+	// phrase such as "edge case".
 	switch {
+	case executeHead:
+		if investigate != evidenceNone {
+			intent, winner = IntentInvestigate, investigate
+		} else {
+			intent, winner = IntentExecute, execute
+		}
+	case read != evidenceNone && !executeClause:
+		intent, winner = IntentRead, read
+	case executeClause:
+		if investigate != evidenceNone {
+			intent, winner = IntentInvestigate, investigate
+		} else {
+			intent, winner = IntentExecute, execute
+		}
 	case read != evidenceNone:
 		intent, winner = IntentRead, read
 	case investigate != evidenceNone:
@@ -443,7 +487,8 @@ var executeHeads = map[string]bool{
 	"init": true, "initialize": true, "bootstrap": true, "scaffold": true,
 	"vendor": true, "pin": true, "port": true, "convert": true,
 	"seed": true, "compile": true, "bundle": true, "connect": true,
-	"disconnect": true, "set": true,
+	"disconnect": true, "set": true, "tidy": true, "ensure": true,
+	"organize": true, "organise": true,
 }
 
 // investigatePhrases are multi-word investigative signals that may appear
@@ -481,4 +526,154 @@ var executePhrases = []string{
 	"make the change", "make the fix", "make it work",
 	"commit the", "revert the", "replace the", "replace it", "patch the",
 	"bump the", "compile the", "build the", "install the", "migrate the",
+	"make sure", "tidy up", "clean up",
+}
+
+// mutationHeads are the leading verbs that ask for a repository change rather
+// than merely execution. The set is deliberately narrower than executeHeads:
+// "run the tests" is EXECUTE for routing but not a mutation objective, while
+// "fix the tests" is both.
+var mutationHeads = map[string]bool{
+	"implement": true, "fix": true, "modify": true, "change": true,
+	"refactor": true, "restructure": true, "create": true, "add": true,
+	"remove": true, "delete": true, "rename": true, "move": true,
+	"apply": true, "write": true, "patch": true, "edit": true,
+	"update": true, "upgrade": true, "install": true, "uninstall": true,
+	"migrate": true, "commit": true, "revert": true, "replace": true,
+	"introduce": true, "generate": true, "rewrite": true, "drop": true,
+	"merge": true, "publish": true, "deploy": true, "bump": true,
+	"wire": true, "format": true, "configure": true, "enable": true,
+	"disable": true, "reset": true, "clean": true, "tidy": true,
+	"init": true, "initialize": true, "bootstrap": true, "scaffold": true,
+	"vendor": true, "pin": true, "port": true, "convert": true,
+	"seed": true, "set": true, "organize": true, "organise": true,
+	"ensure": true,
+}
+
+// mutationPhrases are the multi-word forms that carry a change request even
+// when their head is not a mutation verb ("make sure", "tidy up").
+var mutationPhrases = []string{
+	"make sure", "tidy up", "clean up",
+	"fix it", "fix this", "fix that", "fix the", "fix a", "fix my",
+	"implement the", "implement a", "implement it", "implement this",
+	"refactor the", "refactor this",
+	"add a", "add the", "add it", "add support",
+	"remove the", "remove it", "delete the", "delete it",
+	"rename the", "move the", "apply the", "apply it", "apply this",
+	"write the", "write a", "write it", "create a", "create the", "create it",
+	"update the", "update it", "change the", "change it", "change this",
+	"make the change", "make the fix", "make it work",
+	"commit the", "revert the", "replace the", "replace it", "patch the",
+	"bump the", "install the", "migrate the",
+}
+
+// RequestsMutation reports whether a request clearly contains a clause that
+// asks for a repository change.
+//
+// It is a finite, deterministic contract, not natural-language understanding.
+// A clause whose head is a read verb is not promoted by a phrase alone, so
+// "explain how to make sure the tests pass" stays informational while
+// "inspect X and make sure Y" does not lose its change request. Ambiguous
+// wording is false: completion must not invent an objective the user did not
+// state.
+func RequestsMutation(text string) bool {
+	request := stripPoliteness(normalizeRequest(text))
+	if request == "" {
+		return false
+	}
+	for _, clause := range splitClauses(request) {
+		head := firstToken(clause)
+		if headMatches(mutationHeads, head) {
+			return true
+		}
+		if !headMatches(readHeads, head) && containsPhrase(clause, mutationPhrases) {
+			return true
+		}
+	}
+	return false
+}
+
+// headMatches reports whether token is a recognised head verb, including
+// common inflected forms (plurals, past tense, gerunds/participles) of the
+// heads in the set. The inflections are derived, not enumerated, so a new
+// head verb gains its forms automatically and no verb is special-cased.
+func headMatches(heads map[string]bool, token string) bool {
+	if heads[token] {
+		return true
+	}
+	for head := range heads {
+		for _, form := range headForms(head) {
+			if form == token {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// headForms returns the inflected forms of a head verb that the classifier
+// treats as the same intent-bearing verb.
+func headForms(head string) []string {
+	forms := []string{head}
+	forms = append(forms, head+"s", head+"es")
+	forms = append(forms, head+"ed", head+"d")
+	forms = append(forms, head+"ing")
+	if strings.HasSuffix(head, "e") && len(head) > 1 {
+		forms = append(forms, head[:len(head)-1]+"ing")
+	}
+	// Double the final consonant for short vowel-consonant verbs such as
+	// run -> running, so gerund objectives are not missed.
+	if len(head) >= 3 {
+		last := head[len(head)-1]
+		mid := head[len(head)-2]
+		if isVowel(mid) && !isVowel(last) && last != 'w' && last != 'x' && last != 'y' {
+			forms = append(forms, head+string(last)+"ing")
+		}
+	}
+	return forms
+}
+
+func isVowel(r byte) bool {
+	switch r {
+	case 'a', 'e', 'i', 'o', 'u':
+		return true
+	}
+	return false
+}
+
+// splitClauses breaks a normalized request into its coordinated objectives so
+// a later mutation clause is visible even when the first clause is a
+// read/discovery verb. Splitting is deliberately limited to explicit
+// coordinators: a bare "and" inside a noun phrase is still a coordinator, but
+// subordination ("how to ...") is not split, so informational requests keep
+// their read opener.
+func splitClauses(request string) []string {
+	replaced := request
+	for _, sep := range []string{" and ", " then ", " plus ", " & "} {
+		replaced = strings.ReplaceAll(replaced, sep, ",")
+	}
+	parts := strings.Split(replaced, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		// normalizeRequest has already removed the comma that " and then "
+		// would otherwise leave behind, so a sequencing word can survive as the
+		// clause's head and hide its verb ("inspect X and then add Y").
+		part = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(part), "then "))
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	if len(out) == 0 {
+		return []string{request}
+	}
+	return out
+}
+
+// firstToken returns the first whitespace-delimited token of s.
+func firstToken(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
