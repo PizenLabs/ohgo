@@ -2,6 +2,10 @@ package tools
 
 import (
 	"path"
+	"strings"
+
+	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/contract"
 )
 
 // IsVerificationCommand reports whether a successful shell command is a
@@ -13,6 +17,16 @@ import (
 // be the check, which keeps shell operators from masking a failure
 // ("go test ./... || true" is not verification).
 func IsVerificationCommand(command string) bool {
+	return VerificationFor(command) != nil
+}
+
+// VerificationFor returns the structured verification evidence for a command,
+// or nil when the command is not a recognised check.
+//
+// The scope comes from the command's own package arguments, not from the
+// user's request: evidence must describe what ran, never what would have been
+// convenient to have run.
+func VerificationFor(command string) *agent.VerificationEvidence {
 	segments := shellSegments(command)
 	for i := len(segments) - 1; i >= 0; i-- {
 		words := shellWords(segments[i])
@@ -20,9 +34,151 @@ func IsVerificationCommand(command string) bool {
 		if program == "" {
 			continue
 		}
-		return verificationProgram(path.Base(program), args)
+		base := path.Base(program)
+		if !verificationProgram(base, args) {
+			return nil
+		}
+		evidence := &agent.VerificationEvidence{
+			Command: command,
+			Check:   verificationCheck(base, args),
+		}
+		if base == "go" {
+			evidence.Scopes = goVerificationScopes(args)
+		}
+		return evidence
 	}
-	return false
+	return nil
+}
+
+// verificationCheck reports what kind of check a recognised command performs.
+func verificationCheck(program string, args []string) contract.VerificationCheck {
+	sub := firstNonFlag(args)
+	switch program {
+	case "go":
+		switch sub {
+		case "test":
+			return contract.CheckTest
+		case "build":
+			return contract.CheckBuild
+		case "vet":
+			return contract.CheckVet
+		}
+	case "cargo":
+		switch sub {
+		case "test":
+			return contract.CheckTest
+		case "build", "check":
+			return contract.CheckBuild
+		}
+	case "npm", "pnpm", "yarn", "bun":
+		if sub == "test" {
+			return contract.CheckTest
+		}
+		if sub == "build" {
+			return contract.CheckBuild
+		}
+		if sub == "run" {
+			next := firstNonFlagAfter(args, "run")
+			if next == "test" {
+				return contract.CheckTest
+			}
+			if next == "build" {
+				return contract.CheckBuild
+			}
+		}
+	case "pytest", "jest", "vitest", "rspec", "phpunit":
+		return contract.CheckTest
+	case "python", "python3":
+		if pythonCheck(args) {
+			return contract.CheckTest
+		}
+	case "make":
+		switch sub {
+		case "test":
+			return contract.CheckTest
+		case "build":
+			return contract.CheckBuild
+		case "check":
+			return contract.CheckVet
+		}
+	case "mvn", "gradle", "gradlew":
+		switch sub {
+		case "test", "verify":
+			return contract.CheckTest
+		case "build":
+			return contract.CheckBuild
+		}
+	case "dotnet", "swift", "deno":
+		if sub == "test" {
+			return contract.CheckTest
+		}
+		if sub == "build" || sub == "check" {
+			return contract.CheckBuild
+		}
+	case "mix":
+		if sub == "test" {
+			return contract.CheckTest
+		}
+	case "tsc":
+		return contract.CheckBuild
+	case "staticcheck", "golangci-lint":
+		return contract.CheckVet
+	}
+	return contract.CheckAny
+}
+
+// goVerificationScopes reads the package directories from a go command.
+//
+// Only explicit path-like arguments are accepted. Bare package names are not
+// interpreted because a flag value is indistinguishable from a package name
+// without duplicating the go command-line grammar; an unrecognised scope falls
+// back to the module root, which is conservative for a target in a subpackage.
+func goVerificationScopes(args []string) []agent.VerificationScope {
+	sub := firstNonFlag(args)
+	start := 0
+	for i, arg := range args {
+		if arg == sub {
+			start = i + 1
+			break
+		}
+	}
+	var scopes []agent.VerificationScope
+	for _, arg := range args[start:] {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if arg == "and" || arg == "then" {
+			break
+		}
+		if arg == "..." || arg == "./..." || strings.HasSuffix(arg, "/...") {
+			if arg == "..." || arg == "./..." {
+				return []agent.VerificationScope{{All: true}}
+			}
+			scope := strings.TrimPrefix(strings.TrimSuffix(arg, "/..."), "./")
+			if scope != "" && !strings.Contains(scope, "..") {
+				scopes = append(scopes, agent.VerificationScope{Path: scope, Recursive: true})
+			}
+			continue
+		}
+		if !strings.HasPrefix(arg, ".") && !strings.Contains(arg, "/") {
+			continue
+		}
+		scope := strings.TrimPrefix(arg, "./")
+		scope = strings.Trim(scope, "/")
+		if scope == "" || scope == "." {
+			scopes = append(scopes, agent.VerificationScope{Path: "."})
+			continue
+		}
+		if strings.Contains(scope, "..") {
+			continue
+		}
+		scopes = append(scopes, agent.VerificationScope{Path: scope})
+	}
+	if len(scopes) == 0 {
+		// "go test" with no package argument checks the current package.
+		scopes = append(scopes, agent.VerificationScope{Path: "."})
+	}
+	return scopes
 }
 
 // verificationProgram reports whether program, invoked with args, is a

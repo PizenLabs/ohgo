@@ -183,10 +183,11 @@ func (t *TaskTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 
 	out := agent.Result{
-		Text:     body,
-		Details:  result,
-		Mutates:  result.Mutated,
-		Verifies: result.Verified,
+		Text:         body,
+		Details:      result,
+		Mutates:      result.Mutated,
+		Verifies:     result.Verified,
+		Verification: result.Verification,
 	}
 	// A child that stopped without completion evidence is not a successful
 	// delegation. The parent sees the child's answer plus an explicit error, so

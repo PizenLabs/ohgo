@@ -102,6 +102,53 @@ func (t *SymbolsTool) index() (*ast.Index, error) {
 	return t.idx, nil
 }
 
+// LocateSymbol implements agent.StructuralResolver over the cached index.
+//
+// The completion verifier shares this tool's index rather than building a
+// second coordinate store. The lookup is exact, matching the symbols tool's
+// own contract, so a completion check cannot be more permissive than the
+// coordinate the user named.
+func (t *SymbolsTool) LocateSymbol(name string) ([]agent.SymbolLocation, error) {
+	idx, err := t.index()
+	if err != nil {
+		return nil, err
+	}
+	matches, err := idx.Lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	return symbolLocations(matches), nil
+}
+
+// LocatePackage implements agent.StructuralResolver over the cached index.
+func (t *SymbolsTool) LocatePackage(name string) ([]agent.SymbolLocation, error) {
+	idx, err := t.index()
+	if err != nil {
+		return nil, err
+	}
+	matches, err := idx.Package(name)
+	if err != nil {
+		return nil, err
+	}
+	return symbolLocations(matches), nil
+}
+
+// symbolLocations projects index matches to the verifier's small coordinate
+// type. The index remains the owner of the declaration data.
+func symbolLocations(matches []ast.Match) []agent.SymbolLocation {
+	out := make([]agent.SymbolLocation, 0, len(matches))
+	for _, match := range matches {
+		out = append(out, agent.SymbolLocation{
+			Path:          match.Path,
+			Symbol:        match.Name,
+			QualifiedName: match.QualifiedName,
+			Line:          match.Line,
+			EndLine:       match.EndLine,
+		})
+	}
+	return out
+}
+
 // Execute implements agent.Tool.
 func (t *SymbolsTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	if err := checkCancelled(ctx.Ctx); err != nil {

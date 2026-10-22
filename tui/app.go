@@ -191,6 +191,13 @@ type Program struct {
 	// mentionsLoaded records that the "@" roster was installed, so a session
 	// that references files walks the workspace at most once.
 	mentionsLoaded bool
+	// completionRoot and completionResolver provide the pre-run target
+	// evidence for a mutation request. Nil means the program was built without
+	// semantic completion wiring; a targeted mutation then becomes reviewable
+	// rather than being trusted. They are installed by the host, which owns
+	// the workspace root and the existing symbol index.
+	completionRoot     string
+	completionResolver agent.StructuralResolver
 	// lastJobs remembers the listed jobs so choosing one can show its
 	// output. It is only touched from the update goroutine.
 	lastJobs []JobItem
@@ -3456,11 +3463,16 @@ func (p *Program) runTurn(text string) {
 	}
 	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), Turn: turn})
 
+	// The completion contract is extracted from the user's own text before any
+	// execution. It is the task's objective and the evidence boundary; the
+	// model cannot add to or reinterpret it.
+	intent := workspace.BuildIntentContract(text)
+
 	// A turn is a task boundary: record (or resume) the durable task before
 	// any provider call, so an interruption during this turn has something to
 	// checkpoint. Bookkeeping only — it neither gates nor authorizes the turn.
 	if p.task.Begin != nil {
-		p.PublishTask(p.task.Begin(text))
+		p.PublishTask(p.task.Begin(intent.Objective))
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3557,6 +3569,14 @@ func (p *Program) runTurn(text string) {
 	}
 	p.loop.SetSystemContext(blocks)
 
+	// The completion contract's targets were captured before execution; the
+	// snapshot is the pre-run state the evaluator compares against. No second
+	// repository index is built: the resolver is the symbols tool's own index.
+	var targetSnapshot *agent.TargetSnapshot
+	if intent.Kind == workspace.ObjectiveMutation && p.completionRoot != "" {
+		targetSnapshot = agent.CaptureTargetsContext(ctx, p.completionRoot, intent, p.completionResolver)
+	}
+
 	turns, err := p.loop.Run(ctx, request)
 
 	p.mu.Lock()
@@ -3584,9 +3604,10 @@ func (p *Program) runTurn(text string) {
 
 	// Record the task outcome at the turn boundary from runtime evidence, not
 	// from the model's stop alone. A clean finish is not proof that a requested
-	// change happened or that it was verified; a failure is not erased by a
-	// plausible closing sentence.
-	action, reason := turnTaskOutcome(err, turns, workspace.RequestsMutation(text))
+	// change happened, that it happened to the named target, or that the
+	// verification covered it; a failure is not erased by a plausible closing
+	// sentence.
+	action, reason := turnTaskOutcome(err, turns, intent, targetSnapshot, p.completionResolver)
 	switch action {
 	case taskActionComplete:
 		if p.task.Complete != nil {
@@ -3760,6 +3781,17 @@ func (p *Program) SetMentionLister(lister func() []string) {
 // affordance for embedders and tests that do not own a workspace.
 func (p *Program) SetMentionReader(reader func(path string) (string, error)) {
 	p.readMention = reader
+}
+
+// SetCompletionContext installs the workspace root and structural resolver
+// used to capture pre-run evidence for a mutation request.
+//
+// It must be called before any turn runs. A nil resolver leaves symbol and
+// package targets unverifiable; a path-only contract can still be checked.
+// The resolver is the existing symbols tool's index, never a second index.
+func (p *Program) SetCompletionContext(root string, resolver agent.StructuralResolver) {
+	p.completionRoot = root
+	p.completionResolver = resolver
 }
 
 // AttachSession wires the program to a persistent transcript.

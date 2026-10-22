@@ -90,6 +90,20 @@ func taskProjection(recorded task.Task, err error) tui.TaskProjection {
 	return projection
 }
 
+// structuralResolver returns the existing symbol index through the symbols
+// tool, or nil when the tool set has no structural tool.
+//
+// It is the same instance the model queries, so semantic completion never
+// builds a second repository index.
+func structuralResolver(toolSet []agent.Tool) agent.StructuralResolver {
+	for _, tool := range toolSet {
+		if symbols, ok := tool.(*tools.SymbolsTool); ok {
+			return symbols
+		}
+	}
+	return nil
+}
+
 // todoSource finds the session's todo tool and returns its snapshot.
 //
 // The todo tool stays the single owner of todo mutation; the task layer records

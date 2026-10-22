@@ -64,6 +64,31 @@ func TestTaskToolDelegatesTheAssignment(t *testing.T) {
 	}
 }
 
+// A delegated check carries its real scopes to the parent. Without this, a
+// symbol target in the parent would remain reviewable even though the child
+// ran the package's tests.
+func TestTaskToolCarriesChildVerificationScope(t *testing.T) {
+	spawner := &scriptedSpawner{result: agent.SubagentResult{
+		Text:       "done",
+		Mutated:    true,
+		Verified:   true,
+		Completion: agent.Completion{State: agent.CompletionComplete},
+		Verification: &agent.VerificationEvidence{
+			Command: "go test ./tools",
+			Scopes:  []agent.VerificationScope{{Path: "tools"}},
+		},
+	}}
+	result := testTaskTool(spawner).Execute(
+		agent.Context{Ctx: context.Background()}, taskArgs("fix tools"))
+
+	if !result.Verifies {
+		t.Fatal("the child's verification was not carried")
+	}
+	if result.Verification == nil || !result.Verification.Covers("tools") {
+		t.Fatalf("verification = %+v, want tools scope", result.Verification)
+	}
+}
+
 // TestTaskToolReportsTheCostOfTheRun lets a parent tell a cheap success from one
 // that spent its whole budget reading the repository.
 func TestTaskToolReportsTheCostOfTheRun(t *testing.T) {

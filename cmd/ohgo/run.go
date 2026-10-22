@@ -714,6 +714,18 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 		if gate == nil {
 			gate = opts.newSecurityGate(nil)
 		}
+		// A writable child gets the same bounded contract and pre-run target
+		// evidence as the top-level turn. A read-only child is not asked to
+		// prove a mutation it was forbidden to make.
+		if !spec.ReadOnly {
+			resolver := structuralResolver(parentTools)
+			intent := workspace.BuildIntentContract(spec.Task)
+			spec.Contract = &intent
+			spec.Resolver = resolver
+			if intent.Kind == workspace.ObjectiveMutation {
+				spec.Snapshot = agent.CaptureTargetsContext(ctx, opts.root, intent, resolver)
+			}
+		}
 		parent := agent.Config{
 			Model:      opts.model,
 			Stream:     registry.StreamFn(),
@@ -1552,6 +1564,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
 		attachShellEscape(program, opts.root, opts.security)
 		controller := installTaskContinuity(program, opts.root, loop.Tools())
+		program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
 		// A grant is bound to the task it was approved for, when the task layer
 		// knows one. The task remains authoritative for continuity; the gate
 		// only reads its identity.
@@ -1870,6 +1883,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
 	attachShellEscape(program, opts.root, opts.security)
 	controller := installTaskContinuity(program, opts.root, loop.Tools())
+	program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
 	opts.security.SetTaskSource(func() string {
 		if current, ok := controller.Current(); ok {
 			return current.ID

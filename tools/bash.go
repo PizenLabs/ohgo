@@ -248,11 +248,13 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 			},
 		}
 	}
+	verification := VerificationFor(command)
 	return agent.Result{
-		Text:     text,
-		Mutates:  mutates,
-		Executes: true,
-		Verifies: IsVerificationCommand(command),
+		Text:         text,
+		Mutates:      mutates,
+		Executes:     true,
+		Verifies:     verification != nil,
+		Verification: verification,
 		Details: map[string]any{
 			"command":  command,
 			"exitCode": 0,

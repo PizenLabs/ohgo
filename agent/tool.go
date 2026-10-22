@@ -85,6 +85,11 @@ type Result struct {
 	// (tests, build, vet). It is evidence for completion, not authority: a
 	// verification cannot grant a capability or stand in for a mutation.
 	Verifies bool
+	// Verification records what the successful check actually covered. It is
+	// nil for a verifying tool that cannot report a command scope (a delegated
+	// child, for example), which satisfies a generic requirement but not a
+	// target-scoped one.
+	Verification *VerificationEvidence
 	// Useless marks a result that adds nothing to context and may be elided by
 	// compaction (zero matches, a timeout). Ignored when IsError is set.
 	Useless bool

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/contract"
 )
 
 // ReadOnlyToolNames is the set of built-in tools whose approval tier is "read".
@@ -89,6 +90,14 @@ type SubagentSpec struct {
 	// change; the parent supplies it because intent classification belongs to
 	// the workspace layer, not the agent loop.
 	MutationIntent bool
+	// Contract is the bounded completion contract for this assignment, when
+	// the spawner captured one. It replaces MutationIntent for the verdict.
+	Contract *contract.IntentContract
+	// Snapshot is the child's pre-run target evidence.
+	Snapshot *TargetSnapshot
+	// Resolver locates the contract's symbols and packages after the child
+	// runs. It is the same structural index the parent already owns.
+	Resolver StructuralResolver
 }
 
 // SubagentResult is what a child agent produced.
@@ -111,6 +120,10 @@ type SubagentResult struct {
 	Mutated bool
 	// Verified reports that the child successfully verified its last change.
 	Verified bool
+	// Verification records the scopes the child's successful checks covered,
+	// so the parent's scoped verification requirement can be satisfied by the
+	// child's real command rather than by an unscoped boolean.
+	Verification *VerificationEvidence
 }
 
 // RunSubagent runs a child loop derived from a parent configuration.
@@ -218,27 +231,91 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 			text = t
 		}
 	}
-	completion := EvaluateCompletion(turns, spec.MutationIntent)
+	var completion Completion
+	if spec.Contract != nil {
+		completion = EvaluateTaskCompletion(CompletionInput{
+			Turns:    turns,
+			Contract: *spec.Contract,
+			Snapshot: spec.Snapshot,
+			Resolver: spec.Resolver,
+		})
+	} else {
+		completion = EvaluateCompletion(turns, spec.MutationIntent)
+	}
 	mutated, verified := CompletionEvidence(turns, spec.MutationIntent)
+	verification := verificationFromTurns(turns)
 	if text == "" {
 		return SubagentResult{
-			Turns:      turns,
-			ToolCalls:  toolCalls,
-			Completion: completion,
-			Mutated:    mutated,
-			Verified:   verified,
+			Turns:        turns,
+			ToolCalls:    toolCalls,
+			Completion:   completion,
+			Mutated:      mutated,
+			Verified:     verified,
+			Verification: verification,
 		}, ErrNoSubagentResult
 	}
 
 	return SubagentResult{
-		Text:       text,
-		Turns:      turns,
-		ToolCalls:  toolCalls,
-		ReadOnly:   IsReadOnly(tools),
-		Completion: completion,
-		Mutated:    mutated,
-		Verified:   verified,
+		Text:         text,
+		Turns:        turns,
+		ToolCalls:    toolCalls,
+		ReadOnly:     IsReadOnly(tools),
+		Completion:   completion,
+		Mutated:      mutated,
+		Verified:     verified,
+		Verification: verification,
 	}, nil
+}
+
+// verificationFromTurns collects the successful check scopes a child produced.
+// It is the child's evidence passed to the parent, not a claim the parent makes
+// up from the child's answer.
+func verificationFromTurns(turns []Turn) *VerificationEvidence {
+	var (
+		command string
+		check   contract.VerificationCheck
+		mixed   bool
+		scopes  []VerificationScope
+		seen    = map[VerificationScope]bool{}
+	)
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if !outcome.Result.Verifies || outcome.Result.Verification == nil {
+				continue
+			}
+			if command == "" {
+				command = outcome.Result.Verification.Command
+			}
+			recordCheck := outcome.Result.Verification.EffectiveCheck()
+			if recordCheck != contract.CheckAny {
+				switch {
+				case check == "" || check == contract.CheckAny:
+					check = recordCheck
+				case check != recordCheck:
+					mixed = true
+				}
+			}
+			for _, scope := range outcome.Result.Verification.Scopes {
+				if !seen[scope] {
+					seen[scope] = true
+					scopes = append(scopes, scope)
+				}
+			}
+		}
+	}
+	if command == "" && len(scopes) == 0 {
+		return nil
+	}
+	if mixed {
+		// Mixed check kinds cannot be represented as one evidence kind; the
+		// conservative value is Any, which does not satisfy a specific check
+		// requirement.
+		check = contract.CheckAny
+	}
+	if check == "" {
+		check = contract.CheckAny
+	}
+	return &VerificationEvidence{Command: command, Check: check, Scopes: scopes}
 }
 
 func firstNonEmpty(values ...string) string {
