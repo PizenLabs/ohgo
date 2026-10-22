@@ -84,14 +84,6 @@ func p5StopMessage(text string) ai.AssistantMessage {
 	}
 }
 
-func p5WriteCall(id, path, content string) ai.ToolCall {
-	return ai.ToolCall{ID: id, Name: "write", Arguments: map[string]any{"path": path, "content": content}}
-}
-
-func p5ReadCall(id, path string) ai.ToolCall {
-	return ai.ToolCall{ID: id, Name: "read", Arguments: map[string]any{"path": path}}
-}
-
 func p5BashCall(id, command string) ai.ToolCall {
 	return ai.ToolCall{ID: id, Name: "bash", Arguments: map[string]any{"command": command, "timeout": float64(60_000)}}
 }
@@ -424,14 +416,6 @@ func p5RunSimple(t *testing.T, root, request string, messages []ai.AssistantMess
 	t.Helper()
 	stream := scriptedCompletionStream(messages...)
 	return p5Run(t, root, request, p5ToolSet(root), stream, b, nil)
-}
-
-func p5StopAfter(calls int, call func(int) ai.AssistantMessage) []ai.AssistantMessage {
-	out := make([]ai.AssistantMessage, 0, calls+1)
-	for i := 1; i <= calls; i++ {
-		out = append(out, call(i))
-	}
-	return append(out, p5StopMessage("done"))
 }
 
 func phase5Cases() []phase5Case {
