@@ -84,7 +84,7 @@ variable — and nothing else fails silently because of it.
 ## What it does
 
 Reads, edits, and runs code in your repository through a focused tool set
-(`read write edit delete bash wait glob grep ls symbols webfetch todo task`),
+(`read write edit delete bash wait glob grep ls symbols graph webfetch todo task`),
 with session persistence, context compaction, subagent delegation
 (`--max-depth`), a wall-clock run budget (`--deadline`), and per-tool approval
 prompts.

@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ast"
@@ -25,19 +24,26 @@ type SymbolsTool struct {
 	// Root bounds every query.
 	Root string
 
-	// mu guards idx. Tool calls run concurrently (§agent/loop.go), while
-	// the index itself is internally locked; the mutex here only protects
-	// lazy construction of the cached handle.
-	mu sync.Mutex
-	// idx is the cached repository index. It is built once and refreshed
-	// on demand, so a lookup costs one freshness walk rather than a full
-	// re-parse of the repository.
-	idx *ast.Index
+	// source is the shared, lazily built structural index. It is the only
+	// repository coordinate store; the graph tool reads the same instance.
+	source *StructuralSource
 }
 
-// NewSymbolsTool returns the single structural-navigation tool rooted at root.
+// NewSymbolsTool returns the symbol-coordinate tool rooted at root.
+//
+// It owns a private StructuralSource. Production buildTools uses
+// NewSymbolsToolWithSource so the graph tool shares that source.
 func NewSymbolsTool(root string) *SymbolsTool {
-	tool := &SymbolsTool{Root: root}
+	return NewSymbolsToolWithSource(NewStructuralSource(root))
+}
+
+// NewSymbolsToolWithSource returns the symbol-coordinate tool over source.
+func NewSymbolsToolWithSource(source *StructuralSource) *SymbolsTool {
+	root := ""
+	if source != nil {
+		root = source.Root()
+	}
+	tool := &SymbolsTool{Root: root, source: source}
 	tool.Base = NewBase("symbols",
 		"Locate Go declarations by exact symbol name, or list the declarations "+
 			"in a file, directory, or package. Returns repository-relative "+
@@ -84,23 +90,20 @@ func NewSymbolsTool(root string) *SymbolsTool {
 	return tool
 }
 
-// index returns the cached repository index, building it on first use.
+// index returns the shared repository index, building it on first use.
 // Freshness is owned by the index itself: every query entry point
 // revalidates against the tree (see Index.ensureFresh), so the tool must
 // not add a second refresh policy here.
 func (t *SymbolsTool) index() (*ast.Index, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.idx == nil {
-		idx, err := ast.NewIndex(t.Root)
-		if err != nil {
-			return nil, err
-		}
-		t.idx = idx
+	if t.source == nil {
+		return nil, fmt.Errorf("tools: symbols tool has no structural source")
 	}
-	return t.idx, nil
+	return t.source.Index()
 }
+
+// Source returns the structural source the tool reads. It exists so wiring
+// tests can prove the coordinate and relationship surfaces share one snapshot.
+func (t *SymbolsTool) Source() *StructuralSource { return t.source }
 
 // LocateSymbol implements agent.StructuralResolver over the cached index.
 //

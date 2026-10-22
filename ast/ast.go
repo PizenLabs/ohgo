@@ -29,6 +29,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -83,6 +84,35 @@ type Options struct {
 	// Paths restricts the search to these files. Empty means every file given
 	// to the searcher.
 	Paths []string
+}
+
+// Import is one import declaration from a parsed file.
+//
+// It is relationship data, not a navigable declaration: imports deliberately
+// stay out of the symbol taxonomy so a file or package listing never fills with
+// import noise. The package graph is the only consumer.
+type Import struct {
+	// Path is the unquoted import path.
+	Path string
+	// Line is the 1-based line the import declaration starts on.
+	Line int
+	// Test reports that the declaration came from a _test.go file.
+	Test bool
+}
+
+// FileStructure is the result of one parse: the package clause, the
+// declarations selected by Options, and every import declaration.
+//
+// Symbols and Imports share one parser pass. That is the reason the graph can
+// be derived without becoming a second repository index or doubling the parse
+// cost.
+type FileStructure struct {
+	// Package is the package clause's name.
+	Package string
+	// Symbols are the declarations that passed the kind filter.
+	Symbols []Match
+	// Imports are all imports, regardless of the kind filter.
+	Imports []Import
 }
 
 // Searcher finds declarations. Implementations must be safe for concurrent use
@@ -163,14 +193,30 @@ func (GoBackend) Supported(path string) bool {
 }
 
 // Search implements Searcher.
-func (GoBackend) Search(path string, opts Options) ([]Match, error) {
+func (b GoBackend) Search(path string, opts Options) ([]Match, error) {
+	structure, err := b.Parse(path, opts)
+	if err != nil {
+		return nil, err
+	}
+	return structure.Symbols, nil
+}
+
+// Parse parses one file once and returns its package clause, the declarations
+// selected by opts, and every import declaration.
+//
+// Index uses Parse rather than Search because the package graph needs the
+// imports from the same pass that produces symbol coordinates. A second parse
+// would double the cold cost and create a second source of truth.
+func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
-		return nil, fmt.Errorf("ast: parse %s: %w", path, err)
+		return FileStructure{}, fmt.Errorf("ast: parse %s: %w", path, err)
 	}
 
 	var matches []Match
+	var imports []Import
+	testFile := strings.HasSuffix(filepath.Base(path), "_test.go")
 
 	// A package declaration is a first-class symbol: it anchors every other
 	// declaration in the file and is what a package-level query resolves to.
@@ -218,6 +264,7 @@ func (GoBackend) Search(path string, opts Options) ([]Match, error) {
 						matches = append(matches, goNamedMatch(fset, path, kind, name.Name, s, d))
 					}
 				case *ast.ImportSpec:
+					imports = append(imports, goImportRecord(fset, s, testFile))
 					if kindAllowed(opts, KindImport) {
 						matches = append(matches, goImportMatch(fset, path, s))
 					}
@@ -246,7 +293,7 @@ func (GoBackend) Search(path string, opts Options) ([]Match, error) {
 			}
 		}
 	}
-	return matches, nil
+	return FileStructure{Package: file.Name.Name, Symbols: matches, Imports: imports}, nil
 }
 
 // kindAllowed reports whether a declaration kind passes the filter.
@@ -418,6 +465,21 @@ func goImportMatch(fset *token.FileSet, path string, spec *ast.ImportSpec) Match
 		Line:      fset.Position(spec.Pos()).Line,
 		EndLine:   fset.Position(spec.End()).Line,
 		Signature: name,
+	}
+}
+
+// goImportRecord projects one import spec into relationship data.
+func goImportRecord(fset *token.FileSet, spec *ast.ImportSpec, testFile bool) Import {
+	path, err := strconv.Unquote(spec.Path.Value)
+	if err != nil {
+		// A malformed literal should have failed the parse; keep the raw
+		// spelling rather than dropping the declaration.
+		path = strings.Trim(spec.Path.Value, `"`)
+	}
+	return Import{
+		Path: path,
+		Line: fset.Position(spec.Pos()).Line,
+		Test: testFile,
 	}
 }
 

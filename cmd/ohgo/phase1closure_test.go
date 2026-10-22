@@ -4,17 +4,37 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/tools"
 )
 
-// TestBuildToolsExposesSingleStructuralTool pins the Phase 1 closure
-// decision: exactly one structural-navigation surface ("symbols"). A second
-// wire name for the same capability would double the model's choice without
-// adding any coordinate the first one cannot return.
-func TestBuildToolsExposesSingleStructuralTool(t *testing.T) {
+// TestBuildToolsExposesOneStructuralSource pins the Phase 6 extension of the
+// Phase 1 boundary: symbol coordinates and relationship queries are two
+// surfaces, but they must read one shared structural source. A second index
+// would parse the repository twice and allow the two answers to disagree.
+func TestBuildToolsExposesOneStructuralSource(t *testing.T) {
 	toolSet := buildTools(testOptions(t, t.TempDir(), 1), ai.NewRegistry())
 
-	if !hasTool(toolSet, "symbols") {
+	var symbols *tools.SymbolsTool
+	var graph *tools.GraphTool
+	for _, tool := range toolSet {
+		switch typed := tool.(type) {
+		case *tools.SymbolsTool:
+			symbols = typed
+		case *tools.GraphTool:
+			graph = typed
+		}
+	}
+	if symbols == nil {
 		t.Fatal("symbols is not in the default tool set")
+	}
+	if graph == nil {
+		t.Fatal("graph is not in the default tool set")
+	}
+	if symbols.Source() == nil || graph.Source() == nil {
+		t.Fatal("a structural tool has no source")
+	}
+	if symbols.Source() != graph.Source() {
+		t.Fatal("symbols and graph do not share one structural source")
 	}
 	if hasTool(toolSet, "repo") {
 		t.Fatal("repo is still registered: the duplicate structural surface must go")

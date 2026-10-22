@@ -1,0 +1,21 @@
+Phase 6 graph performance probe
+generated: 2026-10-22T08:32:47Z
+host: darwin/arm64, go1.27.2
+method: synthetic single-module repositories with a chain of package imports;
+        symbols index and package graph are built from one parse pass.
+note: synthetic measurements, not a production-scale claim.
+
+files  packages  cold_ms  parse_ms    index/parse  query_us   stale_us     change_ms   addpkg_ms  heap_MiB   conc_us   
+100    25        6.92     6.97        0.99         1127.6     909.5        6.00        6.11       0.2        6339.3    
+1000   250       48.97    49.45       0.99         8292.8     8091.7       55.71       56.35      2.4        65319.0   
+3000   750       145.70   146.26      1.00         25843.8    25868.1      168.00      168.66     6.8        186172.5  
+
+Interpretation rules:
+- index/parse is the cold index divided by a parse-only walk; a value near 1
+  means imports and the graph did not add a second parse.
+- query_us is a warm depth-1 graph query after the index is built.
+- stale_us is the freshness stat walk alone (Index.Stale); a graph query adds
+  the go.mod fingerprint and traversal on top of it.
+- change_ms is a graph query after one import rewrite (full snapshot rebuild).
+- addpkg_ms is a graph query after creating one package (full snapshot rebuild).
+- conc_us is the average of 8 goroutines issuing bounded queries.

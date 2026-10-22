@@ -472,6 +472,10 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 	// from the same instance: two tables would let bash start jobs no wait
 	// call could ever see.
 	bash := tools.NewBashTool(opts.root)
+	// One structural source serves both coordinate and relationship queries.
+	// Constructing it does not parse the repository; the first structural
+	// query does, and every later graph query reads that same snapshot.
+	structural := tools.NewStructuralSource(opts.root)
 	toolSet := []agent.Tool{
 		tools.NewReadTool(opts.root),
 		tools.NewWriteTool(opts.root),
@@ -482,7 +486,8 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewGlobTool(opts.root),
 		tools.NewGrepTool(opts.root),
 		tools.NewLsTool(opts.root),
-		tools.NewSymbolsTool(opts.root),
+		tools.NewSymbolsToolWithSource(structural),
+		tools.NewGraphTool(structural),
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}
