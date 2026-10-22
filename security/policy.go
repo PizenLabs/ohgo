@@ -59,10 +59,11 @@ type Policy struct{}
 // approval.
 func (Policy) Evaluate(req Request, auth Authority, grant *Grant) Decision {
 	decision := Decision{
-		Capability: req.Capability,
-		Scope:      req.Scope,
-		Risk:       req.Risk,
-		Mutates:    req.Mutates,
+		Capability:       req.Capability,
+		Scope:            req.Scope,
+		Risk:             req.Risk,
+		Mutates:          req.Mutates && !req.Capability.External(),
+		ExternalMutation: req.Mutates && req.Capability.External(),
 	}
 
 	if !req.Capability.Known() {

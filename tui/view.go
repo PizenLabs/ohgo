@@ -231,6 +231,8 @@ func Render(state State) string {
 		renderStatusArea(&sb, state, pal, layout)
 	} else if state.UsageModal != nil {
 		renderUsageArea(&sb, state, pal, layout)
+	} else if state.InfoModal != nil || state.InformationModal != nil {
+		renderInfoArea(&sb, state, pal, layout)
 	} else if state.SessionModal != nil {
 		renderSessionArea(&sb, state, pal, layout)
 	} else if state.HelpModal != nil {
@@ -251,7 +253,7 @@ func Render(state State) string {
 
 	renderThinkingArea(&sb, state, pal, layout)
 
-	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Transition == nil && state.Permissions == nil && state.Diff == nil {
+	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.InfoModal == nil && state.InformationModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Transition == nil && state.Permissions == nil && state.Diff == nil {
 		// Main canvas. No middle status line while the hint bar owns the
 		// row (ShowHints): the header, composer prefix, and hint bar
 		// already own every fact it would repeat. A pending approval drops
@@ -654,7 +656,7 @@ func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout
 // it is only ever rendered — never applied as an Entry — it cannot leak into
 // the persisted session or reappear over a resumed transcript.
 func showWelcome(state State) bool {
-	return !state.SessionActive && len(state.Entries) == 0 && state.Picker == nil && state.ConnectKey == nil && state.Pending == nil && state.QuitConfirm == nil && state.Transition == nil && state.Permissions == nil && state.StatusModal == nil && state.UsageModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.Diff == nil
+	return !state.SessionActive && len(state.Entries) == 0 && state.Picker == nil && state.ConnectKey == nil && state.Pending == nil && state.QuitConfirm == nil && state.Transition == nil && state.Permissions == nil && state.StatusModal == nil && state.UsageModal == nil && state.InfoModal == nil && state.InformationModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.Diff == nil
 }
 
 // renderTranscriptBody renders every entry wrapped to the content width.
@@ -1229,7 +1231,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 // composerPrefixStyle so the frame and the "ask > "/"build > "/"fuzz > "
 // text read as one boundary.
 func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
-	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.ConnectModal != nil || state.Diff != nil {
+	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.InfoModal != nil || state.InformationModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.ConnectModal != nil || state.Diff != nil {
 		return pal.Separator
 	}
 	return composerPrefixStyle(state, pal).Bold(true)

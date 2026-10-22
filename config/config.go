@@ -141,9 +141,118 @@ type Settings struct {
 	//
 	// Any other value behaves as "select", so a typo keeps copy working.
 	Mouse string `json:"mouse,omitempty"`
+	// Search configures external search providers. Absence disables search;
+	// presence with no providers is a configuration error surfaced by the
+	// tool builder rather than a silent no-op.
+	Search *SearchSettings `json:"search,omitempty"`
+	// MCP configures external MCP servers. Absence disables the MCP tools.
+	MCP *MCPSettings `json:"mcp,omitempty"`
+	// Browser configures the bounded read/navigation browser. Absence
+	// disables the browser tool.
+	Browser *BrowserSettings `json:"browser,omitempty"`
 	// Compaction configures context reduction. A nil pointer means "use the
 	// built-in defaults", which is distinct from "disabled".
 	Compaction *Compaction `json:"compaction,omitempty"`
+}
+
+// SearchSettings is the external search configuration.
+//
+// Credentials are named environment variables, never literal values: a
+// settings file is readable by other local processes and must never contain a
+// secret.
+type SearchSettings struct {
+	// DefaultProvider is used when the model names none. Empty uses the first
+	// configured provider.
+	DefaultProvider string `json:"defaultProvider,omitempty"`
+	// Providers are the configured search providers.
+	Providers []SearchProvider `json:"providers,omitempty"`
+}
+
+// SearchProvider configures one external search provider.
+type SearchProvider struct {
+	// Name is the model-facing provider name.
+	Name string `json:"name"`
+	// Kind is the wire shape: "brave" or "tavily".
+	Kind string `json:"kind"`
+	// Endpoint is the provider URL. Production requires https.
+	Endpoint string `json:"endpoint"`
+	// APIKeyEnv names the environment variable holding the credential.
+	APIKeyEnv string `json:"apiKeyEnv,omitempty"`
+	// TimeoutSeconds bounds one request.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
+	// MaxResults bounds the page size.
+	MaxResults int `json:"maxResults,omitempty"`
+	// MaxBytes bounds one response body.
+	MaxBytes int `json:"maxBytes,omitempty"`
+	// Retries is the number of extra bounded attempts.
+	Retries int `json:"retries,omitempty"`
+}
+
+// MCPSettings is the external MCP configuration.
+type MCPSettings struct {
+	// Servers are the configured MCP servers.
+	Servers []MCPServer `json:"servers,omitempty"`
+}
+
+// MCPServer configures one MCP server.
+//
+// Command and Args are human configuration, never model input. Env passes only
+// the named environment variables; the server does not inherit the rest of the
+// process environment.
+type MCPServer struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+	Env     []string `json:"env,omitempty"`
+	// Tools is the explicit safety classification: read, interact, mutate, or
+	// unknown. A tool not listed is unknown and fails closed.
+	Tools map[string]string `json:"tools,omitempty"`
+	// Resources optionally bounds readable resource URI prefixes.
+	Resources []string `json:"resources,omitempty"`
+	// AllowMutation permits interaction/mutation calls at all. It is false by
+	// default; authority and human approval still apply when true.
+	AllowMutation bool `json:"allowMutation,omitempty"`
+	// TimeoutSeconds bounds one JSON-RPC exchange.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
+	// MaxBytes bounds one response and one exchange's cumulative bytes.
+	MaxBytes int `json:"maxBytes,omitempty"`
+	// MaxItems bounds content items and discovered capabilities.
+	MaxItems int `json:"maxItems,omitempty"`
+	// MaxTextChars bounds one tool/resource text result.
+	MaxTextChars int `json:"maxTextChars,omitempty"`
+	// MaxDepth bounds parsed argument and schema nesting.
+	MaxDepth int `json:"maxDepth,omitempty"`
+	// MaxArgumentBytes bounds encoded tool arguments.
+	MaxArgumentBytes int `json:"maxArgumentBytes,omitempty"`
+	// IdleTimeoutSeconds kills an idle server process.
+	IdleTimeoutSeconds int `json:"idleTimeoutSeconds,omitempty"`
+}
+
+// BrowserSettings configures bounded browser read/navigation.
+//
+// The browser has no interaction or mutation surface in Phase 8. A page is
+// fetched only with GET; forms, clicks, JavaScript, and non-GET methods are
+// unsupported and fail closed.
+type BrowserSettings struct {
+	// AllowedHosts is the exact host allowlist. Empty means the host opened
+	// first; a session never widens automatically.
+	AllowedHosts []string `json:"allowedHosts,omitempty"`
+	// MaxNavigations bounds network navigations per session.
+	MaxNavigations int `json:"maxNavigations,omitempty"`
+	// MaxRedirects bounds redirects per navigation.
+	MaxRedirects int `json:"maxRedirects,omitempty"`
+	// MaxBytes bounds one response body.
+	MaxBytes int `json:"maxBytes,omitempty"`
+	// MaxChars bounds extracted page text.
+	MaxChars int `json:"maxChars,omitempty"`
+	// MaxLinks bounds extracted links.
+	MaxLinks int `json:"maxLinks,omitempty"`
+	// MaxSessions bounds live sessions.
+	MaxSessions int `json:"maxSessions,omitempty"`
+	// TimeoutSeconds bounds one request.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
+	// SessionTTLSeconds bounds a session's lifetime.
+	SessionTTLSeconds int `json:"sessionTtlSeconds,omitempty"`
 }
 
 // Compaction settings as configured by the user.

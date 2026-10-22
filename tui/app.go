@@ -695,7 +695,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.ConnectKey != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil || s.HelpModal != nil {
+	if s.Picker != nil || s.Plane != nil || s.ConnectKey != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil || s.HelpModal != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil {
 		return false
 	}
 	return s.Input == ""
@@ -961,6 +961,9 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.handleUsageKey(msg)
 	}
 
+	if p.state.InfoModal != nil || p.state.InformationModal != nil {
+		return p.handleInfoKey(msg)
+	}
 	if p.state.SessionModal != nil {
 		return p.handleSessionManagerKey(msg)
 	}
@@ -1436,6 +1439,10 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		p.openUsage()
 		return nil
 
+	case "info", "about", "documentation", "docs", "changelog":
+		p.openInfo()
+		return nil
+
 	case "doctor":
 		p.runDoctor()
 		return nil
@@ -1645,6 +1652,11 @@ func (p *Program) interruptOrClear() (tea.Model, tea.Cmd) {
 	}
 	if p.state.HelpModal != nil {
 		p.closeHelpCenter()
+		return p, nil
+	}
+	if p.state.InfoModal != nil || p.state.InformationModal != nil {
+		p.state.Apply(InfoModalClosed{})
+		p.state.Apply(InformationModalClosed{})
 		return p, nil
 	}
 	if p.state.Picker != nil {

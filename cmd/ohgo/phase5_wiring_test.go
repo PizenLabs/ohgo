@@ -68,11 +68,13 @@ func TestDerivedBudgetLimitsAreFinite(t *testing.T) {
 	opts := options{maxTurns: 100, maxDepth: 2}
 	limits := opts.budgetLimits()
 	if limits.Turns != 100 || limits.ModelCalls != 110 || limits.ToolCalls != 800 ||
-		limits.Children != 8 || limits.BackgroundJobs != 100 {
+		limits.Children != 8 || limits.BackgroundJobs != 100 ||
+		limits.ExternalCalls != 800 || limits.ExternalBytes != 16*1024*1024 {
 		t.Fatalf("derived limits = %+v", limits)
 	}
 	if limits.Turns <= 0 || limits.ModelCalls <= 0 || limits.ToolCalls <= 0 ||
-		limits.Children <= 0 || limits.BackgroundJobs <= 0 {
+		limits.Children <= 0 || limits.BackgroundJobs <= 0 ||
+		limits.ExternalCalls <= 0 || limits.ExternalBytes <= 0 {
 		t.Fatalf("derived budget has an unmetered dimension: %+v", limits)
 	}
 }

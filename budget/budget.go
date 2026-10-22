@@ -35,6 +35,15 @@ const (
 	// admission, not when the job finishes: an unstarted grant is still a
 	// commitment of the root's capacity.
 	DimensionBackgroundJobs Dimension = "background_jobs"
+	// DimensionExternalCalls is one admitted external capability call. It is
+	// charged independently of the tool-call dimension because one tool call
+	// may make several bounded attempts (a retry, a discovery exchange).
+	DimensionExternalCalls Dimension = "external_calls"
+	// DimensionExternalBytes is the aggregate bytes of external responses this
+	// tree may observe. It is charged after a response is bounded; the
+	// per-request byte cap is what prevents a single response from exceeding
+	// the remaining grant.
+	DimensionExternalBytes Dimension = "external_bytes"
 )
 
 // ErrExhausted is the sentinel every admission failure wraps. Callers match it
@@ -49,6 +58,8 @@ type Limits struct {
 	ToolCalls      int `json:"toolCalls,omitempty"`
 	Children       int `json:"children,omitempty"`
 	BackgroundJobs int `json:"backgroundJobs,omitempty"`
+	ExternalCalls  int `json:"externalCalls,omitempty"`
+	ExternalBytes  int `json:"externalBytes,omitempty"`
 	// Deadline is the root wall-clock bound. Descendants inherit the same
 	// absolute instant, so a child cannot extend it by restarting its clock.
 	Deadline time.Time `json:"deadline,omitempty"`
@@ -62,6 +73,8 @@ type Consumption struct {
 	ToolCalls      int `json:"toolCalls,omitempty"`
 	Children       int `json:"children,omitempty"`
 	BackgroundJobs int `json:"backgroundJobs,omitempty"`
+	ExternalCalls  int `json:"externalCalls,omitempty"`
+	ExternalBytes  int `json:"externalBytes,omitempty"`
 }
 
 // Add returns the sum of two consumption records.
@@ -71,6 +84,8 @@ func (c Consumption) Add(other Consumption) Consumption {
 	c.ToolCalls += other.ToolCalls
 	c.Children += other.Children
 	c.BackgroundJobs += other.BackgroundJobs
+	c.ExternalCalls += other.ExternalCalls
+	c.ExternalBytes += other.ExternalBytes
 	return c
 }
 
@@ -166,9 +181,48 @@ func (b *Budget) AdmitAll(dimensions ...Dimension) error {
 		}
 	}
 	for _, dimension := range dimensions {
-		b.incrementLocked(dimension)
+		b.addLocked(dimension, 1)
 	}
 	return nil
+}
+
+// AdmitN consumes amount units of dimension atomically. A non-positive
+// amount consumes nothing and succeeds. On failure nothing is consumed.
+//
+// It exists for dimensions whose unit is not one call (external response
+// bytes), so a large response cannot be charged one unit at a time while a
+// concurrent child observes the last unit as available.
+func (b *Budget) AdmitN(dimension Dimension, amount int) error {
+	if b == nil || amount <= 0 {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	limit, used := b.dimensionLocked(dimension)
+	if limit > 0 && used+amount > limit {
+		return &ExhaustedError{Dimension: dimension, Limit: limit, Used: used}
+	}
+	b.addLocked(dimension, amount)
+	return nil
+}
+
+// Remaining reports how many units of dimension are left, or -1 when the
+// dimension is unmetered. Callers must not treat it as a reservation: admission
+// is still the only enforcement point.
+func (b *Budget) Remaining(dimension Dimension) int {
+	if b == nil {
+		return -1
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	limit, used := b.dimensionLocked(dimension)
+	if limit <= 0 {
+		return -1
+	}
+	if used >= limit {
+		return 0
+	}
+	return limit - used
 }
 
 // TryAdmit reports whether one unit of dimension remains, without consuming
@@ -220,6 +274,10 @@ func (b *Budget) dimensionLocked(dimension Dimension) (int, int) {
 		return b.limits.Children, b.used.Children
 	case DimensionBackgroundJobs:
 		return b.limits.BackgroundJobs, b.used.BackgroundJobs
+	case DimensionExternalCalls:
+		return b.limits.ExternalCalls, b.used.ExternalCalls
+	case DimensionExternalBytes:
+		return b.limits.ExternalBytes, b.used.ExternalBytes
 	default:
 		// An unknown dimension cannot be metered. Treating it as unbounded is
 		// safer than silently charging the wrong counter; callers that add a
@@ -228,20 +286,24 @@ func (b *Budget) dimensionLocked(dimension Dimension) (int, int) {
 	}
 }
 
-// incrementLocked charges one unit. The caller holds mu and has already
+// addLocked charges amount units. The caller holds mu and has already
 // checked capacity.
-func (b *Budget) incrementLocked(dimension Dimension) {
+func (b *Budget) addLocked(dimension Dimension, amount int) {
 	switch dimension {
 	case DimensionTurns:
-		b.used.Turns++
+		b.used.Turns += amount
 	case DimensionModelCalls:
-		b.used.ModelCalls++
+		b.used.ModelCalls += amount
 	case DimensionToolCalls:
-		b.used.ToolCalls++
+		b.used.ToolCalls += amount
 	case DimensionChildren:
-		b.used.Children++
+		b.used.Children += amount
 	case DimensionBackgroundJobs:
-		b.used.BackgroundJobs++
+		b.used.BackgroundJobs += amount
+	case DimensionExternalCalls:
+		b.used.ExternalCalls += amount
+	case DimensionExternalBytes:
+		b.used.ExternalBytes += amount
 	}
 }
 
@@ -262,6 +324,8 @@ func remaining(limits Limits, used Consumption) Consumption {
 		ToolCalls:      left(limits.ToolCalls, used.ToolCalls),
 		Children:       left(limits.Children, used.Children),
 		BackgroundJobs: left(limits.BackgroundJobs, used.BackgroundJobs),
+		ExternalCalls:  left(limits.ExternalCalls, used.ExternalCalls),
+		ExternalBytes:  left(limits.ExternalBytes, used.ExternalBytes),
 	}
 }
 

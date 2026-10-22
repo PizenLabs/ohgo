@@ -279,12 +279,20 @@ func (o options) budgetLimits() budget.Limits {
 	if backgroundJobs <= 0 {
 		backgroundJobs = turns
 	}
+	// External knowledge is bounded by the same root grant. One external call
+	// is at most one tool call's worth of egress, and the aggregate byte cap is
+	// a fixed finite allowance that a response cannot exceed (the per-request
+	// reader is additionally capped at the remaining grant).
+	externalCalls := toolCalls
+	externalBytes := 16 * 1024 * 1024
 	return budget.Limits{
 		Turns:          turns,
 		ModelCalls:     modelCalls,
 		ToolCalls:      toolCalls,
 		Children:       children,
 		BackgroundJobs: backgroundJobs,
+		ExternalCalls:  externalCalls,
+		ExternalBytes:  externalBytes,
 		Deadline:       o.deadline,
 	}
 }
@@ -494,6 +502,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}
+	toolSet = append(toolSet, externalTools(opts.settings)...)
 
 	// The task tool is added last and gets a spawner that stands up a sibling
 	// with the same capabilities. It is omitted entirely for a read-only

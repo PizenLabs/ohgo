@@ -516,6 +516,8 @@ func liveOverlay(s State, pal *Palette, layout Layout) []string {
 		return liveStatusModalLines(s, pal, layout)
 	case s.UsageModal != nil:
 		return liveUsageModalLines(s, pal, layout)
+	case s.InfoModal != nil || s.InformationModal != nil:
+		return liveInfoModalLines(s, pal, layout)
 	case s.SessionModal != nil:
 		return liveSessionManagerLines(s, pal, layout)
 	case s.HelpModal != nil:
@@ -562,6 +564,19 @@ func liveUsageModalLines(s State, pal *Palette, layout Layout) []string {
 	}
 	return liveModalCardLinesWidth(s, pal, layout, statusCardWidth, func(width, height int) string {
 		return RenderUsageModal(*s.UsageModal, pal, width, height)
+	})
+}
+
+func liveInfoModalLines(s State, pal *Palette, layout Layout) []string {
+	view := s.InfoModal
+	if view == nil {
+		view = s.InformationModal
+	}
+	if view == nil {
+		return nil
+	}
+	return liveModalCardLinesWidth(s, pal, layout, statusCardWidth, func(width, height int) string {
+		return RenderInfoModal(*view, pal, width, height)
 	})
 }
 
@@ -770,7 +785,7 @@ func liveComposerWidth(layout Layout) int {
 // is simply the last thing on screen, which is where the terminal already
 // puts it.
 func liveComposerLines(s State, pal *Palette, layout Layout) []string {
-	if s.ConnectKey != nil || s.Picker != nil || s.HelpModal != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil {
+	if s.ConnectKey != nil || s.Picker != nil || s.HelpModal != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil {
 		return nil
 	}
 	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)

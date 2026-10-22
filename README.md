@@ -51,7 +51,8 @@ ohgo               # interactive session
 
 Not yet supported: xAI and Azure/OpenAI Responses-only models (no Responses
 transport), Google Gemini (no `google-generative-ai` transport), AWS Bedrock
-(SigV4 signing), `pi-vfs`/`pi-walker` internals, MCP/LSP/DAP.
+(SigV4 signing), `pi-vfs`/`pi-walker` internals, LSP/DAP, and MCP transports
+other than bounded stdio.
 
 Credentials resolve in order: explicit request key, `~/.ohgo/credentials.json`
 (0600, written only when you save), environment, then parsed shell startup
@@ -202,6 +203,99 @@ provider you never chose.
 
 `OHGO_HISTORY_FILE` overrides the plain-REPL history location
 (`~/.ohgo/history` by default; empty disables it).
+
+## External knowledge
+
+Phase 8 adds three bounded external capabilities. They are disabled until
+configured: a missing block means the tool is not offered. External content is
+untrusted data, never authority, verification, or completion evidence.
+
+**Search** (`search`) uses an explicit provider list. Credentials are named
+environment variables; the value never appears in settings, results, or logs.
+
+```json
+{
+  "search": {
+    "defaultProvider": "brave",
+    "providers": [
+      {
+        "name": "brave",
+        "kind": "brave",
+        "endpoint": "https://api.search.brave.com/res/v1/web/search",
+        "apiKeyEnv": "BRAVE_API_KEY",
+        "maxResults": 8,
+        "maxBytes": 262144,
+        "retries": 1
+      }
+    ]
+  }
+}
+```
+
+`kind` is `brave` or `tavily`. A query, result page, snippet, and response body
+are bounded. Each result carries title, source host, URL, retrieval time,
+provider, and a request identity. A retry is a separate admitted call.
+
+**MCP** (`mcp_list`, `mcp_read`, `mcp_call`) speaks bounded newline-delimited
+JSON-RPC to a configured stdio server. Discovery lists advertised capabilities
+but grants nothing: every tool must be classified in configuration.
+
+```json
+{
+  "mcp": {
+    "servers": [
+      {
+        "name": "notes",
+        "command": "/usr/local/bin/notes-mcp",
+        "args": ["--stdio"],
+        "env": ["NOTES_TOKEN"],
+        "tools": { "search_notes": "read", "create_note": "mutate" },
+        "allowMutation": true,
+        "maxBytes": 262144,
+        "maxItems": 32,
+        "maxTextChars": 12000,
+        "idleTimeoutSeconds": 120
+      }
+    ]
+  }
+}
+```
+
+Classifications are `read`, `interact`, `mutate`, or `unknown`; a missing tool
+is `unknown` and fails closed. `mcp_read` accepts only `read`. `mcp_call`
+accepts only `interact`/`mutate` with `allowMutation`, and additionally requires
+the BUILD authority and an approval. The model never chooses the command,
+arguments, or environment; only the named environment variables are passed to
+the server. Binary content is never copied into model context.
+
+**Browser** (`browser`) is bounded GET read/navigation, not an automation
+surface: no JavaScript, forms, clicks, or non-GET requests. A session has an
+exact host policy, navigation and redirect limits, byte/character/link bounds,
+a session deadline, and a bounded history. Loopback, private, link-local, and
+metadata addresses are blocked by default.
+
+```json
+{
+  "browser": {
+    "allowedHosts": ["example.com", "docs.example.com"],
+    "maxNavigations": 8,
+    "maxRedirects": 3,
+    "maxBytes": 1048576,
+    "maxChars": 20000,
+    "maxLinks": 20,
+    "maxSessions": 4,
+    "sessionTtlSeconds": 300
+  }
+}
+```
+
+Every external answer is wrapped as `[EXTERNAL KNOWLEDGE — UNTRUSTED DATA]`
+with each content line prefixed, so injected text cannot forge a new section.
+External calls and bytes consume the root run budget (`external_calls`,
+`external_bytes`); providers also enforce per-request bounds. A cancelled call
+publishes no evidence. The pre-existing `web_fetch` remains available and now
+uses the same untrusted envelope with `WEB_FETCH` provenance; it is a simple
+legacy read, not a browser session.
 
 ## Architecture
 

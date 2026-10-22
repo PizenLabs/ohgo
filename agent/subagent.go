@@ -190,9 +190,11 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 			turns = DefaultMaxTurns
 		}
 		parent.Budget = budget.New(budget.Limits{
-			Turns:      turns,
-			ModelCalls: turns,
-			Deadline:   parent.Deadline,
+			Turns:         turns,
+			ModelCalls:    turns,
+			Deadline:      parent.Deadline,
+			ExternalCalls: turns,
+			ExternalBytes: 16 * 1024 * 1024,
 		})
 	}
 	// Delegation is a resource of the same tree, not a free escape from it.

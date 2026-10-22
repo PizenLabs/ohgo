@@ -23,6 +23,9 @@ func (a fakeAuthority) Permits(cap Capability) bool {
 func buildAuthority() fakeAuthority {
 	return fakeAuthority{name: "build", caps: map[Capability]bool{
 		CapabilityRead: true, CapabilityWrite: true, CapabilityExec: true, CapabilityNetwork: true,
+		CapabilityExternalSearch: true, CapabilityExternalMCPRead: true,
+		CapabilityExternalMCPMutate: true, CapabilityExternalBrowserRead: true,
+		CapabilityExternalBrowserMutate: true,
 	}}
 }
 
@@ -108,6 +111,11 @@ func TestClassifyRiskIsDeterministic(t *testing.T) {
 		{"exec ordinary", CapabilityExec, inside, false, false, RiskMedium},
 		{"exec destructive", CapabilityExec, inside, true, true, RiskHigh},
 		{"network", CapabilityNetwork, Scope{Class: ScopeExternal}, false, false, RiskMedium},
+		{"external search", CapabilityExternalSearch, Scope{Class: ScopeExternal}, false, false, RiskMedium},
+		{"mcp read", CapabilityExternalMCPRead, Scope{Class: ScopeExternal}, false, false, RiskMedium},
+		{"browser read", CapabilityExternalBrowserRead, Scope{Class: ScopeExternal}, false, false, RiskMedium},
+		{"mcp mutate", CapabilityExternalMCPMutate, Scope{Class: ScopeExternal}, true, false, RiskHigh},
+		{"browser mutate", CapabilityExternalBrowserMutate, Scope{Class: ScopeExternal}, true, false, RiskHigh},
 		{"unknown capability", Capability("future"), inside, false, false, RiskHigh},
 	}
 	for _, tc := range cases {
@@ -362,5 +370,49 @@ func TestGrantStoreConsumeIsOneShotAndConcurrent(t *testing.T) {
 	wg.Wait()
 	if granted != 1 {
 		t.Fatalf("grants handed out = %d, want 1", granted)
+	}
+}
+
+// External mutation requires the strongest authority and an approval, but the
+// decision must never claim workspace mutation: a remote change cannot demand
+// local verification or become repository completion evidence.
+func TestExternalMutationIsApprovedButNotWorkspaceMutation(t *testing.T) {
+	req := Request{
+		Capability: CapabilityExternalMCPMutate,
+		Scope:      Scope{Class: ScopeExternal, Path: "mcp:alpha"},
+		Risk:       RiskHigh,
+		Mutates:    true,
+	}
+	d := (Policy{}).Evaluate(req, buildAuthority(), nil)
+	if d.Outcome != OutcomeApprove {
+		t.Fatalf("outcome = %s, want APPROVE (%s)", d.Outcome, d.Reason)
+	}
+	if d.Mutates {
+		t.Fatal("external mutation was reported as workspace mutation")
+	}
+	if !d.ExternalMutation {
+		t.Fatal("external mutation was not marked as external")
+	}
+	if !d.Capability.External() || !d.Capability.MutationCapable() {
+		t.Fatalf("capability classification = %+v", d.Capability)
+	}
+}
+
+func TestExternalMutationStillRequiresWriteAuthority(t *testing.T) {
+	ask := fakeAuthority{name: "ask", caps: map[Capability]bool{
+		CapabilityRead: true, CapabilityExternalMCPRead: true, CapabilityExternalMCPMutate: true,
+	}}
+	req := Request{
+		Capability: CapabilityExternalMCPMutate,
+		Scope:      Scope{Class: ScopeExternal, Path: "mcp:alpha"},
+		Risk:       RiskHigh,
+		Mutates:    true,
+	}
+	d := (Policy{}).Evaluate(req, ask, nil)
+	if d.Outcome != OutcomeDeny {
+		t.Fatalf("outcome = %s, want DENY", d.Outcome)
+	}
+	if d.Rule != RuleMutationNotPermitted {
+		t.Fatalf("rule = %s, want %s", d.Rule, RuleMutationNotPermitted)
 	}
 }
