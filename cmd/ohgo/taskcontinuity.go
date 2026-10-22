@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/task"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/PizenLabs/ohgo/tui"
@@ -22,9 +23,16 @@ import (
 // It returns the controller so the caller can hook a compaction report into a
 // checkpoint. A nil store or missing todo tool still installs a usable layer:
 // the objective and lifecycle are recorded even when no todo list exists.
-func installTaskContinuity(program *tui.Program, root string, toolSet []agent.Tool) *task.Controller {
+func installTaskContinuity(program *tui.Program, root string, toolSet []agent.Tool, holders ...*budget.Holder) *task.Controller {
 	controller := task.NewController(task.NewStore(root), todoSource(toolSet))
-	program.SetTaskHooks(tui.TaskHooks{
+	var holder *budget.Holder
+	if len(holders) > 0 {
+		holder = holders[0]
+	}
+	if holder != nil && holder.Get() != nil {
+		controller.SetBudgetLimits(holder.Get().Limits())
+	}
+	hooks := tui.TaskHooks{
 		Begin: func(objective string) tui.TaskProjection {
 			recorded, err := controller.Begin(objective)
 			return taskProjection(recorded, err)
@@ -50,7 +58,20 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			return taskProjection(recorded, err)
 		},
 		Context: controller.Context,
-	})
+	}
+	if holder != nil {
+		// The TUI grants a fresh run budget at each turn boundary through the
+		// controller, then records what the tree consumed. The holder is the
+		// same instance every spawner reads, so descendants cannot obtain a
+		// separate grant.
+		hooks.RunBudget = func() *budget.Budget {
+			grant := controller.RunBudget()
+			holder.Set(grant)
+			return grant
+		}
+		hooks.RecordBudget = controller.RecordBudget
+	}
+	program.SetTaskHooks(hooks)
 
 	// A checkpoint recovered from disk is shown before the next turn. A
 	// non-terminal one was interrupted (a crash is normalized to PAUSED), so

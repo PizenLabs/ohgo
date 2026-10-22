@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/project"
 )
 
@@ -50,6 +51,10 @@ type Progress struct {
 	NextAction string `json:"nextAction,omitempty"`
 	// CheckpointAt orders checkpoints: an older stamp never overwrites a newer.
 	CheckpointAt time.Time `json:"checkpointAt"`
+	// Budget is the task's cumulative resource ledger. It is optional on
+	// read: checkpoints written before Phase 5 carry no budget and resume
+	// with a fresh ledger rather than failing.
+	Budget *budget.State `json:"budget,omitempty"`
 }
 
 // ProgressFrom projects a task into its checkpoint form.

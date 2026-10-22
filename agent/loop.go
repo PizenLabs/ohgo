@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/security"
 )
 
@@ -138,7 +139,19 @@ type Config struct {
 	// DefaultMaxTurns. Reaching the cap returns ErrTurnLimit with the turns
 	// completed so far, so a model that never stops proposing tools cannot run
 	// unbounded even when no deadline was configured.
+	//
+	// It is the legacy per-run cap. When Budget is set, the tree-wide turn
+	// grant is authoritative for aggregate consumption; MaxTurns still bounds
+	// one run, which is the Run Budget half of the contract.
 	MaxTurns int
+	// Budget is the root-owned resource grant shared by every descendant of
+	// this run. When nil the loop creates a run-local budget from MaxTurns and
+	// the deadline, preserving the pre-Phase-5 behaviour for embedders.
+	//
+	// A caller that delegates must pass the same pointer to RunSubagent (the
+	// production spawner does). A child never receives a fresh budget: that
+	// would reset the aggregate the root is enforcing.
+	Budget *budget.Budget
 	// OnToolProgress reports partial and final outcomes for a tool call.
 	//
 	// It is how a long-running command streams output into a UI. Without it a
@@ -237,6 +250,20 @@ type AfterToolCallResult struct {
 // Loop runs the model/tool cycle until the model stops calling tools.
 type Loop struct {
 	cfg Config
+	// budget is the normalised root grant for this loop. cfg.Budget points at
+	// the same instance when the caller supplied one; otherwise it is the
+	// run-local grant New derived from MaxTurns.
+	budget *budget.Budget
+	// explicitBudget records that the caller supplied or installed the grant.
+	// It preserves the frozen ErrTurnLimit contract for embedders that only
+	// set MaxTurns, while a host with a real tree budget receives a resource
+	// stop the completion layer can inspect.
+	explicitBudget bool
+	// admissionMu guards admissionErr. Tool calls dispatch concurrently, so
+	// the first failed admission is recorded under the mutex and surfaced to
+	// Run after the batch joins.
+	admissionMu  sync.Mutex
+	admissionErr error
 	// lastProviderTokens is the context size the provider reported for the
 	// previous request. It floors the local estimate so on-wire compression
 	// cannot hide real growth.
@@ -258,13 +285,21 @@ func New(cfg Config) (*Loop, error) {
 	if cfg.MaxTurns <= 0 {
 		cfg.MaxTurns = DefaultMaxTurns
 	}
+	explicitBudget := cfg.Budget != nil
+	if cfg.Budget == nil {
+		cfg.Budget = budget.New(budget.Limits{
+			Turns:      cfg.MaxTurns,
+			Deadline:   cfg.Deadline,
+			ModelCalls: cfg.MaxTurns,
+		})
+	}
 	// Compaction without a summarizer would leave context growing until the
 	// provider rejects the request, so refuse the misconfiguration here rather
 	// than discovering it mid-conversation.
 	if cfg.Compaction.Enabled && cfg.Compaction.Strategy != StrategyOff && cfg.Summarize == nil {
 		return nil, ErrNoSummarizer
 	}
-	return &Loop{cfg: cfg}, nil
+	return &Loop{cfg: cfg, budget: cfg.Budget, explicitBudget: explicitBudget}, nil
 }
 
 // defaultMaxTokens caps a completion when the caller did not pick a budget.
@@ -390,6 +425,13 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 			return turns, err
 		}
 		if len(turns) >= l.cfg.MaxTurns {
+			if l.explicitBudget {
+				return turns, turnBudgetError(&budget.ExhaustedError{
+					Dimension: budget.DimensionTurns,
+					Limit:     l.cfg.MaxTurns,
+					Used:      len(turns),
+				})
+			}
 			return turns, ErrTurnLimit
 		}
 
@@ -399,7 +441,8 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 		// money; a turn cap would only approximate it. Expiry returns the turns
 		// so far with a nil error, because a deadline is a budget being spent
 		// rather than a failure — the run is resumable from where it stopped.
-		if !l.cfg.Deadline.IsZero() && !time.Now().Before(l.cfg.Deadline) {
+		deadline := l.deadline()
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
 			return turns, nil
 		}
 
@@ -415,6 +458,17 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 		toolChoice := l.cfg.ToolChoice
 		if l.cfg.GetToolChoice != nil {
 			toolChoice = l.cfg.GetToolChoice()
+		}
+
+		if err := ctx.Err(); err != nil {
+			return turns, err
+		}
+		// A model call is admitted only after every local preparation step has
+		// succeeded. Turn and model-call are charged together, atomically: a
+		// refused model call must not silently spend a turn, and a child that
+		// shares this grant cannot observe either counter mid-admission.
+		if err := l.budget.AdmitAll(budget.DimensionTurns, budget.DimensionModelCalls); err != nil {
+			return turns, turnBudgetError(err)
 		}
 
 		stream, err := l.cfg.Stream(ctx, ai.Request{
@@ -460,7 +514,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 			}
 		}
 
-		outcomes := l.dispatch(ctx, byName, assistant, calls, turn, len(turns))
+		outcomes, admissionErr := l.dispatch(ctx, byName, assistant, calls, turn, len(turns))
 		turn.Results = outcomes
 		for _, outcome := range outcomes {
 			live = append(live, ToolResultMessage{
@@ -475,7 +529,81 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 		if l.cfg.OnTurn != nil {
 			l.cfg.OnTurn(turn)
 		}
+		// The turn is complete and its evidence is intact. Return the budget
+		// stop now rather than asking the model for another turn it cannot
+		// afford: the work so far is resumable, and completion evaluation can
+		// still inspect exactly what happened.
+		if admissionErr != nil {
+			return turns, admissionErr
+		}
 	}
+}
+
+// SetBudget installs the root grant for the next Run.
+//
+// A host that spans several runs (the TUI turn loop, the REPL) replaces the
+// grant at a run boundary; descendants share the pointer they were given, so
+// replacing it never mutates a tree that is still executing. It must be called
+// before Run, never during one.
+func (l *Loop) SetBudget(b *budget.Budget) {
+	if b == nil {
+		// A nil grant would silently disable admission. Rebuild the run-local
+		// grant from the loop's existing bounds instead.
+		b = budget.New(budget.Limits{
+			Turns:      l.cfg.MaxTurns,
+			ModelCalls: l.cfg.MaxTurns,
+			Deadline:   l.cfg.Deadline,
+		})
+	}
+	l.cfg.Budget = b
+	l.budget = b
+	l.explicitBudget = true
+}
+
+// Budget returns the grant this loop is currently enforcing.
+func (l *Loop) Budget() *budget.Budget { return l.budget }
+
+// deadline returns the effective wall-clock bound: the stricter of the legacy
+// per-run deadline and the root budget's deadline. One absolute instant is
+// shared down the tree, so a child cannot extend it.
+func (l *Loop) deadline() time.Time {
+	deadline := l.cfg.Deadline
+	if root := l.budget.Deadline(); !root.IsZero() && (deadline.IsZero() || root.Before(deadline)) {
+		deadline = root
+	}
+	return deadline
+}
+
+// recordAdmissionFailure keeps the first budget refusal in a tool batch. The
+// batch continues so every other admitted call still produces its evidence;
+// Run surfaces the stop after the turn is recorded.
+func (l *Loop) recordAdmissionFailure(err error) {
+	l.admissionMu.Lock()
+	if l.admissionErr == nil {
+		l.admissionErr = err
+	}
+	l.admissionMu.Unlock()
+}
+
+// takeAdmissionFailure returns and clears the recorded refusal.
+func (l *Loop) takeAdmissionFailure() error {
+	l.admissionMu.Lock()
+	defer l.admissionMu.Unlock()
+	err := l.admissionErr
+	l.admissionErr = nil
+	return err
+}
+
+// turnBudgetError keeps the frozen ErrTurnLimit sentinel matchable while also
+// exposing the explicit resource dimension to callers that classify budget
+// stops. A model-call or tool-call exhaustion is not a turn limit and is
+// returned unchanged.
+func turnBudgetError(err error) error {
+	var exhausted *budget.ExhaustedError
+	if errors.As(err, &exhausted) && exhausted.Dimension == budget.DimensionTurns {
+		return fmt.Errorf("%w: %w", ErrTurnLimit, err)
+	}
+	return err
 }
 
 // model resolves the model for the next request.
@@ -579,7 +707,7 @@ func (l *Loop) dispatch(
 	calls []ai.ToolCall,
 	turn Turn,
 	turnIndex int,
-) []ToolOutcome {
+) ([]ToolOutcome, error) {
 	type indexed struct {
 		position int
 		outcome  ToolOutcome
@@ -624,7 +752,7 @@ func (l *Loop) dispatch(
 	for _, entry := range collected {
 		out[entry.position] = entry.outcome
 	}
-	return out
+	return out, l.takeAdmissionFailure()
 }
 
 // isExclusive reports whether a call must run alone.
@@ -750,6 +878,22 @@ func (l *Loop) execute(
 		}
 	}
 
+	// Approval can block indefinitely, so re-check cancellation after
+	// authorization and before charging anything. A cancelled call must not
+	// consume a grant it will never use.
+	if err := ctx.Err(); err != nil {
+		return fail(err.Error())
+	}
+
+	// Authority has admitted the operation; budget now decides whether the
+	// tree can still afford it. The two are deliberately separate: a grant is
+	// not permission, and remaining budget cannot widen authority. Admission
+	// is atomic, so an exhausted grant produces no execution.
+	if err := l.budget.Admit(budget.DimensionToolCalls); err != nil {
+		l.recordAdmissionFailure(err)
+		return fail(err.Error())
+	}
+
 	started := time.Now()
 	toolCtx := Context{
 		Ctx:       ctx,
@@ -757,6 +901,8 @@ func (l *Loop) execute(
 		ToolName:  call.Name,
 		SessionID: l.cfg.SessionID,
 		ReadOnly:  decision != nil && decision.ReadOnly,
+		Budget:    l.budget,
+		Deadline:  l.deadline(),
 	}
 	if err := ctx.Err(); err != nil {
 		return fail(err.Error())
@@ -785,6 +931,12 @@ func (l *Loop) execute(
 	}
 
 	result := tool.Execute(toolCtx, args)
+	if result.Exhausted != nil {
+		// The tool enforced a dimension the loop cannot see directly (a
+		// background job slot, a child execution). Record the same stop the
+		// loop's own admission would have produced.
+		l.recordAdmissionFailure(result.Exhausted)
+	}
 
 	// Apply the host override exactly once, here. The progress report below
 	// then sees the final values, so a UI never shows a result the model will

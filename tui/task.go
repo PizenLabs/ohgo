@@ -1,6 +1,10 @@
 package tui
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/PizenLabs/ohgo/budget"
+)
 
 // Task state values the task domain projects. They are duplicated here as
 // plain strings rather than imported so the seam stays a projection: the TUI
@@ -62,6 +66,13 @@ type TaskHooks struct {
 	Fail func(reason string) TaskProjection
 	// Context returns deterministic orientation blocks for the current task.
 	Context func() []string
+	// RunBudget returns the fresh root grant for one turn. The host installs
+	// it on the loop and on the subagent spawner before execution, so every
+	// descendant of the turn shares the same instance.
+	RunBudget func() *budget.Budget
+	// RecordBudget folds a finished run's consumption into the durable task
+	// ledger. It does not reset the in-memory grant.
+	RecordBudget func(snapshot budget.Snapshot)
 }
 
 // TaskProjected publishes a task projection into the transcript.

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/contract"
 )
 
@@ -31,6 +32,27 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 	switch {
 	case errors.Is(err, context.Canceled):
 		return taskActionPause, "interrupted"
+	case errors.Is(err, budget.ErrExhausted):
+		// Budget exhaustion is a resource stop, not a verdict. Phase 4
+		// completion evidence remains authoritative: a tree that stopped
+		// after an independently verified objective may still complete, while
+		// an unverified stop is resumable and never becomes success merely
+		// because the grant ran out.
+		//
+		completion := agent.EvaluateBudgetCompletion(agent.CompletionInput{
+			Turns:    turns,
+			Contract: intent,
+			Snapshot: snapshot,
+			Resolver: resolver,
+		}, true)
+		if completion.Complete() {
+			return taskActionComplete, ""
+		}
+		var exhausted *budget.ExhaustedError
+		if errors.As(err, &exhausted) {
+			return taskActionPause, exhausted.Error()
+		}
+		return taskActionPause, "budget exhausted"
 	case errors.Is(err, agent.ErrTurnLimit):
 		return taskActionPause, "turn limit reached"
 	case err != nil:

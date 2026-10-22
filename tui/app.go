@@ -13,6 +13,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/workspace"
@@ -3474,6 +3475,17 @@ func (p *Program) runTurn(text string) {
 	if p.task.Begin != nil {
 		p.PublishTask(p.task.Begin(intent.Objective))
 	}
+	// The budget is granted at the turn boundary, before any execution. The
+	// spawner shares this instance through the host's holder, so the same
+	// grant covers the root and every descendant. A new user turn is a new
+	// grant; the task ledger still carries the cumulative consumption.
+	var runBudget *budget.Budget
+	if p.task.RunBudget != nil {
+		runBudget = p.task.RunBudget()
+		if runBudget != nil {
+			p.loop.SetBudget(runBudget)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p.mu.Lock()
@@ -3578,6 +3590,13 @@ func (p *Program) runTurn(text string) {
 	}
 
 	turns, err := p.loop.Run(ctx, request)
+
+	// Record what this run consumed before any lifecycle transition persists
+	// it. The ledger is cumulative across resumes; the run grant itself is
+	// never reused for another turn.
+	if runBudget != nil && p.task.RecordBudget != nil {
+		p.task.RecordBudget(runBudget.Snapshot())
+	}
 
 	if p.usage != nil {
 		p.usage.Add(turns)

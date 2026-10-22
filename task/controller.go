@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/PizenLabs/ohgo/budget"
 )
 
 // Source supplies the current todo snapshot from the runtime's single todo
@@ -27,6 +29,12 @@ type Controller struct {
 	task       Task
 	lastAction string
 	restored   bool
+
+	// budgetLimits is the grant a new task starts under. The controller owns
+	// the durable ledger, never enforcement: the root loop and its
+	// descendants share one budget instance per run.
+	budgetLimits budget.Limits
+	budgetState  *budget.State
 }
 
 // NewController returns a controller backed by a store.
@@ -38,6 +46,48 @@ func NewController(store *Store, source Source) *Controller {
 
 // Store returns the store the controller writes through.
 func (c *Controller) Store() *Store { return c.store }
+
+// SetBudgetLimits records the grant new tasks start under. It does not touch
+// the current task's ledger: a resume continues the consumption already
+// recorded rather than resetting it.
+func (c *Controller) SetBudgetLimits(limits budget.Limits) {
+	c.budgetLimits = limits
+	if c.budgetState == nil {
+		c.budgetState = &budget.State{Limits: limits}
+		return
+	}
+	// The user may deliberately resume with a larger grant. Keep the
+	// cumulative usage; replace only the limits.
+	c.budgetState.Limits = limits
+}
+
+// RunBudget returns the fresh root grant for one execution tree.
+//
+// A new run is an explicit user invocation, not a continuation inside a tree:
+// descendants all share this instance, and none of them can replace it. The
+// task ledger still accumulates every run's consumption, so resuming never
+// erases what the previous run spent.
+func (c *Controller) RunBudget() *budget.Budget {
+	return budget.New(c.budgetLimits)
+}
+
+// RecordBudget folds one completed run's consumption into the task ledger.
+func (c *Controller) RecordBudget(snapshot budget.Snapshot) {
+	if c.budgetState == nil {
+		c.budgetState = &budget.State{Limits: snapshot.Limits}
+	}
+	c.budgetState.Limits = snapshot.Limits
+	c.budgetState.Used = c.budgetState.Used.Add(snapshot.Used)
+	c.budgetState.UpdatedAt = c.now().UTC()
+}
+
+// BudgetState returns the durable ledger, if one exists.
+func (c *Controller) BudgetState() (budget.State, bool) {
+	if c.budgetState == nil {
+		return budget.State{}, false
+	}
+	return *c.budgetState, true
+}
 
 // Current returns the task in memory, if any.
 func (c *Controller) Current() (Task, bool) {
@@ -88,6 +138,9 @@ func (c *Controller) Begin(objective string) (Task, error) {
 		if objective != "" && objective != c.task.Objective {
 			c.task.NextAction = objective
 		}
+		if c.budgetState == nil {
+			c.budgetState = &budget.State{Limits: c.budgetLimits}
+		}
 		c.task.UpdatedAt = now
 	default:
 		created, err := New(objective)
@@ -96,6 +149,9 @@ func (c *Controller) Begin(objective string) (Task, error) {
 		}
 		created.UpdatedAt = now
 		c.task = created
+		// A new task owns a new ledger. Its identity is new, so there is no
+		// prior consumption to carry forward.
+		c.budgetState = &budget.State{Limits: c.budgetLimits, UpdatedAt: now}
 	}
 
 	c.syncTodos()
@@ -254,6 +310,18 @@ func (c *Controller) ensureLoaded() error {
 		return nil
 	}
 	c.task = NormalizeRecovered(snap.Task)
+	if stored := snap.Progress.Budget; stored != nil {
+		state := *stored
+		if c.budgetState == nil {
+			c.budgetState = &state
+		} else {
+			// An explicit grant supplied before Restore wins over the stored
+			// limits; the consumed total always comes from disk, so a resume
+			// can raise the ceiling but never erase what was spent.
+			c.budgetState.Used = state.Used
+			c.budgetState.UpdatedAt = state.UpdatedAt
+		}
+	}
 	if err != nil && c.task.ID == "" {
 		// Nothing recoverable: report rather than silently starting over a
 		// state we could not read.
@@ -285,6 +353,10 @@ func (c *Controller) persist() error {
 		progress.CheckpointAt = c.task.UpdatedAt
 	}
 	progress.LastAction = c.lastAction
+	if c.budgetState != nil {
+		state := *c.budgetState
+		progress.Budget = &state
+	}
 	return c.store.SaveCheckpoint(c.task, progress)
 }
 

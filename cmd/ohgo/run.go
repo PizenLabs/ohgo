@@ -14,6 +14,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
 	"github.com/PizenLabs/ohgo/exec"
@@ -59,6 +60,15 @@ type options struct {
 	// maxTurns bounds the model turns in one run. Zero means the agent
 	// package's default.
 	maxTurns int
+	// Tree-wide grants derived from the controlling task. Zero means "derive
+	// from maxTurns/maxDepth" in budgetLimits.
+	maxModelCalls     int
+	maxToolCalls      int
+	maxChildren       int
+	maxBackgroundJobs int
+	// budget is the stable holder shared by the loop and every spawner, so a
+	// run boundary can install a fresh root grant without rebuilding tools.
+	budget *budget.Holder
 	// deadline bounds the whole run in wall-clock time. The zero value is no
 	// limit.
 	deadline time.Time
@@ -192,6 +202,10 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	if turns, _ := cmd.Flags().GetInt("max-turns"); turns > 0 {
 		opts.maxTurns = turns
 	}
+	opts.maxModelCalls, _ = cmd.Flags().GetInt("max-model-calls")
+	opts.maxToolCalls, _ = cmd.Flags().GetInt("max-tool-calls")
+	opts.maxChildren, _ = cmd.Flags().GetInt("max-children")
+	opts.maxBackgroundJobs, _ = cmd.Flags().GetInt("max-background-jobs")
 
 	// A wall-clock deadline bounds the whole run, because every loop iteration
 	// makes a provider call and that is what costs money. It is a budget, not a
@@ -226,7 +240,65 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	default:
 		opts.reasoning = true
 	}
+	opts.budget = budget.NewHolder(opts.newBudget())
 	return opts, registry, nil
+}
+
+// budgetLimits derives the tree-wide grant from the user's explicit knobs.
+//
+// A derived value is not a hidden preference: it is a deterministic function
+// of a flag the user can see, and every dimension has a finite default. The
+// multipliers leave room for the real shape of a turn (several tools per model
+// call) without letting one dimension grow without bound.
+func (o options) budgetLimits() budget.Limits {
+	turns := o.maxTurns
+	if turns <= 0 {
+		turns = agent.DefaultMaxTurns
+	}
+	modelCalls := o.maxModelCalls
+	if modelCalls <= 0 {
+		// Compaction issues a provider request of its own. Give the derived
+		// grant a small allowance so routine summarisation does not masquerade
+		// as model runaway; an explicit flag replaces this entirely.
+		modelCalls = turns + turns/10
+		if modelCalls < turns+4 {
+			modelCalls = turns + 4
+		}
+	}
+	toolCalls := o.maxToolCalls
+	if toolCalls <= 0 {
+		toolCalls = turns * 8
+	}
+	children := o.maxChildren
+	if children <= 0 {
+		children = o.maxDepth * 4
+	}
+	backgroundJobs := o.maxBackgroundJobs
+	if backgroundJobs <= 0 {
+		backgroundJobs = turns
+	}
+	return budget.Limits{
+		Turns:          turns,
+		ModelCalls:     modelCalls,
+		ToolCalls:      toolCalls,
+		Children:       children,
+		BackgroundJobs: backgroundJobs,
+		Deadline:       o.deadline,
+	}
+}
+
+// newBudget returns a fresh root grant for one run.
+func (o options) newBudget() *budget.Budget {
+	return budget.New(o.budgetLimits())
+}
+
+// ensureBudget returns the shared holder, creating one for a caller that built
+// options directly (tests, embedding hosts) rather than through resolveOptions.
+func (o options) ensureBudget() *budget.Holder {
+	if o.budget != nil {
+		return o.budget
+	}
+	return budget.NewHolder(o.newBudget())
 }
 
 // resolveModel picks the model for a run from the highest-precedence source,
@@ -393,6 +465,9 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 	if opts.noTools {
 		return nil
 	}
+	// One holder per tool set: the top-level loop and every spawner built here
+	// must resolve the same current grant.
+	opts.budget = opts.ensureBudget()
 	// The wait tool observes the bash tool's job table, so both are built
 	// from the same instance: two tables would let bash start jobs no wait
 	// call could ever see.
@@ -731,11 +806,12 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 			Stream:     registry.StreamFn(),
 			Tools:      childToolSet(opts, registry, parentTools, spec.Depth),
 			MaxTokens:  opts.maxTokens,
+			Budget:     opts.ensureBudget().Get(),
 			Reasoning:  opts.reasoning,
 			Admit:      opts.admit(),
 			Authorize:  gate,
 			Compaction: compactionFromSettings(opts.settings),
-			Summarize:  newSummarizer(registry.StreamFn(), opts.model),
+			Summarize:  newSummarizer(registry.StreamFn(), opts.model, opts.budget),
 			// The spawner is a separate parent config from the top-level loop,
 			// so every bound the user set must be copied here too. Omitting the
 			// deadline would make the D-2 inheritance fix vacuous in production.
@@ -767,6 +843,9 @@ func childToolSet(opts options, registry *ai.Registry, parentTools []agent.Tool,
 
 // buildLoop constructs the agent loop for a session.
 func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *session.Store, sess *session.Session, approve func(ai.ToolCall, agent.Approval) (bool, string)) (*agent.Loop, error) {
+	// Pin one holder before building the tools, so the loop and the spawner
+	// it creates cannot each derive a different root grant.
+	opts.budget = opts.ensureBudget()
 	// The security boundary is built before the tools so the subagent spawner
 	// can inherit the same gate: a delegated child must cross the same
 	// boundary as its parent, not a fresh one.
@@ -835,6 +914,7 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		SystemFn:        systemPrompt,
 		Tools:           toolSet,
 		MaxTokens:       opts.maxTokens,
+		Budget:          opts.budget.Get(),
 		Deadline:        opts.deadline,
 		MaxTurns:        opts.maxTurns,
 		Reasoning:       opts.reasoning,
@@ -846,7 +926,7 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		// execution.
 		Authorize:  opts.security,
 		Compaction: compactionFromSettings(opts.settings),
-		Summarize:  newSummarizer(registry.StreamFn(), opts.model),
+		Summarize:  newSummarizer(registry.StreamFn(), opts.model, opts.budget),
 		OnCompact: func(result agent.CompactResult) {
 			_, _ = fmt.Fprintf(out, "[compacted %d messages into %d tokens; %d retained]\n",
 				result.Compacted, result.AfterTokens, result.Retained)
@@ -1025,8 +1105,16 @@ func supportBuilder(opts options, registry *ai.Registry) func() (supportBundle, 
 // It runs a second request against the same provider, which costs tokens but
 // is the only honest way to summarise without a local model. The small output
 // budget keeps that cost bounded.
-func newSummarizer(stream ai.StreamFn, model ai.Model) agent.SummarizeFunc {
+func newSummarizer(stream ai.StreamFn, model ai.Model, holders ...*budget.Holder) agent.SummarizeFunc {
 	return func(ctx context.Context, messages []agent.Message) (string, error) {
+		// Compaction is a provider request. Charge it to the same root grant
+		// when the caller supplied one, so summarisation cannot become an
+		// unmetered side channel around the model-call budget.
+		if len(holders) > 0 {
+			if err := holders[0].Get().Admit(budget.DimensionModelCalls); err != nil {
+				return "", err
+			}
+		}
 		var text []string
 		for _, msg := range messages {
 			switch m := msg.(type) {
@@ -1563,7 +1651,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		}
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
 		attachShellEscape(program, opts.root, opts.security)
-		controller := installTaskContinuity(program, opts.root, loop.Tools())
+		controller := installTaskContinuity(program, opts.root, loop.Tools(), opts.budget)
 		program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
 		// A grant is bound to the task it was approved for, when the task layer
 		// knows one. The task remains authoritative for continuity; the gate
@@ -1828,6 +1916,14 @@ func runSession(cmd *cobra.Command, args []string) error {
 	plain.security = opts.security
 	plain.projectID = opts.projectID
 	plain.support = surface
+	// A plain-REPL prompt is one run, exactly like a TUI turn: it starts a
+	// fresh root grant, while the holder keeps every spawner pointed at the
+	// grant the loop is currently enforcing.
+	plain.newBudget = func() *budget.Budget {
+		grant := opts.newBudget()
+		opts.budget.Set(grant)
+		return grant
+	}
 	return repl(plain, out, os.Stdin, history)
 }
 
@@ -1882,7 +1978,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	}
 	program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
 	attachShellEscape(program, opts.root, opts.security)
-	controller := installTaskContinuity(program, opts.root, loop.Tools())
+	controller := installTaskContinuity(program, opts.root, loop.Tools(), opts.budget)
 	program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
 	opts.security.SetTaskSource(func() string {
 		if current, ok := controller.Current(); ok {
@@ -2391,6 +2487,9 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		user := agent.UserMessage{Text: text}
 		request := append(append([]agent.Message(nil), history...), user)
 
+		if h.newBudget != nil {
+			h.loop.SetBudget(h.newBudget())
+		}
 		turns, err := h.loop.Run(context.Background(), request)
 		if err != nil {
 			_, _ = fmt.Fprintf(out, "error: %v\n", err)

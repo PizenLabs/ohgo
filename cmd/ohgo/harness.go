@@ -16,6 +16,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
 	"github.com/PizenLabs/ohgo/creds"
@@ -59,6 +60,9 @@ type harness struct {
 	security *securityGate
 	// support is the ephemeral $sup surface. Nil means $sup is unavailable.
 	support *supportSurface
+	// newBudget grants a fresh root budget for one REPL turn. Nil means the
+	// loop's current grant is used as-is (one-shot runs, tests).
+	newBudget func() *budget.Budget
 }
 
 // newHarness assembles the backend. usage and settings may be nil only where

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/contract"
 )
 
@@ -124,6 +125,9 @@ type SubagentResult struct {
 	// so the parent's scoped verification requirement can be satisfied by the
 	// child's real command rather than by an unscoped boolean.
 	Verification *VerificationEvidence
+	// Budget is the shared root grant after the child ran. It is a snapshot,
+	// never a fresh budget: the parent and child consumed the same instance.
+	Budget budget.Snapshot
 }
 
 // RunSubagent runs a child loop derived from a parent configuration.
@@ -169,6 +173,28 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		maxTokens = parent.MaxTokens
 	}
 
+	// A direct RunSubagent caller may not have built a root grant. Normalise
+	// one here from the parent's own bounds so the child still shares a root
+	// rather than receiving an independent counter it could reset. Production
+	// always supplies an explicit holder shared with the parent loop.
+	if parent.Budget == nil {
+		turns := parent.MaxTurns
+		if turns <= 0 {
+			turns = DefaultMaxTurns
+		}
+		parent.Budget = budget.New(budget.Limits{
+			Turns:      turns,
+			ModelCalls: turns,
+			Deadline:   parent.Deadline,
+		})
+	}
+	// Delegation is a resource of the same tree, not a free escape from it.
+	// Admit before constructing or running the child; a refused admission
+	// produces no child at all.
+	if err := parent.Budget.Admit(budget.DimensionChildren); err != nil {
+		return SubagentResult{}, fmt.Errorf("agent: subagent: %w", err)
+	}
+
 	child := Config{
 		Model:           parent.Model,
 		ModelFn:         parent.ModelFn,
@@ -204,6 +230,9 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		// The turn budget is inherited for the same reason: delegation must
 		// not be a way around the bound that keeps a single run finite.
 		MaxTurns: parent.MaxTurns,
+		// The same root grant, never a copy with reset counters. Every child
+		// and grandchild is therefore visible in the root's aggregate.
+		Budget: parent.Budget,
 		// Progress and turns are the parent's concern; a child that emitted
 		// them would double-count into a UI that is already showing the
 		// parent's turn.
@@ -252,6 +281,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 			Mutated:      mutated,
 			Verified:     verified,
 			Verification: verification,
+			Budget:       parent.Budget.Snapshot(),
 		}, ErrNoSubagentResult
 	}
 
@@ -264,6 +294,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		Mutated:      mutated,
 		Verified:     verified,
 		Verification: verification,
+		Budget:       parent.Budget.Snapshot(),
 	}, nil
 }
 

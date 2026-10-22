@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/sandbox"
 )
 
@@ -151,10 +152,23 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 
 	mutates := t.Capability(args) == agent.TierWrite && !ctx.ReadOnly
 
+	// Foreground work is bounded by the root deadline as well as its own
+	// timeout. A command that outlives the tree is a deadline escape even when
+	// it would have finished within its per-call allowance.
+	if deadline := effectiveDeadline(ctx); !deadline.IsZero() {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return agent.ErrorResult("budget exhausted: deadline")
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+
 	if background, err := boolArg(args, "background", false); err != nil {
 		return agent.ErrorResult("%v", err)
 	} else if background {
-		return t.spawnBackground(command, timeout, ctx.ReadOnly, mutates)
+		return t.spawnBackground(ctx, command, timeout, ctx.ReadOnly, mutates)
 	}
 
 	// The request context is the parent so a run-level abort still kills the
@@ -263,6 +277,17 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 }
 
+// effectiveDeadline is the stricter of the context's deadline and the root
+// budget's deadline. Consulting both keeps a host that threads only the grant
+// from accidentally omitting the wall-clock bound.
+func effectiveDeadline(ctx agent.Context) time.Time {
+	deadline := ctx.Deadline
+	if root := ctx.Budget.Deadline(); !root.IsZero() && (deadline.IsZero() || root.Before(deadline)) {
+		deadline = root
+	}
+	return deadline
+}
+
 // spawnBackground starts a command as a detached job and returns its id.
 //
 // The timeout bounds the job, not the call: a job still running when it
@@ -271,11 +296,38 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 // context on purpose — binding it would kill the job when the turn ends,
 // which is exactly when background work must survive — so jobs live until
 // they exit, are killed by their timeout, or the ohgo process ends.
-func (t *BashTool) spawnBackground(command string, timeout time.Duration, readOnly, mutates bool) agent.Result {
+func (t *BashTool) spawnBackground(ctx agent.Context, command string, timeout time.Duration, readOnly, mutates bool) agent.Result {
+	// A detached job is still part of the root execution tree. Its wall-clock
+	// bound is the stricter of the per-job timeout and the root deadline, so a
+	// child cannot outlive the tree by asking for a long timeout. The budget's
+	// deadline is consulted as well as the context field, so a host that only
+	// threads the grant cannot accidentally omit the bound.
+	if deadline := effectiveDeadline(ctx); !deadline.IsZero() {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return agent.ErrorResult("budget exhausted: deadline")
+		}
+		if timeout <= 0 || remaining < timeout {
+			timeout = remaining
+		}
+	}
+
 	jobs := t.Jobs()
 	id, err := jobs.reserve(command)
 	if err != nil {
 		return agent.ErrorResult("%v", err)
+	}
+	// Charge the root exactly once, before the process exists. A refused
+	// admission discards the reservation, so a child cannot start work the
+	// tree could not afford.
+	if err := ctx.Budget.Admit(budget.DimensionBackgroundJobs); err != nil {
+		jobs.discard(id)
+		result := agent.ErrorResult("%v", err)
+		var exhausted *budget.ExhaustedError
+		if errors.As(err, &exhausted) {
+			result.Exhausted = exhausted
+		}
+		return result
 	}
 
 	// Background work is detached from the request context on purpose, but it
@@ -298,6 +350,13 @@ func (t *BashTool) spawnBackground(command string, timeout time.Duration, readOn
 	cmd.Stderr = &jobWriter{jobs: jobs, id: id}
 	jobs.attach(id, cmd)
 
+	// A cancellation that landed while the process was being prepared must
+	// not start detached work. The job table entry is discarded; the charge
+	// stays because the admission happened, but no process exists.
+	if err := checkCancelled(ctx.Ctx); err != nil {
+		jobs.discard(id)
+		return agent.ErrorResult("%v", err)
+	}
 	if err := cmd.Start(); err != nil {
 		jobs.discard(id)
 		return agent.ErrorResult("start background command: %v", err)
