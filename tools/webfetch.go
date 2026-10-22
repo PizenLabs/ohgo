@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/knowledge"
 	"github.com/PizenLabs/ohgo/security"
 )
 
@@ -134,29 +135,72 @@ func (t *WebFetchTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 	}
 	if text == "" {
 		return agent.Result{
-			Text:    fmt.Sprintf("%s returned no readable text.", rawURL),
+			Text: knowledge.Envelope(
+				"capability: web.fetch\nurl: "+singleLine(rawURL)+"\nstatus: empty",
+				"(no readable text)"),
+			Details: map[string]any{
+				"url":         rawURL,
+				"contentType": ctype,
+				"status":      "empty",
+				"trust":       string(knowledge.TrustUntrusted),
+			},
 			Useless: true,
 		}
 	}
 
 	truncated := false
-	if len(text) > WebFetchMaxChars {
-		text = text[:WebFetchMaxChars]
-		truncated = true
-	}
+	text, truncated = knowledge.BoundText(text, WebFetchMaxChars)
 	if truncated {
 		text += fmt.Sprintf("\n\n[text truncated at %d characters]", WebFetchMaxChars)
 	}
-
+	retrievedAt := time.Now().UTC()
+	parsedURL, _ := url.Parse(rawURL)
+	source := ""
+	if parsedURL != nil {
+		source = parsedURL.Hostname()
+	}
+	evidence := knowledge.Evidence{
+		Kind:  knowledge.EvidenceWebFetch,
+		Trust: knowledge.TrustUntrusted,
+		Provenance: knowledge.Provenance{
+			Capability:  knowledge.CapabilityWebFetch,
+			Source:      source,
+			Locator:     rawURL,
+			Provider:    "web_fetch",
+			RetrievedAt: retrievedAt,
+			RequestID:   knowledge.Hash(rawURL),
+		},
+		Bound: knowledge.Bound{
+			Bytes: len(body), Chars: len([]rune(text)),
+			Items: 1, Truncated: truncated, Reason: truncationReason(truncated),
+		},
+		ContentHash: knowledge.Hash(text),
+	}.Normalize()
+	header := fmt.Sprintf("capability: web.fetch\nurl: %s\ncontent_type: %s\nretrieved_at: %s\n",
+		singleLine(rawURL), singleLine(ctype), retrievedAt.Format(time.RFC3339))
+	if truncated {
+		header += "truncated: true (char_limit)\n"
+	}
 	return agent.Result{
-		Text: text,
+		Text: knowledge.Envelope(header, text),
 		Details: map[string]any{
-			"url":         rawURL,
-			"contentType": ctype,
-			"bytes":       len(body),
-			"truncated":   truncated,
+			"url":          rawURL,
+			"contentType":  ctype,
+			"bytes":        len(body),
+			"truncated":    truncated,
+			"trust":        string(knowledge.TrustUntrusted),
+			"retrieved_at": retrievedAt,
+			"evidence":     []knowledge.Evidence{evidence},
 		},
 	}
+}
+
+// truncationReason names the content bound for the legacy fetch.
+func truncationReason(truncated bool) string {
+	if truncated {
+		return "char_limit"
+	}
+	return ""
 }
 
 // htmlToText strips markup and reduces an HTML document to readable prose.

@@ -486,7 +486,12 @@ type State struct {
 	// keyboard, filters its roster live, and runs the highlighted command. It
 	// never enters the transcript, history, or session itself.
 	HelpModal *HelpCenterState
-	// ConnectModal is the open /connect Provider Manager, or nil. It is a
+	// InfoModal is the open /info page, or nil. It is a read-only modal like
+	// the /status card: any key dismisses it. It never enters the transcript,
+	// history, or session.
+	InfoModal *InfoView
+	// InformationModal is an alias field for InfoModal, kept in sync.
+	InformationModal *InformationView // ConnectModal is the open /connect Provider Manager, or nil. It is a
 	// working modal like the Session Manager: it owns the keyboard, moves its
 	// own cursor, and starts the guided setup for the highlighted provider. It
 	// never enters the transcript, history, or session itself.
@@ -913,6 +918,23 @@ func (s *State) Apply(event Event) {
 	case UsageModalClosed:
 		s.UsageModal = nil
 
+	case InfoModalOpened:
+		view := e.View
+		s.InfoModal = &view
+		s.InformationModal = &view
+
+	case InfoModalClosed:
+		s.InfoModal = nil
+		s.InformationModal = nil
+
+	case InformationModalOpened:
+		view := e.View
+		s.InformationModal = &view
+		s.InfoModal = &view
+
+	case InformationModalClosed:
+		s.InformationModal = nil
+		s.InfoModal = nil
 	case SessionManagerOpened:
 		// The roster is a snapshot taken when the modal opened, so a later
 		// store change cannot make a printed row stale underneath it.
@@ -2531,8 +2553,63 @@ func (QuitRequested) eventKind() string { return "quit_requested" }
 //
 // It exists so a long-running tool shows progress rather than a name, and it
 // reads only the common keys: a tool that stores its target elsewhere still
-// gets a name, which is better than a blank line.
+// gets a name, which is better than a blank line. External capabilities carry
+// an explicit "external" marker so network activity never reads as local
+// execution.
 func ToolSummaryForCall(name string, args map[string]any) string {
+	summary := toolSummaryBody(name, args)
+	if IsExternalTool(name) {
+		return "external " + summary
+	}
+	return summary
+}
+
+// IsExternalTool reports whether a tool talks to an external actor.
+//
+// It is presentation only: authority is still decided by the security gate,
+// never by this classification.
+func IsExternalTool(name string) bool {
+	switch name {
+	case "search", "mcp_list", "mcp_read", "mcp_call", "browser", "web_fetch":
+		return true
+	}
+	return false
+}
+
+// toolSummaryBody renders the tool-specific part of a call summary.
+func toolSummaryBody(name string, args map[string]any) string {
+	switch name {
+	case "search":
+		if query, ok := args["query"].(string); ok && query != "" {
+			return fmt.Sprintf("search %s", oneLine(query))
+		}
+	case "mcp_list":
+		if server, ok := args["server"].(string); ok && server != "" {
+			return fmt.Sprintf("mcp_list %s", oneLine(server))
+		}
+		return "mcp_list"
+	case "mcp_read", "mcp_call":
+		server, _ := args["server"].(string)
+		target, _ := args["tool"].(string)
+		if target == "" {
+			target, _ = args["resource"].(string)
+		}
+		if server != "" || target != "" {
+			return fmt.Sprintf("%s %s %s", name, oneLine(server), oneLine(target))
+		}
+	case "browser":
+		operation, _ := args["operation"].(string)
+		if operation == "" {
+			operation = "browser"
+		}
+		if rawURL, ok := args["url"].(string); ok && rawURL != "" {
+			return fmt.Sprintf("browser %s %s", operation, oneLine(rawURL))
+		}
+		if index, ok := args["index"].(float64); ok {
+			return fmt.Sprintf("browser %s #%d", operation, int(index))
+		}
+		return "browser " + operation
+	}
 	for _, key := range []string{"path", "command", "pattern", "url", "file"} {
 		if value, ok := args[key]; ok {
 			if text, ok := value.(string); ok && text != "" {
@@ -2739,7 +2816,10 @@ var Commands = []CommandSpec{
 	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
 	{Name: "status", Usage: "status", Description: "show workspace, session, and authority status", Category: CommandGroupControl},
 	{Name: "usage", Usage: "usage", Description: "inspect token usage, cost, and providers", Category: CommandGroupControl},
-	{Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
+	{Name: "info", Usage: "info", Description: "show documentation and changelog", Category: CommandGroupControl},
+	{Name: "about", Usage: "about", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
+	{Name: "docs", Usage: "docs", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
+	{Name: "changelog", Usage: "changelog", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl}, {Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
 	{Name: "diff", Usage: "diff [target]", Description: "inspect the working-tree diff", Category: CommandGroupControl},
 	{Name: "retry", Usage: "retry", Description: "re-send the last prompt", Category: CommandGroupControl},
 	{Name: "compact", Usage: "compact", Description: "summarise context now", Category: CommandGroupControl},

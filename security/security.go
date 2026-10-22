@@ -35,12 +35,31 @@ const (
 	CapabilityExec Capability = "process.exec"
 	// CapabilityNetwork fetches a remote resource.
 	CapabilityNetwork Capability = "network.fetch"
+	// CapabilityExternalSearch performs one bounded external search.
+	CapabilityExternalSearch Capability = "external.search"
+	// CapabilityExternalMCPRead reads an MCP resource or calls a read-only MCP
+	// tool. Discovery is included: it observes a configured server and grants
+	// nothing.
+	CapabilityExternalMCPRead Capability = "external.mcp.read"
+	// CapabilityExternalMCPMutate calls an MCP tool classified as interaction
+	// or mutation. It is distinct from a local write because it changes state
+	// outside the workspace, but it requires the same strongest authority and
+	// an explicit human approval.
+	CapabilityExternalMCPMutate Capability = "external.mcp.mutate"
+	// CapabilityExternalBrowserRead opens, follows, or reads a bounded page.
+	CapabilityExternalBrowserRead Capability = "external.browser.read"
+	// CapabilityExternalBrowserMutate is the reserved capability for browser
+	// interaction or mutation. No Phase 8 tool implements it; it fails closed.
+	CapabilityExternalBrowserMutate Capability = "external.browser.mutate"
 )
 
 // Known reports whether cap is one the policy can classify.
 func (c Capability) Known() bool {
 	switch c {
-	case CapabilityRead, CapabilityWrite, CapabilityExec, CapabilityNetwork:
+	case CapabilityRead, CapabilityWrite, CapabilityExec, CapabilityNetwork,
+		CapabilityExternalSearch, CapabilityExternalMCPRead,
+		CapabilityExternalMCPMutate, CapabilityExternalBrowserRead,
+		CapabilityExternalBrowserMutate:
 		return true
 	}
 	return false
@@ -49,6 +68,23 @@ func (c Capability) Known() bool {
 // Filesystem reports whether the capability addresses the local filesystem.
 func (c Capability) Filesystem() bool {
 	return c == CapabilityRead || c == CapabilityWrite
+}
+
+// External reports whether the capability talks to a remote actor.
+func (c Capability) External() bool {
+	switch c {
+	case CapabilityNetwork, CapabilityExternalSearch, CapabilityExternalMCPRead,
+		CapabilityExternalMCPMutate, CapabilityExternalBrowserRead,
+		CapabilityExternalBrowserMutate:
+		return true
+	}
+	return false
+}
+
+// MutationCapable reports whether the capability can durably change state
+// outside the workspace. It is a classification input, never an authorization.
+func (c Capability) MutationCapable() bool {
+	return c == CapabilityExternalMCPMutate || c == CapabilityExternalBrowserMutate
 }
 
 // Risk is a deterministic classification input to policy.
@@ -170,9 +206,17 @@ type Decision struct {
 	Capability Capability
 	Scope      Scope
 	Risk       Risk
-	// Mutates echoes whether the operation can change state, so a UI can
-	// accent a mutation without re-deriving it from the tool name.
+	// Mutates echoes whether the operation can change workspace state, so a UI
+	// can accent a mutation without re-deriving it from the tool name.
+	//
+	// External mutation is deliberately excluded: changing a remote service is
+	// not a repository change, and treating it as one would let an external
+	// call demand local verification or look like completion evidence.
 	Mutates bool
+	// ExternalMutation marks an operation that durably changes state outside
+	// the workspace. It requires the strongest authority and approval, but it
+	// is not workspace mutation evidence.
+	ExternalMutation bool
 	// ReadOnly marks an execution decision that must run behind a read-only
 	// workspace boundary. It is derived from the authority in force, not from
 	// the command text: an authority that cannot write cannot be trusted to

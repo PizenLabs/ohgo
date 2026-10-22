@@ -115,6 +115,14 @@ func ClassifyRisk(cap Capability, scope Scope, mutates, destructive bool) Risk {
 	if cap.Filesystem() && scope.Class == ScopeOutside {
 		return RiskHigh
 	}
+	// External targets are never low risk: even a read sends data to a remote
+	// actor. Anything that can durably change external state is high risk.
+	if cap.External() {
+		if cap.MutationCapable() || mutates {
+			return RiskHigh
+		}
+		return RiskMedium
+	}
 	switch cap {
 	case CapabilityRead:
 		return RiskLow
@@ -124,8 +132,6 @@ func ClassifyRisk(cap Capability, scope Scope, mutates, destructive bool) Risk {
 		if destructive {
 			return RiskHigh
 		}
-		return RiskMedium
-	case CapabilityNetwork:
 		return RiskMedium
 	}
 	return RiskHigh

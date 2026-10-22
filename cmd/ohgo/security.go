@@ -52,6 +52,16 @@ func operationForCapability(cap security.Capability) (workspace.Operation, bool)
 		return workspace.OpExec, true
 	case security.CapabilityNetwork:
 		return workspace.OpRead, true
+	case security.CapabilityExternalSearch, security.CapabilityExternalMCPRead,
+		security.CapabilityExternalBrowserRead:
+		// Reading external knowledge observes a remote resource. It is not a
+		// repository read, but it consumes the same read authority today.
+		return workspace.OpRead, true
+	case security.CapabilityExternalMCPMutate, security.CapabilityExternalBrowserMutate:
+		// External mutation requires the strongest authority. It is a distinct
+		// capability (and a distinct approval), never a silent extension of a
+		// read.
+		return workspace.OpWrite, true
 	}
 	return "", false
 }
@@ -323,6 +333,8 @@ func approvalFor(decision security.Decision, preview agent.MutationPreview) agen
 		tier = agent.TierWrite
 	case security.CapabilityExec:
 		tier = agent.TierExec
+	case security.CapabilityExternalMCPMutate, security.CapabilityExternalBrowserMutate:
+		tier = agent.TierWrite
 	}
 	if decision.Mutates {
 		tier = agent.TierWrite
@@ -331,6 +343,9 @@ func approvalFor(decision security.Decision, preview agent.MutationPreview) agen
 	fmt.Fprintf(&b, "capability: %s\n", decision.Capability)
 	fmt.Fprintf(&b, "scope: %s\n", scopeLabel(decision.Scope))
 	fmt.Fprintf(&b, "risk: %s\n", decision.Risk)
+	if decision.ExternalMutation {
+		b.WriteString("mutation: external (not a repository change)\n")
+	}
 	fmt.Fprintf(&b, "reason: %s", decision.Reason)
 	// Normalize alias fields on the preview.
 	preview.MutationType = preview.Operation
@@ -425,6 +440,32 @@ func scopeFor(cap security.Capability, root string, args map[string]any) securit
 			host = parsed.Host
 		}
 		return security.ExternalScope(raw, host)
+	case security.CapabilityExternalSearch:
+		provider := strings.TrimSpace(argString(args, "provider"))
+		if provider == "" {
+			provider = "default"
+		}
+		return security.ExternalScope("search:"+provider, "search:"+provider)
+	case security.CapabilityExternalMCPRead, security.CapabilityExternalMCPMutate:
+		server := strings.TrimSpace(argString(args, "server"))
+		if server == "" {
+			server = "any"
+		}
+		return security.ExternalScope("mcp:"+server, "mcp:"+server)
+	case security.CapabilityExternalBrowserRead, security.CapabilityExternalBrowserMutate:
+		raw := strings.TrimSpace(argString(args, "url"))
+		host := ""
+		if parsed, err := url.Parse(raw); err == nil {
+			host = parsed.Host
+		}
+		if host == "" {
+			session := strings.TrimSpace(argString(args, "session"))
+			if session == "" {
+				session = "default"
+			}
+			host = "session:" + session
+		}
+		return security.ExternalScope(raw, host)
 	}
 	return security.Scope{Class: security.ScopeUnspecified}
 }
@@ -438,6 +479,44 @@ func summarize(cap security.Capability, args map[string]any) string {
 		return argString(args, "path")
 	case security.CapabilityNetwork:
 		return argString(args, "url")
+	case security.CapabilityExternalSearch:
+		query := argString(args, "query")
+		provider := argString(args, "provider")
+		if provider == "" {
+			provider = "default"
+		}
+		return provider + ": " + query
+	case security.CapabilityExternalMCPRead, security.CapabilityExternalMCPMutate:
+		server := argString(args, "server")
+		operation := argString(args, "operation")
+		tool := argString(args, "tool")
+		resource := argString(args, "resource")
+		parts := []string{"server=" + server}
+		if operation != "" {
+			parts = append(parts, "operation="+operation)
+		}
+		if tool != "" {
+			parts = append(parts, "tool="+tool)
+		}
+		if resource != "" {
+			parts = append(parts, "resource="+resource)
+		}
+		return strings.Join(parts, " ")
+	case security.CapabilityExternalBrowserRead, security.CapabilityExternalBrowserMutate:
+		operation := argString(args, "operation")
+		url := argString(args, "url")
+		session := argString(args, "session")
+		parts := []string{"operation=" + operation}
+		if url != "" {
+			parts = append(parts, "url="+url)
+		}
+		if session != "" {
+			parts = append(parts, "session="+session)
+		}
+		if index, ok := args["index"].(float64); ok {
+			parts = append(parts, fmt.Sprintf("index=%d", int(index)))
+		}
+		return strings.Join(parts, " ")
 	}
 	return ""
 }

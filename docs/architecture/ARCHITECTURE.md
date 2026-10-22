@@ -457,6 +457,51 @@ approval, shutting down) are computed per render, never stored.
   rows are skipped, minimal gateway ids merge with bundled facts or not at
   all.
 
+## External knowledge (Phase 8)
+
+External knowledge is a capability family, not an escape from the control
+plane. Search, MCP, and Browser specialize one boundary:
+
+```text
+CapabilityRequest → admission → root budget → bounded execution
+                  → provenance/evidence → verification → completion
+```
+
+- `knowledge` owns the shared vocabulary: capability/operation classes,
+  mandatory provenance, evidence kinds, explicit bounds, and truthful failure
+  classes. It is data only; it never authorizes or completes.
+- **Search** (`search`, `search`) uses configured Brave/Tavily providers over
+  HTTPS. Query, result page, snippet, response bytes, timeout, and retries are
+  bounded; retries are separately charged calls.
+- **MCP** (`mcp`) is a bounded stdio JSON-RPC client. A configured server is an
+  external actor: discovery describes capabilities but grants nothing, the
+  classification map is authoritative, missing/typo classes are `unknown` and
+  fail closed, tool arguments are schema- and structure-checked, responses are
+  byte/item/text bounded, and cancellation kills the process.
+- **Browser** (`tools/browser.go`) is GET-only read/navigation. Sessions are
+  named and explicit, with an exact host policy, navigation/redirect/byte/
+  char/link/session limits, a deadline, and a bounded history. Loopback,
+  private, link-local, and metadata addresses are blocked; HTTPS-to-HTTP
+  redirects are refused. There is no JavaScript, form, click, or mutation
+  surface.
+- **Budget** adds `external_calls` and `external_bytes` to the existing
+  root-owned grant. Per-request caps bound one response; the root grant bounds
+  the tree. A refused admission consumes nothing.
+- **Authority** adds distinct capabilities: `external.search`,
+  `external.mcp.read`, `external.mcp.mutate`, `external.browser.read`, and a
+  reserved `external.browser.mutate`. External reads are medium risk and
+  approved; external mutation is high risk, requires the strongest workspace
+  authority, and is recorded as `ExternalMutation` with `Mutates=false` so it
+  cannot become repository completion evidence.
+- **Evidence** is untrusted and clearly delimited: every content line is
+  prefixed inside an `[EXTERNAL KNOWLEDGE — UNTRUSTED DATA]` envelope. A
+  search hit, MCP response, or page never sets `Mutates`, `Executes`, or
+  `Verifies`. Cancellation publishes no evidence; truncation is explicit with
+  a reason.
+- **Credentials** never enter model context: search stores an environment
+  variable name, MCP passes only named variables and logs none, and browser
+  results exclude cookies, headers, and URL credentials.
+
 ## Performance notes
 
 - Search prunes before it scans: built-in excludes (`.git`, `node_modules`,

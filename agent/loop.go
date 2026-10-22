@@ -288,9 +288,11 @@ func New(cfg Config) (*Loop, error) {
 	explicitBudget := cfg.Budget != nil
 	if cfg.Budget == nil {
 		cfg.Budget = budget.New(budget.Limits{
-			Turns:      cfg.MaxTurns,
-			Deadline:   cfg.Deadline,
-			ModelCalls: cfg.MaxTurns,
+			Turns:         cfg.MaxTurns,
+			Deadline:      cfg.Deadline,
+			ModelCalls:    cfg.MaxTurns,
+			ExternalCalls: cfg.MaxTurns,
+			ExternalBytes: 16 * 1024 * 1024,
 		})
 	}
 	// Compaction without a summarizer would leave context growing until the
@@ -550,9 +552,11 @@ func (l *Loop) SetBudget(b *budget.Budget) {
 		// A nil grant would silently disable admission. Rebuild the run-local
 		// grant from the loop's existing bounds instead.
 		b = budget.New(budget.Limits{
-			Turns:      l.cfg.MaxTurns,
-			ModelCalls: l.cfg.MaxTurns,
-			Deadline:   l.cfg.Deadline,
+			Turns:         l.cfg.MaxTurns,
+			ModelCalls:    l.cfg.MaxTurns,
+			Deadline:      l.cfg.Deadline,
+			ExternalCalls: l.cfg.MaxTurns,
+			ExternalBytes: 16 * 1024 * 1024,
 		})
 	}
 	l.cfg.Budget = b

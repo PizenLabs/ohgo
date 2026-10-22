@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
 	"github.com/PizenLabs/ohgo/session"
+	"github.com/PizenLabs/ohgo/tools"
 	"github.com/spf13/cobra"
 )
 
@@ -161,7 +163,34 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 	if len(toolSet) == 0 {
 		add("tools", false, "no tools built; check --no-tools is not set")
 	} else {
-		add("tools", true, fmt.Sprintf("%d tools (read, write, edit, bash, wait, glob, grep, ls, webfetch, todo)", len(toolSet)))
+		names := make([]string, 0, len(toolSet))
+		var externalErrors []string
+		external := 0
+		for _, tool := range toolSet {
+			names = append(names, tool.Name())
+			switch typed := tool.(type) {
+			case *tools.SearchTool:
+				external++
+				if typed.ConfigErr != "" {
+					externalErrors = append(externalErrors, "search: "+typed.ConfigErr)
+				}
+			case *tools.MCPListTool:
+				external++
+				if typed.ConfigErr != "" {
+					externalErrors = append(externalErrors, "mcp: "+typed.ConfigErr)
+				}
+			case *tools.MCPReadTool:
+				external++
+			case *tools.MCPCallTool:
+				external++
+			}
+		}
+		add("tools", true, fmt.Sprintf("%d tools (%s)", len(toolSet), strings.Join(names, ", ")))
+		if len(externalErrors) > 0 {
+			add("external", false, strings.Join(externalErrors, "; ")+"; fix ~/.ohgo/settings.json")
+		} else if external > 0 {
+			add("external", true, fmt.Sprintf("%d external capability tools configured", external))
+		}
 	}
 
 	return reports
