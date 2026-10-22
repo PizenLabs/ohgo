@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
@@ -1307,8 +1309,8 @@ func runOnce(cmd *cobra.Command, text string) error {
 	// is called, never handed to it to attempt (§3, §11).
 	route := workspace.RouteTurn(opts.authority(), text)
 	if !route.Allowed() {
-		_, _ = fmt.Fprintln(out, route.Message())
-		return nil
+		outcome := refuseHeadless(out, route)
+		return &headlessExit{outcome: outcome}
 	}
 	if route.Notice() != "" {
 		_, _ = fmt.Fprintln(out, route.Notice())
@@ -1327,9 +1329,17 @@ func runOnce(cmd *cobra.Command, text string) error {
 	if err != nil {
 		return err
 	}
-	request := append(append([]agent.Message(nil), history...), agent.UserMessage{Text: text})
-	_, err = loop.Run(context.Background(), request)
-	return err
+	// A one-shot command is interruptible like an interactive turn. The
+	// cancellation path is not a new orchestration layer: it makes the exit
+	// status honest when the process is stopped.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	outcome, _ := runHeadlessTurn(ctx, loop, opts.root, out, text, history)
+	if outcome.State == runCompleted {
+		return nil
+	}
+	return &headlessExit{outcome: outcome}
 }
 
 // openStore opens the session database without creating a session. A store
@@ -2414,6 +2424,9 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			case "jobs":
 				_, _ = fmt.Fprintln(out, h.JobsReport())
 				continue
+			case "task":
+				_, _ = fmt.Fprintln(out, "task continuity is available in the full-screen UI; the plain REPL is stateless")
+				continue
 			case "ask", "fuzz", "build":
 				ws, err := h.SwitchWorkspace(command.Name)
 				if err != nil {
@@ -2466,7 +2479,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		if h.loop != nil {
 			route := h.RouteTurn(text)
 			if !route.Allowed() {
-				_, _ = fmt.Fprintln(out, route.Message())
+				_ = refuseHeadless(out, route)
 				continue
 			}
 			if route.Notice() != "" {
@@ -2495,17 +2508,17 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		if h.newBudget != nil {
 			h.loop.SetBudget(h.newBudget())
 		}
-		turns, err := h.loop.Run(context.Background(), request)
-		if err != nil {
-			_, _ = fmt.Fprintf(out, "error: %v\n", err)
-			continue
-		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		_, turns := runHeadlessTurn(ctx, h.loop, h.root, out, text, history)
+		stop()
 		if h.usage != nil {
 			h.usage.Add(turns)
 		}
 		// Whatever the loop actually sent replaces the accumulator, including
 		// any compaction it applied, so the next turn starts from the real
-		// context rather than a stale copy.
+		// context rather than a stale copy. A reviewable or paused turn is
+		// still real conversation: keeping it lets the next prompt continue
+		// from what the model actually saw.
 		history = rebaseHistory(request, turns)
 	}
 }

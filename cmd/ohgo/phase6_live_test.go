@@ -45,7 +45,7 @@ type phase6RecordingTool struct {
 }
 
 func (t *phase6RecordingTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
-	return t.runner.executeCtx(ctx.Ctx, t.Tool.Name(), args)
+	return t.runner.executeCtx(ctx.Ctx, t.Name(), args)
 }
 
 // phase6LiveToolSet exposes the tools in a stable order for both tracks.

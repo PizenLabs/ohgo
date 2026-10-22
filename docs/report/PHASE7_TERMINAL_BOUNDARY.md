@@ -1,7 +1,7 @@
 # Phase 7 Terminal Boundary
 
 - **Date:** 2026-10-22
-- **Status:** proposed terminal contract; **not implemented**
+- **Status:** **implemented** — see [`PHASE7_CLOSURE.md`](PHASE7_CLOSURE.md) for the final evidence and verdict
 - **Predecessor:** [`PHASE6_FINAL_SYNTHESIS.md`](PHASE6_FINAL_SYNTHESIS.md)
 - **Purpose:** finish the current system, not continue the roadmap
 

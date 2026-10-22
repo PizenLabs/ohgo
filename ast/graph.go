@@ -26,6 +26,11 @@ const (
 	GraphMaxEdges = 400
 	// GraphWorkLimit bounds edge inspections for one query.
 	GraphWorkLimit = 100_000
+	// graphCancelCheckInterval bounds how many edge inspections may run
+	// between cancellation checks. It matches the Phase 6 contract: a
+	// cancelled traversal must stop promptly without paying a context check
+	// per edge.
+	graphCancelCheckInterval = 256
 )
 
 // GraphRelation selects the direction of a package traversal.
@@ -469,6 +474,17 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 	reason := ""
 	work := 0
 
+	// Edge inspections are the graph's real work unit. Checking the context
+	// every graphCancelCheckInterval inspections keeps cancellation
+	// observable during a long reverse-adjacency build without adding a
+	// per-edge context read.
+	checkCancelled := func() error {
+		if work%graphCancelCheckInterval != 0 {
+			return nil
+		}
+		return ctx.Err()
+	}
+
 	// Reverse traversal needs an importer adjacency. It is built on demand
 	// from the same forward edges; it is not a second stored graph.
 	var reverse map[string][]graphEdge
@@ -478,6 +494,9 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 			node := g.nodes[from]
 			for _, target := range sortedEdgeKeys(node.imports) {
 				work++
+				if err := checkCancelled(); err != nil {
+					return GraphResult{}, err
+				}
 				if work > GraphWorkLimit {
 					truncated, reason = true, "work_limit"
 					break
@@ -537,6 +556,9 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 		}
 		for _, edge := range outgoing {
 			work++
+			if err := checkCancelled(); err != nil {
+				return GraphResult{}, err
+			}
 			if work > GraphWorkLimit {
 				truncated, reason = true, "work_limit"
 				break
@@ -603,6 +625,11 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 	}
 	if truncated && reason == "" {
 		reason = "work_limit"
+	}
+	// A cancellation that landed during the last work band must not be
+	// reported as a successful (possibly truncated) result.
+	if err := ctx.Err(); err != nil {
+		return GraphResult{}, err
 	}
 
 	result.Nodes = make([]GraphNode, 0, len(nodes))

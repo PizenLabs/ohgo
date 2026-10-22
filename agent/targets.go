@@ -42,54 +42,54 @@ type StructuralResolver interface {
 // SymbolLocation is one declaration coordinate.
 type SymbolLocation struct {
 	// Path is repository-relative and slash-separated.
-	Path string
+	Path string `json:"path"`
 	// Symbol is the bare declared name.
-	Symbol string
+	Symbol string `json:"symbol"`
 	// QualifiedName is the receiver- or package-qualified coordinate.
-	QualifiedName string
+	QualifiedName string `json:"qualifiedName,omitempty"`
 	// Line and EndLine bound the declaration in Path.
-	Line    int
-	EndLine int
+	Line    int `json:"line"`
+	EndLine int `json:"endLine,omitempty"`
 }
 
 // FileState is the deterministic content state of one target file.
 type FileState struct {
 	// Path is repository-relative and slash-separated.
-	Path string
+	Path string `json:"path"`
 	// Exists reports whether the file was present when observed.
-	Exists bool
+	Exists bool `json:"exists"`
 	// Hash is the SHA-256 of the file content, empty when absent.
-	Hash string
+	Hash string `json:"hash,omitempty"`
 }
 
 // SymbolState is the content state of one declaration.
 type SymbolState struct {
 	// Location is where the declaration was found.
-	Location SymbolLocation
+	Location SymbolLocation `json:"location"`
 	// Exists reports whether the declaration was found.
-	Exists bool
+	Exists bool `json:"exists"`
 	// Hash is the SHA-256 of the declaration's source range.
-	Hash string
+	Hash string `json:"hash,omitempty"`
 }
 
 // TargetSnapshotEntry is the pre-run state of one contract target.
 type TargetSnapshotEntry struct {
 	// Target is the coordinate the request named.
-	Target contract.Target
+	Target contract.Target `json:"target"`
 	// Operation is the requested direction.
-	Operation contract.ChangeOp
+	Operation contract.ChangeOp `json:"operation"`
 	// Resolved reports that the target could be mapped to a concrete file or
 	// declaration before the run.
-	Resolved bool
+	Resolved bool `json:"resolved"`
 	// Ambiguous reports that the coordinate matched more than one declaration
 	// or package directory.
-	Ambiguous bool
+	Ambiguous bool `json:"ambiguous,omitempty"`
 	// Issue explains why the target could not be resolved.
-	Issue string
+	Issue string `json:"issue,omitempty"`
 	// Files are the file states for a path or package target.
-	Files []FileState
+	Files []FileState `json:"files,omitempty"`
 	// Symbols are the declaration states for a symbol target.
-	Symbols []SymbolState
+	Symbols []SymbolState `json:"symbols,omitempty"`
 }
 
 // TargetSnapshot is the bounded pre-run evidence for one contract.
@@ -98,14 +98,14 @@ type TargetSnapshotEntry struct {
 // repository snapshot: only the coordinates the user named are read.
 type TargetSnapshot struct {
 	// Root is the absolute workspace root the paths are relative to.
-	Root string
+	Root string `json:"root,omitempty"`
 	// Entries are one per target, in contract order.
-	Entries []TargetSnapshotEntry
+	Entries []TargetSnapshotEntry `json:"entries,omitempty"`
 	// FilesRead and BytesRead record the verification's read cost.
-	FilesRead int
-	BytesRead int64
+	FilesRead int   `json:"filesRead,omitempty"`
+	BytesRead int64 `json:"bytesRead,omitempty"`
 	// Issues are capture failures that were not target-specific.
-	Issues []string
+	Issues []string `json:"issues,omitempty"`
 }
 
 // TargetStatus is the structural verdict for one expected change.

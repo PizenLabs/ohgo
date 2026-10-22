@@ -3,7 +3,7 @@
     "benchmark_revision": "phase6-v1",
     "mode": "deterministic-static-tool-probes",
     "model": "none (tool-level capability probe; no provider calls)",
-    "generated_at": "2026-10-22T08:32:42.393042Z",
+    "generated_at": "2026-10-22T12:09:17.519582Z",
     "fixture_files": 53,
     "fixture_go_files": 52,
     "task_hash": "4a9b38c1db67a5ad51d2b346b511fe8303f4228bf9f20a99b639e492777976a6",
@@ -456,7 +456,7 @@
       "files_opened": 0,
       "input_tokens": 0,
       "output_tokens": 0,
-      "duration_ms": 4,
+      "duration_ms": 5,
       "packages": [
         "cmd/app",
         "internal/api",

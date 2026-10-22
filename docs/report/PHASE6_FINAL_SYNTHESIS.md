@@ -7,6 +7,12 @@
 - **Decision frame:** *Dynamic Path, Static Authority, Truthful State Transition*
 - **Companion:** [`PHASE7_TERMINAL_BOUNDARY.md`](PHASE7_TERMINAL_BOUNDARY.md)
 
+> **Post-Phase-7 note (2026-10-22):** this document is the Phase 6 audit and is
+> retained as history. Phase 7 closed A1–A6, F7, and F8; the current source,
+> tests, and terminal verdict are recorded in
+> [`PHASE7_CLOSURE.md`](PHASE7_CLOSURE.md). The gaps and limitations below
+> describe the audited Phase 6 tree, not the final Phase 7 tree.
+
 ## 0. Audit Method and Evidence Standard
 
 The audit read the production source before accepting any prior report:

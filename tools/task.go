@@ -195,6 +195,8 @@ func (t *TaskTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		Text:         body,
 		Details:      result,
 		Mutates:      result.Mutated,
+		Executes:     result.Executed,
+		Finished:     result.Executed,
 		Verifies:     result.Verified,
 		Verification: result.Verification,
 	}

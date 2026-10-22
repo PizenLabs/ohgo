@@ -160,6 +160,41 @@ func TestFutureCheckpointVersionIsRefused(t *testing.T) {
 	}
 }
 
+// A version-1 checkpoint is still readable, but it carries no completion
+// contract. Loading must not invent one or reject the recoverable task.
+func TestVersion1CheckpointLoadsWithoutContract(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(store.ProgressPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{
+  "version": 1,
+  "taskId": "legacy",
+  "status": "NEEDS_REVIEW",
+  "checkpointAt": "2026-01-01T00:00:00Z"
+}`
+	if err := os.WriteFile(store.ProgressPath(), []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	progress, found, err := store.LoadProgress()
+	if err != nil || !found {
+		t.Fatalf("LoadProgress = %v, found=%v", err, found)
+	}
+	if progress.Contract != nil {
+		t.Fatal("a version-1 checkpoint acquired a contract")
+	}
+	snap, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if snap.Task.ID != "legacy" || snap.Task.Status != StatusNeedsReview {
+		t.Fatalf("recovered task = %+v", snap.Task)
+	}
+	if snap.Task.Contract != nil {
+		t.Fatal("Load invented a completion contract")
+	}
+}
+
 // A process that died mid-run leaves RUNNING on disk. Recovery must report it
 // as recoverable (PAUSED), never as completed.
 func TestNormalizeRecovered(t *testing.T) {

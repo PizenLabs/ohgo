@@ -89,7 +89,28 @@ with session persistence, context compaction, subagent delegation
 (`--max-depth`), a wall-clock run budget (`--deadline`), and per-tool approval
 prompts.
 
-In-session commands: `/help /commands /clear /model [provider/id] /models /sessions /jobs /theme [dark|light] /connect /disconnect [provider] /status /usage /doctor /diff [target] /retry /compact /quit`. The REPL and the full-screen UI share the same backend, so every command means the same thing in both. `/status` reports the workspace and session; `/usage` opens the usage and provider inspector.
+In-session commands: `/help /commands /clear /model [provider/id] /models /sessions /jobs /task [status|cancel|accept] /theme [dark|light] /connect /disconnect [provider] /status /usage /doctor /diff [target] /retry /compact /quit`. The REPL and the full-screen UI share the same backend, so every command means the same thing in both; `/task` manages durable task continuity, which exists only in the full-screen UI, so the plain REPL reports it unavailable. `/status` reports the workspace and session; `/usage` opens the usage and provider inspector.
+
+## Completion and exit status
+
+Completion is decided from observed evidence, not from the model stopping.
+`ohgo run` prints one verdict and exits accordingly:
+
+| Verdict | Exit | Meaning |
+|---|---|---|
+| `COMPLETED` | 0 | The requested contract was satisfied by observed evidence |
+| `NEEDS_REVIEW` | 2 | The run stopped without enough evidence (missing execution, empty answer, unverified change) |
+| `PAUSED` | 3 | A budget, deadline, or turn limit stopped the run before a verdict |
+| `FAILED` | 1 | Execution, provider, or authority failure |
+| `CANCELLED` | 130 | The process was interrupted |
+
+The plain REPL prints the same verdict and keeps reading. The full-screen UI
+persists the task contract and its pre-run target evidence; a `NEEDS_REVIEW`
+task stays open until a later turn supplies evidence for that persisted
+contract, or the user explicitly runs `/task cancel` (abandon) or
+`/task accept` (close without claiming completion). Background `wait` reports a
+timed-out or non-zero job as an error, and only a successful recognised check
+is verification evidence.
 Mid-session `/model` resolves through the same catalog as `ohgo models`,
 so a listed model is always switchable. `/commands` (or Tab on a `/`-line)
 opens a searchable command palette; every row runs the command it names.

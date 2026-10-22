@@ -73,8 +73,14 @@ type BackgroundJobs struct {
 type backgroundJob struct {
 	// id is the stable handle handed to the model.
 	id string
-	// command is the shell text, for result headers.
+	// command is the shell text, for result headers and verification evidence.
 	command string
+	// root is the workspace the command ran in, so wait can classify the
+	// command's verification scope against the same root bash used.
+	root string
+	// mutates is the admission classification of the command. It describes
+	// what the command may change; it is not evidence that a change happened.
+	mutates bool
 	// startedAt bounds the elapsed display.
 	startedAt time.Time
 	// cmd is the running process, nil once reaped.
@@ -120,7 +126,7 @@ func (t *BackgroundJobs) runningLocked() int {
 // It fails when too many jobs are already running, or when the table is full
 // of completed jobs with nothing evictable — a table of only running jobs
 // cannot make room without killing something it was told to keep.
-func (t *BackgroundJobs) reserve(command string) (string, error) {
+func (t *BackgroundJobs) reserve(command string, mutates bool, root string) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -155,7 +161,10 @@ func (t *BackgroundJobs) reserve(command string) (string, error) {
 
 	t.next++
 	id := fmt.Sprintf("job-%d", t.next)
-	t.jobs[id] = &backgroundJob{id: id, command: command, startedAt: time.Now()}
+	t.jobs[id] = &backgroundJob{
+		id: id, command: command, root: root,
+		mutates: mutates, startedAt: time.Now(),
+	}
 	t.order = append(t.order, id)
 	return id, nil
 }
@@ -261,6 +270,11 @@ type jobSnapshot struct {
 	// exitCode and timedOut describe the exit, valid only when done.
 	exitCode int
 	timedOut bool
+	// command, root, and mutates carry the job's own execution classification
+	// so wait can report evidence without guessing from text.
+	command string
+	root    string
+	mutates bool
 	// elapsed is how long the job has (or did) run.
 	elapsed time.Duration
 	// text is the output accumulated since the last consume; the cursor is
@@ -290,6 +304,9 @@ func (t *BackgroundJobs) consumeLocked(job *backgroundJob) jobSnapshot {
 		done:     job.done,
 		exitCode: job.exitCode,
 		timedOut: job.timedOut,
+		command:  job.command,
+		root:     job.root,
+		mutates:  job.mutates,
 		elapsed:  time.Since(job.startedAt),
 	}
 	if job.done {
@@ -324,6 +341,9 @@ func (t *BackgroundJobs) completion(id string) (jobSnapshot, bool) {
 		done:     true,
 		exitCode: job.exitCode,
 		timedOut: job.timedOut,
+		command:  job.command,
+		root:     job.root,
+		mutates:  job.mutates,
 		elapsed:  job.finishedAt.Sub(job.startedAt),
 	}, true
 }

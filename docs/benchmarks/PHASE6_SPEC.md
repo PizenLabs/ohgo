@@ -268,10 +268,17 @@ queries. It checks the context between files and before publishing a rebuilt
 snapshot. A cancelled build leaves the previous snapshot intact but the query
 returns the cancellation error; it does not answer from stale data.
 
-Traversal checks the context at every node and at least every 256 edge
-inspections. Cancellation is an error result, never a partial `ok` result.
+Traversal checks the context at every queue node and at least every 256 edge
+inspections, in both the forward traversal and the on-demand reverse-adjacency
+build. It also re-checks before returning a result, so cancellation that lands
+in the final work band is not reported as a successful (possibly truncated)
+result. Cancellation is an error result, never a partial `ok` result.
 
-The existing `symbols` path keeps its frozen Phase 1 cancellation behaviour.
+The first lazy `ast.NewIndex` build is **not** context-cancellable: it is the
+frozen Phase 1 build and was deliberately not redesigned in Phase 6. A query
+that arrives before the index exists waits for that build; a query arriving
+after it observes the cancellation checks above. The existing `symbols` path
+keeps its frozen Phase 1 cancellation behaviour.
 
 ## 10. Authority, budget, verification, delegation
 

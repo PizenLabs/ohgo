@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -19,6 +20,15 @@ import (
 	"github.com/PizenLabs/ohgo/workspace"
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
+)
+
+// Terminal-transition states for one turn. They are deliberately three-valued:
+// a completed claim and a cancellation claim are both terminal, and neither can
+// be rewritten by the other.
+const (
+	turnTerminalOpen int32 = iota
+	turnTerminalCompleted
+	turnTerminalCancelled
 )
 
 // Approval choices offered to the user.
@@ -131,6 +141,17 @@ type Program struct {
 	// cancelTurn aborts the in-flight turn, if any. Set when a turn starts,
 	// cleared when it ends, guarded by mu for the same reason as history.
 	cancelTurn context.CancelFunc
+	// turnTerminal is the turn's terminal-transition linearization point.
+	// Cancellation stores CANCELLED; the post-run transition claims OPEN with
+	// a compare-and-swap before it persists COMPLETED. Whichever operation
+	// wins, the other observes it: a cancel that lands before the claim turns
+	// the action into PAUSE, and a claim that lands first is a completion the
+	// cancellation arrived after.
+	turnTerminal atomic.Int32
+	// beforeTaskTransition is a deterministic test seam for the exact
+	// window between "not cancelled" and the terminal claim. Production never
+	// sets it.
+	beforeTaskTransition func()
 	// mu guards history and cancelTurn across the update and turn goroutines.
 	mu sync.Mutex
 
@@ -1392,6 +1413,10 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		p.openJobsView()
 		return nil
 
+	case "task":
+		p.taskCommand(command.Args)
+		return nil
+
 	case "theme":
 		p.applyThemeCommand(command.Args)
 		return nil
@@ -1729,6 +1754,11 @@ func (p *Program) cancelSupportNow(note string) {
 // with the transition itself, not when the loop unwinds, so the footer can
 // never report working after the turn has terminated.
 func (p *Program) cancelTurnNow(note string) {
+	// Claim the terminal transition before the context is cancelled. The
+	// post-run path claims the same state with a CAS; a cancel that gets here
+	// first therefore cannot be lost between its ctx check and Complete.
+	p.turnTerminal.Store(turnTerminalCancelled)
+
 	p.mu.Lock()
 	cancel := p.cancelTurn
 	p.mu.Unlock()
@@ -3469,11 +3499,74 @@ func (p *Program) runTurn(text string) {
 	// model cannot add to or reinterpret it.
 	intent := workspace.BuildIntentContract(text)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	p.turnTerminal.Store(turnTerminalOpen)
+	p.mu.Lock()
+	p.cancelTurn = cancel
+	history := append([]agent.Message(nil), p.history...)
+	p.mu.Unlock()
+
+	// abortTurn ends a turn that never started execution: it reports the
+	// reason and clears the cancellation handle. The durable task is left
+	// exactly as it was, and the unused context is left to be collected; the
+	// only cancellation path that can store the terminal claim is
+	// cancelTurnNow, which is scoped to the active turn.
+	abortTurn := func(notice string) {
+		p.publish(Notice{Text: notice})
+		p.publish(AssistantDone{Seq: seq})
+		p.mu.Lock()
+		p.cancelTurn = nil
+		p.mu.Unlock()
+	}
+
+	// A non-terminal task owns its contract. A continuation reuses that
+	// persisted contract and its pre-run target baseline; a materially
+	// different request is refused until the human explicitly continues or
+	// abandons the task. This is what stops a review task from being closed by
+	// evidence for a different objective.
+	var targetSnapshot *agent.TargetSnapshot
+	if p.task.Current != nil {
+		if current, ok := p.task.Current(); ok && !taskStatusTerminal(current.Status) {
+			if !current.HasContract {
+				abortTurn("an open task has no persisted completion contract; run /task cancel to abandon it before starting a new task")
+				return
+			}
+			if !continuationPrompt(text) && !contractCompatible(intent, current.Contract) {
+				abortTurn("an open task is waiting: " + current.Objective +
+					". Reply with a continuation (for example \"continue\"), or run /task cancel to abandon it.")
+				return
+			}
+			intent = current.Contract
+			if current.Snapshot != nil {
+				cloned := *current.Snapshot
+				if p.completionRoot != "" {
+					cloned.Root = p.completionRoot
+				}
+				targetSnapshot = &cloned
+			}
+		}
+	}
+
+	// The completion contract's targets are captured before execution; the
+	// snapshot is the pre-run state the evaluator compares against. A resumed
+	// task keeps the baseline captured before its first run: recapturing an
+	// already changed file would erase the change the contract must see. No
+	// second repository index is built: the resolver is the symbols tool's own
+	// index.
+	if targetSnapshot == nil && intent.Kind == workspace.ObjectiveMutation && p.completionRoot != "" {
+		targetSnapshot = agent.CaptureTargetsContext(ctx, p.completionRoot, intent, p.completionResolver)
+	}
+
 	// A turn is a task boundary: record (or resume) the durable task before
 	// any provider call, so an interruption during this turn has something to
 	// checkpoint. Bookkeeping only — it neither gates nor authorizes the turn.
 	if p.task.Begin != nil {
-		p.PublishTask(p.task.Begin(intent.Objective))
+		projection := p.task.Begin(intent, targetSnapshot)
+		p.PublishTask(projection)
+		if projection.Err != "" {
+			abortTurn("task state was not recorded: " + projection.Err)
+			return
+		}
 	}
 	// The budget is granted at the turn boundary, before any execution. The
 	// spawner shares this instance through the host's holder, so the same
@@ -3486,12 +3579,6 @@ func (p *Program) runTurn(text string) {
 			p.loop.SetBudget(runBudget)
 		}
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	p.mu.Lock()
-	p.cancelTurn = cancel
-	history := append([]agent.Message(nil), p.history...)
-	p.mu.Unlock()
 
 	user := agent.UserMessage{Text: text}
 	p.persist(user)
@@ -3581,14 +3668,6 @@ func (p *Program) runTurn(text string) {
 	}
 	p.loop.SetSystemContext(blocks)
 
-	// The completion contract's targets were captured before execution; the
-	// snapshot is the pre-run state the evaluator compares against. No second
-	// repository index is built: the resolver is the symbols tool's own index.
-	var targetSnapshot *agent.TargetSnapshot
-	if intent.Kind == workspace.ObjectiveMutation && p.completionRoot != "" {
-		targetSnapshot = agent.CaptureTargetsContext(ctx, p.completionRoot, intent, p.completionResolver)
-	}
-
 	turns, err := p.loop.Run(ctx, request)
 
 	// Record what this run consumed before any lifecycle transition persists
@@ -3617,27 +3696,43 @@ func (p *Program) runTurn(text string) {
 		}
 	}
 
+	// A loop that stops at the wall-clock bound returns nil; the deadline is
+	// still authoritative. Represent it as the resource stop it is, so the
+	// task is paused unless already-complete evidence can justify completion.
+	if err == nil {
+		if deadline := p.loop.Deadline(); !deadline.IsZero() && !time.Now().Before(deadline) {
+			err = context.DeadlineExceeded
+		}
+	}
 	// Record the task outcome at the turn boundary from runtime evidence, not
 	// from the model's stop alone. A clean finish is not proof that a requested
 	// change happened, that it happened to the named target, or that the
 	// verification covered it; a failure is not erased by a plausible closing
 	// sentence.
 	action, reason := turnTaskOutcome(err, turns, intent, targetSnapshot, p.completionResolver)
+	if p.beforeTaskTransition != nil {
+		p.beforeTaskTransition()
+	}
 	// Cancellation can land after Run returned but while post-run evidence is
 	// still being read. The handle stays installed until the transition, so
-	// ctx.Err is observable here; verified work is still not completed after
-	// the user cancelled the turn.
-	if action == taskActionComplete && ctx.Err() != nil {
+	// ctx.Err is observable here. The atomic claim below is the linearization
+	// point: the ctx check is only a fast path for a cancel whose callback has
+	// not run yet.
+	if ctx.Err() != nil {
+		p.turnTerminal.CompareAndSwap(turnTerminalOpen, turnTerminalCancelled)
+	}
+	if action == taskActionReview && p.turnTerminal.Load() == turnTerminalCancelled {
+		// Cancellation is an interruption, not a review verdict. Both are
+		// non-terminal, but the human's stop is the more truthful transition.
 		action, reason = taskActionPause, "interrupted"
+	}
+	if action == taskActionComplete {
+		if !p.turnTerminal.CompareAndSwap(turnTerminalOpen, turnTerminalCompleted) {
+			action, reason = taskActionPause, "interrupted"
+		}
 	}
 	switch action {
 	case taskActionComplete:
-		if ctx.Err() != nil {
-			if p.task.Pause != nil {
-				p.PublishTask(p.task.Pause("interrupted"))
-			}
-			break
-		}
 		if p.task.Complete != nil {
 			p.PublishTask(p.task.Complete())
 		}

@@ -234,13 +234,13 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		// was classified as mutating may have changed the workspace before it
 		// was killed, so the evidence still requires verification.
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			return agent.Result{Text: fmt.Sprintf("command timed out after %s", timeout), IsError: true, Mutates: mutates, Executes: true}
+			return agent.Result{Text: fmt.Sprintf("command timed out after %s", timeout), IsError: true, Mutates: mutates, Executes: true, Finished: true}
 		}
-		return agent.Result{Text: "command cancelled", IsError: true, Mutates: mutates, Executes: true}
+		return agent.Result{Text: "command cancelled", IsError: true, Mutates: mutates, Executes: true, Finished: true}
 	case errors.As(runErr, &exitErr):
 		exitCode = exitErr.ExitCode()
 	default:
-		return agent.Result{Text: fmt.Sprintf("run command: %v", runErr), IsError: true, Mutates: mutates, Executes: true}
+		return agent.Result{Text: fmt.Sprintf("run command: %v", runErr), IsError: true, Mutates: mutates, Executes: true, Finished: true}
 	}
 
 	text := fmt.Sprintf("$ %s\n\n%s", command, strings.TrimRight(combined, "\n"))
@@ -255,6 +255,7 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 			IsError:  true,
 			Mutates:  mutates,
 			Executes: true,
+			Finished: true,
 			Details: map[string]any{
 				"command":  command,
 				"exitCode": exitCode,
@@ -267,6 +268,7 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		Text:         text,
 		Mutates:      mutates,
 		Executes:     true,
+		Finished:     true,
 		Verifies:     verification != nil,
 		Verification: verification,
 		Details: map[string]any{
@@ -313,7 +315,7 @@ func (t *BashTool) spawnBackground(ctx agent.Context, command string, timeout ti
 	}
 
 	jobs := t.Jobs()
-	id, err := jobs.reserve(command)
+	id, err := jobs.reserve(command, mutates, t.Root)
 	if err != nil {
 		return agent.ErrorResult("%v", err)
 	}
@@ -389,10 +391,9 @@ func (t *BashTool) spawnBackground(ctx agent.Context, command string, timeout ti
 	return agent.Result{
 		Text: fmt.Sprintf("$ %s\n\n[background job %s started, pid %d — killed after %s if still running; use wait to collect output]",
 			command, id, pid, timeout),
-		// A background command has not been observed to finish, so it cannot
-		// verify anything. If it was classified as mutating, completion must
-		// still require a later verification.
-		Mutates:  mutates,
+		// A started job is not a finished execution and not a mutation: it may
+		// still fail, time out, or never finish. Only wait can turn the job's
+		// observed terminal state into evidence.
 		Executes: true,
 		Details: map[string]any{
 			"job":     id,

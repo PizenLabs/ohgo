@@ -8,14 +8,21 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/project"
 )
 
 // ProgressVersion is the on-disk schema version of progress.json. A reader
 // refuses a checkpoint it does not understand rather than guessing at a shape,
 // because a silently misread recovery artifact is worse than a reported one.
-const ProgressVersion = 1
+//
+// Version 2 adds the persisted completion contract, pre-run target snapshot,
+// and review reason. Version 1 checkpoints still load: they simply cannot
+// authorize completion, because a task with no contract has no evidence
+// boundary. They are resolvable only by an explicit human cancel/replace.
+const ProgressVersion = 2
 
 // File names inside the project-local .ohgo directory.
 const (
@@ -55,6 +62,15 @@ type Progress struct {
 	// read: checkpoints written before Phase 5 carry no budget and resume
 	// with a fresh ledger rather than failing.
 	Budget *budget.State `json:"budget,omitempty"`
+	// Contract is the authoritative completion contract. A non-terminal task
+	// without one cannot complete; the missing boundary is reported rather
+	// than replaced by a new prompt.
+	Contract *contract.IntentContract `json:"contract,omitempty"`
+	// Snapshot is the pre-run target evidence that belongs to Contract.
+	Snapshot *agent.TargetSnapshot `json:"snapshot,omitempty"`
+	// ReviewReason is the evidence-boundary explanation persisted when the
+	// task entered NEEDS_REVIEW.
+	ReviewReason string `json:"reviewReason,omitempty"`
 }
 
 // ProgressFrom projects a task into its checkpoint form.
@@ -78,6 +94,15 @@ func ProgressFrom(t Task) Progress {
 		}
 	}
 	p.NextAction = t.NextAction
+	if t.Contract != nil {
+		cloned := cloneContract(*t.Contract)
+		p.Contract = &cloned
+	}
+	if t.Snapshot != nil {
+		cloned := cloneSnapshot(*t.Snapshot)
+		p.Snapshot = &cloned
+	}
+	p.ReviewReason = t.ReviewReason
 	return p
 }
 
@@ -220,6 +245,15 @@ func (s *Store) Load() (Snapshot, error) {
 		t.Status = progress.Status
 		t.Phase = progress.Phase
 		t.NextAction = progress.NextAction
+		if progress.Contract != nil {
+			cloned := cloneContract(*progress.Contract)
+			t.Contract = &cloned
+		}
+		if progress.Snapshot != nil {
+			cloned := cloneSnapshot(*progress.Snapshot)
+			t.Snapshot = &cloned
+		}
+		t.ReviewReason = progress.ReviewReason
 		if progress.CheckpointAt.After(t.UpdatedAt) {
 			t.UpdatedAt = progress.CheckpointAt
 		}

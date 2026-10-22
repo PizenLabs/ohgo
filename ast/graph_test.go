@@ -404,6 +404,45 @@ func TestGraphCancellation(t *testing.T) {
 	}
 }
 
+// Reverse adjacency is the graph's largest optional work unit. A cancellation
+// that lands during that build must stop it; returning a truncated result would
+// present cancelled work as a complete answer.
+func TestGraphReverseAdjacencyHonoursCancellation(t *testing.T) {
+	files := map[string]string{
+		"go.mod":     "module example.com/app\n\ngo 1.21\n",
+		"hub/hub.go": "package hub\n",
+	}
+	for i := 0; i < 300; i++ {
+		files[fmt.Sprintf("p%03d/p.go", i)] = fmt.Sprintf(
+			"package p%03d\n\nimport \"example.com/app/hub\"\n", i)
+	}
+	root := graphFixture(t, files)
+	idx := mustIndex(t, root)
+
+	// A forward query with no outgoing edges gives a stable count of the
+	// freshness and entry checks without building reverse adjacency.
+	forward := &countingContext{Context: context.Background()}
+	if _, err := idx.Graph(forward, GraphQuery{Package: "hub", Relation: RelationImports, Depth: 1}); err != nil {
+		t.Fatalf("forward baseline: %v", err)
+	}
+	if forward.calls == 0 {
+		t.Fatal("the forward baseline observed no context checks")
+	}
+
+	// The first reverse check is work=0, the second is work=256. The forward
+	// baseline ends immediately before the reverse build, so +1 lands on the
+	// second check inside the 300-edge adjacency build.
+	reverse := &countingContext{
+		Context:  context.Background(),
+		cancelAt: forward.calls + 1,
+	}
+	if _, err := idx.Graph(reverse, GraphQuery{
+		Package: "hub", Relation: RelationImportedBy, Depth: 1,
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("reverse query = %v, want context.Canceled", err)
+	}
+}
+
 // countingContext counts Err calls and optionally cancels after cancelAt.
 type countingContext struct {
 	context.Context

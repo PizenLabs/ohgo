@@ -1,5 +1,10 @@
 # Phase 6 Closure
 
+> **Post-Phase-7 note:** this report describes the Phase 6 tree. Phase 7 closed
+> the reverse-adjacency cancellation gap, the truthful-background-evidence gap,
+> and the completion/exit gaps outside the graph. See
+> [`PHASE7_CLOSURE.md`](PHASE7_CLOSURE.md).
+
 ## 1. Verdict
 
 **PASS WITH LIMITATIONS — PHASE 6 CLOSED**

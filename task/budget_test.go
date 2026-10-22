@@ -12,7 +12,7 @@ func TestBudgetLedgerSurvivesPauseAndResume(t *testing.T) {
 	store := NewStore(t.TempDir())
 	controller := NewController(store, nil)
 	controller.SetBudgetLimits(budget.Limits{Turns: 10, ToolCalls: 20})
-	if _, err := controller.Begin("budgeted task"); err != nil {
+	if _, err := controller.Begin(testIntent("budgeted task"), nil); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestBudgetLedgerSurvivesPauseAndResume(t *testing.T) {
 		t.Fatalf("resume limits = %d, want the explicit larger grant 20", state.Limits.Turns)
 	}
 
-	if _, err := reopened.Begin("continue"); err != nil {
+	if _, err := reopened.Begin(testIntent("budgeted task"), nil); err != nil {
 		t.Fatalf("Begin resume: %v", err)
 	}
 	state, _ = reopened.BudgetState()
@@ -67,7 +67,7 @@ func TestBudgetLedgerSurvivesPauseAndResume(t *testing.T) {
 func TestNewTaskStartsWithAZeroLedger(t *testing.T) {
 	controller := NewController(NewStore(t.TempDir()), nil)
 	controller.SetBudgetLimits(budget.Limits{Turns: 5})
-	if _, err := controller.Begin("first"); err != nil {
+	if _, err := controller.Begin(testIntent("first"), nil); err != nil {
 		t.Fatal(err)
 	}
 	grant := controller.RunBudget()
@@ -78,7 +78,7 @@ func TestNewTaskStartsWithAZeroLedger(t *testing.T) {
 	if _, err := controller.Complete(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controller.Begin("second"); err != nil {
+	if _, err := controller.Begin(testIntent("second"), nil); err != nil {
 		t.Fatal(err)
 	}
 	state, ok := controller.BudgetState()
@@ -95,7 +95,7 @@ func TestNewTaskStartsWithAZeroLedger(t *testing.T) {
 func TestRunBudgetIsAFreshGrant(t *testing.T) {
 	controller := NewController(NewStore(t.TempDir()), nil)
 	controller.SetBudgetLimits(budget.Limits{Turns: 2})
-	if _, err := controller.Begin("task"); err != nil {
+	if _, err := controller.Begin(testIntent("task"), nil); err != nil {
 		t.Fatal(err)
 	}
 	first := controller.RunBudget()

@@ -1,9 +1,16 @@
 # OHGO Core Architecture Contract v1
 
-> **Status:** Architecture Baseline  
-> **Scope:** Core runtime, authority model, workspace model, persistence, model resolution, cross-workspace handoff  
-> **Non-goal:** Rewriting or destabilizing the existing execution engine  
+> **Status:** Architecture Baseline (historical)
+> **Scope:** Core runtime, authority model, workspace model, persistence, model resolution, cross-workspace handoff
+> **Non-goal:** Rewriting or destabilizing the existing execution engine
 > **Principle:** Audit existing behavior first. Change only the seams required to conform to this contract.
+>
+> **Current-state note (Phase 7):** references to `Config.Admit` below describe
+> the legacy fallback seam. Production installs `Config.Authorize`
+> (`securityGate`) as the only admission path; see
+> [`ARCHITECTURE.md`](ARCHITECTURE.md) and
+> [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md) for the implemented
+> sequence.
 
 ---
 

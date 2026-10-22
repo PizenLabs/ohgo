@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/security"
 )
+
+var errTestProvider = errors.New("provider unavailable")
 
 func evaluate(root string, intent contract.IntentContract, resolver StructuralResolver, snapshot *TargetSnapshot, turns []Turn) Completion {
 	return EvaluateTaskCompletion(CompletionInput{
@@ -237,6 +240,174 @@ func TestEvaluateTaskCompletionAcceptsExecutedCheck(t *testing.T) {
 	}
 }
 
+// A checkless execution objective is not complete because the model stopped.
+// The runtime must observe a process reach a successful terminal state.
+func TestEvaluateTaskCompletionRejectsExecutionWithoutEvidence(t *testing.T) {
+	for _, objective := range []string{"run ls", "execute echo hello"} {
+		intent := contract.IntentContract{Objective: objective, Kind: contract.ObjectiveExecution}
+		verdict := evaluate("", intent, nil, nil, []Turn{cleanStop()})
+		if verdict.Complete() {
+			t.Fatalf("%q completed without execution evidence", objective)
+		}
+	}
+}
+
+// A process that ran to a successful terminal state is execution evidence for
+// a checkless execution objective.
+func TestEvaluateTaskCompletionAcceptsExecutedObjective(t *testing.T) {
+	intent := contract.IntentContract{Objective: "run ls", Kind: contract.ObjectiveExecution}
+	verdict := evaluate("", intent, nil, nil, []Turn{
+		{Results: []ToolOutcome{{ToolName: "bash", Result: Result{
+			Text: "ok", Executes: true, Finished: true,
+		}}}},
+		cleanStop(),
+	})
+	if !verdict.Complete() {
+		t.Fatalf("finished execution was not complete: %s", verdict.Reason)
+	}
+}
+
+// A read-only tool call is not execution evidence, and a started-but-unfinished
+// background job is not either.
+func TestEvaluateTaskCompletionRejectsNonExecutionEvidence(t *testing.T) {
+	intent := contract.IntentContract{Objective: "run ls", Kind: contract.ObjectiveExecution}
+	for name, outcome := range map[string]ToolOutcome{
+		"read":    {ToolName: "read", Result: Result{Text: "contents"}},
+		"spawned": {ToolName: "bash", Result: Result{Text: "job-1", Executes: true}},
+		"failed":  {ToolName: "bash", Result: Result{Text: "boom", IsError: true, Executes: true, Finished: true}},
+	} {
+		verdict := evaluate("", intent, nil, nil, []Turn{
+			{Results: []ToolOutcome{outcome}},
+			cleanStop(),
+		})
+		if verdict.Complete() {
+			t.Fatalf("%s was accepted as execution evidence", name)
+		}
+	}
+}
+
+// An informational objective needs visible answer text, not just a clean stop.
+func TestEvaluateTaskCompletionRejectsEmptyInformationalAnswer(t *testing.T) {
+	intent := contract.IntentContract{Objective: "explain this", Kind: contract.ObjectiveInformational}
+	for name, turn := range map[string]Turn{
+		"empty":      cleanStop(),
+		"whitespace": answerTurn(" \n\t "),
+	} {
+		verdict := evaluate("", intent, nil, nil, []Turn{turn})
+		if verdict.Complete() {
+			t.Fatalf("%s informational answer was reported complete", name)
+		}
+	}
+}
+
+// A final tool-calling turn has no answer yet; it is review, not completion.
+func TestEvaluateTaskCompletionRejectsToolOnlyInformationalAnswer(t *testing.T) {
+	intent := contract.IntentContract{Objective: "explain this", Kind: contract.ObjectiveInformational}
+	verdict := evaluate("", intent, nil, nil, []Turn{
+		{Results: []ToolOutcome{{ToolName: "read", Result: Result{Text: "contents"}}}},
+	})
+	if verdict.Complete() {
+		t.Fatal("a tool-only turn was accepted as an informational answer")
+	}
+}
+
+// Refusal text is still visible answer evidence. The runtime deliberately does
+// not judge whether the answer is helpful: doing so would require an LLM judge,
+// which is outside the completion contract.
+func TestEvaluateTaskCompletionTreatsRefusalTextAsAnswer(t *testing.T) {
+	intent := contract.IntentContract{Objective: "explain this", Kind: contract.ObjectiveInformational}
+	verdict := evaluate("", intent, nil, nil, []Turn{answerTurn("I cannot help with that.")})
+	if !verdict.Complete() {
+		t.Fatalf("non-empty refusal text was not treated as an answer: %s", verdict.Reason)
+	}
+}
+
+// A provider error is not an answer or a completion.
+func TestEvaluateTaskCompletionRejectsModelError(t *testing.T) {
+	intent := contract.IntentContract{Objective: "explain this", Kind: contract.ObjectiveInformational}
+	verdict := evaluate("", intent, nil, nil, []Turn{{Err: errTestProvider}})
+	if verdict.Complete() {
+		t.Fatal("a model error was reported complete")
+	}
+}
+
+// A background spawn is not mutation evidence: the process has started, but the
+// runtime has not observed it change anything.
+func TestCompletionEvidenceBackgroundSpawnIsNotMutation(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{{
+		ToolName: "bash",
+		Result:   Result{Text: "job-1", Executes: true},
+	}}}}
+	evidence := scanCompletionEvidence(turns, true)
+	if evidence.mutated {
+		t.Fatal("a spawn was counted as a definite mutation")
+	}
+	if evidence.executed {
+		t.Fatal("a started-but-unfinished job was counted as finished execution")
+	}
+}
+
+// A mutation objective whose only observed activity is a background spawn is
+// review, not completion, even when the model stops cleanly.
+func TestEvaluateTaskCompletionRejectsMutationWithOnlySpawn(t *testing.T) {
+	intent := contract.IntentContract{
+		Objective:    "change note.txt",
+		Kind:         contract.ObjectiveMutation,
+		Targets:      []contract.Target{{Kind: contract.TargetPath, Value: "note.txt"}},
+		Verification: []contract.VerificationRequirement{{Kind: contract.VerifyAny}},
+	}
+	verdict := evaluate("", intent, nil, nil, []Turn{
+		{Results: []ToolOutcome{{ToolName: "bash", Result: Result{Text: "job-1", Executes: true}}}},
+		cleanStop(),
+	})
+	if verdict.Complete() {
+		t.Fatal("a spawn-only mutation was reported complete")
+	}
+}
+
+// A finished background mutation followed by a failed check is review. The
+// mutation is real, but the verification did not establish a sound final state.
+func TestEvaluateTaskCompletionRejectsBackgroundMutationWithFailedVerification(t *testing.T) {
+	intent := contract.IntentContract{
+		Objective:    "change note.txt",
+		Kind:         contract.ObjectiveMutation,
+		Verification: []contract.VerificationRequirement{{Kind: contract.VerifyAny}},
+	}
+	verdict := evaluate("", intent, nil, nil, []Turn{
+		{Results: []ToolOutcome{{ToolName: "wait", Result: Result{
+			Text: "finished", Executes: true, Finished: true, Mutates: true,
+		}}}},
+		{Results: []ToolOutcome{{ToolName: "bash", Result: Result{
+			Text: "failed", IsError: true, Executes: true, Finished: true,
+		}}}},
+		cleanStop(),
+	})
+	if verdict.Complete() {
+		t.Fatal("a failed check after a background mutation was accepted")
+	}
+}
+
+// A still-running mutating job plus a foreground check is not completion: the
+// job's mutation was never observed, and the check cannot stand in for it.
+func TestEvaluateTaskCompletionRejectsRunningJobPlusForegroundCheck(t *testing.T) {
+	intent := contract.IntentContract{
+		Objective:    "change note.txt",
+		Kind:         contract.ObjectiveMutation,
+		Verification: []contract.VerificationRequirement{{Kind: contract.VerifyAny}},
+	}
+	verdict := evaluate("", intent, nil, nil, []Turn{
+		{Results: []ToolOutcome{{ToolName: "bash", Result: Result{Text: "job-1", Executes: true}}}},
+		{Results: []ToolOutcome{{ToolName: "bash", Result: Result{
+			Text: "ok", Executes: true, Finished: true, Verifies: true,
+			Verification: &VerificationEvidence{Command: "go test ./...", Check: contract.CheckTest, Scopes: []VerificationScope{{All: true}}},
+		}}}},
+		cleanStop(),
+	})
+	if verdict.Complete() {
+		t.Fatal("a running job plus a foreground check was accepted as mutation evidence")
+	}
+}
+
 // A read request that mutates is not a successful read.
 func TestEvaluateTaskCompletionRejectsMutationDuringInformationalRequest(t *testing.T) {
 	root := t.TempDir()
@@ -257,7 +428,7 @@ func TestEvaluateTaskCompletionRejectsMutationDuringInformationalRequest(t *test
 // A pure answer is a complete informational turn.
 func TestEvaluateTaskCompletionAcceptsInformationalAnswer(t *testing.T) {
 	intent := contract.IntentContract{Objective: "explain this", Kind: contract.ObjectiveInformational}
-	verdict := evaluate("", intent, nil, nil, []Turn{cleanStop()})
+	verdict := evaluate("", intent, nil, nil, []Turn{answerTurn("the package parses Go files")})
 	if !verdict.Complete() {
 		t.Fatalf("informational answer was not complete: %s", verdict.Reason)
 	}
