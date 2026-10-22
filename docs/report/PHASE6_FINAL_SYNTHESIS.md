@@ -1,5 +1,13 @@
 # Phase 6 Final Synthesis
 
+> **Post-closure note (Phase 5/6 debt closure, 2026-10-22):** the package/import
+> contract and the Phase 6 limitations below remain historical and accurate for
+> the original phase. A later exact-subset extension adds package-scope symbol
+> references and statically provable direct-call edges over the same
+> `ast.Index`; interface/reflection/function-value calls and method reference
+> queries remain out of scope. See
+> [`PHASE5_6_DEBT_CLOSURE.md`](PHASE5_6_DEBT_CLOSURE.md).
+
 - **Date:** 2026-10-22
 - **Tree audited:** `6a9765f` (`feat(graph): add bounded import graph`), clean working tree
 - **Scope:** Phase 1–6 source, tests, benchmark artifacts, reports, and Git state

@@ -490,6 +490,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewLsTool(opts.root),
 		tools.NewSymbolsToolWithSource(structural),
 		tools.NewGraphTool(structural),
+		tools.NewRefsTool(structural),
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}

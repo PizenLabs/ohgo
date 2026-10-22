@@ -84,10 +84,15 @@ variable — and nothing else fails silently because of it.
 ## What it does
 
 Reads, edits, and runs code in your repository through a focused tool set
-(`read write edit delete bash wait glob grep ls symbols graph webfetch todo task`),
+(`read write edit delete bash wait glob grep ls symbols graph refs webfetch todo task`),
 with session persistence, context compaction, subagent delegation
 (`--max-depth`), a wall-clock run budget (`--deadline`), and per-tool approval
 prompts.
+
+`symbols`, `graph`, and `refs` share one repository index. `refs` answers where
+a symbol is referenced and which functions it directly calls or is called by.
+It reports ambiguous, truncated, unsupported, and unknown results explicitly;
+method dispatch, function values, dot imports, and reflection are not guessed.
 
 In-session commands: `/help /commands /clear /model [provider/id] /models /sessions /jobs /task [status|cancel|accept] /theme [dark|light] /connect /disconnect [provider] /status /usage /doctor /diff [target] /retry /compact /quit`. The REPL and the full-screen UI share the same backend, so every command means the same thing in both; `/task` manages durable task continuity, which exists only in the full-screen UI, so the plain REPL reports it unavailable. `/status` reports the workspace and session; `/usage` opens the usage and provider inspector.
 

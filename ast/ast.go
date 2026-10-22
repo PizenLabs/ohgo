@@ -84,16 +84,25 @@ type Options struct {
 	// Paths restricts the search to these files. Empty means every file given
 	// to the searcher.
 	Paths []string
+	// Relationships asks Parse to project syntactic references and direct
+	// calls in the same parser pass. It is off by default because Search is a
+	// declaration-only surface; the repository index enables it because the
+	// relationship queries must not trigger a second parse.
+	Relationships bool
 }
 
 // Import is one import declaration from a parsed file.
 //
 // It is relationship data, not a navigable declaration: imports deliberately
 // stay out of the symbol taxonomy so a file or package listing never fills with
-// import noise. The package graph is the only consumer.
+// import noise. The package graph and the symbol-reference projection are the
+// only consumers.
 type Import struct {
 	// Path is the unquoted import path.
 	Path string
+	// Alias is the explicit import name. It is empty for a default import,
+	// "." for a dot import, and "_" for a blank import.
+	Alias string
 	// Line is the 1-based line the import declaration starts on.
 	Line int
 	// Test reports that the declaration came from a _test.go file.
@@ -113,6 +122,12 @@ type FileStructure struct {
 	Symbols []Match
 	// Imports are all imports, regardless of the kind filter.
 	Imports []Import
+
+	// references and calls are the syntactic relationship projection. They
+	// are populated only when Options.Relationships is set and are consumed
+	// by Index during the same build. They never leave the package.
+	references []rawReference
+	calls      []rawCall
 }
 
 // Searcher finds declarations. Implementations must be safe for concurrent use
@@ -274,6 +289,12 @@ func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
 		}
 	}
 
+	var references []rawReference
+	var calls []rawCall
+	if opts.Relationships {
+		references, calls = collectFileRelationships(fset, file)
+	}
+
 	// Populate package and qualified coordinates deterministically. The
 	// package clause is the authority for the package name; never fabricate
 	// one when it is missing.
@@ -293,7 +314,13 @@ func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
 			}
 		}
 	}
-	return FileStructure{Package: file.Name.Name, Symbols: matches, Imports: imports}, nil
+	return FileStructure{
+		Package:    file.Name.Name,
+		Symbols:    matches,
+		Imports:    imports,
+		references: references,
+		calls:      calls,
+	}, nil
 }
 
 // kindAllowed reports whether a declaration kind passes the filter.
@@ -476,10 +503,15 @@ func goImportRecord(fset *token.FileSet, spec *ast.ImportSpec, testFile bool) Im
 		// spelling rather than dropping the declaration.
 		path = strings.Trim(spec.Path.Value, `"`)
 	}
+	alias := ""
+	if spec.Name != nil {
+		alias = spec.Name.Name
+	}
 	return Import{
-		Path: path,
-		Line: fset.Position(spec.Pos()).Line,
-		Test: testFile,
+		Path:  path,
+		Alias: alias,
+		Line:  fset.Position(spec.Pos()).Line,
+		Test:  testFile,
 	}
 }
 

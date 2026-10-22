@@ -16,12 +16,15 @@ func TestBuildToolsExposesOneStructuralSource(t *testing.T) {
 
 	var symbols *tools.SymbolsTool
 	var graph *tools.GraphTool
+	var refs *tools.RefsTool
 	for _, tool := range toolSet {
 		switch typed := tool.(type) {
 		case *tools.SymbolsTool:
 			symbols = typed
 		case *tools.GraphTool:
 			graph = typed
+		case *tools.RefsTool:
+			refs = typed
 		}
 	}
 	if symbols == nil {
@@ -30,11 +33,14 @@ func TestBuildToolsExposesOneStructuralSource(t *testing.T) {
 	if graph == nil {
 		t.Fatal("graph is not in the default tool set")
 	}
-	if symbols.Source() == nil || graph.Source() == nil {
+	if refs == nil {
+		t.Fatal("refs is not in the default tool set")
+	}
+	if symbols.Source() == nil || graph.Source() == nil || refs.Source() == nil {
 		t.Fatal("a structural tool has no source")
 	}
-	if symbols.Source() != graph.Source() {
-		t.Fatal("symbols and graph do not share one structural source")
+	if symbols.Source() != graph.Source() || graph.Source() != refs.Source() {
+		t.Fatal("symbols, graph, and refs do not share one structural source")
 	}
 	if hasTool(toolSet, "repo") {
 		t.Fatal("repo is still registered: the duplicate structural surface must go")

@@ -33,9 +33,15 @@ type fileRecord struct {
 	// symbols are the file's declarations, in coordinate order.
 	symbols []Match
 	// imports are the file's import declarations. They are relationship data,
-	// never exposed through the symbol taxonomy.
+	// never exposed through the symbol taxonomy, and are cleared after the
+	// package graph and symbol graph have consumed them.
 	imports []Import
-	err     error
+	// references and calls are the raw syntactic relationship projection.
+	// They are resolved once after every file is parsed and cleared so the
+	// resident index keeps only answered coordinates.
+	references []rawReference
+	calls      []rawCall
+	err        error
 }
 
 // indexedKinds is the Phase 1 symbol taxonomy.
@@ -84,6 +90,10 @@ type Index struct {
 	// graph is the package/import projection of the same parse. It is
 	// rebuilt with the snapshot, never independently.
 	graph *packageGraph
+	// symbolGraph is the resolved reference and direct-call projection of
+	// the same parse. It shares the records and package graph above; it is
+	// not a second parser or index.
+	symbolGraph *symbolGraph
 }
 
 // NewIndex builds a fresh symbol index rooted at root.
@@ -168,7 +178,7 @@ func (idx *Index) buildLockedCtx(ctx context.Context) error {
 		sig := fileSig{size: info.Size(), mtime: info.ModTime().UnixNano()}
 		sigs[rel] = sig
 
-		structure, perr := backend.Parse(path, Options{Kinds: indexedKinds})
+		structure, perr := backend.Parse(path, Options{Kinds: indexedKinds, Relationships: true})
 		if perr != nil {
 			records[rel] = fileRecord{err: perr}
 			return nil
@@ -189,6 +199,8 @@ func (idx *Index) buildLockedCtx(ctx context.Context) error {
 			packageName: structure.Package,
 			symbols:     syms,
 			imports:     structure.Imports,
+			references:  structure.references,
+			calls:       structure.calls,
 		}
 		return nil
 	})
@@ -206,6 +218,10 @@ func (idx *Index) buildLockedCtx(ctx context.Context) error {
 	// so the graph's edges and the module path it resolved against agree.
 	modulePath, moduleSig := readModule(idx.walkRoot)
 	graph := buildPackageGraph(records, modulePath)
+	symbolGraph, err := buildSymbolGraph(ctx, records, modulePath, graph)
+	if err != nil {
+		return err
+	}
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -216,6 +232,7 @@ func (idx *Index) buildLockedCtx(ctx context.Context) error {
 	idx.modulePath = modulePath
 	idx.moduleSig = moduleSig
 	idx.graph = graph
+	idx.symbolGraph = symbolGraph
 	return nil
 }
 

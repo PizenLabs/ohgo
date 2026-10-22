@@ -22,7 +22,7 @@ cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
   │     ├─► creds     Credential chain: explicit → file → env → shell text.
   │     │             Single owner of ProviderEnvVars; secrets never printed.
   │     ├─► tools     read write edit delete bash wait glob grep ls symbols
-  │     │             graph webfetch todo task (task only when maxDepth > 1;
+  │     │             graph refs webfetch todo task (task only when maxDepth > 1;
   │     │             wait shares bash's job table; artifact when a session is
   │     │             attached). task imports agent for the subagent spec.
   │     ├─► prompt    System prompt assembly + AGENTS.md discovery (root
@@ -59,6 +59,26 @@ Dependency arrows point one way: `catalog → ai` (type only), `ai → creds`
 discovery), `cmd → everything`. Nothing in `ai` imports `catalog`;
 nothing in `agent` constructs HTTP; nothing outside `creds` reads a provider
 credential from env or shell. A cycle here is a bug, not a shortcut.
+
+## Repository intelligence
+
+`symbols`, `graph`, and `refs` are three read-only surfaces over one
+`tools.StructuralSource` and one `ast.Index`. One `GoBackend.Parse` pass
+produces symbol coordinates, package imports, resolved references, and static
+direct-call sites. There is no second parser, index, daemon, or graph database.
+
+- `symbols` returns exact declaration coordinates.
+- `graph` returns bounded package/import relationships with `file:line`
+  witnesses and explicit external/unresolved/ambiguous states.
+- `refs` returns package-scope symbol references and statically provable direct
+  callers/callees. Method dispatch, function values, dot imports, reflection,
+  and unresolved targets are counted as unknown or returned as `unsupported`;
+  they are never guessed. Callers/callees traversal is bounded by depth, node,
+  edge, and work limits, is cycle-safe, and is cancellation-aware.
+
+All three share the same freshness check, workspace path containment, authority
+admission, tool-call budget, and child tool set. Their evidence is advisory: it
+cannot mutate, execute, grant authority, or complete a task.
 
 ## Authority
 

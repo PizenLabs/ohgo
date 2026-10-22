@@ -1,5 +1,12 @@
 # Phase 5 Closure
 
+> **Post-closure note (Phase 5/6 debt closure, 2026-10-22):** no production
+> budget code changed after this report. The shared-pool allocation model,
+> retry accounting, and accounting dimensions below are unchanged. The debt
+> closure adds the missing retry/cancellation/deadline/sibling-child adversarial
+> tests and classifies the unsupported aggregate resources. See
+> [`PHASE5_6_DEBT_CLOSURE.md`](PHASE5_6_DEBT_CLOSURE.md).
+
 ## 1. Verdict
 
 **PASS WITH LIMITATIONS — PHASE 5 CLOSED**
@@ -383,3 +390,23 @@ the Phase 4 benchmark.
 
 The limitations are explicit, bounded, and do not reopen the authority,
 completion, or resumability contracts.
+
+## 23. Post-Closure Addendum — Debt Closure
+
+The Phase 5/6 debt closure did not modify the budget implementation. It added
+the adversarial coverage the original phase named but did not exercise:
+
+- retry after model failure, tool failure, verification failure, cancellation,
+  deadline, and budget exhaustion (`agent/budget_debt_test.go`);
+- concurrent multi-dimension all-or-nothing admission
+  (`budget.TestConcurrentAdmitAllIsAllOrNothing`);
+- sibling contention for the last child unit
+  (`agent.TestConcurrentChildrenCannotBothAdmitTheLastUnit`);
+- failed-child retry consuming another child unit
+  (`agent.TestFailedChildRetryConsumesAnotherChildUnit`).
+
+The full matrix and evidence are in
+[`PHASE5_6_DEBT_CLOSURE.md`](PHASE5_6_DEBT_CLOSURE.md). The verdict remains
+**PASS WITH LIMITATIONS**, with the same accepted limits: shared pool rather
+than reservations, no byte/token/monetary grant, detached background jobs,
+in-flight provider requests, and a fresh grant at a user boundary.

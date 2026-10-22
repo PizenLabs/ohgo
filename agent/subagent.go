@@ -31,6 +31,7 @@ var ReadOnlyToolNames = map[string]bool{
 	"retain":  true,
 	"symbols": true,
 	"graph":   true,
+	"refs":    true,
 }
 
 // IsReadOnly reports whether a tool set can only observe.

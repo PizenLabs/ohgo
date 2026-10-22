@@ -1,5 +1,11 @@
 # Phase 7 — Final System Closure
 
+> **Post-closure note (Phase 5/6 debt closure, 2026-10-22):** the Phase 7
+> completion, background-evidence, cancellation, and graph-cancellation
+> invariants are unchanged. The debt closure added an exact-subset `refs`
+> surface over the same `ast.Index` and additional Phase 5 adversarial tests.
+> See [`PHASE5_6_DEBT_CLOSURE.md`](PHASE5_6_DEBT_CLOSURE.md).
+
 - **Date:** 2026-10-22
 - **Phase:** 7 — Final System Closure
 - **Tree:** working tree based on `a045782` (Phase 6/7 reports, itself on `6a9765f`) plus the Phase 7 changes; no commit was made
@@ -113,7 +119,7 @@ jobs are evidence only after `wait` observes their terminal state.
 |---|---|---|
 | Authority | **PASS** | Production `buildLoop` installs `Config.Authorize` (`securityGate`); `agent.Loop.execute` evaluates every call; DENY is terminal; APPROVE requires a fresh confirming evaluation; path containment is the existing `tools.resolvePath`; workspace table unchanged. Tests: `agent/authorize_test.go`, `cmd/ohgo/authority_route_test.go`, `security/security_test.go`, `tools/*sandbox*`. |
 | Budget | **PASS** | One root-owned `budget.Budget` per run; `AdmitAll` atomic; children and background jobs share the pointer; Phase 5 30/30 scripted cases: 0 overruns, 0 escapes, 0 execution after failed admission. No Phase 7 change to admission semantics. |
-| Discovery | **PASS** | `tools.NewStructuralSource` is the one production source; `symbols` and `graph` share it; one `ast.Index`/one parse. Phase 1/6 tests and Phase 2 dry-run (319 files, 295 Go, 27 tasks, 81 cells) pass. |
+| Discovery | **PASS** | `tools.NewStructuralSource` is the one production source; `symbols`, `graph`, and `refs` share it; one `ast.Index`/one parse. Phase 1/6 tests and Phase 2 dry-run (319 files, 295 Go, 27 tasks, 81 cells) pass. |
 | Graph | **PASS** | Package/import-only, read-only, bounded; deterministic edges with file:line witnesses; no verification/mutation flags; reverse cancellation now bounded. Phase 6 H0/H1: 4/8 vs 8/8 correct, 4 vs 0 false positives, 0 false edges, 10,780 vs 7,140 context bytes. |
 | Verification | **PASS** | Verification remains defined-check evidence (tests/build/vet) with scope matching; background checks use the same `VerificationForIn` semantics; a failed/timed-out background check is never verification. Semantic correctness (a wrong change with passing tests) remains an accepted limitation, not a Phase 7 defect. |
 | Completion | **PASS** | One authoritative evaluator (`EvaluateTaskCompletion`) used by TUI, writable children, and both headless paths. F1/F2 evidence rules; F4 persisted contract; F3 honest exit status. Phase 4 scripted benchmark: 23 cases, H0 false completion 11 → H1 0, 0 false reviews. |

@@ -1,21 +1,23 @@
 Phase 6 graph performance probe
-generated: 2026-10-22T08:32:47Z
+generated: 2026-10-22T13:47:24Z
 host: darwin/arm64, go1.27.2
 method: synthetic single-module repositories with a chain of package imports;
-        symbols index and package graph are built from one parse pass.
+        symbols, package graph, references, and direct calls are built from one parse pass.
 note: synthetic measurements, not a production-scale claim.
 
-files  packages  cold_ms  parse_ms    index/parse  query_us   stale_us     change_ms   addpkg_ms  heap_MiB   conc_us   
-100    25        6.92     6.97        0.99         1127.6     909.5        6.00        6.11       0.2        6339.3    
-1000   250       48.97    49.45       0.99         8292.8     8091.7       55.71       56.35      2.4        65319.0   
-3000   750       145.70   146.26      1.00         25843.8    25868.1      168.00      168.66     6.8        186172.5  
+files  packages  cold_ms  parse_ms    rel_parse_ms  index/rel_parse  query_us   ref_q_us     stale_us     change_ms   addpkg_ms  heap_MiB   conc_us    references    calls      unknown   
+100    25        6.87     5.97        6.90          1.00             813.3      813.2        822.2        7.62        7.92       0.4        6022.5     200           200        0         
+1000   250       66.92    53.13       62.34         1.07             8842.0     9062.8       8721.9       73.76       74.04      3.8        65223.9    2000          2000       0         
+3000   750       199.67   158.22      189.04        1.06             26694.9    27377.4      26356.6      218.33      221.38     10.9       192595.4   6000          6000       0         
 
 Interpretation rules:
-- index/parse is the cold index divided by a parse-only walk; a value near 1
-  means imports and the graph did not add a second parse.
+- parse_ms is a symbols-only parse walk; rel_parse_ms adds reference and call extraction.
+- index/rel_parse is the cold index divided by the relationship parse walk; a value
+  near 1 means the graph and relationships did not add a second parse.
 - query_us is a warm depth-1 graph query after the index is built.
-- stale_us is the freshness stat walk alone (Index.Stale); a graph query adds
-  the go.mod fingerprint and traversal on top of it.
+- ref_q_us is a warm symbol-reference query after the index is built.
+- stale_us is the freshness stat walk alone (Index.Stale); a graph or refs query
+  adds the go.mod fingerprint and traversal on top of it.
 - change_ms is a graph query after one import rewrite (full snapshot rebuild).
 - addpkg_ms is a graph query after creating one package (full snapshot rebuild).
-- conc_us is the average of 8 goroutines issuing bounded queries.
+- conc_us is the average of 8 goroutines issuing bounded graph queries.

@@ -20,12 +20,17 @@ type phase6PerfRow struct {
 	Packages       int
 	ColdIndex      time.Duration
 	ParseOnly      time.Duration
+	RelParseOnly   time.Duration
 	QueryAvg       time.Duration
+	RefQueryAvg    time.Duration
 	FreshnessAvg   time.Duration
 	SingleChange   time.Duration
 	AddPackage     time.Duration
 	ConcurrentAvg  time.Duration
 	HeapRetainedMB float64
+	References     int
+	Calls          int
+	UnknownCalls   int
 }
 
 func TestPhase6Performance(t *testing.T) {
@@ -44,31 +49,34 @@ func TestPhase6Performance(t *testing.T) {
 	fmt.Fprintf(&sb, "generated: %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(&sb, "host: %s/%s, %s\n", runtime.GOOS, runtime.GOARCH, runtime.Version())
 	fmt.Fprintf(&sb, "method: synthetic single-module repositories with a chain of package imports;\n")
-	fmt.Fprintf(&sb, "        symbols index and package graph are built from one parse pass.\n")
+	fmt.Fprintf(&sb, "        symbols, package graph, references, and direct calls are built from one parse pass.\n")
 	fmt.Fprintf(&sb, "note: synthetic measurements, not a production-scale claim.\n\n")
-	fmt.Fprintf(&sb, "%-6s %-9s %-8s %-11s %-12s %-10s %-12s %-11s %-10s %-10s %-10s\n",
-		"files", "packages", "cold_ms", "parse_ms", "index/parse", "query_us", "stale_us", "change_ms", "addpkg_ms", "heap_MiB", "conc_us")
+	fmt.Fprintf(&sb, "%-6s %-9s %-8s %-11s %-13s %-16s %-10s %-12s %-12s %-11s %-10s %-10s %-10s %-13s %-10s %-10s\n",
+		"files", "packages", "cold_ms", "parse_ms", "rel_parse_ms", "index/rel_parse", "query_us", "ref_q_us", "stale_us", "change_ms", "addpkg_ms", "heap_MiB", "conc_us", "references", "calls", "unknown")
 	for _, row := range rows {
 		ratio := 0.0
-		if row.ParseOnly > 0 {
-			ratio = float64(row.ColdIndex) / float64(row.ParseOnly)
+		if row.RelParseOnly > 0 {
+			ratio = float64(row.ColdIndex) / float64(row.RelParseOnly)
 		}
-		fmt.Fprintf(&sb, "%-6d %-9d %-8.2f %-11.2f %-12.2f %-10.1f %-12.1f %-11.2f %-10.2f %-10.1f %-10.1f\n",
+		fmt.Fprintf(&sb, "%-6d %-9d %-8.2f %-11.2f %-13.2f %-16.2f %-10.1f %-12.1f %-12.1f %-11.2f %-10.2f %-10.1f %-10.1f %-13d %-10d %-10d\n",
 			row.Files, row.Packages,
-			ms(row.ColdIndex), ms(row.ParseOnly), ratio,
-			us(row.QueryAvg), us(row.FreshnessAvg),
+			ms(row.ColdIndex), ms(row.ParseOnly), ms(row.RelParseOnly), ratio,
+			us(row.QueryAvg), us(row.RefQueryAvg), us(row.FreshnessAvg),
 			ms(row.SingleChange), ms(row.AddPackage),
-			row.HeapRetainedMB, us(row.ConcurrentAvg))
+			row.HeapRetainedMB, us(row.ConcurrentAvg),
+			row.References, row.Calls, row.UnknownCalls)
 	}
 	sb.WriteString("\nInterpretation rules:\n")
-	sb.WriteString("- index/parse is the cold index divided by a parse-only walk; a value near 1\n")
-	sb.WriteString("  means imports and the graph did not add a second parse.\n")
+	sb.WriteString("- parse_ms is a symbols-only parse walk; rel_parse_ms adds reference and call extraction.\n")
+	sb.WriteString("- index/rel_parse is the cold index divided by the relationship parse walk; a value\n")
+	sb.WriteString("  near 1 means the graph and relationships did not add a second parse.\n")
 	sb.WriteString("- query_us is a warm depth-1 graph query after the index is built.\n")
-	sb.WriteString("- stale_us is the freshness stat walk alone (Index.Stale); a graph query adds\n")
-	sb.WriteString("  the go.mod fingerprint and traversal on top of it.\n")
+	sb.WriteString("- ref_q_us is a warm symbol-reference query after the index is built.\n")
+	sb.WriteString("- stale_us is the freshness stat walk alone (Index.Stale); a graph or refs query\n")
+	sb.WriteString("  adds the go.mod fingerprint and traversal on top of it.\n")
 	sb.WriteString("- change_ms is a graph query after one import rewrite (full snapshot rebuild).\n")
 	sb.WriteString("- addpkg_ms is a graph query after creating one package (full snapshot rebuild).\n")
-	sb.WriteString("- conc_us is the average of 8 goroutines issuing bounded queries.\n")
+	sb.WriteString("- conc_us is the average of 8 goroutines issuing bounded graph queries.\n")
 
 	path := filepath.Join("..", "..", "docs", "benchmarks", "results", "phase6-performance.txt")
 	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
@@ -83,10 +91,16 @@ func phase6MeasureRepo(t *testing.T, files int) phase6PerfRow {
 	row := phase6PerfRow{Files: files, Packages: packages}
 
 	parseStart := time.Now()
-	if err := phase6ParseOnly(root); err != nil {
-		t.Fatalf("parse-only walk: %v", err)
+	if err := phase6ParseOnly(root, false); err != nil {
+		t.Fatalf("symbols-only parse walk: %v", err)
 	}
 	row.ParseOnly = time.Since(parseStart)
+
+	relParseStart := time.Now()
+	if err := phase6ParseOnly(root, true); err != nil {
+		t.Fatalf("relationship parse walk: %v", err)
+	}
+	row.RelParseOnly = time.Since(relParseStart)
 
 	var before, after runtime.MemStats
 	runtime.GC()
@@ -101,13 +115,18 @@ func phase6MeasureRepo(t *testing.T, files int) phase6PerfRow {
 	runtime.ReadMemStats(&after)
 	row.HeapRetainedMB = float64(after.HeapAlloc-before.HeapAlloc) / (1 << 20)
 
-	if row.ParseOnly > 0 && float64(row.ColdIndex)/float64(row.ParseOnly) > 2.5 {
-		t.Errorf("cold index is %.2fx the parse-only walk; the graph doubled the parse",
-			float64(row.ColdIndex)/float64(row.ParseOnly))
+	if row.RelParseOnly > 0 && float64(row.ColdIndex)/float64(row.RelParseOnly) > 2.5 {
+		t.Errorf("cold index is %.2fx the relationship parse walk; the index doubled the parse",
+			float64(row.ColdIndex)/float64(row.RelParseOnly))
 	}
 
 	row.QueryAvg = phase6MedianQuery(t, idx, "internal/p000", 20)
+	row.RefQueryAvg = phase6MedianRefs(t, idx, "p000.F0_0", 20)
 	row.FreshnessAvg = phase6MedianStale(t, idx, 20)
+	stats := idx.RelationshipStats()
+	row.References = stats.References
+	row.Calls = stats.Calls
+	row.UnknownCalls = stats.UnknownCalls
 
 	// One import rewrite: same package, different target. The query must see
 	// the new edge and must pay a full snapshot rebuild.
@@ -191,10 +210,13 @@ func phase6PerfFile(pkg, next, file int) string {
 	for i := 0; i < 10; i++ {
 		fmt.Fprintf(&sb, "func F%d_%d(x int) int { return x + %d }\n", file, i, i)
 	}
+	// A small amount of real reference/call work so the relationship
+	// projection is measured rather than inferred from empty function bodies.
+	fmt.Fprintf(&sb, "func Caller%d(x int) int { return F%d_0(x) + F%d_1(x) }\n", file, file, file)
 	return sb.String()
 }
 
-func phase6ParseOnly(root string) error {
+func phase6ParseOnly(root string, relationships bool) error {
 	backend := ast.GoBackend{}
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -203,9 +225,12 @@ func phase6ParseOnly(root string) error {
 		if info.IsDir() || !strings.HasSuffix(path, ".go") {
 			return nil
 		}
-		_, err = backend.Parse(path, ast.Options{Kinds: []ast.Kind{
-			ast.KindPackage, ast.KindFunc, ast.KindMethod, ast.KindType, ast.KindVar, ast.KindConst,
-		}})
+		_, err = backend.Parse(path, ast.Options{
+			Kinds: []ast.Kind{
+				ast.KindPackage, ast.KindFunc, ast.KindMethod, ast.KindType, ast.KindVar, ast.KindConst,
+			},
+			Relationships: relationships,
+		})
 		return err
 	})
 }
@@ -226,6 +251,20 @@ func phase6MedianQuery(t *testing.T, idx *ast.Index, path string, samples int) t
 
 // phase6MedianStale measures the freshness stat walk alone. Graph queries add
 // the go.mod fingerprint check and traversal on top of this.
+func phase6MedianRefs(t *testing.T, idx *ast.Index, symbol string, samples int) time.Duration {
+	t.Helper()
+	durations := make([]time.Duration, 0, samples)
+	for i := 0; i < samples; i++ {
+		start := time.Now()
+		if _, err := idx.References(context.Background(), ast.RefQuery{Symbol: symbol}); err != nil {
+			t.Fatalf("symbol-reference query: %v", err)
+		}
+		durations = append(durations, time.Since(start))
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	return durations[len(durations)/2]
+}
+
 func phase6MedianStale(t *testing.T, idx *ast.Index, samples int) time.Duration {
 	t.Helper()
 	durations := make([]time.Duration, 0, samples)

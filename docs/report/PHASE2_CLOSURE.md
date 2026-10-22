@@ -9,8 +9,8 @@
 
 > **Historical note (Phase 6):** the "exactly one structural tool" statement
 > below describes the Phase 2 tree. Phase 6 added `graph` as a second read-only
-> wire surface over the same structural source; the one-index/one-parse
-> invariant remains current. See [`PHASE7_CLOSURE.md`](PHASE7_CLOSURE.md).
+> wire surface over the same structural source, and the Phase 5/6 debt closure
+> added `refs` as a third; the one-index/one-parse invariant remains current. See [`PHASE7_CLOSURE.md`](PHASE7_CLOSURE.md).
 
 ## 1. Verdict
 

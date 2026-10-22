@@ -9,8 +9,9 @@
 
 > **Historical note (Phase 6):** statements below about "one structural tool"
 > describe the Phase 1/2 tree. Phase 6 added `graph` as a second read-only wire
-> surface over the same `ast.Index`/`StructuralSource`; the one-source and
-> one-parse invariants remain current. See
+> surface over the same `ast.Index`/`StructuralSource`; the Phase 5/6 debt
+> closure added `refs` as a third. The one-source and one-parse invariants
+> remain current. See
 > [`PHASE7_CLOSURE.md`](PHASE7_CLOSURE.md).
 
 ## 1. Executive Verdict

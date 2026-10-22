@@ -2,6 +2,13 @@
 
 > **Status:** implementation + deterministic tool-level benchmark; live harness
 > gated but no valid live artifact
+>
+> **Post-closure extension:** symbol references and statically provable direct
+> call edges were added after the original phase under a separate exactness
+> contract; see §15 and
+> [`../report/PHASE5_6_DEBT_CLOSURE.md`](../report/PHASE5_6_DEBT_CLOSURE.md).
+> The package/import contract and the original non-goals for interfaces,
+> reflection, function values, and method dispatch remain.
 > **Code boundary before Phase 6:** Phase 1–5 frozen at `30aa541`
 > **Production surface:** one read-only `graph` tool sharing the existing
 > `ast.Index`
@@ -131,8 +138,8 @@ a model assertion.
 |---|---|
 | `file` nodes / `contains` edges | OUT OF SCOPE — the coordinate source already returns file paths. |
 | `symbol` nodes / `declares` edges | OUT OF SCOPE — the coordinate source already returns declarations. |
-| `references` | OUT OF SCOPE — textual references are not semantic references. |
-| `calls` | OUT OF SCOPE — method expressions, function values, interface dispatch, reflection, generics, and build tags make exactness unprovable. |
+| `references` | OUT OF SCOPE in the original phase — textual references are not semantic references. The post-closure exact subset is §15. |
+| `calls` | OUT OF SCOPE in the original phase — method expressions, function values, interface dispatch, reflection, generics, and build tags make exactness unprovable. The post-closure static direct-call subset is §15. |
 | `implements` | OUT OF SCOPE — requires type checking and a build context. |
 | cross-module / vendored / `replace` resolution | OUT OF SCOPE — treated as external or unresolved, explicitly. |
 | build-tag evaluation | OUT OF SCOPE — the index is source-level; edges from files excluded by a build tag are still declared edges and are documented as such. |
@@ -344,3 +351,96 @@ The phase can close only if:
 
 If H1 does not beat H0, the correct outcome is `HOLD` and the graph surface is
 removed or left unreferenced. A graph that merely exists is not a success.
+
+## 15. Post-Closure Extension — Exact References and Static Calls
+
+The original phase deliberately stopped at package/import edges. The Phase 5/6
+debt closure adds a **new read-only surface over the same index**, not a second
+repository model.
+
+### 15.1 Wire tool
+
+`refs`, `agent.TierRead`, closed schema:
+
+| Argument | Contract |
+|---|---|
+| `symbol` | exact symbol or qualified name; required |
+| `relation` | `references` (default), `callers`, or `callees` |
+| `path` | file or directory inside the workspace; scopes the declaration lookup |
+| `depth` | 1–4 for callers/callees; references are one-hop |
+| `limit` | 1–200 references, direct-call edges, or traversal nodes |
+| `edges` | 1–400 transitive call edges; default `2 * limit`, capped; not valid for a direct call query |
+| `skip` | non-negative rows to skip (references or call edges) |
+
+Statuses are `ok`, `ambiguous`, `not_found`, `truncated`, and `unsupported`.
+`ambiguous` lists candidates and chooses none. `truncated` names the bound.
+`unsupported` is used when the relation cannot be proven for that declaration
+kind (for example, a method reference query).
+
+### 15.2 Exact reference subset
+
+A reference is materialised only when:
+
+1. the use is a package-qualified selector whose qualifier resolves to a
+   module-local import, and the member resolves to exactly one package-scope
+   declaration in the target package; or
+2. the use is an unqualified identifier in the same package, is not a local
+   shadow, and resolves to exactly one package-scope declaration.
+
+Every site carries `path:line:column`, `qualified`, `call`, and `test` flags.
+Composite-literal keys, local shadows, struct field declarations, and selector
+members of value expressions are not reported as symbol references.
+
+Explicit blind spots are disclosed:
+
+- a dot import can capture unqualified names in the importing file and in the
+  dot-imported package;
+- methods are not package-scope symbols; method reference queries are
+  `unsupported`;
+- map-key references are conservatively not reported;
+- parse failures and ambiguous declarations mark the answer incomplete.
+
+### 15.3 Static direct-call subset
+
+A call edge is materialised only when the callee resolves to:
+
+- a package-scope function (including generic instantiation);
+- a method expression (`T.M`, `(*T).M`, `pkg.T.M`) whose receiver type resolves
+  to a local declaration with a unique direct method declaration.
+
+Every edge carries caller coordinate, callee coordinate, call-site
+`path:line:column`, `certainty` (`static`, or `lexical` for a call inside a
+closure), and closure/test flags.
+
+Not materialised:
+
+- ordinary method dispatch (`x.M()`), interface dispatch, function values,
+  reflection, and dynamic dependency injection;
+- package-level closures are labelled `<closure>`; package initializers are
+  labelled `<package init>`;
+- unresolved/external targets are counted, not guessed.
+
+### 15.4 Traversal and bounds
+
+Callers/callees support depth 1–4 with:
+
+| Bound | Default | Maximum |
+|---|---:|---:|
+| depth | 1 | 4 |
+| nodes | 50 | 200 |
+| edges | `2 * limit` | 400 |
+| work (edge inspections) | 200,000 | 200,000 |
+
+BFS is cycle-safe; reaching a bound returns `truncated` with `depth`,
+`node_limit`, `edge_limit`, or `work_limit`. Cancellation is checked at every
+queue node, every 256 edge inspections, and before return. A cancelled query
+returns `context.Canceled`, never a partial `ok` result.
+
+### 15.5 Non-goals preserved
+
+The extension does **not** add a second parser, index, daemon, database, or
+graph service. It does not add type checking, interface implementation edges,
+reflection, function-value call resolution, cross-module/vendored/`replace`
+resolution, build-tag evaluation, or model-generated edges. Graph/reference
+evidence remains advisory and cannot grant authority, spend a second budget,
+or complete a task.

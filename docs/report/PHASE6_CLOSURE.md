@@ -4,6 +4,14 @@
 > the reverse-adjacency cancellation gap, the truthful-background-evidence gap,
 > and the completion/exit gaps outside the graph. See
 > [`PHASE7_CLOSURE.md`](PHASE7_CLOSURE.md).
+>
+> **Post-closure note (Phase 5/6 debt closure, 2026-10-22):** the package/import
+> contract below is unchanged. A later exact-subset extension adds symbol
+> references and statically provable direct-call edges over the same
+> `ast.Index`/`StructuralSource` (`ast/relationships.go`, `tools/refs.go`).
+> It does not implement interface/reflection/function-value call edges or
+> method reference queries; those remain explicit unknowns/unsupported. See
+> [`PHASE5_6_DEBT_CLOSURE.md`](PHASE5_6_DEBT_CLOSURE.md).
 
 ## 1. Verdict
 
@@ -174,9 +182,10 @@ Explicitly classified:
 
 Not implemented (OUT OF SCOPE):
 
-- `references` — textual reference is not semantic reference;
+- `references` — textual reference is not semantic reference (post-closure exact subset: see §27);
 - `calls` — method expressions, function values, interface dispatch,
-  reflection, generics, and build tags make exactness unprovable;
+  reflection, generics, and build tags make exactness unprovable
+  (post-closure static direct-call subset: see §27);
 - `implements` — requires type checking and a build context;
 - `contains` / `declares` — duplicate existing coordinates;
 - cross-module, vendored, `replace`, and nested-module resolution;
@@ -537,7 +546,8 @@ Interpretation:
   produced; see §17 and §24.
 - **Package/import only.** No references, calls, implementations, file nodes,
   symbol nodes, cross-module resolution, vendoring, `replace`, or nested
-  modules.
+  modules. The post-closure exact reference/static-call subset is §27;
+  interface/reflection/function-value calls remain out of scope.
 - **Source-level, not build-context-aware.** Generated files and files excluded
   by build tags are indexed and their imports are reported. This is explicit
   and tested, not a semantic claim.
@@ -564,7 +574,8 @@ Interpretation:
   answer quality or turn count. The live harness did not produce valid data.
 - That graph-derived verification scopes improve completion correctness in
   production; only the candidate-scope information was measured.
-- Exact call/reference/implementation relationships.
+- Exact call/reference/implementation relationships beyond the post-closure
+  package-scope reference and static direct-call subset.
 - Build-tag, generated-code, vendored, replaced, or nested-module semantics.
 - Production-scale latency, memory, or contention.
 - Incremental invalidation or a background indexing lifecycle.
@@ -572,7 +583,8 @@ Interpretation:
 
 ## 25. Deferred
 
-- Symbol references and call edges, under an exactness contract.
+- Symbol references and call edges beyond the exact static subset
+  (interface/reflection/function-value dispatch).
 - Interface implementation edges and type checking.
 - File/symbol graph nodes and `contains`/`declares` edges.
 - Wiring graph candidates into Phase 4 verification targeting.
@@ -606,3 +618,34 @@ deferred work, not hidden assumptions.
 The next phase must start from a separate hypothesis and benchmark. Do not add
 semantic edges to this frozen tree without evidence that the package/import
 layer is insufficient.
+
+## 27. Post-Closure Extension — Exact References and Static Calls
+
+The debt closure extends the same structural source with a second relationship
+surface, `refs`, without changing the package/import contract above.
+
+Implemented exact subset:
+
+- package-qualified and same-package unqualified references to package-scope
+  functions, types, vars, and consts;
+- direct calls to package functions, generic instantiations, and method
+  expressions whose receiver type resolves to a local declaration;
+- bounded callers/callees traversal with depth 1–4, node/edge/work limits,
+  cycle safety, and cancellation;
+- stable `path:line:column` witnesses, ambiguity, truncation, and
+  `unsupported` states.
+
+Explicitly not implemented:
+
+- method reference queries (`T.M` where the receiver is a value);
+- interface dispatch, reflection, function-value call resolution, and dynamic
+  dependency injection;
+- type checking, cross-module/vendored/`replace`/nested-module resolution, and
+  build-tag evaluation beyond the source-level declaration model;
+- fields as symbols; map-key references are conservatively not reported.
+
+The extension shares the existing `ast.Index`, `StructuralSource`, freshness,
+cancellation, authority, budget, delegation, and completion boundaries. It is
+read-only and cannot contribute mutation or verification evidence.
+
+Full evidence: [`PHASE5_6_DEBT_CLOSURE.md`](PHASE5_6_DEBT_CLOSURE.md).

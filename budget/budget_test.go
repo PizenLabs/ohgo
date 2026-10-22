@@ -76,6 +76,32 @@ func TestConcurrentAdmissionNeverExceedsTheGrant(t *testing.T) {
 	}
 }
 
+// A concurrent multi-dimension admission must never charge one dimension and
+// leave another uncharged when the second dimension is the one that runs out.
+func TestConcurrentAdmitAllIsAllOrNothing(t *testing.T) {
+	const limit = 20
+	b := New(Limits{Turns: limit, ModelCalls: limit})
+	var admitted atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := b.AdmitAll(DimensionTurns, DimensionModelCalls); err == nil {
+				admitted.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := admitted.Load(); got != limit {
+		t.Fatalf("admitted = %d, want exactly %d", got, limit)
+	}
+	snap := b.Snapshot()
+	if snap.Used.Turns != limit || snap.Used.ModelCalls != limit {
+		t.Fatalf("used = %+v, want both dimensions at %d", snap.Used, limit)
+	}
+}
+
 // A non-positive limit means unmetered, not "zero allowed": the zero value is
 // the only safe way for a caller to leave a dimension outside this grant.
 func TestNonPositiveLimitIsUnmetered(t *testing.T) {
