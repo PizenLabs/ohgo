@@ -4,6 +4,7 @@
 > **Frozen baseline:** `6974185` (tree identical to `723b35d` at start)
 > **Audit:** [`PHASE4_AUDIT.md`](PHASE4_AUDIT.md)
 > **Benchmark spec:** [`../benchmarks/PHASE4_SPEC.md`](../benchmarks/PHASE4_SPEC.md)
+> **Final closure audit:** [`PHASE4_FINAL_CLOSURE.md`](PHASE4_FINAL_CLOSURE.md)
 > **Verdict:** **PASS WITH LIMITATIONS**
 
 ## 1. Verdict
