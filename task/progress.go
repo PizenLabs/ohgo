@@ -10,6 +10,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/project"
 )
@@ -22,6 +23,11 @@ import (
 // and review reason. Version 1 checkpoints still load: they simply cannot
 // authorize completion, because a task with no contract has no evidence
 // boundary. They are resolvable only by an explicit human cancel/replace.
+//
+// Phase 9's evidenceState and audit fields are additive and optional. They do
+// not change the meaning of an existing field, so the schema version stays 2;
+// older readers ignore them and a reader of an older checkpoint sees nil. A
+// field whose meaning changes would still require a version bump.
 const ProgressVersion = 2
 
 // File names inside the project-local .ohgo directory.
@@ -71,6 +77,13 @@ type Progress struct {
 	// ReviewReason is the evidence-boundary explanation persisted when the
 	// task entered NEEDS_REVIEW.
 	ReviewReason string `json:"reviewReason,omitempty"`
+	// EvidenceState is the bounded durable knowledge the runtime acquired. It
+	// lets a resumed turn avoid rediscovering facts and lets a projection
+	// explain what it retained or elided. It is evidence, never authority.
+	EvidenceState *cognition.EvidenceState `json:"evidenceState,omitempty"`
+	// Audit is the last context-projection audit, bounded. It is diagnostic
+	// state: editing it cannot change authority, evidence, or completion.
+	Audit string `json:"audit,omitempty"`
 }
 
 // ProgressFrom projects a task into its checkpoint form.

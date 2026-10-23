@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/workspace"
 )
@@ -96,6 +99,17 @@ type headlessExit struct {
 
 // Error implements error.
 func (e *headlessExit) Error() string { return e.outcome.line() }
+
+// contextAuditEnabled reports whether the runtime should print projection
+// decisions. It is an operator/debug switch, never a task input.
+func contextAuditEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("OHGO_DEBUG_CONTEXT"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 // projectRun derives the stateless verdict from the shared Phase 4 evaluator.
 //
@@ -185,6 +199,33 @@ func runHeadlessTurn(ctx context.Context, loop *agent.Loop, root string, out io.
 	if intent.Kind == workspace.ObjectiveMutation && root != "" {
 		snapshot = agent.CaptureTargetsContext(ctx, root, intent, resolver)
 	}
+
+	// The stateless paths get the same task shape and evidence projection as
+	// the TUI, but the evidence lives for this run only: a one-shot command is
+	// explicitly non-durable and must not pretend to resume knowledge it did
+	// not persist.
+	authority := "build"
+	if intent.Kind == contract.ObjectiveInformational {
+		authority = "ask"
+	}
+	facts := cognition.ProbeFacts(root)
+	shape := cognition.BuildShape(intent, cognition.ShapeParams{
+		Authority: authority,
+		Facts:     facts,
+		Snapshot:  snapshot,
+		Budget:    cognition.BudgetShapeFrom(loop.Budget().Snapshot()),
+	})
+	projector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
+	loop.SetProjectionHook(projector.Project)
+	if contextAuditEnabled() {
+		loop.SetProjectionReportHook(func(report agent.ProjectionReport) {
+			_, _ = fmt.Fprintln(os.Stderr, "[ohgo context]\n"+cognition.RenderAudit(report))
+		})
+	} else {
+		loop.SetProjectionReportHook(nil)
+	}
+	defer loop.SetProjectionHook(nil)
+	defer loop.SetProjectionReportHook(nil)
 
 	request := append(append([]agent.Message(nil), history...), agent.UserMessage{Text: text})
 	turns, err := loop.Run(ctx, request)

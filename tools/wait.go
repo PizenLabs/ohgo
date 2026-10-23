@@ -62,6 +62,7 @@ func NewWaitTool(jobs *BackgroundJobs) *WaitTool {
 		// bytes the process already wrote. Read-tier is honest.
 		agent.Approval{Tier: agent.TierRead},
 	)
+	tool.SetActionClasses(agent.ActionExecute, agent.ActionBackground)
 	return tool
 }
 

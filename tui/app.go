@@ -15,6 +15,7 @@ import (
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/workspace"
@@ -1418,6 +1419,14 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	case "task":
 		p.taskCommand(command.Args)
+		return nil
+
+	case "audit":
+		if p.task.Audit == nil {
+			p.state.Apply(Notice{Text: "context audit is unavailable in this session"})
+			return nil
+		}
+		p.state.Apply(Notice{Text: p.task.Audit()})
 		return nil
 
 	case "theme":
@@ -3580,6 +3589,7 @@ func (p *Program) runTurn(text string) {
 			return
 		}
 	}
+
 	// The budget is granted at the turn boundary, before any execution. The
 	// spawner shares this instance through the host's holder, so the same
 	// grant covers the root and every descendant. A new user turn is a new
@@ -3590,6 +3600,38 @@ func (p *Program) runTurn(text string) {
 		if runBudget != nil {
 			p.loop.SetBudget(runBudget)
 		}
+	}
+
+	// The task shape and evidence state are the runtime's own model of what
+	// this turn needs. They narrow the action surface and build a smaller
+	// context view; they never authorize a call. The security boundary still
+	// evaluates every tool that remains, and completion still evaluates
+	// evidence the runtime observed. The shape is built after the fresh run
+	// grant is installed so an exhausted prior turn cannot poison this one.
+	authorityLabel := strings.ToLower(strings.TrimSpace(turn.Effective))
+	if authorityLabel == "" {
+		authorityLabel = strings.ToLower(strings.TrimSpace(turn.Handler))
+	}
+	if authorityLabel == "" && p.workspace.Current != nil {
+		authorityLabel = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
+	}
+	facts := cognition.ProbeFacts(p.completionRoot)
+	shape := cognition.BuildShape(intent, cognition.ShapeParams{
+		Authority: authorityLabel,
+		Intent:    turn.Intent,
+		Facts:     facts,
+		Snapshot:  targetSnapshot,
+		Budget:    cognition.BudgetShapeFrom(p.loop.Budget().Snapshot()),
+	})
+	if p.task.Evidence != nil {
+		projector := cognition.NewProjector(shape, p.task.Evidence(), facts)
+		p.loop.SetProjectionHook(projector.Project)
+		p.loop.SetProjectionReportHook(p.task.RecordProjection)
+	} else {
+		// A program built without durable evidence keeps the pre-Phase-9
+		// behaviour exactly: full context and the full tool set.
+		p.loop.SetProjectionHook(nil)
+		p.loop.SetProjectionReportHook(nil)
 	}
 
 	user := agent.UserMessage{Text: text}

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/edit"
 )
 
@@ -43,6 +44,8 @@ func NewEditTool(root string) *EditTool {
 		},
 		agent.Approval{Tier: agent.TierWrite, Reason: "edits file contents"},
 	)
+	tool.SetMutationOperations(contract.ChangeModify, contract.ChangeAny)
+	tool.SetActionClasses(agent.ActionMutate, agent.ActionRequiresExisting)
 	return tool
 }
 

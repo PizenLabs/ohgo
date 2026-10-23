@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/contract"
 )
 
 // DeleteTool removes a file.
@@ -31,6 +32,8 @@ func NewDeleteTool(root string) *DeleteTool {
 		},
 		agent.Approval{Tier: agent.TierWrite, Reason: "deletes a file"},
 	)
+	tool.SetMutationOperations(contract.ChangeDelete)
+	tool.SetActionClasses(agent.ActionMutate, agent.ActionRequiresExisting)
 	return tool
 }
 

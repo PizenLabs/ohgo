@@ -396,6 +396,15 @@ func normalizeRequest(text string) string {
 			b.WriteRune(r)
 			continue
 		}
+		if r == ',' {
+			// A comma is a clause boundary, not decoration. Keeping it as a
+			// token is what lets "check the project, write README.md" expose
+			// the mutation clause instead of collapsing both objectives into
+			// one read-headed sentence.
+			b.WriteString(" , ")
+			space = true
+			continue
+		}
 		if !space {
 			b.WriteByte(' ')
 			space = true

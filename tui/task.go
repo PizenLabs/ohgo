@@ -5,6 +5,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/contract"
 )
 
@@ -94,6 +95,14 @@ type TaskHooks struct {
 	AcceptReview func(reason string) TaskProjection
 	// Context returns deterministic orientation blocks for the current task.
 	Context func() []string
+	// Evidence returns the task's durable evidence state. The projector
+	// updates it in place; the controller checkpoints it at lifecycle
+	// boundaries. Nil disables task-shaped projection.
+	Evidence func() *cognition.EvidenceState
+	// RecordProjection stores the last projection audit for /audit.
+	RecordProjection func(agent.ProjectionReport)
+	// Audit returns the last projection audit, for /audit.
+	Audit func() string
 	// RunBudget returns the fresh root grant for one turn. The host installs
 	// it on the loop and on the subagent spawner before execution, so every
 	// descendant of the turn shares the same instance.

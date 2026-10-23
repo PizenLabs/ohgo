@@ -94,6 +94,7 @@ func NewTaskTool(spawn Spawner, depth, maxDepth int, system SystemBuilder) *Task
 		// the subagent's own tools carry their own approval tiers.
 		agent.Approval{Tier: agent.TierRead},
 	)
+	tool.SetActionClasses(agent.ActionDelegate)
 	return tool
 }
 

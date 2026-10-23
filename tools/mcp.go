@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/knowledge"
 	"github.com/PizenLabs/ohgo/mcp"
 	"github.com/PizenLabs/ohgo/security"
@@ -84,6 +85,7 @@ func NewMCPListTool(manager MCPManager) *MCPListTool {
 		},
 		agent.Approval{Tier: agent.TierRead, Reason: "lists a configured MCP server's advertised capabilities"},
 	)
+	tool.SetActionClasses(agent.ActionExternal)
 	return tool
 }
 
@@ -253,6 +255,7 @@ func NewMCPReadTool(manager MCPManager) *MCPReadTool {
 		},
 		agent.Approval{Tier: agent.TierRead, Reason: "reads an external MCP resource or read-classified tool"},
 	)
+	tool.SetActionClasses(agent.ActionExternal)
 	return tool
 }
 
@@ -363,6 +366,8 @@ func NewMCPCallTool(manager MCPManager) *MCPCallTool {
 		},
 	)
 	tool.SetExclusive(true)
+	tool.SetActionClasses(agent.ActionExternal, agent.ActionMutate)
+	tool.SetMutationOperations(contract.ChangeAny)
 	return tool
 }
 

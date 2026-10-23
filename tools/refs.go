@@ -92,6 +92,8 @@ func NewRefsTool(source *StructuralSource) *RefsTool {
 		},
 		agent.Approval{Tier: agent.TierRead},
 	)
+	tool.SetRequiredLanguage("go")
+	tool.SetActionClasses(agent.ActionObserve, agent.ActionRelationship)
 	return tool
 }
 

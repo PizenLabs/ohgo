@@ -71,6 +71,7 @@ func NewArtifactTool(sink ArtifactSink, origin workspace.Workspace) *ArtifactToo
 		},
 		agent.Approval{Tier: agent.TierRead},
 	)
+	tool.SetActionClasses(agent.ActionPlan)
 	return tool
 }
 
