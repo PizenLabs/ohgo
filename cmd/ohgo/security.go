@@ -387,6 +387,9 @@ func scopeLabel(scope security.Scope) string {
 // model's arguments influence the operation but never the classification.
 func securityRequest(root string, tool agent.Tool, args map[string]any, operationID, taskID, sessionID string) security.Request {
 	cap := capabilityForTier(tool.Approval().Tier)
+	// Capability is the declared authority class; a per-call CapabilityReporter
+	// refines the operation (and therefore mutation risk), not the process/
+	// filesystem taxonomy. A shell that writes is still process execution.
 	if namer, ok := tool.(agent.CapabilityNamer); ok {
 		cap = namer.SecurityCapability()
 	}

@@ -67,23 +67,8 @@ DEFAULT_MATRIX = [
         "min_interval": "0",
     },
     {
-        "class": "remote/fast",
+        "class": "remote/fast-primary",
         "ref": "gemini/gemini-2.5-flash-lite",
-        "scenarios": [
-            "A-pure-read",
-            "B-read-build",
-            "C-explicit-boundary",
-            "P10-C1-read-file",
-            "P10-C2-read-then-update",
-            "G-debugging",
-            "K1-irrelevant-large-file",
-            "K7-stop-after-proof",
-        ],
-        "min_interval": "0",
-    },
-    {
-        "class": "remote/free-strong",
-        "ref": "openrouter/openrouter/free",
         "scenarios": [
             "A-pure-read",
             "B-read-build",
@@ -106,22 +91,33 @@ DEFAULT_MATRIX = [
             "P10-C2-read-then-update",
             "P10-F-package-name",
         ],
+        "min_interval": "0",
+    },
+    {
+        "class": "remote/free-router",
+        "ref": "openrouter/openrouter/free",
+        "scenarios": [
+            "A-pure-read",
+            "G-debugging",
+            "K1-irrelevant-large-file",
+        ],
         "min_interval": "1s",
+        "max_turns": 8,
+        "max_tokens": 1024,
+        "timeout": "3m",
     },
     {
         "class": "freetier/constrained",
         "ref": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
         "scenarios": [
             "A-pure-read",
-            "B-read-build",
-            "C-explicit-boundary",
-            "P10-C1-read-file",
-            "P10-C2-read-then-update",
             "G-debugging",
             "K1-irrelevant-large-file",
-            "K7-stop-after-proof",
         ],
         "min_interval": "1s",
+        "max_turns": 8,
+        "max_tokens": 1024,
+        "timeout": "3m",
     },
 ]
 
@@ -184,13 +180,13 @@ def run_one(
         "-projection",
         projection,
         "-max-turns",
-        str(args.max_turns),
+        str(model.get("max_turns", args.max_turns)),
         "-max-tokens",
-        str(args.max_tokens),
+        str(model.get("max_tokens", args.max_tokens)),
         "-temperature",
         str(args.temperature),
         "-timeout",
-        args.timeout,
+        model.get("timeout", args.timeout),
         "-retries",
         str(args.retries),
         "-min-interval",
@@ -395,6 +391,7 @@ def main() -> int:
     parser.add_argument("--pause", type=float, default=0.5)
     parser.add_argument("--control-only", action="store_true")
     parser.add_argument("--cognitive-only", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="reuse completed pairs from existing control/cognitive artifacts")
     args = parser.parse_args()
 
     out_dir = ROOT / args.out_dir
@@ -419,36 +416,6 @@ def main() -> int:
         if not args.scenarios:
             print("--models without --scenarios would run the whole matrix; pass --scenarios", file=sys.stderr)
             return 2
-
-    with tempfile.TemporaryDirectory(prefix="phase10-bin-") as tmp:
-        binary = pathlib.Path(tmp) / "phase9"
-        subprocess.run(
-            ["go", "build", "-o", str(binary), "./bench/phase9"],
-            cwd=ROOT,
-            check=True,
-        )
-
-        control: list[dict] = []
-        cognitive: list[dict] = []
-        for model in matrix:
-            scenarios = model["scenarios"]
-            if not scenarios:
-                print(f"no scenarios for {model['ref']}", file=sys.stderr)
-                continue
-            for scenario in scenarios:
-                for repeat in range(args.repeats):
-                    if not args.cognitive_only:
-                        print(f"control   {model['ref']:<52} {scenario} #{repeat + 1}", flush=True)
-                        result = run_one(binary, model, scenario, "off", args)
-                        result["repeat"] = repeat
-                        control.append(result)
-                        time.sleep(args.pause)
-                    if not args.control_only:
-                        print(f"cognitive {model['ref']:<52} {scenario} #{repeat + 1}", flush=True)
-                        result = run_one(binary, model, scenario, "state", args)
-                        result["repeat"] = repeat
-                        cognitive.append(result)
-                        time.sleep(args.pause)
 
     common = {
         "version": 1,
@@ -480,6 +447,73 @@ def main() -> int:
             for item in matrix
         ],
     }
+    with tempfile.TemporaryDirectory(prefix="phase10-bin-") as tmp:
+        binary = pathlib.Path(tmp) / "phase9"
+        subprocess.run(
+            ["go", "build", "-o", str(binary), "./bench/phase9"],
+            cwd=ROOT,
+            check=True,
+        )
+
+        control: list[dict] = []
+        cognitive: list[dict] = []
+        if args.resume:
+            for path, target in (
+                (out_dir / "phase10-control.json", control),
+                (out_dir / "phase10-cognitive.json", cognitive),
+            ):
+                if path.exists():
+                    try:
+                        target.extend(json.loads(path.read_text()).get("results", []))
+                    except Exception as exc:
+                        print(f"resume: ignoring {path}: {exc}", file=sys.stderr)
+        completed = {
+            (result.get("model_ref", ""), result.get("scenario", ""), result.get("repeat", 0))
+            for result in control
+        }
+        completed &= {
+            (result.get("model_ref", ""), result.get("scenario", ""), result.get("repeat", 0))
+            for result in cognitive
+        }
+
+        def persist(runtime: str) -> None:
+            if runtime == "control":
+                write_json(
+                    out_dir / "phase10-control.json",
+                    {**common, "runtime": "control", "results": control, "aggregate": aggregate(control)},
+                )
+            else:
+                write_json(
+                    out_dir / "phase10-cognitive.json",
+                    {**common, "runtime": "cognitive", "results": cognitive, "aggregate": aggregate(cognitive)},
+                )
+
+        for model in matrix:
+            scenarios = model["scenarios"]
+            if not scenarios:
+                print(f"no scenarios for {model['ref']}", file=sys.stderr)
+                continue
+            for scenario in scenarios:
+                for repeat in range(args.repeats):
+                    key = (model["ref"], scenario, repeat)
+                    if key in completed:
+                        print(f"skip      {model['ref']:<52} {scenario} #{repeat + 1} (resume)", flush=True)
+                        continue
+                    if not args.cognitive_only:
+                        print(f"control   {model['ref']:<52} {scenario} #{repeat + 1}", flush=True)
+                        result = run_one(binary, model, scenario, "off", args)
+                        result["repeat"] = repeat
+                        control.append(result)
+                        persist("control")
+                        time.sleep(args.pause)
+                    if not args.control_only:
+                        print(f"cognitive {model['ref']:<52} {scenario} #{repeat + 1}", flush=True)
+                        result = run_one(binary, model, scenario, "state", args)
+                        result["repeat"] = repeat
+                        cognitive.append(result)
+                        persist("cognitive")
+                        time.sleep(args.pause)
+
     control_artifact = {
         **common,
         "runtime": "control",

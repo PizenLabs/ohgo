@@ -121,10 +121,10 @@ func benchmarkRequest(root string, tool agent.Tool, args map[string]any, callID 
 // does: the declared tier is the default, a tool may refine it per invocation,
 // and a capability namer wins.
 func benchmarkCapability(tool agent.Tool, args map[string]any) security.Capability {
+	// Mirror the production request builder: the declared tier (or an explicit
+	// security capability) owns the capability taxonomy. CapabilityReporter
+	// refines the operation/mutation flag, not the capability class.
 	tier := tool.Approval().Tier
-	if reporter, ok := tool.(agent.CapabilityReporter); ok {
-		tier = reporter.Capability(args)
-	}
 	cap := security.Capability("")
 	switch tier {
 	case agent.TierRead:

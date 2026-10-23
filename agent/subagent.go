@@ -296,6 +296,11 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		})
 	} else {
 		completion = EvaluateCompletion(turns, spec.MutationIntent)
+		if spec.CompletionReview != nil {
+			if review := spec.CompletionReview(); review != "" && completion.Complete() {
+				completion = Completion{State: CompletionNeedsReview, Reason: review}
+			}
+		}
 	}
 	evidence := scanCompletionEvidence(turns, spec.MutationIntent)
 	mutated := evidence.mutated

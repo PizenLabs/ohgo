@@ -113,7 +113,11 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 
 	p.Evidence.ObserveTurns(shape, req.Turns)
 	execution := SummarizeExecution(req.Turns)
-	suff := EvaluateSufficiency(shape, p.Evidence, execution, shape.Budget.Exhausted())
+	// Sufficiency is an evidence verdict, not a resource verdict. Budget
+	// exhaustion withholds tools (Candidates checks it directly), but a
+	// proven change followed by a successful check must not be downgraded just
+	// because the grant ran out at the closing answer.
+	suff := EvaluateSufficiency(shape, p.Evidence, execution, false)
 	candidates := Candidates(shape, p.Evidence, execution, req.Tools, p.Facts, suff)
 
 	messages, report := projectMessages(req.Messages, p.Evidence, options)

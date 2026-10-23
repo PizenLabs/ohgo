@@ -110,8 +110,8 @@ func TestBuildShapeHonorsExplicitNoMutationAndNoExternal(t *testing.T) {
 	if shape.Mutation.Allowed {
 		t.Fatal("an explicit no-mutation constraint must not leave mutation allowed")
 	}
-	if shape.Authority.ExecutionAllowed {
-		t.Fatal("a no-mutation request must not leave execution available")
+	if shape.Authority.MutationAllowed {
+		t.Fatal("an explicit no-mutation constraint must not leave mutation permitted")
 	}
 	if shape.External.Required {
 		t.Fatal("an explicit no-external constraint must leave external knowledge disabled")
@@ -487,7 +487,7 @@ func TestRenderStateKeepsContractWhenEvidenceIsTruncated(t *testing.T) {
 			Seq:       i + 1,
 		})
 	}
-	execution := ExecutionState{}
+	execution := ExecutionState{ToolCalls: 5}
 	suff := EvaluateSufficiency(shape, evidence, execution, false)
 	text := RenderState(shape, evidence, execution, suff, CandidateSet{}, 700, 40)
 	for _, want := range []string{"Mutation scope", "Verification", "Completion", "Sufficiency", "Available actions"} {
@@ -630,6 +630,29 @@ func TestCandidatesBlockMutationButKeepVerification(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "read,bash" {
 		t.Fatalf("blocked candidates = %v, want read,bash", names)
+	}
+}
+
+func TestProjectorSeparatesBudgetFromEvidenceSufficiency(t *testing.T) {
+	// A spent grant withholds tools, but it is not an evidence conflict that
+	// should veto a completion already proven by the run.
+	shape := BuildShape(contract.IntentContract{
+		Objective: "Explain this.",
+		Kind:      contract.ObjectiveInformational,
+	}, ShapeParams{Authority: "ask"})
+	shape.Budget = BudgetShape{MaxTurns: 1, TurnsUsed: 1}
+	projector := NewProjector(shape, NewEvidenceState(), RepositoryFacts{})
+	result := projector.Project(agent.ProjectionRequest{
+		Tools: []agent.Tool{testTool{name: "read", tier: agent.TierRead}},
+	})
+	if result.Report.Sufficiency == string(Blocked) {
+		t.Fatalf("budget exhaustion was reported as evidence BLOCKED: %#v", result.Report)
+	}
+	if len(result.Tools) != 0 {
+		t.Fatalf("an exhausted grant offered tools: %#v", result.Tools)
+	}
+	if len(result.Report.Excluded) == 0 || !strings.Contains(result.Report.Excluded[0].Reason, "grant is exhausted") {
+		t.Fatalf("exhausted grant was not explained: %#v", result.Report.Excluded)
 	}
 }
 

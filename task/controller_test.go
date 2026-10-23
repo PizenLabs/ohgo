@@ -11,6 +11,34 @@ import (
 	"github.com/PizenLabs/ohgo/contract"
 )
 
+func TestControllerExposesTheLastProjectionReview(t *testing.T) {
+	controller := NewController(NewStore(t.TempDir()), nil)
+	if _, err := controller.Begin(testIntent("explain the project"), nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	controller.RecordProjection(agent.ProjectionReport{
+		Applied:     true,
+		Sufficiency: "INSUFFICIENT",
+		Stage:       "explore",
+	})
+	report, ok := controller.LastProjection()
+	if !ok {
+		t.Fatal("last projection was not retained")
+	}
+	if review := report.EvidenceReview(); review == "" {
+		t.Fatal("an insufficient projection did not produce a completion review")
+	}
+	if _, err := controller.Cancel("done"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if _, err := controller.Begin(testIntent("a new task"), nil); err != nil {
+		t.Fatalf("Begin new task: %v", err)
+	}
+	if _, ok := controller.LastProjection(); ok {
+		t.Fatal("a new task inherited the previous task's projection review")
+	}
+}
+
 // A task's evidence survives a checkpoint and a resume; a new task starts
 // empty. This is what lets a later turn avoid rediscovering facts without
 // inheriting another task's observations.

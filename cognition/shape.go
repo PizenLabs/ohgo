@@ -335,7 +335,6 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		shape.Mutation.Allowed = false
 		shape.Authority.MutationAllowed = false
 		shape.Authority.ReadOnly = true
-		shape.Authority.ExecutionAllowed = false
 		shape.Mutation.UnrelatedForbidden = false
 	}
 	// External knowledge is optional unless the task needs it. A request that
