@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/prompt"
@@ -268,10 +270,12 @@ func runLiveScenarioWithOptions(ctx context.Context, sc scenario, live liveModel
 	}
 	deadlineExpired := !deadline.IsZero() && !time.Now().Before(deadline)
 	if runErr != nil {
-		metrics.ObjectiveStatus = "FAILED"
-		metrics.CompletionReason = runErr.Error()
-		metrics.VerificationStatus = "not_applicable"
-		if deadlineExpired {
+		resourceStop := deadlineExpired || errors.Is(runErr, agent.ErrTurnLimit) ||
+			errors.Is(runErr, context.DeadlineExceeded) || errors.Is(runErr, budget.ErrExhausted)
+		if resourceStop {
+			// A turn/deadline/budget stop is a resource pause, not a model
+			// failure. Proven evidence can still complete; otherwise the run is
+			// resumable.
 			completion := agent.EvaluateBudgetCompletion(agent.CompletionInput{
 				Turns: turns, Contract: contract, Snapshot: snapshot, Resolver: resolver, Root: root,
 			}, true)
@@ -280,9 +284,14 @@ func runLiveScenarioWithOptions(ctx context.Context, sc scenario, live liveModel
 				metrics.CompletionReason = ""
 			} else {
 				metrics.ObjectiveStatus = "PAUSED"
-				metrics.CompletionReason = "deadline reached"
+				metrics.CompletionReason = runErr.Error()
 			}
+			metrics.VerificationStatus = "not_applicable"
+			return metrics, nil
 		}
+		metrics.ObjectiveStatus = "FAILED"
+		metrics.CompletionReason = runErr.Error()
+		metrics.VerificationStatus = "not_applicable"
 		return metrics, nil
 	}
 	completion := agent.EvaluateTaskCompletion(agent.CompletionInput{

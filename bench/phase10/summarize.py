@@ -26,7 +26,7 @@ def main() -> int:
     print("## Model summary\n")
     print(
         "| Class | Model | Pairs | Control statuses | Cognitive statuses | "
-        "Control tokens | Cognitive tokens | Token delta | Verified success C/G |"
+        "Control tokens | Cognitive tokens | Token delta | Facts C/G (expected) | Verified success C/G |"
     )
     print("|---|---|---:|---|---|---:|---:|---:|---:|---:|")
     for model, item in data["aggregate"]["by_model"].items():

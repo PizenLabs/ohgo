@@ -77,6 +77,10 @@ def dedupe(results: list[dict]) -> list[dict]:
     return list(unique.values())
 
 
+def result_scenario_id(result: dict) -> str:
+    return str(result.get("scenario", "")).split("@", 1)[0]
+
+
 def class_for(ref: str, fallback: str = "") -> str:
     return MODEL_CLASS.get(ref, fallback or "explicit")
 
@@ -165,6 +169,21 @@ def main() -> int:
         result["model_class"] = class_for(
             result.get("model_ref", ""), result.get("model_class", "")
         )
+        # P10-F asks for one package name. A "not found" answer is wrong even
+        # though the path string contains the expected token; the generic
+        # substring scorer would otherwise count it. This is a benchmark
+        # correction, not a runtime change.
+        reason = str(result.get("completion_reason") or "").lower()
+        if result.get("objective_status") == "FAILED" and (
+            "turn limit" in reason or "budget exhausted" in reason or "deadline reached" in reason
+        ):
+            result["objective_status"] = "PAUSED"
+        if result_scenario_id(result) == "P10-F-package-name":
+            answer = str(result.get("final_answer") or "").lower()
+            if any(marker in answer for marker in ("not found", "does not exist", "no such file")):
+                result["answer_facts_matched"] = 0
+                result["answer_facts_missing"] = ["tui"]
+                result["verified_success"] = False
 
     common = dict(control)
     common.pop("results", None)
