@@ -2519,12 +2519,12 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				}
 				_, _ = fmt.Fprintln(out, outcome)
 				continue
-			case "sessions", "session":
+			case "sessions":
 				h.ListSessions(out)
 				continue
 			case "new":
 				// /new is explicit in both interfaces: a fresh session with no
-				// inherited transcript. /session stays the manager/lister.
+				// inherited transcript. /sessions stays the manager/lister.
 				if h.store == nil {
 					_, _ = fmt.Fprintln(out, "no session store attached")
 					continue

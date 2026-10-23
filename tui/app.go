@@ -1599,10 +1599,6 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		p.openSessionManager()
 		return nil
 
-	case "session":
-		p.openSessionManager()
-		return nil
-
 	case "new":
 		p.openNewSessionPicker(command.Args)
 		return nil

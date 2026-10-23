@@ -3113,7 +3113,6 @@ var Commands = []CommandSpec{
 	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
 	{Name: "permissions", Usage: "permissions", Description: "choose the execution authority", Category: CommandGroupControl},
 	{Name: "mode", Usage: "mode", Description: "choose the execution authority", Hidden: true, Category: CommandGroupControl},
-	{Name: "session", Usage: "session", Description: "list and manage saved sessions", Category: CommandGroupControl},
 	{Name: "sessions", Usage: "sessions", Description: "manage saved sessions: resume, new, rename, archive, delete", Category: CommandGroupControl},
 	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
