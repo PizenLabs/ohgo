@@ -4337,7 +4337,18 @@ func (p *Program) runTurn(text string) {
 	switch action {
 	case taskActionComplete:
 		if p.task.Complete != nil {
-			p.PublishTask(p.task.Complete())
+			projection := p.task.Complete()
+			// The recap is derived here, at the only place that owns both
+			// the completion decision and the run's evidence. It narrates
+			// what the run accomplished from observed tool outcomes and the
+			// assistant's own closing answer; the durable task layer never
+			// stores it.
+			objective := projection.Objective
+			if strings.TrimSpace(objective) == "" {
+				objective = intent.Objective
+			}
+			projection.Recap = recapNarrative(objective, turns)
+			p.PublishTask(projection)
 		}
 	case taskActionReview:
 		if p.task.NeedsReview != nil {

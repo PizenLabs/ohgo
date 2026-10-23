@@ -124,6 +124,44 @@ func TestLiveRegionOnlyHoldsLiveRows(t *testing.T) {
 	}
 }
 
+// A task block is sealed when it first appears, so its completion recap is a
+// separate scrollback line. It must wait for the final answer, appear once, and
+// never be rewritten on later frames.
+func TestLiveTaskRecapIsWrittenOnceAfterTheAnswer(t *testing.T) {
+	p, _ := newLiveProgram()
+	p.state.Apply(TerminalResized{Width: 80, Height: 30})
+
+	var history []string
+	history = append(history, liveEvent(p, UserSubmitted{Text: "ship it"})...)
+	history = append(history, liveEvent(p, TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "ship it",
+	}})...)
+	history = append(history, liveEvent(p, AssistantDelta{Text: "the answer"})...)
+	history = append(history, liveEvent(p, TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "COMPLETED", Objective: "ship it",
+		Recap: "Updated the release config and verified the build.",
+	}})...)
+
+	if strings.Contains(ansi.Strip(strings.Join(history, "\n")), recapPrefix) {
+		t.Fatal("the recap printed before the streaming answer was sealed")
+	}
+
+	history = append(history, liveEvent(p, AssistantDone{})...)
+	joined := ansi.Strip(strings.Join(history, "\n"))
+	want := recapPrefix + " Updated the release config and verified the build."
+	if !strings.Contains(joined, want) {
+		t.Fatalf("the completed task printed no recap:\n%s", joined)
+	}
+	if got := strings.Count(joined, recapPrefix); got != 1 {
+		t.Fatalf("recap printed %d times, want exactly one:\n%s", got, joined)
+	}
+
+	history = append(history, liveEvent(p, Notice{Text: "still done"})...)
+	if got := strings.Count(ansi.Strip(strings.Join(history, "\n")), recapPrefix); got != 1 {
+		t.Fatalf("a later frame duplicated the recap (%d copies):\n%s", got, joined)
+	}
+}
+
 // ---- input safety ----
 
 // A paste or a typed line that looks like a mouse report is prose. The mode

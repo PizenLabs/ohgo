@@ -72,6 +72,10 @@ type Palette struct {
 	// Separator draws full-width rules (header divider, composer frames) in
 	// the dim slate chrome style, distinct from the muted body text.
 	Separator lipgloss.Style
+	// Recap renders the single completion line under a finished task block.
+	// It is the quietest text in the transcript: italic, dimmer than metadata,
+	// never a second answer, and never part of the block's copy payload.
+	Recap lipgloss.Style
 	// SupportHi highlights key entities inside the $sup answer viewport:
 	// bright cyan for concepts/technologies, amber for dates/specs.
 	// Main-chat markdown never uses them, so the overlay hierarchy stays
@@ -130,6 +134,7 @@ func DarkPalette() *Palette {
 		Cyan:         fg("#89dceb"),
 		Comment:      fg(ColorMuted).Italic(true),
 		Separator:    fg(ColorDim),
+		Recap:        fg(ColorRecap).Italic(true),
 		SupportHi:    fg("87").Bold(true),
 		SupportHiAlt: fg("220").Bold(true),
 	}
@@ -177,6 +182,7 @@ func LightPalette() *Palette {
 		Cyan:         fg("#89dceb"),
 		Comment:      fg(lightMuted).Italic(true),
 		Separator:    fg(lightMuted),
+		Recap:        fg(chromeLightRecap).Italic(true),
 		SupportHi:    fg("30").Bold(true),
 		SupportHiAlt: fg("166").Bold(true),
 	}
@@ -1379,6 +1385,13 @@ func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, 
 			sb.WriteString(line + "\n")
 		}
 		sb.WriteString("\n")
+
+	case EntryRecap:
+		// No separator row: this is the terminal footer of the task, so the
+		// next prompt follows it directly. The footer owns at most two rows.
+		for _, line := range recapLines(entry.Recap, textWidth(layout)) {
+			sb.WriteString(pal.Recap.Render(line) + "\n")
+		}
 
 	case EntrySupport:
 		renderSupportEntry(sb, entry, pal, layout)

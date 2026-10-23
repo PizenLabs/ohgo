@@ -69,6 +69,10 @@ type Entry struct {
 	// Task is set when Kind is EntryTask: the compact projection of the
 	// durable task state.
 	Task *TaskProjection
+	// Recap is set when Kind is EntryRecap: the semantic completion footer,
+	// appended after every response and tool block for the task has settled.
+	// It is display metadata, never copyable block content.
+	Recap string
 	// SupportText is set when Kind is EntrySupport: the question when
 	// SupportIsQuestion, else the answer.
 	SupportText string
@@ -97,6 +101,11 @@ const (
 	// projection, never an owner: it carries no execution authority and the
 	// task domain remains the single source of truth.
 	EntryTask EntryKind = "task"
+	// EntryRecap is the trailing completion footer for a task. It is
+	// appended only after the task is COMPLETED and the stream has settled,
+	// so it always lands below the response it describes rather than in the
+	// task block above it.
+	EntryRecap EntryKind = "recap"
 	// EntrySupport is one turn of the ephemeral $sup surface. It is rendered
 	// but never persisted and never enters the model's context (§10.2, I17).
 	EntrySupport EntryKind = "support"
@@ -565,6 +574,11 @@ type State struct {
 	// closedAssistant marks that the trailing assistant entry has ended, so
 	// the next turn opens a new one.
 	closedAssistant bool
+	// recapEmitted records the task IDs whose completion footer is already in
+	// the transcript. The footer is a separate trailing entry, so this map is
+	// the dedup memory that keeps a repeated projection from stacking a second
+	// line. A new task identity is a new footer.
+	recapEmitted map[string]bool
 	// Support reports that the ephemeral $sup surface is open. It is UI state
 	// only: the workspace and session authority are unchanged while it is set
 	// (§34). It is derived from SupportPanel: non-nil means open.
@@ -718,6 +732,9 @@ func (s *State) Apply(event Event) {
 		// The route applied to this turn only. Clearing it returns the UI to
 		// the persistent workspace; the next turn is routed independently.
 		s.Status.Turn = TurnSemantics{}
+		// The stream is settled now, so a task that completed during the turn
+		// can close with its footer at the true tail of the output.
+		s.appendTaskRecap()
 
 	case TurnCancelled:
 		// The same turn-boundary rule as AssistantDone: a cancellation can
@@ -888,16 +905,25 @@ func (s *State) Apply(event Event) {
 			return
 		}
 		projection := e.Projection
+		index := -1
 		for i := len(s.Entries) - 1; i >= 0; i-- {
 			if s.Entries[i].Kind == EntryTask {
-				s.Entries[i].Task = &projection
-				s.bumpEntry(i)
-				return
+				index = i
+				break
 			}
 		}
-		s.Entries = append(s.Entries, Entry{Kind: EntryTask, Task: &projection})
-		s.assignIdentity(len(s.Entries) - 1)
-		s.growScroll(len(projection.Items) + 2)
+		if index >= 0 {
+			s.Entries[index].Task = &projection
+			s.bumpEntry(index)
+		} else {
+			s.Entries = append(s.Entries, Entry{Kind: EntryTask, Task: &projection})
+			s.assignIdentity(len(s.Entries) - 1)
+			s.growScroll(len(projection.Items) + 2)
+		}
+		// A completed projection that arrives after the stream already
+		// settled (or outside a turn) still gets its footer; one arriving
+		// mid-stream waits for AssistantDone.
+		s.appendTaskRecap()
 
 	case HistoryReplaced:
 		// A resumed session continues rather than restarts: the replayed
@@ -906,6 +932,7 @@ func (s *State) Apply(event Event) {
 		// the prior session's token counts and clock do not belong to it.
 		s.replaceEntries(e.Entries)
 		s.closedAssistant = true
+		s.recapEmitted = nil
 		s.OutputTokens = 0
 		s.Status.Turn = TurnSemantics{}
 		s.Transition = nil
@@ -1905,6 +1932,7 @@ func (s *State) Apply(event Event) {
 		// confirmed; a stale expiry after this is a no-op via the generation.
 		s.CopyNotice = ""
 		s.closedAssistant = false
+		s.recapEmitted = nil
 		s.OutputTokens = 0
 		s.resetSessionMetrics()
 	}
@@ -2115,6 +2143,57 @@ func defaultApprovalSelection(choices []string) int {
 		return 0
 	}
 	return len(choices) - 1
+}
+
+// appendTaskRecap adds the completion footer at the tail of the transcript.
+//
+// The footer is a lifecycle event, not part of the task block: it is emitted
+// only when the task is COMPLETED and nothing is still streaming. That is what
+// puts it below the answer the user just read instead of above it in the task
+// header. One entry is emitted per task identity; repeated projections or a
+// second AssistantDone cannot duplicate it.
+func (s *State) appendTaskRecap() {
+	if !s.streamSettled() {
+		return
+	}
+	task := s.tailTask()
+	if task == nil {
+		return
+	}
+	text := taskRecapText(task)
+	if text == "" {
+		return
+	}
+	key := task.ID
+	if key == "" {
+		key = text
+	}
+	if s.recapEmitted[key] {
+		return
+	}
+	if s.recapEmitted == nil {
+		s.recapEmitted = make(map[string]bool)
+	}
+	s.recapEmitted[key] = true
+	s.pushEntry(Entry{Kind: EntryRecap, Recap: text})
+	s.growScroll(1)
+}
+
+// streamSettled reports whether the active turn has finished emitting: no
+// busy turn, no open assistant block, and no tool still running.
+func (s *State) streamSettled() bool {
+	return !s.Status.Busy && s.openAssistant() < 0 && !hasRunningTool(*s)
+}
+
+// tailTask returns the most recent task projection, or nil when the transcript
+// has none.
+func (s *State) tailTask() *TaskProjection {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		if s.Entries[i].Kind == EntryTask && s.Entries[i].Task != nil {
+			return s.Entries[i].Task
+		}
+	}
+	return nil
 }
 
 // openAssistant returns the index of the trailing assistant entry that can

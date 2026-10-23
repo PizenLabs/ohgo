@@ -109,6 +109,10 @@ const (
 	// ColorRose is warm burnt rose, the approval frame accent for a call that
 	// mutates or destroys: the boundary reads as a hazard before the text is.
 	ColorRose = "#CD694A"
+	// ColorRecap is the dim sage-teal for the post-task summary line. It is
+	// deliberately below muted text in contrast: closure is metadata, not a
+	// second answer, and it must recede into the transcript.
+	ColorRecap = "#5C7E70"
 )
 
 // Light-theme counterparts, darkened to read on a bright screen. The hues
@@ -119,6 +123,9 @@ const (
 	chromeLightStatus  = "#8A6D2B"
 	chromeLightAccent  = "#3E6E8E"
 	chromeLightDim     = "#8A93A3"
+	// chromeLightRecap is the same dim sage role darkened for a bright
+	// screen: still quieter than body text, still readable.
+	chromeLightRecap = "#4F6E61"
 )
 
 // Chrome carries the header/footer/composer styles resolved from the tokens

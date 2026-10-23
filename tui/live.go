@@ -456,6 +456,14 @@ func liveEntryLines(s State, e Entry, pal *Palette, layout Layout) []string {
 			return nil
 		}
 		return append(taskLines(e.Task, pal, layout), "")
+
+	case EntryRecap:
+		// No separator row: the footer sits directly above the next prompt.
+		lines := recapLines(e.Recap, textWidth(layout))
+		for i, line := range lines {
+			lines[i] = pal.Recap.Render(line)
+		}
+		return lines
 	}
 	return nil
 }
