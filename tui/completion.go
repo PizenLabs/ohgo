@@ -26,6 +26,14 @@ const (
 // completion comes from agent.EvaluateTaskCompletion, which requires the
 // contract's target evidence and a verification that covers it.
 func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver) (taskAction, string) {
+	return turnTaskOutcomeWithReview(err, turns, intent, snapshot, resolver, "")
+}
+
+// turnTaskOutcomeWithReview is turnTaskOutcome with the cognitive layer's
+// evidence verdict. A non-empty review can only downgrade a normal completion;
+// a proven mutation on a resource stop remains governed by
+// EvaluateBudgetCompletion, which deliberately ignores it.
+func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string) (taskAction, string) {
 	// A cancelled or turn-limited run is a recoverable pause. It must not read
 	// verification evidence after the run has been stopped: cancellation would
 	// otherwise be observable only after a post-cancel filesystem walk.
@@ -34,10 +42,11 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 		return taskActionPause, "interrupted"
 	case errors.Is(err, context.DeadlineExceeded):
 		completion := agent.EvaluateBudgetCompletion(agent.CompletionInput{
-			Turns:    turns,
-			Contract: intent,
-			Snapshot: snapshot,
-			Resolver: resolver,
+			Turns:          turns,
+			Contract:       intent,
+			Snapshot:       snapshot,
+			Resolver:       resolver,
+			EvidenceReview: evidenceReview,
 		}, true)
 		if completion.Complete() {
 			return taskActionComplete, ""
@@ -51,10 +60,11 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 		// because the grant ran out.
 		//
 		completion := agent.EvaluateBudgetCompletion(agent.CompletionInput{
-			Turns:    turns,
-			Contract: intent,
-			Snapshot: snapshot,
-			Resolver: resolver,
+			Turns:          turns,
+			Contract:       intent,
+			Snapshot:       snapshot,
+			Resolver:       resolver,
+			EvidenceReview: evidenceReview,
 		}, true)
 		if completion.Complete() {
 			return taskActionComplete, ""
@@ -70,10 +80,11 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 		return taskActionFail, err.Error()
 	}
 	completion := agent.EvaluateTaskCompletion(agent.CompletionInput{
-		Turns:    turns,
-		Contract: intent,
-		Snapshot: snapshot,
-		Resolver: resolver,
+		Turns:          turns,
+		Contract:       intent,
+		Snapshot:       snapshot,
+		Resolver:       resolver,
+		EvidenceReview: evidenceReview,
 	})
 	switch {
 	case completion.Complete():

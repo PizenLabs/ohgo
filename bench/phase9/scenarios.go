@@ -44,6 +44,10 @@ type scenario struct {
 	Fixture  fixtureKind
 	Steps    []step
 	Expect   expectation
+	// Facts are observable answer requirements. They are a bounded
+	// correctness signal, not a semantic judge: a final answer that never
+	// mentions the project's name or entry point is unlikely to explain it.
+	Facts []string
 }
 
 // matrix returns the Phase 9 A-J matrix plus adversarial controls that are
@@ -152,110 +156,186 @@ func matrix() []scenario {
 			Prompt: "Check this project and explain what it does. Do not modify anything.",
 			Steps:  append(append([]step(nil), readSteps...), readFinal),
 			Expect: expectation{ReadOnly: true, Completed: true},
+			Facts:  []string{"Nimbus Notes", "offline", "index.html", "script.js", "style.css"},
 		},
 		{
 			ID: "B-read-build", Category: "B_READ_BUILD", Fixture: fixtureStatic,
 			Prompt: "Check this project and write README.md.",
 			Steps:  buildSteps,
 			Expect: expectation{Mutation: true, Completed: false},
+			Facts:  []string{"README", "Nimbus"},
 		},
 		{
 			ID: "C-explicit-boundary", Category: "C_BOUNDARY", Fixture: fixtureStatic,
 			Prompt: "Check this project and write README.md. Do not modify any other file.",
 			Steps:  buildSteps,
 			Expect: expectation{Mutation: true, ReadOnly: false, Completed: false},
+			Facts:  []string{"README", "Nimbus"},
 		},
 		{
 			ID: "D-mutation-after-investigation", Category: "D_INVESTIGATE_THEN_BUILD", Fixture: fixtureStatic,
 			Prompt: "Check this project first, then write README.md.",
 			Steps:  buildSteps,
 			Expect: expectation{Mutation: true, Completed: false},
+			Facts:  []string{"README", "Nimbus"},
 		},
 		{
 			ID: "E-embedded-mutation", Category: "E_EMBEDDED", Fixture: fixtureStatic,
 			Prompt: "I want to understand this project, and after checking it, create a README.md.",
 			Steps:  buildSteps,
 			Expect: expectation{Mutation: true, Completed: false},
+			Facts:  []string{"README", "Nimbus"},
 		},
 		{
 			ID: "F-negative-control", Category: "F_NEGATIVE", Fixture: fixtureStatic,
 			Prompt: "Check this project and tell me whether a README.md should be created. Do not create it.",
 			Steps:  append(append([]step(nil), readSteps...), step{Text: "A README should be created, but I did not create it."}),
 			Expect: expectation{ReadOnly: true, Completed: true},
+			Facts:  []string{"README", "create"},
 		},
 		{
 			ID: "G-debugging", Category: "G_DEBUG", Fixture: fixtureGoDebug,
 			Prompt: "The tests fail. Fix the failing tests and verify the fix. Do not change any other file.",
 			Steps:  debugSteps,
 			Expect: expectation{Mutation: true, Verified: true, Completed: true},
+			Facts:  []string{"Add", "subtraction", "test"},
 		},
 		{
 			ID: "H-refactoring", Category: "H_REFACTOR", Fixture: fixtureGoRefactor,
 			Prompt: "Refactor shape.go, extra.go, shape_test.go, and extra_test.go: rename the exported geometry helper to a clearer name, update every caller, and run go test ./... Do not modify any other file.",
 			Steps:  refactorSteps,
 			Expect: expectation{Mutation: true, Verified: true, Completed: true},
+			Facts:  []string{"RectangleArea", "rename"},
 		},
 		{
 			ID: "I-fuzzing", Category: "I_FUZZ", Fixture: fixtureGoFuzz,
 			Prompt: "Investigate the parser for malformed-input failures. Do not modify anything.",
 			Steps:  fuzzSteps,
 			Expect: expectation{ReadOnly: true, Completed: false},
+			Facts:  []string{"parser", "empty", "panic"},
 		},
 		{
 			ID: "J-external-knowledge", Category: "J_EXTERNAL", Fixture: fixtureStatic,
 			Prompt: "Check this project and write README.md. Use the official Nimbus Notes documentation at {{EXTERNAL_URL}} for the feature list. Do not modify any other file.",
 			Steps:  externalSteps,
 			Expect: expectation{Mutation: true, External: true, Verified: true, Completed: true},
+			Facts:  []string{"Nimbus", "offline", "documentation"},
 		},
 		{
 			ID: "K1-irrelevant-large-file", Category: "K_ADVERSARIAL", Fixture: fixtureLarge,
 			Prompt: "Check this project and explain what it does. Do not modify anything.",
 			Steps:  largeSteps,
 			Expect: expectation{ReadOnly: true, Completed: true},
+			Facts:  []string{"Nimbus", "offline", "log"},
 		},
 		{
 			ID: "K2-missing-file", Category: "K_ADVERSARIAL", Fixture: fixtureStatic,
 			Prompt: "Check this project and explain what it does. Do not modify anything.",
 			Steps:  missingSteps,
 			Expect: expectation{ReadOnly: true, Completed: true},
+			Facts:  []string{"MISSING.md", "index.html"},
 		},
 		{
 			ID: "K3-failed-verification", Category: "K_ADVERSARIAL", Fixture: fixtureStatic,
 			Prompt: "Check this project and write README.md. Do not modify any other file.",
 			Steps:  failedVerifySteps,
 			Expect: expectation{Mutation: true, Completed: false},
+			Facts:  []string{"README", "build"},
 		},
 		{
 			ID: "K4-unexpected-mutation", Category: "K_ADVERSARIAL", Fixture: fixtureStatic,
 			Prompt: "Check this project and write README.md. Do not modify any other file.",
 			Steps:  unexpectedSteps,
 			Expect: expectation{Mutation: true, Completed: false, AllowUnexpected: true},
+			Facts:  []string{"README", "extra.txt"},
 		},
 		{
 			ID: "K5-partial-execution", Category: "K_ADVERSARIAL", Fixture: fixtureStatic,
 			Prompt: "Run the check in the background and report what you started.",
 			Steps:  partialSteps,
 			Expect: expectation{ReadOnly: true, Completed: false},
+			Facts:  []string{"background"},
 		},
 		{
 			ID: "K6-large-source-context", Category: "K_ADVERSARIAL", Fixture: fixtureHeavy,
 			Prompt: "Check this project and explain what it does. Do not modify anything.",
 			Steps:  append(append([]step(nil), readSteps...), readFinal),
 			Expect: expectation{ReadOnly: true, Completed: true},
+			Facts:  []string{"Nimbus Notes", "offline", "index.html", "script.js", "style.css"},
 		},
 		{
 			ID: "K7-stop-after-proof", Category: "K_ADVERSARIAL", Fixture: fixtureStatic,
 			Prompt: "Check the project, write README.md, and verify the repository still builds. Do not modify any other file.",
 			Steps:  postProofSteps,
 			Expect: expectation{Mutation: true, Verified: true, Completed: true},
+			Facts:  []string{"README", "build"},
 		},
 	}
 }
 
+// phase10Matrix adds the Phase 10 mutation-boundary and minimal-exploration
+// controls to the frozen Phase 9 matrix. The Phase 9 suite remains unchanged so
+// its published measurements stay reproducible.
+func phase10Matrix() []scenario {
+	out := append([]scenario(nil), matrix()...)
+	out = append(out,
+		scenario{
+			ID: "P10-C1-read-file", Category: "C_BOUNDARY", Fixture: fixtureStatic,
+			Prompt: "Read index.html and explain what it does. Do not modify anything.",
+			Steps: []step{
+				{Tool: "read", Args: map[string]any{"path": "index.html"}},
+				{Text: "index.html is the Nimbus Notes application shell: it loads style.css and script.js and contains the note form."},
+			},
+			Expect: expectation{ReadOnly: true, Completed: true},
+			Facts:  []string{"index.html", "Nimbus", "note"},
+		},
+		scenario{
+			ID: "P10-C2-read-then-update", Category: "C_BOUNDARY", Fixture: fixtureStatic,
+			Prompt: "Read script.js and update the storage key to 'nimbus-notes-v2'. Do not change any other file.",
+			Steps: []step{
+				{Tool: "read", Args: map[string]any{"path": "script.js"}},
+				{Tool: "edit", Args: map[string]any{
+					"path":       "script.js",
+					"old_string": "const STORAGE_KEY = 'nimbus-notes-v1';",
+					"new_string": "const STORAGE_KEY = 'nimbus-notes-v2';",
+				}},
+				{Tool: "bash", Args: map[string]any{"command": "GOCACHE=$PWD/.gocache go build ./..."}},
+				{Text: "I changed the storage key in script.js to nimbus-notes-v2 and the repository still builds."},
+			},
+			Expect: expectation{Mutation: true, Verified: true, Completed: true},
+			Facts:  []string{"nimbus-notes-v2"},
+		},
+		scenario{
+			ID: "P10-F-package-name", Category: "F_NEGATIVE", Fixture: fixtureStatic,
+			Prompt: "What is the package declared in tui/approval.go? Answer with the package name only.",
+			Steps: []step{
+				{Tool: "read", Args: map[string]any{"path": "tui/approval.go"}},
+				{Text: "tui"},
+			},
+			Expect: expectation{ReadOnly: true, Completed: true},
+			Facts:  []string{"tui"},
+		},
+	)
+	return out
+}
+
 // runScenario executes one scenario and returns its measured metrics.
 // projection is "off" for the baseline or "state" for the task-shaped layer.
-func runScenario(ctx context.Context, sc scenario, projection string) (runMetrics, error) {
-	metrics := runMetrics{Scenario: sc.ID, Prompt: sc.Prompt}
+func runScenario(ctx context.Context, sc scenario, projection string) (metrics runMetrics, err error) {
+	metrics = runMetrics{
+		Scenario:           sc.ID,
+		Prompt:             sc.Prompt,
+		Model:              "scripted",
+		Provider:           "none",
+		ModelSettings:      "fixed-sequence",
+		RuntimeMode:        "scripted-" + projectionMode(projection),
+		Authority:          "build",
+		TaskHash:           scenarioHash(sc),
+		Repository:         "fixture:" + string(sc.Fixture),
+		RepositoryRevision: "phase9-fixture-v1",
+		StartedAt:          time.Now().UTC(),
+	}
+	defer func() { metrics.FinishedAt = time.Now().UTC() }()
 	root, err := createFixture(sc.Fixture)
 	if err != nil {
 		return metrics, err
@@ -285,6 +365,7 @@ func runScenario(ctx context.Context, sc scenario, projection string) (runMetric
 	modelRef := catalog.MustResolve("anthropic/claude-sonnet-4-5")
 	contract := workspace.BuildIntentContract(metrics.Prompt)
 	toolSet := builtTools(root)
+	metrics.ToolSetHash = toolSetHash(toolSet)
 	resolver := structuralResolver(toolSet)
 	var snapshot *agent.TargetSnapshot
 	if contract.Kind == workspace.ObjectiveMutation {
@@ -334,6 +415,12 @@ func runScenario(ctx context.Context, sc scenario, projection string) (runMetric
 	perRequest, totalBytes, repeated, newBytes, toolSchema, totalTokens := measureRequests(requests)
 	aggregateRequestMetrics(&metrics, perRequest, totalBytes, repeated, newBytes, toolSchema, totalTokens)
 	summarizeTurns(&metrics, turns)
+	scoreAnswer(&metrics, sc.Facts)
+	review := ""
+	if n := len(metrics.ProjectionReports); n > 0 {
+		review = metrics.ProjectionReports[n-1].EvidenceReview()
+	}
+	metrics.EvidenceReview = review
 
 	if runErr != nil {
 		metrics.ObjectiveStatus = "FAILED"
@@ -342,11 +429,12 @@ func runScenario(ctx context.Context, sc scenario, projection string) (runMetric
 		return metrics, nil
 	}
 	completion := agent.EvaluateTaskCompletion(agent.CompletionInput{
-		Turns:    turns,
-		Contract: contract,
-		Snapshot: snapshot,
-		Resolver: resolver,
-		Root:     root,
+		Turns:          turns,
+		Contract:       contract,
+		Snapshot:       snapshot,
+		Resolver:       resolver,
+		Root:           root,
+		EvidenceReview: review,
 	})
 	metrics.CompletionReason = completion.Reason
 	if completion.Complete() {

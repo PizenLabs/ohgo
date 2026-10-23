@@ -202,7 +202,7 @@ func projectMessages(messages []agent.Message, evidence *EvidenceState, options 
 			continue
 		}
 		policy, text := projectionText(result, item, options)
-		if item.Retention == RetentionExact {
+		if item.Retention == RetentionExact && !keepExact[index] {
 			isRecent := totalToolResults-index <= options.KeepRecentToolResults
 			if isRecent {
 				// A recent result too large for the exact window keeps a
@@ -213,8 +213,9 @@ func projectMessages(messages []agent.Message, evidence *EvidenceState, options 
 				}
 			} else {
 				// An old exact observation is either in the verbatim working
-				// set or summarized as a whole; a partial old file is not a
-				// better use of the budget than a provenance-bearing summary.
+				// set or summarized as a whole. This is the budget enforcement
+				// point: the exact working set is the only reason a small old
+				// result stays verbatim.
 				policy, text = "exact_budget_summary", exactSummary(item, result.ToolName)
 			}
 		}

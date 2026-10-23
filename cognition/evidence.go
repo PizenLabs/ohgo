@@ -256,15 +256,22 @@ func (s *EvidenceState) hasAnyExact() bool {
 	return false
 }
 
-// hasRepositoryOverview reports whether the state has a structure fact.
+// hasRepositoryOverview reports whether the state has content-bearing
+// evidence about the repository.
+//
+// A directory listing is structure, not an explanation: it tells the model
+// which names exist without telling it what any of them do. Treating `ls` as
+// enough for a repository overview let a model answer "explain this project"
+// from filenames alone. A file read or a search that returned matching
+// content is the minimum needed to support a content claim; symbols may
+// establish coordinates for a structural answer.
 func (s *EvidenceState) hasRepositoryOverview() bool {
 	for _, item := range s.Items {
 		if item.Status == StatusConflicting {
 			continue
 		}
-		if strings.HasPrefix(item.ID, "dir:") ||
-			strings.HasPrefix(item.ID, "search:") ||
-			strings.HasPrefix(item.ID, "file:") ||
+		if strings.HasPrefix(item.ID, "file:") ||
+			strings.HasPrefix(item.ID, "search:grep:") ||
 			strings.HasPrefix(item.ID, "symbols:") {
 			return true
 		}
@@ -355,9 +362,9 @@ func (s *EvidenceState) ensureRequirements(shape TaskShape) {
 
 // ObserveOutcome folds one tool outcome into the state.
 func (s *EvidenceState) ObserveOutcome(outcome agent.ToolOutcome) {
-	if s == nil || outcome.Result.CandidateRejected {
-		// A withheld action never ran; it is a control signal, not evidence
-		// about the repository or the task.
+	if s == nil || outcome.Refused() {
+		// A withheld or denied action never ran. It is a control signal, not
+		// an observation about the repository, and must not become evidence.
 		return
 	}
 	s.Seq++
@@ -464,7 +471,9 @@ func (s *EvidenceState) addRead(outcome agent.ToolOutcome, path string, details 
 	if previous, ok := s.Find(item.ID); ok && previous.Digest != "" && previous.Digest != item.Digest {
 		if mutationSeq, changed := s.LastMutationSeq[path]; changed && mutationSeq > previous.Seq {
 			// The runtime changed the file; the new read is the current truth.
-		} else {
+		} else if sameReadWindow(previous, item) {
+			// Two observations of the same window disagree without a runtime
+			// mutation between them. That is a real conflict.
 			item.Status = StatusConflicting
 			item.Conflict = "the file changed without a recorded runtime mutation"
 			item.Summary = bound(path+": CONFLICTING content observed at two different times", MaxEvidenceSummaryBytes)
@@ -472,8 +481,24 @@ func (s *EvidenceState) addRead(outcome agent.ToolOutcome, path string, details 
 				item.Value = previous.Value
 			}
 		}
+		// Different windows of one file are different observations, not a
+		// contradiction. Comparing their digests directly would manufacture a
+		// conflict when a model pages through a large file.
 	}
 	s.upsert(item)
+}
+
+// sameReadWindow reports whether two reads cover the same source range.
+//
+// A complete read covers the whole file. Two partial reads are comparable only
+// when they start at the same line and end at the same line; anything else
+// observes a different region and may legitimately differ.
+func sameReadWindow(previous, current EvidenceItem) bool {
+	if previous.Complete || current.Complete {
+		return previous.Complete && current.Complete
+	}
+	return previous.Source.StartLine == current.Source.StartLine &&
+		previous.Source.EndLine == current.Source.EndLine
 }
 
 // addListing records a directory listing as structural evidence.

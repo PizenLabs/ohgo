@@ -91,6 +91,28 @@ type ProjectionElision struct {
 	After  int    `json:"after_bytes"`
 }
 
+// EvidenceReview converts a projection's sufficiency verdict into a
+// completion veto. An empty string means the runtime had enough evidence for
+// the request it sent; any other verdict means a model that answered anyway
+// did so without the evidence the task required.
+//
+// The mapping lives here, on the report both the UI and headless paths already
+// carry, so no host has to parse audit text or duplicate the vocabulary.
+func (r ProjectionReport) EvidenceReview() string {
+	switch r.Sufficiency {
+	case "", "SUFFICIENT":
+		return ""
+	}
+	review := "runtime evidence was not sufficient for the objective"
+	if r.Sufficiency != "" {
+		review += " (" + r.Sufficiency + ")"
+	}
+	if r.Stage != "" {
+		review += " at stage " + r.Stage
+	}
+	return review
+}
+
 // CandidateExclusion is one tool withheld from the model, with the runtime
 // reason. It is audit data, never authority: the security boundary still
 // evaluates every call that remains.

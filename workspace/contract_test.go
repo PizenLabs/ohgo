@@ -231,7 +231,29 @@ func TestBuildIntentContractExtractsExplicitPackages(t *testing.T) {
 	}
 }
 
-// An empty request has no completion objective to establish.
+// "package declared" and "package name" are prose, not coordinates. The only
+// repository target is the file the question names.
+func TestBuildIntentContractDoesNotInventPackagesFromQuestions(t *testing.T) {
+	contract := BuildIntentContract("What is the package declared in tui/approval.go? Answer with the package name only.")
+	if contract.Kind != ObjectiveInformational {
+		t.Fatalf("kind = %s, want informational", contract.Kind)
+	}
+	for _, target := range contract.Targets {
+		if target.Kind == TargetPackage {
+			t.Fatalf("invented package target %#v from question prose", target)
+		}
+	}
+	foundPath := false
+	for _, target := range contract.Targets {
+		if target.Kind == TargetPath && target.Value == "tui/approval.go" {
+			foundPath = true
+		}
+	}
+	if !foundPath {
+		t.Fatalf("targets = %#v, want tui/approval.go", contract.Targets)
+	}
+}
+
 func TestBuildIntentContractEmptyRequest(t *testing.T) {
 	contract := BuildIntentContract("   ")
 	if contract.Kind != ObjectiveInformational {

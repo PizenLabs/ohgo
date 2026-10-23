@@ -109,6 +109,9 @@ type SubagentSpec struct {
 	// OnProjection reports the child's projection decisions, for a host that
 	// is auditing a delegated tree.
 	OnProjection func(ProjectionReport)
+	// CompletionReview returns the child projection's evidence verdict, or "".
+	// It is a completion veto; it cannot authorize an action.
+	CompletionReview func() string
 }
 
 // SubagentResult is what a child agent produced.
@@ -280,11 +283,16 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 	}
 	var completion Completion
 	if spec.Contract != nil {
+		review := ""
+		if spec.CompletionReview != nil {
+			review = spec.CompletionReview()
+		}
 		completion = EvaluateTaskCompletion(CompletionInput{
-			Turns:    turns,
-			Contract: *spec.Contract,
-			Snapshot: spec.Snapshot,
-			Resolver: spec.Resolver,
+			Turns:          turns,
+			Contract:       *spec.Contract,
+			Snapshot:       spec.Snapshot,
+			Resolver:       spec.Resolver,
+			EvidenceReview: review,
 		})
 	} else {
 		completion = EvaluateCompletion(turns, spec.MutationIntent)

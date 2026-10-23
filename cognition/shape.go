@@ -327,6 +327,23 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 	sort.Strings(shape.Mutation.Paths)
 	shape.Mutation.DeleteRequested = requestsDelete(shape.Objective)
 	shape.Mutation.UnrelatedForbidden = shape.Mutation.Allowed && shape.Mutation.Explicit
+	// An explicit "do not modify anything" is an authority constraint, not a
+	// suggestion to the model. It narrows the shape even when the verb would
+	// otherwise request a change; the result may be NEEDS_REVIEW, which is
+	// truthful for a contradictory request.
+	if hasConstraint(shape.Constraints, "no_mutation") {
+		shape.Mutation.Allowed = false
+		shape.Authority.MutationAllowed = false
+		shape.Authority.ReadOnly = true
+		shape.Authority.ExecutionAllowed = false
+		shape.Mutation.UnrelatedForbidden = false
+	}
+	// External knowledge is optional unless the task needs it. A request that
+	// forbids it keeps the tools withheld even if it also names a URL.
+	if hasConstraint(shape.Constraints, "no_external") {
+		shape.External.Required = false
+		shape.External.Reason = "the request forbids external knowledge"
+	}
 	if params.Snapshot != nil {
 		for _, entry := range params.Snapshot.Entries {
 			if entry.Target.Kind != contract.TargetPath {
@@ -511,6 +528,16 @@ func constraintVocabulary(objective string) []string {
 	add("no_creation", "do not create it", "do not create the file", "do not create any file")
 	add("no_external", "do not use the web", "do not browse", "no external")
 	return out
+}
+
+// hasConstraint reports whether the request stated a named limit.
+func hasConstraint(constraints []string, key string) bool {
+	for _, constraint := range constraints {
+		if constraint == key {
+			return true
+		}
+	}
+	return false
 }
 
 // requiredKnowledge derives the evidence needs from the shape.

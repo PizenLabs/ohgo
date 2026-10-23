@@ -105,7 +105,7 @@ func SummarizeExecution(turns []agent.Turn) ExecutionState {
 		for _, outcome := range turn.Results {
 			state.ToolCalls++
 			if outcome.Result.IsError {
-				if !outcome.Result.CandidateRejected {
+				if !outcome.Refused() {
 					state.FailedActions++
 					state.PendingFailures[outcome.ToolName]++
 				}
@@ -203,6 +203,19 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 		}
 		result.Missing = append(result.Missing, "resolve the conflicting observation")
 		result.Next = append(result.Next, "re-read the changed path or run the authoritative check")
+		return result
+	}
+
+	// A mutation the task shape did not permit is a review boundary even when
+	// the workspace authority allowed the call. The task objective, not just
+	// the workspace, defines what may change; the projection must say so
+	// rather than continuing as if an unauthorized change were ordinary
+	// progress.
+	if !shape.Mutation.Allowed && execution.Mutated {
+		result.State = Blocked
+		result.Stage = StageBlocked
+		result.Reasons = append(result.Reasons, "a repository mutation was observed but the task shape does not permit one")
+		result.Next = append(result.Next, "report the unexpected change and require review")
 		return result
 	}
 

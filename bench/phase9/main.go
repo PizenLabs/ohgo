@@ -14,19 +14,30 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 func main() {
-	scenarioID := flag.String("scenario", "all", "scenario id, or all")
-	mode := flag.String("projection", "off", "projection mode: off or state")
+	scenarioID := flag.String("scenario", "all", "scenario id, category, or all")
+	suite := flag.String("suite", "phase9", "scenario suite: phase9 or phase10")
+	mode := flag.String("projection", "off", "projection mode: off (control) or state (cognitive)")
 	outPath := flag.String("out", "", "write the JSON result to this path")
 	asJSON := flag.Bool("json", false, "print JSON instead of a table")
 	liveRef := flag.String("live-model", "", "run the matrix with a real provider/model reference")
+	maxTurns := flag.Int("max-turns", 30, "maximum model turns per live run")
+	maxTokens := flag.Int("max-tokens", 8192, "maximum completion tokens per live request")
+	temperature := flag.Float64("temperature", 0, "sampling temperature for live runs")
+	timeout := flag.Duration("timeout", 15*time.Minute, "wall-clock budget per live run")
+	retries := flag.Int("retries", 3, "stream-open retries for transient provider errors")
+	minInterval := flag.Duration("min-interval", 0, "minimum delay between provider requests (rate-limit pacing)")
 	flag.Parse()
 
 	if *mode != "off" && *mode != "state" {
 		fmt.Fprintf(os.Stderr, "phase9: unknown projection mode %q\n", *mode)
 		os.Exit(2)
+	}
+	if *maxTurns < 1 {
+		*maxTurns = 1
 	}
 	var live liveModel
 	if *liveRef != "" {
@@ -37,7 +48,23 @@ func main() {
 		}
 		live = resolved
 	}
+	options := liveOptions{
+		MaxTurns:    *maxTurns,
+		MaxTokens:   *maxTokens,
+		Temperature: *temperature,
+		Timeout:     *timeout,
+		Retries:     *retries,
+		MinInterval: *minInterval,
+	}
 	selected := matrix()
+	switch *suite {
+	case "phase9":
+	case "phase10":
+		selected = phase10Matrix()
+	default:
+		fmt.Fprintf(os.Stderr, "phase9: unknown suite %q (want phase9 or phase10)\n", *suite)
+		os.Exit(2)
+	}
 	if *scenarioID != "all" {
 		var found []scenario
 		for _, sc := range selected {
@@ -58,7 +85,7 @@ func main() {
 		var metrics runMetrics
 		var err error
 		if *liveRef != "" {
-			metrics, err = runLiveScenario(context.Background(), sc, live, *mode)
+			metrics, err = runLiveScenarioWithOptions(context.Background(), sc, live, *mode, options)
 		} else {
 			metrics, err = runScenario(context.Background(), sc, *mode)
 		}

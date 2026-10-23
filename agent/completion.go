@@ -78,6 +78,12 @@ func EvaluateCompletion(turns []Turn, mutationIntent bool) Completion {
 	if mutationIntent && !evidence.mutated {
 		return needsReview("the request asked for a repository change but no change was observed")
 	}
+	if !mutationIntent && evidence.mutated {
+		// A read-only or execution-only request must not be called complete
+		// after the run changed the repository. The workspace may have
+		// authorized the call, but the objective did not.
+		return needsReview("the request did not ask for a repository change but a change was observed")
+	}
 	if evidence.lastVerification < evidence.lastPotentialMutation {
 		return needsReview("the repository change or execution was not followed by a successful verification")
 	}
@@ -144,7 +150,7 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 	for _, turn := range turns {
 		for _, outcome := range turn.Results {
 			if outcome.Result.IsError {
-				if !outcome.Result.CandidateRejected {
+				if !outcome.Refused() {
 					evidence.pendingFailures[outcome.ToolName]++
 				}
 				position++
@@ -210,6 +216,11 @@ type CompletionInput struct {
 	Resolver StructuralResolver
 	// Root is the workspace root, used when no snapshot carries one.
 	Root string
+	// EvidenceReview is an optional runtime evidence verdict. A non-empty
+	// value means the cognitive layer judged the evidence insufficient,
+	// conflicting, or blocked at the last request. It can only downgrade a
+	// completion; the completion evaluator still owns the final decision.
+	EvidenceReview string
 }
 
 // Alignment is the bounded semantic verdict.
@@ -367,6 +378,12 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	if len(reasons) > 0 {
 		return needsReview("%s", boundedReason(strings.Join(orderedUnique(reasons), "; ")))
 	}
+	if review := strings.TrimSpace(input.EvidenceReview); review != "" {
+		// The cognitive layer is authoritative about what evidence it has.
+		// A model answering while the runtime still reports missing evidence
+		// is a guess, not a proven completion.
+		return needsReview("%s", boundedReason(review))
+	}
 	return Completion{State: CompletionComplete}
 }
 
@@ -385,6 +402,13 @@ type verificationNeed struct {
 // changed instead of by any check anywhere in the repository.
 func AssessBehavior(intent contract.IntentContract, snapshot *TargetSnapshot, evidence completionEvidence, changedDirs []string) BehavioralEvidence {
 	result := BehavioralEvidence{Satisfied: true}
+	// An informational objective produces an answer, not a checked change.
+	// Its contract may name a Go path because the question is about that file,
+	// but that does not turn the path into a verification scope. Requiring a
+	// build/test after "what package is declared here?" was a false review.
+	if intent.Kind == contract.ObjectiveInformational {
+		return result
+	}
 	after := evidence.verificationsAfter(evidence.lastPotentialMutation)
 	result.Verifications = len(after)
 

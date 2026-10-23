@@ -48,8 +48,10 @@ type Controller struct {
 	// diagnostic text, never authority. auditMu guards it because the loop
 	// records it on the turn goroutine while /audit reads it on the update
 	// goroutine.
-	auditMu sync.Mutex
-	audit   string
+	auditMu    sync.Mutex
+	audit      string
+	lastReport agent.ProjectionReport
+	hasReport  bool
 }
 
 // NewController returns a controller backed by a store.
@@ -130,7 +132,20 @@ func (c *Controller) RecordProjection(report agent.ProjectionReport) {
 	text := cognition.RenderAudit(report)
 	c.auditMu.Lock()
 	c.audit = text
+	c.lastReport = report
+	c.hasReport = true
 	c.auditMu.Unlock()
+}
+
+// LastProjection returns the last projection report and whether one exists.
+//
+// It is evidence diagnostics, not authority: a caller may use the report's
+// sufficiency verdict to veto a false completion claim, but cannot use it to
+// authorize an action.
+func (c *Controller) LastProjection() (agent.ProjectionReport, bool) {
+	c.auditMu.Lock()
+	defer c.auditMu.Unlock()
+	return c.lastReport, c.hasReport
 }
 
 // Audit returns the last projection audit for the debug surface.
@@ -229,6 +244,8 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 		c.evidence = cognition.NewEvidenceState()
 		c.auditMu.Lock()
 		c.audit = ""
+		c.lastReport = agent.ProjectionReport{}
+		c.hasReport = false
 		c.auditMu.Unlock()
 	}
 

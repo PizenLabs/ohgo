@@ -839,15 +839,34 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 		})
 		childProjector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
 		spec.Project = childProjector.Project
-		if contextAuditEnabled() {
-			spec.OnProjection = func(report agent.ProjectionReport) {
+		var lastReport agent.ProjectionReport
+		haveReport := false
+		spec.OnProjection = func(report agent.ProjectionReport) {
+			lastReport = report
+			haveReport = true
+			if contextAuditEnabled() {
 				_, _ = fmt.Fprintln(os.Stderr, "[ohgo context/subagent]\n"+cognition.RenderAudit(report))
 			}
+		}
+		spec.CompletionReview = func() string {
+			if !haveReport {
+				return ""
+			}
+			return lastReport.EvidenceReview()
+		}
+		childTools := childToolSet(opts, registry, parentTools, spec.Depth)
+		if spec.ReadOnly {
+			// A read-only request must actually restrict the child. Filtering
+			// here, before RunSubagent's fail-closed validation, is what turns
+			// the caller's intent into a child that cannot write. Refusing the
+			// whole delegation instead would make the documented `readOnly`
+			// option unusable.
+			childTools = readOnlyToolSet(childTools)
 		}
 		parent := agent.Config{
 			Model:      opts.model,
 			Stream:     registry.StreamFn(),
-			Tools:      childToolSet(opts, registry, parentTools, spec.Depth),
+			Tools:      childTools,
 			MaxTokens:  opts.maxTokens,
 			Budget:     opts.ensureBudget().Get(),
 			Reasoning:  opts.reasoning,
@@ -863,6 +882,21 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 		}
 		return agent.RunSubagent(ctx, parent, spec)
 	})
+}
+
+// readOnlyToolSet keeps only tools that cannot change the workspace.
+//
+// The test names come from agent.ReadOnlyToolNames, the same set the executor
+// uses to assert a child is read-only; duplicating that knowledge here would
+// let the two drift.
+func readOnlyToolSet(tools []agent.Tool) []agent.Tool {
+	out := make([]agent.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if agent.ReadOnlyToolNames[tool.Name()] {
+			out = append(out, tool)
+		}
+	}
+	return out
 }
 
 // childToolSet builds the tools a subagent at depth receives.
@@ -1371,7 +1405,7 @@ func runOnce(cmd *cobra.Command, text string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	outcome, _ := runHeadlessTurn(ctx, loop, opts.root, out, text, history)
+	outcome, _ := runHeadlessTurnAs(ctx, loop, opts.root, out, text, history, route.Handler.String())
 	if outcome.State == runCompleted {
 		return nil
 	}
@@ -2515,12 +2549,14 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		// asked: a request the active workspace may not answer is refused
 		// here rather than offered to a model that cannot execute it (§3,
 		// §11). The active workspace is never changed by the route.
+		authority := ""
 		if h.loop != nil {
 			route := h.RouteTurn(text)
 			if !route.Allowed() {
 				_ = refuseHeadless(out, route)
 				continue
 			}
+			authority = route.Handler.String()
 			if route.Notice() != "" {
 				_, _ = fmt.Fprintln(out, route.Notice())
 			}
@@ -2548,7 +2584,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			h.loop.SetBudget(h.newBudget())
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		_, turns := runHeadlessTurn(ctx, h.loop, h.root, out, text, history)
+		_, turns := runHeadlessTurnAs(ctx, h.loop, h.root, out, text, history, authority)
 		stop()
 		if h.usage != nil {
 			h.usage.Add(turns)

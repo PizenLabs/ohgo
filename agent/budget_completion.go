@@ -25,6 +25,10 @@ func EvaluateBudgetCompletion(input CompletionInput, exhausted bool) Completion 
 		return EvaluateTaskCompletion(input)
 	}
 	input.Turns = budgetCompletionTurns(input.Turns, input.Contract)
+	// A resource stop is not an evidence gap by itself. EvaluateTaskCompletion
+	// still applies every evidence rule; the cognitive review must not veto a
+	// change that was already proven before the resource ran out.
+	input.EvidenceReview = ""
 	return EvaluateTaskCompletion(input)
 }
 
