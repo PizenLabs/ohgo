@@ -157,6 +157,24 @@ def transient_failure(result: dict) -> bool:
     return any(marker in reason for marker in TRANSIENT_MARKERS)
 
 
+def result_scenario_id(result: dict) -> str:
+    """The scenario id without the model suffix used in the result label."""
+    return str(result.get("scenario", "")).split("@", 1)[0]
+
+
+def dedupe_results(results: list[dict]) -> list[dict]:
+    """Keep one result per (model, scenario, repeat); later resume wins."""
+    unique: dict[tuple, dict] = {}
+    for result in results:
+        key = (
+            result.get("model_ref", ""),
+            result_scenario_id(result),
+            result.get("repeat", 0),
+        )
+        unique[key] = result
+    return list(unique.values())
+
+
 def run_one(
     binary: pathlib.Path,
     model: dict,
@@ -467,12 +485,14 @@ def main() -> int:
                         target.extend(json.loads(path.read_text()).get("results", []))
                     except Exception as exc:
                         print(f"resume: ignoring {path}: {exc}", file=sys.stderr)
+        control[:] = dedupe_results(control)
+        cognitive[:] = dedupe_results(cognitive)
         completed = {
-            (result.get("model_ref", ""), result.get("scenario", ""), result.get("repeat", 0))
+            (result.get("model_ref", ""), result_scenario_id(result), result.get("repeat", 0))
             for result in control
         }
         completed &= {
-            (result.get("model_ref", ""), result.get("scenario", ""), result.get("repeat", 0))
+            (result.get("model_ref", ""), result_scenario_id(result), result.get("repeat", 0))
             for result in cognitive
         }
 

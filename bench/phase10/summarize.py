@@ -28,13 +28,15 @@ def main() -> int:
         "| Class | Model | Pairs | Control statuses | Cognitive statuses | "
         "Control tokens | Cognitive tokens | Token delta | Verified success C/G |"
     )
-    print("|---|---|---:|---|---|---:|---:|---:|---:|")
+    print("|---|---|---:|---|---|---:|---:|---:|---:|---:|")
     for model, item in data["aggregate"]["by_model"].items():
         print(
             f"| {item['model_class']} | `{model}` | {item['pairs']} | "
             f"{item['control_statuses']} | {item['cognitive_statuses']} | "
             f"{item['control_tokens']:,} | {item['cognitive_tokens']:,} | "
             f"{pct(item['token_delta_percent'])} | "
+            f"{item['control_facts']}/{item['cognitive_facts']} "
+            f"({item['facts_expected']}) | "
             f"{item['control_verified_success']}/{item['cognitive_verified_success']} |"
         )
 
