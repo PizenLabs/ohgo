@@ -494,6 +494,308 @@ func (c *Controller) SetTodo(id string, status TodoStatus, evidence string) (Tas
 	return c.task.Clone(), c.persist()
 }
 
+// Detach preserves the active task durably and clears the session binding.
+//
+// A non-terminal task is archived as resumable (RUNNING is first paused, so an
+// interruption is never recorded as success) and the live slot is cleared, so
+// the next session or the next new intent starts with no active task. A
+// terminal task is archived as history and then cleared: completed, failed,
+// and cancelled work is never resumable, but its objective, evidence, and
+// outcome are never deleted. The archived copy keeps the full task, progress,
+// budget, evidence, and audit, so /task resume can restore resumable work
+// without replaying the transcript.
+//
+// It never deletes durable work: detaching moves the live task to the archive,
+// it never drops it.
+func (c *Controller) Detach() (Task, bool, error) {
+	if err := c.ensureLoaded(); err != nil {
+		return Task{}, false, err
+	}
+	if c.task.ID == "" {
+		return Task{}, false, nil
+	}
+	detached := c.task.Clone()
+	if detached.Status.IsTerminal() {
+		progress := ProgressFrom(c.task)
+		if progress.CheckpointAt.IsZero() {
+			progress.CheckpointAt = c.task.UpdatedAt
+		}
+		progress.LastAction = firstNonEmpty(c.lastAction, "detached terminal task")
+		if c.budgetState != nil {
+			state := *c.budgetState
+			progress.Budget = &state
+		}
+		_ = c.store.ArchiveTask(c.task, progress)
+		c.task = Task{}
+		c.evidence = cognition.NewEvidenceState()
+		c.auditMu.Lock()
+		c.audit = ""
+		c.lastReport = agent.ProjectionReport{}
+		c.hasReport = false
+		c.auditMu.Unlock()
+		c.lastAction = "detached terminal task"
+		_ = c.store.ClearActive()
+		return detached, false, nil
+	}
+	c.syncTodos()
+	if detached.Status == StatusRunning {
+		if err := c.task.Pause(c.now().UTC()); err != nil {
+			return Task{}, false, err
+		}
+		detached = c.task.Clone()
+		c.lastAction = firstNonEmpty(c.lastAction, "interrupted")
+	}
+	progress := ProgressFrom(c.task)
+	if progress.CheckpointAt.IsZero() {
+		progress.CheckpointAt = c.task.UpdatedAt
+	}
+	progress.LastAction = firstNonEmpty(c.lastAction, "detached for a new session")
+	if c.budgetState != nil {
+		state := *c.budgetState
+		progress.Budget = &state
+	}
+	if c.evidence != nil && !c.evidence.Empty() {
+		progress.EvidenceState = c.evidence.Clone()
+	}
+	c.auditMu.Lock()
+	audit := c.audit
+	c.auditMu.Unlock()
+	if audit != "" {
+		progress.Audit = audit
+	}
+	if err := c.store.ArchiveTask(c.task, progress); err != nil {
+		return Task{}, false, err
+	}
+	archived := c.task.Clone()
+	c.task = Task{}
+	c.evidence = cognition.NewEvidenceState()
+	c.auditMu.Lock()
+	c.audit = ""
+	c.lastReport = agent.ProjectionReport{}
+	c.hasReport = false
+	c.auditMu.Unlock()
+	c.lastAction = "detached: " + describeObjective(archived.Objective)
+	if err := c.store.ClearActive(); err != nil {
+		return Task{}, false, err
+	}
+	return archived, true, nil
+}
+
+// ListResumable returns the active non-terminal task plus every archived
+// non-terminal task, oldest first.
+//
+// The order is deterministic (checkpoint stamp, then ID), so /task list and
+// /task resume with no ID resolve the same way every time. Terminal tasks are
+// never resumable and are excluded.
+func (c *Controller) ListResumable() ([]Task, error) {
+	if err := c.ensureLoaded(); err != nil {
+		return nil, err
+	}
+	var out []Task
+	seen := map[string]bool{}
+	if c.task.ID != "" && IsResumable(c.task.Status) {
+		out = append(out, c.task.Clone())
+		seen[c.task.ID] = true
+	}
+	archived, err := c.store.ListArchived()
+	if err != nil {
+		return nil, err
+	}
+	for _, snap := range archived {
+		t := NormalizeRecovered(snap.Task)
+		if !IsResumable(t.Status) || seen[t.ID] {
+			continue
+		}
+		seen[t.ID] = true
+		out = append(out, t.Clone())
+	}
+	return out, nil
+}
+
+// ResumeTask attaches a resumable task to the current session.
+//
+// An empty id resumes the latest resumable task (newest stamp, ID tie-break);
+// an unknown id is an error, never an arbitrary pick. Resuming archives the
+// current active task first when it is a different non-terminal task, so no
+// durable work is lost by switching. The resumed task moves to RUNNING with
+// its persisted contract, snapshot, review reason, budget, evidence, and audit
+// intact: durable state remains authoritative and is never reconstructed from
+// the transcript.
+func (c *Controller) ResumeTask(id string) (Task, error) {
+	if err := c.ensureLoaded(); err != nil {
+		return Task{}, err
+	}
+	target, progress, found, err := c.findResumable(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if !found {
+		if strings.TrimSpace(id) == "" {
+			return Task{}, errors.New("task: no resumable task")
+		}
+		return Task{}, fmt.Errorf("task: no resumable task %q", id)
+	}
+	if c.task.ID != "" && c.task.ID != target.ID && IsResumable(c.task.Status) {
+		if _, _, err := c.Detach(); err != nil {
+			return Task{}, err
+		}
+	}
+	c.task = target
+	if stored := progress.Budget; stored != nil {
+		state := *stored
+		if c.budgetState == nil {
+			c.budgetState = &state
+		} else {
+			c.budgetState.Used = state.Used
+			c.budgetState.UpdatedAt = state.UpdatedAt
+			if c.budgetState.Limits == (budget.Limits{}) {
+				c.budgetState.Limits = state.Limits
+			}
+		}
+	}
+	if progress.EvidenceState != nil {
+		c.evidence = progress.EvidenceState.Clone()
+	} else if c.evidence == nil {
+		c.evidence = cognition.NewEvidenceState()
+	}
+	if progress.Audit != "" {
+		c.auditMu.Lock()
+		c.audit = progress.Audit
+		c.auditMu.Unlock()
+	}
+	if progress.LastAction != "" {
+		c.lastAction = progress.LastAction
+	}
+	now := c.now().UTC()
+	switch c.task.Status {
+	case StatusPaused, StatusPending, StatusNeedsReview:
+		if err := c.task.Start(now); err != nil {
+			return Task{}, err
+		}
+	case StatusRunning:
+		c.task.UpdatedAt = now
+	}
+	c.lastAction = "resumed: " + describeObjective(c.task.Objective)
+	if err := c.persist(); err != nil {
+		return Task{}, err
+	}
+	_ = c.store.RemoveArchived(c.task.ID)
+	return c.task.Clone(), nil
+}
+
+// CancelResumable cancels one resumable task by ID, or the latest when empty.
+//
+// Cancelling is terminal and never claims completion. A cancelled archived
+// task stays on disk as CANCELLED so it is never listed as resumable again;
+// the live task uses the same transition and remains CANCELLED in place.
+func (c *Controller) CancelResumable(id, reason string) (Task, error) {
+	if err := c.ensureLoaded(); err != nil {
+		return Task{}, err
+	}
+	if strings.TrimSpace(id) == "" {
+		resumable, err := c.ListResumable()
+		if err != nil {
+			return Task{}, err
+		}
+		if len(resumable) == 0 {
+			return Task{}, errors.New("task: no resumable task")
+		}
+		id = resumable[len(resumable)-1].ID
+	}
+	if c.task.ID == id {
+		closed, err := c.Cancel(reason)
+		if err != nil {
+			return Task{}, err
+		}
+		return closed, nil
+	}
+	snap, err := c.store.LoadArchived(id)
+	if err != nil {
+		return Task{}, err
+	}
+	if !snap.Found {
+		return Task{}, fmt.Errorf("task: no resumable task %q", id)
+	}
+	t := NormalizeRecovered(snap.Task)
+	if t.Status.IsTerminal() {
+		return t.Clone(), nil
+	}
+	now := c.now().UTC()
+	switch t.Status {
+	case StatusRunning:
+		if err := t.Pause(now); err != nil {
+			return Task{}, err
+		}
+		fallthrough
+	default:
+		if err := t.Cancel(now); err != nil {
+			// NEEDS_REVIEW -> CANCELLED is permitted; RUNNING was paused above.
+			// Any other refusal is a lifecycle error worth surfacing.
+			return Task{}, err
+		}
+	}
+	progress := snap.Progress
+	progress.Status = t.Status
+	progress.TaskID = t.ID
+	progress.CheckpointAt = t.UpdatedAt
+	if err := c.store.ArchiveTask(t, progress); err != nil {
+		return Task{}, err
+	}
+	return t.Clone(), nil
+}
+
+// findResumable locates one resumable task and its progress, latest when empty.
+func (c *Controller) findResumable(id string) (Task, Progress, bool, error) {
+	id = strings.TrimSpace(id)
+	if id != "" && c.task.ID == id && IsResumable(c.task.Status) {
+		progress := ProgressFrom(c.task)
+		progress.LastAction = c.lastAction
+		return c.task.Clone(), progress, true, nil
+	}
+	archived, err := c.store.ListArchived()
+	if err != nil {
+		return Task{}, Progress{}, false, err
+	}
+	if id != "" {
+		for _, snap := range archived {
+			if snap.Task.ID == id && IsResumable(NormalizeRecovered(snap.Task).Status) {
+				t := NormalizeRecovered(snap.Task)
+				return t.Clone(), snap.Progress, true, nil
+			}
+		}
+		if c.task.ID == id {
+			progress := ProgressFrom(c.task)
+			return c.task.Clone(), progress, IsResumable(c.task.Status), nil
+		}
+		return Task{}, Progress{}, false, nil
+	}
+	var (
+		best      Task
+		bestProg  Progress
+		bestFound bool
+	)
+	consider := func(t Task, p Progress) {
+		t = NormalizeRecovered(t)
+		if !IsResumable(t.Status) {
+			return
+		}
+		if !bestFound || p.CheckpointAt.After(bestProg.CheckpointAt) ||
+			(p.CheckpointAt.Equal(bestProg.CheckpointAt) && t.ID > best.ID) {
+			best, bestProg, bestFound = t.Clone(), p, true
+		}
+	}
+	if c.task.ID != "" {
+		p := ProgressFrom(c.task)
+		p.CheckpointAt = c.task.UpdatedAt
+		p.LastAction = c.lastAction
+		consider(c.task, p)
+	}
+	for _, snap := range archived {
+		consider(snap.Task, snap.Progress)
+	}
+	return best, bestProg, bestFound, nil
+}
+
 func describeObjective(objective string) string {
 	objective = strings.TrimSpace(objective)
 	if objective == "" {

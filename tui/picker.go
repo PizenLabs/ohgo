@@ -34,6 +34,13 @@ const (
 	PickerModels = "models"
 	// PickerJobs inspects background jobs.
 	PickerJobs = "jobs"
+	// PickerNewSession creates a fresh session. Choosing the start row
+	// creates exactly one session; choosing cancel or dismissing (Esc)
+	// creates none.
+	PickerNewSession = "new-session"
+	// PickerTasks resumes a resumable durable task. Choosing attaches the
+	// selected task to the current session.
+	PickerTasks = "tasks"
 )
 
 // PickerItem is one choice in a selection overlay.

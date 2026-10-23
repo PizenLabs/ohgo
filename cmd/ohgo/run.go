@@ -2470,8 +2470,33 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				}
 				_, _ = fmt.Fprintln(out, outcome)
 				continue
-			case "sessions":
+			case "sessions", "session":
 				h.ListSessions(out)
+				continue
+			case "new":
+				// /new is explicit in both interfaces: a fresh session with no
+				// inherited transcript. /session stays the manager/lister.
+				if h.store == nil {
+					_, _ = fmt.Fprintln(out, "no session store attached")
+					continue
+				}
+				sess, err := h.store.CreateWith(session.CreateOptions{
+					Cwd:       h.root,
+					Model:     h.model.Provider + "/" + h.model.ID,
+					Workspace: h.activeWorkspace().String(),
+					Project:   h.projectID,
+				})
+				if err != nil {
+					_, _ = fmt.Fprintf(out, "new session: %v\n", err)
+					continue
+				}
+				title := strings.TrimSpace(strings.Join(command.Args, " "))
+				if title != "" {
+					_ = h.store.SetTitle(sess.ID, title)
+				}
+				history = nil
+				h.sess = &sess
+				_, _ = fmt.Fprintf(out, "started new session %d\n", sess.ID)
 				continue
 			case "resume":
 				if len(command.Args) == 0 {

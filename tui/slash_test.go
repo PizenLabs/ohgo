@@ -172,16 +172,26 @@ func TestRenderSlashPaletteMarksTheActiveRow(t *testing.T) {
 	}
 }
 
-// The palette shows a bounded window that follows the cursor: the seventh match
-// is off-screen at the top but scrolls into view with the highlight.
+// The palette shows a bounded window that follows the cursor: a match past the
+// top window is off-screen at the top but scrolls into view with the highlight.
 func TestRenderSlashPaletteWindowsToTheCursor(t *testing.T) {
 	top := ansi.Strip(RenderSlashPalette("/", 0, 80))
 	if strings.Contains(top, "/model") {
 		t.Errorf("the window showed a match past the top PaletteMaxRows:\n%s", top)
 	}
-	scrolled := ansi.Strip(RenderSlashPalette("/", 6, 80))
+	modelCursor := -1
+	for i, entry := range commandEntries("", "") {
+		if entry.Name == "/model" {
+			modelCursor = i
+			break
+		}
+	}
+	if modelCursor < 0 {
+		t.Fatal("/model is not registered")
+	}
+	scrolled := ansi.Strip(RenderSlashPalette("/", modelCursor, 80))
 	if !strings.Contains(scrolled, "▸ /model") {
-		t.Errorf("scrolling to the seventh match did not reveal it:\n%s", scrolled)
+		t.Errorf("scrolling to /model (index %d) did not reveal it:\n%s", modelCursor, scrolled)
 	}
 }
 

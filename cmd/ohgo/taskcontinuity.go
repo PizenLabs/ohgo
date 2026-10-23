@@ -15,11 +15,13 @@ import (
 // installTaskContinuity wires the durable task continuity layer behind the
 // TUI.
 //
-// The task artifact is project-local (.ohgo/task.md and .ohgo/progress.json),
-// so one project has one active task: a resume continues that task rather than
-// creating a new session-scoped one. The controller is bookkeeping only — the
-// loop still owns execution and the workspace still owns authority — so this
-// wiring cannot grant a capability.
+// The task artifact is project-local (.ohgo/task.md, .ohgo/progress.json, and
+// .ohgo/tasks/ for detached work), so durable work survives session
+// boundaries but never owns future intent: a new session starts with an empty
+// session binding, and a new intent detaches the old task rather than being
+// blocked by it. The controller is bookkeeping only — the loop still owns
+// execution and the workspace still owns authority — so this wiring cannot
+// grant a capability.
 //
 // It returns the controller so the caller can hook a compaction report into a
 // checkpoint. A nil store or missing todo tool still installs a usable layer:
@@ -84,6 +86,46 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			recorded, err := controller.Cancel(reason)
 			return taskProjection(recorded, err)
 		},
+		Detach: func() tui.TaskProjection {
+			detached, ok, err := controller.Detach()
+			if err != nil {
+				return tui.TaskProjection{Err: err.Error()}
+			}
+			if !ok {
+				return tui.TaskProjection{}
+			}
+			return taskProjection(detached, nil)
+		},
+		ListResumable: func() []tui.TaskResume {
+			tasks, err := controller.ListResumable()
+			if err != nil {
+				return nil
+			}
+			out := make([]tui.TaskResume, 0, len(tasks))
+			for _, t := range tasks {
+				resume := tui.TaskResume{
+					ID:           t.ID,
+					Status:       string(t.Status),
+					Objective:    t.Objective,
+					ReviewReason: t.ReviewReason,
+				}
+				if t.Contract != nil {
+					resume.Contract = *t.Contract
+					resume.HasContract = true
+				}
+				resume.Snapshot = t.Snapshot
+				out = append(out, resume)
+			}
+			return out
+		},
+		ResumeTask: func(id string) tui.TaskProjection {
+			recorded, err := controller.ResumeTask(id)
+			return taskProjection(recorded, err)
+		},
+		CancelResumable: func(id string) tui.TaskProjection {
+			recorded, err := controller.CancelResumable(id, "cancelled by user")
+			return taskProjection(recorded, err)
+		},
 		Context:          controller.Context,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
@@ -112,18 +154,18 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 
 	// A checkpoint recovered from disk is shown before the next turn. A
 	// non-terminal one was interrupted (a crash is normalized to PAUSED), so
-	// the transcript says how to continue rather than silently resuming.
+	// the transcript notes it as resumable without blocking the next intent:
+	// the new session starts cleanly and the task stays reachable via /task.
 	recovered, found, err := controller.Restore()
 	switch {
 	case err != nil:
 		fmt.Fprintf(os.Stderr, "ohgo: task continuity unavailable: %v\n", err)
 	case found:
-		program.PublishTask(taskProjection(recovered, nil))
-		switch recovered.Status {
-		case task.StatusPaused:
-			program.PublishNotice("a paused task was recovered; your next prompt continues it")
-		case task.StatusRunning:
-			program.PublishNotice("a task was recovered from an interrupted run")
+		if !recovered.Status.IsTerminal() {
+			program.PublishTask(taskProjection(recovered, nil))
+			if resumable, lerr := controller.ListResumable(); lerr == nil && len(resumable) > 0 {
+				program.PublishNotice("1 resumable task available (see /task list)")
+			}
 		}
 	}
 	return controller

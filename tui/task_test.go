@@ -265,14 +265,16 @@ func TestResumedReviewUsesPersistedContract(t *testing.T) {
 	}
 }
 
-// A prompt with a different objective is refused before the model runs; it is
-// not silently attached to the review task.
+// A prompt with a different objective starts a new task; it is never blocked
+// by the durable task and never silently attached to it. The old task is
+// detached (preserved) and the new intent runs with its own contract.
 func TestResumedReviewRefusesDifferentObjective(t *testing.T) {
 	loop, err := agent.New(agent.Config{
 		Model: ai.Model{ID: "m", Provider: "p"},
 		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
-			t.Fatal("the model was called for a refused continuation")
-			return nil, nil
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content: []ai.ContentBlock{ai.TextContent{Text: "ok"}},
+			}), nil
 		},
 		Tools: []agent.Tool{&idleTool{}},
 	})
@@ -280,6 +282,10 @@ func TestResumedReviewRefusesDifferentObjective(t *testing.T) {
 		t.Fatalf("agent.New: %v", err)
 	}
 	p := NewProgram(loop, "test", 0)
+	var (
+		detached bool
+		began    bool
+	)
 	p.SetTaskHooks(TaskHooks{
 		Current: func() (TaskResume, bool) {
 			return TaskResume{
@@ -291,13 +297,33 @@ func TestResumedReviewRefusesDifferentObjective(t *testing.T) {
 				},
 			}, true
 		},
-		Begin: func(contract.IntentContract, *agent.TargetSnapshot) TaskProjection {
-			t.Fatal("a different objective was attached to the review task")
-			return TaskProjection{}
+		Detach: func() TaskProjection {
+			detached = true
+			return TaskProjection{ID: "t1", Status: "PAUSED", Objective: "fix note.txt"}
+		},
+		Begin: func(intent contract.IntentContract, _ *agent.TargetSnapshot) TaskProjection {
+			began = true
+			if intent.Objective != "what does this project do?" {
+				t.Errorf("new task began with %q, want the new intent", intent.Objective)
+			}
+			return TaskProjection{ID: "t2", Status: "RUNNING", Objective: intent.Objective}
+		},
+		Pause: func(string) TaskProjection {
+			return TaskProjection{ID: "t1", Status: "PAUSED"}
+		},
+		NeedsReview: func(string) TaskProjection {
+			return TaskProjection{ID: "t2", Status: "NEEDS_REVIEW"}
 		},
 	})
 
 	p.runTurn("what does this project do?")
+
+	if !detached {
+		t.Error("a new intent did not detach the durable task")
+	}
+	if !began {
+		t.Error("a new intent did not begin a new task")
+	}
 }
 
 // /task cancel is the explicit abandonment path: it never reports completion.

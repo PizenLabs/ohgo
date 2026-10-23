@@ -325,6 +325,16 @@ type Program struct {
 	// only: the loop remains the execution owner and the task layer grants no
 	// authority (see TaskHooks).
 	task TaskHooks
+	// lastTaskDecision records why the last turn attached, detached, or
+	// started a task: NEW_SESSION, EXPLICIT_RESUME, NEW_INTENT, TASK_DETACH,
+	// TASK_COMPLETE, or NO_TASK. It is diagnostics for /audit and tests, never
+	// shown as a blocking prompt. Guarded by mu because runTurn writes it off
+	// the update goroutine.
+	lastTaskDecision string
+	// newSessionCreating guards picker Enter against double creation: the
+	// picker closes before the session is made, so a second Enter finds no
+	// picker and cannot create a second session. Update-goroutine-owned.
+	newSessionCreating bool
 }
 
 // WorkspaceHooks route workspace commands through their owner.
@@ -1413,6 +1423,14 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		p.openSessionManager()
 		return nil
 
+	case "session":
+		p.openSessionManager()
+		return nil
+
+	case "new":
+		p.openNewSessionPicker(command.Args)
+		return nil
+
 	case "jobs":
 		p.openJobsView()
 		return nil
@@ -1603,12 +1621,148 @@ func (p *Program) choosePicker() (tea.Model, tea.Cmd) {
 	case PickerJobs:
 		p.state.Apply(Notice{Text: p.jobDetail(item.Value)})
 		return p, nil
+	case PickerNewSession:
+		return p.chooseNewSession(item)
+	case PickerTasks:
+		return p.chooseTask(item)
 	case "connect-models":
 		p.finishConnect(item)
 		return p, nil
 	default:
 		return p, nil
 	}
+}
+
+// openNewSessionPicker opens the explicit /new selector.
+//
+// It uses the same generic picker as every other selector — no second picker
+// implementation. Esc cancels without touching session or task state; Enter on
+// the start row creates exactly one new session. A name argument creates
+// directly with that title instead of opening the picker.
+func (p *Program) openNewSessionPicker(args []string) {
+	if name := strings.TrimSpace(strings.Join(args, " ")); name != "" {
+		p.createNewSessionWithTitle(name)
+		return
+	}
+	p.state.Apply(PickerOpened{
+		Kind:  PickerNewSession,
+		Title: "New Session",
+		Items: []PickerItem{
+			{Title: "Start new session", Detail: "fresh conversation", Value: "new"},
+			{Title: "Cancel", Detail: "stay in this session", Value: "cancel"},
+		},
+	})
+}
+
+// chooseNewSession acts on the /new picker selection.
+func (p *Program) chooseNewSession(item PickerItem) (tea.Model, tea.Cmd) {
+	if item.Value == "cancel" {
+		return p, nil
+	}
+	if p.newSessionCreating {
+		return p, nil
+	}
+	p.newSessionCreating = true
+	defer func() { p.newSessionCreating = false }()
+	if p.sessionActions.New == nil {
+		p.state.Apply(Notice{Text: "new session is unavailable"})
+		return p, nil
+	}
+	p.cancelTurnForNewSession()
+	sess, opened, err := p.sessionActions.New()
+	if err != nil {
+		p.state.Apply(Notice{Text: "new session: " + err.Error()})
+		return p, nil
+	}
+	p.detachTaskForNewSession()
+	p.adoptSession(sess, opened)
+	p.recordTaskDecision("NEW_SESSION")
+	return p, nil
+}
+
+// createNewSessionWithTitle creates a session directly for "/new <name>".
+func (p *Program) createNewSessionWithTitle(name string) {
+	if p.newSessionCreating {
+		return
+	}
+	p.newSessionCreating = true
+	defer func() { p.newSessionCreating = false }()
+	if p.sessionActions.New == nil {
+		p.state.Apply(Notice{Text: "new session is unavailable"})
+		return
+	}
+	p.cancelTurnForNewSession()
+	sess, opened, err := p.sessionActions.New()
+	if err != nil {
+		p.state.Apply(Notice{Text: "new session: " + err.Error()})
+		return
+	}
+	p.detachTaskForNewSession()
+	p.adoptSession(sess, opened)
+	if p.sessionActions.Rename != nil && sess != nil {
+		_ = p.sessionActions.Rename(sess.ID, name)
+	}
+	p.recordTaskDecision("NEW_SESSION")
+}
+
+// cancelTurnForNewSession aborts the in-flight turn so its history and
+// transcript cannot leak into the new session. It checks the cancellation
+// handle directly rather than only the view's Busy flag: tests drive runTurn
+// without the Update loop, so Busy may be stale while a turn is running.
+func (p *Program) cancelTurnForNewSession() {
+	p.mu.Lock()
+	hasTurn := p.cancelTurn != nil
+	p.mu.Unlock()
+	if hasTurn || p.state.Status.Busy {
+		p.cancelTurnNow("new session")
+	}
+}
+
+// detachTaskForNewSession preserves the active task as resumable without
+// blocking the new session. It never deletes durable work: the controller
+// archives the task and clears only the session binding.
+func (p *Program) detachTaskForNewSession() {
+	if p.task.Detach == nil {
+		return
+	}
+	projection := p.task.Detach()
+	if projection.ID != "" && projection.Err == "" {
+		p.PublishTask(projection)
+		p.recordTaskDecision("TASK_DETACH")
+	}
+}
+
+// chooseTask resumes the task chosen from the /task resume picker.
+func (p *Program) chooseTask(item PickerItem) (tea.Model, tea.Cmd) {
+	if p.task.ResumeTask == nil {
+		p.state.Apply(Notice{Text: "task resume is unavailable"})
+		return p, nil
+	}
+	projection := p.task.ResumeTask(item.Value)
+	if projection.Err != "" {
+		p.state.Apply(Notice{Text: "task resume: " + projection.Err})
+		return p, nil
+	}
+	p.PublishTask(projection)
+	p.state.Apply(Notice{Text: "resumed task: " + projection.Objective})
+	p.recordTaskDecision("EXPLICIT_RESUME")
+	return p, nil
+}
+
+// recordTaskDecision stores the internal classification for observability. It
+// answers why a task was (or was not) resumed without exposing internals to
+// the transcript.
+func (p *Program) recordTaskDecision(decision string) {
+	p.mu.Lock()
+	p.lastTaskDecision = decision
+	p.mu.Unlock()
+}
+
+// TaskDecision returns the last internal task classification.
+func (p *Program) TaskDecision() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastTaskDecision
 }
 
 // jobDetail renders one background job for the transcript, preferring the
@@ -2631,12 +2785,22 @@ func (p *Program) resumeSessionByID(id int64) tea.Cmd {
 // replayed transcript, and a fresh telemetry window. The store is untouched —
 // every session lives in the one database the program already points at, so
 // only the session pointer moves.
+//
+// A new session never inherits session-scoped execution state: pending tool
+// approvals are denied (an old proposal must never execute in the new
+// session), whole-session tool approvals are cleared (authority never leaks),
+// and the transcript is replaced, never merged.
 func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
+	if p.pending != nil {
+		p.answer(false, "superseded by a new session")
+	}
+	p.pendingEscape = ""
 	p.mu.Lock()
 	p.history = append([]agent.Message(nil), opened.History...)
 	// A resumed or new session is a fresh telemetry window: the prior
 	// session's token counts and clock never carry over.
 	p.resetSessionTelemetryLocked()
+	p.sessionAllowed = nil
 	p.mu.Unlock()
 	p.session = sess
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
@@ -3525,7 +3689,29 @@ func (p *Program) runTurn(text string) {
 	p.mu.Lock()
 	p.cancelTurn = cancel
 	history := append([]agent.Message(nil), p.history...)
+	// Capture the session this turn belongs to: a /new during the turn must
+	// not let this turn's history or transcript leak into the new session.
+	turnStore := p.store
+	var turnSessID int64
+	if p.session != nil {
+		turnSessID = p.session.ID
+	}
 	p.mu.Unlock()
+
+	// persistTo appends to the turn's own session, even if the live session
+	// moved on while the turn was running.
+	persistTo := func(msg agent.Message) {
+		if turnStore == nil || turnSessID == 0 {
+			return
+		}
+		stored, err := session.FromAgentMessage(msg)
+		if err != nil || stored.Role == "" {
+			return
+		}
+		if err := turnStore.Append(turnSessID, stored); err != nil {
+			p.publish(Notice{Text: "could not save turn: " + err.Error()})
+		}
+	}
 
 	// abortTurn ends a turn that never started execution: it reports the
 	// reason and clears the cancellation handle. The durable task is left
@@ -3540,32 +3726,52 @@ func (p *Program) runTurn(text string) {
 		p.mu.Unlock()
 	}
 
-	// A non-terminal task owns its contract. A continuation reuses that
-	// persisted contract and its pre-run target baseline; a materially
-	// different request is refused until the human explicitly continues or
-	// abandons the task. This is what stops a review task from being closed by
-	// evidence for a different objective.
+	// A persisted task is resumable, never mandatory. An explicit continuation
+	// reuses the persisted contract and its pre-run target baseline; any other
+	// prompt is a new intent and starts a new current-session task. The previous
+	// task remains durable (detached, not deleted) and stays reachable through
+	// /task list and /task resume. Relatedness — same repository, same files —
+	// never implies continuation.
 	var targetSnapshot *agent.TargetSnapshot
 	if p.task.Current != nil {
 		if current, ok := p.task.Current(); ok && !taskStatusTerminal(current.Status) {
-			if !current.HasContract {
-				abortTurn("an open task has no persisted completion contract; run /task cancel to abandon it before starting a new task")
-				return
-			}
-			if !continuationPrompt(text) && !contractCompatible(intent, current.Contract) {
-				abortTurn("an open task is waiting: " + current.Objective +
-					". Reply with a continuation (for example \"continue\"), or run /task cancel to abandon it.")
-				return
-			}
-			intent = current.Contract
-			if current.Snapshot != nil {
-				cloned := *current.Snapshot
-				if p.completionRoot != "" {
-					cloned.Root = p.completionRoot
+			if continuationPrompt(text) {
+				if !current.HasContract {
+					abortTurn("an open task has no persisted completion contract; run /task cancel to abandon it, or start a new task with /task list to preserve it")
+					return
 				}
-				targetSnapshot = &cloned
+				intent = current.Contract
+				if current.Snapshot != nil {
+					cloned := *current.Snapshot
+					if p.completionRoot != "" {
+						cloned.Root = p.completionRoot
+					}
+					targetSnapshot = &cloned
+				}
+				p.recordTaskDecision("EXPLICIT_RESUME")
+			} else {
+				// New intent: detach the durable task so it survives the
+				// session boundary without owning the new intent, then
+				// proceed with the fresh contract. COMPLETED/FAILED/CANCELLED
+				// never reach here (terminal), so no continuation prompt is
+				// ever shown for them.
+				if p.task.Detach != nil {
+					detached := p.task.Detach()
+					if detached.Err != "" {
+						abortTurn("task state was not recorded: " + detached.Err)
+						return
+					}
+					if detached.ID != "" {
+						p.PublishTask(detached)
+					}
+				}
+				p.recordTaskDecision("NEW_INTENT")
 			}
+		} else {
+			p.recordTaskDecision("NEW_INTENT")
 		}
+	} else {
+		p.recordTaskDecision("NEW_INTENT")
 	}
 
 	// The completion contract's targets are captured before execution; the
@@ -3635,7 +3841,7 @@ func (p *Program) runTurn(text string) {
 	}
 
 	user := agent.UserMessage{Text: text}
-	p.persist(user)
+	persistTo(user)
 
 	request := append(append([]agent.Message(nil), history...), user)
 
@@ -3812,11 +4018,20 @@ func (p *Program) runTurn(text string) {
 
 	// The turn has made its terminal transition. Keeping the handle installed
 	// until now is what lets a cancel during post-run evidence reach ctx.Err.
+	// A session switch during the turn leaves the new session's history alone:
+	// this turn belongs to the session it started in, and its transcript was
+	// already persisted to that session above.
 	p.mu.Lock()
 	p.cancelTurn = nil
-	// Rebase from the request actually sent: appending to the old history
-	// would reintroduce anything a compaction just removed.
-	p.history = rebase(request, turns)
+	var liveSessID int64
+	if p.session != nil {
+		liveSessID = p.session.ID
+	}
+	if liveSessID == turnSessID {
+		// Rebase from the request actually sent: appending to the old history
+		// would reintroduce anything a compaction just removed.
+		p.history = rebase(request, turns)
+	}
 	p.mu.Unlock()
 
 	// The budget display is fed from the provider's own accounting, not an
@@ -3855,10 +4070,11 @@ func (p *Program) runTurn(text string) {
 	// order as the plain path: dropping non-final results would lose the
 	// evidence the transcript replays, and persisting is the program's job
 	// here (the loop's turn hook stays silent in UI mode — see SetTurnHook).
+	// They land in the turn's own session, never in a session created mid-turn.
 	for _, turn := range turns {
-		p.persist(agent.AssistantMessage{Message: turn.Assistant})
+		persistTo(agent.AssistantMessage{Message: turn.Assistant})
 		for _, outcome := range turn.Results {
-			p.persist(agent.ToolResultMessage{
+			persistTo(agent.ToolResultMessage{
 				ToolCallID: outcome.CallID,
 				ToolName:   outcome.ToolName,
 				Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
