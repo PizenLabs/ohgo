@@ -218,6 +218,10 @@ func BlockCopyText(entry Entry) string {
 			}
 			text = b.String()
 		}
+	case EntryRecap:
+		// The completion footer is lifecycle metadata, not block content:
+		// copying the block must never carry it into a clipboard payload.
+		return ""
 	}
 	return logicalText(text)
 }

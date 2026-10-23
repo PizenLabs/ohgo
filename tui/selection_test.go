@@ -113,6 +113,41 @@ func TestSelectionCopyMultilineAndWrapped(t *testing.T) {
 	}
 }
 
+// Copying a fenced answer must yield the code itself: fence rows are syntax
+// and padded rows are paint, so neither may enter the clipboard payload.
+func TestSelectionCopyFencedCodeHasNoFenceOrPadding(t *testing.T) {
+	s := New()
+	s.Apply(TerminalResized{Width: 40, Height: 30})
+	s.Apply(HistoryReplaced{Entries: []Entry{{
+		Kind:          EntryAssistant,
+		AssistantText: "```go\nfunc main() {\n\treturn 1\n}\n```",
+	}}})
+	l := layoutFor(s)
+	id := blockIDAt(s.Entries, 0)
+	last := l.BlockHeight(0) - 1
+	row := blockRowFor(t, l, 0, last)
+	text, ok := CopySelection(l, &Selection{
+		Start: Position{BlockID: id, Row: 0, Column: 0},
+		End:   Position{BlockID: id, Row: last, Column: row.Width},
+	})
+	if !ok {
+		t.Fatal("selection over a fenced block copied nothing")
+	}
+	if strings.Contains(text, "```") {
+		t.Fatalf("copy contains fence markers: %q", text)
+	}
+	for _, want := range []string{"func main() {", "return 1", "}"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("copy = %q, want code %q", text, want)
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if line != strings.TrimRight(line, " ") {
+			t.Errorf("copy line carries paint padding: %q", line)
+		}
+	}
+}
+
 func TestSelectionCopyEmpty(t *testing.T) {
 	s := selectionFixture()
 	l := layoutFor(s)

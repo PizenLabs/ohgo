@@ -35,6 +35,10 @@ type Palette struct {
 	// Mention renders a valid "@path" reference in the composer, so a file
 	// the prompt will actually attach stands out from surrounding prose.
 	Mention lipgloss.Style
+	// Ghost renders the inline history completion after the cursor. It is
+	// deliberately dimmer than muted text: a suggestion is never content and
+	// must recede the moment the user keeps typing.
+	Ghost lipgloss.Style
 	// ShellPrompt renders the "!" escape marker, and ShellCommand the escaped
 	// command text, so a direct shell block reads as distinct from a tool
 	// (whose badge carries the tool's identity colour) and from the user's
@@ -42,9 +46,8 @@ type Palette struct {
 	ShellPrompt  lipgloss.Style
 	ShellCommand lipgloss.Style
 	// Markdown styles.
-	Code      lipgloss.Style
-	CodeFence lipgloss.Style
-	Heading   lipgloss.Style
+	Code    lipgloss.Style
+	Heading lipgloss.Style
 	// Heading2 and Heading3 stratify the header hierarchy below Heading
 	// (H1): H2 is sage, H3 muted sage, so depth reads without parsing.
 	Heading2 lipgloss.Style
@@ -73,6 +76,10 @@ type Palette struct {
 	// Separator draws full-width rules (header divider, composer frames) in
 	// the dim slate chrome style, distinct from the muted body text.
 	Separator lipgloss.Style
+	// Recap renders the single completion line under a finished task block.
+	// It is the quietest text in the transcript: italic, dimmer than metadata,
+	// never a second answer, and never part of the block's copy payload.
+	Recap lipgloss.Style
 	// SupportHi highlights key entities inside the $sup answer viewport:
 	// bright cyan for concepts/technologies, amber for dates/specs.
 	// Main-chat markdown never uses them, so the overlay hierarchy stays
@@ -111,10 +118,10 @@ func DarkPalette() *Palette {
 		Queued:       fg(darkMuted).Italic(true),
 		Chip:         fg(ColorAccent).Bold(true),
 		Mention:      fg(ColorPrimary).Bold(true),
+		Ghost:        fg(ColorRecap),
 		ShellPrompt:  fg(ColorPrimary).Bold(true),
 		ShellCommand: fg(darkText),
 		Code:         fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
-		CodeFence:    fg(darkMuted),
 		Heading:      fg(darkH1).Bold(true),
 		Heading2:     fg(darkH2).Bold(true),
 		Heading3:     fg(darkH3).Bold(true),
@@ -132,6 +139,7 @@ func DarkPalette() *Palette {
 		Cyan:         fg("#89dceb"),
 		Comment:      fg(ColorMuted).Italic(true),
 		Separator:    fg(ColorDim),
+		Recap:        fg(ColorRecap).Italic(true),
 		SupportHi:    fg("87").Bold(true),
 		SupportHiAlt: fg("220").Bold(true),
 	}
@@ -159,10 +167,10 @@ func LightPalette() *Palette {
 		Queued:       fg(lightMuted).Italic(true),
 		Chip:         fg(chromeLightAccent).Bold(true),
 		Mention:      fg(chromeLightPrimary).Bold(true),
+		Ghost:        fg(chromeLightRecap),
 		ShellPrompt:  fg(chromeLightPrimary).Bold(true),
 		ShellCommand: fg(lightText),
 		Code:         fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
-		CodeFence:    fg(lightMuted),
 		Heading:      fg(lightH1).Bold(true),
 		Heading2:     fg(lightH2).Bold(true),
 		Heading3:     fg(lightH3).Bold(true),
@@ -180,6 +188,7 @@ func LightPalette() *Palette {
 		Cyan:         fg("#89dceb"),
 		Comment:      fg(lightMuted).Italic(true),
 		Separator:    fg(lightMuted),
+		Recap:        fg(chromeLightRecap).Italic(true),
 		SupportHi:    fg("30").Bold(true),
 		SupportHiAlt: fg("166").Bold(true),
 	}
@@ -1183,6 +1192,8 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	// the cap, a fixed tail slice would scroll the caret off-screen the moment
 	// Alt+Enter (or a fold) pushed it above the last maxComposerRows rows.
 	shown, start := composerWindow(rows, cursorRow, state.ComposerScroll, maxComposerRows)
+	ghost := state.suggestionTail()
+	width := composerTextWidthFor(state, layout)
 
 	var sb strings.Builder
 	sb.WriteString(rule)
@@ -1207,6 +1218,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 		text, rowCursor = renderPasteChips(state.Pastes, pal.Chip, text, rowCursor)
 		if isCursorRow {
 			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
+			text = appendGhost(text, ghost, width, pal.Ghost)
 		}
 		prefix := composerContPrefix(state)
 		prefixStyle := composerPrefixStyle(state, pal)
@@ -1220,6 +1232,29 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	}
 	sb.WriteString("\n" + rule)
 	return sb.String()
+}
+
+// appendGhost paints the inline history completion immediately after the
+// cursor. The suggestion is purely visual: it never enters the input buffer,
+// the layout, or the submission text.
+//
+// The tail is truncated to the cells left on the cursor row instead of
+// wrapping. Wrapping would add a display row the layout never reserved, and a
+// ghost that shifts the composer on every keystroke is worse than one that
+// disappears near the right edge.
+func appendGhost(text, tail string, width int, style lipgloss.Style) string {
+	if tail == "" {
+		return text
+	}
+	avail := width - CellWidth(text)
+	if avail < 1 {
+		return text
+	}
+	tail = TruncateToWidth(tail, avail)
+	if tail == "" {
+		return text
+	}
+	return text + style.Render(tail)
 }
 
 // composerRuleStyle resolves the frame colour for the two lines around the
@@ -1382,6 +1417,13 @@ func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, 
 			sb.WriteString(line + "\n")
 		}
 		sb.WriteString("\n")
+
+	case EntryRecap:
+		// No separator row: this is the terminal footer of the task, so the
+		// next prompt follows it directly. The footer owns at most two rows.
+		for _, line := range recapLines(entry.Recap, textWidth(layout)) {
+			sb.WriteString(pal.Recap.Render(line) + "\n")
+		}
 
 	case EntrySupport:
 		renderSupportEntry(sb, entry, pal, layout)

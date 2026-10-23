@@ -9,10 +9,26 @@ import (
 // code, headers, emphasis, lists, quotes, rules, and tables, which render
 // as grids with a stacked narrow fallback.
 
-func TestMarkdownFenceKeepsTheLanguage(t *testing.T) {
+func TestMarkdownFenceMarkersAreNotContent(t *testing.T) {
 	out := RenderMarkdown("```go\nfmt.Println()\n```", DarkPalette())
-	if !strings.Contains(out, "```go") || !strings.Contains(out, "fmt.Println()") {
-		t.Errorf("fence = %q, want the language label and body kept", out)
+	if strings.Contains(out, "```") {
+		t.Errorf("fence = %q, want both delimiter rows dropped", out)
+	}
+	if !strings.Contains(out, "fmt.Println()") {
+		t.Errorf("fence = %q, want the body kept", out)
+	}
+}
+
+// The info string is metadata for the highlighter, not a line of the answer:
+// the language must still colour the body while never being printed.
+func TestMarkdownFenceLanguageDrivesHighlightingOnly(t *testing.T) {
+	pal := forcedPalette()
+	out := RenderMarkdown("```rust\nfn main() {}\n```", pal)
+	if strings.Contains(out, "```") || strings.Contains(out, "rust") {
+		t.Errorf("fence = %q, want the language label and delimiters dropped", out)
+	}
+	if !strings.Contains(out, pal.CodeKeyword.Render("fn")) {
+		t.Errorf("fence = %q, want rust keywords highlighted from the info string", out)
 	}
 }
 

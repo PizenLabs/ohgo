@@ -271,6 +271,7 @@ func fixtureRevision(entry Entry) uint64 {
 			_, _ = h.Write([]byte(item.Label))
 		}
 	}
+	_, _ = h.Write([]byte(entry.Recap))
 	return h.Sum64()
 }
 

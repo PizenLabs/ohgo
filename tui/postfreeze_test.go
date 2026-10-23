@@ -529,19 +529,20 @@ func TestPostfreezeNewPickerUX(t *testing.T) {
 	}
 }
 
-// /session remains the manager while /new is the canonical creator.
+// /sessions remains the manager while /new is the canonical creator; the
+// retired singular /session spelling must not survive as a shadow alias.
 func TestPostfreezeSessionCommandCompatibility(t *testing.T) {
 	if _, ok := LookupCommand("new"); !ok {
 		t.Fatal("/new is not registered")
 	}
-	if _, ok := LookupCommand("session"); !ok {
-		t.Fatal("/session is not registered")
+	if _, ok := LookupCommand("session"); ok {
+		t.Fatal("/session is still registered")
 	}
 	if _, ok := LookupCommand("sessions"); !ok {
-		t.Fatal("/sessions alias is gone")
+		t.Fatal("/sessions is not registered")
 	}
 	p := NewProgram(nil, "test", 0)
-	Command{Name: "session"}.runOn(p)
+	Command{Name: "sessions"}.runOn(p)
 	// Without a browser the manager reports unavailable rather than crashing.
 	found := false
 	for _, entry := range p.state.Entries {
@@ -555,8 +556,11 @@ func TestPostfreezeSessionCommandCompatibility(t *testing.T) {
 	if HelpText() == "" || !strings.Contains(HelpText(), "/new") {
 		t.Fatal("help does not expose /new")
 	}
-	if !strings.Contains(HelpText(), "/session") || !strings.Contains(HelpText(), "/task") {
-		t.Fatal("help does not expose /session and /task")
+	if !strings.Contains(HelpText(), "/sessions ") || !strings.Contains(HelpText(), "/task") {
+		t.Fatal("help does not expose /sessions and /task")
+	}
+	if strings.Contains(HelpText(), "/session ") {
+		t.Fatal("help still exposes the retired /session command")
 	}
 }
 

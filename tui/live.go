@@ -456,6 +456,14 @@ func liveEntryLines(s State, e Entry, pal *Palette, layout Layout) []string {
 			return nil
 		}
 		return append(taskLines(e.Task, pal, layout), "")
+
+	case EntryRecap:
+		// No separator row: the footer sits directly above the next prompt.
+		lines := recapLines(e.Recap, textWidth(layout))
+		for i, line := range lines {
+			lines[i] = pal.Recap.Render(line)
+		}
+		return lines
 	}
 	return nil
 }
@@ -807,6 +815,8 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 	// Same cursor-following window as the framed composer: the caret must stay
 	// painted however far the input folds past the row cap.
 	shown, start := composerWindow(rows, cursorRow, s.ComposerScroll, maxComposerRows)
+	ghost := s.suggestionTail()
+	width := liveComposerWidth(layout)
 
 	var out []string
 	// The palette sits strictly above the input line it completes. It is
@@ -826,6 +836,7 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 		text, rowCursor = renderPasteChips(s.Pastes, pal.Chip, text, rowCursor)
 		if isCursorRow {
 			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
+			text = appendGhost(text, ghost, width, pal.Ghost)
 		}
 		if i == 0 {
 			out = append(out, pal.Prompt.Render("> ")+text)

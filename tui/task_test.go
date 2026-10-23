@@ -43,6 +43,215 @@ func TestTaskProjectionRendersCompactTodoBlock(t *testing.T) {
 	}
 }
 
+// The recap belongs to the tail of the stream, not the task header. A completed
+// projection must leave the header block unchanged, or a long answer pushes the
+// closure line off the top of the screen.
+func TestTaskHeaderNeverRendersRecap(t *testing.T) {
+	projection := &TaskProjection{
+		ID:        "t1",
+		Status:    "COMPLETED",
+		Objective: "Implemented concurrent thread execution",
+		Items:     []TaskItem{{State: taskStateDone, Label: "wired the scheduler"}},
+		Recap:     "Updated the scheduler and verified the change.",
+	}
+	joined := ansi.Strip(strings.Join(taskLines(projection, DarkPalette(), Layout{ContentWidth: 80}), "\n"))
+	if strings.Contains(joined, recapPrefix) || strings.Contains(joined, "Updated the scheduler") {
+		t.Fatalf("the task header still renders completion metadata:\n%s", joined)
+	}
+	if !strings.Contains(joined, "completed") {
+		t.Fatalf("the task header lost its lifecycle status:\n%s", joined)
+	}
+}
+
+// The footer is emitted only after the task completed and the stream settled:
+// a completed projection arriving mid-answer must wait for AssistantDone.
+func TestTaskRecapWaitsForSettledStream(t *testing.T) {
+	state := New()
+	state.Apply(UserSubmitted{Text: "what is golang and for example code"})
+	state.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "explain Go",
+	}})
+	state.Apply(AssistantDelta{Text: "a long answer"})
+	state.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "COMPLETED", Objective: "explain Go",
+		Recap: "Explained the core idea: goroutines are lightweight threads.",
+	}})
+	if countRecapEntries(state) != 0 {
+		t.Fatal("the recap emitted while the answer was still streaming")
+	}
+
+	state.Apply(AssistantDone{})
+	if got := countRecapEntries(state); got != 1 {
+		t.Fatalf("recap entries after settle = %d, want 1", got)
+	}
+	last := state.Entries[len(state.Entries)-1]
+	if last.Kind != EntryRecap || last.Recap != "Explained the core idea: goroutines are lightweight threads." {
+		t.Fatalf("last entry = %+v, want the trailing recap", last)
+	}
+}
+
+// A task that has not completed must never emit a footer, even if it carries a
+// stale recap string.
+func TestTaskRecapRequiresCompletion(t *testing.T) {
+	state := New()
+	state.Apply(UserSubmitted{Text: "ship it"})
+	state.Apply(AssistantDelta{Text: "working"})
+	state.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "ship it",
+		Recap: "Updated the release config and verified the build.",
+	}})
+	state.Apply(AssistantDone{})
+	if got := countRecapEntries(state); got != 0 {
+		t.Fatalf("a running task emitted %d recap entries", got)
+	}
+
+	state.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "COMPLETED", Objective: "ship it",
+		Recap: "Updated the release config and verified the build.",
+	}})
+	if got := countRecapEntries(state); got != 1 {
+		t.Fatalf("a settled completed task emitted %d recap entries, want 1", got)
+	}
+}
+
+// Repeated projections and duplicate turn boundaries must not stack footers.
+func TestTaskRecapEmitsOncePerTask(t *testing.T) {
+	completed := TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "COMPLETED", Objective: "ship it",
+		Recap: "Updated the release config and verified the build.",
+	}}
+	state := New()
+	state.Apply(UserSubmitted{Text: "ship it"})
+	state.Apply(completed)
+	state.Apply(AssistantDone{})
+	state.Apply(completed)
+	state.Apply(AssistantDone{})
+	if got := countRecapEntries(state); got != 1 {
+		t.Fatalf("recap entries = %d, want exactly one", got)
+	}
+}
+
+// Back-to-back tasks each close with one footer, and each footer follows its
+// own answer rather than the next task's header.
+func TestBackToBackTasksEmitOneFooterEach(t *testing.T) {
+	state := New()
+	run := func(id, answer, recap string) {
+		state.Apply(UserSubmitted{Text: "task " + id})
+		state.Apply(TaskProjected{Projection: TaskProjection{
+			ID: id, Status: "RUNNING", Objective: id,
+		}})
+		state.Apply(AssistantDelta{Text: answer})
+		state.Apply(TaskProjected{Projection: TaskProjection{
+			ID: id, Status: "COMPLETED", Objective: id, Recap: recap,
+		}})
+		state.Apply(AssistantDone{})
+	}
+	run("t1", "first answer", "Explained the first result.")
+	run("t2", "second answer", "Explained the second result.")
+
+	if got := countRecapEntries(state); got != 2 {
+		t.Fatalf("recap entries = %d, want one per task", got)
+	}
+	joined := ansi.Strip(strings.Join(entryTexts(state), "\n"))
+	firstFooter := strings.Index(joined, "Explained the first result")
+	secondAnswer := strings.Index(joined, "second answer")
+	secondFooter := strings.Index(joined, "Explained the second result")
+	if firstFooter < 0 || secondFooter < 0 {
+		t.Fatalf("a task footer is missing:\n%s", joined)
+	}
+	if firstFooter > secondAnswer {
+		t.Fatalf("the first footer is not at the end of its own output:\n%s", joined)
+	}
+	if secondFooter < secondAnswer {
+		t.Fatalf("the second footer is not below its answer:\n%s", joined)
+	}
+}
+
+// entryTexts projects the document to plain text for order assertions.
+func entryTexts(state State) []string {
+	out := make([]string, 0, len(state.Entries))
+	for _, entry := range state.Entries {
+		switch entry.Kind {
+		case EntryUser:
+			out = append(out, entry.UserText)
+		case EntryAssistant:
+			out = append(out, entry.AssistantText)
+		case EntryRecap:
+			out = append(out, entry.Recap)
+		}
+	}
+	return out
+}
+
+// The footer is display metadata: the task block copy and the footer block copy
+// both stay out of the clipboard payload.
+func TestTaskRecapIsNotPartOfBlockCopy(t *testing.T) {
+	entry := Entry{Kind: EntryTask, Task: &TaskProjection{
+		ID:        "t1",
+		Status:    "COMPLETED",
+		Objective: "Implemented concurrent thread execution",
+		Items:     []TaskItem{{State: taskStateDone, Label: "wired the scheduler"}},
+		Recap:     "Updated the scheduler and verified the change.",
+	}}
+	got := BlockCopyText(entry)
+	if strings.Contains(got, recapPrefix) || strings.Contains(got, "Updated the scheduler") {
+		t.Fatalf("block copy leaked the recap metadata:\n%s", got)
+	}
+	if !strings.Contains(got, "Implemented concurrent thread execution") {
+		t.Fatalf("block copy lost the task objective:\n%s", got)
+	}
+	if got := BlockCopyText(Entry{Kind: EntryRecap, Recap: "Updated the release config."}); got != "" {
+		t.Fatalf("footer copy = %q, want empty metadata", got)
+	}
+}
+
+// On a long answer the footer must remain visible under the answer: the viewport
+// follows the tail, so scrolling up reveals content above the recap, never below.
+func TestLongAnswerKeepsRecapAtTheBottom(t *testing.T) {
+	state := New()
+	state.Apply(TerminalResized{Width: 80, Height: 30})
+	state.Apply(UserSubmitted{Text: "what is golang and for example code"})
+	state.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "explain Go",
+	}})
+	var answer strings.Builder
+	for i := 0; i < 40; i++ {
+		answer.WriteString("paragraph " + strings.Repeat("x", 20) + "\n\n")
+	}
+	answer.WriteString("ANSWER_END\n")
+	state.Apply(AssistantDelta{Text: answer.String()})
+	state.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "COMPLETED", Objective: "explain Go",
+		Recap: "Explained the core idea: goroutines are lightweight threads.",
+	}})
+	state.Apply(AssistantDone{})
+
+	frame := ansi.Strip(Render(state))
+	answerAt := strings.LastIndex(frame, "ANSWER_END")
+	recapAt := strings.LastIndex(frame, recapPrefix+" Explained the core idea: goroutines are lightweight threads.")
+	if recapAt < 0 {
+		t.Fatalf("the footer is missing from the rendered frame:\n%s", frame)
+	}
+	if answerAt < 0 || recapAt < answerAt {
+		t.Fatalf("the footer is not below the answer (answer=%d, recap=%d):\n%s", answerAt, recapAt, frame)
+	}
+	if got := colorName(DarkPalette().Recap.GetForeground()); got != "#5C7E70" {
+		t.Errorf("recap foreground = %q, want the dim token #5C7E70", got)
+	}
+}
+
+// countRecapEntries reports how many trailing lifecycle footers the document
+// holds, without depending on a particular rendering.
+func countRecapEntries(state State) int {
+	n := 0
+	for _, entry := range state.Entries {
+		if entry.Kind == EntryRecap {
+			n++
+		}
+	}
+	return n
+}
+
 // A projection updates the one task block in place, so a long turn cannot stack
 // a fresh panel on every todo change.
 func TestTaskProjectedReplacesInPlace(t *testing.T) {
@@ -180,6 +389,92 @@ func TestRunTurnCompletesTaskOnFinalTurn(t *testing.T) {
 	defer mu.Unlock()
 	if !completed {
 		t.Error("a run whose final turn stopped calling tools did not complete the task")
+	}
+}
+
+// The completion transition is the only place the recap is attached, and it
+// carries the run's own duration and measured token usage.
+func TestRunTurnAttachesRecapToCompletedTask(t *testing.T) {
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content: []ai.ContentBlock{ai.TextContent{Text: "one goroutine owns the scheduler"}},
+				Usage:   ai.Usage{Input: 10, Output: 5, Total: 15},
+			}), nil
+		},
+		Tools: []agent.Tool{&idleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	p.SetTaskHooks(TaskHooks{
+		Begin: func(contract.IntentContract, *agent.TargetSnapshot) TaskProjection {
+			return TaskProjection{ID: "t1", Status: "RUNNING", Objective: "explain the scheduler"}
+		},
+		Complete: func() TaskProjection {
+			return TaskProjection{ID: "t1", Status: "COMPLETED", Objective: "explain the scheduler"}
+		},
+	})
+
+	p.runTurn("explain the scheduler")
+
+	// runTurn publishes events for the update goroutine; with no running
+	// program the test folds them itself, exactly as Update would.
+drain:
+	for {
+		select {
+		case event := <-p.events:
+			p.state.Apply(event)
+		default:
+			break drain
+		}
+	}
+
+	var task *TaskProjection
+	taskAt := -1
+	for i := range p.state.Entries {
+		if p.state.Entries[i].Kind == EntryTask {
+			task = p.state.Entries[i].Task
+			taskAt = i
+		}
+	}
+	if task == nil {
+		t.Fatal("the completed turn published no task block")
+	}
+	if task.Status != "COMPLETED" {
+		t.Fatalf("task status = %q, want COMPLETED", task.Status)
+	}
+	if !strings.Contains(task.Recap, "goroutine owns the scheduler") {
+		t.Fatalf("recap = %q, want the answer's own subject", task.Recap)
+	}
+	if strings.Contains(task.Recap, "explain the scheduler") {
+		t.Fatalf("recap = %q, echoed the objective instead of narrating the answer", task.Recap)
+	}
+	if strings.Contains(task.Recap, "tokens") || strings.Contains(task.Recap, "0.8s") || strings.Contains(task.Recap, "•") {
+		t.Fatalf("recap = %q, leaked telemetry instead of a narrative", task.Recap)
+	}
+
+	footerAt := -1
+	for i := range p.state.Entries {
+		if p.state.Entries[i].Kind == EntryRecap {
+			footerAt = i
+		}
+	}
+	if footerAt < 0 {
+		t.Fatalf("the completed turn appended no recap footer: %+v", p.state.Entries)
+	}
+	if footerAt < taskAt || footerAt != len(p.state.Entries)-1 {
+		t.Fatalf("recap footer at %d is not the tail (task at %d, entries %d)", footerAt, taskAt, len(p.state.Entries))
+	}
+	footer := p.state.Entries[footerAt].Recap
+	if !strings.HasPrefix(recapLine(footer), recapPrefix+" ") {
+		t.Fatalf("footer = %q, want the stable recap prefix", recapLine(footer))
+	}
+	header := ansi.Strip(strings.Join(taskLines(task, DarkPalette(), Layout{ContentWidth: 100}), "\n"))
+	if strings.Contains(header, recapPrefix) {
+		t.Fatalf("the task header still rendered the recap:\n%s", header)
 	}
 }
 

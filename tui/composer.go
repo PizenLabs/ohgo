@@ -4,6 +4,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/PizenLabs/ohgo/internal/history"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -15,6 +16,34 @@ import (
 // scrolls to the tail. It matches the layout's own cap so the region reserved
 // and the region rendered agree.
 const maxComposerRows = 6
+
+// inlineSuggestion returns the history prompt that completes the current
+// input, or "" when there is nothing to complete.
+//
+// A suggestion is offered only while the cursor sits at the end of the live
+// input. Once the user moves into the middle of a line, inserting a tail would
+// complete text ahead of the cursor rather than from it. Recalled entries and
+// an open palette are excluded for the same reason: the user is already
+// choosing, and a second completion would compete with that choice.
+func (s State) inlineSuggestion() string {
+	if s.HistCursor >= 0 || s.Cursor != len([]rune(s.Input)) {
+		return ""
+	}
+	if len(paletteEntriesFor(s)) > 0 {
+		return ""
+	}
+	return history.Suggestion(s.Submitted, s.Input)
+}
+
+// suggestionTail is the not-yet-typed remainder of the inline suggestion,
+// sanitized as single-line chrome so it cannot inject a row break.
+func (s State) suggestionTail() string {
+	full := s.inlineSuggestion()
+	if full == "" {
+		return ""
+	}
+	return sanitizeInline(strings.TrimPrefix(full, s.Input))
+}
 
 // composerRows hard-wraps one logical line to width cells, preserving every
 // rune (multiple spaces are not folded: what was typed is what is shown). It
