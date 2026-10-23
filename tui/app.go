@@ -141,6 +141,11 @@ type Program struct {
 	// leave through the renderer as print lines — see live.go.
 	live *livePainter
 
+	// promptHistory is the durable prompt store, if one was supplied. It is
+	// read when the program starts and appended to for every turn that
+	// actually reaches the agent, never for a draft or a ghost suggestion.
+	promptHistory PromptHistory
+
 	// transcriptIndex, viewport, and transcriptFrame are the retained
 	// full-screen projection: document geometry, scroll position, and the
 	// rows of the frame about to paint. They are UI-goroutine owned.
@@ -630,6 +635,40 @@ func (p *Program) SetConnectHooks(hooks ConnectHooks) {
 // ProgramOption configures a Program at construction.
 type ProgramOption func(*Program)
 
+// PromptHistory is the durable store behind up-arrow recall and inline
+// suggestions.
+//
+// The program only needs the loaded entries and an append hook, so a test can
+// substitute a fake and a failed file never has to be simulated.
+type PromptHistory interface {
+	// Entries returns the persisted prompts, oldest first.
+	Entries() []string
+	// Add records a submitted prompt. It must not block the update
+	// goroutine on file I/O.
+	Add(prompt string)
+}
+
+// promptHistoryFlusher is implemented by stores that buffer appends. Shutdown
+// flushes them so a prompt submitted immediately before quit is not lost.
+type promptHistoryFlusher interface {
+	Flush() error
+}
+
+// WithPromptHistory seeds recallable history from a durable store and records
+// every submitted prompt back into it.
+//
+// Loading happens here, before the first frame, so the very first up arrow in
+// a new session already reaches the previous session's prompts.
+func WithPromptHistory(store PromptHistory) ProgramOption {
+	return func(p *Program) {
+		if store == nil {
+			return
+		}
+		p.promptHistory = store
+		p.state.Submitted = append(p.state.Submitted, store.Entries()...)
+	}
+}
+
 // WithMouseReporting makes the program request mouse reporting from the
 // terminal, so wheel ticks arrive as real mouse events instead of as arrow
 // keys.
@@ -925,6 +964,12 @@ func (p *Program) onModelsRefreshed(m modelsRefreshedMsg) (tea.Model, tea.Cmd) {
 // apply folds an event into the state and reacts to the ones the program owns.
 func (p *Program) apply(event Event) {
 	p.state.Apply(event)
+	// A prompt joins durable history only when it actually becomes a turn.
+	// Drafts, ghost suggestions, queued lines that never run, and slash or
+	// shell commands are not prompts and must not pollute recall.
+	if submitted, ok := event.(UserSubmitted); ok && p.promptHistory != nil {
+		p.promptHistory.Add(submitted.Text)
+	}
 	// Validation results pair with the pending setup flow here, on the update
 	// goroutine, where the flow lives.
 	if result, ok := event.(ValidationFinished); ok {
@@ -1233,6 +1278,12 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "right", "ctrl+f":
+		// Right arrow at the end of the input accepts a visible history
+		// completion; ctrl+f stays a pure cursor movement so the emacs-style
+		// binding never rewrites the line.
+		if msg.String() == "right" && p.acceptInlineSuggestion() {
+			return p, nil
+		}
 		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: cursorRightAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)})
 		return p, nil
 
@@ -1332,6 +1383,13 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "tab":
+		// Tab accepts an inline history completion before it considers any
+		// other meaning. A visible ghost is the most specific available
+		// action, so it wins over command discovery; the palette path below
+		// only runs when no suggestion is offered.
+		if p.acceptInlineSuggestion() {
+			return p, nil
+		}
 		// Tab on a leading slash discovers commands instead of inserting a
 		// literal tab: a slash line is either a command or a typo, and the
 		// palette shows which without spending a turn. The typed text is
@@ -1397,6 +1455,21 @@ func (p *Program) ensureMentionRoster() {
 	}
 	p.mentionsLoaded = true
 	p.state.Apply(PaletteFilesLoaded{Files: p.listMentions()})
+}
+
+// acceptInlineSuggestion replaces the live input with the inline history
+// suggestion and reports whether one was accepted.
+//
+// The whole prompt is written, not just the visible tail: the tail is derived
+// from the input at paint time, so a user who accepted before the next frame
+// would otherwise keep only the prefix.
+func (p *Program) acceptInlineSuggestion() bool {
+	full := p.state.inlineSuggestion()
+	if full == "" {
+		return false
+	}
+	p.state.Apply(ComposerChanged{Text: full, Cursor: len([]rune(full))})
+	return true
 }
 
 // acceptPalette resolves Enter or Tab on the inline palette: the highlighted
@@ -3285,7 +3358,14 @@ func (p *Program) RunLive() error {
 // closeDone releases tools blocked past shutdown. Idempotent: Run defers it,
 // and headless tests drive shutdown without Run.
 func (p *Program) closeDone() {
-	p.doneOnce.Do(func() { close(p.done) })
+	p.doneOnce.Do(func() {
+		if closer, ok := p.promptHistory.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		} else if flusher, ok := p.promptHistory.(promptHistoryFlusher); ok {
+			_ = flusher.Flush()
+		}
+		close(p.done)
+	})
 }
 
 // waitForEvent returns a command that blocks for the next state event.

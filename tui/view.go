@@ -35,6 +35,10 @@ type Palette struct {
 	// Mention renders a valid "@path" reference in the composer, so a file
 	// the prompt will actually attach stands out from surrounding prose.
 	Mention lipgloss.Style
+	// Ghost renders the inline history completion after the cursor. It is
+	// deliberately dimmer than muted text: a suggestion is never content and
+	// must recede the moment the user keeps typing.
+	Ghost lipgloss.Style
 	// ShellPrompt renders the "!" escape marker, and ShellCommand the escaped
 	// command text, so a direct shell block reads as distinct from a tool
 	// (whose badge carries the tool's identity colour) and from the user's
@@ -114,6 +118,7 @@ func DarkPalette() *Palette {
 		Queued:       fg(darkMuted).Italic(true),
 		Chip:         fg(ColorAccent).Bold(true),
 		Mention:      fg(ColorPrimary).Bold(true),
+		Ghost:        fg(ColorRecap),
 		ShellPrompt:  fg(ColorPrimary).Bold(true),
 		ShellCommand: fg(darkText),
 		Code:         fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
@@ -162,6 +167,7 @@ func LightPalette() *Palette {
 		Queued:       fg(lightMuted).Italic(true),
 		Chip:         fg(chromeLightAccent).Bold(true),
 		Mention:      fg(chromeLightPrimary).Bold(true),
+		Ghost:        fg(chromeLightRecap),
 		ShellPrompt:  fg(chromeLightPrimary).Bold(true),
 		ShellCommand: fg(lightText),
 		Code:         fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
@@ -1186,6 +1192,8 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	// the cap, a fixed tail slice would scroll the caret off-screen the moment
 	// Alt+Enter (or a fold) pushed it above the last maxComposerRows rows.
 	shown, start := composerWindow(rows, cursorRow, state.ComposerScroll, maxComposerRows)
+	ghost := state.suggestionTail()
+	width := composerTextWidthFor(state, layout)
 
 	var sb strings.Builder
 	sb.WriteString(rule)
@@ -1210,6 +1218,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 		text, rowCursor = renderPasteChips(state.Pastes, pal.Chip, text, rowCursor)
 		if isCursorRow {
 			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
+			text = appendGhost(text, ghost, width, pal.Ghost)
 		}
 		prefix := composerContPrefix(state)
 		prefixStyle := composerPrefixStyle(state, pal)
@@ -1223,6 +1232,29 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	}
 	sb.WriteString("\n" + rule)
 	return sb.String()
+}
+
+// appendGhost paints the inline history completion immediately after the
+// cursor. The suggestion is purely visual: it never enters the input buffer,
+// the layout, or the submission text.
+//
+// The tail is truncated to the cells left on the cursor row instead of
+// wrapping. Wrapping would add a display row the layout never reserved, and a
+// ghost that shifts the composer on every keystroke is worse than one that
+// disappears near the right edge.
+func appendGhost(text, tail string, width int, style lipgloss.Style) string {
+	if tail == "" {
+		return text
+	}
+	avail := width - CellWidth(text)
+	if avail < 1 {
+		return text
+	}
+	tail = TruncateToWidth(tail, avail)
+	if tail == "" {
+		return text
+	}
+	return text + style.Render(tail)
 }
 
 // composerRuleStyle resolves the frame colour for the two lines around the

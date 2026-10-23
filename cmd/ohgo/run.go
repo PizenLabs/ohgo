@@ -21,6 +21,7 @@ import (
 	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/config"
 	"github.com/PizenLabs/ohgo/exec"
+	"github.com/PizenLabs/ohgo/internal/history"
 	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/prompt"
 	"github.com/PizenLabs/ohgo/security"
@@ -1764,7 +1765,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		if opts.reasoning {
 			initialEffort = opts.effort
 		}
-		programOpts := []tui.ProgramOption{tui.WithVersion(version), tui.WithEffort(initialEffort)}
+		programOpts := []tui.ProgramOption{tui.WithVersion(version), tui.WithEffort(initialEffort), tui.WithPromptHistory(history.Load(opts.root))}
 		// Precedence: flag, then settings, then the environment default. The
 		// environment matters because the wheel reaches the program by
 		// different routes in different terminals, and a multiplexer that does
@@ -2098,7 +2099,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	if opts.reasoning {
 		initialEffort = opts.effort
 	}
-	programOpts := []tui.ProgramOption{tui.WithVersion(version), tui.WithEffort(initialEffort)}
+	programOpts := []tui.ProgramOption{tui.WithVersion(version), tui.WithEffort(initialEffort), tui.WithPromptHistory(history.Load(opts.root))}
 	mouse := opts.settings.Mouse
 	if flag := flagValue(cmd, "mouse"); flag != "" {
 		mouse = flag
