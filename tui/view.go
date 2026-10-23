@@ -309,6 +309,16 @@ func composerHintsFor(state State) string {
 		return "↑↓ navigate · enter/tab accept · esc dismiss"
 	}
 	if state.Status.Busy {
+		// Busy keeps the live telemetry visible alongside the queue/cancel
+		// keys: hiding ↑/↓/% until the turn ends is what left the
+		// statusline stale for the whole streaming phase. The telemetry
+		// already includes the in-flight output estimate (see
+		// liveSessionOut/livePercent), so it updates on every AssistantDelta
+		// without an extra event per chunk. The session marker still yields
+		// while busy (see busyTelemetry), so the row never duplicates it.
+		if telemetry := busyTelemetry(state); telemetry != "" {
+			return telemetry + " · " + ComposerHints(true)
+		}
 		return ComposerHints(true)
 	}
 	left, right := idleHintZones(state)
@@ -339,6 +349,17 @@ func composerHintBar(state State, width int) string {
 		return hint
 	}
 	if state.Status.Busy {
+		// Same live-telemetry contract as composerHintsFor, split into zones
+		// when a width is known so the busy keys pin right and the measured
+		// tokens survive narrowing. Truncation keeps the token-first head.
+		// The session marker still yields while busy (busyTelemetry).
+		if telemetry := busyTelemetry(state); telemetry != "" {
+			busy := ComposerHints(true)
+			if width <= 0 {
+				return telemetry + " · " + busy
+			}
+			return sessionBarRow(telemetry, busy, width)
+		}
 		if width > 0 {
 			return TruncateToWidth(ComposerHints(true), width)
 		}
@@ -1953,8 +1974,9 @@ func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout L
 }
 
 // renderStatus draws the contextual footer: working directory, session,
-// context budget, and measured usage. It serves modal chrome (overlays,
-// approvals) and the setup wizard; the main idle canvas leaves this row out
+// branch plus compact worktree state, context budget, and measured usage.
+// It serves modal chrome (overlays, approvals) and the setup wizard; the
+// main idle canvas leaves this row out
 // (header, composer prefix, and hint bar already own every fact it would
 // repeat) and gives the row to the transcript instead.
 //
@@ -1973,21 +1995,21 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 	// accounting: untrusted for layout purposes, sanitized inline so the
 	// footer stays exactly one row (it is truncated, never wrapped).
 	if layout.ShowDetail {
-		if pct := status.Percent(); pct >= 0 {
+		if pct := livePercent(state); pct >= 0 {
 			parts = append(parts, fmt.Sprintf("context %d%%", pct))
 		}
 		if status.Session != "" {
 			parts = append(parts, status.Session)
 		}
-		if status.Cwd != "" {
-			parts = append(parts, shortenCwd(sanitizeInline(status.Cwd), 24))
+		if path := sessionPathBranchWidth(state, 24); path != "" {
+			parts = append(parts, path)
 		}
 		if status.UsageText != "" {
 			parts = append(parts, sanitizeInline(status.UsageText))
 		}
 	} else {
-		if status.Cwd != "" {
-			parts = append(parts, shortenCwd(sanitizeInline(status.Cwd), 16))
+		if path := sessionPathBranchWidth(state, 16); path != "" {
+			parts = append(parts, path)
 		}
 		if status.Session != "" {
 			parts = append(parts, status.Session)

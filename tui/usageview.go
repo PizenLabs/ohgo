@@ -262,7 +262,7 @@ func (p *Program) usageView() UsageView {
 		view.HasUsage = turns > 0
 		view.CostKnown = p.usage.CostKnown()
 		view.TotalCost = p.usage.Cost()
-		view.SessionCost = p.usage.CostOf(p.state.SessionIn, p.state.SessionOut, 0, 0)
+		view.SessionCost = p.usage.CostOf(p.state.SessionIn, liveSessionOut(p.state), 0, 0)
 		if last, ok := p.usage.Last(); ok {
 			view.LastRequest = last
 		}
