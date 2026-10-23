@@ -116,12 +116,13 @@ func contextAuditEnabled() bool {
 // It is the one mapping used by `ohgo run` and the plain REPL. It never
 // reimplements completion: every semantic decision is delegated to
 // agent.EvaluateTaskCompletion or agent.EvaluateBudgetCompletion.
-func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, deadlineExpired bool) runOutcome {
+func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, deadlineExpired bool, evidenceReview string) runOutcome {
 	input := agent.CompletionInput{
-		Turns:    turns,
-		Contract: intent,
-		Snapshot: snapshot,
-		Resolver: resolver,
+		Turns:          turns,
+		Contract:       intent,
+		Snapshot:       snapshot,
+		Resolver:       resolver,
+		EvidenceReview: evidenceReview,
 	}
 
 	switch {
@@ -192,6 +193,17 @@ func refuseHeadless(out io.Writer, route workspace.Route) runOutcome {
 // ignores them. The function does not create a durable task: the stateless
 // modes are explicitly non-durable and say so in their output.
 func runHeadlessTurn(ctx context.Context, loop *agent.Loop, root string, out io.Writer, text string, history []agent.Message) (runOutcome, []agent.Turn) {
+	return runHeadlessTurnAs(ctx, loop, root, out, text, history, "")
+}
+
+// runHeadlessTurnAs is runHeadlessTurn with the effective turn authority
+// supplied by the router.
+//
+// The shape's authority must describe the authority the security gate is
+// actually enforcing. Deriving it from the completion kind alone is wrong for
+// an investigative turn delegated to FUZZ, and a state block that names BUILD
+// while the gate is FUZZ is a false observation.
+func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out io.Writer, text string, history []agent.Message, authority string) (runOutcome, []agent.Turn) {
 	intent := workspace.BuildIntentContract(text)
 	resolver := structuralResolver(loop.Tools())
 
@@ -204,9 +216,14 @@ func runHeadlessTurn(ctx context.Context, loop *agent.Loop, root string, out io.
 	// the TUI, but the evidence lives for this run only: a one-shot command is
 	// explicitly non-durable and must not pretend to resume knowledge it did
 	// not persist.
-	authority := "build"
-	if intent.Kind == contract.ObjectiveInformational {
-		authority = "ask"
+	authority = strings.ToLower(strings.TrimSpace(authority))
+	switch authority {
+	case "ask", "build", "fuzz":
+	default:
+		authority = "build"
+		if intent.Kind == contract.ObjectiveInformational {
+			authority = "ask"
+		}
 	}
 	facts := cognition.ProbeFacts(root)
 	shape := cognition.BuildShape(intent, cognition.ShapeParams{
@@ -217,13 +234,15 @@ func runHeadlessTurn(ctx context.Context, loop *agent.Loop, root string, out io.
 	})
 	projector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
 	loop.SetProjectionHook(projector.Project)
-	if contextAuditEnabled() {
-		loop.SetProjectionReportHook(func(report agent.ProjectionReport) {
+	var lastReport agent.ProjectionReport
+	haveReport := false
+	loop.SetProjectionReportHook(func(report agent.ProjectionReport) {
+		lastReport = report
+		haveReport = true
+		if contextAuditEnabled() {
 			_, _ = fmt.Fprintln(os.Stderr, "[ohgo context]\n"+cognition.RenderAudit(report))
-		})
-	} else {
-		loop.SetProjectionReportHook(nil)
-	}
+		}
+	})
 	defer loop.SetProjectionHook(nil)
 	defer loop.SetProjectionReportHook(nil)
 
@@ -238,7 +257,11 @@ func runHeadlessTurn(ctx context.Context, loop *agent.Loop, root string, out io.
 
 	deadline := loop.Deadline()
 	deadlineExpired := !deadline.IsZero() && !time.Now().Before(deadline)
-	outcome := projectRun(err, turns, intent, snapshot, resolver, deadlineExpired)
+	review := ""
+	if haveReport {
+		review = lastReport.EvidenceReview()
+	}
+	outcome := projectRun(err, turns, intent, snapshot, resolver, deadlineExpired, review)
 	if out != nil {
 		_, _ = fmt.Fprintln(out, outcome.line())
 	}

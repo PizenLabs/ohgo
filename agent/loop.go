@@ -62,6 +62,19 @@ type ToolOutcome struct {
 	Authorization *security.Decision
 }
 
+// Refused reports whether the runtime refused the call before execution.
+//
+// A refusal is a control decision, not a failed action: no tool ran and no
+// evidence was produced. Completion and sufficiency must not treat it as a
+// pending execution failure, or a model that adapts after a denied call would
+// be punished for the runtime's refusal.
+func (o ToolOutcome) Refused() bool {
+	if o.Result.CandidateRejected {
+		return true
+	}
+	return o.Authorization != nil && o.Authorization.Outcome == security.OutcomeDeny
+}
+
 // Config configures a Loop.
 type Config struct {
 	// Model is the model to call. Use ModelFn for a dynamically resolved model.
@@ -523,22 +536,23 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 			// projector cannot create a capability the loop was not built
 			// with, even if it returns a fabricated Tool value.
 			filtered, removed := intersectTools(tools, activeTools)
+			// Always use the resolved set, even when nothing was removed: a
+			// projector may have supplied a different value under a known
+			// name, and the loop must execute its own capability instance.
+			activeTools = filtered
 			if removed > 0 {
-				activeTools = filtered
 				report.Reason = joinReason(report.Reason,
 					fmt.Sprintf("projection proposed %d tool(s) outside the loop's tool set; ignored", removed))
 			}
 			// The loop owns the final request shape, so it fills the audit
-			// fields a projector cannot know (or forgot): the offered names
-			// and the actual message count after any fallback.
-			if len(report.ToolNames) == 0 {
-				for _, tool := range activeTools {
-					report.ToolNames = append(report.ToolNames, tool.Name())
-				}
+			// fields from the request it will actually send. A projector may
+			// describe its intent, but the offered names and message count must
+			// reflect the post-intersection reality or the audit would lie.
+			report.ToolNames = report.ToolNames[:0]
+			for _, tool := range activeTools {
+				report.ToolNames = append(report.ToolNames, tool.Name())
 			}
-			if report.Messages == 0 {
-				report.Messages = len(requestMessages)
-			}
+			report.Messages = len(requestMessages)
 			if l.cfg.OnProjection != nil {
 				l.cfg.OnProjection(report)
 			}
@@ -1142,11 +1156,27 @@ func (l *Loop) authorize(call ai.ToolCall, tool Tool) (security.Decision, string
 		return decision, refusalText("authorization denied", decision), false
 	case security.OutcomeApprove:
 		if _, ok := l.cfg.Authorize.Approve(call, decision); !ok {
-			return decision, refusalText("approval rejected", decision), false
+			// A human refusal is a denial, not a failed execution. Recording
+			// it as DENY keeps completion from treating the refusal as an
+			// outstanding tool failure while leaving the audit truthful.
+			denied := decision
+			denied.Outcome = security.OutcomeDeny
+			denied.Rule = "approval_rejected"
+			denied.Reason = "the operation was not approved"
+			return denied, refusalText("approval rejected", decision), false
 		}
 		confirmed := l.cfg.Authorize.Evaluate(call, tool)
 		if confirmed.Outcome != security.OutcomeAuto {
-			return confirmed, refusalText("authorization changed after approval", confirmed), false
+			// The operation no longer matches what was approved. It is still
+			// a refusal rather than an execution failure, so mark it DENY for
+			// completion's benefit while preserving the policy rule.
+			denied := confirmed
+			if denied.Outcome == security.OutcomeApprove {
+				denied.Outcome = security.OutcomeDeny
+				denied.Rule = "approval_not_confirmed"
+				denied.Reason = "the approved operation could not be confirmed"
+			}
+			return denied, refusalText("authorization changed after approval", confirmed), false
 		}
 		return confirmed, "", true
 	default:
@@ -1185,18 +1215,25 @@ func copyMessages(messages []Message) []Message {
 // projection may remove a tool; returning a tool the loop was not built with is
 // a projector bug and must not become a capability.
 func intersectTools(constructed, proposed []Tool) ([]Tool, int) {
-	known := make(map[string]bool, len(constructed))
+	// Resolve by name to the loop's own instance. A projector is trusted
+	// runtime code, but the loop still owns the capability boundary: a
+	// projected value that reuses a known name must not replace the tool the
+	// authorizer and executor were built around.
+	byName := make(map[string]Tool, len(constructed))
 	for _, tool := range constructed {
-		known[tool.Name()] = true
+		byName[tool.Name()] = tool
 	}
 	out := make([]Tool, 0, len(proposed))
+	seen := make(map[string]bool, len(proposed))
 	removed := 0
 	for _, tool := range proposed {
-		if !known[tool.Name()] {
+		built, known := byName[tool.Name()]
+		if !known || seen[tool.Name()] {
 			removed++
 			continue
 		}
-		out = append(out, tool)
+		seen[tool.Name()] = true
+		out = append(out, built)
 	}
 	return out, removed
 }

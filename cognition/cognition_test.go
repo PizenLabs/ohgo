@@ -9,6 +9,7 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/security"
 )
 
 func readContract(objective string) contract.IntentContract {
@@ -99,6 +100,103 @@ func TestBuildShapeKeepsExternalKnowledgeExplicit(t *testing.T) {
 	}
 }
 
+func TestBuildShapeHonorsExplicitNoMutationAndNoExternal(t *testing.T) {
+	c := contract.IntentContract{
+		Objective: "Write README.md using the docs at https://example.test/docs. Do not modify anything and do not use the web.",
+		Kind:      contract.ObjectiveMutation,
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "README.md"}},
+	}
+	shape := BuildShape(c, ShapeParams{Authority: "build"})
+	if shape.Mutation.Allowed {
+		t.Fatal("an explicit no-mutation constraint must not leave mutation allowed")
+	}
+	if shape.Authority.MutationAllowed {
+		t.Fatal("an explicit no-mutation constraint must not leave mutation permitted")
+	}
+	if shape.External.Required {
+		t.Fatal("an explicit no-external constraint must leave external knowledge disabled")
+	}
+}
+
+func TestInformationalContentQuestionNeedsAFileRead(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Objective: "Read index.html and explain what it does.",
+		Kind:      contract.ObjectiveInformational,
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "index.html"}},
+	}, ShapeParams{Authority: "ask"})
+	var contentKey bool
+	for _, need := range shape.RequiredKnowledge {
+		if need.Key == "target_content:index.html" {
+			contentKey = true
+		}
+	}
+	if !contentKey {
+		t.Fatalf("required knowledge = %#v, want target_content:index.html", shape.RequiredKnowledge)
+	}
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "."},
+		Result: agent.Result{Text: "index.html\nstyle.css", Details: map[string]any{"path": ".", "entries": 2}},
+	})
+	if state.Satisfied("target_content:index.html", ExecutionState{}) {
+		t.Fatal("a directory listing satisfied a target's content requirement")
+	}
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-1", ToolName: "read", Args: map[string]any{"path": "index.html"},
+		Result: agent.Result{Text: "1\t<!doctype html>", Details: map[string]any{"path": "index.html", "totalLines": 1, "offset": 1, "limit": 2000}},
+	})
+	if !state.Satisfied("target_content:index.html", ExecutionState{}) {
+		t.Fatal("a file read did not satisfy a target's content requirement")
+	}
+}
+
+func TestStructuralQuerySatisfiesCoordinatesForANamedPath(t *testing.T) {
+	// A symbols query that names the exact path is coordinate evidence for a
+	// package/declaration question; it is not a file read, and it must not
+	// satisfy a content question about an unrelated path.
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "symbols-1", ToolName: "symbols",
+		Args: map[string]any{"symbol": "tui"},
+		Result: agent.Result{
+			Text: "status: ok",
+			Details: map[string]any{
+				"coordinates": []map[string]any{{
+					"path": "tui/approval.go", "symbol": "tui", "kind": "package",
+					"start_line": 1, "end_line": 1,
+				}},
+			},
+		},
+	})
+	if !state.Satisfied("target_state:tui/approval.go", ExecutionState{}) {
+		t.Fatal("a symbols result did not establish target state for the named path")
+	}
+	if !state.Satisfied("target_content:tui/approval.go", ExecutionState{}) {
+		t.Fatal("a symbols result did not satisfy coordinate content for the named path")
+	}
+	if state.Satisfied("target_content:index.html", ExecutionState{}) {
+		t.Fatal("a symbols result for one path satisfied content for another")
+	}
+}
+
+func TestRepositoryOverviewRequiresContentEvidence(t *testing.T) {
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "."},
+		Result: agent.Result{Text: "index.html\nstyle.css", Details: map[string]any{"path": ".", "entries": 2}},
+	})
+	if state.Satisfied("repository_overview", ExecutionState{}) {
+		t.Fatal("a directory listing alone satisfied a repository overview")
+	}
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-1", ToolName: "read", Args: map[string]any{"path": "index.html"},
+		Result: agent.Result{Text: "1\t<!doctype html>", Details: map[string]any{"path": "index.html", "totalLines": 1, "offset": 1, "limit": 2000}},
+	})
+	if !state.Satisfied("repository_overview", ExecutionState{}) {
+		t.Fatal("a file read did not satisfy a repository overview")
+	}
+}
+
 func TestEvidenceRecordsMissingTargetAndDiagnostic(t *testing.T) {
 	state := NewEvidenceState()
 	shape := BuildShape(readContract("Write README.md."), ShapeParams{Authority: "build"})
@@ -142,6 +240,30 @@ func TestEvidenceMarksConflictingReadsWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestEvidenceDifferentReadWindowsAreNotAConflict(t *testing.T) {
+	// Paging through a large file is one investigation, not two disagreeing
+	// observations. Only the same source range may conflict.
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-1", ToolName: "read", Args: map[string]any{"path": "large.go"},
+		Result: agent.Result{Text: "1\tpackage large", Details: map[string]any{"path": "large.go", "totalLines": 100, "offset": 1, "limit": 10}},
+	})
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-2", ToolName: "read", Args: map[string]any{"path": "large.go"},
+		Result: agent.Result{Text: "51\tfunc later() {}", Details: map[string]any{"path": "large.go", "totalLines": 100, "offset": 51, "limit": 10}},
+	})
+	item, ok := state.Find("file:large.go")
+	if !ok {
+		t.Fatal("file evidence missing")
+	}
+	if item.Status == StatusConflicting {
+		t.Fatalf("different windows were marked conflicting: %#v", item)
+	}
+	if len(state.Conflicts()) != 0 {
+		t.Fatalf("conflicts = %#v", state.Conflicts())
+	}
+}
+
 func TestEvidenceAcceptsDifferentReadAfterRecordedMutation(t *testing.T) {
 	state := NewEvidenceState()
 	state.ObserveOutcome(agent.ToolOutcome{
@@ -159,6 +281,22 @@ func TestEvidenceAcceptsDifferentReadAfterRecordedMutation(t *testing.T) {
 	item, _ := state.Find("file:README.md")
 	if item.Status != StatusKnown {
 		t.Fatalf("status = %s, want KNOWN after a recorded mutation", item.Status)
+	}
+}
+
+func TestEvidenceIgnoresRefusedCalls(t *testing.T) {
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "write-1", ToolName: "write",
+		Args:   map[string]any{"path": "README.md"},
+		Result: agent.Result{Text: "authorization denied", IsError: true},
+		Authorization: &security.Decision{
+			Outcome: security.OutcomeDeny,
+			Rule:    "capability_not_permitted",
+		},
+	})
+	if len(state.Items) != 0 {
+		t.Fatalf("a denied call produced evidence: %#v", state.Items)
 	}
 }
 
@@ -226,6 +364,48 @@ func TestProjectionElidesStructuralResultsAndKeepsRecentExact(t *testing.T) {
 	}
 	if len(report.Elisions) != 1 {
 		t.Fatalf("elisions = %d, want 1", len(report.Elisions))
+	}
+}
+
+func TestProjectionEnforcesExactWorkingSetBudget(t *testing.T) {
+	// The budget is a contract, not a hint. Previously an old exact result
+	// smaller than ExactKeepBytes bypassed the working-set budget and every
+	// page of a large file stayed verbatim.
+	state := NewEvidenceState()
+	messages := []agent.Message{agent.UserMessage{Text: "read several files"}}
+	for i := 0; i < 5; i++ {
+		path := "file" + itoa(i) + ".go"
+		text := strings.Repeat("x", 2048)
+		state.ObserveOutcome(agent.ToolOutcome{
+			CallID: "read-" + itoa(i), ToolName: "read", Args: map[string]any{"path": path},
+			Result: agent.Result{Text: text, Details: map[string]any{"path": path, "totalLines": 1, "offset": 1, "limit": 2000}},
+		})
+		messages = append(messages, agent.ToolResultMessage{
+			ToolCallID: "read-" + itoa(i), ToolName: "read",
+			Content: []ai.ContentBlock{ai.TextContent{Text: text}},
+		})
+	}
+	options := ProjectorOptions{
+		KeepRecentToolResults: 1,
+		ExactKeepBytes:        4096,
+		ToolResultBudgetBytes: 4096,
+	}
+	projected, report := projectMessages(messages, state, options)
+	exactBytes := 0
+	for _, message := range projected {
+		result, ok := message.(agent.ToolResultMessage)
+		if !ok {
+			continue
+		}
+		if !strings.Contains(result.Text(), "summarized from runtime evidence") {
+			exactBytes += len(result.Text())
+		}
+	}
+	if exactBytes > options.ToolResultBudgetBytes {
+		t.Fatalf("exact tool-result bytes = %d, over budget %d", exactBytes, options.ToolResultBudgetBytes)
+	}
+	if len(report.Elisions) == 0 {
+		t.Fatal("old exact results were not summarized")
 	}
 }
 
@@ -335,6 +515,52 @@ func TestSufficiencyRequiresVerificationAfterMutation(t *testing.T) {
 	}
 }
 
+func TestSufficiencyBlocksMutationTheShapeDidNotPermit(t *testing.T) {
+	// A read-only task whose run changed the repository is blocked even when
+	// the workspace authority allowed the call. The shape describes the
+	// objective, and the projection must not keep exploring as if nothing
+	// happened.
+	shape := BuildShape(contract.IntentContract{
+		Objective: "Explain the project.",
+		Kind:      contract.ObjectiveInformational,
+	}, ShapeParams{Authority: "ask"})
+	evidence := NewEvidenceState()
+	execution := ExecutionState{Mutated: true, MutatedPaths: []string{"extra.txt"}}
+	suff := EvaluateSufficiency(shape, evidence, execution, false)
+	if suff.State != Blocked || suff.Stage != StageBlocked {
+		t.Fatalf("sufficiency = %s/%s, want BLOCKED/blocked", suff.State, suff.Stage)
+	}
+	if len(suff.Reasons) == 0 {
+		t.Fatal("a blocked verdict must explain the observed mutation")
+	}
+}
+
+func TestRenderStateKeepsContractWhenEvidenceIsTruncated(t *testing.T) {
+	shape := BuildShape(readContract("Write README.md."), ShapeParams{Authority: "build"})
+	evidence := NewEvidenceState()
+	evidence.ensureRequirements(shape)
+	for i := 0; i < 40; i++ {
+		evidence.Items = append(evidence.Items, EvidenceItem{
+			ID:        "file:noise" + itoa(i) + ".go",
+			Status:    StatusKnown,
+			Retention: RetentionExact,
+			Summary:   strings.Repeat("noise ", 40),
+			Seq:       i + 1,
+		})
+	}
+	execution := ExecutionState{ToolCalls: 5}
+	suff := EvaluateSufficiency(shape, evidence, execution, false)
+	text := RenderState(shape, evidence, execution, suff, CandidateSet{}, 700, 40)
+	for _, want := range []string{"Mutation scope", "Verification", "Completion", "Sufficiency", "Available actions"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("state block lost %q under truncation:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(text, "runtime state truncated") {
+		t.Fatalf("expected evidence truncation marker:\n%s", text)
+	}
+}
+
 func TestRenderStateBoundsAndMarksExternalEvidence(t *testing.T) {
 	shape := BuildShape(readContract("Write README.md."), ShapeParams{Authority: "build"})
 	evidence := NewEvidenceState()
@@ -394,6 +620,31 @@ func TestEvidenceObservationIsIdempotentPerCall(t *testing.T) {
 	}
 }
 
+func TestSummarizeExecutionIgnoresRefusedCalls(t *testing.T) {
+	// A denied action is a control decision, not evidence that the run failed.
+	// Otherwise a read-only task that tried one forbidden call would look
+	// permanently unrecoverable even after it answered correctly.
+	turns := []agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID:   "write-1",
+		ToolName: "write",
+		Result:   agent.Result{Text: "authorization denied", IsError: true},
+		Authorization: &security.Decision{
+			Outcome: security.OutcomeDeny,
+			Rule:    "capability_not_permitted",
+		},
+	}}}}
+	execution := SummarizeExecution(turns)
+	if execution.FailedActions != 0 {
+		t.Fatalf("failed actions = %d, want 0 for a refused call", execution.FailedActions)
+	}
+	if len(execution.PendingFailures) != 0 {
+		t.Fatalf("pending failures = %#v, want none", execution.PendingFailures)
+	}
+	if execution.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d, want the refused attempt counted", execution.ToolCalls)
+	}
+}
+
 func TestSummarizeExecutionRequiresVerificationAfterExecution(t *testing.T) {
 	turns := []agent.Turn{{Results: []agent.ToolOutcome{
 		{CallID: "bash-1", ToolName: "bash", Result: agent.Result{Text: "ok", Executes: true, Finished: true}},
@@ -440,6 +691,29 @@ func TestCandidatesBlockMutationButKeepVerification(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "read,bash" {
 		t.Fatalf("blocked candidates = %v, want read,bash", names)
+	}
+}
+
+func TestProjectorSeparatesBudgetFromEvidenceSufficiency(t *testing.T) {
+	// A spent grant withholds tools, but it is not an evidence conflict that
+	// should veto a completion already proven by the run.
+	shape := BuildShape(contract.IntentContract{
+		Objective: "Explain this.",
+		Kind:      contract.ObjectiveInformational,
+	}, ShapeParams{Authority: "ask"})
+	shape.Budget = BudgetShape{MaxTurns: 1, TurnsUsed: 1}
+	projector := NewProjector(shape, NewEvidenceState(), RepositoryFacts{})
+	result := projector.Project(agent.ProjectionRequest{
+		Tools: []agent.Tool{testTool{name: "read", tier: agent.TierRead}},
+	})
+	if result.Report.Sufficiency == string(Blocked) {
+		t.Fatalf("budget exhaustion was reported as evidence BLOCKED: %#v", result.Report)
+	}
+	if len(result.Tools) != 0 {
+		t.Fatalf("an exhausted grant offered tools: %#v", result.Tools)
+	}
+	if len(result.Report.Excluded) == 0 || !strings.Contains(result.Report.Excluded[0].Reason, "grant is exhausted") {
+		t.Fatalf("exhausted grant was not explained: %#v", result.Report.Excluded)
 	}
 }
 

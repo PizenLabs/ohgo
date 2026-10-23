@@ -6,6 +6,8 @@
 *.test
 *.out
 coverage.*
+__pycache__/
+*.pyc
 
 # Local env
 .env

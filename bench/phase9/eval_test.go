@@ -51,6 +51,41 @@ func TestPhase9Matrix(t *testing.T) {
 	}
 }
 
+func TestPhase10Matrix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("phase10 matrix runs real tool and go build checks")
+	}
+	for _, sc := range phase10Matrix() {
+		sc := sc
+		t.Run(sc.ID, func(t *testing.T) {
+			baseline, err := runScenario(context.Background(), sc, "off")
+			if err != nil {
+				t.Fatalf("baseline: %v", err)
+			}
+			if !expectationMet(sc.Expect, baseline) {
+				t.Fatalf("baseline outcome = %s (%s), unexpected=%v",
+					baseline.ObjectiveStatus, baseline.CompletionReason, baseline.Unexpected)
+			}
+			projected, err := runScenario(context.Background(), sc, "state")
+			if err != nil {
+				t.Fatalf("projected: %v", err)
+			}
+			if !expectationMet(sc.Expect, projected) {
+				t.Fatalf("projected outcome = %s (%s), unexpected=%v",
+					projected.ObjectiveStatus, projected.CompletionReason, projected.Unexpected)
+			}
+			if projected.InputTokens >= baseline.InputTokens {
+				t.Fatalf("projection increased input tokens: %d -> %d",
+					baseline.InputTokens, projected.InputTokens)
+			}
+			if projected.ToolSchemaBytes > baseline.ToolSchemaBytes {
+				t.Fatalf("projection increased tool schema bytes: %d -> %d",
+					baseline.ToolSchemaBytes, projected.ToolSchemaBytes)
+			}
+		})
+	}
+}
+
 func TestPhase9StopsExplorationAfterProof(t *testing.T) {
 	if testing.Short() {
 		t.Skip("phase9 proof stop runs a real go build")

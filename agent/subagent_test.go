@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/jsonschema"
 )
 
@@ -224,6 +225,47 @@ func TestRunSubagentRefusesAWriteToolUnderAReadOnlyRequest(t *testing.T) {
 // If the child saw the parent's history it would inherit a conversation about a
 // different problem, and its answers would be coloured by context the parent
 // never intended it to see. The request must carry exactly one user message.
+func TestRunSubagentHonorsCompletionReview(t *testing.T) {
+	stream := func(ctx context.Context, req ai.Request) (*ai.Stream, error) {
+		return ai.NewCompletedStream(ai.AssistantMessage{
+			Content:    []ai.ContentBlock{ai.TextContent{Text: "It is a Go project."}},
+			StopReason: ai.StopEndTurn,
+		}), nil
+	}
+	parent := Config{
+		Model:  ai.Model{ID: "m", Provider: "p"},
+		Stream: stream,
+		Tools:  []Tool{namedTool("read")},
+	}
+	result, err := RunSubagent(context.Background(), parent, SubagentSpec{
+		Task:             "Explain this project.",
+		System:           []ai.SystemPromptBlock{{Text: "you are a subagent"}},
+		Tools:            []Tool{namedTool("read")},
+		Contract:         &contract.IntentContract{Objective: "Explain this project.", Kind: contract.ObjectiveInformational},
+		CompletionReview: func() string { return "runtime evidence was not sufficient (INSUFFICIENT)" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Completion.Complete() {
+		t.Fatal("a child answer with an insufficient completion review was reported complete")
+	}
+	// The legacy no-contract path must also honor the review; a read-only
+	// subagent without a captured contract still must not complete a guess.
+	result, err = RunSubagent(context.Background(), parent, SubagentSpec{
+		Task:             "Explain this project.",
+		System:           []ai.SystemPromptBlock{{Text: "you are a subagent"}},
+		Tools:            []Tool{namedTool("read")},
+		CompletionReview: func() string { return "runtime evidence was not sufficient (INSUFFICIENT)" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Completion.Complete() {
+		t.Fatal("a no-contract child ignored the completion review")
+	}
+}
+
 func TestRunSubagentStartsWithOnlyTheTask(t *testing.T) {
 	var gotMessages []ai.Message
 	var gotSystem []ai.SystemPromptBlock

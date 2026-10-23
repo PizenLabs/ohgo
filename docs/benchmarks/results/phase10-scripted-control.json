@@ -1,0 +1,5186 @@
+[
+  {
+    "scenario": "A-pure-read",
+    "prompt": "Check this project and explain what it does. Do not modify anything.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "73fee061fbcad0c88a24e249c2bad839ee215ad1c88521696c2c30fea5a45872",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:32.863378Z",
+    "finished_at": "2026-10-23T05:10:32.8676Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11751,
+        "system_bytes": 1738,
+        "message_bytes": 68,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3094,
+        "repeated_bytes": 0,
+        "new_bytes": 11751,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11919,
+        "system_bytes": 1738,
+        "message_bytes": 236,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3143,
+        "repeated_bytes": 11751,
+        "new_bytes": 168,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12055,
+        "system_bytes": 1738,
+        "message_bytes": 372,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3184,
+        "repeated_bytes": 11919,
+        "new_bytes": 136,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 12879,
+        "system_bytes": 1738,
+        "message_bytes": 1196,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3397,
+        "repeated_bytes": 12055,
+        "new_bytes": 824,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 13890,
+        "system_bytes": 1738,
+        "message_bytes": 2207,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3657,
+        "repeated_bytes": 12879,
+        "new_bytes": 1011,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 6,
+        "total_bytes": 15266,
+        "system_bytes": 1738,
+        "message_bytes": 3583,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4008,
+        "repeated_bytes": 13890,
+        "new_bytes": 1376,
+        "messages": 11,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 7,
+        "total_bytes": 15693,
+        "system_bytes": 1738,
+        "message_bytes": 4010,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4121,
+        "repeated_bytes": 15266,
+        "new_bytes": 427,
+        "messages": 13,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 7,
+    "request_count": 7,
+    "tool_call_count": 6,
+    "successful_tool_calls": 5,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "index.html",
+      "script.js",
+      "style.css",
+      "tui/approval.go"
+    ],
+    "bytes_read": 3483,
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 24604,
+    "estimated_output_tokens": 933,
+    "raw_tool_output_bytes": 3723,
+    "context_bytes": 23838,
+    "tool_schema_bytes": 69615,
+    "repeated_context_bytes": 77760,
+    "new_context_bytes": 15693,
+    "first_request_bytes": 11751,
+    "last_request_bytes": 15693,
+    "wall_millis": 0,
+    "objective_status": "COMPLETED",
+    "verification_status": "not_applicable",
+    "completion_reason": "",
+    "mutated": false,
+    "verified": false,
+    "final_answer": "Nimbus Notes is a static, offline-first notebook. index.html is the entry point, style.css owns the visual system, script.js owns note persistence, and tui/approval.go is a small Go component. There is no README yet.",
+    "answer_facts_matched": 5,
+    "answer_facts_expected": 5,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "is_error": true,
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-2620451168/README.md: no such file or directory"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "style.css"
+        },
+        "text": "1\t:root {\n2\t  --ink: #17202a;\n3\t  --paper: #fbfaf7;\n4\t  --accent: #2f6f8f;\n5\t  --line: #d9d4ca;\n6\t}\n7\t* { box-sizing: border-box; }\n8\tbody {\n9\t  margin: 0;\n10\t  font-family: ui-sans-serif, system-ui, sans-serif;\n11\t  color: var(--ink);\n12\t  background: var(--paper);\n13\t}\n14\t.topbar { padding: 2rem; border-bottom: 1px solid var(--line); }\n15\t.topbar h1 { margin: 0; font-size: 2rem; }\n16\t.tagline { color: #5c6670; }\n17\tmain { max-width: 48rem; margin: 0 auto; padding: 2rem; }\n18\tform { display: gr…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "script.js"
+        },
+        "text": "1\t'use strict';\n2\t\n3\tconst STORAGE_KEY = 'nimbus-notes-v1';\n4\t\n5\tfunction loadNotes() {\n6\t  try {\n7\t    const raw = localStorage.getItem(STORAGE_KEY);\n8\t    return raw ? JSON.parse(raw) : [];\n9\t  } catch (error) {\n10\t    console.warn('could not read notes', error);\n11\t    return [];\n12\t  }\n13\t}\n14\t\n15\tfunction saveNotes(notes) {\n16\t  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));\n17\t}\n18\t\n19\tfunction render() {\n20\t  const notes = loadNotes();\n21\t  const list = document.getElementById(…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "tui/approval.go"
+        },
+        "text": "1\tpackage tui\n2\t\n3\timport \"fmt\"\n4\t\n5\t// Approval is the UI projection of one authorization decision.\n6\ttype Approval struct {\n7\t\tTool    string\n8\t\tReason  string\n9\t\tPreview string\n10\t}\n11\t\n12\t// Describe renders the decision for a human.\n13\tfunc (a Approval) Describe() string {\n14\t\tif a.Reason == \"\" {\n15\t\t\treturn a.Tool\n16\t\t}\n17\t\treturn fmt.Sprintf(\"%s (%s)\", a.Tool, a.Reason)\n18\t}"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "B-read-build",
+    "prompt": "Check this project and write README.md.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "783aa02ac570b2a65fdb563835007bb9f7a887029e28e8f42a7cdc00355f3d56",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:32.867612Z",
+    "finished_at": "2026-10-23T05:10:32.871401Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11722,
+        "system_bytes": 1738,
+        "message_bytes": 39,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3087,
+        "repeated_bytes": 0,
+        "new_bytes": 11722,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11890,
+        "system_bytes": 1738,
+        "message_bytes": 207,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3136,
+        "repeated_bytes": 11722,
+        "new_bytes": 168,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12026,
+        "system_bytes": 1738,
+        "message_bytes": 343,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3177,
+        "repeated_bytes": 11890,
+        "new_bytes": 136,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 12850,
+        "system_bytes": 1738,
+        "message_bytes": 1167,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3390,
+        "repeated_bytes": 12026,
+        "new_bytes": 824,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 13861,
+        "system_bytes": 1738,
+        "message_bytes": 2178,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3650,
+        "repeated_bytes": 12850,
+        "new_bytes": 1011,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 6,
+        "total_bytes": 15237,
+        "system_bytes": 1738,
+        "message_bytes": 3554,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4001,
+        "repeated_bytes": 13861,
+        "new_bytes": 1376,
+        "messages": 11,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 7,
+        "total_bytes": 15664,
+        "system_bytes": 1738,
+        "message_bytes": 3981,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4114,
+        "repeated_bytes": 15237,
+        "new_bytes": 427,
+        "messages": 13,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 8,
+        "total_bytes": 16488,
+        "system_bytes": 1738,
+        "message_bytes": 4805,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4327,
+        "repeated_bytes": 15664,
+        "new_bytes": 824,
+        "messages": 15,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 9,
+        "total_bytes": 17303,
+        "system_bytes": 1738,
+        "message_bytes": 5620,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4538,
+        "repeated_bytes": 16488,
+        "new_bytes": 815,
+        "messages": 17,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 10,
+        "total_bytes": 17459,
+        "system_bytes": 1738,
+        "message_bytes": 5776,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4584,
+        "repeated_bytes": 17303,
+        "new_bytes": 156,
+        "messages": 19,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 10,
+    "request_count": 10,
+    "tool_call_count": 9,
+    "successful_tool_calls": 8,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "README.md",
+      "index.html",
+      "script.js",
+      "style.css",
+      "tui/approval.go"
+    ],
+    "bytes_read": 4261,
+    "files_written": [
+      "README.md"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 38004,
+    "estimated_output_tokens": 1169,
+    "raw_tool_output_bytes": 4659,
+    "context_bytes": 45050,
+    "tool_schema_bytes": 99450,
+    "repeated_context_bytes": 127041,
+    "new_context_bytes": 17459,
+    "first_request_bytes": 11722,
+    "last_request_bytes": 17459,
+    "wall_millis": 1,
+    "objective_status": "NEEDS_REVIEW",
+    "verification_status": "not_verified",
+    "completion_reason": "the repository change or execution was not followed by a successful verification",
+    "mutated": true,
+    "verified": false,
+    "mutated_paths": [
+      "README.md"
+    ],
+    "final_answer": "Nimbus Notes is a static, offline-first notebook with a small Go terminal component. I wrote README.md and verified it by reading it back.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 2,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "is_error": true,
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-2547772898/README.md: no such file or directory"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "style.css"
+        },
+        "text": "1\t:root {\n2\t  --ink: #17202a;\n3\t  --paper: #fbfaf7;\n4\t  --accent: #2f6f8f;\n5\t  --line: #d9d4ca;\n6\t}\n7\t* { box-sizing: border-box; }\n8\tbody {\n9\t  margin: 0;\n10\t  font-family: ui-sans-serif, system-ui, sans-serif;\n11\t  color: var(--ink);\n12\t  background: var(--paper);\n13\t}\n14\t.topbar { padding: 2rem; border-bottom: 1px solid var(--line); }\n15\t.topbar h1 { margin: 0; font-size: 2rem; }\n16\t.tagline { color: #5c6670; }\n17\tmain { max-width: 48rem; margin: 0 auto; padding: 2rem; }\n18\tform { display: gr…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "script.js"
+        },
+        "text": "1\t'use strict';\n2\t\n3\tconst STORAGE_KEY = 'nimbus-notes-v1';\n4\t\n5\tfunction loadNotes() {\n6\t  try {\n7\t    const raw = localStorage.getItem(STORAGE_KEY);\n8\t    return raw ? JSON.parse(raw) : [];\n9\t  } catch (error) {\n10\t    console.warn('could not read notes', error);\n11\t    return [];\n12\t  }\n13\t}\n14\t\n15\tfunction saveNotes(notes) {\n16\t  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));\n17\t}\n18\t\n19\tfunction render() {\n20\t  const notes = loadNotes();\n21\t  const list = document.getElementById(…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "tui/approval.go"
+        },
+        "text": "1\tpackage tui\n2\t\n3\timport \"fmt\"\n4\t\n5\t// Approval is the UI projection of one authorization decision.\n6\ttype Approval struct {\n7\t\tTool    string\n8\t\tReason  string\n9\t\tPreview string\n10\t}\n11\t\n12\t// Describe renders the decision for a human.\n13\tfunc (a Approval) Describe() string {\n14\t\tif a.Reason == \"\" {\n15\t\t\treturn a.Tool\n16\t\t}\n17\t\treturn fmt.Sprintf(\"%s (%s)\", a.Tool, a.Reason)\n18\t}"
+      },
+      {
+        "tool": "write",
+        "args": {
+          "content": "# Nimbus Notes\n\nNimbus Notes is a small, offline-first notebook that runs entirely in the\nbrowser. Notes are stored in localStorage; there is no account and no server.\n\n## Structure\n\n- index.html is the application shell and entry point.\n- style.css defines the visual system.\n- script.js owns note persistence and rendering.\n- tui/approval.go is the small Go component used by the terminal tooling.\n- docs/ARCHITECTURE.md records the design in prose.\n\n## Running it\n\nOpen index.html in a browser. The Makefile contains the Go checks used by the\nterminal tooling.\n\n## Design notes\n\nThe application deliberately avoids a backend. The browser is the data store,\nso the project has no build step and no runtime dependencies.\n",
+          "path": "README.md"
+        },
+        "text": "Wrote 722 bytes to README.md."
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "text": "1\t# Nimbus Notes\n2\t\n3\tNimbus Notes is a small, offline-first notebook that runs entirely in the\n4\tbrowser. Notes are stored in localStorage; there is no account and no server.\n5\t\n6\t## Structure\n7\t\n8\t- index.html is the application shell and entry point.\n9\t- style.css defines the visual system.\n10\t- script.js owns note persistence and rendering.\n11\t- tui/approval.go is the small Go component used by the terminal tooling.\n12\t- docs/ARCHITECTURE.md records the design in prose.\n13\t\n14\t## Running it\n…"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n     722  README.md\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "C-explicit-boundary",
+    "prompt": "Check this project and write README.md. Do not modify any other file.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "1d7e1f880c5f24451bdc2f4b199ad2bdb24005371245fa7c7d6f996045976d19",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:32.871422Z",
+    "finished_at": "2026-10-23T05:10:32.875409Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11752,
+        "system_bytes": 1738,
+        "message_bytes": 69,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3095,
+        "repeated_bytes": 0,
+        "new_bytes": 11752,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11920,
+        "system_bytes": 1738,
+        "message_bytes": 237,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3144,
+        "repeated_bytes": 11752,
+        "new_bytes": 168,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12056,
+        "system_bytes": 1738,
+        "message_bytes": 373,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3185,
+        "repeated_bytes": 11920,
+        "new_bytes": 136,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 12880,
+        "system_bytes": 1738,
+        "message_bytes": 1197,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3398,
+        "repeated_bytes": 12056,
+        "new_bytes": 824,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 13891,
+        "system_bytes": 1738,
+        "message_bytes": 2208,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3658,
+        "repeated_bytes": 12880,
+        "new_bytes": 1011,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 6,
+        "total_bytes": 15267,
+        "system_bytes": 1738,
+        "message_bytes": 3584,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4009,
+        "repeated_bytes": 13891,
+        "new_bytes": 1376,
+        "messages": 11,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 7,
+        "total_bytes": 15694,
+        "system_bytes": 1738,
+        "message_bytes": 4011,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4122,
+        "repeated_bytes": 15267,
+        "new_bytes": 427,
+        "messages": 13,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 8,
+        "total_bytes": 16518,
+        "system_bytes": 1738,
+        "message_bytes": 4835,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4335,
+        "repeated_bytes": 15694,
+        "new_bytes": 824,
+        "messages": 15,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 9,
+        "total_bytes": 17333,
+        "system_bytes": 1738,
+        "message_bytes": 5650,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4546,
+        "repeated_bytes": 16518,
+        "new_bytes": 815,
+        "messages": 17,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 10,
+        "total_bytes": 17489,
+        "system_bytes": 1738,
+        "message_bytes": 5806,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4592,
+        "repeated_bytes": 17333,
+        "new_bytes": 156,
+        "messages": 19,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 10,
+    "request_count": 10,
+    "tool_call_count": 9,
+    "successful_tool_calls": 8,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "README.md",
+      "index.html",
+      "script.js",
+      "style.css",
+      "tui/approval.go"
+    ],
+    "bytes_read": 4261,
+    "files_written": [
+      "README.md"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 38084,
+    "estimated_output_tokens": 1169,
+    "raw_tool_output_bytes": 4659,
+    "context_bytes": 45350,
+    "tool_schema_bytes": 99450,
+    "repeated_context_bytes": 127311,
+    "new_context_bytes": 17489,
+    "first_request_bytes": 11752,
+    "last_request_bytes": 17489,
+    "wall_millis": 0,
+    "objective_status": "NEEDS_REVIEW",
+    "verification_status": "not_verified",
+    "completion_reason": "the repository change or execution was not followed by a successful verification",
+    "mutated": true,
+    "verified": false,
+    "mutated_paths": [
+      "README.md"
+    ],
+    "final_answer": "Nimbus Notes is a static, offline-first notebook with a small Go terminal component. I wrote README.md and verified it by reading it back.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 2,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "is_error": true,
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-3551916977/README.md: no such file or directory"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "style.css"
+        },
+        "text": "1\t:root {\n2\t  --ink: #17202a;\n3\t  --paper: #fbfaf7;\n4\t  --accent: #2f6f8f;\n5\t  --line: #d9d4ca;\n6\t}\n7\t* { box-sizing: border-box; }\n8\tbody {\n9\t  margin: 0;\n10\t  font-family: ui-sans-serif, system-ui, sans-serif;\n11\t  color: var(--ink);\n12\t  background: var(--paper);\n13\t}\n14\t.topbar { padding: 2rem; border-bottom: 1px solid var(--line); }\n15\t.topbar h1 { margin: 0; font-size: 2rem; }\n16\t.tagline { color: #5c6670; }\n17\tmain { max-width: 48rem; margin: 0 auto; padding: 2rem; }\n18\tform { display: gr…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "script.js"
+        },
+        "text": "1\t'use strict';\n2\t\n3\tconst STORAGE_KEY = 'nimbus-notes-v1';\n4\t\n5\tfunction loadNotes() {\n6\t  try {\n7\t    const raw = localStorage.getItem(STORAGE_KEY);\n8\t    return raw ? JSON.parse(raw) : [];\n9\t  } catch (error) {\n10\t    console.warn('could not read notes', error);\n11\t    return [];\n12\t  }\n13\t}\n14\t\n15\tfunction saveNotes(notes) {\n16\t  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));\n17\t}\n18\t\n19\tfunction render() {\n20\t  const notes = loadNotes();\n21\t  const list = document.getElementById(…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "tui/approval.go"
+        },
+        "text": "1\tpackage tui\n2\t\n3\timport \"fmt\"\n4\t\n5\t// Approval is the UI projection of one authorization decision.\n6\ttype Approval struct {\n7\t\tTool    string\n8\t\tReason  string\n9\t\tPreview string\n10\t}\n11\t\n12\t// Describe renders the decision for a human.\n13\tfunc (a Approval) Describe() string {\n14\t\tif a.Reason == \"\" {\n15\t\t\treturn a.Tool\n16\t\t}\n17\t\treturn fmt.Sprintf(\"%s (%s)\", a.Tool, a.Reason)\n18\t}"
+      },
+      {
+        "tool": "write",
+        "args": {
+          "content": "# Nimbus Notes\n\nNimbus Notes is a small, offline-first notebook that runs entirely in the\nbrowser. Notes are stored in localStorage; there is no account and no server.\n\n## Structure\n\n- index.html is the application shell and entry point.\n- style.css defines the visual system.\n- script.js owns note persistence and rendering.\n- tui/approval.go is the small Go component used by the terminal tooling.\n- docs/ARCHITECTURE.md records the design in prose.\n\n## Running it\n\nOpen index.html in a browser. The Makefile contains the Go checks used by the\nterminal tooling.\n\n## Design notes\n\nThe application deliberately avoids a backend. The browser is the data store,\nso the project has no build step and no runtime dependencies.\n",
+          "path": "README.md"
+        },
+        "text": "Wrote 722 bytes to README.md."
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "text": "1\t# Nimbus Notes\n2\t\n3\tNimbus Notes is a small, offline-first notebook that runs entirely in the\n4\tbrowser. Notes are stored in localStorage; there is no account and no server.\n5\t\n6\t## Structure\n7\t\n8\t- index.html is the application shell and entry point.\n9\t- style.css defines the visual system.\n10\t- script.js owns note persistence and rendering.\n11\t- tui/approval.go is the small Go component used by the terminal tooling.\n12\t- docs/ARCHITECTURE.md records the design in prose.\n13\t\n14\t## Running it\n…"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n     722  README.md\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "D-mutation-after-investigation",
+    "prompt": "Check this project first, then write README.md.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "a36d88f8ea112b8d967e89615a115ba7c98e4e0cea401da129a3f15a12270086",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:32.875422Z",
+    "finished_at": "2026-10-23T05:10:32.878449Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11730,
+        "system_bytes": 1738,
+        "message_bytes": 47,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3089,
+        "repeated_bytes": 0,
+        "new_bytes": 11730,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11898,
+        "system_bytes": 1738,
+        "message_bytes": 215,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3138,
+        "repeated_bytes": 11730,
+        "new_bytes": 168,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12034,
+        "system_bytes": 1738,
+        "message_bytes": 351,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3179,
+        "repeated_bytes": 11898,
+        "new_bytes": 136,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 12858,
+        "system_bytes": 1738,
+        "message_bytes": 1175,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3392,
+        "repeated_bytes": 12034,
+        "new_bytes": 824,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 13869,
+        "system_bytes": 1738,
+        "message_bytes": 2186,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3652,
+        "repeated_bytes": 12858,
+        "new_bytes": 1011,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 6,
+        "total_bytes": 15245,
+        "system_bytes": 1738,
+        "message_bytes": 3562,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4003,
+        "repeated_bytes": 13869,
+        "new_bytes": 1376,
+        "messages": 11,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 7,
+        "total_bytes": 15672,
+        "system_bytes": 1738,
+        "message_bytes": 3989,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4116,
+        "repeated_bytes": 15245,
+        "new_bytes": 427,
+        "messages": 13,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 8,
+        "total_bytes": 16496,
+        "system_bytes": 1738,
+        "message_bytes": 4813,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4329,
+        "repeated_bytes": 15672,
+        "new_bytes": 824,
+        "messages": 15,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 9,
+        "total_bytes": 17311,
+        "system_bytes": 1738,
+        "message_bytes": 5628,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4540,
+        "repeated_bytes": 16496,
+        "new_bytes": 815,
+        "messages": 17,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 10,
+        "total_bytes": 17467,
+        "system_bytes": 1738,
+        "message_bytes": 5784,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4586,
+        "repeated_bytes": 17311,
+        "new_bytes": 156,
+        "messages": 19,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 10,
+    "request_count": 10,
+    "tool_call_count": 9,
+    "successful_tool_calls": 8,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "README.md",
+      "index.html",
+      "script.js",
+      "style.css",
+      "tui/approval.go"
+    ],
+    "bytes_read": 4261,
+    "files_written": [
+      "README.md"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 38024,
+    "estimated_output_tokens": 1169,
+    "raw_tool_output_bytes": 4659,
+    "context_bytes": 45130,
+    "tool_schema_bytes": 99450,
+    "repeated_context_bytes": 127113,
+    "new_context_bytes": 17467,
+    "first_request_bytes": 11730,
+    "last_request_bytes": 17467,
+    "wall_millis": 0,
+    "objective_status": "NEEDS_REVIEW",
+    "verification_status": "not_verified",
+    "completion_reason": "the repository change or execution was not followed by a successful verification",
+    "mutated": true,
+    "verified": false,
+    "mutated_paths": [
+      "README.md"
+    ],
+    "final_answer": "Nimbus Notes is a static, offline-first notebook with a small Go terminal component. I wrote README.md and verified it by reading it back.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 2,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "is_error": true,
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-2518384105/README.md: no such file or directory"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "style.css"
+        },
+        "text": "1\t:root {\n2\t  --ink: #17202a;\n3\t  --paper: #fbfaf7;\n4\t  --accent: #2f6f8f;\n5\t  --line: #d9d4ca;\n6\t}\n7\t* { box-sizing: border-box; }\n8\tbody {\n9\t  margin: 0;\n10\t  font-family: ui-sans-serif, system-ui, sans-serif;\n11\t  color: var(--ink);\n12\t  background: var(--paper);\n13\t}\n14\t.topbar { padding: 2rem; border-bottom: 1px solid var(--line); }\n15\t.topbar h1 { margin: 0; font-size: 2rem; }\n16\t.tagline { color: #5c6670; }\n17\tmain { max-width: 48rem; margin: 0 auto; padding: 2rem; }\n18\tform { display: gr…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "script.js"
+        },
+        "text": "1\t'use strict';\n2\t\n3\tconst STORAGE_KEY = 'nimbus-notes-v1';\n4\t\n5\tfunction loadNotes() {\n6\t  try {\n7\t    const raw = localStorage.getItem(STORAGE_KEY);\n8\t    return raw ? JSON.parse(raw) : [];\n9\t  } catch (error) {\n10\t    console.warn('could not read notes', error);\n11\t    return [];\n12\t  }\n13\t}\n14\t\n15\tfunction saveNotes(notes) {\n16\t  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));\n17\t}\n18\t\n19\tfunction render() {\n20\t  const notes = loadNotes();\n21\t  const list = document.getElementById(…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "tui/approval.go"
+        },
+        "text": "1\tpackage tui\n2\t\n3\timport \"fmt\"\n4\t\n5\t// Approval is the UI projection of one authorization decision.\n6\ttype Approval struct {\n7\t\tTool    string\n8\t\tReason  string\n9\t\tPreview string\n10\t}\n11\t\n12\t// Describe renders the decision for a human.\n13\tfunc (a Approval) Describe() string {\n14\t\tif a.Reason == \"\" {\n15\t\t\treturn a.Tool\n16\t\t}\n17\t\treturn fmt.Sprintf(\"%s (%s)\", a.Tool, a.Reason)\n18\t}"
+      },
+      {
+        "tool": "write",
+        "args": {
+          "content": "# Nimbus Notes\n\nNimbus Notes is a small, offline-first notebook that runs entirely in the\nbrowser. Notes are stored in localStorage; there is no account and no server.\n\n## Structure\n\n- index.html is the application shell and entry point.\n- style.css defines the visual system.\n- script.js owns note persistence and rendering.\n- tui/approval.go is the small Go component used by the terminal tooling.\n- docs/ARCHITECTURE.md records the design in prose.\n\n## Running it\n\nOpen index.html in a browser. The Makefile contains the Go checks used by the\nterminal tooling.\n\n## Design notes\n\nThe application deliberately avoids a backend. The browser is the data store,\nso the project has no build step and no runtime dependencies.\n",
+          "path": "README.md"
+        },
+        "text": "Wrote 722 bytes to README.md."
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "text": "1\t# Nimbus Notes\n2\t\n3\tNimbus Notes is a small, offline-first notebook that runs entirely in the\n4\tbrowser. Notes are stored in localStorage; there is no account and no server.\n5\t\n6\t## Structure\n7\t\n8\t- index.html is the application shell and entry point.\n9\t- style.css defines the visual system.\n10\t- script.js owns note persistence and rendering.\n11\t- tui/approval.go is the small Go component used by the terminal tooling.\n12\t- docs/ARCHITECTURE.md records the design in prose.\n13\t\n14\t## Running it\n…"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n     722  README.md\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "E-embedded-mutation",
+    "prompt": "I want to understand this project, and after checking it, create a README.md.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "c69898903892aba80ebc031c5203cbeebcfea4a460f6aed018a4dc3146d1c068",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:32.878461Z",
+    "finished_at": "2026-10-23T05:10:32.881971Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11760,
+        "system_bytes": 1738,
+        "message_bytes": 77,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3097,
+        "repeated_bytes": 0,
+        "new_bytes": 11760,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11928,
+        "system_bytes": 1738,
+        "message_bytes": 245,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3146,
+        "repeated_bytes": 11760,
+        "new_bytes": 168,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12064,
+        "system_bytes": 1738,
+        "message_bytes": 381,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3187,
+        "repeated_bytes": 11928,
+        "new_bytes": 136,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 12888,
+        "system_bytes": 1738,
+        "message_bytes": 1205,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3400,
+        "repeated_bytes": 12064,
+        "new_bytes": 824,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 13899,
+        "system_bytes": 1738,
+        "message_bytes": 2216,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3660,
+        "repeated_bytes": 12888,
+        "new_bytes": 1011,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 6,
+        "total_bytes": 15275,
+        "system_bytes": 1738,
+        "message_bytes": 3592,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4011,
+        "repeated_bytes": 13899,
+        "new_bytes": 1376,
+        "messages": 11,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 7,
+        "total_bytes": 15702,
+        "system_bytes": 1738,
+        "message_bytes": 4019,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4124,
+        "repeated_bytes": 15275,
+        "new_bytes": 427,
+        "messages": 13,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 8,
+        "total_bytes": 16526,
+        "system_bytes": 1738,
+        "message_bytes": 4843,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4337,
+        "repeated_bytes": 15702,
+        "new_bytes": 824,
+        "messages": 15,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 9,
+        "total_bytes": 17341,
+        "system_bytes": 1738,
+        "message_bytes": 5658,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4548,
+        "repeated_bytes": 16526,
+        "new_bytes": 815,
+        "messages": 17,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 10,
+        "total_bytes": 17497,
+        "system_bytes": 1738,
+        "message_bytes": 5814,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4594,
+        "repeated_bytes": 17341,
+        "new_bytes": 156,
+        "messages": 19,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 10,
+    "request_count": 10,
+    "tool_call_count": 9,
+    "successful_tool_calls": 8,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "README.md",
+      "index.html",
+      "script.js",
+      "style.css",
+      "tui/approval.go"
+    ],
+    "bytes_read": 4261,
+    "files_written": [
+      "README.md"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 38104,
+    "estimated_output_tokens": 1169,
+    "raw_tool_output_bytes": 4659,
+    "context_bytes": 45430,
+    "tool_schema_bytes": 99450,
+    "repeated_context_bytes": 127383,
+    "new_context_bytes": 17497,
+    "first_request_bytes": 11760,
+    "last_request_bytes": 17497,
+    "wall_millis": 0,
+    "objective_status": "NEEDS_REVIEW",
+    "verification_status": "not_verified",
+    "completion_reason": "the repository change or execution was not followed by a successful verification",
+    "mutated": true,
+    "verified": false,
+    "mutated_paths": [
+      "README.md"
+    ],
+    "final_answer": "Nimbus Notes is a static, offline-first notebook with a small Go terminal component. I wrote README.md and verified it by reading it back.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 2,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "is_error": true,
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-2312716007/README.md: no such file or directory"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "style.css"
+        },
+        "text": "1\t:root {\n2\t  --ink: #17202a;\n3\t  --paper: #fbfaf7;\n4\t  --accent: #2f6f8f;\n5\t  --line: #d9d4ca;\n6\t}\n7\t* { box-sizing: border-box; }\n8\tbody {\n9\t  margin: 0;\n10\t  font-family: ui-sans-serif, system-ui, sans-serif;\n11\t  color: var(--ink);\n12\t  background: var(--paper);\n13\t}\n14\t.topbar { padding: 2rem; border-bottom: 1px solid var(--line); }\n15\t.topbar h1 { margin: 0; font-size: 2rem; }\n16\t.tagline { color: #5c6670; }\n17\tmain { max-width: 48rem; margin: 0 auto; padding: 2rem; }\n18\tform { display: gr…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "script.js"
+        },
+        "text": "1\t'use strict';\n2\t\n3\tconst STORAGE_KEY = 'nimbus-notes-v1';\n4\t\n5\tfunction loadNotes() {\n6\t  try {\n7\t    const raw = localStorage.getItem(STORAGE_KEY);\n8\t    return raw ? JSON.parse(raw) : [];\n9\t  } catch (error) {\n10\t    console.warn('could not read notes', error);\n11\t    return [];\n12\t  }\n13\t}\n14\t\n15\tfunction saveNotes(notes) {\n16\t  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));\n17\t}\n18\t\n19\tfunction render() {\n20\t  const notes = loadNotes();\n21\t  const list = document.getElementById(…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "tui/approval.go"
+        },
+        "text": "1\tpackage tui\n2\t\n3\timport \"fmt\"\n4\t\n5\t// Approval is the UI projection of one authorization decision.\n6\ttype Approval struct {\n7\t\tTool    string\n8\t\tReason  string\n9\t\tPreview string\n10\t}\n11\t\n12\t// Describe renders the decision for a human.\n13\tfunc (a Approval) Describe() string {\n14\t\tif a.Reason == \"\" {\n15\t\t\treturn a.Tool\n16\t\t}\n17\t\treturn fmt.Sprintf(\"%s (%s)\", a.Tool, a.Reason)\n18\t}"
+      },
+      {
+        "tool": "write",
+        "args": {
+          "content": "# Nimbus Notes\n\nNimbus Notes is a small, offline-first notebook that runs entirely in the\nbrowser. Notes are stored in localStorage; there is no account and no server.\n\n## Structure\n\n- index.html is the application shell and entry point.\n- style.css defines the visual system.\n- script.js owns note persistence and rendering.\n- tui/approval.go is the small Go component used by the terminal tooling.\n- docs/ARCHITECTURE.md records the design in prose.\n\n## Running it\n\nOpen index.html in a browser. The Makefile contains the Go checks used by the\nterminal tooling.\n\n## Design notes\n\nThe application deliberately avoids a backend. The browser is the data store,\nso the project has no build step and no runtime dependencies.\n",
+          "path": "README.md"
+        },
+        "text": "Wrote 722 bytes to README.md."
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "text": "1\t# Nimbus Notes\n2\t\n3\tNimbus Notes is a small, offline-first notebook that runs entirely in the\n4\tbrowser. Notes are stored in localStorage; there is no account and no server.\n5\t\n6\t## Structure\n7\t\n8\t- index.html is the application shell and entry point.\n9\t- style.css defines the visual system.\n10\t- script.js owns note persistence and rendering.\n11\t- tui/approval.go is the small Go component used by the terminal tooling.\n12\t- docs/ARCHITECTURE.md records the design in prose.\n13\t\n14\t## Running it\n…"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n     722  README.md\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "F-negative-control",
+    "prompt": "Check this project and tell me whether a README.md should be created. Do not create it.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "fafe2b09dcefa902728be1ca5a8232a8961378f1fc1a97efbd4215be95955987",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:32.881977Z",
+    "finished_at": "2026-10-23T05:10:32.884407Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11769,
+        "system_bytes": 1737,
+        "message_bytes": 87,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3099,
+        "repeated_bytes": 0,
+        "new_bytes": 11769,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11936,
+        "system_bytes": 1737,
+        "message_bytes": 254,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3148,
+        "repeated_bytes": 11769,
+        "new_bytes": 167,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12072,
+        "system_bytes": 1737,
+        "message_bytes": 390,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3189,
+        "repeated_bytes": 11936,
+        "new_bytes": 136,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 12896,
+        "system_bytes": 1737,
+        "message_bytes": 1214,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3402,
+        "repeated_bytes": 12072,
+        "new_bytes": 824,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 13907,
+        "system_bytes": 1737,
+        "message_bytes": 2225,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3662,
+        "repeated_bytes": 12896,
+        "new_bytes": 1011,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 6,
+        "total_bytes": 15283,
+        "system_bytes": 1737,
+        "message_bytes": 3601,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4013,
+        "repeated_bytes": 13907,
+        "new_bytes": 1376,
+        "messages": 11,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 7,
+        "total_bytes": 15710,
+        "system_bytes": 1737,
+        "message_bytes": 4028,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 4126,
+        "repeated_bytes": 15283,
+        "new_bytes": 427,
+        "messages": 13,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 7,
+    "request_count": 7,
+    "tool_call_count": 6,
+    "successful_tool_calls": 5,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "index.html",
+      "script.js",
+      "style.css",
+      "tui/approval.go"
+    ],
+    "bytes_read": 3483,
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 24639,
+    "estimated_output_tokens": 933,
+    "raw_tool_output_bytes": 3722,
+    "context_bytes": 23958,
+    "tool_schema_bytes": 69615,
+    "repeated_context_bytes": 77863,
+    "new_context_bytes": 15710,
+    "first_request_bytes": 11769,
+    "last_request_bytes": 15710,
+    "wall_millis": 0,
+    "objective_status": "COMPLETED",
+    "verification_status": "not_applicable",
+    "completion_reason": "",
+    "mutated": false,
+    "verified": false,
+    "final_answer": "A README should be created, but I did not create it.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 2,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "is_error": true,
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-423679552/README.md: no such file or directory"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "style.css"
+        },
+        "text": "1\t:root {\n2\t  --ink: #17202a;\n3\t  --paper: #fbfaf7;\n4\t  --accent: #2f6f8f;\n5\t  --line: #d9d4ca;\n6\t}\n7\t* { box-sizing: border-box; }\n8\tbody {\n9\t  margin: 0;\n10\t  font-family: ui-sans-serif, system-ui, sans-serif;\n11\t  color: var(--ink);\n12\t  background: var(--paper);\n13\t}\n14\t.topbar { padding: 2rem; border-bottom: 1px solid var(--line); }\n15\t.topbar h1 { margin: 0; font-size: 2rem; }\n16\t.tagline { color: #5c6670; }\n17\tmain { max-width: 48rem; margin: 0 auto; padding: 2rem; }\n18\tform { display: gr…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "script.js"
+        },
+        "text": "1\t'use strict';\n2\t\n3\tconst STORAGE_KEY = 'nimbus-notes-v1';\n4\t\n5\tfunction loadNotes() {\n6\t  try {\n7\t    const raw = localStorage.getItem(STORAGE_KEY);\n8\t    return raw ? JSON.parse(raw) : [];\n9\t  } catch (error) {\n10\t    console.warn('could not read notes', error);\n11\t    return [];\n12\t  }\n13\t}\n14\t\n15\tfunction saveNotes(notes) {\n16\t  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));\n17\t}\n18\t\n19\tfunction render() {\n20\t  const notes = loadNotes();\n21\t  const list = document.getElementById(…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "tui/approval.go"
+        },
+        "text": "1\tpackage tui\n2\t\n3\timport \"fmt\"\n4\t\n5\t// Approval is the UI projection of one authorization decision.\n6\ttype Approval struct {\n7\t\tTool    string\n8\t\tReason  string\n9\t\tPreview string\n10\t}\n11\t\n12\t// Describe renders the decision for a human.\n13\tfunc (a Approval) Describe() string {\n14\t\tif a.Reason == \"\" {\n15\t\t\treturn a.Tool\n16\t\t}\n17\t\treturn fmt.Sprintf(\"%s (%s)\", a.Tool, a.Reason)\n18\t}"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "G-debugging",
+    "prompt": "The tests fail. Fix the failing tests and verify the fix. Do not change any other file.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "457f3df70757c8857cb81d9d1f69c073457cd9bc7da59ac14bfef0916449ad79",
+    "repository": "fixture:go-debug",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:32.884415Z",
+    "finished_at": "2026-10-23T05:10:37.276109Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11770,
+        "system_bytes": 1738,
+        "message_bytes": 87,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3099,
+        "repeated_bytes": 0,
+        "new_bytes": 11770,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11999,
+        "system_bytes": 1738,
+        "message_bytes": 316,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3163,
+        "repeated_bytes": 11770,
+        "new_bytes": 229,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12325,
+        "system_bytes": 1738,
+        "message_bytes": 642,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3251,
+        "repeated_bytes": 11999,
+        "new_bytes": 326,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 12560,
+        "system_bytes": 1738,
+        "message_bytes": 877,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3317,
+        "repeated_bytes": 12325,
+        "new_bytes": 235,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 12693,
+        "system_bytes": 1738,
+        "message_bytes": 1010,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3357,
+        "repeated_bytes": 12560,
+        "new_bytes": 133,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 6,
+        "total_bytes": 12848,
+        "system_bytes": 1738,
+        "message_bytes": 1165,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3403,
+        "repeated_bytes": 12693,
+        "new_bytes": 155,
+        "messages": 11,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 6,
+    "request_count": 6,
+    "tool_call_count": 5,
+    "successful_tool_calls": 4,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "calc.go",
+      "calc_test.go"
+    ],
+    "bytes_read": 480,
+    "files_written": [
+      "calc.go"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 19590,
+    "estimated_output_tokens": 198,
+    "raw_tool_output_bytes": 780,
+    "context_bytes": 14525,
+    "tool_schema_bytes": 59670,
+    "repeated_context_bytes": 61347,
+    "new_context_bytes": 12848,
+    "first_request_bytes": 11770,
+    "last_request_bytes": 12848,
+    "wall_millis": 4286,
+    "objective_status": "COMPLETED",
+    "verification_status": "verified",
+    "completion_reason": "",
+    "mutated": true,
+    "verified": true,
+    "mutated_paths": [
+      "calc.go"
+    ],
+    "final_answer": "The defect was an inverted subtraction in Add; I fixed it and the tests now pass.",
+    "answer_facts_matched": 3,
+    "answer_facts_expected": 3,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "calc.go"
+        },
+        "text": "1\tpackage calc\n2\t\n3\t// Add returns the sum of a and b.\n4\tfunc Add(a, b int) int {\n5\t\treturn a - b\n6\t}\n7\t\n8\t// Mul returns the product of a and b.\n9\tfunc Mul(a, b int) int {\n10\t\treturn a * b\n11\t}"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "calc_test.go"
+        },
+        "text": "1\tpackage calc\n2\t\n3\timport \"testing\"\n4\t\n5\tfunc TestAdd(t *testing.T) {\n6\t\tif got := Add(2, 3); got != 5 {\n7\t\t\tt.Fatalf(\"Add(2, 3) = %d, want 5\", got)\n8\t\t}\n9\t}\n10\t\n11\tfunc TestMul(t *testing.T) {\n12\t\tif got := Mul(2, 3); got != 6 {\n13\t\t\tt.Fatalf(\"Mul(2, 3) = %d, want 6\", got)\n14\t\t}\n15\t}"
+      },
+      {
+        "tool": "bash",
+        "args": {
+          "command": "GOCACHE=$PWD/.gocache go test ./..."
+        },
+        "is_error": true,
+        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\n--- FAIL: TestAdd (0.00s)\n    calc_test.go:7: Add(2, 3) = -1, want 5\nFAIL\nFAIL\texample.com/calc\t0.310s\nFAIL\n\n[exit code 1, 3.755s]"
+      },
+      {
+        "tool": "edit",
+        "args": {
+          "new_string": "return a + b",
+          "old_string": "return a - b",
+          "path": "calc.go"
+        },
+        "text": "Replaced 1 occurrence in calc.go (line 5)."
+      },
+      {
+        "tool": "bash",
+        "args": {
+          "command": "GOCACHE=$PWD/.gocache go test ./..."
+        },
+        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\nok  \texample.com/calc\t0.318s\n\n[exit code 0, 530ms]"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "H-refactoring",
+    "prompt": "Refactor shape.go, extra.go, shape_test.go, and extra_test.go: rename the exported geometry helper to a clearer name, update every caller, and run go test ./... Do not modify any other file.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "46e6a94466f321a7e1b8596cd92e1b457b16a8ec3eb06927c2d5a767e2275611",
+    "repository": "fixture:go-refactor",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:37.276178Z",
+    "finished_at": "2026-10-23T05:10:41.164235Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11873,
+        "system_bytes": 1738,
+        "message_bytes": 190,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3125,
+        "repeated_bytes": 0,
+        "new_bytes": 11873,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 12174,
+        "system_bytes": 1738,
+        "message_bytes": 491,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3207,
+        "repeated_bytes": 11873,
+        "new_bytes": 301,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12367,
+        "system_bytes": 1738,
+        "message_bytes": 684,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3262,
+        "repeated_bytes": 12174,
+        "new_bytes": 193,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 12575,
+        "system_bytes": 1738,
+        "message_bytes": 892,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3321,
+        "repeated_bytes": 12367,
+        "new_bytes": 208,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 12801,
+        "system_bytes": 1738,
+        "message_bytes": 1118,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3385,
+        "repeated_bytes": 12575,
+        "new_bytes": 226,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 6,
+        "total_bytes": 12989,
+        "system_bytes": 1738,
+        "message_bytes": 1306,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3439,
+        "repeated_bytes": 12801,
+        "new_bytes": 188,
+        "messages": 11,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 7,
+        "total_bytes": 13169,
+        "system_bytes": 1738,
+        "message_bytes": 1486,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3491,
+        "repeated_bytes": 12989,
+        "new_bytes": 180,
+        "messages": 13,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 8,
+        "total_bytes": 13365,
+        "system_bytes": 1738,
+        "message_bytes": 1682,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3546,
+        "repeated_bytes": 13169,
+        "new_bytes": 196,
+        "messages": 15,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 9,
+        "total_bytes": 13571,
+        "system_bytes": 1738,
+        "message_bytes": 1888,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3604,
+        "repeated_bytes": 13365,
+        "new_bytes": 206,
+        "messages": 17,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 10,
+        "total_bytes": 13731,
+        "system_bytes": 1738,
+        "message_bytes": 2048,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3651,
+        "repeated_bytes": 13571,
+        "new_bytes": 160,
+        "messages": 19,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 10,
+    "request_count": 10,
+    "tool_call_count": 9,
+    "successful_tool_calls": 9,
+    "failed_tool_calls": 0,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "extra.go",
+      "extra_test.go",
+      "shape.go",
+      "shape_test.go"
+    ],
+    "bytes_read": 774,
+    "files_written": [
+      "extra.go",
+      "extra_test.go",
+      "shape.go",
+      "shape_test.go"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 34031,
+    "estimated_output_tokens": 266,
+    "raw_tool_output_bytes": 1050,
+    "context_bytes": 29165,
+    "tool_schema_bytes": 99450,
+    "repeated_context_bytes": 114884,
+    "new_context_bytes": 13731,
+    "first_request_bytes": 11873,
+    "last_request_bytes": 13731,
+    "wall_millis": 3779,
+    "objective_status": "COMPLETED",
+    "verification_status": "verified",
+    "completion_reason": "",
+    "mutated": true,
+    "verified": true,
+    "mutated_paths": [
+      "extra.go",
+      "extra_test.go",
+      "shape.go",
+      "shape_test.go"
+    ],
+    "final_answer": "I renamed Area to RectangleArea across the two source files and their tests, then ran the test suite successfully.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 2,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "shape.go"
+        },
+        "text": "1\tpackage geometry\n2\t\n3\t// Area returns the area of a rectangle.\n4\tfunc Area(width, height int) int {\n5\t\treturn width * height\n6\t}\n7\t\n8\t// Perimeter returns the perimeter of a rectangle.\n9\tfunc Perimeter(width, height int) int {\n10\t\treturn 2 * (width + height)\n11\t}"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "extra.go"
+        },
+        "text": "1\tpackage geometry\n2\t\n3\t// DoubleArea returns twice the area of a rectangle.\n4\tfunc DoubleArea(width, height int) int {\n5\t\treturn 2 * Area(width, height)\n6\t}"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "shape_test.go"
+        },
+        "text": "1\tpackage geometry\n2\t\n3\timport \"testing\"\n4\t\n5\tfunc TestArea(t *testing.T) {\n6\t\tif got := Area(3, 4); got != 12 {\n7\t\t\tt.Fatalf(\"Area(3, 4) = %d, want 12\", got)\n8\t\t}\n9\t}"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "extra_test.go"
+        },
+        "text": "1\tpackage geometry\n2\t\n3\timport \"testing\"\n4\t\n5\tfunc TestDoubleArea(t *testing.T) {\n6\t\tif got := DoubleArea(3, 4); got != 24 {\n7\t\t\tt.Fatalf(\"DoubleArea(3, 4) = %d, want 24\", got)\n8\t\t}\n9\t}"
+      },
+      {
+        "tool": "edit",
+        "args": {
+          "new_string": "func RectangleArea(width, height int) int {",
+          "old_string": "func Area(width, height int) int {",
+          "path": "shape.go"
+        },
+        "text": "Replaced 1 occurrence in shape.go (line 4)."
+      },
+      {
+        "tool": "edit",
+        "args": {
+          "new_string": "return 2 * RectangleArea(width, height)",
+          "old_string": "return 2 * Area(width, height)",
+          "path": "extra.go"
+        },
+        "text": "Replaced 1 occurrence in extra.go (line 5)."
+      },
+      {
+        "tool": "edit",
+        "args": {
+          "new_string": "if got := RectangleArea(3, 4); got != 12 {",
+          "old_string": "if got := Area(3, 4); got != 12 {",
+          "path": "shape_test.go"
+        },
+        "text": "Replaced 1 occurrence in shape_test.go (line 6)."
+      },
+      {
+        "tool": "edit",
+        "args": {
+          "new_string": "if got := 2 * RectangleArea(3, 4); got != 24 {",
+          "old_string": "if got := DoubleArea(3, 4); got != 24 {",
+          "path": "extra_test.go"
+        },
+        "text": "Replaced 1 occurrence in extra_test.go (line 6)."
+      },
+      {
+        "tool": "bash",
+        "args": {
+          "command": "GOCACHE=$PWD/.gocache go test ./..."
+        },
+        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\nok  \texample.com/geometry\t0.319s\n\n[exit code 0, 3.777s]"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "I-fuzzing",
+    "prompt": "Investigate the parser for malformed-input failures. Do not modify anything.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "94ba2a5d4cffab3e6a0f9dc1b504f15b1762fb3986362b5a5346c55cd90674ec",
+    "repository": "fixture:go-fuzz",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:41.164267Z",
+    "finished_at": "2026-10-23T05:10:45.034091Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11759,
+        "system_bytes": 1738,
+        "message_bytes": 76,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3096,
+        "repeated_bytes": 0,
+        "new_bytes": 11759,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 12022,
+        "system_bytes": 1738,
+        "message_bytes": 339,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3169,
+        "repeated_bytes": 11759,
+        "new_bytes": 263,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12536,
+        "system_bytes": 1738,
+        "message_bytes": 853,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3304,
+        "repeated_bytes": 12022,
+        "new_bytes": 514,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 12823,
+        "system_bytes": 1738,
+        "message_bytes": 1140,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3383,
+        "repeated_bytes": 12536,
+        "new_bytes": 287,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 4,
+    "request_count": 4,
+    "tool_call_count": 3,
+    "successful_tool_calls": 2,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "parser.go",
+      "parser_test.go"
+    ],
+    "bytes_read": 698,
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 12952,
+    "estimated_output_tokens": 231,
+    "raw_tool_output_bytes": 919,
+    "context_bytes": 9360,
+    "tool_schema_bytes": 39780,
+    "repeated_context_bytes": 36317,
+    "new_context_bytes": 12823,
+    "first_request_bytes": 11759,
+    "last_request_bytes": 12823,
+    "wall_millis": 3762,
+    "objective_status": "NEEDS_REVIEW",
+    "verification_status": "not_applicable",
+    "completion_reason": "a tool call failed and no later success or verification recovered it",
+    "mutated": false,
+    "verified": false,
+    "final_answer": "The parser assumes at least one element and does not validate malformed empty input. I did not modify the repository.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 3,
+    "answer_facts_missing": [
+      "panic"
+    ],
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "parser.go"
+        },
+        "text": "1\tpackage parser\n2\t\n3\timport \"strings\"\n4\t\n5\t// Split splits a comma-separated list. It assumes at least one item.\n6\tfunc Split(input string) []string {\n7\t\tparts := strings.Split(input, \",\")\n8\t\t_ = parts[0]\n9\t\treturn parts\n10\t}"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "parser_test.go"
+        },
+        "text": "1\tpackage parser\n2\t\n3\timport \"testing\"\n4\t\n5\tfunc TestSplitEmpty(t *testing.T) {\n6\t\tgot := Split(\"\")\n7\t\tif len(got) != 1 || got[0] != \"\" {\n8\t\t\tt.Fatalf(\"Split(\\\"\\\") = %#v\", got)\n9\t\t}\n10\t}\n11\t\n12\tfunc TestSplitPanicsOnNothing(t *testing.T) {\n13\t\t// This test documents the intended failure surface for the investigation.\n14\t\tdefer func() {\n15\t\t\tif recover() == nil {\n16\t\t\t\tt.Fatal(\"expected malformed input handling to be investigated\")\n17\t\t\t}\n18\t\t}()\n19\t\t_ = Split(\"\")\n20\t}"
+      },
+      {
+        "tool": "bash",
+        "args": {
+          "command": "GOCACHE=$PWD/.gocache go test ./..."
+        },
+        "is_error": true,
+        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\n--- FAIL: TestSplitPanicsOnNothing (0.00s)\n    parser_test.go:16: expected malformed input handling to be investigated\nFAIL\nFAIL\texample.com/parser\t0.320s\nFAIL\n\n[exit code 1, 3.762s]"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "J-external-knowledge",
+    "prompt": "Check this project and write README.md. Use the official Nimbus Notes documentation at http://127.0.0.1:51990 for the feature list. Do not modify any other file.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "09aece6624bcaceb9eca3567f3ccd0fe34052fc00617f749b562dfa1ca2861b4",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:45.034127Z",
+    "finished_at": "2026-10-23T05:10:47.22565Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11844,
+        "system_bytes": 1738,
+        "message_bytes": 161,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3118,
+        "repeated_bytes": 0,
+        "new_bytes": 11844,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11948,
+        "system_bytes": 1738,
+        "message_bytes": 265,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3151,
+        "repeated_bytes": 11844,
+        "new_bytes": 104,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12772,
+        "system_bytes": 1738,
+        "message_bytes": 1089,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3364,
+        "repeated_bytes": 11948,
+        "new_bytes": 824,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 13702,
+        "system_bytes": 1738,
+        "message_bytes": 2019,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3604,
+        "repeated_bytes": 12772,
+        "new_bytes": 930,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 13832,
+        "system_bytes": 1738,
+        "message_bytes": 2149,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3643,
+        "repeated_bytes": 13702,
+        "new_bytes": 130,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 5,
+    "request_count": 5,
+    "tool_call_count": 4,
+    "successful_tool_calls": 3,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "index.html"
+    ],
+    "bytes_read": 786,
+    "files_written": [
+      "README.md"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 16880,
+    "estimated_output_tokens": 234,
+    "raw_tool_output_bytes": 928,
+    "context_bytes": 14373,
+    "tool_schema_bytes": 49725,
+    "repeated_context_bytes": 50266,
+    "new_context_bytes": 13832,
+    "first_request_bytes": 11844,
+    "last_request_bytes": 13832,
+    "wall_millis": 2136,
+    "objective_status": "COMPLETED",
+    "verification_status": "verified",
+    "completion_reason": "",
+    "mutated": true,
+    "verified": true,
+    "mutated_paths": [
+      "README.md"
+    ],
+    "final_answer": "I wrote README.md using repository evidence and the published documentation, and verified the repository still builds.",
+    "answer_facts_matched": 1,
+    "answer_facts_expected": 3,
+    "answer_facts_missing": [
+      "Nimbus",
+      "offline"
+    ],
+    "outcomes": [
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:51990"
+        },
+        "is_error": true,
+        "text": "fetch returned HTTP 404 for http://127.0.0.1:51990"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "write",
+        "args": {
+          "content": "# Nimbus Notes\n\nNimbus Notes is a small, offline-first notebook that runs entirely in the\nbrowser. Notes are stored in localStorage; there is no account and no server.\n\n## Structure\n\n- index.html is the application shell and entry point.\n- style.css defines the visual system.\n- script.js owns note persistence and rendering.\n- tui/approval.go is the small Go component used by the terminal tooling.\n- docs/ARCHITECTURE.md records the design in prose.\n\n## Running it\n\nOpen index.html in a browser. The Makefile contains the Go checks used by the\nterminal tooling.\n\n## Design notes\n\nThe application deliberately avoids a backend. The browser is the data store,\nso the project has no build step and no runtime dependencies.\n\n\n## External reference\n\nThe feature list was checked against the project's published documentation.\n",
+          "path": "README.md"
+        },
+        "text": "Wrote 823 bytes to README.md."
+      },
+      {
+        "tool": "bash",
+        "args": {
+          "command": "GOCACHE=$PWD/.gocache go build ./..."
+        },
+        "text": "$ GOCACHE=$PWD/.gocache go build ./...\n\n\n\n[exit code 0, 2.135s]"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "K1-irrelevant-large-file",
+    "prompt": "Check this project and explain what it does. Do not modify anything.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "438db4230202d9fc3ceb4b33109db3736ab25568fc09d05b4d3f1f1e89542390",
+    "repository": "fixture:large",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:47.225681Z",
+    "finished_at": "2026-10-23T05:10:47.231505Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11751,
+        "system_bytes": 1738,
+        "message_bytes": 68,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3094,
+        "repeated_bytes": 0,
+        "new_bytes": 11751,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 157316,
+        "system_bytes": 1738,
+        "message_bytes": 145633,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 39492,
+        "repeated_bytes": 11751,
+        "new_bytes": 145565,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 157458,
+        "system_bytes": 1738,
+        "message_bytes": 145775,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 39534,
+        "repeated_bytes": 157316,
+        "new_bytes": 142,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 158282,
+        "system_bytes": 1738,
+        "message_bytes": 146599,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 39747,
+        "repeated_bytes": 157458,
+        "new_bytes": 824,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 4,
+    "request_count": 4,
+    "tool_call_count": 3,
+    "successful_tool_calls": 3,
+    "failed_tool_calls": 0,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "index.html",
+      "logs/huge.log"
+    ],
+    "bytes_read": 146310,
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 121867,
+    "estimated_output_tokens": 36607,
+    "raw_tool_output_bytes": 146425,
+    "context_bytes": 445027,
+    "tool_schema_bytes": 39780,
+    "repeated_context_bytes": 326525,
+    "new_context_bytes": 158282,
+    "first_request_bytes": 11751,
+    "last_request_bytes": 158282,
+    "wall_millis": 1,
+    "objective_status": "COMPLETED",
+    "verification_status": "not_applicable",
+    "completion_reason": "",
+    "mutated": false,
+    "verified": false,
+    "final_answer": "Nimbus Notes is a static notebook. The large log file is unrelated operational noise.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 3,
+    "answer_facts_missing": [
+      "offline"
+    ],
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "logs/huge.log"
+        },
+        "text": "1\t00000  routine scheduler heartbeat: queue=0 latency_ms=0 status=ok\n2\t00001  routine scheduler heartbeat: queue=1 latency_ms=1 status=ok\n3\t00002  routine scheduler heartbeat: queue=2 latency_ms=2 status=ok\n4\t00003  routine scheduler heartbeat: queue=3 latency_ms=3 status=ok\n5\t00004  routine scheduler heartbeat: queue=4 latency_ms=4 status=ok\n6\t00005  routine scheduler heartbeat: queue=5 latency_ms=5 status=ok\n7\t00006  routine scheduler heartbeat: queue=6 latency_ms=6 status=ok\n8\t00007  routine …"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\nlogs/\ntui/\n      73  Makefile\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "K2-missing-file",
+    "prompt": "Check this project and explain what it does. Do not modify anything.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "ea4733664c59b4561f3cd9c01eaaec60ca66344be06e0a8dacea0692e260be9d",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:47.231514Z",
+    "finished_at": "2026-10-23T05:10:47.233666Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11751,
+        "system_bytes": 1738,
+        "message_bytes": 68,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3094,
+        "repeated_bytes": 0,
+        "new_bytes": 11751,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11922,
+        "system_bytes": 1738,
+        "message_bytes": 239,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3144,
+        "repeated_bytes": 11751,
+        "new_bytes": 171,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12746,
+        "system_bytes": 1738,
+        "message_bytes": 1063,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3357,
+        "repeated_bytes": 11922,
+        "new_bytes": 824,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 3,
+    "request_count": 3,
+    "tool_call_count": 2,
+    "successful_tool_calls": 1,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "index.html"
+    ],
+    "bytes_read": 786,
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 9595,
+    "estimated_output_tokens": 231,
+    "raw_tool_output_bytes": 919,
+    "context_bytes": 6584,
+    "tool_schema_bytes": 29835,
+    "repeated_context_bytes": 23673,
+    "new_context_bytes": 12746,
+    "first_request_bytes": 11751,
+    "last_request_bytes": 12746,
+    "wall_millis": 0,
+    "objective_status": "COMPLETED",
+    "verification_status": "not_applicable",
+    "completion_reason": "",
+    "mutated": false,
+    "verified": false,
+    "final_answer": "MISSING.md does not exist; index.html is the entry point.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 2,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "MISSING.md"
+        },
+        "is_error": true,
+        "text": "stat \"MISSING.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-3455213125/MISSING.md: no such file or directory"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "K3-failed-verification",
+    "prompt": "Check this project and write README.md. Do not modify any other file.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "d695daeb47f99d8254b04045b675b84918726fb01acb719a337c2eb293527f59",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:47.233676Z",
+    "finished_at": "2026-10-23T05:10:47.250108Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11752,
+        "system_bytes": 1738,
+        "message_bytes": 69,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3095,
+        "repeated_bytes": 0,
+        "new_bytes": 11752,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 12576,
+        "system_bytes": 1738,
+        "message_bytes": 893,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3308,
+        "repeated_bytes": 11752,
+        "new_bytes": 824,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 13400,
+        "system_bytes": 1738,
+        "message_bytes": 1717,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3521,
+        "repeated_bytes": 12576,
+        "new_bytes": 824,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 13662,
+        "system_bytes": 1738,
+        "message_bytes": 1979,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3593,
+        "repeated_bytes": 13400,
+        "new_bytes": 262,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 4,
+    "request_count": 4,
+    "tool_call_count": 3,
+    "successful_tool_calls": 2,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "index.html"
+    ],
+    "bytes_read": 786,
+    "files_written": [
+      "README.md"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 13517,
+    "estimated_output_tokens": 251,
+    "raw_tool_output_bytes": 999,
+    "context_bytes": 11610,
+    "tool_schema_bytes": 39780,
+    "repeated_context_bytes": 37728,
+    "new_context_bytes": 13662,
+    "first_request_bytes": 11752,
+    "last_request_bytes": 13662,
+    "wall_millis": 14,
+    "objective_status": "NEEDS_REVIEW",
+    "verification_status": "not_verified",
+    "completion_reason": "a tool call failed and no later success or verification recovered it",
+    "mutated": true,
+    "verified": false,
+    "mutated_paths": [
+      "README.md"
+    ],
+    "final_answer": "I wrote README.md, but the build check failed.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 2,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "write",
+        "args": {
+          "content": "# Nimbus Notes\n\nNimbus Notes is a small, offline-first notebook that runs entirely in the\nbrowser. Notes are stored in localStorage; there is no account and no server.\n\n## Structure\n\n- index.html is the application shell and entry point.\n- style.css defines the visual system.\n- script.js owns note persistence and rendering.\n- tui/approval.go is the small Go component used by the terminal tooling.\n- docs/ARCHITECTURE.md records the design in prose.\n\n## Running it\n\nOpen index.html in a browser. The Makefile contains the Go checks used by the\nterminal tooling.\n\n## Design notes\n\nThe application deliberately avoids a backend. The browser is the data store,\nso the project has no build step and no runtime dependencies.\n",
+          "path": "README.md"
+        },
+        "text": "Wrote 722 bytes to README.md."
+      },
+      {
+        "tool": "bash",
+        "args": {
+          "command": "GOCACHE=$PWD/.gocache go build ./does-not-exist"
+        },
+        "is_error": true,
+        "text": "$ GOCACHE=$PWD/.gocache go build ./does-not-exist\n\nstat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-2681898568/does-not-exist: directory not found\n\n[exit code 1, 13ms]"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "K4-unexpected-mutation",
+    "prompt": "Check this project and write README.md. Do not modify any other file.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "c73bb71954dbe801af4b6f83f2f61aed4d45df4023c97ca77af30aaef8df7738",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:47.250132Z",
+    "finished_at": "2026-10-23T05:10:49.45687Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11752,
+        "system_bytes": 1738,
+        "message_bytes": 69,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3095,
+        "repeated_bytes": 0,
+        "new_bytes": 11752,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 12576,
+        "system_bytes": 1738,
+        "message_bytes": 893,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3308,
+        "repeated_bytes": 11752,
+        "new_bytes": 824,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 13400,
+        "system_bytes": 1738,
+        "message_bytes": 1717,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3521,
+        "repeated_bytes": 12576,
+        "new_bytes": 824,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 13492,
+        "system_bytes": 1738,
+        "message_bytes": 1809,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3550,
+        "repeated_bytes": 13400,
+        "new_bytes": 92,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 13621,
+        "system_bytes": 1738,
+        "message_bytes": 1938,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3589,
+        "repeated_bytes": 13492,
+        "new_bytes": 129,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 5,
+    "request_count": 5,
+    "tool_call_count": 4,
+    "successful_tool_calls": 4,
+    "failed_tool_calls": 0,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "index.html"
+    ],
+    "bytes_read": 786,
+    "files_written": [
+      "README.md",
+      "extra.txt"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 17063,
+    "estimated_output_tokens": 228,
+    "raw_tool_output_bytes": 905,
+    "context_bytes": 15116,
+    "tool_schema_bytes": 49725,
+    "repeated_context_bytes": 51220,
+    "new_context_bytes": 13621,
+    "first_request_bytes": 11752,
+    "last_request_bytes": 13621,
+    "wall_millis": 2151,
+    "objective_status": "NEEDS_REVIEW",
+    "verification_status": "verified",
+    "completion_reason": "observed change outside the requested scope: extra.txt; the run changed a path outside the requested target scope; evidence: satisfied: path README.md; evidence: unexpected: extra.txt",
+    "mutated": true,
+    "verified": true,
+    "mutated_paths": [
+      "README.md",
+      "extra.txt"
+    ],
+    "unexpected_mutations": [
+      "extra.txt"
+    ],
+    "final_answer": "I wrote README.md and also created extra.txt.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 2,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "write",
+        "args": {
+          "content": "# Nimbus Notes\n\nNimbus Notes is a small, offline-first notebook that runs entirely in the\nbrowser. Notes are stored in localStorage; there is no account and no server.\n\n## Structure\n\n- index.html is the application shell and entry point.\n- style.css defines the visual system.\n- script.js owns note persistence and rendering.\n- tui/approval.go is the small Go component used by the terminal tooling.\n- docs/ARCHITECTURE.md records the design in prose.\n\n## Running it\n\nOpen index.html in a browser. The Makefile contains the Go checks used by the\nterminal tooling.\n\n## Design notes\n\nThe application deliberately avoids a backend. The browser is the data store,\nso the project has no build step and no runtime dependencies.\n",
+          "path": "README.md"
+        },
+        "text": "Wrote 722 bytes to README.md."
+      },
+      {
+        "tool": "write",
+        "args": {
+          "content": "not requested",
+          "path": "extra.txt"
+        },
+        "text": "Wrote 13 bytes to extra.txt."
+      },
+      {
+        "tool": "bash",
+        "args": {
+          "command": "GOCACHE=$PWD/.gocache go build ./..."
+        },
+        "text": "$ GOCACHE=$PWD/.gocache go build ./...\n\n\n\n[exit code 0, 2.15s]"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "K5-partial-execution",
+    "prompt": "Run the check in the background and report what you started.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "0b6259c0dec1fa9d1b8b74ee7d8042e0d2358f99408a09514a7b248ef24ec799",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:49.456902Z",
+    "finished_at": "2026-10-23T05:10:49.461629Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11743,
+        "system_bytes": 1738,
+        "message_bytes": 60,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3092,
+        "repeated_bytes": 0,
+        "new_bytes": 11743,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11918,
+        "system_bytes": 1738,
+        "message_bytes": 235,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3142,
+        "repeated_bytes": 11743,
+        "new_bytes": 175,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 2,
+    "request_count": 2,
+    "tool_call_count": 1,
+    "successful_tool_calls": 1,
+    "failed_tool_calls": 0,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "bytes_read": 0,
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 6234,
+    "estimated_output_tokens": 30,
+    "raw_tool_output_bytes": 119,
+    "context_bytes": 3771,
+    "tool_schema_bytes": 19890,
+    "repeated_context_bytes": 11743,
+    "new_context_bytes": 11918,
+    "first_request_bytes": 11743,
+    "last_request_bytes": 11918,
+    "wall_millis": 2,
+    "objective_status": "NEEDS_REVIEW",
+    "verification_status": "not_applicable",
+    "completion_reason": "the request asked for execution but no successful execution was observed",
+    "mutated": false,
+    "verified": false,
+    "final_answer": "I started the check in the background.",
+    "answer_facts_matched": 1,
+    "answer_facts_expected": 1,
+    "outcomes": [
+      {
+        "tool": "bash",
+        "args": {
+          "background": true,
+          "command": "sleep 2"
+        },
+        "text": "$ sleep 2\n\n[background job job-1 started, pid 39284 — killed after 2m0s if still running; use wait to collect output]"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "K6-large-source-context",
+    "prompt": "Check this project and explain what it does. Do not modify anything.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "32a990a4daa8e3a9711a60312e3bb5d8f62f734b3fa39fb9c1d82407d297528e",
+    "repository": "fixture:heavy",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:49.461646Z",
+    "finished_at": "2026-10-23T05:10:49.465272Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11751,
+        "system_bytes": 1738,
+        "message_bytes": 68,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3094,
+        "repeated_bytes": 0,
+        "new_bytes": 11751,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 11919,
+        "system_bytes": 1738,
+        "message_bytes": 236,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3143,
+        "repeated_bytes": 11751,
+        "new_bytes": 168,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 12055,
+        "system_bytes": 1738,
+        "message_bytes": 372,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3184,
+        "repeated_bytes": 11919,
+        "new_bytes": 136,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 20246,
+        "system_bytes": 1738,
+        "message_bytes": 8563,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 5239,
+        "repeated_bytes": 12055,
+        "new_bytes": 8191,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 29721,
+        "system_bytes": 1738,
+        "message_bytes": 18038,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 7615,
+        "repeated_bytes": 20246,
+        "new_bytes": 9475,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 6,
+        "total_bytes": 39205,
+        "system_bytes": 1738,
+        "message_bytes": 27522,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 9993,
+        "repeated_bytes": 29721,
+        "new_bytes": 9484,
+        "messages": 11,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 7,
+        "total_bytes": 45472,
+        "system_bytes": 1738,
+        "message_bytes": 33789,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 11566,
+        "repeated_bytes": 39205,
+        "new_bytes": 6267,
+        "messages": 13,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 7,
+    "request_count": 7,
+    "tool_call_count": 6,
+    "successful_tool_calls": 5,
+    "failed_tool_calls": 1,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "index.html",
+      "script.js",
+      "style.css",
+      "tui/approval.go"
+    ],
+    "bytes_read": 33262,
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 43834,
+    "estimated_output_tokens": 8378,
+    "raw_tool_output_bytes": 33502,
+    "context_bytes": 100754,
+    "tool_schema_bytes": 69615,
+    "repeated_context_bytes": 124897,
+    "new_context_bytes": 45472,
+    "first_request_bytes": 11751,
+    "last_request_bytes": 45472,
+    "wall_millis": 0,
+    "objective_status": "COMPLETED",
+    "verification_status": "not_applicable",
+    "completion_reason": "",
+    "mutated": false,
+    "verified": false,
+    "final_answer": "Nimbus Notes is a static, offline-first notebook. index.html is the entry point, style.css owns the visual system, script.js owns note persistence, and tui/approval.go is a small Go component. There is no README yet.",
+    "answer_facts_matched": 5,
+    "answer_facts_expected": 5,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "README.md"
+        },
+        "is_error": true,
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-4129494356/README.md: no such file or directory"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n      35  go.mod\n    7678  index.html\n    8888  script.js\n    8895  style.css"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "style.css"
+        },
+        "text": "1\t:root {\n2\t  --ink: #17202a;\n3\t  --paper: #fbfaf7;\n4\t  --accent: #2f6f8f;\n5\t  --line: #d9d4ca;\n6\t}\n7\t* { box-sizing: border-box; }\n8\tbody {\n9\t  margin: 0;\n10\t  font-family: ui-sans-serif, system-ui, sans-serif;\n11\t  color: var(--ink);\n12\t  background: var(--paper);\n13\t}\n14\t.topbar { padding: 2rem; border-bottom: 1px solid var(--line); }\n15\t.topbar h1 { margin: 0; font-size: 2rem; }\n16\t.tagline { color: #5c6670; }\n17\tmain { max-width: 48rem; margin: 0 auto; padding: 2rem; }\n18\tform { display: gr…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "script.js"
+        },
+        "text": "1\t'use strict';\n2\t\n3\tconst STORAGE_KEY = 'nimbus-notes-v1';\n4\t\n5\tfunction loadNotes() {\n6\t  try {\n7\t    const raw = localStorage.getItem(STORAGE_KEY);\n8\t    return raw ? JSON.parse(raw) : [];\n9\t  } catch (error) {\n10\t    console.warn('could not read notes', error);\n11\t    return [];\n12\t  }\n13\t}\n14\t\n15\tfunction saveNotes(notes) {\n16\t  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));\n17\t}\n18\t\n19\tfunction render() {\n20\t  const notes = loadNotes();\n21\t  const list = document.getElementById(…"
+      },
+      {
+        "tool": "read",
+        "args": {
+          "path": "tui/approval.go"
+        },
+        "text": "1\tpackage tui\n2\t\n3\timport \"fmt\"\n4\t\n5\t// Approval is the UI projection of one authorization decision.\n6\ttype Approval struct {\n7\t\tTool    string\n8\t\tReason  string\n9\t\tPreview string\n10\t}\n11\t\n12\t// Describe renders the decision for a human.\n13\tfunc (a Approval) Describe() string {\n14\t\tif a.Reason == \"\" {\n15\t\t\treturn a.Tool\n16\t\t}\n17\t\treturn fmt.Sprintf(\"%s (%s)\", a.Tool, a.Reason)\n18\t}\n19\t// The terminal projection is presentation only; it never authorizes.\n20\t// The terminal projection is presentat…"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "K7-stop-after-proof",
+    "prompt": "Check the project, write README.md, and verify the repository still builds. Do not modify any other file.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "dfd20941b02b13aa0252375425bbc2bdb718018a073c147f9d7808030e9da774",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:49.465287Z",
+    "finished_at": "2026-10-23T05:10:51.676598Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11788,
+        "system_bytes": 1738,
+        "message_bytes": 105,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3104,
+        "repeated_bytes": 0,
+        "new_bytes": 11788,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 12612,
+        "system_bytes": 1738,
+        "message_bytes": 929,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3317,
+        "repeated_bytes": 11788,
+        "new_bytes": 824,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 13436,
+        "system_bytes": 1738,
+        "message_bytes": 1753,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3530,
+        "repeated_bytes": 12612,
+        "new_bytes": 824,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 13566,
+        "system_bytes": 1738,
+        "message_bytes": 1883,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3569,
+        "repeated_bytes": 13436,
+        "new_bytes": 130,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 5,
+        "total_bytes": 13722,
+        "system_bytes": 1738,
+        "message_bytes": 2039,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3615,
+        "repeated_bytes": 13566,
+        "new_bytes": 156,
+        "messages": 9,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 5,
+    "request_count": 5,
+    "tool_call_count": 4,
+    "successful_tool_calls": 4,
+    "failed_tool_calls": 0,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "index.html"
+    ],
+    "bytes_read": 786,
+    "files_written": [
+      "README.md"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 17135,
+    "estimated_output_tokens": 254,
+    "raw_tool_output_bytes": 1007,
+    "context_bytes": 15399,
+    "tool_schema_bytes": 49725,
+    "repeated_context_bytes": 51402,
+    "new_context_bytes": 13722,
+    "first_request_bytes": 11788,
+    "last_request_bytes": 13722,
+    "wall_millis": 2156,
+    "objective_status": "COMPLETED",
+    "verification_status": "verified",
+    "completion_reason": "",
+    "mutated": true,
+    "verified": true,
+    "mutated_paths": [
+      "README.md"
+    ],
+    "final_answer": "I wrote README.md and verified the repository builds.",
+    "answer_facts_matched": 2,
+    "answer_facts_expected": 2,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      },
+      {
+        "tool": "write",
+        "args": {
+          "content": "# Nimbus Notes\n\nNimbus Notes is a small, offline-first notebook that runs entirely in the\nbrowser. Notes are stored in localStorage; there is no account and no server.\n\n## Structure\n\n- index.html is the application shell and entry point.\n- style.css defines the visual system.\n- script.js owns note persistence and rendering.\n- tui/approval.go is the small Go component used by the terminal tooling.\n- docs/ARCHITECTURE.md records the design in prose.\n\n## Running it\n\nOpen index.html in a browser. The Makefile contains the Go checks used by the\nterminal tooling.\n\n## Design notes\n\nThe application deliberately avoids a backend. The browser is the data store,\nso the project has no build step and no runtime dependencies.\n",
+          "path": "README.md"
+        },
+        "text": "Wrote 722 bytes to README.md."
+      },
+      {
+        "tool": "bash",
+        "args": {
+          "command": "GOCACHE=$PWD/.gocache go build ./..."
+        },
+        "text": "$ GOCACHE=$PWD/.gocache go build ./...\n\n\n\n[exit code 0, 2.156s]"
+      },
+      {
+        "tool": "ls",
+        "args": {
+          "path": "."
+        },
+        "text": ".\ndocs/\ntui/\n      73  Makefile\n     722  README.md\n      35  go.mod\n     718  index.html\n    1208  script.js\n     915  style.css"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "P10-C1-read-file",
+    "prompt": "Read index.html and explain what it does. Do not modify anything.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "ee7893c1f6b8b196f38549a08b362c69384a2abaa0235fe422fd83a92db66958",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:51.676631Z",
+    "finished_at": "2026-10-23T05:10:51.679804Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11747,
+        "system_bytes": 1737,
+        "message_bytes": 65,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3094,
+        "repeated_bytes": 0,
+        "new_bytes": 11747,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 12571,
+        "system_bytes": 1737,
+        "message_bytes": 889,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3307,
+        "repeated_bytes": 11747,
+        "new_bytes": 824,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 2,
+    "request_count": 2,
+    "tool_call_count": 1,
+    "successful_tool_calls": 1,
+    "failed_tool_calls": 0,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "index.html"
+    ],
+    "bytes_read": 786,
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 6401,
+    "estimated_output_tokens": 197,
+    "raw_tool_output_bytes": 786,
+    "context_bytes": 4428,
+    "tool_schema_bytes": 19890,
+    "repeated_context_bytes": 11747,
+    "new_context_bytes": 12571,
+    "first_request_bytes": 11747,
+    "last_request_bytes": 12571,
+    "wall_millis": 0,
+    "objective_status": "COMPLETED",
+    "verification_status": "not_applicable",
+    "completion_reason": "",
+    "mutated": false,
+    "verified": false,
+    "final_answer": "index.html is the Nimbus Notes application shell: it loads style.css and script.js and contains the note form.",
+    "answer_facts_matched": 3,
+    "answer_facts_expected": 3,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "index.html"
+        },
+        "text": "1\t\u003c!doctype html\u003e\n2\t\u003chtml lang=\"en\"\u003e\n3\t\u003chead\u003e\n4\t  \u003cmeta charset=\"utf-8\"\u003e\n5\t  \u003ctitle\u003eNimbus Notes\u003c/title\u003e\n6\t  \u003clink rel=\"stylesheet\" href=\"style.css\"\u003e\n7\t\u003c/head\u003e\n8\t\u003cbody\u003e\n9\t  \u003cheader class=\"topbar\"\u003e\n10\t    \u003ch1\u003eNimbus Notes\u003c/h1\u003e\n11\t    \u003cp class=\"tagline\"\u003eA tiny offline-first notebook.\u003c/p\u003e\n12\t  \u003c/header\u003e\n13\t  \u003cmain id=\"app\"\u003e\n14\t    \u003cform id=\"note-form\"\u003e\n15\t      \u003clabel for=\"note-input\"\u003eNew note\u003c/label\u003e\n16\t      \u003ctextarea id=\"note-input\" rows=\"4\" placeholder=\"Write something...\"\u003e\u003c/textarea\u003e\n17\t      …"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "P10-C2-read-then-update",
+    "prompt": "Read script.js and update the storage key to 'nimbus-notes-v2'. Do not change any other file.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "106fb9378e6bdb3e84f5040d682cc67a3aaab96e98457e3f6bb9f8089e4ff21c",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:51.679816Z",
+    "finished_at": "2026-10-23T05:10:53.89084Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11776,
+        "system_bytes": 1738,
+        "message_bytes": 93,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3101,
+        "repeated_bytes": 0,
+        "new_bytes": 11776,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 13152,
+        "system_bytes": 1738,
+        "message_bytes": 1469,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3452,
+        "repeated_bytes": 11776,
+        "new_bytes": 1376,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 3,
+        "total_bytes": 13341,
+        "system_bytes": 1738,
+        "message_bytes": 1658,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3506,
+        "repeated_bytes": 13152,
+        "new_bytes": 189,
+        "messages": 5,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 4,
+        "total_bytes": 13471,
+        "system_bytes": 1738,
+        "message_bytes": 1788,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3545,
+        "repeated_bytes": 13341,
+        "new_bytes": 130,
+        "messages": 7,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 4,
+    "request_count": 4,
+    "tool_call_count": 3,
+    "successful_tool_calls": 3,
+    "failed_tool_calls": 0,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "script.js"
+    ],
+    "bytes_read": 1339,
+    "files_written": [
+      "script.js"
+    ],
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 13604,
+    "estimated_output_tokens": 362,
+    "raw_tool_output_bytes": 1446,
+    "context_bytes": 11960,
+    "tool_schema_bytes": 39780,
+    "repeated_context_bytes": 38269,
+    "new_context_bytes": 13471,
+    "first_request_bytes": 11776,
+    "last_request_bytes": 13471,
+    "wall_millis": 2156,
+    "objective_status": "COMPLETED",
+    "verification_status": "verified",
+    "completion_reason": "",
+    "mutated": true,
+    "verified": true,
+    "mutated_paths": [
+      "script.js"
+    ],
+    "final_answer": "I changed the storage key in script.js to nimbus-notes-v2 and the repository still builds.",
+    "answer_facts_matched": 1,
+    "answer_facts_expected": 1,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "script.js"
+        },
+        "text": "1\t'use strict';\n2\t\n3\tconst STORAGE_KEY = 'nimbus-notes-v1';\n4\t\n5\tfunction loadNotes() {\n6\t  try {\n7\t    const raw = localStorage.getItem(STORAGE_KEY);\n8\t    return raw ? JSON.parse(raw) : [];\n9\t  } catch (error) {\n10\t    console.warn('could not read notes', error);\n11\t    return [];\n12\t  }\n13\t}\n14\t\n15\tfunction saveNotes(notes) {\n16\t  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));\n17\t}\n18\t\n19\tfunction render() {\n20\t  const notes = loadNotes();\n21\t  const list = document.getElementById(…"
+      },
+      {
+        "tool": "edit",
+        "args": {
+          "new_string": "const STORAGE_KEY = 'nimbus-notes-v2';",
+          "old_string": "const STORAGE_KEY = 'nimbus-notes-v1';",
+          "path": "script.js"
+        },
+        "text": "Replaced 1 occurrence in script.js (line 3)."
+      },
+      {
+        "tool": "bash",
+        "args": {
+          "command": "GOCACHE=$PWD/.gocache go build ./..."
+        },
+        "text": "$ GOCACHE=$PWD/.gocache go build ./...\n\n\n\n[exit code 0, 2.156s]"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  },
+  {
+    "scenario": "P10-F-package-name",
+    "prompt": "What is the package declared in tui/approval.go? Answer with the package name only.",
+    "model": "scripted",
+    "provider": "none",
+    "model_settings": "fixed-sequence",
+    "runtime_mode": "scripted-control",
+    "authority": "build",
+    "task_hash": "b2df882fc35bd713589072b853d0cef3fc433454ecf75addc25a10c837447610",
+    "repository": "fixture:static",
+    "repository_revision": "phase9-fixture-v1",
+    "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
+    "started_at": "2026-10-23T05:10:53.890883Z",
+    "finished_at": "2026-10-23T05:10:53.893497Z",
+    "requests": [
+      {
+        "index": 1,
+        "total_bytes": 11766,
+        "system_bytes": 1738,
+        "message_bytes": 83,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3098,
+        "repeated_bytes": 0,
+        "new_bytes": 11766,
+        "messages": 1,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      },
+      {
+        "index": 2,
+        "total_bytes": 12193,
+        "system_bytes": 1738,
+        "message_bytes": 510,
+        "tool_schema_bytes": 9945,
+        "estimated_tokens": 3211,
+        "repeated_bytes": 11766,
+        "new_bytes": 427,
+        "messages": 3,
+        "tools": 14,
+        "tool_names": [
+          "bash",
+          "delete",
+          "edit",
+          "glob",
+          "graph",
+          "grep",
+          "ls",
+          "read",
+          "refs",
+          "symbols",
+          "todo",
+          "wait",
+          "web_fetch",
+          "write"
+        ]
+      }
+    ],
+    "turn_count": 2,
+    "request_count": 2,
+    "tool_call_count": 1,
+    "successful_tool_calls": 1,
+    "failed_tool_calls": 0,
+    "candidate_rejections": 0,
+    "authorization_refusals": 0,
+    "retries": 0,
+    "files_read": [
+      "tui/approval.go"
+    ],
+    "bytes_read": 384,
+    "bytes_written": 0,
+    "duplicate_reads": 0,
+    "search_calls": 0,
+    "estimated_input_tokens": 6309,
+    "estimated_output_tokens": 96,
+    "raw_tool_output_bytes": 384,
+    "context_bytes": 4069,
+    "tool_schema_bytes": 19890,
+    "repeated_context_bytes": 11766,
+    "new_context_bytes": 12193,
+    "first_request_bytes": 11766,
+    "last_request_bytes": 12193,
+    "wall_millis": 0,
+    "objective_status": "COMPLETED",
+    "verification_status": "not_applicable",
+    "completion_reason": "",
+    "mutated": false,
+    "verified": false,
+    "final_answer": "tui",
+    "answer_facts_matched": 1,
+    "answer_facts_expected": 1,
+    "outcomes": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "tui/approval.go"
+        },
+        "text": "1\tpackage tui\n2\t\n3\timport \"fmt\"\n4\t\n5\t// Approval is the UI projection of one authorization decision.\n6\ttype Approval struct {\n7\t\tTool    string\n8\t\tReason  string\n9\t\tPreview string\n10\t}\n11\t\n12\t// Describe renders the decision for a human.\n13\tfunc (a Approval) Describe() string {\n14\t\tif a.Reason == \"\" {\n15\t\t\treturn a.Tool\n16\t\t}\n17\t\treturn fmt.Sprintf(\"%s (%s)\", a.Tool, a.Reason)\n18\t}"
+      }
+    ],
+    "evidence_state_bytes": 0,
+    "evidence_items": 0
+  }
+]

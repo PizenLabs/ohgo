@@ -101,6 +101,10 @@ type TaskHooks struct {
 	Evidence func() *cognition.EvidenceState
 	// RecordProjection stores the last projection audit for /audit.
 	RecordProjection func(agent.ProjectionReport)
+	// ProjectionReview returns the last projection's evidence review, or ""
+	// when the runtime had enough evidence. It is a completion veto, never an
+	// authorization.
+	ProjectionReview func() string
 	// Audit returns the last projection audit, for /audit.
 	Audit func() string
 	// RunBudget returns the fresh root grant for one turn. The host installs

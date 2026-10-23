@@ -37,6 +37,10 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 		maxItems = DefaultStateBlockItems
 	}
 
+	// The contract and the sufficiency verdict come first. They are the part
+	// of the state that must survive context reduction: evidence is allowed to
+	// be summarized, but authority, task scope, verification, completion, and
+	// the reason for the current stage are not.
 	var sections []string
 	var head strings.Builder
 	head.WriteString("# Runtime state (authoritative, not a user request)\n\n")
@@ -44,53 +48,46 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 		fmt.Fprintf(&head, "Objective: %s\n", bound(shape.Objective, 320))
 	}
 	fmt.Fprintf(&head, "Task shape: %s\n", shape.Summary())
-	// Stable shape details are sent once, not on every turn. The current
-	// objective and the one-line shape remain, so the model never loses what
-	// the task is; repeating the full contract on every request would defeat
-	// the projection it is meant to enable.
-	if execution.ToolCalls <= 1 {
-		if len(shape.Constraints) > 0 {
-			fmt.Fprintf(&head, "Constraints: %s\n", strings.Join(shape.Constraints, ", "))
+	if len(shape.Constraints) > 0 {
+		fmt.Fprintf(&head, "Constraints: %s\n", strings.Join(shape.Constraints, ", "))
+	}
+	if shape.Mutation.Allowed {
+		scope := "not explicit"
+		if len(shape.Mutation.Paths) > 0 {
+			scope = strings.Join(shape.Mutation.Paths, ", ")
 		}
-		if shape.Mutation.Allowed {
-			scope := "not explicit"
-			if len(shape.Mutation.Paths) > 0 {
-				scope = strings.Join(shape.Mutation.Paths, ", ")
-			}
-			fmt.Fprintf(&head, "Mutation scope: %s\n", scope)
-			if shape.Mutation.UnrelatedForbidden {
-				head.WriteString("Unrelated mutation: forbidden\n")
-			}
-		} else {
-			head.WriteString("Mutation: forbidden\n")
+		fmt.Fprintf(&head, "Mutation scope: %s\n", scope)
+		if shape.Mutation.UnrelatedForbidden {
+			head.WriteString("Unrelated mutation: forbidden\n")
 		}
-		if len(shape.Verification) > 0 {
-			fmt.Fprintf(&head, "Verification: %s\n", verificationSummary(shape.Verification))
+	} else {
+		head.WriteString("Mutation: forbidden\n")
+	}
+	if len(shape.Verification) > 0 {
+		fmt.Fprintf(&head, "Verification: %s\n", verificationSummary(shape.Verification))
+	}
+	if len(shape.Completion) > 0 {
+		var conditions []string
+		for _, condition := range shape.Completion {
+			conditions = append(conditions, condition.Description)
 		}
-		if len(shape.Completion) > 0 {
-			var conditions []string
-			for _, condition := range shape.Completion {
-				conditions = append(conditions, condition.Description)
-			}
-			fmt.Fprintf(&head, "Completion: %s\n", bound(strings.Join(conditions, "; "), 360))
-		}
+		fmt.Fprintf(&head, "Completion: %s\n", bound(strings.Join(conditions, "; "), 360))
 	}
 	sections = append(sections, head.String())
 
-	known := orderedEvidence(evidence.Items, maxItems)
-	if len(known) > 0 {
-		var sb strings.Builder
-		sb.WriteString("Evidence known:\n")
-		for _, item := range known {
-			if item.Status == StatusConflicting || item.Retention == RetentionExternal {
-				continue
-			}
-			fmt.Fprintf(&sb, "- [%s/%s] %s%s\n", item.Status, item.Retention, bound(item.Summary, 260), sourceSuffix(item.Source))
-		}
-		if sb.Len() > len("Evidence known:\n") {
-			sections = append(sections, sb.String())
-		}
+	var suffLine strings.Builder
+	fmt.Fprintf(&suffLine, "Sufficiency: %s (%s)\n", suff.State, suff.Stage)
+	if len(suff.Reasons) > 0 {
+		fmt.Fprintf(&suffLine, "Why: %s\n", bound(strings.Join(uniqueStrings(suff.Reasons), "; "), 420))
 	}
+	if len(suff.Next) > 0 {
+		fmt.Fprintf(&suffLine, "Next evidence: %s\n", bound(strings.Join(uniqueStrings(suff.Next), "; "), 320))
+	}
+	fmt.Fprintf(&suffLine, "Available actions: %s\n", candidates.CandidateSummary(420))
+	if len(candidates.Notices) > 0 {
+		fmt.Fprintf(&suffLine, "Withheld: %s\n", bound(strings.Join(candidates.Notices, "; "), 420))
+	}
+	sections = append(sections, suffLine.String())
 
 	var required []string
 	for _, missing := range suff.Missing {
@@ -127,19 +124,23 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 			strings.Join(external, "\n")+"\n")
 	}
 
-	var suffLine strings.Builder
-	fmt.Fprintf(&suffLine, "Sufficiency: %s (%s)\n", suff.State, suff.Stage)
-	if len(suff.Reasons) > 0 {
-		fmt.Fprintf(&suffLine, "Why: %s\n", bound(strings.Join(uniqueStrings(suff.Reasons), "; "), 420))
+	// Evidence summaries are the first thing sacrificed when the briefing does
+	// not fit. The exact observations remain in the live transcript and the
+	// durable evidence state; the model can re-read them.
+	known := orderedEvidence(evidence.Items, maxItems)
+	if len(known) > 0 {
+		var sb strings.Builder
+		sb.WriteString("Evidence known:\n")
+		for _, item := range known {
+			if item.Status == StatusConflicting || item.Retention == RetentionExternal {
+				continue
+			}
+			fmt.Fprintf(&sb, "- [%s/%s] %s%s\n", item.Status, item.Retention, bound(item.Summary, 260), sourceSuffix(item.Source))
+		}
+		if sb.Len() > len("Evidence known:\n") {
+			sections = append(sections, sb.String())
+		}
 	}
-	if len(suff.Next) > 0 {
-		fmt.Fprintf(&suffLine, "Next evidence: %s\n", bound(strings.Join(uniqueStrings(suff.Next), "; "), 320))
-	}
-	fmt.Fprintf(&suffLine, "Available actions: %s\n", candidates.CandidateSummary(420))
-	if len(candidates.Notices) > 0 {
-		fmt.Fprintf(&suffLine, "Withheld: %s\n", bound(strings.Join(candidates.Notices, "; "), 420))
-	}
-	sections = append(sections, suffLine.String())
 
 	return boundSections(sections, maxBytes)
 }

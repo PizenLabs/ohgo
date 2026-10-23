@@ -13,6 +13,23 @@ import (
 
 func stopTurn() agent.Turn { return agent.Turn{Assistant: ai.AssistantMessage{}} }
 
+func TestTurnTaskOutcomeHonorsEvidenceReview(t *testing.T) {
+	turns := []agent.Turn{{Assistant: ai.AssistantMessage{
+		Content:    []ai.ContentBlock{ai.TextContent{Text: "It is a Go project."}},
+		StopReason: ai.StopEndTurn,
+	}}}
+	action, reason := turnTaskOutcomeWithReview(
+		nil, turns, workspace.BuildIntentContract("Explain this project."), nil, nil,
+		"runtime evidence was not sufficient for the objective (INSUFFICIENT) at stage explore",
+	)
+	if action != taskActionReview {
+		t.Fatalf("action = %v, want review (reason %q)", action, reason)
+	}
+	if reason == "" {
+		t.Fatal("review has no reason")
+	}
+}
+
 // A failed tool call followed by a clean stop is reviewable, never complete.
 func TestTurnTaskOutcomeRejectsFailedToolCall(t *testing.T) {
 	turns := []agent.Turn{

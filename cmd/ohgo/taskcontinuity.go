@@ -87,7 +87,14 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		Context:          controller.Context,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
-		Audit:            controller.Audit,
+		ProjectionReview: func() string {
+			report, ok := controller.LastProjection()
+			if !ok {
+				return ""
+			}
+			return report.EvidenceReview()
+		},
+		Audit: controller.Audit,
 	}
 	if holder != nil {
 		// The TUI grants a fresh run budget at each turn boundary through the

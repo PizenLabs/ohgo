@@ -92,6 +92,91 @@ func TestProjectionCannotAddTools(t *testing.T) {
 	}
 }
 
+func TestProjectionCannotSubstituteAToolWithTheSameName(t *testing.T) {
+	// A projector that returns a different tool under a known name is still
+	// limited to the loop's constructed instance. Name-only intersection
+	// would let a fabricated tool replace the authorizer-approved capability.
+	constructed := newScriptedTool("read", "real result")
+	fabricated := newScriptedTool("read", "fabricated result")
+	stream, _ := scriptedStream(
+		ai.AssistantMessage{
+			Content:    []ai.ContentBlock{ai.ToolCall{ID: "call-1", Name: "read", Arguments: map[string]any{"value": "x"}}},
+			StopReason: ai.StopToolUse,
+		},
+		ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "done"}}, StopReason: ai.StopEndTurn},
+	)
+	var report ProjectionReport
+	loop, err := New(Config{
+		Model:  catalog.MustResolve("anthropic/claude-sonnet-4-5"),
+		Stream: stream,
+		Tools:  []Tool{constructed},
+		Project: func(ProjectionRequest) ProjectionResult {
+			return ProjectionResult{Tools: []Tool{fabricated}}
+		},
+		OnProjection: func(r ProjectionReport) { report = r },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loop.Run(context.Background(), []Message{UserMessage{Text: "read"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(constructed.invoked()); got != 1 {
+		t.Fatalf("constructed tool ran %d times, want 1", got)
+	}
+	if got := len(fabricated.invoked()); got != 0 {
+		t.Fatalf("fabricated tool ran %d times, want 0", got)
+	}
+	if len(report.ToolNames) != 1 || report.ToolNames[0] != "read" {
+		t.Fatalf("audit tool names = %#v", report.ToolNames)
+	}
+}
+
+func TestAuthorizationDenialIsNotACompletionFailure(t *testing.T) {
+	// A refused call never executed. If the model then answers a read-only
+	// request, the objective can still be complete: the refusal is a control
+	// decision, not an unrecovered tool failure.
+	tool := newScriptedTool("read", "contents")
+	authorizer := &scriptedAuthorizer{decisions: []security.Decision{{
+		Outcome: security.OutcomeDeny,
+		Rule:    "test-deny",
+		Reason:  "not allowed",
+	}}}
+	turns, scripted := runWithAuthorizer(t, tool, authorizer)
+	if len(scripted.invoked()) != 0 {
+		t.Fatal("a denied tool executed")
+	}
+	if len(turns) == 0 || len(turns[0].Results) != 1 {
+		t.Fatalf("turns = %#v", turns)
+	}
+	if !turns[0].Results[0].Refused() {
+		t.Fatalf("outcome = %#v, want a refusal", turns[0].Results[0])
+	}
+	if completion := EvaluateCompletion(turns, false); !completion.Complete() {
+		t.Fatalf("completion = %s (%s), want complete after a denied call", completion.State, completion.Reason)
+	}
+}
+
+func TestApprovalRejectionIsNotACompletionFailure(t *testing.T) {
+	// A human refusal is also a control decision. It must not leave a
+	// pending-failure shadow over an otherwise answered read-only objective.
+	tool := newScriptedTool("read", "contents")
+	authorizer := &scriptedAuthorizer{
+		decisions:     []security.Decision{{Outcome: security.OutcomeApprove}},
+		approveResult: false,
+	}
+	turns, scripted := runWithAuthorizer(t, tool, authorizer)
+	if len(scripted.invoked()) != 0 {
+		t.Fatal("a rejected tool executed")
+	}
+	if !turns[0].Results[0].Refused() {
+		t.Fatalf("outcome = %#v, want a refusal", turns[0].Results[0])
+	}
+	if completion := EvaluateCompletion(turns, false); !completion.Complete() {
+		t.Fatalf("completion = %s (%s), want complete after a rejected call", completion.State, completion.Reason)
+	}
+}
+
 func TestProjectionDoesNotBypassAuthorizer(t *testing.T) {
 	tool := newScriptedTool("read", "ok")
 	authorizer := &scriptedAuthorizer{decisions: []security.Decision{{

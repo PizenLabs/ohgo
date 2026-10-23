@@ -62,6 +62,46 @@ func TestHeadlessExitCodes(t *testing.T) {
 	}
 }
 
+func TestHeadlessShapeUsesRoutedAuthority(t *testing.T) {
+	// The router may delegate an informational or investigative turn to a
+	// narrower handler while the active workspace stays BUILD. The shape the
+	// stateless path sends must name the handler it is actually running under,
+	// not the completion kind's default.
+	root := t.TempDir()
+	var offered [][]string
+	stream := func(ctx context.Context, req ai.Request) (*ai.Stream, error) {
+		names := make([]string, 0, len(req.Tools))
+		for _, spec := range req.Tools {
+			names = append(names, spec.Name)
+		}
+		offered = append(offered, names)
+		return ai.NewCompletedStream(stopMessage()), nil
+	}
+	var out bytes.Buffer
+	_, _ = runHeadlessTurnAs(context.Background(), headlessLoop(t, root, stream), root, &out, "Write README.md.", nil, "ask")
+	if len(offered) == 0 {
+		t.Fatal("the provider was not called")
+	}
+	for _, name := range offered[0] {
+		if name == "write" || name == "bash" {
+			t.Fatalf("ASK-shaped turn offered %q: %#v", name, offered[0])
+		}
+	}
+}
+
+func TestHeadlessEvidenceReviewPreventsGuessedAnswer(t *testing.T) {
+	// A repository-scoped question answered without a single read is a guess.
+	// The projection says INSUFFICIENT at the request that produced the
+	// answer; completion must report review, not COMPLETED.
+	outcome, text := runOnceHeadless(t, t.TempDir(), scriptedCompletionStream(stopMessage()), "Explain this project.")
+	if outcome.State == runCompleted {
+		t.Fatalf("an evidence-free answer was reported complete: %s", text)
+	}
+	if !strings.Contains(text, "NEEDS_REVIEW") {
+		t.Fatalf("output = %q, want NEEDS_REVIEW", text)
+	}
+}
+
 func TestOneShotReturnsZeroOnCompleted(t *testing.T) {
 	outcome, text := runOnceHeadless(t, t.TempDir(), scriptedCompletionStream(stopMessage()), "explain this")
 	if outcome.State != runCompleted || outcome.exitCode() != 0 {

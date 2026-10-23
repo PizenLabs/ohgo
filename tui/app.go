@@ -3763,7 +3763,11 @@ func (p *Program) runTurn(text string) {
 	// change happened, that it happened to the named target, or that the
 	// verification covered it; a failure is not erased by a plausible closing
 	// sentence.
-	action, reason := turnTaskOutcome(err, turns, intent, targetSnapshot, p.completionResolver)
+	evidenceReview := ""
+	if p.task.ProjectionReview != nil {
+		evidenceReview = p.task.ProjectionReview()
+	}
+	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview)
 	if p.beforeTaskTransition != nil {
 		p.beforeTaskTransition()
 	}

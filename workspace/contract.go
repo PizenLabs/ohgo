@@ -561,6 +561,27 @@ var (
 	namedPackage      = regexp.MustCompile(`\b([a-z][a-z0-9_]*)\s+package\b`)
 )
 
+// packageStopWords are English words and generic nouns that can follow or
+// precede "package" in a question without naming a Go package. A word absent
+// from this list remains a candidate, so a real package such as "auth" is not
+// lost to over-filtering.
+var packageStopWords = map[string]bool{
+	"a": true, "an": true, "the": true, "this": true, "that": true,
+	"these": true, "those": true, "its": true, "your": true, "our": true,
+	"declared": true, "defined": true, "named": true, "called": true,
+	"name": true, "names": true, "manager": true, "json": true, "main": true,
+	"structure": true, "layout": true, "dependency": true, "dependencies": true,
+	"import": true, "imports": true, "path": true, "paths": true,
+	"directory": true, "directories": true, "file": true, "files": true,
+	"list": true, "version": true, "versions": true, "code": true,
+	"source": true, "sources": true, "module": true, "modules": true,
+	"function": true, "functions": true, "type": true, "types": true,
+	"test": true, "tests": true, "build": true, "builds": true,
+	"compile": true, "compiles": true, "documentation": true, "docs": true,
+	"readme": true, "root": true, "project": true, "repository": true,
+	"repo": true, "package": true, "packages": true,
+}
+
 // symbolStopWords are English words that happen to look like identifiers.
 var symbolStopWords = map[string]bool{
 	"a": true, "an": true, "the": true, "this": true, "that": true,
@@ -615,18 +636,23 @@ func extractSymbolTargets(text string) []string {
 }
 
 // extractPackageTargets returns explicitly named Go packages.
+//
+// The surrounding words are natural language, not coordinates: "what package
+// is declared here?" is a question about a file, not a request to locate a
+// package named "declared". The stop list keeps those generic words from
+// becoming evidence requirements.
 func extractPackageTargets(text string) []string {
 	var out []string
 	for _, match := range packagePattern.FindAllStringSubmatch(text, -1) {
 		value := match[1]
-		if value == "manager" || value == "json" || value == "main" {
+		if packageStopWords[value] {
 			continue
 		}
 		out = appendUnique(out, value)
 	}
 	for _, match := range namedPackage.FindAllStringSubmatch(text, -1) {
 		value := match[1]
-		if value == "the" || value == "this" || value == "that" || value == "a" || value == "go" {
+		if packageStopWords[value] {
 			continue
 		}
 		out = appendUnique(out, value)

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/security"
 )
 
@@ -43,6 +44,85 @@ func TestEvaluateCompletionRejectsMissingMutation(t *testing.T) {
 	verdict := EvaluateCompletion([]Turn{cleanStop()}, true)
 	if verdict.Complete() {
 		t.Fatal("a mutation objective with no observed change was reported complete")
+	}
+}
+
+func TestEvaluateCompletionRejectsUnexpectedMutation(t *testing.T) {
+	// A read-only or execution-only run that changed the repository is not
+	// complete even if the model produced a clean final answer. The workspace
+	// may have authorized the call; the objective did not.
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("write", Result{Text: "wrote", Mutates: true})}},
+		answerTurn("done"),
+	}
+	if verdict := EvaluateCompletion(turns, false); verdict.Complete() {
+		t.Fatal("a read-only run that mutated was reported complete")
+	}
+}
+
+func TestInformationalPathTargetDoesNotRequireVerification(t *testing.T) {
+	// Naming a Go file in a question does not make the answer a checked
+	// change. Before this rule, "what package is declared in tui/x.go?"
+	// required a build or test that the task never asked for.
+	contract := contract.IntentContract{
+		Objective: "What package is declared in tui/approval.go?",
+		Kind:      contract.ObjectiveInformational,
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "tui/approval.go"}},
+	}
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("read", Result{
+			Text:    "1\tpackage tui",
+			Details: map[string]any{"path": "tui/approval.go", "totalLines": 1, "offset": 1, "limit": 2000},
+		})}},
+		answerTurn("tui"),
+	}
+	verdict := EvaluateTaskCompletion(CompletionInput{Turns: turns, Contract: contract})
+	if !verdict.Complete() {
+		t.Fatalf("informational completion = %s (%s), want COMPLETED", verdict.State, verdict.Reason)
+	}
+}
+
+func TestEvidenceReviewVetoesAnAnswerWithoutEvidence(t *testing.T) {
+	// A model can always emit a plausible sentence. The cognitive layer's
+	// sufficiency verdict is the runtime's statement that the sentence was
+	// produced without the evidence the task required.
+	contract := contract.IntentContract{
+		Objective: "Explain this project.",
+		Kind:      contract.ObjectiveInformational,
+	}
+	verdict := EvaluateTaskCompletion(CompletionInput{
+		Turns:          []Turn{answerTurn("It is a Go project.")},
+		Contract:       contract,
+		EvidenceReview: "runtime evidence was not sufficient for the objective (INSUFFICIENT) at stage explore",
+	})
+	if verdict.Complete() {
+		t.Fatal("an answer with an insufficient evidence review was reported complete")
+	}
+}
+
+func TestBudgetCompletionKeepsProvenEvidenceAuthoritative(t *testing.T) {
+	// A resource stop removes the closing model turn, but not the proof. The
+	// cognitive review from the pre-verification request must not undo a
+	// definite change followed by a successful check.
+	contract := contract.IntentContract{
+		Objective:           "Change note.txt and verify it.",
+		Kind:                contract.ObjectiveMutation,
+		BehavioralObjective: true,
+		Verification: []contract.VerificationRequirement{{
+			Kind: contract.VerifyAny,
+		}},
+	}
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("write", Result{Text: "wrote", Mutates: true})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{Text: "ok", Verifies: true})}},
+	}
+	verdict := EvaluateBudgetCompletion(CompletionInput{
+		Turns:          turns,
+		Contract:       contract,
+		EvidenceReview: "runtime evidence was not sufficient for the objective (INSUFFICIENT) at stage verify",
+	}, true)
+	if !verdict.Complete() {
+		t.Fatalf("proven budget completion = %s (%s), want COMPLETED", verdict.State, verdict.Reason)
 	}
 }
 
