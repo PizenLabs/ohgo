@@ -84,6 +84,34 @@ Mutations remain subject to the runtime security policy.`
 	return ""
 }
 
+// ProposalDecision renders a recorded human proposal decision as
+// control-plane-authored system text for the turn that decision releases.
+//
+// The copy lives here, beside the other system-prompt text, so there is
+// exactly one place to audit what the model is told. A delegated choice has no
+// directive and reports false: the human explicitly granted the authority, so
+// there is nothing to convey.
+func ProposalDecision(label, directive, question, subject string) (string, bool) {
+	if strings.TrimSpace(directive) == "" {
+		return "", false
+	}
+	var sb strings.Builder
+	sb.WriteString("Execution decision (decided by the human before execution; authoritative, not a model inference):")
+	if subject != "" {
+		sb.WriteString("\nRequested work: ")
+		sb.WriteString(subject)
+	}
+	if question != "" {
+		sb.WriteString("\nDecision: ")
+		sb.WriteString(question)
+	}
+	sb.WriteString("\nChoice: ")
+	sb.WriteString(label)
+	sb.WriteString(".\n")
+	sb.WriteString(directive)
+	return sb.String(), true
+}
+
 // Build assembles the system prompt blocks for one session.
 func Build(root string, extra string) []string {
 	var blocks []string

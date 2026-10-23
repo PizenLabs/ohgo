@@ -141,3 +141,39 @@ func TestIdentityForbidsSelfIntroduction(t *testing.T) {
 		}
 	}
 }
+
+// TestProposalDecisionRendersHumanProvenance proves a recorded decision
+// reaches the model as control-plane-authored text: the human's choice, the
+// question it answered, and its provenance, never bare wording the model could
+// mistake for its own inference.
+func TestProposalDecisionRendersHumanProvenance(t *testing.T) {
+	text, ok := ProposalDecision(
+		"One file",
+		`Keep "portfolio site" in one self-contained file.`,
+		`How should I organize "portfolio site"?`,
+		"portfolio site",
+	)
+	if !ok {
+		t.Fatal("a structural choice produced no directive")
+	}
+	for _, want := range []string{
+		"decided by the human",
+		"Requested work: portfolio site",
+		`Decision: How should I organize "portfolio site"?`,
+		"Choice: One file.",
+		"one self-contained file",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("decision block lost %q: %q", want, text)
+		}
+	}
+}
+
+// TestProposalDecisionDelegationAddsNoConstraint proves a delegated choice
+// constrains nothing: explicit delegation grants the authority rather than
+// directing it.
+func TestProposalDecisionDelegationAddsNoConstraint(t *testing.T) {
+	if text, ok := ProposalDecision("Let the model decide", "", "Which approach?", "the work"); ok || text != "" {
+		t.Errorf("delegation constrained execution with %q", text)
+	}
+}

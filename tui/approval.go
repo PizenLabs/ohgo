@@ -33,6 +33,12 @@ const (
 	// approvalFooterHint names the keys the dialog actually captures, so the
 	// user is never taught a binding the open dialog has taken over.
 	approvalFooterHint = "↑↓ move · enter confirm · y approve · n/esc deny"
+	// proposalTitle is the legend for a request-derived proposal. It stays in
+	// the same permission boundary; only the decision data differs.
+	proposalTitle = "Proposal Permission"
+	// proposalFooterHint names the keys a proposal captures. It deliberately
+	// omits y/n: those decide a tool grant, not a proposal.
+	proposalFooterHint = "↑↓ move · enter confirm · esc cancel"
 	// approvalIndent insets every body row from the frame.
 	approvalIndent = "  "
 	// approvalBorderRows is the fixed top and bottom frame.
@@ -192,14 +198,41 @@ func approvalPlan(pending *PendingApproval, layout Layout) []approvalRow {
 			}
 		}
 	}
-	rows = append(rows, approvalRow{kind: approvalRowQuestion, text: approvalQuestion, drop: dropQuestion})
+	for _, line := range WrapToWidth(pending.question(), body) {
+		rows = append(rows, approvalRow{kind: approvalRowQuestion, text: line, drop: dropQuestion})
+	}
 	rows = append(rows, approvalRow{kind: approvalRowSpacer, drop: dropSpacerTop})
 	for i, choice := range pending.Choices {
 		rows = append(rows, approvalRow{kind: approvalRowChoice, index: i, text: sanitizeInline(choice), drop: protectedRow})
 	}
 	rows = append(rows, approvalRow{kind: approvalRowSpacer, drop: dropSpacerBottom})
-	rows = append(rows, approvalRow{kind: approvalRowFooter, text: approvalFooterHint, drop: dropFooter})
+	rows = append(rows, approvalRow{kind: approvalRowFooter, text: pending.footerHint(), drop: dropFooter})
 	return rows
+}
+
+// title is the frame legend: the tool boundary or the proposal boundary.
+func (p *PendingApproval) title() string {
+	if p.IsProposal() {
+		return proposalTitle
+	}
+	return approvalTitle
+}
+
+// question is the ask that introduces the answers. A proposal supplies its
+// own request-derived question; a tool approval keeps the fixed ask.
+func (p *PendingApproval) question() string {
+	if p.IsProposal() && strings.TrimSpace(p.Proposal.Question) != "" {
+		return p.Proposal.Question
+	}
+	return approvalQuestion
+}
+
+// footerHint names the keys this prompt actually captures.
+func (p *PendingApproval) footerHint() string {
+	if p.IsProposal() {
+		return proposalFooterHint
+	}
+	return approvalFooterHint
 }
 
 // approvalBudget is the rows the whole approval block may occupy. The
@@ -303,7 +336,7 @@ func renderApproval(sb *strings.Builder, pending *PendingApproval, theme string,
 	}
 	interior := approvalInterior(layout)
 	border := approvalBorderColor(pending)
-	sb.WriteString(approvalTitleBorder(interior, border))
+	sb.WriteString(approvalTitleBorder(pending.title(), interior, border))
 	sb.WriteString("\n")
 	for _, row := range approvalBoxRows(pending, layout) {
 		content := renderApprovalRow(row, pending, border, theme, interior)
@@ -328,16 +361,16 @@ func approvalFrame(border string, content string) string {
 
 // approvalTitleBorder draws the top frame with the legend centered on it, in
 // the frame accent so the title and the boundary read as one object.
-func approvalTitleBorder(interior int, border string) string {
+func approvalTitleBorder(title string, interior int, border string) string {
 	b := lipgloss.RoundedBorder()
 	edge := fg(border)
 	titleStyle := fg(border).Bold(true)
 	if interior <= 0 {
 		return edge.Render(b.TopLeft + b.TopRight)
 	}
-	label := " " + approvalTitle + " "
+	label := " " + title + " "
 	if interior <= CellWidth(label) {
-		t := TruncateToWidth(approvalTitle, interior)
+		t := TruncateToWidth(title, interior)
 		if gap := interior - CellWidth(t); gap > 0 {
 			t += strings.Repeat(" ", gap)
 		}
