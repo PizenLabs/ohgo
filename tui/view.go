@@ -467,10 +467,20 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	conn, showConn := headerConn(state, tier)
 	width := displayWidth(state, layout)
 
+	// A transient clipboard confirmation layers over the permanent header on
+	// the far right. It reserves its own budget before the model truncates,
+	// so the permanent segments keep their established shedding order and
+	// the confirmation can never overlap them.
+	notice := sanitizeInline(state.CopyNotice)
+	reserved := 0
+	if notice != "" {
+		reserved = CellWidth(notice) + 2
+	}
+
 	// The model segment shares one budget with its effort badge: the badge
 	// drops before the core id truncates, so narrowing sheds "◈ max" first
 	// and only then shortens the leaf.
-	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version))
+	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version)-reserved)
 
 	phaseStyle := chrome.Idle
 	if headerRuntimeActive(runtime) {
@@ -500,7 +510,36 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 		sb.WriteString(chrome.Separator.Render(" · "))
 		sb.WriteString(chrome.Check.Render(conn))
 	}
-	return sb.String()
+	left := sb.String()
+	if notice == "" {
+		return left
+	}
+	noticeStyled := ExtrasFor(state.Theme).Success.Bold(true).Render(notice)
+	if state.Width <= 0 {
+		// Unknown size renders everything without slicing: join without
+		// padding so no arbitrary width is invented.
+		return left + "  " + noticeStyled
+	}
+	leftW := CellWidth(left)
+	noticeW := CellWidth(notice)
+	gap := width - leftW - noticeW
+	if gap < 2 {
+		// Unreachable on every supported width (the model budget above
+		// guarantees at least the minimum gap, and Mini owns narrower
+		// terminals), but never overlap or overflow if it ever happens:
+		// truncate the plain left to make room rather than covering it.
+		maxLeft := width - noticeW - 2
+		if maxLeft < 0 {
+			maxLeft = 0
+		}
+		left = TruncateToWidth(stripANSI(left), maxLeft)
+		leftW = CellWidth(left)
+		gap = width - leftW - noticeW
+		if gap < 2 {
+			gap = 2
+		}
+	}
+	return left + strings.Repeat(" ", gap) + noticeStyled
 }
 
 // headerTier resolves the header density from the terminal width. Unknown

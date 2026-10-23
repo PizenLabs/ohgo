@@ -7,9 +7,12 @@ package tui
 // ever encoded. A terminal that does not implement OSC 52 ignores the sequence;
 // the program reports nothing false about the clipboard's contents.
 //
-// tmux and screen sit between the application and the terminal. They forward
-// OSC 52 only when configured to, so their escape wrappers are emitted when the
-// environment names them. This changes packaging, not the payload.
+// Inside tmux the sequence is sent raw and tmux forwards it via its own
+// set-clipboard handling (proven end-to-end with Ghostty+tmux 3.8 where
+// set-clipboard is on and allow-passthrough is off). The DCS tmux passthrough
+// wrapper requires allow-passthrough on and is dropped otherwise, so it must
+// not be used for the clipboard path. GNU screen keeps its DCS wrapper,
+// which is its documented passthrough channel.
 
 import (
 	"encoding/base64"
@@ -34,16 +37,20 @@ func OSC52Sequence(text string) string {
 
 // OSC52SequenceFor wraps the sequence for the multiplexer in the path.
 //
-// tmux requires a DCS passthrough wrapper and `allow-passthrough on`; screen
-// uses a DCS wrapper split into 76-byte chunks. Both are protocol packaging
-// only: the base64 payload is the same logical text.
+// Inside tmux the raw OSC 52 sequence is returned unchanged so tmux itself
+// forwards it through set-clipboard. Wrapping it in a DCS tmux passthrough
+// (`allow-passthrough on`) is dropped by the default configuration
+// (allow-passthrough off, verified against tmux 3.8 + Ghostty) and leaves the
+// OS clipboard untouched, so it must never be emitted on the clipboard path.
+// GNU screen keeps its DCS wrapper split into 76-byte chunks. Both wrappers
+// are protocol packaging only: the base64 payload is the same logical text.
 func OSC52SequenceFor(text string, tmux bool, term string) string {
 	sequence := OSC52Sequence(text)
 	if sequence == "" {
 		return ""
 	}
 	if tmux {
-		return "\x1bPtmux;\x1b" + sequence + "\x1b\\"
+		return sequence
 	}
 	if strings.HasPrefix(strings.ToLower(term), "screen") {
 		payload := strings.TrimSuffix(strings.TrimPrefix(sequence, osc52Prefix), osc52Suffix)

@@ -204,3 +204,232 @@ document mutation (covered by `TestMouseClickNeverSubmitsOrAuthorizes` and
 - Grapheme attachment covers base + combining marks; extended grapheme
   clusters (e.g. ZWJ emoji sequences) are handled per-rune with the same
   rule on both paths, so paint and copy still agree.
+
+---
+
+## Automatic Copy UX Closure
+
+### 1. Automatic copy behavior
+
+`MouseUp` finalizes the logical selection (`Start`/`End` from anchor to
+focus), projects it via `CopySelection`, and queues one OSC 52 write through
+the existing clipboard path. `queueClipboard` now returns the confirmation's
+expiry command: on success `markCopySuccess` sets `State.CopyNotice =
+"Copied"` and schedules `copyNoticeExpiredMsg`; empty selections, a nil
+clipboard (disabled/unsupported), and emission failures (`""` sequence)
+return `nil`, show nothing, and keep the selection intact. Alt-click block
+copies share the same success gate. Files: `tui/mouse_selection.go`,
+`tui/copy_notice.go`, `tui/app.go` (`handleMouse` propagates the command).
+
+### 2. Status rendering location
+
+`renderHeader` (`tui/view.go`) layers the transient notice over the permanent
+header at the far right: the model segment's budget is reduced by
+`CellWidth(notice)+2` before truncation, so permanent shedding order is
+unchanged, then the left is padded with spaces to `displayWidth` and the
+notice renders in success bold. Unknown widths join with two spaces and never
+invent a width. No new panel, popup, status bar, viewport-height, or document
+mutation; `ComputeLayout` never reads the notice.
+
+### 3. Status lifetime
+
+`copyNoticeTTL = 1500ms` (inside the required 1.5–2.0s window,
+`TestCopyNoticeTTLInRange`). No busy loop, no render-path sleep, one one-shot
+`tea.Tick` per copy; the update goroutine owns the clear.
+
+### 4. Disabled/unsupported clipboard behavior
+
+`clipboard == nil` (explicit `OHGO_CLIPBOARD=off` and dumb/empty `TERM` via
+`ClipboardAvailable`) traces unsupported and returns `nil`: no queue, no
+`Copied`, selection preserved (`TestCopyNoticeDisabledClipboardNoFalseSuccess`,
+`TestCopyNoticeUnsupportedTerminalNoFalseSuccess`). An empty sequence from the
+backend is treated as emission failure with the same no-false-success contract
+(`TestCopyNoticeEmissionFailureNoFalseSuccess`).
+
+### 5. Stale timer protection
+
+Every confirmation carries `State.CopyGen`; each success increments it and
+schedules its own expiry. `update` handles `copyNoticeExpiredMsg` via
+`clearCopyNotice`, which ignores generations trailing the current one. The
+latest copy always owns the expiry (`TestCopyNoticeRepeatedCopyStaleExpiryIgnored`,
+`TestCopyNoticeExpiryClears`). Session boundaries (`Cleared`,
+`HistoryReplaced`) clear the notice without touching the transcript.
+
+### 6. Tests
+
+New `tui/copy_notice_test.go`: auto-copy payload + status, partial `world`,
+reversed drag, wrapped rows with line break, Unicode CJK, empty drag no-copy,
+disabled/unsupported/emission-failure no-false-success with selection intact,
+expiry clear without sleeps, repeated-copy stale-expiry guard, resize
+far-right positioning with viewport validity, no transcript mutation (block
+count/IDs, no `Copied` block/row), runtime isolation (workspace/session/busy,
+history, approvals), header chrome composition, TTL range. Break-check:
+blanking the notice fails `TestCopyNoticeAutoCopyShowsCopied`.
+
+### 7. Manual verification
+
+Deterministic headless equivalent of the acceptance path (no terminal
+required): multi-block transcript, scroll-detached historical content, drag
+mid-line to mid-line across wrapped rows, wheel-scroll mid-drag, release;
+Base64-decoded OSC 52 payload asserted equal to the logical text; header
+plain line asserted to end with `Copied` at `displayWidth`; repeat-copy,
+disabled, post-resize, wrapped-Unicode, and reversed-drag variants all
+covered by the tests above plus the existing H–L closure matrix.
+
+### 8. Regression verification
+
+```text
+gofmt -l .                       → empty
+go build ./...                   → pass
+go vet ./...                     → pass
+golangci-lint run ./...          → 0 issues
+go test ./...                    → all packages ok (tui 21.8s)
+go test -race ./...              → all packages ok (tui 28.9s)
+go test ./tui/ -run 'TestCopyNotice|TestSelectionClosure|TestMouse|TestClipboard|TestProgramCopy|TestHeader' → pass
+BenchmarkViewport                → scroll 0 rendered/op, selection cheap, stream/append 1 rendered/op
+```
+
+Selection geometry, logical extraction, OSC 52, tmux/screen packaging,
+mouse report/select, live, following/detached, historical expansion,
+incremental rendering, and Fenwick layout unchanged; the notice never enters
+`Document`/`Block`/`Selection`/`Task`/`Session`/`Runtime` and never rebuilds
+layout.
+
+---
+
+## Real Clipboard Transport Closure
+
+### 1. Original false-positive mechanism
+
+The previous PASS showed `Copied` whenever an internal string was queued:
+`queueClipboard` encoded the text, stored it in `pendingClipboard`, and
+`markCopySuccess` ran unconditionally; `View` prepended the string to the
+frame for the Bubble Tea renderer. Unit tests asserted on `pendingClipboard`
+and the `View` prefix, so they passed while the real clipboard stayed
+unchanged. Two defects hid behind the green suite: (a) inside tmux the
+emitted bytes were a DCS passthrough wrapper the multiplexer drops by
+default, and (b) success meant "queued", not "emitted to the terminal
+transport" — a renderer drop or writer failure would still show `Copied`.
+
+### 2. Exact OSC 52 call path
+
+```text
+tui/mouse_selection.go: handleTranscriptMouse (MouseUp)
+  → copySelection → CopySelection (tui/selection.go: logical text)
+  → queueClipboard → p.clipboard(text) (tui/clipboard.go: OSC52SequenceFor)
+  → io.WriteString(p.termOut, seq) (os.Stdout in production)
+  → markCopySuccess → State.CopyNotice = Copied + expiry Cmd
+  → app.go: update handles copyNoticeExpiredMsg via clearCopyNotice
+```
+
+`tui/copy_notice.go` owns the notice, generation, TTL, and expiry message.
+`tui/view.go:renderHeader` renders the notice only. No transcript, document,
+session, runtime, or authority state is touched.
+
+### 3. Exact output writer
+
+`p.termOut` (`os.Stdout` in production, a recording `bytes.Buffer` in
+tests). `queueClipboard` performs one synchronous unbuffered
+`io.WriteString` with no queue, no next-frame delay, and no flush boundary
+to trap bytes. A non-nil error or short write traces unsupported and returns
+`nil` without `Copied`; only a complete write earns the notice. `View`
+never carries clipboard bytes, so renderer truncation, diff-skipping, and
+line splitting cannot drop them.
+
+### 4. Buffering
+
+None in ohgo's path. The old `pendingClipboard` + `View`-prepend queue was
+removed (`tui/app.go:View` no longer references it). Emission is proven
+synchronous by `TestClipboardTransportFlushesImmediately`: the writer holds
+the framed bytes immediately after the release `Update` returns, before any
+further `View`/render.
+
+### 5. Tmux wrapping correctness
+
+`OSC52SequenceFor` with `tmux==true` previously returned the DCS wrapper
+`\x1bPtmux;\x1b…\x1b\\`, which requires `allow-passthrough on`. The
+environment runs tmux 3.8 with `allow-passthrough off` (default) and
+`set-clipboard on`. Controlled test on the active pane's TTY: raw
+`\x1b]52;c;BASE64\x07` updated the OS clipboard (`pbpaste` matched);
+the DCS-wrapped form left it unchanged. The fix returns the raw sequence
+inside tmux so the multiplexer forwards it via `set-clipboard`; GNU screen
+keeps its documented DCS wrapper, direct terminals stay raw
+(`TestClipboardTransportTmuxUsesRaw`,
+`TestClipboardTransportScreenAndDirect`).
+
+### 6. Renderer alteration
+
+Bubble Tea 1.3.10 `standard_renderer` truncates each line with
+`ansi.Truncate`, which preserves a leading OSC 52
+(`TestClipboardRendererPreservesOSC52`), and diff-skips unchanged lines —
+which is why the old frame-riding design looked correct in unit tests while
+tmux dropped the (wrongly wrapped) bytes downstream. The new path bypasses
+the renderer entirely; `TestClipboardTransportNeverRidesTheFrame` asserts no
+frame ever contains `\x1b]52;c;`.
+
+### 7. Direct Ghostty result
+
+The tmux E2E terminates in Ghostty (the outer terminal): raw OSC forwarded
+by tmux updated `pbpaste` to the exact token (`OHGO_CLIPBOARD_E2E_7F31A`,
+then isolated `ISO_*` tokens). A tmux-free Ghostty pane was unavailable in
+this environment (all panes are tmux clients); the direct case is classified
+as inferred-pass: the byte sequence is identical (raw OSC 52) with fewer
+intermediaries, and Ghostty already accepted it as the outer terminal.
+No double wrapper is ever emitted.
+
+### 8. Ghostty + tmux result
+
+PASS on the attached/active window's pane: MouseUp through production
+`queueClipboard` with `termOut` set to the real pane TTY wrote the exact
+framed bytes and `pbpaste` returned the selected text verbatim
+(`OHGO_CLIPBOARD_E2E_7F31A` full-token direct write; MouseUp-driven
+`[0,24)` selection decoded to the same 24 chars in-process with `Copied`
+set). Inactive windows' output is (correctly) not forwarded by tmux, so E2E
+must target the visible window — expected multiplexer behavior, not an ohgo
+defect.
+
+### 9. Minimal OSC 52 probe result
+
+Standalone probe (no ohgo): raw `\x1b]52;c;BASE64\x07` to the active pane
+TTY updated `pbpaste`; `\x1bPtmux;\x1b…\x1b\\` did not. This separates
+terminal capability (Ghostty + tmux `set-clipboard on` accept raw OSC 52)
+from the old ohgo defect (emitted the wrapper). Probe removed after
+diagnosis; the permanent coverage is `tui/clipboard_transport_test.go`.
+
+### 10. Final success semantics for `Copied`
+
+`Copied = the OSC 52 sequence was synchronously and completely written to
+the application's terminal output transport (termOut).` It is emission
+success, not an OS-level acknowledgement — OSC 52 provides no portable
+synchronous ack. Writer failure, empty text, disabled (`OHGO_CLIPBOARD=off`)
+or unsupported (`dumb`/empty `TERM`) terminals, and a nil writer never show
+`Copied` and never disturb the selection
+(`TestProgramCopyWriterFailureIsSilent`,
+`TestClipboardTransportNegativeMatrix`).
+
+### 11. Tests
+
+New `tui/clipboard_transport_test.go`: exact bytes + base64 round-trip for
+short/1KB/10KB/Unicode/multiline payloads, ANSI exclusion, tmux-raw vs
+screen-wrapper vs direct, BEL termination (no ST), synchronous flush before
+`View`, frame never carries OSC, renderer preservation note, and the full
+negative matrix (writer failure, empty, disabled, unsupported) with
+selection preserved. Updated `tui/clipboard_test.go`,
+`tui/selection_closure_test.go`, `tui/copy_notice_test.go` to capture real
+writer bytes via a recording `termOut` instead of the removed queue;
+`TestOSC52TmuxAndScreenPackaging` now pins the raw-tmux contract.
+Break-checks: blanking the write fails `TestCopyNoticeAutoCopyShowsCopied`;
+restoring the DCS wrapper fails `TestClipboardTransportTmuxUsesRaw` and the
+live `pbpaste` E2E.
+
+### 12. Manual E2E verification
+
+Active-window pane TTY + `pbpaste`: (a) raw probe token round-tripped
+exactly; (b) fixed `OSC52SequenceFor(..., tmux=true)` round-tripped
+`OHGO_CLIPBOARD_E2E_7F31A`; (c) production MouseUp path with `termOut` set
+to the real TTY set `Copied` and `CopySelection` decoded to the same 24
+chars. ASCII, Unicode, multiline, wrapped, and reversed selections are
+covered by the transport + notice suites (payloads asserted byte-exact);
+BEL termination and no-truncation (1KB/10KB) covered without real sleeps.
+Diagnostic logging was never added; no selected text or base64 payload is
+logged — only lengths, byte counts, and transport state.

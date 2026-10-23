@@ -13,7 +13,11 @@ package tui
 // goes through the current TranscriptLayout, so it remains correct after
 // scrolling, expansion, resize, and streamed appends.
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"io"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // dragState tracks one pointer drag between press and release.
 type dragState struct {
@@ -26,15 +30,18 @@ type dragState struct {
 }
 
 // handleTranscriptMouse handles a non-wheel mouse event. It reports whether
-// the event was consumed. Callers route wheel ticks to the scroll logic first.
-func (p *Program) handleTranscriptMouse(m tea.MouseMsg) bool {
+// the event was consumed and returns the follow-up command, if any. A
+// successful clipboard copy schedules the transient confirmation's expiry;
+// empty, disabled, unsupported, or failed copies return nil and never show
+// a false confirmation.
+func (p *Program) handleTranscriptMouse(m tea.MouseMsg) (bool, tea.Cmd) {
 	if !p.mouseReporting {
-		return false
+		return false, nil
 	}
 	switch m.Action {
 	case tea.MouseActionPress:
 		if m.Button != tea.MouseButtonLeft {
-			return false
+			return false, nil
 		}
 		pos, ok := p.positionAt(m.X, m.Y, false)
 		if !ok {
@@ -42,27 +49,27 @@ func (p *Program) handleTranscriptMouse(m tea.MouseMsg) bool {
 			// never touches history or execution state.
 			p.state.Selection = nil
 			p.drag = nil
-			return true
+			return true, nil
 		}
 		p.drag = &dragState{Anchor: pos, Current: pos, Alt: m.Alt}
 		p.state.Selection = nil
 		p.trace(traceSelection)
-		return true
+		return true, nil
 
 	case tea.MouseActionMotion:
 		if p.drag == nil {
-			return false
+			return false, nil
 		}
 		// During an active drag any motion updates the focus, even when the
 		// terminal reports it without a button (X10 fallback and
 		// Windows Terminal quirks). Hover without a press has no drag and
 		// is ignored above.
 		if m.Button != tea.MouseButtonLeft && m.Button != tea.MouseButtonNone {
-			return false
+			return false, nil
 		}
 		pos, ok := p.positionAt(m.X, m.Y, true)
 		if !ok {
-			return true
+			return true, nil
 		}
 		p.drag.Current = pos
 		p.drag.Moved = pos != p.drag.Anchor
@@ -72,18 +79,18 @@ func (p *Program) handleTranscriptMouse(m tea.MouseMsg) bool {
 		} else {
 			p.state.Selection = nil
 		}
-		return true
+		return true, nil
 
 	case tea.MouseActionRelease:
 		if p.drag == nil {
-			return true
+			return true, nil
 		}
 		// Finalize on left-button and button-less releases. X10 encodes a
 		// release as ButtonNone, and SGR as ButtonLeft; accepting only one
 		// of them drops the copy on terminals using the other. Any other
 		// button leaves the drag in place rather than finalizing it.
 		if m.Button != tea.MouseButtonLeft && m.Button != tea.MouseButtonNone {
-			return true
+			return true, nil
 		}
 		drag := p.drag
 		p.drag = nil
@@ -94,21 +101,22 @@ func (p *Program) handleTranscriptMouse(m tea.MouseMsg) bool {
 		if !drag.Moved {
 			p.state.Selection = nil
 			if drag.Alt {
-				if !p.copyBlockAt(drag.Anchor) {
+				if ok, cmd := p.copyBlockAt(drag.Anchor); !ok {
 					p.trace(traceUnsupported)
+					return true, nil
+				} else {
+					return true, cmd
 				}
-				return true
 			}
 			if !p.toggleBlockAt(drag.Anchor) {
 				p.trace(traceSelection)
 			}
-			return true
+			return true, nil
 		}
 		p.state.Selection = &Selection{Start: drag.Anchor, End: drag.Current}
-		p.copySelection()
-		return true
+		return true, p.copySelection()
 	}
-	return false
+	return false, nil
 }
 
 // visibleRows returns the transcript rows currently painted and the number of
@@ -202,39 +210,70 @@ func (p *Program) toggleBlockAt(pos Position) bool {
 	return true
 }
 
-// copySelection projects the current logical selection and queues its OSC 52
-// write for the next frame.
-func (p *Program) copySelection() {
+// copySelection projects the current logical selection and emits its OSC 52
+// payload to the terminal output transport. It returns the transient
+// confirmation's expiry command on emission success and nil otherwise. Empty
+// selections, a disabled or unsupported clipboard, a missing writer, and
+// emission failures never show a confirmation, and the selection itself is
+// always preserved.
+//
+// Success means the OSC 52 bytes were handed to the application's terminal
+// output writer (termOut, os.Stdout in production). OSC 52 has no portable
+// synchronous acknowledgement from the terminal, so this is emission success,
+// not an OS-level clipboard guarantee; the end-to-end Ghostty/tmux proof
+// lives in the transport closure report.
+func (p *Program) copySelection() tea.Cmd {
 	if p.state.Selection == nil || p.transcriptFrame == nil {
-		return
+		return nil
 	}
 	text, ok := CopySelection(p.transcriptFrame.index, p.state.Selection)
 	if !ok || text == "" {
-		return
+		return nil
 	}
-	p.queueClipboard(text)
+	return p.queueClipboard(text)
 }
 
 // copyBlockAt copies one block's canonical logical content, independent of its
 // current projection. An alt-click uses it; it never needs a selection range.
-func (p *Program) copyBlockAt(pos Position) bool {
+// It reports whether the copy reached the clipboard path and, on success,
+// returns the confirmation's expiry command.
+func (p *Program) copyBlockAt(pos Position) (bool, tea.Cmd) {
 	block, ok := p.state.Document().ByID(pos.BlockID)
 	if !ok {
-		return false
+		return false, nil
 	}
 	text := BlockCopyText(block.Entry)
 	if text == "" {
-		return false
+		return false, nil
 	}
-	p.queueClipboard(text)
-	return true
+	return true, p.queueClipboard(text)
 }
 
-func (p *Program) queueClipboard(text string) {
+func (p *Program) queueClipboard(text string) tea.Cmd {
 	if p.clipboard == nil {
 		p.trace(traceUnsupported)
-		return
+		return nil
 	}
-	p.pendingClipboard = p.clipboard(text)
+	seq := p.clipboard(text)
+	if seq == "" {
+		// The clipboard path refused the payload: report nothing false
+		// about the clipboard while keeping the selection intact.
+		p.trace(traceUnsupported)
+		return nil
+	}
+	out := p.termOut
+	if out == nil {
+		p.trace(traceUnsupported)
+		return nil
+	}
+	// Synchronous emission to the terminal transport: one unbuffered write,
+	// no queue, no next-frame delay. Only a successful write earns Copied.
+	// The payload is never logged; only lengths and byte counts are traced.
+	n, err := io.WriteString(out, seq)
+	if err != nil || n != len(seq) {
+		p.trace(traceUnsupported)
+		return nil
+	}
 	p.trace(traceCopy)
+	return p.markCopySuccess()
 }

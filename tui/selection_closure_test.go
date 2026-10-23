@@ -9,6 +9,7 @@ package tui
 // consume it, so each test asserts both sides agree.
 
 import (
+	"bytes"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -331,6 +332,8 @@ func TestSelectionClosurePadding(t *testing.T) {
 // H. The MouseUp event path completes exactly one copy and keeps the selection.
 func TestSelectionClosureMouseUpCopiesOnce(t *testing.T) {
 	p := NewProgram(nil, "test", 0, WithMouseReporting())
+	var out bytes.Buffer
+	p.termOut = &out
 	calls := 0
 	var copied string
 	p.clipboard = func(s string) string {
@@ -358,10 +361,10 @@ func TestSelectionClosureMouseUpCopiesOnce(t *testing.T) {
 	if p.state.Selection == nil {
 		t.Fatal("selection cleared by MouseUp")
 	}
-	if p.pendingClipboard == "" {
-		t.Fatal("no OSC 52 sequence queued")
+	if out.Len() == 0 {
+		t.Fatal("no OSC 52 bytes emitted")
 	}
-	if got := closureDecode(t, p.pendingClipboard); got != "world" {
+	if got := closureDecode(t, out.String()); got != "world" {
 		t.Fatalf("OSC 52 payload = %q, want logical text", got)
 	}
 }
@@ -369,6 +372,8 @@ func TestSelectionClosureMouseUpCopiesOnce(t *testing.T) {
 // H2. An X10-style release (ButtonNone) finalizes the same way as SGR.
 func TestSelectionClosureMouseUpButtonNone(t *testing.T) {
 	p := NewProgram(nil, "test", 0, WithMouseReporting())
+	var out bytes.Buffer
+	p.termOut = &out
 	calls := 0
 	p.clipboard = func(s string) string {
 		calls++
@@ -399,6 +404,8 @@ func TestSelectionClosureMouseUpButtonNone(t *testing.T) {
 // I. Press without movement copies nothing.
 func TestSelectionClosureEmptyDragNoCopy(t *testing.T) {
 	p := NewProgram(nil, "test", 0, WithMouseReporting())
+	var out bytes.Buffer
+	p.termOut = &out
 	calls := 0
 	p.clipboard = func(s string) string {
 		calls++
@@ -417,14 +424,16 @@ func TestSelectionClosureEmptyDragNoCopy(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("empty drag copied %d times", calls)
 	}
-	if p.pendingClipboard != "" {
-		t.Fatalf("empty drag queued %q", p.pendingClipboard)
+	if out.Len() != 0 {
+		t.Fatalf("empty drag wrote %q", out.String())
 	}
 }
 
 // J. Dragging across a scroll keeps one logical selection and one copy.
 func TestSelectionClosureScrollDuringSelection(t *testing.T) {
 	p := NewProgram(nil, "test", 0, WithMouseReporting())
+	var out bytes.Buffer
+	p.termOut = &out
 	calls := 0
 	var copied string
 	p.clipboard = func(s string) string {

@@ -453,6 +453,18 @@ type State struct {
 	// Selection is the application-owned logical selection, or nil. Positions
 	// name a block and a row inside it, never a terminal coordinate.
 	Selection *Selection
+	// CopyNotice is transient clipboard feedback, e.g. "Copied", shown in
+	// the existing top header at the far right. It is ephemeral UI state
+	// only: it never enters the document, the transcript, the session, the
+	// runtime authority, or any execution state. It is set only after the
+	// clipboard path reports success and clears automatically after
+	// copyNoticeTTL. Empty means no confirmation is visible.
+	CopyNotice string
+	// CopyGen identifies the current clipboard confirmation generation. Every
+	// successful copy increments it and schedules an expiry carrying that
+	// generation; a stale expiry whose generation trails the current one is
+	// ignored, so the latest copy always owns the visible lifetime.
+	CopyGen uint64
 	// Width and Height are the terminal size in cells. Zero means unknown,
 	// in which case the view renders everything without slicing.
 	Width  int
@@ -887,6 +899,9 @@ func (s *State) Apply(event Event) {
 		s.Status.Turn = TurnSemantics{}
 		s.Transition = nil
 		s.Selection = nil
+		// A transient clipboard confirmation never survives a session
+		// boundary: the selection it confirmed no longer exists.
+		s.CopyNotice = ""
 		s.Scroll = 0
 		s.scrollIntent = 0
 		s.ScrollSeq++
@@ -1874,6 +1889,9 @@ func (s *State) Apply(event Event) {
 		s.ScrollSeq++
 		s.Follow = true
 		s.Selection = nil
+		// Clearing drops the transient confirmation with the transcript it
+		// confirmed; a stale expiry after this is a no-op via the generation.
+		s.CopyNotice = ""
 		s.closedAssistant = false
 		s.OutputTokens = 0
 		s.resetSessionMetrics()

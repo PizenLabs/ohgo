@@ -150,12 +150,10 @@ type Program struct {
 	// drag is the in-progress application-owned selection. It lives only
 	// between a press inside the transcript and the matching release.
 	drag *dragState
-	// pendingClipboard is an OSC 52 sequence waiting to ride out with the next
-	// frame. Emitting it through View keeps it on the renderer's writer instead
-	// of racing a frame from another goroutine.
-	pendingClipboard string
 	// clipboard encodes logical text for the terminal. Nil disables copying
 	// (dumb terminal or OHGO_CLIPBOARD=off); no external process is ever used.
+	// Emission writes the encoded sequence synchronously to termOut, so
+	// Copied means the bytes reached the terminal transport, not a queue.
 	clipboard func(string) string
 	// traceFn receives lightweight UI events when diagnostics are enabled.
 	traceFn func(string)
@@ -699,6 +697,12 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modelsRefreshedMsg:
 		return p.onModelsRefreshed(m)
 
+	case copyNoticeExpiredMsg:
+		// A stale expiry never clears a newer confirmation: the generation
+		// pins the visible status to the latest successful copy.
+		p.state.clearCopyNotice(m.gen)
+		return p, nil
+
 	case tea.WindowSizeMsg:
 		p.state.Apply(TerminalResized{Width: m.Width, Height: m.Height})
 		p.trace(traceResize)
@@ -794,8 +798,8 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// Application-owned pointer interaction. Selection mode never receives
 	// these events; reporting mode maps them through the current layout.
 	if m.Button != tea.MouseButtonWheelUp && m.Button != tea.MouseButtonWheelDown {
-		p.handleTranscriptMouse(m)
-		return p, nil
+		_, cmd := p.handleTranscriptMouse(m)
+		return p, cmd
 	}
 	// The inspector owns the wheel while it is open: a tick moves the tree
 	// selection or scrolls the hunk viewport, never the hidden transcript.
@@ -3093,15 +3097,7 @@ func (p *Program) View() string {
 		return p.live.view()
 	}
 	p.syncTranscript()
-	out := renderState(p.state, p.transcriptFrame)
-	if p.pendingClipboard != "" {
-		// A frame is one writer flush. Prepending a zero-width OSC sequence
-		// keeps clipboard transport off a second goroutine while preserving
-		// the frame's row count.
-		out = p.pendingClipboard + out
-		p.pendingClipboard = ""
-	}
-	return out
+	return renderState(p.state, p.transcriptFrame)
 }
 
 // syncTranscript folds the current state into the retained layout and resolves

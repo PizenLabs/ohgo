@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 
@@ -30,9 +32,12 @@ func TestOSC52SequenceFraming(t *testing.T) {
 
 func TestOSC52TmuxAndScreenPackaging(t *testing.T) {
 	plain := OSC52Sequence("hi")
-	tmux := OSC52SequenceFor("hi", true, "xterm-256color")
-	if tmux != "\x1bPtmux;\x1b"+plain+"\x1b\\" {
-		t.Fatalf("tmux wrapper = %q", tmux)
+	// Inside tmux the raw sequence is emitted so tmux forwards it via
+	// set-clipboard. The DCS passthrough wrapper requires allow-passthrough
+	// on (default off, tmux 3.8) and is dropped otherwise, so it must never
+	// be used on the clipboard path (proven end-to-end Ghostty+tmux).
+	if tmux := OSC52SequenceFor("hi", true, "xterm-256color"); tmux != plain {
+		t.Fatalf("tmux wrapper = %q, want raw %q", tmux, plain)
 	}
 	screen := OSC52SequenceFor("hi", false, "screen-256color")
 	if !strings.HasPrefix(screen, "\x1bP\x1b]52;c;") || !strings.HasSuffix(screen, "\x07\x1b\\") {
@@ -60,6 +65,8 @@ func TestClipboardAvailability(t *testing.T) {
 // still arrives, the application must not build a competing selection.
 func TestSelectionModeIgnoresPointerDrags(t *testing.T) {
 	p := NewProgram(nil, "test", 0) // no WithMouseReporting
+	var out bytes.Buffer
+	p.termOut = &out
 	p.state = selectionFixture()
 	p.Update(tea.WindowSizeMsg{Width: 50, Height: 30})
 	top := ComputeLayout(p.state).HeaderLines
@@ -69,17 +76,19 @@ func TestSelectionModeIgnoresPointerDrags(t *testing.T) {
 	if p.state.Selection != nil {
 		t.Fatalf("terminal-owned mode created %+v", p.state.Selection)
 	}
-	if p.pendingClipboard != "" {
-		t.Fatal("terminal-owned mode queued an OSC 52 copy")
+	if out.Len() != 0 {
+		t.Fatal("terminal-owned mode wrote an OSC 52 copy")
 	}
 }
 
-// A program-owned copy emits exactly one OSC payload on the next frame and
-// then stops repeating it.
+// A program-owned copy synchronously emits exactly one OSC payload to the
+// terminal transport and never routes it through the rendered frame.
 func TestProgramCopyEmitsOSC52Once(t *testing.T) {
 	s := selectionFixture()
 	l := layoutFor(s)
 	p := NewProgram(nil, "test", 0)
+	var out bytes.Buffer
+	p.termOut = &out
 	p.clipboard = OSC52Sequence
 	p.transcriptFrame = &transcriptFrame{index: l}
 	p.state.Entries = s.Entries
@@ -89,28 +98,38 @@ func TestProgramCopyEmitsOSC52Once(t *testing.T) {
 		End:   Position{BlockID: id, Row: 0, Column: 5},
 	}
 	p.copySelection()
-	if p.pendingClipboard == "" {
-		t.Fatal("copy produced no clipboard sequence")
+	if out.Len() == 0 {
+		t.Fatal("copy wrote no clipboard bytes")
+	}
+	emitted := out.String()
+	if !strings.HasPrefix(emitted, "\x1b]52;c;") || !strings.HasSuffix(emitted, "\x07") {
+		t.Fatalf("emitted bytes are not a framed OSC 52 sequence: %q", emitted)
 	}
 	view := p.View()
-	if !strings.HasPrefix(view, "\x1b]52;c;") {
-		t.Fatalf("frame did not carry the clipboard sequence: %q", view[:min(len(view), 20)])
+	if strings.Contains(view, "\x1b]52;c;") {
+		t.Fatal("frame carries clipboard bytes; emission must use the terminal writer, not rendered content")
 	}
 	// Bubble Tea truncates each rendered line to the terminal width. The
-	// zero-width OSC payload must survive that pass intact.
+	// clipboard transport bypasses the renderer, so truncation can never
+	// drop it; the renderer must still preserve a leading OSC if one ever
+	// appears in content.
 	first := strings.SplitN(view, "\n", 2)[0]
-	if truncated := ansi.Truncate(first, 80, ""); !strings.HasPrefix(truncated, "\x1b]52;c;") {
-		t.Fatalf("renderer-width truncation dropped the clipboard sequence: %q", truncated)
+	_ = ansi.Truncate(first, 80, "")
+	if again := p.View(); strings.Contains(again, "\x1b]52;c;") {
+		t.Fatal("clipboard sequence repeated in a later frame")
 	}
-	if again := p.View(); strings.HasPrefix(again, "\x1b]52;c;") {
-		t.Fatal("clipboard sequence repeated on a later frame")
+	// Exactly one emission for one copy.
+	if n := strings.Count(emitted, "\x1b]52;c;"); n != 1 {
+		t.Fatalf("emissions = %d, want exactly 1", n)
 	}
 }
 
-// Disabled clipboard means no sequence, not a process fallback and not a
+// Disabled clipboard means no bytes, not a process fallback and not a
 // false success indicator.
 func TestProgramCopyDisabledIsSilent(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
+	var out bytes.Buffer
+	p.termOut = &out
 	p.clipboard = nil
 	p.state = selectionFixture()
 	p.transcriptFrame = viewportFor(p.state)
@@ -120,10 +139,36 @@ func TestProgramCopyDisabledIsSilent(t *testing.T) {
 		End:   Position{BlockID: id, Row: 0, Column: 3},
 	}
 	p.copySelection()
-	if p.pendingClipboard != "" {
-		t.Fatalf("disabled clipboard queued %q", p.pendingClipboard)
+	if out.Len() != 0 {
+		t.Fatalf("disabled clipboard wrote %q", out.String())
 	}
 }
+
+// A failing terminal writer never earns Copied: the selection survives and
+// no false success is reported.
+func TestProgramCopyWriterFailureIsSilent(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.termOut = failWriter{}
+	p.clipboard = OSC52Sequence
+	p.state = selectionFixture()
+	p.transcriptFrame = viewportFor(p.state)
+	id := blockIDAt(p.state.Entries, 0)
+	p.state.Selection = &Selection{
+		Start: Position{BlockID: id, Row: 0, Column: 0},
+		End:   Position{BlockID: id, Row: 0, Column: 3},
+	}
+	p.copySelection()
+	if p.state.CopyNotice == "Copied" {
+		t.Fatal("failed write reported success")
+	}
+	if p.state.Selection == nil {
+		t.Fatal("failed write cleared the selection")
+	}
+}
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("tty closed") }
 
 // The clipboard payload is the logical selection, never the styled projection.
 func TestClipboardPayloadHasNoANSIRendererArtifacts(t *testing.T) {
@@ -154,6 +199,8 @@ func TestClipboardPayloadHasNoANSIRendererArtifacts(t *testing.T) {
 // Mouse press/motion/release drives the logical selection and the clipboard.
 func TestMouseDragSelectsAndCopies(t *testing.T) {
 	p := NewProgram(nil, "test", 0, WithMouseReporting())
+	var out bytes.Buffer
+	p.termOut = &out
 	p.clipboard = OSC52Sequence
 	p.state = selectionFixture()
 	p.Update(tea.WindowSizeMsg{Width: 50, Height: 30})
@@ -169,10 +216,10 @@ func TestMouseDragSelectsAndCopies(t *testing.T) {
 		t.Fatal("drag produced no selection")
 	}
 	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 5, Y: y})
-	if p.pendingClipboard == "" {
-		t.Fatal("release did not copy the selection")
+	if out.Len() == 0 {
+		t.Fatal("release wrote no clipboard bytes")
 	}
-	payload := strings.TrimSuffix(strings.TrimPrefix(p.pendingClipboard, "\x1b]52;c;"), "\x07")
+	payload := strings.TrimSuffix(strings.TrimPrefix(out.String(), "\x1b]52;c;"), "\x07")
 	decoded, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
 		t.Fatal(err)
@@ -242,6 +289,8 @@ func TestMouseExpandsHistoricalBlockWithoutScrollbackMutation(t *testing.T) {
 // or execution state.
 func TestMouseAltClickCopiesWholeBlock(t *testing.T) {
 	p := NewProgram(nil, "test", 0, WithMouseReporting())
+	var out bytes.Buffer
+	p.termOut = &out
 	p.clipboard = OSC52Sequence
 	p.state = selectionFixture()
 	p.Update(tea.WindowSizeMsg{Width: 50, Height: 30})
@@ -260,10 +309,10 @@ func TestMouseAltClickCopiesWholeBlock(t *testing.T) {
 		p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 1, Y: y, Alt: true})
 		break
 	}
-	if p.pendingClipboard == "" {
-		t.Fatal("alt-click copied nothing")
+	if out.Len() == 0 {
+		t.Fatal("alt-click wrote nothing")
 	}
-	payload := strings.TrimSuffix(strings.TrimPrefix(p.pendingClipboard, "\x1b]52;c;"), "\x07")
+	payload := strings.TrimSuffix(strings.TrimPrefix(out.String(), "\x1b]52;c;"), "\x07")
 	decoded, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
 		t.Fatal(err)
