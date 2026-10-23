@@ -17,6 +17,7 @@ import (
 	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/exec"
+	"github.com/PizenLabs/ohgo/prompt"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/tokens"
 	"github.com/PizenLabs/ohgo/workspace"
@@ -353,6 +354,13 @@ type Program struct {
 	// shown as a blocking prompt. Guarded by mu because runTurn writes it off
 	// the update goroutine.
 	lastTaskDecision string
+	// proposal is the human's decided proposal awaiting or serving its turn.
+	// It is set when a proposal is resolved and consumed by the released turn
+	// (plus explicit continuations of the same execution). A new intent clears
+	// it; a session boundary drops it. Nil means no decision stands. Guarded
+	// by mu: resolveProposal writes it on the update goroutine while runTurn
+	// and submit read it off-goroutine.
+	proposal *ProposalResolution
 	// newSessionCreating guards picker Enter against double creation: the
 	// picker closes before the session is made, so a second Enter finds no
 	// picker and cannot create a second session. Update-goroutine-owned.
@@ -382,20 +390,38 @@ type WorkspaceHooks struct {
 	Predict func(text string) (TurnTransition, bool)
 }
 
-// TurnTransition is the UI projection of one workspace-transition proposal.
+// Proposal kinds carried by TurnTransition.
+const (
+	// TransitionKindWorkspace moves the session between authorities.
+	TransitionKindWorkspace = "workspace"
+	// TransitionKindProposal is a request-derived decision about the execution
+	// path. Authority does not move; the human resolves the decision through
+	// the same permission surface a tool approval uses.
+	TransitionKindProposal = "proposal"
+)
+
+// TurnTransition is the UI projection of one pending decision: a workspace
+// transition or a request-derived proposal.
 //
 // It is a request, not a decision: the program stores it for presentation and
-// asks the owner to switch only after the user accepts. It is a projection of
-// workspace.TransitionProposal, never a second policy, and it deliberately
-// carries a Strength level rather than a score (I12).
+// acts only after the user answers. The workspace fields project
+// workspace.TransitionProposal; Proposal projects workspace.Proposal. Both are
+// projections, never second policies, and Strength stays a level rather than a
+// score (I12).
 type TurnTransition struct {
+	// Kind names the decision. Empty is treated as a workspace transition so
+	// a producer that predates proposals keeps its meaning.
+	Kind string
 	// Current and Proposed are workspace labels, e.g. "BUILD" and "ASK".
+	// They are meaningful for the workspace kind only.
 	Current  string
 	Proposed string
 	// CurrentAccent and ProposedAccent are the semantic workspace accents from
 	// the owner, so the dialog never hardcodes a colour.
 	CurrentAccent  string
 	ProposedAccent string
+	// Proposal is the request-derived decision for the proposal kind.
+	Proposal *workspace.Proposal
 	// Intent is the classified request, e.g. "READ".
 	Intent string
 	// Strength is the classifier's evidence level, e.g. "strong".
@@ -404,6 +430,31 @@ type TurnTransition struct {
 	Question string
 	// Reason is the one-line explanation under the heading.
 	Reason string
+}
+
+// ProposalResolution is a human's decided proposal: trusted control-plane
+// state, not conversational text.
+//
+// It is recorded when the human resolves a proposal and consumed by the turn
+// that resolution releases (plus explicit continuations of the same
+// execution). Because it lives outside the transcript and the model input, the
+// model can neither invent it nor reinterpret its provenance.
+type ProposalResolution struct {
+	// Option is the chosen option identity.
+	Option string
+	// Label is the human-facing choice.
+	Label string
+	// Directive is the execution constraint the choice establishes. Empty
+	// means the human delegated the decision.
+	Directive string
+	// Dimension is the unresolved axis the human resolved.
+	Dimension workspace.ProposalDimension
+	// Subject is the requested work the question named.
+	Subject string
+	// Question is the exact question the human answered.
+	Question string
+	// Request is the exact user text this decision answers.
+	Request string
 }
 
 // TurnAuthority is the decision for one turn, phrased for the UI.
@@ -954,6 +1005,9 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if p.state.Pending != nil {
+		if p.state.Pending.IsProposal() {
+			return p.handleProposalKey(msg)
+		}
 		switch msg.String() {
 		case "up", "k", "shift+tab", "left", "h":
 			p.state.Apply(ApprovalMoved{Delta: -1})
@@ -2850,9 +2904,19 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	// session's token counts and clock never carry over.
 	p.resetSessionTelemetryLocked()
 	p.sessionAllowed = nil
+	// A session boundary drops any standing proposal decision with the rest
+	// of the session state: the decision answered one session's execution,
+	// and a new session must determine its own.
+	p.proposal = nil
 	p.mu.Unlock()
 	p.session = sess
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
+	// A proposal still on screen belongs to the old session; close it so it
+	// cannot be answered into the new one. Tool approvals were already denied
+	// above through the blocked tool's reply channel.
+	if p.state.Pending != nil {
+		p.state.Apply(ApprovalAnswered{})
+	}
 	if p.live != nil {
 		p.live.forget()
 	}
@@ -3250,6 +3314,96 @@ func tick() tea.Cmd {
 	return tea.Tick(spinnerInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
+// handleProposalKey answers a request-derived proposal. The interaction is
+// the permission dialog's own: arrows move, Enter confirms, Esc cancels. The
+// pending turn has not started, so cancelling simply closes the prompt and
+// leaves the typed request in the composer.
+func (p *Program) handleProposalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k", "shift+tab", "left", "h":
+		p.state.Apply(ApprovalMoved{Delta: -1})
+		return p, nil
+	case "down", "j", "tab", "right", "l":
+		p.state.Apply(ApprovalMoved{Delta: 1})
+		return p, nil
+	case "enter":
+		return p.resolveProposal()
+	case "esc", "ctrl+c":
+		p.state.Apply(ApprovalAnswered{})
+		return p, nil
+	}
+	return p, nil
+}
+
+// resolveProposal records the human's choice as trusted structured state and
+// releases the turn it was blocking.
+//
+// The choice is stored outside the transcript and the model input, then
+// rendered into the turn's system context with control-plane provenance. It
+// never becomes conversational text the model could reinterpret.
+func (p *Program) resolveProposal() (tea.Model, tea.Cmd) {
+	pending := p.state.Pending
+	if pending == nil || pending.Proposal == nil {
+		return p, nil
+	}
+	choice, ok := pending.Proposal.Choice(pending.Cursor)
+	if !ok {
+		return p, nil
+	}
+	resolution := &ProposalResolution{
+		Option:    choice.ID,
+		Label:     choice.Label,
+		Directive: choice.Directive,
+		Dimension: pending.Proposal.Dimension,
+		Subject:   pending.Proposal.Subject,
+		Question:  pending.Proposal.Question,
+		Request:   pending.Proposal.Request,
+	}
+	p.mu.Lock()
+	p.proposal = resolution
+	p.mu.Unlock()
+	p.state.Apply(ApprovalAnswered{})
+	p.state.Apply(Notice{Text: "proposal: " + choice.Label + " (your choice)"})
+	return p, p.startTurn(pending.Proposal.Request)
+}
+
+// proposalFor returns the standing human proposal decision for a turn's
+// request, or nil when none applies.
+//
+// A decision serves the exact request it answered and explicit continuations
+// of the same execution ("continue", ...). Any other request clears it, so a
+// recorded choice can never constrain an unrelated turn. It is called from
+// submit (to skip re-proposing a resolved choice) and from runTurn (to consume
+// the choice), both under mu.
+func (p *Program) proposalFor(text string) *ProposalResolution {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.proposal == nil {
+		return nil
+	}
+	if text == p.proposal.Request || continuationPrompt(text) {
+		return p.proposal
+	}
+	p.proposal = nil
+	return nil
+}
+
+// proposalSystemBlock renders a recorded human proposal decision as a
+// control-plane-authored system block for the turn that decision releases.
+// The copy itself lives in the prompt package; this only maps trusted state
+// onto it. A delegated choice yields no block: the human explicitly granted
+// the authority, and there is nothing to convey.
+func proposalSystemBlock(res *ProposalResolution) *ai.SystemPromptBlock {
+	if res == nil {
+		return nil
+	}
+	text, ok := prompt.ProposalDecision(res.Label, res.Directive, res.Question, res.Subject)
+	if !ok {
+		return nil
+	}
+	return &ai.SystemPromptBlock{Text: text}
+}
+
 // submit runs one turn off the UI goroutine.
 //
 // Prompts typed while a turn runs wait their turn instead of racing it:
@@ -3271,14 +3425,42 @@ func (p *Program) submit(text string) tea.Cmd {
 		}
 		return p.startSupportRun(strings.TrimSpace(question))
 	}
+	// A standing human proposal decision answers the turn before prediction
+	// runs: re-proposing a resolved choice would interrogate the user about a
+	// decision they already made. proposalFor also drops a decision its request
+	// no longer matches, so a stale choice can never constrain an unrelated
+	// turn.
+	if p.proposalFor(text) != nil {
+		return p.startTurn(text)
+	}
 	// Ask the workspace owner what it would propose for this request before
 	// the turn begins. Predicting changes nothing: it only opens the decision
 	// surface, and the turn starts when that decision is resolved, so no
 	// provider request, tool, or mutation can run while it is pending
 	// (I2, I4-I6). A program without a Predict hook keeps the pre-proposal
 	// behavior and starts the turn immediately.
-	if p.workspace.Predict != nil && p.state.Transition == nil {
+	if p.workspace.Predict != nil && p.state.Transition == nil && p.state.Pending == nil {
 		if proposed, ok := p.workspace.Predict(text); ok {
+			if proposed.Kind == TransitionKindProposal && proposed.Proposal != nil {
+				labels := make([]string, len(proposed.Proposal.Options))
+				for i, option := range proposed.Proposal.Options {
+					labels[i] = option.Label
+				}
+				// The proposal uses the existing permission boundary: the
+				// same dialog, the same frame, the same arrow/enter/esc
+				// interaction. Only its question and choices differ.
+				p.state.Apply(ApprovalAsked{
+					Prompt:  "Request",
+					Summary: text,
+					Reason:  proposed.Proposal.Reason,
+					// A proposal is a decision, not a destructive call: the
+					// amber read accent keeps it in the permission family.
+					Mutating: false,
+					Choices:  labels,
+					Proposal: proposed.Proposal,
+				})
+				return nil
+			}
 			p.state.Apply(TransitionProposed{
 				Text:           text,
 				Current:        proposed.Current,
@@ -4009,6 +4191,13 @@ func (p *Program) runTurn(text string) {
 			})
 		}
 	}
+	// A standing human proposal decision rides the same reconstructed context
+	// with control-plane provenance. proposalFor drops a decision its request
+	// no longer matches, so an unrelated turn cannot inherit it — and a turn
+	// with no standing decision sets no block, exactly as before.
+	if block := proposalSystemBlock(p.proposalFor(text)); block != nil {
+		blocks = append(blocks, *block)
+	}
 	p.loop.SetSystemContext(blocks)
 
 	// Live statusline seeding: the provider only reports measured usage at
@@ -4383,6 +4572,14 @@ func (p *Program) AttachSession(store *session.Store, sess *session.Session, his
 	p.store = store
 	p.session = sess
 	p.history = append([]agent.Message(nil), history...)
+	// An attached session — new or resumed — starts with no standing proposal
+	// decision: the choice belongs to the execution it released.
+	p.mu.Lock()
+	p.proposal = nil
+	p.mu.Unlock()
+	if p.state.Pending != nil {
+		p.state.Apply(ApprovalAnswered{})
+	}
 	if len(history) == 0 {
 		return
 	}

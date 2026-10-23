@@ -1072,31 +1072,79 @@ func turnAuthority(held *harness, text string) tui.TurnAuthority {
 	}
 }
 
-// turnTransition projects a workspace-transition proposal into the TUI's
-// decision shape, or reports that the policy wants no proposal.
+// turnTransition projects a pending decision into the TUI's proposal shape, or
+// reports that the policy wants no decision.
+//
+// It consults two boundaries in order. The workspace transition answers
+// whether the request belongs to a narrower authority; the proposal
+// assessment answers whether an authorized request leaves a decision the
+// request itself opened. The two are disjoint by intent — transitions fire on
+// READ and INVESTIGATE, proposals on EXECUTE — so at most one proposes, and
+// the workspace narrowing keeps precedence.
 //
 // It is deliberately side-effect-free, unlike turnAuthority: prediction runs
 // before the turn is decided, so it must not install the handler or move the
-// gate. The accepted transition is applied later, through Switch. It is the
-// single place the workspace package's policy vocabulary is translated for the
-// UI, so both full-screen entry points agree.
+// gate. The accepted transition is applied later, through Switch; the
+// resolved proposal is recorded by the program when the human answers. It is
+// the single place the workspace package's policy vocabulary is translated for
+// the UI, so both full-screen entry points agree.
 func turnTransition(held *harness, text string) (tui.TurnTransition, bool) {
 	active := held.activeWorkspace()
-	proposal, ok := workspace.ProposeTransition(active, workspace.ClassifyPrediction(text))
+	transition, ok := workspace.ProposeTransition(active, workspace.ClassifyPrediction(text))
+	if ok {
+		current, proposed := transition.Current.Style(), transition.Proposed.Style()
+		return tui.TurnTransition{
+			Kind:           tui.TransitionKindWorkspace,
+			Current:        current.Label,
+			Proposed:       proposed.Label,
+			CurrentAccent:  current.Accent,
+			ProposedAccent: proposed.Accent,
+			Intent:         strings.ToUpper(string(transition.Intent)),
+			Strength:       string(transition.Strength),
+			Question:       transition.Question(),
+			Reason:         transition.Reason,
+		}, true
+	}
+
+	proposal, ok := workspace.AssessProposal(active, text, proposalFacts(held.root))
 	if !ok {
 		return tui.TurnTransition{}, false
 	}
-	current, proposed := proposal.Current.Style(), proposal.Proposed.Style()
+	prediction := workspace.ClassifyPrediction(text)
 	return tui.TurnTransition{
-		Current:        current.Label,
-		Proposed:       proposed.Label,
-		CurrentAccent:  current.Accent,
-		ProposedAccent: proposed.Accent,
-		Intent:         strings.ToUpper(string(proposal.Intent)),
-		Strength:       string(proposal.Strength),
-		Question:       proposal.Question(),
-		Reason:         proposal.Reason,
+		Kind:     tui.TransitionKindProposal,
+		Proposal: &proposal,
+		Intent:   strings.ToUpper(string(prediction.Intent)),
+		Strength: string(prediction.Strength),
+		Question: proposal.Question,
+		Reason:   proposal.Reason,
 	}, true
+}
+
+// proposalFacts builds the generic workspace evidence a proposal assessment
+// may consult: whether any visible entry exists. Hidden runtime directories
+// (.ohgo, .git) do not count, so a freshly initialized empty workspace
+// establishes no convention while a real project does.
+//
+// The probe never reads a file, classifies a language, or names a project
+// kind. Presence is the whole evidence.
+func proposalFacts(root string) workspace.ProposalFacts {
+	var facts workspace.ProposalFacts
+	if strings.TrimSpace(root) == "" {
+		return facts
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return facts
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		facts.VisibleEntries++
+	}
+	facts.HasConvention = facts.VisibleEntries > 0
+	return facts
 }
 
 // admit returns the loop's runtime gate, resolving the authority at call time.

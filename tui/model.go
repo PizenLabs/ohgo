@@ -18,6 +18,7 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/tokens"
 	diffview "github.com/PizenLabs/ohgo/tui/diff"
+	"github.com/PizenLabs/ohgo/workspace"
 )
 
 // ToolStatus is where a tool call is in its lifecycle.
@@ -183,9 +184,11 @@ type ShellEntry struct {
 	Seq int
 }
 
-// PendingApproval is a question the user must answer before a tool runs.
+// PendingApproval is a question the user must answer before a tool runs, or a
+// proposal decision rendered through the same permission boundary.
 type PendingApproval struct {
-	// ToolName is the tool that wants to run.
+	// ToolName is the tool that wants to run. It is empty for a proposal,
+	// whose Proposal and Reason carry the context instead.
 	ToolName string
 	// Prompt, when non-empty, is a shell-specific label shown above the call
 	// in the dialog. It exists for the "!" shell escape, whose confirmation
@@ -207,7 +210,15 @@ type PendingApproval struct {
 	Choices []string
 	// Cursor is the highlighted choice index.
 	Cursor int
+	// Proposal, when non-nil, marks this as a request-derived proposal rather
+	// than a tool approval. It supplies the contextual question and the
+	// resolutions; Choices mirrors the option labels so the existing
+	// navigation and layout stay authoritative.
+	Proposal *workspace.Proposal
 }
+
+// IsProposal reports whether the pending question is a proposal decision.
+func (p *PendingApproval) IsProposal() bool { return p != nil && p.Proposal != nil }
 
 // Selected reports the currently highlighted choice.
 func (p *PendingApproval) Selected() string {
@@ -942,6 +953,7 @@ func (s *State) Apply(event Event) {
 			Mutating:        e.Mutating,
 			Choices:         e.Choices,
 			Cursor:          defaultApprovalSelection(e.Choices),
+			Proposal:        e.Proposal,
 		}
 
 	case ApprovalMoved:
@@ -2425,6 +2437,10 @@ type ApprovalAsked struct {
 	// destructive boundary differently from a read one.
 	Mutating bool
 	Choices  []string
+	// Proposal, when non-nil, turns the prompt into a proposal decision. The
+	// question, reason, and choices come from the request-derived proposal;
+	// the dialog shell remains the one permission surface.
+	Proposal *workspace.Proposal
 }
 
 func (ApprovalAsked) eventKind() string { return "approval_asked" }
