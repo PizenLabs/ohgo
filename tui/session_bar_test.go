@@ -234,3 +234,57 @@ func lastLine(out string) string {
 	}
 	return lines[len(lines)-1]
 }
+
+// The compact worktree state names only measured, non-zero buckets: staged
+// as "+", modified as "!", untracked as "?". Unknown or clean stays absent
+// rather than inventing zeros or a fabricated "clean".
+func TestGitCompactStatusSkipsZeroAndUnknown(t *testing.T) {
+	if got := gitCompactStatus(Status{GitKnown: false, GitModified: 6}); got != "" {
+		t.Errorf("unknown gitCompactStatus = %q, want absent", got)
+	}
+	if got := gitCompactStatus(Status{GitKnown: true}); got != "" {
+		t.Errorf("clean gitCompactStatus = %q, want absent", got)
+	}
+	if got := gitCompactStatus(Status{GitKnown: true, GitModified: 6, GitUntracked: 1}); got != "!6 ?1" {
+		t.Errorf("gitCompactStatus = %q, want %q", got, "!6 ?1")
+	}
+	if got := gitCompactStatus(Status{GitKnown: true, GitStaged: 2, GitUntracked: 3}); got != "+2 ?3" {
+		t.Errorf("gitCompactStatus = %q, want %q", got, "+2 ?3")
+	}
+}
+
+// The path orientation carries the compact dirty state, so the footer names
+// the worktree in one chunk: "proj:main !6 ?1".
+func TestFooterPathBranchCarriesGitStatus(t *testing.T) {
+	s := New()
+	s.Status.Cwd = "/work/proj"
+	s.Status.GitBranch = "main"
+	s.Status.GitKnown = true
+	s.Status.GitModified = 6
+	s.Status.GitUntracked = 1
+	got := sessionPathBranch(s)
+	if !strings.Contains(got, "main") || !strings.Contains(got, "!6 ?1") {
+		t.Errorf("sessionPathBranch = %q, want branch plus %q", got, "!6 ?1")
+	}
+}
+
+// The busy footer keeps the worktree state while the session marker stays
+// parked until the turn ends.
+func TestBusyFooterShowsGitWithoutSessionMarker(t *testing.T) {
+	s := New()
+	s.Status.Cwd = "/work/proj"
+	s.Status.GitBranch = "main"
+	s.Status.GitKnown = true
+	s.Status.GitModified = 6
+	s.Status.GitUntracked = 1
+	s.Status.Session = "#9"
+	s.Apply(UserSubmitted{Text: "go"})
+
+	row := composerHintBar(s, 120)
+	if !strings.Contains(row, "!6 ?1") {
+		t.Errorf("busy hint bar = %q, want compact git status while streaming", row)
+	}
+	if strings.Contains(row, "#9") {
+		t.Errorf("busy hint bar = %q, want no session marker while busy", row)
+	}
+}

@@ -132,6 +132,9 @@ func ProjectThinking(s State) ThinkingState {
 // deterministic and selects among tools the runtime actually holds — it never
 // invents one.
 func latestRunningTool(s State) *ToolEntry {
+	if s.runtimeTracked && s.runningTools == 0 {
+		return nil
+	}
 	for i := len(s.Entries) - 1; i >= 0; i-- {
 		entry := &s.Entries[i]
 		if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.Status == ToolRunning {

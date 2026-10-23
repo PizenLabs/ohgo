@@ -55,6 +55,31 @@ func TestWrapKeepsCJKWithinWidth(t *testing.T) {
 	}
 }
 
+func TestCellWidthExpandsTabsAtTerminalStops(t *testing.T) {
+	if got := CellWidth("\t"); got != CodeTabWidth {
+		t.Errorf("tab = %d, want %d", got, CodeTabWidth)
+	}
+	// 'a' advances to column 1, so the tab fills to the next four-cell stop.
+	if got := CellWidth("a\tb"); got != 5 {
+		t.Errorf("a-tab-b = %d, want 5", got)
+	}
+	if got := CellWidth("\x1b[31m\t\x1b[0m"); got != CodeTabWidth {
+		t.Errorf("styled tab = %d, want %d (escapes are zero width)", got, CodeTabWidth)
+	}
+}
+
+func TestWrapLongWhitespaceStaysWithinWidth(t *testing.T) {
+	lines := WrapToWidth(strings.Repeat(" ", 13), 5)
+	for _, line := range lines {
+		if CellWidth(line) > 5 {
+			t.Errorf("line = %q (%d cells), want <= 5", line, CellWidth(line))
+		}
+	}
+	if len(lines) != 3 {
+		t.Errorf("wrapped whitespace into %d lines, want 3", len(lines))
+	}
+}
+
 func TestWrapEmptyAndTrailingNewline(t *testing.T) {
 	if got := WrapToWidth("", 20); len(got) != 1 {
 		t.Errorf("empty = %v, want one empty line", got)

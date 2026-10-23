@@ -753,11 +753,25 @@ func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	if s.Status.Model != "" {
 		parts = append(parts, s.Status.Model)
 	}
-	if pct := s.Status.Percent(); pct >= 0 {
+	// Token telemetry stays visible while streaming: the provider only
+	// reports measured usage at turn completion, so the footer would sit
+	// stale for the whole Responding phase without the in-flight estimate.
+	// liveSessionOut/livePercent already fold OutputTokens in while busy and
+	// pass through measured totals when idle.
+	if s.SessionIn > 0 {
+		parts = append(parts, "↑"+formatTokens(s.SessionIn))
+	}
+	if liveOut := liveSessionOut(s); liveOut > 0 {
+		parts = append(parts, "↓"+formatTokens(liveOut))
+	}
+	if pct := livePercent(s); pct >= 0 {
 		parts = append(parts, "ctx "+strconv.Itoa(pct)+"%")
 	}
-	if s.Status.Cwd != "" {
-		parts = append(parts, shortenCwd(sanitizeInline(s.Status.Cwd), 24))
+	// Path carries branch plus the compact worktree state ("proj:main !6
+	// ?1") so live mode orients exactly like the full-screen hint bar;
+	// unknown or clean stays quiet rather than inventing zeros.
+	if path := sessionPathBranch(s); path != "" {
+		parts = append(parts, path)
 	}
 	if len(parts) == 0 {
 		return ""

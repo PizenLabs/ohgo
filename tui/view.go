@@ -205,6 +205,13 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 // runtime state. Layout derives from WindowSizeMsg dimensions recorded in
 // state; a resize re-renders without issuing requests.
 func Render(state State) string {
+	return renderState(state, nil)
+}
+
+// renderState produces the full frame. frame is an optional retained
+// transcript projection; nil builds a one-shot layout, which is what Render
+// does for tests and standalone callers.
+func renderState(state State, frame *transcriptFrame) string {
 	pal := PaletteFor(state.Theme)
 	layout := ComputeLayout(state)
 	if layout.Mode == LayoutMini && state.Width > 0 && state.Height > 0 {
@@ -244,7 +251,7 @@ func Render(state State) string {
 	} else if state.Picker != nil {
 		renderPickerArea(&sb, state, pal, layout)
 	} else {
-		renderTranscriptArea(&sb, state, pal, layout)
+		renderTranscriptArea(&sb, state, pal, layout, frame)
 	}
 
 	if state.Pending != nil {
@@ -309,6 +316,16 @@ func composerHintsFor(state State) string {
 		return "↑↓ navigate · enter/tab accept · esc dismiss"
 	}
 	if state.Status.Busy {
+		// Busy keeps the live telemetry visible alongside the queue/cancel
+		// keys: hiding ↑/↓/% until the turn ends is what left the
+		// statusline stale for the whole streaming phase. The telemetry
+		// already includes the in-flight output estimate (see
+		// liveSessionOut/livePercent), so it updates on every AssistantDelta
+		// without an extra event per chunk. The session marker still yields
+		// while busy (see busyTelemetry), so the row never duplicates it.
+		if telemetry := busyTelemetry(state); telemetry != "" {
+			return telemetry + " · " + ComposerHints(true)
+		}
 		return ComposerHints(true)
 	}
 	left, right := idleHintZones(state)
@@ -339,6 +356,17 @@ func composerHintBar(state State, width int) string {
 		return hint
 	}
 	if state.Status.Busy {
+		// Same live-telemetry contract as composerHintsFor, split into zones
+		// when a width is known so the busy keys pin right and the measured
+		// tokens survive narrowing. Truncation keeps the token-first head.
+		// The session marker still yields while busy (busyTelemetry).
+		if telemetry := busyTelemetry(state); telemetry != "" {
+			busy := ComposerHints(true)
+			if width <= 0 {
+				return telemetry + " · " + busy
+			}
+			return sessionBarRow(telemetry, busy, width)
+		}
 		if width > 0 {
 			return TruncateToWidth(ComposerHints(true), width)
 		}
@@ -439,10 +467,20 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	conn, showConn := headerConn(state, tier)
 	width := displayWidth(state, layout)
 
+	// A transient clipboard confirmation layers over the permanent header on
+	// the far right. It reserves its own budget before the model truncates,
+	// so the permanent segments keep their established shedding order and
+	// the confirmation can never overlap them.
+	notice := sanitizeInline(state.CopyNotice)
+	reserved := 0
+	if notice != "" {
+		reserved = CellWidth(notice) + 2
+	}
+
 	// The model segment shares one budget with its effort badge: the badge
 	// drops before the core id truncates, so narrowing sheds "◈ max" first
 	// and only then shortens the leaf.
-	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version))
+	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version)-reserved)
 
 	phaseStyle := chrome.Idle
 	if headerRuntimeActive(runtime) {
@@ -472,7 +510,36 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 		sb.WriteString(chrome.Separator.Render(" · "))
 		sb.WriteString(chrome.Check.Render(conn))
 	}
-	return sb.String()
+	left := sb.String()
+	if notice == "" {
+		return left
+	}
+	noticeStyled := ExtrasFor(state.Theme).Success.Bold(true).Render(notice)
+	if state.Width <= 0 {
+		// Unknown size renders everything without slicing: join without
+		// padding so no arbitrary width is invented.
+		return left + "  " + noticeStyled
+	}
+	leftW := CellWidth(left)
+	noticeW := CellWidth(notice)
+	gap := width - leftW - noticeW
+	if gap < 2 {
+		// Unreachable on every supported width (the model budget above
+		// guarantees at least the minimum gap, and Mini owns narrower
+		// terminals), but never overlap or overflow if it ever happens:
+		// truncate the plain left to make room rather than covering it.
+		maxLeft := width - noticeW - 2
+		if maxLeft < 0 {
+			maxLeft = 0
+		}
+		left = TruncateToWidth(stripANSI(left), maxLeft)
+		leftW = CellWidth(left)
+		gap = width - leftW - noticeW
+		if gap < 2 {
+			gap = 2
+		}
+	}
+	return left + strings.Repeat(" ", gap) + noticeStyled
 }
 
 // headerTier resolves the header density from the terminal width. Unknown
@@ -571,81 +638,6 @@ func compactModel(model string) string {
 	return model
 }
 
-// renderTranscriptArea writes the transcript, wrapped to the content width
-// and sliced to the conversation height when the size is known.
-//
-// The region always fills its budget: short content sits at the top with the
-// remaining rows left blank below it, so the composer is pinned to the bottom
-// of the screen instead of floating up under a short conversation. Overflow is
-// trimmed from the top, keeping the live edge visible.
-func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout Layout) {
-	body := renderTranscriptBody(state, pal, layout)
-	if body == "" && showWelcome(state) {
-		body = renderWelcome(state, pal, layout)
-	}
-	lines := splitLines(body)
-	if state.Height <= 0 || layout.Mode == LayoutWide && state.Width <= 0 {
-		sb.WriteString(body)
-		if body != "" && !strings.HasSuffix(body, "\n") {
-			sb.WriteString("\n")
-		}
-		return
-	}
-	avail := layout.ConversationHeight
-	// An approval dialog claims rows inside the conversation budget so
-	// regions never overlap. Queued prompts live in the composer, never
-	// here: the transcript holds conversation history, interaction state
-	// belongs to the pinned chrome.
-	if state.Pending != nil {
-		avail -= approvalLines(state.Pending, layout)
-	}
-	// The transcript yields entirely to modal pressure on tiny viewports:
-	// a zero-row transcript plus a visible dialog beats an overflowing one.
-	if avail < 0 {
-		avail = 0
-	}
-	// The region emits exactly avail rows: entry separators are blank lines
-	// inside the row budget, not extra rows past it. Writing the raw body
-	// plus padding would double-count them and push chrome off-screen.
-	if len(lines) <= avail {
-		for _, line := range lines {
-			sb.WriteString(line + "\n")
-		}
-		// Pad below so the composer stays at the bottom of the viewport.
-		for i := len(lines); i < avail; i++ {
-			sb.WriteString("\n")
-		}
-		return
-	}
-	// The scroll offset is clamped to the content: an offset past the top
-	// would emit fewer than avail rows and unpin the composer from the
-	// bottom of the viewport, and the marker must count lines actually
-	// above rather than the raw offset. Render stays pure — the stored
-	// offset is untouched, so scrolling back down still moves.
-	scroll := state.Scroll
-	if max := len(lines) - avail; scroll > max {
-		scroll = max
-	}
-	if scroll > 0 && avail > 0 {
-		sb.WriteString(pal.Muted.Render(fmt.Sprintf("↑ %d lines above — end to follow", scroll)) + "\n")
-		avail--
-	}
-	start := len(lines) - avail - scroll
-	if start < 0 {
-		start = 0
-	}
-	end := len(lines) - scroll
-	if end < start {
-		end = start
-	}
-	if end > len(lines) {
-		end = len(lines)
-	}
-	for _, line := range lines[start:end] {
-		sb.WriteString(line + "\n")
-	}
-}
-
 // showWelcome reports whether the empty-conversation introduction belongs.
 //
 // It is derived, never stored: the welcome is chrome for "nothing has happened
@@ -660,6 +652,11 @@ func showWelcome(state State) bool {
 }
 
 // renderTranscriptBody renders every entry wrapped to the content width.
+//
+// The interactive path does not call it: it slices TranscriptLayout.Rows. This
+// full projection is the reference for the layout-equivalence tests and the
+// full-render comparison benchmark, which is exactly the old ownership model
+// the retained viewport replaces.
 func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 	var body strings.Builder
 	frame := spinnerFrame(state.Status.Spinner)
@@ -1953,8 +1950,9 @@ func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout L
 }
 
 // renderStatus draws the contextual footer: working directory, session,
-// context budget, and measured usage. It serves modal chrome (overlays,
-// approvals) and the setup wizard; the main idle canvas leaves this row out
+// branch plus compact worktree state, context budget, and measured usage.
+// It serves modal chrome (overlays, approvals) and the setup wizard; the
+// main idle canvas leaves this row out
 // (header, composer prefix, and hint bar already own every fact it would
 // repeat) and gives the row to the transcript instead.
 //
@@ -1973,21 +1971,21 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 	// accounting: untrusted for layout purposes, sanitized inline so the
 	// footer stays exactly one row (it is truncated, never wrapped).
 	if layout.ShowDetail {
-		if pct := status.Percent(); pct >= 0 {
+		if pct := livePercent(state); pct >= 0 {
 			parts = append(parts, fmt.Sprintf("context %d%%", pct))
 		}
 		if status.Session != "" {
 			parts = append(parts, status.Session)
 		}
-		if status.Cwd != "" {
-			parts = append(parts, shortenCwd(sanitizeInline(status.Cwd), 24))
+		if path := sessionPathBranchWidth(state, 24); path != "" {
+			parts = append(parts, path)
 		}
 		if status.UsageText != "" {
 			parts = append(parts, sanitizeInline(status.UsageText))
 		}
 	} else {
-		if status.Cwd != "" {
-			parts = append(parts, shortenCwd(sanitizeInline(status.Cwd), 16))
+		if path := sessionPathBranchWidth(state, 16); path != "" {
+			parts = append(parts, path)
 		}
 		if status.Session != "" {
 			parts = append(parts, status.Session)

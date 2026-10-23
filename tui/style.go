@@ -292,13 +292,21 @@ func DeriveRuntime(s State) RuntimeState {
 	return RuntimeIdle
 }
 
-// hasRunningTool reports any tool still executing.
+// hasRunningTool reports any tool still executing. Apply maintains the count,
+// so idle frames do not scan a long transcript; hand-built fixtures fall back
+// to the scan.
 func hasRunningTool(s State) bool {
+	if s.runtimeTracked {
+		return s.runningTools > 0
+	}
 	return latestRunningTool(s) != nil
 }
 
 // hasAssistantText reports the trailing assistant entry holds streamed text.
 func hasAssistantText(s State) bool {
+	if s.runtimeTracked {
+		return s.assistantText
+	}
 	for i := len(s.Entries) - 1; i >= 0; i-- {
 		if s.Entries[i].Kind == EntryAssistant {
 			return s.Entries[i].AssistantText != ""

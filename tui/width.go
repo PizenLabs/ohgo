@@ -10,11 +10,51 @@ import (
 // CellWidth reports the terminal cells a string occupies.
 //
 // ANSI escape sequences contribute zero width; CJK, emoji, and other wide
-// glyphs contribute two. Byte length is never consulted: a CJK character is
-// three bytes but one or two cells, and measuring bytes overflows narrow
-// terminals and underflows wide ones.
+// glyphs contribute two. Tabs are expanded at the renderer's fixed tab stops
+// before measurement: a terminal paints them, so counting them as zero would
+// understate the row and cause a soft wrap the layout never budgeted.
 func CellWidth(s string) int {
-	return runewidth.StringWidth(ansi.Strip(s))
+	return runewidth.StringWidth(expandTabsStyled(ansi.Strip(s)))
+}
+
+// expandTabsStyled expands tabs without disturbing ANSI escape sequences.
+//
+// A tab stop is a screen column, and an escape sequence occupies none. The
+// scanner walks the original string, copies escape sequences whole, and only
+// advances the column for printable runes.
+func expandTabsStyled(s string) string {
+	if !strings.Contains(s, "\t") {
+		return s
+	}
+	runes := []rune(s)
+	var sb strings.Builder
+	sb.Grow(len(s))
+	col := 0
+	for i := 0; i < len(runes); {
+		if advance, keep := scanEscape(runes, i); advance > 0 {
+			if keep {
+				for _, r := range runes[i : i+advance] {
+					sb.WriteRune(r)
+				}
+			}
+			i += advance
+			continue
+		}
+		r := runes[i]
+		if r == '\t' {
+			n := CodeTabWidth - col%CodeTabWidth
+			sb.WriteString(strings.Repeat(" ", n))
+			col += n
+			i++
+			continue
+		}
+		sb.WriteRune(r)
+		if w := runewidth.RuneWidth(r); w > 0 {
+			col += w
+		}
+		i++
+	}
+	return sb.String()
 }
 
 // CodeTabWidth is the tab stop the renderer commits to when it lays out a code
@@ -35,27 +75,7 @@ const CodeTabWidth = 4
 // per tab — enough for a padded code row to overflow its budget, which the
 // terminal then soft-wraps, turning one logical row into two.
 func expandTabs(s string) string {
-	if !strings.Contains(s, "\t") {
-		return s
-	}
-	var sb strings.Builder
-	sb.Grow(len(s))
-	col := 0
-	for _, r := range s {
-		if r == '\t' {
-			n := CodeTabWidth - col%CodeTabWidth
-			sb.WriteString(strings.Repeat(" ", n))
-			col += n
-			continue
-		}
-		sb.WriteRune(r)
-		// A zero-width rune (combining mark) must not advance the column:
-		// it rides the previous cell, so the next tab stop stays put.
-		if w := runewidth.RuneWidth(r); w > 0 {
-			col += w
-		}
-	}
-	return sb.String()
+	return expandTabsStyled(s)
 }
 
 // TruncateToWidth cuts s to at most width cells, appending ellipsis when cut.
@@ -66,6 +86,7 @@ func TruncateToWidth(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
+	s = expandTabsStyled(s)
 	stripped := ansi.Strip(s)
 	if runewidth.StringWidth(stripped) <= width {
 		return s
@@ -93,7 +114,7 @@ func WrapToWidth(text string, width int) []string {
 	raw := strings.Split(text, "\n")
 	var out []string
 	for _, line := range raw {
-		out = append(out, wrapLine(line, width)...)
+		out = append(out, wrapLine(expandTabsStyled(line), width)...)
 	}
 	return out
 }
@@ -105,7 +126,13 @@ func wrapLine(line string, width int) []string {
 		return []string{line}
 	}
 	if strings.TrimSpace(plain) == "" {
-		return []string{line}
+		if runewidth.StringWidth(plain) <= width {
+			return []string{line}
+		}
+		// A long run of spaces or expanded tabs still occupies cells the
+		// terminal will lay out; hiding it behind a one-row shortcut would
+		// desynchronise the row count from the screen.
+		return sliceCells(plain, width)
 	}
 	words := strings.Fields(plain)
 	// No spaces to break at: hard-slice by cells.

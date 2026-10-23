@@ -38,7 +38,19 @@ const (
 // Entry is one line in the transcript.
 //
 // Exactly one of the embedded kinds is meaningful, discriminated by Kind.
+//
+// Entry is the canonical block representation: it holds logical content, never
+// terminal coordinates or rendered bytes. ID identifies the block across
+// scrolling, expansion and resize; rev is a cache token the retained layout
+// uses to decide which projection is stale.
 type Entry struct {
+	// ID is the block's stable identity for the lifetime of this view. It is
+	// assigned when the entry enters the transcript and is never derived from
+	// a screen row.
+	ID BlockID
+	// rev advances whenever the entry's rendered projection can change. It is
+	// a dirty token for the layout cache, not semantic state.
+	rev uint64
 	// Kind tells which payload is set.
 	Kind EntryKind
 
@@ -423,11 +435,36 @@ type State struct {
 	// automatically when the turn completes.
 	Queued []string
 	// Scroll is how many lines above the bottom edge the viewport shows.
-	// Zero follows the live edge.
+	// Zero follows the live edge. It is retained as the event-level mirror of
+	// the user's scroll intent; TranscriptLayout is the geometry authority,
+	// so this number is never interpreted as a terminal row.
 	Scroll int
+	// scrollIntent is the user's accumulated scroll distance, untouched by
+	// output growth. The viewport tracker uses it to distinguish "the user
+	// scrolled" from "content arrived while detached"; the Scroll mirror keeps
+	// both effects for compatibility with callers that observe it.
+	scrollIntent int
+	// ScrollSeq advances only on an explicit scroll transition. The viewport
+	// tracker treats it as the boundary between a user action and reflow.
+	ScrollSeq int
 	// Follow reports the viewport tracks new output. Scrolling up clears it;
 	// scrolling back to the bottom restores it.
 	Follow bool
+	// Selection is the application-owned logical selection, or nil. Positions
+	// name a block and a row inside it, never a terminal coordinate.
+	Selection *Selection
+	// CopyNotice is transient clipboard feedback, e.g. "Copied", shown in
+	// the existing top header at the far right. It is ephemeral UI state
+	// only: it never enters the document, the transcript, the session, the
+	// runtime authority, or any execution state. It is set only after the
+	// clipboard path reports success and clears automatically after
+	// copyNoticeTTL. Empty means no confirmation is visible.
+	CopyNotice string
+	// CopyGen identifies the current clipboard confirmation generation. Every
+	// successful copy increments it and schedules an expiry carrying that
+	// generation; a stale expiry whose generation trails the current one is
+	// ignored, so the latest copy always owns the visible lifetime.
+	CopyGen uint64
 	// Width and Height are the terminal size in cells. Zero means unknown,
 	// in which case the view renders everything without slicing.
 	Width  int
@@ -559,6 +596,26 @@ type State struct {
 	// sample. It is stored rather than read at render time so Render stays
 	// pure and deterministic.
 	SessionElapsed time.Duration
+	// nextBlockID and nextEntryRev allocate stable identities and dirty
+	// tokens for transcript blocks. They never leave the UI state.
+	nextBlockID  int
+	nextEntryRev uint64
+	// dirty and dirtyReset are the layout cache's invalidation hints. They
+	// record which blocks Apply changed, so a refresh does not have to scan
+	// the whole document to find a single streamed block.
+	dirty      []int
+	dirtyReset bool
+	// runningTools counts ToolRunning blocks. DeriveRuntime asks whether any
+	// tool runs on every header render; without the counter an idle 10k-block
+	// transcript would be scanned per frame. runtimeTracked distinguishes a
+	// counter maintained by Apply from a hand-built fixture, which still falls
+	// back to a scan.
+	runningTools   int
+	runtimeTracked bool
+	// assistantText reports the most recent assistant entry has streamed
+	// text. DeriveRuntime asks this on every busy frame; the flag keeps an
+	// idle/tool-only history from being scanned for it.
+	assistantText bool
 }
 
 // New returns an empty state.
@@ -571,6 +628,24 @@ func New() State {
 // This is the only place a transition happens, which is what makes the
 // behaviour testable without a terminal.
 func (s *State) Apply(event Event) {
+	if !s.runtimeTracked {
+		// A fixture may have installed entries directly. Count once before
+		// the incremental bookkeeping takes over.
+		s.runningTools = 0
+		s.assistantText = false
+		for i := range s.Entries {
+			if s.Entries[i].Kind == EntryTool && s.Entries[i].Tool != nil && s.Entries[i].Tool.Status == ToolRunning {
+				s.runningTools++
+			}
+		}
+		for i := len(s.Entries) - 1; i >= 0; i-- {
+			if s.Entries[i].Kind == EntryAssistant {
+				s.assistantText = s.Entries[i].AssistantText != ""
+				break
+			}
+		}
+		s.runtimeTracked = true
+	}
 	switch e := event.(type) {
 	case UserSubmitted:
 		seq := e.Seq
@@ -585,7 +660,7 @@ func (s *State) Apply(event Event) {
 		// turn supersedes any proposal still held (I: stale state cannot
 		// survive into another turn).
 		s.Transition = nil
-		s.Entries = append(s.Entries, Entry{Kind: EntryUser, UserText: e.Text})
+		s.pushEntry(Entry{Kind: EntryUser, UserText: e.Text})
 		s.Input = ""
 		s.Cursor = 0
 		s.Pastes = nil
@@ -601,6 +676,7 @@ func (s *State) Apply(event Event) {
 		// The first prompt flips the helper bar from shortcuts to telemetry;
 		// a run that later clears returns it to the clean state.
 		s.SessionActive = true
+		s.Selection = nil
 		s.growScroll(countLines(e.Text))
 
 	case AssistantDelta:
@@ -655,13 +731,17 @@ func (s *State) Apply(event Event) {
 				entry.Tool.Status = ToolError
 				entry.Tool.Summary = "cancelled"
 				entry.Tool.Text = "cancelled"
+				s.bumpEntry(i)
+				if s.runningTools > 0 {
+					s.runningTools--
+				}
 			}
 		}
 		text := e.Text
 		if text == "" {
 			text = "cancelled"
 		}
-		s.Entries = append(s.Entries, Entry{Kind: EntryNotice, Notice: text})
+		s.pushEntry(Entry{Kind: EntryNotice, Notice: text})
 		s.growScroll(countLines(text))
 
 	case ToolStarted:
@@ -688,6 +768,8 @@ func (s *State) Apply(event Event) {
 				StartedAt:  e.At,
 			},
 		})
+		s.assignIdentity(len(s.Entries) - 1)
+		s.runningTools++
 		s.growScroll(1)
 
 	case ToolPreview:
@@ -700,8 +782,9 @@ func (s *State) Apply(event Event) {
 		// A preview updates the summary of a *running* call only. Once a call
 		// has finished, a late preview would resurrect stale progress on top
 		// of the real outcome.
-		if tool := s.tool(e.ID); tool != nil && tool.Status == ToolRunning {
-			tool.Summary = e.Summary
+		if idx := s.toolIndex(e.ID); idx >= 0 && s.Entries[idx].Tool != nil && s.Entries[idx].Tool.Status == ToolRunning {
+			s.Entries[idx].Tool.Summary = e.Summary
+			s.bumpEntry(idx)
 		}
 
 	case ToolFinished:
@@ -711,9 +794,13 @@ func (s *State) Apply(event Event) {
 		if s.Cancelled {
 			return
 		}
-		tool := s.tool(e.ID)
-		if tool == nil {
+		idx := s.toolIndex(e.ID)
+		if idx < 0 {
 			return
+		}
+		tool := s.Entries[idx].Tool
+		if tool.Status == ToolRunning && s.runningTools > 0 {
+			s.runningTools--
 		}
 		tool.EndedAt = e.At
 		// The outcome replaces the running summary, but the invocation
@@ -727,13 +814,15 @@ func (s *State) Apply(event Event) {
 		} else {
 			tool.Status = ToolDone
 		}
+		s.bumpEntry(idx)
 		s.growScroll(countLines(e.Text) + 1)
 
 	case ToolToggled:
 		// Expansion is presentation-only: flipping it never re-runs the
 		// tool, mutates its result, or touches approval state.
-		if tool := s.tool(e.ID); tool != nil {
-			tool.Expanded = !tool.Expanded
+		if idx := s.toolIndex(e.ID); idx >= 0 {
+			s.Entries[idx].Tool.Expanded = !s.Entries[idx].Tool.Expanded
+			s.bumpEntry(idx)
 		}
 
 	case ShellStarted:
@@ -743,6 +832,7 @@ func (s *State) Apply(event Event) {
 			Seq:       e.Seq,
 			StartedAt: e.At,
 		}})
+		s.assignIdentity(len(s.Entries) - 1)
 		s.growScroll(1)
 
 	case ShellDelta:
@@ -751,13 +841,17 @@ func (s *State) Apply(event Event) {
 			return
 		}
 		shell.Output += e.Text
+		if idx := s.shellIndex(e.Seq); idx >= 0 {
+			s.bumpEntry(idx)
+		}
 		s.growScroll(strings.Count(e.Text, "\n"))
 
 	case ShellFinished:
-		shell := s.shell(e.Seq)
-		if shell == nil {
+		idx := s.shellIndex(e.Seq)
+		if idx < 0 {
 			return
 		}
+		shell := s.Entries[idx].Shell
 		shell.Duration = e.Duration
 		shell.ExitCode = e.ExitCode
 		shell.Truncated = e.Truncated
@@ -768,10 +862,11 @@ func (s *State) Apply(event Event) {
 		default:
 			shell.Status = ShellDone
 		}
+		s.bumpEntry(idx)
 		s.growScroll(1)
 
 	case Notice:
-		s.Entries = append(s.Entries, Entry{Kind: EntryNotice, Notice: e.Text})
+		s.pushEntry(Entry{Kind: EntryNotice, Notice: e.Text})
 		s.growScroll(countLines(e.Text))
 
 	case TaskProjected:
@@ -785,10 +880,12 @@ func (s *State) Apply(event Event) {
 		for i := len(s.Entries) - 1; i >= 0; i-- {
 			if s.Entries[i].Kind == EntryTask {
 				s.Entries[i].Task = &projection
+				s.bumpEntry(i)
 				return
 			}
 		}
 		s.Entries = append(s.Entries, Entry{Kind: EntryTask, Task: &projection})
+		s.assignIdentity(len(s.Entries) - 1)
 		s.growScroll(len(projection.Items) + 2)
 
 	case HistoryReplaced:
@@ -796,11 +893,19 @@ func (s *State) Apply(event Event) {
 		// transcript replaces the view outright. It is a fresh session
 		// boundary, so the progressive-disclosure telemetry restarts clean:
 		// the prior session's token counts and clock do not belong to it.
-		s.Entries = append([]Entry(nil), e.Entries...)
+		s.replaceEntries(e.Entries)
 		s.closedAssistant = true
 		s.OutputTokens = 0
 		s.Status.Turn = TurnSemantics{}
 		s.Transition = nil
+		s.Selection = nil
+		// A transient clipboard confirmation never survives a session
+		// boundary: the selection it confirmed no longer exists.
+		s.CopyNotice = ""
+		s.Scroll = 0
+		s.scrollIntent = 0
+		s.ScrollSeq++
+		s.Follow = true
 		s.resetSessionMetrics()
 
 	case ContextUpdated:
@@ -822,6 +927,7 @@ func (s *State) Apply(event Event) {
 			Kind:   EntryNotice,
 			Notice: fmt.Sprintf("context compacted: %d messages summarised, %d retained", e.Messages, e.Retained),
 		})
+		s.assignIdentity(len(s.Entries) - 1)
 		s.Status.ContextUsed = e.AfterTokens
 		s.Status.ContextWindow = e.Window
 		s.growScroll(1)
@@ -1143,16 +1249,25 @@ func (s *State) Apply(event Event) {
 
 	case ScrollMoved:
 		s.Scroll += e.Delta
-		if s.Scroll <= 0 {
+		s.scrollIntent += e.Delta
+		// Attachment follows the user's intent, not the compatibility mirror:
+		// while detached, growScroll also advances Scroll for output that has
+		// arrived. Using Scroll here would make the wheel need one tick per
+		// streamed line before it could reattach.
+		if s.scrollIntent <= 0 {
 			s.Scroll = 0
+			s.scrollIntent = 0
 			s.Follow = true
 		} else {
 			s.Follow = false
 		}
+		s.ScrollSeq++
 
 	case ScrollToBottom:
 		s.Scroll = 0
+		s.scrollIntent = 0
 		s.Follow = true
+		s.ScrollSeq++
 
 	case TerminalResized:
 		s.Width = e.Width
@@ -1754,6 +1869,10 @@ func (s *State) Apply(event Event) {
 		// would pin the next turn's output to the top of an empty
 		// transcript instead of following it.
 		s.Entries = nil
+		s.dirtyReset = true
+		s.dirty = s.dirty[:0]
+		s.runningTools = 0
+		s.assistantText = false
 		s.Pending = nil
 		s.QuitConfirm = nil
 		s.Transition = nil
@@ -1766,7 +1885,13 @@ func (s *State) Apply(event Event) {
 		s.ConnectKey = nil
 		s.Queued = nil
 		s.Scroll = 0
+		s.scrollIntent = 0
+		s.ScrollSeq++
 		s.Follow = true
+		s.Selection = nil
+		// Clearing drops the transient confirmation with the transcript it
+		// confirmed; a stale expiry after this is a no-op via the generation.
+		s.CopyNotice = ""
 		s.closedAssistant = false
 		s.OutputTokens = 0
 		s.resetSessionMetrics()
@@ -1799,10 +1924,76 @@ func (s *State) currentOutputTokens() int {
 //
 // In follow mode the view tracks the live edge, so there is nothing to do.
 // Scrolled up, the offset from the bottom must grow by the lines just added,
-// or the viewport would drift downward with every event.
+// or the viewport would drift downward with every event. This is only the
+// compatibility mirror: TranscriptLayout re-resolves geometry from the visual
+// rows, and the viewport tracker anchors on a block, so wrapped output cannot
+// make the rendered position drift even when this estimate is coarse.
 func (s *State) growScroll(lines int) {
 	if !s.Follow {
 		s.Scroll += lines
+	}
+}
+
+// pushEntry appends a block and gives it a stable identity.
+func (s *State) pushEntry(entry Entry) {
+	s.Entries = append(s.Entries, entry)
+	s.assignIdentity(len(s.Entries) - 1)
+}
+
+// assignIdentity allocates the block ID and dirty token for an entry that just
+// entered the transcript.
+func (s *State) assignIdentity(index int) {
+	if index < 0 || index >= len(s.Entries) {
+		return
+	}
+	s.nextBlockID++
+	s.nextEntryRev++
+	s.Entries[index].ID = BlockID(fmt.Sprintf("block-%d", s.nextBlockID))
+	s.Entries[index].rev = s.nextEntryRev
+	s.dirty = append(s.dirty, index)
+}
+
+// bumpEntry marks one block's projection stale after an in-place update.
+func (s *State) bumpEntry(index int) {
+	if index < 0 || index >= len(s.Entries) {
+		return
+	}
+	s.nextEntryRev++
+	s.Entries[index].rev = s.nextEntryRev
+	s.dirty = append(s.dirty, index)
+}
+
+// clearDirty consumes the layout invalidation hints. The UI goroutine calls it
+// after a successful Refresh; a second cache (a one-shot Render) rebuilds from
+// scratch and never relies on these hints.
+func (s *State) clearDirty() {
+	s.dirty = s.dirty[:0]
+	s.dirtyReset = false
+}
+
+// replaceEntries installs a whole transcript, as a resume does. IDs are
+// reassigned because a persisted transcript has no view identity to preserve:
+// the old selection and viewport refer to blocks that no longer exist.
+func (s *State) replaceEntries(entries []Entry) {
+	s.Entries = append([]Entry(nil), entries...)
+	s.dirty = s.dirty[:0]
+	s.dirtyReset = true
+	s.runningTools = 0
+	s.assistantText = false
+	for i := range s.Entries {
+		s.nextBlockID++
+		s.nextEntryRev++
+		s.Entries[i].ID = BlockID(fmt.Sprintf("block-%d", s.nextBlockID))
+		s.Entries[i].rev = s.nextEntryRev
+		if s.Entries[i].Kind == EntryTool && s.Entries[i].Tool != nil && s.Entries[i].Tool.Status == ToolRunning {
+			s.runningTools++
+		}
+	}
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		if s.Entries[i].Kind == EntryAssistant {
+			s.assistantText = s.Entries[i].AssistantText != ""
+			break
+		}
 	}
 }
 
@@ -1934,15 +2125,19 @@ func (s *State) appendAssistant(text string) {
 	}
 	if index := s.openAssistant(); index >= 0 {
 		s.Entries[index].AssistantText += text
+		s.assistantText = true
+		s.bumpEntry(index)
 		return
 	}
 	s.Entries = append(s.Entries, Entry{Kind: EntryAssistant, AssistantText: text})
+	s.assistantText = true
+	s.assignIdentity(len(s.Entries) - 1)
 	s.closedAssistant = false
 }
 
 // tool finds a tool entry by call id.
 func (s *State) tool(id string) *ToolEntry {
-	for i := range s.Entries {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
 		entry := &s.Entries[i]
 		if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.ID == id {
 			return entry.Tool
@@ -1994,9 +2189,24 @@ func (s *State) LatestToolID() string {
 
 // toolIndex returns the transcript index of a tool block, or -1.
 func (s *State) toolIndex(id string) int {
-	for i := range s.Entries {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
 		entry := &s.Entries[i]
 		if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// shellIndex returns the transcript index of an escape block, or -1. A zero
+// seq matches the most recent block, mirroring shell().
+func (s *State) shellIndex(seq int) int {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		entry := &s.Entries[i]
+		if entry.Kind != EntryShell || entry.Shell == nil {
+			continue
+		}
+		if seq == 0 || entry.Shell.Seq == seq {
 			return i
 		}
 	}
