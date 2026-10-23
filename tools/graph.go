@@ -88,6 +88,8 @@ func NewGraphTool(source *StructuralSource) *GraphTool {
 		},
 		agent.Approval{Tier: agent.TierRead},
 	)
+	tool.SetRequiredLanguage("go")
+	tool.SetActionClasses(agent.ActionObserve, agent.ActionRelationship)
 	return tool
 }
 

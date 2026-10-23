@@ -102,6 +102,13 @@ type SubagentSpec struct {
 	// Resolver locates the contract's symbols and packages after the child
 	// runs. It is the same structural index the parent already owns.
 	Resolver StructuralResolver
+	// Project installs a task-shaped projection on the child loop. The parent
+	// builds it from the assignment's own contract and evidence, never from
+	// the parent's conversation: a child must not inherit the parent's state.
+	Project func(ProjectionRequest) ProjectionResult
+	// OnProjection reports the child's projection decisions, for a host that
+	// is auditing a delegated tree.
+	OnProjection func(ProjectionReport)
 }
 
 // SubagentResult is what a child agent produced.
@@ -226,12 +233,14 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		// lost the parent's authority seam would be a way around the security
 		// boundary. A delegated turn narrows what the child may do, never
 		// widens it.
-		Admit:      parent.Admit,
-		Approve:    parent.Approve,
-		Authorize:  parent.Authorize,
-		Compaction: parent.Compaction,
-		Summarize:  parent.Summarize,
-		OnCompact:  parent.OnCompact,
+		Admit:        parent.Admit,
+		Approve:      parent.Approve,
+		Authorize:    parent.Authorize,
+		Compaction:   parent.Compaction,
+		Summarize:    parent.Summarize,
+		OnCompact:    parent.OnCompact,
+		Project:      spec.Project,
+		OnProjection: spec.OnProjection,
 		// The parent's wall-clock budget bounds the whole delegated tree. A
 		// child that dropped it would keep spending provider calls after the
 		// user's --deadline had already expired.

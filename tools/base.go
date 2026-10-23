@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/jsonschema"
 )
 
@@ -32,6 +33,14 @@ type Base struct {
 	approval agent.Approval
 	// exclusive forces the tool to run alone.
 	exclusive bool
+	// classes is the declared action surface. Empty means derive it from the
+	// approval tier.
+	classes []agent.ActionClass
+	// language is the source language the tool needs, or "".
+	language string
+	// mutations is the declared repository change surface, or nil when the
+	// tool does not declare one.
+	mutations []contract.ChangeOp
 }
 
 // NewBase builds a Base. A nil schema yields a schema that accepts any value,
@@ -63,6 +72,33 @@ func (b Base) Exclusive(map[string]any) bool { return b.exclusive }
 
 // SetExclusive marks the tool as requiring sole use of the batch.
 func (b *Base) SetExclusive(value bool) { b.exclusive = value }
+
+// ActionClasses implements agent.ActionClassifier.
+func (b Base) ActionClasses() []agent.ActionClass {
+	return append([]agent.ActionClass(nil), b.classes...)
+}
+
+// SetActionClasses declares the action surface a tool exposes.
+func (b *Base) SetActionClasses(classes ...agent.ActionClass) {
+	b.classes = append([]agent.ActionClass(nil), classes...)
+}
+
+// RequiredLanguage implements agent.LanguageReporter.
+func (b Base) RequiredLanguage() string { return b.language }
+
+// SetRequiredLanguage declares the source language a tool needs.
+func (b *Base) SetRequiredLanguage(language string) { b.language = language }
+
+// MutationOperations implements agent.MutationReporter.
+func (b Base) MutationOperations() []contract.ChangeOp {
+	return append([]contract.ChangeOp(nil), b.mutations...)
+}
+
+// SetMutationOperations declares the repository change operations a tool
+// performs.
+func (b *Base) SetMutationOperations(operations ...contract.ChangeOp) {
+	b.mutations = append([]contract.ChangeOp(nil), operations...)
+}
 
 // pathArg extracts the common "path" argument.
 func pathArg(args map[string]any) (string, error) {

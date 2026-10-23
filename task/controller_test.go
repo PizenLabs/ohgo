@@ -11,6 +11,52 @@ import (
 	"github.com/PizenLabs/ohgo/contract"
 )
 
+// A task's evidence survives a checkpoint and a resume; a new task starts
+// empty. This is what lets a later turn avoid rediscovering facts without
+// inheriting another task's observations.
+func TestControllerPersistsEvidenceAcrossResume(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	controller := NewController(store, nil)
+	if _, err := controller.Begin(testIntent("write README.md"), nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	controller.Evidence().ObserveOutcome(agent.ToolOutcome{
+		CallID:   "read-1",
+		ToolName: "read",
+		Args:     map[string]any{"path": "index.html"},
+		Result: agent.Result{
+			Text:    "1\t<!doctype html>",
+			Details: map[string]any{"path": "index.html", "totalLines": 1, "offset": 1, "limit": 2000},
+		},
+	})
+	controller.RecordProjection(agent.ProjectionReport{Applied: true, Turn: 1, Messages: 2, Stage: "act", Sufficiency: "SUFFICIENT"})
+	if _, err := controller.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	reopened := NewController(store, nil)
+	if _, found, err := reopened.Restore(); err != nil || !found {
+		t.Fatalf("Restore: found=%v err=%v", found, err)
+	}
+	if _, ok := reopened.Evidence().Find("file:index.html"); !ok {
+		t.Fatal("evidence did not survive the checkpoint")
+	}
+	if audit := reopened.Audit(); !strings.Contains(audit, "projection:") {
+		t.Fatalf("audit did not survive the checkpoint: %q", audit)
+	}
+
+	if _, err := reopened.Cancel("done"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if _, err := reopened.Begin(testIntent("a different task"), nil); err != nil {
+		t.Fatalf("Begin new task: %v", err)
+	}
+	if !reopened.Evidence().Empty() {
+		t.Fatalf("new task inherited evidence: %#v", reopened.Evidence().Items)
+	}
+}
+
 // testIntent is the smallest complete contract the controller needs; the
 // completion rules themselves are tested in the agent package.
 func testIntent(objective string) contract.IntentContract {

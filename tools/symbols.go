@@ -87,6 +87,7 @@ func NewSymbolsToolWithSource(source *StructuralSource) *SymbolsTool {
 		},
 		agent.Approval{Tier: agent.TierRead},
 	)
+	tool.SetRequiredLanguage("go")
 	return tool
 }
 

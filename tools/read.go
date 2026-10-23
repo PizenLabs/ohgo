@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/contract"
 )
 
 // Preview limits shared by the read tool and its tests.
@@ -180,6 +181,7 @@ func NewWriteTool(root string) *WriteTool {
 		},
 		agent.Approval{Tier: agent.TierWrite, Reason: "overwrites file contents"},
 	)
+	tool.SetMutationOperations(contract.ChangeCreate, contract.ChangeModify, contract.ChangeAny)
 	return tool
 }
 

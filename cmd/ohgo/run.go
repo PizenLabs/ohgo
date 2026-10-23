@@ -18,6 +18,7 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/catalog"
+	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/config"
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/project"
@@ -809,13 +810,38 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 		// A writable child gets the same bounded contract and pre-run target
 		// evidence as the top-level turn. A read-only child is not asked to
 		// prove a mutation it was forbidden to make.
+		intent := workspace.BuildIntentContract(spec.Task)
+		if spec.Contract != nil {
+			intent = *spec.Contract
+		}
 		if !spec.ReadOnly {
 			resolver := structuralResolver(parentTools)
-			intent := workspace.BuildIntentContract(spec.Task)
 			spec.Contract = &intent
 			spec.Resolver = resolver
 			if intent.Kind == workspace.ObjectiveMutation {
 				spec.Snapshot = agent.CaptureTargetsContext(ctx, opts.root, intent, resolver)
+			}
+		}
+		// A child gets its own shape and evidence, derived from the assignment
+		// rather than inherited from the parent conversation. The projection
+		// narrows the child's context and action surface; the inherited
+		// security gate remains the only authority.
+		authority := "ask"
+		if !spec.ReadOnly {
+			authority = opts.authority().String()
+		}
+		facts := cognition.ProbeFacts(opts.root)
+		shape := cognition.BuildShape(intent, cognition.ShapeParams{
+			Authority: authority,
+			Intent:    "execute",
+			Facts:     facts,
+			Snapshot:  spec.Snapshot,
+		})
+		childProjector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
+		spec.Project = childProjector.Project
+		if contextAuditEnabled() {
+			spec.OnProjection = func(report agent.ProjectionReport) {
+				_, _ = fmt.Fprintln(os.Stderr, "[ohgo context/subagent]\n"+cognition.RenderAudit(report))
 			}
 		}
 		parent := agent.Config{
@@ -2436,6 +2462,9 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				continue
 			case "task":
 				_, _ = fmt.Fprintln(out, "task continuity is available in the full-screen UI; the plain REPL is stateless")
+				continue
+			case "audit":
+				_, _ = fmt.Fprintln(out, "the context audit is available in the full-screen UI; set OHGO_DEBUG_CONTEXT=1 to print projection decisions in stateless runs")
 				continue
 			case "ask", "fuzz", "build":
 				ws, err := h.SwitchWorkspace(command.Name)

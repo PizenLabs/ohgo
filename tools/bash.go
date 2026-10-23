@@ -13,6 +13,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/sandbox"
 )
 
@@ -73,6 +74,11 @@ func NewBashTool(root string) *BashTool {
 		},
 		agent.Approval{Tier: agent.TierExec, Reason: "runs a shell command"},
 	)
+	// A shell command can observe, execute, and mutate. Declaring that surface
+	// lets a read-only task shape hide it rather than offer an action the
+	// authority would refuse.
+	tool.SetActionClasses(agent.ActionExecute, agent.ActionMutate)
+	tool.SetMutationOperations(contract.ChangeAny)
 	return tool
 }
 

@@ -258,6 +258,7 @@ func NewTodoTool() *TodoTool {
 		},
 		agent.Approval{Tier: agent.TierRead},
 	)
+	tool.SetActionClasses(agent.ActionPlan)
 	return tool
 }
 

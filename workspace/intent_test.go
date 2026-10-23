@@ -316,6 +316,19 @@ func TestRouteIndicatorNamesWorkspaceThenTurn(t *testing.T) {
 	}
 }
 
+// A comma is a clause boundary. Without preserving it, "check the project,
+// write README.md" collapsed into one read-headed clause and the mutation was
+// invisible to the contract.
+func TestCommaSeparatedMutationClauseIsVisible(t *testing.T) {
+	text := "Check the project, write README.md."
+	if !RequestsMutation(text) {
+		t.Fatal("comma-separated mutation clause was not recognized")
+	}
+	if intent := BuildIntentContract(text); intent.Kind != ObjectiveMutation {
+		t.Fatalf("contract kind = %s, want mutation", intent.Kind)
+	}
+}
+
 func TestRouteDelegatedAndNotice(t *testing.T) {
 	// A delegated turn is reported truthfully; an undeligated one adds no
 	// noise.

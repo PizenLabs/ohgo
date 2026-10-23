@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/contract"
 )
 
@@ -38,13 +40,28 @@ type Controller struct {
 	// descendants share one budget instance per run.
 	budgetLimits budget.Limits
 	budgetState  *budget.State
+
+	// evidence is the durable knowledge acquired during the task. The
+	// projector updates it in place; persist checkpoints a bounded copy.
+	evidence *cognition.EvidenceState
+	// audit is the last rendered projection, for the debug surface. It is
+	// diagnostic text, never authority. auditMu guards it because the loop
+	// records it on the turn goroutine while /audit reads it on the update
+	// goroutine.
+	auditMu sync.Mutex
+	audit   string
 }
 
 // NewController returns a controller backed by a store.
 //
 // source may be nil, in which case the controller records no todo snapshot.
 func NewController(store *Store, source Source) *Controller {
-	return &Controller{store: store, source: source, now: time.Now}
+	return &Controller{
+		store:    store,
+		source:   source,
+		now:      time.Now,
+		evidence: cognition.NewEvidenceState(),
+	}
 }
 
 // Store returns the store the controller writes through.
@@ -90,6 +107,41 @@ func (c *Controller) BudgetState() (budget.State, bool) {
 		return budget.State{}, false
 	}
 	return *c.budgetState, true
+}
+
+// Evidence returns the durable evidence state for this task.
+//
+// The projector updates the returned state in place; the controller
+// checkpoints a bounded copy at the next lifecycle boundary. The pointer is
+// stable for the life of the task, so a projector created at a turn boundary
+// keeps writing to the same knowledge.
+func (c *Controller) Evidence() *cognition.EvidenceState {
+	if c.evidence == nil {
+		c.evidence = cognition.NewEvidenceState()
+	}
+	return c.evidence
+}
+
+// RecordProjection stores the last projection audit.
+//
+// It is diagnostic state. A malformed or missing audit never changes evidence,
+// authority, or completion; it only makes the runtime harder to inspect.
+func (c *Controller) RecordProjection(report agent.ProjectionReport) {
+	text := cognition.RenderAudit(report)
+	c.auditMu.Lock()
+	c.audit = text
+	c.auditMu.Unlock()
+}
+
+// Audit returns the last projection audit for the debug surface.
+func (c *Controller) Audit() string {
+	c.auditMu.Lock()
+	text := c.audit
+	c.auditMu.Unlock()
+	if text == "" {
+		return "no context projection has run for this task"
+	}
+	return text
 }
 
 // Current returns the task in memory, if any.
@@ -171,9 +223,13 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 			created.Snapshot = &clonedSnapshot
 		}
 		c.task = created
-		// A new task owns a new ledger. Its identity is new, so there is no
-		// prior consumption to carry forward.
+		// A new task owns a new ledger and new evidence. Its identity is new,
+		// so neither prior consumption nor prior observations apply.
 		c.budgetState = &budget.State{Limits: c.budgetLimits, UpdatedAt: now}
+		c.evidence = cognition.NewEvidenceState()
+		c.auditMu.Lock()
+		c.audit = ""
+		c.auditMu.Unlock()
 	}
 
 	c.syncTodos()
@@ -353,6 +409,14 @@ func (c *Controller) ensureLoaded() error {
 			c.budgetState.UpdatedAt = state.UpdatedAt
 		}
 	}
+	if snap.Progress.EvidenceState != nil {
+		c.evidence = snap.Progress.EvidenceState.Clone()
+	}
+	if snap.Progress.Audit != "" {
+		c.auditMu.Lock()
+		c.audit = snap.Progress.Audit
+		c.auditMu.Unlock()
+	}
 	if err != nil && c.task.ID == "" {
 		// Nothing recoverable: report rather than silently starting over a
 		// state we could not read.
@@ -387,6 +451,15 @@ func (c *Controller) persist() error {
 	if c.budgetState != nil {
 		state := *c.budgetState
 		progress.Budget = &state
+	}
+	if c.evidence != nil && !c.evidence.Empty() {
+		progress.EvidenceState = c.evidence.Clone()
+	}
+	c.auditMu.Lock()
+	audit := c.audit
+	c.auditMu.Unlock()
+	if audit != "" {
+		progress.Audit = audit
 	}
 	return c.store.SaveCheckpoint(c.task, progress)
 }

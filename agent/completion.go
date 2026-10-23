@@ -144,7 +144,9 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 	for _, turn := range turns {
 		for _, outcome := range turn.Results {
 			if outcome.Result.IsError {
-				evidence.pendingFailures[outcome.ToolName]++
+				if !outcome.Result.CandidateRejected {
+					evidence.pendingFailures[outcome.ToolName]++
+				}
 				position++
 				continue
 			}

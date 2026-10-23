@@ -540,7 +540,13 @@ func TestChildInheritsFuzzAuthority(t *testing.T) {
 		t.Fatalf("child requests = %d, want at least 2", child)
 	}
 	joined := strings.Join(bodies, "\n")
-	if !strings.Contains(joined, "not permitted") {
+	// A task-shaped child in FUZZ withholds the mutating tool before the
+	// call reaches the security boundary. Both messages are truthful refusal
+	// surfaces: "not permitted" is the gate's wording, and the action-surface
+	// message names the shape. The invariant under test is that the child
+	// cannot write, which the file check above already proves.
+	if !strings.Contains(joined, "not permitted") &&
+		!strings.Contains(joined, "not offered in the current task stage") {
 		t.Errorf("the child's write refusal was not observable: %s", joined)
 	}
 	if !strings.Contains(joined, "subagent needs review") {

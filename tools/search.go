@@ -76,6 +76,7 @@ func NewSearchTool(client *search.Client) *SearchTool {
 		},
 		agent.Approval{Tier: agent.TierRead, Reason: "sends a search query to an external provider"},
 	)
+	tool.SetActionClasses(agent.ActionExternal)
 	return tool
 }
 

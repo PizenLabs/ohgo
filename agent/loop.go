@@ -47,6 +47,11 @@ type ToolOutcome struct {
 	CallID string
 	// ToolName is the tool that ran.
 	ToolName string
+	// Args are the arguments the call ran with, after any BeforeToolCall
+	// override. They are the runtime's observation of what was asked for, not
+	// model narration, and are retained so evidence can be attributed to a
+	// concrete path or command.
+	Args map[string]any
 	// Result is the tool's return value.
 	Result Result
 	// Authorization is the security decision that admitted this call, when an
@@ -129,6 +134,16 @@ type Config struct {
 	Summarize SummarizeFunc
 	// OnCompact reports each compaction, for logging and UI.
 	OnCompact func(CompactResult)
+	// Project builds the next request view from authoritative runtime state.
+	//
+	// It may replace the messages sent on this turn, append system blocks, and
+	// narrow the offered tool set. It cannot widen the tool set beyond Tools,
+	// change authority, or alter the live conversation the loop retains. A nil
+	// Project preserves the original full-context behaviour exactly.
+	Project func(ProjectionRequest) ProjectionResult
+	// OnProjection reports each projection for audit. It is called after the
+	// projection and before the provider request.
+	OnProjection func(ProjectionReport)
 	// Deadline bounds the whole run in wall-clock time. The zero value means no
 	// limit, and every loop iteration makes a provider call, so time is what
 	// actually costs money. Expiry returns the turns completed so far with a
@@ -365,6 +380,23 @@ func (l *Loop) SetAuthorizeHook(authorizer Authorizer) {
 // forcing the host to keep a second reference that could drift.
 func (l *Loop) Authorizer() Authorizer { return l.cfg.Authorize }
 
+// SetProjectionHook installs the context projection seam after construction.
+//
+// A host installs a fresh projector at each turn boundary because the task
+// shape belongs to the turn, not to the loop. It must be called before Run,
+// never during one. Pass nil to restore full-context behaviour.
+func (l *Loop) SetProjectionHook(project func(ProjectionRequest) ProjectionResult) {
+	l.cfg.Project = project
+}
+
+// SetProjectionReportHook installs the projection audit reporter.
+//
+// It must be called before Run, never during one. Passing nil silences audit
+// reports without disabling projection.
+func (l *Loop) SetProjectionReportHook(hook func(ProjectionReport)) {
+	l.cfg.OnProjection = hook
+}
+
 // SetTurnHook installs the per-turn reporter after construction, or nil to
 // silence turn reports.
 //
@@ -415,11 +447,6 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 	copy(live, messages)
 
 	tools := l.cfg.Tools
-	specs := Specs(tools)
-	byName := make(map[string]Tool, len(tools))
-	for _, tool := range tools {
-		byName[tool.Name()] = tool
-	}
 
 	var turns []Turn
 	for {
@@ -452,10 +479,81 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 			continue
 		}
 
-		converted, err := l.convert(live)
+		// The projection is a view of this request, never a mutation of the
+		// live conversation. The loop keeps the exact transcript and the full
+		// tool set; only what reaches the provider is narrowed. This is what
+		// makes an elided tool result recoverable: the evidence state explains
+		// it and a later turn can still re-read the source.
+		requestMessages := live
+		requestSystem := l.system()
+		activeTools := tools
+		if l.cfg.Project != nil {
+			projected := l.cfg.Project(ProjectionRequest{
+				Messages: copyMessages(live),
+				Turns:    append([]Turn(nil), turns...),
+				Turn:     len(turns),
+				Tools:    tools,
+				System:   requestSystem,
+			})
+			emptyProjection := false
+			if projected.Messages != nil {
+				if len(projected.Messages) == 0 {
+					// An empty conversation cannot be sent. Treat it as a
+					// projector bug and keep the authoritative live context
+					// rather than silently asking the provider to answer
+					// nothing.
+					emptyProjection = true
+				} else {
+					requestMessages = projected.Messages
+				}
+			}
+			if projected.Tools != nil {
+				activeTools = projected.Tools
+			}
+			if len(projected.System) > 0 {
+				requestSystem = append(append([]ai.SystemPromptBlock(nil), requestSystem...), projected.System...)
+			}
+			report := projected.Report
+			report.Applied = true
+			report.Turn = len(turns)
+			if emptyProjection {
+				report.Reason = joinReason(report.Reason, "empty message projection ignored")
+			}
+			// A projection may narrow the tool surface, never widen it. A
+			// projector cannot create a capability the loop was not built
+			// with, even if it returns a fabricated Tool value.
+			filtered, removed := intersectTools(tools, activeTools)
+			if removed > 0 {
+				activeTools = filtered
+				report.Reason = joinReason(report.Reason,
+					fmt.Sprintf("projection proposed %d tool(s) outside the loop's tool set; ignored", removed))
+			}
+			// The loop owns the final request shape, so it fills the audit
+			// fields a projector cannot know (or forgot): the offered names
+			// and the actual message count after any fallback.
+			if len(report.ToolNames) == 0 {
+				for _, tool := range activeTools {
+					report.ToolNames = append(report.ToolNames, tool.Name())
+				}
+			}
+			if report.Messages == 0 {
+				report.Messages = len(requestMessages)
+			}
+			if l.cfg.OnProjection != nil {
+				l.cfg.OnProjection(report)
+			}
+		}
+
+		converted, err := l.convert(requestMessages)
 		if err != nil {
 			return turns, fmt.Errorf("agent: convert context: %w", err)
 		}
+
+		activeByName := make(map[string]Tool, len(activeTools))
+		for _, tool := range activeTools {
+			activeByName[tool.Name()] = tool
+		}
+		specs := Specs(activeTools)
 
 		toolChoice := l.cfg.ToolChoice
 		if l.cfg.GetToolChoice != nil {
@@ -476,7 +574,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 		stream, err := l.cfg.Stream(ctx, ai.Request{
 			Model:           l.model(),
 			Messages:        converted,
-			System:          l.system(),
+			System:          requestSystem,
 			Tools:           specs,
 			ToolChoice:      toolChoice,
 			MaxTokens:       l.cfg.MaxTokens,
@@ -516,7 +614,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 			}
 		}
 
-		outcomes, admissionErr := l.dispatch(ctx, byName, assistant, calls, turn, len(turns))
+		outcomes, admissionErr := l.dispatch(ctx, activeByName, assistant, calls, turn, len(turns))
 		turn.Results = outcomes
 		for _, outcome := range outcomes {
 			live = append(live, ToolResultMessage{
@@ -767,6 +865,16 @@ func (l *Loop) dispatch(
 	return out, l.takeAdmissionFailure()
 }
 
+// hasTool reports whether the loop was constructed with a tool of this name.
+func (l *Loop) hasTool(name string) bool {
+	for _, tool := range l.cfg.Tools {
+		if tool.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
 // isExclusive reports whether a call must run alone.
 func isExclusive(byName map[string]Tool, call ai.ToolCall) bool {
 	tool, ok := byName[call.Name]
@@ -798,6 +906,23 @@ func (l *Loop) execute(
 		names := make([]string, 0, len(byName))
 		for name := range byName {
 			names = append(names, name)
+		}
+		// A tool the loop was built with but the task-shaped projection
+		// withheld is a runtime action-space refusal, not an execution
+		// failure. The model is told which tools are available; completion
+		// does not count the refusal as a failed call.
+		if l.cfg.Project != nil && l.hasTool(call.Name) {
+			return ToolOutcome{
+				CallID:   call.ID,
+				ToolName: call.Name,
+				Args:     call.Arguments,
+				Result: Result{
+					Text: fmt.Sprintf("Tool %q is not offered in the current task stage. Available tools: %s.",
+						call.Name, strings.Join(sorted(names), ", ")),
+					IsError:           true,
+					CandidateRejected: true,
+				},
+			}
 		}
 		return fail(fmt.Sprintf("Tool %q not found. Available tools: %s.", call.Name, strings.Join(sorted(names), ", ")))
 	}
@@ -847,7 +972,16 @@ func (l *Loop) execute(
 	if l.cfg.Authorize != nil {
 		resolved, failure, ok := l.authorize(call, tool)
 		if !ok {
-			return fail(failure)
+			// A denied call carries the decision that refused it, so an audit
+			// can tell "not authorized" from "authorized but failed" without
+			// parsing error text. Nothing executed.
+			return ToolOutcome{
+				CallID:        call.ID,
+				ToolName:      call.Name,
+				Args:          args,
+				Result:        Result{Text: failure, IsError: true},
+				Authorization: &resolved,
+			}
 		}
 		decision = &resolved
 	} else {
@@ -982,7 +1116,13 @@ func (l *Loop) execute(
 		})
 	}
 
-	return ToolOutcome{CallID: call.ID, ToolName: call.Name, Result: result, Authorization: decision}
+	return ToolOutcome{
+		CallID:        call.ID,
+		ToolName:      call.Name,
+		Args:          args,
+		Result:        result,
+		Authorization: decision,
+	}
 }
 
 // authorize runs the security sequence for one call and reports the failure
@@ -1030,6 +1170,46 @@ func refusalText(prefix string, decision security.Decision) string {
 		return fmt.Sprintf("%s (%s)", prefix, decision.Rule)
 	}
 	return fmt.Sprintf("%s (%s): %s", prefix, decision.Rule, decision.Reason)
+}
+
+// copyMessages returns a shallow copy of the message slice. A projector gets a
+// private slice so appending or reordering cannot alter the loop's live
+// conversation. Messages themselves are treated as immutable.
+func copyMessages(messages []Message) []Message {
+	out := make([]Message, len(messages))
+	copy(out, messages)
+	return out
+}
+
+// intersectTools keeps only tools present in the loop's constructed set. A
+// projection may remove a tool; returning a tool the loop was not built with is
+// a projector bug and must not become a capability.
+func intersectTools(constructed, proposed []Tool) ([]Tool, int) {
+	known := make(map[string]bool, len(constructed))
+	for _, tool := range constructed {
+		known[tool.Name()] = true
+	}
+	out := make([]Tool, 0, len(proposed))
+	removed := 0
+	for _, tool := range proposed {
+		if !known[tool.Name()] {
+			removed++
+			continue
+		}
+		out = append(out, tool)
+	}
+	return out, removed
+}
+
+// joinReason appends one audit reason without losing an earlier one.
+func joinReason(existing, addition string) string {
+	if existing == "" {
+		return addition
+	}
+	if addition == "" {
+		return existing
+	}
+	return existing + "; " + addition
 }
 
 func sorted(values []string) []string {

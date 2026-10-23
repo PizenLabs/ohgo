@@ -187,6 +187,7 @@ func NewBrowserTool(cfg BrowserConfig) *BrowserTool {
 		},
 		agent.Approval{Tier: agent.TierRead, Reason: "navigates to an external page over GET and stores a bounded session"},
 	)
+	tool.SetActionClasses(agent.ActionExternal)
 	return tool
 }
 

@@ -102,6 +102,11 @@ type Result struct {
 	// Useless marks a result that adds nothing to context and may be elided by
 	// compaction (zero matches, a timeout). Ignored when IsError is set.
 	Useless bool
+	// CandidateRejected marks a call the runtime withheld because the task
+	// shape's action surface did not include the tool. It is an error for the
+	// model, which must choose another action, but it is not an execution
+	// failure: nothing ran, so completion must not treat it as a failed call.
+	CandidateRejected bool
 	// Exhausted is set when the tool refused work because the root budget
 	// could not admit it. The loop records it as a resource stop after the
 	// turn, so a budget refusal inside a tool is visible to the root instead

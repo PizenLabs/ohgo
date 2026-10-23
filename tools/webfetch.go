@@ -49,6 +49,7 @@ func NewWebFetchTool() *WebFetchTool {
 		},
 		agent.Approval{Tier: agent.TierRead, Reason: "sends a request to a remote host"},
 	)
+	tool.SetActionClasses(agent.ActionExternal)
 	return tool
 }
 
