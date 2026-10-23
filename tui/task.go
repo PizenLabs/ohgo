@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
@@ -93,6 +94,21 @@ type TaskHooks struct {
 	// the explicit human replacement path: the next prompt starts a new task
 	// identity instead of inheriting the old contract.
 	AcceptReview func(reason string) TaskProjection
+	// Detach preserves the active task durably and clears the session binding.
+	// A non-terminal task remains resumable via List/Resume; the live slot is
+	// left empty so the next session or next new intent starts cleanly. It
+	// never deletes durable work.
+	Detach func() TaskProjection
+	// ListResumable returns every resumable durable task, oldest first. Empty
+	// when no layer is installed or nothing is resumable.
+	ListResumable func() []TaskResume
+	// ResumeTask attaches one resumable task to the current session by ID, or
+	// the latest when id is empty. It restores durable state and moves the
+	// task to RUNNING.
+	ResumeTask func(id string) TaskProjection
+	// CancelResumable closes one resumable task by ID, or the latest when id
+	// is empty. It never claims completion and the task stops being resumable.
+	CancelResumable func(id string) TaskProjection
 	// Context returns deterministic orientation blocks for the current task.
 	Context func() []string
 	// Evidence returns the task's durable evidence state. The projector
@@ -145,16 +161,21 @@ func (p *Program) SyncTask() {
 	p.PublishTask(p.task.Sync())
 }
 
-// taskCommand handles /task status|cancel|accept.
+// taskCommand handles /task status|list|show|resume|cancel|accept.
 //
-// It is the explicit human decision the review boundary requires. Cancel and
-// accept both close the task as CANCELLED: neither claims the objective was
-// completed, and the next prompt starts a new task identity instead of
-// inheriting the old contract.
+// Status, list, and show are read-only. Resume attaches a resumable durable
+// task to the current session; cancel and accept close it as CANCELLED without
+// ever claiming completion. The next prompt after a close starts a new task
+// identity instead of inheriting the old contract.
+//
+// Durable work survives sessions: detaching (via /new or a new intent) never
+// deletes it, and /task list shows what remains resumable.
 func (p *Program) taskCommand(args []string) {
 	action := "status"
+	rest := []string{}
 	if len(args) > 0 {
 		action = strings.ToLower(args[0])
+		rest = args[1:]
 	}
 	if p.state.Status.Busy {
 		p.state.Apply(Notice{Text: "cancel the running turn before changing the task"})
@@ -164,31 +185,92 @@ func (p *Program) taskCommand(args []string) {
 		p.state.Apply(Notice{Text: "task continuity is unavailable"})
 		return
 	}
-	current, ok := p.task.Current()
-	if !ok {
-		p.state.Apply(Notice{Text: "no task is active"})
-		return
-	}
 
 	switch action {
-	case "status":
-		text := "task " + current.Status + ": " + current.Objective
-		if current.ReviewReason != "" {
-			text += "\nneeds review: " + current.ReviewReason
-		}
-		p.state.Apply(Notice{Text: text})
-	case "cancel", "accept":
-		if taskStatusTerminal(current.Status) {
-			p.state.Apply(Notice{Text: "task is already " + current.Status})
+	case "list":
+		if p.task.ListResumable == nil {
+			p.state.Apply(Notice{Text: "task listing is unavailable"})
 			return
 		}
-		if action == "accept" {
-			if p.task.AcceptReview == nil {
-				p.state.Apply(Notice{Text: "review acceptance is unavailable"})
+		resumable := p.task.ListResumable()
+		if len(resumable) == 0 {
+			p.state.Apply(Notice{Text: "no resumable tasks"})
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("resumable tasks:")
+		for _, r := range resumable {
+			fmt.Fprintf(&sb, "\n  %s %s: %s", r.Status, shortTaskID(r.ID), r.Objective)
+		}
+		p.state.Apply(Notice{Text: sb.String()})
+		return
+	case "show":
+		target := strings.Join(rest, " ")
+		resume, ok := p.selectTask(target)
+		if !ok {
+			return
+		}
+		text := "task " + resume.Status + ": " + resume.Objective
+		if resume.ReviewReason != "" {
+			text += "\nneeds review: " + resume.ReviewReason
+		}
+		text += "\nid: " + resume.ID
+		p.state.Apply(Notice{Text: text})
+		return
+	case "resume":
+		if p.task.ResumeTask == nil {
+			p.state.Apply(Notice{Text: "task resume is unavailable"})
+			return
+		}
+		target := strings.Join(rest, " ")
+		id := p.resolveResumeID(target)
+		if id == "__picker__" {
+			return
+		}
+		projection := p.task.ResumeTask(id)
+		if projection.Err != "" {
+			p.state.Apply(Notice{Text: "task resume: " + projection.Err})
+			return
+		}
+		p.PublishTask(projection)
+		p.state.Apply(Notice{Text: "resumed task: " + projection.Objective})
+		return
+	case "cancel":
+		target := strings.Join(rest, " ")
+		if target == "" {
+			// No ID: prefer the explicit resumable canceller when present so
+			// a detached task can be cancelled without resuming it first.
+			if p.task.CancelResumable != nil {
+				projection := p.task.CancelResumable("")
+				if projection.Err != "" {
+					p.state.Apply(Notice{Text: "task cancel: " + projection.Err})
+					return
+				}
+				if projection.ID != "" {
+					p.PublishTask(projection)
+				}
+				p.state.Apply(Notice{Text: "task cancelled; the next prompt starts a new task"})
 				return
 			}
-			p.PublishTask(p.task.AcceptReview("reviewed and closed by user without a completion claim"))
-			p.state.Apply(Notice{Text: "review closed without completion; the next prompt starts a new task"})
+		} else if p.task.CancelResumable != nil {
+			projection := p.task.CancelResumable(p.resolveCancelID(target))
+			if projection.Err != "" {
+				p.state.Apply(Notice{Text: "task cancel: " + projection.Err})
+				return
+			}
+			if projection.ID != "" {
+				p.PublishTask(projection)
+			}
+			p.state.Apply(Notice{Text: "task cancelled; the next prompt starts a new task"})
+			return
+		}
+		current, ok := p.task.Current()
+		if !ok {
+			p.state.Apply(Notice{Text: "no task is active"})
+			return
+		}
+		if taskStatusTerminal(current.Status) {
+			p.state.Apply(Notice{Text: "task is already " + current.Status})
 			return
 		}
 		if p.task.Cancel == nil {
@@ -197,9 +279,165 @@ func (p *Program) taskCommand(args []string) {
 		}
 		p.PublishTask(p.task.Cancel("cancelled by user"))
 		p.state.Apply(Notice{Text: "task cancelled; the next prompt starts a new task"})
+		return
+	case "status":
+		current, ok := p.task.Current()
+		if !ok {
+			// No active task in this session is not an error: a durable task
+			// may still be resumable. Point at the explicit recovery path.
+			if p.task.ListResumable != nil {
+				if resumable := p.task.ListResumable(); len(resumable) > 0 {
+					p.state.Apply(Notice{Text: "no active task in this session — " + formatTaskCount(len(resumable)) + " resumable task(s) available (see /task list)"})
+					return
+				}
+			}
+			p.state.Apply(Notice{Text: "no task is active"})
+			return
+		}
+		text := "task " + current.Status + ": " + current.Objective
+		if current.ReviewReason != "" {
+			text += "\nneeds review: " + current.ReviewReason
+		}
+		p.state.Apply(Notice{Text: text})
+		return
+	case "accept":
+		current, ok := p.task.Current()
+		if !ok {
+			p.state.Apply(Notice{Text: "no task is active"})
+			return
+		}
+		if taskStatusTerminal(current.Status) {
+			p.state.Apply(Notice{Text: "task is already " + current.Status})
+			return
+		}
+		if p.task.AcceptReview == nil {
+			p.state.Apply(Notice{Text: "review acceptance is unavailable"})
+			return
+		}
+		p.PublishTask(p.task.AcceptReview("reviewed and closed by user without a completion claim"))
+		p.state.Apply(Notice{Text: "review closed without completion; the next prompt starts a new task"})
+		return
 	default:
-		p.state.Apply(Notice{Text: "usage: /task [status|cancel|accept]"})
+		p.state.Apply(Notice{Text: "usage: /task [status|list|show [id]|resume [id]|cancel [id]|accept]"})
 	}
+}
+
+// selectTask locates one task for /task show by ID, objective substring, or
+// the latest resumable when the query is empty.
+func (p *Program) selectTask(query string) (TaskResume, bool) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		if current, ok := p.task.Current(); ok {
+			return current, true
+		}
+	}
+	if p.task.ListResumable == nil {
+		if current, ok := p.task.Current(); ok {
+			return current, true
+		}
+		p.state.Apply(Notice{Text: "no task is active"})
+		return TaskResume{}, false
+	}
+	resumable := p.task.ListResumable()
+	if len(resumable) == 0 {
+		p.state.Apply(Notice{Text: "no task is active"})
+		return TaskResume{}, false
+	}
+	if query == "" {
+		return resumable[len(resumable)-1], true
+	}
+	for _, r := range resumable {
+		if strings.EqualFold(r.ID, query) || strings.HasPrefix(strings.ToLower(r.ID), strings.ToLower(query)) {
+			return r, true
+		}
+	}
+	lowered := strings.ToLower(query)
+	for _, r := range resumable {
+		if strings.Contains(strings.ToLower(r.Objective), lowered) {
+			return r, true
+		}
+	}
+	p.state.Apply(Notice{Text: "no resumable task matches " + query})
+	return TaskResume{}, false
+}
+
+// resolveResumeID maps a /task resume argument to an ID. An empty argument
+// resumes the latest; an ambiguous non-empty argument without an ID match opens
+// the task picker instead of picking arbitrarily.
+func (p *Program) resolveResumeID(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return ""
+	}
+	if p.task.ListResumable == nil {
+		return query
+	}
+	resumable := p.task.ListResumable()
+	for _, r := range resumable {
+		if strings.EqualFold(r.ID, query) || strings.HasPrefix(strings.ToLower(r.ID), strings.ToLower(query)) {
+			return r.ID
+		}
+	}
+	lowered := strings.ToLower(query)
+	var matched []TaskResume
+	for _, r := range resumable {
+		if strings.Contains(strings.ToLower(r.Objective), lowered) {
+			matched = append(matched, r)
+		}
+	}
+	if len(matched) == 1 {
+		return matched[0].ID
+	}
+	if len(matched) == 0 {
+		return query
+	}
+	items := make([]PickerItem, 0, len(matched))
+	for _, r := range matched {
+		items = append(items, PickerItem{
+			Title:  shortTaskID(r.ID) + " " + r.Objective,
+			Detail: r.Status,
+			Value:  r.ID,
+		})
+	}
+	p.state.Apply(PickerOpened{Kind: PickerTasks, Title: "resume task", Items: items})
+	return "__picker__"
+}
+
+// resolveCancelID maps a /task cancel argument to an ID, preferring an exact
+// ID prefix and otherwise passing the query through for the controller to
+// match deterministically.
+func (p *Program) resolveCancelID(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" || p.task.ListResumable == nil {
+		return query
+	}
+	for _, r := range p.task.ListResumable() {
+		if strings.EqualFold(r.ID, query) || strings.HasPrefix(strings.ToLower(r.ID), strings.ToLower(query)) {
+			return r.ID
+		}
+	}
+	return query
+}
+
+// shortTaskID renders the leading bytes of a task ID for list rows.
+func shortTaskID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// formatTaskCount renders a small count without importing strconv.
+func formatTaskCount(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
 }
 
 // taskStatusTerminal reports whether the task's status absorbs further work.
@@ -214,10 +452,11 @@ func taskStatusTerminal(status string) bool {
 
 // continuationPrompt recognizes a deliberate continuation of the open task.
 //
-// It is a finite vocabulary, not natural-language understanding: the hard
-// safety rule is that completion still uses the persisted contract. This only
-// decides whether an obviously-continuing prompt may attach to it without an
-// extra human step.
+// It is an explicit-intent classifier, not semantic similarity: only language
+// that names continuation resumes a resumable task. A new intent — even one
+// about the same repository or the same files — is never a continuation merely
+// because it is related. The hard safety rule is unchanged: completion still
+// uses the persisted contract, this only decides attachment.
 func continuationPrompt(text string) bool {
 	normalized := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(text))), " ")
 	switch normalized {
@@ -227,29 +466,40 @@ func continuationPrompt(text string) bool {
 		"run the verification", "run the tests", "run the test":
 		return true
 	}
+	// Explicit continuation phrases: "continue the previous task",
+	// "resume the README task", "continue where we left off". Any prompt that
+	// names continuation with these verbs is an explicit resume request.
+	if containsContinuationVerb(normalized) {
+		return true
+	}
 	return false
 }
 
-// contractCompatible reports whether a new prompt's contract is the same work
-// as the persisted one. Targets must be a subset: a prompt may narrow the
-// existing objective, but naming a new coordinate is a different task.
-func contractCompatible(next, persisted contract.IntentContract) bool {
-	if next.Kind != persisted.Kind {
-		return false
-	}
-	for _, target := range next.Targets {
-		found := false
-		for _, existing := range persisted.Targets {
-			if existing == target {
-				found = true
-				break
+// containsContinuationVerb reports whether the prompt explicitly names
+// continuation. It matches whole words so "migrating" or "continuous" do not
+// count, while "continue the previous task" and "resume the README" do.
+func containsContinuationVerb(normalized string) bool {
+	words := strings.Fields(normalized)
+	has := func(want string) bool {
+		for _, w := range words {
+			trimmed := strings.Trim(w, ".,!?;:")
+			if trimmed == want {
+				return true
 			}
 		}
-		if !found {
-			return false
+		return false
+	}
+	if has("continue") || has("resume") || has("resumes") || has("resuming") {
+		return true
+	}
+	for _, phrase := range []string{
+		"keep going", "go on", "carry on", "where we left off", "previous task",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // taskGlyph maps a projection state to its single status marker. One glyph
