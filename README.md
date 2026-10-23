@@ -157,12 +157,42 @@ transcript so the composer stays pinned to the bottom of the screen.
 
 Shortcuts that are shown always work: `enter` send (queues while busy),
 `alt+enter`/`ctrl+j` insert a break, `↑` recalls history on a single line,
-`pgup`/`pgdn` scroll, `esc` cancels a turn (never quits), `ctrl+c` cancels
-when busy, clears a non-empty draft, or points at the exit chords when idle
-(never quits), `ctrl+d` on an empty composer quits. Approval
+`pgup`/`pgdn` scroll, `home` jumps to the transcript top while the composer is
+idle, `end` returns to the live edge, `esc` cancels a turn (never quits),
+`ctrl+c` cancels when busy, clears a non-empty draft, or points at the exit
+chords when idle (never quits), `ctrl+d` on an empty composer quits. Approval
 dialogs default to the conservative choice; closing, cancelling, or resizing
 never approves. Widths are measured in terminal cells (CJK/emoji/ANSI
 aware), long URLs and tool output wrap and bound rather than overflow.
+
+### Transcript, scrolling, and selection
+
+The alternate-screen workspace owns its transcript: blocks keep stable
+identities, a layout index computes visual rows at the current width, and a
+virtual viewport slices only the rows on screen. Scrolling never rewrites
+terminal scrollback and never moves the terminal cursor into history. New
+output follows the bottom while you are at the live edge; scrolling up detaches
+and pins the block you are reading, so streaming does not steal the viewport. A
+`↑ N lines above — end to follow` marker counts the hidden rows, and `end` (or
+scrolling back down) reattaches. Expanding a block — `ctrl+o` for the latest
+activity, or a click in reporting mode — changes presentation only; it never
+reruns a tool, reads the repository, or changes authority.
+
+Pointer behaviour follows the `mouse` setting:
+
+- `select` (default outside tmux): the terminal keeps drag-select and copy.
+  The wheel arrives through alternate-scroll mode (DEC 1007).
+- `report` (default inside tmux): the application owns the pointer. Drag
+  selects logical rows; click expands an expandable tool block; alt-click
+  copies that block's canonical content; releasing a drag copies via OSC 52
+  (`ESC ] 52 ; c ; <base64> BEL`). Copy payloads are logical text — never ANSI,
+  cursor controls, or padding. A terminal that ignores OSC 52 silently does
+  nothing; `OHGO_CLIPBOARD=off` disables the transport explicitly.
+
+`--live` is the separate output-first mode: it writes sealed transcript rows
+to the terminal's normal buffer, so terminal scrollback, native selection, and
+pipe behaviour remain the terminal's job. It never requests a mouse mode or
+attempts historical expansion.
 
 The `/model` picker lists the merged catalog (bundled plus live-cached
 rows) with the active model marked, provider scope, result count, and

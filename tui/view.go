@@ -205,6 +205,13 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 // runtime state. Layout derives from WindowSizeMsg dimensions recorded in
 // state; a resize re-renders without issuing requests.
 func Render(state State) string {
+	return renderState(state, nil)
+}
+
+// renderState produces the full frame. frame is an optional retained
+// transcript projection; nil builds a one-shot layout, which is what Render
+// does for tests and standalone callers.
+func renderState(state State, frame *transcriptFrame) string {
 	pal := PaletteFor(state.Theme)
 	layout := ComputeLayout(state)
 	if layout.Mode == LayoutMini && state.Width > 0 && state.Height > 0 {
@@ -244,7 +251,7 @@ func Render(state State) string {
 	} else if state.Picker != nil {
 		renderPickerArea(&sb, state, pal, layout)
 	} else {
-		renderTranscriptArea(&sb, state, pal, layout)
+		renderTranscriptArea(&sb, state, pal, layout, frame)
 	}
 
 	if state.Pending != nil {
@@ -592,81 +599,6 @@ func compactModel(model string) string {
 	return model
 }
 
-// renderTranscriptArea writes the transcript, wrapped to the content width
-// and sliced to the conversation height when the size is known.
-//
-// The region always fills its budget: short content sits at the top with the
-// remaining rows left blank below it, so the composer is pinned to the bottom
-// of the screen instead of floating up under a short conversation. Overflow is
-// trimmed from the top, keeping the live edge visible.
-func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout Layout) {
-	body := renderTranscriptBody(state, pal, layout)
-	if body == "" && showWelcome(state) {
-		body = renderWelcome(state, pal, layout)
-	}
-	lines := splitLines(body)
-	if state.Height <= 0 || layout.Mode == LayoutWide && state.Width <= 0 {
-		sb.WriteString(body)
-		if body != "" && !strings.HasSuffix(body, "\n") {
-			sb.WriteString("\n")
-		}
-		return
-	}
-	avail := layout.ConversationHeight
-	// An approval dialog claims rows inside the conversation budget so
-	// regions never overlap. Queued prompts live in the composer, never
-	// here: the transcript holds conversation history, interaction state
-	// belongs to the pinned chrome.
-	if state.Pending != nil {
-		avail -= approvalLines(state.Pending, layout)
-	}
-	// The transcript yields entirely to modal pressure on tiny viewports:
-	// a zero-row transcript plus a visible dialog beats an overflowing one.
-	if avail < 0 {
-		avail = 0
-	}
-	// The region emits exactly avail rows: entry separators are blank lines
-	// inside the row budget, not extra rows past it. Writing the raw body
-	// plus padding would double-count them and push chrome off-screen.
-	if len(lines) <= avail {
-		for _, line := range lines {
-			sb.WriteString(line + "\n")
-		}
-		// Pad below so the composer stays at the bottom of the viewport.
-		for i := len(lines); i < avail; i++ {
-			sb.WriteString("\n")
-		}
-		return
-	}
-	// The scroll offset is clamped to the content: an offset past the top
-	// would emit fewer than avail rows and unpin the composer from the
-	// bottom of the viewport, and the marker must count lines actually
-	// above rather than the raw offset. Render stays pure — the stored
-	// offset is untouched, so scrolling back down still moves.
-	scroll := state.Scroll
-	if max := len(lines) - avail; scroll > max {
-		scroll = max
-	}
-	if scroll > 0 && avail > 0 {
-		sb.WriteString(pal.Muted.Render(fmt.Sprintf("↑ %d lines above — end to follow", scroll)) + "\n")
-		avail--
-	}
-	start := len(lines) - avail - scroll
-	if start < 0 {
-		start = 0
-	}
-	end := len(lines) - scroll
-	if end < start {
-		end = start
-	}
-	if end > len(lines) {
-		end = len(lines)
-	}
-	for _, line := range lines[start:end] {
-		sb.WriteString(line + "\n")
-	}
-}
-
 // showWelcome reports whether the empty-conversation introduction belongs.
 //
 // It is derived, never stored: the welcome is chrome for "nothing has happened
@@ -681,6 +613,11 @@ func showWelcome(state State) bool {
 }
 
 // renderTranscriptBody renders every entry wrapped to the content width.
+//
+// The interactive path does not call it: it slices TranscriptLayout.Rows. This
+// full projection is the reference for the layout-equivalence tests and the
+// full-render comparison benchmark, which is exactly the old ownership model
+// the retained viewport replaces.
 func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 	var body strings.Builder
 	frame := spinnerFrame(state.Status.Spinner)

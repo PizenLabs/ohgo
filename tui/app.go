@@ -140,6 +140,29 @@ type Program struct {
 	// leave through the renderer as print lines — see live.go.
 	live *livePainter
 
+	// transcriptIndex, viewport, and transcriptFrame are the retained
+	// full-screen projection: document geometry, scroll position, and the
+	// rows of the frame about to paint. They are UI-goroutine owned.
+	transcriptIndex *TranscriptLayout
+	viewport        ViewportTracker
+	transcriptFrame *transcriptFrame
+
+	// drag is the in-progress application-owned selection. It lives only
+	// between a press inside the transcript and the matching release.
+	drag *dragState
+	// pendingClipboard is an OSC 52 sequence waiting to ride out with the next
+	// frame. Emitting it through View keeps it on the renderer's writer instead
+	// of racing a frame from another goroutine.
+	pendingClipboard string
+	// clipboard encodes logical text for the terminal. Nil disables copying
+	// (dumb terminal or OHGO_CLIPBOARD=off); no external process is ever used.
+	clipboard func(string) string
+	// traceFn receives lightweight UI events when diagnostics are enabled.
+	traceFn func(string)
+	// lastFollowing and lastScrollSeq detect transitions for instrumentation.
+	lastFollowing bool
+	lastScrollSeq int
+
 	// cancelTurn aborts the in-flight turn, if any. Set when a turn starts,
 	// cleared when it ends, guarded by mu for the same reason as history.
 	cancelTurn context.CancelFunc
@@ -588,6 +611,7 @@ func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOptio
 		done:           make(chan struct{}),
 		window:         window,
 		termOut:        os.Stdout,
+		traceFn:        traceWriterFromEnv(),
 	}
 	// State first, options after: an option records into the state the
 	// program actually runs (model, version), rather than a zero value
@@ -598,6 +622,14 @@ func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOptio
 	}
 	p.state.Status.Model = model
 	p.state.Status.ContextWindow = window
+	// OSC 52 is the only clipboard transport. A dumb terminal or an explicit
+	// opt-out disables it; the copy is then a no-op rather than a spawned
+	// process or a false success.
+	term := os.Getenv("TERM")
+	if ClipboardAvailable(term) && !strings.EqualFold(os.Getenv("OHGO_CLIPBOARD"), "off") {
+		tmux := os.Getenv("TMUX") != ""
+		p.clipboard = func(text string) string { return OSC52SequenceFor(text, tmux, term) }
+	}
 	return p
 }
 
@@ -669,6 +701,7 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		p.state.Apply(TerminalResized{Width: m.Width, Height: m.Height})
+		p.trace(traceResize)
 		p.syncDiffSize()
 		return p, nil
 
@@ -747,23 +780,21 @@ func (p *Program) composerLineBelow() (int, bool) {
 	return snapPasteBoundary(p.state.Pastes, p.state.Input, pos), true
 }
 
-// handleMouse routes wheel ticks to the scrollable region in focus: the
-// picker selection while one is open, the transcript otherwise. Press,
-// release, and motion are deliberately ignored and never move state.
-//
-// Mouse reporting is off (see Run): the terminal owns selection and the
-// application never receives mouse bytes in normal operation, so there is
-// no protocol stream that can split across input reads and leak into the
-// composer. The handler stays as a defensive contract: if reporting is ever
-// re-enabled, wheel ticks scroll without touching prompt text, and every
-// other mouse message remains a no-op.
+// handleMouse routes pointer input. Wheel ticks scroll the region in focus
+// (the picker selection while one is open, the transcript otherwise). When
+// mouse reporting is enabled, press/motion/release belong to the application
+// selection and hit-test paths; in the default selection mode the terminal
+// keeps drag-copy and these events never arrive.
 func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if p.wizard != nil {
 		// Onboarding owns the keyboard and the canvas: a wheel tick must
 		// not scroll a transcript that is not on screen.
 		return p, nil
 	}
+	// Application-owned pointer interaction. Selection mode never receives
+	// these events; reporting mode maps them through the current layout.
 	if m.Button != tea.MouseButtonWheelUp && m.Button != tea.MouseButtonWheelDown {
+		p.handleTranscriptMouse(m)
 		return p, nil
 	}
 	// The inspector owns the wheel while it is open: a tick moves the tree
@@ -1148,6 +1179,19 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "home", "ctrl+a":
+		// With an idle composer (the reader state), Home scrolls the
+		// transcript to the top. Typing keeps it as the line-start chord.
+		if msg.String() == "home" && wheelScrolls(p.state) {
+			p.syncTranscript()
+			scroll := p.state.scrollIntent
+			if scroll == 0 {
+				scroll = p.state.Scroll
+			}
+			if top := p.transcriptFrame.vp.MaxOffset; top > 0 && top > scroll {
+				p.state.Apply(ScrollMoved{Delta: top - scroll})
+				return p, nil
+			}
+		}
 		p.state.Apply(ComposerChanged{Text: p.state.Input, Cursor: lineStartAtomic(p.state.Pastes, p.state.Input, p.state.Cursor)})
 		return p, nil
 
@@ -3048,7 +3092,49 @@ func (p *Program) View() string {
 	if p.live != nil {
 		return p.live.view()
 	}
-	return Render(p.state)
+	p.syncTranscript()
+	out := renderState(p.state, p.transcriptFrame)
+	if p.pendingClipboard != "" {
+		// A frame is one writer flush. Prepending a zero-width OSC sequence
+		// keeps clipboard transport off a second goroutine while preserving
+		// the frame's row count.
+		out = p.pendingClipboard + out
+		p.pendingClipboard = ""
+	}
+	return out
+}
+
+// syncTranscript folds the current state into the retained layout and resolves
+// the viewport. Only blocks whose revision changed are re-rendered, so a scroll
+// or a mouse hit-test never walks the rendered history.
+func (p *Program) syncTranscript() {
+	if p.transcriptIndex == nil {
+		p.transcriptIndex = &TranscriptLayout{}
+	}
+	layout := ComputeLayout(p.state)
+	p.transcriptIndex.Refresh(&p.state, layout)
+	if p.transcriptIndex.Reflowed {
+		p.trace(traceLayout)
+	}
+	scroll := p.state.scrollIntent
+	if scroll == 0 && p.state.Scroll > 0 && !p.state.Follow {
+		// A caller that set the mirror directly still gets honest geometry.
+		scroll = p.state.Scroll
+	}
+	vp := p.viewport.Update(p.state.Follow, scroll, p.state.ScrollSeq, transcriptBudget(p.state, layout), p.transcriptIndex)
+	p.transcriptFrame = &transcriptFrame{index: p.transcriptIndex, vp: vp}
+	if p.state.ScrollSeq != p.lastScrollSeq {
+		p.lastScrollSeq = p.state.ScrollSeq
+		p.trace(traceScroll)
+	}
+	if vp.Following != p.lastFollowing {
+		p.lastFollowing = vp.Following
+		if vp.Following {
+			p.trace(traceFollow)
+		} else {
+			p.trace(traceDetach)
+		}
+	}
 }
 
 // enterAlternateScroll turns on alternate scroll mode and returns the function

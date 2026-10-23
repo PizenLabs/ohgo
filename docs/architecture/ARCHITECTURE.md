@@ -395,7 +395,33 @@ approval, shutting down) are computed per render, never stored.
   a pane using 1007 alone receives nothing), so `MouseDefaultFor` selects
   reporting when `$TMUX` is set. `--mouse select|report` and the `mouse` setting
   override it; anything unrecognised degrades to `select` so a typo never costs
-  drag-copy. Both modes are bracketed on entry and restored on every exit path.
+  drag-copy. `select` leaves drag-copy with the terminal; `report` activates the
+  application-owned hit-test, expansion, and logical selection path. Both modes
+  are bracketed on entry and restored on every exit path.
+- `tui/document.go`: the canonical transcript block model. `Entry` is the
+  domain block; `BlockID` is allocated when a block enters the document and is
+  never derived from a screen row. `BlockCopyText` projects logical content,
+  stripping SGR/OSC and padding. Expansion goes through the same
+  presentation-only transition as Ctrl+O.
+- `tui/transcript_layout.go`: the geometry authority. Each block is projected
+  once per revision and width into cached visual rows; a Fenwick tree maps
+  document rows to blocks in O(log n). Width/theme/tier changes reflow all
+  blocks; streaming and expansion render only the dirty block. Regex never
+  determines row count, wrapping, or hit-testing.
+- `tui/viewport.go`: explicit FOLLOWING/DETACHED state. Detached mode anchors on
+  `(BlockID, row)`, so appended output, expansion above the window, and resize
+  preserve the reading position. The marker consumes a row and `MaxOffset` is
+  clamped exactly.
+- `tui/selection.go`: logical selection by block/row/column, cell-aware copy
+  (Unicode, wrapping, cross-block, reversed drags), and ANSI-aware reverse-video
+  highlighting. Copy projects plain text; no renderer artifact can enter it.
+- `tui/clipboard.go`: OSC 52 framing (plain, tmux DCS passthrough, screen
+  chunking), Base64 encoding, and capability gating. No external clipboard
+  process is spawned.
+- `tui/mouse_selection.go`: screen cell → visible frame row → `BlockID` +
+  local row + column. Click toggles presentation state; drag updates the
+  selection; release copies through OSC 52. Never maps a mouse Y to a
+  scrollback line.
 - `tui/width.go`: cell-width measurement, truncation, wrapping
   (ANSI-stripped, CJK/emoji-aware, hard-breaks unbroken runs, combining
   marks stay attached).
@@ -415,7 +441,9 @@ approval, shutting down) are computed per render, never stored.
   pickers, mini-mode notice, overlap-free slicing. The transcript and the
   picker each emit exactly their viewport rows — entry separators live
   inside the budget, and a zero-row transcript yields to modal pressure on
-  tiny screens rather than overflowing.
+  tiny screens rather than overflowing. The interactive transcript is a
+  projection of `TranscriptLayout` and `Viewport`; ordinary scroll, drag, and
+  streaming frames slice cached rows instead of re-rendering the document.
   The composer is two restrained rules around the input with an inline
   slash-suggestion list and a queued-prompts line (busy and approval live
   in the header, status, and modal — never restated under the input). `?` on an empty composer opens the

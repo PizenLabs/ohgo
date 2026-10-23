@@ -87,7 +87,7 @@ func SupportModalRect(termWidth, termHeight int) ModalRect {
 func renderSupportArea(sb *strings.Builder, state State, pal *Palette, layout Layout) {
 	panel := state.SupportPanel
 	if panel == nil {
-		renderTranscriptArea(sb, state, pal, layout)
+		renderTranscriptArea(sb, state, pal, layout, nil)
 		return
 	}
 	if state.Width <= 0 || state.Height <= 0 {

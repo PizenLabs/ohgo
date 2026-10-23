@@ -149,7 +149,7 @@ func (p *Program) forwardDiff(msg tea.Msg) (tea.Model, tea.Cmd) {
 // slicing happens here.
 func renderDiffArea(sb *strings.Builder, state State, pal *Palette, layout Layout) {
 	if state.Diff == nil {
-		renderTranscriptArea(sb, state, pal, layout)
+		renderTranscriptArea(sb, state, pal, layout, nil)
 		return
 	}
 	sb.WriteString(state.Diff.View())
