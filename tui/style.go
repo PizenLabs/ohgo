@@ -18,7 +18,9 @@ const (
 // these, so a theme change lands here and nowhere else.
 //
 // The indexes are 256-colour, deliberately not truecolor hex: they resolve on
-// every terminal that reports colour and degrade predictably on the rest.
+// every terminal that reports colour and degrade predictably on the rest. The
+// code surface is the sole exception (see darkCodeBg): its tint must sit close
+// to the deep-forest transcript, which no 256-colour index can express.
 // Colour signals state or voice; it never decorates ordinary metadata, and
 // every state that uses colour also carries a text marker (✓ ✗ ● ○ ■ ◐).
 const (
@@ -31,7 +33,10 @@ const (
 	darkWarning = "214"
 	darkDanger  = "196"
 	darkCodeFg  = "228"
-	darkCodeBg  = "236"
+	// The code surface is the one truecolor body token: no 256-colour index
+	// sits close enough to the deep-forest transcript (#0b1210) to read as
+	// part of it. This faint emerald stays a surface, never a box.
+	darkCodeBg = "#121d19"
 	// Deep-forest header scale: bright emerald H1, sage H2, muted sage H3.
 	darkH1 = "85"
 	darkH2 = "114"

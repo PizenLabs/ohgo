@@ -205,26 +205,25 @@ func (r *blockRenderer) renderHeading(trimmed string) string {
 
 // ---- fences ----
 
+// renderFence consumes one fenced block and returns only its body lines.
+//
+// Fence markers are syntax, not content. The opening line's language tag is
+// metadata for the highlighter; both delimiter rows are dropped, so neither
+// the transcript nor a copy projected from it ever carries a backtick fence.
+// An unclosed fence still renders its remaining lines as code — provisional
+// while streaming, exact when the model never closed it — because dropping
+// them would silently lose model output.
 func (r *blockRenderer) renderFence(lines []string, start int) ([]string, int) {
 	trimmed := strings.TrimSpace(lines[start])
 	lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
-	head := r.pal.CodeFence.Render("```" + lang)
 	var out []string
-	out = append(out, head)
 	i := start + 1
-	closed := false
 	for ; i < len(lines); i++ {
 		if strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
-			closed = true
 			i++
 			break
 		}
 		out = append(out, r.renderCodeLine(lines[i], lang))
-	}
-	// An unclosed fence renders to the end as code: provisional during
-	// streaming, exact when the model never closed it.
-	if closed {
-		out = append(out, r.pal.CodeFence.Render("```"))
 	}
 	return out, i
 }

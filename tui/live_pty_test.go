@@ -120,7 +120,6 @@ func TestLiveSessionUnderARrealPTY(t *testing.T) {
 	// A streamed answer arrives carrying every markdown shape the prototype
 	// has to survive.
 	waitFor("Session boundary inspection", 20*time.Second)
-	waitFor("```go", 20*time.Second)
 	waitFor("sessionCheck", 20*time.Second)
 	waitFor("│ a │ b │", 20*time.Second)
 	waitFor("Closing line.", 20*time.Second)
@@ -237,7 +236,6 @@ func assertTranscriptArrived(t *testing.T, out string) {
 	for _, phrase := range []string{
 		"Session boundary inspection",
 		"The session check moved to",
-		"```go",
 		"sessionCheck",
 		"│ a │ b │",
 		"│ 1 │ 2 │",
@@ -246,6 +244,10 @@ func assertTranscriptArrived(t *testing.T, out string) {
 		if !strings.Contains(plain, phrase) {
 			t.Errorf("%q never reached the terminal:\n%s", phrase, tail(plain))
 		}
+	}
+	// Fence rows are syntax, never visible output: no frame may leak them.
+	if strings.Contains(plain, "```") {
+		t.Errorf("fence markers reached the terminal:\n%s", tail(plain))
 	}
 	order := []string{"Session boundary inspection", "Here is the relevant part:", "Closing line."}
 	last := -1

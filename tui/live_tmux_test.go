@@ -124,7 +124,7 @@ func TestLiveSessionInsideTmux(t *testing.T) {
 		t.Errorf("the bottom of the answer is not on screen:\n%s", visible)
 	}
 	history := pane(80)
-	for _, line := range []string{"Session boundary inspection", "```go", "│ a │ b │"} {
+	for _, line := range []string{"Session boundary inspection", "func sessionCheck", "│ a │ b │"} {
 		if !strings.Contains(history, line) {
 			t.Errorf("%q is not in tmux's scrollback, so the terminal owns no history:\n%s", line, history)
 		}

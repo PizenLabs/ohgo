@@ -157,7 +157,6 @@ func forcedPalette() *Palette {
 		Cursor:      fg("121").Reverse(true),
 		Queued:      fg("244").Italic(true),
 		Code:        fg("228").Background(lipgloss.Color("236")),
-		CodeFence:   fg("244"),
 		Heading:     fg("121").Bold(true),
 		Heading2:    fg("114").Bold(true),
 		Heading3:    fg("144").Bold(true),
@@ -177,15 +176,15 @@ func TestMarkdownDelimitersDoNotLeak(t *testing.T) {
 	in := "# Title\n\nRun **bold** and *italic* with `code` and [docs](https://example.com).\n\n- item\n\n1. first\n\n> quoted\n\n---\n\n```go\nfmt.Println()\n```"
 	out := stripForTest(t, RenderMarkdownWrapped(in, DarkPalette(), 60))
 	// Completed inline syntax leaves no raw markers: no asterisks,
-	// backticks, brackets, heading hashes, or quote prefixes. Fence
-	// boundaries (```go / ```) and the link URL in parens are deliberate
-	// readable structure, not leakage, and are asserted present below.
-	for _, leak := range []string{"**", "[docs]", "# Title", "> quoted", "*italic*"} {
+	// backticks, brackets, heading hashes, quote prefixes, or fence rows.
+	// The link URL in parens is deliberate readable structure, not
+	// leakage, and is asserted present below.
+	for _, leak := range []string{"**", "[docs]", "# Title", "> quoted", "*italic*", "```"} {
 		if strings.Contains(out, leak) {
 			t.Errorf("output contains raw delimiter %q:\n%s", leak, out)
 		}
 	}
-	for _, want := range []string{"Title", "bold", "italic", "code", "docs", "https://example.com", "item", "first", "quoted", "```go", "fmt.Println()"} {
+	for _, want := range []string{"Title", "bold", "italic", "code", "docs", "https://example.com", "item", "first", "quoted", "fmt.Println()"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lost content %q:\n%s", want, out)
 		}

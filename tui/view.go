@@ -42,9 +42,8 @@ type Palette struct {
 	ShellPrompt  lipgloss.Style
 	ShellCommand lipgloss.Style
 	// Markdown styles.
-	Code      lipgloss.Style
-	CodeFence lipgloss.Style
-	Heading   lipgloss.Style
+	Code    lipgloss.Style
+	Heading lipgloss.Style
 	// Heading2 and Heading3 stratify the header hierarchy below Heading
 	// (H1): H2 is sage, H3 muted sage, so depth reads without parsing.
 	Heading2 lipgloss.Style
@@ -114,7 +113,6 @@ func DarkPalette() *Palette {
 		ShellPrompt:  fg(ColorPrimary).Bold(true),
 		ShellCommand: fg(darkText),
 		Code:         fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
-		CodeFence:    fg(darkMuted),
 		Heading:      fg(darkH1).Bold(true),
 		Heading2:     fg(darkH2).Bold(true),
 		Heading3:     fg(darkH3).Bold(true),
@@ -162,7 +160,6 @@ func LightPalette() *Palette {
 		ShellPrompt:  fg(chromeLightPrimary).Bold(true),
 		ShellCommand: fg(lightText),
 		Code:         fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
-		CodeFence:    fg(lightMuted),
 		Heading:      fg(lightH1).Bold(true),
 		Heading2:     fg(lightH2).Bold(true),
 		Heading3:     fg(lightH3).Bold(true),

@@ -163,10 +163,13 @@ func TestCodeHighlightCommentAndStringSurviveStripped(t *testing.T) {
 	}
 }
 
-func TestFencedCodeWithLanguageRendersBodyAndLabel(t *testing.T) {
+func TestFencedCodeWithLanguageRendersBodyWithoutLabel(t *testing.T) {
 	out := RenderMarkdown("```go\nfunc main() {}\n```", DarkPalette())
-	if !strings.Contains(out, "```go") || !strings.Contains(ansi.Strip(out), "func main() {}") {
-		t.Errorf("fence = %q, want the label and the body kept", out)
+	if strings.Contains(out, "```") || strings.Contains(ansi.Strip(out), "go\n") {
+		t.Errorf("fence = %q, want no delimiter or language label row", out)
+	}
+	if !strings.Contains(ansi.Strip(out), "func main() {}") {
+		t.Errorf("fence = %q, want the body kept", out)
 	}
 }
 
@@ -229,10 +232,10 @@ func TestFencedCodeBodyFillsTheBlockWidth(t *testing.T) {
 	pal := forcedPalette()
 	out := RenderMarkdownWrapped("```go\nx := 1\n\nlonger line here\n```", pal, 20)
 	lines := strings.Split(out, "\n")
-	if len(lines) != 5 {
-		t.Fatalf("fence = %q, want label + 3 body + close", out)
+	if len(lines) != 3 {
+		t.Fatalf("fence = %q, want exactly the 3 body rows", out)
 	}
-	for _, line := range lines[1:4] {
+	for _, line := range lines {
 		if CellWidth(line) != 20 {
 			t.Errorf("code line = %d cells, want the full block width 20: %q", CellWidth(line), line)
 		}
