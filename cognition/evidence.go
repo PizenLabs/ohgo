@@ -227,6 +227,24 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 			return s.hasAnyExact()
 		}
 		return s.targetStateKnown(path)
+	case strings.HasPrefix(key, "target_content:"):
+		path := strings.TrimPrefix(key, "target_content:")
+		if item, ok := s.Find("file:" + path); ok && item.Status != StatusConflicting &&
+			item.Status != StatusRequired && item.Status != StatusUnknown &&
+			strings.TrimSpace(item.Value) != "" {
+			return true
+		}
+		// A structural query naming the exact path is content-bearing
+		// coordinate evidence for a question about a declaration or package.
+		for _, item := range s.Items {
+			if item.Source.Path != path {
+				continue
+			}
+			if strings.HasPrefix(item.ID, "symbol:") || strings.HasPrefix(item.ID, "symbols:") {
+				return item.Status != StatusConflicting && item.Status != StatusRequired && item.Status != StatusUnknown
+			}
+		}
+		return false
 	case strings.HasPrefix(key, "target_coordinates:"):
 		value := strings.TrimPrefix(key, "target_coordinates:")
 		return s.containsEvidence("symbol", value)
@@ -304,6 +322,17 @@ func (s *EvidenceState) targetStateKnown(path string) bool {
 	}
 	if item, ok := s.Find("mutation:" + path); ok {
 		return item.Status == StatusKnown
+	}
+	// A structural query that names the exact path proves the path exists and
+	// carries declarations. It is not a file read, but it is target-state and
+	// coordinate evidence for a question about a declaration/package.
+	for _, item := range s.Items {
+		if item.Source.Path != path {
+			continue
+		}
+		if strings.HasPrefix(item.ID, "symbol:") || strings.HasPrefix(item.ID, "symbols:") {
+			return item.Status != StatusConflicting && item.Status != StatusRequired && item.Status != StatusUnknown
+		}
 	}
 	dir := filepath.ToSlash(filepath.Dir(path))
 	if dir == "." {

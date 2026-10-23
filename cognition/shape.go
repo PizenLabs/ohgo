@@ -539,6 +539,24 @@ func hasConstraint(constraints []string, key string) bool {
 	return false
 }
 
+// requestsContent reports whether the request asks about what a file says,
+// rather than merely whether it exists or where it lives. The distinction is
+// load-bearing: a complete directory listing proves target_state but not
+// target_content.
+func requestsContent(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	for _, phrase := range []string{
+		" read ", " reading ", " explain ", " explains ", " describe ",
+		" what does ", " what is ", " what's ", " summarize ", " summarise ",
+		" summary ", " contents ", " content ", " contains ", " declared ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // requiredKnowledge derives the evidence needs from the shape.
 func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []KnowledgeNeed {
 	var needs []KnowledgeNeed
@@ -575,6 +593,9 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 	case contract.ObjectiveInformational:
 		for _, path := range shape.Mutation.Paths {
 			add("target_state:"+path, "the answer names a concrete repository path")
+			if requestsContent(shape.Objective) {
+				add("target_content:"+path, "the answer needs the file's contents, not merely its presence")
+			}
 		}
 		for _, target := range intent.Targets {
 			switch target.Kind {

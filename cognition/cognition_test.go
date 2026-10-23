@@ -118,6 +118,67 @@ func TestBuildShapeHonorsExplicitNoMutationAndNoExternal(t *testing.T) {
 	}
 }
 
+func TestInformationalContentQuestionNeedsAFileRead(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Objective: "Read index.html and explain what it does.",
+		Kind:      contract.ObjectiveInformational,
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "index.html"}},
+	}, ShapeParams{Authority: "ask"})
+	var contentKey bool
+	for _, need := range shape.RequiredKnowledge {
+		if need.Key == "target_content:index.html" {
+			contentKey = true
+		}
+	}
+	if !contentKey {
+		t.Fatalf("required knowledge = %#v, want target_content:index.html", shape.RequiredKnowledge)
+	}
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "."},
+		Result: agent.Result{Text: "index.html\nstyle.css", Details: map[string]any{"path": ".", "entries": 2}},
+	})
+	if state.Satisfied("target_content:index.html", ExecutionState{}) {
+		t.Fatal("a directory listing satisfied a target's content requirement")
+	}
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-1", ToolName: "read", Args: map[string]any{"path": "index.html"},
+		Result: agent.Result{Text: "1\t<!doctype html>", Details: map[string]any{"path": "index.html", "totalLines": 1, "offset": 1, "limit": 2000}},
+	})
+	if !state.Satisfied("target_content:index.html", ExecutionState{}) {
+		t.Fatal("a file read did not satisfy a target's content requirement")
+	}
+}
+
+func TestStructuralQuerySatisfiesCoordinatesForANamedPath(t *testing.T) {
+	// A symbols query that names the exact path is coordinate evidence for a
+	// package/declaration question; it is not a file read, and it must not
+	// satisfy a content question about an unrelated path.
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "symbols-1", ToolName: "symbols",
+		Args: map[string]any{"symbol": "tui"},
+		Result: agent.Result{
+			Text: "status: ok",
+			Details: map[string]any{
+				"coordinates": []map[string]any{{
+					"path": "tui/approval.go", "symbol": "tui", "kind": "package",
+					"start_line": 1, "end_line": 1,
+				}},
+			},
+		},
+	})
+	if !state.Satisfied("target_state:tui/approval.go", ExecutionState{}) {
+		t.Fatal("a symbols result did not establish target state for the named path")
+	}
+	if !state.Satisfied("target_content:tui/approval.go", ExecutionState{}) {
+		t.Fatal("a symbols result did not satisfy coordinate content for the named path")
+	}
+	if state.Satisfied("target_content:index.html", ExecutionState{}) {
+		t.Fatal("a symbols result for one path satisfied content for another")
+	}
+}
+
 func TestRepositoryOverviewRequiresContentEvidence(t *testing.T) {
 	state := NewEvidenceState()
 	state.ObserveOutcome(agent.ToolOutcome{

@@ -356,6 +356,8 @@ func nextEvidence(key string) string {
 			return "read the repository coordinate the answer names"
 		}
 		return "read " + path + " or list its directory to establish whether it exists"
+	case strings.HasPrefix(key, "target_content:"):
+		return "read " + strings.TrimPrefix(key, "target_content:") + " or query its declarations"
 	case strings.HasPrefix(key, "target_coordinates:"):
 		return "locate the requested declaration with the symbols tool"
 	case key == "repository_overview":
