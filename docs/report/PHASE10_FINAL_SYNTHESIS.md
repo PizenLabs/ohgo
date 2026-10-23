@@ -60,13 +60,13 @@ projection differs.
 
 | Measure | Pre-Phase-9 CONTROL | Final COGNITIVE | Result |
 |---|---:|---:|---|
-| Estimated input tokens, Phase 9 matrix | 514,155 | 261,956 | **−49.05%** |
-| Estimated input tokens excluding K1 | 392,288 | 253,407 | −35.40% |
+| Estimated input tokens, Phase 9 matrix | 514,157 | 261,961 | **−49.05%** |
+| Estimated input tokens excluding K1 | 392,290 | 253,412 | −35.40% |
 | Median scenario | — | — | −40.73% |
 | Tool-schema bytes | 1,084,005 | 469,917 | −56.65% |
-| Context bytes | 894,424 | 530,177 | −40.72% |
-| Repeated-context bytes | 1,554,461 | 727,661 | −53.19% |
-| Raw tool output | 213,633 | 213,571 | unchanged |
+| Context bytes | 894,436 | 530,224 | −40.72% |
+| Repeated-context bytes | 1,554,471 | 727,693 | −53.19% |
+| Raw tool output | 213,633 | 213,575 | unchanged |
 | Objective statuses | — | — | identical per scenario |
 | Tool calls / turns | — | — | identical per scenario |
 
@@ -80,7 +80,7 @@ Phase 10 context invariant, and it is reported rather than hidden.
 
 | Measure | CONTROL | COGNITIVE | Result |
 |---|---:|---:|---|
-| Estimated input tokens, 20 scenarios | 540,471 | 276,299 | **−48.88%** |
+| Estimated input tokens, 20 scenarios | 540,471 | 276,305 | **−48.88%** |
 | `P10-C1-read-file` | COMPLETED, no mutation | COMPLETED, no mutation | pass |
 | `P10-C2-read-then-update` | COMPLETED, mutated+verified | COMPLETED, mutated+verified | pass |
 | `P10-F-package-name` | COMPLETED, one read | COMPLETED, one read | pass |

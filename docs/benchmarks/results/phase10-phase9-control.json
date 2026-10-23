@@ -11,8 +11,8 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:11.796265Z",
-    "finished_at": "2026-10-23T04:43:11.801815Z",
+    "started_at": "2026-10-23T05:09:54.561819Z",
+    "finished_at": "2026-10-23T05:09:54.569801Z",
     "requests": [
       {
         "index": 1,
@@ -238,7 +238,7 @@
     "new_context_bytes": 15693,
     "first_request_bytes": 11751,
     "last_request_bytes": 15693,
-    "wall_millis": 0,
+    "wall_millis": 1,
     "objective_status": "COMPLETED",
     "verification_status": "not_applicable",
     "completion_reason": "",
@@ -254,7 +254,7 @@
           "path": "README.md"
         },
         "is_error": true,
-        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-3996972929/README.md: no such file or directory"
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-4002327405/README.md: no such file or directory"
       },
       {
         "tool": "ls",
@@ -307,8 +307,8 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:11.801831Z",
-    "finished_at": "2026-10-23T04:43:11.806025Z",
+    "started_at": "2026-10-23T05:09:54.569828Z",
+    "finished_at": "2026-10-23T05:09:54.575601Z",
     "requests": [
       {
         "index": 1,
@@ -641,7 +641,7 @@
           "path": "README.md"
         },
         "is_error": true,
-        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-1916074031/README.md: no such file or directory"
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-2948651381/README.md: no such file or directory"
       },
       {
         "tool": "ls",
@@ -716,8 +716,8 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:11.806036Z",
-    "finished_at": "2026-10-23T04:43:11.809309Z",
+    "started_at": "2026-10-23T05:09:54.575621Z",
+    "finished_at": "2026-10-23T05:09:54.580678Z",
     "requests": [
       {
         "index": 1,
@@ -1031,7 +1031,7 @@
     "new_context_bytes": 17489,
     "first_request_bytes": 11752,
     "last_request_bytes": 17489,
-    "wall_millis": 0,
+    "wall_millis": 1,
     "objective_status": "NEEDS_REVIEW",
     "verification_status": "not_verified",
     "completion_reason": "the repository change or execution was not followed by a successful verification",
@@ -1050,7 +1050,7 @@
           "path": "README.md"
         },
         "is_error": true,
-        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-1850160172/README.md: no such file or directory"
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-4232906757/README.md: no such file or directory"
       },
       {
         "tool": "ls",
@@ -1125,8 +1125,8 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:11.809318Z",
-    "finished_at": "2026-10-23T04:43:11.813051Z",
+    "started_at": "2026-10-23T05:09:54.580692Z",
+    "finished_at": "2026-10-23T05:09:54.585511Z",
     "requests": [
       {
         "index": 1,
@@ -1459,7 +1459,7 @@
           "path": "README.md"
         },
         "is_error": true,
-        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-1034131606/README.md: no such file or directory"
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-1278235751/README.md: no such file or directory"
       },
       {
         "tool": "ls",
@@ -1534,8 +1534,8 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:11.813064Z",
-    "finished_at": "2026-10-23T04:43:11.816535Z",
+    "started_at": "2026-10-23T05:09:54.585527Z",
+    "finished_at": "2026-10-23T05:09:54.590121Z",
     "requests": [
       {
         "index": 1,
@@ -1849,7 +1849,7 @@
     "new_context_bytes": 17497,
     "first_request_bytes": 11760,
     "last_request_bytes": 17497,
-    "wall_millis": 0,
+    "wall_millis": 1,
     "objective_status": "NEEDS_REVIEW",
     "verification_status": "not_verified",
     "completion_reason": "the repository change or execution was not followed by a successful verification",
@@ -1868,7 +1868,7 @@
           "path": "README.md"
         },
         "is_error": true,
-        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-4081594888/README.md: no such file or directory"
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-2698969142/README.md: no such file or directory"
       },
       {
         "tool": "ls",
@@ -1943,8 +1943,8 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:11.816543Z",
-    "finished_at": "2026-10-23T04:43:11.819285Z",
+    "started_at": "2026-10-23T05:09:54.590132Z",
+    "finished_at": "2026-10-23T05:09:54.596653Z",
     "requests": [
       {
         "index": 1,
@@ -2170,7 +2170,7 @@
     "new_context_bytes": 15710,
     "first_request_bytes": 11769,
     "last_request_bytes": 15710,
-    "wall_millis": 0,
+    "wall_millis": 1,
     "objective_status": "COMPLETED",
     "verification_status": "not_applicable",
     "completion_reason": "",
@@ -2186,7 +2186,7 @@
           "path": "README.md"
         },
         "is_error": true,
-        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-614329446/README.md: no such file or directory"
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-662178882/README.md: no such file or directory"
       },
       {
         "tool": "ls",
@@ -2239,18 +2239,18 @@
     "repository": "fixture:go-debug",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:11.819293Z",
-    "finished_at": "2026-10-23T04:43:16.669374Z",
+    "started_at": "2026-10-23T05:09:54.596678Z",
+    "finished_at": "2026-10-23T05:09:58.983919Z",
     "requests": [
       {
         "index": 1,
-        "total_bytes": 11769,
-        "system_bytes": 1737,
+        "total_bytes": 11770,
+        "system_bytes": 1738,
         "message_bytes": 87,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3099,
         "repeated_bytes": 0,
-        "new_bytes": 11769,
+        "new_bytes": 11770,
         "messages": 1,
         "tools": 14,
         "tool_names": [
@@ -2272,12 +2272,12 @@
       },
       {
         "index": 2,
-        "total_bytes": 11998,
-        "system_bytes": 1737,
+        "total_bytes": 11999,
+        "system_bytes": 1738,
         "message_bytes": 316,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3163,
-        "repeated_bytes": 11769,
+        "repeated_bytes": 11770,
         "new_bytes": 229,
         "messages": 3,
         "tools": 14,
@@ -2300,12 +2300,12 @@
       },
       {
         "index": 3,
-        "total_bytes": 12324,
-        "system_bytes": 1737,
+        "total_bytes": 12325,
+        "system_bytes": 1738,
         "message_bytes": 642,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3251,
-        "repeated_bytes": 11998,
+        "repeated_bytes": 11999,
         "new_bytes": 326,
         "messages": 5,
         "tools": 14,
@@ -2328,12 +2328,12 @@
       },
       {
         "index": 4,
-        "total_bytes": 12559,
-        "system_bytes": 1737,
+        "total_bytes": 12560,
+        "system_bytes": 1738,
         "message_bytes": 877,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3317,
-        "repeated_bytes": 12324,
+        "repeated_bytes": 12325,
         "new_bytes": 235,
         "messages": 7,
         "tools": 14,
@@ -2356,12 +2356,12 @@
       },
       {
         "index": 5,
-        "total_bytes": 12692,
-        "system_bytes": 1737,
+        "total_bytes": 12693,
+        "system_bytes": 1738,
         "message_bytes": 1010,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3357,
-        "repeated_bytes": 12559,
+        "repeated_bytes": 12560,
         "new_bytes": 133,
         "messages": 9,
         "tools": 14,
@@ -2384,12 +2384,12 @@
       },
       {
         "index": 6,
-        "total_bytes": 12847,
-        "system_bytes": 1737,
+        "total_bytes": 12848,
+        "system_bytes": 1738,
         "message_bytes": 1165,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3403,
-        "repeated_bytes": 12692,
+        "repeated_bytes": 12693,
         "new_bytes": 155,
         "messages": 11,
         "tools": 14,
@@ -2433,13 +2433,13 @@
     "estimated_input_tokens": 19590,
     "estimated_output_tokens": 198,
     "raw_tool_output_bytes": 780,
-    "context_bytes": 14519,
+    "context_bytes": 14525,
     "tool_schema_bytes": 59670,
-    "repeated_context_bytes": 61342,
-    "new_context_bytes": 12847,
-    "first_request_bytes": 11769,
-    "last_request_bytes": 12847,
-    "wall_millis": 4729,
+    "repeated_context_bytes": 61347,
+    "new_context_bytes": 12848,
+    "first_request_bytes": 11770,
+    "last_request_bytes": 12848,
+    "wall_millis": 4279,
     "objective_status": "COMPLETED",
     "verification_status": "verified",
     "completion_reason": "",
@@ -2472,7 +2472,7 @@
           "command": "GOCACHE=$PWD/.gocache go test ./..."
         },
         "is_error": true,
-        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\n--- FAIL: TestAdd (0.00s)\n    calc_test.go:7: Add(2, 3) = -1, want 5\nFAIL\nFAIL\texample.com/calc\t0.314s\nFAIL\n\n[exit code 1, 4.187s]"
+        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\n--- FAIL: TestAdd (0.00s)\n    calc_test.go:7: Add(2, 3) = -1, want 5\nFAIL\nFAIL\texample.com/calc\t0.318s\nFAIL\n\n[exit code 1, 3.755s]"
       },
       {
         "tool": "edit",
@@ -2488,7 +2488,7 @@
         "args": {
           "command": "GOCACHE=$PWD/.gocache go test ./..."
         },
-        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\nok  \texample.com/calc\t0.318s\n\n[exit code 0, 541ms]"
+        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\nok  \texample.com/calc\t0.310s\n\n[exit code 0, 523ms]"
       }
     ],
     "evidence_state_bytes": 0,
@@ -2506,8 +2506,8 @@
     "repository": "fixture:go-refactor",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:16.669431Z",
-    "finished_at": "2026-10-23T04:43:20.776035Z",
+    "started_at": "2026-10-23T05:09:58.984002Z",
+    "finished_at": "2026-10-23T05:10:03.057064Z",
     "requests": [
       {
         "index": 1,
@@ -2763,13 +2763,13 @@
       },
       {
         "index": 10,
-        "total_bytes": 13731,
+        "total_bytes": 13730,
         "system_bytes": 1738,
-        "message_bytes": 2048,
+        "message_bytes": 2047,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3651,
         "repeated_bytes": 13571,
-        "new_bytes": 160,
+        "new_bytes": 159,
         "messages": 19,
         "tools": 14,
         "tool_names": [
@@ -2816,14 +2816,14 @@
     "search_calls": 0,
     "estimated_input_tokens": 34031,
     "estimated_output_tokens": 266,
-    "raw_tool_output_bytes": 1050,
-    "context_bytes": 29165,
+    "raw_tool_output_bytes": 1049,
+    "context_bytes": 29164,
     "tool_schema_bytes": 99450,
     "repeated_context_bytes": 114884,
-    "new_context_bytes": 13731,
+    "new_context_bytes": 13730,
     "first_request_bytes": 11873,
-    "last_request_bytes": 13731,
-    "wall_millis": 4000,
+    "last_request_bytes": 13730,
+    "wall_millis": 3972,
     "objective_status": "COMPLETED",
     "verification_status": "verified",
     "completion_reason": "",
@@ -2908,7 +2908,7 @@
         "args": {
           "command": "GOCACHE=$PWD/.gocache go test ./..."
         },
-        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\nok  \texample.com/geometry\t0.306s\n\n[exit code 0, 3.999s]"
+        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\nok  \texample.com/geometry\t0.331s\n\n[exit code 0, 3.97s]"
       }
     ],
     "evidence_state_bytes": 0,
@@ -2926,8 +2926,8 @@
     "repository": "fixture:go-fuzz",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:20.776068Z",
-    "finished_at": "2026-10-23T04:43:25.03942Z",
+    "started_at": "2026-10-23T05:10:03.057106Z",
+    "finished_at": "2026-10-23T05:10:06.922858Z",
     "requests": [
       {
         "index": 1,
@@ -3067,7 +3067,7 @@
     "new_context_bytes": 12823,
     "first_request_bytes": 11759,
     "last_request_bytes": 12823,
-    "wall_millis": 4158,
+    "wall_millis": 3766,
     "objective_status": "NEEDS_REVIEW",
     "verification_status": "not_applicable",
     "completion_reason": "a tool call failed and no later success or verification recovered it",
@@ -3100,7 +3100,7 @@
           "command": "GOCACHE=$PWD/.gocache go test ./..."
         },
         "is_error": true,
-        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\n--- FAIL: TestSplitPanicsOnNothing (0.00s)\n    parser_test.go:16: expected malformed input handling to be investigated\nFAIL\nFAIL\texample.com/parser\t0.308s\nFAIL\n\n[exit code 1, 4.158s]"
+        "text": "$ GOCACHE=$PWD/.gocache go test ./...\n\n--- FAIL: TestSplitPanicsOnNothing (0.00s)\n    parser_test.go:16: expected malformed input handling to be investigated\nFAIL\nFAIL\texample.com/parser\t0.324s\nFAIL\n\n[exit code 1, 3.766s]"
       }
     ],
     "evidence_state_bytes": 0,
@@ -3108,7 +3108,7 @@
   },
   {
     "scenario": "J-external-knowledge",
-    "prompt": "Check this project and write README.md. Use the official Nimbus Notes documentation at http://127.0.0.1:50992 for the feature list. Do not modify any other file.",
+    "prompt": "Check this project and write README.md. Use the official Nimbus Notes documentation at http://127.0.0.1:51971 for the feature list. Do not modify any other file.",
     "model": "scripted",
     "provider": "none",
     "model_settings": "fixed-sequence",
@@ -3118,8 +3118,8 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:25.039485Z",
-    "finished_at": "2026-10-23T04:43:27.420397Z",
+    "started_at": "2026-10-23T05:10:06.922901Z",
+    "finished_at": "2026-10-23T05:10:09.136408Z",
     "requests": [
       {
         "index": 1,
@@ -3289,7 +3289,7 @@
     "new_context_bytes": 13832,
     "first_request_bytes": 11844,
     "last_request_bytes": 13832,
-    "wall_millis": 2326,
+    "wall_millis": 2158,
     "objective_status": "COMPLETED",
     "verification_status": "verified",
     "completion_reason": "",
@@ -3309,10 +3309,10 @@
       {
         "tool": "web_fetch",
         "args": {
-          "url": "http://127.0.0.1:50992"
+          "url": "http://127.0.0.1:51971"
         },
         "is_error": true,
-        "text": "fetch returned HTTP 404 for http://127.0.0.1:50992"
+        "text": "fetch returned HTTP 404 for http://127.0.0.1:51971"
       },
       {
         "tool": "read",
@@ -3334,7 +3334,7 @@
         "args": {
           "command": "GOCACHE=$PWD/.gocache go build ./..."
         },
-        "text": "$ GOCACHE=$PWD/.gocache go build ./...\n\n\n\n[exit code 0, 2.325s]"
+        "text": "$ GOCACHE=$PWD/.gocache go build ./...\n\n\n\n[exit code 0, 2.156s]"
       }
     ],
     "evidence_state_bytes": 0,
@@ -3352,8 +3352,8 @@
     "repository": "fixture:large",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:27.420438Z",
-    "finished_at": "2026-10-23T04:43:27.427627Z",
+    "started_at": "2026-10-23T05:10:09.136433Z",
+    "finished_at": "2026-10-23T05:10:09.141987Z",
     "requests": [
       {
         "index": 1,
@@ -3543,18 +3543,18 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:27.427637Z",
-    "finished_at": "2026-10-23T04:43:27.42968Z",
+    "started_at": "2026-10-23T05:10:09.142009Z",
+    "finished_at": "2026-10-23T05:10:09.144663Z",
     "requests": [
       {
         "index": 1,
-        "total_bytes": 11750,
-        "system_bytes": 1737,
+        "total_bytes": 11751,
+        "system_bytes": 1738,
         "message_bytes": 68,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3094,
         "repeated_bytes": 0,
-        "new_bytes": 11750,
+        "new_bytes": 11751,
         "messages": 1,
         "tools": 14,
         "tool_names": [
@@ -3576,13 +3576,13 @@
       },
       {
         "index": 2,
-        "total_bytes": 11920,
-        "system_bytes": 1737,
-        "message_bytes": 238,
+        "total_bytes": 11922,
+        "system_bytes": 1738,
+        "message_bytes": 239,
         "tool_schema_bytes": 9945,
-        "estimated_tokens": 3143,
-        "repeated_bytes": 11750,
-        "new_bytes": 170,
+        "estimated_tokens": 3144,
+        "repeated_bytes": 11751,
+        "new_bytes": 171,
         "messages": 3,
         "tools": 14,
         "tool_names": [
@@ -3604,12 +3604,12 @@
       },
       {
         "index": 3,
-        "total_bytes": 12744,
-        "system_bytes": 1737,
-        "message_bytes": 1062,
+        "total_bytes": 12746,
+        "system_bytes": 1738,
+        "message_bytes": 1063,
         "tool_schema_bytes": 9945,
-        "estimated_tokens": 3356,
-        "repeated_bytes": 11920,
+        "estimated_tokens": 3357,
+        "repeated_bytes": 11922,
         "new_bytes": 824,
         "messages": 5,
         "tools": 14,
@@ -3646,15 +3646,15 @@
     "bytes_written": 0,
     "duplicate_reads": 0,
     "search_calls": 0,
-    "estimated_input_tokens": 9593,
-    "estimated_output_tokens": 230,
-    "raw_tool_output_bytes": 918,
-    "context_bytes": 6579,
+    "estimated_input_tokens": 9595,
+    "estimated_output_tokens": 231,
+    "raw_tool_output_bytes": 919,
+    "context_bytes": 6584,
     "tool_schema_bytes": 29835,
-    "repeated_context_bytes": 23670,
-    "new_context_bytes": 12744,
-    "first_request_bytes": 11750,
-    "last_request_bytes": 12744,
+    "repeated_context_bytes": 23673,
+    "new_context_bytes": 12746,
+    "first_request_bytes": 11751,
+    "last_request_bytes": 12746,
     "wall_millis": 0,
     "objective_status": "COMPLETED",
     "verification_status": "not_applicable",
@@ -3671,7 +3671,7 @@
           "path": "MISSING.md"
         },
         "is_error": true,
-        "text": "stat \"MISSING.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-400672629/MISSING.md: no such file or directory"
+        "text": "stat \"MISSING.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-2994223253/MISSING.md: no such file or directory"
       },
       {
         "tool": "read",
@@ -3696,8 +3696,8 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:27.429687Z",
-    "finished_at": "2026-10-23T04:43:27.446551Z",
+    "started_at": "2026-10-23T05:10:09.144674Z",
+    "finished_at": "2026-10-23T05:10:09.160344Z",
     "requests": [
       {
         "index": 1,
@@ -3839,7 +3839,7 @@
     "new_context_bytes": 13662,
     "first_request_bytes": 11752,
     "last_request_bytes": 13662,
-    "wall_millis": 14,
+    "wall_millis": 13,
     "objective_status": "NEEDS_REVIEW",
     "verification_status": "not_verified",
     "completion_reason": "a tool call failed and no later success or verification recovered it",
@@ -3873,7 +3873,7 @@
           "command": "GOCACHE=$PWD/.gocache go build ./does-not-exist"
         },
         "is_error": true,
-        "text": "$ GOCACHE=$PWD/.gocache go build ./does-not-exist\n\nstat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-1944915867/does-not-exist: directory not found\n\n[exit code 1, 14ms]"
+        "text": "$ GOCACHE=$PWD/.gocache go build ./does-not-exist\n\nstat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-1428097576/does-not-exist: directory not found\n\n[exit code 1, 13ms]"
       }
     ],
     "evidence_state_bytes": 0,
@@ -3891,8 +3891,8 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:27.446563Z",
-    "finished_at": "2026-10-23T04:43:29.700845Z",
+    "started_at": "2026-10-23T05:10:09.16036Z",
+    "finished_at": "2026-10-23T05:10:11.338506Z",
     "requests": [
       {
         "index": 1,
@@ -4063,7 +4063,7 @@
     "new_context_bytes": 13622,
     "first_request_bytes": 11752,
     "last_request_bytes": 13622,
-    "wall_millis": 2198,
+    "wall_millis": 2122,
     "objective_status": "NEEDS_REVIEW",
     "verification_status": "verified",
     "completion_reason": "observed change outside the requested scope: extra.txt; the run changed a path outside the requested target scope; evidence: satisfied: path README.md; evidence: unexpected: extra.txt",
@@ -4108,7 +4108,7 @@
         "args": {
           "command": "GOCACHE=$PWD/.gocache go build ./..."
         },
-        "text": "$ GOCACHE=$PWD/.gocache go build ./...\n\n\n\n[exit code 0, 2.198s]"
+        "text": "$ GOCACHE=$PWD/.gocache go build ./...\n\n\n\n[exit code 0, 2.122s]"
       }
     ],
     "evidence_state_bytes": 0,
@@ -4126,18 +4126,18 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:29.700871Z",
-    "finished_at": "2026-10-23T04:43:29.70586Z",
+    "started_at": "2026-10-23T05:10:11.338534Z",
+    "finished_at": "2026-10-23T05:10:11.34287Z",
     "requests": [
       {
         "index": 1,
-        "total_bytes": 11743,
-        "system_bytes": 1738,
+        "total_bytes": 11742,
+        "system_bytes": 1737,
         "message_bytes": 60,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3092,
         "repeated_bytes": 0,
-        "new_bytes": 11743,
+        "new_bytes": 11742,
         "messages": 1,
         "tools": 14,
         "tool_names": [
@@ -4160,12 +4160,12 @@
       {
         "index": 2,
         "total_bytes": 11917,
-        "system_bytes": 1738,
-        "message_bytes": 234,
+        "system_bytes": 1737,
+        "message_bytes": 235,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3142,
-        "repeated_bytes": 11743,
-        "new_bytes": 174,
+        "repeated_bytes": 11742,
+        "new_bytes": 175,
         "messages": 3,
         "tools": 14,
         "tool_names": [
@@ -4200,12 +4200,12 @@
     "search_calls": 0,
     "estimated_input_tokens": 6234,
     "estimated_output_tokens": 30,
-    "raw_tool_output_bytes": 118,
-    "context_bytes": 3770,
+    "raw_tool_output_bytes": 119,
+    "context_bytes": 3769,
     "tool_schema_bytes": 19890,
-    "repeated_context_bytes": 11743,
+    "repeated_context_bytes": 11742,
     "new_context_bytes": 11917,
-    "first_request_bytes": 11743,
+    "first_request_bytes": 11742,
     "last_request_bytes": 11917,
     "wall_millis": 1,
     "objective_status": "NEEDS_REVIEW",
@@ -4223,7 +4223,7 @@
           "background": true,
           "command": "sleep 2"
         },
-        "text": "$ sleep 2\n\n[background job job-1 started, pid 8271 — killed after 2m0s if still running; use wait to collect output]"
+        "text": "$ sleep 2\n\n[background job job-1 started, pid 36869 — killed after 2m0s if still running; use wait to collect output]"
       }
     ],
     "evidence_state_bytes": 0,
@@ -4241,8 +4241,8 @@
     "repository": "fixture:heavy",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:29.70587Z",
-    "finished_at": "2026-10-23T04:43:29.709413Z",
+    "started_at": "2026-10-23T05:10:11.342881Z",
+    "finished_at": "2026-10-23T05:10:11.346522Z",
     "requests": [
       {
         "index": 1,
@@ -4484,7 +4484,7 @@
           "path": "README.md"
         },
         "is_error": true,
-        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-4054615305/README.md: no such file or directory"
+        "text": "stat \"README.md\": stat /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-2517880439/README.md: no such file or directory"
       },
       {
         "tool": "ls",
@@ -4537,18 +4537,18 @@
     "repository": "fixture:static",
     "repository_revision": "phase9-fixture-v1",
     "tool_set_hash": "8cdd5a0e25d7b838f02d94c88e430c4bcb9bf7326d9c58289e6a4b3360648504",
-    "started_at": "2026-10-23T04:43:29.709438Z",
-    "finished_at": "2026-10-23T04:43:31.934705Z",
+    "started_at": "2026-10-23T05:10:11.346535Z",
+    "finished_at": "2026-10-23T05:10:13.610453Z",
     "requests": [
       {
         "index": 1,
-        "total_bytes": 11787,
-        "system_bytes": 1737,
+        "total_bytes": 11788,
+        "system_bytes": 1738,
         "message_bytes": 105,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3104,
         "repeated_bytes": 0,
-        "new_bytes": 11787,
+        "new_bytes": 11788,
         "messages": 1,
         "tools": 14,
         "tool_names": [
@@ -4570,12 +4570,12 @@
       },
       {
         "index": 2,
-        "total_bytes": 12611,
-        "system_bytes": 1737,
+        "total_bytes": 12612,
+        "system_bytes": 1738,
         "message_bytes": 929,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3317,
-        "repeated_bytes": 11787,
+        "repeated_bytes": 11788,
         "new_bytes": 824,
         "messages": 3,
         "tools": 14,
@@ -4598,12 +4598,12 @@
       },
       {
         "index": 3,
-        "total_bytes": 13435,
-        "system_bytes": 1737,
+        "total_bytes": 13436,
+        "system_bytes": 1738,
         "message_bytes": 1753,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3530,
-        "repeated_bytes": 12611,
+        "repeated_bytes": 12612,
         "new_bytes": 824,
         "messages": 5,
         "tools": 14,
@@ -4627,12 +4627,12 @@
       {
         "index": 4,
         "total_bytes": 13565,
-        "system_bytes": 1737,
-        "message_bytes": 1883,
+        "system_bytes": 1738,
+        "message_bytes": 1882,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3569,
-        "repeated_bytes": 13435,
-        "new_bytes": 130,
+        "repeated_bytes": 13436,
+        "new_bytes": 129,
         "messages": 7,
         "tools": 14,
         "tool_names": [
@@ -4655,8 +4655,8 @@
       {
         "index": 5,
         "total_bytes": 13721,
-        "system_bytes": 1737,
-        "message_bytes": 2039,
+        "system_bytes": 1738,
+        "message_bytes": 2038,
         "tool_schema_bytes": 9945,
         "estimated_tokens": 3615,
         "repeated_bytes": 13565,
@@ -4701,14 +4701,14 @@
     "search_calls": 0,
     "estimated_input_tokens": 17135,
     "estimated_output_tokens": 254,
-    "raw_tool_output_bytes": 1007,
-    "context_bytes": 15394,
+    "raw_tool_output_bytes": 1006,
+    "context_bytes": 15397,
     "tool_schema_bytes": 49725,
-    "repeated_context_bytes": 51398,
+    "repeated_context_bytes": 51401,
     "new_context_bytes": 13721,
-    "first_request_bytes": 11787,
+    "first_request_bytes": 11788,
     "last_request_bytes": 13721,
-    "wall_millis": 2171,
+    "wall_millis": 2210,
     "objective_status": "COMPLETED",
     "verification_status": "verified",
     "completion_reason": "",
@@ -4741,7 +4741,7 @@
         "args": {
           "command": "GOCACHE=$PWD/.gocache go build ./..."
         },
-        "text": "$ GOCACHE=$PWD/.gocache go build ./...\n\n\n\n[exit code 0, 2.171s]"
+        "text": "$ GOCACHE=$PWD/.gocache go build ./...\n\n\n\n[exit code 0, 2.21s]"
       },
       {
         "tool": "ls",

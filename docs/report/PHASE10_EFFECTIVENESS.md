@@ -109,13 +109,13 @@ go run ./bench/phase9 -projection state -out docs/benchmarks/results/phase10-pha
 
 | Measure | CONTROL | COGNITIVE | Change |
 |---|---:|---:|---:|
-| Estimated input tokens (17 scenarios) | 514,155 | 261,956 | **−49.05%** |
-| Estimated input tokens excluding K1 | 392,288 | 253,407 | **−35.40%** |
+| Estimated input tokens (17 scenarios) | 514,157 | 261,961 | **−49.05%** |
+| Estimated input tokens excluding K1 | 392,290 | 253,412 | **−35.40%** |
 | Median scenario | — | — | −40.73% |
 | Tool-schema bytes | 1,084,005 | 469,917 | −56.65% |
-| Context bytes | 894,424 | 530,177 | −40.72% |
-| Repeated-context bytes | 1,554,461 | 727,661 | −53.19% |
-| Raw tool-output bytes | 213,633 | 213,571 | −0.03% |
+| Context bytes | 894,436 | 530,224 | −40.72% |
+| Repeated-context bytes | 1,554,471 | 727,693 | −53.19% |
+| Raw tool-output bytes | 213,633 | 213,575 | −0.03% |
 | Objective statuses | same per scenario | same per scenario | no correctness change |
 | Tool calls / turns | same | same | the scripted path is fixed |
 
@@ -137,7 +137,7 @@ go run ./bench/phase9 -suite phase10 -projection state \
 
 | Measure | CONTROL | COGNITIVE | Change |
 |---|---:|---:|---:|
-| Estimated input tokens (20 scenarios) | 540,471 | 276,299 | **−48.88%** |
+| Estimated input tokens (20 scenarios) | 540,471 | 276,305 | **−48.88%** |
 | Objective statuses | same per scenario | same per scenario | no change |
 | `P10-C1-read-file` | COMPLETED, no mutation | COMPLETED, no mutation | pass |
 | `P10-C2-read-then-update` | COMPLETED, mutated+verified | COMPLETED, mutated+verified | pass |
