@@ -3128,6 +3128,8 @@ var Commands = []CommandSpec{
 	{Name: "docs", Usage: "docs", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
 	{Name: "changelog", Usage: "changelog", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl}, {Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
 	{Name: "diff", Usage: "diff [target]", Description: "inspect the working-tree diff", Category: CommandGroupControl},
+	{Name: "undo", Usage: "undo", Description: "revert the last agent edit", Category: CommandGroupControl},
+	{Name: "redo", Usage: "redo", Description: "restore an undone agent edit", Category: CommandGroupControl},
 	{Name: "retry", Usage: "retry", Description: "re-send the last prompt", Category: CommandGroupControl},
 	{Name: "compact", Usage: "compact", Description: "summarise context now", Category: CommandGroupControl},
 	{Name: "quit", Usage: "quit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},

@@ -20,6 +20,7 @@ import (
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
 	"github.com/PizenLabs/ohgo/creds"
+	"github.com/PizenLabs/ohgo/recovery"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/tui"
 	"github.com/PizenLabs/ohgo/workspace"
@@ -63,6 +64,9 @@ type harness struct {
 	// newBudget grants a fresh root budget for one REPL turn. Nil means the
 	// loop's current grant is used as-is (one-shot runs, tests).
 	newBudget func() *budget.Budget
+	// rec is the workspace recovery authority. Nil means the REPL was built
+	// without one (tests), in which case /undo and /redo say so.
+	rec *recoveryService
 }
 
 // newHarness assembles the backend. usage and settings may be nil only where
@@ -504,6 +508,45 @@ func (h *harness) CompactHistory(ctx context.Context, history []agent.Message) (
 	}
 	summary := fmt.Sprintf("%d messages summarised, %d retained", result.Compacted, result.Retained)
 	return result.Messages, summary, nil
+}
+
+// journal returns the loop's checkpoint seam for the current session, or nil
+// when no session or no recovery store is attached.
+func (h *harness) journal() agent.EditJournal {
+	if h == nil || h.rec == nil || h.sess == nil {
+		return nil
+	}
+	return h.rec.Journal(h.sess.ID)
+}
+
+// Undo reverts the last agent edit in the current session's workspace.
+//
+// It is reachable only from the explicit REPL command, exactly like the
+// full-screen UI's /undo. No tool calls it, and the harness exposes no other
+// entry point.
+func (h *harness) Undo() recovery.Result {
+	if h.rec == nil {
+		return recovery.Result{Op: recovery.OpUndo, State: recovery.StateFailed,
+			Reason: "workspace recovery is unavailable in this session"}
+	}
+	var sessionID int64
+	if h.sess != nil {
+		sessionID = h.sess.ID
+	}
+	return h.rec.Undo(context.Background(), sessionID)
+}
+
+// Redo restores the next undone agent edit in the current session.
+func (h *harness) Redo() recovery.Result {
+	if h.rec == nil {
+		return recovery.Result{Op: recovery.OpRedo, State: recovery.StateFailed,
+			Reason: "workspace recovery is unavailable in this session"}
+	}
+	var sessionID int64
+	if h.sess != nil {
+		sessionID = h.sess.ID
+	}
+	return h.rec.Redo(context.Background(), sessionID)
 }
 
 // Disconnect removes a saved credential. Only file-store and explicit keys

@@ -400,11 +400,6 @@ func matchSegments(pattern, name []string) bool {
 	return true
 }
 
-// isHidden reports whether a name is a dotfile.
-func isHidden(name string) bool {
-	return strings.HasPrefix(name, ".") && name != "." && name != ".."
-}
-
 // relativeToRoot renders a path relative to root for display.
 func relativeToRoot(root, path string) string {
 	if rel, err := filepath.Rel(root, path); err == nil && rel != "." {

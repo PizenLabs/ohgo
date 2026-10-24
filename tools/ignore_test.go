@@ -7,13 +7,19 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/internal/ignore"
 )
 
 // newTestIgnorer builds an ignorer from literal .gitignore contents, without
 // touching the filesystem, so the rule semantics can be tested directly.
 func newTestIgnorer(contents string) *ignorer {
-	ig := &ignorer{root: "/"}
-	ig.appendFile("", contents)
+	return newTestIgnorerAt("", contents)
+}
+
+// newTestIgnorerAt builds an ignorer whose rules are relative to base.
+func newTestIgnorerAt(base, contents string) *ignorer {
+	ig := &ignorer{matcher: ignore.NewRules()}
+	ig.matcher.Append(base, contents)
 	return ig
 }
 
@@ -91,8 +97,7 @@ func TestIgnorerAnchorsBarePatternToBase(t *testing.T) {
 }
 
 func TestIgnorerAnchorsBarePatternInsideNestedBase(t *testing.T) {
-	ig := &ignorer{root: "/"}
-	ig.appendFile("cmd", "/ohgo\n")
+	ig := newTestIgnorerAt("cmd", "/ohgo\n")
 	if !ig.ignored("cmd/ohgo", true) {
 		t.Error("the nested anchored file was not excluded")
 	}
@@ -141,8 +146,7 @@ func TestIgnorerHonoursCommentsAndBlanks(t *testing.T) {
 }
 
 func TestIgnorerIsInertWhenDisabled(t *testing.T) {
-	ig := &ignorer{root: "/", disabled: true}
-	ig.appendFile("", "*.go\n")
+	ig := newIgnorer("/", false)
 	if ig.ignored("a.go", false) {
 		t.Error("a disabled ignorer still excluded files")
 	}
@@ -151,8 +155,7 @@ func TestIgnorerIsInertWhenDisabled(t *testing.T) {
 func TestIgnorerScopesNestedFilesToTheirSubtree(t *testing.T) {
 	// A rule in sub/.gitignore governs only sub/, which is how git scopes
 	// nested ignore files.
-	ig := &ignorer{root: "/"}
-	ig.appendFile("sub", "*.tmp\n")
+	ig := newTestIgnorerAt("sub", "*.tmp\n")
 
 	if !ig.ignored("sub/a.tmp", false) {
 		t.Error("a nested rule did not apply inside its own directory")
@@ -163,9 +166,8 @@ func TestIgnorerScopesNestedFilesToTheirSubtree(t *testing.T) {
 }
 
 func TestIgnorerLetsNestedNegationWin(t *testing.T) {
-	ig := &ignorer{root: "/"}
-	ig.appendFile("", "*.log\n")
-	ig.appendFile("sub", "!keep.log\n")
+	ig := newTestIgnorer("*.log\n")
+	ig.matcher.Append("sub", "!keep.log\n")
 
 	if !ig.ignored("a.log", false) {
 		t.Error("the outer exclusion stopped applying")
@@ -232,14 +234,22 @@ func TestNewIgnorerHandlesMissingAndUnreadableFiles(t *testing.T) {
 	}
 }
 
-func TestMatchSegmentsNeverCrossesSeparators(t *testing.T) {
+func TestIgnorePatternsNeverCrossSeparators(t *testing.T) {
 	// "*" must not span a "/": this is the difference between
 	// "src/*.ts" matching one level and matching everything.
-	if matchSegments([]string{"src", "*.ts"}, []string{"src", "a", "b.ts"}) {
+	ig := newTestIgnorer("src/*.ts\n")
+	if ig.ignored("src/a/b.ts", false) {
 		t.Error("a single-star pattern crossed a directory boundary")
 	}
-	if !matchSegments([]string{"src", "*.ts"}, []string{"src", "a.ts"}) {
+	if !ig.ignored("src/a.ts", false) {
 		t.Error("a valid single-level pattern did not match")
+	}
+}
+
+func TestIgnoreDoubleStarSpansDirectories(t *testing.T) {
+	ig := newTestIgnorer("src/**/*.ts\n")
+	if !ig.ignored("src/a/b/c.ts", false) {
+		t.Error("a double-star pattern did not span directories")
 	}
 }
 
