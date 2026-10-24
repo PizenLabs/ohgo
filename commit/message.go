@@ -124,9 +124,6 @@ func Parse(text string, refs map[string]bool) (Proposal, error) {
 	if lines[1] != "" {
 		return Proposal{}, invalid("exactly one blank line is required between subject and body")
 	}
-	if len(lines) == 2 {
-		return Proposal{}, invalid("the body separator is followed by no bullets")
-	}
 	for _, line := range lines[2:] {
 		if line == "" {
 			return Proposal{}, invalid("the body contains an empty line")
@@ -151,9 +148,6 @@ func (p Proposal) Validate(refs map[string]bool) error {
 	}
 	if !scopePattern.MatchString(p.Scope) {
 		return invalid("scope %q is not one lowercase token", p.Scope)
-	}
-	if p.Summary == "" {
-		return invalid("the subject message is empty")
 	}
 	if strings.TrimSpace(p.Summary) != p.Summary {
 		return invalid("the subject message has leading or trailing whitespace")

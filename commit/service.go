@@ -497,9 +497,6 @@ func proposalBudget(configured int, model ai.Model) int {
 	if model.MaxOutputTokens > 0 && budget > model.MaxOutputTokens {
 		budget = model.MaxOutputTokens
 	}
-	if budget <= 0 {
-		budget = DefaultProposalTokens
-	}
 	return budget
 }
 
@@ -800,11 +797,7 @@ func remainingChanges(ctx context.Context, repo *vcs.RepoInfo) ([]FileChange, er
 	}
 	var remaining []FileChange
 	for _, entry := range entries {
-		change := classify(entry)
-		if change.Ignored {
-			continue
-		}
-		remaining = append(remaining, change)
+		remaining = append(remaining, classify(entry))
 	}
 	return remaining, nil
 }

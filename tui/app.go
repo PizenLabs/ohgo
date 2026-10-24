@@ -1138,10 +1138,6 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// The reflex abort key must not be swallowed by this switch: the
 			// turn would stay parked on a question nobody can reach. A shell
 			// confirmation has no turn to cancel, so it is denied instead.
-			if p.state.Pending.Commit != nil {
-				p.cancelCommitProposal()
-				return p, nil
-			}
 			if p.pendingEscape != "" {
 				return p.answer(false, "cancelled")
 			}
@@ -3261,13 +3257,6 @@ func (p *Program) quitNow() tea.Cmd {
 // answers affirmative. Every other choice maps through the usual affirmative
 // test, so "No" still denies and a custom label still defaults to denial.
 func (p *Program) answerSelection(choice string) (tea.Model, tea.Cmd) {
-	if p.state.Pending != nil && p.state.Pending.Commit != nil {
-		// The commit dialog's affirmative label is not one of the tool
-		// approval words, so it is matched exactly before the generic
-		// affirmative test.
-		approved := strings.EqualFold(choice, commitApproveChoice)
-		return p.answerCommit(approved, "denied by user")
-	}
 	if isSessionApprovalChoice(choice) {
 		switch {
 		case p.pending != nil:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,22 @@ import (
 	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/vcs"
 )
+
+// configureGitIdentity makes a fixture repository self-contained: commits must
+// not depend on whoever runs the suite having a global git identity.
+func configureGitIdentity(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
 
 // Discovery pins the fast-path contract: an existing .ohgo/ with a complete
 // project.yml skips initialization entirely.
@@ -1328,6 +1345,9 @@ func TestEnsureLeavesExistingRepositoryWorktreeAlone(t *testing.T) {
 	if err := vcs.Init(root, "main"); err != nil {
 		t.Fatalf("fixture init: %v", err)
 	}
+	// The fixture commits, so it needs an identity even on a machine that has
+	// no global git user configured (CI runners are exactly that machine).
+	configureGitIdentity(t, root)
 	repo, err := vcs.Discover(root)
 	if err != nil || repo == nil {
 		t.Fatalf("Discover: %v", err)
