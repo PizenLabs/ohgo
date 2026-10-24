@@ -1,13 +1,12 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/PizenLabs/onpic/refs/heads/main/ohgo/ohgo.png" width="96%" alt="izen" />
+  <img src="https://raw.githubusercontent.com/PizenLabs/onpic/refs/heads/main/ohgo/ohgo.png" width="15%" alt="izen" />
 </p>
 
 <h1 align="center">ohgo</h1>
 
 <p align="center">
-  <strong>A coding agent with the IDE wired in.</strong><br />
-  Reads, edits, and runs code in your terminal — with explicit authority,
-  bounded budgets, and evidence-based completion.
+  <strong>A coding agent with a controlled runtime.</strong><br />
+  Reads, edits, and runs code in your terminal — with explicit authority, <br> bounded budgets, and evidence-based completion.
 </p>
 
 <p align="center">
