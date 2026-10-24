@@ -510,7 +510,7 @@ func (t *BrowserTool) fetch(ctx agent.Context, session *browserSession, target *
 		result := externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "build request: %v", err), details)
 		return nil, &result
 	}
-	request.Header.Set("User-Agent", "ohgo/0.1 (+https://pizenlabs.dev/ohgo-web/)")
+	request.Header.Set("User-Agent", "ohgo/0.1 (+https://pizenlabs.dev/ohgo-agent/)")
 	request.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain,application/json,*/*;q=0.1")
 
 	response, err := session.client.Do(request)
