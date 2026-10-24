@@ -2,39 +2,33 @@ package prompt
 
 // Commit is the system prompt for the dedicated commit-authoring role.
 //
-// The model proposes text only. It receives bounded repository evidence and no
-// tools, so it has no path to stage, execute, or rewrite anything. Every rule
-// stated here is also enforced deterministically in the commit package; the
-// prose exists to make the model succeed on the first attempt, not to be the
-// boundary.
-const Commit = `You write one Git commit message for the change described by the evidence.
+// It carries only the message contract and the bounded evidence. The model has
+// no tools, no repository access, and no session context: staging, scope,
+// authorization, execution, and verification are deterministic and stay
+// outside this prompt. Every rule here is also enforced by commit.Parse; the
+// prose exists to make the first attempt succeed, not to be the boundary.
+const Commit = `Write one Git commit message for the evidence below.
 
-Reply with the commit message and nothing else: no preamble, no explanation,
-no code fences, and no trailing text.
+Output only the message, in exactly this shape:
 
-Structure, exactly:
+type(scope): summary
 
-type(scope): message
-
-- change summary
-- change summary
+- change
 
 Rules:
-- The first line is the subject: lowercase conventional-commit type, a scope in
-  parentheses, then a colon, one space, and a concise message.
-- Use one of these types: feat, fix, refactor, test, docs, chore, perf, build,
-  ci, style, revert.
-- The complete subject line is at most 36 characters.
-- If there is a body, put exactly one blank line between the subject and it.
-- Each body line starts with "- " and is a single concrete change.
-- Each complete bullet line is at most 50 characters, including the "- ".
-- Keep at most five bullets. An empty body is valid when the subject already
-  says everything.
-- Describe only changes present in the evidence. Do not invent files, features,
-  issues, or pull-request numbers.
-- A reference such as #123 may appear only when it appears in the evidence, and
-  it counts toward the line's length limit.
-- Do not end a line with a space or a tab.`
+- the complete subject must be at most 36 characters
+- subject form: lowercase type, a required scope in parentheses, colon, summary
+- keep the summary near 15 characters so the full subject fits
+- types: feat fix refactor test docs chore perf build ci style revert
+- optional body: one blank line, <= 5 bullets, each "- " and <= 50 characters
+- describe only changes in the evidence; never invent files, issues, URLs, or references
+- no preamble, no explanation, no code fence, no trailing spaces`
+
+// CommitShorten rewrites only an overlong subject. It is a focused correction:
+// the body was already valid and the model does not need the repository again.
+const CommitShorten = `Rewrite the Git commit subject to at most 36 characters.
+Keep the type(scope) prefix. Replace the summary with a shorter phrase of at most 3 words.
+Do not add new claims. Output only the subject line, nothing else.`
 
 // CommitEvidence introduces the bounded repository evidence sent as the user
 // message. Keeping the label here means the exact request shape is auditable in
@@ -43,11 +37,17 @@ func CommitEvidence(evidence string) string {
 	return "Repository evidence for this one commit:\n\n" + evidence
 }
 
+// CommitShortenSubject carries the one line the focused correction rewrites.
+// The subject is model output, so it is untrusted data, never instructions.
+func CommitShortenSubject(subject string) string {
+	return subject
+}
+
 // CommitRetry asks for a corrected message after deterministic validation
 // rejected the previous one. The validation error is trusted control-plane
 // text, never model output.
 func CommitRetry(reason, previous string) string {
-	return "The previous message was rejected by validation: " + reason +
-		"\n\nPrevious message:\n" + previous +
-		"\n\nReturn a corrected commit message only, following the required structure."
+	return "The previous message was rejected: " + reason +
+		"\nPrevious message:\n" + previous +
+		"\n\nReturn only a corrected commit message."
 }

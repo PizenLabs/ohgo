@@ -28,10 +28,15 @@ var (
 
 // Bounds on the evidence sent to the commit model and on one proposal.
 const (
-	maxChangedPaths      = 2000
-	maxDiffBytes         = 48 * 1024
-	maxUntrackedBytes    = 8 * 1024
-	maxRecentCommits     = 10
+	maxChangedPaths = 2000
+	// maxDiffBytes bounds the model-visible diff. The deterministic diffstat
+	// still names every changed path, so a truncated diff does not hide what
+	// changed; it only stops the prompt from growing with the patch.
+	maxDiffBytes      = 24 * 1024
+	maxUntrackedBytes = 4 * 1024
+	// maxScopeLines bounds the readable path list. The diffstat remains the
+	// complete per-path summary when the list is elided.
+	maxScopeLines        = 100
 	internalProjectDir   = ".ohgo"
 	untrackedPreviewLine = 120
 )
@@ -103,8 +108,6 @@ type Snapshot struct {
 	Branch string
 	// Head is the commit HEAD pointed at when the proposal was built.
 	Head string
-	// HeadSubject is that commit's subject, for style context.
-	HeadSubject string
 	// Mode is how Scope was selected.
 	Mode Mode
 	// Staged, Unstaged, and Untracked classify every relevant path.
@@ -127,8 +130,6 @@ type Snapshot struct {
 	// DiffStat and Diff are bounded evidence.
 	DiffStat string
 	Diff     string
-	// RecentCommits supplies repository style context.
-	RecentCommits []string
 	// Refs is every issue/PR/URL token present in the evidence.
 	Refs map[string]bool
 	// evidence is the rendered bounded text handed to the model.
@@ -172,18 +173,6 @@ func BuildSnapshot(ctx context.Context, repo *vcs.RepoInfo) (*Snapshot, error) {
 	if snapshot.Branch, err = repo.CurrentBranch(ctx); err != nil {
 		return nil, err
 	}
-	if snapshot.Head != "" {
-		details, err := repo.CommitDetails(ctx, snapshot.Head)
-		if err == nil {
-			snapshot.HeadSubject = firstLine(details.Message)
-		}
-		// An unborn branch has no log to read; that is a valid state, not a
-		// failure of the proposal.
-		if snapshot.RecentCommits, err = repo.LogOnelines(ctx, maxRecentCommits); err != nil {
-			return nil, err
-		}
-	}
-
 	hasStaged := false
 	for _, entry := range entries {
 		change := classify(entry)
@@ -407,51 +396,47 @@ func (s *Snapshot) fingerprint(ctx context.Context, repo *vcs.RepoInfo, entries 
 }
 
 // captureEvidence builds the bounded text the commit model sees.
+//
+// The model needs the approved paths, their per-file line counts, and the
+// change itself. Branch, HEAD, staged/unstaged/untracked duplicates, recent
+// commit style, and excluded internal paths do not change the message and are
+// deliberately absent: the approval surface already shows them to the human.
 func (s *Snapshot) captureEvidence(ctx context.Context, repo *vcs.RepoInfo) {
-	var records []string
-	records = append(records, "branch: "+valueOr(s.Branch, "(detached)"))
-	records = append(records, "head: "+valueOr(s.Head, "(unborn)"))
-	if s.HeadSubject != "" {
-		records = append(records, "head subject: "+s.HeadSubject)
-	}
-	records = append(records, "scope mode: "+string(s.Mode))
-
-	records = append(records, "\nstaged:\n"+renderChangesBounded(s.Staged, 100))
-	records = append(records, "\nunstaged:\n"+renderChangesBounded(s.Unstaged, 100))
-	records = append(records, "\nuntracked:\n"+renderChangesBounded(s.Untracked, 100))
-	if len(s.Ignored) > 0 {
-		records = append(records, "\nignored (excluded):\n"+renderChangesBounded(s.Ignored, 24))
-	}
-	if len(s.Internal) > 0 {
-		records = append(records, "\ninternal .ohgo (excluded):\n"+renderChangesBounded(s.Internal, 24))
-	}
-	records = append(records, "\ncommit scope:\n"+renderChangesBounded(s.Scope, 100))
-
 	var diffOptions vcs.DiffOptions
 	if s.Mode == ModeStaged {
 		diffOptions.Cached = true
 	}
 	diff, err := repo.Diff(ctx, diffOptions)
-	if err == nil {
-		s.Diff = truncateUTF8(diff, maxDiffBytes)
+	if err != nil {
+		diff = ""
 	}
-	numstat, err := repo.Numstat(ctx, diffOptions)
-	if err == nil {
-		s.DiffStat = renderNumstat(numstat)
-	}
+	diff = strings.TrimRight(diff, "\n")
 	if s.Mode == ModeWorktree {
 		if preview := untrackedPreview(repo.Root, s.Untracked); preview != "" {
-			s.Diff += "\n\nuntracked preview:\n" + preview
+			if diff != "" {
+				diff += "\n\n"
+			}
+			diff += "new files:\n" + preview
 		}
 	}
-	if len(s.RecentCommits) > 0 {
-		records = append(records, "\nrecent commits:\n"+strings.Join(s.RecentCommits, "\n"))
+	if diff != "" {
+		s.Diff = truncateUTF8(diff, maxDiffBytes)
+	}
+	if numstat, err := repo.Numstat(ctx, diffOptions); err == nil {
+		s.DiffStat = renderNumstat(numstat)
+	}
+
+	records := []string{
+		"repository: " + valueOr(filepath.Base(s.Root), s.Root),
+		"",
+		"approved scope:",
+		renderChangesBounded(s.Scope, maxScopeLines),
 	}
 	if s.DiffStat != "" {
-		records = append(records, "\ndiffstat:\n"+s.DiffStat)
+		records = append(records, "", "change summary:", s.DiffStat)
 	}
 	if s.Diff != "" {
-		records = append(records, "\ndiff:\n"+s.Diff)
+		records = append(records, "", "relevant diff:", s.Diff)
 	}
 	evidence := strings.Join(records, "\n")
 	s.evidence = evidence
@@ -576,14 +561,6 @@ func sortedKeys(set map[string]bool) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// firstLine returns the first line of a message.
-func firstLine(text string) string {
-	if line, _, ok := strings.Cut(text, "\n"); ok {
-		return strings.TrimSpace(line)
-	}
-	return strings.TrimSpace(text)
 }
 
 // valueOr replaces an empty field with a display marker.

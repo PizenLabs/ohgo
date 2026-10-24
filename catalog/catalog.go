@@ -89,6 +89,14 @@ func Describe(name string) (string, bool) {
 type Thinking struct {
 	Mode    string
 	Efforts []string
+	// Disable is the provider-native effort value that explicitly turns
+	// reasoning off. It exists because some providers reason by default even
+	// when the request omits the setting, so "leave it out" is not a disable
+	// there. Empty means the provider has no such control.
+	Disable string `json:"disable,omitempty"`
+	// Mandatory reports a model that reasons whether or not an effort is sent.
+	// A caller must not pretend it disabled reasoning for such a model.
+	Mandatory bool `json:"mandatory,omitempty"`
 }
 
 // Supports reports whether an effort level is accepted by this model.
@@ -284,6 +292,15 @@ func (r record) toModel(provider Provider) (ai.Model, error) {
 		baseURL = provider.BaseURL
 	}
 
+	var efforts []string
+	var disable string
+	var mandatory bool
+	if r.Thinking != nil {
+		efforts = append([]string(nil), r.Thinking.Efforts...)
+		disable = r.Thinking.Disable
+		mandatory = r.Thinking.Mandatory
+	}
+
 	return ai.Model{
 		ID:              r.ID,
 		Provider:        r.Provider,
@@ -298,8 +315,11 @@ func (r record) toModel(provider Provider) (ai.Model, error) {
 			CacheRead:  r.Cost.CacheRead,
 			CacheWrite: r.Cost.CacheWrite,
 		},
-		Reasoning:       r.Reasoning,
-		InputModalities: append([]string(nil), r.Input...),
+		Reasoning:          r.Reasoning,
+		ReasoningEfforts:   efforts,
+		ReasoningDisable:   disable,
+		ReasoningMandatory: mandatory,
+		InputModalities:    append([]string(nil), r.Input...),
 	}, nil
 }
 

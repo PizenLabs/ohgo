@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/prompt"
@@ -93,6 +94,28 @@ type ProposalDiagnostics struct {
 	Model string
 	// MaxOutputTokens is the completion budget sent to the provider.
 	MaxOutputTokens int
+	// PromptBytes is the byte length of the system prompt plus the user
+	// evidence message on the final attempt.
+	PromptBytes int
+	// EvidenceBytes is the byte length of the bounded repository evidence.
+	EvidenceBytes int
+	// InputTokens, OutputTokens, and ReasoningTokens are provider-reported
+	// totals across every attempt in this request. ReasoningTokens stays zero
+	// when the provider does not report it separately.
+	InputTokens     int
+	OutputTokens    int
+	ReasoningTokens int
+	// Reasoning reports whether an effort was sent. ReasoningEffort is the
+	// value sent, including "none" when the provider has an explicit disable.
+	Reasoning       bool
+	ReasoningEffort string
+	// Regenerations is the number of validation-triggered retries.
+	Regenerations int
+	// RetryReasons records the deterministic rule that rejected each attempt,
+	// in order. Rejected model text is never retained.
+	RetryReasons []string
+	// ProposalValid reports that a validated proposal was produced.
+	ProposalValid bool
 	// StartedAt is when the proposal request began.
 	StartedAt time.Time
 	// EndedAt is when it finished, failed, or was cancelled.
@@ -167,11 +190,13 @@ func DiagnosticsOf(err error) (ProposalDiagnostics, bool) {
 // DiagnosticText renders the internal facts in one line. It is for logs and
 // tests, never for the rendered transcript.
 func DiagnosticText(d ProposalDiagnostics) string {
-	return fmt.Sprintf("commit request provider=%s model=%s max_output_tokens=%d configured_timeout=%s started_at=%s elapsed=%s deadline=%s context_deadline=%s attempts=%d cancellation=%s status=%d",
+	return fmt.Sprintf("commit request provider=%s model=%s max_output_tokens=%d configured_timeout=%s started_at=%s elapsed=%s deadline=%s context_deadline=%s attempts=%d regenerations=%d cancellation=%s status=%d prompt_bytes=%d evidence_bytes=%d input_tokens=%d output_tokens=%d reasoning_tokens=%d reasoning=%t effort=%s valid=%t",
 		d.Provider, d.Model, d.MaxOutputTokens, d.Timeout,
 		d.StartedAt.Format(time.RFC3339Nano), d.Elapsed.Round(time.Millisecond),
 		formatDeadline(d.Deadline), formatDeadline(d.ContextDeadline),
-		d.Attempts, d.CancellationReason, d.ProviderStatus)
+		d.Attempts, d.Regenerations, d.CancellationReason, d.ProviderStatus,
+		d.PromptBytes, d.EvidenceBytes, d.InputTokens, d.OutputTokens,
+		d.ReasoningTokens, d.Reasoning, d.ReasoningEffort, d.ProposalValid)
 }
 
 func formatDeadline(t time.Time) string {
@@ -237,16 +262,15 @@ type Service struct {
 	OnStaged func()
 }
 
-// maxProposalTokens bounds the completion request, not the message.
+// DefaultProposalTokens is the dedicated COMMIT completion budget.
 //
-// The message contract needs fewer than 100 tokens, but reasoning models spend
-// hidden reasoning tokens from the same completion budget before emitting any
-// visible text. A 512-token cap made such a model return finish_reason=length
-// with an empty content block, which looked like a model that refused to answer.
-// Reserving a realistic budget while still bounding the request keeps the
-// visible contract tiny without misclassifying reasoning as an empty reply. The
+// A complete message is roughly 100 tokens, so this cap is a guardrail rather
+// than a target. It is deliberately far below the coding-turn ceiling: COMMIT
+// proposes text and does no reasoning over the repository. A model whose
+// reasoning cannot be disabled may still spend hidden tokens here; that case is
+// reported as ErrModelTruncated rather than accepted as a partial message. The
 // value is clamped to the model's own ceiling where the catalog knows it.
-const maxProposalTokens = 8192
+const DefaultProposalTokens = 1024
 
 // defaultAttempts is the bounded regeneration policy for invalid output.
 const defaultAttempts = 3
@@ -299,6 +323,7 @@ func (s *Service) Propose(ctx context.Context) (request *Request, err error) {
 	if err != nil {
 		return nil, err
 	}
+	diag.EvidenceBytes = len(snapshot.Evidence())
 
 	requestCtx, cancel := context.WithTimeoutCause(ctx, timeout, ErrProposalTimeout)
 	defer cancel()
@@ -326,15 +351,27 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 	}
 	enabled, level := reasoning(s.Effort)
 	maxTokens := proposalBudget(s.MaxTokens, s.Model)
+	diag.Reasoning = enabled
+	diag.ReasoningEffort = level
 
-	userText := prompt.CommitEvidence(snapshot.Evidence())
+	evidence := snapshot.Evidence()
+	fullText := prompt.CommitEvidence(evidence)
+	systemText := prompt.Commit
+	userText := fullText
+	// shortening means the next request fixes only an overlong subject. The
+	// body is already the message the human will review, so it is reattached
+	// unchanged and never regenerated by the focused correction.
+	shortening := false
+	shortBody := ""
+
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		diag.Attempts++
+		diag.PromptBytes = len(systemText) + len(userText)
 		stream, err := s.Stream(ctx, ai.Request{
 			Model: s.Model,
 			System: []ai.SystemPromptBlock{
-				{Text: prompt.Commit, Cache: true},
+				{Text: systemText, Cache: true},
 			},
 			Messages: []ai.Message{ai.UserMessage{Content: []ai.ContentBlock{
 				ai.TextContent{Text: userText},
@@ -350,20 +387,51 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 		if err != nil {
 			return Proposal{}, modelError(ctx, err, diag)
 		}
+		diag.InputTokens += message.Usage.Input
+		diag.OutputTokens += message.Usage.Output
+		diag.ReasoningTokens += message.Usage.Reasoning
+		diag.Regenerations = diag.Attempts - 1
+
+		// A budget-exhausted reply is incomplete by definition, even when it
+		// happens to parse. Accepting it would let a small cap silently shorten
+		// the message, so it is a classified failure, never a retry.
+		if message.StopReason == ai.StopMaxTokens {
+			return Proposal{}, truncatedResponse(message, maxTokens, diag)
+		}
 		raw := message.Text()
 		if strings.TrimSpace(raw) == "" {
 			// Empty visible content is not an invalid message the model can
 			// correct: there is nothing to correct. Re-asking would only hide
 			// the real cause, so the classified failure is returned at once.
-			return Proposal{}, emptyResponse(message, maxTokens, diag)
+			return Proposal{}, emptyResponse(message, diag)
 		}
-		proposal, err := Parse(raw, snapshot.Refs)
+		candidate := raw
+		if shortening {
+			subject, _ := splitSubjectBody(normalize(raw))
+			candidate = subject + shortBody
+		}
+		proposal, err := Parse(candidate, snapshot.Refs)
 		if err == nil {
+			diag.ProposalValid = true
 			return proposal, nil
 		}
 		lastErr = err
-		userText = prompt.CommitEvidence(snapshot.Evidence()) + "\n\n" +
-			prompt.CommitRetry(invalidCause(err), raw)
+		diag.RetryReasons = append(diag.RetryReasons, invalidCause(err))
+
+		if subject, body, overlong := overlongSubject(raw); overlong {
+			if !shortening {
+				shortBody = body
+			}
+			shortening = true
+			systemText = prompt.CommitShorten
+			userText = prompt.CommitShortenSubject(subject)
+			continue
+		}
+		// Another rule failed (missing scope, invented reference, a bad
+		// body). That needs the evidence again, not a subject rewrite.
+		shortening = false
+		systemText = prompt.Commit
+		userText = fullText + "\n\n" + prompt.CommitRetry(invalidCause(err), raw)
 	}
 	// Keep the sentinel and the final reason in one chain: wrapping the
 	// already-sentinel-wrapped Parse error would print "commit: invalid
@@ -371,21 +439,47 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 	return Proposal{}, fmt.Errorf("%w: %s", ErrInvalidProposal, invalidCause(lastErr))
 }
 
+// splitSubjectBody splits an untrusted message at the first line while keeping
+// the original separator. The returned body starts with the newline it followed,
+// so reattaching a rewritten subject preserves the reviewed body byte for byte.
+func splitSubjectBody(text string) (subject, body string) {
+	first, rest, found := strings.Cut(text, "\n")
+	if !found {
+		return first, ""
+	}
+	return first, "\n" + rest
+}
+
+// overlongSubject reports the precise case a focused rewrite can fix. A
+// malformed type or scope is deliberately excluded: shortening cannot repair
+// it, and the full evidence is the better second attempt.
+func overlongSubject(text string) (subject, body string, ok bool) {
+	subject, body = splitSubjectBody(normalize(text))
+	match := subjectPattern.FindStringSubmatch(subject)
+	if match == nil || !scopePattern.MatchString(match[2]) {
+		return "", "", false
+	}
+	if utf8.RuneCountInString(subject) <= MaxSubjectRunes {
+		return "", "", false
+	}
+	return subject, body, true
+}
+
 // proposalBudget resolves the completion budget for one proposal.
 //
-// A caller-supplied positive value is honoured, but the default is the larger
-// reasoning-safe budget. The model's own ceiling wins when known, because a
-// provider rejects a request above it outright.
+// A caller-supplied positive value is honoured, but the default is the
+// COMMIT-specific small budget. The model's own ceiling wins when known,
+// because a provider rejects a request above it outright.
 func proposalBudget(configured int, model ai.Model) int {
 	budget := configured
 	if budget <= 0 {
-		budget = maxProposalTokens
+		budget = DefaultProposalTokens
 	}
 	if model.MaxOutputTokens > 0 && budget > model.MaxOutputTokens {
 		budget = model.MaxOutputTokens
 	}
 	if budget <= 0 {
-		budget = maxProposalTokens
+		budget = DefaultProposalTokens
 	}
 	return budget
 }
@@ -460,14 +554,20 @@ func providerStatusCode(err error) int {
 	return 0
 }
 
-// emptyResponse separates a truncated reasoning-only reply from a genuinely
-// empty one, while preserving the stop reason for diagnostics.
-func emptyResponse(message ai.AssistantMessage, budget int, diag *ProposalDiagnostics) error {
-	if message.StopReason == ai.StopMaxTokens {
-		return newProposalError(ErrModelTruncated,
-			fmt.Errorf("the %d-token budget was exhausted before any message text (stop reason %q)",
-				budget, message.StopReason), diag, "")
+// truncatedResponse classifies a budget-exhausted reply. The visible text, if
+// any, is discarded: a partial commit message is not a proposal.
+func truncatedResponse(message ai.AssistantMessage, budget int, diag *ProposalDiagnostics) error {
+	detail := "before any message text"
+	if strings.TrimSpace(message.Text()) != "" {
+		detail = "after a partial message"
 	}
+	return newProposalError(ErrModelTruncated,
+		fmt.Errorf("the %d-token budget was exhausted %s (stop reason %q)",
+			budget, detail, message.StopReason), diag, "")
+}
+
+// emptyResponse classifies a reply that ended naturally without visible text.
+func emptyResponse(message ai.AssistantMessage, diag *ProposalDiagnostics) error {
 	return newProposalError(ErrModelEmpty,
 		fmt.Errorf("stop reason %q", message.StopReason), diag, "")
 }
@@ -734,6 +834,10 @@ func displayList(values []string) string {
 }
 
 // reasoning maps a role effort to the provider's thinking fields.
+//
+// "none" is a provider-native disable value, not a level: it must be sent so a
+// model that reasons by default stops doing so. Empty and "off" omit the field
+// entirely, which is the disable for providers that only reason when asked.
 func reasoning(effort string) (bool, string) {
 	switch strings.TrimSpace(effort) {
 	case "", "off":
@@ -753,7 +857,7 @@ func AbortText(err error) string {
 	case errors.Is(err, ErrModelEmpty):
 		return "Commit proposal failed:\nthe COMMIT model returned an empty response."
 	case errors.Is(err, ErrModelTruncated):
-		return "Commit proposal failed:\nthe COMMIT model ran out of output budget before writing a message."
+		return "Commit proposal failed:\nthe COMMIT model ran out of output budget."
 	case errors.Is(err, ErrModelProviderTimeout):
 		return "Commit proposal failed:\nthe provider timed out before returning a proposal."
 	case errors.Is(err, ErrModelTimeout):

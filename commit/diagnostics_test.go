@@ -45,7 +45,7 @@ func TestReasoningOnlyReplyIsATruncatedModelFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "budget") {
 		t.Errorf("internal error %q does not preserve the budget diagnostic", err)
 	}
-	if text := AbortText(err); text != "Commit proposal failed:\nthe COMMIT model ran out of output budget before writing a message." {
+	if text := AbortText(err); text != "Commit proposal failed:\nthe COMMIT model ran out of output budget." {
 		t.Errorf("AbortText = %q", text)
 	}
 	if staged := strings.TrimSpace(runTestGit(t, repo, "diff", "--cached", "--name-only")); staged != "" {
@@ -170,20 +170,129 @@ func TestInvalidProposalIsNotDoubleWrapped(t *testing.T) {
 	}
 }
 
-// TestProposalBudgetIsReasoningSafeAndClamped proves the budget is large
-// enough for hidden reasoning by default and never exceeds a known ceiling.
-func TestProposalBudgetIsReasoningSafeAndClamped(t *testing.T) {
-	if got := proposalBudget(0, ai.Model{}); got != maxProposalTokens {
-		t.Errorf("default budget = %d, want %d", got, maxProposalTokens)
+// TestProposalBudgetIsDedicatedAndClamped proves COMMIT owns a small budget
+// that is far below a coding turn, and never exceeds a known model ceiling.
+func TestProposalBudgetIsDedicatedAndClamped(t *testing.T) {
+	if got := proposalBudget(0, ai.Model{}); got != DefaultProposalTokens {
+		t.Errorf("default budget = %d, want %d", got, DefaultProposalTokens)
 	}
-	if got := proposalBudget(0, ai.Model{MaxOutputTokens: 4096}); got != 4096 {
-		t.Errorf("budget = %d, want the model ceiling 4096", got)
+	if got := proposalBudget(0, ai.Model{MaxOutputTokens: 256}); got != 256 {
+		t.Errorf("budget = %d, want the model ceiling 256", got)
 	}
-	if got := proposalBudget(1024, ai.Model{MaxOutputTokens: 4096}); got != 1024 {
-		t.Errorf("configured budget = %d, want 1024", got)
+	if got := proposalBudget(512, ai.Model{MaxOutputTokens: 4096}); got != 512 {
+		t.Errorf("configured budget = %d, want 512", got)
 	}
-	if maxProposalTokens < 2048 {
-		t.Errorf("default budget %d is too small for a reasoning preamble", maxProposalTokens)
+	if DefaultProposalTokens > 1024 {
+		t.Errorf("default budget %d is not a small COMMIT budget", DefaultProposalTokens)
+	}
+	if DefaultProposalTokens >= 8192 {
+		t.Errorf("default budget %d is not smaller than the coding-turn budget", DefaultProposalTokens)
+	}
+}
+
+// TestTruncatedReplyDiscardsVisibleText is the budget-safety contract: a
+// smaller cap must never turn a partial commit message into an accepted one,
+// even when the partial text happens to satisfy the format.
+func TestTruncatedReplyDiscardsVisibleText(t *testing.T) {
+	repo := newTestRepo(t)
+	initialCommit(t, repo, "a.txt", "one\n")
+	writeTestFile(t, repo, "a.txt", "two\n")
+
+	var calls atomic.Int32
+	service := &Service{
+		Root:  repo,
+		Model: ai.Model{Provider: "test", ID: "commit-model", API: "test"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			calls.Add(1)
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content:    []ai.ContentBlock{ai.TextContent{Text: "fix(scope): complete looking"}},
+				StopReason: ai.StopMaxTokens,
+			}), nil
+		},
+	}
+	_, err := service.Propose(context.Background())
+	if !errors.Is(err, ErrModelTruncated) {
+		t.Fatalf("Propose = %v, want ErrModelTruncated", err)
+	}
+	if errors.Is(err, ErrInvalidProposal) {
+		t.Errorf("truncation was misclassified as invalid: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("truncated reply made %d calls; it must not be retried", got)
+	}
+	if staged := strings.TrimSpace(runTestGit(t, repo, "diff", "--cached", "--name-only")); staged != "" {
+		t.Errorf("a truncated proposal staged files: %q", staged)
+	}
+}
+
+// TestProposalDiagnosticsRecordTheEfficiencyFacts proves the request is
+// measurable without reading the TUI: budget, prompt/evidence size, provider
+// usage, reasoning, regeneration count, and final validity.
+func TestProposalDiagnosticsRecordTheEfficiencyFacts(t *testing.T) {
+	repo := newTestRepo(t)
+	initialCommit(t, repo, "a.txt", "one\n")
+	writeTestFile(t, repo, "a.txt", "two\n")
+
+	var calls atomic.Int32
+	var diagnostics []ProposalDiagnostics
+	service := &Service{
+		Root:   repo,
+		Model:  ai.Model{Provider: "test", ID: "commit-model", API: "test"},
+		Effort: "none",
+		OnDiagnostics: func(d ProposalDiagnostics) {
+			diagnostics = append(diagnostics, d)
+		},
+		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+			if req.MaxTokens != DefaultProposalTokens {
+				t.Errorf("request budget = %d, want %d", req.MaxTokens, DefaultProposalTokens)
+			}
+			if !req.Reasoning || req.ReasoningEffort != "none" {
+				t.Errorf("reasoning = %v/%q, want the explicit disable", req.Reasoning, req.ReasoningEffort)
+			}
+			if calls.Add(1) == 1 {
+				return ai.NewCompletedStream(ai.AssistantMessage{
+					Content: []ai.ContentBlock{ai.TextContent{Text: "bad"}},
+					Usage:   ai.Usage{Input: 11, Output: 7, Reasoning: 5},
+				}), nil
+			}
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content: []ai.ContentBlock{ai.TextContent{Text: "fix(scope): regenerated"}},
+				Usage:   ai.Usage{Input: 13, Output: 9, Reasoning: 6},
+			}), nil
+		},
+	}
+	if _, err := service.Propose(context.Background()); err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	if len(diagnostics) != 1 {
+		t.Fatalf("diagnostics calls = %d, want 1", len(diagnostics))
+	}
+	d := diagnostics[0]
+	if d.MaxOutputTokens != DefaultProposalTokens {
+		t.Errorf("max output = %d, want %d", d.MaxOutputTokens, DefaultProposalTokens)
+	}
+	if d.PromptBytes == 0 || d.EvidenceBytes == 0 {
+		t.Errorf("prompt/evidence bytes = %d/%d, want measured sizes", d.PromptBytes, d.EvidenceBytes)
+	}
+	if d.InputTokens != 24 || d.OutputTokens != 16 || d.ReasoningTokens != 11 {
+		t.Errorf("tokens = %d/%d/%d, want the summed provider usage",
+			d.InputTokens, d.OutputTokens, d.ReasoningTokens)
+	}
+	if !d.Reasoning || d.ReasoningEffort != "none" {
+		t.Errorf("reasoning = %v/%q, want the explicit disable", d.Reasoning, d.ReasoningEffort)
+	}
+	if d.Attempts != 2 || d.Regenerations != 1 {
+		t.Errorf("attempts/regenerations = %d/%d, want 2/1", d.Attempts, d.Regenerations)
+	}
+	if !d.ProposalValid {
+		t.Error("a successful proposal was not recorded as valid")
+	}
+	if len(d.RetryReasons) != 1 || !strings.Contains(d.RetryReasons[0], "type(scope)") {
+		t.Errorf("retry reasons = %v, want the deterministic rejection rule", d.RetryReasons)
+	}
+	if !strings.Contains(DiagnosticText(d), "regenerations=1") ||
+		!strings.Contains(DiagnosticText(d), "output_tokens=16") {
+		t.Errorf("DiagnosticText = %q", DiagnosticText(d))
 	}
 }
 

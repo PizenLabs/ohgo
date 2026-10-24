@@ -61,6 +61,16 @@ type Model struct {
 	Cost Cost
 	// Reasoning reports whether the model accepts a thinking budget.
 	Reasoning bool
+	// ReasoningEfforts is the model's effort ladder, lowest first. Empty means
+	// the provider publishes no ladder, not that reasoning is unsupported.
+	ReasoningEfforts []string
+	// ReasoningDisable is the provider-native effort value that explicitly
+	// turns reasoning off. Empty means the provider exposes no such value, so
+	// omitting the effort is the only disable.
+	ReasoningDisable string
+	// ReasoningMandatory reports a model that reasons whether or not an effort
+	// is sent. A caller must not claim it disabled reasoning for this model.
+	ReasoningMandatory bool
 	// InputModalities lists the content kinds the model accepts, e.g. "text", "image".
 	InputModalities []string
 }
@@ -81,6 +91,10 @@ type Usage struct {
 	Output     int
 	CacheRead  int
 	CacheWrite int
+	// Reasoning is the subset of Output the provider reports as hidden
+	// reasoning tokens. It stays zero when the provider does not distinguish
+	// them, rather than being inferred from Output.
+	Reasoning int
 	// Total is Input + Output + CacheRead, excluding cache-write tokens which
 	// are billed separately by most providers.
 	Total int

@@ -399,6 +399,9 @@ func (a *openAIAccumulator) apply(event sseEvent) error {
 			PromptDetails    *struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
+			CompletionDetails *struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
 		} `json:"usage"`
 		Error *struct {
 			Message string `json:"message"`
@@ -417,6 +420,7 @@ func (a *openAIAccumulator) apply(event sseEvent) error {
 			Output:    chunk.Usage.CompletionTokens,
 			Total:     chunk.Usage.TotalTokens,
 			CacheRead: cachedTokens(chunk.Usage.PromptDetails),
+			Reasoning: reasoningTokens(chunk.Usage.CompletionDetails),
 		}
 	}
 
@@ -444,6 +448,15 @@ func cachedTokens(details *struct {
 		return 0
 	}
 	return details.CachedTokens
+}
+
+func reasoningTokens(details *struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+}) int {
+	if details == nil {
+		return 0
+	}
+	return details.ReasoningTokens
 }
 
 func (a *openAIAccumulator) appendText(text string) {

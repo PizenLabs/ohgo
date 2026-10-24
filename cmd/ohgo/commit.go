@@ -15,14 +15,6 @@ import (
 	"github.com/PizenLabs/ohgo/tui"
 )
 
-// commitMaxTokens bounds the commit-authoring completion.
-//
-// The message itself is tiny, but reasoning models spend hidden reasoning
-// tokens from this same budget before emitting visible text. A 512-token cap
-// made the COMMIT model finish with empty content and a length stop reason.
-// The budget is reserved, not consumed: only generated tokens are billed.
-const commitMaxTokens = 8192
-
 // newCommitService resolves the dedicated COMMIT role and builds the
 // deterministic executor.
 //
@@ -45,13 +37,48 @@ func newCommitService(ctx context.Context, root string, settings config.Settings
 		Root:      root,
 		Stream:    registry.StreamFn(),
 		Model:     model,
-		Effort:    effort,
-		MaxTokens: commitMaxTokens,
+		Effort:    commitEffort(model, effort),
+		MaxTokens: commit.DefaultProposalTokens,
 		// The bounded interactive budget lives in the commit package so the
 		// TUI, the REPL, and tests share one policy. The request context owns
 		// lifecycle only; this timeout owns the wait.
 		Timeout: commit.DefaultProposalTimeout,
 	}, nil
+}
+
+// commitEffort selects the least reasoning the bound model can be asked for.
+//
+// COMMIT writes one short message, so the role's coding-turn effort is not the
+// right default. A model with a published ladder uses its lowest level; a model
+// with a provider-native disable (some endpoints reason by default) uses that
+// value; a non-reasoning model is left switched off. Only a mandatory-reasoning
+// model keeps the role effort, because claiming it was disabled would be false.
+func commitEffort(model ai.Model, roleEffort string) string {
+	roleEffort = strings.TrimSpace(roleEffort)
+	if !model.Reasoning {
+		return "off"
+	}
+	if roleEffort == "off" {
+		return "off"
+	}
+	// Anthropic's thinking control is a slice of the same max_tokens budget.
+	// A COMMIT-sized completion has no room for a valid thinking budget, so the
+	// transport must omit thinking rather than send an invalid request.
+	if model.API == ai.APIAnthropicMessages {
+		return "off"
+	}
+	if model.ReasoningDisable != "" {
+		return model.ReasoningDisable
+	}
+	if len(model.ReasoningEfforts) > 0 {
+		return model.ReasoningEfforts[0]
+	}
+	if model.ReasoningMandatory {
+		return roleEffort
+	}
+	// No known control: omit the field. That is the only truthful disable for
+	// a model that does not publish a ladder.
+	return "off"
 }
 
 // commitHooks wires /commit into the full-screen UI.

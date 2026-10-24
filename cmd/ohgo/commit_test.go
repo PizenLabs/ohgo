@@ -68,6 +68,47 @@ func TestResolveRoleModelKeepsCommitSeparate(t *testing.T) {
 	}
 }
 
+// TestCommitUsesTheLeastReasoningTheModelExposes proves COMMIT does not inherit
+// a coding-turn effort: a laddered model uses its lowest level, and a model
+// without reasoning is explicitly off.
+func TestCommitUsesTheLeastReasoningTheModelExposes(t *testing.T) {
+	laddered := catalog.MustResolve("openai/gpt-5")
+	if got := commitEffort(laddered, "high"); got != "minimal" {
+		t.Errorf("commit effort = %q, want the model's lowest level", got)
+	}
+	plain := catalog.MustResolve("anthropic/claude-3-5-sonnet-20240620")
+	if got := commitEffort(plain, "high"); got != "off" {
+		t.Errorf("non-reasoning commit effort = %q, want off", got)
+	}
+	// Anthropic thinking shares max_tokens, which a COMMIT-sized reply cannot
+	// give a valid budget to.
+	anthropic := catalog.MustResolve("anthropic/claude-haiku-4-5")
+	if got := commitEffort(anthropic, "high"); got != "off" {
+		t.Errorf("Anthropic commit effort = %q, want off", got)
+	}
+}
+
+// TestCommitBudgetIsDedicatedAndSmall proves /commit does not reuse the coding
+// completion ceiling.
+func TestCommitBudgetIsDedicatedAndSmall(t *testing.T) {
+	settings := config.Settings{
+		Model: "groq/llama-3.1-8b-instant",
+		Roles: map[string]config.Profile{
+			"commit": {Model: "groq/llama-3.1-8b-instant"},
+		},
+	}
+	service, err := newCommitService(context.Background(), t.TempDir(), settings, ai.NewRegistry())
+	if err != nil {
+		t.Fatalf("newCommitService: %v", err)
+	}
+	if service.MaxTokens != commit.DefaultProposalTokens {
+		t.Errorf("commit budget = %d, want %d", service.MaxTokens, commit.DefaultProposalTokens)
+	}
+	if commit.DefaultProposalTokens > 1024 {
+		t.Errorf("commit budget %d is not a small proposal budget", commit.DefaultProposalTokens)
+	}
+}
+
 // TestCommitWithoutAnExplicitRoleUsesTheDocumentedFallback proves an
 // unassigned COMMIT role keeps the existing precedence: the global model, not
 // an unrelated workspace role and not the catalog default.
@@ -148,7 +189,7 @@ func TestCommitEndToEndUsesTheConfiguredModelAndCommitsOnlyTheApprovedScope(t *t
 	if captured.Model == "llama-3.3-70b-versatile" {
 		t.Error("/commit invoked the ASK/BUILD model instead of the COMMIT binding")
 	}
-	for _, want := range []string{"Repository evidence for this one commit", "hana.txt", "commit scope"} {
+	for _, want := range []string{"Repository evidence for this one commit", "hana.txt", "approved scope"} {
 		if !strings.Contains(captured.Body, want) {
 			t.Errorf("provider request = %q, want bounded evidence %q", captured.Body, want)
 		}
@@ -556,8 +597,8 @@ func TestCommitProposalTimeoutUsesTheResolvedCommitModel(t *testing.T) {
 		if got.Model != "llama-3.1-8b-instant" {
 			t.Errorf("provider model = %q, want the dedicated COMMIT model", got.Model)
 		}
-		if got.MaxTokens != commitMaxTokens {
-			t.Errorf("max_tokens = %d, want %d", got.MaxTokens, commitMaxTokens)
+		if got.MaxTokens != commit.DefaultProposalTokens {
+			t.Errorf("max_tokens = %d, want %d", got.MaxTokens, commit.DefaultProposalTokens)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the provider never observed the request")

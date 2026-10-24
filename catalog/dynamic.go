@@ -26,10 +26,10 @@ const dynamicCacheTTL = 24 * time.Hour
 //
 // It exists so a future change to the cached record can be detected instead of
 // decoded as valid-but-wrong: a cache written by a newer build is ignored and
-// refetched rather than trusted. A cache written before the field existed
-// (version 0) carries the same shape and is still read, so adding the field did
-// not invalidate an existing user's cache.
-const discoverCacheSchema = 1
+// refetched rather than trusted. Version 2 records explicit-disable and
+// mandatory reasoning facts; a version-1 cache would silently lose them, so it
+// is refetched instead of trusted.
+const discoverCacheSchema = 2
 
 // openRouterDiscoveryNote: OpenRouter's /models answers the OpenAI-compatible
 // list shape with rich extensions (context_length, pricing per token,
@@ -53,7 +53,7 @@ func discoverOpenRouter(ctx context.Context, client *http.Client, baseURL, apiKe
 		if params, ok := entry["supported_parameters"].([]any); ok && !hasString(params, "tools") {
 			continue
 		}
-		rec := recordFromOpenRouterEntry(id, entry)
+		rec := recordFromOpenRouterEntry(id, "openrouter", entry)
 		if rec.Context > 0 && rec.MaxTokens > 0 {
 			out = append(out, rec)
 		}
@@ -65,8 +65,8 @@ func discoverOpenRouter(ctx context.Context, client *http.Client, baseURL, apiKe
 // recordFromOpenRouterEntry maps one rich entry. Pricing is per token on the
 // wire and per million here; a missing price is zero, not an error, because
 // free models price at zero legitimately.
-func recordFromOpenRouterEntry(id string, entry map[string]any) record {
-	rec := record{ID: id, Provider: "openrouter", API: "openrouter", Route: "openai-chat-completions"}
+func recordFromOpenRouterEntry(id, provider string, entry map[string]any) record {
+	rec := record{ID: id, Provider: provider, API: "openrouter", Route: "openai-chat-completions"}
 	if name, _ := entry["name"].(string); name != "" {
 		rec.Name = name
 	} else {
@@ -98,13 +98,25 @@ func recordFromOpenRouterEntry(id string, entry map[string]any) record {
 		}
 	}
 	rec.Input = modalities
-	if reasoning, ok := entry["reasoning"].(map[string]any); ok {
+	reasoning, hasReasoning := entry["reasoning"].(map[string]any)
+	params, _ := entry["supported_parameters"].([]any)
+	if hasReasoning || hasString(params, "reasoning") {
+		rec.Reasoning = true
+	}
+	if hasReasoning {
 		efforts := stringsOf(reasoning["supported_efforts"])
-		if len(efforts) > 0 {
-			rec.Reasoning = true
+		switch {
+		case len(efforts) > 0:
 			rec.Thinking = &Thinking{Mode: "effort", Efforts: efforts}
-		} else if mandatory(reasoning) {
-			rec.Reasoning = true
+		case mandatory(reasoning):
+			// The model reasons regardless of the request. Recording that
+			// fact keeps a caller from claiming it disabled thinking.
+			rec.Thinking = &Thinking{Mode: "effort", Mandatory: true}
+		case provider == "openrouter":
+			// OpenRouter accepts an explicit "none" even when it publishes no
+			// effort ladder, and otherwise reasons by default. This is a
+			// provider capability, not a model-specific rule.
+			rec.Thinking = &Thinking{Mode: "effort", Disable: "none"}
 		}
 	}
 	return rec
@@ -128,7 +140,7 @@ func discoverGateway(ctx context.Context, client *http.Client, provider, baseURL
 		if id == "" {
 			continue
 		}
-		rich := recordFromOpenRouterEntry(id, entry)
+		rich := recordFromOpenRouterEntry(id, provider, entry)
 		if rich.Context > 0 && rich.MaxTokens > 0 {
 			rich.Provider = provider
 			out = append(out, rich)

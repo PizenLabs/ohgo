@@ -427,7 +427,7 @@ func TestCommitModelIsGivenNoTools(t *testing.T) {
 	if captured.Model.ID != "commit-model" {
 		t.Errorf("model = %q", captured.Model.ID)
 	}
-	if !strings.Contains(captured.Messages[0].(ai.UserMessage).Text(), "commit scope:") {
+	if !strings.Contains(captured.Messages[0].(ai.UserMessage).Text(), "approved scope:") {
 		t.Error("request did not carry the bounded repository evidence")
 	}
 }
