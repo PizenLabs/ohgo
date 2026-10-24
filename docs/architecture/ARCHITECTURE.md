@@ -277,16 +277,21 @@ create project-local state as a side effect.
 
 - `startup.Discover` is **read-only** and safe to call repeatedly. It reports
   the project root, whether `.ohgo/` exists, whether `project.yml` is valid and
-  complete, whether the directory is a Git worktree, and a `State` of
-  `Uninitialized` or `Initialized` (`Invalid` distinguishes a broken `.ohgo/`
-  from a missing one). A valid-but-incomplete `project.yml` — an id/root-only
-  file from an earlier build — is `Uninitialized`: the gate owns completing it.
+  complete, whether the directory is a Git worktree, whether `.gitignore` exists
+  and already ignores `.ohgo/`, and a `State` of `Uninitialized` or
+  `Initialized` (`Invalid` distinguishes a broken `.ohgo/` from a missing one).
+  A valid-but-incomplete `project.yml` — an id/root-only file from an earlier
+  build — is `Uninitialized`: the gate owns completing it.
 - `startup.Ensure` fast-paths when `State == Initialized`; otherwise it enters
-  `Initializing`, prompts for the Git decision, the project worker name, and the
-  project name, and only then commits: `git init` (if confirmed) and the
-  project-local metadata to `<root>/.ohgo/project.yml` through
-  `project.EnsureWith` (atomic, id preserving). Decisions come first so a cancel
-  (`ErrCanceled`) leaves the directory exactly as it was found.
+  `Initializing`, prompts for the Git decision, the `.ohgo/` ignore decision
+  (skipped when already satisfied), the project worker name, and the project
+  name, and only then commits: `git init -b main` (if confirmed), the
+  confirmed `.gitignore` rule, and the project-local metadata to
+  `<root>/.ohgo/project.yml` through `project.EnsureWith` (atomic, id
+  preserving). Decisions come first so a cancel (`ErrCanceled`) leaves the
+  directory exactly as it was found. A new repository therefore starts on
+  `main`; an existing repository keeps its branch, and neither discovery nor
+  the fast path rewrites `.gitignore`.
 - `resolveOptions` resolves project identity with `project.Load` (read-only),
   never `project.Ensure`. `ohgo` runs the gate before constructing the runtime;
   `ohgo run` cannot show the gate, so it discovers read-only and refuses an

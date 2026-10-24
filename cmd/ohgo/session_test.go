@@ -197,7 +197,7 @@ func TestMachineStateSurvivesProjectDeletion(t *testing.T) {
 	}
 
 	first, err := startup.Ensure(root, startup.Deps{
-		Stdin:  strings.NewReader("Alice\nproject-a\n"),
+		Stdin:  strings.NewReader("n\nAlice\nproject-a\n"),
 		Stdout: io.Discard,
 	})
 	if err != nil {
@@ -240,7 +240,7 @@ func TestMachineStateSurvivesProjectDeletion(t *testing.T) {
 	}
 
 	second, err := startup.Ensure(root, startup.Deps{
-		Stdin:  strings.NewReader("Bob\nproject-b\n"),
+		Stdin:  strings.NewReader("n\nBob\nproject-b\n"),
 		Stdout: io.Discard,
 	})
 	if err != nil {
@@ -300,7 +300,7 @@ func TestSessionContextResolvesProjectIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		res, err := startup.Ensure(root, startup.Deps{
-			Stdin:  strings.NewReader(worker + "\n" + name + "\n"),
+			Stdin:  strings.NewReader("n\n" + worker + "\n" + name + "\n"),
 			Stdout: io.Discard,
 		})
 		if err != nil {

@@ -15,7 +15,7 @@ var errTestWizardCommit = errors.New("commit project: disk is read-only")
 // order is the contract, and the wizard replays it in-canvas.
 
 func TestWizardStepOrderGitIdentityProject(t *testing.T) {
-	w := NewInitWizard(true, "Alex", "payments-api")
+	w := NewInitWizard(true, false, "Alex", "payments-api")
 	if w.Step() != WizardStepGit {
 		t.Fatalf("step = %v, want git first", w.Step())
 	}
@@ -41,7 +41,7 @@ func TestWizardStepOrderGitIdentityProject(t *testing.T) {
 }
 
 func TestWizardSkipsGitInsideARepository(t *testing.T) {
-	w := NewInitWizard(false, "Alex", "payments-api")
+	w := NewInitWizard(false, false, "Alex", "payments-api")
 	if w.Step() != WizardStepIdentity {
 		t.Fatalf("step = %v, want identity first when git exists", w.Step())
 	}
@@ -52,11 +52,81 @@ func TestWizardSkipsGitInsideARepository(t *testing.T) {
 	}
 }
 
+// The runtime-state decision is its own explicit step, defaults to keeping
+// .ohgo/ out of Git, and is skippable only when the rule already holds.
+
+func TestWizardRuntimeStateStepDefaultsToAdd(t *testing.T) {
+	w := NewInitWizard(true, true, "Alex", "proj")
+	if w.Step() != WizardStepGit {
+		t.Fatalf("step = %v, want git first", w.Step())
+	}
+	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if w.Step() != WizardStepIgnore {
+		t.Fatalf("step = %v, want the runtime-state choice after git", w.Step())
+	}
+	if !w.Decision().IgnoreOhgo {
+		t.Error("IgnoreOhgo = false before any answer, want the Add default")
+	}
+	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if w.Step() != WizardStepIdentity {
+		t.Fatalf("step = %v, want identity after the runtime-state choice", w.Step())
+	}
+	if !w.Decision().IgnoreOhgo {
+		t.Error("Enter on the default must keep the Add decision")
+	}
+}
+
+func TestWizardRuntimeStateCanBeDeclined(t *testing.T) {
+	w := NewInitWizard(true, true, "Alex", "proj")
+	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if w.Step() != WizardStepIdentity {
+		t.Fatalf("step = %v, want identity after declining the ignore rule", w.Step())
+	}
+	if w.Decision().IgnoreOhgo {
+		t.Error("IgnoreOhgo = true after an explicit n")
+	}
+}
+
+func TestWizardRuntimeStateViewOffersTheRule(t *testing.T) {
+	w := NewInitWizard(false, true, "Alex", "proj")
+	view := w.View(80)
+	for _, want := range []string{"Runtime", "Add .ohgo/ to .gitignore", "Leave unchanged", "Keep this state out of Git?"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view lacks %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestWizardRuntimeStateStepIsSkippedWhenAlreadyIgnored(t *testing.T) {
+	// An existing satisfied rule must not be proposed again, and skipping it
+	// still reports the directory as covered.
+	w := NewInitWizard(false, false, "Alex", "proj")
+	if w.Step() != WizardStepIdentity {
+		t.Fatalf("step = %v, want identity when both setup choices are done", w.Step())
+	}
+	if !w.Decision().IgnoreOhgo {
+		t.Error("IgnoreOhgo = false although the rule already exists")
+	}
+}
+
+func TestWizardEscapesTheRuntimeStateStepBackToGit(t *testing.T) {
+	w := NewInitWizard(true, true, "Alex", "proj")
+	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if w.Step() != WizardStepGit {
+		t.Fatalf("step = %v, want esc to return to git", w.Step())
+	}
+	if w.Canceled() {
+		t.Error("stepping back from the ignore choice must not cancel onboarding")
+	}
+}
+
 // The Git choice answers directly and stays reversible until confirmed.
 
 func TestWizardGitShortcutsAnswerDirectly(t *testing.T) {
 	for key, want := range map[string]bool{"y": true, "Y": true, "n": false, "N": false} {
-		w := NewInitWizard(true, "Alex", "proj")
+		w := NewInitWizard(true, false, "Alex", "proj")
 		w, _ = w.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
 		if w.Step() != WizardStepIdentity {
 			t.Errorf("key %q: step = %v, want identity", key, w.Step())
@@ -73,7 +143,7 @@ func TestWizardGitQuitCancelsWithoutCommitting(t *testing.T) {
 		{Type: tea.KeyEsc},
 		{Type: tea.KeyCtrlC},
 	} {
-		w := NewInitWizard(true, "Alex", "proj")
+		w := NewInitWizard(true, false, "Alex", "proj")
 		w, _ = w.Update(msg)
 		if !w.Canceled() {
 			t.Errorf("key %q: canceled = false, want a clean abort", msg.String())
@@ -85,7 +155,7 @@ func TestWizardGitQuitCancelsWithoutCommitting(t *testing.T) {
 }
 
 func TestWizardGitCursorStopsAtTheEnds(t *testing.T) {
-	w := NewInitWizard(true, "Alex", "proj")
+	w := NewInitWizard(true, false, "Alex", "proj")
 	w.MoveGit(-1)
 	if w.GitCursor() != 0 {
 		t.Errorf("cursor = %d, want it clamped at Yes", w.GitCursor())
@@ -101,7 +171,7 @@ func TestWizardGitCursorStopsAtTheEnds(t *testing.T) {
 // edits, and refuse an empty name rather than committing one.
 
 func TestWizardEmptyInputConfirmsTheDefault(t *testing.T) {
-	w := NewInitWizard(false, "Alex", "payments-api")
+	w := NewInitWizard(false, false, "Alex", "payments-api")
 	clearInput(w)
 	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	clearInput(w)
@@ -115,7 +185,7 @@ func TestWizardEmptyInputConfirmsTheDefault(t *testing.T) {
 }
 
 func TestWizardTypedInputOverridesTheDefault(t *testing.T) {
-	w := NewInitWizard(false, "Alex", "payments-api")
+	w := NewInitWizard(false, false, "Alex", "payments-api")
 	clearInput(w)
 	w, _ = w.Update(runes("Bob"))
 	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -129,7 +199,7 @@ func TestWizardTypedInputOverridesTheDefault(t *testing.T) {
 }
 
 func TestWizardEmptyNameWithEmptyDefaultStaysOpen(t *testing.T) {
-	w := NewInitWizard(false, "", "proj")
+	w := NewInitWizard(false, false, "", "proj")
 	clearInput(w)
 	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if w.Done() || w.Step() != WizardStepIdentity {
@@ -141,7 +211,7 @@ func TestWizardEmptyNameWithEmptyDefaultStaysOpen(t *testing.T) {
 }
 
 func TestWizardEscapeStepsBackKeepingTypedValues(t *testing.T) {
-	w := NewInitWizard(true, "Alex", "proj")
+	w := NewInitWizard(true, false, "Alex", "proj")
 	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	clearInput(w)
 	w, _ = w.Update(runes("Bob"))
@@ -165,7 +235,7 @@ func TestWizardEscapeStepsBackKeepingTypedValues(t *testing.T) {
 
 func TestWizardKeysNeverReachTheComposer(t *testing.T) {
 	p := NewProgram(nil, "groq/llama", 0)
-	p.SetInitWizard(NewInitWizard(true, "Alex", "proj"), InitWizardHooks{})
+	p.SetInitWizard(NewInitWizard(true, false, "Alex", "proj"), InitWizardHooks{})
 	keyPress(p, runes("n"))
 	keyPress(p, runes("Bob"))
 	if p.state.Input != "" {
@@ -180,7 +250,7 @@ func TestWizardFrameKeepsHeaderAndFooter(t *testing.T) {
 	p := NewProgram(nil, "groq/llama-3.1-8b-instant", 128000)
 	p.state.Status.Workspace = "BUILD"
 	p.state.Status.Cwd = "/tmp/demo"
-	p.SetInitWizard(NewInitWizard(true, "Alex", "proj"), InitWizardHooks{})
+	p.SetInitWizard(NewInitWizard(true, false, "Alex", "proj"), InitWizardHooks{})
 	view := p.View()
 	if !strings.Contains(view, "ohgo") || !strings.Contains(view, "groq/llama-3.1-8b-instant") {
 		t.Errorf("frame %q: the header must keep product and model", firstLines(view, 2))
@@ -196,7 +266,7 @@ func TestWizardFrameKeepsHeaderAndFooter(t *testing.T) {
 func TestWizardCompletionHandsDecisionsToTheOwner(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	var got InitWizardDecision
-	p.SetInitWizard(NewInitWizard(false, "Alex", "proj"), InitWizardHooks{
+	p.SetInitWizard(NewInitWizard(false, false, "Alex", "proj"), InitWizardHooks{
 		Complete: func(d InitWizardDecision) (IdentityUpdated, string, error) {
 			got = d
 			return IdentityUpdated{User: d.Worker, Greeting: "Good evening, Alex.", Ready: "ready"}, "runtime ready", nil
@@ -226,7 +296,7 @@ func TestWizardCompletionHandsDecisionsToTheOwner(t *testing.T) {
 
 func TestWizardCancelQuitsWithoutPublishing(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	p.SetInitWizard(NewInitWizard(true, "Alex", "proj"), InitWizardHooks{})
+	p.SetInitWizard(NewInitWizard(true, false, "Alex", "proj"), InitWizardHooks{})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	if p.wizard != nil {
 		t.Fatal("a cancelled wizard must leave the screen")
@@ -239,7 +309,7 @@ func TestWizardCancelQuitsWithoutPublishing(t *testing.T) {
 // A failed commit reopens the final step instead of stranding the user.
 func TestWizardFailedCommitReopensForRetry(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	p.SetInitWizard(NewInitWizard(false, "Alex", "proj"), InitWizardHooks{
+	p.SetInitWizard(NewInitWizard(false, false, "Alex", "proj"), InitWizardHooks{
 		Complete: func(InitWizardDecision) (IdentityUpdated, string, error) {
 			return IdentityUpdated{}, "", errTestWizardCommit
 		},

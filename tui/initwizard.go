@@ -5,11 +5,12 @@
 // stay pinned while the wizard owns the middle of the screen.
 //
 // The step order is the startup gate's contract and must not change:
-// (1) Git repository check/init prompt, (2) worker identity prompt,
-// (3) project name prompt. Decisions are collected first and committed
-// only through InitWizardHooks.Complete, mirroring startup.Ensure's
-// decisions-first-mutations-last rule: cancelling at any step leaves
-// nothing created behind.
+// (1) Git repository check/init prompt, (2) runtime-state ignore prompt,
+// (3) worker identity prompt, (4) project name prompt. The Git and ignore
+// steps are skipped when they are already satisfied. Decisions are collected
+// first and committed only through InitWizardHooks.Complete, mirroring
+// startup.Ensure's decisions-first-mutations-last rule: cancelling at any
+// step leaves nothing created behind.
 //
 // The model never touches os.Stdin or fmt.Scan: keys arrive as tea.KeyMsg
 // and text editing is delegated to bubbles/textinput.
@@ -49,6 +50,9 @@ const (
 	// WizardStepGit asks whether to create a Git repository. Skipped when
 	// the directory already sits inside one.
 	WizardStepGit WizardStep = iota
+	// WizardStepIgnore asks whether to keep .ohgo/ out of Git. Skipped when
+	// the existing .gitignore already covers it.
+	WizardStepIgnore
 	// WizardStepIdentity asks for the project-local worker name.
 	WizardStepIdentity
 	// WizardStepProject asks for the human-readable project name.
@@ -64,16 +68,26 @@ const (
 	wizardGitQuit
 )
 
+// Ignore choice indexes, in button order. Add is the default: runtime state
+// is not project source.
+const (
+	wizardIgnoreYes = iota
+	wizardIgnoreNo
+)
+
 // wizardInputLimit bounds a name field. Names are labels, not prose; the
 // cap keeps one decision on one row of the card.
 const wizardInputLimit = 80
 
 // InitWizardDecision is the collected onboarding answers handed to
-// InitWizardHooks.Complete. It carries the same three decisions
+// InitWizardHooks.Complete. It carries the same four decisions
 // startup.Ensure collects from stdin, in the same order.
 type InitWizardDecision struct {
 	// WantGit reports the user chose to create a Git repository.
 	WantGit bool
+	// IgnoreOhgo reports the user chose to add .ohgo/ to .gitignore. It is
+	// true when the step was skipped because the rule was already satisfied.
+	IgnoreOhgo bool
 	// Worker is the confirmed project-local worker name.
 	Worker string
 	// Project is the confirmed human-readable project name.
@@ -98,23 +112,27 @@ type InitWizardHooks struct {
 // InitWizardModel owns one onboarding run. The zero value is unusable;
 // construct with NewInitWizard.
 type InitWizardModel struct {
-	step       WizardStep
-	askGit     bool
-	gitCursor  int
-	wantGit    bool
-	identity   textinput.Model
-	project    textinput.Model
-	workerDef  string
-	projectDef string
-	errMsg     string
-	done       bool
-	canceled   bool
+	step         WizardStep
+	askGit       bool
+	askIgnore    bool
+	gitCursor    int
+	ignoreCursor int
+	wantGit      bool
+	wantIgnore   bool
+	identity     textinput.Model
+	project      textinput.Model
+	workerDef    string
+	projectDef   string
+	errMsg       string
+	done         bool
+	canceled     bool
 }
 
-// NewInitWizard returns a wizard starting at the Git step when askGit, else
-// at the identity step. Defaults seed the inputs exactly like the stdin
-// prompts: an untouched field confirms its default.
-func NewInitWizard(askGit bool, workerDef, projectDef string) *InitWizardModel {
+// NewInitWizard returns a wizard starting at the first step the project still
+// needs: Git when askGit, else the ignore choice when askIgnore, else the
+// identity prompt. Defaults seed the inputs exactly like the stdin prompts: an
+// untouched field confirms its default, and the ignore choice starts on Add.
+func NewInitWizard(askGit, askIgnore bool, workerDef, projectDef string) *InitWizardModel {
 	identity := textinput.New()
 	identity.Prompt = ""
 	identity.Placeholder = "Your name"
@@ -131,14 +149,19 @@ func NewInitWizard(askGit bool, workerDef, projectDef string) *InitWizardModel {
 
 	w := &InitWizardModel{
 		askGit:     askGit,
+		askIgnore:  askIgnore,
+		wantIgnore: true,
 		identity:   identity,
 		project:    project,
 		workerDef:  strings.TrimSpace(workerDef),
 		projectDef: strings.TrimSpace(projectDef),
 	}
-	if askGit {
+	switch {
+	case askGit:
 		w.step = WizardStepGit
-	} else {
+	case askIgnore:
+		w.step = WizardStepIgnore
+	default:
 		w.step = WizardStepIdentity
 		// The returned blink command belongs to a runtime that does not
 		// exist yet; dropping it leaves a steady cursor, which still
@@ -160,14 +183,18 @@ func (w *InitWizardModel) Canceled() bool { return w.canceled }
 // Decision returns the collected answers. It is meaningful only when Done.
 func (w *InitWizardModel) Decision() InitWizardDecision {
 	return InitWizardDecision{
-		WantGit: w.wantGit,
-		Worker:  strings.TrimSpace(w.identity.Value()),
-		Project: strings.TrimSpace(w.project.Value()),
+		WantGit:    w.wantGit,
+		IgnoreOhgo: w.wantIgnore,
+		Worker:     strings.TrimSpace(w.identity.Value()),
+		Project:    strings.TrimSpace(w.project.Value()),
 	}
 }
 
 // GitCursor reports the highlighted Git choice index (Yes/No/Quit order).
 func (w *InitWizardModel) GitCursor() int { return w.gitCursor }
+
+// IgnoreCursor reports the highlighted ignore choice index (Add/Leave order).
+func (w *InitWizardModel) IgnoreCursor() int { return w.ignoreCursor }
 
 // MoveGit shifts the Git highlight, stopping at either end like the
 // approval dialog: the affirmative option is never reached by wrap-around.
@@ -180,6 +207,18 @@ func (w *InitWizardModel) MoveGit(delta int) {
 		next = wizardGitQuit
 	}
 	w.gitCursor = next
+}
+
+// MoveIgnore shifts the ignore highlight, clamped like MoveGit.
+func (w *InitWizardModel) MoveIgnore(delta int) {
+	next := w.ignoreCursor + delta
+	if next < wizardIgnoreYes {
+		next = wizardIgnoreYes
+	}
+	if next > wizardIgnoreNo {
+		next = wizardIgnoreNo
+	}
+	w.ignoreCursor = next
 }
 
 // SetError shows a commit failure on the current step without losing the
@@ -217,6 +256,9 @@ func (w *InitWizardModel) handleKey(msg tea.KeyMsg) (*InitWizardModel, tea.Cmd) 
 	}
 	if w.step == WizardStepGit {
 		return w.handleGitKey(msg)
+	}
+	if w.step == WizardStepIgnore {
+		return w.handleIgnoreKey(msg)
 	}
 	return w.handleTextKey(msg)
 }
@@ -258,6 +300,39 @@ func (w *InitWizardModel) chooseGit(choice int) {
 	default:
 		w.canceled = true
 	}
+}
+
+// handleIgnoreKey drives the runtime-state choice. Esc steps back (to Git when
+// that step exists, otherwise out of onboarding); q quits outright.
+func (w *InitWizardModel) handleIgnoreKey(msg tea.KeyMsg) (*InitWizardModel, tea.Cmd) {
+	switch msg.String() {
+	case "left", "h", "up", "shift+tab":
+		w.MoveIgnore(-1)
+		return w, nil
+	case "right", "l", "down", "tab":
+		w.MoveIgnore(1)
+		return w, nil
+	case "y", "Y":
+		w.chooseIgnore(wizardIgnoreYes)
+		return w, w.advance()
+	case "n", "N":
+		w.chooseIgnore(wizardIgnoreNo)
+		return w, w.advance()
+	case "q", "Q":
+		w.canceled = true
+		return w, nil
+	case "esc":
+		return w, w.back()
+	case "enter", " ":
+		w.chooseIgnore(w.ignoreCursor)
+		return w, w.advance()
+	}
+	return w, nil
+}
+
+// chooseIgnore records the ignore decision without touching .gitignore.
+func (w *InitWizardModel) chooseIgnore(choice int) {
+	w.wantIgnore = choice == wizardIgnoreYes
 }
 
 // handleTextKey confirms or edits the identity/project inputs. Enter with
@@ -304,6 +379,13 @@ func (w *InitWizardModel) advance() tea.Cmd {
 	w.errMsg = ""
 	switch w.step {
 	case WizardStepGit:
+		if w.askIgnore {
+			w.step = WizardStepIgnore
+			return nil
+		}
+		w.step = WizardStepIdentity
+		return w.identity.Focus()
+	case WizardStepIgnore:
 		w.step = WizardStepIdentity
 		return w.identity.Focus()
 	case WizardStepIdentity:
@@ -331,10 +413,24 @@ func (w *InitWizardModel) back() tea.Cmd {
 		return w.identity.Focus()
 	case WizardStepIdentity:
 		w.identity.Blur()
+		if w.askIgnore {
+			w.step = WizardStepIgnore
+			return nil
+		}
 		if w.askGit {
 			w.step = WizardStepGit
 			return nil
 		}
+		w.canceled = true
+		return nil
+	case WizardStepIgnore:
+		if w.askGit {
+			w.step = WizardStepGit
+			return nil
+		}
+		w.canceled = true
+		return nil
+	case WizardStepGit:
 		w.canceled = true
 		return nil
 	}
@@ -375,6 +471,9 @@ func (w *InitWizardModel) stepPosition() (index, total int) {
 	if w.askGit {
 		steps = append(steps, WizardStepGit)
 	}
+	if w.askIgnore {
+		steps = append(steps, WizardStepIgnore)
+	}
 	steps = append(steps, WizardStepIdentity, WizardStepProject)
 	for i, s := range steps {
 		if s == w.step {
@@ -410,9 +509,11 @@ func (w *InitWizardModel) View(width int) string {
 	switch w.step {
 	case WizardStepGit:
 		body = w.gitBody()
+	case WizardStepIgnore:
+		body = w.ignoreBody()
 	case WizardStepIdentity:
 		backHint := "esc quit"
-		if w.askGit {
+		if w.askGit || w.askIgnore {
 			backHint = "esc back"
 		}
 		body = w.textBody("What should OHGO call you for this project?", "Name", w.identity, cardW,
@@ -444,6 +545,8 @@ func stepLabel(step WizardStep, index, total int) string {
 	switch step {
 	case WizardStepGit:
 		name = "Git"
+	case WizardStepIgnore:
+		name = "Runtime"
 	case WizardStepIdentity:
 		name = "Identity"
 	}
@@ -457,7 +560,7 @@ func (w *InitWizardModel) gitBody() string {
 		Render("This project is not a Git repository.")
 	question := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(wizardGrey)).
-		Render("Create one?")
+		Render("Initialize Git on main?")
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
 		gitButton("Yes", w.gitCursor == wizardGitYes),
 		"   ",
@@ -469,6 +572,26 @@ func (w *InitWizardModel) gitBody() string {
 		Foreground(lipgloss.Color(wizardGrey)).
 		Render("←→ move · enter confirm · y/n/q shortcut")
 	return lipgloss.JoinVertical(lipgloss.Left, alert, question, "", buttons, "", hints)
+}
+
+// ignoreBody renders the runtime-state question with the same badge toggles as
+// the Git step, so onboarding keeps one interaction model.
+func (w *InitWizardModel) ignoreBody() string {
+	lead := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardGrey)).
+		Render("ohgo stores local runtime state in .ohgo/.")
+	question := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardGrey)).
+		Render("Keep this state out of Git?")
+	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
+		gitButton("Add .ohgo/ to .gitignore", w.ignoreCursor == wizardIgnoreYes),
+		"   ",
+		gitButton("Leave unchanged", w.ignoreCursor == wizardIgnoreNo),
+	)
+	hints := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(wizardGrey)).
+		Render("←→ move · enter confirm · y/n shortcut · esc back")
+	return lipgloss.JoinVertical(lipgloss.Left, lead, question, "", buttons, "", hints)
 }
 
 // textBody renders one labeled input with its focus ring.

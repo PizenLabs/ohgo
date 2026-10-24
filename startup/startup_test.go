@@ -1,6 +1,7 @@
 package startup
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -191,7 +192,7 @@ func TestFullFlowGitAccepted(t *testing.T) {
 	var gitCalled bool
 	td := &testDeps{committed: &committed, gitInit: &gitCalled}
 	var out strings.Builder
-	res, err := Ensure(root, td.deps("\nAlex\npayments-api\n", &out))
+	res, err := Ensure(root, td.deps("\n\nAlex\npayments-api\n", &out))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -203,6 +204,16 @@ func TestFullFlowGitAccepted(t *testing.T) {
 	}
 	if committed.Worker != "Alex" || committed.Name != "payments-api" {
 		t.Errorf("committed = %+v, want worker Alex and project payments-api", committed)
+	}
+	if !res.AskedIgnore || !res.IgnoredOhgo {
+		t.Errorf("result = %+v, want the runtime-state choice asked and accepted", res)
+	}
+	rule, err := os.ReadFile(filepath.Join(root, GitignoreName))
+	if err != nil {
+		t.Fatalf("accepted ignore rule not written: %v", err)
+	}
+	if !strings.Contains(string(rule), GitignoreRule) {
+		t.Errorf(".gitignore = %q, want the .ohgo/ rule", rule)
 	}
 	if res.Project.WorkerName() != "Alex" || res.Project.Name != "payments-api" {
 		t.Errorf("project = %+v, want the confirmed worker and name", res.Project)
@@ -227,7 +238,7 @@ func TestFullFlowGitDeclined(t *testing.T) {
 	var gitCalled bool
 	td := &testDeps{committed: &committed, gitInit: &gitCalled}
 	var out strings.Builder
-	res, err := Ensure(root, td.deps("n\nAlex\npayments-api\n", &out))
+	res, err := Ensure(root, td.deps("n\nn\nAlex\npayments-api\n", &out))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -240,6 +251,12 @@ func TestFullFlowGitDeclined(t *testing.T) {
 	if committed.Worker != "Alex" {
 		t.Errorf("committed worker = %q, want Alex", committed.Worker)
 	}
+	if _, statErr := os.Stat(filepath.Join(root, GitignoreName)); !os.IsNotExist(statErr) {
+		t.Errorf(".gitignore created after an explicit decline: %v", statErr)
+	}
+	if res.IgnoredOhgo {
+		t.Error("IgnoredOhgo = true after declining the rule")
+	}
 }
 
 func TestInvalidGitAnswerRepromptsWithoutInitializing(t *testing.T) {
@@ -247,7 +264,7 @@ func TestInvalidGitAnswerRepromptsWithoutInitializing(t *testing.T) {
 	var gitCalled bool
 	td := &testDeps{gitInit: &gitCalled}
 	var out strings.Builder
-	_, err := Ensure(root, td.deps("maybe\ny\nAlex\nproj\n", &out))
+	_, err := Ensure(root, td.deps("maybe\ny\nn\nAlex\nproj\n", &out))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -267,7 +284,7 @@ func TestExistingGitSkipsPrompt(t *testing.T) {
 	var gitCalled bool
 	td := &testDeps{gitInit: &gitCalled}
 	var out strings.Builder
-	res, err := Ensure(root, td.deps("Alex\nproj\n", &out))
+	res, err := Ensure(root, td.deps("n\nAlex\nproj\n", &out))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -294,7 +311,7 @@ func TestGlobalDefaultSeedsWorkerPrompt(t *testing.T) {
 	deps := Deps{
 		LoadSettings:  func() (config.Settings, error) { return settings, nil },
 		CommitProject: project.EnsureWith,
-		Stdin:         strings.NewReader("\n\na-project\n"),
+		Stdin:         strings.NewReader("n\n\na-project\n"),
 		Stdout:        &strings.Builder{},
 		Now:           func() time.Time { return time.Date(2026, 10, 12, 20, 0, 0, 0, time.Local) },
 	}
@@ -356,7 +373,7 @@ func TestProjectWorkerIsolation(t *testing.T) {
 		res, err := Ensure(root, Deps{
 			LoadSettings:  func() (config.Settings, error) { return config.Default(), nil },
 			CommitProject: project.EnsureWith,
-			Stdin:         strings.NewReader("n\n" + worker + "\n" + name + "\n"),
+			Stdin:         strings.NewReader("n\nn\n" + worker + "\n" + name + "\n"),
 			Stdout:        &strings.Builder{},
 			Now:           func() time.Time { return time.Date(2026, 10, 12, 8, 0, 0, 0, time.Local) },
 		})
@@ -400,7 +417,7 @@ func TestWorkerIdentityNeverWrittenToGlobalSettings(t *testing.T) {
 	deps := Deps{
 		LoadSettings:  func() (config.Settings, error) { return settings, nil },
 		CommitProject: project.EnsureWith,
-		Stdin:         strings.NewReader("n\nAlice\npayments-api\n"),
+		Stdin:         strings.NewReader("n\nn\nAlice\npayments-api\n"),
 		Stdout:        &strings.Builder{},
 		Now:           time.Now,
 	}
@@ -427,7 +444,7 @@ func TestGitUnavailableContinues(t *testing.T) {
 	var gitCalled bool
 	td := &testDeps{gitInit: &gitCalled, avail: &avail}
 	var out strings.Builder
-	res, err := Ensure(root, td.deps("\nAlex\nproj\n", &out))
+	res, err := Ensure(root, td.deps("\nn\nAlex\nproj\n", &out))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -446,7 +463,7 @@ func TestGitInitFailureContinuesWithoutClaim(t *testing.T) {
 	root := t.TempDir()
 	var out strings.Builder
 	td := &testDeps{gitErr: errors.New("permission denied")}
-	res, err := Ensure(root, td.deps("\nAlex\nproj\n", &out))
+	res, err := Ensure(root, td.deps("\nn\nAlex\nproj\n", &out))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -466,7 +483,7 @@ func TestProjectCommitFailureSurfaces(t *testing.T) {
 		CommitProject: func(string, project.Metadata) (project.Identity, error) {
 			return project.Identity{}, want
 		},
-		Stdin:  strings.NewReader("n\nAlex\nproj\n"),
+		Stdin:  strings.NewReader("n\nn\nAlex\nproj\n"),
 		Stdout: &strings.Builder{},
 		Now:    time.Now,
 	}
@@ -481,7 +498,7 @@ func TestMalformedSettingsWarnsAndContinues(t *testing.T) {
 	deps := Deps{
 		LoadSettings:  func() (config.Settings, error) { return config.Default(), errors.New("parse settings.json: bad json") },
 		CommitProject: project.EnsureWith,
-		Stdin:         strings.NewReader("n\nAlex\nproj\n"),
+		Stdin:         strings.NewReader("n\nn\nAlex\nproj\n"),
 		Stdout:        &out,
 		Now:           func() time.Time { return time.Date(2026, 10, 12, 20, 0, 0, 0, time.Local) },
 	}
@@ -559,6 +576,12 @@ func TestClosedStdinCancelsInitialization(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(root, project.DirName)); !os.IsNotExist(statErr) {
 		t.Errorf(".ohgo exists after a canceled flow: %v", statErr)
 	}
+	if _, statErr := os.Stat(filepath.Join(root, GitignoreName)); !os.IsNotExist(statErr) {
+		t.Errorf(".gitignore exists after a canceled flow: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, ".git")); !os.IsNotExist(statErr) {
+		t.Errorf(".git exists after a canceled flow: %v", statErr)
+	}
 }
 
 func TestCancellationAfterGitAnswerCreatesNothing(t *testing.T) {
@@ -568,7 +591,7 @@ func TestCancellationAfterGitAnswerCreatesNothing(t *testing.T) {
 	root := t.TempDir()
 	td := &testDeps{}
 	var out strings.Builder
-	res, err := Ensure(root, td.deps("n\n", &out))
+	res, err := Ensure(root, td.deps("n\nn\n", &out))
 	if !errors.Is(err, ErrCanceled) {
 		t.Fatalf("Ensure err = %v, want ErrCanceled", err)
 	}
@@ -641,7 +664,7 @@ func TestStateTransitionsAcrossInitialization(t *testing.T) {
 		t.Fatalf("fresh state = %v, want Uninitialized", got)
 	}
 	td := &testDeps{}
-	res, err := Ensure(root, td.deps("n\nAlex\nproj\n", &strings.Builder{}))
+	res, err := Ensure(root, td.deps("n\nn\nAlex\nproj\n", &strings.Builder{}))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -664,7 +687,7 @@ func TestTwoProjectsStayIndependent(t *testing.T) {
 		res, err := Ensure(root, Deps{
 			LoadSettings:  func() (config.Settings, error) { return config.Default(), nil },
 			CommitProject: project.EnsureWith,
-			Stdin:         strings.NewReader("n\n" + worker + "\n" + name + "\n"),
+			Stdin:         strings.NewReader("n\nn\n" + worker + "\n" + name + "\n"),
 			Stdout:        &strings.Builder{},
 			Now:           time.Now,
 		})
@@ -774,7 +797,7 @@ func TestDeleteOhgoReinitializes(t *testing.T) {
 	evening := func() time.Time { return time.Date(2026, 10, 12, 20, 0, 0, 0, time.Local) }
 	first, err := Ensure(root, Deps{
 		LoadSettings: func() (config.Settings, error) { return config.Default(), nil },
-		Stdin:        strings.NewReader("n\nAlex\nproj\n"),
+		Stdin:        strings.NewReader("n\nn\nAlex\nproj\n"),
 		Stdout:       &strings.Builder{},
 		Now:          evening,
 	})
@@ -811,7 +834,7 @@ func TestDeleteOhgoReinitializes(t *testing.T) {
 	var out strings.Builder
 	second, err := Ensure(root, Deps{
 		LoadSettings: func() (config.Settings, error) { return config.Default(), nil },
-		Stdin:        strings.NewReader("n\nAlex\nproj\n"),
+		Stdin:        strings.NewReader("n\nn\nAlex\nproj\n"),
 		Stdout:       &out,
 		Now:          evening,
 	})
@@ -860,7 +883,7 @@ func TestDeleteOhgoInGitRepoRepromptsWorker(t *testing.T) {
 		t.Helper()
 		res, err := Ensure(root, Deps{
 			LoadSettings: func() (config.Settings, error) { return settings, nil },
-			Stdin:        strings.NewReader(worker + "\n" + name + "\n"),
+			Stdin:        strings.NewReader("n\n" + worker + "\n" + name + "\n"),
 			Stdout:       &strings.Builder{},
 			Now:          evening,
 		})
@@ -916,7 +939,7 @@ func TestDeleteProjectFileReinitializes(t *testing.T) {
 		LoadSettings:  func() (config.Settings, error) { return config.Default(), nil },
 		CommitProject: project.EnsureWith,
 		InitGit:       func(string) error { gitCalled = true; return nil },
-		Stdin:         strings.NewReader("n\nAlex\nproj\n"),
+		Stdin:         strings.NewReader("n\nn\nAlex\nproj\n"),
 		Stdout:        &strings.Builder{},
 		Now:           time.Now,
 	})
@@ -986,7 +1009,7 @@ func TestIncompleteProjectRecoveredWithoutChangingID(t *testing.T) {
 	res, err := Ensure(root, Deps{
 		LoadSettings:  func() (config.Settings, error) { return config.Default(), nil },
 		CommitProject: project.EnsureWith,
-		Stdin:         strings.NewReader("n\nAlice\npayments-api\n"),
+		Stdin:         strings.NewReader("n\nn\nAlice\npayments-api\n"),
 		Stdout:        &strings.Builder{},
 		Now:           time.Now,
 	})
@@ -1028,5 +1051,445 @@ func TestDiscoveryKeepsMissingDistinctFromInitialized(t *testing.T) {
 	}
 	if !NeedsInit(d) {
 		t.Error("NeedsInit = false for a missing project")
+	}
+}
+
+// --- Onboarding repository decisions ----------------------------------------
+//
+// A new repository starts on main; an existing branch is never renamed; and
+// .ohgo/ is proposed for .gitignore but written only after confirmation.
+
+// testSettings keeps initialization off the real machine-global settings.
+func testSettings() func() (config.Settings, error) {
+	return func() (config.Settings, error) { return config.Default(), nil }
+}
+
+func TestEnsureInitializesGitOnMain(t *testing.T) {
+	if !GitAvailable() {
+		t.Skip("git is unavailable")
+	}
+	root := t.TempDir()
+	var out strings.Builder
+	res, err := Ensure(root, Deps{
+		LoadSettings: testSettings(),
+		Stdin:        strings.NewReader("\nn\nAlex\nproj\n"),
+		Stdout:       &out,
+		Now:          time.Now,
+	})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if !res.CreatedProject || !res.AskedGit {
+		t.Errorf("result = %+v, want a full initialization with the Git decision", res)
+	}
+	repo, err := vcs.Discover(root)
+	if err != nil || repo == nil {
+		t.Fatalf("repository was not created: %v", err)
+	}
+	head, err := repo.ReadHead()
+	if err != nil {
+		t.Fatalf("ReadHead: %v", err)
+	}
+	if head.Branch != vcs.DefaultBranch || head.Commit != "" {
+		t.Errorf("HEAD = %+v, want an unborn %s branch", head, vcs.DefaultBranch)
+	}
+	if !strings.Contains(out.String(), "Git initialized on main.") {
+		t.Errorf("output does not state the branch truthfully: %q", out.String())
+	}
+}
+
+func TestEnsureNeverRenamesAnExistingBranch(t *testing.T) {
+	if !GitAvailable() {
+		t.Skip("git is unavailable")
+	}
+	for _, branch := range []string{"main", "master"} {
+		t.Run(branch, func(t *testing.T) {
+			root := t.TempDir()
+			if err := vcs.Init(root, branch); err != nil {
+				t.Fatalf("fixture init: %v", err)
+			}
+			res, err := Ensure(root, Deps{
+				LoadSettings: testSettings(),
+				InitGit: func(string) error {
+					t.Error("InitGit called for an existing repository")
+					return nil
+				},
+				Stdin:  strings.NewReader("n\nAlex\nproj\n"),
+				Stdout: &strings.Builder{},
+				Now:    time.Now,
+			})
+			if err != nil {
+				t.Fatalf("Ensure: %v", err)
+			}
+			if res.AskedGit {
+				t.Error("Git prompt appeared for an existing repository")
+			}
+			repo, err := vcs.Discover(root)
+			if err != nil || repo == nil {
+				t.Fatalf("repository disappeared: %v", err)
+			}
+			head, err := repo.ReadHead()
+			if err != nil {
+				t.Fatalf("ReadHead: %v", err)
+			}
+			if head.Branch != branch {
+				t.Errorf("branch = %q, want the existing %q left alone", head.Branch, branch)
+			}
+		})
+	}
+}
+
+func TestEnsureCreatesMinimalGitignore(t *testing.T) {
+	root := t.TempDir()
+	var out strings.Builder
+	res, err := Ensure(root, Deps{
+		LoadSettings: testSettings(),
+		Stdin:        strings.NewReader("n\n\nAlex\nproj\n"),
+		Stdout:       &out,
+		Now:          time.Now,
+	})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if !res.AskedIgnore || !res.IgnoredOhgo {
+		t.Errorf("result = %+v, want the ignore decision asked and accepted", res)
+	}
+	data, err := os.ReadFile(filepath.Join(root, GitignoreName))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	want := GitignoreHeader + "\n" + GitignoreRule + "\n"
+	if string(data) != want {
+		t.Errorf(".gitignore = %q, want the minimal %q", data, want)
+	}
+}
+
+func TestEnsurePreservesExistingGitignoreContent(t *testing.T) {
+	root := t.TempDir()
+	original := "*.log\nnode_modules/\n"
+	if err := os.WriteFile(filepath.Join(root, GitignoreName), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ensure(root, Deps{
+		LoadSettings: testSettings(),
+		Stdin:        strings.NewReader("n\n\nAlex\nproj\n"),
+		Stdout:       &strings.Builder{},
+		Now:          time.Now,
+	}); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, GitignoreName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), original) {
+		t.Errorf(".gitignore no longer starts with the user content: %q", data)
+	}
+	if count := strings.Count(string(data), GitignoreRule); count != 1 {
+		t.Errorf(".ohgo/ appears %d times, want exactly one: %q", count, data)
+	}
+}
+
+func TestEnsureDoesNotAskWhenOhgoIsAlreadyIgnored(t *testing.T) {
+	root := t.TempDir()
+	original := "# keep\n.ohgo/\n.env\n"
+	if err := os.WriteFile(filepath.Join(root, GitignoreName), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	res, err := Ensure(root, Deps{
+		LoadSettings: testSettings(),
+		Stdin:        strings.NewReader("n\nAlex\nproj\n"),
+		Stdout:       &out,
+		Now:          time.Now,
+	})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if res.AskedIgnore {
+		t.Error("the ignore prompt repeated although .ohgo/ is already ignored")
+	}
+	if !res.IgnoredOhgo {
+		t.Error("IgnoredOhgo = false although the rule already holds")
+	}
+	if strings.Contains(out.String(), "Add .ohgo/ to .gitignore") {
+		t.Errorf("output proposes an existing rule: %q", out.String())
+	}
+	data, err := os.ReadFile(filepath.Join(root, GitignoreName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Errorf(".gitignore was rewritten:\nbefore %q\nafter  %q", original, data)
+	}
+}
+
+func TestEnsurePreservesExistingOhgoState(t *testing.T) {
+	root := t.TempDir()
+	ohgoDir := filepath.Join(root, project.DirName)
+	if err := os.MkdirAll(filepath.Join(ohgoDir, "tasks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixtures := map[string]string{
+		"history":       "user: hello\n",
+		"progress.json": "{\"step\":2}\n",
+		"task.md":       "# task\n",
+		"tasks/one.md":  "# detached\n",
+	}
+	for name, content := range fixtures {
+		if err := os.WriteFile(filepath.Join(ohgoDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Ensure(root, Deps{
+		LoadSettings: testSettings(),
+		Stdin:        strings.NewReader("n\n\nAlex\nproj\n"),
+		Stdout:       &strings.Builder{},
+		Now:          time.Now,
+	}); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	for name, content := range fixtures {
+		data, err := os.ReadFile(filepath.Join(ohgoDir, name))
+		if err != nil {
+			t.Fatalf("%s lost during onboarding: %v", name, err)
+		}
+		if string(data) != content {
+			t.Errorf("%s changed: %q, want %q", name, data, content)
+		}
+	}
+	if _, err := os.Stat(project.Path(root)); err != nil {
+		t.Errorf("project identity missing: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, GitignoreName))
+	if err != nil || !strings.Contains(string(data), GitignoreRule) {
+		t.Errorf(".gitignore = %q (%v), want the confirmed rule", data, err)
+	}
+}
+
+func TestEnsureReportsGitignoreFailureTruthfully(t *testing.T) {
+	root := t.TempDir()
+	ignoreErr := errors.New("read-only filesystem")
+	var out strings.Builder
+	res, err := Ensure(root, Deps{
+		LoadSettings:    testSettings(),
+		InitGit:         func(string) error { return nil },
+		EnsureGitignore: func(string) (bool, error) { return false, ignoreErr },
+		Stdin:           strings.NewReader("\n\nAlex\nproj\n"),
+		Stdout:          &out,
+		Now:             time.Now,
+	})
+	if err != nil {
+		t.Fatalf("a failed .gitignore write must not abort the project: %v", err)
+	}
+	if !res.CreatedProject {
+		t.Error("project was not created after a partial .gitignore failure")
+	}
+	text := out.String()
+	if !strings.Contains(text, "Git initialized on main.") {
+		t.Errorf("output hides the Git success: %q", text)
+	}
+	if !strings.Contains(text, "Failed to update .gitignore") || !strings.Contains(text, ignoreErr.Error()) {
+		t.Errorf("output hides the .gitignore failure: %q", text)
+	}
+}
+
+func TestEnsureDeclinedGitCreatesNothingGitRelated(t *testing.T) {
+	root := t.TempDir()
+	var out strings.Builder
+	res, err := Ensure(root, Deps{
+		LoadSettings: testSettings(),
+		InitGit: func(string) error {
+			t.Error("InitGit ran after a decline")
+			return nil
+		},
+		Stdin:  strings.NewReader("n\nn\nAlex\nproj\n"),
+		Stdout: &out,
+		Now:    time.Now,
+	})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	for _, path := range []string{".git", GitignoreName} {
+		if _, statErr := os.Stat(filepath.Join(root, path)); !os.IsNotExist(statErr) {
+			t.Errorf("%s exists after declining both choices: %v", path, statErr)
+		}
+	}
+	if !res.CreatedProject || res.IgnoredOhgo {
+		t.Errorf("result = %+v, want a project without Git or ignore changes", res)
+	}
+}
+
+func TestEnsureLeavesExistingRepositoryWorktreeAlone(t *testing.T) {
+	if !GitAvailable() {
+		t.Skip("git is unavailable")
+	}
+	root := t.TempDir()
+	if err := vcs.Init(root, "main"); err != nil {
+		t.Fatalf("fixture init: %v", err)
+	}
+	repo, err := vcs.Discover(root)
+	if err != nil || repo == nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	ctx := context.Background()
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The fixture ignores .ohgo/ already, so onboarding has no ignore choice
+	// to make and no .gitignore edit to perform.
+	write(GitignoreName, GitignoreRule+"\n")
+	write("a.txt", "one\n")
+	if err := repo.StagePaths(ctx, []string{GitignoreName, "a.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CommitMessage(ctx, "initial"); err != nil {
+		t.Fatal(err)
+	}
+	write("a.txt", "two\n")
+	write("notes.txt", "user work\n")
+
+	headBefore, err := repo.HeadSHA(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchBefore, err := repo.CurrentBranch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryBefore, err := repo.Summary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Ensure(root, Deps{
+		LoadSettings: testSettings(),
+		Stdin:        strings.NewReader("Alex\nproj\n"),
+		Stdout:       &strings.Builder{},
+		Now:          time.Now,
+	})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if res.AskedGit || res.AskedIgnore {
+		t.Errorf("result = %+v, want both setup questions skipped", res)
+	}
+
+	headAfter, _ := repo.HeadSHA(ctx)
+	branchAfter, _ := repo.CurrentBranch(ctx)
+	summaryAfter, _ := repo.Summary(ctx)
+	staged, _ := repo.StagedPaths(ctx)
+	if headAfter != headBefore {
+		t.Errorf("HEAD moved during onboarding: %s -> %s", headBefore, headAfter)
+	}
+	if branchAfter != branchBefore || branchAfter != "main" {
+		t.Errorf("branch = %q, want %q unchanged", branchAfter, branchBefore)
+	}
+	if summaryAfter != summaryBefore {
+		t.Errorf("worktree summary changed: %+v -> %+v", summaryBefore, summaryAfter)
+	}
+	if len(staged) != 0 {
+		t.Errorf("onboarding staged %v, want nothing", staged)
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "a.txt")); string(data) != "two\n" {
+		t.Errorf("user edit lost: %q", data)
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "notes.txt")); string(data) != "user work\n" {
+		t.Errorf("user file lost: %q", data)
+	}
+}
+
+func TestIgnoresOhgoRecognisesEquivalentRules(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"rule with slash", ".ohgo/\n", true},
+		{"bare directory", ".ohgo\n", true},
+		{"root anchored", "/.ohgo/\n", true},
+		{"double star root", "**/.ohgo/\n", true},
+		{"contents form", ".ohgo/**\n", true},
+		{"crlf", ".ohgo/\r\n", true},
+		{"commented", "# .ohgo/\n", false},
+		{"different path", ".ohgo-other/\n", false},
+		{"nested only", ".ohgo/keep\n", false},
+		{"negated", ".ohgo/\n!.ohgo/\n", false},
+		{"re-included then ignored", "!.ohgo/\n.ohgo/\n", true},
+		{"blank file", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IgnoresOhgo([]byte(tc.content)); got != tc.want {
+				t.Errorf("IgnoresOhgo(%q) = %v, want %v", tc.content, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDiscoverReportsGitignoreState(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		exists  bool
+		ignored bool
+	}{
+		{"missing", "", false, false},
+		{"unrelated", "*.log\n", true, false},
+		{"covered", ".ohgo/\n", true, true},
+		{"covered root anchored", "/.ohgo/\n", true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.exists {
+				if err := os.WriteFile(filepath.Join(root, GitignoreName), []byte(tc.content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d := Discover(root)
+			if d.GitignoreExists != tc.exists || d.OhgoIgnored != tc.ignored {
+				t.Errorf("discovery = exists:%v ignored:%v, want exists:%v ignored:%v",
+					d.GitignoreExists, d.OhgoIgnored, tc.exists, tc.ignored)
+			}
+			if NeedsIgnore(d) == tc.ignored {
+				t.Errorf("NeedsIgnore = %v for ignored=%v", NeedsIgnore(d), tc.ignored)
+			}
+		})
+	}
+}
+
+func TestDiscoverIsReadOnlyForGitignore(t *testing.T) {
+	root := t.TempDir()
+	_ = Discover(root)
+	_ = Discover(root)
+	if _, err := os.Stat(filepath.Join(root, GitignoreName)); !os.IsNotExist(err) {
+		t.Errorf("discovery created .gitignore: %v", err)
+	}
+}
+
+func TestEnsureVerifiesTheIgnoreRuleItReports(t *testing.T) {
+	// A writer that claims success without producing a rule must not be
+	// reported as covered: the surface has to match what git will see.
+	root := t.TempDir()
+	var out strings.Builder
+	res, err := Ensure(root, Deps{
+		LoadSettings:    testSettings(),
+		EnsureGitignore: func(string) (bool, error) { return true, nil },
+		Stdin:           strings.NewReader("n\n\nAlex\nproj\n"),
+		Stdout:          &out,
+		Now:             time.Now,
+	})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if res.IgnoredOhgo {
+		t.Error("IgnoredOhgo = true although no rule exists")
+	}
+	if !strings.Contains(out.String(), "Failed to verify .gitignore") {
+		t.Errorf("output claims coverage without it: %q", out.String())
 	}
 }

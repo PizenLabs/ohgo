@@ -510,3 +510,62 @@ func contains2(values []string, target string) bool {
 	}
 	return false
 }
+
+// Init binds the branch atomically, so a new OHGO repository is never briefly
+// on Git's compiled-in default and never needs a follow-up rename.
+
+func TestInitCreatesRepositoryOnMain(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable")
+	}
+	dir := t.TempDir()
+	if err := Init(dir, DefaultBranch); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	info, err := Discover(dir)
+	if err != nil || info == nil {
+		t.Fatalf("Discover: %v (%v)", err, info)
+	}
+	head, err := info.ReadHead()
+	if err != nil {
+		t.Fatalf("ReadHead: %v", err)
+	}
+	if head.Branch != "main" || head.Commit != "" {
+		t.Errorf("HEAD = %+v, want an unborn main branch", head)
+	}
+	cmd := exec.Command("git", "branch", "--show-current")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --show-current: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "main" {
+		t.Errorf("branch = %q, want main", got)
+	}
+}
+
+func TestInitLeavesAnExistingBranchAlone(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable")
+	}
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", "--quiet", "-b", "master")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fixture git init: %v\n%s", err, out)
+	}
+	if err := Init(dir, "main"); err != nil {
+		t.Fatalf("Init over an existing repository: %v", err)
+	}
+	info, err := Discover(dir)
+	if err != nil || info == nil {
+		t.Fatalf("Discover: %v (%v)", err, info)
+	}
+	head, err := info.ReadHead()
+	if err != nil {
+		t.Fatalf("ReadHead: %v", err)
+	}
+	if head.Branch != "master" {
+		t.Errorf("branch = %q, want the existing master untouched", head.Branch)
+	}
+}

@@ -10,6 +10,11 @@
 // and the human working with this project. Both belong to
 // `<project>/.ohgo/project.yml`. A machine-global default name is only ever a
 // suggestion for the worker prompt, never the persisted value.
+//
+// Initialization also owns the two explicit repository decisions: a new
+// repository starts on main, and project-local runtime state is proposed for
+// .gitignore. Both are proposals until a human confirms them; discovery and
+// the fast path never rewrite .gitignore or a branch.
 package startup
 
 import (
@@ -96,6 +101,11 @@ type Discovery struct {
 	HasGit bool
 	// GitRoot is the repository root when HasGit.
 	GitRoot string
+	// GitignoreExists reports whether the project root has a .gitignore.
+	GitignoreExists bool
+	// OhgoIgnored reports whether the existing .gitignore already ignores
+	// .ohgo/. It is false when the file is absent or unreadable.
+	OhgoIgnored bool
 }
 
 // Classify derives the lifecycle state from observed facts. It is pure and
@@ -144,15 +154,18 @@ func Discover(dir string) Discovery {
 		hasGit = true
 		gitRoot = repo.Root
 	}
+	ignore := InspectGitignore(root)
 	d := Discovery{
-		Dir:           abs,
-		Root:          root,
-		OhgoDirExists: ohgoExists,
-		ProjectFound:  found,
-		Invalid:       ohgoExists && !found,
-		Project:       identity,
-		HasGit:        hasGit,
-		GitRoot:       gitRoot,
+		Dir:             abs,
+		Root:            root,
+		OhgoDirExists:   ohgoExists,
+		ProjectFound:    found,
+		Invalid:         ohgoExists && !found,
+		Project:         identity,
+		HasGit:          hasGit,
+		GitRoot:         gitRoot,
+		GitignoreExists: ignore.Exists,
+		OhgoIgnored:     ignore.IgnoresOhgo,
 	}
 	d.State = Classify(d)
 	return d
@@ -330,8 +343,11 @@ type Deps struct {
 	// CommitProject atomically writes .ohgo/project.yml with the collected
 	// metadata, preserving an existing id. Default: project.EnsureWith.
 	CommitProject func(dir string, meta project.Metadata) (project.Identity, error)
-	// InitGit runs `git init` in dir. Default: gitInit.
+	// InitGit initializes a new repository on the default branch. Default:
+	// vcs.Init(dir, vcs.DefaultBranch).
 	InitGit func(dir string) error
+	// EnsureGitignore applies the .ohgo/ ignore rule. Default: EnsureGitignore.
+	EnsureGitignore func(dir string) (changed bool, err error)
 	// GitAvailable reports whether the git binary exists. Default: LookPath.
 	GitAvailable func() bool
 	// Stdin is read for init answers. Default: os.Stdin.
@@ -364,6 +380,11 @@ type Result struct {
 	CreatedProject bool
 	// AskedGit reports the git prompt was shown.
 	AskedGit bool
+	// AskedIgnore reports the .ohgo/ ignore prompt was shown.
+	AskedIgnore bool
+	// IgnoredOhgo reports .ohgo/ is ignored after the run, either because a
+	// rule already existed or because this run added one.
+	IgnoredOhgo bool
 	// AskedWorker reports the project worker-name prompt was shown.
 	AskedWorker bool
 	// AskedProject reports the project-name prompt was shown.
@@ -376,13 +397,15 @@ type Result struct {
 
 // Ensure runs the explicit initialization lifecycle for dir. It fast-paths
 // when a valid project.yml with complete project-local metadata already
-// exists; otherwise it collects the Git, worker, and project-name decisions
-// and only then writes project-local state. It never touches the network.
+// exists; otherwise it collects the Git, ignore, worker, and project-name
+// decisions and only then writes project-local state. It never touches the
+// network.
 //
 // The order is deliberate: decisions first, mutations last. A cancel at any
 // prompt returns ErrCanceled with nothing created, so the flow can never
-// leave a half-initialized .ohgo/ or an unauthorized git init behind. The
-// worker name is never persisted globally: it belongs to the project.
+// leave a half-initialized .ohgo/, an unauthorized git init, or a .gitignore
+// edit behind. The worker name is never persisted globally: it belongs to the
+// project.
 func Ensure(dir string, deps Deps) (Result, error) {
 	load := deps.LoadSettings
 	if load == nil {
@@ -409,12 +432,13 @@ func Ensure(dir string, deps Deps) (Result, error) {
 
 	if !NeedsInit(d) {
 		return Result{
-			Settings: settings,
-			Project:  d.Project,
-			Root:     d.Root,
-			State:    Initialized,
-			Greeting: Greeting(d.Project.WorkerName(), now()),
-			Git:      DescribeGit(d.Dir),
+			Settings:    settings,
+			Project:     d.Project,
+			Root:        d.Root,
+			State:       Initialized,
+			IgnoredOhgo: d.OhgoIgnored,
+			Greeting:    Greeting(d.Project.WorkerName(), now()),
+			Git:         DescribeGit(d.Dir),
 		}, nil
 	}
 
@@ -452,6 +476,20 @@ func Ensure(dir string, deps Deps) (Result, error) {
 		wantGit = decision
 	}
 
+	// Runtime state is local implementation detail, not project source. The
+	// default is to keep it out of Git, but only an explicit answer authorizes
+	// the .gitignore edit, and an already-ignored directory is never asked.
+	wantIgnore := false
+	askedIgnore := false
+	if NeedsIgnore(d) {
+		askedIgnore = true
+		decision, err := promptIgnore(reader, out)
+		if err != nil {
+			return Result{State: Uninitialized, Root: d.Root}, err
+		}
+		wantIgnore = decision
+	}
+
 	// The worker belongs to the project. An existing project worker
 	// (recovery) wins, then the machine-global default, then the OS account
 	// name; none becomes authoritative without the human confirming it here.
@@ -482,6 +520,29 @@ func Ensure(dir string, deps Deps) (Result, error) {
 			_, _ = fmt.Fprintf(out, "git init failed: %v; continuing without a repository.\n", gerr)
 		} else {
 			d.HasGit = true
+			_, _ = fmt.Fprintf(out, "Git initialized on %s.\n", vcs.DefaultBranch)
+		}
+	}
+
+	ignored := d.OhgoIgnored
+	if wantIgnore {
+		ensure := deps.EnsureGitignore
+		if ensure == nil {
+			ensure = EnsureGitignore
+		}
+		_, ierr := ensure(d.Root)
+		switch {
+		case ierr != nil:
+			// A partial success is reported as one: the Git repository (if
+			// any) and the project identity still stand, but the ignore rule
+			// did not land and no later step silently retries it.
+			_, _ = fmt.Fprintf(out, "Failed to update .gitignore: %v\n", ierr)
+		case InspectGitignore(d.Root).IgnoresOhgo:
+			// Verify the resulting file rather than trusting the write: the
+			// claim on the surface must match what git will actually see.
+			ignored = true
+		default:
+			_, _ = fmt.Fprintln(out, "Failed to verify .gitignore: .ohgo/ is not ignored.")
 		}
 	}
 
@@ -508,6 +569,8 @@ func Ensure(dir string, deps Deps) (Result, error) {
 		State:          Initialized,
 		CreatedProject: true,
 		AskedGit:       askedGit,
+		AskedIgnore:    askedIgnore,
+		IgnoredOhgo:    ignored,
 		AskedWorker:    true,
 		AskedProject:   true,
 		Greeting:       greeting,
@@ -561,7 +624,7 @@ func ProjectSuggestion(d Discovery) string {
 func promptGit(reader *bufio.Reader, out io.Writer, deps Deps) (bool, error) {
 	_, _ = fmt.Fprintln(out, "This project is not a Git repository.")
 	for {
-		_, _ = fmt.Fprint(out, "Create one? [Y/n/q] ")
+		_, _ = fmt.Fprint(out, "Initialize Git on main? [Y/n/q] ")
 		line, rerr := reader.ReadString('\n')
 		if rerr != nil && rerr != io.EOF {
 			return false, fmt.Errorf("startup: read git answer: %w", rerr)
@@ -576,6 +639,36 @@ func promptGit(reader *bufio.Reader, out io.Writer, deps Deps) (bool, error) {
 				_, _ = fmt.Fprintln(out, "git is unavailable; continuing without a repository.")
 				return false, nil
 			}
+			return true, nil
+		case strings.EqualFold(trimmed, "n") || strings.EqualFold(trimmed, "no"):
+			return false, nil
+		case strings.EqualFold(trimmed, "q") || strings.EqualFold(trimmed, "quit") || strings.EqualFold(trimmed, "cancel"):
+			return false, ErrCanceled
+		}
+		if rerr == io.EOF {
+			return false, ErrCanceled
+		}
+		_, _ = fmt.Fprintln(out, "Please answer y or n.")
+	}
+}
+
+// promptIgnore asks whether to keep project runtime state out of Git. The
+// default is yes; EOF before an answer cancels rather than authorizing a
+// .gitignore edit. q/quit/cancel abort the whole flow.
+func promptIgnore(reader *bufio.Reader, out io.Writer) (bool, error) {
+	_, _ = fmt.Fprintln(out, "ohgo stores local runtime state in .ohgo/.")
+	for {
+		_, _ = fmt.Fprint(out, "Add .ohgo/ to .gitignore? [Y/n/q] ")
+		line, rerr := reader.ReadString('\n')
+		if rerr != nil && rerr != io.EOF {
+			return false, fmt.Errorf("startup: read ignore answer: %w", rerr)
+		}
+		if line == "" && rerr == io.EOF {
+			return false, ErrCanceled
+		}
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "" || strings.EqualFold(trimmed, "y") || strings.EqualFold(trimmed, "yes"):
 			return true, nil
 		case strings.EqualFold(trimmed, "n") || strings.EqualFold(trimmed, "no"):
 			return false, nil
@@ -623,20 +716,16 @@ func GitAvailable() bool {
 	return err == nil
 }
 
-// InitGit runs `git init` in dir without creating commits, branches, or
-// staging. It is the commit step the TUI wizard calls after collecting its
-// decisions, sharing the stdin gate's implementation so the two paths can
-// never drift.
+// InitGit initializes a new repository in dir with HEAD on main. It creates no
+// commits, branches, or staging. It is the commit step the TUI wizard calls
+// after collecting its decisions, sharing the stdin gate's implementation so
+// the two paths can never drift.
 func InitGit(dir string) error {
-	return gitInit(dir)
+	return vcs.Init(dir, vcs.DefaultBranch)
 }
 
-// gitInit runs `git init` without creating commits, branches, or staging.
+// gitInit runs `git init -b main` without creating commits, branches, or
+// staging.
 func gitInit(dir string) error {
-	cmd := exec.Command("git", "init")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git init: %s: %w", strings.TrimSpace(string(out)), err)
-	}
-	return nil
+	return vcs.Init(dir, vcs.DefaultBranch)
 }

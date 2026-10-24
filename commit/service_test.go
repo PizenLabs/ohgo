@@ -555,3 +555,50 @@ func containsPath(changes []FileChange, path string) bool {
 	}
 	return false
 }
+
+// TestCommitOnboardingRegressionExcludesModifiedOhgoState pins the contract
+// the .gitignore onboarding rule depends on: even when runtime state is
+// tracked or modified and .gitignore is untracked, COMMIT's own scope
+// filtering keeps .ohgo/ out. The only candidate is the approved .gitignore.
+func TestCommitOnboardingRegressionExcludesModifiedOhgoState(t *testing.T) {
+	repo := newTestRepo(t)
+	initialCommit(t, repo, "a.txt", "one\n")
+	// A repository from an earlier build can carry tracked runtime state.
+	writeTestFile(t, repo, ".ohgo/history", "old\n")
+	writeTestFile(t, repo, ".ohgo/progress.json", "{}\n")
+	writeTestFile(t, repo, ".ohgo/task.md", "task\n")
+	runTestGit(t, repo, "add", "-f", "--", ".ohgo")
+	runTestGit(t, repo, "commit", "-qm", "track runtime state")
+
+	writeTestFile(t, repo, ".ohgo/history", "new\n")
+	writeTestFile(t, repo, ".ohgo/progress.json", "{\"step\":1}\n")
+	writeTestFile(t, repo, ".ohgo/task.md", "task v2\n")
+	writeTestFile(t, repo, ".gitignore", "# ohgo runtime state\n.ohgo/\n")
+
+	service := testService(repo, "chore(ignore): exclude ohgo runtime state\n\n- add .gitignore")
+	request, err := service.Propose(context.Background())
+	if err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	scope := request.Snapshot.Scope
+	if len(scope) != 1 || scope[0].Path != ".gitignore" {
+		t.Fatalf("scope = %s, want only .gitignore", renderChanges(scope))
+	}
+	for _, path := range []string{".ohgo/history", ".ohgo/progress.json", ".ohgo/task.md"} {
+		if !containsPath(request.Snapshot.Internal, path) {
+			t.Errorf("%s not reported as internal: %s", path, renderChanges(request.Snapshot.Internal))
+		}
+	}
+
+	result, err := service.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	committed := runTestGit(t, repo, "diff", "--name-only", "HEAD~1", "HEAD")
+	if strings.TrimSpace(committed) != ".gitignore" {
+		t.Errorf("commit changed %q, want only .gitignore", committed)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != ".gitignore" {
+		t.Errorf("result.Files = %s, want only .gitignore", renderChanges(result.Files))
+	}
+}
