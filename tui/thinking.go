@@ -36,6 +36,10 @@ const (
 	ThinkingTool ThinkingPhase = "tool"
 	// ThinkingWaiting means the turn is blocked on human approval.
 	ThinkingWaiting ThinkingPhase = "waiting"
+	// ThinkingCommit means the dedicated /commit workflow is working. It is a
+	// distinct phase because no agent turn is running, so the ordinary
+	// Busy-derived label would be false.
+	ThinkingCommit ThinkingPhase = "commit"
 )
 
 // ThinkingState is the presentation contract for the activity line.
@@ -76,6 +80,22 @@ type ThinkingState struct {
 // selection defers to DeriveRuntime, the existing single owner of "which phase
 // is this", so the activity line can never drift from the header's phase word.
 func ProjectThinking(s State) ThinkingState {
+	// /commit owns its own lifecycle and runs while the agent turn is idle.
+	// Read it first so the activity line names the work that is actually in
+	// flight rather than reporting an idle session.
+	if s.CommitActive() && !s.Quit {
+		label := "Preparing commit…"
+		if s.Commit.Phase == CommitExecuting {
+			label = "Creating commit…"
+		}
+		return ThinkingState{
+			Active:        true,
+			Phase:         ThinkingCommit,
+			Label:         label,
+			StartedAt:     s.Commit.StartedAt,
+			Interruptible: s.Commit.Phase == CommitProposing,
+		}
+	}
 	switch DeriveRuntime(s) {
 	case RuntimeAwaitingApproval:
 		// A blocked tool is not running, so waiting gets no elapsed timer
@@ -227,7 +247,7 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 	if state.Phase == ThinkingWaiting {
 		// Blocked on the user, not executing: the whole row parks in the
 		// muted zone with no timer and no interrupt hint.
-		return []string{formatThinkingLine(z.waiting(thinkingGlyph(state.Phase)), z.waiting(state.Label), "", width, z)}
+		return []string{formatThinkingLine(z.waiting(thinkingGlyphAt(state.Phase, tick)), z.waiting(state.Label), "", width, z)}
 	}
 	// The shimmer wraps only label runes and its stripped width always
 	// equals the plain width, so the trailing metadata never shifts across
@@ -267,7 +287,7 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 	if len(metaParts) > 0 {
 		tail = z.dim("(") + strings.Join(metaParts, " "+z.dim("·")+" ") + z.dim(")")
 	}
-	return []string{formatThinkingLine(z.active(thinkingGlyph(state.Phase)), content, tail, width, z)}
+	return []string{formatThinkingLine(z.active(thinkingGlyphAt(state.Phase, tick)), content, tail, width, z)}
 }
 
 // formatThinkingLine joins glyph, content, and parenthesised tail into one
@@ -328,6 +348,15 @@ func thinkingGlyph(phase ThinkingPhase) string {
 		return "◇"
 	}
 	return "✳"
+}
+
+// thinkingGlyphAt adds the one animated glyph: /commit uses the existing tool
+// spinner frames, driven by the existing tick, so it needs no second timer.
+func thinkingGlyphAt(phase ThinkingPhase, tick int) string {
+	if phase == ThinkingCommit {
+		return spinnerFrame(tick)
+	}
+	return thinkingGlyph(phase)
 }
 
 // elapsedLabel formats a truthful elapsed time from the activity's real start.

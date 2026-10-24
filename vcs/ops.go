@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -26,8 +28,46 @@ type DiffOptions struct {
 type StatusOptions struct {
 	// Untracked selects the untracked reporting mode.
 	Untracked string
+	// Ignored includes ignored paths, reported with the "!!" code.
+	Ignored bool
 	// Pathspecs restricts the query.
 	Pathspecs []string
+}
+
+// StatusEntry is one parsed porcelain-v1 status record.
+//
+// Index and Worktree are the two porcelain status bytes. For a rename or copy
+// the record also carries the original path; porcelain -z emits it as the next
+// NUL-separated field rather than on the same line.
+type StatusEntry struct {
+	// Index is the index-side status byte.
+	Index byte
+	// Worktree is the worktree-side status byte.
+	Worktree byte
+	// Path is the current path, relative to the repository root.
+	Path string
+	// OrigPath is the pre-rename path, or "".
+	OrigPath string
+}
+
+// Staged reports whether the entry has an index change.
+func (e StatusEntry) Staged() bool {
+	return e.Index != ' ' && e.Index != '?' && e.Index != '!'
+}
+
+// Unstaged reports whether the entry has a worktree change.
+func (e StatusEntry) Unstaged() bool {
+	return e.Worktree != ' ' && e.Worktree != '?' && e.Worktree != '!'
+}
+
+// Untracked reports the "??" record.
+func (e StatusEntry) Untracked() bool {
+	return e.Index == '?' && e.Worktree == '?'
+}
+
+// Ignored reports the "!!" record.
+func (e StatusEntry) Ignored() bool {
+	return e.Index == '!' && e.Worktree == '!'
 }
 
 // NumstatEntry is one file's added/removed line counts.
@@ -86,6 +126,231 @@ func (info *RepoInfo) StatusPorcelain(ctx context.Context, opts StatusOptions) (
 		args = append(args, opts.Pathspecs...)
 	}
 	return info.run(ctx, args...)
+}
+
+// StatusEntries returns parsed status records.
+//
+// The parsed form exists so callers that must decide a commit scope can use the
+// same status bytes the summary counts, including the original path of a
+// rename, instead of re-parsing quoted porcelain text themselves.
+func (info *RepoInfo) StatusEntries(ctx context.Context, opts StatusOptions) ([]StatusEntry, error) {
+	args := []string{"status", "-z", "--porcelain"}
+	if opts.Untracked != "" {
+		args = append(args, "--untracked-files="+opts.Untracked)
+	}
+	if opts.Ignored {
+		args = append(args, "--ignored=matching")
+	}
+	if len(opts.Pathspecs) > 0 {
+		args = append(args, "--")
+		args = append(args, opts.Pathspecs...)
+	}
+	out, err := info.run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	return parseStatusEntries(out), nil
+}
+
+// parseStatusEntries decodes porcelain-v1 -z output.
+func parseStatusEntries(output string) []StatusEntry {
+	fields := strings.Split(output, "\x00")
+	entries := make([]StatusEntry, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		entry := fields[i]
+		// Two status bytes, one separator space, then the path.
+		if len(entry) < 4 || entry[2] != ' ' {
+			continue
+		}
+		parsed := StatusEntry{
+			Index:    entry[0],
+			Worktree: entry[1],
+			Path:     entry[3:],
+		}
+		if parsed.Index == 'R' || parsed.Index == 'C' ||
+			parsed.Worktree == 'R' || parsed.Worktree == 'C' {
+			if i+1 < len(fields) {
+				parsed.OrigPath = fields[i+1]
+				i++
+			}
+		}
+		entries = append(entries, parsed)
+	}
+	return entries
+}
+
+// HeadSHA resolves HEAD, returning "" for an unborn branch.
+func (info *RepoInfo) HeadSHA(ctx context.Context) (string, error) {
+	out, code, err := info.runExit(ctx, nil, "rev-parse", "--verify", "--quiet", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// CurrentBranch returns the checked-out branch, or "" when detached.
+func (info *RepoInfo) CurrentBranch(ctx context.Context) (string, error) {
+	out, code, err := info.runExit(ctx, nil, "symbolic-ref", "--short", "-q", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// StagePaths stages exactly the named paths.
+//
+// The -A form makes a deletion stage too, while the explicit path list keeps
+// the operation from touching anything the caller did not name. It is
+// deliberately not `git add -A` with an empty pathspec.
+func (info *RepoInfo) StagePaths(ctx context.Context, paths []string) error {
+	if len(paths) == 0 {
+		return fmt.Errorf("vcs: no paths to stage")
+	}
+	args := append([]string{"add", "-A", "--"}, paths...)
+	_, err := info.run(ctx, args...)
+	return err
+}
+
+// StagedPaths lists index paths relative to HEAD.
+//
+// Rename detection is disabled so a rename appears as its deletion plus its
+// addition, which is the same path set the caller approved.
+func (info *RepoInfo) StagedPaths(ctx context.Context) ([]string, error) {
+	out, err := info.run(ctx, "diff", "--cached", "--name-only", "--no-renames", "-z")
+	if err != nil {
+		return nil, err
+	}
+	return splitNUL(out), nil
+}
+
+// IndexHashes returns the blob hash recorded in the index for each tracked
+// path. A path that is not tracked (an untracked addition, or a deletion that
+// has reached the index) is absent from the result.
+func (info *RepoInfo) IndexHashes(ctx context.Context, paths []string) (map[string]string, error) {
+	hashes := make(map[string]string, len(paths))
+	if len(paths) == 0 {
+		return hashes, nil
+	}
+	args := append([]string{"ls-files", "--stage", "-z", "--"}, paths...)
+	out, err := info.run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range strings.Split(out, "\x00") {
+		meta, path, ok := strings.Cut(entry, "\t")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(meta)
+		if len(fields) < 2 {
+			continue
+		}
+		hashes[path] = fields[1]
+	}
+	return hashes, nil
+}
+
+// HashPath returns the git blob hash of a worktree path, or found=false when
+// the path does not exist (a deletion).
+//
+// Regular files are hashed with their path so clean/smudge filters apply
+// exactly as they would during `git add`. A symlink is hashed from its link
+// target bytes, matching how git stores a symlink blob.
+func (info *RepoInfo) HashPath(ctx context.Context, path string) (hash string, found bool, err error) {
+	clean := filepath.Clean(filepath.FromSlash(path))
+	if filepath.IsAbs(clean) || clean == ".." ||
+		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", false, fmt.Errorf("vcs: path %q escapes the repository", path)
+	}
+	abs := filepath.Join(info.Root, clean)
+	fi, err := os.Lstat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("vcs: stat %q: %w", path, err)
+	}
+	if fi.IsDir() {
+		return "", false, fmt.Errorf("vcs: %q is a directory; submodule and nested-repository changes are not supported", path)
+	}
+
+	var (
+		data []byte
+		args []string
+	)
+	if fi.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(abs)
+		if err != nil {
+			return "", false, fmt.Errorf("vcs: read symlink %q: %w", path, err)
+		}
+		data = []byte(target)
+		// A symlink's target is stored verbatim; no content filter applies.
+		args = []string{"hash-object", "--stdin"}
+	} else {
+		// Let git read the file itself: a large worktree file must not be
+		// duplicated in memory merely to hash it.
+		args = []string{"hash-object", "--path=" + path, "--", path}
+	}
+	var out string
+	if data != nil {
+		out, err = info.runInput(ctx, data, args...)
+	} else {
+		out, err = info.run(ctx, args...)
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(out), true, nil
+}
+
+// IndexTree writes the current index as a tree object and returns its SHA.
+//
+// It is plumbing used after staging to pin exactly what a commit must contain:
+// comparing this tree with the new commit's tree closes the window between
+// verification and the commit itself.
+func (info *RepoInfo) IndexTree(ctx context.Context) (string, error) {
+	out, err := info.run(ctx, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// CommitTree returns the tree SHA of one commit.
+func (info *RepoInfo) CommitTree(ctx context.Context, rev string) (string, error) {
+	if strings.TrimSpace(rev) == "" {
+		return "", fmt.Errorf("vcs: commit revision is required")
+	}
+	out, err := info.run(ctx, "rev-parse", rev+"^{tree}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// CommitMessage creates one commit with exactly the supplied message and
+// returns its SHA.
+func (info *RepoInfo) CommitMessage(ctx context.Context, message string) (string, error) {
+	if strings.TrimSpace(message) == "" {
+		return "", fmt.Errorf("vcs: commit message is required")
+	}
+	if _, err := info.run(ctx, "commit", "-m", message); err != nil {
+		return "", err
+	}
+	sha, err := info.HeadSHA(ctx)
+	if err != nil {
+		return "", err
+	}
+	if sha == "" {
+		return "", fmt.Errorf("vcs: commit succeeded but HEAD does not resolve")
+	}
+	return sha, nil
 }
 
 // Summary returns the staged/unstaged/untracked counts.
@@ -249,8 +514,16 @@ func (info *RepoInfo) LsFiles(ctx context.Context, excludeStandard bool) ([]stri
 
 // run executes a git command inside the repository.
 func (info *RepoInfo) run(ctx context.Context, args ...string) (string, error) {
+	return info.runInput(ctx, nil, args...)
+}
+
+// runInput executes a git command with optional stdin bytes.
+func (info *RepoInfo) runInput(ctx context.Context, input []byte, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = info.Root
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -264,6 +537,35 @@ func (info *RepoInfo) run(ctx context.Context, args ...string) (string, error) {
 		return "", fmt.Errorf("vcs: git %s: %s", strings.Join(args, " "), message)
 	}
 	return stdout.String(), nil
+}
+
+// runExit executes a git command and preserves a non-zero exit status as data.
+//
+// Callers that ask a yes/no question (does HEAD resolve?) must distinguish "the
+// answer is no" from "git could not run at all"; only the latter is an error.
+func (info *RepoInfo) runExit(ctx context.Context, input []byte, args ...string) (string, int, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = info.Root
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err == nil {
+		return stdout.String(), 0, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return stdout.String(), exitErr.ExitCode(), nil
+	}
+	message := strings.TrimSpace(stderr.String())
+	if message == "" {
+		message = err.Error()
+	}
+	return "", -1, fmt.Errorf("vcs: git %s: %s", strings.Join(args, " "), message)
 }
 
 // splitLines splits on newlines and drops empty entries.

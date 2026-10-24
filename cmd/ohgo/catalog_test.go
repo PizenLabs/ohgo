@@ -276,6 +276,10 @@ func TestBudgetTracksTheModel(t *testing.T) {
 // model cannot honour. Sending one anyway means the provider ignores it, and
 // the user believes they paid for reasoning they never got.
 func TestEffortLadderIsValidatedAgainstTheCatalog(t *testing.T) {
+	// The merged roster prefers a discovered row over a bundled one, so the
+	// test must run without the machine's live cache to compare like with like.
+	t.Setenv("HOME", t.TempDir())
+
 	// opus-4-6 uses the adaptive ladder: it tops out at "max" and has no
 	// "xhigh", which the older budget-based Anthropic models accept.
 	ladder := catalog.ThinkingFor("anthropic/claude-opus-4-6")

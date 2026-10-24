@@ -280,6 +280,9 @@ const (
 	RuntimeAwaitingApproval RuntimeState = "awaiting approval"
 	// RuntimeWorking covers a busy turn with no finer signal.
 	RuntimeWorking RuntimeState = "working"
+	// RuntimeCommitting means the dedicated /commit workflow is generating a
+	// proposal or executing one approved proposal.
+	RuntimeCommitting RuntimeState = "committing"
 	// RuntimeShuttingDown means the session is exiting.
 	RuntimeShuttingDown RuntimeState = "shutting down"
 )
@@ -288,6 +291,11 @@ const (
 func DeriveRuntime(s State) RuntimeState {
 	if s.Quit {
 		return RuntimeShuttingDown
+	}
+	// Commit work is an explicit lifecycle, not an inference from Busy: the
+	// agent turn is idle while the commit model is answering.
+	if s.CommitActive() {
+		return RuntimeCommitting
 	}
 	if s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil {
 		return RuntimeAwaitingApproval
@@ -333,7 +341,7 @@ func RuntimeMarker(r RuntimeState) string {
 	switch r {
 	case RuntimeIdle:
 		return "○"
-	case RuntimeStreaming, RuntimeWorking, RuntimeRunningTool:
+	case RuntimeStreaming, RuntimeWorking, RuntimeRunningTool, RuntimeCommitting:
 		return "●"
 	case RuntimeAwaitingApproval:
 		return "◐"

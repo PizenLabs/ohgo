@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/startup"
 	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/vcs"
 	"github.com/spf13/cobra"
 )
 
@@ -66,6 +68,49 @@ func TestWizardCompleteCommitsProjectWithoutGit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
 		t.Error("declining Git must not create a repository")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".gitignore")); !os.IsNotExist(err) {
+		t.Error("declining the ignore rule must not create .gitignore")
+	}
+}
+
+// The wizard path commits the same repository decisions as the stdin gate:
+// a new repository on main, plus the confirmed runtime-state rule.
+func TestWizardCompleteCreatesGitOnMainAndIgnoresRuntime(t *testing.T) {
+	if !startup.GitAvailable() {
+		t.Skip("git is unavailable")
+	}
+	dir := t.TempDir()
+	opts := wizardTestOpts(dir)
+	registry := ai.NewRegistry()
+	d := startup.Discover(dir)
+	if d.HasGit {
+		t.Skip("temp dir sits inside a repository")
+	}
+	program := tui.NewProgram(nil, "test", 0)
+	held := newHarness(registry, nil, nil, nil, &agent.UsageLog{}, &opts.settings, dir, opts.model)
+	complete := wizardComplete(&cobra.Command{}, &opts, registry, d, nil, held, program, 0)
+
+	if _, _, err := complete(tui.InitWizardDecision{WantGit: true, IgnoreOhgo: true, Worker: "Bob", Project: "demo"}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	repo, err := vcs.Discover(dir)
+	if err != nil || repo == nil {
+		t.Fatalf("repository was not created: %v", err)
+	}
+	branch, err := repo.CurrentBranch(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if branch != vcs.DefaultBranch {
+		t.Errorf("branch = %q, want %q", branch, vcs.DefaultBranch)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, startup.GitignoreName))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	if !strings.Contains(string(data), startup.GitignoreRule) {
+		t.Errorf(".gitignore = %q, want the .ohgo/ rule", data)
 	}
 }
 

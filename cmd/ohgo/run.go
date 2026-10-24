@@ -19,6 +19,7 @@ import (
 	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/cognition"
+	"github.com/PizenLabs/ohgo/commit"
 	"github.com/PizenLabs/ohgo/config"
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/internal/history"
@@ -1707,7 +1708,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 
 	// The full-screen UI owns onboarding for an uninitialized project: raw
 	// stdin prompts would scroll the terminal and then jump into the
-	// alt-screen. The wizard collects the same three decisions in-canvas
+	// alt-screen. The wizard collects the same setup decisions in-canvas
 	// and commits through the same seams. Every other path keeps the
 	// stdin gate below, which fast-paths initialized projects either way.
 	if useInteractiveUI(cmd) && startup.NeedsInit(startup.Discover(opts.root)) {
@@ -1798,6 +1799,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		recoverer := openRecoveryService(opts.root)
 		defer func() { _ = recoverer.Close() }()
 		program.SetRecovery(recoverer)
+		program.SetCommitHooks(commitHooks(opts.root, &opts.settings, registry))
 		attachShellEscape(program, opts.root, opts.security)
 		controller := installTaskContinuity(program, opts.root, loop.Tools(), opts.budget)
 		program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
@@ -2079,12 +2081,12 @@ func runSession(cmd *cobra.Command, args []string) error {
 
 // runSessionWizard starts the full-screen UI with in-canvas onboarding.
 //
-// It is the TUI counterpart to startup.Ensure: the same three decisions in
-// the same order (Git, worker, project), collected by an InitWizardModel
-// instead of stdin prompts, and committed through the same seams
-// (startup.InitGit, project.EnsureWith). Nothing on disk changes before
-// Complete runs, so quitting the wizard leaves nothing created behind,
-// exactly like cancelling the stdin gate.
+// It is the TUI counterpart to startup.Ensure: the same four decisions in
+// the same order (Git, runtime-state ignore, worker, project), collected by an
+// InitWizardModel instead of stdin prompts, and committed through the same
+// seams (startup.InitGit, startup.EnsureGitignore, project.EnsureWith).
+// Nothing on disk changes before Complete runs, so quitting the wizard leaves
+// nothing created behind, exactly like cancelling the stdin gate.
 //
 // The terminal is entered once: the wizard renders between the header and
 // footer of the same Program that serves the session, and completion drops
@@ -2130,6 +2132,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	recoverer := openRecoveryService(opts.root)
 	defer func() { _ = recoverer.Close() }()
 	program.SetRecovery(recoverer)
+	program.SetCommitHooks(commitHooks(opts.root, &opts.settings, registry))
 	attachShellEscape(program, opts.root, opts.security)
 	controller := installTaskContinuity(program, opts.root, loop.Tools(), opts.budget)
 	program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
@@ -2293,7 +2296,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 
 	resumeID, _ := cmd.Flags().GetInt64("resume")
 	program.SetInitWizard(
-		tui.NewInitWizard(!d.HasGit, startup.WorkerSuggestion(d, opts.settings), startup.ProjectSuggestion(d)),
+		tui.NewInitWizard(!d.HasGit, startup.NeedsIgnore(d), startup.WorkerSuggestion(d, opts.settings), startup.ProjectSuggestion(d)),
 		tui.InitWizardHooks{Complete: wizardComplete(cmd, &opts, registry, d, store, held, program, resumeID)},
 	)
 
@@ -2310,11 +2313,12 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 }
 
 // wizardComplete commits one finished onboarding run. It collects the Git,
-// worker, and project decisions first and mutates disk only afterwards,
-// mirroring startup.Ensure: git init, then project.yml, then the session.
-// It runs on the Bubble Tea update goroutine (see InitWizardHooks), so it
-// attaches the session and publishes chrome directly. A failed commit
-// returns an error and the wizard reopens its final step for retry.
+// ignore, worker, and project decisions first and mutates disk only
+// afterwards, mirroring startup.Ensure: git init on main, then the optional
+// .gitignore rule, then project.yml, then the session. It runs on the Bubble
+// Tea update goroutine (see InitWizardHooks), so it attaches the session and
+// publishes chrome directly. A failed commit returns an error and the wizard
+// reopens its final step for retry.
 func wizardComplete(cmd *cobra.Command, opts *options, registry *ai.Registry, d startup.Discovery, store *session.Store, held *harness, program *tui.Program, resumeID int64) func(tui.InitWizardDecision) (tui.IdentityUpdated, string, error) {
 	return func(dec tui.InitWizardDecision) (tui.IdentityUpdated, string, error) {
 		var notes []string
@@ -2323,6 +2327,15 @@ func wizardComplete(cmd *cobra.Command, opts *options, registry *ai.Registry, d 
 				notes = append(notes, "git is unavailable; continuing without a repository.")
 			} else if err := startup.InitGit(d.Dir); err != nil {
 				notes = append(notes, fmt.Sprintf("git init failed: %v; continuing without a repository.", err))
+			} else {
+				notes = append(notes, "Git initialized on main.")
+			}
+		}
+		if dec.IgnoreOhgo {
+			if _, err := startup.EnsureGitignore(d.Root); err != nil {
+				notes = append(notes, fmt.Sprintf("Failed to update .gitignore: %v", err))
+			} else if !startup.InspectGitignore(d.Root).IgnoresOhgo {
+				notes = append(notes, "Failed to verify .gitignore: .ohgo/ is not ignored.")
 			}
 		}
 
@@ -2590,6 +2603,11 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				continue
 			case "redo":
 				_, _ = fmt.Fprintln(out, formatRecoveryResult(h.Redo()))
+				continue
+			case "commit":
+				if err := h.commitREPL(out, reader); err != nil {
+					_, _ = fmt.Fprintln(out, commit.AbortText(err))
+				}
 				continue
 			case "jobs":
 				_, _ = fmt.Fprintln(out, h.JobsReport())

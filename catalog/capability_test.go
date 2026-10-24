@@ -57,6 +57,48 @@ func TestBundledReasoningIsAuthoritativeWithAModelSpecificLadder(t *testing.T) {
 	}
 }
 
+// TestOpenRouterReasoningWithoutALadderRecordsTheExplicitDisable proves the
+// discovered capability needed by a lightweight role: a model that reasons by
+// default and publishes no ladder still has a provider-native "none" value.
+func TestOpenRouterReasoningWithoutALadderRecordsTheExplicitDisable(t *testing.T) {
+	entry := map[string]any{
+		"context_length":       float64(100000),
+		"top_provider":         map[string]any{"max_completion_tokens": float64(4096)},
+		"pricing":              map[string]any{"prompt": "0", "completion": "0"},
+		"architecture":         map[string]any{"input_modalities": []any{"text"}},
+		"supported_parameters": []any{"tools", "reasoning"},
+		"reasoning":            map[string]any{"mandatory": false},
+	}
+	rec := recordFromOpenRouterEntry("vendor/default-reasoner", "openrouter", entry)
+	if !rec.Reasoning {
+		t.Fatal("a model that advertises the reasoning parameter was recorded as non-reasoning")
+	}
+	if rec.Thinking == nil || rec.Thinking.Disable != "none" {
+		t.Fatalf("thinking = %+v, want the explicit none disable", rec.Thinking)
+	}
+	model, err := rec.toModel(Provider{})
+	if err != nil {
+		t.Fatalf("toModel: %v", err)
+	}
+	if model.ReasoningDisable != "none" {
+		t.Errorf("model disable = %q, want the capability carried on ai.Model", model.ReasoningDisable)
+	}
+
+	// A mandatory reasoner must not claim it can be switched off.
+	entry["reasoning"] = map[string]any{"mandatory": true}
+	mandatory := recordFromOpenRouterEntry("vendor/always-reasons", "openrouter", entry)
+	if mandatory.Thinking == nil || !mandatory.Thinking.Mandatory || mandatory.Thinking.Disable != "" {
+		t.Errorf("mandatory thinking = %+v, want mandatory with no disable", mandatory.Thinking)
+	}
+
+	// Gateways do not necessarily accept OpenRouter's "none" value.
+	entry["reasoning"] = map[string]any{"mandatory": false}
+	gateway := recordFromOpenRouterEntry("vendor/default-reasoner", "opencode-zen", entry)
+	if gateway.Thinking != nil && gateway.Thinking.Disable != "" {
+		t.Errorf("gateway thinking = %+v, want no foreign disable value", gateway.Thinking)
+	}
+}
+
 // TestDiscoveredReasoningAbsenceIsUnknownNotUnsupported is the unknown-vs-
 // unsupported contract for discovered rows: a live roster that says nothing
 // about reasoning must not be presented as "does not support thinking".

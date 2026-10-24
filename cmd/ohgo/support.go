@@ -201,10 +201,24 @@ func (h *harness) CloseSupport() {
 // resolve looks references up; production passes live discovery, tests
 // pass catalog.Resolve to stay offline and deterministic.
 func resolveSupModel(settings config.Settings, resolve func(string) (ai.Model, error)) (ai.Model, string, error) {
-	ref, roleEffort, _ := settings.RoleModel(string(config.RoleSup))
+	return resolveRoleModel(settings, config.RoleSup, "$sup", resolve)
+}
+
+// resolveRoleModel resolves one model role through the canonical authority
+// chain: role profile, then legacy layers, then the catalog default — exactly
+// what Settings.RoleModel reports. Effort follows the same rule as the
+// workspace run path: the role's configured effort, else the global default.
+// An effort the bound model does not expose is refused rather than stored or
+// silently downgraded, through the same Supports check the /model assignment
+// seam uses.
+//
+// label names the role in an error. resolve looks references up; production
+// passes live discovery, tests pass catalog.Resolve to stay offline.
+func resolveRoleModel(settings config.Settings, role config.Role, label string, resolve func(string) (ai.Model, error)) (ai.Model, string, error) {
+	ref, roleEffort, _ := settings.RoleModel(string(role))
 	ref = strings.TrimSpace(ref)
 	roleEffort = strings.TrimSpace(roleEffort)
-	effort, validate := supEffectiveEffort(settings, roleEffort)
+	effort, validate := roleEffectiveEffort(settings, roleEffort)
 	if ref == "" {
 		return catalog.Default(), effort, nil
 	}
@@ -215,21 +229,21 @@ func resolveSupModel(settings config.Settings, resolve func(string) (ai.Model, e
 	canonical := model.Provider + "/" + model.ID
 	if validate && effort != "" && effort != "off" {
 		if !catalog.ThinkingFor(canonical).Supports(effort) {
-			return ai.Model{}, "", fmt.Errorf("$sup: %s does not expose thinking effort %q", canonical, effort)
+			return ai.Model{}, "", fmt.Errorf("%s: %s does not expose thinking effort %q", label, canonical, effort)
 		}
 	}
 	return model, effort, nil
 }
 
-// supEffectiveEffort resolves the SUP thinking effort and whether it is a
-// claim that must be validated against the bound model.
+// roleEffectiveEffort resolves a non-workspace role's thinking effort and
+// whether it is a claim that must be validated against the bound model.
 //
 // An explicit role effort is a claim, so it is validated. An unset role effort
 // inherits the global default only when thinking is enabled globally; when it
 // is disabled the provider never receives an effort, so validating one would
 // refuse a configuration that runs fine. That mirrors the workspace run path,
 // where the global default does not enable thinking by itself.
-func supEffectiveEffort(settings config.Settings, roleEffort string) (effort string, validate bool) {
+func roleEffectiveEffort(settings config.Settings, roleEffort string) (effort string, validate bool) {
 	switch roleEffort {
 	case "off":
 		return "off", false
