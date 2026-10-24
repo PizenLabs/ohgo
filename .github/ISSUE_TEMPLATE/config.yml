@@ -3,3 +3,6 @@ contact_links:
   - name: Question / discussion
     url: https://github.com/PizenLabs/ohgo/discussions
     about: Ask how to use ohgo, propose ideas, or get help with setup.
+  - name: Security vulnerability
+    url: https://github.com/PizenLabs/ohgo/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue; see SECURITY.md.
