@@ -146,6 +146,147 @@ func TestParseRejectsInventedReferences(t *testing.T) {
 	}
 }
 
+func TestRepairFillsAMissingScopeFromTheApprovedPaths(t *testing.T) {
+	text := "docs: explain commit flow\n\n- keep the reviewed body"
+	proposal, ok := repairProposal(text, nil, "commit")
+	if !ok {
+		t.Fatal("a scope-less but otherwise valid message was not repaired")
+	}
+	if got, want := proposal.Subject(), "docs(commit): explain commit flow"; got != want {
+		t.Errorf("subject = %q, want %q", got, want)
+	}
+	if len(proposal.Body) != 1 || proposal.Body[0] != "- keep the reviewed body" {
+		t.Errorf("body = %#v, want the reviewed body preserved", proposal.Body)
+	}
+}
+
+func TestRepairReplacesAMalformedScope(t *testing.T) {
+	for _, subject := range []string{
+		"feat(.ohgo): add hello file",
+		"feat(): add hello file",
+		"feat(ohgo repo): add hello file",
+		"feat(Ohgo): add hello file",
+	} {
+		proposal, ok := repairProposal(subject, nil, "hana")
+		if !ok {
+			t.Fatalf("%q was not repaired", subject)
+		}
+		if got, want := proposal.Subject(), "feat(hana): add hello file"; got != want {
+			t.Errorf("%q repaired to %q, want the approved-path scope %q", subject, got, want)
+		}
+	}
+	if _, ok := repairProposal("feat(.ohgo): add hello file", nil, "Bad Scope"); ok {
+		t.Error("repair used an unusable fallback scope")
+	}
+}
+
+func TestRepairFitsOverlongSubjectAndBullets(t *testing.T) {
+	long := "docs(readme): update the readme with a much longer introduction"
+	bullet := "- " + strings.Repeat("a", 60)
+	proposal, ok := repairProposal(long+"\n\n"+bullet, nil, "readme")
+	if !ok {
+		t.Fatal("a structurally valid but overlong message was not repaired")
+	}
+	if got, want := proposal.Subject(), "docs(readme): update the readme"; got != want {
+		t.Errorf("subject = %q, want the phrase fitted at a word boundary %q", got, want)
+	}
+	if len(proposal.Body) != 1 {
+		t.Fatalf("body = %#v, want one bullet", proposal.Body)
+	}
+	if got := len([]rune(proposal.Body[0])); got > MaxBulletRunes {
+		t.Errorf("bullet is %d runes, want at most %d", got, MaxBulletRunes)
+	}
+	if want := "- " + strings.Repeat("a", 48); proposal.Body[0] != want {
+		t.Errorf("bullet = %q, want %q", proposal.Body[0], want)
+	}
+}
+
+func TestRepairInsertsMissingBodySeparatorAndNormalizesMarkers(t *testing.T) {
+	proposal, ok := repairProposal("docs: explain commit flow\n* first item\n* second item", nil, "commit")
+	if !ok {
+		t.Fatal("a message with a missing separator and star bullets was not repaired")
+	}
+	if got, want := proposal.Message(), "docs(commit): explain commit flow\n\n- first item\n- second item"; got != want {
+		t.Errorf("message = %q, want %q", got, want)
+	}
+}
+
+func TestRepairCapsTheBodyAtFiveBullets(t *testing.T) {
+	bullets := make([]string, 0, MaxBullets+2)
+	for i := 0; i < MaxBullets+2; i++ {
+		bullets = append(bullets, "- bullet "+strconv.Itoa(i))
+	}
+	proposal, ok := repairProposal("docs: explain\n\n"+strings.Join(bullets, "\n"), nil, "commit")
+	if !ok {
+		t.Fatal("a body with too many bullets was not repaired")
+	}
+	if len(proposal.Body) != MaxBullets {
+		t.Fatalf("body has %d bullets, want the first %d", len(proposal.Body), MaxBullets)
+	}
+	if got, want := proposal.Body[0], bullets[0]; got != want {
+		t.Errorf("first bullet = %q, want %q", got, want)
+	}
+}
+
+func TestRepairDropsATrailingStopWord(t *testing.T) {
+	proposal, ok := repairProposal("docs: add commit docs and more details", nil, "commit")
+	if !ok {
+		t.Fatal("a structurally valid message was not repaired")
+	}
+	if got, want := proposal.Subject(), "docs(commit): add commit docs"; got != want {
+		t.Errorf("subject = %q, want the trailing conjunction dropped: %q", got, want)
+	}
+}
+
+func TestRepairNeverBypassesValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{"invented reference", "docs: close #999"},
+		{"invented body reference", "docs: explain\n\n- close #999"},
+		{"invalid bullet", "docs: explain\n\n+ plus"},
+		{"missing type", "Update: explain"},
+		{"nothing but prose", "please write a commit message"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if proposal, ok := repairProposal(tc.text, nil, "commit"); ok {
+				t.Fatalf("repair accepted invalid text as %q", proposal.Message())
+			}
+		})
+	}
+	refs := map[string]bool{"#999": true}
+	if _, ok := repairProposal("docs: explain\n\n- close #999", refs, "commit"); !ok {
+		t.Error("repair rejected a reference present in the evidence")
+	}
+}
+
+func TestSuggestedScopeIsDeterministic(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		root  string
+		paths []string
+		want  string
+	}{
+		{"most common directory", "/tmp/ohgo", []string{"commit/a.go", "commit/b.go", "docs/x.md"}, "commit"},
+		{"tie is lexical", "/tmp/ohgo", []string{"docs/x.md", "commit/a.go"}, "commit"},
+		{"root files use repository name", "/tmp/ohgo", []string{"README.md", "main.go"}, "ohgo"},
+		{"repository name is sanitized", "/tmp/My Project!", []string{"README.md"}, "myproject"},
+		{"long directory falls back", "/tmp/ohgo", []string{"very-long-directory-name/a.go"}, "ohgo"},
+		{"no usable name", "/", []string{"README.md"}, "repo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := &Snapshot{Root: tc.root}
+			for _, path := range tc.paths {
+				snapshot.Scope = append(snapshot.Scope, FileChange{Path: path})
+			}
+			if got := snapshot.SuggestedScope(); got != tc.want {
+				t.Errorf("scope = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseAcceptsOneOuterCodeFence(t *testing.T) {
 	proposal, err := Parse("```\nfix(scope): fenced\n\n- ok\n```", nil)
 	if err != nil {

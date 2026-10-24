@@ -399,6 +399,50 @@ func TestInvalidOutputIsRegeneratedWhenValidReplyArrives(t *testing.T) {
 	}
 }
 
+// TestUnrulyModelTextIsRepairedInsteadOfFailing pins the reported failure: a
+// small model omitted the scope, exceeded the subject budget, and wrote a long
+// bullet on every attempt. The deterministic repair must preserve the change
+// summary and body while producing a proposal that satisfies every rule.
+func TestUnrulyModelTextIsRepairedInsteadOfFailing(t *testing.T) {
+	repo := newTestRepo(t)
+	initialCommit(t, repo, "a.txt", "one\n")
+	writeTestFile(t, repo, "commit/change.go", "package commit\n")
+
+	text := "docs: update the readme with a much longer introduction\n\n- " + strings.Repeat("a", 60)
+	service := testService(repo, text)
+	request, err := service.Propose(context.Background())
+	if err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	if got, want := request.Proposal.Subject(), "docs(commit): update the readme"; got != want {
+		t.Errorf("subject = %q, want %q", got, want)
+	}
+	if len(request.Proposal.Body) != 1 {
+		t.Fatalf("body = %#v, want one bullet", request.Proposal.Body)
+	}
+	if got := len([]rune(request.Proposal.Body[0])); got > MaxBulletRunes {
+		t.Errorf("bullet is %d runes, want at most %d", got, MaxBulletRunes)
+	}
+}
+
+// TestMalformedModelScopeIsReplaced pins the reported `.ohgo` scope failure:
+// the model invented a scope the validator cannot accept, and the deterministic
+// repair substitutes the scope derived from the approved path.
+func TestMalformedModelScopeIsReplaced(t *testing.T) {
+	repo := newTestRepo(t)
+	initialCommit(t, repo, "base.txt", "base\n")
+	writeTestFile(t, repo, "commit/hana.txt", "hello\n")
+
+	service := testService(repo, "feat(.ohgo): add hello file\n\n- add hana.txt")
+	request, err := service.Propose(context.Background())
+	if err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	if got, want := request.Proposal.Subject(), "feat(commit): add hello file"; got != want {
+		t.Errorf("subject = %q, want %q", got, want)
+	}
+}
+
 func TestCommitModelIsGivenNoTools(t *testing.T) {
 	repo := newTestRepo(t)
 	initialCommit(t, repo, "a.txt", "one\n")

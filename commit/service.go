@@ -365,6 +365,7 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 	shortBody := ""
 
 	var lastErr error
+	lastCandidate := ""
 	for attempt := 0; attempt < attempts; attempt++ {
 		diag.Attempts++
 		diag.PromptBytes = len(systemText) + len(userText)
@@ -410,6 +411,7 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 			subject, _ := splitSubjectBody(normalize(raw))
 			candidate = subject + shortBody
 		}
+		lastCandidate = candidate
 		proposal, err := Parse(candidate, snapshot.Refs)
 		if err == nil {
 			diag.ProposalValid = true
@@ -418,7 +420,7 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 		lastErr = err
 		diag.RetryReasons = append(diag.RetryReasons, invalidCause(err))
 
-		if subject, body, overlong := overlongSubject(raw); overlong {
+		if subject, body, overlong := overlongSubject(candidate, snapshot.Refs); overlong {
 			if !shortening {
 				shortBody = body
 			}
@@ -432,6 +434,15 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 		shortening = false
 		systemText = prompt.Commit
 		userText = fullText + "\n\n" + prompt.CommitRetry(invalidCause(err), raw)
+	}
+	// A small model can fix every rule except the scope or the total subject
+	// length. Rather than fail an otherwise valid proposal, fill a missing
+	// scope from the approved paths and fit an overlong summary into the
+	// budget. This is deterministic, preserves the reviewed body, and still
+	// goes through Parse so no other rule is bypassed.
+	if proposal, ok := repairProposal(lastCandidate, snapshot.Refs, snapshot.SuggestedScope()); ok {
+		diag.ProposalValid = true
+		return proposal, nil
 	}
 	// Keep the sentinel and the final reason in one chain: wrapping the
 	// already-sentinel-wrapped Parse error would print "commit: invalid
@@ -453,13 +464,21 @@ func splitSubjectBody(text string) (subject, body string) {
 // overlongSubject reports the precise case a focused rewrite can fix. A
 // malformed type or scope is deliberately excluded: shortening cannot repair
 // it, and the full evidence is the better second attempt.
-func overlongSubject(text string) (subject, body string, ok bool) {
+//
+// The body must already be valid. Parse validates the subject first, so an
+// overlong subject can hide an invalid bullet; preserving that body while
+// asking the model to rewrite only the subject would make the next proposal
+// fail for a reason the model was never told about.
+func overlongSubject(text string, refs map[string]bool) (subject, body string, ok bool) {
 	subject, body = splitSubjectBody(normalize(text))
 	match := subjectPattern.FindStringSubmatch(subject)
 	if match == nil || !scopePattern.MatchString(match[2]) {
 		return "", "", false
 	}
 	if utf8.RuneCountInString(subject) <= MaxSubjectRunes {
+		return "", "", false
+	}
+	if _, err := Parse("fix(scope): fit"+body, refs); err != nil {
 		return "", "", false
 	}
 	return subject, body, true
@@ -867,7 +886,7 @@ func AbortText(err error) string {
 	case errors.Is(err, ErrModel):
 		return "Commit proposal failed:\n" + trimSentinel(err, ErrModel)
 	case errors.Is(err, ErrInvalidProposal):
-		return "Commit proposal failed.\nThe COMMIT model did not produce a valid proposal."
+		return invalidProposalText(err)
 	case errors.Is(err, ErrStateChanged):
 		return "Commit aborted: repository state changed after proposal."
 	case errors.Is(err, ErrNoChanges):
@@ -897,6 +916,27 @@ func formatElapsed(elapsed time.Duration) string {
 		return "less than 1s"
 	}
 	return elapsed.Round(time.Second).String()
+}
+
+// invalidProposalText names the layer and the final validation rule. Without
+// the rule the sentence is the same for every malformed reply, which makes a
+// model that keeps missing one rule impossible to diagnose from the transcript.
+// The reason is one bounded line: it can quote model text but must not turn the
+// notice into a paste of the whole reply.
+func invalidProposalText(err error) string {
+	const limit = 180
+	reason := strings.Join(strings.Fields(ValidationText(err)), " ")
+	if reason == ErrInvalidProposal.Error() {
+		reason = ""
+	}
+	if n := utf8.RuneCountInString(reason); n > limit {
+		reason = string([]rune(reason)[:limit]) + "…"
+	}
+	const sentence = "Commit proposal failed.\nThe COMMIT model did not produce a valid proposal."
+	if reason == "" {
+		return sentence
+	}
+	return sentence + "\n" + reason
 }
 
 // trimSentinel removes "sentinel: " from the front of an error message, keeping

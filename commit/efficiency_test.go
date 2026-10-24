@@ -149,9 +149,10 @@ func TestOverlongSubjectDetectionIsPrecise(t *testing.T) {
 		{"at limit", "fix(scope): " + strings.Repeat("a", 22), false},
 		{"missing scope", "fix: " + strings.Repeat("a", 30), false},
 		{"invalid scope", "fix(Bad Scope): " + strings.Repeat("a", 30), false},
+		{"invalid body", long + "\n\n- " + strings.Repeat("a", 60), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, got := overlongSubject(tc.text); got != tc.want {
+			if _, _, got := overlongSubject(tc.text, nil); got != tc.want {
 				t.Errorf("overlongSubject(%q) = %v, want %v", tc.text, got, tc.want)
 			}
 		})

@@ -1,5 +1,10 @@
 package prompt
 
+import (
+	"fmt"
+	"unicode/utf8"
+)
+
 // Commit is the system prompt for the dedicated commit-authoring role.
 //
 // It carries only the message contract and the bounded evidence. The model has
@@ -38,9 +43,12 @@ func CommitEvidence(evidence string) string {
 }
 
 // CommitShortenSubject carries the one line the focused correction rewrites.
-// The subject is model output, so it is untrusted data, never instructions.
+// The subject is model output, so it is untrusted data, never instructions. The
+// measured length is stated explicitly because a small model does not reliably
+// count the prefix it is being asked to preserve.
 func CommitShortenSubject(subject string) string {
-	return subject
+	return fmt.Sprintf("Current subject (%d characters):\n%s\n\nThe complete subject must be at most 36 characters.",
+		utf8.RuneCountInString(subject), subject)
 }
 
 // CommitRetry asks for a corrected message after deterministic validation

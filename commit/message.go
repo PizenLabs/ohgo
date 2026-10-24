@@ -39,6 +39,15 @@ var ErrInvalidProposal = errors.New("commit: invalid proposal")
 // validation does not force a repository to use only those words.
 var (
 	subjectPattern = regexp.MustCompile(`^([a-z][a-z0-9-]*)\(([^()\s]+)\): (.+)$`)
+	// repairSubjectPattern is deliberately more permissive than the validation
+	// pattern: repair needs the type and summary even when the scope is empty,
+	// spaced, uppercase, or otherwise unusable. The scope is then replaced by
+	// the deterministic value derived from the approved paths.
+	repairSubjectPattern = regexp.MustCompile(`^([a-z][a-z0-9-]*)\s*\(([^()]*)\)\s*:\s*(.+)$`)
+	// noScopeSubjectPattern is the conventional form without a scope. The
+	// proposal contract requires a scope, but a model can omit it; repair
+	// fills one from the approved paths instead of failing the whole commit.
+	noScopeSubjectPattern = regexp.MustCompile(`^([a-z][a-z0-9-]*)\s*:\s*(.+)$`)
 	// scopePattern keeps a scope to one lowercase token.
 	scopePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*$`)
 	// referencePattern finds the issue/PR forms that must never be invented.
@@ -180,6 +189,162 @@ func (p Proposal) Validate(refs map[string]bool) error {
 		}
 	}
 	return nil
+}
+
+// repairProposal is the deterministic last resort after bounded regeneration.
+//
+// A small model can repeatedly miss the scope or the line budgets while fixing
+// every other rule. Repairing those content-free defects keeps an otherwise
+// valid proposal instead of failing /commit. The scope comes from the
+// already-approved paths, never from the model, and the fitted lines keep the
+// model's type and summary.
+//
+// The repaired text is parsed again, so repair never bypasses a validation rule:
+// an invalid body, an invented reference, or a malformed type still fails. The
+// human reviews the result before execution.
+func repairProposal(text string, refs map[string]bool, fallbackScope string) (Proposal, bool) {
+	cleaned := normalize(text)
+	if cleaned == "" {
+		return Proposal{}, false
+	}
+	subject, body := splitSubjectBody(cleaned)
+	typ, scope, summary, ok := parseSubjectParts(subject, fallbackScope)
+	if !ok {
+		return Proposal{}, false
+	}
+	prefix := typ + "(" + scope + "): "
+	if utf8.RuneCountInString(prefix+summary) > MaxSubjectRunes {
+		allowance := MaxSubjectRunes - utf8.RuneCountInString(prefix)
+		if allowance <= 0 {
+			return Proposal{}, false
+		}
+		summary = fitSummary(summary, allowance)
+		if summary == "" {
+			return Proposal{}, false
+		}
+	}
+	body = normalizeBodySeparator(body)
+	body = fitBullets(body)
+	proposal, err := Parse(prefix+summary+body, refs)
+	if err != nil {
+		return Proposal{}, false
+	}
+	return proposal, true
+}
+
+// normalizeBodySeparator inserts the blank line a model sometimes omits between
+// the subject and the first bullet. Other shapes are left untouched so Parse can
+// still reject them.
+func normalizeBodySeparator(body string) string {
+	if strings.HasPrefix(body, "\n- ") || strings.HasPrefix(body, "\n* ") {
+		return "\n" + body
+	}
+	return body
+}
+
+// fitBullets bounds the body to MaxBullets lines, normalizes `* ` markers to
+// `- `, and shortens each overlong line to the bullet budget. Extra bullets are
+// dropped, and other body shapes are left untouched so Parse can still reject
+// them; repair only removes or fits content, never invents or reorders it.
+func fitBullets(body string) string {
+	if body == "" {
+		return ""
+	}
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines))
+	bullets := 0
+	for _, line := range lines {
+		summary, isBullet := bulletSummary(line)
+		if !isBullet {
+			out = append(out, line)
+			continue
+		}
+		bullets++
+		if bullets > MaxBullets {
+			continue
+		}
+		if utf8.RuneCountInString(line) > MaxBulletRunes {
+			summary = fitSummary(summary, MaxBulletRunes-2)
+			if summary == "" {
+				return body
+			}
+		}
+		out = append(out, "- "+summary)
+	}
+	return strings.Join(out, "\n")
+}
+
+// bulletSummary accepts the two markers models use for a body item.
+func bulletSummary(line string) (summary string, ok bool) {
+	switch {
+	case strings.HasPrefix(line, "- "):
+		return strings.TrimPrefix(line, "- "), true
+	case strings.HasPrefix(line, "* "):
+		return strings.TrimPrefix(line, "* "), true
+	default:
+		return "", false
+	}
+}
+
+// parseSubjectParts accepts either the full `type(scope): summary` form or the
+// scope-less `type: summary` form the model sometimes emits. A missing or
+// malformed scope is replaced with the deterministic scope derived from the
+// approved paths, never with a value guessed from the model. An unusable
+// fallback leaves the proposal invalid.
+func parseSubjectParts(subject, fallbackScope string) (typ, scope, summary string, ok bool) {
+	fallback := strings.TrimSpace(fallbackScope)
+	if match := repairSubjectPattern.FindStringSubmatch(subject); match != nil {
+		scope = match[2]
+		if !scopePattern.MatchString(scope) {
+			scope = fallback
+		}
+		if !scopePattern.MatchString(scope) {
+			return "", "", "", false
+		}
+		return match[1], scope, strings.TrimSpace(match[3]), true
+	}
+	match := noScopeSubjectPattern.FindStringSubmatch(subject)
+	if match == nil {
+		return "", "", "", false
+	}
+	if fallback == "" || !scopePattern.MatchString(fallback) {
+		return "", "", "", false
+	}
+	return match[1], fallback, strings.TrimSpace(match[2]), true
+}
+
+// fitSummary shortens a summary to at most limit runes. It prefers the last
+// word boundary so the fitted subject does not end mid-word; a single long token
+// is cut at the rune limit because there is no boundary to preserve. A trailing
+// conjunction or preposition is dropped so the fitted phrase reads as a phrase
+// rather than a sentence cut off in the middle.
+func fitSummary(summary string, limit int) string {
+	summary = strings.TrimSpace(summary)
+	if utf8.RuneCountInString(summary) <= limit {
+		return summary
+	}
+	cut := []rune(summary)[:limit]
+	for i := len(cut) - 1; i > 0; i-- {
+		if unicode.IsSpace(cut[i]) {
+			cut = cut[:i]
+			break
+		}
+	}
+	words := strings.Fields(string(cut))
+	for len(words) > 1 && isTrailingStopWord(words[len(words)-1]) {
+		words = words[:len(words)-1]
+	}
+	return strings.TrimRight(strings.Join(words, " "), ",;:-")
+}
+
+// isTrailingStopWord reports a word that should not end a shortened phrase.
+func isTrailingStopWord(word string) bool {
+	switch strings.ToLower(word) {
+	case "a", "an", "and", "as", "at", "by", "for", "from", "in", "into",
+		"of", "on", "or", "the", "to", "with":
+		return true
+	}
+	return false
 }
 
 // ValidationText returns the concrete rule that rejected a message, without

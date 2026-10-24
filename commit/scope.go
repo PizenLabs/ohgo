@@ -293,6 +293,70 @@ func dedupeChanges(changes []FileChange) []FileChange {
 	return out
 }
 
+// maxSuggestedScopeRunes keeps a derived scope from consuming the subject
+// budget. It leaves room for a short type, the parentheses, and a summary.
+const maxSuggestedScopeRunes = 16
+
+// SuggestedScope derives a conventional-commit scope from the approved paths.
+//
+// It is used only when the model omitted the scope entirely. The most common
+// top-level directory wins; a repository with only root-level changes uses a
+// sanitized repository name, and "repo" is the final honest fallback. A name too
+// long to leave room for a summary is skipped for the same fallback. The value
+// is deterministic for one snapshot, so two identical proposals cannot disagree.
+func (s *Snapshot) SuggestedScope() string {
+	counts := make(map[string]int)
+	for _, change := range s.Scope {
+		dir, _, nested := strings.Cut(change.Path, "/")
+		if !nested {
+			continue
+		}
+		dir = strings.ToLower(dir)
+		if scopePattern.MatchString(dir) {
+			counts[dir]++
+		}
+	}
+	best := ""
+	for dir, n := range counts {
+		switch {
+		case n > counts[best]:
+			best = dir
+		case n == counts[best] && (best == "" || dir < best):
+			best = dir
+		}
+	}
+	if fitsScopeBudget(best) {
+		return best
+	}
+	if name := scopeToken(filepath.Base(s.Root)); fitsScopeBudget(name) {
+		return name
+	}
+	return "repo"
+}
+
+// fitsScopeBudget reports a non-empty derived scope that leaves room for a
+// type and a summary.
+func fitsScopeBudget(scope string) bool {
+	return scope != "" && utf8.RuneCountInString(scope) <= maxSuggestedScopeRunes
+}
+
+// scopeToken turns a repository name into a lowercase scope token, dropping
+// characters the scope grammar does not allow. An unusable name returns "".
+func scopeToken(value string) string {
+	var sb strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(value)) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-', r == '/':
+			sb.WriteRune(r)
+		}
+	}
+	token := strings.Trim(sb.String(), "-._/")
+	if !scopePattern.MatchString(token) {
+		return ""
+	}
+	return token
+}
+
 // ExpectedStagedPaths is the index path set the approved commit must have.
 //
 // A staged rename contributes both its new path and its old path: with rename

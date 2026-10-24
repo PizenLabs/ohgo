@@ -146,6 +146,15 @@ immutable.
 
 ### Fixed
 
+- `/commit` failed with "the COMMIT model did not produce a valid proposal"
+  after bounded retries when a small model omitted or malformed the scope (for
+  example `.ohgo`), exceeded the subject/bullet budgets, emitted too many
+  bullets, or used a common formatting variant. A deterministic final repair now
+  derives a scope from the approved paths, fits overlong lines, caps the body,
+  and normalizes the separator and `*` markers; the repaired text still goes
+  through the full validator and still requires human approval.
+- The focused subject rewrite preserved an invalid body because it checked only
+  the subject. It now verifies the body before reattaching it.
 - Plain REPL ignored `/model` (reported as unknown command); mid-session
   switching required a restart.
 - `PORT.md` still listed `todo` as remaining though ported, and `notebookEdit`

@@ -3,6 +3,7 @@ package commit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -162,11 +163,30 @@ func TestInvalidProposalIsNotDoubleWrapped(t *testing.T) {
 	if strings.Count(err.Error(), ErrInvalidProposal.Error()) != 1 {
 		t.Errorf("error nests the sentinel: %q", err)
 	}
-	if got := AbortText(err); got != "Commit proposal failed.\nThe COMMIT model did not produce a valid proposal." {
-		t.Errorf("AbortText = %q", got)
+	want := "Commit proposal failed.\nThe COMMIT model did not produce a valid proposal.\n" +
+		"subject \"not a commit message\" is not `type(scope): message`"
+	if got := AbortText(err); got != want {
+		t.Errorf("AbortText = %q, want %q", got, want)
 	}
 	if reason := ValidationText(err); !strings.Contains(reason, "not `type(scope): message`") {
 		t.Errorf("ValidationText = %q, want the concrete rule", reason)
+	}
+}
+
+// TestInvalidProposalTextIsOneBoundedLine keeps the rendered failure from
+// becoming a paste of the model's whole reply while still naming the rule.
+func TestInvalidProposalTextIsOneBoundedLine(t *testing.T) {
+	long := strings.Repeat("x", 1000)
+	text := AbortText(fmt.Errorf("%w: subject %q is invalid", ErrInvalidProposal, long))
+	lines := strings.Split(text, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("notice has %d lines, want the fixed sentence plus one reason line:\n%s", len(lines), text)
+	}
+	if got := len([]rune(lines[2])); got > 181 {
+		t.Errorf("reason line is %d runes, want it bounded", got)
+	}
+	if !strings.HasSuffix(lines[2], "…") {
+		t.Errorf("bounded reason = %q, want an explicit ellipsis", lines[2])
 	}
 }
 
