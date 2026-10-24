@@ -48,6 +48,94 @@ func git(t *testing.T, dir string, args ...string) {
 	}
 }
 
+func TestStatusEntriesParsesRenameUntrackedAndIgnored(t *testing.T) {
+	root := initRepo(t)
+	write(t, root, "a.txt", "one\n")
+	git(t, root, "add", "a.txt")
+	git(t, root, "commit", "-m", "initial")
+	git(t, root, "mv", "a.txt", "b.txt")
+	write(t, root, "new.txt", "new\n")
+	write(t, root, ".git/info/exclude", "*.log\n")
+	write(t, root, "debug.log", "noise\n")
+
+	info, err := Discover(root)
+	if err != nil || info == nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	entries, err := info.StatusEntries(context.Background(), StatusOptions{Untracked: "all", Ignored: true})
+	if err != nil {
+		t.Fatalf("StatusEntries: %v", err)
+	}
+	found := map[string]StatusEntry{}
+	for _, entry := range entries {
+		found[entry.Path] = entry
+	}
+	renamed, ok := found["b.txt"]
+	if !ok || renamed.Index != 'R' || renamed.OrigPath != "a.txt" {
+		t.Errorf("rename entry = %+v, want R with original a.txt", renamed)
+	}
+	untracked, ok := found["new.txt"]
+	if !ok || !untracked.Untracked() {
+		t.Errorf("untracked entry = %+v", untracked)
+	}
+	ignored, ok := found["debug.log"]
+	if !ok || !ignored.Ignored() {
+		t.Errorf("ignored entry = %+v", ignored)
+	}
+}
+
+func TestStagePathsAndHashesStayExact(t *testing.T) {
+	root := initRepo(t)
+	write(t, root, "a.txt", "one\n")
+	write(t, root, "b.txt", "two\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "initial")
+	write(t, root, "a.txt", "changed a\n")
+	write(t, root, "b.txt", "changed b\n")
+
+	info, err := Discover(root)
+	if err != nil || info == nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	ctx := context.Background()
+	if err := info.StagePaths(ctx, []string{"a.txt"}); err != nil {
+		t.Fatalf("StagePaths: %v", err)
+	}
+	staged, err := info.StagedPaths(ctx)
+	if err != nil {
+		t.Fatalf("StagedPaths: %v", err)
+	}
+	if len(staged) != 1 || staged[0] != "a.txt" {
+		t.Fatalf("staged = %v, want only a.txt", staged)
+	}
+	hashes, err := info.IndexHashes(ctx, []string{"a.txt", "b.txt"})
+	if err != nil {
+		t.Fatalf("IndexHashes: %v", err)
+	}
+	if hashes["a.txt"] == "" {
+		t.Error("staged file has no index hash")
+	}
+	// b.txt is tracked, so the index still carries its committed blob. That
+	// is the pre-stage content, not the changed worktree content.
+	if hashes["b.txt"] == "" {
+		t.Error("tracked file lost its index hash")
+	}
+	worktreeHash, found, err := info.HashPath(ctx, "b.txt")
+	if err != nil || !found {
+		t.Fatalf("HashPath b: %v found=%v", err, found)
+	}
+	if worktreeHash == hashes["b.txt"] {
+		t.Error("an unstaged worktree edit leaked into the index hash")
+	}
+	worktreeHash, found, err = info.HashPath(ctx, "a.txt")
+	if err != nil || !found {
+		t.Fatalf("HashPath: %v found=%v", err, found)
+	}
+	if worktreeHash != hashes["a.txt"] {
+		t.Errorf("worktree hash %q != staged hash %q", worktreeHash, hashes["a.txt"])
+	}
+}
+
 func TestDiscoverFindsTheOutermostRepository(t *testing.T) {
 	root := initRepo(t)
 	nested := filepath.Join(root, "a", "b", "c")

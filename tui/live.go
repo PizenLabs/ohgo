@@ -749,7 +749,7 @@ func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	if ts := ProjectThinking(s); ts.Active {
 		now := time.Now()
 		lines := RenderThinking(ts, now, 0)
-		if shimmerSupported() {
+		if shimmerSupported() || ts.Phase == ThinkingCommit {
 			lines = RenderThinkingTick(ts, now, s.Status.Spinner, 0)
 		}
 		if len(lines) > 0 {

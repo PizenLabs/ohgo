@@ -224,6 +224,10 @@ type PendingApproval struct {
 	// resolutions; Choices mirrors the option labels so the existing
 	// navigation and layout stay authoritative.
 	Proposal *workspace.Proposal
+	// Commit, when non-nil, marks this as the /commit proposal dialog. The
+	// exact message and scope are rendered as dedicated rows in the same
+	// permission surface.
+	Commit *CommitProposalView
 }
 
 // IsProposal reports whether the pending question is a proposal decision.
@@ -481,6 +485,10 @@ type State struct {
 	ConnDetail string
 	// Pending is a non-nil approval prompt.
 	Pending *PendingApproval
+	// Commit is the /commit lifecycle, or nil when idle. It is the single
+	// source the activity line, header, and tests read; the proposal payload
+	// itself lives in the Program because it contains non-renderable state.
+	Commit *CommitActivity
 	// QuitConfirm is a non-nil quit-confirmation prompt opened by /q. It
 	// reuses PendingApproval for its Yes/No choices so the conservative
 	// default and the no-wrap navigation match the tool approval dialog.
@@ -912,6 +920,12 @@ func (s *State) Apply(event Event) {
 		s.ScrollSeq++
 		s.Follow = true
 		s.resetSessionMetrics()
+		// A waiting or terminal commit phase belongs to the session that
+		// produced it. An execution already in flight stays visible so its
+		// real result is reported rather than silently swallowed.
+		if !s.CommitActive() {
+			s.Commit = nil
+		}
 
 	case ContextUpdated:
 		s.Status.ContextUsed = e.Used
@@ -937,6 +951,19 @@ func (s *State) Apply(event Event) {
 		s.Status.ContextWindow = e.Window
 		s.growScroll(1)
 
+	case CommitChanged:
+		if e.Phase == CommitIdle {
+			s.Commit = nil
+			break
+		}
+		started := e.At
+		if started.IsZero() && s.Commit != nil {
+			// A transition that names no new start keeps the phase's real
+			// start time; substituting render time would fabricate elapsed.
+			started = s.Commit.StartedAt
+		}
+		s.Commit = &CommitActivity{Phase: e.Phase, StartedAt: started, Text: e.Text}
+
 	case ApprovalAsked:
 		s.Pending = &PendingApproval{
 			ToolName:        e.ToolName,
@@ -948,6 +975,7 @@ func (s *State) Apply(event Event) {
 			Choices:         e.Choices,
 			Cursor:          defaultApprovalSelection(e.Choices),
 			Proposal:        e.Proposal,
+			Commit:          e.Commit,
 		}
 
 	case ApprovalMoved:
@@ -2484,6 +2512,9 @@ type ApprovalAsked struct {
 	// question, reason, and choices come from the request-derived proposal;
 	// the dialog shell remains the one permission surface.
 	Proposal *workspace.Proposal
+	// Commit carries the /commit proposal payload when the prompt is a commit
+	// decision.
+	Commit *CommitProposalView
 }
 
 func (ApprovalAsked) eventKind() string { return "approval_asked" }
@@ -3097,6 +3128,7 @@ var Commands = []CommandSpec{
 	{Name: "docs", Usage: "docs", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
 	{Name: "changelog", Usage: "changelog", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl}, {Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
 	{Name: "diff", Usage: "diff [target]", Description: "inspect the working-tree diff", Category: CommandGroupControl},
+	{Name: "commit", Usage: "commit [--retry|--edit]", Description: "propose and create one Git commit", Category: CommandGroupControl},
 	{Name: "undo", Usage: "undo", Description: "revert the last agent edit", Category: CommandGroupControl},
 	{Name: "redo", Usage: "redo", Description: "restore an undone agent edit", Category: CommandGroupControl},
 	{Name: "retry", Usage: "retry", Description: "re-send the last prompt", Category: CommandGroupControl},
