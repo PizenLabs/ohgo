@@ -36,6 +36,13 @@ const (
 	// proposalTitle is the legend for a request-derived proposal. It stays in
 	// the same permission boundary; only the decision data differs.
 	proposalTitle = "Proposal Permission"
+	// commitProposalTitle is the legend for the /commit proposal.
+	commitProposalTitle = "Commit Proposal"
+	// commitProposalQuestion is the ask for the one Git mutation.
+	commitProposalQuestion = "Create this commit?"
+	// commitProposalFooterHint names the commit-only actions in addition to
+	// the shared navigation keys.
+	commitProposalFooterHint = "↑↓ move · enter confirm · e edit · r retry · esc cancel"
 	// proposalFooterHint names the keys a proposal captures. It deliberately
 	// omits y/n: those decide a tool grant, not a proposal.
 	proposalFooterHint = "↑↓ move · enter confirm · esc cancel"
@@ -58,6 +65,11 @@ const (
 	approvalRowSpacer
 	approvalRowChoice
 	approvalRowFooter
+	approvalRowCommitSubject
+	approvalRowCommitBody
+	approvalRowCommitLabel
+	approvalRowCommitFile
+	approvalRowCommitNote
 )
 
 // Drop priorities: a row with a lower value is shed first when the box must
@@ -118,6 +130,9 @@ func approvalInterior(layout Layout) int {
 // tool name followed by its summary, without repeating a name the summary
 // already carries.
 func approvalTarget(pending *PendingApproval) string {
+	if pending.Commit != nil {
+		return "Commit proposal"
+	}
 	summary := strings.TrimSpace(sanitizeInline(pending.Summary))
 	name := strings.TrimSpace(sanitizeInline(pending.ToolName))
 	if pending.Prompt != "" || name == "" {
@@ -201,6 +216,10 @@ func approvalPlan(pending *PendingApproval, layout Layout) []approvalRow {
 	for _, line := range WrapToWidth(pending.question(), body) {
 		rows = append(rows, approvalRow{kind: approvalRowQuestion, text: line, drop: dropQuestion})
 	}
+	if pending.Commit != nil {
+		commitRows := commitApprovalRows(pending.Commit, body)
+		rows = append(rows, commitRows...)
+	}
 	rows = append(rows, approvalRow{kind: approvalRowSpacer, drop: dropSpacerTop})
 	for i, choice := range pending.Choices {
 		rows = append(rows, approvalRow{kind: approvalRowChoice, index: i, text: sanitizeInline(choice), drop: protectedRow})
@@ -210,8 +229,42 @@ func approvalPlan(pending *PendingApproval, layout Layout) []approvalRow {
 	return rows
 }
 
+// commitApprovalRows renders the exact message and scope inside the existing
+// permission dialog. The subject and files are protected: the reviewer must be
+// able to see what text and what paths the approval would commit, even on a
+// short terminal. The body and the explanatory note shed first.
+func commitApprovalRows(view *CommitProposalView, body int) []approvalRow {
+	var rows []approvalRow
+	rows = append(rows, approvalRow{kind: approvalRowSpacer, drop: dropSpacerTop})
+	for _, line := range WrapToWidth(sanitizeInline(view.Subject), body) {
+		rows = append(rows, approvalRow{kind: approvalRowCommitSubject, text: line, drop: protectedRow})
+	}
+	for _, line := range view.Body {
+		for _, wrapped := range WrapToWidth(sanitizeInline(line), body) {
+			rows = append(rows, approvalRow{kind: approvalRowCommitBody, text: wrapped, drop: dropReason})
+		}
+	}
+	if len(view.Files) > 0 {
+		rows = append(rows, approvalRow{kind: approvalRowCommitLabel, text: "Files:", drop: protectedRow})
+		for _, file := range view.Files {
+			for _, wrapped := range WrapToWidth(sanitizeInline(file), body) {
+				rows = append(rows, approvalRow{kind: approvalRowCommitFile, text: wrapped, drop: protectedRow})
+			}
+		}
+	}
+	if strings.TrimSpace(view.Note) != "" {
+		for _, line := range WrapToWidth(sanitizeInline(view.Note), body) {
+			rows = append(rows, approvalRow{kind: approvalRowCommitNote, text: line, drop: dropPreview})
+		}
+	}
+	return rows
+}
+
 // title is the frame legend: the tool boundary or the proposal boundary.
 func (p *PendingApproval) title() string {
+	if p.Commit != nil {
+		return commitProposalTitle
+	}
 	if p.IsProposal() {
 		return proposalTitle
 	}
@@ -221,6 +274,9 @@ func (p *PendingApproval) title() string {
 // question is the ask that introduces the answers. A proposal supplies its
 // own request-derived question; a tool approval keeps the fixed ask.
 func (p *PendingApproval) question() string {
+	if p.Commit != nil {
+		return commitProposalQuestion
+	}
 	if p.IsProposal() && strings.TrimSpace(p.Proposal.Question) != "" {
 		return p.Proposal.Question
 	}
@@ -229,6 +285,9 @@ func (p *PendingApproval) question() string {
 
 // footerHint names the keys this prompt actually captures.
 func (p *PendingApproval) footerHint() string {
+	if p.Commit != nil {
+		return commitProposalFooterHint
+	}
 	if p.IsProposal() {
 		return proposalFooterHint
 	}
@@ -427,6 +486,16 @@ func approvalRowStyle(row approvalRow, pending *PendingApproval, border string, 
 		return approvalIndent + row.text, fg(ColorText)
 	case approvalRowQuestion:
 		return approvalIndent + row.text, fg(ColorText)
+	case approvalRowCommitSubject:
+		return approvalIndent + row.text, fg(ColorText).Bold(true)
+	case approvalRowCommitBody:
+		return approvalIndent + row.text, fg(ColorMuted)
+	case approvalRowCommitLabel:
+		return approvalIndent + row.text, fg(ColorMuted).Bold(true)
+	case approvalRowCommitFile:
+		return approvalIndent + row.text, fg(ColorText)
+	case approvalRowCommitNote:
+		return approvalIndent + row.text, fg(ColorDim)
 	case approvalRowFooter:
 		return approvalIndent + row.text, fg(ColorDim)
 	case approvalRowChoice:

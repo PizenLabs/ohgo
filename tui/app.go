@@ -16,6 +16,7 @@ import (
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/cognition"
+	"github.com/PizenLabs/ohgo/commit"
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/prompt"
 	"github.com/PizenLabs/ohgo/recovery"
@@ -221,6 +222,25 @@ type Program struct {
 	// program owns neither the session store, the catalog, nor the tool set.
 	listSessions func() ([]SessionItem, error)
 	openSession  func(id int64) (*session.Session, OpenedSession, error)
+	// commitHooks own the dedicated /commit workflow. commitRequest is the
+	// proposal awaiting a human answer; commitRunning is the one execution in
+	// flight; commitProposing marks a read-only proposal generation; and
+	// commitEditing is the composer-backed message editor. All are touched
+	// only by the update goroutine.
+	commitHooks     CommitHooks
+	commitRequest   *commit.Request
+	commitRunning   bool
+	commitProposing bool
+	commitEditing   bool
+	// commitCancel aborts an in-flight proposal request with a cause, so the
+	// failure can distinguish user cancellation from session shutdown and
+	// supersession. Execution is never cancelled here: a Git commit that
+	// already started must report its real outcome rather than pretend it was
+	// abandoned.
+	commitCancel context.CancelCauseFunc
+	// commitSeq invalidates a proposal that was generated against a session
+	// the user has since left, or a proposal the user cancelled.
+	commitSeq int
 	// sessionActions are the Session Manager's write operations. Every field
 	// is nil-safe: a missing hook reports the action unavailable rather than
 	// pretending it succeeded.
@@ -607,6 +627,13 @@ func (p *Program) SetRecovery(recoverer Recoverer) {
 	p.recovery = recoverer
 }
 
+// SetCommitHooks installs the dedicated /commit workflow. Both hooks are
+// required for the command to run; a nil pair reports it unavailable rather
+// than inventing a fallback through the normal agent path.
+func (p *Program) SetCommitHooks(hooks CommitHooks) {
+	p.commitHooks = hooks
+}
+
 // SetDoctorFunc installs diagnostics behind /doctor.
 func (p *Program) SetDoctorFunc(doctor DoctorFunc) {
 	p.doctor = doctor
@@ -774,7 +801,10 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, p.waitForApproval()
 
 	case tickMsg:
-		if p.state.Status.Busy || p.state.SupportBusy() {
+		// The commit spinner shares the one spinner index and the one tick.
+		// Advancing it here keeps the activity line animating without a second
+		// timer, and the tick itself never blocks the update goroutine.
+		if p.state.Status.Busy || p.state.SupportBusy() || p.state.CommitActive() {
 			p.state.Status.Spinner = AdvanceSpinner(p.state.Status.Spinner, len(spinnerFrames))
 		}
 		return p, tick()
@@ -794,6 +824,12 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modelsRefreshedMsg:
 		return p.onModelsRefreshed(m)
+
+	case commitProposedMsg:
+		return p.onCommitProposed(m)
+
+	case commitFinishedMsg:
+		return p.onCommitFinished(m)
 
 	case copyNoticeExpiredMsg:
 		// A stale expiry never clears a newer confirmation: the generation
@@ -1057,7 +1093,31 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 
+	// The commit editor owns Enter and the conservative exits. Every other
+	// key falls through to the ordinary composer, so editing feels like
+	// typing a prompt rather than using a second text surface.
+	if p.commitEditing && !p.otherOverlayOpen() {
+		switch msg.String() {
+		case "enter":
+			return p.submitCommitEdit()
+		case "esc", "ctrl+c":
+			p.cancelCommitEdit()
+			return p, nil
+		}
+	}
+
+	// A proposal generation is an interruptible read-only operation. Esc and
+	// Ctrl+C cancel it immediately; the sequence guard makes the later answer
+	// harmless. An open overlay keeps its own keys.
+	if p.commitProposing && !p.otherOverlayOpen() && (msg.String() == "esc" || msg.String() == "ctrl+c") {
+		p.cancelCommitProposal()
+		return p, nil
+	}
+
 	if p.state.Pending != nil {
+		if p.state.Pending.Commit != nil {
+			return p.handleCommitKey(msg)
+		}
 		if p.state.Pending.IsProposal() {
 			return p.handleProposalKey(msg)
 		}
@@ -1078,6 +1138,10 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// The reflex abort key must not be swallowed by this switch: the
 			// turn would stay parked on a question nobody can reach. A shell
 			// confirmation has no turn to cancel, so it is denied instead.
+			if p.state.Pending.Commit != nil {
+				p.cancelCommitProposal()
+				return p, nil
+			}
 			if p.pendingEscape != "" {
 				return p.answer(false, "cancelled")
 			}
@@ -1657,6 +1721,9 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 	case "diff":
 		return p.openDiff(command.Args)
 
+	case "commit":
+		return p.startCommit(command.Args)
+
 	case "retry":
 		return p.retryLast()
 
@@ -2117,6 +2184,9 @@ func (p *Program) cancelSupportNow(note string) {
 // with the transition itself, not when the loop unwinds, so the footer can
 // never report working after the turn has terminated.
 func (p *Program) cancelTurnNow(note string) {
+	// A commit proposal has its own lifetime. /commit is an independent
+	// interactive command, so cancelling an unrelated turn must not abort it;
+	// user cancellation, session changes, and quitting cancel it explicitly.
 	// Claim the terminal transition before the context is cancelled. The
 	// post-run path claims the same state with a CAS; a cancel that gets here
 	// first therefore cannot be lost between its ctx check and Complete.
@@ -2994,6 +3064,20 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	// and a new session must determine its own.
 	p.proposal = nil
 	p.mu.Unlock()
+	// A commit proposal belongs to the old session's repository decision and
+	// must not be answerable into the new one. The sequence bump and the
+	// cancelled context make an in-flight answer harmless.
+	p.commitSeq++
+	p.commitRequest = nil
+	p.commitProposing = false
+	p.commitEditing = false
+	p.stopCommitRequest(commit.ErrSessionClosed)
+	// A cancelled generation must not leave the new session's activity line
+	// spinning. An execution already in flight stays visible so its real
+	// result is reported rather than silently swallowed.
+	if p.state.CommitPhase() != CommitExecuting {
+		p.state.Apply(CommitChanged{Phase: CommitIdle})
+	}
 	p.session = sess
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
 	if sess != nil {
@@ -3153,6 +3237,11 @@ func (p *Program) openQuitConfirm() {
 // goroutine (and the turn holding it) until the process exits. Denial is the
 // same conservative answer n/esc gives, so quitting can never approve work.
 func (p *Program) quitNow() tea.Cmd {
+	p.commitSeq++
+	p.commitRequest = nil
+	p.commitProposing = false
+	p.commitEditing = false
+	p.stopCommitRequest(commit.ErrSessionClosed)
 	if p.state.Pending != nil {
 		p.answer(false, "denied by user")
 	}
@@ -3172,6 +3261,13 @@ func (p *Program) quitNow() tea.Cmd {
 // answers affirmative. Every other choice maps through the usual affirmative
 // test, so "No" still denies and a custom label still defaults to denial.
 func (p *Program) answerSelection(choice string) (tea.Model, tea.Cmd) {
+	if p.state.Pending != nil && p.state.Pending.Commit != nil {
+		// The commit dialog's affirmative label is not one of the tool
+		// approval words, so it is matched exactly before the generic
+		// affirmative test.
+		approved := strings.EqualFold(choice, commitApproveChoice)
+		return p.answerCommit(approved, "denied by user")
+	}
 	if isSessionApprovalChoice(choice) {
 		switch {
 		case p.pending != nil:
@@ -3211,6 +3307,9 @@ func (p *Program) allowForSession(tool string) {
 // answer unblocks the tool that is waiting, or starts the confirmed shell
 // escape that asked.
 func (p *Program) answer(approved bool, reason string) (tea.Model, tea.Cmd) {
+	if p.state.Pending != nil && p.state.Pending.Commit != nil {
+		return p.answerCommit(approved, reason)
+	}
 	if p.pending != nil {
 		// A buffered reply channel means this never blocks the UI even if the
 		// tool has already given up.

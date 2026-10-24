@@ -19,6 +19,7 @@ import (
 	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/cognition"
+	"github.com/PizenLabs/ohgo/commit"
 	"github.com/PizenLabs/ohgo/config"
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/internal/history"
@@ -1798,6 +1799,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		recoverer := openRecoveryService(opts.root)
 		defer func() { _ = recoverer.Close() }()
 		program.SetRecovery(recoverer)
+		program.SetCommitHooks(commitHooks(opts.root, &opts.settings, registry))
 		attachShellEscape(program, opts.root, opts.security)
 		controller := installTaskContinuity(program, opts.root, loop.Tools(), opts.budget)
 		program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
@@ -2130,6 +2132,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	recoverer := openRecoveryService(opts.root)
 	defer func() { _ = recoverer.Close() }()
 	program.SetRecovery(recoverer)
+	program.SetCommitHooks(commitHooks(opts.root, &opts.settings, registry))
 	attachShellEscape(program, opts.root, opts.security)
 	controller := installTaskContinuity(program, opts.root, loop.Tools(), opts.budget)
 	program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
@@ -2590,6 +2593,11 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				continue
 			case "redo":
 				_, _ = fmt.Fprintln(out, formatRecoveryResult(h.Redo()))
+				continue
+			case "commit":
+				if err := h.commitREPL(out, reader); err != nil {
+					_, _ = fmt.Fprintln(out, commit.AbortText(err))
+				}
 				continue
 			case "jobs":
 				_, _ = fmt.Fprintln(out, h.JobsReport())

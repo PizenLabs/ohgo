@@ -1969,7 +1969,10 @@ func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout L
 	now := time.Now()
 	tick := state.Status.Spinner
 	lines := RenderThinking(ts, now, displayWidth(state, layout))
-	if shimmerSupported() {
+	// The commit glyph is the shared spinner, so it needs the tick even on a
+	// terminal that declines the TrueColor shimmer. The tick is pure and the
+	// commit label never shimmers, so this cannot enable reduced motion.
+	if shimmerSupported() || ts.Phase == ThinkingCommit {
 		lines = RenderThinkingTick(ts, now, tick, displayWidth(state, layout))
 	}
 	for _, line := range lines {
