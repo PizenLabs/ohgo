@@ -186,6 +186,14 @@ type Config struct {
 	// slow tool shows nothing until it finishes, which is exactly when the
 	// user most wants to see what it is doing.
 	OnToolProgress func(progress ToolProgress)
+	// Journal captures a recovery point around the run's mutations.
+	//
+	// It is installed by the host and consulted immediately before the first
+	// batch that can change the workspace. A journal that cannot capture the
+	// pre-mutation state refuses the batch: an edit without a recovery point is
+	// not permitted. Nil disables checkpointing, which is the correct default
+	// for embedders that do not own a workspace.
+	Journal EditJournal
 }
 
 // ToolProgress is one report about a running tool call.
@@ -435,6 +443,15 @@ func (l *Loop) SetCompactHook(hook func(CompactResult)) {
 	l.cfg.OnCompact = hook
 }
 
+// SetJournal installs the edit-recovery seam after construction.
+//
+// The host rebuilds it when the active session changes, so a checkpoint can
+// never be attributed to the wrong session's timeline. It must be called before
+// Run, never during one. Passing nil disables checkpointing.
+func (l *Loop) SetJournal(journal EditJournal) {
+	l.cfg.Journal = journal
+}
+
 // Tools returns the loop's tool set.
 //
 // The UI needs it to build views over live tool state (the background-job
@@ -451,7 +468,29 @@ func (l *Loop) Tools() []Tool {
 // cover every cycle, including the final one that made no tool calls. A
 // non-nil error means the run did not complete: the turns returned so far are
 // still valid and the caller may resume from them.
-func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
+//
+// When a Journal is installed, the run's mutation boundary is captured before
+// the first mutating tool batch and published when the run ends. The commit is
+// attempted even after cancellation: the mutation already happened, so its
+// recovery point must not be dropped merely because the turn stopped early.
+func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runErr error) {
+	edit := &runEdit{journal: l.cfg.Journal}
+	defer func() {
+		if edit.txn == nil {
+			return
+		}
+		commitErr := edit.txn.Commit(context.WithoutCancel(ctx))
+		if commitErr == nil {
+			return
+		}
+		published := fmt.Errorf("agent: publish edit checkpoint: %w", commitErr)
+		if runErr == nil {
+			runErr = published
+			return
+		}
+		runErr = fmt.Errorf("%w; %v", runErr, published)
+	}()
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -461,7 +500,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 
 	tools := l.cfg.Tools
 
-	var turns []Turn
+	turns = nil
 	for {
 		if err := ctx.Err(); err != nil {
 			return turns, err
@@ -628,7 +667,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) ([]Turn, error) {
 			}
 		}
 
-		outcomes, admissionErr := l.dispatch(ctx, activeByName, assistant, calls, turn, len(turns))
+		outcomes, admissionErr := l.dispatch(ctx, activeByName, assistant, calls, turn, len(turns), edit)
 		turn.Results = outcomes
 		for _, outcome := range outcomes {
 			live = append(live, ToolResultMessage{
@@ -819,6 +858,12 @@ func (l *Loop) drain(ctx context.Context, stream *ai.Stream) (ai.AssistantMessag
 	return ai.DrainStream(ctx, stream, l.cfg.OnTextDelta)
 }
 
+// runEdit tracks one run's optional edit transaction.
+type runEdit struct {
+	journal EditJournal
+	txn     EditTransaction
+}
+
 // dispatch runs a batch of tool calls.
 //
 // Calls marked exclusive run alone; shared calls run concurrently. Results are
@@ -831,7 +876,36 @@ func (l *Loop) dispatch(
 	calls []ai.ToolCall,
 	turn Turn,
 	turnIndex int,
+	edit *runEdit,
 ) ([]ToolOutcome, error) {
+	// The recovery point is captured before the first batch that can change the
+	// workspace, and before any call in it is authorized. A journal failure
+	// refuses the batch outright: executing a mutation we cannot undo would
+	// trade a recoverable mistake for an unrecoverable one.
+	if edit != nil && edit.txn == nil && edit.journal != nil && batchMayMutate(byName, calls) {
+		txn, err := edit.journal.BeginEdit(ctx, EditBoundary{
+			Turn:  turnIndex,
+			Tools: batchToolNames(calls),
+		})
+		if err != nil {
+			out := make([]ToolOutcome, len(calls))
+			for i, call := range calls {
+				out[i] = ToolOutcome{
+					CallID:   call.ID,
+					ToolName: call.Name,
+					Args:     call.Arguments,
+					Result: Result{
+						Text: fmt.Sprintf(
+							"recovery checkpoint unavailable: %v; no files were modified", err),
+						IsError: true,
+					},
+				}
+			}
+			return out, nil
+		}
+		edit.txn = txn
+	}
+
 	type indexed struct {
 		position int
 		outcome  ToolOutcome
@@ -887,6 +961,36 @@ func (l *Loop) hasTool(name string) bool {
 		}
 	}
 	return false
+}
+
+// batchMayMutate reports whether any call in a batch can change the workspace.
+//
+// It is deliberately conservative in the safe direction: a tool declares its
+// action surface, and a delegated call is treated as mutating because the child
+// shares this workspace. An unrecognised tool falls back to its approval tier,
+// so the only way to be skipped is a tool that is provably read-only.
+func batchMayMutate(byName map[string]Tool, calls []ai.ToolCall) bool {
+	for _, call := range calls {
+		tool, ok := byName[call.Name]
+		if !ok {
+			continue
+		}
+		for _, class := range ToolActionClasses(tool) {
+			if class == ActionMutate || class == ActionDelegate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// batchToolNames lists the tools in a batch, in call order.
+func batchToolNames(calls []ai.ToolCall) []string {
+	names := make([]string, 0, len(calls))
+	for _, call := range calls {
+		names = append(names, call.Name)
+	}
+	return names
 }
 
 // isExclusive reports whether a call must run alone.

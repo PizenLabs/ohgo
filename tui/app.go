@@ -18,6 +18,7 @@ import (
 	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/exec"
 	"github.com/PizenLabs/ohgo/prompt"
+	"github.com/PizenLabs/ohgo/recovery"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/tokens"
 	"github.com/PizenLabs/ohgo/workspace"
@@ -322,6 +323,13 @@ type Program struct {
 	// Switch, which owns validation, the runtime, persistence, and chrome.
 	workspace WorkspaceHooks
 
+	// recovery is the host's workspace recovery authority. Nil means recovery
+	// is unavailable, in which case /undo and /redo report that rather than
+	// silently doing nothing. The program never builds a checkpoint itself:
+	// the journal is handed to the loop per turn, and Undo/Redo are invoked
+	// only from the explicit slash commands.
+	recovery Recoverer
+
 	// shell wires the "!" escape: the process runner and the mutation
 	// classifier the ASK gate consults. Its zero value reports the feature
 	// unavailable rather than shelling out to an unwired process.
@@ -597,6 +605,15 @@ func (p *Program) SetUsageLog(log *agent.UsageLog) {
 // SetCompactor installs the summarizer behind /compact.
 func (p *Program) SetCompactor(compact Compactor) {
 	p.compactor = compact
+}
+
+// SetRecovery installs the workspace recovery authority behind /undo and
+// /redo, and the journal the loop uses to checkpoint agent edits.
+//
+// It is one seam because the two halves must agree: the journal records into
+// the same session timeline that the commands move through.
+func (p *Program) SetRecovery(recoverer Recoverer) {
+	p.recovery = recoverer
 }
 
 // SetDoctorFunc installs diagnostics behind /doctor.
@@ -1654,6 +1671,14 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	case "compact":
 		return p.compactNow()
+
+	case "undo":
+		p.recoverWorkspace(recovery.OpUndo)
+		return nil
+
+	case "redo":
+		p.recoverWorkspace(recovery.OpRedo)
+		return nil
 
 	case "connect":
 		p.openConnectManager()
@@ -2980,6 +3005,9 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	p.mu.Unlock()
 	p.session = sess
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
+	if sess != nil {
+		p.reportRecoveryInspection(sess.ID)
+	}
 	// A proposal still on screen belongs to the old session; close it so it
 	// cannot be answered into the new one. Tool approvals were already denied
 	// above through the blocked tool's reply channel.
@@ -4276,6 +4304,11 @@ func (p *Program) runTurn(text string) {
 	}
 	p.loop.SetSystemContext(blocks)
 
+	// The recovery seam is bound at the turn boundary, to the session this
+	// turn belongs to. A /new during the turn cannot retarget it, and the
+	// checkpoint published at the end lands in the right timeline.
+	p.installRecoveryJournal(turnSessID)
+
 	// Live statusline seeding: the provider only reports measured usage at
 	// turn completion, so without a provisional the upload count and the
 	// context budget would sit stale for the whole streaming phase and jump
@@ -4327,6 +4360,9 @@ func (p *Program) runTurn(text string) {
 	})
 
 	turns, err := p.loop.Run(ctx, request)
+	// The run published its edit checkpoint, if any. Clearing the journal
+	// keeps a later code path from capturing under this turn's scope.
+	p.loop.SetJournal(nil)
 
 	// Record what this run consumed before any lifecycle transition persists
 	// it. The ledger is cumulative across resumes; the run grant itself is
@@ -4668,11 +4704,18 @@ func (p *Program) AttachSession(store *session.Store, sess *session.Session, his
 		p.state.Apply(ApprovalAnswered{})
 	}
 	if len(history) == 0 {
+		if sess != nil {
+			p.reportRecoveryInspection(sess.ID)
+		}
 		return
 	}
 	p.state.Apply(HistoryReplaced{Entries: EntriesFromMessages(history)})
 	if sess != nil {
 		p.state.Apply(Notice{Text: fmt.Sprintf("resumed session %d (%d messages)", sess.ID, len(history))})
+		// A leftover interrupted recovery belongs to this session's workspace,
+		// so it is surfaced when the session opens rather than waiting for an
+		// undo that would be refused.
+		p.reportRecoveryInspection(sess.ID)
 	}
 }
 

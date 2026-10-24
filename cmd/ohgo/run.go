@@ -1784,6 +1784,11 @@ func runSession(cmd *cobra.Command, args []string) error {
 			programOpts = append(programOpts, tui.WithMouseReporting())
 		}
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+		// The recovery store is opened before the UI runs; /undo and /redo
+		// move through the same session timeline the loop records into.
+		recoverer := openRecoveryService(opts.root)
+		defer func() { _ = recoverer.Close() }()
+		program.SetRecovery(recoverer)
 		attachShellEscape(program, opts.root, opts.security)
 		controller := installTaskContinuity(program, opts.root, loop.Tools(), opts.budget)
 		program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
@@ -2044,6 +2049,8 @@ func runSession(cmd *cobra.Command, args []string) error {
 	}
 
 	plain := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
+	plain.rec = openRecoveryService(opts.root)
+	defer func() { _ = plain.rec.Close() }()
 	plain.usage.SetCost(opts.model.Cost)
 	plain.workspace = opts.authority().Label()
 	plain.gate = opts.gate
@@ -2111,6 +2118,9 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		programOpts = append(programOpts, tui.WithMouseReporting())
 	}
 	program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+	recoverer := openRecoveryService(opts.root)
+	defer func() { _ = recoverer.Close() }()
+	program.SetRecovery(recoverer)
 	attachShellEscape(program, opts.root, opts.security)
 	controller := installTaskContinuity(program, opts.root, loop.Tools(), opts.budget)
 	program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
@@ -2126,6 +2136,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	}
 
 	held := newHarness(registry, loop, store, nil, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
+	held.rec = recoverer
 	held.usage.SetCost(opts.model.Cost)
 	held.workspace = opts.authority().Label()
 	held.gate = opts.gate
@@ -2565,6 +2576,12 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				history = relayed
 				_, _ = fmt.Fprintln(out, notice)
 				continue
+			case "undo":
+				_, _ = fmt.Fprintln(out, formatRecoveryResult(h.Undo()))
+				continue
+			case "redo":
+				_, _ = fmt.Fprintln(out, formatRecoveryResult(h.Redo()))
+				continue
 			case "jobs":
 				_, _ = fmt.Fprintln(out, h.JobsReport())
 				continue
@@ -2657,8 +2674,13 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		if h.newBudget != nil {
 			h.loop.SetBudget(h.newBudget())
 		}
+		// The plain REPL records the same edit boundary as the full-screen UI:
+		// one explicit turn, one recovery point. The journal is bound to the
+		// session this turn belongs to and cleared afterwards.
+		h.loop.SetJournal(h.journal())
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		_, turns := runHeadlessTurnAs(ctx, h.loop, h.root, out, text, history, authority)
+		h.loop.SetJournal(nil)
 		stop()
 		if h.usage != nil {
 			h.usage.Add(turns)

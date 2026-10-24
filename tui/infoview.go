@@ -81,6 +81,8 @@ var defaultDocumentation = strings.Join([]string{
 	"  /usage            token usage, cost, and providers",
 	"  /doctor           diagnose setup, credentials, and tools",
 	"  /diff             inspect the working-tree diff",
+	"  /undo             revert the last agent edit",
+	"  /redo             restore an undone agent edit",
 	"  /compact          summarise context now",
 	"  /quit             exit the session",
 	"",
