@@ -44,9 +44,8 @@ func explanationFor(intent Intent) string {
 // It is explicit and pinned by tests. Strong — a leading-verb match that no
 // rival signal contests — is the "strong separation" the policy requires (§7).
 // Moderate is a single corroborating phrase, and ambiguous is either no signal
-// or a contested one; neither is worth interrupting a turn for, and the
-// existing safe narrowing (delegation and refusal) still handles those
-// requests without changing authority.
+// or a contested one; neither can choose a different workspace. The caller
+// sends uncertain cross-workspace requests to the human selector.
 const proposalThreshold = StrengthStrong
 
 // transitionTargets is the only set of transitions the policy may propose.

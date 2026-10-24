@@ -293,7 +293,7 @@ func TestReplReportsNeedsReviewAndContinues(t *testing.T) {
 	h.workspace = workspace.Build.Label()
 
 	var out bytes.Buffer
-	err := repl(h, &out, strings.NewReader("change note.txt\nexplain this\n/quit\n"), nil)
+	err := repl(h, &out, strings.NewReader("change note.txt\n/ask\nexplain this\n/quit\n"), nil)
 	if err != nil {
 		t.Fatalf("repl: %v", err)
 	}

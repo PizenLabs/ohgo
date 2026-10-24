@@ -314,28 +314,6 @@ func (t *TransitionPrompt) Move(delta int) {
 	t.Selection = next
 }
 
-// TurnSemantics is the UI projection of one turn's route.
-//
-// It exists only while that turn runs. Active mirrors the session's persistent
-// workspace so a test can assert the route did not move it; Workspace, Handler,
-// Intent, and Effective are the route's own labels. The renderer derives the
-// delegated indicator from Handler versus the persistent Workspace, so a route
-// can never make the UI claim the session switched authority.
-type TurnSemantics struct {
-	// Active reports that a route was supplied for the turn.
-	Active bool
-	// Workspace is the route's view of the persistent workspace label.
-	Workspace string
-	// Handler is the workspace whose semantics answer this turn.
-	Handler string
-	// Intent is the classified request.
-	Intent string
-	// Effective is the authority actually available to this turn.
-	Effective string
-	// Delegated reports the handler narrows the persistent workspace.
-	Delegated bool
-}
-
 // Status is the persistent footer.
 type Status struct {
 	// Model is the model in use.
@@ -366,11 +344,6 @@ type Status struct {
 	// WorkspaceAccent is the semantic 256-color index for the workspace, from
 	// workspace.Style(). Empty falls back to a neutral accent.
 	WorkspaceAccent string
-	// Turn is the ephemeral route projection for the turn in flight, zero when
-	// idle. It is cleared by the turn's terminal event and never copied into
-	// Workspace: delegation changes how one turn is handled, not the session's
-	// authority boundary.
-	Turn TurnSemantics
 	// User is the project worker display name from the project-local metadata.
 	// Empty hides it: the view never invents a name.
 	User string
@@ -680,7 +653,6 @@ func (s *State) Apply(event Event) {
 		s.TurnSeq = seq
 		s.Cancelled = false
 		s.TurnStartedAt = e.At
-		s.Status.Turn = e.Turn
 		// A resolved decision never outlives the turn it was made for: a new
 		// turn supersedes any proposal still held (I: stale state cannot
 		// survive into another turn).
@@ -729,9 +701,6 @@ func (s *State) Apply(event Event) {
 			s.closedAssistant = true
 		}
 		s.Status.Busy = false
-		// The route applied to this turn only. Clearing it returns the UI to
-		// the persistent workspace; the next turn is routed independently.
-		s.Status.Turn = TurnSemantics{}
 		// The stream is settled now, so a task that completed during the turn
 		// can close with its footer at the true tail of the output.
 		s.appendTaskRecap()
@@ -748,7 +717,6 @@ func (s *State) Apply(event Event) {
 		}
 		s.Cancelled = true
 		s.Status.Busy = false
-		s.Status.Turn = TurnSemantics{}
 		s.Queued = nil
 		if open := s.openAssistant(); open >= 0 {
 			s.closedAssistant = true
@@ -934,7 +902,6 @@ func (s *State) Apply(event Event) {
 		s.closedAssistant = true
 		s.recapEmitted = nil
 		s.OutputTokens = 0
-		s.Status.Turn = TurnSemantics{}
 		s.Transition = nil
 		s.Selection = nil
 		// A transient clipboard confirmation never survives a session
@@ -1035,7 +1002,12 @@ func (s *State) Apply(event Event) {
 		// The cursor parks on the authority in force, so Enter on an
 		// unchanged selection is a deliberate reaffirmation rather than a
 		// silent jump to another mode.
-		s.Permissions = &PermissionsState{Cursor: authorityIndexForLabel(s.Status.Workspace)}
+		s.Permissions = &PermissionsState{
+			Cursor:  authorityIndexForLabel(s.Status.Workspace),
+			Title:   e.Title,
+			Reason:  e.Reason,
+			Request: e.Request,
+		}
 
 	case PermissionsMoved:
 		if s.Permissions != nil {
@@ -1713,10 +1685,6 @@ func (s *State) Apply(event Event) {
 		if e.HasWorkspace {
 			s.Status.Workspace = e.Workspace
 			s.Status.WorkspaceAccent = e.WorkspaceAccent
-			// An explicit switch supersedes any turn projection: the new
-			// workspace owns the next turn, and no delegated indicator may
-			// outlive the session authority it described.
-			s.Status.Turn = TurnSemantics{}
 			// The workspace moved, so a proposal naming the old one is stale.
 			s.Transition = nil
 		}
@@ -2331,10 +2299,6 @@ type UserSubmitted struct {
 	// model-phase activity line. Zero means unknown, and unknown shows no
 	// elapsed time rather than a fabricated one.
 	At time.Time
-	// Turn is the route projection for this turn. Zero preserves the
-	// pre-router behavior: the active workspace handles the turn and no
-	// delegated indicator is shown.
-	Turn TurnSemantics
 }
 
 func (UserSubmitted) eventKind() string { return "user_submitted" }
@@ -2595,8 +2559,13 @@ type TransitionResolved struct{}
 func (TransitionResolved) eventKind() string { return "transition_resolved" }
 
 // PermissionsOpened opens the authority selector with the cursor parked on the
-// authority in force.
-type PermissionsOpened struct{}
+// authority in force. Request is non-empty only when the selector is resolving
+// an ambiguous user intent; that request runs only after an explicit choice.
+type PermissionsOpened struct {
+	Title   string
+	Reason  string
+	Request string
+}
 
 func (PermissionsOpened) eventKind() string { return "permissions_opened" }
 

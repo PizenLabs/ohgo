@@ -391,9 +391,8 @@ type WorkspaceHooks struct {
 	Current func() string
 	// Switch moves the session to the named workspace.
 	Switch func(name string) error
-	// PrepareTurn classifies a turn's request, installs the resulting runtime
-	// authority, and reports what the UI must show. Nil preserves the
-	// pre-router behavior: the active workspace handles every turn.
+	// PrepareTurn validates a turn's request against the active authority and
+	// reports a refusal before the model is called. It never changes authority.
 	PrepareTurn func(text string) TurnAuthority
 	// Predict classifies a turn's request and reports the safe workspace
 	// transition its owner would propose, if any. It must not change
@@ -407,6 +406,9 @@ type WorkspaceHooks struct {
 const (
 	// TransitionKindWorkspace moves the session between authorities.
 	TransitionKindWorkspace = "workspace"
+	// TransitionKindAmbiguous requires an explicit workspace choice before the
+	// request is admitted.
+	TransitionKindAmbiguous = "ambiguous"
 	// TransitionKindProposal is a request-derived decision about the execution
 	// path. Authority does not move; the human resolves the decision through
 	// the same permission surface a tool approval uses.
@@ -470,23 +472,12 @@ type ProposalResolution struct {
 	Request string
 }
 
-// TurnAuthority is the decision for one turn, phrased for the UI.
-//
-// It keeps the active workspace and the turn's handler distinct so a delegated
-// informational turn can be shown truthfully instead of naming an authority
-// the turn is not exercising. It is a projection of workspace.Route, never a
-// second routing decision: the program stores it for presentation only.
+// TurnAuthority is the workspace owner's validation result for one turn.
 type TurnAuthority struct {
 	// Active is the session's persistent workspace label, e.g. "BUILD".
 	Active string
-	// Handler is the workspace label that answers the turn, e.g. "ASK".
-	Handler string
 	// Intent is the classified request, e.g. "READ".
 	Intent string
-	// Effective is the authority actually available this turn.
-	Effective string
-	// Delegated reports the handler differs from the active workspace.
-	Delegated bool
 	// Blocked reports the turn must not run.
 	Blocked bool
 	// Reason explains a block in user-facing terms.
@@ -2167,30 +2158,30 @@ func (p *Program) queue(text string) tea.Cmd {
 //
 // The transition happens at a turn boundary: a running turn keeps the
 // authority it started under, so one execution never spans two workspaces.
-func (p *Program) switchWorkspace(name string) {
+func (p *Program) switchWorkspace(name string) bool {
 	if p.workspace.Switch == nil {
 		p.state.Apply(Notice{Text: "workspace switching is unavailable"})
-		return
+		return false
 	}
 	// A workspace switch underneath an open support panel would move the
 	// authority a running SUP turn executes under. Refused until the
 	// panel closes (Esc); the turn boundary rule stays intact.
 	if p.state.SupportPanel != nil {
 		p.state.Apply(Notice{Text: "close support first (Esc) before switching workspace"})
-		return
+		return false
 	}
 	if p.state.Status.Busy {
 		p.state.Apply(Notice{Text: "wait for the turn to finish before switching workspace"})
-		return
+		return false
 	}
 	if p.workspace.Current != nil && strings.EqualFold(p.workspace.Current(), name) {
-		p.state.Apply(Notice{Text: "already in " + strings.ToUpper(name)})
-		return
+		return true
 	}
 	if err := p.workspace.Switch(name); err != nil {
 		p.state.Apply(Notice{Text: "workspace: " + err.Error()})
-		return
+		return false
 	}
+	return true
 }
 
 // It exists so a test can exercise the dispatch table without a Bubble Tea
@@ -3545,6 +3536,10 @@ func (p *Program) submit(text string) tea.Cmd {
 	// behavior and starts the turn immediately.
 	if p.workspace.Predict != nil && p.state.Transition == nil && p.state.Pending == nil {
 		if proposed, ok := p.workspace.Predict(text); ok {
+			if proposed.Kind == TransitionKindAmbiguous {
+				p.openAuthorityChoice(text, proposed.Reason)
+				return nil
+			}
 			if proposed.Kind == TransitionKindProposal && proposed.Proposal != nil {
 				labels := make([]string, len(proposed.Proposal.Options))
 				for i, option := range proposed.Proposal.Options {
@@ -3586,8 +3581,15 @@ func (p *Program) submit(text string) tea.Cmd {
 // the prediction step, so a resolved proposal replays its prompt without
 // being re-proposed.
 func (p *Program) startTurn(text string) tea.Cmd {
+	return p.startTurnWithChoice(text, "")
+}
+
+// startTurnWithChoice runs a request under the workspace explicitly chosen in
+// the centered selector. The choice is captured by the command, not shared
+// state, so another input cannot consume or overwrite it before execution.
+func (p *Program) startTurnWithChoice(text string, choice workspace.Workspace) tea.Cmd {
 	return func() tea.Msg {
-		p.runTurn(text)
+		p.runTurnWithChoice(text, choice)
 		return turnFinishedMsg{}
 	}
 }
@@ -3595,11 +3597,9 @@ func (p *Program) startTurn(text string) tea.Cmd {
 // resolveTransition consumes the pending proposal and starts the turn.
 //
 // Accepting routes the workspace move through the owner's Switch — the one
-// authoritative seam — and only then runs the turn; the turn therefore
-// executes under the proposed authority through the normal routing. Rejecting
-// leaves authority untouched and runs the turn under the current workspace,
-// whose own safe semantic narrowing still applies, so declining can never
-// escalate (I2, I3, I7).
+// authoritative seam — and only then runs the turn. Rejecting cancels the
+// request; running it under a different workspace would make the visual and
+// runtime contract disagree (I2, I3, I7).
 //
 // The prompt is cleared before the switch so the chrome the switch publishes
 // cannot race a stale proposal back onto the screen.
@@ -3611,10 +3611,13 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 	text, proposed := pending.Text, pending.Proposed
 	p.state.Apply(TransitionResolved{})
 	if !accept {
-		return p, p.startTurn(text)
+		p.restoreAuthorityRequest(text)
+		p.state.Apply(Notice{Text: "request cancelled; choose its workspace explicitly, then resend"})
+		return p, nil
 	}
 	if p.workspace.Switch == nil {
 		p.state.Apply(Notice{Text: "workspace switching is unavailable"})
+		p.restoreAuthorityRequest(text)
 		return p, nil
 	}
 	if p.workspace.Current != nil && strings.EqualFold(p.workspace.Current(), proposed) {
@@ -3627,6 +3630,7 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 		// silently execute under the workspace the user declined. Report and
 		// drop the prompt; the user can resend.
 		p.state.Apply(Notice{Text: "workspace: " + err.Error()})
+		p.restoreAuthorityRequest(text)
 		return p, nil
 	}
 	return p, p.startTurn(text)
@@ -4013,40 +4017,41 @@ func (p *Program) cancelShellNow() {
 // It never touches the queue: shifting state off the update goroutine would
 // race the renderer, so the shift waits for turnFinishedMsg.
 func (p *Program) runTurn(text string) {
+	p.runTurnWithChoice(text, "")
+}
+
+func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	p.mu.Lock()
 	p.turnSeq++
 	seq := p.turnSeq
 	p.mu.Unlock()
 
-	// The intent router decides the authority for this turn before the model
-	// is asked anything. A request the active workspace is not permitted to
-	// answer is refused here, not offered to the model: authority is decided
-	// by the runtime, never proposed by a model (§11, §37). The route is
-	// projected into the turn-start event rather than kept beside it, so the
-	// transcript and the status projection agree on one decision.
-	turn := TurnSemantics{}
-	if p.workspace.PrepareTurn != nil {
-		authority := p.workspace.PrepareTurn(text)
-		if authority.Blocked {
-			p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
-			reason := authority.Reason
-			if reason == "" {
-				reason = "request refused by workspace authority"
-			}
-			p.publish(Notice{Text: reason})
-			p.publish(AssistantDone{Seq: seq})
-			return
+	// The control plane validates the active authority before the model is asked.
+	// A request the selected workspace cannot answer is refused unless this exact
+	// turn carries the user's explicit choice from the authority selector.
+	turn := TurnAuthority{}
+	if choice.Valid() {
+		// The selector is the authority decision. Classification remains useful
+		// task context, but it cannot veto or replace the user's chosen workspace;
+		// tool admission still enforces that workspace's contract.
+		turn = TurnAuthority{
+			Active: choice.Label(),
+			Intent: strings.ToUpper(string(workspace.Classify(text))),
 		}
-		turn = TurnSemantics{
-			Active:    true,
-			Workspace: authority.Active,
-			Handler:   authority.Handler,
-			Intent:    authority.Intent,
-			Effective: authority.Effective,
-			Delegated: authority.Delegated,
-		}
+	} else if p.workspace.PrepareTurn != nil {
+		turn = p.workspace.PrepareTurn(text)
 	}
-	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), Turn: turn})
+	if turn.Blocked {
+		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
+		reason := turn.Reason
+		if reason == "" {
+			reason = "request refused by workspace authority"
+		}
+		p.publish(Notice{Text: reason})
+		p.publish(AssistantDone{Seq: seq})
+		return
+	}
+	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
 
 	// The completion contract is extracted from the user's own text before any
 	// execution. It is the task's objective and the evidence boundary; the
@@ -4183,10 +4188,7 @@ func (p *Program) runTurn(text string) {
 	// evaluates every tool that remains, and completion still evaluates
 	// evidence the runtime observed. The shape is built after the fresh run
 	// grant is installed so an exhausted prior turn cannot poison this one.
-	authorityLabel := strings.ToLower(strings.TrimSpace(turn.Effective))
-	if authorityLabel == "" {
-		authorityLabel = strings.ToLower(strings.TrimSpace(turn.Handler))
-	}
+	authorityLabel := strings.ToLower(strings.TrimSpace(turn.Active))
 	if authorityLabel == "" && p.workspace.Current != nil {
 		authorityLabel = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
 	}

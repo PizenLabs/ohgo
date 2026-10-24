@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/workspace"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -85,6 +86,13 @@ const (
 type PermissionsState struct {
 	// Cursor is the highlighted option index into AuthorityOptions.
 	Cursor int
+	// Title and Reason customize the selector when it is the ambiguity boundary.
+	// Empty Title means the normal /permissions heading.
+	Title  string
+	Reason string
+	// Request is held until the user chooses a workspace; an empty value means
+	// this is an ordinary authority-management action.
+	Request string
 }
 
 // Move shifts the highlight, wrapping at both ends: the three authorities form
@@ -190,6 +198,10 @@ func authorityAccent(mode AuthorityMode) string {
 // Every emitted line is padded to the interior width, which keeps the rounded
 // border aligned and guarantees no row exceeds width.
 func RenderPermissionsModal(selectedIdx int, currentMode AuthorityMode, width int) string {
+	return renderPermissionsModal(selectedIdx, currentMode, width, "", "", "")
+}
+
+func renderPermissionsModal(selectedIdx int, currentMode AuthorityMode, width int, title, reason, request string) string {
 	if width <= 0 {
 		width = permissionsDefaultWidth
 	}
@@ -219,7 +231,22 @@ func RenderPermissionsModal(selectedIdx int, currentMode AuthorityMode, width in
 	footerStyle := fg(ColorDim)
 
 	var rows []string
-	rows = append(rows, permissionsCenter(titleStyle, "Update Model Execution Authority", interior))
+	if strings.TrimSpace(title) == "" {
+		title = "Update Model Execution Authority"
+	}
+	rows = append(rows, permissionsCenter(titleStyle, title, interior))
+	if strings.TrimSpace(reason) != "" {
+		rows = append(rows, "")
+		for _, line := range WrapToWidth(reason, descWidth) {
+			rows = append(rows, descStyle.Render(permissionsIndent+line))
+		}
+	}
+	if strings.TrimSpace(request) != "" {
+		rows = append(rows, "")
+		for _, line := range WrapToWidth("Request: "+request, descWidth) {
+			rows = append(rows, descStyle.Render(permissionsIndent+line))
+		}
+	}
 	rows = append(rows, "")
 	for i, opt := range AuthorityOptions {
 		rows = append(rows, permissionsOptionRow(i, i == selected, opt, currentMode, interior))
@@ -330,7 +357,7 @@ func renderPermissionsArea(sb *strings.Builder, state State, _ *Palette, layout 
 		return
 	}
 	current, _ := AuthorityModeFromLabel(state.Status.Workspace)
-	card := RenderPermissionsModal(modal.Cursor, current, permissionsCardWidth(state.Width))
+	card := renderPermissionsModal(modal.Cursor, current, permissionsCardWidth(state.Width), modal.Title, modal.Reason, modal.Request)
 	if state.Width <= 0 || state.Height <= 0 {
 		sb.WriteString(card)
 		if !strings.HasSuffix(card, "\n") {
@@ -377,6 +404,30 @@ func (p *Program) openPermissions() {
 	p.state.Apply(PermissionsOpened{})
 }
 
+// openAuthorityChoice makes the centered authority selector the human
+// decision boundary for a request the classifier cannot safely place.
+func (p *Program) openAuthorityChoice(request, reason string) {
+	if p.state.Status.Busy || p.state.SupportPanel != nil {
+		p.restoreAuthorityRequest(request)
+		p.state.Apply(Notice{Text: "wait until the current surface closes before choosing a workspace"})
+		return
+	}
+	p.state.Apply(PermissionsOpened{
+		Title:   "Choose Workspace For This Request",
+		Reason:  reason,
+		Request: request,
+	})
+}
+
+// restoreAuthorityRequest leaves a cancelled or failed choice available for
+// the user to edit and resubmit; it is never silently executed.
+func (p *Program) restoreAuthorityRequest(request string) {
+	if strings.TrimSpace(request) == "" {
+		return
+	}
+	p.state.Apply(InputChanged{Text: request})
+}
+
 // handlePermissionsKey routes keys to the open selector. It owns the keyboard
 // while open: navigation wraps, Enter confirms, and Esc or Ctrl+C cancels
 // without touching authority.
@@ -389,6 +440,9 @@ func (p *Program) handlePermissionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter", " ":
 		return p.confirmPermissions()
 	case "esc", "ctrl+c":
+		if p.state.Permissions != nil {
+			p.restoreAuthorityRequest(p.state.Permissions.Request)
+		}
 		p.state.Apply(PermissionsClosed{})
 	}
 	return p, nil
@@ -408,8 +462,27 @@ func (p *Program) confirmPermissions() (tea.Model, tea.Cmd) {
 	}
 	option, ok := permissionSelection(modal.Cursor)
 	p.state.Apply(PermissionsClosed{})
-	if ok {
-		p.switchWorkspace(option.Mode.WorkspaceName())
+	if !ok {
+		p.restoreAuthorityRequest(modal.Request)
+		return p, nil
+	}
+	name := option.Mode.WorkspaceName()
+	current := ""
+	if p.workspace.Current != nil {
+		current = p.workspace.Current()
+	}
+	if !strings.EqualFold(current, name) && !p.switchWorkspace(name) {
+		p.restoreAuthorityRequest(modal.Request)
+		return p, nil
+	}
+	if modal.Request != "" {
+		ws, err := workspace.Parse(name)
+		if err != nil {
+			p.restoreAuthorityRequest(modal.Request)
+			p.state.Apply(Notice{Text: "workspace: " + err.Error()})
+			return p, nil
+		}
+		return p, p.startTurnWithChoice(modal.Request, ws)
 	}
 	return p, nil
 }

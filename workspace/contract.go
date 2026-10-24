@@ -460,7 +460,17 @@ func behavioralMutationObjective(text string) bool {
 			return true
 		}
 	}
-	return false
+	// Creating a concrete runnable artifact can be judged by observed changes
+	// followed by a repository-level check even when the user did not name a
+	// filename (for example, a portfolio website in an empty workspace).
+	return behavioralCreationObjective.MatchString(strings.TrimSpace(normalized))
+}
+
+var behavioralCreationObjective = regexp.MustCompile(
+	`\b(?:create|build|scaffold|generate|implement|write)\b.{0,64}\b(?:website|web site|web app|web application|landing page|portfolio site)\b`)
+
+func createsVerifiableArtifact(text string) bool {
+	return behavioralCreationObjective.MatchString(normalizeRequest(text))
 }
 
 // pathToken matches one candidate path-like token. It stops at punctuation so

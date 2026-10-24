@@ -150,11 +150,9 @@ func TestAskRefusesInvestigation(t *testing.T) {
 	}
 }
 
-// TestBuildDelegatesReadTurnsToAsk is invariant C and H: an informational turn
-// in BUILD is answered by ASK semantics, cannot mutate, and leaves BUILD
-// active. The loop carries a prompt claiming BUILD authority, so the test also
-// proves the boundary is the runtime gate, not the prompt.
-func TestBuildDelegatesReadTurnsToAsk(t *testing.T) {
+// TestBuildRequiresAnExplicitAskSwitch: BUILD cannot become conversational
+// ASK semantics behind the workspace badge.
+func TestBuildRequiresAnExplicitAskSwitch(t *testing.T) {
 	t.Setenv("OHGO_HISTORY_FILE", "")
 	write := &spyTool{name: "write", tier: agent.TierWrite}
 	stream := &routeStream{call: writeCall()}
@@ -179,14 +177,17 @@ func TestBuildDelegatesReadTurnsToAsk(t *testing.T) {
 	if got := write.executions(); got != 0 {
 		t.Errorf("mutations = %d, want 0 for an informational turn", got)
 	}
+	if got := stream.requests(); got != 0 {
+		t.Errorf("provider requests = %d, want 0 before the workspace decision", got)
+	}
 	if h.activeWorkspace() != workspace.Build {
 		t.Errorf("active workspace = %s, want BUILD", h.activeWorkspace())
 	}
 	if h.workspace != "BUILD" {
 		t.Errorf("workspace label = %q, want BUILD", h.workspace)
 	}
-	if !strings.Contains(out.String(), "BUILD · ASK / READ") {
-		t.Errorf("the delegated turn was not reported truthfully:\n%s", out.String())
+	if !strings.Contains(out.String(), "this request needs ASK authority") {
+		t.Errorf("the required ASK transition was not reported:\n%s", out.String())
 	}
 }
 
@@ -198,6 +199,12 @@ func TestBuildExecutesExplicitMutation(t *testing.T) {
 	stream := &routeStream{call: writeCall()}
 	gate := newAuthorityGate(workspace.Build)
 	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, write), "BUILD")
+	if route := h.RouteTurn("why does this function use sync.Map?"); route.Allowed() {
+		t.Fatal("BUILD silently handled an informational request without an explicit ASK choice")
+	}
+	if got := gate.Workspace(); got != workspace.Build {
+		t.Fatalf("gate after refusing the read = %s, want BUILD", got)
+	}
 
 	var out strings.Builder
 	if err := repl(h, &out, strings.NewReader("implement the fix\n/quit\n"), nil); err != nil {
@@ -206,14 +213,17 @@ func TestBuildExecutesExplicitMutation(t *testing.T) {
 	if got := write.executions(); got != 1 {
 		t.Errorf("mutations = %d, want 1", got)
 	}
+	if got := stream.requests(); got != 2 {
+		t.Errorf("provider requests = %d, want one admitted tool round trip", got)
+	}
 	if h.activeWorkspace() != workspace.Build {
 		t.Errorf("active workspace = %s, want BUILD", h.activeWorkspace())
 	}
 }
 
-// TestFuzzDelegatesReadTurnsAndStaysFuzz is invariant D: FUZZ + READ is
-// answered by ASK, cannot mutate, and leaves FUZZ active.
-func TestFuzzDelegatesReadTurnsAndStaysFuzz(t *testing.T) {
+// TestFuzzRequiresAnExplicitAskSwitch keeps informational work out of the
+// FUZZ investigation contract unless the user explicitly switches.
+func TestFuzzRequiresAnExplicitAskSwitch(t *testing.T) {
 	t.Setenv("OHGO_HISTORY_FILE", "")
 	write := &spyTool{name: "write", tier: agent.TierWrite}
 	stream := &routeStream{call: writeCall()}
@@ -227,11 +237,14 @@ func TestFuzzDelegatesReadTurnsAndStaysFuzz(t *testing.T) {
 	if got := write.executions(); got != 0 {
 		t.Errorf("mutations = %d, want 0", got)
 	}
+	if got := stream.requests(); got != 0 {
+		t.Errorf("provider requests = %d, want 0 before the workspace decision", got)
+	}
 	if h.activeWorkspace() != workspace.Fuzz {
 		t.Errorf("active workspace = %s, want FUZZ", h.activeWorkspace())
 	}
-	if !strings.Contains(out.String(), "FUZZ · ASK / READ") {
-		t.Errorf("the delegated turn was not reported truthfully:\n%s", out.String())
+	if !strings.Contains(out.String(), "this request needs ASK authority") {
+		t.Errorf("the required ASK transition was not reported:\n%s", out.String())
 	}
 }
 
@@ -305,11 +318,9 @@ func TestAuthorityIsEnforcedWithoutPromptInstructions(t *testing.T) {
 	}
 }
 
-// TestCrossWorkspaceSessionKeepsAuthority is the end-to-end scenario: one
-// session moves through BUILD informational, BUILD mutation, FUZZ
-// investigation, and FUZZ informational turns; only the explicit BUILD
-// mutation executes, and each informational turn is reported against its
-// originating workspace.
+// TestCrossWorkspaceSessionKeepsAuthority is the end-to-end scenario: every
+// mode change is explicit, BUILD alone admits mutation, and informational or
+// investigative requests cannot silently borrow another workspace's policy.
 func TestCrossWorkspaceSessionKeepsAuthority(t *testing.T) {
 	t.Setenv("OHGO_HISTORY_FILE", "")
 	write := &spyTool{name: "write", tier: agent.TierWrite}
@@ -318,11 +329,15 @@ func TestCrossWorkspaceSessionKeepsAuthority(t *testing.T) {
 	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, write), "BUILD")
 
 	input := strings.Join([]string{
-		"why is this function using X?", // BUILD + READ    → ASK, no mutation
+		"/ask",                          // explicit switch to ASK
+		"why is this function using X?", // ASK + READ
+		"/build",                        // explicit switch to BUILD
 		"Implement the fix.",            // BUILD + EXECUTE → mutation
 		"/fuzz",                         // explicit switch to FUZZ
-		"Try to break the fix.",         // FUZZ + INVESTIGATE → no mutation
-		"Why did this edge case fail?",  // FUZZ + READ    → ASK, no mutation
+		"Try to break the fix.",         // FUZZ + INVESTIGATE
+		"Why did this edge case fail?",  // FUZZ + READ is refused
+		"/ask",                          // explicit switch to ASK
+		"Why did this edge case fail?",  // ASK + READ
 		"/quit",
 	}, "\n") + "\n"
 
@@ -333,14 +348,14 @@ func TestCrossWorkspaceSessionKeepsAuthority(t *testing.T) {
 	if got := write.executions(); got != 1 {
 		t.Errorf("mutations = %d, want exactly the one explicit BUILD turn", got)
 	}
-	if h.activeWorkspace() != workspace.Fuzz {
-		t.Errorf("active workspace = %s, want FUZZ after the explicit switch", h.activeWorkspace())
+	if h.activeWorkspace() != workspace.Ask {
+		t.Errorf("active workspace = %s, want ASK after the explicit switch", h.activeWorkspace())
 	}
-	if !strings.Contains(out.String(), "BUILD · ASK / READ") {
-		t.Errorf("the BUILD informational turn was not reported:\n%s", out.String())
+	if !strings.Contains(out.String(), "this request needs ASK authority") {
+		t.Errorf("the incompatible FUZZ informational request was not refused:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "FUZZ · ASK / READ") {
-		t.Errorf("the FUZZ informational turn was not reported:\n%s", out.String())
+	if strings.Contains(out.String(), "BUILD · ASK / READ") || strings.Contains(out.String(), "FUZZ · ASK / READ") {
+		t.Errorf("a redundant per-turn workspace node was displayed:\n%s", out.String())
 	}
 }
 
@@ -362,45 +377,47 @@ func TestSwitchWorkspaceMovesTheLiveGate(t *testing.T) {
 	}
 }
 
-// TestRouteTurnInstallsTheHandlerForDelegatedTurns proves the router narrows
-// the live authority for an allowed informational turn.
-func TestRouteTurnInstallsTheHandlerForDelegatedTurns(t *testing.T) {
+// TestRouteTurnKeepsBuildAuthority proves a request cannot narrow the live
+// authority before an explicit workspace transition.
+func TestRouteTurnKeepsBuildAuthority(t *testing.T) {
 	gate := newAuthorityGate(workspace.Build)
 	h := &harness{gate: gate, workspace: "BUILD"}
 	route := h.RouteTurn("why does this work?")
-	if !route.Delegated() {
-		t.Fatalf("route = %+v, want a delegated turn", route)
+	if route.Allowed() || route.Required != workspace.Ask {
+		t.Fatalf("route = %+v, want a refusal requiring ASK", route)
 	}
-	if got := gate.Workspace(); got != workspace.Ask {
-		t.Errorf("gate = %s, want ASK for the turn", got)
+	if got := gate.Workspace(); got != workspace.Build {
+		t.Errorf("gate = %s, want unchanged BUILD authority", got)
 	}
-	// The active workspace is untouched.
+	// Both the stored workspace and live gate remain BUILD.
 	if h.activeWorkspace() != workspace.Build {
 		t.Errorf("active workspace = %s, want BUILD", h.activeWorkspace())
 	}
+	if got := gate.Workspace(); got != workspace.Build {
+		t.Errorf("gate = %s, want BUILD", got)
+	}
 }
 
-// TestDelegatedTurnDoesNotLeakIntoTheNextRoute proves the runtime projection
-// is per-turn: after a narrowed READ turn, an EXECUTE turn is routed from the
-// unchanged workspace and restores BUILD authority (I2, I6).
-func TestDelegatedTurnDoesNotLeakIntoTheNextRoute(t *testing.T) {
+// TestRouteNeverNarrowedTheBuildGate proves a refused READ cannot leave the
+// security gate in ASK for the next BUILD execution.
+func TestRouteNeverNarrowedTheBuildGate(t *testing.T) {
 	gate := newAuthorityGate(workspace.Build)
 	h := &harness{gate: gate, workspace: "BUILD"}
 
 	read := h.RouteTurn("why does this work?")
-	if !read.Delegated() || read.Effective() != workspace.Ask {
-		t.Fatalf("read route = %+v, want a delegated ASK turn", read)
+	if read.Allowed() || read.Required != workspace.Ask || read.Active != workspace.Build {
+		t.Fatalf("read route = %+v, want refusal without authority change", read)
 	}
-	if got := gate.Workspace(); got != workspace.Ask {
-		t.Fatalf("gate during the read turn = %s, want ASK", got)
+	if got := gate.Workspace(); got != workspace.Build {
+		t.Fatalf("gate after the read refusal = %s, want BUILD", got)
 	}
 
 	execute := h.RouteTurn("implement the fix")
-	if execute.Handler != workspace.Build || execute.Effective() != workspace.Build {
+	if !execute.Allowed() || execute.Active != workspace.Build {
 		t.Fatalf("execute route = %+v, want BUILD", execute)
 	}
 	if got := gate.Workspace(); got != workspace.Build {
-		t.Errorf("gate after routing the next turn = %s, want BUILD", got)
+		t.Errorf("gate after the execution route = %s, want BUILD", got)
 	}
 	if h.activeWorkspace() != workspace.Build {
 		t.Errorf("active workspace = %s, want BUILD", h.activeWorkspace())
@@ -420,7 +437,7 @@ func TestRefusedRouteLeavesAuthorityUntouched(t *testing.T) {
 	if got := gate.Workspace(); got != workspace.Ask {
 		t.Errorf("gate after refusal = %s, want ASK", got)
 	}
-	if route.Effective() != workspace.Ask {
-		t.Errorf("refused effective authority = %s, want ASK", route.Effective())
+	if route.Active != workspace.Ask {
+		t.Errorf("refused route changed active authority = %s, want ASK", route.Active)
 	}
 }

@@ -58,10 +58,8 @@ func (o *countingOwner) install(p *Program, predict func(string) (TurnTransition
 			})
 			return nil
 		},
-		Predict: predict,
-		PrepareTurn: func(string) TurnAuthority {
-			return TurnAuthority{Active: o.ws(), Handler: o.ws()}
-		},
+		Predict:     predict,
+		PrepareTurn: func(string) TurnAuthority { return TurnAuthority{Active: o.ws()} },
 	})
 }
 
@@ -171,10 +169,9 @@ func TestProposalNavigationClampsAtTheEnds(t *testing.T) {
 	}
 }
 
-// TestRejectedProposalKeepsAuthorityAndRunsTheTurn covers the fallback: Enter
-// on the default keeps the workspace, switches nothing, and the turn still
-// runs under the current authority (I2, I3).
-func TestRejectedProposalKeepsAuthorityAndRunsTheTurn(t *testing.T) {
+// TestRejectedWorkspaceMoveCancelsTheTurn: declining a different workspace
+// cannot run the request under the current workspace's unrelated contract.
+func TestRejectedWorkspaceMoveCancelsTheTurn(t *testing.T) {
 	var requests int32
 	p, owner := newTransitionProgram(t, &requests)
 
@@ -193,12 +190,14 @@ func TestRejectedProposalKeepsAuthorityAndRunsTheTurn(t *testing.T) {
 	if p.state.Status.Workspace != "BUILD" {
 		t.Errorf("displayed workspace = %q, want BUILD", p.state.Status.Workspace)
 	}
-	if cmd == nil {
-		t.Fatal("rejecting the proposal did not run the turn")
+	if cmd != nil {
+		t.Fatal("rejecting a workspace move scheduled the turn")
 	}
-	cmd()
-	if got := atomic.LoadInt32(&requests); got == 0 {
-		t.Error("the turn did not reach the model after rejection")
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Errorf("provider requests = %d, want 0 after rejection", got)
+	}
+	if p.state.Input != "why does this work?" {
+		t.Errorf("input = %q, want the cancelled request preserved", p.state.Input)
 	}
 }
 
@@ -217,8 +216,14 @@ func TestEscRejectsWithoutSwitching(t *testing.T) {
 	if got := owner.asked(); len(got) != 0 {
 		t.Errorf("Esc switched the workspace: %v", got)
 	}
-	if cmd == nil {
-		t.Error("Esc did not continue the turn under the current workspace")
+	if cmd != nil {
+		t.Error("Esc scheduled the request after cancelling the workspace choice")
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Errorf("provider requests = %d, want 0 after Esc", got)
+	}
+	if p.state.Input != "why does this work?" {
+		t.Errorf("input = %q, want the cancelled request preserved", p.state.Input)
 	}
 }
 
@@ -307,6 +312,9 @@ func TestAcceptedSwitchFailureDoesNotRunTheTurn(t *testing.T) {
 	if p.state.Status.Workspace != "BUILD" {
 		t.Errorf("displayed workspace = %q, want BUILD", p.state.Status.Workspace)
 	}
+	if p.state.Input != "why does this work?" {
+		t.Errorf("input = %q, want the request preserved after switch failure", p.state.Input)
+	}
 }
 
 // TestNoPredictHookKeepsTheOldBehavior: a program without a Predict hook never
@@ -317,7 +325,7 @@ func TestNoPredictHookKeepsTheOldBehavior(t *testing.T) {
 	p.SetWorkspaceSwitcher(WorkspaceHooks{
 		Current:     func() string { return "BUILD" },
 		Switch:      func(string) error { return nil },
-		PrepareTurn: func(string) TurnAuthority { return TurnAuthority{Active: "BUILD", Handler: "BUILD"} },
+		PrepareTurn: func(string) TurnAuthority { return TurnAuthority{Active: "BUILD"} },
 	})
 
 	cmd := typeAndEnter(p, "why does this work?")

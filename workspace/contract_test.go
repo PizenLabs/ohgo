@@ -120,6 +120,17 @@ func TestBuildIntentContractAcceptsBehaviouralMutationObjective(t *testing.T) {
 	}
 }
 
+func TestBuildIntentContractCanVerifyAnUnnamedCreatedWebsite(t *testing.T) {
+	contract := BuildIntentContract("Create a portfolio website")
+	if contract.Kind != ObjectiveMutation || contract.Ambiguous || !contract.BehavioralObjective {
+		t.Fatalf("contract = %+v, want a verifiable behavioral mutation", contract)
+	}
+	want := []VerificationRequirement{{Kind: VerifyScope, Scope: "*", Check: CheckAny}}
+	if !reflect.DeepEqual(contract.Verification, want) {
+		t.Fatalf("verification = %+v, want repository-level check evidence %+v", contract.Verification, want)
+	}
+}
+
 // Running a check is an execution objective, not a mutation. The check is still
 // required evidence: a clean stop without running it is not a completion.
 func TestBuildIntentContractSeparatesExecutionFromMutation(t *testing.T) {

@@ -7391,7 +7391,7 @@
             "description": "List repository contents"
           },
           "authorization": "AUTO",
-          "text": "$ ls -la\n\ntotal 32\ndrwx------@   6 anvndev  staff   192 Oct 23 11:54 .\ndrwx------@ 157 anvndev  staff  5024 Oct 23 11:54 ..\n-rw-r--r--@   1 anvndev  staff   251 Oct 23 11:54 calc_test.go\n-rw-r--r--@   1 anvndev  staff   171 Oct 23 11:54 calc.go\n-rw-r--r--@   1 anvndev  staff    33 Oct 23 11:54 go.mod\n-rw-r--r--@   1 anvndev  staff    21 Oct 23 11:54 Makefile\n\n[exit code 0, 14ms]"
+          "text": "$ ls -la\n\ntotal 32\ndrwx------@   6 pizenlabs  staff   192 Oct 23 11:54 .\ndrwx------@ 157 pizenlabs  staff  5024 Oct 23 11:54 ..\n-rw-r--r--@   1 pizenlabs  staff   251 Oct 23 11:54 calc_test.go\n-rw-r--r--@   1 pizenlabs  staff   171 Oct 23 11:54 calc.go\n-rw-r--r--@   1 pizenlabs  staff    33 Oct 23 11:54 go.mod\n-rw-r--r--@   1 pizenlabs  staff    21 Oct 23 11:54 Makefile\n\n[exit code 0, 14ms]"
         },
         {
           "tool": "read",

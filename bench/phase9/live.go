@@ -185,14 +185,17 @@ func runLiveScenarioWithOptions(ctx context.Context, sc scenario, live liveModel
 	metrics.Prompt = promptText
 
 	contract := workspace.BuildIntentContract(promptText)
-	route := workspace.RouteTurn(workspace.Build, promptText)
+	// The benchmark supplies the authority that matches the scenario's explicit
+	// intent; runtime sessions never perform this workspace choice implicitly.
+	benchmarkWorkspace := workspace.Classify(promptText).Handler()
+	route := workspace.RouteTurn(benchmarkWorkspace, promptText)
 	if !route.Allowed() {
 		metrics.ObjectiveStatus = "FAILED"
 		metrics.CompletionReason = route.Message()
 		metrics.VerificationStatus = "not_applicable"
 		return metrics, nil
 	}
-	metrics.Authority = route.Handler.String()
+	metrics.Authority = route.Active.String()
 	toolSet := builtTools(root)
 	metrics.ToolSetHash = toolSetHash(toolSet)
 	resolver := structuralResolver(toolSet)
@@ -202,7 +205,7 @@ func runLiveScenarioWithOptions(ctx context.Context, sc scenario, live liveModel
 	}
 
 	system := aiSystemBlock(prompt.Build(root,
-		prompt.WorkspaceContract(route.Handler.String())+"\n\n"+prompt.ProjectContext(root)))
+		prompt.WorkspaceContract(route.Active.String())+"\n\n"+prompt.ProjectContext(root)))
 
 	var requests []ai.Request
 	retries := 0
@@ -225,7 +228,7 @@ func runLiveScenarioWithOptions(ctx context.Context, sc scenario, live liveModel
 		MaxTokens: options.MaxTokens,
 		MaxTurns:  options.MaxTurns,
 		Deadline:  deadline,
-		Authorize: newBenchmarkGate(root, route.Handler),
+		Authorize: newBenchmarkGate(root, route.Active),
 	})
 	if err != nil {
 		return metrics, err
@@ -235,7 +238,7 @@ func runLiveScenarioWithOptions(ctx context.Context, sc scenario, live liveModel
 	if projection != "off" {
 		facts := cognition.ProbeFacts(root)
 		shape := cognition.BuildShape(contract, cognition.ShapeParams{
-			Authority: route.Handler.String(),
+			Authority: route.Active.String(),
 			Facts:     facts,
 			Snapshot:  snapshot,
 			Budget:    cognition.BudgetShapeFrom(loop.Budget().Snapshot()),

@@ -138,8 +138,14 @@ func ClassifyPrediction(text string) Prediction {
 	// while a read signal is taken only from the leading clause so an
 	// informational opener is not fabricated from a later noun phrase.
 	read := evidenceNone
-	if len(clauses) > 0 && headMatches(readHeads, firstToken(clauses[0])) {
-		read = evidenceHead
+	if len(clauses) > 0 {
+		head := clauseHead(clauses[0])
+		if headMatches(readHeads, head) {
+			read = evidenceHead
+			if headMatches(ambiguousReadHeads, head) {
+				read = evidencePhrase
+			}
+		}
 	}
 	investigateHead := false
 	executeHead := false
@@ -148,7 +154,7 @@ func ClassifyPrediction(text string) Prediction {
 	// only mutation signal in that clause, so a head-only rule would drop it.
 	executeClause := false
 	for i, clause := range clauses {
-		token := firstToken(clause)
+		token := clauseHead(clause)
 		if headMatches(investigateHeads, token) {
 			investigateHead = true
 		}
@@ -220,9 +226,14 @@ func ClassifyPrediction(text string) Prediction {
 		competing = ""
 	}
 
+	// A read verb in the same request does not contest an explicit execution
+	// clause: "check this project and create the missing files" asks for the
+	// mutation, not for a decision between reading and executing it.
+	decisiveMutation := intent == IntentExecute && (executeHead || executeClause) && competing == IntentRead
+
 	prediction := Prediction{Intent: intent, Competing: competing}
 	switch {
-	case winner == evidenceNone || rival >= winner:
+	case winner == evidenceNone || (rival >= winner && !decisiveMutation):
 		prediction.Strength = StrengthAmbiguous
 	case winner == evidenceHead:
 		prediction.Strength = StrengthStrong
@@ -248,7 +259,7 @@ type Outcome string
 
 // Outcomes.
 const (
-	// Allow means the turn runs under Route.Handler.
+	// Allow means the turn runs under the active workspace.
 	Allow Outcome = "allow"
 	// Require means the request needs an authority the active workspace does
 	// not hold, so it must be refused until the user changes workspace
@@ -258,16 +269,13 @@ const (
 
 // Route is the authority decision for one turn.
 //
-// It keeps the session's active workspace and the turn's semantic handler
-// distinct: an informational turn delegated to ASK is handled with ASK
-// semantics while the active workspace remains authoritative (§9, §10).
+// The active workspace is the turn's authority. Intent can refuse an operation
+// that exceeds ASK or FUZZ, but it cannot silently narrow BUILD into another
+// workspace (§3, §11).
 type Route struct {
 	// Active is the session's authoritative workspace. A route never changes
 	// it; only an explicit user switch does.
 	Active Workspace
-	// Handler is the workspace whose semantics answer this turn. It is always
-	// at most Active's authority: delegation narrows, it never widens.
-	Handler Workspace
 	// Intent is the classified request.
 	Intent Intent
 	// Outcome is whether the turn may run.
@@ -278,39 +286,6 @@ type Route struct {
 
 // Allowed reports whether the turn may run.
 func (r Route) Allowed() bool { return r.Outcome == Allow }
-
-// Delegated reports whether the turn is answered by a workspace other than
-// the active one. It is how the UI stays truthful about a narrowed turn.
-func (r Route) Delegated() bool { return r.Allowed() && r.Handler != r.Active }
-
-// Effective is the authority actually available to this turn.
-//
-// A permitted route exercises its handler; a refused route executes nothing,
-// so the active workspace remains the only authority that could apply. The
-// result is never stronger than Active: a route narrows, it never widens.
-func (r Route) Effective() Workspace {
-	if !r.Allowed() {
-		return r.Active
-	}
-	return r.Handler
-}
-
-// Indicator is the canonical turn-level projection, or "" when the active
-// workspace itself answers.
-//
-// It names the persistent workspace first and the ephemeral handler second,
-// so the relationship reads as "BUILD stays active; this turn is ASK/READ"
-// rather than "the session became ASK" (§12).
-func (r Route) Indicator() string {
-	if !r.Delegated() {
-		return ""
-	}
-	return r.Active.Label() + " · " + r.Handler.Label() + " / " + strings.ToUpper(string(r.Intent))
-}
-
-// Notice is the turn-level indicator for a delegated turn, or "" when the
-// active workspace itself answers.
-func (r Route) Notice() string { return r.Indicator() }
 
 // Message is the user-facing explanation of a refused route.
 func (r Route) Message() string {
@@ -327,29 +302,31 @@ func (r Route) Message() string {
 // RouteTurn derives the authority decision for a request in the active
 // workspace.
 //
-// The transition table is explicit and boring by design (§8, §24):
+// The authority table is explicit and boring by design (§8, §24):
 //
 //	ACTIVE   INTENT        RESULT
 //	ASK      READ          ASK (read-only)
 //	ASK      EXECUTE       refused — requires an explicit BUILD switch
 //	ASK      INVESTIGATE   refused — requires an explicit FUZZ switch
-//	BUILD    READ          ASK semantics, BUILD remains active
+//	BUILD    READ          refused — requires an explicit ASK switch
 //	BUILD    EXECUTE       BUILD
-//	BUILD    INVESTIGATE   FUZZ semantics, BUILD remains active
-//	FUZZ     READ          ASK semantics, FUZZ remains active
+//	BUILD    INVESTIGATE   refused — requires an explicit FUZZ switch
+//	FUZZ     READ          refused — requires an explicit ASK switch
 //	FUZZ     INVESTIGATE   FUZZ
 //	FUZZ     EXECUTE       refused — requires an explicit BUILD switch
 //
-// The rule behind it: information may flow between workspaces, authority may
-// not. ASK never escalates implicitly, FUZZ never becomes BUILD, and a
-// delegated turn is always narrower than the workspace that delegated it.
+// Workspace changes are explicit user decisions. Intent classification only
+// prevents ASK and FUZZ from executing work outside their contracts.
 func RouteTurn(active Workspace, text string) Route {
 	intent := Classify(text)
-	route := Route{Active: active, Handler: active, Intent: intent, Outcome: Allow}
+	route := Route{Active: active, Intent: intent, Outcome: Allow}
 	if !active.Valid() {
 		// An unresolved workspace is denied, never defaulted to one of the
 		// three (see Workspace's doc comment).
 		route.Outcome = Require
+		return route
+	}
+	if IsConversationalAcknowledgement(text) {
 		return route
 	}
 	switch active {
@@ -363,19 +340,31 @@ func RouteTurn(active Workspace, text string) Route {
 	case Build:
 		switch intent {
 		case IntentRead:
-			route.Handler = Ask
+			route.Outcome, route.Required = Require, Ask
 		case IntentInvestigate:
-			route.Handler = Fuzz
+			route.Outcome, route.Required = Require, Fuzz
 		}
 	case Fuzz:
 		switch intent {
 		case IntentRead:
-			route.Handler = Ask
+			route.Outcome, route.Required = Require, Ask
 		case IntentExecute:
 			route.Outcome, route.Required = Require, Build
 		}
 	}
 	return route
+}
+
+// IsConversationalAcknowledgement identifies short acknowledgements that are
+// not workspace work. They can be answered within the selected workspace
+// without routing the session into ASK.
+func IsConversationalAcknowledgement(text string) bool {
+	switch normalizeRequest(text) {
+	case "hi", "hello", "hey", "good morning", "good afternoon", "good evening", "thanks", "thank you":
+		return true
+	default:
+		return false
+	}
 }
 
 // normalizeRequest lowercases a request and collapses every run of
@@ -469,6 +458,13 @@ var readHeads = map[string]bool{
 	"outline": true, "review": true, "analyze": true, "analyse": true,
 	"inspect": true, "check": true, "discuss": true, "elaborate": true,
 	"understand": true, "read": true, "give": true, "help": true,
+}
+
+// ambiguousReadHeads are verbs whose meaning depends on whether the user
+// wants an explanation, an investigation, or an action. They are useful
+// signals, but not enough to silently choose a narrower workspace.
+var ambiguousReadHeads = map[string]bool{
+	"check": true, "inspect": true, "review": true,
 }
 
 // investigateHeads are leading verbs that ask to probe or reproduce rather
@@ -591,7 +587,7 @@ func RequestsMutation(text string) bool {
 		return false
 	}
 	for _, clause := range splitClauses(request) {
-		head := firstToken(clause)
+		head := clauseHead(clause)
 		if headMatches(mutationHeads, head) {
 			return true
 		}
@@ -658,7 +654,7 @@ func isVowel(r byte) bool {
 // their read opener.
 func splitClauses(request string) []string {
 	replaced := request
-	for _, sep := range []string{" and ", " then ", " plus ", " & "} {
+	for _, sep := range []string{" and also ", " also ", " and ", " then ", " plus ", " & "} {
 		replaced = strings.ReplaceAll(replaced, sep, ",")
 	}
 	parts := strings.Split(replaced, ",")
@@ -667,7 +663,10 @@ func splitClauses(request string) []string {
 		// normalizeRequest has already removed the comma that " and then "
 		// would otherwise leave behind, so a sequencing word can survive as the
 		// clause's head and hide its verb ("inspect X and then add Y").
-		part = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(part), "then "))
+		part = strings.TrimSpace(part)
+		for _, prefix := range []string{"then ", "also "} {
+			part = strings.TrimSpace(strings.TrimPrefix(part, prefix))
+		}
 		if part != "" {
 			out = append(out, part)
 		}
@@ -678,11 +677,17 @@ func splitClauses(request string) []string {
 	return out
 }
 
-// firstToken returns the first whitespace-delimited token of s.
-func firstToken(s string) string {
-	fields := strings.Fields(s)
+// clauseHead skips command and discourse wrappers that do not change the
+// requested operation. In particular, "git commit" is execution intent, but
+// "tell me how to git commit" remains informational because its clause starts
+// with "tell".
+func clauseHead(clause string) string {
+	fields := strings.Fields(clause)
 	if len(fields) == 0 {
 		return ""
+	}
+	if fields[0] == "git" && len(fields) > 1 {
+		return fields[1]
 	}
 	return fields[0]
 }

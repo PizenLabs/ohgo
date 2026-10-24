@@ -5,7 +5,7 @@
     "task_hash": "414012543e4c10121d3e1ffd6c24ed4c6107c74dcd8134406ae0a2181f1b68bb",
     "started_at": "2026-10-21T05:18:21.165115Z",
     "finished_at": "2026-10-21T05:23:33.708632Z",
-    "repository": "/Users/anvndev/Documents/Project/OpenSource/PizenLabs/ohgo",
+    "repository": "./PizenLabs/ohgo",
     "repository_revision": "53bc07b2e850720e331e5fdcdf6ed0fa256402d7",
     "fixture_files": 319,
     "fixture_go_files": 295,

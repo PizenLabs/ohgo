@@ -4319,7 +4319,7 @@
             "command": "ls -la /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-4103114412"
           },
           "authorization": "AUTO",
-          "text": "$ ls -la /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-4103114412\n\ntotal 32\ndrwx------@   6 anvndev  staff   192 Oct 23 11:54 .\ndrwx------@ 154 anvndev  staff  4928 Oct 23 11:54 ..\n-rw-r--r--@   1 anvndev  staff   251 Oct 23 11:54 calc_test.go\n-rw-r--r--@   1 anvndev  staff   171 Oct 23 11:54 calc.go\n-rw-r--r--@   1 anvndev  staff    33 Oct 23 11:54 go.mod\n-rw-r--r--@   1 anvndev  staff    21 Oct 23 11:54 Makefile\n\n[exit code 0, 24ms]"
+          "text": "$ ls -la /var/folders/0z/x6n_jq_s0qv68_1ldw38p2b00000gn/T/ohgo-phase9-4103114412\n\ntotal 32\ndrwx------@   6 pizenlabs  staff   192 Oct 23 11:54 .\ndrwx------@ 154 pizenlabs  staff  4928 Oct 23 11:54 ..\n-rw-r--r--@   1 pizenlabs  staff   251 Oct 23 11:54 calc_test.go\n-rw-r--r--@   1 pizenlabs  staff   171 Oct 23 11:54 calc.go\n-rw-r--r--@   1 pizenlabs  staff    33 Oct 23 11:54 go.mod\n-rw-r--r--@   1 pizenlabs  staff    21 Oct 23 11:54 Makefile\n\n[exit code 0, 24ms]"
         },
         {
           "tool": "read",

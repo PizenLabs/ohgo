@@ -49,17 +49,6 @@ func collectTurn(t *testing.T, p *Program) []Event {
 	}
 }
 
-// submittedTurn returns the route projection carried by the turn's
-// UserSubmitted event, or false when the turn never started.
-func submittedTurn(events []Event) (TurnSemantics, bool) {
-	for _, event := range events {
-		if submitted, ok := event.(UserSubmitted); ok {
-			return submitted.Turn, true
-		}
-	}
-	return TurnSemantics{}, false
-}
-
 // TestRunTurnRefusesBlockedIntentBeforeTheModel proves the UI consults the
 // router and never reaches the provider for a request the active workspace is
 // not permitted to answer (§11, §19).
@@ -69,7 +58,7 @@ func TestRunTurnRefusesBlockedIntentBeforeTheModel(t *testing.T) {
 	p.SetWorkspaceSwitcher(WorkspaceHooks{
 		Current: func() string { return "ASK" },
 		PrepareTurn: func(string) TurnAuthority {
-			return TurnAuthority{Active: "ASK", Handler: "ASK", Intent: "EXECUTE", Blocked: true, Reason: "this request needs BUILD authority"}
+			return TurnAuthority{Active: "ASK", Intent: "EXECUTE", Blocked: true, Reason: "this request needs BUILD authority"}
 		},
 	})
 
@@ -80,9 +69,6 @@ func TestRunTurnRefusesBlockedIntentBeforeTheModel(t *testing.T) {
 
 	if got := atomic.LoadInt32(&requests); got != 0 {
 		t.Errorf("provider requests = %d, want 0", got)
-	}
-	if turn, ok := submittedTurn(events); ok && turn.Active {
-		t.Errorf("a refused turn projected a delegated route: %+v", turn)
 	}
 	found := false
 	for _, event := range events {
@@ -104,27 +90,17 @@ func TestRunTurnRefusesBlockedIntentBeforeTheModel(t *testing.T) {
 	if got := composerPrefix(state); got != "ask > " {
 		t.Errorf("refusal prefix = %q, want the unchanged ASK workspace", got)
 	}
-	if state.Status.Turn.Active {
-		t.Error("a refused turn painted a turn projection")
-	}
 }
 
-// TestRunTurnProjectsDelegatedRouteTruthfully proves the UI stores the router's
-// own handler and intent for the turn instead of re-deriving them (§5).
-func TestRunTurnProjectsDelegatedRouteTruthfully(t *testing.T) {
+// TestRunTurnKeepsTheSelectedWorkspace proves turn processing does not create
+// a second per-turn workspace state.
+func TestRunTurnProjectsTheSelectedWorkspace(t *testing.T) {
 	var requests int32
 	p := NewProgram(countingLoop(t, &requests), "test", 0)
+	p.state.Status.Workspace = "BUILD"
 	p.SetWorkspaceSwitcher(WorkspaceHooks{
-		Current: func() string { return "BUILD" },
-		PrepareTurn: func(string) TurnAuthority {
-			return TurnAuthority{
-				Active:    "BUILD",
-				Handler:   "ASK",
-				Intent:    "READ",
-				Effective: "ASK",
-				Delegated: true,
-			}
-		},
+		Current:     func() string { return "BUILD" },
+		PrepareTurn: func(string) TurnAuthority { return TurnAuthority{Active: "BUILD", Intent: "READ"} },
 	})
 
 	done := make(chan struct{})
@@ -133,119 +109,35 @@ func TestRunTurnProjectsDelegatedRouteTruthfully(t *testing.T) {
 	<-done
 
 	if got := atomic.LoadInt32(&requests); got == 0 {
-		t.Error("a delegated turn did not reach the model")
+		t.Error("the turn did not reach the model")
 	}
-	turn, ok := submittedTurn(events)
-	if !ok {
+	submitted := false
+	for _, event := range events {
+		if _, ok := event.(UserSubmitted); ok {
+			submitted = true
+		}
+	}
+	if !submitted {
 		t.Fatal("the turn never started")
 	}
-	if !turn.Active || !turn.Delegated {
-		t.Errorf("turn = %+v, want an active delegated projection", turn)
-	}
-	if turn.Workspace != "BUILD" || turn.Handler != "ASK" || turn.Intent != "READ" || turn.Effective != "ASK" {
-		t.Errorf("turn = %+v, want BUILD/ASK/READ/ASK", turn)
+	if p.state.Status.Workspace != "BUILD" {
+		t.Errorf("workspace = %q, want BUILD", p.state.Status.Workspace)
 	}
 }
 
-// TestDelegatedTurnNeverSwitchesWorkspace is the negative contract: routing a
-// BUILD informational turn must not call the workspace owner (§7, §16).
-func TestDelegatedTurnNeverSwitchesWorkspace(t *testing.T) {
-	var requests int32
-	p := NewProgram(countingLoop(t, &requests), "test", 0)
-	switched := ""
-	p.SetWorkspaceSwitcher(WorkspaceHooks{
-		Current: func() string { return "BUILD" },
-		Switch:  func(name string) error { switched = name; return nil },
-		PrepareTurn: func(string) TurnAuthority {
-			return TurnAuthority{Active: "BUILD", Handler: "ASK", Intent: "READ", Effective: "ASK", Delegated: true}
-		},
-	})
-
-	done := make(chan struct{})
-	go func() { defer close(done); p.runTurn("why does this work?") }()
-	collectTurn(t, p)
-	<-done
-
-	if switched != "" {
-		t.Errorf("a delegated turn switched the workspace to %q", switched)
-	}
-	if p.state.Status.Workspace == "ASK" {
-		t.Error("a delegated turn moved the active workspace to ASK")
-	}
-}
-
-// TestTurnSemanticsAreClearedOnCompletion proves the delegated indicator
-// outlives neither the turn nor the transcript: after AssistantDone the
-// composer is back to the persistent workspace (§8).
-func TestTurnSemanticsAreClearedOnCompletion(t *testing.T) {
-	s := New()
-	s.Status.Workspace = "BUILD"
-	s.Apply(UserSubmitted{Text: "why?", Seq: 1, Turn: TurnSemantics{
-		Active: true, Workspace: "BUILD", Handler: "ASK", Intent: "READ", Effective: "ASK", Delegated: true,
-	}})
-
-	if got := composerPrefix(s); !strings.Contains(got, "ask/read") {
-		t.Fatalf("composer prefix = %q, want the delegated turn indicator", got)
-	}
-
-	s.Apply(AssistantDone{Seq: 1})
-
-	if got := composerPrefix(s); got != "build > " {
-		t.Errorf("composer prefix after the turn = %q, want the persistent workspace", got)
-	}
-	if s.Status.Turn.Active {
-		t.Error("turn semantics survived completion")
-	}
-	if got := s.Status.Workspace; got != "BUILD" {
-		t.Errorf("active workspace after the turn = %q, want BUILD", got)
-	}
-}
-
-// TestComposerPrefixShowsOnlyNarrowedTurns pins the visual contract: the
-// ephemeral indicator appears only when the handler differs from the active
-// workspace, so BUILD+EXECUTE and ASK+READ add no redundant second label.
-func TestComposerPrefixShowsOnlyNarrowedTurns(t *testing.T) {
-	cases := []struct {
-		name string
-		ws   string
-		turn TurnSemantics
-		want string
-	}{
-		{"BUILD+READ", "BUILD", TurnSemantics{Active: true, Handler: "ASK", Intent: "READ", Delegated: true}, "build · ask/read > "},
-		{"BUILD+INVESTIGATE", "BUILD", TurnSemantics{Active: true, Handler: "FUZZ", Intent: "INVESTIGATE", Delegated: true}, "build · fuzz/investigate > "},
-		{"FUZZ+READ", "FUZZ", TurnSemantics{Active: true, Handler: "ASK", Intent: "READ", Delegated: true}, "fuzz · ask/read > "},
-		{"BUILD+EXECUTE", "BUILD", TurnSemantics{Active: true, Handler: "BUILD", Intent: "EXECUTE"}, "build > "},
-		{"ASK+READ", "ASK", TurnSemantics{Active: true, Handler: "ASK", Intent: "READ"}, "ask > "},
-		{"idle", "BUILD", TurnSemantics{}, "build > "},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s := New()
-			s.Status.Workspace = tc.ws
-			s.Status.Turn = tc.turn
-			if got := composerPrefix(s); got != tc.want {
-				t.Errorf("composer prefix = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-// TestRenderShowsTurnSemanticsWithoutMovingTheWorkspace proves the semantic
-// projection reaches the rendered frame and still names the persistent
-// workspace as the authority (§12, §15).
-func TestRenderShowsTurnSemanticsWithoutMovingTheWorkspace(t *testing.T) {
+// TestRenderShowsTheSelectedWorkspaceDuringSupportingReads proves the rendered
+// authority stays truthful while BUILD reads files to execute a task.
+func TestRenderShowsTheSelectedWorkspaceDuringSupportingReads(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 100, Height: 24})
 	s.Apply(WorkspaceUpdated{Workspace: "BUILD", WorkspaceAccent: "33", HasWorkspace: true})
-	s.Apply(UserSubmitted{Text: "why does this work?", Seq: 1, Turn: TurnSemantics{
-		Active: true, Workspace: "BUILD", Handler: "ASK", Intent: "READ", Effective: "ASK", Delegated: true,
-	}})
+	s.Apply(UserSubmitted{Text: "read supporting context", Seq: 1})
 
 	out := stripANSI(Render(s))
-	if !strings.Contains(out, "build · ask/read") {
-		t.Fatalf("frame does not show the delegated turn:\n%s", out)
+	if strings.Contains(out, "build · ask/read") {
+		t.Fatalf("frame created an ASK handler inside BUILD:\n%s", out)
 	}
-	if strings.Contains(out, "ask > ") {
-		t.Errorf("frame presented the session as ASK:\n%s", out)
+	if !strings.Contains(out, "build > ") {
+		t.Errorf("frame lost the selected BUILD authority:\n%s", out)
 	}
 }
