@@ -78,7 +78,7 @@ func TestReplAccumulatesHistoryAcrossTurns(t *testing.T) {
 	}
 
 	t.Setenv("OHGO_HISTORY_FILE", "")
-	in := strings.NewReader("first question\nsecond question\nthird question\n")
+	in := strings.NewReader("implement first change\nimplement second change\nimplement third change\n")
 	var out strings.Builder
 	if err := repl(&harness{loop: loop}, &out, in, nil); err != nil {
 		t.Fatalf("repl: %v", err)
@@ -124,7 +124,7 @@ func TestReplPersistsEveryTurn(t *testing.T) {
 	}
 
 	t.Setenv("OHGO_HISTORY_FILE", "")
-	in := strings.NewReader("one\ntwo\n/quit\n")
+	in := strings.NewReader("implement one\nimplement two\n/quit\n")
 	if err := repl(&harness{loop: loop, store: store, sess: &sess}, io.Discard, in, nil); err != nil {
 		t.Fatalf("repl: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestResumeRoundTripThroughTheStore(t *testing.T) {
 		t.Fatalf("buildLoop: %v", err)
 	}
 	t.Setenv("OHGO_HISTORY_FILE", "")
-	if err := repl(&harness{loop: loop, store: store, sess: sess}, io.Discard, strings.NewReader("remember this\n/quit\n"), nil); err != nil {
+	if err := repl(&harness{loop: loop, store: store, sess: sess}, io.Discard, strings.NewReader("implement this note\n/quit\n"), nil); err != nil {
 		t.Fatalf("repl: %v", err)
 	}
 	id := sess.ID

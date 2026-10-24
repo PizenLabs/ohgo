@@ -90,8 +90,8 @@ type options struct {
 
 // authority returns the workspace in force.
 //
-// The live gate wins when one is installed: it is what a workspace switch or a
-// delegated turn moves. An unset workspace defaults to BUILD. The CLI always
+// The live gate wins when one is installed: it moves only on an explicit
+// workspace switch. An unset workspace defaults to BUILD. The CLI always
 // resolves one through workspace.Parse (where a typo is fatal), but a caller
 // that predates workspaces — or a test that builds options directly — keeps the
 // authority it always had rather than being silently denied everything.
@@ -1063,13 +1063,10 @@ func admitFor(ws workspace.Workspace) func(ai.ToolCall, agent.Tool) (bool, strin
 func turnAuthority(held *harness, text string) tui.TurnAuthority {
 	route := held.RouteTurn(text)
 	return tui.TurnAuthority{
-		Active:    route.Active.Label(),
-		Handler:   route.Handler.Label(),
-		Intent:    strings.ToUpper(string(route.Intent)),
-		Effective: route.Effective().Label(),
-		Delegated: route.Delegated(),
-		Blocked:   !route.Allowed(),
-		Reason:    route.Message(),
+		Active:  route.Active.Label(),
+		Intent:  strings.ToUpper(string(route.Intent)),
+		Blocked: !route.Allowed(),
+		Reason:  route.Message(),
 	}
 }
 
@@ -1091,7 +1088,26 @@ func turnAuthority(held *harness, text string) tui.TurnAuthority {
 // the UI, so both full-screen entry points agree.
 func turnTransition(held *harness, text string) (tui.TurnTransition, bool) {
 	active := held.activeWorkspace()
-	transition, ok := workspace.ProposeTransition(active, workspace.ClassifyPrediction(text))
+	prediction := workspace.ClassifyPrediction(text)
+	// A moderate or contested prediction may not choose the authority. A
+	// no-signal objective also needs a human choice; a plain greeting is not a
+	// workspace decision and remains in the explicitly selected workspace.
+	noSignalChoice := prediction.Strength == workspace.StrengthAmbiguous &&
+		prediction.Competing == "" && prediction.Intent.Handler() != active &&
+		!workspace.IsConversationalAcknowledgement(text)
+	if prediction.Intent.Handler() != active &&
+		(prediction.Strength == workspace.StrengthModerate ||
+			prediction.Strength == workspace.StrengthAmbiguous && prediction.Competing != "" ||
+			noSignalChoice) {
+		return tui.TurnTransition{
+			Kind:     tui.TransitionKindAmbiguous,
+			Intent:   strings.ToUpper(string(prediction.Intent)),
+			Strength: string(prediction.Strength),
+			Question: "Choose a workspace for this request",
+			Reason:   "The request contains competing or incomplete intent signals. The workspace is yours to choose.",
+		}, true
+	}
+	transition, ok := workspace.ProposeTransition(active, prediction)
 	if ok {
 		current, proposed := transition.Current.Style(), transition.Proposed.Style()
 		return tui.TurnTransition{
@@ -1111,7 +1127,6 @@ func turnTransition(held *harness, text string) (tui.TurnTransition, bool) {
 	if !ok {
 		return tui.TurnTransition{}, false
 	}
-	prediction := workspace.ClassifyPrediction(text)
 	return tui.TurnTransition{
 		Kind:     tui.TransitionKindProposal,
 		Proposal: &proposal,
@@ -1151,9 +1166,8 @@ func proposalFacts(root string) workspace.ProposalFacts {
 // admit returns the loop's runtime gate, resolving the authority at call time.
 //
 // It is admitFor against the live options rather than a captured workspace, so
-// a workspace switch or a delegated turn narrows authority without rebuilding
-// the loop. A test that builds options without a gate falls back to the
-// resolved workspace, preserving the pre-router behavior.
+// an explicit workspace switch moves authority without rebuilding the loop. A
+// test that builds options without a gate falls back to the resolved workspace.
 func (o options) admit() func(ai.ToolCall, agent.Tool) (bool, string) {
 	if o.gate != nil {
 		return o.gate.Admit
@@ -1431,11 +1445,6 @@ func runOnce(cmd *cobra.Command, text string) error {
 		outcome := refuseHeadless(out, route)
 		return &headlessExit{outcome: outcome}
 	}
-	if route.Notice() != "" {
-		_, _ = fmt.Fprintln(out, route.Notice())
-	}
-	opts.gate.Set(route.Handler)
-
 	var history []agent.Message
 	if sess != nil && resumeID > 0 {
 		history, err = loadHistory(store, sess)
@@ -1454,7 +1463,7 @@ func runOnce(cmd *cobra.Command, text string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	outcome, _ := runHeadlessTurnAs(ctx, loop, opts.root, out, text, history, route.Handler.String())
+	outcome, _ := runHeadlessTurnAs(ctx, loop, opts.root, out, text, history, route.Active.String())
 	if outcome.State == runCompleted {
 		return nil
 	}
@@ -2636,10 +2645,9 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			continue
 		}
 
-		// The intent router decides this turn's authority before the model is
-		// asked: a request the active workspace may not answer is refused
-		// here rather than offered to a model that cannot execute it (§3,
-		// §11). The active workspace is never changed by the route.
+		// The control plane refuses a request that does not match the active
+		// workspace before the model is asked. It never changes workspace here;
+		// the user must switch explicitly (§3, §11).
 		authority := ""
 		if h.loop != nil {
 			route := h.RouteTurn(text)
@@ -2647,10 +2655,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				_ = refuseHeadless(out, route)
 				continue
 			}
-			authority = route.Handler.String()
-			if route.Notice() != "" {
-				_, _ = fmt.Fprintln(out, route.Notice())
-			}
+			authority = route.Active.String()
 		}
 
 		// The prompt is appended to a history file best-effort, so a plain-REPL

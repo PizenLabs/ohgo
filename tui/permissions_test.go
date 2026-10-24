@@ -2,10 +2,117 @@ package tui
 
 import (
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// An uncertain request does not reach the model until the human chooses an
+// authority. Choosing BUILD is an explicit authority decision, not a model
+// inference from the classifier's conservative READ fallback.
+func TestAmbiguousWorkspaceChoiceRunsOnlyAfterHumanSelection(t *testing.T) {
+	var requests int32
+	p := NewProgram(countingLoop(t, &requests), "test", 0)
+	current := "BUILD"
+	prepared := 0
+	p.SetWorkspaceSwitcher(WorkspaceHooks{
+		Current: func() string { return current },
+		Switch: func(name string) error {
+			current = strings.ToUpper(name)
+			p.state.Apply(WorkspaceUpdated{Workspace: current, HasWorkspace: true})
+			return nil
+		},
+		PrepareTurn: func(string) TurnAuthority {
+			prepared++
+			return TurnAuthority{Active: current, Blocked: true, Reason: "workspace choice was not applied"}
+		},
+		Predict: func(string) (TurnTransition, bool) {
+			return TurnTransition{Kind: TransitionKindAmbiguous, Reason: "ambiguous intent"}, true
+		},
+	})
+	p.state.Apply(WorkspaceUpdated{Workspace: current, HasWorkspace: true})
+
+	cmd := typeAndEnter(p, "check this project")
+	if cmd != nil || p.state.Permissions == nil {
+		t.Fatal("ambiguous request did not wait in the centered authority selector")
+	}
+	if p.state.Permissions.Request != "check this project" {
+		t.Fatalf("pending request = %q, want the original request", p.state.Permissions.Request)
+	}
+	p.state.Apply(TerminalResized{Width: 100, Height: 30})
+	view := stripANSI(Render(p.state))
+	for _, want := range []string{"Choose Workspace For This Request", "ambiguous intent", "Request: check this project"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("authority picker missing %q:\n%s", want, view)
+		}
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Fatalf("provider requests before selection = %d, want 0", got)
+	}
+
+	cmd = press(p, tea.KeyMsg{Type: tea.KeyEnter}) // explicitly reaffirm BUILD
+	if cmd == nil {
+		t.Fatal("explicit BUILD selection did not release the request")
+	}
+	cmd()
+	collectTurn(t, p)
+	if current != "BUILD" || p.state.Status.Workspace != "BUILD" {
+		t.Fatalf("workspace owner/UI = %s/%s, want BUILD/BUILD", current, p.state.Status.Workspace)
+	}
+	if prepared != 0 {
+		t.Errorf("explicit workspace decision was reclassified %d times", prepared)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Errorf("provider requests after selection = %d, want exactly 1", got)
+	}
+}
+
+func TestCancellingAmbiguousWorkspaceChoicePreservesRequestWithoutExecution(t *testing.T) {
+	var requests int32
+	p := NewProgram(countingLoop(t, &requests), "test", 0)
+	p.state.Apply(WorkspaceUpdated{Workspace: "BUILD", HasWorkspace: true})
+	p.openAuthorityChoice("check this project", "ambiguous intent")
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEsc})
+	if p.state.Permissions != nil {
+		t.Fatal("Esc left the authority selector open")
+	}
+	if p.state.Input != "check this project" {
+		t.Errorf("input = %q, want the cancelled request restored", p.state.Input)
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Errorf("provider requests = %d, want 0 after cancellation", got)
+	}
+}
+
+func TestAmbiguousWorkspaceChoiceSynchronizesAuthorityAndUI(t *testing.T) {
+	var requests int32
+	p := NewProgram(countingLoop(t, &requests), "test", 0)
+	current := "BUILD"
+	p.SetWorkspaceSwitcher(WorkspaceHooks{
+		Current: func() string { return current },
+		Switch: func(name string) error {
+			current = strings.ToUpper(name)
+			p.state.Apply(WorkspaceUpdated{Workspace: current, HasWorkspace: true})
+			return nil
+		},
+	})
+	p.state.Apply(WorkspaceUpdated{Workspace: current, HasWorkspace: true})
+	p.openAuthorityChoice("check this project", "ambiguous intent")
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp}) // select ASK, not the current BUILD
+	cmd := press(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("explicit ASK selection did not release the request")
+	}
+	cmd()
+	collectTurn(t, p)
+	if current != "ASK" || p.state.Status.Workspace != "ASK" {
+		t.Fatalf("workspace owner/UI = %s/%s, want ASK/ASK", current, p.state.Status.Workspace)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Errorf("provider requests = %d, want exactly 1", got)
+	}
+}
 
 // The selector must mark exactly the highlighted row and exactly the
 // authority in force: a badge on the wrong row would tell the user they are

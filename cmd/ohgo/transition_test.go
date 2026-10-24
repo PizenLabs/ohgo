@@ -9,9 +9,8 @@ import (
 )
 
 // TestTurnTransitionPredictsWithoutMovingAuthority is invariant 1 and 2: the
-// classifier may propose, but computing a proposal must not touch the live
-// gate or the persistent workspace. turnTransition is deliberately not
-// turnAuthority, which does install the handler.
+// classifier may propose a human choice, but computing it must not touch the
+// live gate or persistent workspace.
 func TestTurnTransitionPredictsWithoutMovingAuthority(t *testing.T) {
 	gate := newAuthorityGate(workspace.Build)
 	h := routedHarness(gate, nil, "BUILD")
@@ -35,7 +34,8 @@ func TestTurnTransitionPredictsWithoutMovingAuthority(t *testing.T) {
 }
 
 // TestTurnTransitionMatrixMatchesThePolicy pins the seam's projection against
-// the §6 table: the safe narrowings propose, everything else stays silent.
+// the workspace contract: clear cross-workspace requests propose, uncertain
+// requests require the centered authority selector, and matching intents stay.
 func TestTurnTransitionMatrixMatchesThePolicy(t *testing.T) {
 	cases := []struct {
 		active   string
@@ -44,7 +44,7 @@ func TestTurnTransitionMatrixMatchesThePolicy(t *testing.T) {
 		want     bool
 	}{
 		{"ASK", "explain this", "", false},
-		{"ASK", "try to break this", "", false},
+		{"ASK", "try to break this", "", true},
 		{"ASK", "fix the bug", "", false},
 		{"BUILD", "why does this work?", "ASK", true},
 		{"BUILD", "reproduce the failure", "FUZZ", true},

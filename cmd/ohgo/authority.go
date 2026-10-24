@@ -12,11 +12,10 @@ import (
 // policy admits a tool call at the moment the call is made.
 //
 // It exists because authority is a runtime property, not a construction-time
-// constant. A workspace switch moves it, and a delegated informational turn
-// narrows it for that turn. Both the agent loop's admission hook and the
-// subagent spawner read the gate at call time, so a delegated turn's
-// narrowing applies to anything the turn delegates as well: nothing the model
-// emits can widen the gate (ARCHITECTURE_CONTRACT_V1 §7, §11).
+// constant. Only an explicit workspace switch moves it. Both the agent loop's
+// admission hook and the subagent spawner read the gate at call time, so no
+// model output can widen or change the authority (ARCHITECTURE_CONTRACT_V1 §7,
+// §11).
 type authorityGate struct {
 	mu sync.RWMutex
 	ws workspace.Workspace
@@ -27,8 +26,8 @@ func newAuthorityGate(ws workspace.Workspace) *authorityGate {
 	return &authorityGate{ws: ws}
 }
 
-// Set moves the gate's authority. Only a workspace transition (SwitchWorkspace)
-// or the intent router (RouteTurn) calls it; no model output and no tool can.
+// Set moves the gate's authority. Only an explicit workspace transition calls
+// it; no model output, intent classifier, or tool can.
 func (g *authorityGate) Set(ws workspace.Workspace) {
 	if g == nil {
 		return

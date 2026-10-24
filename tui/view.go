@@ -1091,20 +1091,6 @@ func composerPrefix(state State) string {
 		return "> "
 	}
 	label := strings.ToLower(active)
-	// A delegated turn appends the ephemeral handler after the persistent
-	// workspace ("build · ask/read > "), so the two facts are visible at once
-	// and the workspace never appears to have moved. An undeligated turn adds
-	// nothing: the workspace prefix already states how it is answered.
-	if turn := state.Status.Turn; turn.Active {
-		handler := strings.TrimSpace(turn.Handler)
-		if handler != "" && !strings.EqualFold(handler, active) {
-			suffix := strings.ToLower(handler)
-			if intent := strings.TrimSpace(turn.Intent); intent != "" {
-				suffix += "/" + strings.ToLower(intent)
-			}
-			return label + " · " + suffix + " > "
-		}
-	}
 	return label + " > "
 }
 

@@ -79,8 +79,8 @@ type securityGate struct {
 	grants *security.GrantStore
 
 	mu sync.Mutex
-	// authority resolves the execution authority at call time, so a workspace
-	// switch or a delegated turn narrows the gate without rebuilding the loop.
+	// authority resolves the execution authority at call time, so an explicit
+	// workspace switch moves the gate without rebuilding the loop.
 	authority func() workspace.Workspace
 	// fallback is the authority used when no live gate resolves one. It is
 	// what a bare harness (no authorityGate) updates on a switch.

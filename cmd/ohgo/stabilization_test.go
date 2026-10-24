@@ -198,7 +198,7 @@ func TestReplHistoryIsRecorded(t *testing.T) {
 		t.Fatalf("buildLoop: %v", err)
 	}
 
-	in := strings.NewReader("remember this prompt\n/quit\n")
+	in := strings.NewReader("implement this note, remember this prompt\n/quit\n")
 	var out strings.Builder
 	if err := repl(&harness{loop: loop}, &out, in, nil); err != nil {
 		t.Fatalf("repl: %v", err)

@@ -124,7 +124,7 @@ func AssessProposal(active Workspace, text string, facts ProposalFacts) (Proposa
 	if contract.Kind != ObjectiveMutation {
 		return none, false
 	}
-	if contract.BehavioralObjective || hasVerificationScope(contract.Verification) {
+	if (contract.BehavioralObjective || hasVerificationScope(contract.Verification)) && !createsVerifiableArtifact(text) {
 		return none, false
 	}
 	// The request's own alternatives are the strongest evidence of an

@@ -939,23 +939,16 @@ func (h *harness) applyAuthority(ws workspace.Workspace) {
 	}
 }
 
-// RouteTurn classifies a request against the active workspace and installs the
-// turn's authority.
+// RouteTurn classifies a request against the active workspace.
 //
-// It is the runtime's intent router: it computes the semantic handler for the
-// request and, when the request is permitted, narrows the live authority to
-// that handler for the turn. It never changes the active workspace — a
-// delegated turn is temporary and the originating workspace remains
-// authoritative (§9, §10).
+// It is the runtime's intent guard: it refuses work outside ASK/FUZZ authority,
+// while permitted work stays under the workspace the user selected. Intent
+// classification never changes the live gate (§9, §10).
 //
 // A refused route installs nothing: an ASK request to mutate leaves ASK in
 // force and returns the refusal for the caller to show.
 func (h *harness) RouteTurn(text string) workspace.Route {
-	route := workspace.RouteTurn(h.activeWorkspace(), text)
-	if route.Allowed() {
-		h.applyAuthority(route.Handler)
-	}
-	return route
+	return workspace.RouteTurn(h.activeWorkspace(), text)
 }
 
 // atoi parses a menu number.

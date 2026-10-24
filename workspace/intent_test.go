@@ -127,6 +127,60 @@ func TestClassifyPreservesCompoundMutationVocabulary(t *testing.T) {
 	}
 }
 
+// Later actionable clauses outrank read-oriented openers. This is the
+// externally visible distinction between asking about execution and asking
+// ohgo to perform it.
+func TestClassifyUsesTheWholeRequestForMutationIntent(t *testing.T) {
+	for _, text := range []string{
+		"create a portfolio website",
+		"check this project and create the missing files",
+		"inspect the project, then fix the failing tests",
+		"check this project and git commit the changes",
+		"check this project and also create a website",
+		"explain the bug and fix it",
+	} {
+		if got := Classify(text); got != IntentExecute {
+			t.Errorf("Classify(%q) = %s, want EXECUTE", text, got)
+		}
+		if contract := BuildIntentContract(text); contract.Kind != ObjectiveMutation {
+			t.Errorf("BuildIntentContract(%q).Kind = %s, want mutation", text, contract.Kind)
+		}
+		route := RouteTurn(Build, text)
+		if !route.Allowed() || route.Active != Build {
+			t.Errorf("BUILD route for %q = %+v, want execution under BUILD", text, route)
+		}
+	}
+	question := "tell me how to git commit these changes"
+	if got := Classify(question); got != IntentRead {
+		t.Errorf("informational git request = %s, want READ", got)
+	}
+	if contract := BuildIntentContract(question); contract.Kind != ObjectiveInformational {
+		t.Errorf("BuildIntentContract(%q).Kind = %s, want informational", question, contract.Kind)
+	}
+}
+
+func TestAmbiguousReadVerbRequiresAWorkspaceChoice(t *testing.T) {
+	prediction := ClassifyPrediction("check this project")
+	if prediction.Intent != IntentRead || prediction.Strength != StrengthModerate {
+		t.Fatalf("prediction = %+v, want a moderate READ signal", prediction)
+	}
+	route := RouteTurn(Build, "check this project")
+	if route.Allowed() || route.Required != Ask {
+		t.Errorf("route = %+v, want control-plane choice before ASK", route)
+	}
+}
+
+func TestGreetingDoesNotRequireAnAuthorityTransition(t *testing.T) {
+	for _, active := range []Workspace{Ask, Fuzz, Build} {
+		for _, text := range []string{"hi", "hello!", "good morning"} {
+			route := RouteTurn(active, text)
+			if !route.Allowed() || route.Active != active {
+				t.Errorf("RouteTurn(%s, %q) = %+v, want a greeting in the selected workspace", active, text, route)
+			}
+		}
+	}
+}
+
 // A question that merely mentions a mutation phrase stays informational. The
 // contract must not invent a change request from explanatory language.
 func TestClassifyDoesNotPromoteInformationalMutationPhrases(t *testing.T) {
@@ -198,48 +252,41 @@ func TestRouteTurnTransitionMatrix(t *testing.T) {
 		name     string
 		active   Workspace
 		text     string
-		handler  Workspace
 		allowed  bool
 		required Workspace
 	}{
 		// ASK is execution-closed.
-		{"ASK+READ", Ask, "explain this", Ask, true, ""},
-		{"ASK+EXECUTE", Ask, "fix the bug", Ask, false, Build},
-		{"ASK+INVESTIGATE", Ask, "try to break this", Ask, false, Fuzz},
+		{"ASK+READ", Ask, "explain this", true, ""},
+		{"ASK+EXECUTE", Ask, "fix the bug", false, Build},
+		{"ASK+INVESTIGATE", Ask, "try to break this", false, Fuzz},
 
-		// BUILD delegates informational turns and keeps its authority.
-		{"BUILD+READ", Build, "why does this work?", Ask, true, ""},
-		{"BUILD+EXECUTE", Build, "implement the fix", Build, true, ""},
-		{"BUILD+INVESTIGATE", Build, "reproduce the failure", Fuzz, true, ""},
+		// BUILD must explicitly transition for informational or investigative
+		// work; a request never narrows its authority behind the UI.
+		{"BUILD+READ", Build, "why does this work?", false, Ask},
+		{"BUILD+EXECUTE", Build, "implement the fix", true, ""},
+		{"BUILD+INVESTIGATE", Build, "reproduce the failure", false, Fuzz},
 
-		// FUZZ delegates informational turns and never becomes BUILD.
-		{"FUZZ+READ", Fuzz, "explain this", Ask, true, ""},
-		{"FUZZ+INVESTIGATE", Fuzz, "try to break this", Fuzz, true, ""},
-		{"FUZZ+EXECUTE", Fuzz, "fix the bug", Fuzz, false, Build},
+		// FUZZ remains the selected no-mutation investigation workspace.
+		{"FUZZ+READ", Fuzz, "explain this", false, Ask},
+		{"FUZZ+INVESTIGATE", Fuzz, "try to break this", true, ""},
+		{"FUZZ+EXECUTE", Fuzz, "fix the bug", false, Build},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			route := RouteTurn(tc.active, tc.text)
-			if route.Handler != tc.handler {
-				t.Errorf("handler = %s, want %s", route.Handler, tc.handler)
-			}
 			if route.Allowed() != tc.allowed {
 				t.Errorf("allowed = %v, want %v", route.Allowed(), tc.allowed)
 			}
 			if route.Required != tc.required {
 				t.Errorf("required = %s, want %s", route.Required, tc.required)
 			}
-			// Delegation may only narrow authority, never widen it.
-			if route.Allowed() && !route.Handler.Permits(OpRead) && route.Active.Permits(OpRead) {
-				t.Errorf("handler %s is not a valid workspace", route.Handler)
-			}
 		})
 	}
 }
 
 func TestRouteTurnNeverChangesTheActiveWorkspace(t *testing.T) {
-	// Invariant G: a temporary handler must not permanently move the active
-	// workspace.
+	// Classification and refusal never move the workspace; only an explicit
+	// switch can change the active authority.
 	for _, active := range []Workspace{Ask, Fuzz, Build} {
 		for _, text := range []string{"why does this work?", "fix it", "try to break it"} {
 			route := RouteTurn(active, text)
@@ -262,60 +309,6 @@ func TestRouteTurnDeniesAnUnresolvedWorkspace(t *testing.T) {
 	}
 }
 
-func TestRouteEffectiveAuthorityNeverExceedsTheWorkspace(t *testing.T) {
-	// Effective authority is the workspace constrained by the turn intent.
-	// For an allowed turn it is the handler; for a refused turn nothing runs,
-	// so it stays the active workspace (I3).
-	cases := []struct {
-		name   string
-		active Workspace
-		text   string
-		want   Workspace
-	}{
-		{"ASK+READ", Ask, "explain this", Ask},
-		{"ASK+EXECUTE", Ask, "fix the bug", Ask},
-		{"ASK+INVESTIGATE", Ask, "try to break this", Ask},
-		{"BUILD+READ", Build, "why does this work?", Ask},
-		{"BUILD+EXECUTE", Build, "implement the fix", Build},
-		{"BUILD+INVESTIGATE", Build, "reproduce the failure", Fuzz},
-		{"FUZZ+READ", Fuzz, "explain this", Ask},
-		{"FUZZ+INVESTIGATE", Fuzz, "try to break this", Fuzz},
-		{"FUZZ+EXECUTE", Fuzz, "fix the bug", Fuzz},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			route := RouteTurn(tc.active, tc.text)
-			if got := route.Effective(); got != tc.want {
-				t.Errorf("Effective() = %s, want %s", got, tc.want)
-			}
-			// A route may never grant an authority the active workspace could
-			// not itself exercise for the intent.
-			if route.Effective().Permits(OpWrite) && !tc.active.Permits(OpWrite) {
-				t.Errorf("Effective() = %s escalated mutation above %s", route.Effective(), tc.active)
-			}
-		})
-	}
-}
-
-func TestRouteIndicatorNamesWorkspaceThenTurn(t *testing.T) {
-	// The indicator keeps the persistent workspace first and the ephemeral
-	// handler second, so it can never read as a workspace switch (§12).
-	if got := RouteTurn(Build, "why does this work?").Indicator(); got != "BUILD · ASK / READ" {
-		t.Errorf("indicator = %q, want %q", got, "BUILD · ASK / READ")
-	}
-	if got := RouteTurn(Build, "reproduce the failure").Indicator(); got != "BUILD · FUZZ / INVESTIGATE" {
-		t.Errorf("indicator = %q, want %q", got, "BUILD · FUZZ / INVESTIGATE")
-	}
-	// A direct or refused turn adds no indicator: the workspace already names
-	// the authority in force.
-	if got := RouteTurn(Build, "implement the fix").Indicator(); got != "" {
-		t.Errorf("direct turn indicator = %q, want empty", got)
-	}
-	if got := RouteTurn(Ask, "fix the bug").Indicator(); got != "" {
-		t.Errorf("refused turn indicator = %q, want empty", got)
-	}
-}
-
 // A comma is a clause boundary. Without preserving it, "check the project,
 // write README.md" collapsed into one read-headed clause and the mutation was
 // invisible to the contract.
@@ -329,24 +322,17 @@ func TestCommaSeparatedMutationClauseIsVisible(t *testing.T) {
 	}
 }
 
-func TestRouteDelegatedAndNotice(t *testing.T) {
-	// A delegated turn is reported truthfully; an undeligated one adds no
-	// noise.
-	delegated := RouteTurn(Build, "why does this work?")
-	if !delegated.Delegated() {
-		t.Fatal("BUILD+READ was not reported as delegated")
-	}
-	if delegated.Notice() == "" {
-		t.Error("a delegated turn has no indicator")
-	}
-	if direct := RouteTurn(Build, "fix it"); direct.Delegated() || direct.Notice() != "" {
-		t.Errorf("BUILD+EXECUTE reported delegation: %+v", direct)
+func TestRouteKeepsSelectedWorkspaceAndRefusesOnlyEscalation(t *testing.T) {
+	for _, active := range []Workspace{Ask, Fuzz, Build} {
+		for _, text := range []string{"why does this work?", "reproduce the failure", "implement the fix"} {
+			route := RouteTurn(active, text)
+			if route.Active != active {
+				t.Errorf("RouteTurn(%s, %q) changed authority: %+v", active, text, route)
+			}
+		}
 	}
 	refused := RouteTurn(Fuzz, "fix it")
-	if refused.Delegated() {
-		t.Error("a refused route reported delegation")
-	}
-	if refused.Message() == "" {
-		t.Error("a refused route has no message")
+	if refused.Allowed() || refused.Required != Build || refused.Message() == "" {
+		t.Errorf("FUZZ mutation was not refused with a BUILD boundary: %+v", refused)
 	}
 }
