@@ -10,6 +10,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1410,7 +1411,10 @@ func (s *State) Apply(event Event) {
 			// which source stayed cached. Only an empty snapshot keeps
 			// the current rows untouched.
 			if len(e.Snapshot.Options) > 0 {
-				s.Picker.SetItems(optionsToItems(e.Snapshot.Options))
+				items := optionsToItems(e.Snapshot.Options)
+				if !samePickerItems(s.Picker.Items, items) {
+					s.Picker.SetItems(items)
+				}
 				if e.Snapshot.Origin != "" {
 					s.Picker.Origin = e.Snapshot.Origin
 				}
@@ -1422,7 +1426,9 @@ func (s *State) Apply(event Event) {
 			s.Plane.Refreshing = false
 			s.Plane.Stale = false
 			if len(e.Snapshot.Options) > 0 {
-				s.Plane.SetModels(e.Snapshot.Options)
+				if !sameModelOptions(s.Plane.Models, e.Snapshot.Options) {
+					s.Plane.SetModels(e.Snapshot.Options)
+				}
 				if e.Snapshot.Origin != "" {
 					s.Plane.Origin = e.Snapshot.Origin
 				}
@@ -4092,6 +4098,34 @@ type ModelOption struct {
 	// source said nothing, so the UI renders "unknown", never
 	// "unsupported".
 	ReasoningKnown bool
+}
+
+// sameModelOptions reports whether two rosters are indistinguishable to the
+// control plane. A refresh that changes nothing must not swap the rows out
+// from under the user's cursor.
+func sameModelOptions(a, b []ModelOption) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		// Origin is per-row provenance, not a displayed fact: the plane shows
+		// freshness once for the whole roster, so cached->live alone must not
+		// rebuild the rows. Changed facts still differ through the fields below.
+		x, y := a[i], b[i]
+		if x.ID != y.ID || x.Provider != y.Provider || x.Title != y.Title ||
+			x.Detail != y.Detail || x.Active != y.Active || x.Name != y.Name ||
+			x.Context != y.Context || x.PriceKnown != y.PriceKnown ||
+			x.Free != y.Free || x.MaxOutput != y.MaxOutput || x.CostInput != y.CostInput ||
+			x.CostOutput != y.CostOutput || x.CostCacheRead != y.CostCacheRead ||
+			x.CostCacheWrite != y.CostCacheWrite || x.Reasoning != y.Reasoning ||
+			x.ReasoningKnown != y.ReasoningKnown ||
+			!slices.Equal(x.Capabilities, y.Capabilities) ||
+			!slices.Equal(x.InputModalities, y.InputModalities) ||
+			!slices.Equal(x.ThinkingEfforts, y.ThinkingEfforts) {
+			return false
+		}
+	}
+	return true
 }
 
 // CatalogSnapshot is one model roster with freshness metadata.

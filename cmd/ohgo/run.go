@@ -627,9 +627,12 @@ func catalogSnapshot() tui.CatalogSnapshot {
 // Per-provider failures keep that provider's cached rows and surface one
 // summary error; victories merge through the same snapshot the picker
 // opened with, so newly added models appear without a binary rebuild.
-func refreshModelCatalog(held *harness, seq int) tea.Cmd {
+func refreshModelCatalog(parent context.Context, held *harness, seq int) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		// The caller's context is the program lifetime: quitting the TUI
+		// cancels the fetch instead of leaving provider requests running
+		// behind a closed UI.
+		ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 		defer cancel()
 		var failures []string
 		for _, provider := range catalog.DynamicProviders() {
@@ -1905,7 +1908,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		program.SetCatalogHooks(tui.CatalogHooks{
 			Snapshot: func() tui.CatalogSnapshot { return catalogSnapshot() },
 			Refresh: func(ctx context.Context, seq int) tea.Cmd {
-				return refreshModelCatalog(held, seq)
+				return refreshModelCatalog(ctx, held, seq)
 			},
 		})
 		// The model control plane: the provider pane, the role assignments,
@@ -2205,7 +2208,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	program.SetCatalogHooks(tui.CatalogHooks{
 		Snapshot: func() tui.CatalogSnapshot { return catalogSnapshot() },
 		Refresh: func(ctx context.Context, seq int) tea.Cmd {
-			return refreshModelCatalog(held, seq)
+			return refreshModelCatalog(ctx, held, seq)
 		},
 	})
 	program.SetModelControl(tui.ModelControlHooks{

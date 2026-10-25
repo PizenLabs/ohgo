@@ -499,6 +499,21 @@ func (p *PickerState) Chosen() (PickerItem, bool) {
 	return visible[p.Cursor], true
 }
 
+// samePickerItems reports whether two rosters are indistinguishable to the
+// picker. A refresh that returns the same rows must not rebuild the list:
+// replacing it would reset scroll state and redraw for no new information.
+func samePickerItems(a, b []PickerItem) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // optionsToItems converts enriched catalog rows into picker rows,
 // preserving provider identity, pricing flags, and context so search and
 // free-filtering work on metadata, not on rendered strings.

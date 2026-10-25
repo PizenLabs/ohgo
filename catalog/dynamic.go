@@ -509,13 +509,17 @@ func SnapshotAll() (entries []SnapshotEntry, stale bool) {
 		provider string
 		id       string
 	}
+	// Each provider's roster is read once. Reading it per merged row made this
+	// function quadratic in roster size: a 400-model cache was parsed once per
+	// row, which is the difference between an instant picker and a multi-second
+	// one. The maps below are the same records, indexed for the merge.
+	rosters := make(map[string]map[string]record, len(DynamicProviders()))
 	merged := map[key]SnapshotEntry{}
 	// Bundled first: the explicit fallback everything else overrides.
 	for provider, models := range doc.Models {
 		for id, rec := range models {
 			k := key{provider, id}
 			merged[k] = SnapshotEntry{Origin: "bundled", PriceKnown: rec.Priced, Free: rec.Priced && freeRecord(rec)}
-			_ = id
 		}
 	}
 	// Cached live rosters override bundled rows id by id.
@@ -533,21 +537,26 @@ func SnapshotAll() (entries []SnapshotEntry, stale bool) {
 			stale = true
 			continue
 		}
+		records := make(map[string]record, len(cached))
 		for _, rec := range cached {
 			rec.Provider = provider
+			records[rec.ID] = rec
 			merged[key{provider, rec.ID}] = SnapshotEntry{
 				Origin:     origin,
 				PriceKnown: rec.Priced,
 				Free:       rec.Priced && freeRecord(rec),
 			}
 		}
+		rosters[provider] = records
 	}
 	meta := doc.Providers
 	for k, entry := range merged {
 		var rec record
 		found := false
 		// Prefer the cached live record; fall back to bundled.
-		rec, found = findCachedRecord(k.provider, k.id)
+		if records, ok := rosters[k.provider]; ok {
+			rec, found = records[k.id]
+		}
 		if !found {
 			rec, found = doc.Models[k.provider][k.id]
 		}

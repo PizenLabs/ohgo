@@ -304,6 +304,16 @@ type Program struct {
 	// background and reports through a Bubble Tea command, never blocking
 	// the event loop. Zero value degrades to the legacy listers below.
 	catalog CatalogHooks
+	// catalogCtx bounds an in-flight catalog refresh to the program's
+	// lifetime. It is cancelled by closeDone, so quitting does not leave a
+	// provider fetch running behind a dead UI.
+	catalogCtx context.Context
+	// catalogCancel releases catalogCtx. Nil-safe for a zero Program.
+	catalogCancel context.CancelFunc
+	// modelRefreshing records that a catalog refresh is in flight. It
+	// survives the picker closing, so reopening /model reuses the running
+	// refresh instead of fanning out another one.
+	modelRefreshing bool
 	// modelControl feeds and persists the /model control plane. Its zero
 	// value means the plane is unavailable and /model falls back to the
 	// picker; the program never owns durable configuration itself.
@@ -726,6 +736,7 @@ func WithVersion(v string) ProgramOption {
 
 // NewProgram returns a program driving the given loop.
 func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOption) *Program {
+	catalogCtx, catalogCancel := context.WithCancel(context.Background())
 	p := &Program{
 		loop:           loop,
 		events:         make(chan Event, 256),
@@ -735,6 +746,8 @@ func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOptio
 		window:         window,
 		termOut:        os.Stdout,
 		traceFn:        traceWriterFromEnv(),
+		catalogCtx:     catalogCtx,
+		catalogCancel:  catalogCancel,
 	}
 	// State first, options after: an option records into the state the
 	// program actually runs (model, version), rather than a zero value
@@ -994,12 +1007,27 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 // response must never overwrite newer rows. A failure keeps the cached rows
 // and records the reason on the picker.
 func (p *Program) onModelsRefreshed(m modelsRefreshedMsg) (tea.Model, tea.Cmd) {
+	if m.seq != p.modelSeq {
+		return p, nil
+	}
+	// The refresh belongs to the program, not to one open picker. Clear the
+	// in-flight marker even when the user closed the picker while it ran, or
+	// the next /model would wait behind a refresh nobody is showing.
+	p.modelRefreshing = false
 	relevant := (p.state.Picker != nil && p.state.Picker.Kind == PickerModels) || p.state.Plane != nil
 	if !relevant {
 		return p, nil
 	}
-	if m.seq != p.modelSeq {
-		return p, nil
+	// A refresh supplies catalog facts, not runtime authority: recompute the
+	// active marker from what the loop is actually calling so replacing the
+	// roster cannot erase the current-model highlight.
+	if p.currentModel != nil && len(m.snapshot.Options) > 0 {
+		active := p.currentModel()
+		options := append([]ModelOption(nil), m.snapshot.Options...)
+		for i := range options {
+			options[i].Active = options[i].ID == active
+		}
+		m.snapshot.Options = options
 	}
 	p.apply(ModelsRefreshed{Seq: m.seq, Snapshot: m.snapshot, Err: m.errMsg})
 	return p, nil
@@ -2282,7 +2310,11 @@ func (p *Program) openModelPicker() tea.Cmd {
 		p.state.Apply(Notice{Text: "model: " + p.state.Status.Model})
 		return nil
 	}
-	if len(snapshot.Options) == 0 && snapshot.Origin != "loading" {
+	// An empty snapshot with a refresh hook is a cache miss, not a dead end:
+	// open the picker in its existing loading state and hydrate it in the
+	// background. Without a hook there is nothing to hydrate, so say so.
+	loading := snapshot.Origin == "loading" || (len(snapshot.Options) == 0 && p.catalog.Refresh != nil)
+	if len(snapshot.Options) == 0 && !loading {
 		p.state.Apply(Notice{Text: "no models known"})
 		return nil
 	}
@@ -2293,7 +2325,6 @@ func (p *Program) openModelPicker() tea.Cmd {
 	for i := range snapshot.Options {
 		snapshot.Options[i].Active = snapshot.Options[i].ID == active
 	}
-	loading := snapshot.Origin == "loading"
 	p.state.Apply(PickerOpened{
 		Kind:    PickerModels,
 		Title:   "models",
@@ -2302,12 +2333,10 @@ func (p *Program) openModelPicker() tea.Cmd {
 		Origin:  snapshot.Origin,
 		Stale:   snapshot.Stale,
 	})
-	// A stale, bundled-only, or still-loading snapshot refreshes in the
-	// background; the picker is already open and usable meanwhile.
-	if snapshot.Stale || loading || snapshot.Origin == "bundled" || snapshot.Origin == "" {
-		return p.issueRefresh()
-	}
-	return nil
+	// The snapshot is the boot roster. Revalidate it in the background, after
+	// the picker is already visible: refresh time must never determine
+	// time-to-first-picker.
+	return p.issueRefresh()
 }
 
 // openModelControl opens the persistent split-pane control plane behind
@@ -2339,7 +2368,7 @@ func (p *Program) openModelControl() tea.Cmd {
 	if p.modelControl.ActiveRole != nil {
 		activeRole = p.modelControl.ActiveRole()
 	}
-	loading := snapshot.Origin == "loading"
+	loading := snapshot.Origin == "loading" || (len(snapshot.Options) == 0 && p.catalog.Refresh != nil)
 	p.state.Apply(ModelPlaneOpened{
 		Providers:  providers,
 		Models:     snapshot.Options,
@@ -2352,10 +2381,10 @@ func (p *Program) openModelControl() tea.Cmd {
 	if p.state.Plane != nil {
 		p.state.Plane.SetVisibleRows(planeRowsFor(p.state))
 	}
-	if snapshot.Stale || loading || snapshot.Origin == "bundled" || snapshot.Origin == "" {
-		return p.issueRefresh()
-	}
-	return nil
+	// Render from the cached snapshot first; revalidate it in the background.
+	// The providers and roles above are local reads, so nothing on this path
+	// waits for provider discovery or a remote catalog.
+	return p.issueRefresh()
 }
 
 // closePlane dismisses the control plane without applying anything.
@@ -2942,9 +2971,13 @@ func (p *Program) refreshModelCatalog() tea.Cmd {
 	return p.issueRefresh()
 }
 
-// issueRefresh starts a refresh unconditionally (the caller already decided
-// one is due, e.g. a stale snapshot at open). It bumps the generation so a
-// slower older response can never overwrite newer rows.
+// issueRefresh starts a refresh unless one is already in flight. It bumps the
+// generation so a slower older response can never overwrite newer rows.
+//
+// The marker lives on the program rather than the open surface: closing and
+// reopening /model must reuse the running refresh, not spawn a second one. The
+// returned command is nil in that case, while the newly opened picker is told
+// a refresh is already on its way.
 func (p *Program) issueRefresh() tea.Cmd {
 	if p.catalog.Refresh == nil {
 		return nil
@@ -2952,14 +2985,46 @@ func (p *Program) issueRefresh() tea.Cmd {
 	if p.state.Picker == nil && p.state.Plane == nil {
 		return nil
 	}
+	if p.modelRefreshing {
+		p.markRefreshing()
+		return nil
+	}
 	p.modelSeq++
+	p.modelRefreshing = true
+	p.markRefreshing()
+	ctx := p.catalogCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := p.catalog.Refresh(ctx, p.modelSeq)
+	if cmd == nil {
+		// No command means no result will ever arrive; do not leave the
+		// in-flight marker stuck and block every later refresh.
+		p.modelRefreshing = false
+		p.markRefreshed()
+	}
+	return cmd
+}
+
+// markRefreshing shows the subtle in-flight status on whichever surface is
+// open.
+func (p *Program) markRefreshing() {
 	if p.state.Picker != nil {
 		p.state.Picker.Refreshing = true
 	}
 	if p.state.Plane != nil {
 		p.state.Plane.Refreshing = true
 	}
-	return p.catalog.Refresh(context.Background(), p.modelSeq)
+}
+
+// markRefreshed clears the in-flight status without applying rows.
+func (p *Program) markRefreshed() {
+	if p.state.Picker != nil {
+		p.state.Picker.Refreshing = false
+	}
+	if p.state.Plane != nil {
+		p.state.Plane.Refreshing = false
+	}
 }
 
 // openSessionManager opens the Session Manager over the stored sessions. The
@@ -3462,6 +3527,9 @@ func (p *Program) RunLive() error {
 // and headless tests drive shutdown without Run.
 func (p *Program) closeDone() {
 	p.doneOnce.Do(func() {
+		if p.catalogCancel != nil {
+			p.catalogCancel()
+		}
 		if closer, ok := p.promptHistory.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		} else if flusher, ok := p.promptHistory.(promptHistoryFlusher); ok {
