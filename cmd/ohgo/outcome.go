@@ -207,6 +207,12 @@ func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out i
 	intent := workspace.BuildIntentContract(text)
 	resolver := structuralResolver(loop.Tools())
 
+	// The request's semantic contract is installed for this turn only. It
+	// narrows the action space (no invented mutation) and gives the completion
+	// evaluator the entities and ambiguities the user actually stated.
+	loop.SetGrounding(intent.Grounding)
+	defer loop.SetGrounding(nil)
+
 	var snapshot *agent.TargetSnapshot
 	if intent.Kind == workspace.ObjectiveMutation && root != "" {
 		snapshot = agent.CaptureTargetsContext(ctx, root, intent, resolver)

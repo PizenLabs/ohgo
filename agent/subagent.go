@@ -147,6 +147,16 @@ type SubagentResult struct {
 	Budget budget.Snapshot
 }
 
+// subagentGrounding returns the assignment's semantic contract. A child must
+// not inherit the parent's grounding: the child has its own task, and the
+// parent's entities are not evidence for it.
+func subagentGrounding(spec SubagentSpec) *contract.IntentGrounding {
+	if spec.Contract == nil {
+		return nil
+	}
+	return spec.Contract.Grounding
+}
+
 // RunSubagent runs a child loop derived from a parent configuration.
 //
 // The isolation is the point. A subagent that shared the parent's message
@@ -239,6 +249,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		Admit:        parent.Admit,
 		Approve:      parent.Approve,
 		Authorize:    parent.Authorize,
+		Grounding:    subagentGrounding(spec),
 		Compaction:   parent.Compaction,
 		Summarize:    parent.Summarize,
 		OnCompact:    parent.OnCompact,

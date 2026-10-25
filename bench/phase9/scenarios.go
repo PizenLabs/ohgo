@@ -232,7 +232,10 @@ func matrix() []scenario {
 			ID: "K2-missing-file", Category: "K_ADVERSARIAL", Fixture: fixtureStatic,
 			Prompt: "Check this project and explain what it does. Do not modify anything.",
 			Steps:  missingSteps,
-			Expect: expectation{ReadOnly: true, Completed: true},
+			// A failed read is a tool error, not proof that the file is absent
+			// repository-wide. The explanation may be correct, but the
+			// unproven absence claim keeps the task reviewable.
+			Expect: expectation{ReadOnly: true, Completed: false},
 			Facts:  []string{"MISSING.md", "index.html"},
 		},
 		{

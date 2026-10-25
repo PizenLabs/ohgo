@@ -141,6 +141,32 @@ The full matrix, state model, and invariants are in
 Semantic identity (`workspace.Style`) is teal/magenta/blue for ASK/FUZZ/BUILD,
 fixed across themes; it never participates in an authority decision.
 
+### Intent grounding
+
+Before a turn executes, `workspace.BuildIntentContract` attaches a
+deterministic `contract.IntentGrounding` to the completion contract: action,
+named entities, scope, expected outcome, constraints, assumptions, and
+ambiguities. It is built from the user's text, never from model output, and it
+grants nothing.
+
+The same contract is consumed at three seams:
+
+- `agent.Loop` semantic admission refuses a mutating call when the request did
+  not ground a mutation, before the security gate is consulted. A read may
+  proceed as bounded observation; it cannot turn into the objective.
+- `cognition` projects the entities and ambiguity into the runtime state block
+  so the model sees what it must preserve.
+- `agent.EvaluateTaskCompletion` calls `AssessGrounding` after structural
+  evidence and before `COMPLETED`. Dropped entities, an invented action
+  narrative, narrowed scope, unresolved references, and unsupported negative
+  conclusions downgrade the result to `NEEDS_REVIEW`.
+
+Task persistence carries the grounding inside the existing `IntentContract`, so
+a resumed task keeps the same semantic boundary. `$sup` is deliberately not
+automatically invoked: it has no repository evidence, and a second model call
+on the common path would add cost without replacing the deterministic checks.
+The full contract is in [`INTENT_GROUNDING.md`](INTENT_GROUNDING.md).
+
 ## The turn
 
 One `Loop.Run` call is one turn:

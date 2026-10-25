@@ -1,0 +1,914 @@
+{
+  "Extraction": [
+    {
+      "ID": "A",
+      "Request": "Fix the authentication bug.",
+      "Action": "mutate",
+      "Actions": [
+        "mutate"
+      ],
+      "Entities": null,
+      "Scope": "",
+      "Ambiguity": "",
+      "Description": "explicit objective"
+    },
+    {
+      "ID": "B",
+      "Request": "Check k8s and opencode as additional projects.",
+      "Action": "read",
+      "Actions": [
+        "read"
+      ],
+      "Entities": [
+        "k8s",
+        "opencode"
+      ],
+      "Scope": "named",
+      "Ambiguity": "",
+      "Description": "multiple entities"
+    },
+    {
+      "ID": "C",
+      "Request": "Additional projects are k8s and opencode.",
+      "Action": "unknown",
+      "Actions": null,
+      "Entities": [
+        "k8s",
+        "opencode"
+      ],
+      "Scope": "named",
+      "Ambiguity": "unknown_action",
+      "Description": "missing action"
+    },
+    {
+      "ID": "D",
+      "Request": "Investigate the API issue and update the documentation.",
+      "Action": "mutate",
+      "Actions": [
+        "investigate",
+        "mutate"
+      ],
+      "Entities": null,
+      "Scope": "",
+      "Ambiguity": "",
+      "Description": "compound request"
+    },
+    {
+      "ID": "E",
+      "Request": "Check the other two repositories too.",
+      "Action": "read",
+      "Actions": [
+        "read"
+      ],
+      "Entities": null,
+      "Scope": "",
+      "Ambiguity": "unresolved_reference",
+      "Description": "scope ambiguity"
+    },
+    {
+      "ID": "F",
+      "Request": "Find why auth is failing and fix it.",
+      "Action": "mutate",
+      "Actions": [
+        "investigate",
+        "mutate"
+      ],
+      "Entities": null,
+      "Scope": "",
+      "Ambiguity": "",
+      "Description": "mutation after investigation"
+    },
+    {
+      "ID": "G",
+      "Request": "Check whether README.md exists.",
+      "Action": "read",
+      "Actions": [
+        "read"
+      ],
+      "Entities": [
+        "README.md"
+      ],
+      "Scope": "named",
+      "Ambiguity": "",
+      "Description": "negative evidence"
+    },
+    {
+      "ID": "H",
+      "Request": "Read the configuration file.",
+      "Action": "read",
+      "Actions": [
+        "read"
+      ],
+      "Entities": null,
+      "Scope": "",
+      "Ambiguity": "",
+      "Description": "tool failure"
+    },
+    {
+      "ID": "I",
+      "Request": "Fix the failing tests.",
+      "Action": "mutate",
+      "Actions": [
+        "mutate"
+      ],
+      "Entities": null,
+      "Scope": "",
+      "Ambiguity": "",
+      "Description": "false completion"
+    },
+    {
+      "ID": "J",
+      "Request": "Clean up the login flow.",
+      "Action": "mutate",
+      "Actions": [
+        "mutate"
+      ],
+      "Entities": null,
+      "Scope": "",
+      "Ambiguity": "",
+      "Description": "benign inference"
+    },
+    {
+      "ID": "K",
+      "Request": "The additional projects are k8s and opencode; use them if relevant.",
+      "Action": "unknown",
+      "Actions": null,
+      "Entities": [
+        "k8s",
+        "opencode"
+      ],
+      "Scope": "named",
+      "Ambiguity": "unknown_action",
+      "Description": "conditional named context"
+    }
+  ],
+  "Behaviors": [
+    {
+      "ID": "C-negative",
+      "Request": "Additional projects are k8s and opencode.",
+      "Turns": [
+        {
+          "Assistant": {
+            "Content": null,
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "",
+            "ErrorMessage": ""
+          },
+          "Results": [
+            {
+              "CallID": "",
+              "ToolName": "ls",
+              "Args": {
+                "path": "."
+              },
+              "Result": {
+                "Text": "cmd\ninternal\nmain.go\n",
+                "Details": null,
+                "IsError": false,
+                "Mutates": false,
+                "Executes": false,
+                "Finished": false,
+                "Verifies": false,
+                "Verification": null,
+                "Useless": false,
+                "CandidateRejected": false,
+                "Exhausted": null
+              },
+              "Authorization": null
+            }
+          ],
+          "Err": null
+        },
+        {
+          "Assistant": {
+            "Content": [
+              {
+                "Text": "The repository contains no README documentation, so I cannot describe the test-web2 project."
+              }
+            ],
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "end_turn",
+            "ErrorMessage": ""
+          },
+          "Results": null,
+          "Err": null
+        }
+      ],
+      "Answer": "negative conclusion",
+      "Negative": true,
+      "Description": "global absence conclusion from a root listing; entities dropped",
+      "WantGrounded": false
+    },
+    {
+      "ID": "C-missing-entity",
+      "Request": "Additional projects are k8s and opencode.",
+      "Turns": [
+        {
+          "Assistant": {
+            "Content": [
+              {
+                "Text": "opencode looks fine."
+              }
+            ],
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "end_turn",
+            "ErrorMessage": ""
+          },
+          "Results": null,
+          "Err": null
+        }
+      ],
+      "Answer": "partial entity answer",
+      "Negative": false,
+      "Description": "one named project disappears",
+      "WantGrounded": false
+    },
+    {
+      "ID": "C-grounded-ack",
+      "Request": "Additional projects are k8s and opencode.",
+      "Turns": [
+        {
+          "Assistant": {
+            "Content": [
+              {
+                "Text": "Noted: k8s and opencode are additional projects."
+              }
+            ],
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "end_turn",
+            "ErrorMessage": ""
+          },
+          "Results": null,
+          "Err": null
+        }
+      ],
+      "Answer": "grounded acknowledgement",
+      "Negative": false,
+      "Description": "both entities preserved without an invented action",
+      "WantGrounded": true
+    },
+    {
+      "ID": "K-conditional",
+      "Request": "The additional projects are k8s and opencode; use them if relevant.",
+      "Turns": [
+        {
+          "Assistant": {
+            "Content": [
+              {
+                "Text": "Understood; I will use them only if relevant."
+              }
+            ],
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "end_turn",
+            "ErrorMessage": ""
+          },
+          "Results": null,
+          "Err": null
+        }
+      ],
+      "Answer": "conditional acknowledgement",
+      "Negative": false,
+      "Description": "relevance remains conditional; no forced mention",
+      "WantGrounded": true
+    },
+    {
+      "ID": "B-missing-entity",
+      "Request": "Check k8s and opencode as additional projects.",
+      "Turns": [
+        {
+          "Assistant": {
+            "Content": [
+              {
+                "Text": "opencode is healthy."
+              }
+            ],
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "end_turn",
+            "ErrorMessage": ""
+          },
+          "Results": null,
+          "Err": null
+        }
+      ],
+      "Answer": "partial entity answer",
+      "Negative": false,
+      "Description": "explicit multi-entity check drops one entity",
+      "WantGrounded": false
+    },
+    {
+      "ID": "G-unproven",
+      "Request": "Check whether README.md exists.",
+      "Turns": [
+        {
+          "Assistant": {
+            "Content": null,
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "",
+            "ErrorMessage": ""
+          },
+          "Results": [
+            {
+              "CallID": "",
+              "ToolName": "ls",
+              "Args": {
+                "path": "docs"
+              },
+              "Result": {
+                "Text": "design.md\n",
+                "Details": null,
+                "IsError": false,
+                "Mutates": false,
+                "Executes": false,
+                "Finished": false,
+                "Verifies": false,
+                "Verification": null,
+                "Useless": false,
+                "CandidateRejected": false,
+                "Exhausted": null
+              },
+              "Authorization": null
+            }
+          ],
+          "Err": null
+        },
+        {
+          "Assistant": {
+            "Content": [
+              {
+                "Text": "README.md does not exist in this repository."
+              }
+            ],
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "end_turn",
+            "ErrorMessage": ""
+          },
+          "Results": null,
+          "Err": null
+        }
+      ],
+      "Answer": "global absence from a local listing",
+      "Negative": true,
+      "Description": "a docs listing cannot prove repository-wide absence",
+      "WantGrounded": false
+    },
+    {
+      "ID": "G-proven",
+      "Request": "Check whether README.md exists.",
+      "Turns": [
+        {
+          "Assistant": {
+            "Content": null,
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "",
+            "ErrorMessage": ""
+          },
+          "Results": [
+            {
+              "CallID": "",
+              "ToolName": "glob",
+              "Args": {
+                "pattern": "**/*"
+              },
+              "Result": {
+                "Text": "main.go\nnotes.txt\n",
+                "Details": null,
+                "IsError": false,
+                "Mutates": false,
+                "Executes": false,
+                "Finished": false,
+                "Verifies": false,
+                "Verification": null,
+                "Useless": false,
+                "CandidateRejected": false,
+                "Exhausted": null
+              },
+              "Authorization": null
+            }
+          ],
+          "Err": null
+        },
+        {
+          "Assistant": {
+            "Content": [
+              {
+                "Text": "README.md does not exist in this repository."
+              }
+            ],
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "end_turn",
+            "ErrorMessage": ""
+          },
+          "Results": null,
+          "Err": null
+        }
+      ],
+      "Answer": "absence from a complete file scan",
+      "Negative": true,
+      "Description": "a complete recursive file scan supports file absence",
+      "WantGrounded": true
+    },
+    {
+      "ID": "H-tool-failure",
+      "Request": "Check whether config.yaml exists.",
+      "Turns": [
+        {
+          "Assistant": {
+            "Content": null,
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "",
+            "ErrorMessage": ""
+          },
+          "Results": [
+            {
+              "CallID": "",
+              "ToolName": "read",
+              "Args": {
+                "path": "config.yaml"
+              },
+              "Result": {
+                "Text": "no such file",
+                "Details": null,
+                "IsError": true,
+                "Mutates": false,
+                "Executes": false,
+                "Finished": false,
+                "Verifies": false,
+                "Verification": null,
+                "Useless": false,
+                "CandidateRejected": false,
+                "Exhausted": null
+              },
+              "Authorization": null
+            }
+          ],
+          "Err": null
+        },
+        {
+          "Assistant": {
+            "Content": [
+              {
+                "Text": "config.yaml does not exist."
+              }
+            ],
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "end_turn",
+            "ErrorMessage": ""
+          },
+          "Results": null,
+          "Err": null
+        }
+      ],
+      "Answer": "tool error as absence",
+      "Negative": true,
+      "Description": "a failed read remains a tool error, not proof",
+      "WantGrounded": false
+    },
+    {
+      "ID": "E-unresolved",
+      "Request": "Check the other two repositories too.",
+      "Turns": [
+        {
+          "Assistant": {
+            "Content": [
+              {
+                "Text": "I checked repo-a and repo-b; both are fine."
+              }
+            ],
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "end_turn",
+            "ErrorMessage": ""
+          },
+          "Results": null,
+          "Err": null
+        }
+      ],
+      "Answer": "invented scope",
+      "Negative": false,
+      "Description": "the request never named which repositories",
+      "WantGrounded": false
+    },
+    {
+      "ID": "J-benign",
+      "Request": "Clean up the login flow.",
+      "Turns": [
+        {
+          "Assistant": {
+            "Content": [
+              {
+                "Text": "Done."
+              }
+            ],
+            "Model": {
+              "ID": "",
+              "Name": "",
+              "Provider": "",
+              "API": "",
+              "BaseURL": "",
+              "ContextWindow": 0,
+              "MaxOutputTokens": 0,
+              "Cost": {
+                "Input": 0,
+                "Output": 0,
+                "CacheRead": 0,
+                "CacheWrite": 0
+              },
+              "Reasoning": false,
+              "ReasoningEfforts": null,
+              "ReasoningDisable": "",
+              "ReasoningMandatory": false,
+              "InputModalities": null
+            },
+            "Usage": {
+              "Input": 0,
+              "Output": 0,
+              "CacheRead": 0,
+              "CacheWrite": 0,
+              "Reasoning": 0,
+              "Total": 0
+            },
+            "StopReason": "end_turn",
+            "ErrorMessage": ""
+          },
+          "Results": null,
+          "Err": null
+        }
+      ],
+      "Answer": "claim without mutation evidence",
+      "Negative": false,
+      "Description": "a reasonable inference still needs observed evidence",
+      "WantGrounded": false
+    }
+  ],
+  "Metrics": {
+    "action_fidelity": "11/11 (100.0%)",
+    "ambiguity_preservation": "3/3 (100.0%)",
+    "clarification_rate_grounded": "7/10 (70.0%)",
+    "entity_recall": "7/7 (100.0%)",
+    "extra_model_calls": "0",
+    "false_completion_rate_baseline": "5/7 (71.4%)",
+    "false_completion_rate_grounded": "0/7 (0.0%)",
+    "false_negative_conclusion_rate_baseline": "2/3 (66.7%)",
+    "false_negative_conclusion_rate_grounded": "0/3 (0.0%)",
+    "grounding_tokens_per_request_estimate": "116",
+    "scope_fidelity": "4/4 (100.0%)",
+    "tool_call_overhead": "0",
+    "unsupported_action_rate_baseline": "6/6 (100.0%)",
+    "unsupported_action_rate_grounded": "0/6 (0.0%)",
+    "unsupported_assumption_rate": "2/11 (18.2%)"
+  },
+  "TokenBytes": 5072,
+  "ModelCalls": 0,
+  "ToolCalls": 0,
+  "GroundedRev": 7
+}

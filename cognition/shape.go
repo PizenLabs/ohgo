@@ -59,6 +59,12 @@ type TaskShape struct {
 	RequiredKnowledge []KnowledgeNeed `json:"requiredKnowledge,omitempty"`
 	// Constraints are explicit limits the request states.
 	Constraints []string `json:"constraints,omitempty"`
+	// NamedEntities are the project/entity names the request preserves.
+	NamedEntities []string `json:"namedEntities,omitempty"`
+	// RequestedAction is the grounded action, or "unknown".
+	RequestedAction string `json:"requestedAction,omitempty"`
+	// Ambiguities are the request's unresolved dimensions.
+	Ambiguities []string `json:"ambiguities,omitempty"`
 	// Verification is what the contract requires after execution or mutation.
 	Verification []contract.VerificationRequirement `json:"verification,omitempty"`
 	// External is whether the task requires knowledge outside the workspace.
@@ -308,6 +314,15 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		len(shape.Verification) > 0 || needsExecution(shape.Objective)
 	shape.External = externalRequirement(shape.Objective)
 	shape.Constraints = constraintVocabulary(shape.Objective)
+	if intent.Grounding != nil {
+		shape.NamedEntities = intent.Grounding.EntityValues()
+		shape.RequestedAction = string(intent.Grounding.Action)
+		for _, ambiguity := range intent.Grounding.Ambiguities {
+			if ambiguity.Kind != "" {
+				shape.Ambiguities = appendUnique(shape.Ambiguities, ambiguity.Kind)
+			}
+		}
+	}
 
 	shape.Mutation = MutationScope{
 		Allowed:  authority == "build" && shape.Kind == contract.ObjectiveMutation,
@@ -397,6 +412,15 @@ func (s TaskShape) Summary() string {
 	}
 	if s.External.Required {
 		parts = append(parts, "external=yes")
+	}
+	if len(s.NamedEntities) > 0 {
+		parts = append(parts, "entities="+strings.Join(s.NamedEntities, ","))
+	}
+	if s.RequestedAction != "" {
+		parts = append(parts, "action="+s.RequestedAction)
+	}
+	if len(s.Ambiguities) > 0 {
+		parts = append(parts, "ambiguity="+strings.Join(s.Ambiguities, ","))
 	}
 	if len(s.Verification) > 0 {
 		parts = append(parts, "verification=required")

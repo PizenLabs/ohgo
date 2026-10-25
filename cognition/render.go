@@ -51,6 +51,16 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	if len(shape.Constraints) > 0 {
 		fmt.Fprintf(&head, "Constraints: %s\n", strings.Join(shape.Constraints, ", "))
 	}
+	if len(shape.NamedEntities) > 0 {
+		fmt.Fprintf(&head, "Named entities (preserve them): %s\n", strings.Join(shape.NamedEntities, ", "))
+	}
+	if shape.RequestedAction != "" {
+		fmt.Fprintf(&head, "Requested action: %s\n", shape.RequestedAction)
+	}
+	if len(shape.Ambiguities) > 0 {
+		fmt.Fprintf(&head, "Ambiguity (do not collapse into an invented objective): %s\n",
+			strings.Join(shape.Ambiguities, ", "))
+	}
 	if shape.Mutation.Allowed {
 		scope := "not explicit"
 		if len(shape.Mutation.Paths) > 0 {

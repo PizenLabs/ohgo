@@ -4370,6 +4370,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	user := agent.UserMessage{Text: text}
 	persistTo(user)
 
+	// The grounding belongs to this turn. It is cleared when runTurn returns,
+	// so a later turn never inherits an objective it did not state.
+	p.loop.SetGrounding(intent.Grounding)
+	defer p.loop.SetGrounding(nil)
+
 	request := append(append([]agent.Message(nil), history...), user)
 
 	// Progress is forwarded live so a slow tool is visible while it runs.

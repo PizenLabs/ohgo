@@ -7,6 +7,17 @@ immutable.
 
 ### Added
 
+- Intent grounding and semantic integrity: `workspace.BuildIntentContract` now
+  attaches a deterministic `contract.IntentGrounding` (action, entities, scope,
+  constraints, assumptions, ambiguities). The loop refuses a mutation the
+  request did not ground before the security boundary; the completion evaluator
+  reviews dropped entities, invented action narratives, narrowed or unresolved
+  scope, and unsupported negative conclusions. Grounding persists with the
+  existing task contract, is projected into the runtime state block, and never
+  adds a model call. See `docs/architecture/INTENT_GROUNDING.md` and
+  `docs/report/INTENT_GROUNDING_CLOSURE.md`; benchmark with
+  `go run ./bench/intent`.
+
 - Open-source project documentation: a reorganized `README.md` with the project
   mascot, feature map, usage, authority model, and architecture links, plus
   `CONTRIBUTING.md`, `SECURITY.md`, and `CODE_OF_CONDUCT.md`. `LICENSE` remains

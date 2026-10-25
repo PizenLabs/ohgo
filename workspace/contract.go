@@ -60,6 +60,7 @@ func BuildIntentContract(text string) IntentContract {
 		contract.Kind = ObjectiveInformational
 		contract.Ambiguous = true
 		contract.Issues = append(contract.Issues, "the request is empty")
+		contract.Grounding = buildGrounding(objective, contract)
 		return contract
 	}
 
@@ -147,6 +148,7 @@ func BuildIntentContract(text string) IntentContract {
 				"the request does not name a verifiable target or behavioural check")
 		}
 	}
+	contract.Grounding = buildGrounding(objective, contract)
 	return contract
 }
 
@@ -590,6 +592,8 @@ var packageStopWords = map[string]bool{
 	"compile": true, "compiles": true, "documentation": true, "docs": true,
 	"readme": true, "root": true, "project": true, "repository": true,
 	"repo": true, "package": true, "packages": true,
+	"one": true, "two": true, "three": true, "four": true, "five": true,
+	"six": true, "seven": true, "eight": true, "nine": true, "ten": true,
 }
 
 // symbolStopWords are English words that happen to look like identifiers.

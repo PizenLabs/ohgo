@@ -378,6 +378,14 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	if len(reasons) > 0 {
 		return needsReview("%s", boundedReason(strings.Join(orderedUnique(reasons), "; ")))
 	}
+	// Semantic integrity comes before the model's claim of success. A
+	// deterministic answer check can veto completion even when every
+	// structural target and verification passed: an unsupported global
+	// negative conclusion is not a completed objective.
+	grounding := AssessGrounding(intent, input.Turns, last.Assistant.Text())
+	if !grounding.Pass() {
+		return needsReview("intent grounding: %s", boundedReason(grounding.Reason()))
+	}
 	if review := strings.TrimSpace(input.EvidenceReview); review != "" {
 		// The cognitive layer is authoritative about what evidence it has.
 		// A model answering while the runtime still reports missing evidence
