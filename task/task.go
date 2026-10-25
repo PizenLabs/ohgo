@@ -237,7 +237,23 @@ func cloneContract(in contract.IntentContract) contract.IntentContract {
 	out.ExpectedChanges = append([]contract.ExpectedChange(nil), in.ExpectedChanges...)
 	out.Verification = append([]contract.VerificationRequirement(nil), in.Verification...)
 	out.Issues = append([]string(nil), in.Issues...)
+	out.Grounding = cloneGrounding(in.Grounding)
 	return out
+}
+
+// cloneGrounding deep-copies the semantic contract a checkpoint retains.
+func cloneGrounding(in *contract.IntentGrounding) *contract.IntentGrounding {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Actions = append([]contract.GroundingAction(nil), in.Actions...)
+	out.Entities = append([]contract.Entity(nil), in.Entities...)
+	out.Scope.Values = append([]string(nil), in.Scope.Values...)
+	out.Constraints = append([]string(nil), in.Constraints...)
+	out.Assumptions = append([]contract.Assumption(nil), in.Assumptions...)
+	out.Ambiguities = append([]contract.Ambiguity(nil), in.Ambiguities...)
+	return &out
 }
 
 // cloneSnapshot deep-copies the target evidence a checkpoint retains.

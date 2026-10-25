@@ -10,6 +10,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/security"
 )
 
@@ -140,6 +141,11 @@ type Config struct {
 	// the loop owns that sequence, no tool, UI, or model output can reach
 	// execution without a decision.
 	Authorize Authorizer
+	// Grounding is the request's deterministic semantic contract. When set,
+	// the loop refuses a mutating call the request did not ground before the
+	// security boundary is consulted. It narrows the action space; it never
+	// grants authority.
+	Grounding *contract.IntentGrounding
 	// Compaction configures context reduction. The zero value disables it.
 	Compaction Compaction
 	// Summarize replaces the compacted prefix during compaction. Required when
@@ -408,6 +414,13 @@ func (l *Loop) Authorizer() Authorizer { return l.cfg.Authorize }
 // never during one. Pass nil to restore full-context behaviour.
 func (l *Loop) SetProjectionHook(project func(ProjectionRequest) ProjectionResult) {
 	l.cfg.Project = project
+}
+
+// SetGrounding installs the request's deterministic semantic contract for the
+// next run. It is set at a turn boundary by the control plane and cleared
+// afterwards, so one turn's grounding never authorizes the next.
+func (l *Loop) SetGrounding(grounding *contract.IntentGrounding) {
+	l.cfg.Grounding = grounding
 }
 
 // SetProjectionReportHook installs the projection audit reporter.
@@ -1070,6 +1083,36 @@ func (l *Loop) execute(
 			args = outcome.Args
 			if err := ValidateArgs(tool, args); err != nil {
 				return fail(fmt.Sprintf("Invalid arguments for %q: %v", call.Name, err))
+			}
+		}
+	}
+
+	// Semantic admission runs before the security boundary. It is not an
+	// authorization decision: it refuses an action the user's own request did
+	// not ground, so a mutating proposal can never reach the approval prompt
+	// or execution under a read-only or actionless objective. The refusal is
+	// a control decision (refused, not a failed execution), so completion does
+	// not punish the model for adapting.
+	if l.cfg.Grounding != nil {
+		// Delegation may only narrow authority. A request that did not ground
+		// a mutation cannot authorize a writable child, whatever the model's
+		// assignment says; the child is forced read-only here. This is the
+		// same bounded-observation rule as a direct read: the child may gather
+		// evidence, but it cannot mutate under an ungrounded objective.
+		if HasActionClass(tool, ActionDelegate) && !l.cfg.Grounding.MutationIntent {
+			args["readOnly"] = true
+		}
+		assessment := ValidateProposal(l.cfg.Grounding, ProposalForCall(tool, args))
+		if assessment.Verdict == contract.GroundingReject {
+			return ToolOutcome{
+				CallID:   call.ID,
+				ToolName: call.Name,
+				Args:     args,
+				Result: Result{
+					Text:              "Action not grounded in the request: " + assessment.Reason(),
+					IsError:           true,
+					CandidateRejected: true,
+				},
 			}
 		}
 	}

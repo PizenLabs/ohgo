@@ -154,6 +154,11 @@ type IntentContract struct {
 	// no behavioural success condition. It is the only field that downgrades a
 	// run before any execution happens; it never grants anything.
 	Ambiguous bool
+	// Grounding is the structured semantic reading of the request: action,
+	// entities, scope, assumptions, and ambiguities. It is the reference the
+	// runtime validates a model proposal and final answer against. It is
+	// extracted from user text, never from model output, and grants nothing.
+	Grounding *IntentGrounding
 	// Issues are deterministic extraction notes, used in the review reason.
 	Issues []string
 }
