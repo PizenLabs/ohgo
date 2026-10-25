@@ -520,19 +520,24 @@ func (f *fenwick) len() int { return f.n }
 
 func (f *fenwick) reset(heights []int) {
 	f.n = len(heights)
+	f.heights = append(f.heights[:0], heights...)
+	f.rebuild()
+}
+
+// rebuild reconstructs the tree over the whole allocated capacity, treating
+// leaves past f.n as zero.
+//
+// Nodes above f.n must still hold the sum of the real leaves in their range:
+// the next append only adds its own height and walks the ancestor chain, so a
+// node left at zero would drop every earlier leaf it covers. That is the
+// boundary where a following viewport silently loses blocks and a later full
+// reflow (a resize) makes them appear again.
+func (f *fenwick) rebuild() {
 	capacity := f.n
 	if capacity < 8 {
 		capacity = 8
 	}
-	f.tree = make([]int, capacity+1)
-	f.heights = append(f.heights[:0], heights...)
-	for i, h := range f.heights {
-		f.tree[i+1] += h
-		parent := i + 1 + ((i + 1) & -(i + 1))
-		if parent <= f.n {
-			f.tree[parent] += f.tree[i+1]
-		}
-	}
+	f.rebuildWithCapacity(capacity)
 }
 
 // append adds one leaf at the end.
@@ -540,24 +545,37 @@ func (f *fenwick) append(height int) {
 	if f == nil {
 		return
 	}
-	capacity := len(f.tree) - 1
-	if capacity < 8 {
-		capacity = 8
-		f.tree = make([]int, capacity+1)
-	}
-	if f.n >= capacity {
-		capacity *= 2
-		tree := make([]int, capacity+1)
-		copy(tree, f.tree)
-		f.tree = tree
-	}
-	f.n++
 	f.heights = append(f.heights, height)
-	// tree[f.n] already holds the sums of earlier ranges beyond this leaf;
-	// adding the new height and propagating keeps every ancestor correct.
+	f.n = len(f.heights)
+	capacity := len(f.tree) - 1
+	if capacity < f.n {
+		capacity *= 2
+		if capacity < 8 {
+			capacity = 8
+		}
+		// Growth is amortised: this rebuild happens only when capacity
+		// doubles, and keeps every ancestor exact across the new boundary.
+		f.rebuildWithCapacity(capacity)
+		return
+	}
 	f.tree[f.n] += height
 	for i := f.n + (f.n & -f.n); i <= capacity; i += i & -i {
 		f.tree[i] += height
+	}
+}
+
+func (f *fenwick) rebuildWithCapacity(capacity int) {
+	f.tree = make([]int, capacity+1)
+	for i := 0; i < capacity; i++ {
+		var h int
+		if i < len(f.heights) {
+			h = f.heights[i]
+		}
+		f.tree[i+1] += h
+		parent := i + 1 + ((i + 1) & -(i + 1))
+		if parent <= capacity {
+			f.tree[parent] += f.tree[i+1]
+		}
 	}
 }
 
