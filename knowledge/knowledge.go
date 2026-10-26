@@ -37,6 +37,11 @@ const (
 	// CapabilityMCPMutationTool calls one MCP tool classified as interaction
 	// or mutation.
 	CapabilityMCPMutationTool Capability = "mcp.mutation_tool"
+	// CapabilityMCPExecuteTool calls one MCP tool classified as execution.
+	CapabilityMCPExecuteTool Capability = "mcp.execute_tool"
+	// CapabilityMCPPrompt renders one MCP prompt template. It is context, not
+	// authority and not completion evidence.
+	CapabilityMCPPrompt Capability = "mcp.prompt"
 	// CapabilityMCPDiscovery lists capabilities advertised by an MCP server.
 	// Discovery is not authorization and produces no knowledge evidence.
 	CapabilityMCPDiscovery Capability = "mcp.discovery"
@@ -96,6 +101,8 @@ const (
 	EvidenceMCPResource EvidenceKind = "MCP_RESOURCE"
 	// EvidenceMCPToolResult is one MCP tool result.
 	EvidenceMCPToolResult EvidenceKind = "MCP_TOOL_RESULT"
+	// EvidenceMCPPrompt is one rendered MCP prompt template.
+	EvidenceMCPPrompt EvidenceKind = "MCP_PROMPT"
 	// EvidenceBrowserPage is one bounded page snapshot.
 	EvidenceBrowserPage EvidenceKind = "BROWSER_PAGE"
 	// EvidenceBrowserNavigation is one navigation transition.

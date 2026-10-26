@@ -291,6 +291,9 @@ type Program struct {
 	// card's SYMBOL ENGINE section. Nil (the default) hides the section so
 	// the card never invents an engine that is not wired.
 	symbolStatus func() StatusEngine
+	// mcp inspects the session's configured MCP servers. Zero value reports
+	// MCP unavailable rather than opening a second registry.
+	mcp MCPHooks
 	// deleter removes saved credentials for /disconnect. Nil means unavailable.
 	deleter CredentialDeleter
 	// connect drives the /connect setup flow. Zero value reports each step
@@ -665,6 +668,11 @@ func (p *Program) SetProbeFunc(probe ProbeFunc) {
 // section: an engine the runtime does not have is never claimed.
 func (p *Program) SetSymbolStatusFunc(status func() StatusEngine) {
 	p.symbolStatus = status
+}
+
+// SetMCPHooks installs the MCP inspector behind /mcp.
+func (p *Program) SetMCPHooks(hooks MCPHooks) {
+	p.mcp = hooks
 }
 
 // SetCredentialDeleter installs removal behind /disconnect.
@@ -1741,6 +1749,9 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 	case "doctor":
 		p.runDoctor()
 		return nil
+
+	case "mcp":
+		return p.mcpCommand(command.Args)
 
 	case "diff":
 		return p.openDiff(command.Args)
@@ -3068,6 +3079,8 @@ func (p *Program) openSessionManager() {
 
 // activeSessionID returns the loaded session's id, or zero when none.
 func (p *Program) activeSessionID() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.session == nil {
 		return 0
 	}
@@ -3124,6 +3137,7 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	// of the session state: the decision answered one session's execution,
 	// and a new session must determine its own.
 	p.proposal = nil
+	p.session = sess
 	p.mu.Unlock()
 	// A commit proposal belongs to the old session's repository decision and
 	// must not be answerable into the new one. The sequence bump and the
@@ -3139,7 +3153,6 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	if p.state.CommitPhase() != CommitExecuting {
 		p.state.Apply(CommitChanged{Phase: CommitIdle})
 	}
-	p.session = sess
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
 	if sess != nil {
 		p.reportRecoveryInspection(sess.ID)
@@ -4855,12 +4868,12 @@ func (p *Program) SetCompletionContext(root string, resolver agent.StructuralRes
 // loop secretly holds full history. This mirrors the /sessions picker path,
 // which applies HistoryReplaced on choosing.
 func (p *Program) AttachSession(store *session.Store, sess *session.Session, history []agent.Message) {
+	p.mu.Lock()
 	p.store = store
 	p.session = sess
 	p.history = append([]agent.Message(nil), history...)
 	// An attached session — new or resumed — starts with no standing proposal
 	// decision: the choice belongs to the execution it released.
-	p.mu.Lock()
 	p.proposal = nil
 	p.mu.Unlock()
 	if p.state.Pending != nil {
@@ -4888,7 +4901,11 @@ func (p *Program) AttachSession(store *session.Store, sess *session.Session, his
 // conversation is still correct in memory, and losing the log is better than
 // losing the answer.
 func (p *Program) persist(msg agent.Message) {
-	if p.store == nil || p.session == nil {
+	p.mu.Lock()
+	store := p.store
+	sess := p.session
+	p.mu.Unlock()
+	if store == nil || sess == nil {
 		return
 	}
 	stored, err := session.FromAgentMessage(msg)
@@ -4896,7 +4913,7 @@ func (p *Program) persist(msg agent.Message) {
 		// A UI-only or unconvertible message has no stored form.
 		return
 	}
-	if err := p.store.Append(p.session.ID, stored); err != nil {
+	if err := store.Append(sess.ID, stored); err != nil {
 		p.publish(Notice{Text: "could not save turn: " + err.Error()})
 	}
 }

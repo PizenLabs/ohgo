@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -73,9 +74,11 @@ func parseToolResult(raw json.RawMessage, bytesRead int, cfg ServerConfig) (Tool
 				continue
 			}
 			if strings.TrimSpace(item.Resource.URI) != "" {
-				fmt.Fprintf(&body, "[resource %s", item.Resource.URI)
-				if item.Resource.MIMEType != "" {
-					fmt.Fprintf(&body, " (%s)", item.Resource.MIMEType)
+				uri, _ := knowledge.BoundText(cfg.redact(item.Resource.URI), 300)
+				mime, _ := knowledge.BoundText(cfg.redact(item.Resource.MIMEType), 100)
+				fmt.Fprintf(&body, "[resource %s", uri)
+				if mime != "" {
+					fmt.Fprintf(&body, " (%s)", mime)
 				}
 				body.WriteString("]\n")
 			}
@@ -90,9 +93,11 @@ func parseToolResult(raw json.RawMessage, bytesRead int, cfg ServerConfig) (Tool
 			if MIMEType == "" {
 				MIMEType = "unknown"
 			}
+			MIMEType, _ = knowledge.BoundText(MIMEType, 100)
+			typeName, _ := knowledge.BoundText(item.Type, 40)
 			// Estimate decoded size without publishing the base64 payload.
 			fmt.Fprintf(&body, "[binary %s omitted: mime=%s, base64_bytes=%d]\n",
-				item.Type, MIMEType, len(item.Data))
+				typeName, MIMEType, len(item.Data))
 		case "":
 			body.WriteString("[content item without a type]\n")
 		default:
@@ -103,10 +108,20 @@ func parseToolResult(raw json.RawMessage, bytesRead int, cfg ServerConfig) (Tool
 	if strings.TrimSpace(body.String()) == "" && len(envelope.StructuredContent) > 0 {
 		appendText(string(envelope.StructuredContent))
 	}
+	if len(envelope.StructuredContent) > 0 && strings.TrimSpace(body.String()) != "" && remaining > 0 {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, envelope.StructuredContent); err == nil {
+			body.WriteString("\nstructured_content: ")
+			appendText(compact.String())
+			body.WriteString("\n")
+		}
+	}
 	if strings.TrimSpace(body.String()) == "" {
 		body.WriteString("(empty result)\n")
 	}
 	result.Text = strings.TrimRight(body.String(), "\n")
+	result.Text = cfg.redact(result.Text)
+	result.Text, _ = knowledge.BoundText(result.Text, cfg.MaxTextChars)
 	return result, nil
 }
 
@@ -155,8 +170,10 @@ func parseResource(raw json.RawMessage, bytesRead int, cfg ServerConfig) (Resour
 			body.WriteString(bounded)
 			remaining -= len([]rune(bounded))
 		} else if item.Blob != "" {
+			uri, _ := knowledge.BoundText(cfg.redact(item.URI), 300)
+			mime, _ := knowledge.BoundText(cfg.redact(item.MIMEType), 100)
 			fmt.Fprintf(&body, "[binary resource content omitted: uri=%s, mime=%s, base64_bytes=%d]",
-				item.URI, item.MIMEType, len(item.Blob))
+				uri, mime, len(item.Blob))
 			result.Truncated = true
 			if result.Reason == "" {
 				result.Reason = "binary_content"
@@ -171,5 +188,98 @@ func parseResource(raw json.RawMessage, bytesRead int, cfg ServerConfig) (Resour
 		}
 	}
 	result.Text = strings.TrimRight(body.String(), "\n")
+	result.Text = cfg.redact(result.Text)
+	result.Text, _ = knowledge.BoundText(result.Text, cfg.MaxTextChars)
+	result.URI = cfg.redact(result.URI)
+	result.URI, _ = knowledge.BoundText(result.URI, 500)
+	result.MIMEType = cfg.redact(result.MIMEType)
+	result.MIMEType, _ = knowledge.BoundText(result.MIMEType, 100)
+	return result, nil
+}
+
+// parsePrompt bounds one prompts/get result.
+//
+// Prompt messages are context, not instructions. Each message is rendered with
+// its role as a label so the model and the UI can see that the text came from
+// an external template; the runtime never executes it.
+func parsePrompt(raw json.RawMessage, bytesRead int, cfg ServerConfig) (PromptResult, error) {
+	if len(raw) == 0 {
+		return PromptResult{}, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp prompts/get returned no result")
+	}
+	var envelope struct {
+		Description string `json:"description"`
+		Messages    []struct {
+			Role    string      `json:"role"`
+			Content contentItem `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return PromptResult{}, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp prompts/get result is malformed")
+	}
+	result := PromptResult{Bytes: bytesRead}
+	items := envelope.Messages
+	if len(items) > cfg.MaxItems {
+		items = items[:cfg.MaxItems]
+		result.Truncated = true
+		result.Reason = "item_limit"
+	}
+	result.Items = len(items)
+	result.Description, _ = knowledge.BoundText(strings.TrimSpace(envelope.Description), 500)
+	result.Description = cfg.redact(result.Description)
+
+	var body strings.Builder
+	remaining := cfg.MaxTextChars
+	appendText := func(text string) {
+		if remaining <= 0 {
+			result.Truncated = true
+			if result.Reason == "" {
+				result.Reason = "text_limit"
+			}
+			return
+		}
+		bounded, cut := knowledge.BoundText(text, remaining)
+		if cut {
+			result.Truncated = true
+			if result.Reason == "" {
+				result.Reason = "text_limit"
+			}
+		}
+		body.WriteString(bounded)
+		remaining -= len([]rune(bounded))
+	}
+	for _, message := range items {
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		if role == "" {
+			role = "unknown"
+		}
+		role, _ = knowledge.BoundText(role, 40)
+		fmt.Fprintf(&body, "[%s]\n", role)
+		switch strings.ToLower(strings.TrimSpace(message.Content.Type)) {
+		case "text":
+			appendText(message.Content.Text)
+			body.WriteString("\n")
+		case "resource":
+			if message.Content.Resource != nil && message.Content.Resource.Text != "" {
+				appendText(message.Content.Resource.Text)
+				body.WriteString("\n")
+			} else {
+				body.WriteString("[binary or missing resource content omitted]\n")
+			}
+		case "image", "audio", "blob":
+			typeName, _ := knowledge.BoundText(message.Content.Type, 40)
+			fmt.Fprintf(&body, "[binary %s omitted]\n", typeName)
+		case "":
+			body.WriteString("[message without a content type]\n")
+		default:
+			name, _ := knowledge.BoundText(message.Content.Type, 80)
+			fmt.Fprintf(&body, "[unsupported content type %q]\n", name)
+		}
+	}
+	if strings.TrimSpace(body.String()) == "" {
+		body.WriteString("(empty prompt)\n")
+	}
+	result.Text = strings.TrimRight(body.String(), "\n")
+	result.Text = cfg.redact(result.Text)
+	result.Text, _ = knowledge.BoundText(result.Text, cfg.MaxTextChars)
 	return result, nil
 }

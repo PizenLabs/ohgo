@@ -1,10 +1,17 @@
 // Package mcp implements a bounded MCP client boundary.
 //
 // An MCP server is an external actor. Discovery returns capability
-// descriptions, never authority: every mutating call must be configured as
-// such, admitted by the security gate, and approved by a human. Responses are
-// bounded before they become model context, and a cancelled exchange kills the
-// process rather than leaving an unbounded read behind.
+// descriptions, never authority: every mutating or executing call must be
+// classified in configuration, admitted by the security gate, and approved by a
+// human. Every capability has a stable "<server>:<capability>" identity, and
+// server provenance is preserved rather than flattened into a global namespace.
+//
+// The package supports stdio and the streamable-HTTP request/response core,
+// normalizes tools, resources, and prompts, caches discovery snapshots with an
+// explicit refresh, bounds responses and argument trees, and maps progress
+// notifications into the existing tool progress callback. A cancelled exchange
+// kills a stdio child rather than leaving an orphan, and every result is
+// untrusted data with provenance.
 package mcp
 
 import (
@@ -12,6 +19,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -48,6 +57,92 @@ const (
 	DefaultMaxArgumentBytes = 256 * 1024
 	// DefaultIdleTimeout kills a server process that has been idle.
 	DefaultIdleTimeout = 2 * time.Minute
+	// DefaultCacheTTL bounds how long a discovery snapshot is reused. It is
+	// short enough that a capability change is observed without an explicit
+	// refresh, and long enough that a turn does not re-handshake per call.
+	DefaultCacheTTL = 5 * time.Minute
+	// MaxCacheTTL is the absolute cache lifetime.
+	MaxCacheTTL = time.Hour
+)
+
+// Transport names how the client reaches an MCP server.
+//
+// The transport is an implementation detail below the capability layer: the
+// rest of the runtime sees normalized capabilities, never an HTTP or pipe
+// handle.
+type Transport string
+
+// Supported transports.
+const (
+	// TransportStdio speaks newline-delimited JSON-RPC to a child process.
+	TransportStdio Transport = "stdio"
+	// TransportStreamableHTTP speaks JSON-RPC over HTTP POST, accepting either
+	// a JSON response or a server-sent-event stream.
+	TransportStreamableHTTP Transport = "streamable-http"
+)
+
+// ParseTransport validates a configured transport. An empty value is stdio,
+// the historical default; an unknown value is refused rather than guessed.
+func ParseTransport(value string) (Transport, bool) {
+	switch Transport(strings.ToLower(strings.TrimSpace(value))) {
+	case "", TransportStdio:
+		return TransportStdio, true
+	case TransportStreamableHTTP:
+		return TransportStreamableHTTP, true
+	}
+	return "", false
+}
+
+// Trust is human-provided provenance metadata for a server.
+//
+// It is deliberately not authority: a local server does not gain mutation
+// permission from its label, and an external server is not refused merely for
+// being external. Admission is decided by ohgo's security boundary alone.
+type Trust string
+
+// Trust classes.
+const (
+	// TrustLocal marks a server the human runs on the same machine.
+	TrustLocal Trust = "local"
+	// TrustExternal marks a configured remote or third-party server.
+	TrustExternal Trust = "external"
+	// TrustUntrusted is the conservative default for an unspecified server.
+	TrustUntrusted Trust = "untrusted"
+)
+
+// ParseTrust normalizes trust metadata. Anything unrecognised is untrusted, so
+// a typo never upgrades a server's label.
+func ParseTrust(value string) Trust {
+	switch Trust(strings.ToLower(strings.TrimSpace(value))) {
+	case TrustLocal:
+		return TrustLocal
+	case TrustExternal:
+		return TrustExternal
+	}
+	return TrustUntrusted
+}
+
+// AuthorityClass is the normalized admission class of a capability.
+//
+// It is metadata for admission and UX. It never grants authority: the
+// security boundary still decides whether the class is permitted under the
+// active workspace and whether a human must approve.
+type AuthorityClass string
+
+// Normalized authority classes.
+const (
+	// AuthorityRead observes without changing state.
+	AuthorityRead AuthorityClass = "READ"
+	// AuthorityExecute starts a process or runs a remote operation that is
+	// neither a read nor a durable mutation.
+	AuthorityExecute AuthorityClass = "EXECUTE"
+	// AuthorityMutate changes repository state.
+	AuthorityMutate AuthorityClass = "MUTATE"
+	// AuthorityExternalSideEffect changes or acts on state outside the
+	// workspace.
+	AuthorityExternalSideEffect AuthorityClass = "EXTERNAL_SIDE_EFFECT"
+	// AuthorityUnknown is the fail-closed default.
+	AuthorityUnknown AuthorityClass = "UNKNOWN"
 )
 
 // Classification is the explicit safety class of one MCP tool.
@@ -60,6 +155,10 @@ type Classification string
 const (
 	// ClassRead observes only.
 	ClassRead Classification = "read"
+	// ClassExecute runs a bounded remote operation without a durable state
+	// change. It is stricter than read and weaker than interaction: ASK may
+	// not run it, FUZZ and BUILD may after the normal approval.
+	ClassExecute Classification = "execute"
 	// ClassInteract changes transient external state.
 	ClassInteract Classification = "interact"
 	// ClassMutate durably changes external state.
@@ -71,32 +170,63 @@ const (
 // Valid reports whether the classification is explicit.
 func (c Classification) Valid() bool {
 	switch c {
-	case ClassRead, ClassInteract, ClassMutate, ClassUnknown:
+	case ClassRead, ClassExecute, ClassInteract, ClassMutate, ClassUnknown:
 		return true
 	}
 	return false
 }
 
-// Mutating reports whether the class requires the mutation boundary.
+// Mutating reports whether the class can change external state.
 func (c Classification) Mutating() bool {
 	return c == ClassInteract || c == ClassMutate
 }
 
+// RequiresMutationBoundary reports whether the class may only use ModeMutate.
+//
+// Execution is included: running a remote operation is not a read, and ASK
+// must not reach it. The mutation boundary is the admitted, approved path.
+func (c Classification) RequiresMutationBoundary() bool {
+	return c == ClassExecute || c == ClassInteract || c == ClassMutate
+}
+
+// Authority returns the normalized admission class.
+//
+// Every MCP tool acts outside the workspace, so a state-changing tool is an
+// external side effect, never a repository mutation. The distinction matters
+// to completion: an external call is not evidence that a repository objective
+// was satisfied.
+func (c Classification) Authority() AuthorityClass {
+	switch c {
+	case ClassRead:
+		return AuthorityRead
+	case ClassExecute:
+		return AuthorityExecute
+	case ClassInteract, ClassMutate:
+		return AuthorityExternalSideEffect
+	}
+	return AuthorityUnknown
+}
+
 // ParseClassification maps configuration text to a classification. Anything
 // unrecognised is Unknown, so a typo fails closed rather than granting read.
+//
+// "write" is accepted as a durable-mutation alias, and "exec" as an execution
+// alias, because both spellings are common in human configuration.
 func ParseClassification(value string) Classification {
 	switch Classification(strings.ToLower(strings.TrimSpace(value))) {
 	case ClassRead:
 		return ClassRead
+	case ClassExecute, "exec":
+		return ClassExecute
 	case ClassInteract:
 		return ClassInteract
-	case ClassMutate:
+	case ClassMutate, "write":
 		return ClassMutate
 	}
 	return ClassUnknown
 }
 
-// CapabilityKind distinguishes tools from resources.
+// CapabilityKind distinguishes tools, resources, and prompt templates.
 type CapabilityKind string
 
 // Capability kinds.
@@ -105,6 +235,8 @@ const (
 	KindTool CapabilityKind = "tool"
 	// KindResource is an MCP resource.
 	KindResource CapabilityKind = "resource"
+	// KindPrompt is an MCP prompt template.
+	KindPrompt CapabilityKind = "prompt"
 )
 
 // ServerConfig configures one MCP server.
@@ -115,6 +247,8 @@ const (
 type ServerConfig struct {
 	// Name is the model-facing server name.
 	Name string
+	// Transport selects stdio or streamable HTTP. Empty means stdio.
+	Transport Transport
 	// Command is the executable to start. It is never model-controlled.
 	Command string
 	// Args are the process arguments.
@@ -124,20 +258,32 @@ type ServerConfig struct {
 	// its project from the working directory sees the same repository the
 	// agent does.
 	Dir string
+	// URL is the streamable-HTTP endpoint. It is human configuration and must
+	// be absolute http/https.
+	URL string
+	// HeaderEnv maps an HTTP header name to the environment variable that
+	// holds its value. Configuration never contains the secret itself, and
+	// the value is never logged, displayed, or published as evidence.
+	HeaderEnv map[string]string
 	// Env names environment variables to pass through. Values live in the
 	// environment, never in configuration, logs, or model context.
 	Env []string
-	// Tools maps a tool name to read/interact/mutate/unknown. A missing tool is
-	// Unknown and fails closed.
+	// Trust is human-provided provenance metadata. It is not authority.
+	Trust Trust
+	// Tools maps a tool name to read/execute/interact/mutate/unknown. A
+	// missing tool is Unknown and fails closed.
 	Tools map[string]string
 	// ResourcePrefixes optionally bounds readable resource URIs. Empty means
 	// the server's resources may be read.
 	ResourcePrefixes []string
-	// AllowMutation permits interaction/mutation calls at all. It is false by
-	// default; even when true, the authority and approval gates still apply.
+	// AllowMutation permits interaction/mutation/execute calls at all. It is
+	// false by default; even when true, the authority and approval gates still
+	// apply.
 	AllowMutation bool
 	// Timeout bounds one exchange.
 	Timeout time.Duration
+	// CacheTTL bounds discovery-snapshot reuse.
+	CacheTTL time.Duration
 	// MaxBytes bounds one response and the cumulative bytes of one exchange.
 	MaxBytes int
 	// MaxItems bounds content items and discovered capabilities.
@@ -156,7 +302,15 @@ type ServerConfig struct {
 func (c ServerConfig) normalized() ServerConfig {
 	c.Name = strings.TrimSpace(c.Name)
 	c.Command = strings.TrimSpace(c.Command)
+	c.URL = strings.TrimSpace(c.URL)
+	c.Trust = ParseTrust(string(c.Trust))
+	if strings.TrimSpace(string(c.Transport)) == "" {
+		c.Transport = TransportStdio
+	} else if transport, ok := ParseTransport(string(c.Transport)); ok {
+		c.Transport = transport
+	}
 	c.Timeout = clampDuration(c.Timeout, DefaultTimeout, MaxTimeout)
+	c.CacheTTL = clampDuration(c.CacheTTL, DefaultCacheTTL, MaxCacheTTL)
 	c.MaxBytes = clampInt(c.MaxBytes, DefaultMaxBytes, MaxResponseBytes)
 	c.MaxItems = clampInt(c.MaxItems, DefaultMaxItems, MaxItemsLimit)
 	c.MaxTextChars = clampInt(c.MaxTextChars, DefaultMaxTextChars, MaxTextCharsLimit)
@@ -171,8 +325,32 @@ func (c ServerConfig) validate() error {
 	if c.Name == "" {
 		return errors.New("mcp: server name is required")
 	}
-	if c.Command == "" {
-		return fmt.Errorf("mcp: server %q has no command", c.Name)
+	if !validServerName(c.Name) {
+		return fmt.Errorf("mcp: server name %q must be non-empty and must not contain ':' or control characters", c.Name)
+	}
+	switch c.Transport {
+	case TransportStdio:
+		if c.Command == "" {
+			return fmt.Errorf("mcp: server %q has no command", c.Name)
+		}
+		if c.URL != "" {
+			return fmt.Errorf("mcp: stdio server %q must not set a URL", c.Name)
+		}
+	case TransportStreamableHTTP:
+		if c.Command != "" {
+			return fmt.Errorf("mcp: http server %q must not set a command", c.Name)
+		}
+		parsed, err := url.Parse(c.URL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("mcp: server %q has an invalid URL", c.Name)
+		}
+		if parsed.User != nil {
+			// Credentials belong in HeaderEnv, never in the URL: the URL is
+			// configuration and may be shown in diagnostics.
+			return fmt.Errorf("mcp: server %q URL must not contain userinfo; use headerEnv", c.Name)
+		}
+	default:
+		return fmt.Errorf("mcp: server %q has an unsupported transport %q", c.Name, c.Transport)
 	}
 	for name := range c.Tools {
 		if strings.TrimSpace(name) == "" {
@@ -182,6 +360,14 @@ func (c ServerConfig) validate() error {
 	for _, name := range c.Env {
 		if !validEnvName(name) {
 			return fmt.Errorf("mcp: server %q has invalid environment name %q", c.Name, name)
+		}
+	}
+	for header, name := range c.HeaderEnv {
+		if !validHeaderName(header) {
+			return fmt.Errorf("mcp: server %q has invalid header name %q", c.Name, header)
+		}
+		if !validEnvName(name) {
+			return fmt.Errorf("mcp: server %q header %q has invalid environment name %q", c.Name, header, name)
 		}
 	}
 	return nil
@@ -216,7 +402,31 @@ func (c ServerConfig) allowsResource(uri string) bool {
 	return false
 }
 
-// Capability is one discovered MCP tool or resource.
+// redact removes configured credential values from text that may become model
+// context, an error, or evidence.
+//
+// The configuration stores variable names, never values, so this is the only
+// place that reads them for redaction. A short value is left alone: replacing
+// every "1" or "on" would corrupt normal content without protecting a secret.
+func (c ServerConfig) redact(text string) string {
+	if text == "" {
+		return text
+	}
+	names := append([]string(nil), c.Env...)
+	for _, name := range c.HeaderEnv {
+		names = append(names, name)
+	}
+	for _, name := range names {
+		value := os.Getenv(name)
+		if len(value) < 4 {
+			continue
+		}
+		text = strings.ReplaceAll(text, value, "[redacted]")
+	}
+	return text
+}
+
+// Capability is one discovered MCP tool, resource, or prompt.
 //
 // Discovery is description, not permission. Classification is copied from
 // configuration, and Schema is compiled and bounded before use.
@@ -228,9 +438,34 @@ type Capability struct {
 	URI            string             `json:"uri,omitempty"`
 	MIMEType       string             `json:"mime_type,omitempty"`
 	Classification Classification     `json:"classification"`
+	Authority      AuthorityClass     `json:"authority"`
+	Trust          Trust              `json:"trust"`
 	Schema         *jsonschema.Schema `json:"-"`
 	SchemaRaw      json.RawMessage    `json:"-"`
 	DiscoveredAt   time.Time          `json:"discovered_at"`
+}
+
+// ID returns the stable, provenance-preserving capability identity.
+//
+// A tool is "<server>:<tool>". Prompts and resources are namespace-qualified
+// because an MCP server may advertise a tool and a prompt with the same name;
+// collapsing them would make two distinct capabilities share one identity.
+// The server prefix is part of the identity, never decoration: two servers may
+// advertise the same name, and a capability from one must never be represented
+// as the other's.
+func (c Capability) ID() string {
+	switch c.Kind {
+	case KindPrompt:
+		return c.Server + ":prompt/" + c.Name
+	case KindResource:
+		value := c.URI
+		if strings.TrimSpace(value) == "" {
+			value = c.Name
+		}
+		return c.Server + ":resource/" + value
+	default:
+		return c.Server + ":" + c.Name
+	}
 }
 
 // Mode is the safety boundary a caller asks the manager to enforce.
@@ -246,13 +481,29 @@ const (
 )
 
 // Meter charges and bounds one exchange. Before may clamp the response bytes;
-// After is called once per exchange with the bytes actually read.
+// After is called once per exchange with the bytes actually read. Progress is
+// called for a server progress notification that arrives while the exchange is
+// outstanding.
 //
 // A nil Meter performs no accounting. The capability tool always supplies one,
 // so an MCP exchange cannot bypass the root grant.
 type Meter struct {
-	Before func(ctx context.Context, method string) (maxBytes int, err error)
-	After  func(ctx context.Context, bytes int) error
+	Before   func(ctx context.Context, method string) (maxBytes int, err error)
+	After    func(ctx context.Context, bytes int) error
+	Progress func(Progress)
+}
+
+// Progress is one bounded progress observation from a server.
+//
+// It is presentation, not authority and not completion evidence: a server that
+// reports progress has not proven that anything finished.
+type Progress struct {
+	// Message is the bounded human-readable update.
+	Message string
+	// Progress and Total are the server's own counters. Total is zero when the
+	// server did not report one.
+	Progress float64
+	Total    float64
 }
 
 // ToolResult is one bounded MCP tool result.
@@ -290,12 +541,34 @@ type ResourceResult struct {
 	Reason string
 }
 
+// PromptResult is one bounded MCP prompt rendering.
+//
+// It is context, not authority: the runtime treats every message as untrusted
+// external data, exactly like a tool result.
+type PromptResult struct {
+	// Name is the prompt template identity.
+	Name string
+	// Description is the server's bounded description.
+	Description string
+	// Text is the bounded rendered messages.
+	Text string
+	// Items is the number of messages observed.
+	Items int
+	// Bytes is the response bytes observed.
+	Bytes int
+	// Truncated reports that a bound cut the content.
+	Truncated bool
+	// Reason names the bound.
+	Reason string
+}
+
 // Discovery is one bounded discovery result.
 //
 // Truncated and Reason are explicit: a server that advertises more
 // capabilities than the bound is never presented as if the list were complete.
 type Discovery struct {
-	// Capabilities are the advertised tools and resources, capped and sorted.
+	// Capabilities are the advertised tools, resources, and prompts, capped
+	// and sorted.
 	Capabilities []Capability
 	// Instructions is the bounded usage guidance the server returned from
 	// initialize. It is data from the server, not authority.
@@ -304,6 +577,26 @@ type Discovery struct {
 	Truncated bool
 	// Reason names the bound that cut it.
 	Reason string
+	// FetchedAt is when the snapshot was observed.
+	FetchedAt time.Time
+	// CacheHit reports that this answer came from the capability cache rather
+	// than a fresh exchange.
+	CacheHit bool
+}
+
+// ServerStatus is the cheap, non-connecting view of one configured server.
+//
+// It is what /mcp lists: configuration, trust metadata, connection state, and
+// the last cached capability count. It never starts a server.
+type ServerStatus struct {
+	Name           string
+	Transport      Transport
+	Trust          Trust
+	Connected      bool
+	Cached         bool
+	Capabilities   int
+	DiscoveredAt   time.Time
+	CacheExpiresAt time.Time
 }
 
 // Manager owns the configured MCP servers.
@@ -315,10 +608,17 @@ type Manager struct {
 	closed  bool
 }
 
-// serverEntry holds one configured server and its lazily started client.
+// serverEntry holds one configured server, its lazily started client, and the
+// cached capability snapshot.
 type serverEntry struct {
 	cfg    ServerConfig
 	client *client
+
+	// stateMu guards the cache. It is held across a discovery exchange so two
+	// callers cannot race two handshakes for one server.
+	stateMu  sync.Mutex
+	cache    *Discovery
+	cachedAt time.Time
 }
 
 // NewManager validates and builds a manager.
@@ -360,6 +660,42 @@ func (m *Manager) Configured(name string) bool {
 	return ok
 }
 
+// Status returns the cheap cached view of every configured server. It never
+// connects, so calling it is safe at startup and from a UI key handler.
+func (m *Manager) Status() []ServerStatus {
+	m.mu.Lock()
+	entries := make([]*serverEntry, 0, len(m.order))
+	for _, name := range m.order {
+		entries = append(entries, m.servers[name])
+	}
+	m.mu.Unlock()
+
+	out := make([]ServerStatus, 0, len(entries))
+	for _, entry := range entries {
+		entry.stateMu.Lock()
+		status := ServerStatus{
+			Name:      entry.cfg.Name,
+			Transport: entry.cfg.Transport,
+			Trust:     entry.cfg.Trust,
+			Cached:    entry.cache != nil,
+		}
+		if entry.cache != nil {
+			status.Capabilities = len(entry.cache.Capabilities)
+			status.DiscoveredAt = entry.cachedAt
+			status.CacheExpiresAt = entry.cachedAt.Add(entry.cfg.CacheTTL)
+		}
+		entry.stateMu.Unlock()
+		m.mu.Lock()
+		client := entry.client
+		m.mu.Unlock()
+		if client != nil {
+			status.Connected = client.connected()
+		}
+		out = append(out, status)
+	}
+	return out
+}
+
 // Close stops every server process.
 func (m *Manager) Close() error {
 	m.mu.Lock()
@@ -377,6 +713,10 @@ func (m *Manager) Close() error {
 		if client == nil {
 			continue
 		}
+		entry.stateMu.Lock()
+		entry.cache = nil
+		entry.cachedAt = time.Time{}
+		entry.stateMu.Unlock()
 		if err := client.Close(); err != nil && first == nil {
 			first = err
 		}
@@ -384,18 +724,33 @@ func (m *Manager) Close() error {
 	return first
 }
 
+// entryFor returns a configured server entry.
+func (m *Manager) entryFor(name string) (*serverEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, knowledge.Fail(knowledge.FailureNotConfigured, false,
+			"mcp manager is closed")
+	}
+	entry, ok := m.servers[name]
+	if !ok {
+		return nil, knowledge.Fail(knowledge.FailureNotConfigured, false,
+			"mcp server %q is not configured", name)
+	}
+	return entry, nil
+}
+
 // clientFor returns the lazily started client for a configured server.
 func (m *Manager) clientFor(name string) (*client, ServerConfig, error) {
+	entry, err := m.entryFor(name)
+	if err != nil {
+		return nil, ServerConfig{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, ServerConfig{}, knowledge.Fail(knowledge.FailureNotConfigured, false,
 			"mcp manager is closed")
-	}
-	entry, ok := m.servers[name]
-	if !ok {
-		return nil, ServerConfig{}, knowledge.Fail(knowledge.FailureNotConfigured, false,
-			"mcp server %q is not configured", name)
 	}
 	if entry.client == nil {
 		entry.client = newClient(entry.cfg, m.start)
@@ -403,12 +758,82 @@ func (m *Manager) clientFor(name string) (*client, ServerConfig, error) {
 	return entry.client, entry.cfg, nil
 }
 
-// Discover lists the bounded capabilities a server advertises.
+// Classify returns the configured classification of one tool.
 //
-// It starts and initializes the server, which is configuration-trusted: the
-// model never chooses the command. A failed discovery grants nothing.
+// The answer is configuration metadata, never authority. A server name and
+// tool name that are not configured fail closed as Unknown.
+func (m *Manager) Classify(name, tool string) (Classification, bool) {
+	entry, err := m.entryFor(name)
+	if err != nil {
+		return ClassUnknown, false
+	}
+	return entry.cfg.Classify(tool), true
+}
+
+// Discover lists the bounded capabilities a server advertises, reusing a
+// fresh cached snapshot.
+//
+// It starts and initializes the server on a cache miss, which is
+// configuration-trusted: the model never chooses the command or URL. A failed
+// discovery grants nothing and is never cached as success.
 func (m *Manager) Discover(ctx context.Context, name string, meter Meter) (Discovery, error) {
-	client, cfg, err := m.clientFor(name)
+	if err := ctx.Err(); err != nil {
+		return Discovery{}, contextFailure(ctx)
+	}
+	entry, err := m.entryFor(name)
+	if err != nil {
+		return Discovery{}, err
+	}
+	return m.discover(ctx, entry, meter, false)
+}
+
+// Refresh bypasses the capability cache and observes the server again.
+func (m *Manager) Refresh(ctx context.Context, name string, meter Meter) (Discovery, error) {
+	if err := ctx.Err(); err != nil {
+		return Discovery{}, contextFailure(ctx)
+	}
+	entry, err := m.entryFor(name)
+	if err != nil {
+		return Discovery{}, err
+	}
+	return m.discover(ctx, entry, meter, true)
+}
+
+// discover performs one cached or fresh discovery.
+func (m *Manager) discover(ctx context.Context, entry *serverEntry, meter Meter, force bool) (Discovery, error) {
+	entry.stateMu.Lock()
+	defer entry.stateMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Discovery{}, contextFailure(ctx)
+	}
+	if !force && entry.cache != nil {
+		age := time.Since(entry.cachedAt)
+		if age >= 0 && age < entry.cfg.CacheTTL {
+			cached := cloneDiscovery(*entry.cache)
+			cached.CacheHit = true
+			return cached, nil
+		}
+	}
+	result, err := m.discoverFresh(ctx, entry, meter)
+	if err != nil {
+		// A failed refresh must not silently keep serving a stale snapshot as
+		// if it were current: drop it, so the next caller observes the failure
+		// rather than inventing a capability list.
+		entry.cache = nil
+		entry.cachedAt = time.Time{}
+		return Discovery{}, err
+	}
+	entry.cache = &result
+	entry.cachedAt = result.FetchedAt
+	cached := cloneDiscovery(result)
+	return cached, nil
+}
+
+// discoverFresh performs the actual handshake and capability listing.
+func (m *Manager) discoverFresh(ctx context.Context, entry *serverEntry, meter Meter) (Discovery, error) {
+	name := entry.cfg.Name
+	cfg := entry.cfg
+	client, _, err := m.clientFor(name)
 	if err != nil {
 		return Discovery{}, err
 	}
@@ -416,6 +841,8 @@ func (m *Manager) Discover(ctx context.Context, name string, meter Meter) (Disco
 		return Discovery{}, err
 	}
 	instructions := client.serverInstructions()
+	instructions = cfg.redact(instructions)
+	instructions, _ = knowledge.BoundText(instructions, cfg.MaxTextChars)
 	now := time.Now().UTC()
 	var capabilities []Capability
 	truncated := false
@@ -426,12 +853,15 @@ func (m *Manager) Discover(ctx context.Context, name string, meter Meter) (Disco
 	}
 	truncated = truncated || toolsTruncated
 	for _, tool := range tools {
+		class := cfg.Classify(tool.Name)
 		capability := Capability{
 			Server:         name,
 			Kind:           KindTool,
 			Name:           tool.Name,
-			Description:    tool.Description,
-			Classification: cfg.Classify(tool.Name),
+			Description:    cfg.redact(tool.Description),
+			Classification: class,
+			Authority:      class.Authority(),
+			Trust:          cfg.Trust,
 			SchemaRaw:      tool.SchemaRaw(),
 			DiscoveredAt:   now,
 		}
@@ -460,12 +890,39 @@ func (m *Manager) Discover(ctx context.Context, name string, meter Meter) (Disco
 			Server:         name,
 			Kind:           KindResource,
 			Name:           resource.Name,
-			Description:    resource.Description,
-			URI:            resource.URI,
-			MIMEType:       resource.MIMEType,
+			Description:    cfg.redact(resource.Description),
+			URI:            cfg.redact(resource.URI),
+			MIMEType:       cfg.redact(resource.MIMEType),
 			Classification: ClassRead,
+			Authority:      AuthorityRead,
+			Trust:          cfg.Trust,
 			DiscoveredAt:   now,
 		})
+	}
+
+	prompts, promptsTruncated, err := client.listPrompts(ctx, meter)
+	if err != nil && !isUnsupported(err) {
+		return Discovery{}, err
+	}
+	truncated = truncated || promptsTruncated
+	for _, prompt := range prompts {
+		capability := Capability{
+			Server:         name,
+			Kind:           KindPrompt,
+			Name:           prompt.Name,
+			Description:    cfg.redact(prompt.Description),
+			Classification: ClassRead,
+			Authority:      AuthorityRead,
+			Trust:          cfg.Trust,
+			SchemaRaw:      prompt.schemaRaw(),
+			DiscoveredAt:   now,
+		}
+		if len(capability.SchemaRaw) > 0 {
+			if schema, compileErr := compileSchema(capability.SchemaRaw, cfg.MaxDepth); compileErr == nil {
+				capability.Schema = schema
+			}
+		}
+		capabilities = append(capabilities, capability)
 	}
 
 	sort.Slice(capabilities, func(i, j int) bool {
@@ -481,12 +938,20 @@ func (m *Manager) Discover(ctx context.Context, name string, meter Meter) (Disco
 	result := Discovery{
 		Capabilities: capabilities,
 		Instructions: instructions,
+		FetchedAt:    now,
 		Truncated:    truncated,
 	}
 	if truncated {
 		result.Reason = "item_limit"
 	}
 	return result, nil
+}
+
+// cloneDiscovery copies a discovery result so a caller cannot mutate the
+// cached slice through the returned value.
+func cloneDiscovery(source Discovery) Discovery {
+	source.Capabilities = append([]Capability(nil), source.Capabilities...)
+	return source
 }
 
 // ReadResource reads one bounded resource.
@@ -515,8 +980,9 @@ func (m *Manager) ReadResource(ctx context.Context, name, uri string, meter Mete
 // CallTool calls one MCP tool under an explicit mode.
 //
 // Read mode accepts only tools classified read. Mutate mode accepts only
-// interact/mutate tools, requires AllowMutation, and leaves the final authority
-// and approval decision to the security gate. Unknown always fails closed.
+// execute/interact/mutate tools, requires AllowMutation, and leaves the final
+// authority and approval decision to the security gate. Unknown always fails
+// closed.
 func (m *Manager) CallTool(ctx context.Context, name, tool string, args map[string]any, mode Mode, meter Meter) (ToolResult, error) {
 	if strings.TrimSpace(tool) == "" {
 		return ToolResult{}, knowledge.Fail(knowledge.FailureInvalidRequest, false, "tool name is required")
@@ -536,9 +1002,9 @@ func (m *Manager) CallTool(ctx context.Context, name, tool string, args map[stri
 				"mcp tool %q is classified %s, not read", tool, class)
 		}
 	case ModeMutate:
-		if class == ClassUnknown || class == ClassRead {
+		if !class.RequiresMutationBoundary() {
 			return ToolResult{}, knowledge.Fail(knowledge.FailureMutationDenied, false,
-				"mcp tool %q is classified %s; only interact or mutate tools may use this boundary", tool, class)
+				"mcp tool %q is classified %s; only execute, interact, or mutate tools may use this boundary", tool, class)
 		}
 		if !cfg.AllowMutation {
 			return ToolResult{}, knowledge.Fail(knowledge.FailureMutationDenied, false,
@@ -555,7 +1021,7 @@ func (m *Manager) CallTool(ctx context.Context, name, tool string, args map[stri
 	if err := knowledge.ValidateStructure(args, cfg.MaxArgumentBytes, cfg.MaxDepth, maxValues); err != nil {
 		return ToolResult{}, knowledge.Fail(knowledge.FailureInvalidRequest, false, "mcp arguments: %v", err)
 	}
-	if err := client.validateToolArgs(ctx, tool, args, cfg, meter); err != nil {
+	if err := m.validateToolArgs(ctx, name, tool, args, cfg, meter); err != nil {
 		return ToolResult{}, err
 	}
 	if err := client.initialize(ctx, meter); err != nil {
@@ -570,35 +1036,127 @@ func (m *Manager) CallTool(ctx context.Context, name, tool string, args map[stri
 	return parseToolResult(raw, bytes, cfg)
 }
 
-// validateToolArgs fetches discovery and validates the tool's input schema.
-func (c *client) validateToolArgs(ctx context.Context, tool string, args map[string]any, cfg ServerConfig, meter Meter) error {
-	if err := c.initialize(ctx, meter); err != nil {
-		return err
-	}
-	tools, _, err := c.listTools(ctx, meter)
+// validateToolArgs validates one tool call against the advertised schema.
+//
+// It reads the capability cache first. A tool that is missing from a fresh
+// snapshot forces one refresh, so a capability added on the server is not
+// permanently invisible, and a schema change is observed at the cache
+// boundary rather than silently trusted forever. A validation failure against
+// a cached snapshot also refreshes once: a rejected argument may be valid under
+// a schema the cache has not yet observed.
+func (m *Manager) validateToolArgs(ctx context.Context, name, tool string, args map[string]any, cfg ServerConfig, meter Meter) error {
+	discovery, err := m.Discover(ctx, name, meter)
 	if err != nil {
 		return err
 	}
-	for _, item := range tools {
-		if item.Name != tool {
-			continue
-		}
-		schemaRaw := item.SchemaRaw()
-		if len(schemaRaw) == 0 {
-			return nil
-		}
-		schema, err := compileSchema(schemaRaw, cfg.MaxDepth)
+	capability, ok := findCapability(discovery, KindTool, tool)
+	if !ok {
+		discovery, err = m.Refresh(ctx, name, meter)
 		if err != nil {
-			return knowledge.Fail(knowledge.FailureUnknownCapability, false,
-				"mcp tool %q has an invalid input schema: %v", tool, err)
+			return err
 		}
-		if err := schema.Validate(args); err != nil {
-			return knowledge.Fail(knowledge.FailureInvalidRequest, false,
-				"mcp tool %q arguments: %v", tool, err)
-		}
+		capability, ok = findCapability(discovery, KindTool, tool)
+	}
+	if !ok {
+		return knowledge.Fail(knowledge.FailureUnknownCapability, false,
+			"mcp tool %q was not discovered on server %q", tool, name)
+	}
+	validationErr := validateCapabilityArgs(capability, args, cfg.MaxDepth)
+	if validationErr == nil || !discovery.CacheHit {
+		return validationErr
+	}
+	refreshed, refreshErr := m.Refresh(ctx, name, meter)
+	if refreshErr != nil {
+		return validationErr
+	}
+	capability, ok = findCapability(refreshed, KindTool, tool)
+	if !ok {
+		return knowledge.Fail(knowledge.FailureUnknownCapability, false,
+			"mcp tool %q was not discovered on server %q after refresh", tool, name)
+	}
+	return validateCapabilityArgs(capability, args, cfg.MaxDepth)
+}
+
+// validateCapabilityArgs validates arguments against a discovered schema. A
+// capability with no schema accepts any structurally bounded object; a
+// capability whose schema was rejected at discovery fails closed.
+func validateCapabilityArgs(capability Capability, args map[string]any, maxDepth int) error {
+	if len(capability.SchemaRaw) == 0 {
 		return nil
 	}
-	return knowledge.Fail(knowledge.FailureInvalidRequest, false, "mcp tool %q was not discovered", tool)
+	if capability.Schema == nil {
+		return knowledge.Fail(knowledge.FailureUnknownCapability, false,
+			"mcp capability %q has an unusable input schema", capability.ID())
+	}
+	if err := capability.Schema.Validate(args); err != nil {
+		return knowledge.Fail(knowledge.FailureInvalidRequest, false,
+			"mcp tool %q arguments: %v", capability.Name, err)
+	}
+	return nil
+}
+
+// findCapability returns one capability of a given kind by name.
+func findCapability(discovery Discovery, kind CapabilityKind, name string) (Capability, bool) {
+	for _, capability := range discovery.Capabilities {
+		if capability.Kind == kind && capability.Name == name {
+			return capability, true
+		}
+	}
+	return Capability{}, false
+}
+
+// GetPrompt renders one MCP prompt template.
+//
+// A prompt is input/context, never authority and never an instruction from the
+// runtime: its messages are untrusted external data and still pass through the
+// normal ohgo pipeline.
+func (m *Manager) GetPrompt(ctx context.Context, name, prompt string, args map[string]any, meter Meter) (PromptResult, error) {
+	if strings.TrimSpace(prompt) == "" {
+		return PromptResult{}, knowledge.Fail(knowledge.FailureInvalidRequest, false, "prompt name is required")
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	client, cfg, err := m.clientFor(name)
+	if err != nil {
+		return PromptResult{}, err
+	}
+	maxValues := cfg.MaxItems * 8
+	if maxValues < 64 {
+		maxValues = 64
+	}
+	if err := knowledge.ValidateStructure(args, cfg.MaxArgumentBytes, cfg.MaxDepth, maxValues); err != nil {
+		return PromptResult{}, knowledge.Fail(knowledge.FailureInvalidRequest, false, "mcp prompt arguments: %v", err)
+	}
+	discovery, err := m.Discover(ctx, name, meter)
+	if err != nil {
+		return PromptResult{}, err
+	}
+	capability, ok := findCapability(discovery, KindPrompt, prompt)
+	if !ok {
+		discovery, err = m.Refresh(ctx, name, meter)
+		if err != nil {
+			return PromptResult{}, err
+		}
+		capability, ok = findCapability(discovery, KindPrompt, prompt)
+	}
+	if !ok {
+		return PromptResult{}, knowledge.Fail(knowledge.FailureUnknownCapability, false,
+			"mcp prompt %q was not discovered on server %q", prompt, name)
+	}
+	if err := validateCapabilityArgs(capability, args, cfg.MaxDepth); err != nil {
+		return PromptResult{}, err
+	}
+	if err := client.initialize(ctx, meter); err != nil {
+		return PromptResult{}, err
+	}
+	raw, bytes, err := client.exchange(ctx, "prompts/get", map[string]any{
+		"name": prompt, "arguments": args,
+	}, meter)
+	if err != nil {
+		return PromptResult{}, err
+	}
+	return parsePrompt(raw, bytes, cfg)
 }
 
 // compileSchema compiles a bounded JSON Schema.
@@ -643,6 +1201,23 @@ func clampDuration(value, fallback, max time.Duration) time.Duration {
 		value = max
 	}
 	return value
+}
+
+// validServerName reports whether a server name is usable as an identity
+// prefix. A colon is refused because the stable capability identity is
+// "<server>:<capability>"; control characters are refused because a name is
+// displayed and may reach a terminal. Spaces and punctuation are allowed so an
+// existing human-configured name keeps working.
+func validServerName(name string) bool {
+	if strings.TrimSpace(name) == "" {
+		return false
+	}
+	for _, r := range name {
+		if r == ':' || r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // validEnvName reports whether name is a portable environment variable name.

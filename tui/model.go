@@ -3133,6 +3133,7 @@ var Commands = []CommandSpec{
 	{Name: "about", Usage: "about", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
 	{Name: "docs", Usage: "docs", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
 	{Name: "changelog", Usage: "changelog", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl}, {Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
+	{Name: "mcp", Usage: "mcp [list|inspect <server>|refresh [server]]", Description: "inspect configured MCP servers and capabilities", Category: CommandGroupControl},
 	{Name: "diff", Usage: "diff [target]", Description: "inspect the working-tree diff", Category: CommandGroupControl},
 	{Name: "commit", Usage: "commit [--retry|--edit]", Description: "propose and create one Git commit", Category: CommandGroupControl},
 	{Name: "undo", Usage: "undo", Description: "revert the last agent edit", Category: CommandGroupControl},

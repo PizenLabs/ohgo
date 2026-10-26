@@ -84,10 +84,12 @@ func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.To
 		return "the objective's evidence is complete; answer without further tools", true
 	}
 	if suff.Stage == StageBlocked && agent.HasActionClass(tool, agent.ActionMutate) &&
-		!agent.HasActionClass(tool, agent.ActionExecute) {
+		(!agent.HasActionClass(tool, agent.ActionExecute) || agent.HasActionClass(tool, agent.ActionConfigured)) {
 		// Do not allow more mutation after a scope violation, but keep the
 		// observation and check surface so the model can verify what happened
-		// and report it truthfully.
+		// and report it truthfully. A configured MCP tool is dual-use, so it
+		// is not exempt: the candidate layer cannot tell an execute call from
+		// a mutation before the model proposes one.
 		return "the evidence boundary is blocked; do not mutate further", true
 	}
 	if shape.Budget.Exhausted() {
@@ -136,7 +138,16 @@ func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.To
 		}
 	}
 	if agent.HasActionClass(tool, agent.ActionExecute) && !shape.NeedsExecution {
-		return "the task does not require execution", true
+		// A configured MCP mutation capability is dual-use: the same tool runs
+		// an execute-class remote operation or a mutation/interaction. It must
+		// stay available for a mutation objective even though that objective
+		// does not require local process execution. A non-configured dual-use
+		// tool (a shell) keeps the original execution-only rule.
+		configuredMutation := agent.HasActionClass(tool, agent.ActionConfigured) &&
+			agent.HasActionClass(tool, agent.ActionMutate) && shape.Mutation.Allowed
+		if !configuredMutation {
+			return "the task does not require execution", true
+		}
 	}
 	if agent.HasActionClass(tool, agent.ActionBackground) && !execution.BackgroundStarted {
 		return "no background job has been started", true

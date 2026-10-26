@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"sync"
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
@@ -10,19 +12,44 @@ import (
 	"github.com/PizenLabs/ohgo/tools"
 )
 
+// mcpRuntime holds the one MCP manager a session's tool set built. It exists
+// so the UI can inspect the same manager the tools use instead of opening a
+// second set of server connections, and so session shutdown closes it once.
+type mcpRuntime struct {
+	once    sync.Once
+	manager *mcp.Manager
+}
+
+// set records the manager. The first non-nil manager wins: a session builds
+// one tool set, and replacing it would strand the first manager's processes.
+func (r *mcpRuntime) set(manager *mcp.Manager) {
+	if r == nil || manager == nil {
+		return
+	}
+	r.once.Do(func() { r.manager = manager })
+}
+
+// close stops every MCP server the session started.
+func (r *mcpRuntime) close() error {
+	if r == nil || r.manager == nil {
+		return nil
+	}
+	return r.manager.Close()
+}
+
 // externalTools builds the Phase 8 external knowledge capabilities from
 // configuration.
 //
 // A missing block means the capability is not offered. A present but malformed
 // block keeps the tool visible with a configuration failure, so the model and
 // the user see the problem instead of a capability silently disappearing.
-func externalTools(settings config.Settings, root string) []agent.Tool {
+func externalTools(settings config.Settings, root string, runtime *mcpRuntime) []agent.Tool {
 	var out []agent.Tool
 	if settings.Search != nil {
 		out = append(out, searchToolFromSettings(*settings.Search))
 	}
 	if settings.MCP != nil {
-		out = append(out, mcpToolsFromSettings(*settings.MCP, root)...)
+		out = append(out, mcpToolsFromSettings(*settings.MCP, root, runtime)...)
 	}
 	if settings.Browser != nil {
 		out = append(out, tools.NewBrowserTool(browserConfigFromSettings(*settings.Browser)))
@@ -60,23 +87,35 @@ func searchToolFromSettings(settings config.SearchSettings) *tools.SearchTool {
 }
 
 // mcpToolsFromSettings converts configured MCP servers.
-func mcpToolsFromSettings(settings config.MCPSettings, root string) []agent.Tool {
+//
+// Disabled servers contribute nothing: disabling MCP removes capabilities
+// without changing native execution. An MCP block with no enabled server
+// contributes no tools at all.
+func mcpToolsFromSettings(settings config.MCPSettings, root string, runtime *mcpRuntime) []agent.Tool {
 	servers := make([]mcp.ServerConfig, 0, len(settings.Servers))
 	for _, server := range settings.Servers {
+		if !server.IsEnabled() {
+			continue
+		}
 		dir := server.Dir
 		if dir == "" {
 			dir = root
 		}
 		servers = append(servers, mcp.ServerConfig{
 			Name:             server.Name,
+			Transport:        mcp.Transport(server.Transport),
 			Command:          server.Command,
 			Args:             server.Args,
 			Dir:              dir,
+			URL:              server.URL,
+			HeaderEnv:        server.HeaderEnv,
 			Env:              server.Env,
+			Trust:            mcp.Trust(server.Trust),
 			Tools:            server.Tools,
 			ResourcePrefixes: server.Resources,
 			AllowMutation:    server.AllowMutation,
 			Timeout:          seconds(server.TimeoutSeconds),
+			CacheTTL:         seconds(server.CacheTTLSeconds),
 			MaxBytes:         server.MaxBytes,
 			MaxItems:         server.MaxItems,
 			MaxTextChars:     server.MaxTextChars,
@@ -85,18 +124,36 @@ func mcpToolsFromSettings(settings config.MCPSettings, root string) []agent.Tool
 			IdleTimeout:      seconds(server.IdleTimeoutSeconds),
 		})
 	}
+	if len(servers) == 0 {
+		if len(settings.Servers) == 0 {
+			// A present but empty block is a configuration error, not a
+			// silent no-op: the human asked for MCP and named nothing.
+			return failedMCPTools(errors.New("mcp: no servers configured"))
+		}
+		// Every server is disabled. Disabling MCP removes its capabilities
+		// without changing native execution.
+		return nil
+	}
 	manager, err := mcp.NewManager(servers)
 	list := tools.NewMCPListTool(manager)
 	read := tools.NewMCPReadTool(manager)
 	call := tools.NewMCPCallTool(manager)
 	if err != nil {
-		list.ConfigErr = err.Error()
-		read.ConfigErr = err.Error()
-		call.ConfigErr = err.Error()
-		list.Manager = nil
-		read.Manager = nil
-		call.Manager = nil
+		return failedMCPTools(err)
 	}
+	runtime.set(manager)
+	return []agent.Tool{list, read, call}
+}
+
+// failedMCPTools keeps a configuration problem visible while failing closed.
+func failedMCPTools(err error) []agent.Tool {
+	list := tools.NewMCPListTool(nil)
+	read := tools.NewMCPReadTool(nil)
+	call := tools.NewMCPCallTool(nil)
+	message := err.Error()
+	list.ConfigErr = message
+	read.ConfigErr = message
+	call.ConfigErr = message
 	return []agent.Tool{list, read, call}
 }
 

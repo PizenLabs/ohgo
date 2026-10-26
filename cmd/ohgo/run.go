@@ -79,6 +79,9 @@ type options struct {
 	deadline time.Time
 	// settings is the loaded configuration.
 	settings config.Settings
+	// mcpRuntime holds the session's one MCP manager. It is shared by the
+	// tools and the UI inspector, and closed at session shutdown.
+	mcpRuntime *mcpRuntime
 	// noTools disables the tool set entirely.
 	noTools bool
 	// autoApprove skips every approval prompt.
@@ -124,7 +127,7 @@ func (o *options) setAuthority(ws workspace.Workspace) {
 // registry the run will use. One registry serves resolution and the loop so
 // both agree on credentials and overrides.
 func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
-	opts := options{settings: config.Default()}
+	opts := options{settings: config.Default(), mcpRuntime: &mcpRuntime{}}
 
 	flagDir, _ := cmd.Flags().GetString("dir")
 	opts.root = flagDir
@@ -247,6 +250,14 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	}
 	opts.budget = budget.NewHolder(opts.newBudget())
 	return opts, registry, nil
+}
+
+// closeMCP stops every MCP connection the session opened. It is safe on a
+// session that never enabled MCP.
+func (o options) closeMCP() {
+	if o.mcpRuntime != nil {
+		_ = o.mcpRuntime.close()
+	}
 }
 
 // budgetLimits derives the tree-wide grant from the user's explicit knobs.
@@ -513,7 +524,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}
-	toolSet = append(toolSet, externalTools(opts.settings, opts.root)...)
+	toolSet = append(toolSet, externalTools(opts.settings, opts.root, opts.mcpRuntime)...)
 
 	// The task tool is added last and gets a spawner that stands up a sibling
 	// with the same capabilities. It is omitted entirely for a read-only
@@ -1469,6 +1480,7 @@ func runOnce(cmd *cobra.Command, text string) error {
 	if err != nil {
 		return err
 	}
+	defer opts.closeMCP()
 	// A one-shot command is interruptible like an interactive turn. The
 	// cancellation path is not a new orchestration layer: it makes the exit
 	// status honest when the process is stopped.
@@ -1769,6 +1781,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer opts.closeMCP()
 
 	// One ephemeral surface serves both interfaces. It is created here, not in
 	// buildLoop, because it owns its own SUP-role runtime and is deliberately
@@ -1837,6 +1850,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		// One harness serves the UI's commands; the REPL builds its own
 		// further down from the same pieces, so both agree.
 		held := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
+		held.mcp = opts.mcpRuntime
 		held.usage.SetCost(opts.model.Cost)
 		held.workspace = opts.authority().Label()
 		held.gate = opts.gate
@@ -1898,6 +1912,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 			return held.CompactHistory(ctx, history)
 		})
 		program.SetDoctorFunc(held.DoctorLines)
+		program.SetMCPHooks(mcpHooks(opts))
 		program.SetProvidersFunc(held.ProviderRows)
 		program.SetProbeFunc(func(ctx context.Context) tui.ProbeFinished {
 			return held.ProbeCurrent(ctx)
@@ -2071,6 +2086,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	}
 
 	plain := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
+	plain.mcp = opts.mcpRuntime
 	plain.rec = openRecoveryService(opts.root)
 	defer func() { _ = plain.rec.Close() }()
 	plain.usage.SetCost(opts.model.Cost)
@@ -2121,6 +2137,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	if err != nil {
 		return err
 	}
+	defer opts.closeMCP()
 
 	surface := newSupportSurface(supportBuilder(opts, registry))
 
@@ -2159,6 +2176,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	}
 
 	held := newHarness(registry, loop, store, nil, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
+	held.mcp = opts.mcpRuntime
 	held.rec = recoverer
 	held.usage.SetCost(opts.model.Cost)
 	held.workspace = opts.authority().Label()
@@ -2198,6 +2216,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		return held.CompactHistory(ctx, history)
 	})
 	program.SetDoctorFunc(held.DoctorLines)
+	program.SetMCPHooks(mcpHooks(opts))
 	program.SetProvidersFunc(held.ProviderRows)
 	program.SetProbeFunc(func(ctx context.Context) tui.ProbeFinished {
 		return held.ProbeCurrent(ctx)
@@ -2528,6 +2547,9 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 					}
 					_, _ = fmt.Fprintf(out, "%-10s %-12s %s\n", status, line.Name, line.Detail)
 				}
+				continue
+			case "mcp":
+				_, _ = fmt.Fprintln(out, replMCP(h, command.Args))
 				continue
 			case "retry":
 				last, ok := agent.LastUserText(history)

@@ -67,6 +67,9 @@ type harness struct {
 	// rec is the workspace recovery authority. Nil means the REPL was built
 	// without one (tests), in which case /undo and /redo say so.
 	rec *recoveryService
+	// mcp is the session's one MCP manager, shared with the tool set. Nil
+	// means MCP is not configured.
+	mcp *mcpRuntime
 }
 
 // newHarness assembles the backend. usage and settings may be nil only where

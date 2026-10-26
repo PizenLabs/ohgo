@@ -7,6 +7,17 @@ immutable.
 
 ### Added
 
+- MCP capability layer: normalized `<server>:<capability>` identities with
+  server provenance, `read`/`execute`/`interact`/`mutate`/`unknown`
+  classifications mapped to `READ`/`EXECUTE`/`EXTERNAL_SIDE_EFFECT`, explicit
+  trust metadata that never grants authority, streamable-HTTP transport beside
+  stdio, discovery caching with explicit refresh, prompt templates as untrusted
+  context, progress propagation, human-visible `/mcp` inspection, and
+  configured-credential redaction in results, descriptions, and errors.
+  Execute-class MCP tools use execution authority (ASK cannot run them; FUZZ
+  and BUILD can after approval), while interaction/mutation stays at the BUILD
+  boundary. See `docs/architecture/MCP.md`.
+
 - MCP interoperability: discovery follows `nextCursor` to completion,
   `mcp_list` publishes the server's `initialize` instructions and a bounded
   input schema per tool (`summary` by default, `full` for property

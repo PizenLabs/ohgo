@@ -31,7 +31,10 @@ type MCPManager interface {
 	Names() []string
 	Configured(name string) bool
 	Discover(ctx context.Context, name string, meter mcp.Meter) (mcp.Discovery, error)
+	Refresh(ctx context.Context, name string, meter mcp.Meter) (mcp.Discovery, error)
+	Classify(name, tool string) (mcp.Classification, bool)
 	ReadResource(ctx context.Context, name, uri string, meter mcp.Meter) (mcp.ResourceResult, error)
+	GetPrompt(ctx context.Context, name, prompt string, args map[string]any, meter mcp.Meter) (mcp.PromptResult, error)
 	CallTool(ctx context.Context, name, tool string, args map[string]any, mode mcp.Mode, meter mcp.Meter) (mcp.ToolResult, error)
 	Close() error
 }
@@ -55,6 +58,20 @@ func mcpMeter(ctx agent.Context) mcp.Meter {
 		After: func(_ context.Context, bytes int) error {
 			return chargeExternalBytes(ctx, bytes)
 		},
+		Progress: func(progress mcp.Progress) {
+			if ctx.OnProgress == nil {
+				return
+			}
+			text := strings.TrimSpace(progress.Message)
+			if text == "" && progress.Total > 0 {
+				text = fmt.Sprintf("%.0f/%.0f", progress.Progress, progress.Total)
+			}
+			if text == "" {
+				return
+			}
+			text, _ = knowledge.BoundText(text, 240)
+			ctx.OnProgress(agent.Result{Text: "mcp: " + singleLine(text)})
+		},
 	}
 }
 
@@ -72,14 +89,16 @@ type MCPListTool struct {
 func NewMCPListTool(manager MCPManager) *MCPListTool {
 	tool := &MCPListTool{Manager: manager}
 	tool.Base = NewBase("mcp_list",
-		"List the tools and resources a configured MCP server advertises, with "+
-			"the runtime's explicit read/interact/mutate/unknown classification, "+
-			"each tool's bounded input schema, and the server's own usage "+
-			"instructions. Use the schema to build mcp_read arguments. "+
-			"Discovery is not authorization: an advertised capability is not a "+
-			"permitted one, and an unknown classification fails closed. This "+
-			"tool starts the configured server process; the command is human "+
-			"configuration, never model input.",
+		"List the tools, resources, and prompt templates a configured MCP "+
+			"server advertises, with each stable server:capability identity, "+
+			"the runtime's explicit read/execute/interact/mutate/unknown "+
+			"classification, each tool's bounded input schema, and the "+
+			"server's own usage instructions. Use the schema to build "+
+			"mcp_read arguments. Discovery is not authorization: an advertised "+
+			"capability is not a permitted one, and an unknown classification "+
+			"fails closed. This tool starts the configured server process or "+
+			"connects to its URL; both are human configuration, never model "+
+			"input.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -96,6 +115,11 @@ func NewMCPListTool(manager MCPManager) *MCPListTool {
 					"description": "Input-schema detail: summary (default) keeps " +
 						"required fields, types, enums and bounds; full adds the " +
 						"server's property descriptions; none omits schemas.",
+				},
+				"refresh": map[string]any{
+					"type": "boolean",
+					"description": "Bypass the capability cache and observe the " +
+						"server again.",
 				},
 			},
 		},
@@ -125,7 +149,7 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 	if err := checkCancelled(ctx.Ctx); err != nil {
 		return externalCancelledResult(ctx, map[string]any{"capability": string(knowledge.CapabilityMCPDiscovery)})
 	}
-	if err := validateClosedArgs(args, "server", "schema"); err != nil {
+	if err := validateClosedArgs(args, "server", "schema", "refresh"); err != nil {
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
 	}
 	if t.Manager == nil {
@@ -146,6 +170,10 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 	default:
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false,
 			"schema must be summary, full, or none"), nil)
+	}
+	refresh, err := boolArg(args, "refresh", false)
+	if err != nil {
+		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
 	}
 	names := t.Manager.Names()
 	if strings.TrimSpace(server) != "" {
@@ -172,7 +200,13 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 		if err := checkCancelled(ctx.Ctx); err != nil {
 			return externalCancelledResult(ctx, details)
 		}
-		discovery, err := t.Manager.Discover(ctx.Ctx, name, meter)
+		var discovery mcp.Discovery
+		var err error
+		if refresh {
+			discovery, err = t.Manager.Refresh(ctx.Ctx, name, meter)
+		} else {
+			discovery, err = t.Manager.Discover(ctx.Ctx, name, meter)
+		}
 		if err != nil {
 			failures++
 			if ctx.Ctx.Err() != nil {
@@ -198,6 +232,9 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 		}
 		total += len(capabilities)
 		fmt.Fprintf(body, "server: %s\ndisclosed: %d\n", name, len(capabilities))
+		if discovery.CacheHit {
+			body.WriteString("cache: hit\n")
+		}
 		if discovery.Truncated {
 			fmt.Fprintf(body, "truncated: true (%s)\n", discovery.Reason)
 		}
@@ -206,14 +243,29 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 			fmt.Fprintf(body, "instructions:\n%s\n", strings.TrimRight(instructions, "\n"))
 		}
 		for _, capability := range capabilities {
+			authority := capability.Authority
+			if authority == "" {
+				authority = capability.Classification.Authority()
+			}
+			trust := capability.Trust
+			if trust == "" {
+				trust = mcp.TrustUntrusted
+			}
 			fmt.Fprintf(body, "  - kind: %s\n", capability.Kind)
-			fmt.Fprintf(body, "    name: %s\n", capability.Name)
+			id, _ := knowledge.BoundText(singleLine(capability.ID()), 300)
+			name, _ := knowledge.BoundText(singleLine(capability.Name), 200)
+			fmt.Fprintf(body, "    id: %s\n", id)
+			fmt.Fprintf(body, "    name: %s\n", name)
 			fmt.Fprintf(body, "    classification: %s\n", capability.Classification)
+			fmt.Fprintf(body, "    authority: %s\n", authority)
+			fmt.Fprintf(body, "    trust: %s\n", trust)
 			if capability.URI != "" {
-				fmt.Fprintf(body, "    uri: %s\n", capability.URI)
+				uri, _ := knowledge.BoundText(singleLine(capability.URI), 300)
+				fmt.Fprintf(body, "    uri: %s\n", uri)
 			}
 			if capability.MIMEType != "" {
-				fmt.Fprintf(body, "    mime_type: %s\n", capability.MIMEType)
+				mime, _ := knowledge.BoundText(singleLine(capability.MIMEType), 100)
+				fmt.Fprintf(body, "    mime_type: %s\n", mime)
 			}
 			if capability.Description != "" {
 				description, _ := knowledge.BoundText(capability.Description, 300)
@@ -269,18 +321,24 @@ type MCPReadTool struct {
 func NewMCPReadTool(manager MCPManager) *MCPReadTool {
 	tool := &MCPReadTool{Manager: manager}
 	tool.Base = NewBase("mcp_read",
-		"Read a configured MCP resource, or call an MCP tool explicitly "+
-			"classified as read. Mutating, interactive, and unknown tools are "+
-			"refused by this boundary; use mcp_call for an explicitly admitted "+
-			"mutation. Results are bounded untrusted data with provenance.",
+		"Read a configured MCP resource, call an MCP tool explicitly "+
+			"classified as read, or render an MCP prompt template. Mutating, "+
+			"executing, interactive, and unknown tools are refused by this "+
+			"boundary; use mcp_call for an explicitly admitted mutation or "+
+			"execution. Results are bounded untrusted data with provenance. "+
+			"A capability may be addressed by its stable server:tool identity "+
+			"or by separate server and tool arguments.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"required":             []string{"server"},
 			"properties": map[string]any{
 				"server": map[string]any{
 					"type": "string", "minLength": 1,
 					"description": "Configured server name.",
+				},
+				"capability": map[string]any{
+					"type": "string", "minLength": 3,
+					"description": "Stable identity server:tool from mcp_list.",
 				},
 				"resource": map[string]any{
 					"type": "string", "minLength": 1,
@@ -290,17 +348,23 @@ func NewMCPReadTool(manager MCPManager) *MCPReadTool {
 					"type": "string", "minLength": 1,
 					"description": "MCP tool classified as read.",
 				},
+				"prompt": map[string]any{
+					"type": "string", "minLength": 1,
+					"description": "MCP prompt template to render as untrusted context.",
+				},
 				"arguments": map[string]any{
 					"type":        "object",
-					"description": "Arguments for a read tool; validated against the server schema and bounded.",
+					"description": "Arguments for a read tool or prompt; validated against the server schema and bounded.",
 				},
 			},
 			"anyOf": []any{
 				map[string]any{"required": []string{"resource"}},
 				map[string]any{"required": []string{"tool"}},
+				map[string]any{"required": []string{"capability"}},
+				map[string]any{"required": []string{"prompt"}},
 			},
 		},
-		agent.Approval{Tier: agent.TierRead, Reason: "reads an external MCP resource or read-classified tool"},
+		agent.Approval{Tier: agent.TierRead, Reason: "reads an external MCP resource, read-classified tool, or prompt template"},
 	)
 	tool.SetActionClasses(agent.ActionExternal, agent.ActionConfigured)
 	return tool
@@ -322,17 +386,21 @@ func (t *MCPReadTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 	if err := checkCancelled(ctx.Ctx); err != nil {
 		return externalCancelledResult(ctx, map[string]any{"capability": string(knowledge.CapabilityMCPReadTool)})
 	}
-	if err := validateClosedArgs(args, "server", "resource", "tool", "arguments"); err != nil {
+	if err := validateClosedArgs(args, "server", "capability", "resource", "tool", "prompt", "arguments"); err != nil {
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
 	}
 	if t.Manager == nil {
 		return externalFailureResult(mcpNotConfigured(t.ConfigErr), nil)
 	}
 	server, err := strArg(args, "server", "")
-	if err != nil || strings.TrimSpace(server) == "" {
-		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "server is required"), nil)
+	if err != nil {
+		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
 	}
 	resource, err := strArg(args, "resource", "")
+	if err != nil {
+		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
+	}
+	prompt, err := strArg(args, "prompt", "")
 	if err != nil {
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
 	}
@@ -340,9 +408,42 @@ func (t *MCPReadTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 	if err != nil {
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
 	}
-	if (strings.TrimSpace(resource) == "") == (strings.TrimSpace(toolName) == "") {
+	capability, err := strArg(args, "capability", "")
+	if err != nil {
+		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
+	}
+	if strings.TrimSpace(capability) != "" {
+		if strings.TrimSpace(toolName) != "" {
+			return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false,
+				"capability and tool are mutually exclusive"), nil)
+		}
+		capServer, capTool, ok := splitCapability(capability)
+		if !ok {
+			return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false,
+				"capability must be server:tool, for example github:search_code"), nil)
+		}
+		if strings.TrimSpace(server) != "" && strings.TrimSpace(server) != capServer {
+			return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false,
+				"capability server conflicts with the server argument"), nil)
+		}
+		server, toolName = capServer, capTool
+	}
+	targets := 0
+	if strings.TrimSpace(resource) != "" {
+		targets++
+	}
+	if strings.TrimSpace(prompt) != "" {
+		targets++
+	}
+	if strings.TrimSpace(toolName) != "" {
+		targets++
+	}
+	if targets != 1 {
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false,
-			"exactly one of resource or tool is required"), nil)
+			"exactly one of resource, prompt, tool, or capability is required"), nil)
+	}
+	if strings.TrimSpace(server) == "" {
+		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "server is required"), nil)
 	}
 	arguments, err := objectArg(args, "arguments")
 	if err != nil {
@@ -350,20 +451,38 @@ func (t *MCPReadTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 	}
 	if strings.TrimSpace(resource) != "" && len(arguments) > 0 {
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false,
-			"arguments apply only to a tool call"), nil)
+			"arguments apply only to a tool or prompt"), nil)
 	}
 	meter := mcpMeter(ctx)
 	if strings.TrimSpace(resource) != "" {
 		requestID := knowledge.Hash("mcp-resource\x00" + server + "\x00" + resource)
 		details := mcpDetails(server, knowledge.CapabilityMCPResource, resource, requestID)
+		details["id"] = mcpID(server, "resource/"+resource)
+		details["classification"] = string(mcp.ClassRead)
+		details["authority"] = string(mcp.AuthorityRead)
 		result, err := t.Manager.ReadResource(ctx.Ctx, server, resource, meter)
 		if err != nil {
 			return externalErrorResult(ctx, err, details)
 		}
 		return publishMCPResource(ctx, details, requestID, server, result)
 	}
+	if strings.TrimSpace(prompt) != "" {
+		requestID := knowledge.Hash("mcp-prompt\x00" + server + "\x00" + prompt)
+		details := mcpDetails(server, knowledge.CapabilityMCPPrompt, prompt, requestID)
+		details["id"] = mcpID(server, "prompt/"+prompt)
+		details["classification"] = string(mcp.ClassRead)
+		details["authority"] = string(mcp.AuthorityRead)
+		result, err := t.Manager.GetPrompt(ctx.Ctx, server, prompt, arguments, meter)
+		if err != nil {
+			return externalErrorResult(ctx, err, details)
+		}
+		return publishMCPPrompt(ctx, details, requestID, server, prompt, result)
+	}
 	requestID := knowledge.Hash("mcp-tool\x00" + server + "\x00" + toolName)
 	details := mcpDetails(server, knowledge.CapabilityMCPReadTool, toolName, requestID)
+	details["id"] = mcpID(server, toolName)
+	details["classification"] = string(mcp.ClassRead)
+	details["authority"] = string(mcp.AuthorityRead)
 	result, err := t.Manager.CallTool(ctx.Ctx, server, toolName, arguments, mcp.ModeRead, meter)
 	if err != nil {
 		return externalErrorResult(ctx, err, details)
@@ -382,51 +501,84 @@ type MCPCallTool struct {
 func NewMCPCallTool(manager MCPManager) *MCPCallTool {
 	tool := &MCPCallTool{Manager: manager}
 	tool.Base = NewBase("mcp_call",
-		"Call a configured MCP tool explicitly classified as interact or mutate. "+
-			"This boundary is unavailable in a read-only authority, requires an "+
-			"explicit server configuration, and prompts for approval. A tool "+
-			"classified read, unknown, or unclassified is refused. The call may "+
-			"change external state; it is not a repository change and cannot "+
-			"complete a repository objective by itself.",
+		"Call a configured MCP tool explicitly classified as execute, interact, "+
+			"or mutate. This boundary is unavailable in a read-only authority, "+
+			"requires an explicit server configuration, and prompts for approval. "+
+			"A tool classified read, unknown, or unclassified is refused. The "+
+			"call may run a remote operation or change external state; it is not "+
+			"a repository change and cannot complete a repository objective by "+
+			"itself. Address the tool by its stable server:tool identity or by "+
+			"separate server and tool arguments.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"required":             []string{"server", "tool"},
 			"properties": map[string]any{
 				"server": map[string]any{
 					"type": "string", "minLength": 1,
 					"description": "Configured server name.",
 				},
+				"capability": map[string]any{
+					"type": "string", "minLength": 3,
+					"description": "Stable identity server:tool from mcp_list.",
+				},
 				"tool": map[string]any{
 					"type": "string", "minLength": 1,
-					"description": "MCP tool explicitly classified interact or mutate.",
+					"description": "MCP tool explicitly classified execute, interact, or mutate.",
 				},
 				"arguments": map[string]any{
 					"type":        "object",
 					"description": "Arguments validated against the server schema and bounded.",
 				},
 			},
+			"anyOf": []any{
+				map[string]any{"required": []string{"server", "tool"}},
+				map[string]any{"required": []string{"capability"}},
+			},
 		},
 		agent.Approval{
 			Tier:   agent.TierWrite,
-			Reason: "calls an MCP interaction/mutation tool and may change external state",
+			Reason: "calls an MCP execute/interaction/mutation tool and may change external state",
 		},
 	)
 	tool.SetExclusive(true)
-	tool.SetActionClasses(agent.ActionExternal, agent.ActionConfigured, agent.ActionMutate)
+	tool.SetActionClasses(agent.ActionExternal, agent.ActionConfigured, agent.ActionMutate, agent.ActionExecute)
 	tool.SetMutationOperations(contract.ChangeAny)
 	return tool
 }
 
-// SecurityCapability implements agent.CapabilityNamer.
+// SecurityCapability implements agent.CapabilityNamer. It is the conservative
+// default; SecurityCapabilityFor refines it per invocation from configuration.
 func (t *MCPCallTool) SecurityCapability() security.Capability {
 	return security.CapabilityExternalMCPMutate
 }
 
-// Capability implements agent.CapabilityReporter. The declaration is already
-// write, but reporting it per call keeps the authority classification explicit
-// even if the declared tier is later relaxed.
-func (t *MCPCallTool) Capability(map[string]any) agent.Tier { return agent.TierWrite }
+// SecurityCapabilityFor implements agent.InvocationCapabilityNamer.
+//
+// An execute-classified tool needs execution authority, not repository write
+// authority. The class is configuration metadata: the model names the tool,
+// but only a human's configuration can say it is execute rather than mutate.
+// Anything unresolved stays at the mutation boundary and fails closed.
+func (t *MCPCallTool) SecurityCapabilityFor(args map[string]any) security.Capability {
+	server, tool, err := toolTarget(args)
+	if err != nil || t.Manager == nil {
+		return security.CapabilityExternalMCPMutate
+	}
+	class, ok := t.Manager.Classify(server, tool)
+	if ok && class == mcp.ClassExecute {
+		return security.CapabilityExternalMCPExecute
+	}
+	return security.CapabilityExternalMCPMutate
+}
+
+// Capability implements agent.CapabilityReporter. Execution and mutation are
+// different authorities; reporting the configured class per call keeps the
+// semantic grounding layer truthful without giving the model any say in it.
+func (t *MCPCallTool) Capability(args map[string]any) agent.Tier {
+	if t.SecurityCapabilityFor(args) == security.CapabilityExternalMCPExecute {
+		return agent.TierExec
+	}
+	return agent.TierWrite
+}
 
 // Execute implements agent.Tool.
 func (t *MCPCallTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
@@ -439,31 +591,88 @@ func (t *MCPCallTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 	if err := checkCancelled(ctx.Ctx); err != nil {
 		return externalCancelledResult(ctx, map[string]any{"capability": string(knowledge.CapabilityMCPMutationTool)})
 	}
-	if err := validateClosedArgs(args, "server", "tool", "arguments"); err != nil {
+	if err := validateClosedArgs(args, "server", "capability", "tool", "arguments"); err != nil {
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
 	}
 	if t.Manager == nil {
 		return externalFailureResult(mcpNotConfigured(t.ConfigErr), nil)
 	}
-	server, err := strArg(args, "server", "")
-	if err != nil || strings.TrimSpace(server) == "" {
-		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "server is required"), nil)
-	}
-	toolName, err := strArg(args, "tool", "")
-	if err != nil || strings.TrimSpace(toolName) == "" {
-		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "tool is required"), nil)
+	server, toolName, err := toolTarget(args)
+	if err != nil {
+		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
 	}
 	arguments, err := objectArg(args, "arguments")
 	if err != nil {
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
 	}
+	class, _ := t.Manager.Classify(server, toolName)
+	operation := knowledge.OpMutate
+	capability := knowledge.CapabilityMCPMutationTool
+	if class == mcp.ClassExecute {
+		operation = knowledge.OpInteract
+		capability = knowledge.CapabilityMCPExecuteTool
+	}
 	requestID := knowledge.Hash("mcp-mutate\x00" + server + "\x00" + toolName)
-	details := mcpDetails(server, knowledge.CapabilityMCPMutationTool, toolName, requestID)
+	details := mcpDetails(server, capability, toolName, requestID)
+	details["id"] = mcpID(server, toolName)
+	details["operation"] = string(operation)
+	details["classification"] = string(class)
+	details["authority"] = string(class.Authority())
 	result, err := t.Manager.CallTool(ctx.Ctx, server, toolName, arguments, mcp.ModeMutate, mcpMeter(ctx))
 	if err != nil {
 		return externalErrorResult(ctx, err, details)
 	}
-	return publishMCPTool(ctx, details, requestID, server, toolName, knowledge.CapabilityMCPMutationTool, result)
+	return publishMCPTool(ctx, details, requestID, server, toolName, capability, result)
+}
+
+// toolTarget resolves the server and tool from either the stable identity or
+// the separate arguments. The two spellings must agree when both are present.
+func toolTarget(args map[string]any) (string, string, error) {
+	server, err := strArg(args, "server", "")
+	if err != nil {
+		return "", "", err
+	}
+	tool, err := strArg(args, "tool", "")
+	if err != nil {
+		return "", "", err
+	}
+	capability, err := strArg(args, "capability", "")
+	if err != nil {
+		return "", "", err
+	}
+	capability = strings.TrimSpace(capability)
+	if capability == "" {
+		if strings.TrimSpace(server) == "" || strings.TrimSpace(tool) == "" {
+			return "", "", fmt.Errorf("server and tool are required unless capability is given")
+		}
+		return strings.TrimSpace(server), strings.TrimSpace(tool), nil
+	}
+	if strings.TrimSpace(tool) != "" {
+		return "", "", fmt.Errorf("capability and tool are mutually exclusive")
+	}
+	capServer, capTool, ok := splitCapability(capability)
+	if !ok {
+		return "", "", fmt.Errorf("capability must be server:tool, for example github:search_code")
+	}
+	if strings.TrimSpace(server) != "" && strings.TrimSpace(server) != capServer {
+		return "", "", fmt.Errorf("capability server conflicts with the server argument")
+	}
+	return capServer, capTool, nil
+}
+
+// splitCapability parses the stable server:capability identity.
+func splitCapability(value string) (string, string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", false
+	}
+	server, name, ok := strings.Cut(value, ":")
+	server = strings.TrimSpace(server)
+	name = strings.TrimSpace(name)
+	if !ok || server == "" || name == "" {
+		return "", "", false
+	}
+	return server, name, true
 }
 
 // mcpNotConfigured renders a fail-closed configuration failure.
@@ -528,8 +737,18 @@ func summarizeSchema(value any) any {
 	}
 }
 
+// mcpID renders a bounded capability identity for audit details.
+func mcpID(server, target string) string {
+	id, _ := knowledge.BoundText(singleLine(server+":"+target), 300)
+	return id
+}
+
 // mcpDetails builds the bounded audit projection for one MCP call.
 func mcpDetails(server string, capability knowledge.Capability, target, requestID string) map[string]any {
+	server = singleLine(server)
+	target = singleLine(target)
+	server, _ = knowledge.BoundText(server, 200)
+	target, _ = knowledge.BoundText(target, 500)
 	return map[string]any{
 		"capability": string(capability),
 		"operation":  string(knowledge.OpRead),
@@ -537,6 +756,13 @@ func mcpDetails(server string, capability knowledge.Capability, target, requestI
 		"target":     target,
 		"request_id": requestID,
 	}
+}
+
+// mcpHeader renders one bounded single-line audit header value.
+func mcpHeader(text string, max int) string {
+	text = singleLine(text)
+	text, _ = knowledge.BoundText(text, max)
+	return text
 }
 
 // publishMCPResource renders a bounded resource result.
@@ -547,8 +773,8 @@ func publishMCPResource(ctx agent.Context, details map[string]any, requestID, se
 	if result.Text == "" {
 		details["status"] = "empty"
 		return agent.Result{
-			Text: knowledge.Envelope("capability: mcp.resource\nserver: "+singleLine(server)+
-				"\nresource: "+singleLine(result.URI)+"\nstatus: empty", "(empty resource)"),
+			Text: knowledge.Envelope("capability: mcp.resource\nserver: "+mcpHeader(server, 200)+
+				"\nresource: "+mcpHeader(result.URI, 500)+"\nstatus: empty", "(empty resource)"),
 			Details: details,
 			Useless: true,
 		}
@@ -565,9 +791,9 @@ func publishMCPResource(ctx agent.Context, details map[string]any, requestID, se
 		Trust: knowledge.TrustUntrusted,
 		Provenance: knowledge.Provenance{
 			Capability:  knowledge.CapabilityMCPResource,
-			Source:      "mcp:" + server,
-			Locator:     uri,
-			Provider:    server,
+			Source:      mcpHeader("mcp:"+server, 220),
+			Locator:     mcpHeader(uri, 500),
+			Provider:    mcpHeader(server, 200),
 			RetrievedAt: retrievedAt,
 			RequestID:   requestID,
 		},
@@ -582,14 +808,68 @@ func publishMCPResource(ctx agent.Context, details map[string]any, requestID, se
 		status = "truncated"
 	}
 	header := fmt.Sprintf("capability: mcp.resource\nserver: %s\nresource: %s\nmime_type: %s\nretrieved_at: %s\nstatus: %s\n",
-		singleLine(server), singleLine(uri), singleLine(result.MIMEType), retrievedAt.Format(time.RFC3339), status)
+		mcpHeader(server, 200), mcpHeader(uri, 500), mcpHeader(result.MIMEType, 100), retrievedAt.Format(time.RFC3339), status)
 	if result.Truncated {
 		header += fmt.Sprintf("truncated: true (%s)\n", result.Reason)
 	}
 	details = mergeDetails(details, externalEvidenceDetails(
 		knowledge.CapabilityMCPResource, knowledge.OpRead, requestID, []knowledge.Evidence{evidence}))
 	details["status"] = status
-	details["uri"] = uri
+	details["uri"] = mcpHeader(uri, 500)
+	details["bytes"] = result.Bytes
+	details["truncated"] = result.Truncated
+	details["retrieved_at"] = retrievedAt
+	return agent.Result{Text: knowledge.Envelope(header, result.Text), Details: details}
+}
+
+// publishMCPPrompt renders a bounded prompt result as untrusted context.
+func publishMCPPrompt(ctx agent.Context, details map[string]any, requestID, server, prompt string, result mcp.PromptResult) agent.Result {
+	if err := checkCancelled(ctx.Ctx); err != nil {
+		return externalCancelledResult(ctx, details)
+	}
+	if result.Text == "" {
+		details["status"] = "empty"
+		return agent.Result{
+			Text: knowledge.Envelope("capability: mcp.prompt\nserver: "+mcpHeader(server, 200)+
+				"\nprompt: "+mcpHeader(prompt, 200)+"\nstatus: empty", "(empty prompt)"),
+			Details: details,
+			Useless: true,
+		}
+	}
+	retrievedAt := time.Now().UTC()
+	evidence := knowledge.Evidence{
+		Kind:  knowledge.EvidenceMCPPrompt,
+		Trust: knowledge.TrustUntrusted,
+		Provenance: knowledge.Provenance{
+			Capability:  knowledge.CapabilityMCPPrompt,
+			Source:      mcpHeader("mcp:"+server, 220),
+			Locator:     mcpHeader("prompt:"+prompt, 500),
+			Provider:    mcpHeader(server, 200),
+			RetrievedAt: retrievedAt,
+			RequestID:   requestID,
+		},
+		Bound: knowledge.Bound{
+			Bytes: result.Bytes, Chars: len([]rune(result.Text)),
+			Items: result.Items, Truncated: result.Truncated, Reason: result.Reason,
+		},
+		ContentHash: knowledge.Hash(result.Text),
+	}.Normalize()
+	status := "ok"
+	if result.Truncated {
+		status = "truncated"
+	}
+	header := fmt.Sprintf("capability: mcp.prompt\nserver: %s\nprompt: %s\nretrieved_at: %s\nstatus: %s\n",
+		mcpHeader(server, 200), mcpHeader(prompt, 200), retrievedAt.Format(time.RFC3339), status)
+	if result.Description != "" {
+		header += "description: " + mcpHeader(result.Description, 500) + "\n"
+	}
+	if result.Truncated {
+		header += fmt.Sprintf("truncated: true (%s)\n", result.Reason)
+	}
+	details = mergeDetails(details, externalEvidenceDetails(
+		knowledge.CapabilityMCPPrompt, knowledge.OpRead, requestID, []knowledge.Evidence{evidence}))
+	details["status"] = status
+	details["prompt"] = mcpHeader(prompt, 200)
 	details["bytes"] = result.Bytes
 	details["truncated"] = result.Truncated
 	details["retrieved_at"] = retrievedAt
@@ -606,6 +886,11 @@ func publishMCPTool(ctx agent.Context, details map[string]any, requestID, server
 	if capability == knowledge.CapabilityMCPMutationTool {
 		operation = knowledge.OpMutate
 	}
+	if declared, ok := details["operation"].(string); ok {
+		if candidate := knowledge.Operation(declared); candidate.Valid() {
+			operation = candidate
+		}
+	}
 	status := "ok"
 	if result.IsError {
 		status = "remote_tool_error"
@@ -617,9 +902,9 @@ func publishMCPTool(ctx agent.Context, details map[string]any, requestID, server
 		Trust: knowledge.TrustUntrusted,
 		Provenance: knowledge.Provenance{
 			Capability:  capability,
-			Source:      "mcp:" + server,
-			Locator:     "tool:" + tool,
-			Provider:    server,
+			Source:      mcpHeader("mcp:"+server, 220),
+			Locator:     mcpHeader("tool:"+tool, 500),
+			Provider:    mcpHeader(server, 200),
 			RetrievedAt: retrievedAt,
 			RequestID:   requestID,
 		},
@@ -630,7 +915,7 @@ func publishMCPTool(ctx agent.Context, details map[string]any, requestID, server
 		ContentHash: knowledge.Hash(result.Text),
 	}.Normalize()
 	header := fmt.Sprintf("capability: %s\nserver: %s\ntool: %s\noperation: %s\nretrieved_at: %s\nstatus: %s\n",
-		capability, singleLine(server), singleLine(tool), operation, retrievedAt.Format(time.RFC3339), status)
+		capability, mcpHeader(server, 200), mcpHeader(tool, 200), operation, retrievedAt.Format(time.RFC3339), status)
 	if result.Truncated {
 		header += fmt.Sprintf("truncated: true (%s)\n", result.Reason)
 	}
@@ -645,7 +930,7 @@ func publishMCPTool(ctx agent.Context, details map[string]any, requestID, server
 			Class:   knowledge.FailureToolError,
 			Message: "the remote MCP tool reported an error result",
 		}
-		details["classification"] = string(knowledge.FailureToolError)
+		details["failure_classification"] = string(knowledge.FailureToolError)
 	}
 	return agent.Result{
 		Text:    knowledge.Envelope(header, result.Text),

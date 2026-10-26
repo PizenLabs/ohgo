@@ -706,6 +706,9 @@ func TestCandidatesBlockMutationButKeepVerification(t *testing.T) {
 		testTool{name: "read", tier: agent.TierRead},
 		testTool{name: "write", tier: agent.TierWrite, ops: []contract.ChangeOp{contract.ChangeCreate}},
 		testTool{name: "bash", tier: agent.TierExec, classes: []agent.ActionClass{agent.ActionExecute, agent.ActionMutate}},
+		testTool{name: "mcp_call", tier: agent.TierWrite, classes: []agent.ActionClass{
+			agent.ActionExternal, agent.ActionConfigured, agent.ActionMutate, agent.ActionExecute,
+		}},
 	}
 	suff := Sufficiency{State: Blocked, Stage: StageBlocked}
 	set := Candidates(shape, NewEvidenceState(), ExecutionState{}, tools, RepositoryFacts{}, suff)
@@ -785,5 +788,53 @@ func TestEvidenceRoundTripsThroughJSON(t *testing.T) {
 	}
 	if _, ok := decoded.Find("file:a.go"); !ok {
 		t.Fatal("file evidence did not round-trip")
+	}
+}
+
+// A configured MCP call tool is dual-use: the same wire tool may run an
+// execute-class remote operation or an interaction/mutation. Candidate
+// selection must keep it for FUZZ execution and BUILD mutation, while ASK
+// read-only still withholds it.
+func TestCandidatesKeepConfiguredMCPForExecutionAndMutation(t *testing.T) {
+	mcpCall := testTool{name: "mcp_call", tier: agent.TierWrite, classes: []agent.ActionClass{
+		agent.ActionExternal, agent.ActionConfigured, agent.ActionMutate, agent.ActionExecute,
+	}}
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		mcpCall,
+	}
+	names := func(shape TaskShape) string {
+		suff := EvaluateSufficiency(shape, NewEvidenceState(), ExecutionState{}, false)
+		set := Candidates(shape, NewEvidenceState(), ExecutionState{}, tools, RepositoryFacts{}, suff)
+		var out []string
+		for _, tool := range set.Tools {
+			out = append(out, tool.Name())
+		}
+		return strings.Join(out, ",")
+	}
+
+	fuzz := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveExecution,
+		Objective: "run the tests to reproduce the failure",
+	}, ShapeParams{Authority: "fuzz"})
+	if got := names(fuzz); !strings.Contains(got, "mcp_call") {
+		t.Fatalf("FUZZ execution candidates = %q, want mcp_call", got)
+	}
+
+	build := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveMutation,
+		Objective: "write README.md",
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "README.md"}},
+	}, ShapeParams{Authority: "build"})
+	if got := names(build); !strings.Contains(got, "mcp_call") {
+		t.Fatalf("BUILD mutation candidates = %q, want mcp_call", got)
+	}
+
+	ask := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "explain this project",
+	}, ShapeParams{Authority: "ask"})
+	if got := names(ask); strings.Contains(got, "mcp_call") {
+		t.Fatalf("ASK informational candidates = %q, want mcp_call withheld", got)
 	}
 }

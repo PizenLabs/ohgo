@@ -57,6 +57,10 @@ func operationForCapability(cap security.Capability) (workspace.Operation, bool)
 		// Reading external knowledge observes a remote resource. It is not a
 		// repository read, but it consumes the same read authority today.
 		return workspace.OpRead, true
+	case security.CapabilityExternalMCPExecute:
+		// Execution outside the workspace is execution, not a repository
+		// write. FUZZ and BUILD may run it after approval; ASK may not.
+		return workspace.OpExec, true
 	case security.CapabilityExternalMCPMutate, security.CapabilityExternalBrowserMutate:
 		// External mutation requires the strongest authority. It is a distinct
 		// capability (and a distinct approval), never a silent extension of a
@@ -333,6 +337,8 @@ func approvalFor(decision security.Decision, preview agent.MutationPreview) agen
 		tier = agent.TierWrite
 	case security.CapabilityExec:
 		tier = agent.TierExec
+	case security.CapabilityExternalMCPExecute:
+		tier = agent.TierExec
 	case security.CapabilityExternalMCPMutate, security.CapabilityExternalBrowserMutate:
 		tier = agent.TierWrite
 	}
@@ -390,8 +396,10 @@ func securityRequest(root string, tool agent.Tool, args map[string]any, operatio
 	// Capability is the declared authority class; a per-call CapabilityReporter
 	// refines the operation (and therefore mutation risk), not the process/
 	// filesystem taxonomy. A shell that writes is still process execution.
-	if namer, ok := tool.(agent.CapabilityNamer); ok {
-		cap = namer.SecurityCapability()
+	// An invocation-aware namer may pick a different security capability from
+	// trusted configuration, for example MCP execute versus MCP mutate.
+	if resolved, ok := agent.SecurityCapabilityFor(tool, args); ok {
+		cap = resolved
 	}
 	op := workspace.OperationForTool(tool, args)
 	mutates := op.Mutates()
@@ -449,8 +457,9 @@ func scopeFor(cap security.Capability, root string, args map[string]any) securit
 			provider = "default"
 		}
 		return security.ExternalScope("search:"+provider, "search:"+provider)
-	case security.CapabilityExternalMCPRead, security.CapabilityExternalMCPMutate:
-		server := strings.TrimSpace(argString(args, "server"))
+	case security.CapabilityExternalMCPRead, security.CapabilityExternalMCPMutate,
+		security.CapabilityExternalMCPExecute:
+		server, _ := mcpTarget(args)
 		if server == "" {
 			server = "any"
 		}
@@ -489,11 +498,12 @@ func summarize(cap security.Capability, args map[string]any) string {
 			provider = "default"
 		}
 		return provider + ": " + query
-	case security.CapabilityExternalMCPRead, security.CapabilityExternalMCPMutate:
-		server := argString(args, "server")
+	case security.CapabilityExternalMCPRead, security.CapabilityExternalMCPMutate,
+		security.CapabilityExternalMCPExecute:
+		server, tool := mcpTarget(args)
 		operation := argString(args, "operation")
-		tool := argString(args, "tool")
 		resource := argString(args, "resource")
+		prompt := argString(args, "prompt")
 		parts := []string{"server=" + server}
 		if operation != "" {
 			parts = append(parts, "operation="+operation)
@@ -503,6 +513,9 @@ func summarize(cap security.Capability, args map[string]any) string {
 		}
 		if resource != "" {
 			parts = append(parts, "resource="+resource)
+		}
+		if prompt != "" {
+			parts = append(parts, "prompt="+prompt)
 		}
 		return strings.Join(parts, " ")
 	case security.CapabilityExternalBrowserRead, security.CapabilityExternalBrowserMutate:
@@ -522,6 +535,25 @@ func summarize(cap security.Capability, args map[string]any) string {
 		return strings.Join(parts, " ")
 	}
 	return ""
+}
+
+// mcpTarget resolves a server and tool from either the stable identity or the
+// separate arguments. It is display/scope metadata only, never authority.
+func mcpTarget(args map[string]any) (string, string) {
+	server := strings.TrimSpace(argString(args, "server"))
+	tool := strings.TrimSpace(argString(args, "tool"))
+	capability := strings.TrimSpace(argString(args, "capability"))
+	if capability != "" {
+		if capServer, capTool, ok := strings.Cut(capability, ":"); ok {
+			if server == "" {
+				server = strings.TrimSpace(capServer)
+			}
+			if tool == "" {
+				tool = strings.TrimSpace(capTool)
+			}
+		}
+	}
+	return server, tool
 }
 
 // argString reads a string argument, tolerating any type.

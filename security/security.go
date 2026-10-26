@@ -46,6 +46,10 @@ const (
 	// outside the workspace, but it requires the same strongest authority and
 	// an explicit human approval.
 	CapabilityExternalMCPMutate Capability = "external.mcp.mutate"
+	// CapabilityExternalMCPExecute runs an MCP tool classified as execution.
+	// It is not a repository mutation, so FUZZ and BUILD may perform it after
+	// approval; ASK may not.
+	CapabilityExternalMCPExecute Capability = "external.mcp.execute"
 	// CapabilityExternalBrowserRead opens, follows, or reads a bounded page.
 	CapabilityExternalBrowserRead Capability = "external.browser.read"
 	// CapabilityExternalBrowserMutate is the reserved capability for browser
@@ -58,8 +62,8 @@ func (c Capability) Known() bool {
 	switch c {
 	case CapabilityRead, CapabilityWrite, CapabilityExec, CapabilityNetwork,
 		CapabilityExternalSearch, CapabilityExternalMCPRead,
-		CapabilityExternalMCPMutate, CapabilityExternalBrowserRead,
-		CapabilityExternalBrowserMutate:
+		CapabilityExternalMCPMutate, CapabilityExternalMCPExecute,
+		CapabilityExternalBrowserRead, CapabilityExternalBrowserMutate:
 		return true
 	}
 	return false
@@ -74,8 +78,8 @@ func (c Capability) Filesystem() bool {
 func (c Capability) External() bool {
 	switch c {
 	case CapabilityNetwork, CapabilityExternalSearch, CapabilityExternalMCPRead,
-		CapabilityExternalMCPMutate, CapabilityExternalBrowserRead,
-		CapabilityExternalBrowserMutate:
+		CapabilityExternalMCPMutate, CapabilityExternalMCPExecute,
+		CapabilityExternalBrowserRead, CapabilityExternalBrowserMutate:
 		return true
 	}
 	return false

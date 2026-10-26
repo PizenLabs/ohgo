@@ -532,11 +532,14 @@ CapabilityRequest → admission → root budget → bounded execution
 - **Search** (`search`, `search`) uses configured Brave/Tavily providers over
   HTTPS. Query, result page, snippet, response bytes, timeout, and retries are
   bounded; retries are separately charged calls.
-- **MCP** (`mcp`) is a bounded stdio JSON-RPC client. A configured server is an
-  external actor: discovery describes capabilities but grants nothing, the
-  classification map is authoritative, missing/typo classes are `unknown` and
-  fail closed, tool arguments are schema- and structure-checked, responses are
-  byte/item/text bounded, and cancellation kills the process.
+- **MCP** (`mcp`) is a bounded stdio or streamable-HTTP JSON-RPC client. A
+  configured server is an external actor: discovery describes capabilities but
+  grants nothing, the classification map is authoritative, missing/typo classes
+  are `unknown` and fail closed, and every capability carries the stable
+  `<server>:<capability>` identity. Tool arguments are schema- and
+  structure-checked, responses are byte/item/text bounded, discovery is cached
+  with an explicit refresh, and cancellation kills the process. See
+  [`MCP.md`](MCP.md).
 - **Browser** (`tools/browser.go`) is GET-only read/navigation. Sessions are
   named and explicit, with an exact host policy, navigation/redirect/byte/
   char/link/session limits, a deadline, and a bounded history. Loopback,
