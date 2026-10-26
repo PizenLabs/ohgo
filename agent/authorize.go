@@ -36,3 +36,27 @@ type CapabilityNamer interface {
 	// exercises.
 	SecurityCapability() security.Capability
 }
+
+// InvocationCapabilityNamer lets a tool refine the security capability for one
+// call when trusted configuration distinguishes otherwise identical
+// invocations.
+//
+// The model never supplies the class: the tool resolves it from its own
+// configuration. A tool that cannot resolve one must return the conservative
+// capability, not a weaker guess.
+type InvocationCapabilityNamer interface {
+	// SecurityCapabilityFor returns the capability this invocation exercises.
+	SecurityCapabilityFor(args map[string]any) security.Capability
+}
+
+// SecurityCapabilityFor returns the per-call security capability, falling back
+// to the tool's declared capability.
+func SecurityCapabilityFor(tool Tool, args map[string]any) (security.Capability, bool) {
+	if namer, ok := tool.(InvocationCapabilityNamer); ok {
+		return namer.SecurityCapabilityFor(args), true
+	}
+	if namer, ok := tool.(CapabilityNamer); ok {
+		return namer.SecurityCapability(), true
+	}
+	return "", false
+}

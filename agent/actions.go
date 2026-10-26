@@ -21,6 +21,12 @@ const (
 	ActionExecute ActionClass = "execute"
 	// ActionExternal reaches knowledge outside the workspace.
 	ActionExternal ActionClass = "external"
+	// ActionConfigured marks a tool a human configured explicitly, such as an
+	// MCP server capability. It is still external and still passes the
+	// security boundary, but task-shape narrowing must not hide it merely
+	// because the request did not ask for web knowledge: configuration is the
+	// human's decision to make the capability available.
+	ActionConfigured ActionClass = "configured"
 	// ActionDelegate hands work to a child agent.
 	ActionDelegate ActionClass = "delegate"
 	// ActionPlan writes task guidance (a todo list, an artifact).

@@ -221,6 +221,64 @@ func TestDocsGeneratesReference(t *testing.T) {
 	}
 }
 
+// Generated reference covers runtime slash commands, so /mcp is documented
+// alongside the CLI tree from the same registry the session uses. The man page
+// is generated from that same registry, so it cannot drift from markdown.
+func TestDocsIncludeRuntimeMCPCommands(t *testing.T) {
+	dir := t.TempDir()
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"docs", "--dir", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("docs: %v", err)
+	}
+	want := []string{
+		"/mcp",
+		"/mcp list",
+		"/mcp inspect <server>",
+		"/mcp refresh [server]",
+		"/mcp enable <server>",
+		"/mcp disable <server>",
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "runtime-commands.md"))
+	if err != nil {
+		t.Fatalf("read runtime reference: %v", err)
+	}
+	for _, form := range want {
+		if !strings.Contains(string(data), form) {
+			t.Errorf("runtime reference missing %q:\n%s", form, data)
+		}
+	}
+	man, err := os.ReadFile(filepath.Join(dir, "ohgo-runtime-commands.1"))
+	if err != nil {
+		t.Fatalf("read runtime man page: %v", err)
+	}
+	for _, form := range want {
+		if !strings.Contains(string(man), form) {
+			t.Errorf("runtime man page missing %q:\n%s", form, man)
+		}
+	}
+}
+
+// `ohgo -h` points at the runtime MCP surface without inventing a top-level
+// `ohgo mcp` command.
+func TestRootHelpNamesMCPRuntimeCommand(t *testing.T) {
+	cmd := rootCmd()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	if !strings.Contains(out.String(), "/mcp") {
+		t.Fatalf("root help = %q, want the MCP runtime command", out.String())
+	}
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "mcp" {
+			t.Fatal("top-level mcp subcommand was added")
+		}
+	}
+}
+
 // TestDocsCreatesItsDirectory proves a fresh path works: the generators write
 // into the directory rather than creating it, so docs must create it first.
 func TestDocsCreatesItsDirectory(t *testing.T) {

@@ -169,6 +169,23 @@ func TestValidateAnyOfAndOneOf(t *testing.T) {
 	}
 }
 
+func TestAnyOfReportsBranchReasons(t *testing.T) {
+	schema := MustCompile([]byte(`{"anyOf":[
+		{"type":"object","required":["tool"]},
+		{"type":"object","required":["prompt"]}
+	]}`))
+	err := schema.Validate(map[string]any{})
+	if err == nil {
+		t.Fatal("expected an empty object to fail anyOf")
+	}
+	message := err.Error()
+	for _, want := range []string{"branch 1", "branch 2", "tool", "prompt"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("anyOf error %q is missing %q", message, want)
+		}
+	}
+}
+
 func TestValidateNestedObjectPaths(t *testing.T) {
 	schema := MustCompile([]byte(`{
 		"type":"object",

@@ -189,6 +189,15 @@ func (m *phase8MCP) Close() error                { return nil }
 func (m *phase8MCP) Discover(ctx context.Context, name string, meter mcp.Meter) (mcp.Discovery, error) {
 	return mcp.Discovery{}, nil
 }
+func (m *phase8MCP) Refresh(ctx context.Context, name string, meter mcp.Meter) (mcp.Discovery, error) {
+	return mcp.Discovery{}, nil
+}
+func (m *phase8MCP) Classify(name, tool string) (mcp.Classification, bool) {
+	return mcp.ClassMutate, true
+}
+func (m *phase8MCP) GetPrompt(ctx context.Context, name, prompt string, args map[string]any, meter mcp.Meter) (mcp.PromptResult, error) {
+	return mcp.PromptResult{}, nil
+}
 func (m *phase8MCP) ReadResource(ctx context.Context, name, uri string, meter mcp.Meter) (mcp.ResourceResult, error) {
 	return mcp.ResourceResult{}, nil
 }

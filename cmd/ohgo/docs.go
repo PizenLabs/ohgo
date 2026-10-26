@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
+	"github.com/PizenLabs/ohgo/tui"
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
 )
@@ -44,10 +47,82 @@ the result without maintaining it by hand.`,
 			if err := doc.GenMarkdownTree(root, dir); err != nil {
 				return fmt.Errorf("docs: markdown: %w", err)
 			}
+			if err := writeRuntimeReference(dir); err != nil {
+				return fmt.Errorf("docs: runtime commands: %w", err)
+			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrote reference into %s\n", dir)
 			return nil
 		},
 	}
 	cmd.Flags().String("dir", "", "output directory for man pages and markdown")
 	return cmd
+}
+
+// writeRuntimeReference documents the in-session slash commands.
+//
+// The cobra tree documents flags and subcommands; it cannot see /help or /mcp
+// because those are runtime commands. They are generated from tui.Commands, the
+// same registry that powers runtime help and completion, so the CLI reference
+// and the in-session listing cannot drift.
+func writeRuntimeReference(dir string) error {
+	if err := os.WriteFile(filepath.Join(dir, "runtime-commands.md"),
+		[]byte(runtimeCommandsMarkdown()), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "ohgo-runtime-commands.1"),
+		[]byte(runtimeCommandsMan()), 0o644)
+}
+
+// runtimeCommandsMarkdown renders the slash-command registry as markdown.
+func runtimeCommandsMarkdown() string {
+	var b strings.Builder
+	b.WriteString("# Runtime slash commands\n\n")
+	b.WriteString("These commands run inside an ohgo session, not as CLI subcommands. ")
+	b.WriteString("Type `/help` in a session to open the Command & Help Center.\n\n")
+	for _, group := range []string{tui.CommandGroupWorkspace, tui.CommandGroupControl} {
+		fmt.Fprintf(&b, "## %s\n\n", group)
+		for _, spec := range tui.Commands {
+			if spec.Hidden || groupOfCommand(spec) != group {
+				continue
+			}
+			fmt.Fprintf(&b, "- `/%s` — %s\n", spec.Usage, spec.Description)
+			for _, sub := range spec.Subcommands {
+				fmt.Fprintf(&b, "  - `/%s %s` — %s\n", spec.Name, sub.Usage, sub.Description)
+			}
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// runtimeCommandsMan renders the slash-command registry as a man page.
+func runtimeCommandsMan() string {
+	var b strings.Builder
+	b.WriteString(".TH OHGO-RUNTIME-COMMANDS 1 \"\" \"ohgo\" \"Runtime slash commands\"\n")
+	b.WriteString(".SH NAME\nohgo runtime commands \\- slash commands available inside a session\n")
+	b.WriteString(".SH DESCRIPTION\n")
+	b.WriteString("These commands run inside an ohgo session, not as CLI subcommands. ")
+	b.WriteString("Type /help in a session to open the Command & Help Center.\n")
+	for _, group := range []string{tui.CommandGroupWorkspace, tui.CommandGroupControl} {
+		fmt.Fprintf(&b, ".SH %s\n", group)
+		for _, spec := range tui.Commands {
+			if spec.Hidden || groupOfCommand(spec) != group {
+				continue
+			}
+			fmt.Fprintf(&b, ".TP\n.B /%s\n%s\n", spec.Usage, spec.Description)
+			for _, sub := range spec.Subcommands {
+				fmt.Fprintf(&b, ".TP\n.B /%s %s\n%s\n", spec.Name, sub.Usage, sub.Description)
+			}
+		}
+	}
+	return b.String()
+}
+
+// groupOfCommand mirrors tui's grouping so the generated reference keeps the
+// same WORKSPACE/CONTROL order as the in-session help.
+func groupOfCommand(spec tui.CommandSpec) string {
+	if spec.Category == tui.CommandGroupWorkspace {
+		return tui.CommandGroupWorkspace
+	}
+	return tui.CommandGroupControl
 }

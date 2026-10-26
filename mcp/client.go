@@ -29,6 +29,11 @@ type serverProcess interface {
 // errLineTooLong reports a response line over the bound.
 var errLineTooLong = errors.New("mcp: response line exceeds the byte bound")
 
+// maxListPages bounds cursor-following for one discovery list. A server that
+// advertises more pages than this is reported as truncated rather than allowed
+// to drive an unbounded number of exchanges.
+const maxListPages = 64
+
 // rpcRequest is one JSON-RPC request.
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -42,6 +47,7 @@ type rpcMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
 	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
 	Result  json.RawMessage `json:"result"`
 	Error   *rpcError       `json:"error"`
 }
@@ -52,25 +58,32 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-// client owns one MCP server process. It serializes exchanges, so one server
-// has at most one in-flight request and a bounded response reader.
+// client owns one MCP server connection. It serializes exchanges, so one
+// server has at most one in-flight request and a bounded response reader.
 type client struct {
 	cfg   ServerConfig
 	start func(ServerConfig) (serverProcess, error)
+	// remote is the streamable-HTTP exchange seam. It is nil for stdio.
+	remote *httpTransport
 
 	gate chan struct{}
 
-	mu          sync.Mutex
-	proc        serverProcess
-	initialized bool
-	closed      bool
-	nextID      int
-	idle        *time.Timer
+	mu           sync.Mutex
+	proc         serverProcess
+	initialized  bool
+	closed       bool
+	nextID       int
+	idle         *time.Timer
+	instructions string
 }
 
 // newClient returns a client for a normalized config.
 func newClient(cfg ServerConfig, start func(ServerConfig) (serverProcess, error)) *client {
-	return &client{cfg: cfg, start: start, gate: make(chan struct{}, 1)}
+	client := &client{cfg: cfg, start: start, gate: make(chan struct{}, 1)}
+	if cfg.Transport == TransportStreamableHTTP {
+		client.remote = newHTTPTransport(cfg)
+	}
+	return client
 }
 
 // Close stops the process and refuses future starts.
@@ -80,11 +93,16 @@ func (c *client) Close() error {
 	proc := c.proc
 	c.proc = nil
 	c.initialized = false
+	c.instructions = ""
 	timer := c.idle
 	c.idle = nil
+	remote := c.remote
 	c.mu.Unlock()
 	if timer != nil {
 		timer.Stop()
+	}
+	if remote != nil {
+		remote.close()
 	}
 	if proc != nil {
 		return proc.Kill()
@@ -92,9 +110,21 @@ func (c *client) Close() error {
 	return nil
 }
 
+// connected reports whether the client currently holds a live connection.
+func (c *client) connected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.remote != nil {
+		return c.initialized && !c.closed
+	}
+	return c.proc != nil
+}
+
 // initialize handshakes once. A failed handshake kills the process so the next
 // call starts from a clean state instead of writing into a broken pipe.
 func (c *client) initialize(ctx context.Context, meter Meter) error {
+	ctx, cancel := c.exchangeContext(ctx)
+	defer cancel()
 	if err := c.enter(ctx); err != nil {
 		return err
 	}
@@ -122,12 +152,24 @@ func (c *client) initialize(ctx context.Context, meter Meter) error {
 		c.kill()
 		return knowledge.Fail(knowledge.FailureProtocol, false, "mcp initialize returned no result")
 	}
+	// Server instructions are part of the initialize result, not a tool. Keep
+	// them bounded and expose them through discovery so a client that does not
+	// otherwise surface initialize output can still give the model the
+	// server's own usage guidance.
+	var handshake struct {
+		Instructions string `json:"instructions"`
+	}
+	instructions := ""
+	if err := json.Unmarshal(raw, &handshake); err == nil {
+		instructions, _ = knowledge.BoundText(handshake.Instructions, c.cfg.MaxTextChars)
+	}
 	if err := c.notifyLocked(ctx, "notifications/initialized"); err != nil {
 		c.kill()
 		return err
 	}
 	c.mu.Lock()
 	c.initialized = true
+	c.instructions = instructions
 	c.mu.Unlock()
 	c.touch()
 	return nil
@@ -135,6 +177,8 @@ func (c *client) initialize(ctx context.Context, meter Meter) error {
 
 // exchange performs one request/response exchange after initialization.
 func (c *client) exchange(ctx context.Context, method string, params any, meter Meter) (json.RawMessage, int, error) {
+	ctx, cancel := c.exchangeContext(ctx)
+	defer cancel()
 	if err := c.enter(ctx); err != nil {
 		return nil, 0, err
 	}
@@ -144,6 +188,8 @@ func (c *client) exchange(ctx context.Context, method string, params any, meter 
 
 // exchangeLocked performs one exchange. The caller holds the gate.
 func (c *client) exchangeLocked(ctx context.Context, method string, params any, meter Meter) (json.RawMessage, int, error) {
+	ctx, cancel := c.exchangeContext(ctx)
+	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return nil, 0, contextFailure(ctx)
 	}
@@ -173,6 +219,23 @@ func (c *client) exchangeLocked(ctx context.Context, method string, params any, 
 		return nil, 0, knowledge.Fail(knowledge.FailureInvalidRequest, false, "encode mcp request: %v", err)
 	}
 
+	if c.remote != nil {
+		raw, bytesRead, err := c.remote.exchange(ctx, id, request, limit, meter)
+		if err != nil {
+			var failure knowledge.Failure
+			if errors.As(err, &failure) && failureNeedsKill(failure) {
+				c.kill()
+			}
+			return nil, 0, c.redactError(err)
+		}
+		if meter.After != nil {
+			if err := meter.After(ctx, bytesRead); err != nil {
+				return nil, 0, err
+			}
+		}
+		return raw, bytesRead, nil
+	}
+
 	proc := c.process()
 	if proc == nil {
 		return nil, 0, knowledge.Fail(knowledge.FailureUnavailable, true, "mcp server %q is not running", c.cfg.Name)
@@ -197,7 +260,7 @@ func (c *client) exchangeLocked(ctx context.Context, method string, params any, 
 	}
 	done := make(chan readResult, 1)
 	go func() {
-		raw, bytesRead, failure := c.readResponse(id, limit)
+		raw, bytesRead, failure := c.readResponse(id, limit, meter)
 		done <- readResult{raw: raw, bytes: bytesRead, failure: failure}
 	}()
 	select {
@@ -206,7 +269,16 @@ func (c *client) exchangeLocked(ctx context.Context, method string, params any, 
 		return nil, 0, contextFailure(ctx)
 	case result := <-done:
 		if result.failure != nil {
-			c.kill()
+			// A clean JSON-RPC error (method not supported, invalid params,
+			// unknown tool) does not desynchronize the stream: the response was
+			// read in full, so the process remains usable. Killing it there
+			// would restart the server on every unsupported optional method —
+			// for example resources/list on a tools-only server.
+			if failureNeedsKill(*result.failure) {
+				c.kill()
+			}
+			result.failure.Message = c.cfg.redact(result.failure.Message)
+			result.failure.Message, _ = knowledge.BoundText(result.failure.Message, 500)
 			return nil, 0, *result.failure
 		}
 		if meter.After != nil {
@@ -222,9 +294,17 @@ func (c *client) exchangeLocked(ctx context.Context, method string, params any, 
 // notifyLocked sends a notification without expecting a response. Notifications
 // are part of the initialize handshake, so they are not separately metered.
 func (c *client) notifyLocked(ctx context.Context, method string) error {
+	ctx, cancel := c.exchangeContext(ctx)
+	defer cancel()
 	request, err := json.Marshal(rpcRequest{JSONRPC: "2.0", Method: method})
 	if err != nil {
 		return knowledge.Fail(knowledge.FailureInvalidRequest, false, "encode mcp notification: %v", err)
+	}
+	if c.remote != nil {
+		if err := c.remote.notify(ctx, request); err != nil {
+			return err
+		}
+		return nil
 	}
 	proc := c.process()
 	if proc == nil {
@@ -245,7 +325,7 @@ func (c *client) notifyLocked(ctx context.Context, method string) error {
 }
 
 // readResponse reads messages until the matching response arrives.
-func (c *client) readResponse(id int, limit int) (json.RawMessage, int, *knowledge.Failure) {
+func (c *client) readResponse(id int, limit int, meter Meter) (json.RawMessage, int, *knowledge.Failure) {
 	total := 0
 	for unsolicited := 0; unsolicited < 64; unsolicited++ {
 		remaining := limit - total
@@ -276,8 +356,12 @@ func (c *client) readResponse(id int, limit int) (json.RawMessage, int, *knowled
 			c.refuseServerRequest(message)
 			continue
 		}
-		if len(message.ID) == 0 {
-			// A notification is bounded but otherwise ignored.
+		if len(message.ID) == 0 || string(message.ID) == "null" {
+			// A notification is bounded. Progress is the only one that maps to
+			// runtime state; everything else stays inert.
+			if message.Method == "notifications/progress" {
+				emitProgress(meter, message.Params, c.cfg)
+			}
 			continue
 		}
 		if !idMatches(message.ID, id) {
@@ -291,6 +375,30 @@ func (c *client) readResponse(id int, limit int) (json.RawMessage, int, *knowled
 	}
 	failure := knowledge.Fail(knowledge.FailureProtocol, false, "mcp server sent too many unsolicited messages")
 	return nil, total, &failure
+}
+
+// emitProgress maps a bounded server progress notification to the Meter.
+//
+// The notification is untrusted data. It is bounded before it reaches a UI and
+// is never treated as completion.
+func emitProgress(meter Meter, params json.RawMessage, cfg ServerConfig) {
+	if meter.Progress == nil || len(params) == 0 {
+		return
+	}
+	var payload struct {
+		Progress float64 `json:"progress"`
+		Total    float64 `json:"total"`
+		Message  string  `json:"message"`
+	}
+	if err := json.Unmarshal(params, &payload); err != nil {
+		return
+	}
+	message, _ := knowledge.BoundText(strings.TrimSpace(cfg.redact(payload.Message)), 200)
+	meter.Progress(Progress{
+		Message:  message,
+		Progress: payload.Progress,
+		Total:    payload.Total,
+	})
 }
 
 // refuseServerRequest answers a server-initiated request with "not supported".
@@ -319,6 +427,10 @@ func (c *client) ensureProcess() error {
 	if c.closed {
 		c.mu.Unlock()
 		return knowledge.Fail(knowledge.FailureUnavailable, false, "mcp client is closed")
+	}
+	if c.remote != nil {
+		c.mu.Unlock()
+		return nil
 	}
 	if c.proc != nil {
 		c.mu.Unlock()
@@ -349,6 +461,15 @@ func (c *client) process() serverProcess {
 	return c.proc
 }
 
+// serverInstructions returns the bounded instructions from the last
+// handshake. It is empty when the server supplied none or the process has been
+// restarted since.
+func (c *client) serverInstructions() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.instructions
+}
+
 // touch resets the idle process timer.
 func (c *client) touch() {
 	c.mu.Lock()
@@ -356,7 +477,7 @@ func (c *client) touch() {
 	if c.idle != nil {
 		c.idle.Stop()
 	}
-	if c.closed || c.proc == nil {
+	if c.closed || c.proc == nil || c.remote != nil {
 		return
 	}
 	c.idle = time.AfterFunc(c.cfg.IdleTimeout, func() { c.kill() })
@@ -368,11 +489,16 @@ func (c *client) kill() {
 	proc := c.proc
 	c.proc = nil
 	c.initialized = false
+	c.instructions = ""
 	timer := c.idle
 	c.idle = nil
+	remote := c.remote
 	c.mu.Unlock()
 	if timer != nil {
 		timer.Stop()
+	}
+	if remote != nil {
+		remote.reset()
 	}
 	if proc != nil {
 		_ = proc.Kill()
@@ -392,50 +518,83 @@ func (c *client) enter(ctx context.Context) error {
 // leave releases the gate.
 func (c *client) leave() { <-c.gate }
 
-// listTools calls tools/list and bounds the result.
+// listTools calls tools/list, follows nextCursor, and bounds the result.
+//
+// Pagination is mandatory for compatibility: a server may return a bounded
+// page with an opaque nextCursor, and a client that ignores it silently sees
+// only a fraction of the advertised tools. Every page is a separately metered
+// exchange, and a repeated cursor or the page ceiling is reported as
+// truncation rather than followed forever.
 func (c *client) listTools(ctx context.Context, meter Meter) ([]wireTool, bool, error) {
-	raw, _, err := c.exchange(ctx, "tools/list", map[string]any{}, meter)
-	if err != nil {
-		return nil, false, err
+	var out []wireTool
+	cursor := ""
+	for page := 0; page < maxListPages; page++ {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		raw, _, err := c.exchange(ctx, "tools/list", params, meter)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(raw) == 0 {
+			return out, false, nil
+		}
+		var envelope struct {
+			Tools      []wireTool `json:"tools"`
+			NextCursor string     `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return nil, false, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp tools/list result is malformed")
+		}
+		out = append(out, envelope.Tools...)
+		if len(out) >= c.cfg.MaxItems {
+			return out[:c.cfg.MaxItems], true, nil
+		}
+		next := strings.TrimSpace(envelope.NextCursor)
+		if next == "" || next == cursor {
+			return out, next != "" && next == cursor, nil
+		}
+		cursor = next
 	}
-	if len(raw) == 0 {
-		return nil, false, nil
-	}
-	var envelope struct {
-		Tools []wireTool `json:"tools"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, false, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp tools/list result is malformed")
-	}
-	truncated := false
-	if len(envelope.Tools) > c.cfg.MaxItems {
-		envelope.Tools = envelope.Tools[:c.cfg.MaxItems]
-		truncated = true
-	}
-	return envelope.Tools, truncated, nil
+	return out, true, nil
 }
 
-// listResources calls resources/list and bounds the result.
+// listResources calls resources/list, follows nextCursor, and bounds the
+// result.
 func (c *client) listResources(ctx context.Context, meter Meter) ([]wireResource, bool, error) {
-	raw, _, err := c.exchange(ctx, "resources/list", map[string]any{}, meter)
-	if err != nil {
-		return nil, false, err
+	var out []wireResource
+	cursor := ""
+	for page := 0; page < maxListPages; page++ {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		raw, _, err := c.exchange(ctx, "resources/list", params, meter)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(raw) == 0 {
+			return out, false, nil
+		}
+		var envelope struct {
+			Resources  []wireResource `json:"resources"`
+			NextCursor string         `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return nil, false, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp resources/list result is malformed")
+		}
+		out = append(out, envelope.Resources...)
+		if len(out) >= c.cfg.MaxItems {
+			return out[:c.cfg.MaxItems], true, nil
+		}
+		next := strings.TrimSpace(envelope.NextCursor)
+		if next == "" || next == cursor {
+			return out, next != "" && next == cursor, nil
+		}
+		cursor = next
 	}
-	if len(raw) == 0 {
-		return nil, false, nil
-	}
-	var envelope struct {
-		Resources []wireResource `json:"resources"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, false, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp resources/list result is malformed")
-	}
-	truncated := false
-	if len(envelope.Resources) > c.cfg.MaxItems {
-		envelope.Resources = envelope.Resources[:c.cfg.MaxItems]
-		truncated = true
-	}
-	return envelope.Resources, truncated, nil
+	return out, true, nil
 }
 
 // wireTool is one discovered tool description.
@@ -464,6 +623,96 @@ type wireResource struct {
 	Blob        string `json:"blob,omitempty"`
 }
 
+// wirePrompt is one discovered prompt template.
+type wirePrompt struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Arguments   []wireArgument `json:"arguments"`
+}
+
+// wireArgument is one prompt argument declaration.
+type wireArgument struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+}
+
+// schemaRaw synthesizes a JSON Schema for a prompt's arguments, so discovery
+// publishes the same callable contract for a prompt as for a tool.
+func (p wirePrompt) schemaRaw() json.RawMessage {
+	if len(p.Arguments) == 0 {
+		return nil
+	}
+	properties := make(map[string]any, len(p.Arguments))
+	var required []string
+	for _, argument := range p.Arguments {
+		name := strings.TrimSpace(argument.Name)
+		if name == "" {
+			continue
+		}
+		property := map[string]any{"type": "string"}
+		if argument.Description != "" {
+			property["description"] = argument.Description
+		}
+		properties[name] = property
+		if argument.Required {
+			required = append(required, name)
+		}
+	}
+	if len(properties) == 0 {
+		return nil
+	}
+	object := map[string]any{
+		"type":                 "object",
+		"properties":           properties,
+		"additionalProperties": false,
+	}
+	if len(required) > 0 {
+		object["required"] = required
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
+// listPrompts calls prompts/list, follows nextCursor, and bounds the result.
+func (c *client) listPrompts(ctx context.Context, meter Meter) ([]wirePrompt, bool, error) {
+	var out []wirePrompt
+	cursor := ""
+	for page := 0; page < maxListPages; page++ {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		raw, _, err := c.exchange(ctx, "prompts/list", params, meter)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(raw) == 0 {
+			return out, false, nil
+		}
+		var envelope struct {
+			Prompts    []wirePrompt `json:"prompts"`
+			NextCursor string       `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return nil, false, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp prompts/list result is malformed")
+		}
+		out = append(out, envelope.Prompts...)
+		if len(out) >= c.cfg.MaxItems {
+			return out[:c.cfg.MaxItems], true, nil
+		}
+		next := strings.TrimSpace(envelope.NextCursor)
+		if next == "" || next == cursor {
+			return out, next != "" && next == cursor, nil
+		}
+		cursor = next
+	}
+	return out, true, nil
+}
+
 // classifyReadError turns a process read failure into a truthful class.
 func classifyReadError(err error, server string) knowledge.Failure {
 	if errors.Is(err, errLineTooLong) {
@@ -473,6 +722,21 @@ func classifyReadError(err error, server string) knowledge.Failure {
 		return knowledge.Fail(knowledge.FailureUnavailable, true, "mcp server %q disconnected", server)
 	}
 	return knowledge.Fail(knowledge.FailureUnavailable, true, "read mcp server %q: %v", server, err)
+}
+
+// failureNeedsKill reports whether a failure leaves the stream unusable.
+//
+// A JSON-RPC error response is a complete frame: the request is finished even
+// though it failed. Transport, framing, and bound failures are different — the
+// next read cannot be trusted to line up with the next request.
+func failureNeedsKill(failure knowledge.Failure) bool {
+	switch failure.Class {
+	case knowledge.FailureUnsupported, knowledge.FailureInvalidRequest,
+		knowledge.FailureUnknownCapability, knowledge.FailureToolError:
+		return false
+	default:
+		return true
+	}
 }
 
 // classifyRPCError maps a JSON-RPC error to a failure class.
@@ -490,12 +754,36 @@ func classifyRPCError(rpc rpcError) knowledge.Failure {
 	}
 }
 
+// exchangeContext applies the configured per-exchange timeout without
+// extending a stricter caller deadline.
+func (c *client) exchangeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := c.cfg.Timeout
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= timeout {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 // contextFailure classifies a finished context.
 func contextFailure(ctx context.Context) knowledge.Failure {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return knowledge.Fail(knowledge.FailureTimeout, false, "mcp exchange timed out")
 	}
 	return knowledge.Fail(knowledge.FailureCancelled, false, "mcp exchange cancelled")
+}
+
+// redactError removes configured credential values from a classified failure.
+func (c *client) redactError(err error) error {
+	var failure knowledge.Failure
+	if errors.As(err, &failure) {
+		failure.Message = c.cfg.redact(failure.Message)
+		failure.Message, _ = knowledge.BoundText(failure.Message, 500)
+		return failure
+	}
+	return err
 }
 
 // idMatches reports whether a response id matches the numeric request id.
@@ -530,6 +818,7 @@ type stdioProcess struct {
 // startStdio starts a configured MCP server.
 func startStdio(cfg ServerConfig) (serverProcess, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
+	cmd.Dir = cfg.Dir
 	cmd.Env = filteredEnv(cfg.Env)
 	cmd.Stderr = io.Discard
 	stdin, err := cmd.StdinPipe()

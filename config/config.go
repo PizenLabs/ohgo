@@ -200,20 +200,38 @@ type MCPSettings struct {
 // the named environment variables; the server does not inherit the rest of the
 // process environment.
 type MCPServer struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command"`
-	Args    []string `json:"args,omitempty"`
-	Env     []string `json:"env,omitempty"`
-	// Tools is the explicit safety classification: read, interact, mutate, or
-	// unknown. A tool not listed is unknown and fails closed.
+	Name string `json:"name"`
+	// Transport is "stdio" (default) or "streamable-http".
+	Transport string   `json:"transport,omitempty"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
+	// URL is the streamable-HTTP endpoint. It is required for that transport.
+	URL string `json:"url,omitempty"`
+	// HeaderEnv maps an HTTP header name to the environment variable that
+	// holds its value. The secret is never stored in configuration.
+	HeaderEnv map[string]string `json:"headerEnv,omitempty"`
+	// Dir is the child working directory. Empty uses the agent's workspace
+	// root, so a repository-aware server starts where the agent is working.
+	Dir string   `json:"dir,omitempty"`
+	Env []string `json:"env,omitempty"`
+	// Trust is human provenance metadata: local, external, or untrusted. It is
+	// not authority.
+	Trust string `json:"trust,omitempty"`
+	// Enabled defaults to true when omitted. A disabled server contributes no
+	// capabilities and is never connected.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Tools is the explicit safety classification: read, execute, interact,
+	// mutate, or unknown. A tool not listed is unknown and fails closed.
 	Tools map[string]string `json:"tools,omitempty"`
 	// Resources optionally bounds readable resource URI prefixes.
 	Resources []string `json:"resources,omitempty"`
-	// AllowMutation permits interaction/mutation calls at all. It is false by
-	// default; authority and human approval still apply when true.
+	// AllowMutation permits execute/interaction/mutation calls at all. It is
+	// false by default; authority and human approval still apply when true.
 	AllowMutation bool `json:"allowMutation,omitempty"`
 	// TimeoutSeconds bounds one JSON-RPC exchange.
 	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
+	// CacheTTLSeconds bounds discovery-snapshot reuse.
+	CacheTTLSeconds int `json:"cacheTtlSeconds,omitempty"`
 	// MaxBytes bounds one response and one exchange's cumulative bytes.
 	MaxBytes int `json:"maxBytes,omitempty"`
 	// MaxItems bounds content items and discovered capabilities.
@@ -226,6 +244,12 @@ type MCPServer struct {
 	MaxArgumentBytes int `json:"maxArgumentBytes,omitempty"`
 	// IdleTimeoutSeconds kills an idle server process.
 	IdleTimeoutSeconds int `json:"idleTimeoutSeconds,omitempty"`
+}
+
+// IsEnabled reports whether the server contributes capabilities. An omitted
+// value is enabled so an existing configuration keeps working.
+func (s MCPServer) IsEnabled() bool {
+	return s.Enabled == nil || *s.Enabled
 }
 
 // BrowserSettings configures bounded browser read/navigation.

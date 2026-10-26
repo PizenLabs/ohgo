@@ -467,6 +467,19 @@ func commandItems(specs []CommandSpec) []helpItem {
 			Usage:       spec.Usage,
 			Command:     spec.Name,
 		})
+		for _, sub := range spec.Subcommands {
+			// A subcommand row names one argument form. Choosing it runs the
+			// parent command: there is no second dispatch table, and opening
+			// the manager is the safe action for every MCP form.
+			out = append(out, helpItem{
+				Name:        spec.Name,
+				Prefix:      "/",
+				Category:    groupOf(spec),
+				Description: sub.Description,
+				Usage:       sub.Usage,
+				Command:     spec.Name,
+			})
+		}
 	}
 	return out
 }
@@ -721,8 +734,22 @@ func renderHelpRow(row helpRow, view HelpCenterState, pal *Palette, interior, ca
 		catStyle = fg(helpCategoryAccent(category)).Bold(true).Background(bg)
 		descStyle = pal.Muted.Background(bg)
 	}
-	body := helpRowText(lineW, item.Prefix+item.Name, category, item.Description, catW, nameStyle, catStyle, descStyle)
+	body := helpRowText(lineW, helpCommandForm(item), category, item.Description, catW, nameStyle, catStyle, descStyle)
 	return markerStyle.Render(marker) + strings.Repeat(" ", helpColGap) + body
+}
+
+// helpCommandForm renders one command row's full invocation: "/new [name]" for
+// a parent command, "/mcp inspect <server>" for a subcommand. A parent's Usage
+// repeats the command word, so it is not appended a second time.
+func helpCommandForm(item helpItem) string {
+	form := item.Prefix + item.Name
+	if item.Command == "" || item.Usage == "" || item.Usage == item.Name {
+		return form
+	}
+	if strings.HasPrefix(item.Usage, item.Name+" ") {
+		return item.Prefix + item.Usage
+	}
+	return form + " " + item.Usage
 }
 
 // helpTabStrip renders the tab indicators: a filled marker and the accent on
@@ -839,10 +866,7 @@ func helpSelectedBlock(view HelpCenterState, pal *Palette, interior int) []strin
 	if !ok {
 		return append(rows, strings.Repeat(" ", statusFieldIndent)+pal.Muted.Render(helpEmptyLabel(view.View)))
 	}
-	line := strings.Repeat(" ", statusFieldIndent) + pal.Choice.Render(sanitizeInline(item.Prefix+item.Name))
-	if item.Usage != "" && item.Usage != item.Name {
-		line += " " + pal.Muted.Render(sanitizeInline(item.Usage))
-	}
+	line := strings.Repeat(" ", statusFieldIndent) + pal.Choice.Render(sanitizeInline(helpCommandForm(item)))
 	if item.Description != "" {
 		line += "  " + pal.Muted.Render("· "+sanitizeInline(item.Description))
 	}

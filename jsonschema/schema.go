@@ -330,7 +330,22 @@ func (s *Schema) validate(value any, path string, errs *[]Error) {
 		*errs = append(*errs, Error{Path: path, Message: "must not match the 'not' schema"})
 	}
 	if len(s.anyOf) > 0 && !anyAccepts(s.anyOf, value) {
-		*errs = append(*errs, Error{Path: path, Message: "must match at least one of the 'anyOf' schemas"})
+		// Preserve branch-level reasons. "must match anyOf" alone tells the
+		// caller nothing about which argument shape was expected.
+		branches := make([]string, 0, len(s.anyOf))
+		for i, sub := range s.anyOf {
+			var branchErrs []Error
+			sub.validate(value, path, &branchErrs)
+			if len(branchErrs) == 0 {
+				continue
+			}
+			branches = append(branches, fmt.Sprintf("branch %d: %s", i+1, branchErrs[0].Message))
+		}
+		message := "must match at least one of the 'anyOf' schemas"
+		if len(branches) > 0 {
+			message += " (" + strings.Join(branches, "; ") + ")"
+		}
+		*errs = append(*errs, Error{Path: path, Message: message})
 	}
 	if len(s.oneOf) > 0 {
 		matches := 0

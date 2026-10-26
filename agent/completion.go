@@ -73,7 +73,8 @@ func EvaluateCompletion(turns []Turn, mutationIntent bool) Completion {
 
 	evidence := scanCompletionEvidence(turns, mutationIntent)
 	if len(evidence.pendingFailures) > 0 {
-		return needsReview("a tool call failed and no later success or verification recovered it")
+		return needsReview("a tool call failed and no later success or verification recovered it: %s",
+			pendingFailureNames(evidence.pendingFailures))
 	}
 	if mutationIntent && !evidence.mutated {
 		return needsReview("the request asked for a repository change but no change was observed")
@@ -268,6 +269,21 @@ type BehavioralEvidence struct {
 	Detail string
 }
 
+// pendingFailureNames renders the tools with unrecovered failures so the
+// review reason names the capability instead of saying only "a tool call".
+func pendingFailureNames(failures map[string]int) string {
+	names := make([]string, 0, len(failures))
+	for name, count := range failures {
+		if count > 1 {
+			names = append(names, fmt.Sprintf("%s x%d", name, count))
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 // EvaluateTaskCompletion derives a completion verdict from a task contract and
 // runtime evidence.
 //
@@ -295,7 +311,8 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	}
 	evidence := scanCompletionEvidence(input.Turns, intent.Kind == contract.ObjectiveMutation)
 	if len(evidence.pendingFailures) > 0 {
-		return needsReview("a tool call failed and no later success or verification recovered it")
+		return needsReview("a tool call failed and no later success or verification recovered it: %s",
+			pendingFailureNames(evidence.pendingFailures))
 	}
 	if intent.Kind == contract.ObjectiveMutation && !evidence.mutated {
 		return needsReview("the request asked for a repository change but no change was observed")

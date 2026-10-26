@@ -78,3 +78,16 @@ func TestDerivedBudgetLimitsAreFinite(t *testing.T) {
 		t.Fatalf("derived budget has an unmetered dimension: %+v", limits)
 	}
 }
+
+// A tiny explicit tool grant must not make paginated MCP discovery fail before
+// it advertises anything: discovery is several metered exchanges.
+func TestTinyToolGrantKeepsDiscoveryUsable(t *testing.T) {
+	opts := options{maxTurns: 1, maxToolCalls: 2}
+	limits := opts.budgetLimits()
+	if limits.ToolCalls != 2 {
+		t.Fatalf("tool grant = %d, want the explicit 2", limits.ToolCalls)
+	}
+	if limits.ExternalCalls < 16 {
+		t.Fatalf("external grant = %d, want at least one discovery floor", limits.ExternalCalls)
+	}
+}

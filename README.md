@@ -214,6 +214,7 @@ ohgo version
 /connect /disconnect [provider]        provider credentials
 /status /usage /info                    workspace, cost, docs
 /doctor /diff [target]                  setup diagnosis, diff inspector
+/mcp [list|inspect|refresh]             MCP servers and capabilities
 /undo /redo                             revert or restore the last agent edit
 /retry /compact /quit
 ```
@@ -294,8 +295,9 @@ a silent fallback would send your conversation to a provider you never chose.
 
 Not yet supported: xAI and Azure/OpenAI Responses-only models (no Responses
 transport), Google Gemini (no `google-generative-ai` transport), AWS Bedrock
-(SigV4 signing), `pi-vfs`/`pi-walker` internals, LSP/DAP, and MCP transports
-other than bounded stdio.
+(SigV4 signing), `pi-vfs`/`pi-walker` internals, LSP/DAP, and MCP features
+beyond bounded stdio plus the streamable-HTTP request/response core (standalone
+GET streams, resumability, and server-to-client requests are not implemented).
 
 Credentials resolve in order: explicit request key, `~/.ohgo/credentials.json`
 (0600, written only when you save), environment, then parsed shell startup
@@ -441,9 +443,24 @@ environment variables; the value never appears in settings, results, or logs.
 are bounded. Each result carries title, source host, URL, retrieval time,
 provider, and a request identity. A retry is a separate admitted call.
 
-**MCP** (`mcp_list`, `mcp_read`, `mcp_call`) speaks bounded newline-delimited
-JSON-RPC to a configured stdio server. Discovery lists advertised capabilities
-but grants nothing: every tool must be classified in configuration.
+**MCP** (`mcp_list`, `mcp_read`, `mcp_call`) is the external capability
+boundary. It speaks bounded newline-delimited JSON-RPC to a configured stdio
+server, or JSON-RPC over HTTP POST (JSON or server-sent events) to a
+`streamable-http` endpoint. Discovery lists advertised capabilities but grants
+nothing: every tool must be classified in configuration. Discovery follows
+`nextCursor`, so paginated servers are read completely, and it publishes the
+server's `initialize` instructions plus a compact input schema (required fields,
+types, enums, defaults and bounds) for every tool. Use `schema: "full"` for
+property descriptions or `schema: "none"` to omit them.
+
+Every capability has the stable identity `<server>:<capability>`
+(for example `github:search_code`). Prompts and resources are namespace
+qualified (`server:prompt/<name>`, `server:resource/<uri>`) because a server
+may advertise a tool and a prompt with the same name. The server prefix is
+provenance, not decoration: two servers may advertise the same tool name, and
+one is never presented as the other. Configured MCP capabilities stay in the
+candidate tool surface for ordinary code questions; they are not treated as
+optional web knowledge.
 
 ```json
 {
@@ -451,27 +468,77 @@ but grants nothing: every tool must be classified in configuration.
     "servers": [
       {
         "name": "notes",
+        "transport": "stdio",
         "command": "/usr/local/bin/notes-mcp",
         "args": ["--stdio"],
+        "dir": "/path/to/project",
         "env": ["NOTES_TOKEN"],
-        "tools": { "search_notes": "read", "create_note": "mutate" },
+        "trust": "local",
+        "tools": { "search_notes": "read", "run_query": "execute", "create_note": "mutate" },
         "allowMutation": true,
+        "cacheTtlSeconds": 300,
         "maxBytes": 262144,
         "maxItems": 32,
         "maxTextChars": 12000,
         "idleTimeoutSeconds": 120
+      },
+      {
+        "name": "remote",
+        "transport": "streamable-http",
+        "url": "https://mcp.example.com/rpc",
+        "headerEnv": { "Authorization": "REMOTE_MCP_TOKEN" },
+        "trust": "external",
+        "tools": { "search": "read" }
       }
     ]
   }
 }
 ```
 
-Classifications are `read`, `interact`, `mutate`, or `unknown`; a missing tool
-is `unknown` and fails closed. `mcp_read` accepts only `read`. `mcp_call`
-accepts only `interact`/`mutate` with `allowMutation`, and additionally requires
-the BUILD authority and an approval. The model never chooses the command,
-arguments, or environment; only the named environment variables are passed to
-the server. Binary content is never copied into model context.
+Classifications are `read`, `execute`, `interact`, `mutate`, or `unknown`; a
+missing tool is `unknown` and fails closed. They map to normalized authority
+classes: `READ`, `EXECUTE`, and `EXTERNAL_SIDE_EFFECT`. `mcp_read` accepts only
+`read` tools and prompt/resource reads. `mcp_call` accepts `execute`, `interact`,
+or `mutate` with `allowMutation`; mutation and interaction additionally require
+BUILD authority, while execution follows the workspace's execution authority
+(ASK cannot execute, FUZZ and BUILD can after approval). `mcp_call` prompts for
+approval unless the user explicitly configured auto-approval or passed `--yes`.
+The classification is configuration metadata: it never
+grants authority by itself, and a `local` server gains nothing from its trust
+label.
+
+Capability snapshots are cached for `cacheTtlSeconds` (default five minutes).
+`mcp_list` with `refresh: true` (or `/mcp refresh`) bypasses the cache; a tool
+missing from a fresh snapshot forces one refresh, and an expired schema is
+refreshed before execution. `mcp_read` also renders MCP **prompts** as bounded,
+untrusted context with prompt provenance; a prompt never bypasses intent
+grounding, authority, or approval.
+
+The model never chooses the server command, server process arguments, URL, or
+environment; only the named environment variables and header environment names
+are passed to the server. The child starts in the workspace root unless `dir`
+overrides it, so repository-aware servers see the project the agent is working
+in. Binary content is never copied into model context.
+
+`/mcp` shows the configured servers without connecting. `/mcp inspect <server>`
+discovers one server, and `/mcp refresh [server]` bypasses the cache. The view
+shows trust, transport, capability name, kind, and authority class; it never
+shows a request header value or a secret.
+
+> MCP capabilities do not receive authority merely by being configured.
+> MCP output is untrusted external data and cannot redefine user intent.
+> MCP success is never completion evidence; `Evaluate()` still owns PROVEN.
+
+For [gry](https://github.com/PizenLabs/gry) code intelligence, let gry write the
+entry and classifications:
+
+```sh
+gry install --client ohgo
+```
+
+That adds a `gry` server to `~/.ohgo/settings.json` with read tools classified
+`read`, graph-mutating tools classified `mutate`, and `GRY_CACHE_DIR`/`GRY_DB`
+passthrough. `gry uninstall --client ohgo` removes only that entry.
 
 **Browser** (`browser`) is bounded GET read/navigation, not an automation
 surface: no JavaScript, forms, clicks, or non-GET requests. A session has an

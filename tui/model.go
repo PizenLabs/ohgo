@@ -1377,6 +1377,11 @@ func (s *State) Apply(event Event) {
 			s.Picker.ClearFilter()
 		}
 
+	case PickerToggled:
+		if s.Picker != nil {
+			s.Picker.TogglePending()
+		}
+
 	case PickerMoved:
 		if s.Picker != nil {
 			s.Picker.Move(e.Delta)
@@ -3079,6 +3084,18 @@ func ParseSupport(line string) (question string, ok bool) {
 	return strings.TrimSpace(strings.TrimPrefix(trimmed, "$sup")), true
 }
 
+// CommandSubcommand documents one argument form of a command.
+//
+// It is help text only: the parent command's handler owns dispatch, so a
+// subcommand row cannot invent a second routing path.
+type CommandSubcommand struct {
+	// Usage is the argument shape without the command word, e.g.
+	// "inspect <server>".
+	Usage string
+	// Description is one line of help.
+	Description string
+}
+
 // CommandSpec describes one command for the help listing.
 type CommandSpec struct {
 	// Name is the command word.
@@ -3091,6 +3108,10 @@ type CommandSpec struct {
 	Category string
 	// Hidden keeps a command out of the listing, for aliases.
 	Hidden bool
+	// Subcommands documents argument forms that deserve their own help row.
+	// The registry remains the single source for runtime help and generated
+	// reference output.
+	Subcommands []CommandSubcommand
 }
 
 // Slash command categories. Workspace commands change execution authority;
@@ -3133,6 +3154,13 @@ var Commands = []CommandSpec{
 	{Name: "about", Usage: "about", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
 	{Name: "docs", Usage: "docs", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
 	{Name: "changelog", Usage: "changelog", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl}, {Name: "doctor", Usage: "doctor", Description: "diagnose setup, credentials, and tools", Category: CommandGroupControl},
+	{Name: "mcp", Usage: "mcp", Description: "manage MCP servers and capabilities", Category: CommandGroupControl, Subcommands: []CommandSubcommand{
+		{Usage: "list", Description: "show configured MCP servers and cached status"},
+		{Usage: "inspect <server>", Description: "inspect one MCP server"},
+		{Usage: "refresh [server]", Description: "refresh MCP discovery"},
+		{Usage: "enable <server>", Description: "enable one MCP server"},
+		{Usage: "disable <server>", Description: "disable one MCP server"},
+	}},
 	{Name: "diff", Usage: "diff [target]", Description: "inspect the working-tree diff", Category: CommandGroupControl},
 	{Name: "commit", Usage: "commit [--retry|--edit]", Description: "propose and create one Git commit", Category: CommandGroupControl},
 	{Name: "undo", Usage: "undo", Description: "revert the last agent edit", Category: CommandGroupControl},
@@ -3231,6 +3259,9 @@ func HelpText() string {
 				continue
 			}
 			fmt.Fprintf(&sb, "  /%-22s %s\n", spec.Usage, spec.Description)
+			for _, sub := range spec.Subcommands {
+				fmt.Fprintf(&sb, "    /%-20s %s\n", spec.Name+" "+sub.Usage, sub.Description)
+			}
 		}
 	}
 	sb.WriteString("\nAnything else is sent to the model.")
@@ -3424,6 +3455,12 @@ type PickerOpened struct {
 }
 
 func (PickerOpened) eventKind() string { return "picker_opened" }
+
+// PickerToggled stages an MCP enable/disable change on the highlighted row.
+// It never runs a hook or performs I/O.
+type PickerToggled struct{}
+
+func (PickerToggled) eventKind() string { return "picker_toggled" }
 
 // PickerFilterChanged re-filters the visible items.
 type PickerFilterChanged struct{ Text string }

@@ -776,13 +776,17 @@ func (s *EvidenceState) addExternal(outcome agent.ToolOutcome, details map[strin
 		trust = string(knowledge.TrustUntrusted)
 	}
 	text := bound(outcome.Result.Text, MaxEvidenceValueBytes)
+	summaryLine := firstContentLine(text)
+	if remote := detailString(details, "remote_error"); remote != "" {
+		summaryLine = "remote_error: " + firstLine(remote)
+	}
 	id := "external:" + capability + ":" + firstNonEmpty(locator, digest(text))
 	s.upsert(EvidenceItem{
 		ID:        id,
 		Status:    StatusKnown,
 		Retention: RetentionExternal,
 		Summary: bound("UNTRUSTED "+capability+" from "+firstNonEmpty(source, url, "unknown")+
-			": "+firstContentLine(text), MaxEvidenceSummaryBytes),
+			": "+summaryLine, MaxEvidenceSummaryBytes),
 		Value:  text,
 		Digest: digest(text),
 		Source: Source{Tool: outcome.ToolName, CallID: outcome.CallID, URL: locator,

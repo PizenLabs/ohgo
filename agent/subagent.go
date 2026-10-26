@@ -18,20 +18,22 @@ import (
 // matters: any unknown tool makes the agent *not* read-only, because assuming
 // write access is safe would let an unrecognised tool mutate the repository.
 var ReadOnlyToolNames = map[string]bool{
-	"read":    true,
-	"wait":    true,
-	"grep":    true,
-	"glob":    true,
-	"find":    true,
-	"todo":    true,
-	"yield":   true,
-	"ask":     true,
-	"recall":  true,
-	"reflect": true,
-	"retain":  true,
-	"symbols": true,
-	"graph":   true,
-	"refs":    true,
+	"read":     true,
+	"wait":     true,
+	"grep":     true,
+	"glob":     true,
+	"find":     true,
+	"todo":     true,
+	"yield":    true,
+	"ask":      true,
+	"recall":   true,
+	"reflect":  true,
+	"retain":   true,
+	"symbols":  true,
+	"graph":    true,
+	"refs":     true,
+	"mcp_list": true,
+	"mcp_read": true,
 }
 
 // IsReadOnly reports whether a tool set can only observe.

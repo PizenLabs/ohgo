@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/ai"
@@ -164,8 +165,12 @@ func TestEvaluateCompletionRejectsUnrecoveredToolFailure(t *testing.T) {
 		{Results: []ToolOutcome{toolOutcome("edit", Result{Text: "no match", IsError: true})}},
 		cleanStop(),
 	}
-	if EvaluateCompletion(turns, false).Complete() {
+	completion := EvaluateCompletion(turns, false)
+	if completion.Complete() {
 		t.Fatal("a failed tool call followed by a clean stop was reported complete")
+	}
+	if !strings.Contains(completion.Reason, "edit") {
+		t.Fatalf("review reason does not name the failing tool: %q", completion.Reason)
 	}
 }
 

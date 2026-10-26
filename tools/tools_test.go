@@ -62,10 +62,17 @@ func TestReadToolReportsDirectoryAndMissingFile(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "sub", "a.go"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	tool := NewReadTool(root)
-	if result := tool.Execute(testContext(), map[string]any{"path": "sub"}); !result.IsError {
+	result := tool.Execute(testContext(), map[string]any{"path": "sub"})
+	if !result.IsError {
 		t.Error("expected a directory to be rejected")
+	}
+	if !strings.Contains(result.Text, "a.go") {
+		t.Errorf("directory error should list entries, got %q", result.Text)
 	}
 	if result := tool.Execute(testContext(), map[string]any{"path": "missing.go"}); !result.IsError {
 		t.Error("expected a missing file to be rejected")

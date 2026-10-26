@@ -467,6 +467,46 @@ func TestCandidatesHideMutationWhenShapeForbidsIt(t *testing.T) {
 	}
 }
 
+// A human-configured MCP capability stays in the action space for an ordinary
+// code question. It is still external and still passes the security boundary;
+// only the task-shape narrowing exempts it.
+func TestCandidatesKeepConfiguredExternalTools(t *testing.T) {
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "web_fetch", tier: agent.TierRead, classes: []agent.ActionClass{agent.ActionExternal}},
+		testTool{name: "mcp_read", tier: agent.TierRead, classes: []agent.ActionClass{agent.ActionExternal, agent.ActionConfigured}},
+	}
+	shape := BuildShape(contract.IntentContract{Kind: contract.ObjectiveInformational, Objective: "who calls parse"}, ShapeParams{Authority: "ask"})
+	if shape.External.Required {
+		t.Fatal("the test objective must not require web knowledge")
+	}
+	suff := EvaluateSufficiency(shape, NewEvidenceState(), ExecutionState{}, false)
+	set := Candidates(shape, NewEvidenceState(), ExecutionState{}, tools, RepositoryFacts{}, suff)
+	var names []string
+	for _, tool := range set.Tools {
+		names = append(names, tool.Name())
+	}
+	if strings.Join(names, ",") != "read,mcp_read" {
+		t.Fatalf("candidates = %v, want read,mcp_read (web_fetch stays hidden)", names)
+	}
+}
+
+func TestExplorationObjectiveNeedsStructureAndExternalContext(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Help me explore this project using Gry MCP",
+	}, ShapeParams{Authority: "ask"})
+	if !shape.NeedsCodeNavigation {
+		t.Error("an explicit Gry/MCP exploration request must enable structural navigation")
+	}
+	if !shape.NeedsRelationshipNavigation {
+		t.Error("an exploration request must enable relationship navigation")
+	}
+	if !shape.External.Required {
+		t.Error("an explicit Gry/MCP request must require external context")
+	}
+}
+
 func TestCandidatesExcludeExistingOnlyToolsForCreateTarget(t *testing.T) {
 	tools := []agent.Tool{
 		testTool{name: "read", tier: agent.TierRead},
@@ -682,6 +722,9 @@ func TestCandidatesBlockMutationButKeepVerification(t *testing.T) {
 		testTool{name: "read", tier: agent.TierRead},
 		testTool{name: "write", tier: agent.TierWrite, ops: []contract.ChangeOp{contract.ChangeCreate}},
 		testTool{name: "bash", tier: agent.TierExec, classes: []agent.ActionClass{agent.ActionExecute, agent.ActionMutate}},
+		testTool{name: "mcp_call", tier: agent.TierWrite, classes: []agent.ActionClass{
+			agent.ActionExternal, agent.ActionConfigured, agent.ActionMutate, agent.ActionExecute,
+		}},
 	}
 	suff := Sufficiency{State: Blocked, Stage: StageBlocked}
 	set := Candidates(shape, NewEvidenceState(), ExecutionState{}, tools, RepositoryFacts{}, suff)
@@ -761,5 +804,53 @@ func TestEvidenceRoundTripsThroughJSON(t *testing.T) {
 	}
 	if _, ok := decoded.Find("file:a.go"); !ok {
 		t.Fatal("file evidence did not round-trip")
+	}
+}
+
+// A configured MCP call tool is dual-use: the same wire tool may run an
+// execute-class remote operation or an interaction/mutation. Candidate
+// selection must keep it for FUZZ execution and BUILD mutation, while ASK
+// read-only still withholds it.
+func TestCandidatesKeepConfiguredMCPForExecutionAndMutation(t *testing.T) {
+	mcpCall := testTool{name: "mcp_call", tier: agent.TierWrite, classes: []agent.ActionClass{
+		agent.ActionExternal, agent.ActionConfigured, agent.ActionMutate, agent.ActionExecute,
+	}}
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		mcpCall,
+	}
+	names := func(shape TaskShape) string {
+		suff := EvaluateSufficiency(shape, NewEvidenceState(), ExecutionState{}, false)
+		set := Candidates(shape, NewEvidenceState(), ExecutionState{}, tools, RepositoryFacts{}, suff)
+		var out []string
+		for _, tool := range set.Tools {
+			out = append(out, tool.Name())
+		}
+		return strings.Join(out, ",")
+	}
+
+	fuzz := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveExecution,
+		Objective: "run the tests to reproduce the failure",
+	}, ShapeParams{Authority: "fuzz"})
+	if got := names(fuzz); !strings.Contains(got, "mcp_call") {
+		t.Fatalf("FUZZ execution candidates = %q, want mcp_call", got)
+	}
+
+	build := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveMutation,
+		Objective: "write README.md",
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "README.md"}},
+	}, ShapeParams{Authority: "build"})
+	if got := names(build); !strings.Contains(got, "mcp_call") {
+		t.Fatalf("BUILD mutation candidates = %q, want mcp_call", got)
+	}
+
+	ask := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "explain this project",
+	}, ShapeParams{Authority: "ask"})
+	if got := names(ask); strings.Contains(got, "mcp_call") {
+		t.Fatalf("ASK informational candidates = %q, want mcp_call withheld", got)
 	}
 }

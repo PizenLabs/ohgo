@@ -65,6 +65,10 @@ In scope — issues that cross a boundary the documentation claims to enforce:
   metadata addresses despite the host policy.
 - **MCP command injection** — model-controlled command, arguments, or
   environment reaching a configured stdio server.
+- **MCP authority confusion** — a configured server's trust label, advertised
+  capability, prompt, resource, or result gaining authority; a capability from
+  one server represented as another's; or a stale capability snapshot enabling
+  an invocation.
 - **Budget or isolation escape** — exceeding the tree-wide model, tool, child,
   job, deadline, or external-I/O limits; a depth-capped subagent acquiring a
   `task` tool.

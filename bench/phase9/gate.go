@@ -93,6 +93,8 @@ func benchmarkOperation(cap security.Capability) (workspace.Operation, bool) {
 	case security.CapabilityNetwork, security.CapabilityExternalSearch,
 		security.CapabilityExternalMCPRead, security.CapabilityExternalBrowserRead:
 		return workspace.OpRead, true
+	case security.CapabilityExternalMCPExecute:
+		return workspace.OpExec, true
 	case security.CapabilityExternalMCPMutate, security.CapabilityExternalBrowserMutate:
 		return workspace.OpWrite, true
 	}
@@ -134,8 +136,8 @@ func benchmarkCapability(tool agent.Tool, args map[string]any) security.Capabili
 	case agent.TierExec:
 		cap = security.CapabilityExec
 	}
-	if namer, ok := tool.(agent.CapabilityNamer); ok {
-		cap = namer.SecurityCapability()
+	if resolved, ok := agent.SecurityCapabilityFor(tool, args); ok {
+		cap = resolved
 	}
 	return cap
 }

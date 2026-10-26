@@ -103,7 +103,10 @@ func withAudit(result agent.Result, started time.Time, ctx agent.Context) agent.
 	if !ok || details == nil {
 		details = map[string]any{}
 	}
-	details["duration_ms"] = time.Since(started).Milliseconds()
+	ended := time.Now()
+	details["started_at"] = started.UTC()
+	details["ended_at"] = ended.UTC()
+	details["duration_ms"] = ended.Sub(started).Milliseconds()
 	if ctx.Budget != nil {
 		snapshot := ctx.Budget.Snapshot()
 		details["budget"] = map[string]any{
@@ -127,7 +130,13 @@ func externalFailureResult(failure knowledge.Failure, details map[string]any) ag
 	}
 	details["status"] = "failed"
 	details["failure"] = failure
-	details["classification"] = string(failure.Class)
+	// Keep a capability classification when the tool already published one
+	// (MCP read/execute/mutate); the failure class is always available under
+	// its own key.
+	if _, ok := details["classification"]; !ok {
+		details["classification"] = string(failure.Class)
+	}
+	details["failure_classification"] = string(failure.Class)
 	text := fmt.Sprintf("external capability failed: %s", failure.Class)
 	if failure.Message != "" {
 		text += ": " + failure.Message
