@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -11,7 +13,7 @@ import (
 	"github.com/PizenLabs/ohgo/tui"
 )
 
-// mcpHooks builds the /mcp inspector over the same manager the tool set uses.
+// mcpHooks builds the /mcp manager over the same manager the tool set uses.
 //
 // A disabled server is listed but never inspected, so disabling MCP removes its
 // capabilities without changing native execution. The hook never creates a
@@ -24,19 +26,39 @@ func mcpHooks(opts options) tui.MCPHooks {
 		Inspect: func(ctx context.Context, server string, refresh bool) tui.MCPInspection {
 			return inspectMCP(ctx, opts, server, refresh)
 		},
+		Apply: func(ctx context.Context, changes []tui.MCPChange) []tui.MCPApplyResult {
+			return applyMCPChanges(ctx, opts, changes)
+		},
+		AddHint: mcpAddHint,
 	}
+}
+
+// mcpConfiguredSettings returns the current MCP block. The runtime snapshot
+// wins because /mcp may have changed it in this session; the startup settings
+// are the fallback for a test or a session that never built a manager.
+func mcpConfiguredSettings(opts options) config.MCPSettings {
+	if opts.mcpRuntime != nil {
+		if settings, ok := opts.mcpRuntime.settingsSnapshot(); ok {
+			return settings
+		}
+	}
+	if opts.settings.MCP != nil {
+		return *opts.settings.MCP
+	}
+	return config.MCPSettings{}
 }
 
 // mcpServerRows renders the cheap configuration view. It reads cached
 // capability counts only and never connects.
 func mcpServerRows(opts options) []tui.MCPServerRow {
-	var settings config.MCPSettings
-	if opts.settings.MCP != nil {
-		settings = *opts.settings.MCP
-	}
+	settings := mcpConfiguredSettings(opts)
 	statuses := map[string]mcp.ServerStatus{}
-	if opts.mcpRuntime != nil && opts.mcpRuntime.manager != nil {
-		for _, status := range opts.mcpRuntime.manager.Status() {
+	manager := (*mcp.Manager)(nil)
+	if opts.mcpRuntime != nil {
+		manager = opts.mcpRuntime.getManager()
+	}
+	if manager != nil {
+		for _, status := range manager.Status() {
 			statuses[status.Name] = status
 		}
 	}
@@ -53,11 +75,17 @@ func mcpServerRows(opts options) []tui.MCPServerRow {
 			row.Transport = string(mcp.TransportStdio)
 		}
 		if status, ok := statuses[name]; ok {
+			// Runtime status is the actual state. Configuration is the
+			// desired state; a failed apply must not be rendered as success.
+			row.Enabled = status.Enabled
 			row.Connected = status.Connected
 			row.Cached = status.Cached
 			row.Capabilities = status.Capabilities
 			row.DiscoveredAt = status.DiscoveredAt
 			row.CacheExpiresAt = status.CacheExpiresAt
+		}
+		if opts.mcpRuntime != nil {
+			row.Error = opts.mcpRuntime.failure(name)
 		}
 		rows = append(rows, row)
 	}
@@ -69,24 +97,26 @@ func mcpServerRows(opts options) []tui.MCPServerRow {
 func inspectMCP(ctx context.Context, opts options, server string, refresh bool) tui.MCPInspection {
 	server = strings.TrimSpace(server)
 	view := tui.MCPInspection{Server: mcpLine(server, 100)}
-	if opts.settings.MCP != nil {
-		for _, configured := range opts.settings.MCP.Servers {
-			if strings.TrimSpace(configured.Name) != server {
-				continue
-			}
-			view.Transport = mcpLine(string(mcp.Transport(configured.Transport)), 40)
-			if view.Transport == "" {
-				view.Transport = string(mcp.TransportStdio)
-			}
-			view.Trust = string(mcp.ParseTrust(configured.Trust))
-			break
+	settings := mcpConfiguredSettings(opts)
+	for _, configured := range settings.Servers {
+		if strings.TrimSpace(configured.Name) != server {
+			continue
 		}
+		view.Transport = mcpLine(string(mcp.Transport(configured.Transport)), 40)
+		if view.Transport == "" {
+			view.Transport = string(mcp.TransportStdio)
+		}
+		view.Trust = string(mcp.ParseTrust(configured.Trust))
+		break
 	}
-	if opts.mcpRuntime == nil || opts.mcpRuntime.manager == nil {
+	manager := (*mcp.Manager)(nil)
+	if opts.mcpRuntime != nil {
+		manager = opts.mcpRuntime.getManager()
+	}
+	if manager == nil {
 		view.Error = "no enabled MCP manager is attached to this session"
 		return view
 	}
-	manager := opts.mcpRuntime.manager
 	if !manager.Configured(server) {
 		view.Error = "server is not configured or is disabled"
 		return view
@@ -100,7 +130,16 @@ func inspectMCP(ctx context.Context, opts options, server string, refresh bool) 
 	}
 	if err != nil {
 		view.Error = boundedMCPError(err)
+		if opts.mcpRuntime != nil {
+			// The manager row is a management surface: it says the connection
+			// failed without echoing configuration. The inspection view keeps
+			// the bounded detail for deliberate diagnosis.
+			opts.mcpRuntime.setFailure(server, "connection failed")
+		}
 		return view
+	}
+	if opts.mcpRuntime != nil {
+		opts.mcpRuntime.clearFailure(server)
 	}
 	view.Cached = discovery.CacheHit
 	view.DiscoveredAt = discovery.FetchedAt
@@ -119,11 +158,210 @@ func inspectMCP(ctx context.Context, opts options, server string, refresh bool) 
 			ID:             mcpLine(capability.ID(), 300),
 			Name:           mcpLine(capability.Name, 200),
 			Kind:           string(capability.Kind),
-			Classification: string(capability.Classification),
 			Authority:      string(capability.Authority),
+			Classification: string(capability.Classification),
 		})
 	}
 	return view
+}
+
+// applyMCPChanges commits only the supplied changes.
+//
+// The manager transition runs first and the settings file is written only
+// after it succeeds, so a saved "enabled" is not a claim that a connection
+// worked. Enabling discovers once; disabling closes that one client. Servers
+// missing from the change list are never touched.
+func applyMCPChanges(ctx context.Context, opts options, changes []tui.MCPChange) []tui.MCPApplyResult {
+	results := make([]tui.MCPApplyResult, 0, len(changes))
+	if len(changes) == 0 {
+		return results
+	}
+
+	current := mcpConfiguredSettings(opts)
+	index := make(map[string]int, len(current.Servers))
+	for i, server := range current.Servers {
+		index[strings.TrimSpace(server.Name)] = i
+	}
+
+	persisted, err := settingsForMCPUpdate(opts, current)
+	if err != nil {
+		for _, change := range changes {
+			results = append(results, tui.MCPApplyResult{Name: change.Name, Enabled: change.Enabled, Error: boundedMCPError(err)})
+		}
+		return results
+	}
+
+	manager := (*mcp.Manager)(nil)
+	if opts.mcpRuntime != nil {
+		manager = opts.mcpRuntime.getManager()
+	}
+	actualBefore := map[string]bool{}
+	for _, server := range current.Servers {
+		actualBefore[strings.TrimSpace(server.Name)] = server.IsEnabled()
+	}
+	if manager != nil {
+		for _, status := range manager.Status() {
+			actualBefore[status.Name] = status.Enabled
+		}
+	}
+
+	// A session that started with every server disabled has no manager yet.
+	// Build one from the desired enabled set; it still connects lazily, on the
+	// explicit enable below, not on picker open.
+	if manager == nil {
+		desired := desiredServerSettings(current, changes)
+		if configs := enabledServerConfigs(desired, opts.root); len(configs) > 0 {
+			created, createErr := mcp.NewManager(configs)
+			if createErr != nil {
+				for _, change := range changes {
+					results = append(results, tui.MCPApplyResult{Name: change.Name, Enabled: change.Enabled, Error: boundedMCPError(createErr)})
+				}
+				return results
+			}
+			opts.mcpRuntime.set(created)
+			manager = created
+		}
+	}
+
+	saved := false
+	for _, change := range changes {
+		name := strings.TrimSpace(change.Name)
+		idx, ok := index[name]
+		if !ok {
+			results = append(results, tui.MCPApplyResult{Name: name, Enabled: change.Enabled, Error: "server is not configured"})
+			continue
+		}
+		server := current.Servers[idx]
+		cfg := mcpServerConfig(server, opts.root)
+		result := tui.MCPApplyResult{Name: name, Enabled: change.Enabled}
+
+		if manager != nil {
+			if err := manager.SetServerEnabled(cfg, change.Enabled); err != nil {
+				result.Error = boundedMCPError(err)
+				results = append(results, result)
+				continue
+			}
+		} else if change.Enabled {
+			result.Error = "no MCP manager is available for this session"
+			results = append(results, result)
+			continue
+		}
+
+		if change.Enabled {
+			discovery, discoverErr := manager.Discover(ctx, name, mcp.Meter{})
+			if discoverErr != nil {
+				// The row and the notice name the failure, not the command,
+				// endpoint, or header that produced it. /mcp inspect remains
+				// the deliberate diagnostic path.
+				result.Error = "connection failed"
+				if opts.mcpRuntime != nil {
+					opts.mcpRuntime.setFailure(name, result.Error)
+				}
+			} else {
+				result.Connected = true
+				result.Capabilities = len(discovery.Capabilities)
+				if opts.mcpRuntime != nil {
+					opts.mcpRuntime.clearFailure(name)
+				}
+			}
+		} else if opts.mcpRuntime != nil {
+			opts.mcpRuntime.clearFailure(name)
+		}
+
+		enabled := change.Enabled
+		persisted.MCP.Servers[idx].Enabled = &enabled
+		saved = true
+		results = append(results, result)
+	}
+
+	if !saved {
+		return results
+	}
+	if err := config.Save(persisted); err != nil {
+		// The manager moved but the durable state did not. Revert every
+		// transition so the next session and the current session agree, and
+		// report the failure rather than pretending the change stuck.
+		if manager != nil {
+			for _, change := range changes {
+				idx, ok := index[strings.TrimSpace(change.Name)]
+				if !ok {
+					continue
+				}
+				was, known := actualBefore[change.Name]
+				if !known {
+					continue
+				}
+				_ = manager.SetServerEnabled(mcpServerConfig(current.Servers[idx], opts.root), was)
+			}
+		}
+		for i := range results {
+			if results[i].Error == "" {
+				results[i].Error = "saving MCP configuration failed"
+				results[i].Connected = false
+			}
+		}
+		return results
+	}
+
+	if opts.mcpRuntime != nil {
+		opts.mcpRuntime.configure(*persisted.MCP)
+	}
+	return results
+}
+
+// settingsForMCPUpdate loads the durable settings so an MCP change preserves
+// every other setting, including ones edited after this session started. The
+// current MCP block is authoritative for the rows being managed.
+func settingsForMCPUpdate(opts options, current config.MCPSettings) (config.Settings, error) {
+	persisted, err := config.Load(opts.root)
+	if err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			return config.Settings{}, err
+		}
+		persisted = opts.settings
+	}
+	persisted.MCP = &config.MCPSettings{Servers: append([]config.MCPServer(nil), current.Servers...)}
+	return persisted, nil
+}
+
+// desiredServerSettings applies changes to a copy for initial manager setup.
+func desiredServerSettings(settings config.MCPSettings, changes []tui.MCPChange) config.MCPSettings {
+	out := cloneMCPSettings(settings)
+	index := make(map[string]int, len(out.Servers))
+	for i, server := range out.Servers {
+		index[strings.TrimSpace(server.Name)] = i
+	}
+	for _, change := range changes {
+		idx, ok := index[strings.TrimSpace(change.Name)]
+		if !ok {
+			continue
+		}
+		enabled := change.Enabled
+		out.Servers[idx].Enabled = &enabled
+	}
+	return out
+}
+
+// enabledServerConfigs converts every enabled server for manager creation.
+func enabledServerConfigs(settings config.MCPSettings, root string) []mcp.ServerConfig {
+	configs := make([]mcp.ServerConfig, 0, len(settings.Servers))
+	for _, server := range settings.Servers {
+		if !server.IsEnabled() {
+			continue
+		}
+		configs = append(configs, mcpServerConfig(server, root))
+	}
+	return configs
+}
+
+// mcpAddHint names the canonical configuration file and the block to edit.
+// It is a diagnostic path, not a second configuration system.
+func mcpAddHint() string {
+	path, err := config.Path("")
+	if err != nil {
+		return "Add MCP servers under \"mcp\": {\"servers\": [...]} in your ohgo settings."
+	}
+	return fmt.Sprintf("Add MCP servers under \"mcp\": {\"servers\": [...]} in %s, then run /mcp again.", path)
 }
 
 // mcpLine collapses untrusted server or configuration text to one bounded line
@@ -135,17 +373,34 @@ func mcpLine(text string, max int) string {
 }
 
 // boundedMCPError keeps a UI failure short and free of payloads.
+//
+// A transport error may embed an endpoint URL, so URL-shaped tokens are
+// dropped before the message reaches a row or the transcript.
 func boundedMCPError(err error) string {
 	if err == nil {
 		return ""
 	}
 	text := strings.TrimSpace(knowledge.SanitizeText(err.Error()))
-	text, _ = knowledge.BoundText(strings.Join(strings.Fields(text), " "), 240)
+	fields := strings.Fields(text)
+	kept := fields[:0]
+	for _, field := range fields {
+		lower := strings.ToLower(field)
+		if strings.Contains(lower, "://") || strings.HasPrefix(lower, "http") {
+			continue
+		}
+		kept = append(kept, field)
+	}
+	text = strings.Join(kept, " ")
+	if text == "" {
+		text = "connection failed"
+	}
+	text, _ = knowledge.BoundText(text, 240)
 	return text
 }
 
 // replMCP renders /mcp for the plain REPL. It uses the same manager and the
-// same renderers as the full-screen inspector.
+// same renderers as the full-screen manager, with textual enable/disable as
+// the non-TUI management path.
 func replMCP(h *harness, args []string) string {
 	opts := options{}
 	if h != nil {
@@ -153,6 +408,7 @@ func replMCP(h *harness, args []string) string {
 		if h.settings != nil {
 			opts.settings = *h.settings
 		}
+		opts.root = h.root
 	}
 	sub := "list"
 	if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
@@ -160,7 +416,14 @@ func replMCP(h *harness, args []string) string {
 	}
 	switch sub {
 	case "list":
-		return tui.RenderMCPServers(mcpServerRows(opts))
+		rows := mcpServerRows(opts)
+		out := tui.RenderMCPServers(rows)
+		if len(rows) == 0 {
+			out += "\n\n" + mcpAddHint()
+		} else {
+			out += "\n\n/mcp enable <server> · /mcp disable <server> · /mcp inspect <server>"
+		}
+		return out
 	case "inspect", "refresh":
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
@@ -189,7 +452,26 @@ func replMCP(h *harness, args []string) string {
 			return strings.Join(views, "\n\n")
 		}
 		return tui.RenderMCPInspection(inspectMCP(ctx, opts, target, refresh))
+	case "enable", "disable":
+		target := ""
+		if len(args) > 1 {
+			target = strings.TrimSpace(args[1])
+		}
+		if target == "" {
+			return "usage: /mcp " + sub + " <server>"
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		results := applyMCPChanges(ctx, opts, []tui.MCPChange{{Name: target, Enabled: sub == "enable"}})
+		// The harness settings pointer is the plain REPL's cheap view; refresh
+		// it so the next /mcp list agrees with disk without restarting.
+		if h != nil && h.settings != nil {
+			if reloaded, err := config.Load(h.root); err == nil {
+				*h.settings = reloaded
+			}
+		}
+		return tui.RenderMCPApplyResults(results)
 	default:
-		return "usage: /mcp [list|inspect <server>|refresh [server]]"
+		return "usage: /mcp [list|inspect <server>|refresh [server]|enable <server>|disable <server>]"
 	}
 }

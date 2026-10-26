@@ -11,6 +11,7 @@ import (
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/session"
+	"github.com/PizenLabs/ohgo/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -28,10 +29,16 @@ func main() {
 }
 
 func rootCmd() *cobra.Command {
+	mcpDescription := "manage MCP servers and capabilities"
+	if spec, ok := tui.LookupCommand("mcp"); ok {
+		mcpDescription = spec.Description
+	}
 	root := &cobra.Command{
-		Use:     "ohgo",
-		Short:   "A coding agent with the IDE wired in",
-		Long:    "ohgo is a coding agent that reads, edits, and runs code in your terminal.",
+		Use:   "ohgo",
+		Short: "A coding agent with the IDE wired in",
+		Long: "ohgo is a coding agent that reads, edits, and runs code in your terminal.\n\n" +
+			"Runtime slash commands run inside a session: /mcp — " + mcpDescription + ". " +
+			"Type /help in a session for the full registry, and run `ohgo docs` for the generated reference.",
 		Version: version,
 		// Running without a subcommand starts the interactive session.
 		RunE: func(cmd *cobra.Command, args []string) error {

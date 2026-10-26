@@ -294,6 +294,10 @@ type Program struct {
 	// mcp inspects the session's configured MCP servers. Zero value reports
 	// MCP unavailable rather than opening a second registry.
 	mcp MCPHooks
+	// mcpBefore records each server's actual enabled state when the /mcp
+	// manager opened, so Enter applies only rows the user changed and Esc can
+	// discard the rest. Update-goroutine-owned.
+	mcpBefore map[string]bool
 	// deleter removes saved credentials for /disconnect. Nil means unavailable.
 	deleter CredentialDeleter
 	// connect drives the /connect setup flow. Zero value reports each step
@@ -1848,6 +1852,15 @@ func (p *Program) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(PickerFilterCursorMoved{Delta: len([]rune(picker.Filter))})
 		}
 		return p, nil
+	case " ", "space":
+		// Space stages an MCP toggle; it is not a filter character here. Every
+		// other picker keeps space in the query.
+		if picker != nil && picker.Kind == PickerMCP {
+			p.state.Apply(PickerToggled{})
+			return p, nil
+		}
+		p.state.Apply(PickerTyped{Text: " "})
+		return p, nil
 	case "backspace", "ctrl+h":
 		p.state.Apply(PickerFilterBackspace{})
 		return p, nil
@@ -1860,6 +1873,12 @@ func (p *Program) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return p, nil
 	default:
+		// The MCP manager is keyboard-first and has no filter: printable input
+		// must not accumulate an invisible query that Esc would clear instead
+		// of closing.
+		if picker != nil && picker.Kind == PickerMCP {
+			return p, nil
+		}
 		// Space arrives as KeySpace, not KeyRunes: accept both, or
 		// multiword search ("deepseek v4 free") silently loses its spaces.
 		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
@@ -1879,6 +1898,11 @@ func (p *Program) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // picker opened over typing. Closing never selects, and never loses the
 // saved draft.
 func (p *Program) closePicker() {
+	if picker := p.state.Picker; picker != nil && picker.Kind == PickerMCP {
+		// Esc discards staged changes: dropping the snapshot is what makes
+		// "nothing was applied" true, even if a later picker reopens.
+		p.mcpBefore = nil
+	}
 	p.state.Apply(PickerClosed{})
 	if p.pickerRestoreSet {
 		p.state.Apply(InputChanged{Text: p.pickerRestore})
@@ -1895,6 +1919,9 @@ func (p *Program) choosePicker() (tea.Model, tea.Cmd) {
 	}
 	item, ok := picker.Chosen()
 	kind := picker.Kind
+	if kind == PickerMCP {
+		return p.applyMCPPicker(picker, item, ok)
+	}
 	p.state.Apply(PickerClosed{})
 	p.pickerRestore = ""
 	p.pickerRestoreSet = false
@@ -1920,6 +1947,42 @@ func (p *Program) choosePicker() (tea.Model, tea.Cmd) {
 		return p, nil
 	default:
 		return p, nil
+	}
+}
+
+// applyMCPPicker commits the staged MCP changes and closes the manager.
+//
+// Space only stages state, so this is the one place a server change becomes
+// real. Esc never reaches it, which is what makes cancel side-effect free.
+func (p *Program) applyMCPPicker(picker *PickerState, item PickerItem, ok bool) (tea.Model, tea.Cmd) {
+	if !ok {
+		p.closePicker()
+		return p, nil
+	}
+	if item.Value == MCPAddValue {
+		p.closePicker()
+		hint := "configure MCP servers in your ohgo settings, then run /mcp again"
+		if p.mcp.AddHint != nil {
+			hint = p.mcp.AddHint()
+		}
+		p.state.Apply(Notice{Text: hint})
+		return p, nil
+	}
+	changes := mcpPickerChanges(picker, p.mcpBefore)
+	p.closePicker()
+	if len(changes) == 0 {
+		p.state.Apply(Notice{Text: "no MCP changes"})
+		return p, nil
+	}
+	if p.mcp.Apply == nil {
+		p.state.Apply(Notice{Text: "applying MCP changes is unavailable in this session"})
+		return p, nil
+	}
+	return p, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		p.publish(Notice{Text: RenderMCPApplyResults(p.mcp.Apply(ctx, changes))})
+		return nil
 	}
 }
 

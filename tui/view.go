@@ -837,6 +837,57 @@ func splitLines(body string) []string {
 	return strings.Split(trimmed, "\n")
 }
 
+// mcpPickerWidth clamps the MCP manager card to a compact reading width.
+func mcpPickerWidth(terminal int) int {
+	width := terminal - 10
+	if width > 64 {
+		width = 64
+	}
+	if width > terminal-2 && terminal > 2 {
+		width = terminal - 2
+	}
+	if width < 24 {
+		width = 24
+	}
+	return width
+}
+
+// renderMCPPickerCard draws the MCP manager as a centered card.
+//
+// It shares the modal family's rounded frame and centering contract instead of
+// filling the transcript area: managing a short server list should read as one
+// compact decision, not a settings screen.
+func renderMCPPickerCard(picker *PickerState, pal *Palette, theme string, layout Layout, width int) string {
+	inner := width - 6 // border sides plus two cells of padding each side
+	if inner < 12 {
+		inner = 12
+	}
+	header := pal.Heading.Render(TruncateToWidth(pickerHeader(picker), inner))
+	footer := pal.Muted.Render(TruncateToWidth(pickerFooter(picker, layout), inner))
+
+	var lines []string
+	lines = append(lines, header, "")
+	filtered := picker.Filtered()
+	window, start := picker.windowOf(filtered)
+	if len(window) == 0 {
+		lines = append(lines, pal.Muted.Render("  (no servers)"))
+	} else {
+		for i, item := range window {
+			marker := "  "
+			if start+i == picker.Cursor {
+				marker = pal.Selected.Render("> ")
+			}
+			lines = append(lines, renderMCPPickerRow(marker, picker, item, pal, layout, inner))
+		}
+	}
+	lines = append(lines, "", footer)
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ChromeFor(theme).Separator.GetForeground()).
+		Padding(0, 2)
+	return box.Render(strings.Join(lines, "\n"))
+}
+
 // renderPickerArea shows the selection overlay in place of the transcript.
 //
 // The transcript hides while picking: an overlay that shared the screen with
@@ -850,6 +901,12 @@ func splitLines(body string) []string {
 // trims item rows while keeping the header, search, and footer visible.
 func renderPickerArea(sb *strings.Builder, state State, pal *Palette, layout Layout) {
 	picker := state.Picker
+	if picker.Kind == PickerMCP {
+		renderCardAreaWidth(sb, state, layout, mcpPickerWidth, func(width, height int) string {
+			return renderMCPPickerCard(picker, pal, state.Theme, layout, width)
+		})
+		return
+	}
 	width := displayWidth(state, layout)
 	header := pal.Heading.Render(TruncateToWidth(pickerHeader(picker), width))
 	search := renderPickerSearch(picker, pal, width)
@@ -935,6 +992,26 @@ func pickerHeader(picker *PickerState) string {
 	if picker.Kind == PickerModels {
 		return fmt.Sprintf("%s · %s · %d %s", title, scope, count, results)
 	}
+	if picker.Kind == PickerMCP {
+		servers := 0
+		for _, item := range picker.Items {
+			if item.Value != MCPAddValue {
+				servers++
+			}
+		}
+		if servers == 0 {
+			return "MCP · no servers configured"
+		}
+		label := "servers"
+		if servers == 1 {
+			label = "server"
+		}
+		header := fmt.Sprintf("%s · %d %s", title, servers, label)
+		if pending := picker.PendingCount(); pending > 0 {
+			header += fmt.Sprintf(" · %d pending", pending)
+		}
+		return header
+	}
 	return fmt.Sprintf("%s · %d %s", title, count, results)
 }
 
@@ -984,6 +1061,9 @@ func renderPickerRow(index int, picker *PickerState, item PickerItem, pal *Palet
 	if item.Active {
 		active = "● "
 	}
+	if picker.Kind == PickerMCP {
+		return renderMCPPickerRow(marker, picker, item, pal, layout, width)
+	}
 	if picker.Kind != PickerModels {
 		title := TruncateToWidth(item.Title, width-4-len(active))
 		line := marker + active + title
@@ -1031,6 +1111,54 @@ func renderPickerRow(index int, picker *PickerState, item PickerItem, pal *Palet
 	}
 }
 
+// renderMCPPickerRow draws one MCP manager row: state, name, provenance, and
+// a known capability count. It never renders a command, URL, header, or
+// secret because those are not in PickerItem's management fields at all.
+func renderMCPPickerRow(marker string, picker *PickerState, item PickerItem, pal *Palette, layout Layout, width int) string {
+	if item.Value == MCPAddValue {
+		title := TruncateToWidth(item.Title, width-3)
+		return marker + pal.Muted.Render(title)
+	}
+	state := item.State
+	if item.Pending {
+		if item.Active {
+			state = "enabled"
+		} else {
+			state = "disabled"
+		}
+	}
+	glyph := "○"
+	switch state {
+	case "error":
+		glyph = "!"
+	case "enabled":
+		glyph = "●"
+	}
+	var detail []string
+	if item.Trust != "" {
+		detail = append(detail, item.Trust)
+	}
+	if item.Cached {
+		detail = append(detail, formatCount(item.Count))
+	}
+	if item.Connected && state != "error" {
+		detail = append(detail, "connected")
+	}
+	if state == "error" {
+		detail = append(detail, "connection failed")
+	}
+	if item.Pending {
+		detail = append(detail, "pending")
+	}
+	text := marker + glyph + " " + TruncateToWidth(item.Title, width-4)
+	if layout.ShowDetail && len(detail) > 0 {
+		if joined := strings.Join(detail, " · "); joined != "" {
+			text += "  " + pal.Muted.Render(TruncateToWidth(joined, width-CellWidth(text)-2))
+		}
+	}
+	return text
+}
+
 // pickerCatalogStatus reports catalog freshness in words: loading, live,
 // cached with staleness, or a failed refresh that kept cached rows.
 func pickerCatalogStatus(picker *PickerState) string {
@@ -1058,6 +1186,25 @@ func pickerCatalogStatus(picker *PickerState) string {
 // pickerFooter lists the shortcuts that actually work in the picker,
 // shortened per tier so the footer never overflows a narrow viewport.
 func pickerFooter(picker *PickerState, layout Layout) string {
+	if picker.Kind == PickerMCP {
+		empty := true
+		for _, item := range picker.Items {
+			if item.Value != MCPAddValue {
+				empty = false
+				break
+			}
+		}
+		if empty {
+			if layout.Mode == LayoutNarrow {
+				return "Enter select · Esc close"
+			}
+			return "↑↓ navigate · Enter select · Esc close"
+		}
+		if layout.Mode == LayoutNarrow {
+			return "Space toggle · Enter apply · Esc cancel"
+		}
+		return "↑↓ navigate · Space toggle · Enter apply · Esc cancel"
+	}
 	refresh := ""
 	if picker.Kind == PickerModels {
 		refresh = " · Ctrl+R refresh"

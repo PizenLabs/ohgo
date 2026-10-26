@@ -589,9 +589,12 @@ type Discovery struct {
 // It is what /mcp lists: configuration, trust metadata, connection state, and
 // the last cached capability count. It never starts a server.
 type ServerStatus struct {
-	Name           string
-	Transport      Transport
-	Trust          Trust
+	Name      string
+	Transport Transport
+	Trust     Trust
+	// Enabled reports whether the server contributes capabilities. A disabled
+	// server is listed so the manager can show it, but it is never admitted.
+	Enabled        bool
 	Connected      bool
 	Cached         bool
 	Capabilities   int
@@ -613,6 +616,10 @@ type Manager struct {
 type serverEntry struct {
 	cfg    ServerConfig
 	client *client
+	// disabled is runtime enablement, separate from configuration. A disabled
+	// entry stays in the manager so the UI can show it and re-enable it
+	// without inventing a second registry solely for the manager.
+	disabled bool
 
 	// stateMu guards the cache. It is held across a discovery exchange so two
 	// callers cannot race two handshakes for one server.
@@ -649,15 +656,75 @@ func newManager(configs []ServerConfig, start func(ServerConfig) (serverProcess,
 	return manager, nil
 }
 
-// Names returns the configured server names in order.
-func (m *Manager) Names() []string { return append([]string(nil), m.order...) }
+// Names returns the enabled server names in order.
+//
+// A disabled server stays visible through Status but contributes no
+// capability, so the model-facing roster never includes one.
+func (m *Manager) Names() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.order))
+	for _, name := range m.order {
+		if entry := m.servers[name]; entry != nil && !entry.disabled {
+			out = append(out, name)
+		}
+	}
+	return out
+}
 
-// Configured reports whether a server is configured.
+// Configured reports whether a server is configured and enabled.
 func (m *Manager) Configured(name string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, ok := m.servers[name]
-	return ok
+	entry, ok := m.servers[name]
+	return ok && !entry.disabled
+}
+
+// SetServerEnabled enables or disables one server at runtime.
+//
+// Enabling does not connect: the first discovery or call still starts the
+// server lazily. Disabling closes the live client and drops the cached
+// snapshot, because a disabled server must not keep answering from a snapshot
+// taken while it was enabled. Configuration persistence is the caller's job.
+func (m *Manager) SetServerEnabled(cfg ServerConfig, enabled bool) error {
+	cfg = cfg.normalized()
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return knowledge.Fail(knowledge.FailureNotConfigured, false, "mcp manager is closed")
+	}
+	entry, ok := m.servers[cfg.Name]
+	if !ok {
+		entry = &serverEntry{cfg: cfg}
+		m.servers[cfg.Name] = entry
+		m.order = append(m.order, cfg.Name)
+	}
+	// An existing entry keeps the configuration it was built with. Runtime
+	// enablement is not a config rewrite; a changed command, URL, or bound
+	// belongs to the next session so a live client is never mutated mid-flight.
+	entry.disabled = !enabled
+	var client *client
+	if !enabled {
+		client = entry.client
+		entry.client = nil
+	}
+	m.mu.Unlock()
+
+	if client != nil {
+		if err := client.Close(); err != nil {
+			return err
+		}
+	}
+	if !enabled {
+		entry.stateMu.Lock()
+		entry.cache = nil
+		entry.cachedAt = time.Time{}
+		entry.stateMu.Unlock()
+	}
+	return nil
 }
 
 // Status returns the cheap cached view of every configured server. It never
@@ -673,10 +740,14 @@ func (m *Manager) Status() []ServerStatus {
 	out := make([]ServerStatus, 0, len(entries))
 	for _, entry := range entries {
 		entry.stateMu.Lock()
+		m.mu.Lock()
+		disabled := entry.disabled
+		m.mu.Unlock()
 		status := ServerStatus{
 			Name:      entry.cfg.Name,
 			Transport: entry.cfg.Transport,
 			Trust:     entry.cfg.Trust,
+			Enabled:   !disabled,
 			Cached:    entry.cache != nil,
 		}
 		if entry.cache != nil {
@@ -736,6 +807,10 @@ func (m *Manager) entryFor(name string) (*serverEntry, error) {
 	if !ok {
 		return nil, knowledge.Fail(knowledge.FailureNotConfigured, false,
 			"mcp server %q is not configured", name)
+	}
+	if entry.disabled {
+		return nil, knowledge.Fail(knowledge.FailureNotConfigured, false,
+			"mcp server %q is disabled", name)
 	}
 	return entry, nil
 }

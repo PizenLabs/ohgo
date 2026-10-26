@@ -44,6 +44,101 @@ type MCPServerRow struct {
 	// CacheExpiresAt is when the cached snapshot becomes stale. Zero means
 	// the server has no cached snapshot.
 	CacheExpiresAt time.Time
+	// Error is a bounded, non-secret failure from the last connect or
+	// discovery attempt. It marks the row as an error without pretending the
+	// configured enabled state changed.
+	Error string
+}
+
+// MCPAddValue is the picker value of the empty state's configuration row.
+const MCPAddValue = "__mcp_add__"
+
+// MCPAddTitle is the empty state's action row.
+const MCPAddTitle = "+ Add server"
+
+// mcpPickerItems converts the cheap server rows into management rows.
+//
+// The row carries only what a manager needs: state, name, provenance, and a
+// known capability count. It deliberately omits transport details, commands,
+// URLs, headers, and secrets.
+func mcpPickerItems(rows []MCPServerRow) []PickerItem {
+	if len(rows) == 0 {
+		return []PickerItem{{
+			Title:  MCPAddTitle,
+			Detail: "configure an MCP server",
+			Value:  MCPAddValue,
+		}}
+	}
+	items := make([]PickerItem, 0, len(rows))
+	for _, row := range rows {
+		state := "disabled"
+		if row.Enabled {
+			state = "enabled"
+		}
+		if row.Error != "" {
+			state = "error"
+		}
+		trust := row.Trust
+		if trust == "" {
+			trust = "untrusted"
+		}
+		items = append(items, PickerItem{
+			Title:     row.Name,
+			Value:     row.Name,
+			State:     state,
+			Trust:     trust,
+			Count:     row.Capabilities,
+			Cached:    row.Cached,
+			Connected: row.Connected,
+			Active:    row.Enabled,
+		})
+	}
+	return items
+}
+
+// mcpPickerChanges returns the pending transitions from the picker.
+func mcpPickerChanges(picker *PickerState, before map[string]bool) []MCPChange {
+	if picker == nil {
+		return nil
+	}
+	var changes []MCPChange
+	for _, item := range picker.Items {
+		if item.Value == MCPAddValue {
+			continue
+		}
+		was, known := before[item.Value]
+		if !known || was == item.Active {
+			continue
+		}
+		changes = append(changes, MCPChange{Name: item.Value, Enabled: item.Active})
+	}
+	return changes
+}
+
+// MCPChange is one desired enable/disable transition for /mcp apply.
+type MCPChange struct {
+	// Name is the configured server name.
+	Name string
+	// Enabled is the desired state.
+	Enabled bool
+}
+
+// MCPApplyResult is the truthful outcome of one applied change.
+//
+// Enabled still reports what the user asked for; Error reports why the actual
+// state differs. A saved configuration never implies Connected.
+type MCPApplyResult struct {
+	// Name is the configured server name.
+	Name string
+	// Enabled is the desired state the change asked for.
+	Enabled bool
+	// Connected reports whether discovery succeeded after enabling.
+	Connected bool
+	// Capabilities is the freshly discovered capability count.
+	Capabilities int
+	// Error is a bounded, non-secret failure. It never contains a command,
+	// URL, header, or credential.
+	Error string
 }
 
 // MCPInspection is the result of one /mcp inspect or /mcp refresh.
@@ -77,6 +172,13 @@ type MCPHooks struct {
 	Servers func() []MCPServerRow
 	// Inspect discovers one server. refresh bypasses the capability cache.
 	Inspect func(ctx context.Context, server string, refresh bool) MCPInspection
+	// Apply commits only the supplied changes. It must persist the new
+	// configuration through the existing settings file and must not reconnect
+	// servers whose desired state did not change.
+	Apply func(ctx context.Context, changes []MCPChange) []MCPApplyResult
+	// AddHint names the existing configuration path and syntax for the empty
+	// state's "+ Add server" row. It is a diagnostic, not an editor.
+	AddHint func() string
 }
 
 // RenderMCPServers renders the /mcp list view.
@@ -86,18 +188,21 @@ type MCPHooks struct {
 // visible without turning the transcript into a settings screen.
 func RenderMCPServers(rows []MCPServerRow) string {
 	if len(rows) == 0 {
-		return "MCP\n\nNo MCP servers are configured."
+		return "MCP\n\nNo MCP servers are configured.\n\nAdd servers to your ohgo settings, then run /mcp again."
 	}
 	var b strings.Builder
 	b.WriteString("MCP SERVERS\n\n")
 	for _, row := range rows {
-		marker := "o"
-		state := "configured"
-		if !row.Enabled {
-			marker = "-"
+		marker := "●"
+		state := ""
+		switch {
+		case row.Error != "":
+			marker = "!"
+			state = row.Error
+		case !row.Enabled:
+			marker = "○"
 			state = "disabled"
-		} else if row.Connected {
-			marker = "*"
+		case row.Connected:
 			state = "connected"
 		}
 		trust := row.Trust
@@ -117,12 +222,45 @@ func RenderMCPServers(rows []MCPServerRow) string {
 		}
 		fmt.Fprintf(&b, "%s %-12s %-10s %-14s %s\n",
 			marker, row.Name, trust, transport, count)
-		if state != "configured" {
+		if state != "" {
 			fmt.Fprintf(&b, "  %-12s %s\n", "", state)
 		}
 	}
-	b.WriteString("\n* connected  o configured  - disabled\n")
+	b.WriteString("\n● enabled  ○ disabled  ! error\n")
 	b.WriteString("Trust is provenance, not authority. /mcp inspect <server> discovers capabilities.")
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// RenderMCPApplyResults reports applied MCP changes truthfully.
+//
+// A failed change prints the bounded failure and never a connected claim. A
+// successful enable reports the connection result separately from the desired
+// configuration state.
+func RenderMCPApplyResults(results []MCPApplyResult) string {
+	if len(results) == 0 {
+		return "no MCP changes"
+	}
+	var b strings.Builder
+	b.WriteString("MCP\n\n")
+	for _, result := range results {
+		name := result.Name
+		if name == "" {
+			name = "unknown server"
+		}
+		if result.Error != "" {
+			fmt.Fprintf(&b, "! %-12s %s\n", name, result.Error)
+			continue
+		}
+		if !result.Enabled {
+			fmt.Fprintf(&b, "○ %-12s disabled\n", name)
+			continue
+		}
+		if result.Connected {
+			fmt.Fprintf(&b, "● %-12s enabled · %d capabilities\n", name, result.Capabilities)
+			continue
+		}
+		fmt.Fprintf(&b, "● %-12s enabled · connect on first use\n", name)
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -180,21 +318,39 @@ func truncateText(value string, max int) string {
 	return string(runes[:max-1]) + "~"
 }
 
-// mcpCommand routes /mcp list, inspect, and refresh.
+// mcpCommand routes /mcp manage, list, inspect, refresh, enable, and disable.
 //
-// Listing is a cache read and never connects. Inspect and refresh run off the
-// update goroutine so a slow server cannot freeze the UI; the result arrives as
-// a notice, exactly like /doctor and /compact.
+// The default opens the interactive manager from the cheap configuration and
+// cached-status view; it never connects. Listing stays textual for scripts and
+// the plain REPL. Inspect, refresh, and apply run off the update goroutine so a
+// slow server cannot freeze the UI; the result arrives as a notice, exactly
+// like /doctor and /compact.
 func (p *Program) mcpCommand(args []string) tea.Cmd {
-	if p.mcp.Servers == nil && p.mcp.Inspect == nil {
+	if p.mcp.Servers == nil && p.mcp.Inspect == nil && p.mcp.Apply == nil {
 		p.state.Apply(Notice{Text: "MCP is not configured in this session"})
 		return nil
 	}
-	sub := "list"
+	sub := "manage"
 	if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
 		sub = strings.ToLower(strings.TrimSpace(args[0]))
 	}
 	switch sub {
+	case "manage":
+		if p.mcp.Servers == nil {
+			p.state.Apply(Notice{Text: "MCP is not configured in this session"})
+			return nil
+		}
+		rows := p.mcp.Servers()
+		p.mcpBefore = make(map[string]bool, len(rows))
+		for _, row := range rows {
+			p.mcpBefore[row.Name] = row.Enabled
+		}
+		p.state.Apply(PickerOpened{
+			Kind:  PickerMCP,
+			Title: "MCP SERVERS",
+			Items: mcpPickerItems(rows),
+		})
+		return nil
 	case "list":
 		if p.mcp.Servers == nil {
 			p.state.Apply(Notice{Text: "MCP is not configured in this session"})
@@ -202,6 +358,26 @@ func (p *Program) mcpCommand(args []string) tea.Cmd {
 		}
 		p.state.Apply(Notice{Text: RenderMCPServers(p.mcp.Servers())})
 		return nil
+	case "enable", "disable":
+		if p.mcp.Apply == nil {
+			p.state.Apply(Notice{Text: "applying MCP changes is unavailable in this session"})
+			return nil
+		}
+		target := ""
+		if len(args) > 1 {
+			target = strings.TrimSpace(args[1])
+		}
+		if target == "" {
+			p.state.Apply(Notice{Text: "usage: /mcp " + sub + " <server>"})
+			return nil
+		}
+		change := MCPChange{Name: target, Enabled: sub == "enable"}
+		return func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			p.publish(Notice{Text: RenderMCPApplyResults(p.mcp.Apply(ctx, []MCPChange{change}))})
+			return nil
+		}
 	case "inspect", "refresh":
 		if p.mcp.Inspect == nil {
 			p.state.Apply(Notice{Text: "MCP inspection is unavailable in this session"})
@@ -257,7 +433,7 @@ func (p *Program) mcpCommand(args []string) tea.Cmd {
 			return nil
 		}
 	default:
-		p.state.Apply(Notice{Text: "usage: /mcp [list|inspect <server>|refresh [server]]"})
+		p.state.Apply(Notice{Text: "usage: /mcp [manage|list|inspect <server>|refresh [server]|enable <server>|disable <server>]"})
 		return nil
 	}
 }

@@ -467,6 +467,19 @@ func commandItems(specs []CommandSpec) []helpItem {
 			Usage:       spec.Usage,
 			Command:     spec.Name,
 		})
+		for _, sub := range spec.Subcommands {
+			// A subcommand row names one argument form. Choosing it runs the
+			// parent command: there is no second dispatch table, and opening
+			// the manager is the safe action for every MCP form.
+			out = append(out, helpItem{
+				Name:        spec.Name,
+				Prefix:      "/",
+				Category:    groupOf(spec),
+				Description: sub.Description,
+				Usage:       sub.Usage,
+				Command:     spec.Name,
+			})
+		}
 	}
 	return out
 }

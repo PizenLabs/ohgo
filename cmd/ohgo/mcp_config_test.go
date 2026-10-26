@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/agent"
 	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/mcp"
+	"github.com/PizenLabs/ohgo/tui"
 )
 
 // Disabling every configured server removes its capabilities without changing
@@ -67,6 +70,110 @@ func TestMCPUnknownTransportFailsClosed(t *testing.T) {
 	result := list.Execute(agent.Context{Ctx: context.Background(), Budget: phase8Budget()}, map[string]any{})
 	if !result.IsError {
 		t.Fatalf("unknown transport was accepted: %+v", result)
+	}
+}
+
+// Applying one enable persists only that server and records the real
+// connection outcome: a saved configuration is not a connection claim.
+func TestMCPApplyPersistsOnlyTheChangedServer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	opts := testOptions(t, root, 1)
+	opts.mcpRuntime = &mcpRuntime{}
+	enabled := true
+	opts.settings.MCP = &config.MCPSettings{Servers: []config.MCPServer{
+		{Name: "keep", Command: "/bin/echo", Enabled: &enabled},
+		{Name: "off", Command: "definitely-not-an-mcp-command"},
+	}}
+	buildTools(opts, ai.NewRegistry())
+
+	results := applyMCPChanges(context.Background(), opts, []tui.MCPChange{{Name: "off", Enabled: true}})
+	if len(results) != 1 || results[0].Error == "" {
+		t.Fatalf("results = %+v, want a truthful connection failure", results)
+	}
+	if results[0].Connected {
+		t.Fatalf("results = %+v, a failed discovery claimed a connection", results)
+	}
+
+	reloaded, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load persisted settings: %v", err)
+	}
+	if reloaded.MCP == nil || len(reloaded.MCP.Servers) != 2 {
+		t.Fatalf("persisted MCP = %+v", reloaded.MCP)
+	}
+	byName := map[string]config.MCPServer{}
+	for _, server := range reloaded.MCP.Servers {
+		byName[server.Name] = server
+	}
+	if !byName["off"].IsEnabled() {
+		t.Error("the changed server was not persisted as enabled")
+	}
+	if !byName["keep"].IsEnabled() {
+		t.Error("the untouched server lost its enabled state")
+	}
+
+	statuses := opts.mcpRuntime.getManager().Status()
+	for _, status := range statuses {
+		if status.Name == "keep" && status.Connected {
+			t.Error("applying one server connected the untouched server")
+		}
+	}
+	rows := mcpServerRows(opts)
+	for _, row := range rows {
+		if row.Name != "off" {
+			continue
+		}
+		if row.Error == "" || row.Connected {
+			t.Errorf("off row = %+v, want a truthful failure state", row)
+		}
+	}
+}
+
+// The plain REPL keeps a usable textual management path: disable persists and
+// the next list reflects it without a restart.
+func TestReplMCPDisableIsUsableWithoutFullScreenUI(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	settings := config.Default()
+	enabled := true
+	settings.MCP = &config.MCPSettings{Servers: []config.MCPServer{{
+		Name: "off", Command: "/bin/echo", Enabled: &enabled,
+	}}}
+	runtime := &mcpRuntime{}
+	manager, err := mcp.NewManager([]mcp.ServerConfig{{Name: "off", Command: "/bin/echo"}})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	runtime.set(manager)
+	runtime.configure(*settings.MCP)
+	h := &harness{settings: &settings, root: root, mcp: runtime}
+
+	out := replMCP(h, []string{"disable", "off"})
+	if !strings.Contains(out, "○ off") || !strings.Contains(out, "disabled") {
+		t.Fatalf("disable output = %q, want a disabled row", out)
+	}
+	list := replMCP(h, nil)
+	if !strings.Contains(list, "○ off") || !strings.Contains(list, "disabled") {
+		t.Fatalf("list after disable = %q, want the persisted disabled state", list)
+	}
+	reloaded, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("load persisted settings: %v", err)
+	}
+	if reloaded.MCP == nil || reloaded.MCP.Servers[0].IsEnabled() {
+		t.Fatalf("persisted = %+v, want off disabled", reloaded.MCP)
+	}
+}
+
+// An empty plain-REPL list names the canonical configuration path instead of
+// leaving the user with a dead end.
+func TestReplMCPEmptyStateNamesTheConfigPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	out := replMCP(&harness{settings: &config.Settings{}}, nil)
+	if !strings.Contains(out, "No MCP servers are configured") || !strings.Contains(out, ".ohgo") {
+		t.Fatalf("empty output = %q, want an actionable path", out)
 	}
 }
 

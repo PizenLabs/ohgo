@@ -221,6 +221,46 @@ func TestDocsGeneratesReference(t *testing.T) {
 	}
 }
 
+// Generated reference covers runtime slash commands, so /mcp is documented
+// alongside the CLI tree from the same registry the session uses.
+func TestDocsIncludeRuntimeMCPCommands(t *testing.T) {
+	dir := t.TempDir()
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"docs", "--dir", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("docs: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "runtime-commands.md"))
+	if err != nil {
+		t.Fatalf("read runtime reference: %v", err)
+	}
+	for _, want := range []string{"/mcp", "/mcp inspect <server>", "/mcp refresh [server]"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("runtime reference missing %q:\n%s", want, data)
+		}
+	}
+}
+
+// `ohgo -h` points at the runtime MCP surface without inventing a top-level
+// `ohgo mcp` command.
+func TestRootHelpNamesMCPRuntimeCommand(t *testing.T) {
+	cmd := rootCmd()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	if !strings.Contains(out.String(), "/mcp") {
+		t.Fatalf("root help = %q, want the MCP runtime command", out.String())
+	}
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "mcp" {
+			t.Fatal("top-level mcp subcommand was added")
+		}
+	}
+}
+
 // TestDocsCreatesItsDirectory proves a fresh path works: the generators write
 // into the directory rather than creating it, so docs must create it first.
 func TestDocsCreatesItsDirectory(t *testing.T) {

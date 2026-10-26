@@ -16,8 +16,11 @@ import (
 // so the UI can inspect the same manager the tools use instead of opening a
 // second set of server connections, and so session shutdown closes it once.
 type mcpRuntime struct {
-	once    sync.Once
-	manager *mcp.Manager
+	mu       sync.Mutex
+	manager  *mcp.Manager
+	settings config.MCPSettings
+	has      bool
+	failures map[string]string
 }
 
 // set records the manager. The first non-nil manager wins: a session builds
@@ -26,15 +29,96 @@ func (r *mcpRuntime) set(manager *mcp.Manager) {
 	if r == nil || manager == nil {
 		return
 	}
-	r.once.Do(func() { r.manager = manager })
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.manager == nil {
+		r.manager = manager
+	}
+}
+
+// getManager returns the shared manager, or nil when MCP is not configured.
+func (r *mcpRuntime) getManager() *mcp.Manager {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.manager
+}
+
+// configure records the current MCP configuration so the manager UI keeps
+// showing the same state the tools were built from.
+func (r *mcpRuntime) configure(settings config.MCPSettings) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.settings = cloneMCPSettings(settings)
+	r.has = true
+}
+
+// settingsSnapshot returns the current MCP configuration and whether one has
+// been observed in this session.
+func (r *mcpRuntime) settingsSnapshot() (config.MCPSettings, bool) {
+	if r == nil {
+		return config.MCPSettings{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.has {
+		return config.MCPSettings{}, false
+	}
+	return cloneMCPSettings(r.settings), true
+}
+
+// setFailure records a bounded failure for one server. It is display metadata,
+// never authority.
+func (r *mcpRuntime) setFailure(name, text string) {
+	if r == nil || name == "" || text == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.failures == nil {
+		r.failures = map[string]string{}
+	}
+	r.failures[name] = text
+}
+
+// clearFailure removes a stale error after a successful observation.
+func (r *mcpRuntime) clearFailure(name string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.failures, name)
+}
+
+// failure returns the last bounded failure for a server.
+func (r *mcpRuntime) failure(name string) string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.failures[name]
+}
+
+// cloneMCPSettings copies the slice so a caller cannot mutate shared state.
+func cloneMCPSettings(settings config.MCPSettings) config.MCPSettings {
+	settings.Servers = append([]config.MCPServer(nil), settings.Servers...)
+	return settings
 }
 
 // close stops every MCP server the session started.
 func (r *mcpRuntime) close() error {
-	if r == nil || r.manager == nil {
+	manager := r.getManager()
+	if manager == nil {
 		return nil
 	}
-	return r.manager.Close()
+	return manager.Close()
 }
 
 // externalTools builds the Phase 8 external knowledge capabilities from
@@ -92,37 +176,15 @@ func searchToolFromSettings(settings config.SearchSettings) *tools.SearchTool {
 // without changing native execution. An MCP block with no enabled server
 // contributes no tools at all.
 func mcpToolsFromSettings(settings config.MCPSettings, root string, runtime *mcpRuntime) []agent.Tool {
+	if runtime != nil {
+		runtime.configure(settings)
+	}
 	servers := make([]mcp.ServerConfig, 0, len(settings.Servers))
 	for _, server := range settings.Servers {
 		if !server.IsEnabled() {
 			continue
 		}
-		dir := server.Dir
-		if dir == "" {
-			dir = root
-		}
-		servers = append(servers, mcp.ServerConfig{
-			Name:             server.Name,
-			Transport:        mcp.Transport(server.Transport),
-			Command:          server.Command,
-			Args:             server.Args,
-			Dir:              dir,
-			URL:              server.URL,
-			HeaderEnv:        server.HeaderEnv,
-			Env:              server.Env,
-			Trust:            mcp.Trust(server.Trust),
-			Tools:            server.Tools,
-			ResourcePrefixes: server.Resources,
-			AllowMutation:    server.AllowMutation,
-			Timeout:          seconds(server.TimeoutSeconds),
-			CacheTTL:         seconds(server.CacheTTLSeconds),
-			MaxBytes:         server.MaxBytes,
-			MaxItems:         server.MaxItems,
-			MaxTextChars:     server.MaxTextChars,
-			MaxDepth:         server.MaxDepth,
-			MaxArgumentBytes: server.MaxArgumentBytes,
-			IdleTimeout:      seconds(server.IdleTimeoutSeconds),
-		})
+		servers = append(servers, mcpServerConfig(server, root))
 	}
 	if len(servers) == 0 {
 		if len(settings.Servers) == 0 {
@@ -143,6 +205,36 @@ func mcpToolsFromSettings(settings config.MCPSettings, root string, runtime *mcp
 	}
 	runtime.set(manager)
 	return []agent.Tool{list, read, call}
+}
+
+// mcpServerConfig converts one persisted server into the manager's config.
+func mcpServerConfig(server config.MCPServer, root string) mcp.ServerConfig {
+	dir := server.Dir
+	if dir == "" {
+		dir = root
+	}
+	return mcp.ServerConfig{
+		Name:             server.Name,
+		Transport:        mcp.Transport(server.Transport),
+		Command:          server.Command,
+		Args:             server.Args,
+		Dir:              dir,
+		URL:              server.URL,
+		HeaderEnv:        server.HeaderEnv,
+		Env:              server.Env,
+		Trust:            mcp.Trust(server.Trust),
+		Tools:            server.Tools,
+		ResourcePrefixes: server.Resources,
+		AllowMutation:    server.AllowMutation,
+		Timeout:          seconds(server.TimeoutSeconds),
+		CacheTTL:         seconds(server.CacheTTLSeconds),
+		MaxBytes:         server.MaxBytes,
+		MaxItems:         server.MaxItems,
+		MaxTextChars:     server.MaxTextChars,
+		MaxDepth:         server.MaxDepth,
+		MaxArgumentBytes: server.MaxArgumentBytes,
+		IdleTimeout:      seconds(server.IdleTimeoutSeconds),
+	}
 }
 
 // failedMCPTools keeps a configuration problem visible while failing closed.

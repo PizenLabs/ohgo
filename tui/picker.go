@@ -41,6 +41,9 @@ const (
 	// PickerTasks resumes a resumable durable task. Choosing attaches the
 	// selected task to the current session.
 	PickerTasks = "tasks"
+	// PickerMCP manages MCP server enablement. Space stages a change and
+	// Enter applies it; no network work happens while navigating.
+	PickerMCP = "mcp"
 )
 
 // PickerItem is one choice in a selection overlay.
@@ -69,6 +72,21 @@ type PickerItem struct {
 	Context int
 	// Active marks the current model row.
 	Active bool
+	// State is the management state for an MCP row: "enabled", "disabled", or
+	// "error". Empty for other picker kinds.
+	State string
+	// Trust is MCP provenance metadata, shown without implying authority.
+	Trust string
+	// Count is an optional capability count for an MCP row. Cached reports
+	// whether Count is known.
+	Count int
+	// Cached reports that Count came from a capability snapshot.
+	Cached bool
+	// Connected reports a live MCP connection. Enabled alone is not a
+	// connection claim.
+	Connected bool
+	// Pending reports an unapplied MCP enable/disable change on this row.
+	Pending bool
 }
 
 // searchText folds every matchable field of an item into one haystack.
@@ -488,6 +506,51 @@ func (p *PickerState) clamp() {
 	if p.Offset < 0 {
 		p.Offset = 0
 	}
+}
+
+// TogglePending flips the highlighted MCP row's desired enabled state.
+//
+// It changes only picker state: no hook runs, no server starts, and no file is
+// written. The change becomes real only when Enter applies it.
+func (p *PickerState) TogglePending() {
+	if p == nil || p.Kind != PickerMCP {
+		return
+	}
+	chosen, ok := p.Chosen()
+	if !ok || chosen.Value == MCPAddValue {
+		return
+	}
+	// Chosen returns a copy from the filtered view, so the mutation has to
+	// land on the owned roster. MCP has no filter, but matching by Value keeps
+	// this correct if one is ever added.
+	for i := range p.Items {
+		item := &p.Items[i]
+		if item.Value != chosen.Value {
+			continue
+		}
+		item.Active = !item.Active
+		item.Pending = true
+		if item.Active {
+			item.State = "enabled"
+		} else {
+			item.State = "disabled"
+		}
+		return
+	}
+}
+
+// PendingCount reports how many MCP rows carry an unapplied change.
+func (p *PickerState) PendingCount() int {
+	if p == nil {
+		return 0
+	}
+	n := 0
+	for _, item := range p.Items {
+		if item.Pending {
+			n++
+		}
+	}
+	return n
 }
 
 // Chosen returns the highlighted item, if any.

@@ -164,6 +164,70 @@ func baseConfig() ServerConfig {
 	}
 }
 
+// Disabling a server removes it from the model-facing roster and closes the
+// live client, while Status still reports the disabled row for the manager.
+func TestSetServerEnabledDisablesAndReenablesOneServer(t *testing.T) {
+	handler := standardHandler(t, []any{
+		map[string]any{"name": "read_tool", "description": "reads"},
+	}, nil)
+	var mu sync.Mutex
+	var processes []*scriptedProcess
+	manager, err := newManager([]ServerConfig{baseConfig()}, func(ServerConfig) (serverProcess, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		process := &scriptedProcess{handler: handler}
+		processes = append(processes, process)
+		return process, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	if _, err := manager.Discover(context.Background(), "test", Meter{}); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.Status()[0].Connected {
+		t.Fatal("discovery did not establish a connection to disable")
+	}
+	first := processes[0]
+
+	if err := manager.SetServerEnabled(baseConfig(), false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if got := manager.Names(); len(got) != 0 {
+		t.Fatalf("Names after disable = %v, want none", got)
+	}
+	if manager.Configured("test") {
+		t.Fatal("a disabled server still reports Configured")
+	}
+	status := manager.Status()
+	if len(status) != 1 || status[0].Enabled || status[0].Connected || status[0].Cached {
+		t.Fatalf("status after disable = %+v, want disabled and disconnected", status)
+	}
+	first.mu.Lock()
+	killed := first.killed
+	first.mu.Unlock()
+	if !killed {
+		t.Fatal("disabling a live server did not close its client")
+	}
+	if _, err := manager.Discover(context.Background(), "test", Meter{}); err == nil {
+		t.Fatal("discovery succeeded for a disabled server")
+	}
+
+	if err := manager.SetServerEnabled(baseConfig(), true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if got := manager.Names(); len(got) != 1 || got[0] != "test" {
+		t.Fatalf("Names after enable = %v, want test", got)
+	}
+	if _, err := manager.Discover(context.Background(), "test", Meter{}); err != nil {
+		t.Fatalf("discovery after enable: %v", err)
+	}
+	if !manager.Status()[0].Enabled || !manager.Status()[0].Connected {
+		t.Fatalf("status after enable = %+v, want enabled and connected", manager.Status())
+	}
+}
+
 // Discovery returns descriptions and configuration classes. It does not
 // authorize anything by itself.
 func TestDiscoverySeparatesDescriptionFromAuthority(t *testing.T) {
