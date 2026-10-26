@@ -1807,6 +1807,12 @@ func (p *Program) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	picker := p.state.Picker
 	switch msg.String() {
 	case "esc":
+		// The MCP manager has no search box: Esc always closes it and
+		// discards staged changes immediately.
+		if picker != nil && picker.Kind == PickerMCP {
+			p.closePicker()
+			return p, nil
+		}
 		if picker.Filter != "" {
 			p.state.Apply(PickerFilterCleared{})
 			return p, nil
@@ -1868,6 +1874,11 @@ func (p *Program) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.state.Apply(PickerFilterDelete{})
 		return p, nil
 	case "ctrl+r":
+		// The MCP manager has no catalog to refresh; Ctrl+R stays inert so
+		// opening or browsing it never starts unrelated I/O.
+		if picker != nil && picker.Kind == PickerMCP {
+			return p, nil
+		}
 		if cmd := p.refreshModelCatalog(); cmd != nil {
 			return p, cmd
 		}
@@ -1961,7 +1972,7 @@ func (p *Program) applyMCPPicker(picker *PickerState, item PickerItem, ok bool) 
 	}
 	if item.Value == MCPAddValue {
 		p.closePicker()
-		hint := "configure MCP servers in your ohgo settings, then run /mcp again"
+		hint := MCPAddHintText("")
 		if p.mcp.AddHint != nil {
 			hint = p.mcp.AddHint()
 		}

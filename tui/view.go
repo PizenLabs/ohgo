@@ -852,40 +852,108 @@ func mcpPickerWidth(terminal int) int {
 	return width
 }
 
-// renderMCPPickerCard draws the MCP manager as a centered card.
+// renderMCPPickerCard draws the MCP manager as a centered modal card.
 //
-// It shares the modal family's rounded frame and centering contract instead of
-// filling the transcript area: managing a short server list should read as one
-// compact decision, not a settings screen.
-func renderMCPPickerCard(picker *PickerState, pal *Palette, theme string, layout Layout, width int) string {
-	inner := width - 6 // border sides plus two cells of padding each side
-	if inner < 12 {
-		inner = 12
+// It reuses the shared card frame rather than a bespoke box: the border-embedded
+// cyan title, interior padding, footer rule, and footer bar match the /usage and
+// /status cards, so managing a short server list reads as one compact decision.
+func renderMCPPickerCard(picker *PickerState, pal *Palette, layout Layout, width, height int) string {
+	interior := width - 2
+	if interior < statusMinContent {
+		interior = statusMinContent
 	}
-	header := pal.Heading.Render(TruncateToWidth(pickerHeader(picker), inner))
-	footer := pal.Muted.Render(TruncateToWidth(pickerFooter(picker, layout), inner))
 
-	var lines []string
-	lines = append(lines, header, "")
+	var rows []string
+	rows = append(rows, "")
 	filtered := picker.Filtered()
 	window, start := picker.windowOf(filtered)
 	if len(window) == 0 {
-		lines = append(lines, pal.Muted.Render("  (no servers)"))
+		rows = append(rows, strings.Repeat(" ", statusFieldIndent)+pal.Muted.Render("(no servers)"))
 	} else {
 		for i, item := range window {
 			marker := "  "
 			if start+i == picker.Cursor {
 				marker = pal.Selected.Render("> ")
 			}
-			lines = append(lines, renderMCPPickerRow(marker, picker, item, pal, layout, inner))
+			row := renderMCPPickerRow(marker, item, pal, interior-statusFieldIndent)
+			rows = append(rows, strings.Repeat(" ", statusFieldIndent)+row)
 		}
 	}
-	lines = append(lines, "", footer)
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(ChromeFor(theme).Separator.GetForeground()).
-		Padding(0, 2)
-	return box.Render(strings.Join(lines, "\n"))
+	// The blank row above the footer rule gives the short list the same
+	// breathing room as the inspector cards without adding a section header.
+	rows = append(rows, "")
+	// The title border, the footer rule, the footer bar, and the bottom
+	// border claim four rows; everything else is body.
+	if height > 0 {
+		rows = fitStatusRows(rows, maxInt(height-4, 0))
+	}
+
+	footer := mcpPickerFooter(pal, picker, layout, interior)
+	return renderModalFrameWithFooter(mcpManagerTitle(picker), rows, footer, pal, interior)
+}
+
+// mcpManagerTitle heads the manager with its status: "MCP · 2 servers". The
+// empty state reads "MCP · no servers configured", matching the actionable
+// picker contract.
+func mcpManagerTitle(picker *PickerState) string {
+	servers := mcpServerCount(picker)
+	if servers == 0 {
+		return "MCP · no servers configured"
+	}
+	status := fmt.Sprintf("%d servers", servers)
+	if servers == 1 {
+		status = "1 server"
+	}
+	if pending := picker.PendingCount(); pending > 0 {
+		status += fmt.Sprintf(" · %d pending", pending)
+	}
+	return "MCP · " + status
+}
+
+// mcpServerCount counts real servers, excluding the empty state's add row.
+func mcpServerCount(picker *PickerState) int {
+	if picker == nil {
+		return 0
+	}
+	count := 0
+	for _, item := range picker.Items {
+		if item.Value != MCPAddValue {
+			count++
+		}
+	}
+	return count
+}
+
+// mcpPickerFooter names the keys the manager actually handles. Keys are bold
+// and their meanings muted, matching the shared modal footer bar; the plain
+// text under the styles is the contract shown in the help and tests.
+func mcpPickerFooter(pal *Palette, picker *PickerState, layout Layout, interior int) string {
+	type binding struct{ key, label string }
+	var bindings []binding
+	narrow := layout.Mode == LayoutNarrow
+	switch {
+	case mcpServerCount(picker) == 0:
+		// The empty state's footer is the documented actionable-picker
+		// contract: one add row, navigate, select, close.
+		bindings = []binding{{"↑↓", "navigate"}, {"Enter", "select"}, {"Esc", "close"}}
+	case narrow:
+		bindings = []binding{{"Space", "toggle"}, {"Enter", "apply"}, {"Esc", "cancel"}}
+	default:
+		bindings = []binding{
+			{"↑↓", "navigate"},
+			{"Space", "toggle"},
+			{"Enter", "apply"},
+			{"Esc", "cancel"},
+		}
+	}
+	line := strings.Repeat(" ", statusFieldIndent)
+	for i, binding := range bindings {
+		if i > 0 {
+			line += pal.Muted.Render(" · ")
+		}
+		line += pal.Bold.Render(binding.key) + pal.Muted.Render(" "+binding.label)
+	}
+	return TruncateToWidth(line, interior)
 }
 
 // renderPickerArea shows the selection overlay in place of the transcript.
@@ -903,7 +971,7 @@ func renderPickerArea(sb *strings.Builder, state State, pal *Palette, layout Lay
 	picker := state.Picker
 	if picker.Kind == PickerMCP {
 		renderCardAreaWidth(sb, state, layout, mcpPickerWidth, func(width, height int) string {
-			return renderMCPPickerCard(picker, pal, state.Theme, layout, width)
+			return renderMCPPickerCard(picker, pal, layout, width, height)
 		})
 		return
 	}
@@ -1062,7 +1130,7 @@ func renderPickerRow(index int, picker *PickerState, item PickerItem, pal *Palet
 		active = "● "
 	}
 	if picker.Kind == PickerMCP {
-		return renderMCPPickerRow(marker, picker, item, pal, layout, width)
+		return renderMCPPickerRow(marker, item, pal, width)
 	}
 	if picker.Kind != PickerModels {
 		title := TruncateToWidth(item.Title, width-4-len(active))
@@ -1111,12 +1179,14 @@ func renderPickerRow(index int, picker *PickerState, item PickerItem, pal *Palet
 	}
 }
 
-// renderMCPPickerRow draws one MCP manager row: state, name, provenance, and
-// a known capability count. It never renders a command, URL, header, or
-// secret because those are not in PickerItem's management fields at all.
-func renderMCPPickerRow(marker string, picker *PickerState, item PickerItem, pal *Palette, layout Layout, width int) string {
+// renderMCPPickerRow draws one MCP manager row: state, name, provenance, a
+// known capability count, and a live-connection claim only when one exists.
+// It never renders a command, URL, header, or secret because those are not in
+// PickerItem's management fields at all. A bounded failure keeps the row marked
+// with "!" even while the human stages a different desired state.
+func renderMCPPickerRow(marker string, item PickerItem, pal *Palette, width int) string {
 	if item.Value == MCPAddValue {
-		title := TruncateToWidth(item.Title, width-3)
+		title := TruncateToWidth(sanitizeInline(item.Title), maxInt(width-3, 1))
 		return marker + pal.Muted.Render(title)
 	}
 	state := item.State
@@ -1128,32 +1198,39 @@ func renderMCPPickerRow(marker string, picker *PickerState, item PickerItem, pal
 		}
 	}
 	glyph := "○"
-	switch state {
-	case "error":
+	switch {
+	case state == "error" || item.Error != "":
 		glyph = "!"
-	case "enabled":
+	case state == "enabled":
 		glyph = "●"
 	}
+
 	var detail []string
 	if item.Trust != "" {
-		detail = append(detail, item.Trust)
+		detail = append(detail, sanitizeInline(item.Trust))
 	}
 	if item.Cached {
-		detail = append(detail, formatCount(item.Count))
+		detail = append(detail, mcpCapabilityLabel(item.Count))
 	}
-	if item.Connected && state != "error" {
+	if item.Connected && state != "error" && item.Error == "" {
 		detail = append(detail, "connected")
 	}
-	if state == "error" {
+	if item.Error != "" {
+		detail = append(detail, sanitizeInline(item.Error))
+	} else if state == "error" {
 		detail = append(detail, "connection failed")
 	}
 	if item.Pending {
 		detail = append(detail, "pending")
 	}
-	text := marker + glyph + " " + TruncateToWidth(item.Title, width-4)
-	if layout.ShowDetail && len(detail) > 0 {
-		if joined := strings.Join(detail, " · "); joined != "" {
-			text += "  " + pal.Muted.Render(TruncateToWidth(joined, width-CellWidth(text)-2))
+
+	nameW := maxInt(width-4, 1) // marker, glyph, and one separating cell
+	text := marker + glyph + " " + TruncateToWidth(sanitizeInline(item.Title), nameW)
+	if joined := strings.Join(detail, " · "); joined != "" {
+		// Detail yields before the name and state marker do. A narrow card
+		// still shows the row identity; the facts appear whenever they fit.
+		if avail := width - CellWidth(text) - 2; avail >= 8 {
+			text += "  " + pal.Muted.Render(TruncateToWidth(joined, avail))
 		}
 	}
 	return text

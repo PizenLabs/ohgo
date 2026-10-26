@@ -222,7 +222,8 @@ func TestDocsGeneratesReference(t *testing.T) {
 }
 
 // Generated reference covers runtime slash commands, so /mcp is documented
-// alongside the CLI tree from the same registry the session uses.
+// alongside the CLI tree from the same registry the session uses. The man page
+// is generated from that same registry, so it cannot drift from markdown.
 func TestDocsIncludeRuntimeMCPCommands(t *testing.T) {
 	dir := t.TempDir()
 	cmd := rootCmd()
@@ -230,13 +231,30 @@ func TestDocsIncludeRuntimeMCPCommands(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("docs: %v", err)
 	}
+	want := []string{
+		"/mcp",
+		"/mcp list",
+		"/mcp inspect <server>",
+		"/mcp refresh [server]",
+		"/mcp enable <server>",
+		"/mcp disable <server>",
+	}
 	data, err := os.ReadFile(filepath.Join(dir, "runtime-commands.md"))
 	if err != nil {
 		t.Fatalf("read runtime reference: %v", err)
 	}
-	for _, want := range []string{"/mcp", "/mcp inspect <server>", "/mcp refresh [server]"} {
-		if !strings.Contains(string(data), want) {
-			t.Errorf("runtime reference missing %q:\n%s", want, data)
+	for _, form := range want {
+		if !strings.Contains(string(data), form) {
+			t.Errorf("runtime reference missing %q:\n%s", form, data)
+		}
+	}
+	man, err := os.ReadFile(filepath.Join(dir, "ohgo-runtime-commands.1"))
+	if err != nil {
+		t.Fatalf("read runtime man page: %v", err)
+	}
+	for _, form := range want {
+		if !strings.Contains(string(man), form) {
+			t.Errorf("runtime man page missing %q:\n%s", form, man)
 		}
 	}
 }

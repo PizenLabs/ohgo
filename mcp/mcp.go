@@ -683,7 +683,9 @@ func (m *Manager) Configured(name string) bool {
 // SetServerEnabled enables or disables one server at runtime.
 //
 // Enabling does not connect: the first discovery or call still starts the
-// server lazily. Disabling closes the live client and drops the cached
+// server lazily. Enabling from disabled also drops any cached snapshot, so the
+// reconnect observes the server as it is now rather than as it was in an
+// earlier enabled period. Disabling closes the live client and drops the cached
 // snapshot, because a disabled server must not keep answering from a snapshot
 // taken while it was enabled. Configuration persistence is the caller's job.
 func (m *Manager) SetServerEnabled(cfg ServerConfig, enabled bool) error {
@@ -705,6 +707,7 @@ func (m *Manager) SetServerEnabled(cfg ServerConfig, enabled bool) error {
 	// An existing entry keeps the configuration it was built with. Runtime
 	// enablement is not a config rewrite; a changed command, URL, or bound
 	// belongs to the next session so a live client is never mutated mid-flight.
+	wasDisabled := entry.disabled
 	entry.disabled = !enabled
 	var client *client
 	if !enabled {
@@ -718,7 +721,11 @@ func (m *Manager) SetServerEnabled(cfg ServerConfig, enabled bool) error {
 			return err
 		}
 	}
-	if !enabled {
+	// A disabled server must forget what it knew, and a server coming back
+	// from disabled must observe its current capabilities rather than reuse a
+	// snapshot from a previous enabled period. Both paths drop the cache; a
+	// set-enabled on an already-enabled server changes nothing.
+	if !enabled || wasDisabled {
 		entry.stateMu.Lock()
 		entry.cache = nil
 		entry.cachedAt = time.Time{}

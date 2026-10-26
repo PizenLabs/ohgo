@@ -164,6 +164,99 @@ func baseConfig() ServerConfig {
 	}
 }
 
+// Status and staging are I/O-free, and each discovery after an enable starts
+// exactly one server process. Disabling closes that process and drops the
+// cached snapshot so the next enable observes the server again.
+func TestStatusAndStagingNeverConnectUntilDiscovery(t *testing.T) {
+	handler := standardHandler(t, []any{
+		map[string]any{"name": "read_tool", "description": "reads"},
+	}, nil)
+	var mu sync.Mutex
+	starts := 0
+	var processes []*scriptedProcess
+	manager, err := newManager([]ServerConfig{baseConfig()}, func(ServerConfig) (serverProcess, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		starts++
+		process := &scriptedProcess{handler: handler}
+		processes = append(processes, process)
+		return process, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	startCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return starts
+	}
+
+	status := manager.Status()
+	if len(status) != 1 || status[0].Connected || status[0].Cached {
+		t.Fatalf("initial status = %+v, want disconnected and uncached", status)
+	}
+	if startCount() != 0 {
+		t.Fatal("Status started a server")
+	}
+	if err := manager.SetServerEnabled(baseConfig(), true); err != nil {
+		t.Fatalf("no-op enable: %v", err)
+	}
+	if startCount() != 0 {
+		t.Fatal("enabling in the UI started a server")
+	}
+	if err := manager.SetServerEnabled(baseConfig(), false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if startCount() != 0 {
+		t.Fatal("disabling started a server")
+	}
+	if err := manager.SetServerEnabled(baseConfig(), true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if startCount() != 0 {
+		t.Fatal("re-enabling before discovery started a server")
+	}
+	if _, err := manager.Discover(context.Background(), "test", Meter{}); err != nil {
+		t.Fatalf("discovery: %v", err)
+	}
+	if got := startCount(); got != 1 {
+		t.Fatalf("discovery starts = %d, want exactly one", got)
+	}
+	status = manager.Status()
+	if !status[0].Connected || !status[0].Cached {
+		t.Fatalf("status after discovery = %+v, want connected and cached", status)
+	}
+
+	if err := manager.SetServerEnabled(baseConfig(), false); err != nil {
+		t.Fatalf("disable after discovery: %v", err)
+	}
+	status = manager.Status()
+	if status[0].Connected || status[0].Cached || status[0].Enabled {
+		t.Fatalf("status after disable = %+v, want closed, uncached, and disabled", status)
+	}
+	mu.Lock()
+	first := processes[0]
+	mu.Unlock()
+	first.mu.Lock()
+	killed := first.killed
+	first.mu.Unlock()
+	if !killed {
+		t.Fatal("disable did not shut down the stdio process")
+	}
+
+	if err := manager.SetServerEnabled(baseConfig(), true); err != nil {
+		t.Fatalf("second enable: %v", err)
+	}
+	if _, err := manager.Discover(context.Background(), "test", Meter{}); err != nil {
+		t.Fatalf("second discovery: %v", err)
+	}
+	if got := startCount(); got != 2 {
+		t.Fatalf("re-enable discovery starts = %d, want a fresh single attempt", got)
+	}
+}
+
 // Disabling a server removes it from the model-facing roster and closes the
 // live client, while Status still reports the disabled row for the manager.
 func TestSetServerEnabledDisablesAndReenablesOneServer(t *testing.T) {

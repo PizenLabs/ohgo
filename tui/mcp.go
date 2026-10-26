@@ -56,6 +56,24 @@ const MCPAddValue = "__mcp_add__"
 // MCPAddTitle is the empty state's action row.
 const MCPAddTitle = "+ Add server"
 
+// MCPDefaultSettingsPath is the canonical machine-scoped settings file. The
+// empty state points at it rather than opening an inline editor or creating a
+// second configuration store.
+const MCPDefaultSettingsPath = "~/.ohgo/settings.json"
+
+// MCPAddHintText names the configuration file and the expected mcp.servers
+// shape. An empty path falls back to the canonical location; a caller with a
+// resolved path passes it so the hint is directly actionable.
+func MCPAddHintText(path string) string {
+	if strings.TrimSpace(path) == "" {
+		path = MCPDefaultSettingsPath
+	}
+	return fmt.Sprintf(
+		"Add MCP servers in %s under \"mcp\": {\"servers\": [{\"name\": \"<name>\", \"command\": \"<command>\", \"trust\": \"local\"}]}, then run /mcp again.",
+		path,
+	)
+}
+
 // mcpPickerItems converts the cheap server rows into management rows.
 //
 // The row carries only what a manager needs: state, name, provenance, and a
@@ -83,14 +101,17 @@ func mcpPickerItems(rows []MCPServerRow) []PickerItem {
 			trust = "untrusted"
 		}
 		items = append(items, PickerItem{
-			Title:     row.Name,
-			Value:     row.Name,
-			State:     state,
-			Trust:     trust,
-			Count:     row.Capabilities,
-			Cached:    row.Cached,
-			Connected: row.Connected,
-			Active:    row.Enabled,
+			Title:         row.Name,
+			Value:         row.Name,
+			State:         state,
+			Trust:         trust,
+			Count:         row.Capabilities,
+			Cached:        row.Cached,
+			Connected:     row.Connected,
+			Active:        row.Enabled,
+			InitialActive: row.Enabled,
+			InitialKnown:  true,
+			Error:         row.Error,
 		})
 	}
 	return items
@@ -183,9 +204,11 @@ type MCPHooks struct {
 
 // RenderMCPServers renders the /mcp list view.
 //
-// The view is deliberately table-like and monochrome-safe: a marker, a name
-// column, trust, transport, and the capability count. It makes classification
-// visible without turning the transcript into a settings screen.
+// The view is deliberately table-like and monochrome-safe: a state marker, a
+// name column, provenance, the cached capability count, and a live-connected
+// claim only when one exists. Transport, commands, URLs, headers, and secrets
+// stay out of the management surface; /mcp inspect is the deliberate diagnostic
+// path that may name the transport.
 func RenderMCPServers(rows []MCPServerRow) string {
 	if len(rows) == 0 {
 		return "MCP\n\nNo MCP servers are configured.\n\nAdd servers to your ohgo settings, then run /mcp again."
@@ -193,42 +216,58 @@ func RenderMCPServers(rows []MCPServerRow) string {
 	var b strings.Builder
 	b.WriteString("MCP SERVERS\n\n")
 	for _, row := range rows {
-		marker := "●"
-		state := ""
-		switch {
-		case row.Error != "":
-			marker = "!"
-			state = row.Error
-		case !row.Enabled:
-			marker = "○"
-			state = "disabled"
-		case row.Connected:
-			state = "connected"
-		}
-		trust := row.Trust
-		if trust == "" {
-			trust = "untrusted"
-		}
-		transport := row.Transport
-		if transport == "" {
-			transport = "stdio"
-		}
-		count := "no cached capabilities"
+		marker, state := mcpRowState(row)
+		facts := []string{mcpTrust(row.Trust)}
 		if row.Cached {
-			count = fmt.Sprintf("%d capabilities", row.Capabilities)
+			count := mcpCapabilityLabel(row.Capabilities)
 			if !row.CacheExpiresAt.IsZero() && time.Now().After(row.CacheExpiresAt) {
 				count += " (stale)"
 			}
+			facts = append(facts, count)
 		}
-		fmt.Fprintf(&b, "%s %-12s %-10s %-14s %s\n",
-			marker, row.Name, trust, transport, count)
 		if state != "" {
-			fmt.Fprintf(&b, "  %-12s %s\n", "", state)
+			facts = append(facts, state)
 		}
+		fmt.Fprintf(&b, "%s %-12s %s\n",
+			marker, sanitizeInline(row.Name), strings.Join(facts, " · "))
 	}
 	b.WriteString("\n● enabled  ○ disabled  ! error\n")
 	b.WriteString("Trust is provenance, not authority. /mcp inspect <server> discovers capabilities.")
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// mcpRowState resolves the row's glyph and the one state fact worth naming.
+//
+// A failure always wins: a row whose last connect failed is never rendered as
+// healthy even if configuration still says enabled. "connected" is the only
+// healthy state claim, and it is emitted only for a live client.
+func mcpRowState(row MCPServerRow) (marker, state string) {
+	switch {
+	case row.Error != "":
+		return "!", sanitizeInline(strings.TrimSpace(row.Error))
+	case !row.Enabled:
+		return "○", "disabled"
+	case row.Connected:
+		return "●", "connected"
+	default:
+		return "●", ""
+	}
+}
+
+// mcpTrust normalizes an absent provenance label to the fail-closed default.
+func mcpTrust(trust string) string {
+	if strings.TrimSpace(trust) == "" {
+		return "untrusted"
+	}
+	return sanitizeInline(trust)
+}
+
+// mcpCapabilityLabel renders a cached capability count with its unit.
+func mcpCapabilityLabel(count int) string {
+	if count == 1 {
+		return "1 capability"
+	}
+	return fmt.Sprintf("%s capabilities", formatCount(count))
 }
 
 // RenderMCPApplyResults reports applied MCP changes truthfully.
@@ -247,19 +286,20 @@ func RenderMCPApplyResults(results []MCPApplyResult) string {
 		if name == "" {
 			name = "unknown server"
 		}
+		name = sanitizeInline(name)
 		if result.Error != "" {
-			fmt.Fprintf(&b, "! %-12s %s\n", name, result.Error)
+			fmt.Fprintf(&b, "! %s · %s\n", name, sanitizeInline(result.Error))
 			continue
 		}
 		if !result.Enabled {
-			fmt.Fprintf(&b, "○ %-12s disabled\n", name)
+			fmt.Fprintf(&b, "○ %s · disabled\n", name)
 			continue
 		}
 		if result.Connected {
-			fmt.Fprintf(&b, "● %-12s enabled · %d capabilities\n", name, result.Capabilities)
+			fmt.Fprintf(&b, "● %s · enabled · %s\n", name, mcpCapabilityLabel(result.Capabilities))
 			continue
 		}
-		fmt.Fprintf(&b, "● %-12s enabled · connect on first use\n", name)
+		fmt.Fprintf(&b, "● %s · enabled · connect on first use\n", name)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -347,7 +387,7 @@ func (p *Program) mcpCommand(args []string) tea.Cmd {
 		}
 		p.state.Apply(PickerOpened{
 			Kind:  PickerMCP,
-			Title: "MCP SERVERS",
+			Title: "MCP",
 			Items: mcpPickerItems(rows),
 		})
 		return nil

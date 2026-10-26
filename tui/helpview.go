@@ -734,8 +734,22 @@ func renderHelpRow(row helpRow, view HelpCenterState, pal *Palette, interior, ca
 		catStyle = fg(helpCategoryAccent(category)).Bold(true).Background(bg)
 		descStyle = pal.Muted.Background(bg)
 	}
-	body := helpRowText(lineW, item.Prefix+item.Name, category, item.Description, catW, nameStyle, catStyle, descStyle)
+	body := helpRowText(lineW, helpCommandForm(item), category, item.Description, catW, nameStyle, catStyle, descStyle)
 	return markerStyle.Render(marker) + strings.Repeat(" ", helpColGap) + body
+}
+
+// helpCommandForm renders one command row's full invocation: "/new [name]" for
+// a parent command, "/mcp inspect <server>" for a subcommand. A parent's Usage
+// repeats the command word, so it is not appended a second time.
+func helpCommandForm(item helpItem) string {
+	form := item.Prefix + item.Name
+	if item.Command == "" || item.Usage == "" || item.Usage == item.Name {
+		return form
+	}
+	if strings.HasPrefix(item.Usage, item.Name+" ") {
+		return item.Prefix + item.Usage
+	}
+	return form + " " + item.Usage
 }
 
 // helpTabStrip renders the tab indicators: a filled marker and the accent on
@@ -852,10 +866,7 @@ func helpSelectedBlock(view HelpCenterState, pal *Palette, interior int) []strin
 	if !ok {
 		return append(rows, strings.Repeat(" ", statusFieldIndent)+pal.Muted.Render(helpEmptyLabel(view.View)))
 	}
-	line := strings.Repeat(" ", statusFieldIndent) + pal.Choice.Render(sanitizeInline(item.Prefix+item.Name))
-	if item.Usage != "" && item.Usage != item.Name {
-		line += " " + pal.Muted.Render(sanitizeInline(item.Usage))
-	}
+	line := strings.Repeat(" ", statusFieldIndent) + pal.Choice.Render(sanitizeInline(helpCommandForm(item)))
 	if item.Description != "" {
 		line += "  " + pal.Muted.Render("· "+sanitizeInline(item.Description))
 	}

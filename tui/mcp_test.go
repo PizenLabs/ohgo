@@ -35,13 +35,16 @@ func TestMCPCommandListsServersWithoutConnecting(t *testing.T) {
 	}
 	for _, want := range []string{
 		"MCP SERVERS",
-		"lynx", "local", "stdio", "12 capabilities",
-		"postgres", "external", "streamable-http", "disabled",
+		"lynx", "local", "12 capabilities", "connected",
+		"postgres", "external", "disabled",
 		"Trust is provenance, not authority",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("/mcp list output = %q, want %q", text, want)
 		}
+	}
+	if strings.Contains(text, "stdio") || strings.Contains(text, "streamable-http") {
+		t.Errorf("/mcp list leaked transport detail into the manager rows: %q", text)
 	}
 	if inspected != 0 {
 		t.Errorf("listing inspected %d servers, want no discovery", inspected)
@@ -180,14 +183,23 @@ func TestMCPManagerEmptyStateIsActionable(t *testing.T) {
 	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	p.SetMCPHooks(MCPHooks{
 		Servers: func() []MCPServerRow { return nil },
-		AddHint: func() string { return "Add servers in settings.json" },
+		AddHint: func() string {
+			return "Add servers in ~/.ohgo/settings.json under \"mcp\": {\"servers\": [...]}"
+		},
 	})
 	Command{Name: "mcp"}.runOn(p)
 	if p.state.Picker == nil || p.state.Picker.Kind != PickerMCP {
 		t.Fatal("empty /mcp did not open a picker")
 	}
-	if out := Render(p.state); !strings.Contains(out, "Enter select") {
-		t.Fatalf("empty manager footer = %q, want the select contract", out)
+	out := Render(p.state)
+	for _, want := range []string{
+		"MCP · no servers configured",
+		"> + Add server",
+		"↑↓ navigate · Enter select · Esc close",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("empty manager = %q, want %q", out, want)
+		}
 	}
 	item, ok := p.state.Picker.Chosen()
 	if !ok || item.Value != MCPAddValue || item.Title != MCPAddTitle {
@@ -195,8 +207,24 @@ func TestMCPManagerEmptyStateIsActionable(t *testing.T) {
 	}
 	p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	notice := mcpLastNotice(p)
-	if !strings.Contains(notice, "settings.json") {
-		t.Fatalf("add action notice = %q, want the configuration path", notice)
+	if !strings.Contains(notice, "settings.json") || !strings.Contains(notice, `"mcp"`) || !strings.Contains(notice, "servers") {
+		t.Fatalf("add action notice = %q, want the configuration path and mcp.servers shape", notice)
+	}
+}
+
+// Even without an AddHint hook, the empty state points at the canonical
+// settings file and the mcp.servers shape. It never opens a second editor.
+func TestMCPManagerEmptyStateFallbackHintIsActionable(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	p.SetMCPHooks(MCPHooks{Servers: func() []MCPServerRow { return nil }})
+	Command{Name: "mcp"}.runOn(p)
+	p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	notice := mcpLastNotice(p)
+	for _, want := range []string{"~/.ohgo/settings.json", `"mcp"`, `"servers"`} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("fallback add hint = %q, want %q", notice, want)
+		}
 	}
 }
 
@@ -236,6 +264,135 @@ func TestMCPManagerRendersStateTrustAndCount(t *testing.T) {
 	for _, want := range []string{"● lynx", "local", "12", "! postgres", "external", "8", "Space toggle", "Enter apply", "Esc cancel"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("manager render = %q, want %q", out, want)
+		}
+	}
+}
+
+// The manager reuses the shared modal frame: thin box drawing, a cyan
+// border-embedded title formatted "MCP · <status>", and no bespoke rounded
+// box. It also keeps transport, command, URL, header, and secret text out of
+// the row entirely.
+func TestMCPManagerCardMatchesTheModalFamily(t *testing.T) {
+	p := openMCPManager(t, []MCPServerRow{
+		{Name: "lynx", Trust: "local", Enabled: true, Cached: true, Capabilities: 12},
+	})
+	out := Render(p.state)
+	for _, want := range []string{"┌", "┐", "└", "┘", "MCP · 1 server", "● lynx", "local", "12 capabilities"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("manager card = %q, want %q", out, want)
+		}
+	}
+	for _, forbidden := range []string{"╭", "╮", "╰", "╯", "stdio", "streamable-http", "http://", "https://"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("manager card leaked %q:\n%s", forbidden, out)
+		}
+	}
+}
+
+// Printable keys do not build an invisible search query in /mcp. Esc therefore
+// closes on the first press instead of merely clearing hidden text.
+func TestMCPManagerIgnoresPrintableKeys(t *testing.T) {
+	p := openMCPManager(t, []MCPServerRow{
+		{Name: "lynx", Enabled: true},
+		{Name: "github", Enabled: false},
+	})
+	for _, r := range "abc def" {
+		p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if p.state.Picker == nil {
+		t.Fatal("typing closed the manager")
+	}
+	if p.state.Picker.Filter != "" {
+		t.Fatalf("manager filter = %q, want no hidden query", p.state.Picker.Filter)
+	}
+	p.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if p.state.Picker != nil {
+		t.Fatal("Esc cleared an invisible query instead of closing")
+	}
+}
+
+// Toggling back to the state captured at open clears the pending marker, so
+// Enter never reports a change the user already reverted.
+func TestMCPManagerToggleBackClearsPending(t *testing.T) {
+	p := openMCPManager(t, []MCPServerRow{{Name: "lynx", Enabled: true}})
+	p.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if item, _ := p.state.Picker.Chosen(); !item.Pending || item.Active {
+		t.Fatalf("after first space = %+v, want staged disable", item)
+	}
+	p.Update(tea.KeyMsg{Type: tea.KeySpace})
+	item, _ := p.state.Picker.Chosen()
+	if item.Pending || !item.Active || item.State != "enabled" {
+		t.Fatalf("after second space = %+v, want the original enabled state", item)
+	}
+	if got := p.state.Picker.PendingCount(); got != 0 {
+		t.Fatalf("pending count = %d, want none", got)
+	}
+}
+
+// A failed connection renders with "!" and never claims a live connection,
+// even while the human stages the opposite desired state.
+func TestMCPManagerFailureStaysTruthfulWhileStaged(t *testing.T) {
+	p := openMCPManager(t, []MCPServerRow{{
+		Name:         "github",
+		Trust:        "external",
+		Enabled:      true,
+		Connected:    true,
+		Cached:       true,
+		Capabilities: 4,
+		Error:        "connection failed",
+	}})
+	out := Render(p.state)
+	for _, want := range []string{"! github", "external", "connection failed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("failed row = %q, want %q", out, want)
+		}
+	}
+	for _, forbidden := range []string{"● github", "connected"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("failed row rendered %q as healthy:\n%s", forbidden, out)
+		}
+	}
+	p.Update(tea.KeyMsg{Type: tea.KeySpace})
+	out = Render(p.state)
+	if !strings.Contains(out, "! github") || !strings.Contains(out, "connection failed") || !strings.Contains(out, "pending") {
+		t.Fatalf("staged failed row = %q, want failure plus pending", out)
+	}
+}
+
+// The full-screen Command & Help Center names each MCP subcommand's full form,
+// not five indistinguishable "/mcp" rows.
+func TestHelpCenterDisplaysMCPSubcommands(t *testing.T) {
+	view := NewHelpCenter(Commands)
+	items := commandItems(Commands)
+	parentSeen := false
+	for _, item := range items {
+		if item.Name != "mcp" || item.Usage != "mcp" {
+			continue
+		}
+		parentSeen = true
+		row := renderHelpRow(helpRow{Item: item}, view, DarkPalette(), 80, 8)
+		if !strings.Contains(row, "/mcp") || strings.Contains(row, "/mcp mcp") {
+			t.Errorf("parent help row = %q, want a single /mcp invocation", row)
+		}
+	}
+	if !parentSeen {
+		t.Error("help center is missing the /mcp parent command")
+	}
+	want := []string{"list", "inspect <server>", "refresh [server]", "enable <server>", "disable <server>"}
+	for _, usage := range want {
+		found := false
+		for _, item := range items {
+			if item.Name != "mcp" || item.Usage != usage {
+				continue
+			}
+			found = true
+			row := renderHelpRow(helpRow{Item: item}, view, DarkPalette(), 80, 8)
+			if !strings.Contains(row, "/mcp "+usage) {
+				t.Errorf("help row = %q, want /mcp %s", row, usage)
+			}
+		}
+		if !found {
+			t.Errorf("help center is missing /mcp %s", usage)
 		}
 	}
 }
@@ -350,6 +507,7 @@ func TestSpaceStillFiltersNonMCPPickers(t *testing.T) {
 func openMCPManager(t *testing.T, rows []MCPServerRow) *Program {
 	t.Helper()
 	p := NewProgram(nil, "test", 0)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	p.SetMCPHooks(MCPHooks{
 		Servers: func() []MCPServerRow { return rows },
 	})
@@ -364,6 +522,7 @@ func openMCPManager(t *testing.T, rows []MCPServerRow) *Program {
 func openMCPManagerWithApply(t *testing.T, rows []MCPServerRow, apply func(context.Context, []MCPChange) []MCPApplyResult) *Program {
 	t.Helper()
 	p := NewProgram(nil, "test", 0)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	p.SetMCPHooks(MCPHooks{
 		Servers: func() []MCPServerRow { return rows },
 		Apply:   apply,

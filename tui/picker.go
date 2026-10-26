@@ -85,6 +85,17 @@ type PickerItem struct {
 	// Connected reports a live MCP connection. Enabled alone is not a
 	// connection claim.
 	Connected bool
+	// InitialActive is the enabled state captured when the manager opened.
+	// It lets a staged toggle that returns to the original state stop
+	// advertising a pending change. It is meaningful only when InitialKnown
+	// is true; free-standing test rows default to "always pending".
+	InitialActive bool
+	// InitialKnown reports that InitialActive was captured by the manager.
+	InitialKnown bool
+	// Error is the bounded MCP failure text from the last connect attempt.
+	// It keeps a failed row visibly failed even while a toggle is staged.
+	// Empty for non-MCP rows.
+	Error string
 	// Pending reports an unapplied MCP enable/disable change on this row.
 	Pending bool
 }
@@ -511,7 +522,9 @@ func (p *PickerState) clamp() {
 // TogglePending flips the highlighted MCP row's desired enabled state.
 //
 // It changes only picker state: no hook runs, no server starts, and no file is
-// written. The change becomes real only when Enter applies it.
+// written. The change becomes real only when Enter applies it. Toggling back to
+// the state captured at open clears the pending marker, so the row never claims
+// a change Enter would not make.
 func (p *PickerState) TogglePending() {
 	if p == nil || p.Kind != PickerMCP {
 		return
@@ -530,9 +543,15 @@ func (p *PickerState) TogglePending() {
 		}
 		item.Active = !item.Active
 		item.Pending = true
-		if item.Active {
+		if item.InitialKnown {
+			item.Pending = item.Active != item.InitialActive
+		}
+		switch {
+		case item.Error != "":
+			item.State = "error"
+		case item.Active:
 			item.State = "enabled"
-		} else {
+		default:
 			item.State = "disabled"
 		}
 		return

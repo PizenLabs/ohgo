@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -355,13 +355,32 @@ func enabledServerConfigs(settings config.MCPSettings, root string) []mcp.Server
 }
 
 // mcpAddHint names the canonical configuration file and the block to edit.
-// It is a diagnostic path, not a second configuration system.
+// It is a diagnostic path, not a second configuration system: /mcp never opens
+// an inline editor or writes a side store.
 func mcpAddHint() string {
-	path, err := config.Path("")
-	if err != nil {
-		return "Add MCP servers under \"mcp\": {\"servers\": [...]} in your ohgo settings."
+	path := ""
+	if resolved, err := config.Path(""); err == nil && resolved != "" {
+		path = mcpTildePath(resolved)
 	}
-	return fmt.Sprintf("Add MCP servers under \"mcp\": {\"servers\": [...]} in %s, then run /mcp again.", path)
+	return tui.MCPAddHintText(path)
+}
+
+// mcpTildePath shortens the home directory prefix so the hint names the
+// canonical ~/.ohgo/settings.json path while keeping an unusual state
+// directory fully qualified.
+func mcpTildePath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	prefix := home + string(os.PathSeparator)
+	if strings.HasPrefix(path, prefix) {
+		return "~" + strings.TrimPrefix(path, home)
+	}
+	return path
 }
 
 // mcpLine collapses untrusted server or configuration text to one bounded line

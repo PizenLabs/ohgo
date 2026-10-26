@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -174,6 +175,49 @@ func TestReplMCPEmptyStateNamesTheConfigPath(t *testing.T) {
 	out := replMCP(&harness{settings: &config.Settings{}}, nil)
 	if !strings.Contains(out, "No MCP servers are configured") || !strings.Contains(out, ".ohgo") {
 		t.Fatalf("empty output = %q, want an actionable path", out)
+	}
+}
+
+// The empty state's add action names the canonical path and the mcp.servers
+// shape. It is a pointer to the one settings file, never a second store.
+func TestMCPAddHintNamesCanonicalPathAndSchema(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	hint := mcpAddHint()
+	for _, want := range []string{".ohgo/settings.json", `"mcp"`, `"servers"`, `"name"`, `"command"`, "trust"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("add hint = %q, want %q", hint, want)
+		}
+	}
+}
+
+// A failed manager transition must not reach disk: the settings file only
+// records states the runtime actually accepted.
+func TestMCPApplyDoesNotPersistWhenManagerTransitionFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	opts := testOptions(t, root, 1)
+	enabled := true
+	opts.settings.MCP = &config.MCPSettings{Servers: []config.MCPServer{{
+		Name: "off", Command: "/bin/echo", Enabled: &enabled,
+	}}}
+	runtime := &mcpRuntime{}
+	manager, err := mcp.NewManager([]mcp.ServerConfig{{Name: "off", Command: "/bin/echo"}})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	runtime.set(manager)
+	runtime.configure(*opts.settings.MCP)
+	opts.mcpRuntime = runtime
+	if err := manager.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	results := applyMCPChanges(context.Background(), opts, []tui.MCPChange{{Name: "off", Enabled: false}})
+	if len(results) != 1 || results[0].Error == "" {
+		t.Fatalf("results = %+v, want a failed transition", results)
+	}
+	if _, err := config.Load(root); !errors.Is(err, config.ErrNotFound) {
+		t.Fatalf("settings were written after a failed transition: %v", err)
 	}
 }
 
