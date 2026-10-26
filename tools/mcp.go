@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,6 +18,11 @@ import (
 
 // MaxMCPDiscoveryChars bounds one discovery answer published to the model.
 const MaxMCPDiscoveryChars = 32_000
+
+// MaxMCPInputSchemaChars bounds one advertised input schema. The model needs
+// property names, required fields, and enums; a pathological schema must not
+// crowd out the rest of the discovery answer.
+const MaxMCPInputSchemaChars = 4096
 
 // MCPManager is the bounded MCP boundary the tools consume. It is an interface
 // so tests can assert the exact mode a tool requests without starting a
@@ -66,7 +73,9 @@ func NewMCPListTool(manager MCPManager) *MCPListTool {
 	tool := &MCPListTool{Manager: manager}
 	tool.Base = NewBase("mcp_list",
 		"List the tools and resources a configured MCP server advertises, with "+
-			"the runtime's explicit read/interact/mutate/unknown classification. "+
+			"the runtime's explicit read/interact/mutate/unknown classification, "+
+			"each tool's bounded input schema, and the server's own usage "+
+			"instructions. Use the schema to build mcp_read arguments. "+
 			"Discovery is not authorization: an advertised capability is not a "+
 			"permitted one, and an unknown classification fails closed. This "+
 			"tool starts the configured server process; the command is human "+
@@ -81,11 +90,22 @@ func NewMCPListTool(manager MCPManager) *MCPListTool {
 					"description": "Configured server name; omitted lists every " +
 						"configured server.",
 				},
+				"schema": map[string]any{
+					"type": "string",
+					"enum": []string{"summary", "full", "none"},
+					"description": "Input-schema detail: summary (default) keeps " +
+						"required fields, types, enums and bounds; full adds the " +
+						"server's property descriptions; none omits schemas.",
+				},
 			},
 		},
 		agent.Approval{Tier: agent.TierRead, Reason: "lists a configured MCP server's advertised capabilities"},
 	)
-	tool.SetActionClasses(agent.ActionExternal)
+	// Configured keeps the tool in the candidate surface for ordinary tasks.
+	// Without it, task-shape narrowing hides every MCP capability unless the
+	// prompt happens to ask for web knowledge, which makes a repository
+	// intelligence server unusable for normal code questions.
+	tool.SetActionClasses(agent.ActionExternal, agent.ActionConfigured)
 	return tool
 }
 
@@ -105,7 +125,7 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 	if err := checkCancelled(ctx.Ctx); err != nil {
 		return externalCancelledResult(ctx, map[string]any{"capability": string(knowledge.CapabilityMCPDiscovery)})
 	}
-	if err := validateClosedArgs(args, "server"); err != nil {
+	if err := validateClosedArgs(args, "server", "schema"); err != nil {
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
 	}
 	if t.Manager == nil {
@@ -114,6 +134,18 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 	server, err := strArg(args, "server", "")
 	if err != nil {
 		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
+	}
+	schemaMode, err := strArg(args, "schema", "summary")
+	if err != nil {
+		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false, "%v", err), nil)
+	}
+	switch schemaMode {
+	case "", "summary":
+		schemaMode = "summary"
+	case "full", "none":
+	default:
+		return externalFailureResult(knowledge.Fail(knowledge.FailureInvalidRequest, false,
+			"schema must be summary, full, or none"), nil)
 	}
 	names := t.Manager.Names()
 	if strings.TrimSpace(server) != "" {
@@ -150,7 +182,13 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 			if !errors.As(err, &failure) {
 				failure = knowledge.Fail(knowledge.FailureUnavailable, true, "%v", err)
 			}
-			fmt.Fprintf(body, "server: %s\ndiscovery: failed (%s)\n\n", name, failure.Class)
+			message, _ := knowledge.BoundText(failure.Message, 500)
+			fmt.Fprintf(body, "server: %s\ndiscovery: failed (%s)\n",
+				name, failure.Class)
+			if strings.TrimSpace(message) != "" {
+				fmt.Fprintf(body, "reason: %s\n", singleLine(message))
+			}
+			body.WriteString("\n")
 			continue
 		}
 		capabilities := discovery.Capabilities
@@ -162,6 +200,10 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 		fmt.Fprintf(body, "server: %s\ndisclosed: %d\n", name, len(capabilities))
 		if discovery.Truncated {
 			fmt.Fprintf(body, "truncated: true (%s)\n", discovery.Reason)
+		}
+		if discovery.Instructions != "" {
+			instructions, _ := knowledge.BoundText(discovery.Instructions, 8000)
+			fmt.Fprintf(body, "instructions:\n%s\n", strings.TrimRight(instructions, "\n"))
 		}
 		for _, capability := range capabilities {
 			fmt.Fprintf(body, "  - kind: %s\n", capability.Kind)
@@ -176,6 +218,11 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 			if capability.Description != "" {
 				description, _ := knowledge.BoundText(capability.Description, 300)
 				fmt.Fprintf(body, "    description: %s\n", singleLine(description))
+			}
+			if schemaMode != "none" && len(capability.SchemaRaw) > 0 {
+				if schema, ok := boundedSchema(capability.SchemaRaw, schemaMode == "full"); ok {
+					fmt.Fprintf(body, "    input_schema: %s\n", schema)
+				}
 			}
 		}
 		body.WriteString("\n")
@@ -255,7 +302,7 @@ func NewMCPReadTool(manager MCPManager) *MCPReadTool {
 		},
 		agent.Approval{Tier: agent.TierRead, Reason: "reads an external MCP resource or read-classified tool"},
 	)
-	tool.SetActionClasses(agent.ActionExternal)
+	tool.SetActionClasses(agent.ActionExternal, agent.ActionConfigured)
 	return tool
 }
 
@@ -366,7 +413,7 @@ func NewMCPCallTool(manager MCPManager) *MCPCallTool {
 		},
 	)
 	tool.SetExclusive(true)
-	tool.SetActionClasses(agent.ActionExternal, agent.ActionMutate)
+	tool.SetActionClasses(agent.ActionExternal, agent.ActionConfigured, agent.ActionMutate)
 	tool.SetMutationOperations(contract.ChangeAny)
 	return tool
 }
@@ -426,6 +473,59 @@ func mcpNotConfigured(configErr string) knowledge.Failure {
 			"mcp configuration is invalid: %s", configErr)
 	}
 	return knowledge.Fail(knowledge.FailureNotConfigured, false, "no MCP servers are configured")
+}
+
+// boundedSchema renders one advertised input schema as compact, bounded JSON.
+// An unparsable schema is omitted: discovery must never publish malformed JSON
+// as if it were a callable contract.
+//
+// Summary mode drops prose descriptions but keeps every field that changes a
+// call: required names, types, enums, defaults, bounds, array items, and
+// additionalProperties. The model needs the contract, not the marketing copy,
+// and a full schema for every tool crowds an otherwise small discovery answer.
+func boundedSchema(raw json.RawMessage, full bool) (string, bool) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	if !full {
+		value = summarizeSchema(value)
+	}
+	var compact bytes.Buffer
+	encoder := json.NewEncoder(&compact)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return "", false
+	}
+	text, _ := knowledge.BoundText(strings.TrimSpace(compact.String()), MaxMCPInputSchemaChars)
+	return text, true
+}
+
+// summarizeSchema removes prose from a JSON Schema while preserving every
+// structural keyword, including composition ($ref, anyOf, oneOf, allOf) and
+// nested definitions. A summary must never validate a different contract than
+// the full schema; it only costs fewer tokens.
+func summarizeSchema(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			switch key {
+			case "description", "title", "examples", "$comment", "deprecated":
+				continue
+			}
+			out[key] = summarizeSchema(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = summarizeSchema(item)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 // mcpDetails builds the bounded audit projection for one MCP call.

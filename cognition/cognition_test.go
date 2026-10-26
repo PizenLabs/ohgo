@@ -467,6 +467,30 @@ func TestCandidatesHideMutationWhenShapeForbidsIt(t *testing.T) {
 	}
 }
 
+// A human-configured MCP capability stays in the action space for an ordinary
+// code question. It is still external and still passes the security boundary;
+// only the task-shape narrowing exempts it.
+func TestCandidatesKeepConfiguredExternalTools(t *testing.T) {
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "web_fetch", tier: agent.TierRead, classes: []agent.ActionClass{agent.ActionExternal}},
+		testTool{name: "mcp_read", tier: agent.TierRead, classes: []agent.ActionClass{agent.ActionExternal, agent.ActionConfigured}},
+	}
+	shape := BuildShape(contract.IntentContract{Kind: contract.ObjectiveInformational, Objective: "who calls parse"}, ShapeParams{Authority: "ask"})
+	if shape.External.Required {
+		t.Fatal("the test objective must not require web knowledge")
+	}
+	suff := EvaluateSufficiency(shape, NewEvidenceState(), ExecutionState{}, false)
+	set := Candidates(shape, NewEvidenceState(), ExecutionState{}, tools, RepositoryFacts{}, suff)
+	var names []string
+	for _, tool := range set.Tools {
+		names = append(names, tool.Name())
+	}
+	if strings.Join(names, ",") != "read,mcp_read" {
+		t.Fatalf("candidates = %v, want read,mcp_read (web_fetch stays hidden)", names)
+	}
+}
+
 func TestCandidatesExcludeExistingOnlyToolsForCreateTarget(t *testing.T) {
 	tools := []agent.Tool{
 		testTool{name: "read", tier: agent.TierRead},

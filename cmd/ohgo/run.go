@@ -286,7 +286,15 @@ func (o options) budgetLimits() budget.Limits {
 	// is at most one tool call's worth of egress, and the aggregate byte cap is
 	// a fixed finite allowance that a response cannot exceed (the per-request
 	// reader is additionally capped at the remaining grant).
+	//
+	// A floor keeps one discovery usable: initialize, every tools/list page,
+	// and the optional resources/list are separate metered exchanges. Without
+	// it, a small --max-tool-calls value makes a paginated MCP server fail
+	// before it has advertised a single capability.
 	externalCalls := toolCalls
+	if externalCalls < 16 {
+		externalCalls = 16
+	}
 	externalBytes := 16 * 1024 * 1024
 	return budget.Limits{
 		Turns:          turns,
@@ -505,7 +513,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}
-	toolSet = append(toolSet, externalTools(opts.settings)...)
+	toolSet = append(toolSet, externalTools(opts.settings, opts.root)...)
 
 	// The task tool is added last and gets a spawner that stands up a sibling
 	// with the same capabilities. It is omitted entirely for a read-only

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,12 @@ func TestStdioMCPHelper(t *testing.T) {
 		case "tools/call":
 			arguments, _ := request.Params["arguments"].(map[string]any)
 			text, _ := arguments["text"].(string)
-			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "echo: " + text}}}
+			if text == "cwd" {
+				wd, _ := os.Getwd()
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": wd}}}
+			} else {
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "echo: " + text}}}
+			}
 		default:
 			_ = encoder.Encode(map[string]any{
 				"jsonrpc": "2.0", "id": *request.ID,
@@ -93,5 +99,45 @@ func TestStdioClientRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "echo: hello") {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+// A configured working directory reaches the child process, so a
+// repository-aware server starts in the agent's workspace rather than the
+// shell's directory.
+func TestStdioClientUsesConfiguredDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess test in short mode")
+	}
+	t.Setenv("OHGO_MCP_HELPER", "1")
+	dir := t.TempDir()
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ServerConfig{
+		Name:     "helper",
+		Command:  os.Args[0],
+		Args:     []string{"-test.run=TestStdioMCPHelper"},
+		Dir:      dir,
+		Env:      []string{"OHGO_MCP_HELPER"},
+		Tools:    map[string]string{"echo": "read"},
+		MaxBytes: 64 * 1024,
+	}
+	manager, err := NewManager([]ServerConfig{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	result, err := manager.CallTool(context.Background(), "helper", "echo", map[string]any{"text": "cwd"}, ModeRead, Meter{})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	got, err := filepath.EvalSymlinks(strings.TrimSpace(result.Text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("child dir = %q, want %q", got, want)
 	}
 }

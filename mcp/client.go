@@ -29,6 +29,11 @@ type serverProcess interface {
 // errLineTooLong reports a response line over the bound.
 var errLineTooLong = errors.New("mcp: response line exceeds the byte bound")
 
+// maxListPages bounds cursor-following for one discovery list. A server that
+// advertises more pages than this is reported as truncated rather than allowed
+// to drive an unbounded number of exchanges.
+const maxListPages = 64
+
 // rpcRequest is one JSON-RPC request.
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -60,12 +65,13 @@ type client struct {
 
 	gate chan struct{}
 
-	mu          sync.Mutex
-	proc        serverProcess
-	initialized bool
-	closed      bool
-	nextID      int
-	idle        *time.Timer
+	mu           sync.Mutex
+	proc         serverProcess
+	initialized  bool
+	closed       bool
+	nextID       int
+	idle         *time.Timer
+	instructions string
 }
 
 // newClient returns a client for a normalized config.
@@ -80,6 +86,7 @@ func (c *client) Close() error {
 	proc := c.proc
 	c.proc = nil
 	c.initialized = false
+	c.instructions = ""
 	timer := c.idle
 	c.idle = nil
 	c.mu.Unlock()
@@ -122,12 +129,24 @@ func (c *client) initialize(ctx context.Context, meter Meter) error {
 		c.kill()
 		return knowledge.Fail(knowledge.FailureProtocol, false, "mcp initialize returned no result")
 	}
+	// Server instructions are part of the initialize result, not a tool. Keep
+	// them bounded and expose them through discovery so a client that does not
+	// otherwise surface initialize output can still give the model the
+	// server's own usage guidance.
+	var handshake struct {
+		Instructions string `json:"instructions"`
+	}
+	instructions := ""
+	if err := json.Unmarshal(raw, &handshake); err == nil {
+		instructions, _ = knowledge.BoundText(handshake.Instructions, c.cfg.MaxTextChars)
+	}
 	if err := c.notifyLocked(ctx, "notifications/initialized"); err != nil {
 		c.kill()
 		return err
 	}
 	c.mu.Lock()
 	c.initialized = true
+	c.instructions = instructions
 	c.mu.Unlock()
 	c.touch()
 	return nil
@@ -206,7 +225,14 @@ func (c *client) exchangeLocked(ctx context.Context, method string, params any, 
 		return nil, 0, contextFailure(ctx)
 	case result := <-done:
 		if result.failure != nil {
-			c.kill()
+			// A clean JSON-RPC error (method not supported, invalid params,
+			// unknown tool) does not desynchronize the stream: the response was
+			// read in full, so the process remains usable. Killing it there
+			// would restart the server on every unsupported optional method —
+			// for example resources/list on a tools-only server.
+			if failureNeedsKill(*result.failure) {
+				c.kill()
+			}
 			return nil, 0, *result.failure
 		}
 		if meter.After != nil {
@@ -349,6 +375,15 @@ func (c *client) process() serverProcess {
 	return c.proc
 }
 
+// serverInstructions returns the bounded instructions from the last
+// handshake. It is empty when the server supplied none or the process has been
+// restarted since.
+func (c *client) serverInstructions() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.instructions
+}
+
 // touch resets the idle process timer.
 func (c *client) touch() {
 	c.mu.Lock()
@@ -368,6 +403,7 @@ func (c *client) kill() {
 	proc := c.proc
 	c.proc = nil
 	c.initialized = false
+	c.instructions = ""
 	timer := c.idle
 	c.idle = nil
 	c.mu.Unlock()
@@ -392,50 +428,83 @@ func (c *client) enter(ctx context.Context) error {
 // leave releases the gate.
 func (c *client) leave() { <-c.gate }
 
-// listTools calls tools/list and bounds the result.
+// listTools calls tools/list, follows nextCursor, and bounds the result.
+//
+// Pagination is mandatory for compatibility: a server may return a bounded
+// page with an opaque nextCursor, and a client that ignores it silently sees
+// only a fraction of the advertised tools. Every page is a separately metered
+// exchange, and a repeated cursor or the page ceiling is reported as
+// truncation rather than followed forever.
 func (c *client) listTools(ctx context.Context, meter Meter) ([]wireTool, bool, error) {
-	raw, _, err := c.exchange(ctx, "tools/list", map[string]any{}, meter)
-	if err != nil {
-		return nil, false, err
+	var out []wireTool
+	cursor := ""
+	for page := 0; page < maxListPages; page++ {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		raw, _, err := c.exchange(ctx, "tools/list", params, meter)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(raw) == 0 {
+			return out, false, nil
+		}
+		var envelope struct {
+			Tools      []wireTool `json:"tools"`
+			NextCursor string     `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return nil, false, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp tools/list result is malformed")
+		}
+		out = append(out, envelope.Tools...)
+		if len(out) >= c.cfg.MaxItems {
+			return out[:c.cfg.MaxItems], true, nil
+		}
+		next := strings.TrimSpace(envelope.NextCursor)
+		if next == "" || next == cursor {
+			return out, next != "" && next == cursor, nil
+		}
+		cursor = next
 	}
-	if len(raw) == 0 {
-		return nil, false, nil
-	}
-	var envelope struct {
-		Tools []wireTool `json:"tools"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, false, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp tools/list result is malformed")
-	}
-	truncated := false
-	if len(envelope.Tools) > c.cfg.MaxItems {
-		envelope.Tools = envelope.Tools[:c.cfg.MaxItems]
-		truncated = true
-	}
-	return envelope.Tools, truncated, nil
+	return out, true, nil
 }
 
-// listResources calls resources/list and bounds the result.
+// listResources calls resources/list, follows nextCursor, and bounds the
+// result.
 func (c *client) listResources(ctx context.Context, meter Meter) ([]wireResource, bool, error) {
-	raw, _, err := c.exchange(ctx, "resources/list", map[string]any{}, meter)
-	if err != nil {
-		return nil, false, err
+	var out []wireResource
+	cursor := ""
+	for page := 0; page < maxListPages; page++ {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		raw, _, err := c.exchange(ctx, "resources/list", params, meter)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(raw) == 0 {
+			return out, false, nil
+		}
+		var envelope struct {
+			Resources  []wireResource `json:"resources"`
+			NextCursor string         `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return nil, false, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp resources/list result is malformed")
+		}
+		out = append(out, envelope.Resources...)
+		if len(out) >= c.cfg.MaxItems {
+			return out[:c.cfg.MaxItems], true, nil
+		}
+		next := strings.TrimSpace(envelope.NextCursor)
+		if next == "" || next == cursor {
+			return out, next != "" && next == cursor, nil
+		}
+		cursor = next
 	}
-	if len(raw) == 0 {
-		return nil, false, nil
-	}
-	var envelope struct {
-		Resources []wireResource `json:"resources"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, false, knowledge.Fail(knowledge.FailureMalformedResponse, false, "mcp resources/list result is malformed")
-	}
-	truncated := false
-	if len(envelope.Resources) > c.cfg.MaxItems {
-		envelope.Resources = envelope.Resources[:c.cfg.MaxItems]
-		truncated = true
-	}
-	return envelope.Resources, truncated, nil
+	return out, true, nil
 }
 
 // wireTool is one discovered tool description.
@@ -473,6 +542,21 @@ func classifyReadError(err error, server string) knowledge.Failure {
 		return knowledge.Fail(knowledge.FailureUnavailable, true, "mcp server %q disconnected", server)
 	}
 	return knowledge.Fail(knowledge.FailureUnavailable, true, "read mcp server %q: %v", server, err)
+}
+
+// failureNeedsKill reports whether a failure leaves the stream unusable.
+//
+// A JSON-RPC error response is a complete frame: the request is finished even
+// though it failed. Transport, framing, and bound failures are different — the
+// next read cannot be trusted to line up with the next request.
+func failureNeedsKill(failure knowledge.Failure) bool {
+	switch failure.Class {
+	case knowledge.FailureUnsupported, knowledge.FailureInvalidRequest,
+		knowledge.FailureUnknownCapability, knowledge.FailureToolError:
+		return false
+	default:
+		return true
+	}
 }
 
 // classifyRPCError maps a JSON-RPC error to a failure class.
@@ -530,6 +614,7 @@ type stdioProcess struct {
 // startStdio starts a configured MCP server.
 func startStdio(cfg ServerConfig) (serverProcess, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
+	cmd.Dir = cfg.Dir
 	cmd.Env = filteredEnv(cfg.Env)
 	cmd.Stderr = io.Discard
 	stdin, err := cmd.StdinPipe()

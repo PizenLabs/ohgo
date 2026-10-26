@@ -16,13 +16,13 @@ import (
 // A missing block means the capability is not offered. A present but malformed
 // block keeps the tool visible with a configuration failure, so the model and
 // the user see the problem instead of a capability silently disappearing.
-func externalTools(settings config.Settings) []agent.Tool {
+func externalTools(settings config.Settings, root string) []agent.Tool {
 	var out []agent.Tool
 	if settings.Search != nil {
 		out = append(out, searchToolFromSettings(*settings.Search))
 	}
 	if settings.MCP != nil {
-		out = append(out, mcpToolsFromSettings(*settings.MCP)...)
+		out = append(out, mcpToolsFromSettings(*settings.MCP, root)...)
 	}
 	if settings.Browser != nil {
 		out = append(out, tools.NewBrowserTool(browserConfigFromSettings(*settings.Browser)))
@@ -60,13 +60,18 @@ func searchToolFromSettings(settings config.SearchSettings) *tools.SearchTool {
 }
 
 // mcpToolsFromSettings converts configured MCP servers.
-func mcpToolsFromSettings(settings config.MCPSettings) []agent.Tool {
+func mcpToolsFromSettings(settings config.MCPSettings, root string) []agent.Tool {
 	servers := make([]mcp.ServerConfig, 0, len(settings.Servers))
 	for _, server := range settings.Servers {
+		dir := server.Dir
+		if dir == "" {
+			dir = root
+		}
 		servers = append(servers, mcp.ServerConfig{
 			Name:             server.Name,
 			Command:          server.Command,
 			Args:             server.Args,
+			Dir:              dir,
 			Env:              server.Env,
 			Tools:            server.Tools,
 			ResourcePrefixes: server.Resources,

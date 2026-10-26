@@ -17,6 +17,7 @@ type fakeMCPManager struct {
 	names        []string
 	configured   map[string]bool
 	capabilities map[string][]mcp.Capability
+	instructions string
 	discoverErr  error
 	resource     mcp.ResourceResult
 	resourceErr  error
@@ -51,7 +52,7 @@ func (f *fakeMCPManager) Discover(ctx context.Context, name string, meter mcp.Me
 	if f.discoverErr != nil {
 		return mcp.Discovery{}, f.discoverErr
 	}
-	return mcp.Discovery{Capabilities: f.capabilities[name]}, nil
+	return mcp.Discovery{Capabilities: f.capabilities[name], Instructions: f.instructions}, nil
 }
 
 func (f *fakeMCPManager) ReadResource(ctx context.Context, name, uri string, meter mcp.Meter) (mcp.ResourceResult, error) {
@@ -125,6 +126,51 @@ func TestMCPListShowsClassificationAndGrantsNoAuthority(t *testing.T) {
 	}
 	if result.Mutates || result.Executes || result.Verifies {
 		t.Fatalf("discovery claimed execution evidence: %+v", result)
+	}
+}
+
+// Discovery publishes the server's instructions and compact input schemas so
+// the model can build a valid call without a second, opaque discovery round.
+func TestMCPListPublishesInstructionsAndSchemas(t *testing.T) {
+	schema := []byte(`{"type":"object","required":["project"],"properties":{"project":{"type":"string","description":"Project name."},"mode":{"type":"string","enum":["full","fast"],"default":"full"}},"additionalProperties":false}`)
+	manager := &fakeMCPManager{
+		names:        []string{"alpha"},
+		configured:   map[string]bool{"alpha": true},
+		instructions: "Call search_graph before reading source.",
+		capabilities: map[string][]mcp.Capability{
+			"alpha": {{
+				Server: "alpha", Kind: mcp.KindTool, Name: "search_graph",
+				Classification: mcp.ClassRead, SchemaRaw: schema,
+			}},
+		},
+	}
+	tool := NewMCPListTool(manager)
+	result := tool.Execute(mcpContext(context.Background(), mcpGrant()), map[string]any{"server": "alpha"})
+	if result.IsError {
+		t.Fatalf("list failed: %s", result.Text)
+	}
+	for _, needle := range []string{
+		"instructions:",
+		"Call search_graph before reading source.",
+		`"required":["project"]`,
+		`"enum":["full","fast"]`,
+		`"additionalProperties":false`,
+	} {
+		if !strings.Contains(result.Text, needle) {
+			t.Errorf("discovery is missing %q:\n%s", needle, result.Text)
+		}
+	}
+	if strings.Contains(result.Text, "Project name.") {
+		t.Error("summary schema leaked prose descriptions")
+	}
+
+	full := tool.Execute(mcpContext(context.Background(), mcpGrant()), map[string]any{"server": "alpha", "schema": "full"})
+	if !strings.Contains(full.Text, "Project name.") {
+		t.Errorf("full schema omitted a property description:\n%s", full.Text)
+	}
+	none := tool.Execute(mcpContext(context.Background(), mcpGrant()), map[string]any{"server": "alpha", "schema": "none"})
+	if strings.Contains(none.Text, "input_schema") {
+		t.Errorf("schema=none still published a schema:\n%s", none.Text)
 	}
 }
 

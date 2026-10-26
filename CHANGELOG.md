@@ -7,6 +7,13 @@ immutable.
 
 ### Added
 
+- MCP interoperability: discovery follows `nextCursor` to completion,
+  `mcp_list` publishes the server's `initialize` instructions and a bounded
+  input schema per tool (`summary` by default, `full` for property
+  descriptions, `none` to omit), and each server accepts a `dir` working
+  directory (defaulting to the workspace root). A compatible client now sees
+  every tool a paginated server such as gry advertises and can build valid
+  arguments from discovery alone.
 - Intent grounding and semantic integrity: `workspace.BuildIntentContract` now
   attaches a deterministic `contract.IntentGrounding` (action, entities, scope,
   constraints, assumptions, ambiguities). The loop refuses a mutation the
@@ -101,6 +108,16 @@ immutable.
 
 ### Changed
 
+- Configured MCP capabilities are no longer hidden by task-shape narrowing on
+  ordinary code questions. They remain external evidence and still pass the
+  security boundary, but a human-configured server is not optional web
+  knowledge; the action space keeps `mcp_list`/`mcp_read` available. Read-only
+  subagents may also use those two tools.
+- A clean JSON-RPC error from an optional method (for example a tools-only
+  server rejecting `resources/list`) no longer kills the process, so discovery
+  and the following call reuse one handshake. External-call budgets have a
+  small floor so paginated discovery is not refused before it advertises a
+  single tool.
 - Completed turns close with a semantic recap (`▧ recap:`) instead of duration
   and token telemetry. The narrative is derived from the run's own evidence —
   changed paths, verification commands, inspected files, and the assistant's

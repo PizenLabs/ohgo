@@ -203,7 +203,10 @@ type MCPServer struct {
 	Name    string   `json:"name"`
 	Command string   `json:"command"`
 	Args    []string `json:"args,omitempty"`
-	Env     []string `json:"env,omitempty"`
+	// Dir is the child working directory. Empty uses the agent's workspace
+	// root, so a repository-aware server starts where the agent is working.
+	Dir string   `json:"dir,omitempty"`
+	Env []string `json:"env,omitempty"`
 	// Tools is the explicit safety classification: read, interact, mutate, or
 	// unknown. A tool not listed is unknown and fails closed.
 	Tools map[string]string `json:"tools,omitempty"`

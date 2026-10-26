@@ -119,6 +119,11 @@ type ServerConfig struct {
 	Command string
 	// Args are the process arguments.
 	Args []string
+	// Dir is the child working directory. Empty inherits the agent's current
+	// directory; the CLI sets it to the workspace root so a server that reads
+	// its project from the working directory sees the same repository the
+	// agent does.
+	Dir string
 	// Env names environment variables to pass through. Values live in the
 	// environment, never in configuration, logs, or model context.
 	Env []string
@@ -292,6 +297,9 @@ type ResourceResult struct {
 type Discovery struct {
 	// Capabilities are the advertised tools and resources, capped and sorted.
 	Capabilities []Capability
+	// Instructions is the bounded usage guidance the server returned from
+	// initialize. It is data from the server, not authority.
+	Instructions string
 	// Truncated reports that the bound cut the advertised list.
 	Truncated bool
 	// Reason names the bound that cut it.
@@ -407,6 +415,7 @@ func (m *Manager) Discover(ctx context.Context, name string, meter Meter) (Disco
 	if err := client.initialize(ctx, meter); err != nil {
 		return Discovery{}, err
 	}
+	instructions := client.serverInstructions()
 	now := time.Now().UTC()
 	var capabilities []Capability
 	truncated := false
@@ -469,7 +478,11 @@ func (m *Manager) Discover(ctx context.Context, name string, meter Meter) (Disco
 		capabilities = capabilities[:cfg.MaxItems]
 		truncated = true
 	}
-	result := Discovery{Capabilities: capabilities, Truncated: truncated}
+	result := Discovery{
+		Capabilities: capabilities,
+		Instructions: instructions,
+		Truncated:    truncated,
+	}
 	if truncated {
 		result.Reason = "item_limit"
 	}

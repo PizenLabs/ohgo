@@ -102,7 +102,12 @@ func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.To
 			return "the task does not need " + language + " structural navigation", true
 		}
 	}
-	if agent.HasActionClass(tool, agent.ActionExternal) && !shape.External.Required {
+	if agent.HasActionClass(tool, agent.ActionExternal) &&
+		!agent.HasActionClass(tool, agent.ActionConfigured) &&
+		!shape.External.Required {
+		// Configured capabilities (MCP servers) are exempt: a human already
+		// decided they belong in this agent's action space. The security gate
+		// still decides whether any particular call is authorized.
 		return "the task does not require external knowledge", true
 	}
 	if agent.HasActionClass(tool, agent.ActionRelationship) && !shape.NeedsRelationshipNavigation {

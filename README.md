@@ -443,7 +443,13 @@ provider, and a request identity. A retry is a separate admitted call.
 
 **MCP** (`mcp_list`, `mcp_read`, `mcp_call`) speaks bounded newline-delimited
 JSON-RPC to a configured stdio server. Discovery lists advertised capabilities
-but grants nothing: every tool must be classified in configuration.
+but grants nothing: every tool must be classified in configuration. Discovery
+follows `nextCursor`, so paginated servers are read completely, and it
+publishes the server's `initialize` instructions plus a compact input schema
+(required fields, types, enums, defaults and bounds) for every tool. Use
+`schema: "full"` for property descriptions or `schema: "none"` to omit them.
+Configured MCP capabilities stay in the candidate tool surface for ordinary
+code questions; they are not treated as optional web knowledge.
 
 ```json
 {
@@ -453,6 +459,7 @@ but grants nothing: every tool must be classified in configuration.
         "name": "notes",
         "command": "/usr/local/bin/notes-mcp",
         "args": ["--stdio"],
+        "dir": "/path/to/project",
         "env": ["NOTES_TOKEN"],
         "tools": { "search_notes": "read", "create_note": "mutate" },
         "allowMutation": true,
@@ -471,7 +478,20 @@ is `unknown` and fails closed. `mcp_read` accepts only `read`. `mcp_call`
 accepts only `interact`/`mutate` with `allowMutation`, and additionally requires
 the BUILD authority and an approval. The model never chooses the command,
 arguments, or environment; only the named environment variables are passed to
-the server. Binary content is never copied into model context.
+the server. The child starts in the workspace root unless `dir` overrides it,
+so repository-aware servers see the project the agent is working in. Binary
+content is never copied into model context.
+
+For [gry](https://github.com/PizenLabs/gry) code intelligence, let gry write the
+entry and classifications:
+
+```sh
+gry install --client ohgo
+```
+
+That adds a `gry` server to `~/.ohgo/settings.json` with read tools classified
+`read`, graph-mutating tools classified `mutate`, and `GRY_CACHE_DIR`/`GRY_DB`
+passthrough. `gry uninstall --client ohgo` removes only that entry.
 
 **Browser** (`browser`) is bounded GET read/navigation, not an automation
 surface: no JavaScript, forms, clicks, or non-GET requests. A session has an

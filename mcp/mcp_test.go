@@ -452,6 +452,137 @@ func TestMCPDiscoveryTruncationIsExplicit(t *testing.T) {
 	}
 }
 
+// Discovery follows the server's nextCursor instead of stopping at the first
+// page, and surfaces the initialize instructions as bounded data.
+func TestMCPDiscoveryFollowsNextCursor(t *testing.T) {
+	manager, _ := testManager(t, baseConfig(), func(method string, params map[string]any, id int) [][]byte {
+		switch method {
+		case "initialize":
+			return [][]byte{rpcResult(t, id, map[string]any{
+				"protocolVersion": "2024-11-05",
+				"instructions":    "call the graph first",
+			})}
+		case "tools/list":
+			cursor, _ := params["cursor"].(string)
+			switch cursor {
+			case "":
+				return [][]byte{rpcResult(t, id, map[string]any{
+					"tools":      []any{map[string]any{"name": "alpha"}, map[string]any{"name": "beta"}},
+					"nextCursor": "page-2",
+				})}
+			case "page-2":
+				return [][]byte{rpcResult(t, id, map[string]any{
+					"tools":      []any{map[string]any{"name": "gamma"}},
+					"nextCursor": "page-3",
+				})}
+			case "page-3":
+				return [][]byte{rpcResult(t, id, map[string]any{
+					"tools": []any{map[string]any{"name": "delta"}},
+				})}
+			}
+			t.Fatalf("unexpected cursor %q", cursor)
+		case "resources/list":
+			return [][]byte{rpcResult(t, id, map[string]any{"resources": []any{}})}
+		}
+		return [][]byte{rpcErrorLine(t, id, -32601, "no")}
+	})
+	discovery, err := manager.Discover(context.Background(), "test", Meter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, capability := range discovery.Capabilities {
+		names = append(names, capability.Name)
+	}
+	if strings.Join(names, ",") != "alpha,beta,delta,gamma" {
+		t.Fatalf("capabilities = %v, want all four pages", names)
+	}
+	if discovery.Truncated {
+		t.Fatal("complete pagination was marked truncated")
+	}
+	if discovery.Instructions != "call the graph first" {
+		t.Fatalf("instructions = %q", discovery.Instructions)
+	}
+}
+
+// A page that exceeds the item bound stops immediately and says so.
+func TestMCPDiscoveryPageTruncationStopsFollowingCursors(t *testing.T) {
+	cfg := baseConfig()
+	cfg.MaxItems = 2
+	manager, process := testManager(t, cfg, func(method string, params map[string]any, id int) [][]byte {
+		switch method {
+		case "initialize":
+			return [][]byte{rpcResult(t, id, map[string]any{})}
+		case "tools/list":
+			return [][]byte{rpcResult(t, id, map[string]any{
+				"tools":      []any{map[string]any{"name": "a"}, map[string]any{"name": "b"}, map[string]any{"name": "c"}},
+				"nextCursor": "more",
+			})}
+		case "resources/list":
+			return [][]byte{rpcResult(t, id, map[string]any{"resources": []any{}})}
+		}
+		return [][]byte{rpcErrorLine(t, id, -32601, "no")}
+	})
+	discovery, err := manager.Discover(context.Background(), "test", Meter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Capabilities) != 2 || !discovery.Truncated || discovery.Reason != "item_limit" {
+		t.Fatalf("discovery = %+v, want two explicit item_limit rows", discovery)
+	}
+	// The first page already exhausted the bound, so the cursor is never
+	// requested: following it would spend another exchange for rows that could
+	// not be published.
+	for _, line := range process.writes {
+		if strings.Contains(string(line), `"cursor"`) {
+			t.Fatalf("a cursor was requested after the item bound was exhausted: %s", line)
+		}
+	}
+}
+
+// An optional method the server does not implement is a complete JSON-RPC
+// error response, not a broken stream. The process must survive it so the next
+// call does not pay for another handshake.
+func TestUnsupportedOptionalMethodDoesNotKillTheProcess(t *testing.T) {
+	manager, process := testManager(t, baseConfig(), func(method string, params map[string]any, id int) [][]byte {
+		switch method {
+		case "initialize":
+			return [][]byte{rpcResult(t, id, map[string]any{
+				"protocolVersion": "2024-11-05",
+				"instructions":    "tools only",
+			})}
+		case "tools/list":
+			return [][]byte{rpcResult(t, id, map[string]any{
+				"tools": []any{map[string]any{"name": "read_tool"}},
+			})}
+		case "resources/list":
+			return [][]byte{rpcErrorLine(t, id, -32601, "method not found")}
+		case "tools/call":
+			return [][]byte{rpcResult(t, id, map[string]any{
+				"content": []any{map[string]any{"type": "text", "text": "still alive"}},
+			})}
+		}
+		return [][]byte{rpcErrorLine(t, id, -32601, "method not found")}
+	})
+	discovery, err := manager.Discover(context.Background(), "test", Meter{})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if discovery.Instructions != "tools only" || len(discovery.Capabilities) != 1 {
+		t.Fatalf("discovery = %+v", discovery)
+	}
+	if process.killed {
+		t.Fatal("an unsupported optional method killed the process")
+	}
+	result, err := manager.CallTool(context.Background(), "test", "read_tool", nil, ModeRead, Meter{})
+	if err != nil {
+		t.Fatalf("call after unsupported method: %v", err)
+	}
+	if !strings.Contains(result.Text, "still alive") {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 // A closed manager refuses new work instead of starting a fresh process after
 // shutdown.
 func TestClosedMCPManagerRefusesNewWork(t *testing.T) {
