@@ -365,8 +365,12 @@ func TestMCPReadBoundaryRefusesMutatingAndUnknownTools(t *testing.T) {
 			continue
 		}
 		var failure knowledge.Failure
-		if !errors.As(err, &failure) || failure.Class != knowledge.FailureMutationDenied {
-			t.Fatalf("%s error = %v, want mutation_denied", tool, err)
+		want := knowledge.FailureMutationDenied
+		if tool == "mystery_tool" {
+			want = knowledge.FailureUnknownCapability
+		}
+		if !errors.As(err, &failure) || failure.Class != want {
+			t.Fatalf("%s error = %v, want %s", tool, err, want)
 		}
 	}
 	if process.wroteMethod("tools/call") {
@@ -387,8 +391,12 @@ func TestMCPMutationRequiresExplicitConfiguration(t *testing.T) {
 	for _, tool := range []string{"send_tool", "mystery_tool", "read_tool"} {
 		_, err := manager.CallTool(context.Background(), "test", tool, nil, ModeMutate, Meter{})
 		var failure knowledge.Failure
-		if !errors.As(err, &failure) || failure.Class != knowledge.FailureMutationDenied {
-			t.Errorf("%s error = %v, want mutation_denied", tool, err)
+		want := knowledge.FailureMutationDenied
+		if tool == "mystery_tool" {
+			want = knowledge.FailureUnknownCapability
+		}
+		if !errors.As(err, &failure) || failure.Class != want {
+			t.Errorf("%s error = %v, want %s", tool, err, want)
 		}
 	}
 

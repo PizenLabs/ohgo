@@ -310,6 +310,12 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 	shape.RepositoryScope = repositoryScope(shape.Objective, intent)
 	shape.NeedsCodeNavigation = needsCodeNavigation(shape.Objective, intent)
 	shape.NeedsRelationshipNavigation = needsRelationshipNavigation(shape.Objective)
+	// An explicit Gry/MCP request is structural by definition.
+	if strings.Contains(strings.ToLower(shape.Objective), "gry") ||
+		strings.Contains(strings.ToLower(shape.Objective), "mcp") {
+		shape.NeedsCodeNavigation = true
+		shape.NeedsRelationshipNavigation = true
+	}
 	shape.NeedsExecution = shape.Kind == contract.ObjectiveExecution ||
 		len(shape.Verification) > 0 || needsExecution(shape.Objective)
 	shape.External = externalRequirement(shape.Objective)
@@ -462,6 +468,8 @@ func needsCodeNavigation(objective string, intent contract.IntentContract) bool 
 		"refactor", "rename", "function", "symbol", "implementation",
 		"caller", "callee", "package", "module", "interface", "struct",
 		"stack trace", "compile", "build error",
+		"explore", "exploring", "architecture", "structure", "overview",
+		"graph", "dependency", "dependencies", "index", "indexed", "gry", "mcp",
 	} {
 		if strings.Contains(normalized, " "+word+" ") {
 			return true
@@ -489,6 +497,8 @@ func needsRelationshipNavigation(objective string) bool {
 		"import", "imports", "imported", "dependency", "dependencies",
 		"caller", "callers", "callee", "callees", "reference", "references",
 		"call graph", "graph", "who calls", "impact", "affected",
+		"architecture", "structure", "overview", "gry", "mcp",
+		"model context protocol",
 	} {
 		if strings.Contains(normalized, " "+phrase+" ") {
 			return true
@@ -526,6 +536,7 @@ func externalRequirement(objective string) ExternalRequirement {
 		"release notes", "search the web", "search online", "look up online",
 		"web search", "from the web", "website", "published documentation",
 		"external documentation", "up-to-date documentation", "current documentation",
+		"gry", "mcp", "model context protocol",
 	} {
 		if strings.Contains(normalized, " "+phrase+" ") {
 			return ExternalRequirement{Required: true, Reason: "the request asks for external knowledge"}

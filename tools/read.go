@@ -79,7 +79,30 @@ func (t *ReadTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		return agent.ErrorResult("stat %q: %v", raw, err)
 	}
 	if info.IsDir() {
-		return agent.ErrorResult("%q is a directory, not a file", raw)
+		entries, readErr := os.ReadDir(path)
+		if readErr != nil {
+			return agent.ErrorResult("%q is a directory, not a file", raw)
+		}
+		if len(entries) == 0 {
+			return agent.ErrorResult("%q is an empty directory, not a file", raw)
+		}
+		names := make([]string, 0, len(entries))
+		for i, entry := range entries {
+			if i >= 50 {
+				break
+			}
+			name := entry.Name()
+			if entry.IsDir() {
+				name += "/"
+			}
+			names = append(names, name)
+		}
+		suffix := ""
+		if len(entries) > len(names) {
+			suffix = fmt.Sprintf(" … (%d entries total)", len(entries))
+		}
+		return agent.ErrorResult("%q is a directory, not a file; entries: %s%s",
+			raw, strings.Join(names, ", "), suffix)
 	}
 
 	offset, err := intArg(args, "offset", 1)

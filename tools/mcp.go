@@ -226,6 +226,24 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 			continue
 		}
 		capabilities := discovery.Capabilities
+		// Tools first even if the manager returned an older ordering. A
+		// truncated excerpt must expose callable contracts before prompts.
+		ordered := make([]mcp.Capability, 0, len(capabilities))
+		for _, want := range []mcp.CapabilityKind{mcp.KindTool, mcp.KindResource, mcp.KindPrompt} {
+			for _, capability := range capabilities {
+				if capability.Kind == want {
+					ordered = append(ordered, capability)
+				}
+			}
+		}
+		for _, capability := range capabilities {
+			switch capability.Kind {
+			case mcp.KindTool, mcp.KindResource, mcp.KindPrompt:
+				continue
+			}
+			ordered = append(ordered, capability)
+		}
+		capabilities = ordered
 		truncated = truncated || discovery.Truncated
 		if discovery.Truncated && truncationReason == "" {
 			truncationReason = discovery.Reason
@@ -241,6 +259,24 @@ func (t *MCPListTool) execute(ctx agent.Context, args map[string]any) agent.Resu
 		if discovery.Instructions != "" {
 			instructions, _ := knowledge.BoundText(discovery.Instructions, 8000)
 			fmt.Fprintf(body, "instructions:\n%s\n", strings.TrimRight(instructions, "\n"))
+		}
+		// A compact index keeps every callable name and its required arguments
+		// visible even when the detailed schemas are excerpted downstream.
+		if len(capabilities) > 0 {
+			body.WriteString("capability_index:\n")
+			for _, capability := range capabilities {
+				if capability.Kind != mcp.KindTool {
+					continue
+				}
+				fmt.Fprintf(body, "  - tool: %s(%s)\n",
+					singleLine(capability.Name), requiredArgs(capability.SchemaRaw))
+			}
+			for _, capability := range capabilities {
+				if capability.Kind != mcp.KindPrompt {
+					continue
+				}
+				fmt.Fprintf(body, "  - prompt: %s\n", singleLine(capability.Name))
+			}
 		}
 		for _, capability := range capabilities {
 			authority := capability.Authority
@@ -692,6 +728,27 @@ func mcpNotConfigured(configErr string) knowledge.Failure {
 // call: required names, types, enums, defaults, bounds, array items, and
 // additionalProperties. The model needs the contract, not the marketing copy,
 // and a full schema for every tool crowds an otherwise small discovery answer.
+// requiredArgs renders the required property names from one tool schema.
+// It is the compact contract that must survive discovery truncation.
+func requiredArgs(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return ""
+	}
+	args := make([]string, 0, len(schema.Required))
+	for _, arg := range schema.Required {
+		if arg = strings.TrimSpace(arg); arg != "" {
+			args = append(args, arg)
+		}
+	}
+	return strings.Join(args, ", ")
+}
+
 func boundedSchema(raw json.RawMessage, full bool) (string, bool) {
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {
@@ -706,7 +763,25 @@ func boundedSchema(raw json.RawMessage, full bool) (string, bool) {
 	if err := encoder.Encode(value); err != nil {
 		return "", false
 	}
-	text, _ := knowledge.BoundText(strings.TrimSpace(compact.String()), MaxMCPInputSchemaChars)
+	text, cut := knowledge.BoundText(strings.TrimSpace(compact.String()), MaxMCPInputSchemaChars)
+	if cut {
+		// Never publish a schema cut in the middle of JSON: the caller would
+		// validate against a contract that never existed. Keep the required
+		// names and tell the caller where the full schema lives.
+		var minimal struct {
+			Required []string `json:"required"`
+		}
+		_ = json.Unmarshal(raw, &minimal)
+		fallback, err := json.Marshal(map[string]any{
+			"schema_omitted": true,
+			"required":       minimal.Required,
+			"hint":           "schema exceeds the published bound; call mcp_list with schema=full",
+		})
+		if err != nil {
+			return "", false
+		}
+		return string(fallback), true
+	}
 	return text, true
 }
 
@@ -931,6 +1006,9 @@ func publishMCPTool(ctx agent.Context, details map[string]any, requestID, server
 			Message: "the remote MCP tool reported an error result",
 		}
 		details["failure_classification"] = string(knowledge.FailureToolError)
+		if remote, _ := knowledge.BoundText(singleLine(result.Text), 500); remote != "" {
+			details["remote_error"] = remote
+		}
 	}
 	return agent.Result{
 		Text:    knowledge.Envelope(header, result.Text),

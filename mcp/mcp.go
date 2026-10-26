@@ -1007,9 +1007,24 @@ func (m *Manager) discoverFresh(ctx context.Context, entry *serverEntry, meter M
 		capabilities = append(capabilities, capability)
 	}
 
+	// Tools first. A truncated discovery excerpt must contain the callable
+	// tool contracts before prompt templates and resources.
+	kindOrder := func(kind CapabilityKind) int {
+		switch kind {
+		case KindTool:
+			return 0
+		case KindResource:
+			return 1
+		case KindPrompt:
+			return 2
+		default:
+			return 3
+		}
+	}
 	sort.Slice(capabilities, func(i, j int) bool {
-		if capabilities[i].Kind != capabilities[j].Kind {
-			return capabilities[i].Kind < capabilities[j].Kind
+		left, right := kindOrder(capabilities[i].Kind), kindOrder(capabilities[j].Kind)
+		if left != right {
+			return left < right
 		}
 		return capabilities[i].Name < capabilities[j].Name
 	})
@@ -1077,6 +1092,10 @@ func (m *Manager) CallTool(ctx context.Context, name, tool string, args map[stri
 		return ToolResult{}, err
 	}
 	class := cfg.Classify(tool)
+	if class == ClassUnknown {
+		return ToolResult{}, knowledge.Fail(knowledge.FailureUnknownCapability, false,
+			"unknown mcp capability %q; call mcp_list for tools, and use mcp_read prompt=<name> for prompts", tool)
+	}
 	switch mode {
 	case ModeRead:
 		if class != ClassRead {

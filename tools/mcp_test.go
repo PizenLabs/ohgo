@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -168,10 +169,16 @@ func TestMCPListPublishesInstructionsAndSchemas(t *testing.T) {
 		configured:   map[string]bool{"alpha": true},
 		instructions: "Call search_graph before reading source.",
 		capabilities: map[string][]mcp.Capability{
-			"alpha": {{
-				Server: "alpha", Kind: mcp.KindTool, Name: "search_graph",
-				Classification: mcp.ClassRead, SchemaRaw: schema,
-			}},
+			"alpha": {
+				{
+					Server: "alpha", Kind: mcp.KindPrompt, Name: "explore_codebase",
+					Classification: mcp.ClassRead,
+				},
+				{
+					Server: "alpha", Kind: mcp.KindTool, Name: "search_graph",
+					Classification: mcp.ClassRead, SchemaRaw: schema,
+				},
+			},
 		},
 	}
 	tool := NewMCPListTool(manager)
@@ -190,6 +197,19 @@ func TestMCPListPublishesInstructionsAndSchemas(t *testing.T) {
 			t.Errorf("discovery is missing %q:\n%s", needle, result.Text)
 		}
 	}
+	for _, needle := range []string{
+		"capability_index:",
+		"tool: search_graph(project)",
+	} {
+		if !strings.Contains(result.Text, needle) {
+			t.Errorf("discovery is missing compact contract %q:\n%s", needle, result.Text)
+		}
+	}
+	toolIndex := strings.Index(result.Text, "kind: tool")
+	promptIndex := strings.Index(result.Text, "kind: prompt")
+	if toolIndex < 0 || promptIndex < 0 || toolIndex > promptIndex {
+		t.Errorf("tools must precede prompts (tool=%d prompt=%d):\n%s", toolIndex, promptIndex, result.Text)
+	}
 	if strings.Contains(result.Text, "Project name.") {
 		t.Error("summary schema leaked prose descriptions")
 	}
@@ -201,6 +221,21 @@ func TestMCPListPublishesInstructionsAndSchemas(t *testing.T) {
 	none := tool.Execute(mcpContext(context.Background(), mcpGrant()), map[string]any{"server": "alpha", "schema": "none"})
 	if strings.Contains(none.Text, "input_schema") {
 		t.Errorf("schema=none still published a schema:\n%s", none.Text)
+	}
+}
+
+func TestBoundedSchemaNeverPublishesPartialJSON(t *testing.T) {
+	schema := []byte(`{"type":"object","required":["project"],"description":"` +
+		strings.Repeat("x", MaxMCPInputSchemaChars+1) + `"}`)
+	text, ok := boundedSchema(schema, true)
+	if !ok {
+		t.Fatal("boundedSchema rejected a valid schema")
+	}
+	if !json.Valid([]byte(text)) {
+		t.Fatalf("bounded schema is not valid JSON: %s", text)
+	}
+	if !strings.Contains(text, "schema_omitted") {
+		t.Fatalf("oversized schema was not replaced by a safe fallback: %s", text)
 	}
 }
 
@@ -306,6 +341,10 @@ func TestMCPRemoteToolErrorIsAFailure(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "remote_tool_error") {
 		t.Fatalf("result does not name the remote error:\n%s", result.Text)
+	}
+	details := result.Details.(map[string]any)
+	if details["remote_error"] != "remote refused" {
+		t.Fatalf("remote_error = %v, want the remote message", details["remote_error"])
 	}
 }
 

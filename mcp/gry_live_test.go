@@ -59,8 +59,18 @@ func TestGryLive(t *testing.T) {
 	if discovery.Truncated {
 		t.Fatalf("discovery truncated: %s", discovery.Reason)
 	}
-	if len(discovery.Capabilities) != 17 {
-		t.Fatalf("discovered %d capabilities, want 17: %+v", len(discovery.Capabilities), discovery.Capabilities)
+	tools, prompts := 0, 0
+	for _, capability := range discovery.Capabilities {
+		switch capability.Kind {
+		case KindTool:
+			tools++
+		case KindPrompt:
+			prompts++
+		}
+	}
+	t.Logf("discovered %d capabilities (%d tools, %d prompts)", len(discovery.Capabilities), tools, prompts)
+	if tools != 17 {
+		t.Fatalf("discovered %d tools, want 17", tools)
 	}
 	if !strings.Contains(discovery.Instructions, "search_graph") {
 		t.Fatalf("server instructions were not surfaced: %q", discovery.Instructions)
@@ -79,7 +89,7 @@ func TestGryLive(t *testing.T) {
 		args map[string]any
 		want string
 	}{
-		{"list_projects", map[string]any{}, "repo"},
+		{"list_projects", map[string]any{}, project},
 		{"search_graph", map[string]any{"project": project, "query": "parse"}, "parse"},
 		{"get_architecture", map[string]any{"project": project, "aspects": []any{"overview"}}, "languages"},
 		{"index_status", map[string]any{"project": project}, "indexed"},

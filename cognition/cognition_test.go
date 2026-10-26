@@ -491,6 +491,22 @@ func TestCandidatesKeepConfiguredExternalTools(t *testing.T) {
 	}
 }
 
+func TestExplorationObjectiveNeedsStructureAndExternalContext(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Help me explore this project using Gry MCP",
+	}, ShapeParams{Authority: "ask"})
+	if !shape.NeedsCodeNavigation {
+		t.Error("an explicit Gry/MCP exploration request must enable structural navigation")
+	}
+	if !shape.NeedsRelationshipNavigation {
+		t.Error("an exploration request must enable relationship navigation")
+	}
+	if !shape.External.Required {
+		t.Error("an explicit Gry/MCP request must require external context")
+	}
+}
+
 func TestCandidatesExcludeExistingOnlyToolsForCreateTarget(t *testing.T) {
 	tools := []agent.Tool{
 		testTool{name: "read", tier: agent.TierRead},
