@@ -147,12 +147,40 @@ type Settings struct {
 	Search *SearchSettings `json:"search,omitempty"`
 	// MCP configures external MCP servers. Absence disables the MCP tools.
 	MCP *MCPSettings `json:"mcp,omitempty"`
+	// Gry configures the opt-in GRY lifecycle evidence adapter. Absence keeps
+	// the adapter disabled and OHGO's behaviour unchanged. It contains no
+	// credentials and grants no authority.
+	Gry *GrySettings `json:"gry,omitempty"`
 	// Browser configures the bounded read/navigation browser. Absence
 	// disables the browser tool.
 	Browser *BrowserSettings `json:"browser,omitempty"`
 	// Compaction configures context reduction. A nil pointer means "use the
 	// built-in defaults", which is distinct from "disabled".
 	Compaction *Compaction `json:"compaction,omitempty"`
+}
+
+// GrySettings is the machine-scoped GRY evidence adapter configuration.
+//
+// The adapter is read-only and opt-in. These values select the binary and the
+// indexed project; they never approve, authorize, or execute anything. The
+// OHGO_GRY_* environment variables override them for one process, so a user
+// can test a different index without rewriting the file.
+type GrySettings struct {
+	// Enabled starts the adapter on headless runs.
+	Enabled bool `json:"enabled,omitempty"`
+	// Binary is an absolute path or a PATH name. Empty disables the adapter.
+	Binary string `json:"binary,omitempty"`
+	// Project is a GRY project name. Empty disables the adapter: ohgo never
+	// guesses indexing identity from a directory name.
+	Project string `json:"project,omitempty"`
+	// CacheDir is the GRY cache used for indexing, when it is non-default.
+	CacheDir string `json:"cacheDir,omitempty"`
+	// TimeoutMs bounds one hook process. Zero uses the adapter default.
+	TimeoutMs int `json:"timeoutMs,omitempty"`
+	// MaxTokens bounds evidence returned by one hook.
+	MaxTokens int `json:"maxTokens,omitempty"`
+	// Debug prints one bounded status line per observation.
+	Debug bool `json:"debug,omitempty"`
 }
 
 // SearchSettings is the external search configuration.

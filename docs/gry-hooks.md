@@ -22,7 +22,15 @@ not be shown as complete evidence.
 
 ## Enablement
 
-The adapter is disabled by default. Enable it for one run:
+The adapter is disabled by default. Persist it in `~/.ohgo/settings.json`:
+
+```sh
+ohgo gry enable --project <indexed-project-name>   --binary /path/to/gry   --cache-dir <same cache used to index>       # optional
+ohgo gry status                                 # effective config, no process started
+ohgo gry disable                                # remove only the gry key
+```
+
+Or enable it for one process without writing settings:
 
 ```sh
 export OHGO_GRY_HOOK=1
@@ -35,9 +43,34 @@ export OHGO_GRY_DEBUG=1                                # optional status lines
 ohgo --dir <repo> --workspace build --plain --no-tui -y run "<task>"
 ```
 
-`OHGO_GRY_PROJECT` is not guessed from the directory: GRY owns project identity.
-A missing binary or project disables the adapter instead of creating a silent
-dependency.
+Environment values override the file for one process; `OHGO_GRY_HOOK=0`
+disables an enabled entry without editing it. `OHGO_GRY_PROJECT` is not guessed
+from the directory: GRY owns project identity. A missing binary or project
+disables the adapter instead of creating a silent dependency.
+
+The persisted form is:
+
+```json
+{
+  "gry": {
+    "enabled": true,
+    "binary": "/usr/local/bin/gry",
+    "project": "my-repo",
+    "cacheDir": "/Users/me/.cache/gry",
+    "timeoutMs": 1500,
+    "maxTokens": 6000,
+    "debug": false
+  }
+}
+```
+
+These fields select evidence and bound its cost. They never change approval,
+grounding, execution budget, or mutation policy. `ohgo gry status` reports
+`tui_wired: false` until the TUI path is actually wired and tested.
+
+`gry enable` and `gry disable` edit the settings document as raw JSON, so keys
+this build does not know about survive. The write is atomic; other settings are
+never reset.
 
 ## Lifecycle and identity
 
@@ -93,10 +126,17 @@ A GRY failure cannot grant a capability or make an unapproved edit execute.
 
 ```sh
 go test ./internal/gryhook
+go test ./cmd/ohgo -run TestGry
 go test ./...
 go vet ./...
-gofmt -l .          # must be empty
+gofmt -l .             # must be empty
+bash scripts/install_test.sh
 ```
+
+`internal/gryhook/settings_test.go` covers file/environment precedence,
+`OHGO_GRY_HOOK=0`, invalid budgets, and the project-name rule.
+`cmd/ohgo/gry_test.go` covers `gry enable/status/disable`, preservation of
+unrelated settings, and rejection of invalid input without writing.
 
 Deterministic lifecycle coverage lives in
 `internal/gryhook/install_test.go`: a scripted model calls a real write tool and

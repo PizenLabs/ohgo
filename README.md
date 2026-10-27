@@ -91,11 +91,28 @@ it is done. ohgo is built around the opposite contract.
 
 ```sh
 OHGO_VERSION=v0.1.0 sh install.sh
+# or
+sh install.sh --version v0.1.0 --prefix "$HOME/.local"
 ```
 
-The script selects the tarball for your OS and architecture, verifies nothing
-is guessed about the install prefix, installs to `$PREFIX/bin` (default
-`/usr/local/bin`), and runs `ohgo version` as a smoke test.
+The script selects the tarball for your OS and architecture, downloads
+`sha256sums.txt` from the same release, verifies the archive before extracting
+it, installs atomically to `$PREFIX/bin` (default `/usr/local/bin`), and runs
+`ohgo version` as a smoke test. It refuses absolute or parent-traversing paths
+inside the archive. There is no flag that disables checksum verification.
+
+Useful options:
+
+```sh
+sh install.sh --version v0.1.0 --dry-run            # print the plan only
+sh install.sh --version v0.1.0 --gry-project <name> # opt in to GRY evidence
+sh install.sh --uninstall                           # remove the binary only
+OHGO_VERSION=dev sh install.sh                      # install ./ohgo from a local build
+```
+
+`--gry-project` runs `ohgo gry enable --project <name>` after the binary lands.
+The adapter is not enabled by default; settings in `~/.ohgo/settings.json` are
+preserved by install and uninstall. See [docs/gry-hooks.md](docs/gry-hooks.md).
 
 ### From source
 

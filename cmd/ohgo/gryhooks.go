@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/config"
 	"github.com/PizenLabs/ohgo/internal/gryhook"
 )
 
@@ -14,8 +15,8 @@ import (
 // run. It returns nil when the adapter is disabled, so the default path keeps
 // its exact previous behaviour. The adapter is evidence-only: it cannot admit,
 // approve or execute a mutation.
-func attachGRYEvidence(ctx context.Context, root, taskID, text string, loop *agent.Loop) *gryhook.Session {
-	cfg := gryhook.FromEnv(root)
+func attachGRYEvidence(ctx context.Context, root, taskID, text string, loop *agent.Loop, settings config.Settings) *gryhook.Session {
+	cfg := gryhook.FromEnvAndSettings(root, gryFileConfig(settings))
 	if !cfg.Enabled {
 		return nil
 	}

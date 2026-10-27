@@ -47,19 +47,58 @@ type Config struct {
 
 var projectPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
-// FromEnv reads the narrow integration contract. An empty project or binary
+// FileConfig is the persistent subset of the adapter contract, mirroring
+// config.GrySettings without making the adapter import the settings package.
+// Zero values mean "use the adapter default".
+type FileConfig struct {
+	Enabled   bool
+	Binary    string
+	Project   string
+	CacheDir  string
+	TimeoutMs int
+	MaxTokens int
+	Debug     bool
+}
+
+// FromEnv reads the environment-only contract. An empty project or binary
 // disables the adapter rather than guessing a project name: indexing identity
 // is GRY's decision, not a string OHGO can infer from a directory.
 func FromEnv(root string) Config {
+	return FromEnvAndSettings(root, FileConfig{})
+}
+
+// FromEnvAndSettings resolves the persistent configuration first and lets the
+// OHGO_GRY_* environment override it for one process. An explicit
+// OHGO_GRY_HOOK=0 disables an enabled file entry, which is the switch a user
+// needs when investigating a hook without editing settings.
+func FromEnvAndSettings(root string, file FileConfig) Config {
 	cfg := Config{
-		Enabled:   truthy(os.Getenv("OHGO_GRY_HOOK")),
-		Binary:    strings.TrimSpace(os.Getenv("OHGO_GRY_BIN")),
-		Project:   strings.TrimSpace(os.Getenv("OHGO_GRY_PROJECT")),
+		Enabled:   file.Enabled,
+		Binary:    strings.TrimSpace(file.Binary),
+		Project:   strings.TrimSpace(file.Project),
 		Root:      root,
-		CacheDir:  strings.TrimSpace(os.Getenv("OHGO_GRY_CACHE_DIR")),
+		CacheDir:  strings.TrimSpace(file.CacheDir),
 		Timeout:   1500 * time.Millisecond,
 		MaxTokens: 6000,
-		Debug:     truthy(os.Getenv("OHGO_GRY_DEBUG")),
+		Debug:     file.Debug,
+	}
+	if file.TimeoutMs >= 100 && file.TimeoutMs <= 30000 {
+		cfg.Timeout = time.Duration(file.TimeoutMs) * time.Millisecond
+	}
+	if file.MaxTokens >= 128 && file.MaxTokens <= 1000000 {
+		cfg.MaxTokens = file.MaxTokens
+	}
+	if value := strings.TrimSpace(os.Getenv("OHGO_GRY_HOOK")); value != "" {
+		cfg.Enabled = truthy(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("OHGO_GRY_BIN")); value != "" {
+		cfg.Binary = value
+	}
+	if value := strings.TrimSpace(os.Getenv("OHGO_GRY_PROJECT")); value != "" {
+		cfg.Project = value
+	}
+	if value := strings.TrimSpace(os.Getenv("OHGO_GRY_CACHE_DIR")); value != "" {
+		cfg.CacheDir = value
 	}
 	if raw := os.Getenv("OHGO_GRY_TIMEOUT_MS"); raw != "" {
 		var ms int
@@ -73,13 +112,20 @@ func FromEnv(root string) Config {
 			cfg.MaxTokens = tokens
 		}
 	}
-	if cfg.Binary == "" {
-		cfg.Enabled = false
+	if value := strings.TrimSpace(os.Getenv("OHGO_GRY_DEBUG")); value != "" {
+		cfg.Debug = truthy(value)
 	}
-	if cfg.Project == "" {
+	if cfg.Binary == "" || cfg.Project == "" {
 		cfg.Enabled = false
 	}
 	return cfg
+}
+
+// ValidProject reports whether a name can be passed to GRY as a project
+// identity. It is exported so the settings command validates with the same
+// rule the adapter enforces.
+func ValidProject(name string) bool {
+	return projectPattern.MatchString(strings.TrimSpace(name))
 }
 
 func truthy(value string) bool {

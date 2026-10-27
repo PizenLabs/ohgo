@@ -1491,7 +1491,7 @@ func runOnce(cmd *cobra.Command, text string) error {
 	if sess != nil {
 		taskID = fmt.Sprintf("sess-%d", sess.ID)
 	}
-	grySession := attachGRYEvidence(ctx, opts.root, taskID, text, loop)
+	grySession := attachGRYEvidence(ctx, opts.root, taskID, text, loop, opts.settings)
 	defer finishGRYEvidence(grySession)
 
 	outcome, _ := runHeadlessTurnAs(ctx, loop, opts.root, out, text, history, route.Active.String())

@@ -5,7 +5,7 @@ BIN := ohgo
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test vet fmt lint race check bench install uninstall clean docker snapshot release
+.PHONY: build test test-install vet fmt lint race check bench install uninstall clean docker snapshot release
 
 # Install location. Defaults to ~/.local (first on a typical PATH, no sudo);
 # override for system installs: `sudo make install PREFIX=/usr/local`.
@@ -35,6 +35,9 @@ build:
 
 test:
 	go test ./...
+
+test-install:
+	bash scripts/install_test.sh
 
 vet:
 	go vet ./...
