@@ -1487,6 +1487,13 @@ func runOnce(cmd *cobra.Command, text string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	taskID := fmt.Sprintf("run-%d", time.Now().UnixNano())
+	if sess != nil {
+		taskID = fmt.Sprintf("sess-%d", sess.ID)
+	}
+	grySession := attachGRYEvidence(ctx, opts.root, taskID, text, loop)
+	defer finishGRYEvidence(grySession)
+
 	outcome, _ := runHeadlessTurnAs(ctx, loop, opts.root, out, text, history, route.Active.String())
 	if outcome.State == runCompleted {
 		return nil

@@ -407,6 +407,18 @@ func (l *Loop) SetAuthorizeHook(authorizer Authorizer) {
 // forcing the host to keep a second reference that could drift.
 func (l *Loop) Authorizer() Authorizer { return l.cfg.Authorize }
 
+// SetBeforeToolCall installs the pre-execution hook. It must be called before
+// Run, never during one. Pass nil to remove it.
+func (l *Loop) SetBeforeToolCall(hook func(BeforeToolCallContext) BeforeToolCallResult) {
+	l.cfg.BeforeToolCall = hook
+}
+
+// SetAfterToolCall installs the post-execution hook. It must be called before
+// Run, never during one. Pass nil to remove it.
+func (l *Loop) SetAfterToolCall(hook func(AfterToolCallContext) AfterToolCallResult) {
+	l.cfg.AfterToolCall = hook
+}
+
 // SetProjectionHook installs the context projection seam after construction.
 //
 // A host installs a fresh projector at each turn boundary because the task
