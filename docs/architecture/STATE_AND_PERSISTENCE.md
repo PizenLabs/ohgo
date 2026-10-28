@@ -27,6 +27,8 @@ Two rules frame everything below:
 | `sessions.db` (+ `-wal`, `-shm`) | SQLite session store: sessions, messages, artifacts | `session` | machine; authoritative; survives every project |
 | `cache/<provider>-models.json` | provider/model discovery rosters, `schema_version`-stamped | `catalog` | machine; **derived**, rebuildable |
 | `history` | plain-REPL prompt audit trail, last 1000 lines, commands excluded | `cmd/ohgo` | machine; ephemeral audit, best-effort |
+| `update.json` | latest observed release, provenance, ETag, last error, TTL timestamps; `0600`, atomic | `update` | machine; **derived**, rebuildable, never authority |
+| `update.lock` | exclusive OS advisory installation claim; released automatically on process exit | `update` | transient; removed by its owner |
 
 `~/.ohgo` is resolved through one owner, the `state` package (`state.Dir()`,
 `state.Path(...)`). Before that change `config`, `session`, `creds`, `catalog`,
@@ -139,13 +141,17 @@ model output into durable state because no such path exists.
 ├── credentials.json              │                  project worker identity)
 ├── sessions.db      (session)    └── [graph.db]    (future; derived; disposable)
 ├── cache/           (derived)       [memory.db]    (only if ever justified)
-└── history          (audit)
+├── history          (audit)
+├── update.json      (derived)       [update.lock]  (transient install claim)
 ```
 
-**No new files are created by this slice.** `graph.db` and `memory.db` appear
-here as reserved locations with a defined lifecycle, not as permission to write
-them. A store is added only when something reads it; a database with no reader
-is a speculative structure.
+The self-update slice adds `update.json` and `update.lock`. The update record is
+a cache: a tampered record can produce a wrong hint or a redundant request, but
+it cannot install anything, because `ohgo update` resolves the release again and
+verifies the artifact before replacement. `graph.db` and `memory.db` appear here
+as reserved locations with a defined lifecycle, not as permission to write them.
+A store is added only when something reads it; a database with no reader is a
+speculative structure.
 
 Five scopes, plus the memory seam, no more:
 

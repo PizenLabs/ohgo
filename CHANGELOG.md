@@ -7,6 +7,21 @@ immutable.
 
 ### Added
 
+- Explicit self-update: `ohgo update` (`--check` to observe only) resolves the
+  published GitHub release, selects the tarball by the running `GOOS`/`GOARCH`,
+  downloads to a temporary file beside the executable, requires the published
+  SHA-256 entry, extracts only the `ohgo` entry with traversal/symlink/bomb
+  guards, replaces the executable atomically, and keeps the previous binary
+  until the new one reports the requested version. A failed verification
+  restores the previous binary. Package-manager-owned installs are detected by
+  receipt and refused with the owner's command; Windows and other unpublished
+  platforms report unsupported. Normal invocations only read a 24-hour local
+  cache (`~/.ohgo/update.json`) and may refresh it in the background; the hint
+  is footer chrome in the TUI and one line in the plain REPL, never transcript,
+  never machine output. Disable automatic checks with
+  `OHGO_UPDATE_CHECK=off` or `"update": { "enabled": false }`. Self-update is
+  not exposed as an agent tool.
+
 - MCP capability layer: normalized `<server>:<capability>` identities with
   server provenance, `read`/`execute`/`interact`/`mutate`/`unknown`
   classifications mapped to `READ`/`EXECUTE`/`EXTERNAL_SIDE_EFFECT`, explicit

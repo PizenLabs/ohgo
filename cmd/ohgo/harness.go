@@ -70,6 +70,11 @@ type harness struct {
 	// mcp is the session's one MCP manager, shared with the tool set. Nil
 	// means MCP is not configured.
 	mcp *mcpRuntime
+	// updateNotice prints a cached update hint before the next prompt. Nil
+	// disables it: tests, non-terminals, and headless runs never install or
+	// announce anything. The function reads only the local cache; it never
+	// performs network I/O in the prompt loop.
+	updateNotice func(io.Writer)
 }
 
 // newHarness assembles the backend. usage and settings may be nil only where

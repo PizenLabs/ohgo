@@ -2246,6 +2246,11 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 			parts = append(parts, status.Session)
 		}
 	}
+	// A newer release is chrome, never a transcript line. Appending it last
+	// lets the existing one-row budget drop it first on a narrow terminal.
+	if status.UpdateAvailable != "" {
+		parts = append(parts, "update "+sanitizeInline(status.UpdateAvailable))
+	}
 	// The runtime phase is named once, in the header, and the live detail
 	// lives in the activity line; the footer stays context-only so a third
 	// "working" copy never competes with them. SUP is a model role, not a

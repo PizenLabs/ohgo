@@ -372,6 +372,10 @@ type Status struct {
 	// hides it: the header and the welcome frame show no version rather
 	// than an invented one.
 	Version string
+	// UpdateAvailable is a newer release found by the background check,
+	// e.g. "v1.2.3". Empty hides the hint. It is chrome, not transcript:
+	// the notification never enters the conversation or the model context.
+	UpdateAvailable string
 }
 
 // VersionLabel normalizes a raw version for display alongside the brand.
@@ -873,6 +877,15 @@ func (s *State) Apply(event Event) {
 	case Notice:
 		s.pushEntry(Entry{Kind: EntryNotice, Notice: e.Text})
 		s.growScroll(countLines(e.Text))
+
+	case UpdateFound:
+		// Availability is chrome, not conversation: it must never enter the
+		// transcript, the session store, or the model's context. An empty
+		// version is ignored rather than clearing an existing hint, so a
+		// failed or empty refresh cannot erase a real observation.
+		if version := strings.TrimSpace(e.Version); version != "" {
+			s.Status.UpdateAvailable = VersionLabel(version)
+		}
 
 	case TaskProjected:
 		// The projection replaces the current task block in place, so a long
@@ -2471,6 +2484,12 @@ func (ShellFinished) eventKind() string { return "shell_finished" }
 type Notice struct{ Text string }
 
 func (Notice) eventKind() string { return "notice" }
+
+// UpdateFound reports a newer release discovered in the background. It is
+// chrome-only: it updates the footer hint and never enters the transcript.
+type UpdateFound struct{ Version string }
+
+func (UpdateFound) eventKind() string { return "update_found" }
 
 // ContextUpdated sizes the budget display.
 type ContextUpdated struct {

@@ -5000,6 +5000,15 @@ func (p *Program) PublishNotice(text string) {
 	p.publish(Notice{Text: text})
 }
 
+// PublishUpdateAvailable records a newer release in the footer chrome from
+// outside the update goroutine.
+//
+// It is deliberately not a Notice: an update hint is not part of the
+// conversation, must not be persisted, and must not become model context.
+func (p *Program) PublishUpdateAvailable(version string) {
+	p.publish(UpdateFound{Version: version})
+}
+
 // rebase rebuilds history from the request that was sent plus the new turns.
 func rebase(request []agent.Message, turns []agent.Turn) []agent.Message {
 	out := append([]agent.Message(nil), request...)

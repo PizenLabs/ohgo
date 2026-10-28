@@ -134,6 +134,45 @@ docker run -it -v "$PWD:/work" ohgo:dev
 The image is built `CGO_ENABLED=0` and runs as a non-root user on a distroless
 static base.
 
+### Self-update
+
+```sh
+ohgo update            # explicit install
+ohgo update --check    # report availability without installing
+```
+
+Normal invocations never download or install anything. They read the local
+cache (`~/.ohgo/update.json`, 24-hour TTL), may refresh it once in the
+background, and show a single hint — footer chrome in the full-screen UI, one
+line in the plain REPL. No hint appears on a pipe, in `ohgo run`, during CI, or
+in any machine-readable output.
+
+An explicit update:
+
+1. resolves the latest GitHub release for `PizenLabs/ohgo`;
+2. selects the tarball by the **running** `GOOS`/`GOARCH`;
+3. downloads it to a temporary file beside the installed executable;
+4. requires the published `sha256sums.txt` entry to match;
+5. extracts only the `ohgo` entry, rejecting traversal, links, and bombs;
+6. replaces the executable atomically and keeps the previous binary until the
+   new one answers `ohgo version` with the requested release;
+7. restores the previous binary if verification fails.
+
+A package-manager-owned installation is never overwritten. The command names
+the proven owner (for example `brew upgrade ohgo`) instead. Linux and macOS on
+amd64/arm64 are the published matrix; everything else reports unsupported. The
+updater never invokes `sudo`, never edits shell configuration, and is not an
+agent tool: only a human running `ohgo update` can install.
+
+Verification currently rests on TLS plus the publisher's SHA-256 manifest.
+Release signing is not part of the current release workflow; the verifier seam
+is deliberately separate from installation so a publisher signature can be
+added without redesigning replacement.
+
+Disable automatic checks with `OHGO_UPDATE_CHECK=off` (or
+`"update": { "enabled": false }` in settings). The explicit command is
+unaffected.
+
 ### Shell completion and reference docs
 
 ```sh

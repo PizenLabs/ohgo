@@ -1825,6 +1825,11 @@ func runSession(cmd *cobra.Command, args []string) error {
 			programOpts = append(programOpts, tui.WithMouseReporting())
 		}
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+		// Observation starts before the first frame: the cached hint is
+		// synchronous and local, and any refresh runs on a bounded goroutine
+		// that only updates footer chrome. Neither path installs anything.
+		startUpdateObserver(boot.Settings, version,
+			func(v string) { program.PublishUpdateAvailable(v) })
 		// The recovery store is opened before the UI runs; /undo and /redo
 		// move through the same session timeline the loop records into.
 		recoverer := openRecoveryService(opts.root)
@@ -2082,6 +2087,10 @@ func runSession(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintln(out, boot.Greeting)
 	}
 	_, _ = fmt.Fprintln(out, "Type your request, or /quit to exit.")
+	// The plain REPL reads a terminal, so a cached update hint is safe to
+	// print once here. A background refresh is persisted and picked up at the
+	// next prompt boundary, never while the user is typing.
+	updateAlert := startUpdateObserver(boot.Settings, version, nil)
 
 	var history []agent.Message
 	if sess != nil && resumeID > 0 {
@@ -2102,6 +2111,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	plain.security = opts.security
 	plain.projectID = opts.projectID
 	plain.support = surface
+	plain.updateNotice = updateAlert
 	// A plain-REPL prompt is one run, exactly like a TUI turn: it starts a
 	// fresh root grant, while the holder keeps every spawner pointed at the
 	// grant the loop is currently enforcing.
@@ -2487,6 +2497,11 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 	reader := bufio.NewReader(in)
 	pending := ""
 	for {
+		// A background release observation only ever becomes visible at a
+		// prompt boundary, never in the middle of a line the user is typing.
+		if h.updateNotice != nil {
+			h.updateNotice(out)
+		}
 		var text string
 		if pending != "" {
 			text, pending = pending, ""

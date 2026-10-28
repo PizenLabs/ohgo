@@ -23,6 +23,11 @@ func main() {
 			// is left to communicate.
 			os.Exit(exit.outcome.exitCode())
 		}
+		var reported *reportedExit
+		if errors.As(err, &reported) {
+			// The command already printed a complete explanation.
+			os.Exit(reported.code)
+		}
 		fmt.Fprintf(os.Stderr, "ohgo: %v\n", err)
 		os.Exit(1)
 	}
@@ -69,6 +74,7 @@ func rootCmd() *cobra.Command {
 	root.PersistentFlags().Bool("live", false, "output-first UI: ohgo writes the transcript and the terminal owns scrolling, selection and copy")
 
 	root.AddCommand(versionCmd())
+	root.AddCommand(updateCmd())
 	root.AddCommand(modelsCmd())
 	root.AddCommand(runCmd())
 	root.AddCommand(sessionsCmd())
