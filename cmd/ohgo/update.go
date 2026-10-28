@@ -73,11 +73,17 @@ func executeUpdate(cmd *cobra.Command, svc updateService, checkOnly bool) error 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	return executeUpdateTo(ctx, cmd.OutOrStdout(), svc, checkOnly)
+}
+
+// executeUpdateTo is the shared renderer for both the CLI command and the
+// plain REPL's /update. The full-screen UI has its own presentation, but every
+// surface crosses the one updateService.Update authority.
+func executeUpdateTo(ctx context.Context, out io.Writer, svc updateService, checkOnly bool) error {
 	// A whole update is bounded: a stalled endpoint must fail rather than
 	// hold the command open forever.
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	out := cmd.OutOrStdout()
 
 	if checkOnly {
 		status, err := svc.Check(ctx)

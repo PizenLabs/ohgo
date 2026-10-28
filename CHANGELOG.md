@@ -17,10 +17,12 @@ immutable.
   receipt and refused with the owner's command; Windows and other unpublished
   platforms report unsupported. Normal invocations only read a 24-hour local
   cache (`~/.ohgo/update.json`) and may refresh it in the background; the hint
-  is footer chrome in the TUI and one line in the plain REPL, never transcript,
-  never machine output. Disable automatic checks with
-  `OHGO_UPDATE_CHECK=off` or `"update": { "enabled": false }`. Self-update is
-  not exposed as an agent tool.
+  is header chrome in the TUI and one line in the plain REPL, never transcript,
+  never machine output. The TUI offers the same authority as `/update`; the
+  hint reports availability only and never installs by itself. Disable
+  automatic checks with `OHGO_UPDATE_CHECK=off` or
+  `"update": { "enabled": false }`. Self-update is not exposed as an agent
+  tool.
 
 - MCP capability layer: normalized `<server>:<capability>` identities with
   server provenance, `read`/`execute`/`interact`/`mutate`/`unknown`

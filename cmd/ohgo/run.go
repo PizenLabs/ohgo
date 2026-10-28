@@ -31,6 +31,7 @@ import (
 	"github.com/PizenLabs/ohgo/state"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/update"
 	"github.com/PizenLabs/ohgo/workspace"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -1825,9 +1826,20 @@ func runSession(cmd *cobra.Command, args []string) error {
 			programOpts = append(programOpts, tui.WithMouseReporting())
 		}
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+		// /update is a presentation surface over the same authority the CLI
+		// command uses. Progress lands in header chrome while the operation
+		// runs off the update goroutine; nothing installs until the human
+		// invokes /update.
+		updateSvc := update.NewService(update.Config{
+			CurrentVersion: version,
+			Progress: func(stage update.Stage) {
+				program.PublishUpdateProgress(string(stage))
+			},
+		})
+		program.SetUpdateFunc(updateSvc.Update)
 		// Observation starts before the first frame: the cached hint is
 		// synchronous and local, and any refresh runs on a bounded goroutine
-		// that only updates footer chrome. Neither path installs anything.
+		// that only updates header chrome. Neither path installs anything.
 		startUpdateObserver(boot.Settings, version,
 			func(v string) { program.PublishUpdateAvailable(v) })
 		// The recovery store is opened before the UI runs; /undo and /redo
@@ -2557,6 +2569,27 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				continue
 			case "status":
 				_, _ = fmt.Fprintln(out, h.StatusReport(history, 0, "full-screen UI only", false))
+				continue
+			case "update":
+				// The plain REPL presents the same authority as `ohgo update`
+				// and the full-screen /update; only the rendering differs.
+				var last update.Stage
+				svc := update.NewService(update.Config{
+					CurrentVersion: version,
+					Progress: func(stage update.Stage) {
+						if stage == last {
+							return
+						}
+						last = stage
+						_, _ = fmt.Fprintln(out, stageLine(stage))
+					},
+				})
+				if err := executeUpdateTo(context.Background(), out, svc, false); err != nil {
+					var reported *reportedExit
+					if !errors.As(err, &reported) {
+						_, _ = fmt.Fprintln(out, err)
+					}
+				}
 				continue
 			case "usage":
 				_, _ = fmt.Fprintln(out, h.UsageReport())

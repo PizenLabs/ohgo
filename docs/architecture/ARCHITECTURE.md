@@ -361,7 +361,8 @@ Root runs the interactive session; subcommands: `run`, `sessions` (+
 Both interactive paths share one backend (`harness.go`): the full-screen
 UI and the plain REPL call the same code for `/model` (static then live
 discovery), `/compact`, `/sessions`/`/resume`, `/jobs`, `/usage`,
-`/status`, `/doctor`, `/connect` (a Provider Manager modal browses the
+`/status`, `/update` (the same `update.Service` authority as `ohgo update`),
+`/doctor`, `/connect` (a Provider Manager modal browses the
 credential roster, an API-key modal collects the credential — pasted or
 detected — then a wizard: validated model list → saved key + settings),
 `/disconnect`

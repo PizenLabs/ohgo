@@ -143,9 +143,13 @@ ohgo update --check    # report availability without installing
 
 Normal invocations never download or install anything. They read the local
 cache (`~/.ohgo/update.json`, 24-hour TTL), may refresh it once in the
-background, and show a single hint — footer chrome in the full-screen UI, one
+background, and show a single hint — header chrome in the full-screen UI, one
 line in the plain REPL. No hint appears on a pipe, in `ohgo run`, during CI, or
 in any machine-readable output.
+
+From the full-screen UI, `/update` (or `ohgo update` from a shell) installs an
+available release. The hint never installs on its own, and ignoring it is
+always valid.
 
 An explicit update:
 
@@ -252,6 +256,7 @@ ohgo version
 /theme [dark|light]                    show or switch the palette
 /connect /disconnect [provider]        provider credentials
 /status /usage /info                    workspace, cost, docs
+/update                                 install the latest release
 /doctor /diff [target]                  setup diagnosis, diff inspector
 /mcp [list|inspect|refresh]             MCP servers and capabilities
 /undo /redo                             revert or restore the last agent edit

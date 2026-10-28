@@ -392,6 +392,14 @@ type Program struct {
 	// InitWizardHooks for the goroutine contract.
 	wizardHooks InitWizardHooks
 
+	// updateFn is the explicit update authority behind /update. Nil reports
+	// the command unavailable: the TUI never owns release resolution,
+	// download, verification, or installation itself.
+	updateFn UpdateFunc
+	// updateRunning guards against a second explicit update racing the first.
+	// It is update-goroutine-owned, like pending and flow.
+	updateRunning bool
+
 	// task is the durable task continuity layer, nil-safe. When set, runTurn
 	// records lifecycle boundaries (turn start, interruption, completion,
 	// failure) and the transcript projects the task state. It is bookkeeping
@@ -849,6 +857,9 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modelsRefreshedMsg:
 		return p.onModelsRefreshed(m)
+
+	case updateFinishedMsg:
+		return p.onUpdateFinished(m)
 
 	case commitProposedMsg:
 		return p.onCommitProposed(m)
@@ -1741,6 +1752,11 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 	case "status":
 		p.openStatus()
 		return nil
+
+	case "update":
+		// /update is the human's explicit authorization. Observation events
+		// never reach this branch; they only change header chrome.
+		return p.startUpdate()
 
 	case "usage":
 		p.openUsage()
@@ -5000,7 +5016,7 @@ func (p *Program) PublishNotice(text string) {
 	p.publish(Notice{Text: text})
 }
 
-// PublishUpdateAvailable records a newer release in the footer chrome from
+// PublishUpdateAvailable records a newer release in the header chrome from
 // outside the update goroutine.
 //
 // It is deliberately not a Notice: an update hint is not part of the

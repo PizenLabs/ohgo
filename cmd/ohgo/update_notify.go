@@ -48,7 +48,7 @@ func updateChecksEnabled(settings config.Settings, getenv func(string) string) b
 //
 // publish, when non-nil, receives a cached observation immediately and a
 // refreshed observation from the background goroutine. It is the full-screen
-// UI's thread-safe footer hook. A plain REPL passes nil and uses the returned
+// UI's thread-safe header hook. A plain REPL passes nil and uses the returned
 // function instead, so nothing is ever written while the user is typing.
 //
 // The returned function, when non-nil, reads the local cache and prints a

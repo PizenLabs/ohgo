@@ -436,10 +436,11 @@ const (
 // The line reads `ohgo v1.0.0 · model · phase · check`, each segment in its
 // chrome role: the brand in primary, the release label muted beside it, the
 // model in sage, an active phase in bold accent (idle in muted), the check
-// status in amber, and every separator in dim slate. Phase and connection
-// stay words, never colour alone. An unknown version hides rather than
-// rendering as a placeholder, and the model budget shrinks to pay for the
-// label so the header stays one row.
+// status in amber, and every separator in dim slate. A known newer release
+// appends an update segment last: availability, or the stage of an explicit
+// /update. Phase and connection stay words, never colour alone. An unknown
+// version hides rather than rendering as a placeholder, and the model budget
+// shrinks to pay for the label so the header stays one row.
 //
 // Width sheds detail, never rows: full terminals show the whole model id and
 // probe detail; medium terminals keep the state word and shorten the model;
@@ -474,6 +475,7 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	phase := string(runtime)
 	tier := headerTier(state.Width)
 	conn, showConn := headerConn(state, tier)
+	updateHint := headerUpdateHint(state, tier)
 	width := displayWidth(state, layout)
 
 	// A transient clipboard confirmation layers over the permanent header on
@@ -489,7 +491,7 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	// The model segment shares one budget with its effort badge: the badge
 	// drops before the core id truncates, so narrowing sheds "◈ max" first
 	// and only then shortens the leaf.
-	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version)-reserved)
+	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version, updateHint)-reserved)
 
 	phaseStyle := chrome.Idle
 	if headerRuntimeActive(runtime) {
@@ -519,8 +521,20 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 		sb.WriteString(chrome.Separator.Render(" · "))
 		sb.WriteString(chrome.Check.Render(conn))
 	}
+	if updateHint != "" {
+		// Update availability is chrome, not a second header row. It sits
+		// last so the model budget pays for it and the permanent identity
+		// keeps its place when the terminal narrows.
+		sb.WriteString(chrome.Separator.Render(" · "))
+		sb.WriteString(chrome.Context.Render(updateHint))
+	}
 	left := sb.String()
 	if notice == "" {
+		if state.Width > 0 && CellWidth(left) > width {
+			// Last-resort guard: a pathological release tag must not wrap the
+			// header into a second row, which would desynchronise the frame.
+			return TruncateToWidth(stripANSI(left), width)
+		}
 		return left
 	}
 	noticeStyled := ExtrasFor(state.Theme).Success.Bold(true).Render(notice)
@@ -595,15 +609,50 @@ func headerConn(state State, tier string) (string, bool) {
 	return conn, true
 }
 
+// headerUpdateHint renders the update segment for the current header tier.
+//
+// It is plain text: the caller styles it, so the hint stays subordinate to
+// the brand and the model. Availability and progress are mutually exclusive:
+// an explicit /update replaces the invitation with the phase it is running.
+// Compact terminals shed the invitation verb but keep the release identity,
+// so availability is never communicated by colour or animation alone.
+func headerUpdateHint(state State, tier string) string {
+	if state.Status.UpdateRunning {
+		stage := sanitizeInline(state.Status.UpdateStage)
+		if tier == "compact" {
+			return "updating"
+		}
+		if stage == "" {
+			return "updating ohgo"
+		}
+		return "updating · " + stage
+	}
+	version := sanitizeInline(state.Status.UpdateAvailable)
+	if version == "" {
+		return ""
+	}
+	switch tier {
+	case "compact":
+		return "update " + version
+	case "medium":
+		return "update " + version + " · /update"
+	default:
+		return "update available: " + version + " · /update"
+	}
+}
+
 // headerChromeOverhead counts every header cell except the model itself, so
 // the model receives exactly the remaining budget.
-func headerChromeOverhead(marker, phase, conn string, showConn bool, version string) int {
+func headerChromeOverhead(marker, phase, conn string, showConn bool, version, updateHint string) int {
 	n := CellWidth("ohgo " + marker + " " + " · " + phase)
 	if version != "" {
 		n += CellWidth(" " + version)
 	}
 	if showConn {
 		n += CellWidth(" · " + conn)
+	}
+	if updateHint != "" {
+		n += CellWidth(" · " + updateHint)
 	}
 	return n
 }
@@ -2246,11 +2295,9 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 			parts = append(parts, status.Session)
 		}
 	}
-	// A newer release is chrome, never a transcript line. Appending it last
-	// lets the existing one-row budget drop it first on a narrow terminal.
-	if status.UpdateAvailable != "" {
-		parts = append(parts, "update "+sanitizeInline(status.UpdateAvailable))
-	}
+	// A newer release is chrome, never a transcript line. It has exactly one
+	// home: the header, where the release identity already lives. The footer
+	// stays context-only so the same fact cannot appear twice.
 	// The runtime phase is named once, in the header, and the live detail
 	// lives in the activity line; the footer stays context-only so a third
 	// "working" copy never competes with them. SUP is a model role, not a

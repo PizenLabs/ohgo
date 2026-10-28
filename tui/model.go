@@ -376,6 +376,13 @@ type Status struct {
 	// e.g. "v1.2.3". Empty hides the hint. It is chrome, not transcript:
 	// the notification never enters the conversation or the model context.
 	UpdateAvailable string
+	// UpdateRunning reports that an explicit /update is in flight. The header
+	// then shows progress instead of the availability hint. It is chrome
+	// only: agent turns, tools, and typing keep running normally.
+	UpdateRunning bool
+	// UpdateStage is the current explicit-update phase, e.g. "downloading".
+	// Empty while no update is running.
+	UpdateStage string
 }
 
 // VersionLabel normalizes a raw version for display alongside the brand.
@@ -885,6 +892,27 @@ func (s *State) Apply(event Event) {
 		// failed or empty refresh cannot erase a real observation.
 		if version := strings.TrimSpace(e.Version); version != "" {
 			s.Status.UpdateAvailable = VersionLabel(version)
+		}
+
+	case UpdateStarted:
+		s.Status.UpdateRunning = true
+		s.Status.UpdateStage = "checking for updates"
+
+	case UpdateProgress:
+		if !s.Status.UpdateRunning {
+			return
+		}
+		if stage := strings.TrimSpace(e.Stage); stage != "" {
+			s.Status.UpdateStage = stage
+		}
+
+	case UpdateFinished:
+		s.Status.UpdateRunning = false
+		s.Status.UpdateStage = ""
+		// Only a real outcome invalidates the observation. A failure leaves
+		// the hint intact because the newer release is still known to exist.
+		if e.Err == "" && (e.InstalledVersion != "" || e.AlreadyCurrent) {
+			s.Status.UpdateAvailable = ""
 		}
 
 	case TaskProjected:
@@ -2486,10 +2514,41 @@ type Notice struct{ Text string }
 func (Notice) eventKind() string { return "notice" }
 
 // UpdateFound reports a newer release discovered in the background. It is
-// chrome-only: it updates the footer hint and never enters the transcript.
+// chrome-only: it updates the header hint and never enters the transcript.
+//
+// This event is observation, not authority. Applying it must never start an
+// installation; only the explicit /update command crosses that boundary.
 type UpdateFound struct{ Version string }
 
 func (UpdateFound) eventKind() string { return "update_found" }
+
+// UpdateStarted marks an explicit /update in flight. It is emitted only by the
+// command handler, never by an observation.
+type UpdateStarted struct{}
+
+func (UpdateStarted) eventKind() string { return "update_started" }
+
+// UpdateProgress reports one stage of the explicit update already running.
+type UpdateProgress struct{ Stage string }
+
+func (UpdateProgress) eventKind() string { return "update_progress" }
+
+// UpdateFinished closes an explicit update attempt.
+//
+// A successful install, or a truthful "already current", invalidates the
+// availability hint. A failure keeps it: a newer release is still known to
+// exist, so hiding the hint would misreport the machine's state.
+type UpdateFinished struct {
+	// InstalledVersion is the release now on disk. Empty when nothing was
+	// installed.
+	InstalledVersion string
+	// AlreadyCurrent reports that the authority found no newer release.
+	AlreadyCurrent bool
+	// Err is the failure text. Non-empty preserves the availability hint.
+	Err string
+}
+
+func (UpdateFinished) eventKind() string { return "update_finished" }
 
 // ContextUpdated sizes the budget display.
 type ContextUpdated struct {
@@ -3168,6 +3227,7 @@ var Commands = []CommandSpec{
 	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
 	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
 	{Name: "status", Usage: "status", Description: "show workspace, session, and authority status", Category: CommandGroupControl},
+	{Name: "update", Usage: "update", Description: "install the latest release if one is available", Category: CommandGroupControl},
 	{Name: "usage", Usage: "usage", Description: "inspect token usage, cost, and providers", Category: CommandGroupControl},
 	{Name: "info", Usage: "info", Description: "show documentation and changelog", Category: CommandGroupControl},
 	{Name: "about", Usage: "about", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
