@@ -687,9 +687,11 @@ gofmt -l .          # must be empty
 tests.
 
 Release preparation is documented in
-[`docs/RELEASING.md`](docs/RELEASING.md): it lists every file that changes for
-a new version, including `CHANGELOG.md` and the binary-embedded
-`update/changelog.json`, and the upgrade/restart/acknowledgement smoke test.
+[`docs/RELEASING.md`](docs/RELEASING.md). `scripts/update-version.sh` propagates
+the version in `VERSION` to every file that embeds it, and `--release` cuts
+`CHANGELOG.md` and the binary-embedded `update/changelog.json` in one step;
+`./scripts/update-version.sh --check` fails when the tree is stale. The doc also
+holds the upgrade/restart/acknowledgement smoke test.
 
 The integration suite (`cmd/ohgo/integration_test.go`) drives a full tool call
 through the real transport and filesystem against an `httptest` provider.
