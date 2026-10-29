@@ -1,0 +1,18 @@
+# Funding options for ohgo.
+# Uncomment and fill in the handle(s) for the platforms you use. GitHub only
+# reads the keys listed here, so leave unused platforms commented out.
+#
+# Founder PizenLabs
+ github: [andev0x]
+# patreon: # Replace with a single Patreon username
+# open_collective: # Replace with a single Open Collective name
+# ko_fi: # Replace with a single Ko-fi username
+# tidelift: # Replace with a single Tidelift platform-name/package-name
+# community_bridge: # Replace with a single Community Bridge project name
+# liberapay: # Replace with a single Liberapay username
+# issuehunt: # Replace with a single IssueHunt username
+# lfx_crowdfunding: # Replace with a single LFX Crowdfunding project name
+# polar: # Replace with a single Polar username
+# buy_me_a_coffee: # Replace with a single Buy Me a Coffee username
+# thanks_dev: # Replace with a single thanks.dev username
+# custom: # Replace with up to 4 custom sponsorship URLs, one per line, e.g. ["https://example.com/donate"]
