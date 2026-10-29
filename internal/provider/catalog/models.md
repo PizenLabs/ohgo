@@ -66,7 +66,7 @@ and keeps cached rows with a reason when a refresh fails.
    - Native `ollama-chat` for Ollama local and Cloud.
    - Exclude Responses-only lines (codex, internal codenames, xai), Gemini
      rows, Bedrock rows, and anything without real windows and prices.
-4. Validate: `go test ./catalog/` — `TestCatalogIsWellFormed` rejects entries
+4. Validate: `go test ./internal/provider/catalog/` — `TestCatalogIsWellFormed` rejects entries
    with no id/provider, non-positive windows, output exceeding context, or no
    input modalities. `TestResolveReturnsRealFacts` pins the values that were
    wrong before the catalog existed.

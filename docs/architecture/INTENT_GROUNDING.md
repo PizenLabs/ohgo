@@ -1,5 +1,10 @@
 # Intent Grounding and Semantic Integrity
 
+> **Package paths:** this document predates the `internal/` migration. Package
+> *names* and behaviour are unchanged; their *locations* moved. Read
+> `OHGO_ARCHITECTURE_MAP.md` for the current tree and
+> `OHGO_ARCHITECTURE_RULES.md` for the enforced boundaries.
+
 > **Status:** implemented.
 > **Scope:** user request → semantic contract → tool proposal → completion.
 > **Non-goal:** a second agent, a planner, a prompt framework, or an LLM judge

@@ -12,6 +12,12 @@
 > additively in [§12](#12-second-optimization-pass--architectural-completion),
 > which also states the final stopping-point recommendation.
 
+> **Update — third pass (architectural migration and governance).** Section 13
+> records the `internal/` topology migration and the machine-checked boundary
+> suite. The permanent contract is `OHGO_ARCHITECTURE_RULES.md`, the topology is
+> `OHGO_ARCHITECTURE_MAP.md`, and the migration record is
+> `OHGO_ARCHITECTURE_MIGRATION.md`.
+
 ---
 
 ## 1. Summary
@@ -718,3 +724,173 @@ Justification, in the brief's own terms:
 A further *optimization* pass is not justified. A further *structural* pass
 (splitting the two remaining large files) is possible and low-risk, but it is
 file organisation, not architecture, and should be scheduled on its own merits.
+
+---
+
+## 13. Third Pass — Architectural Migration and Governance
+
+> **Starting point:** commit `76a182d`, clean tree, 43 packages, suite green.
+> Sections 1–12 above were re-verified against the source before any change:
+> `agent.ClassifyRun`, the nine `cmd/ohgo` files, `ai.Model.Ref()`, the single
+> session-authority writer, and 43 packages.
+>
+> **This pass had a different objective from the first two.** They removed
+> duplicated *behaviour*. This one changed *where code lives* and made the
+> boundaries permanent. The full record is in three companion documents:
+> `OHGO_ARCHITECTURE_MAP.md`, `OHGO_ARCHITECTURE_RULES.md`, and
+> `OHGO_ARCHITECTURE_MIGRATION.md`; this section summarises and links.
+
+### 13.1 What was true before
+
+| Fact | Measurement |
+|---|---|
+| Packages | 43, of which **38 were implementation packages at the module root** |
+| Accidental Go API | any external module could import `agent`, `tools`, `workspace`, `session`, … |
+| Module-internal import edges | 127 |
+| Turn engine imports | `agent` → `{ai, budget, contract, jsonschema, security, tokens}` — already a clean allow-list, but nothing enforced it |
+| Architecture enforcement | none. The baseline documented invariants; the compiler only checked acyclicity |
+| Root-cause of the `run.go` god file (first pass) | no stated placement rule, so everything landed in the nearest package |
+
+### 13.2 Completed slices
+
+Each slice is one commit, independently revertible.
+
+#### Slice 1 (`445a4c6`) — encapsulate the kernel leaves and the provider plane
+
+| | |
+|---|---|
+| **Target** | 16 dependency-light packages |
+| **Problem** | Implementation packages sat at the module root, so every one was an accidental compatibility promise |
+| **Old owner** | module root |
+| **New owner** | `internal/…`, grouped by domain |
+| **Why correct** | The module ships a binary and documents no public Go API. `internal/` states that truth; the domain grouping states which concept each package owns |
+| **Behaviour preserved** | Pure path move: no declaration, tag, or comment changed. See §13.3 |
+| **Tests added** | none needed for a path move; the existing 2,909 test names are the specification |
+| **Verification** | `gofmt`, `build`, `vet`, `go test ./...` (40 test packages) |
+
+#### Slice 2 (`b1a1f7f`) — control, execution, continuity, presentation
+
+Moved the remaining 19 packages, including `agent`, `tools`, `tui`, and the three
+continuity stores. Same proof, plus the full matrix in §13.5.
+
+#### Slice 3 (`e69d906`) — machine-checked governance
+
+| | |
+|---|---|
+| **Target** | The boundaries themselves |
+| **Problem** | Every rule was prose. Nothing stopped a new package from importing upward, nothing forced an ownership decision, and a boundary could be crossed silently in a one-line import edit |
+| **Old owner** | human review |
+| **New owner** | `internal/architecture` — a test-only package that parses production Go files |
+| **Why correct** | It has no production code and no dependencies, so it cannot become part of the architecture it checks. It runs in every `go test ./...`, needs no extra tooling, and names the importer, the import, and the rule on failure |
+| **Behaviour preserved** | It changes no production file |
+| **Tests added** | 12 tests: 9 boundary rules, the manifest, dependency-free leaves, and the command-leaf rule |
+| **Verification** | All green on the real tree; **each rule proven to fail on an injected violation** (§13.6) |
+
+### 13.3 Why the relocation is provably behaviour-preserving
+
+Four independent layers, strongest first:
+
+1. **Diff purity.** Every added/removed line in the relocation is a module
+   import path. Zero declaration, string, tag, or statement lines changed.
+2. **Rename detection.** `git diff --summary -M` reports 458 renames; the tree
+   was moved, not rewritten.
+3. **Identical test inventory.** 2,909 test/benchmark/example names before and
+   after, same sha256 — no test renamed, dropped, or skipped.
+4. **Identical edge count.** 127 module-internal imports before and after. The
+   one new package imports nothing.
+
+Risks specific to relocation were checked individually: `go:embed` paths are
+package-relative (both embeds moved with their packages); the only `../..` root
+discovery is in `cmd/ohgo`, which did not move; and no persisted format encodes
+Go type identity (no `encoding/gob`, no `%T`/`reflect.TypeOf` in a write path),
+so `progress.json`, `sessions.db`, and `recovery.db` are byte-compatible.
+
+### 13.4 Rejected migrations
+
+| Candidate | Why not |
+|---|---|
+| `internal/foundation/` (or `core/`) for the 15 leaves | "Imports nothing" is not a domain. A folder named after the absence of dependencies is the generic dumping ground the brief forbids |
+| Merge `control/contract` into `control/workspace` | The contract is persisted in `progress.json` and consumed by `agent`; `workspace` imports `agent`, so the merge creates `agent → workspace → agent` |
+| Merge `control/cognition` or `execution/tools` into `agent` | Inverts the kernel boundary the whole architecture rests on |
+| Rename packages to remove name collisions (`diff`/`tui/diff`, `config`/`contract`) | Churn across every identifier for zero structural gain |
+| A numeric **layer-rank** rule ("no import of a higher rank") | **Tautological**: with a cycle-free graph a topological ranking always exists, so it restates the compiler's acyclicity check while looking like a boundary. Replaced with explicit semantic prohibitions |
+| Move `bench/` under `internal/` | Not shipped implementation; `internal/` is the shipped boundary |
+| Move `cmd/ohgo` under `internal/` | `package main`; the `go install …/cmd/ohgo` path is a user contract |
+| Split `harness.go` / `tui/app.go` now | Structural, not semantic; mixing a file split into a package relocation makes both harder to review and to revert. Recorded as SAFE NEXT |
+| Unify turn preparation | Rejected in §12.4; the relocation changes nothing about that finding |
+
+### 13.5 Verification
+
+| Check | Result |
+|---|---|
+| `gofmt -l .` | empty |
+| `go build ./...` | pass |
+| `go vet ./...` | pass |
+| `go test ./...` | pass — 44 packages, 40 with tests |
+| `go test -race ./...` | pass — run in two phases (`./internal/...`, then `./cmd/... ./bench/... ./scripts/...`) because linking all 41 race binaries at once exhausted the machine's free disk; every test package green |
+| `go list -deps ./...` | pass; acyclic; 127 internal edges (unchanged) |
+| Encapsulation | 3 production roots outside `internal/` (`cmd/ohgo`, `bench/*`, `scripts/*`) |
+| Manifest | 39/39 internal packages declared |
+| Boundary rules | 9/9 pass, each proven to fail on injection |
+| Diff purity | 0 non-import changed lines |
+| Test inventory | identical sha256 |
+| Binary smoke test | `ohgo 0.0.3-dev` |
+| CLI smoke test | `ohgo --help`, `ohgo models` correct |
+
+### 13.6 The governance tests found a bug in themselves
+
+The first version of the plane helper compared `"internal/continuity/task"` to
+the prefix `"internal/continuity/"`, appending a second slash. Every plane rule
+was therefore **silently vacuous**: they passed on the real tree and kept
+passing when violations were injected. Only the injection exercise exposed it.
+
+Fixed, then every rule re-proven by injecting the exact violation it forbids
+(manifest gap, kernel allow-list, execution→continuity, continuity→tui,
+intelligence→runtime, provider→runtime, shell-as-dependency, tui→tools).
+
+This is recorded because it is the general lesson: **a boundary test that has
+never failed is not evidence.** `OHGO_ARCHITECTURE_RULES.md` §18 makes the
+injection step mandatory for every new rule.
+
+### 13.7 Architectural delta
+
+Stated as ownership and enforceability, not line count:
+
+* **38 accidental public APIs became 0.** Implementation is now encapsulated;
+  the only importable roots are the command, the benchmarks, and repo tooling.
+* **Nine boundaries became machine-checked.** Before, "the engine must not know
+  about capabilities" was a comment. Now it is a failing test.
+* **Ownership became a prerequisite.** A package that is not declared in the
+  manifest cannot exist: the suite fails until someone decides who owns it.
+* **The tree now answers "where does this go?"** Eleven representative future
+  changes were placed against it (map §7); each resolved to one owner.
+* **Zero behavioural delta.** No edge added or removed, no persisted shape
+  changed, identical test inventory.
+
+What did **not** change: authority order, admission, security, read-only
+semantics, execution, completion, task lifecycle, persistence, recovery,
+repository freshness, provider behaviour, CLI behaviour, TUI behaviour.
+
+### 13.8 Remaining debt
+
+| Classification | Item |
+|---|---|
+| **SAFE NEXT** | Split `cmd/ohgo/harness.go` (965 lines, four clusters) — same package, fingerprint-verifiable |
+| **SAFE NEXT** | Split `internal/tui/app.go` method families — same package, fingerprint-verifiable |
+| **SAFE NEXT** | Constrain the manifest's domain *names* (today they are free strings) |
+| **DEFERRED** | Turn-preparation sharing; `agent/loop.go` cohesion split; `cognition`/`task` → `agent` concrete-type coupling |
+| **LOAD-BEARING** | Authority mirrors; five read-only layers; callback order; terminal CAS; journal-before-mutation; projection narrowing; contract immutability; `progress.json` > `task.md` |
+| **PUBLIC API** | The 38 packages removed from external reach (intended); `prompt.ToolCatalog`, `tui.ModelID` (dead, removal still needs a decision) |
+| **SCHEMA / COMPATIBILITY** | `progress.json` version; `sessions.db` / `recovery.db` schemas — unchanged, and any change now follows rules §12 |
+| **BEHAVIOR-CHANGING** | `ReadOnlyToolNames` drift; stale artifact origin after a switch; mid-session resume not restoring authority/model |
+
+### 13.9 Final recommendation
+
+**The repository is at a safe architectural stopping point, and it can now
+defend that position.**
+
+The first two passes removed duplicated behaviour. This pass removed the
+*possibility of silent structural decay*: ownership must be declared, direction
+is enforced, and the shell cannot become a dependency. What remains is either
+file organisation (SAFE NEXT) or a product decision (BEHAVIOR-CHANGING). Neither
+is an architecture task, and neither should be smuggled into one.

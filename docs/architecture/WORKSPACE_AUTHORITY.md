@@ -1,5 +1,10 @@
 # Workspace Authority: Intent-Aware Transitions
 
+> **Package paths:** this document predates the `internal/` migration. Package
+> *names* and behaviour are unchanged; their *locations* moved. Read
+> `OHGO_ARCHITECTURE_MAP.md` for the current tree and
+> `OHGO_ARCHITECTURE_RULES.md` for the enforced boundaries.
+
 > **Status:** Implemented
 > **Scope:** ASK / BUILD / FUZZ authority, turn routing, delegation, escalation
 > **Related:** [`ARCHITECTURE_CONTRACT_V1.md`](ARCHITECTURE_CONTRACT_V1.md) §3, §7, §22–§27, §33, §37, §44

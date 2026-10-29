@@ -14,6 +14,7 @@ Go equivalent should be redesigned rather than transliterated.
 go build ./...
 go test ./...
 go vet ./...
+go test -race ./...
 gofmt -l .          # must be empty
 ```
 
@@ -49,9 +50,11 @@ safe: never leave global mutable state, `os.Chdir`, or an un-restored
 - **No prompts in code.** System prompts and tool descriptions live in the
   `prompt` package or in the tool's own constructor. No inline prompt strings
   at call sites.
-- **Centralise before adding a helper.** Check `tools/base.go`,
-  `ai/sse.go`, and the domain package before writing a utility. Two
-  implementations of the same thing is a bug even when both work.
+- **Centralise before adding a helper.** Check `internal/execution/tools/base.go`,
+  `internal/provider/ai/sse.go`, and the domain package before writing a
+  utility. Two implementations of the same thing is a bug even when both work.
+  A persisted format (a model reference, a session snapshot) has **one**
+  formatter and one parser.
 
 ## Testing rules
 
@@ -76,19 +79,41 @@ mode a consumer would see. Specifically:
 
 ## Adding a provider
 
-1. Implement `ai.Provider` in `ai/<name>.go`, reusing `doJSON` and `readSSE`
-   from `ai/sse.go`.
+1. Implement `ai.Provider` in `internal/provider/ai/<name>.go`, reusing
+   `doJSON` and `readSSE` from `internal/provider/ai/sse.go`.
 2. Add the `api` constant and register it in `Registry.ProviderFor`.
-3. Add the credential lookup to `envAPIKeyVars`.
+3. Add the credential lookup to `creds.ProviderEnvVars`
+   (`internal/provider/creds`).
 4. Add SSE round-trip tests with an `httptest` server: text, tool calls with
    streamed argument fragments, usage, stop reason, and an error event.
 
 ## Adding a tool
 
-1. Create the type in `tools/<name>.go`, embedding `tools.Base`.
+1. Create the type in `internal/execution/tools/<name>.go`, embedding
+   `tools.Base`.
 2. Write the JSON Schema as a `map[string]any` in the constructor. A malformed
    schema must panic at construction — never reach a call site.
 3. Declare the `agent.Approval` tier honestly. Omitted means "prompt every
    time", which is the correct default.
-4. Register it in `cmd/ohgo/run.go`'s `buildTools`.
+4. Register it in `cmd/ohgo/build.go`'s `buildTools`.
 5. Test: the happy path, each rejection, cancellation, and root containment.
+
+## Where code goes
+
+`OHGO_ARCHITECTURE_MAP.md` answers "where does feature X belong" and
+`OHGO_ARCHITECTURE_RULES.md` is the permanent contract. Both are enforced by
+`internal/architecture` (a test-only package that fails `go test ./...`).
+
+In short:
+
+- Implementation lives under `internal/`, grouped by domain
+  (`control`, `execution`, `continuity`, `intelligence`, `provider`, `tui`, …).
+  `cmd/ohgo` is composition only; nothing imports it.
+- `internal/agent` is a closed kernel: it may import only `contract`, `budget`,
+  `security`, `jsonschema`, `ai`, `tokens`. Capabilities, workspace policy,
+  persistence and presentation reach it through interfaces, never imports.
+- Every new package must be declared in the manifest in
+  `internal/architecture/rules_test.go`, with the domain that owns it.
+- Do not create `common/`, `shared/`, `util/`, `helpers/`, `runtime/`, `core/`,
+  `engine/`, `manager/` or `pipeline/`. If a concept has no owner, deciding the
+  owner is the task.

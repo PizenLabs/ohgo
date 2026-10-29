@@ -166,7 +166,7 @@ Validate both records before committing:
 
 ```sh
 ./scripts/update-version.sh --check
-go test ./update/ -run 'Changelog|Transition'
+go test ./internal/update/ -run 'Changelog|Transition'
 ```
 
 `--check` proves every released `CHANGELOG.md` section has a matching entry
@@ -241,7 +241,7 @@ make build VERSION=vX.Y.Z
 ```
 
 `ohgo version` must print `vX.Y.Z`. Confirm `update/changelog.json` has the same
-key and that `go test ./update/ -run 'Changelog|Transition'` passes.
+key and that `go test ./internal/update/ -run 'Changelog|Transition'` passes.
 
 A complete updater smoke test needs a published release because the updater
 resolves GitHub releases. Use a staging repository/release when you need that

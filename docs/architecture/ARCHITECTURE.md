@@ -1,5 +1,10 @@
 # Architecture
 
+> **Package paths:** this document predates the `internal/` migration. Package
+> *names* and behaviour are unchanged; their *locations* moved. Read
+> `OHGO_ARCHITECTURE_MAP.md` for the current tree and
+> `OHGO_ARCHITECTURE_RULES.md` for the enforced boundaries.
+
 How `ohgo` is structured, and why. The port invariants live in
 [`MEMORY.md`](MEMORY.md); this file is the map, that file is the law.
 

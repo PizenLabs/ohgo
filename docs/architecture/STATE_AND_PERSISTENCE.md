@@ -1,5 +1,10 @@
 # State, Persistence & Memory Boundaries
 
+> **Package paths:** this document predates the `internal/` migration. Package
+> *names* and behaviour are unchanged; their *locations* moved. Read
+> `OHGO_ARCHITECTURE_MAP.md` for the current tree and
+> `OHGO_ARCHITECTURE_RULES.md` for the enforced boundaries.
+
 How OHGO separates machine, project, session, derived, and runtime state — and
 where each boundary is drawn, why, and what owns it.
 
