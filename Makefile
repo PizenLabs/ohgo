@@ -66,7 +66,7 @@ clean:
 	rm -f $(BIN) coverage.* *.out *.test
 
 docker:
-	docker build -t ohgo:$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) -t ohgo:$(VERSION) .
 
 snapshot:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN)-$(VERSION) ./cmd/ohgo
