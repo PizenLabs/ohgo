@@ -1,11 +1,7 @@
 package tui
 
 import (
-	"context"
-	"errors"
-
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/contract"
 )
 
@@ -33,63 +29,30 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 // evidence verdict. A non-empty review can only downgrade a normal completion;
 // a proven mutation on a resource stop remains governed by
 // EvaluateBudgetCompletion, which deliberately ignores it.
+//
+// The stop classification and the completion rules belong to agent.ClassifyRun;
+// this function only projects its verdict into the durable task lifecycle.
 func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string) (taskAction, string) {
-	// A cancelled or turn-limited run is a recoverable pause. It must not read
-	// verification evidence after the run has been stopped: cancellation would
-	// otherwise be observable only after a post-cancel filesystem walk.
-	switch {
-	case errors.Is(err, context.Canceled):
-		return taskActionPause, "interrupted"
-	case errors.Is(err, context.DeadlineExceeded):
-		completion := agent.EvaluateBudgetCompletion(agent.CompletionInput{
-			Turns:          turns,
-			Contract:       intent,
-			Snapshot:       snapshot,
-			Resolver:       resolver,
-			EvidenceReview: evidenceReview,
-		}, true)
-		if completion.Complete() {
-			return taskActionComplete, ""
-		}
-		return taskActionPause, "deadline reached"
-	case errors.Is(err, budget.ErrExhausted):
-		// Budget exhaustion is a resource stop, not a verdict. Phase 4
-		// completion evidence remains authoritative: a tree that stopped
-		// after an independently verified objective may still complete, while
-		// an unverified stop is resumable and never becomes success merely
-		// because the grant ran out.
-		//
-		completion := agent.EvaluateBudgetCompletion(agent.CompletionInput{
-			Turns:          turns,
-			Contract:       intent,
-			Snapshot:       snapshot,
-			Resolver:       resolver,
-			EvidenceReview: evidenceReview,
-		}, true)
-		if completion.Complete() {
-			return taskActionComplete, ""
-		}
-		var exhausted *budget.ExhaustedError
-		if errors.As(err, &exhausted) {
-			return taskActionPause, exhausted.Error()
-		}
-		return taskActionPause, "budget exhausted"
-	case errors.Is(err, agent.ErrTurnLimit):
-		return taskActionPause, "turn limit reached"
-	case err != nil:
-		return taskActionFail, err.Error()
-	}
-	completion := agent.EvaluateTaskCompletion(agent.CompletionInput{
+	verdict, reason := agent.ClassifyRun(err, agent.CompletionInput{
 		Turns:          turns,
 		Contract:       intent,
 		Snapshot:       snapshot,
 		Resolver:       resolver,
 		EvidenceReview: evidenceReview,
-	})
-	switch {
-	case completion.Complete():
+	}, false)
+
+	switch verdict {
+	case agent.RunCompleted:
 		return taskActionComplete, ""
-	default:
-		return taskActionReview, completion.Reason
+	case agent.RunNeedsReview:
+		return taskActionReview, reason
+	case agent.RunCancelled:
+		// Cancellation is a pause, not a failure verdict: the human's stop is
+		// the more truthful transition for a non-terminal run.
+		return taskActionPause, reason
+	case agent.RunFailed:
+		return taskActionFail, reason
+	default: // agent.RunPaused
+		return taskActionPause, reason
 	}
 }

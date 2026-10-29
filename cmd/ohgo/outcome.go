@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/cognition"
 	"github.com/PizenLabs/ohgo/contract"
 	"github.com/PizenLabs/ohgo/workspace"
@@ -111,11 +109,12 @@ func contextAuditEnabled() bool {
 	}
 }
 
-// projectRun derives the stateless verdict from the shared Phase 4 evaluator.
+// projectRun derives the stateless verdict from the shared evaluator.
 //
 // It is the one mapping used by `ohgo run` and the plain REPL. It never
-// reimplements completion: every semantic decision is delegated to
-// agent.EvaluateTaskCompletion or agent.EvaluateBudgetCompletion.
+// reimplements completion or the stop classification: agent.ClassifyRun owns
+// the decision, and this function only projects the verdict into the exit-code
+// vocabulary a script can branch on.
 func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, deadlineExpired bool, evidenceReview string) runOutcome {
 	input := agent.CompletionInput{
 		Turns:          turns,
@@ -125,53 +124,21 @@ func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, s
 		EvidenceReview: evidenceReview,
 	}
 
-	switch {
-	case errors.Is(err, context.Canceled):
-		// Cancellation is authoritative. Verified work is not completed after
-		// the user interrupted the process; the TUI path pauses for the same
-		// reason.
-		return newOutcome(runCancelled, "interrupted")
-	case errors.Is(err, context.DeadlineExceeded):
-		return resourceOutcome(input, "deadline reached")
-	case errors.Is(err, budget.ErrExhausted):
-		reason := "budget exhausted"
-		var exhausted *budget.ExhaustedError
-		if errors.As(err, &exhausted) {
-			reason = exhausted.Error()
-		}
-		return resourceOutcome(input, reason)
-	case errors.Is(err, agent.ErrTurnLimit):
-		return newOutcome(runPaused, "turn limit reached")
-	case err != nil:
-		return newOutcome(runFailed, err.Error())
-	}
-
-	if deadlineExpired {
-		// A deadline is a resource stop, not a verdict. Phase 5's rule still
-		// applies: already-complete evidence remains authoritative, and a
-		// missing closing turn does not erase a verified mutation.
-		completion := agent.EvaluateBudgetCompletion(input, true)
-		if completion.Complete() {
-			return newOutcome(runCompleted, "")
-		}
-		return newOutcome(runPaused, "deadline reached")
-	}
-	completion := agent.EvaluateTaskCompletion(input)
-	if completion.Complete() {
+	verdict, reason := agent.ClassifyRun(err, input, deadlineExpired)
+	switch verdict {
+	case agent.RunCompleted:
 		return newOutcome(runCompleted, "")
+	case agent.RunNeedsReview:
+		return newOutcome(runNeedsReview, reason)
+	case agent.RunPaused:
+		return newOutcome(runPaused, reason)
+	case agent.RunCancelled:
+		// Cancellation is authoritative: verified work is not completed after
+		// the user interrupted the process.
+		return newOutcome(runCancelled, reason)
+	default:
+		return newOutcome(runFailed, reason)
 	}
-	return newOutcome(runNeedsReview, completion.Reason)
-}
-
-// resourceOutcome applies the Phase 5 budget-completion rule: a resource stop
-// is not success by itself, but already-complete evidence remains
-// authoritative.
-func resourceOutcome(input agent.CompletionInput, reason string) runOutcome {
-	completion := agent.EvaluateBudgetCompletion(input, true)
-	if completion.Complete() {
-		return newOutcome(runCompleted, "")
-	}
-	return newOutcome(runPaused, reason)
 }
 
 // refuseHeadless prints and returns the verdict for a route the active

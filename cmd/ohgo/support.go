@@ -268,3 +268,28 @@ func supReasoning(effort string) (bool, string) {
 		return true, effort
 	}
 }
+
+// supportBuilder returns a builder for the ephemeral $sup runtime.
+//
+// The model and effort resolve through the SUP role on every invocation, so a
+// /model reassignment applies to the next $sup with no restart. The runtime is
+// only the shared provider transport plus the resolved model: $sup is an answer
+// surface, so it is built without the agent loop, the tool set, the repository
+// context, and the compaction machinery the workspaces carry (§1, §2, §4).
+//
+// It is built lazily on first use: resolving a second model eagerly would cost
+// a round trip for a capability most sessions never invoke.
+func supportBuilder(opts options, registry *ai.Registry) func() (supportBundle, error) {
+	return func() (supportBundle, error) {
+		supModel, effort, err := resolveSupModel(opts.settings, dynamicResolver(context.Background(), registry))
+		if err != nil {
+			return supportBundle{}, err
+		}
+		return supportBundle{
+			stream: registry.StreamFn(),
+			model:  supModel,
+			ref:    supModel.Provider + "/" + supModel.ID,
+			effort: effort,
+		}, nil
+	}
+}
