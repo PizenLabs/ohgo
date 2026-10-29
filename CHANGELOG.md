@@ -5,6 +5,8 @@ immutable.
 
 ## [Unreleased]
 
+## [v0.0.3] - 2026-10-29
+
 ### Added
 
 - Explicit self-update: `ohgo update` (`--check` to observe only) resolves the

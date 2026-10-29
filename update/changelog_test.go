@@ -10,15 +10,15 @@ func TestEmbeddedChangelogIsLocalAndWellFormed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadChangelog: %v", err)
 	}
-	release, ok := changelog.Release("v0.8.3")
+	release, ok := changelog.Release("v0.0.3")
 	if !ok {
-		t.Fatal("the embedded changelog has no notes for v0.8.3")
+		t.Fatal("the embedded changelog has no notes for v0.0.3")
 	}
-	if !strings.Contains(release.Title, "v0.8.3") {
+	if !strings.Contains(release.Title, "v0.0.3") {
 		t.Errorf("title = %q, want the release named", release.Title)
 	}
 	if len(release.Changes) == 0 {
-		t.Fatal("v0.8.3 has no changes")
+		t.Fatal("v0.0.3 has no changes")
 	}
 	seen := make(map[string]bool)
 	for _, change := range release.Changes {

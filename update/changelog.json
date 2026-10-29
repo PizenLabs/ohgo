@@ -1,9 +1,15 @@
 {
   "schema": 1,
   "releases": {
-    "v0.8.3": {
-      "title": "What's new in v0.8.3",
+    "v0.0.3": {
+      "title": "What's new in v0.0.3",
       "changes": [
+        {
+          "id": "self-update",
+          "type": "added",
+          "title": "Explicit self-update",
+          "description": "ohgo update installs the published release after verifying its SHA-256, and a failed verification restores the previous binary."
+        },
         {
           "id": "update-lifecycle",
           "type": "added",
@@ -15,12 +21,6 @@
           "type": "improved",
           "title": "Improved TUI update handling",
           "description": "The update hint remains informational, installation stays explicit, and the restart requirement is named truthfully."
-        },
-        {
-          "id": "local-release-notes",
-          "type": "changed",
-          "title": "Release notes stay local",
-          "description": "What's New is read from the binary, so presenting it never performs a network request."
         }
       ]
     }

@@ -24,6 +24,8 @@ jobs:
         run: go vet ./...
       - name: Gofmt
         run: test -z "$(gofmt -l .)"
+      - name: Version files
+        run: ./scripts/update-version.sh --check
       - name: Test
         run: go test -coverprofile=coverage.out -covermode=atomic ./...
       - name: Upload coverage
