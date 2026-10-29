@@ -73,7 +73,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	if tui.NormalizeMouse(mouse) == tui.MouseReport {
 		programOpts = append(programOpts, tui.WithMouseReporting())
 	}
-	program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+	program := tui.NewProgram(loop, opts.model.Ref(), opts.model.ContextWindow, programOpts...)
 	recoverer := openRecoveryService(opts.root)
 	defer func() { _ = recoverer.Close() }()
 	program.SetRecovery(recoverer)
@@ -125,7 +125,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 			return err
 		},
 		func() string {
-			return held.model.Provider + "/" + held.model.ID
+			return held.model.Ref()
 		},
 	)
 	program.SetUsageLog(held.usage)
@@ -145,7 +145,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	program.SetModelLister(func() []string {
 		var ids []string
 		for _, model := range catalog.List() {
-			ids = append(ids, model.Provider+"/"+model.ID)
+			ids = append(ids, model.Ref())
 		}
 		return ids
 	})
@@ -183,7 +183,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 				WorkspaceAccent: style.Accent,
 				HasWorkspace:    true,
 			})
-			program.PublishModel(held.model.Provider + "/" + held.model.ID)
+			program.PublishModel(held.model.Ref())
 			program.PublishEffort(func() string {
 				role := held.sessionRole()
 				if role == "" {
@@ -352,8 +352,8 @@ func attachWizardSession(cmd *cobra.Command, opts *options, registry *ai.Registr
 		}
 		// The loop predates the authority restore, so it moves when the
 		// session names a different model than the resolved one.
-		if current := held.model.Provider + "/" + held.model.ID; current != opts.model.Provider+"/"+opts.model.ID {
-			if _, err := held.SwitchModel(context.Background(), opts.model.Provider+"/"+opts.model.ID); err != nil {
+		if current := held.model.Ref(); current != opts.model.Ref() {
+			if _, err := held.SwitchModel(context.Background(), opts.model.Ref()); err != nil {
 				return fmt.Errorf("resume: session model: %w", err)
 			}
 		}
@@ -373,7 +373,7 @@ func attachWizardSession(cmd *cobra.Command, opts *options, registry *ai.Registr
 
 	sess, err := store.CreateWith(session.CreateOptions{
 		Cwd:       opts.root,
-		Model:     opts.model.Provider + "/" + opts.model.ID,
+		Model:     opts.model.Ref(),
 		Workspace: opts.authority().String(),
 		Project:   projectID,
 	})

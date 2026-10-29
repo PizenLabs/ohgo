@@ -173,13 +173,13 @@ func (h *harness) SupportInfo() (model, effort string) {
 	settings := h.settingsOrDefault()
 	resolved, eff, err := resolveSupModel(settings, catalog.Resolve)
 	if err == nil {
-		return resolved.Provider + "/" + resolved.ID, eff
+		return resolved.Ref(), eff
 	}
 	if ref, eff, _ := settings.RoleModel(string(config.RoleSup)); strings.TrimSpace(ref) != "" {
 		return strings.TrimSpace(ref), strings.TrimSpace(eff)
 	}
 	fallback := catalog.Default()
-	return fallback.Provider + "/" + fallback.ID, ""
+	return fallback.Ref(), ""
 }
 
 // CloseSupport discards the ephemeral conversation without touching the main
@@ -226,7 +226,7 @@ func resolveRoleModel(settings config.Settings, role config.Role, label string, 
 	if err != nil {
 		return ai.Model{}, "", err
 	}
-	canonical := model.Provider + "/" + model.ID
+	canonical := model.Ref()
 	if validate && effort != "" && effort != "off" {
 		if !catalog.ThinkingFor(canonical).Supports(effort) {
 			return ai.Model{}, "", fmt.Errorf("%s: %s does not expose thinking effort %q", label, canonical, effort)
@@ -288,7 +288,7 @@ func supportBuilder(opts options, registry *ai.Registry) func() (supportBundle, 
 		return supportBundle{
 			stream: registry.StreamFn(),
 			model:  supModel,
-			ref:    supModel.Provider + "/" + supModel.ID,
+			ref:    supModel.Ref(),
 			effort: effort,
 		}, nil
 	}

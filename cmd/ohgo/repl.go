@@ -176,7 +176,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				}
 				sess, err := h.store.CreateWith(session.CreateOptions{
 					Cwd:       h.root,
-					Model:     h.model.Provider + "/" + h.model.ID,
+					Model:     h.model.Ref(),
 					Workspace: h.activeWorkspace().String(),
 					Project:   h.projectID,
 				})

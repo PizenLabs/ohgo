@@ -7,6 +7,11 @@
 > **Constraint honoured throughout:** no authority, execution, persistence,
 > completion, or repository-intelligence semantics were altered.
 
+> **Update — second pass (architectural completion).** Sections 1–11 document
+> the first pass and remain historically accurate. The second pass is recorded
+> additively in [§12](#12-second-optimization-pass--architectural-completion),
+> which also states the final stopping-point recommendation.
+
 ---
 
 ## 1. Summary
@@ -382,3 +387,334 @@ Per the rule that architecture history is not silently erased.
 
 The baseline document itself was **not** edited; it remains the historical
 evidence of the pre-optimization state.
+
+---
+
+## 12. Second Optimization Pass — Architectural Completion
+
+> **Starting point:** commit `51c19ad`, clean tree. Sections 1–11 above were
+> re-verified against the source: `agent.ClassifyRun` and the nine extracted
+> `cmd/ohgo` files are present, `run.go` is 546 lines, and the suite is green.
+>
+> **Method this pass:** (a) a mechanical duplicate scan rather than intuition,
+> (b) an explicit partition of the turn-preparation path before any extraction,
+> (c) one semantic slice per canonical-owner question, (d) fingerprint/identity
+> verification for every change that touched persisted values.
+
+### 12.1 Refactoring ledger
+
+| Candidate | Type | Current owners | Risk | Value | Correct owner known? | Action |
+|---|---|---|---|---|---|---|
+| duplicated turn preparation | orchestration | `tui/app.go`, `cmd/ohgo/outcome.go` | high | claimed high | **No** | investigated → rejected |
+| model reference format `provider/id` | protocol / vocabulary | 31 ad-hoc sites in `cmd/ohgo`, `tui`, `bench` | low | high | **Yes** — `ai.Model` | **done** |
+| session authority snapshot write | state transition | `SwitchWorkspace` inline + `recordSessionAuthority` | low | medium | **Yes** — existing `harness` method | **done** |
+| terminal-status predicate | semantic | `tui.taskStatusTerminal` vs `task.Status.IsTerminal` | high | low | yes, but **seam forbids** it | rejected (documented projection) |
+| unknown-authority defaulting | policy | `options.authority()` vs `harness.activeWorkspace()` | medium | low | no — different inputs | rejected |
+| `agent/loop.go` cohesion split | structural | one file | high | low | no — one machine | rejected |
+| authority mirrors | state | `options`, `harness`, gate, session | critical | high | no | preserve |
+| persistence types | compatibility | `task`, `session`, `recovery` | critical | medium | n/a | preserve |
+| repository intelligence | subsystem | `ast`, `tools.StructuralSource` | high | medium | n/a | preserve |
+| tool/evidence coupling | protocol | `tools`, `cognition` | high | high | n/a (it is a contract) | preserve |
+
+**Mechanical duplicate scan.** Two throwaway AST tools were built rather than
+trusting eyeballing:
+
+* `bodydup` — hashes each function/method body after `go/printer` normalisation.
+* `bodydup2` — hashes the token stream with identifiers and literals replaced,
+  so a copy that differs only in names still collides.
+
+Both reported **0 duplicate groups across all production packages**. Conclusion:
+the copy-paste duplication the baseline described has been eliminated (the first
+pass removed the one literal case, `ClassifyRun`). Everything that remains in
+baseline §17 is either a different concept with a shared name or a deliberate
+projection — not duplicated code. This is textual evidence, not semantic proof,
+which is why each remaining candidate below was still judged individually.
+
+### 12.2 Completed slice 1 — the model reference has one owner
+
+| | |
+|---|---|
+| **Target** | The `provider/model-id` reference format |
+| **Problem** | `"provider" + "/" + id` was assembled at **31 sites** (`cmd/ohgo` 28, `tui` 1, `bench` 1, plus the pair form in `options.go`). Separately, `tui.ModelID` was exported and documented as "matching the CLI's own format" — while having **zero callers**. The type that owns the two fields, `ai.Model`, had no formatter. |
+| **Old owner** | Nobody. 31 independent ad-hoc definitions, plus a dead `tui` helper claiming the role. |
+| **New owner** | `ai.Model.Ref()` and `ai.Ref(provider, id)` — `ai/model.go`. `Model.Ref()` delegates to `Ref`, so the rule is implemented once. |
+| **Why the owner is correct** | `ai.Model` owns `Provider` and `ID`; formatting their reference needs no other package. Direction stays `cmd/ohgo → ai` and `tui → ai` (both already existed). No new edge, no new package. The reference is **persisted** in `sessions.db` (`sessions.workspace/model`) and `settings.json` (`Roles`, `Model`), and parsed by `catalog.Resolve` and `config.splitModel`, both with `strings.Cut(ref, "/")`. Formatting it anywhere else is a second definition of a wire contract. |
+| **Behaviour preserved** | Byte-identical output by construction. The existing assertion `h.sess.Model == "p/m"` (`TestTransitionKeepsTheSameSession`) still passes, and `TestApplySessionAuthorityRestoresWorkspaceAndModel` still reads back `anthropic/claude-sonnet-4-5`. `options.go`'s pair form now calls `ai.Ref(provider, id)`; `tui.ModelID` now delegates to `ai.Model.Ref()` instead of reimplementing (exported surface preserved). |
+| **Tests added** | `ai/ref_test.go`: ref round-trips through the first-slash split; an OpenRouter-style id containing a slash stays one id; the pair form and the method agree. |
+| **Verification** | Full suite green; `-race` on `ai`, `cmd/ohgo`, `tui`; zero `Provider + "/"` concatenations remain in non-test code (grep-verified). Test-the-test: changing the separator to `:` fails both round-trip tests, then restored. |
+
+The OpenRouter case is the reason this matters: `openrouter/anthropic/claude-3.5-sonnet`
+must survive a save/restore cycle, and every parser splits on the *first* slash.
+A future formatter that escaped or dropped the inner slash would silently
+retarget the model on resume. The named owner puts that decision in one place.
+
+### 12.3 Completed slice 2 — one writer for the session authority snapshot
+
+| | |
+|---|---|
+| **Target** | The persisted session authority transition |
+| **Problem** | `harness.SwitchWorkspace` assembled and wrote the session's `workspace` + `model` snapshot inline (7 lines, including its own `store.SetAuthority` call and a duplicate warn-and-continue error path), while `harness.recordSessionAuthority` already did exactly that for `AssignRole` and `SetModel`. Two writers for one persisted fact. |
+| **Old owner** | Split: `SwitchWorkspace` inline vs `recordSessionAuthority`. |
+| **New owner** | `harness.recordSessionAuthority` — now the single writer. `SwitchWorkspace` sets only the workspace field it uniquely knows, then delegates. |
+| **Why the owner is correct** | The method already existed and already carried the contract ("a storage failure is reported but never fails the assignment"). Adding a third caller is cheaper and safer than a third copy. The switch is the only path that also changes the workspace, so it sets that one field and lets the canonical writer persist. |
+| **Behaviour preserved** | Exact equivalence: `recordSessionAuthority` writes `strings.ToLower(h.workspace)`, and `SwitchWorkspace` sets `h.workspace = ws.Label()` immediately before calling it, so `"BUILD" → "build" == ws.String()` for all three valid authorities. Nil `sess`/`store` handling and the warning text are unchanged. `h.sess.Workspace` is still set explicitly (the method does not own it). |
+| **Tests added** | `cmd/ohgo/workspace_switch_test.go: TestSwitchWorkspaceRecordsTheSessionAuthority` — store-backed, asserts both the in-memory session and the persisted row. Written **first** and confirmed passing against the old implementation, then re-run after the change. |
+| **Verification** | Switch/transition suite green; test-the-test: dropping the delegation fails with `stored session = build/…, want ask/…`, then restored. |
+
+### 12.4 Rejected refactor — turn preparation (the Priority-1 candidate)
+
+This was the main investigation. Both paths were read line by line and partitioned.
+
+**Partition**
+
+| Category | Operations | Same semantics? |
+|---|---|---|
+| **Common — already canonical calls** | `workspace.BuildIntentContract(text)`; `agent.CaptureTargetsContext`; `cognition.ProbeFacts`; `cognition.BuildShape`; `cognition.NewProjector`; `loop.SetProjectionHook`; `loop.SetGrounding`; `loop.Run` | Each is a *single call to a function that already has one owner*. No logic is duplicated. |
+| **Common — repeated composition** | contract → snapshot → shape → projector → hook → grounding → request (≈7 lines) | **No.** Three of its five inputs differ in *source*, and one shell has an extra branch. |
+| **TUI-specific** | route guard / `TurnAuthority`; task continuation decision (which can *replace* `intent` with the persisted contract); `task.Begin`; fresh `RunBudget` + `SetBudget`; authority label from `turn.Active`/`workspace.Current`; durable `EvidenceState`; `RecordProjection` sink; `persistTo(user)`; text/tool/turn hooks; mention + task-continuity + proposal context blocks; recovery journal; session metrics; terminal CAS; task transitions; assistant-tail publishing; result persistence; history rebase | — |
+| **Headless-specific** | authority normalisation with `build`/`ask` fallback; ephemeral `EvidenceState`; `OHGO_DEBUG_CONTEXT` audit sink; `err == nil && ctx.Err() != nil` normalisation; `deadlineExpired` flag; `lastReport.EvidenceReview()`; `projectRun` → exit code | — |
+| **Persistence-specific** | TUI persists the user message immediately and each assistant/tool result per turn; headless persists nothing here, and `ohgo run` deliberately does not store the user prompt | — |
+| **Presentation-specific** | TUI publishes events; headless prints one verdict line | — |
+
+**Why no shared owner can be correct**
+
+1. **The only identical logic is already owned.** Contract extraction, snapshot
+   capture, shape building, projection and grounding are each one call into a
+   package that already owns them. Moving those calls into a new component does
+   not remove a definition; it adds an indirection layer over existing seams.
+2. **The composition's inputs differ in kind, not just in value.** Snapshot root
+   and resolver differ (`root`/`structuralResolver(loop.Tools())` vs
+   `p.completionRoot`/`p.completionResolver`); evidence differs (`NewEvidenceState()`
+   vs `p.task.Evidence()`); the report sink differs (stderr audit vs
+   `task.RecordProjection`). A shared function would need all of them as
+   parameters, plus a branch for the TUI's nil-evidence fallback.
+3. **Ordering is incompatible.** The TUI must interleave `task.Begin` and the
+   fresh run grant *between* contract extraction and shape building: the shape
+   consumes `loop.Budget().Snapshot()` after the new grant is installed, and
+   `Begin` persists the contract. Even `SetGrounding` is installed at a different
+   point in the two paths. A single shared "prepare" function would have to own
+   the durable-task lifecycle or take it as a callback — i.e. it would need to
+   know about durable tasks, which is exactly the domain knowledge that must not
+   move into a neutral package.
+4. **Every possible home is a layering regression.** `tui` cannot import
+   `cmd/ohgo` (package `main`); `agent` must not import `workspace`/`cognition`;
+   `cognition` is a pure narrowing package and must not orchestrate a live
+   `*agent.Loop`; a new package would need a semantic boundary, and "the seven
+   call-composition lines two shells happen to share" is not one.
+
+**Conclusion:** this is category C (coincidentally similar), not category A.
+The apparent duplication is a *repeated call sequence over already-canonical
+owners*, not duplicated behaviour. Extracting it would add an abstraction with
+no owner and encode shell differences as parameters. **Not extracted.**
+
+Because this path is *not* being changed, no new characterization suite was
+added for it: §19's requirement applies to seams that are about to move. Both
+shells' verdicts remain pinned by the existing
+`tui/completion_test.go`, `tui/budget_test.go`, and
+`cmd/ohgo/headless_outcome_test.go` suites, plus the six `TestClassifyRun*`
+tests from the first pass.
+
+The one genuine divergence found while partitioning is worth recording: the
+TUI lets `BuildShape` default an empty authority to `build`, while the headless
+path applies an extra `informational → ask` rule. Those are different shell
+policies, so they must not be unified as a "cleanup" — that would change what
+the state block reports.
+
+### 12.5 Other rejected candidates
+
+| Apparent duplication | Why it is not safe to consolidate | Evidence |
+|---|---|---|
+| `tui.taskStatusTerminal` vs `task.Status.IsTerminal` | The TUI deliberately does not import `task`; the vocabulary is a projection. Consolidating would either import the domain type into the UI or export a string predicate purely to serve it. | `tui/task.go` documents the rule at the declaration: the task states "are duplicated here as plain strings rather than imported so the seam stays a projection". |
+| `options.authority()` vs `harness.activeWorkspace()` | Different inputs (`workspace.Workspace` value vs a label string) and different failure modes (no parse vs `workspace.Parse` error). They share only the *value* `workspace.Build`, which is not a policy to abstract. | `workspace.Parse` is the canonical string parser; `options.authority` never parses. A merged helper would need both shapes and would hide which validation ran. |
+| `cognition.EvidenceState` vs `agent.scanCompletionEvidence` | Bounded, durable, projection-facing vs complete, in-memory, verdict-facing. Different retention and different authority. | Baseline §17.5; the previous pass already rejected it, and nothing in this pass changed the inputs. |
+| `agent/loop.go` cluster split | The file is **one state machine plus its configuration contract**. `Run`/`dispatch`/`execute`/`authorize` share state and ordering; the hook setters exist only to populate `Config`. Splitting them across files would make one machine read as several, which is the "split a state machine across arbitrary files" the brief forbids. | Distinct from `cmd/ohgo/run.go`, which held *unrelated* responsibilities (CLI parsing, wizard, REPL, history). There, splitting restored the package's own convention. |
+| Read-only layers (semantic intent, security authority, tool capability, OS sandbox, delegation filter) | They protect different layers; collapsing them to one boolean would weaken the strongest boundary. | Baseline §17/§18.7; untouched this pass. |
+| Authority mirrors (`options.workspace`, `harness.workspace`, `authorityGate`, `session.Workspace`) | Configuration vs live runtime value vs persisted snapshot. The invariant is that the execution path reads live authority at call time; merging the mirrors would require a redesign with new tests for resume/switch/adopt. | Baseline invariant 6 and hazard 17; `securityGate.authorityInForce` reads the gate per call. |
+| Tool names / `Details` keys | A string protocol between `tools` and `cognition`. Renaming silently degrades evidence and completion. | Baseline hazard 12. |
+| `prompt.ToolCatalog`, `tui.ModelID` | Dead exported API. Zero callers each. | Removing exported symbols is an API decision, not a refactor. `tui.ModelID` was *delegated* rather than deleted, so its surface is unchanged. |
+
+#### 12.5.1 Semantic overlap record
+
+The eight concepts the brief names, in the required shape. "Refactor safety"
+records the decision this pass made, not a hypothetical.
+
+**Intent**
+
+| Field | Value |
+|---|---|
+| Representations | `workspace.Intent` (`read`/`execute`/`investigate`); `contract.ObjectiveKind`; `cognition.TaskShape.Intent` (lowercased string) |
+| Authoritative | Each is authoritative **for its own question**. Routing intent decides whether the workspace can answer at all; objective kind decides what completion must prove; shape intent decides which capabilities look relevant |
+| Derived | `TaskShape.Intent` is derived from kind when a caller omits it (`BuildShape`), so it is the only derived one |
+| Creation | `workspace.Classify`; `workspace.BuildIntentContract`; `cognition.BuildShape` |
+| Mutation | None after creation (pure functions) |
+| Consumers | `RouteTurn`, `ProposeTransition`, shape, TUI chrome; completion; candidates/sufficiency |
+| Persistence | Objective kind + contract are persisted in `progress.json`; routing intent is not persisted |
+| Refactor safety | **Do not merge.** READ can be informational; EXECUTE can be execution or mutation. Merging loses the distinction completion depends on |
+
+**Grounding**
+
+| Field | Value |
+|---|---|
+| Representations | `contract.IntentGrounding` only |
+| Authoritative | Same type; built once from user text |
+| Derived | `cognition.TaskShape` copies entities/ambiguities into its own fields for display and narrowing |
+| Creation | `workspace/grounding.go: buildGrounding` |
+| Mutation | Read by the loop per call; never rewritten |
+| Consumers | `ValidateProposal` (admission), `AssessGrounding` (review), cognition state block |
+| Persistence | Embedded in `contract.IntentContract` → `progress.json` |
+| Refactor safety | **No change.** Single representation already |
+
+**Proposal**
+
+| Field | Value |
+|---|---|
+| Representations | `contract.ActionProposal` (a tool call to validate); `workspace.Proposal` (a human decision); `workspace.TransitionProposal` (recommended authority move) |
+| Authoritative | Each for its own decision; none overrides another |
+| Derived | `tui.ProposalResolution` holds the second; nothing derives the others |
+| Creation | `agent.ProposalForCall`; `workspace.AssessProposal`; `workspace.ProposeTransition` |
+| Mutation | Immutable values |
+| Consumers | Admission/audit; TUI prompt + prompt block; TUI authority selector |
+| Persistence | None (decision text may ride the system context for one turn) |
+| Refactor safety | **Name collision only.** Category C |
+
+**Evidence**
+
+| Field | Value |
+|---|---|
+| Representations | `cognition.EvidenceState` / `EvidenceItem`; `agent.completionEvidence` (private, from `scanCompletionEvidence`); `agent.VerificationEvidence`; `agent.MutationEvidence` |
+| Authoritative | `agent.scanCompletionEvidence` for the **verdict**; `cognition.EvidenceState` for **projection and sufficiency**. Neither may be substituted for the other |
+| Derived | `EvidenceState` is bounded and durable; the completion scan is complete and in-memory |
+| Creation | `Projector.ObserveTurns/ObserveOutcome`; `scanCompletionEvidence`; tool results |
+| Mutation | `EvidenceState` accumulates per turn; completion evidence is recomputed per verdict |
+| Consumers | Projection, task checkpoint, cognitive review; completion |
+| Persistence | `EvidenceState` in `progress.json`; the rest are run-local |
+| Refactor safety | **Do not merge.** Different retention and authority; baseline §17.5 |
+
+**Projection**
+
+| Field | Value |
+|---|---|
+| Representations | `agent.ProjectionRequest/Result/Report`; `cognition.Projector`; `task.Progress` evidence |
+| Authoritative | The loop owns the applied request; the projector may only narrow |
+| Derived | The projected message/tool/system view is per-request and discarded |
+| Creation | `cognition.NewProjector(...).Project` |
+| Mutation | `ObserveTurns` mutates the durable evidence while projecting |
+| Consumers | `Loop.Run` (intersect by name), `OnProjection` audit, task review |
+| Persistence | Only the evidence state |
+| Refactor safety | **Preserve narrowing-only.** Baseline invariant 12 |
+
+**Completion**
+
+| Field | Value |
+|---|---|
+| Representations | `agent.CompletionState` (`COMPLETED`/`NEEDS_REVIEW`); `task.Status` (7 states); `cmd/ohgo.runState` (5 states); `tui.taskAction` (4) |
+| Authoritative | `agent.EvaluateTaskCompletion` / `EvaluateBudgetCompletion` decide; `agent.ClassifyRun` selects and classifies (first pass) |
+| Derived | `runState`, `taskAction`, and `task.Status` are projections of that decision |
+| Creation | `ClassifyRun` → shell projection → controller transition |
+| Mutation | Task controller is the only writer of `Status` |
+| Consumers | Exit code; durable lifecycle; UI |
+| Persistence | `task.Status` in `progress.json` only |
+| Refactor safety | **Decision already consolidated; vocabularies stay.** Category B |
+
+**Task shape**
+
+| Field | Value |
+|---|---|
+| Representations | `cognition.TaskShape` |
+| Authoritative | Same; it is a narrowing input, never an execution authority |
+| Derived | Candidate tool set, state block, sufficiency judgement |
+| Creation | `cognition.BuildShape` per turn |
+| Mutation | Immutable after build |
+| Consumers | Projector, prompt state block, `EvaluateSufficiency` |
+| Persistence | Embedded in projection reports; the audit is persisted, the shape is not |
+| Refactor safety | **No change.** Single representation |
+
+**State**
+
+| Field | Value |
+|---|---|
+| Representations | `agent.Turn`; `tui.State.Entries` + `Program.history`; `session` rows; `task.Progress`; `authorityGate`; `session.Session.Workspace/Model` |
+| Authoritative | `session` for the transcript; `progress.json` for the task; `authorityGate` for live authority; `session.Session` for the persisted snapshot |
+| Derived | TUI entries and `Program.history` are disposable mirrors; `harness.workspace` is a label mirror of the gate |
+| Creation | Loop (turns), event bus (UI state), store (transcript), controller (task), explicit switch (authority) |
+| Mutation | Each owner only; UI mirrors are rebuildable |
+| Consumers | Renderer, prompt continuity, resume, authorization |
+| Persistence | Transcript, task checkpoint, session snapshot |
+| Refactor safety | **Mirrors preserved.** Unifying them changes resume/switch semantics (baseline hazard 17/23) |
+
+### 12.6 Remaining debt
+
+| Classification | Item |
+|---|---|
+| **SAFE NEXT** | `cmd/ohgo/harness.go` (965 lines) still mixes four clusters: model plane, session/recovery, reporting, workspace. A same-package split is fingerprint-verifiable. |
+| **SAFE NEXT** | `tui/app.go` (5,174 lines) method families (support, model plane, task, recovery, sessions) could be separated across files; same-package, fingerprint-verifiable. |
+| **DEFERRED** | Turn-preparation sharing — blocked on a missing seam, not on effort. Requires a deliberate architecture decision first. |
+| **DEFERRED** | `agent/loop.go` cohesion — no cluster has independent semantic identity. |
+| **LOAD-BEARING** | Authority mirrors; five read-only layers; callback installation order; TUI terminal CAS; journal-before-mutation; projection narrowing; task contract immutability. |
+| **PUBLIC API** | `prompt.ToolCatalog` (zero callers); `tui.ModelID` (now a one-line alias, zero callers). Removal needs an explicit decision. |
+| **SCHEMA / COMPATIBILITY** | `progress.json` embedded types; `sessions.db` and `recovery.db` schemas; the `provider/id` reference format (now named, unchanged). |
+| **BEHAVIOR-CHANGING** | `agent.ReadOnlyToolNames` drift (deriving from `Tier` would widen read-only children); stale `workspace.Artifact` origin after a switch; mid-session `/sessions` resume not restoring authority/model. All three are product decisions with observed behaviour to change, not refactors. |
+
+### 12.7 Architectural delta
+
+What became simpler — stated as ownership, not line count:
+
+* **A persisted format rule went from 31 definitions to 1.** The model reference
+  is now owned by the type whose fields it is made of. Before, `tui` exported a
+  formatter nobody called while the CLI reimplemented it 28 times; a change to
+  the separator or escaping would have required finding all of them.
+* **A persisted state transition went from 2 writers to 1.** The session
+  authority snapshot now has a single implementation, and its failure policy
+  (report, continue) is stated once.
+* **Nothing else moved.** No package was added or removed; no import edge
+  changed; no type was relocated; no dependency direction was altered.
+
+What deliberately did **not** change: authority, execution order, evidence,
+completion, persistence representation, repository indexing, and the two
+orchestration paths.
+
+### 12.8 Verification
+
+| Check | Command | Result |
+|---|---|---|
+| Formatting | `gofmt -l .` | empty |
+| Build | `go build ./...` | pass |
+| Vet | `go vet ./...` | pass |
+| Tests | `go test ./...` | pass, all 43 packages |
+| Race | `go test -race ./ai ./cmd/ohgo ./tui` | pass |
+| Dependency graph | `go list -deps ./...` | pass; `go list ./...` reports 43 packages; Go rejects import cycles at compile time, so the acyclic invariant holds |
+| Architecture/invariant tests | included in `go test ./...` | `agent/authorize_test.go`, `security`, `cmd/ohgo/authority_route_test.go`, `task`, `recovery`, `ast`, `tui/completion_test.go` all green |
+| Duplicate scan | `bodydup`, `bodydup2` over production packages | 0 duplicate groups |
+| Reference-format invariant | `grep 'Provider *+ *"/"'` in non-test code | 0 matches |
+| Binary smoke test | `ohgo version` | `ohgo 0.0.3-dev` |
+| Test-the-test | break each new test's subject | both new suites fail as expected, then restored |
+
+*Reconciliation note:* the baseline (§2) and the first-pass §5 both report 44
+packages; `go list ./...` reports **43** in the current tree. No package was
+removed by either pass (no import edges changed), so the earlier count was
+simply off by one. The package *graph* is unchanged.
+
+### 12.9 Final recommendation
+
+**The repository has reached a safe architectural stopping point.**
+
+Justification, in the brief's own terms:
+
+* The category-A duplication that remained has been removed. A token-level and
+  body-level scan over every production package returns **zero** duplicate
+  implementations, so further "de-duplication" would be inventing duplication
+  rather than finding it.
+* Every remaining candidate requires at least one of: a behaviour change, a
+  persistence migration, an authority redesign, a public-API decision, or a new
+  abstraction with no provable owner. Those are precisely the stop conditions.
+* The two orchestration paths are *not* a shared owner waiting to be discovered.
+  The partition above shows the shared part is a sequence of calls to functions
+  that already have owners, and the differing part is the durable-task and
+  recovery lifecycle. Unifying them would move domain knowledge into a neutral
+  package — a net loss of clarity.
+* The remaining large files (`harness.go`, `tui/app.go`) are structural, not
+  semantic, and are recorded as SAFE NEXT rather than forced through now.
+
+A further *optimization* pass is not justified. A further *structural* pass
+(splitting the two remaining large files) is possible and low-risk, but it is
+file organisation, not architecture, and should be scheduled on its own merits.

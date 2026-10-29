@@ -89,7 +89,7 @@ func openSession(opts options, resumeID int64) (*session.Store, *session.Session
 
 	sess, err := store.CreateWith(session.CreateOptions{
 		Cwd:       opts.root,
-		Model:     opts.model.Provider + "/" + opts.model.ID,
+		Model:     opts.model.Ref(),
 		Workspace: opts.authority().String(),
 		Project:   opts.projectID,
 	})
@@ -165,7 +165,7 @@ func installSessionManager(program *tui.Program, store *session.Store, held *har
 		New: func() (*session.Session, tui.OpenedSession, error) {
 			sess, err := store.CreateWith(session.CreateOptions{
 				Cwd:       opts.root,
-				Model:     held.model.Provider + "/" + held.model.ID,
+				Model:     held.model.Ref(),
 				Workspace: opts.authority().String(),
 				Project:   held.projectID,
 			})
@@ -220,7 +220,7 @@ func applySessionAuthority(cmd *cobra.Command, opts *options, resolve func(strin
 
 	// Snapshot the effective authority so a later run restores what actually
 	// executed rather than what the configuration happened to say this time.
-	effective := opts.model.Provider + "/" + opts.model.ID
+	effective := opts.model.Ref()
 	if store != nil && (sess.Workspace != opts.authority().String() || sess.Model != effective) {
 		if err := store.SetAuthority(sess.ID, opts.authority().String(), effective); err != nil {
 			fmt.Fprintf(os.Stderr, "ohgo: could not record session authority: %v\n", err)

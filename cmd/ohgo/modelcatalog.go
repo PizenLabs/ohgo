@@ -27,7 +27,7 @@ func catalogSnapshot() tui.CatalogSnapshot {
 	options := make([]tui.ModelOption, 0, len(entries))
 	for _, entry := range entries {
 		model := entry.Model
-		id := model.Provider + "/" + model.ID
+		id := model.Ref()
 		title := model.Name
 		if title == "" {
 			title = id

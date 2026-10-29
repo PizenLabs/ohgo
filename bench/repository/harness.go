@@ -405,7 +405,7 @@ func RunTask(ctx context.Context, root string, task Task, track Track, cfg RunCo
 		TaskID:   task.ID,
 		Category: task.Category,
 		Track:    track.Name,
-		Model:    cfg.Model.Provider + "/" + cfg.Model.ID,
+		Model:    cfg.Model.Ref(),
 	}
 
 	rec := newRecorder(root, task.Targets)

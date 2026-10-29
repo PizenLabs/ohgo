@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
 	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/workspace"
 )
 
@@ -39,6 +41,46 @@ func (testIdleTool) Approval() agent.Approval      { return agent.Approval{} }
 func (testIdleTool) Exclusive(map[string]any) bool { return false }
 func (testIdleTool) Execute(agent.Context, map[string]any) agent.Result {
 	return agent.Result{}
+}
+
+// A workspace switch is a persisted state change: the session row must describe
+// the authority and model that will actually execute, or a later --resume
+// restores a workspace the session never ran under.
+func TestSwitchWorkspaceRecordsTheSessionAuthority(t *testing.T) {
+	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	sess, err := store.CreateWith(session.CreateOptions{
+		Cwd: t.TempDir(), Model: "anthropic/claude-sonnet-4-5", Workspace: "build",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	model := catalog.MustResolve("anthropic/claude-sonnet-4-5")
+	gate := newAuthorityGate(workspace.Build)
+	h := routedHarness(gate, nil, "BUILD")
+	h.store = store
+	h.sess = &sess
+	h.model = model
+
+	if _, err := h.SwitchWorkspace("ask"); err != nil {
+		t.Fatalf("SwitchWorkspace: %v", err)
+	}
+	if h.sess.Workspace != "ask" || h.sess.Model != "anthropic/claude-sonnet-4-5" {
+		t.Fatalf("in-memory session = %s/%s, want ask/anthropic/claude-sonnet-4-5",
+			h.sess.Workspace, h.sess.Model)
+	}
+	stored, err := store.Get(sess.ID)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if stored.Workspace != "ask" || stored.Model != "anthropic/claude-sonnet-4-5" {
+		t.Fatalf("stored session = %s/%s, want ask/anthropic/claude-sonnet-4-5",
+			stored.Workspace, stored.Model)
+	}
 }
 
 func TestSwitchWorkspaceCyclesAuthority(t *testing.T) {

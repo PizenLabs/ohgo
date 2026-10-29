@@ -75,6 +75,19 @@ type Model struct {
 	InputModalities []string
 }
 
+// Ref returns the canonical provider/model-id reference for the model.
+func (m Model) Ref() string { return Ref(m.Provider, m.ID) }
+
+// Ref formats a provider/model-id reference from its parts.
+//
+// The reference is the inverse of the first-slash split used by every parser
+// (catalog.Resolve, config.splitModel), so a model id that itself contains a
+// slash — an OpenRouter id, for example — survives the round trip unchanged.
+// The reference is persisted in session rows and in settings.Roles, so its
+// shape is a compatibility contract: formatting one anywhere else is a second
+// definition of that contract.
+func Ref(provider, id string) string { return provider + "/" + id }
+
 // SupportsImages reports whether the model accepts image content blocks.
 func (m Model) SupportsImages() bool {
 	for _, modality := range m.InputModalities {

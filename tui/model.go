@@ -3183,7 +3183,7 @@ func TruncateForDisplay(text string, limit int) (string, bool) {
 
 // ModelID renders a model as "provider/id", matching the CLI's own format.
 func ModelID(model ai.Model) string {
-	return model.Provider + "/" + model.ID
+	return model.Ref()
 }
 
 // Command is a parsed slash command.

@@ -245,7 +245,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		if tui.NormalizeMouse(mouse) == tui.MouseReport {
 			programOpts = append(programOpts, tui.WithMouseReporting())
 		}
-		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+		program := tui.NewProgram(loop, opts.model.Ref(), opts.model.ContextWindow, programOpts...)
 		// /update is a presentation surface over the same authority the CLI
 		// command uses. Progress lands in header chrome while the operation
 		// runs off the update goroutine; nothing installs until the human
@@ -338,7 +338,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 				return err
 			},
 			func() string {
-				return held.model.Provider + "/" + held.model.ID
+				return held.model.Ref()
 			},
 		)
 		program.SetUsageLog(held.usage)
@@ -358,7 +358,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		program.SetModelLister(func() []string {
 			var ids []string
 			for _, model := range catalog.List() {
-				ids = append(ids, model.Provider+"/"+model.ID)
+				ids = append(ids, model.Ref())
 			}
 			return ids
 		})
@@ -404,7 +404,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 				// A workspace move rebinds the session's model and effort:
 				// the header follows the newly effective role rather than
 				// naming a model the loop no longer calls.
-				program.PublishModel(held.model.Provider + "/" + held.model.ID)
+				program.PublishModel(held.model.Ref())
 				program.PublishEffort(func() string {
 					role := held.sessionRole()
 					if role == "" {
