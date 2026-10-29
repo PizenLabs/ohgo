@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/tui"
 	"github.com/PizenLabs/ohgo/update"
 )
 
@@ -117,4 +118,75 @@ func announceUpdate(out io.Writer, current, latest string) {
 	_, _ = fmt.Fprintf(out, "A newer ohgo release is available: %s → %s\n",
 		displayVersion(current), displayVersion(latest))
 	_, _ = fmt.Fprintln(out, "Run `ohgo update` to install.")
+}
+
+// installUpdateLifecycle wires the presentation surfaces to the one update
+// authority: /update, the informational observer, and the pending post-update
+// acknowledgement. It never installs anything during startup; only a human
+// invoking /update crosses that boundary.
+func installUpdateLifecycle(program *tui.Program, settings config.Settings, current string) {
+	svc := update.NewService(update.Config{
+		CurrentVersion: current,
+		Progress: func(stage update.Stage) {
+			program.PublishUpdateProgress(string(stage))
+		},
+	})
+	program.SetUpdateFunc(svc.Update)
+	startUpdateObserver(settings, current, func(v string) {
+		program.PublishUpdateAvailable(v)
+	})
+	showPendingPostUpdate(program, current)
+}
+
+// showPendingPostUpdate presents the one-shot What's New card only when the
+// persisted transition says an explicit update installed the running version
+// and its notice is still pending.
+//
+// Everything here is local: the transition record and the changelog embedded
+// in this binary. Release discovery is a separate concern and is never called
+// on this path.
+func showPendingPostUpdate(program *tui.Program, current string) {
+	store, err := update.NewTransitionStore()
+	if err != nil {
+		return
+	}
+	notice, acknowledge, ok := pendingPostUpdate(store, current, update.LoadChangelog)
+	if !ok {
+		return
+	}
+	program.ShowPostUpdateNotice(notice, acknowledge)
+}
+
+// pendingPostUpdate is the testable decision seam: the transition record
+// authorizes the card, the local changelog only supplies its content.
+func pendingPostUpdate(store *update.TransitionStore, current string, load func() (update.Changelog, error)) (tui.PostUpdateView, func() error, bool) {
+	if store == nil {
+		return tui.PostUpdateView{}, nil, false
+	}
+	transition, ok := store.Pending(current)
+	if !ok {
+		return tui.PostUpdateView{}, nil, false
+	}
+	notice := tui.PostUpdateView{Version: displayVersion(transition.To)}
+	// Missing or malformed release notes must not corrupt update state or
+	// block the acknowledgement: the card still truthfully reports the
+	// version and says no notes are available.
+	if load != nil {
+		if changelog, err := load(); err == nil {
+			if release, found := changelog.Release(transition.To); found {
+				notice.Title = strings.TrimSpace(release.Title)
+				for _, change := range release.Changes {
+					notice.Changes = append(notice.Changes, tui.PostUpdateChange{
+						Type:  string(change.Type),
+						Title: strings.TrimSpace(change.Title),
+					})
+				}
+			}
+		}
+	}
+	acknowledge := func() error {
+		_, err := store.Acknowledge(current)
+		return err
+	}
+	return notice, acknowledge, true
 }

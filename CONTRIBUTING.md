@@ -207,6 +207,13 @@ static tarballs for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and
 generated notes. `CHANGELOG.md` is the human-authored record; released sections
 are immutable.
 
+A release also updates `update/changelog.json`, the release notes embedded in
+the binary for the one-shot What's New card. It is local content, never fetched
+from GitHub, and its key must match the release tag. Follow
+[`docs/RELEASING.md`](docs/RELEASING.md) for the complete edit checklist,
+versioned-document rules, artifact verification, and update-lifecycle smoke
+test. A version tag alone is not a release if those records disagree.
+
 ## License of contributions
 
 ohgo is licensed under the [Apache License, Version 2.0](LICENSE). By

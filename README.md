@@ -90,7 +90,8 @@ it is done. ohgo is built around the opposite contract.
 ### Prebuilt release
 
 ```sh
-OHGO_VERSION=v0.1.0 sh install.sh
+# Replace vX.Y.Z with the latest release tag.
+OHGO_VERSION=vX.Y.Z sh install.sh
 ```
 
 The script selects the tarball for your OS and architecture, verifies nothing
@@ -684,6 +685,11 @@ gofmt -l .          # must be empty
 `go test ./...` must be full-suite safe: never leave global mutable state,
 `os.Chdir`, or an un-restored `t.Setenv` that can leak into another file's
 tests.
+
+Release preparation is documented in
+[`docs/RELEASING.md`](docs/RELEASING.md): it lists every file that changes for
+a new version, including `CHANGELOG.md` and the binary-embedded
+`update/changelog.json`, and the upgrade/restart/acknowledgement smoke test.
 
 The integration suite (`cmd/ohgo/integration_test.go`) drives a full tool call
 through the real transport and filesystem against an `httptest` provider.

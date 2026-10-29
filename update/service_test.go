@@ -125,6 +125,7 @@ func newUpdateFixture(t *testing.T, current, tag, binary string, manifest func(n
 		GOARCH:         target.GOARCH,
 		Source:         source,
 		Cache:          NewCacheStoreAt(filepath.Join(root, "update.json")),
+		Transition:     NewTransitionStoreAt(filepath.Join(root, "update-transition.json")),
 		Downloader:     &Downloader{Client: server.Client()},
 		Installer:      &Installer{},
 		Now:            func() time.Time { return now },

@@ -399,6 +399,11 @@ type Program struct {
 	// updateRunning guards against a second explicit update racing the first.
 	// It is update-goroutine-owned, like pending and flow.
 	updateRunning bool
+	// ackPostUpdate persists the post-update acknowledgement. It is invoked
+	// only after the What's New card was actually presented and the user
+	// pressed Enter; a nil function is a test seam that still dismisses the
+	// in-memory card. Update-goroutine-owned.
+	ackPostUpdate func() error
 
 	// task is the durable task continuity layer, nil-safe. When set, runTurn
 	// records lifecycle boundaries (turn start, interruption, completion,
@@ -914,7 +919,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.ConnectKey != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil || s.HelpModal != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil {
+	if s.Picker != nil || s.Plane != nil || s.ConnectKey != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil || s.HelpModal != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil {
 		return false
 	}
 	return s.Input == ""
@@ -1079,6 +1084,30 @@ func (p *Program) apply(event Event) {
 // prompt is open, keys answer it rather than compose a line: a tool is
 // blocked on that answer, so the prompt has to be modal.
 func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// A completed update owns the screen until the user explicitly exits. The
+	// running process is still the old binary, so ordinary interaction must
+	// not resume around a change that only takes effect on the next launch.
+	if p.state.UpdateRestart != nil {
+		// Only Enter advances: the completion state names one explicit exit,
+		// and a stray key must not look like the acknowledgement the user owes
+		// this install.
+		if msg.String() == "enter" {
+			return p, p.quitNow()
+		}
+		return p, nil
+	}
+	// A pending post-update notice is consumed only by an explicit Enter. Esc
+	// and stray keys neither dismiss it nor acknowledge it; Ctrl+C exits while
+	// leaving the notice pending for the next interactive launch.
+	if p.state.PostUpdate != nil {
+		switch msg.String() {
+		case "enter":
+			return p.acknowledgePostUpdate()
+		case "ctrl+c":
+			return p, p.quitNow()
+		}
+		return p, nil
+	}
 	if p.wizard != nil {
 		return p.handleWizardKey(msg)
 	}

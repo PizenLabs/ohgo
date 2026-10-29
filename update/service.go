@@ -79,6 +79,10 @@ type Config struct {
 	Source Source
 	// Cache is the local observation store. Default: the machine state path.
 	Cache *CacheStore
+	// Transition is the local lifecycle store. Default: the machine state
+	// path. A successful explicit update records a pending post-update
+	// notice here; release observation never writes it.
+	Transition *TransitionStore
 	// Downloader defaults to a bounded HTTPS client.
 	Downloader *Downloader
 	// Installer defaults to the production transaction.
@@ -155,6 +159,7 @@ type Service struct {
 	target     Target
 	source     Source
 	cache      *CacheStore
+	transition *TransitionStore
 	downloader *Downloader
 	installer  *Installer
 	now        func() time.Time
@@ -188,6 +193,12 @@ func NewService(cfg Config) *Service {
 			cache = store
 		}
 	}
+	transition := cfg.Transition
+	if transition == nil {
+		if store, err := NewTransitionStore(); err == nil {
+			transition = store
+		}
+	}
 	ttl := cfg.CheckInterval
 	if ttl == 0 {
 		ttl = DefaultCheckInterval
@@ -215,6 +226,7 @@ func NewService(cfg Config) *Service {
 		target:     Target{GOOS: goos, GOARCH: goarch},
 		source:     source,
 		cache:      cache,
+		transition: transition,
 		downloader: downloader,
 		installer:  installer,
 		now:        now,
@@ -401,6 +413,14 @@ func (s *Service) Update(ctx context.Context) (Result, error) {
 	}
 
 	now := s.now().UTC()
+	// The install is already verified and durable. Recording the lifecycle
+	// transition is therefore best-effort: a machine-state write failure must
+	// not report the successful replacement as a failed update. Without the
+	// record the next launch simply presents no notice, which is truthful.
+	if s.transition != nil {
+		transition := NewVersionTransition(OperationUpdate, s.current, release.Tag, now)
+		_ = s.transition.Save(transition)
+	}
 	cache.LatestVersion = release.Tag
 	cache.ReleaseID = release.ID
 	cache.ReleaseURL = release.URL

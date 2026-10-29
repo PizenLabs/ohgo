@@ -1829,19 +1829,9 @@ func runSession(cmd *cobra.Command, args []string) error {
 		// /update is a presentation surface over the same authority the CLI
 		// command uses. Progress lands in header chrome while the operation
 		// runs off the update goroutine; nothing installs until the human
-		// invokes /update.
-		updateSvc := update.NewService(update.Config{
-			CurrentVersion: version,
-			Progress: func(stage update.Stage) {
-				program.PublishUpdateProgress(string(stage))
-			},
-		})
-		program.SetUpdateFunc(updateSvc.Update)
-		// Observation starts before the first frame: the cached hint is
-		// synchronous and local, and any refresh runs on a bounded goroutine
-		// that only updates header chrome. Neither path installs anything.
-		startUpdateObserver(boot.Settings, version,
-			func(v string) { program.PublishUpdateAvailable(v) })
+		// invokes /update. A pending post-update transition is presented here
+		// as a one-shot local acknowledgement.
+		installUpdateLifecycle(program, boot.Settings, version)
 		// The recovery store is opened before the UI runs; /undo and /redo
 		// move through the same session timeline the loop records into.
 		recoverer := openRecoveryService(opts.root)
@@ -2424,6 +2414,12 @@ func wizardComplete(cmd *cobra.Command, opts *options, registry *ai.Registry, d 
 				return tui.IdentityUpdated{}, "", serr
 			}
 		}
+
+		// Onboarding has finished, so the program is now the interactive
+		// session /update belongs to. Wiring the lifecycle here keeps the
+		// wizard from hiding a pending post-update acknowledgement behind its
+		// own modal; the card opens after the dialog closes.
+		installUpdateLifecycle(program, opts.settings, version)
 
 		notice := "runtime ready"
 		if name := identity.WorkerName(); name != "" {

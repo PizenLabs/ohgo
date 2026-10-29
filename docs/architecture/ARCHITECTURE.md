@@ -580,4 +580,6 @@ CapabilityRequest → admission → root budget → bounded execution
 Run `make bench` for the current numbers; `make check` for the full gate
 (build + vet + gofmt + tests). Releases are `make release` (four static
 tarballs: linux/darwin × amd64/arm64, `CGO_ENABLED=0`) installed via
-`install.sh` or `make install` (`~/.local/bin` by default).
+`install.sh` or `make install` (`~/.local/bin` by default). The complete
+versioned-document and upgrade-verification checklist is
+[`docs/RELEASING.md`](../RELEASING.md).

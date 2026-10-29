@@ -2,7 +2,7 @@
 # Install ohgo from a release tarball.
 #
 # Usage:
-#   OHGO_VERSION=v0.1.0 sh install.sh
+#   OHGO_VERSION=vX.Y.Z sh install.sh                    # latest release tag
 #   OHGO_VERSION=dev PREFIX=$HOME/.local sh install.sh   # local build install
 #
 # set -u fails on unset variables rather than expanding them empty: an empty
@@ -15,7 +15,7 @@ VERSION="${OHGO_VERSION:-}"
 PREFIX="${PREFIX:-/usr/local}"
 
 if [ -z "$VERSION" ]; then
-	echo "OHGO_VERSION is required, e.g. OHGO_VERSION=v0.1.0 sh install.sh" >&2
+	echo "OHGO_VERSION is required, e.g. OHGO_VERSION=vX.Y.Z sh install.sh" >&2
 	exit 1
 fi
 

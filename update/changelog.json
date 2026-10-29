@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "releases": {
+    "v0.8.3": {
+      "title": "What's new in v0.8.3",
+      "changes": [
+        {
+          "id": "update-lifecycle",
+          "type": "added",
+          "title": "Complete update lifecycle",
+          "description": "A successful /update now offers a one-shot What's New acknowledgement on the next interactive launch."
+        },
+        {
+          "id": "tui-update",
+          "type": "improved",
+          "title": "Improved TUI update handling",
+          "description": "The update hint remains informational, installation stays explicit, and the restart requirement is named truthfully."
+        },
+        {
+          "id": "local-release-notes",
+          "type": "changed",
+          "title": "Release notes stay local",
+          "description": "What's New is read from the binary, so presenting it never performs a network request."
+        }
+      ]
+    }
+  }
+}

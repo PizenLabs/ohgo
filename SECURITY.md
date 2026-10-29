@@ -9,7 +9,7 @@ the latest release, reproduce the issue on `main` before reporting it.
 | Version | Supported |
 | --- | --- |
 | `main` (latest commit) | Yes |
-| Latest `0.1.x` release | Yes |
+| Latest tagged release | Yes |
 | Older releases | No |
 
 ## Reporting a vulnerability

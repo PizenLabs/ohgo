@@ -297,7 +297,7 @@ func DeriveRuntime(s State) RuntimeState {
 	if s.CommitActive() {
 		return RuntimeCommitting
 	}
-	if s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil {
+	if s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil {
 		return RuntimeAwaitingApproval
 	}
 	if hasRunningTool(s) {

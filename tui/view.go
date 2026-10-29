@@ -231,7 +231,11 @@ func renderState(state State, frame *transcriptFrame) string {
 	sb.WriteString(renderHeader(state, pal, layout) + "\n")
 	sb.WriteString(SeparatorLine(separatorWidth(state, layout), pal) + "\n")
 
-	if state.Transition != nil {
+	if state.UpdateRestart != nil {
+		renderUpdateRestartArea(&sb, state, pal, layout)
+	} else if state.PostUpdate != nil {
+		renderPostUpdateArea(&sb, state, pal, layout)
+	} else if state.Transition != nil {
 		renderTransitionArea(&sb, state, pal, layout)
 	} else if state.QuitConfirm != nil {
 		renderQuitConfirmArea(&sb, state, pal, layout)
@@ -263,13 +267,17 @@ func renderState(state State, frame *transcriptFrame) string {
 		renderTranscriptArea(&sb, state, pal, layout, frame)
 	}
 
-	if state.Pending != nil {
+	// A completed update or pending acknowledgement owns the surface until
+	// the user answers it. A tool that asks for approval underneath is left
+	// blocked: quitting denies it through the existing conservative path, and
+	// the lifecycle card never renders a second, conflicting dialog.
+	if state.Pending != nil && state.UpdateRestart == nil && state.PostUpdate == nil {
 		renderApproval(&sb, state.Pending, state.Theme, layout)
 	}
 
 	renderThinkingArea(&sb, state, pal, layout)
 
-	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.InfoModal == nil && state.InformationModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Transition == nil && state.Permissions == nil && state.Diff == nil {
+	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.InfoModal == nil && state.InformationModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Transition == nil && state.UpdateRestart == nil && state.PostUpdate == nil && state.Permissions == nil && state.Diff == nil {
 		// Main canvas. No middle status line while the hint bar owns the
 		// row (ShowHints): the header, composer prefix, and hint bar
 		// already own every fact it would repeat. A pending approval drops
@@ -318,7 +326,7 @@ func renderState(state State, frame *transcriptFrame) string {
 // displaces them. This joined form is for tests and narrow fallbacks; the
 // frame renders the padded split via composerHintBar.
 func composerHintsFor(state State) string {
-	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil {
+	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
 		return ""
 	}
 	if paletteOwnsKeys(state) && state.ConnectKey == nil {
@@ -354,7 +362,7 @@ func composerHintsFor(state State) string {
 // Idle telemetry splits via sessionBarRow: left metrics survive, right
 // shortcuts yield first on narrowing, and the row never wraps.
 func composerHintBar(state State, width int) string {
-	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil {
+	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
 		return ""
 	}
 	if paletteOwnsKeys(state) && state.ConnectKey == nil {
@@ -1522,7 +1530,7 @@ func appendGhost(text, tail string, width int, style lipgloss.Style) string {
 // composerPrefixStyle so the frame and the "ask > "/"build > "/"fuzz > "
 // text read as one boundary.
 func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
-	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.InfoModal != nil || state.InformationModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.ConnectModal != nil || state.Diff != nil {
+	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.InfoModal != nil || state.InformationModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.ConnectModal != nil || state.Diff != nil {
 		return pal.Separator
 	}
 	return composerPrefixStyle(state, pal).Bold(true)
@@ -1612,7 +1620,7 @@ func one(show bool) int {
 // Idleness stays quiet, and an approval modal owns its dialog, so both
 // yield no line at all.
 func composerStateLine(state State, pal *Palette, layout Layout) string {
-	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil {
+	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
 		return ""
 	}
 	n := len(state.Queued)
@@ -1968,11 +1976,10 @@ func shellElapsed(shell *ShellEntry) string {
 	return shell.Duration.Round(time.Millisecond).String()
 }
 
-// quitCardWidth bounds the centered quit dialog: wide enough for the hint,
-// narrow enough to read as a popup with margins on roomy terminals.
-func quitCardWidth(termWidth int) int {
-	const maxCard = 52
-	const minCard = 30
+// centeredCardWidth bounds a centered dialog: wide enough for its content,
+// narrow enough to read as a popup with margins on roomy terminals. floor is
+// the minimum width used when the terminal is too narrow to preserve margins.
+func centeredCardWidth(termWidth, maxCard, minCard, floor int) int {
 	if termWidth <= 0 {
 		return maxCard
 	}
@@ -1982,14 +1989,20 @@ func quitCardWidth(termWidth int) int {
 	}
 	if w < minCard {
 		w = termWidth - 4
-		if w < 10 {
-			w = 10
+		if w < floor {
+			w = floor
 		}
 		if w > termWidth {
 			w = termWidth
 		}
 	}
 	return w
+}
+
+// quitCardWidth bounds the centered quit dialog: wide enough for the hint,
+// narrow enough to read as a popup with margins on roomy terminals.
+func quitCardWidth(termWidth int) int {
+	return centeredCardWidth(termWidth, 52, 30, 10)
 }
 
 // quitCard builds the centered bordered confirmation: title, horizontal
@@ -2044,25 +2057,7 @@ func quitCard(confirm *PendingApproval, cardW int) string {
 // transitionCardWidth bounds the centered transition dialog: wide enough for
 // the hint, narrow enough to read as a popup with margins on roomy terminals.
 func transitionCardWidth(termWidth int) int {
-	const maxCard = 56
-	const minCard = 32
-	if termWidth <= 0 {
-		return maxCard
-	}
-	w := termWidth - 8
-	if w > maxCard {
-		w = maxCard
-	}
-	if w < minCard {
-		w = termWidth - 4
-		if w < 12 {
-			w = 12
-		}
-		if w > termWidth {
-			w = termWidth
-		}
-	}
-	return w
+	return centeredCardWidth(termWidth, 56, 32, 12)
 }
 
 // transitionCard builds the centered workspace-transition dialog: the

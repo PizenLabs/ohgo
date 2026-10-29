@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -134,40 +133,7 @@ func (s *CacheStore) Save(cache Cache) error {
 		return fmt.Errorf("update: encode cache: %w", err)
 	}
 	data = append(data, '\n')
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("update: create cache directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".update-*.json")
-	if err != nil {
-		return fmt.Errorf("update: create cache temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("update: write cache temp file: %w", err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("update: set cache permissions: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("update: sync cache temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("update: close cache temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		cleanup()
-		return fmt.Errorf("update: replace cache: %w", err)
-	}
-	return nil
+	return writeFileAtomic(s.path, data, 0o600)
 }
 
 // Fresh reports whether cache is younger than ttl.
