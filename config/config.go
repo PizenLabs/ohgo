@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/state"
+	"github.com/PizenLabs/ohgo/internal/state"
 )
 
 // ErrNotFound means no configuration file exists at the expected location.

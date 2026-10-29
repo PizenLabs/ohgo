@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/PizenLabs/ohgo/state"
+	"github.com/PizenLabs/ohgo/internal/state"
 )
 
 // Platform defaults mirror the Makefile's release matrix.

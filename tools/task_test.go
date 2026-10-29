@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // scriptedSpawner records what the task tool asked for and returns a fixed

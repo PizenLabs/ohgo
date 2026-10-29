@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // TestLoopHonoursADeadlineIsARunawayCostGuard is the reason the deadline exists.

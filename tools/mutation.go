@@ -7,8 +7,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/diff"
-	"github.com/PizenLabs/ohgo/edit"
+	"github.com/PizenLabs/ohgo/internal/diff"
+	"github.com/PizenLabs/ohgo/internal/edit"
 )
 
 // Mutation preview helpers used by the execution layer and the security gate.

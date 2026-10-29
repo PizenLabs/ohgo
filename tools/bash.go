@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/budget"
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/sandbox"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/execution/sandbox"
 )
 
 // Bash limits, shared with tests.

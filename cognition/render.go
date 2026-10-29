@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // State block bounds. The block is a briefing, not a transcript: it must fit on

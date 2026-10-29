@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 func hasClass(tool agent.Tool, want agent.ActionClass) bool {

@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // DeleteTool removes a file.

@@ -7,11 +7,11 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/budget"
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
+	"github.com/PizenLabs/ohgo/internal/security"
 	"github.com/PizenLabs/ohgo/mcp"
-	"github.com/PizenLabs/ohgo/security"
 )
 
 // fakeMCPManager records the exact boundary the tools request and simulates one

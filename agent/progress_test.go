@@ -2,9 +2,9 @@ package agent
 
 import (
 	"context"
-	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"sync"
 	"testing"
 	"time"

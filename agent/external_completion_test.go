@@ -3,9 +3,9 @@ package agent
 import (
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/security"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/security"
 )
 
 // An external mutation decision is an approval and authority fact, not

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 func postfreezeIntent(objective string) contract.IntentContract {

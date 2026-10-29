@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ast"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 )
 
 // GraphTool answers bounded package-import relationship queries.

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // Live download and context % must grow while the turn streams, not only at

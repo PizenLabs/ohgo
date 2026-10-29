@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // Stage is the projected position of a task in its evidence lifecycle.

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/internal/ignore"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ignore"
 )
 
 // newTestIgnorer builds an ignorer from literal .gitignore contents, without

@@ -14,9 +14,9 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/workspace"
 )
 

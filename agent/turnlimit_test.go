@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // alwaysToolStream answers every request with another tool call. It is the

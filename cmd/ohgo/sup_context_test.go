@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/tokens"
 	"github.com/PizenLabs/ohgo/prompt"
-	"github.com/PizenLabs/ohgo/tokens"
 	"github.com/PizenLabs/ohgo/workspace"
 )
 

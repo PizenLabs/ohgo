@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/budget"
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // ReadOnlyToolNames is the set of built-in tools whose approval tier is "read".

@@ -6,9 +6,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/security"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/security"
 )
 
 // scriptedAuthorizer returns a fixed sequence of decisions and records what it

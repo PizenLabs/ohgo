@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // TestRunSubagentRunsToARealAnswer is the capability this increment bought.

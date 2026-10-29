@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/budget"
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 )
 
 func browserFixture(t *testing.T, handler http.HandlerFunc, cfg BrowserConfig) (*BrowserTool, *budget.Budget, *httptest.Server) {

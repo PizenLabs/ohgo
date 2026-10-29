@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/vcs"
+	"github.com/PizenLabs/ohgo/internal/vcs"
 	"go.yaml.in/yaml/v3"
 )
 

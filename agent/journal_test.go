@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // recordingJournal records the edit boundary the loop opens and whether the

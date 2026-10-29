@@ -31,8 +31,8 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/vcs"
 	"github.com/PizenLabs/ohgo/project"
-	"github.com/PizenLabs/ohgo/vcs"
 )
 
 // ErrCanceled means the initialization flow was aborted before it committed

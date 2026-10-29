@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ast"
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/security"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
+	"github.com/PizenLabs/ohgo/internal/security"
 )
 
 func writeTarget(t *testing.T, root, rel, content string) {

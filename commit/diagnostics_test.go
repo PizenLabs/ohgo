@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // TestReasoningOnlyReplyIsATruncatedModelFailure pins the real observed

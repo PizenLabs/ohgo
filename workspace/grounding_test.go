@@ -3,7 +3,7 @@ package workspace
 import (
 	"testing"
 
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // The grounding contract preserves what the user named. Each case is a

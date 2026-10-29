@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // groundingTool is a minimal tool whose declared class is the test variable.

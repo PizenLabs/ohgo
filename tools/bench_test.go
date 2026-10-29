@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
 )
 
 // benchTree builds a repository-shaped tree for search benchmarks.

@@ -2,7 +2,7 @@ package tui
 
 import (
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // taskAction is what a finished turn does to the durable task.

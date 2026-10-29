@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/vcs"
 	"github.com/PizenLabs/ohgo/project"
-	"github.com/PizenLabs/ohgo/vcs"
 )
 
 // configureGitIdentity makes a fixture repository self-contained: commits must

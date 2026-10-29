@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/task"
 	tea "github.com/charmbracelet/bubbletea"

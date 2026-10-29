@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // Stages mirror GRY's hook vocabulary. This is an interface constant, not a

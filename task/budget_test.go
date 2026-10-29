@@ -3,7 +3,7 @@ package task
 import (
 	"testing"
 
-	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
 )
 
 // A run's consumption is folded into the task ledger and survives a restart.

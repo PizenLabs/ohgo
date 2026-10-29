@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // CompletionState is the runtime's verdict on whether a run reached its

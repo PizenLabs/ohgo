@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/security"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/security"
 )
 
 // Authorizer is the security boundary the loop consults before execution.

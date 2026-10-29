@@ -34,7 +34,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 //go:embed catalog.json

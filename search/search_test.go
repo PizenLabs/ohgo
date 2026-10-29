@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 )
 
 func testProvider(t *testing.T, handler http.HandlerFunc) (*Client, *httptest.Server) {

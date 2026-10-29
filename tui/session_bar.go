@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/tokens"
+	"github.com/PizenLabs/ohgo/internal/tokens"
 )
 
 // SessionShortcutBar is the right zone of the telemetry footer: the two

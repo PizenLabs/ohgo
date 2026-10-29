@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/sandbox"
+	"github.com/PizenLabs/ohgo/internal/execution/sandbox"
 )
 
 func TestParseEscape(t *testing.T) {

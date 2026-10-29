@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	tea "github.com/charmbracelet/bubbletea"
 )
 

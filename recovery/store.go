@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/state"
-	"github.com/PizenLabs/ohgo/vcs"
+	"github.com/PizenLabs/ohgo/internal/state"
+	"github.com/PizenLabs/ohgo/internal/vcs"
 	_ "modernc.org/sqlite"
 )
 

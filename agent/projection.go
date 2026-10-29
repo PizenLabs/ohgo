@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/PizenLabs/ohgo/ai"
+import "github.com/PizenLabs/ohgo/internal/provider/ai"
 
 // ProjectionRequest is the runtime state a projection may use to build the next
 // model request.

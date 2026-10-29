@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/state"
+	"github.com/PizenLabs/ohgo/internal/state"
 )
 
 // CacheSchemaVersion guards the on-disk shape. A record written by a newer

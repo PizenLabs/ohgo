@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // A subagent must not start a provider call once the parent's wall-clock

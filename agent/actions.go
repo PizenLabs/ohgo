@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/PizenLabs/ohgo/contract"
+import "github.com/PizenLabs/ohgo/internal/control/contract"
 
 // ActionClass is the kind of work a tool performs.
 //

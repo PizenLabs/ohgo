@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/catalog"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 func budgetTestModel() ai.Model { return catalog.MustResolve("anthropic/claude-sonnet-4-5") }

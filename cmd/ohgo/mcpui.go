@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/config"
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 	"github.com/PizenLabs/ohgo/mcp"
 	"github.com/PizenLabs/ohgo/tui"
 )

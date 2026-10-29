@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 )
 
 // browserLink is one link discovered in the current page snapshot.

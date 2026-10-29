@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 )
 
 // contentItem is one MCP content entry. Binary payloads are represented only by

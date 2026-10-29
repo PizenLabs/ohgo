@@ -8,14 +8,14 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/vcs"
 	"github.com/PizenLabs/ohgo/project"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/startup"
 	"github.com/PizenLabs/ohgo/tui"
-	"github.com/PizenLabs/ohgo/vcs"
 	"github.com/spf13/cobra"
 )
 

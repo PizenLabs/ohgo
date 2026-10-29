@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/PizenLabs/ohgo/exec"
-	"github.com/PizenLabs/ohgo/security"
+	"github.com/PizenLabs/ohgo/internal/security"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/PizenLabs/ohgo/tui"
 )

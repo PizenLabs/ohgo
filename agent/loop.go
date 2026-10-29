@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/budget"
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/security"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/security"
 )
 
 // ErrNoTools means the loop was started with an empty tool set.

@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // EntriesFromMessages rebuilds a transcript view from agent messages.

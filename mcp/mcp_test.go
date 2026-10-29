@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 )
 
 // scriptedProcess is a line-oriented fake MCP server. It answers each written

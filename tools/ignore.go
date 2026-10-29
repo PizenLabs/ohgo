@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/PizenLabs/ohgo/internal/ignore"
+import "github.com/PizenLabs/ohgo/internal/intelligence/ignore"
 
 // ignorer is the tools package's view of the shared ignore matcher.
 //

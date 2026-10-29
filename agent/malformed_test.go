@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // A model that emits arguments the tool schema rejects must produce an

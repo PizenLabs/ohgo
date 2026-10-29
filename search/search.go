@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 )
 
 // Hard limits. They are runtime constants, never model-controlled.

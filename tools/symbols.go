@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ast"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 )
 
 // Symbol query limits.

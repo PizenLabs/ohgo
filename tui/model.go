@@ -16,8 +16,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/tokens"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/tokens"
 	diffview "github.com/PizenLabs/ohgo/tui/diff"
 	"github.com/PizenLabs/ohgo/workspace"
 )

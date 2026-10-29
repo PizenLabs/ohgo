@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // UsageLog accumulates token usage and cost across turns.

@@ -33,7 +33,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/internal/ignore"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ignore"
 )
 
 // EntryKind is what a workspace path is.

@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/knowledge"
-	"github.com/PizenLabs/ohgo/security"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
+	"github.com/PizenLabs/ohgo/internal/security"
 )
 
 // WebFetch limits.

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/tokens"
+	"github.com/PizenLabs/ohgo/internal/tokens"
 )
 
 // Compaction settings.

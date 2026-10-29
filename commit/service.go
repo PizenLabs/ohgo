@@ -9,9 +9,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/vcs"
 	"github.com/PizenLabs/ohgo/prompt"
-	"github.com/PizenLabs/ohgo/vcs"
 )
 
 // DefaultProposalTimeout bounds one COMMIT proposal request.

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 )
 
 // httpTransport is the streamable-HTTP JSON-RPC seam.

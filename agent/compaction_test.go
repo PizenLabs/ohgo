@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/tokens"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/tokens"
 )
 
 func TestResolveThresholdTokensUsesFixedTokensFirst(t *testing.T) {

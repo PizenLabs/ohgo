@@ -3,7 +3,7 @@ package agent
 import (
 	"strings"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // Message is one agent-level turn.

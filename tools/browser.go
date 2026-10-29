@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/knowledge"
-	"github.com/PizenLabs/ohgo/security"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
+	"github.com/PizenLabs/ohgo/internal/security"
 )
 
 // MaxBrowserOutputChars bounds one browser answer published to the model.

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/sandbox"
+	"github.com/PizenLabs/ohgo/internal/execution/sandbox"
 )
 
 // Background job tuning, shared with tests.

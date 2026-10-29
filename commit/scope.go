@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/PizenLabs/ohgo/vcs"
+	"github.com/PizenLabs/ohgo/internal/vcs"
 )
 
 // Errors that stop /commit before it asks the model or mutates anything.

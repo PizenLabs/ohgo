@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/edit"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/edit"
 )
 
 // EditTool replaces an exact string in a file.

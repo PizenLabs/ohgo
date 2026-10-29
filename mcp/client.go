@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 )
 
 // serverProcess is the line-oriented process seam. Tests substitute a fake;

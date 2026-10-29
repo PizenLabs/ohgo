@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/budget"
 	"github.com/PizenLabs/ohgo/cognition"
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // Task state values the task domain projects. They are duplicated here as

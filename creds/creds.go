@@ -24,7 +24,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/state"
+	"github.com/PizenLabs/ohgo/internal/state"
 )
 
 // ErrMissingCredential means no source held a credential for the provider.

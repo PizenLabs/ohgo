@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/jsonschema"
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
 )
 
 // Hard limits for MCP configuration and responses.

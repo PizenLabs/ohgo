@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/security"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/security"
 )
 
 var errTestProvider = errors.New("provider unavailable")

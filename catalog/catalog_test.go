@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // TestResolveReturnsRealFacts pins the values that were wrong when they lived

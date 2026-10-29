@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
 	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/session"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/spf13/cobra"

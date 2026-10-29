@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/security"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/security"
 )
 
 // Target evidence limits. A completion check reads only the coordinates the

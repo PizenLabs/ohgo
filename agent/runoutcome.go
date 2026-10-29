@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/PizenLabs/ohgo/budget"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
 )
 
 // RunVerdict is the terminal classification of a finished run, independent of

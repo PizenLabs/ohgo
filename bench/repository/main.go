@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/ast"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 const harnessVersion = "phase2-v1"

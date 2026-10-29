@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/contract"
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
+	"github.com/PizenLabs/ohgo/internal/security"
 	"github.com/PizenLabs/ohgo/mcp"
-	"github.com/PizenLabs/ohgo/security"
 )
 
 // MaxMCPDiscoveryChars bounds one discovery answer published to the model.

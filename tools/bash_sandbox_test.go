@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/sandbox"
+	"github.com/PizenLabs/ohgo/internal/execution/sandbox"
 )
 
 // A FUZZ execution is authorized as read-only by the authority decision, not

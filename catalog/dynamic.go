@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/state"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/state"
 )
 
 // dynamicCacheTTL bounds how long a fetched roster is trusted. A day matches

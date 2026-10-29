@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/ast"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 )
 
 // StructuralSource owns the one lazily built repository index shared by every

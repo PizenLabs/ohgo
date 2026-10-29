@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/state"
+	"github.com/PizenLabs/ohgo/internal/state"
 )
 
 // TransitionSchemaVersion guards the on-disk shape of update-transition.json.

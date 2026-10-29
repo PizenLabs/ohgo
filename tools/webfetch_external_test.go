@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/knowledge"
+	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 )
 
 // The pre-existing simple fetch now uses the same untrusted envelope and

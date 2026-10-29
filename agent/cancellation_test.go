@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
 )
 
 // A cancellation that lands between the model's proposal and the tool call must

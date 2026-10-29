@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // The usage ledger must be safe for concurrent turns and honest about gaps.

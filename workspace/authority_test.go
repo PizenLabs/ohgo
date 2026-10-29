@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
 )
 
 // fakeTool is a minimal agent.Tool whose declared tier is controlled by the

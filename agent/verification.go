@@ -3,7 +3,7 @@ package agent
 import (
 	"strings"
 
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // VerificationScope is one package directory a successful check covered.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/PizenLabs/ohgo/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/prompt"
 	"github.com/charmbracelet/lipgloss"
 )

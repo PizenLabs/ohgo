@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // EvaluateBudgetCompletion is the Phase 5 completion interaction.

@@ -3,9 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
-	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"strings"
 	"sync"
 	"sync/atomic"

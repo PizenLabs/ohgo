@@ -3,7 +3,7 @@ package task
 import (
 	"testing"
 
-	"github.com/PizenLabs/ohgo/contract"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // The grounding contract is durable task state: a resumed task must remember

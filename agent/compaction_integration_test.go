@@ -3,8 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
-	"github.com/PizenLabs/ohgo/ai"
 	"github.com/PizenLabs/ohgo/catalog"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"strings"
 	"sync/atomic"
 	"testing"

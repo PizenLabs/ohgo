@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode"
 
-	linediff "github.com/PizenLabs/ohgo/diff"
+	linediff "github.com/PizenLabs/ohgo/internal/diff"
 )
 
 // DefaultContext is the unified context git includes around each change in the

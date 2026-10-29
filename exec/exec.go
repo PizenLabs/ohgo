@@ -19,7 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/PizenLabs/ohgo/sandbox"
+	"github.com/PizenLabs/ohgo/internal/execution/sandbox"
 )
 
 // EscapePrefix is the character that opens a shell escape.
