@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 
-	"github.com/PizenLabs/ohgo/exec"
+	"github.com/PizenLabs/ohgo/internal/execution/exec"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/security"
-	"github.com/PizenLabs/ohgo/tools"
-	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // attachShellEscape wires the "!" escape to the local shell and to the same

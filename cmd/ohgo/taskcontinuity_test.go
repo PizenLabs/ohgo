@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/continuity/task"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
-	"github.com/PizenLabs/ohgo/task"
-	"github.com/PizenLabs/ohgo/tools"
-	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // The todo tool stays the single mutation owner; the snapshot is a faithful

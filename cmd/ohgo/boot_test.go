@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/project"
+	"github.com/PizenLabs/ohgo/internal/project"
 )
 
 // TestBootProjectIsReadOnly pins the one-shot contract: resolving the project

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/tools"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 )
 
 // phase6BenchTask is one discovery question. The static benchmark uses the

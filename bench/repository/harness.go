@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/tools"
 )
 
 // benchmarkPrompt is identical for every track. It states the answer contract

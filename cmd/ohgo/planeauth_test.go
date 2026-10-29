@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/creds"
+	"github.com/PizenLabs/ohgo/internal/provider/creds"
 )
 
 // TestSavePlaneKeyPersistsToFileStore is the credential-chain contract: a

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/update"
+	"github.com/PizenLabs/ohgo/internal/update"
 )
 
 const syncedMain = `var version = "0.0.3-dev"`

@@ -6,11 +6,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/catalog"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 )
 
 // spyTool records every time it executes. Execution is the observable the

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/catalog"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/tools"
-	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
+	"github.com/PizenLabs/ohgo/internal/tui"
 	tea "github.com/charmbracelet/bubbletea"
 )
 

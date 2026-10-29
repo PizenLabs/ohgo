@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/commit"
-	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/commit"
+	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // newCommitService resolves the dedicated COMMIT role and builds the

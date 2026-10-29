@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 

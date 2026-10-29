@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/tools"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 )
 
 // StaticProbe is one deterministic tool-level measurement. It is not an

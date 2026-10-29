@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/cognition"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/control/cognition"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 )
 
 // runState is the honest terminal verdict a stateless execution path reports.

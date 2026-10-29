@@ -11,19 +11,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/tools"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"golang.org/x/term"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/config"
-	"github.com/PizenLabs/ohgo/creds"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/continuity/recovery"
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/recovery"
-	"github.com/PizenLabs/ohgo/session"
-	"github.com/PizenLabs/ohgo/tui"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
+	"github.com/PizenLabs/ohgo/internal/provider/creds"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // harness is the shared backend behind slash commands in both interfaces.

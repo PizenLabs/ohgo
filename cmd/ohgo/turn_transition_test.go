@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/PizenLabs/ohgo/tui"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 func TestTurnTransitionSendsAmbiguousIntentToAuthorityPicker(t *testing.T) {

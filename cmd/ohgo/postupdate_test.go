@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/update"
+	"github.com/PizenLabs/ohgo/internal/update"
 )
 
 func postUpdateStore(t *testing.T) *update.TransitionStore {

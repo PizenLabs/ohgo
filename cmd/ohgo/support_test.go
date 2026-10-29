@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/session"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 )
 
 // TestSupIsEphemeralAndDoesNotPersist is the end-to-end contract for $sup.

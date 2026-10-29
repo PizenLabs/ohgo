@@ -4,8 +4,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/tui"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // turnAuthority projects a harness route into the TUI's turn decision.

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/workspace"
 )
 
 // phase4BenchCase is one scripted task. The expected state is fixed before the

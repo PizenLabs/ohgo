@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/config"
-	"github.com/PizenLabs/ohgo/update"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/update"
 	"github.com/spf13/cobra"
 )
 

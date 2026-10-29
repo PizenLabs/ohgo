@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/prompt"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/prompt"
 )
 
 // promptBlocks renders the system prompt into provider blocks.

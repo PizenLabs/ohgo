@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/execution/mcp"
 	"github.com/PizenLabs/ohgo/internal/external/knowledge"
-	"github.com/PizenLabs/ohgo/mcp"
-	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // mcpHooks builds the /mcp manager over the same manager the tool set uses.

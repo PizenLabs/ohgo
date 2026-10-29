@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"

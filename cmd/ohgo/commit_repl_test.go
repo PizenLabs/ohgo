@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/commit"
-	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/commit"
+	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 

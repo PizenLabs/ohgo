@@ -6,10 +6,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/prompt"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/prompt"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 )
 
 // supMaxTokens bounds one $sup completion.

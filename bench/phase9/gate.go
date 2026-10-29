@@ -5,11 +5,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/security"
-	"github.com/PizenLabs/ohgo/tools"
-	"github.com/PizenLabs/ohgo/workspace"
 )
 
 // benchmarkGate is the Phase 10 live-benchmark authorizer.

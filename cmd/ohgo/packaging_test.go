@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/PizenLabs/ohgo/catalog"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 	"os"
 	"path/filepath"
 	"strings"

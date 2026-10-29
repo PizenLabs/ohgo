@@ -3,12 +3,12 @@ package main
 import (
 	"testing"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/security"
-	"github.com/PizenLabs/ohgo/tools"
-	"github.com/PizenLabs/ohgo/workspace"
 )
 
 // gateFor builds a security gate under a workspace authority.

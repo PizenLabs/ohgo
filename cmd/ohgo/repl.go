@@ -12,13 +12,13 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/commit"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/commit"
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/state"
-	"github.com/PizenLabs/ohgo/session"
-	"github.com/PizenLabs/ohgo/tui"
-	"github.com/PizenLabs/ohgo/update"
+	"github.com/PizenLabs/ohgo/internal/tui"
+	"github.com/PizenLabs/ohgo/internal/update"
 )
 
 // History is a parameter so a resumed session can be seeded from a stored

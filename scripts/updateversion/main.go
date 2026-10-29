@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/update"
+	"github.com/PizenLabs/ohgo/internal/update"
 )
 
 // The files this command owns. Each one carries a copy of the version because a

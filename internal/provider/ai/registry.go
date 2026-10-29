@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/creds"
+	"github.com/PizenLabs/ohgo/internal/provider/creds"
 )
 
 // DefaultHTTPTimeout bounds one provider request, including the body read.

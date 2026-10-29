@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/config"
-	"github.com/PizenLabs/ohgo/tui"
-	"github.com/PizenLabs/ohgo/update"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/tui"
+	"github.com/PizenLabs/ohgo/internal/update"
 )
 
 // updateCheckTimeout bounds the background refresh. It is short because the
