@@ -61,8 +61,7 @@ immutable.
   reviews dropped entities, invented action narratives, narrowed or unresolved
   scope, and unsupported negative conclusions. Grounding persists with the
   existing task contract, is projected into the runtime state block, and never
-  adds a model call. See `docs/architecture/INTENT_GROUNDING.md` and
-  `docs/report/INTENT_GROUNDING_CLOSURE.md`; benchmark with
+  adds a model call. See `docs/architecture/INTENT_GROUNDING.md`; benchmark with
   `go run ./bench/intent`.
 
 - Open-source project documentation: a reorganized `README.md` with the project
@@ -225,8 +224,8 @@ immutable.
   the subject. It now verifies the body before reattaching it.
 - Plain REPL ignored `/model` (reported as unknown command); mid-session
   switching required a restart.
-- `PORT.md` still listed `todo` as remaining though ported, and `notebookEdit`
-  as remaining though it does not exist in the source revision.
+- The port plan still listed `todo` as remaining though ported, and
+  `notebookEdit` as remaining though it does not exist in the source revision.
 - An execution request such as `run ls` could complete after a clean model stop
   with nothing executed.
 - An informational request could complete on an empty or whitespace-only final

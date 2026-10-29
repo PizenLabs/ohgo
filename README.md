@@ -583,7 +583,9 @@ gry install --client ohgo
 
 That adds a `gry` server to `~/.ohgo/settings.json` with read tools classified
 `read`, graph-mutating tools classified `mutate`, and `GRY_CACHE_DIR`/`GRY_DB`
-passthrough. `gry uninstall --client ohgo` removes only that entry.
+passthrough. `gry uninstall --client ohgo` removes only that entry. The opt-in
+lifecycle-hook adapter is documented in
+[`docs/gry-hooks.md`](docs/gry-hooks.md).
 
 **Browser** (`browser`) is bounded GET read/navigation, not an automation
 surface: no JavaScript, forms, clicks, or non-GET requests. A session has an
@@ -634,12 +636,19 @@ the supported-version policy.
 
 ## Architecture
 
-See [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md)
-for the layer map, turn lifecycle, concurrency rules, error taxonomy, storage,
-transports, and performance notes. The implemented authority model is described
-in [`docs/architecture/WORKSPACE_AUTHORITY.md`](docs/architecture/WORKSPACE_AUTHORITY.md);
-state and persistence in
-[`docs/architecture/STATE_AND_PERSISTENCE.md`](docs/architecture/STATE_AND_PERSISTENCE.md).
+The canonical architecture sources are:
+
+- [`OHGO_ARCHITECTURE_MAP.md`](OHGO_ARCHITECTURE_MAP.md) — current package
+  topology, domains, ownership, and feature placement.
+- [`OHGO_ARCHITECTURE_RULES.md`](OHGO_ARCHITECTURE_RULES.md) — the permanent,
+  machine-enforced architectural contract.
+- [`OHGO_ARCHITECTURE_MIGRATION.md`](OHGO_ARCHITECTURE_MIGRATION.md) — why the
+  tree is shaped this way and how the migration was proven safe.
+
+The runtime behaviour reference is
+[`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md).
+Authority, persistence, intent grounding, and MCP have their own supporting
+documents under [`docs/architecture/`](docs/architecture/).
 
 Key properties:
 
@@ -655,10 +664,9 @@ Key properties:
   the run is bounded by a wall-clock deadline, and expiry returns completed
   turns rather than an error.
 
-The dependency arrows point one way: `catalog → ai` (type only), `ai → creds`
-(secrets only), `tools → agent` (subagent spec only), `workspace → agent`
-(tool admission only), and `cmd → everything`. A cycle here is a bug, not a
-shortcut.
+Dependency direction is enforced, not advisory: `internal/architecture` fails
+`go test ./...` when a package imports across a forbidden boundary or is not
+declared in the domain manifest.
 
 ## Development
 

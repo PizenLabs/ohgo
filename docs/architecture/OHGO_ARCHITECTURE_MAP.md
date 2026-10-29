@@ -5,10 +5,12 @@
 > **Companion documents:** `OHGO_ARCHITECTURE_RULES.md` (the permanent
 > development contract) and `OHGO_ARCHITECTURE_MIGRATION.md` (what moved and
 > how it was proven safe).
-> **History:** `docs/OHGO_ARCHITECTURE_BASELINE.md` describes the pre-migration
-> tree. Package paths in that document, and in `docs/architecture/*.md`, are
-> historical; the *behavioural* content of the baseline is still the authority
-> for what must not change.
+> **History:** the pre-migration tree and the behaviour-preservation proof are
+> recorded in `OHGO_ARCHITECTURE_MIGRATION.md`. Superseded architecture
+> snapshots are archived outside the active documentation set.
+> **Behavioural detail:** `docs/architecture/` explains runtime behaviour,
+> authority, persistence, intent grounding, and MCP. Those documents defer
+> topology and ownership to this map.
 > **Enforcement:** `internal/architecture/rules_test.go`. Every rule marked
 > **\[ENFORCED]** fails `go test ./...` when broken.
 

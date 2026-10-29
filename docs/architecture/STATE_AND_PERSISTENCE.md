@@ -1,17 +1,18 @@
 # State, Persistence & Memory Boundaries
 
-> **Package paths:** this document predates the `internal/` migration. Package
-> *names* and behaviour are unchanged; their *locations* moved. Read
-> `OHGO_ARCHITECTURE_MAP.md` for the current tree and
-> `OHGO_ARCHITECTURE_RULES.md` for the enforced boundaries.
+> **Scope:** machine, project, session, derived, and runtime state ownership.
+> **Canonical topology:** [`OHGO_ARCHITECTURE_MAP.md`](../../OHGO_ARCHITECTURE_MAP.md).
+> **Permanent rules:** [`OHGO_ARCHITECTURE_RULES.md`](../../OHGO_ARCHITECTURE_RULES.md) §11–§12.
+> **Runtime behaviour:** [`ARCHITECTURE.md`](ARCHITECTURE.md); authority:
+> [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
 
 How OHGO separates machine, project, session, derived, and runtime state — and
 where each boundary is drawn, why, and what owns it.
 
 This document is the ownership contract for persisted state and memory. The
-runtime authority contract lives in [`ARCHITECTURE_CONTRACT_V1.md`](ARCHITECTURE_CONTRACT_V1.md);
-this file answers a narrower question: **who owns each datum, where does it
-live, what survives what, and what is never allowed to become durable.**
+authority rules live in [`OHGO_ARCHITECTURE_RULES.md`](../../OHGO_ARCHITECTURE_RULES.md)
+§13–§14; this file answers a narrower question: **who owns each datum, where
+does it live, what survives what, and what is never allowed to become durable.**
 
 Two rules frame everything below:
 

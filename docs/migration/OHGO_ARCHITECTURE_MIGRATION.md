@@ -247,7 +247,7 @@ reasoning matters more than the decision.
 | **Moving `bench/` under `internal/`** | `internal/` is the shipped implementation boundary; benchmarks are not shipped. Moving them would imply they are part of the binary's architecture. |
 | **Moving `cmd/ohgo` under `internal/`** | It is `package main`; `go install github.com/PizenLabs/ohgo/cmd/ohgo@latest` is a documented user path. |
 | **Splitting `cmd/ohgo/harness.go` (965 lines) and `internal/tui/app.go` (~5,174 lines) in this pass** | Structural, not semantic. Mixing a file split into a package relocation makes both harder to review and to revert. Recorded as SAFE NEXT in §8. |
-| **Unifying turn preparation (`runTurnWithChoice` ↔ `runHeadlessTurnAs`)** | Investigated and rejected in the second pass (§12.4 of `OHGO_OPTIMIZATION_REPORT.md`): the shared part is a call sequence over already-canonical owners; the divergent part is the durable-task and recovery lifecycle. The relocation changes nothing about that finding. **Do not reintroduce it** without a new architectural decision. |
+| **Unifying turn preparation (`runTurnWithChoice` ↔ `runHeadlessTurnAs`)** | Investigated and rejected in the second optimization pass: the shared part is a call sequence over already-canonical owners; the divergent part is the durable-task and recovery lifecycle. The relocation changes nothing about that finding. **Do not reintroduce it** without a new architectural decision. |
 | **Unifying the TUI task vocabulary with `task.Status`** | The TUI's string vocabulary is a deliberate projection seam. Moving `task` under `internal/` does not change the seam; `internal/architecture` now *enforces* that `tui` must not import `continuity/task`. |
 
 ---

@@ -1,12 +1,15 @@
 # AGENTS.md
 
-Conventions for working in this Go port.
+Operating conventions for contributing to ohgo.
 
 ## Scope
 
-When a behaviour is ambiguous, the TypeScript original is the authority. Port
-its **contract**, not its implementation detail: a subsystem that had no clean
-Go equivalent should be redesigned rather than transliterated.
+The current Go implementation, its tests, and the canonical architecture
+documents define the contract.
+
+When existing implementation does not cleanly support a requirement, redesign
+the subsystem around its current ownership and invariants rather than
+translating or preserving obsolete structure.
 
 ## Build, test, check
 
@@ -18,9 +21,12 @@ go test -race ./...
 gofmt -l .          # must be empty
 ```
 
-Run all four before declaring work done. `go test ./...` must be full-suite
+Run all five before declaring work done. `go test ./...` must be full-suite
 safe: never leave global mutable state, `os.Chdir`, or an un-restored
 `t.Setenv` that can leak into another file's tests.
+
+A green test suite is necessary but does not by itself prove that the requested
+behaviour or architecture was implemented correctly.
 
 ## Style
 
@@ -37,7 +43,7 @@ safe: never leave global mutable state, `os.Chdir`, or an un-restored
   `lipgloss` (TUI rendering), `modernc.org/sqlite` (pure-Go session store, no
   cgo), `golang.org/x/term` (terminal detection).
 
-## Conventions inherited from the original port plan
+## Engineering conventions
 
 - **Logic in a testable seam.** Anything that talks to the network, the
   filesystem, or the clock goes behind an interface or a function field, so a
@@ -55,6 +61,37 @@ safe: never leave global mutable state, `os.Chdir`, or an un-restored
   utility. Two implementations of the same thing is a bug even when both work.
   A persisted format (a model reference, a session snapshot) has **one**
   formatter and one parser.
+- **Use existing repository-intelligence seams.** Prefer the repository's
+  existing structural discovery mechanisms when they provide the coordinates
+  required by the task. Do not introduce a second discovery, index, or search
+  path for a problem an existing domain already owns.
+
+## Agent authority and completion
+
+ASK, FUZZ, and BUILD are authority boundaries, not conversational labels.
+
+- **ASK** is read-only repository understanding. It must not mutate repository
+  source or durable project state.
+- **FUZZ** is exploratory and adversarial execution. It may run commands,
+  benchmarks, stress tests, and reproduction probes, but must not mutate
+  repository source.
+- **BUILD** is the sole repository mutation authority. It implements and
+  verifies the requested change rather than treating implementation as an
+  open-ended exploration task.
+
+Do not infer execution authority from the first verb, model preference, tool
+availability, or an inferred user intention. Effective authority comes from
+the current workspace and turn intent.
+
+Never widen authority because a mutation, delegation, or additional capability
+appears useful. Model output is a proposal, not an authority grant.
+
+Tool approval does not replace workspace or intent authority. A tool must not
+provide a mutation path unavailable to the current execution mode.
+
+Do not declare completion from model confidence, intent, or tool success alone.
+Completion requires the requested state transition and appropriate verification
+evidence.
 
 ## Testing rules
 
@@ -94,9 +131,12 @@ mode a consumer would see. Specifically:
 2. Write the JSON Schema as a `map[string]any` in the constructor. A malformed
    schema must panic at construction — never reach a call site.
 3. Declare the `agent.Approval` tier honestly. Omitted means "prompt every
-   time", which is the correct default.
+   time", which is the correct default. Approval does not grant authority
+   beyond the current workspace and turn intent.
 4. Register it in `cmd/ohgo/build.go`'s `buildTools`.
-5. Test: the happy path, each rejection, cancellation, and root containment.
+5. For mutating tools, preserve the existing mutation preview/evidence contract.
+6. Test the happy path, each rejection, cancellation, root containment, and
+   any mutation-preview/evidence contract.
 
 ## Where code goes
 
@@ -114,6 +154,21 @@ In short:
   persistence and presentation reach it through interfaces, never imports.
 - Every new package must be declared in the manifest in
   `internal/architecture/rules_test.go`, with the domain that owns it.
-- Do not create `common/`, `shared/`, `util/`, `helpers/`, `runtime/`, `core/`,
-  `engine/`, `manager/` or `pipeline/`. If a concept has no owner, deciding the
-  owner is the task.
+- Do not create generic architectural buckets such as `common/`, `shared/`,
+  `util/`, `helpers/`, `runtime/`, `core/`, `engine/`, `manager/` or
+  `pipeline/`. If a concept has no owner, deciding the owner is the task.
+
+## Documentation
+
+The canonical sources are `OHGO_ARCHITECTURE_MAP.md` (topology and ownership),
+`OHGO_ARCHITECTURE_RULES.md` (permanent constraints), and
+`OHGO_ARCHITECTURE_MIGRATION.md` (history). Behavioural detail lives in
+`docs/architecture/`; those documents defer topology to the map.
+
+- One fact has one canonical document. Link to it; do not restate it.
+- Update the canonical document in the same change that alters the fact.
+- Move superseded or historical material to `old_docs/`; never leave it
+  competing with current guidance. `old_docs/` is a temporary archive, not an
+  active documentation domain.
+- Use stable, purpose-named files. Do not create versioned architecture names
+  (`*_V2`, `*_FINAL`, `*_NEW`) or generic dumping files (`NOTES.md`).
