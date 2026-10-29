@@ -1,13 +1,38 @@
+# The build needs go.mod, go.sum, the Go source tree, and LICENSE (copied into
+# the image for attribution). Everything else only inflates the context and
+# invalidates the source layer.
+
+# Compiled artifacts and local state
 /ohgo
+/dist/
+/.ohgo/
 *.exe
 *.test
 *.out
 coverage.*
+
+# Version control and CI
+/.git/
+/.github/
+
+# Documentation and assets the binary does not embed
+/docs/
+/old_docs/
+/img-bugs/
+/bench/
+/scripts/
+*.md
+
+# Local configuration and secrets
 .env
 .env.local
+
+# Editor and OS noise
 .idea/
 .vscode/
 *.swp
 .DS_Store
+
+# Go workspace overrides: the module is built on its own
 go.work
 go.work.sum
