@@ -461,7 +461,9 @@ func renderCardAreaWidth(sb *strings.Builder, state State, layout Layout, widthF
 		return
 	}
 	avail := layout.ConversationHeight
-	if state.Pending != nil {
+	// The update lifecycle cards own the surface outright; a tool approval
+	// underneath stays blocked and does not reserve rows in the card.
+	if state.Pending != nil && state.UpdateRestart == nil && state.PostUpdate == nil {
 		avail -= approvalLines(state.Pending, layout)
 	}
 	if avail < 0 {

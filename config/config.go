@@ -153,6 +153,21 @@ type Settings struct {
 	// Compaction configures context reduction. A nil pointer means "use the
 	// built-in defaults", which is distinct from "disabled".
 	Compaction *Compaction `json:"compaction,omitempty"`
+	// Update controls automatic release observation. Absence means enabled:
+	// the check is local-first, background, and never installs anything.
+	Update *UpdateSettings `json:"update,omitempty"`
+}
+
+// UpdateSettings configures the background release observation.
+//
+// It deliberately has no channel, endpoint, or install switch. Installation is
+// always an explicit `ohgo update`, and the release source is part of the
+// build so a settings file cannot redirect verification.
+type UpdateSettings struct {
+	// Enabled turns automatic checks on or off. An omitted value is enabled.
+	// OHGO_UPDATE_CHECK=off overrides it. The explicit `ohgo update` command
+	// is unaffected: a human asking for an update is the authority.
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // SearchSettings is the external search configuration.

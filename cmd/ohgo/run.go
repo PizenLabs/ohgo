@@ -31,6 +31,7 @@ import (
 	"github.com/PizenLabs/ohgo/state"
 	"github.com/PizenLabs/ohgo/tools"
 	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/update"
 	"github.com/PizenLabs/ohgo/workspace"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -1825,6 +1826,12 @@ func runSession(cmd *cobra.Command, args []string) error {
 			programOpts = append(programOpts, tui.WithMouseReporting())
 		}
 		program := tui.NewProgram(loop, opts.model.Provider+"/"+opts.model.ID, opts.model.ContextWindow, programOpts...)
+		// /update is a presentation surface over the same authority the CLI
+		// command uses. Progress lands in header chrome while the operation
+		// runs off the update goroutine; nothing installs until the human
+		// invokes /update. A pending post-update transition is presented here
+		// as a one-shot local acknowledgement.
+		installUpdateLifecycle(program, boot.Settings, version)
 		// The recovery store is opened before the UI runs; /undo and /redo
 		// move through the same session timeline the loop records into.
 		recoverer := openRecoveryService(opts.root)
@@ -2082,6 +2089,10 @@ func runSession(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintln(out, boot.Greeting)
 	}
 	_, _ = fmt.Fprintln(out, "Type your request, or /quit to exit.")
+	// The plain REPL reads a terminal, so a cached update hint is safe to
+	// print once here. A background refresh is persisted and picked up at the
+	// next prompt boundary, never while the user is typing.
+	updateAlert := startUpdateObserver(boot.Settings, version, nil)
 
 	var history []agent.Message
 	if sess != nil && resumeID > 0 {
@@ -2102,6 +2113,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	plain.security = opts.security
 	plain.projectID = opts.projectID
 	plain.support = surface
+	plain.updateNotice = updateAlert
 	// A plain-REPL prompt is one run, exactly like a TUI turn: it starts a
 	// fresh root grant, while the holder keeps every spawner pointed at the
 	// grant the loop is currently enforcing.
@@ -2403,6 +2415,12 @@ func wizardComplete(cmd *cobra.Command, opts *options, registry *ai.Registry, d 
 			}
 		}
 
+		// Onboarding has finished, so the program is now the interactive
+		// session /update belongs to. Wiring the lifecycle here keeps the
+		// wizard from hiding a pending post-update acknowledgement behind its
+		// own modal; the card opens after the dialog closes.
+		installUpdateLifecycle(program, opts.settings, version)
+
 		notice := "runtime ready"
 		if name := identity.WorkerName(); name != "" {
 			notice = "Welcome, " + name + " — runtime ready"
@@ -2487,6 +2505,11 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 	reader := bufio.NewReader(in)
 	pending := ""
 	for {
+		// A background release observation only ever becomes visible at a
+		// prompt boundary, never in the middle of a line the user is typing.
+		if h.updateNotice != nil {
+			h.updateNotice(out)
+		}
 		var text string
 		if pending != "" {
 			text, pending = pending, ""
@@ -2542,6 +2565,27 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				continue
 			case "status":
 				_, _ = fmt.Fprintln(out, h.StatusReport(history, 0, "full-screen UI only", false))
+				continue
+			case "update":
+				// The plain REPL presents the same authority as `ohgo update`
+				// and the full-screen /update; only the rendering differs.
+				var last update.Stage
+				svc := update.NewService(update.Config{
+					CurrentVersion: version,
+					Progress: func(stage update.Stage) {
+						if stage == last {
+							return
+						}
+						last = stage
+						_, _ = fmt.Fprintln(out, stageLine(stage))
+					},
+				})
+				if err := executeUpdateTo(context.Background(), out, svc, false); err != nil {
+					var reported *reportedExit
+					if !errors.As(err, &reported) {
+						_, _ = fmt.Fprintln(out, err)
+					}
+				}
 				continue
 			case "usage":
 				_, _ = fmt.Fprintln(out, h.UsageReport())

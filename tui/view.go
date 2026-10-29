@@ -231,7 +231,11 @@ func renderState(state State, frame *transcriptFrame) string {
 	sb.WriteString(renderHeader(state, pal, layout) + "\n")
 	sb.WriteString(SeparatorLine(separatorWidth(state, layout), pal) + "\n")
 
-	if state.Transition != nil {
+	if state.UpdateRestart != nil {
+		renderUpdateRestartArea(&sb, state, pal, layout)
+	} else if state.PostUpdate != nil {
+		renderPostUpdateArea(&sb, state, pal, layout)
+	} else if state.Transition != nil {
 		renderTransitionArea(&sb, state, pal, layout)
 	} else if state.QuitConfirm != nil {
 		renderQuitConfirmArea(&sb, state, pal, layout)
@@ -263,13 +267,17 @@ func renderState(state State, frame *transcriptFrame) string {
 		renderTranscriptArea(&sb, state, pal, layout, frame)
 	}
 
-	if state.Pending != nil {
+	// A completed update or pending acknowledgement owns the surface until
+	// the user answers it. A tool that asks for approval underneath is left
+	// blocked: quitting denies it through the existing conservative path, and
+	// the lifecycle card never renders a second, conflicting dialog.
+	if state.Pending != nil && state.UpdateRestart == nil && state.PostUpdate == nil {
 		renderApproval(&sb, state.Pending, state.Theme, layout)
 	}
 
 	renderThinkingArea(&sb, state, pal, layout)
 
-	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.InfoModal == nil && state.InformationModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Transition == nil && state.Permissions == nil && state.Diff == nil {
+	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.InfoModal == nil && state.InformationModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Transition == nil && state.UpdateRestart == nil && state.PostUpdate == nil && state.Permissions == nil && state.Diff == nil {
 		// Main canvas. No middle status line while the hint bar owns the
 		// row (ShowHints): the header, composer prefix, and hint bar
 		// already own every fact it would repeat. A pending approval drops
@@ -318,7 +326,7 @@ func renderState(state State, frame *transcriptFrame) string {
 // displaces them. This joined form is for tests and narrow fallbacks; the
 // frame renders the padded split via composerHintBar.
 func composerHintsFor(state State) string {
-	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil {
+	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
 		return ""
 	}
 	if paletteOwnsKeys(state) && state.ConnectKey == nil {
@@ -354,7 +362,7 @@ func composerHintsFor(state State) string {
 // Idle telemetry splits via sessionBarRow: left metrics survive, right
 // shortcuts yield first on narrowing, and the row never wraps.
 func composerHintBar(state State, width int) string {
-	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil {
+	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
 		return ""
 	}
 	if paletteOwnsKeys(state) && state.ConnectKey == nil {
@@ -436,10 +444,11 @@ const (
 // The line reads `ohgo v1.0.0 · model · phase · check`, each segment in its
 // chrome role: the brand in primary, the release label muted beside it, the
 // model in sage, an active phase in bold accent (idle in muted), the check
-// status in amber, and every separator in dim slate. Phase and connection
-// stay words, never colour alone. An unknown version hides rather than
-// rendering as a placeholder, and the model budget shrinks to pay for the
-// label so the header stays one row.
+// status in amber, and every separator in dim slate. A known newer release
+// appends an update segment last: availability, or the stage of an explicit
+// /update. Phase and connection stay words, never colour alone. An unknown
+// version hides rather than rendering as a placeholder, and the model budget
+// shrinks to pay for the label so the header stays one row.
 //
 // Width sheds detail, never rows: full terminals show the whole model id and
 // probe detail; medium terminals keep the state word and shorten the model;
@@ -474,6 +483,7 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	phase := string(runtime)
 	tier := headerTier(state.Width)
 	conn, showConn := headerConn(state, tier)
+	updateHint := headerUpdateHint(state, tier)
 	width := displayWidth(state, layout)
 
 	// A transient clipboard confirmation layers over the permanent header on
@@ -489,7 +499,7 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	// The model segment shares one budget with its effort badge: the badge
 	// drops before the core id truncates, so narrowing sheds "◈ max" first
 	// and only then shortens the leaf.
-	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version)-reserved)
+	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version, updateHint)-reserved)
 
 	phaseStyle := chrome.Idle
 	if headerRuntimeActive(runtime) {
@@ -519,8 +529,20 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 		sb.WriteString(chrome.Separator.Render(" · "))
 		sb.WriteString(chrome.Check.Render(conn))
 	}
+	if updateHint != "" {
+		// Update availability is chrome, not a second header row. It sits
+		// last so the model budget pays for it and the permanent identity
+		// keeps its place when the terminal narrows.
+		sb.WriteString(chrome.Separator.Render(" · "))
+		sb.WriteString(chrome.Context.Render(updateHint))
+	}
 	left := sb.String()
 	if notice == "" {
+		if state.Width > 0 && CellWidth(left) > width {
+			// Last-resort guard: a pathological release tag must not wrap the
+			// header into a second row, which would desynchronise the frame.
+			return TruncateToWidth(stripANSI(left), width)
+		}
 		return left
 	}
 	noticeStyled := ExtrasFor(state.Theme).Success.Bold(true).Render(notice)
@@ -595,15 +617,50 @@ func headerConn(state State, tier string) (string, bool) {
 	return conn, true
 }
 
+// headerUpdateHint renders the update segment for the current header tier.
+//
+// It is plain text: the caller styles it, so the hint stays subordinate to
+// the brand and the model. Availability and progress are mutually exclusive:
+// an explicit /update replaces the invitation with the phase it is running.
+// Compact terminals shed the invitation verb but keep the release identity,
+// so availability is never communicated by colour or animation alone.
+func headerUpdateHint(state State, tier string) string {
+	if state.Status.UpdateRunning {
+		stage := sanitizeInline(state.Status.UpdateStage)
+		if tier == "compact" {
+			return "updating"
+		}
+		if stage == "" {
+			return "updating ohgo"
+		}
+		return "updating · " + stage
+	}
+	version := sanitizeInline(state.Status.UpdateAvailable)
+	if version == "" {
+		return ""
+	}
+	switch tier {
+	case "compact":
+		return "update " + version
+	case "medium":
+		return "update " + version + " · /update"
+	default:
+		return "update available: " + version + " · /update"
+	}
+}
+
 // headerChromeOverhead counts every header cell except the model itself, so
 // the model receives exactly the remaining budget.
-func headerChromeOverhead(marker, phase, conn string, showConn bool, version string) int {
+func headerChromeOverhead(marker, phase, conn string, showConn bool, version, updateHint string) int {
 	n := CellWidth("ohgo " + marker + " " + " · " + phase)
 	if version != "" {
 		n += CellWidth(" " + version)
 	}
 	if showConn {
 		n += CellWidth(" · " + conn)
+	}
+	if updateHint != "" {
+		n += CellWidth(" · " + updateHint)
 	}
 	return n
 }
@@ -1473,7 +1530,7 @@ func appendGhost(text, tail string, width int, style lipgloss.Style) string {
 // composerPrefixStyle so the frame and the "ask > "/"build > "/"fuzz > "
 // text read as one boundary.
 func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
-	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.InfoModal != nil || state.InformationModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.ConnectModal != nil || state.Diff != nil {
+	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.InfoModal != nil || state.InformationModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.ConnectModal != nil || state.Diff != nil {
 		return pal.Separator
 	}
 	return composerPrefixStyle(state, pal).Bold(true)
@@ -1563,7 +1620,7 @@ func one(show bool) int {
 // Idleness stays quiet, and an approval modal owns its dialog, so both
 // yield no line at all.
 func composerStateLine(state State, pal *Palette, layout Layout) string {
-	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil {
+	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
 		return ""
 	}
 	n := len(state.Queued)
@@ -1919,11 +1976,10 @@ func shellElapsed(shell *ShellEntry) string {
 	return shell.Duration.Round(time.Millisecond).String()
 }
 
-// quitCardWidth bounds the centered quit dialog: wide enough for the hint,
-// narrow enough to read as a popup with margins on roomy terminals.
-func quitCardWidth(termWidth int) int {
-	const maxCard = 52
-	const minCard = 30
+// centeredCardWidth bounds a centered dialog: wide enough for its content,
+// narrow enough to read as a popup with margins on roomy terminals. floor is
+// the minimum width used when the terminal is too narrow to preserve margins.
+func centeredCardWidth(termWidth, maxCard, minCard, floor int) int {
 	if termWidth <= 0 {
 		return maxCard
 	}
@@ -1933,14 +1989,20 @@ func quitCardWidth(termWidth int) int {
 	}
 	if w < minCard {
 		w = termWidth - 4
-		if w < 10 {
-			w = 10
+		if w < floor {
+			w = floor
 		}
 		if w > termWidth {
 			w = termWidth
 		}
 	}
 	return w
+}
+
+// quitCardWidth bounds the centered quit dialog: wide enough for the hint,
+// narrow enough to read as a popup with margins on roomy terminals.
+func quitCardWidth(termWidth int) int {
+	return centeredCardWidth(termWidth, 52, 30, 10)
 }
 
 // quitCard builds the centered bordered confirmation: title, horizontal
@@ -1995,25 +2057,7 @@ func quitCard(confirm *PendingApproval, cardW int) string {
 // transitionCardWidth bounds the centered transition dialog: wide enough for
 // the hint, narrow enough to read as a popup with margins on roomy terminals.
 func transitionCardWidth(termWidth int) int {
-	const maxCard = 56
-	const minCard = 32
-	if termWidth <= 0 {
-		return maxCard
-	}
-	w := termWidth - 8
-	if w > maxCard {
-		w = maxCard
-	}
-	if w < minCard {
-		w = termWidth - 4
-		if w < 12 {
-			w = 12
-		}
-		if w > termWidth {
-			w = termWidth
-		}
-	}
-	return w
+	return centeredCardWidth(termWidth, 56, 32, 12)
 }
 
 // transitionCard builds the centered workspace-transition dialog: the
@@ -2246,6 +2290,9 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 			parts = append(parts, status.Session)
 		}
 	}
+	// A newer release is chrome, never a transcript line. It has exactly one
+	// home: the header, where the release identity already lives. The footer
+	// stays context-only so the same fact cannot appear twice.
 	// The runtime phase is named once, in the header, and the live detail
 	// lives in the activity line; the footer stays context-only so a third
 	// "working" copy never competes with them. SUP is a model role, not a

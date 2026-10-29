@@ -514,6 +514,10 @@ func expandedToolLines(s State, id string) []string {
 // matches the full-screen UI: one thing at a time owns the keyboard.
 func liveOverlay(s State, pal *Palette, layout Layout) []string {
 	switch {
+	case s.UpdateRestart != nil:
+		return liveUpdateRestartLines(s, pal, layout)
+	case s.PostUpdate != nil:
+		return livePostUpdateLines(s, pal, layout)
 	case s.Transition != nil:
 		return liveTransitionLines(s)
 	case s.QuitConfirm != nil:
@@ -807,7 +811,7 @@ func liveComposerWidth(layout Layout) int {
 // is simply the last thing on screen, which is where the terminal already
 // puts it.
 func liveComposerLines(s State, pal *Palette, layout Layout) []string {
-	if s.ConnectKey != nil || s.Picker != nil || s.HelpModal != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil {
+	if s.ConnectKey != nil || s.Picker != nil || s.HelpModal != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil {
 		return nil
 	}
 	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)

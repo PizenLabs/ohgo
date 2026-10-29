@@ -152,7 +152,7 @@ func (p *Program) transcriptModalOpen() bool {
 		s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil ||
 		s.InformationModal != nil || s.SessionModal != nil || s.HelpModal != nil ||
 		s.ConnectModal != nil || s.ConnectKey != nil || s.Diff != nil ||
-		s.QuitConfirm != nil || s.Transition != nil || s.Permissions != nil
+		s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil || s.Permissions != nil
 }
 
 // positionAt maps a terminal cell to a logical position.

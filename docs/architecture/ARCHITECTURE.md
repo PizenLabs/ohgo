@@ -361,7 +361,8 @@ Root runs the interactive session; subcommands: `run`, `sessions` (+
 Both interactive paths share one backend (`harness.go`): the full-screen
 UI and the plain REPL call the same code for `/model` (static then live
 discovery), `/compact`, `/sessions`/`/resume`, `/jobs`, `/usage`,
-`/status`, `/doctor`, `/connect` (a Provider Manager modal browses the
+`/status`, `/update` (the same `update.Service` authority as `ohgo update`),
+`/doctor`, `/connect` (a Provider Manager modal browses the
 credential roster, an API-key modal collects the credential — pasted or
 detected — then a wizard: validated model list → saved key + settings),
 `/disconnect`
@@ -579,4 +580,6 @@ CapabilityRequest → admission → root budget → bounded execution
 Run `make bench` for the current numbers; `make check` for the full gate
 (build + vet + gofmt + tests). Releases are `make release` (four static
 tarballs: linux/darwin × amd64/arm64, `CGO_ENABLED=0`) installed via
-`install.sh` or `make install` (`~/.local/bin` by default).
+`install.sh` or `make install` (`~/.local/bin` by default). The complete
+versioned-document and upgrade-verification checklist is
+[`docs/RELEASING.md`](../RELEASING.md).

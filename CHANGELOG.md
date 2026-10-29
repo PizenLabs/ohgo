@@ -7,6 +7,33 @@ immutable.
 
 ### Added
 
+- Explicit self-update: `ohgo update` (`--check` to observe only) resolves the
+  published GitHub release, selects the tarball by the running `GOOS`/`GOARCH`,
+  downloads to a temporary file beside the executable, requires the published
+  SHA-256 entry, extracts only the `ohgo` entry with traversal/symlink/bomb
+  guards, replaces the executable atomically, and keeps the previous binary
+  until the new one reports the requested version. A failed verification
+  restores the previous binary. Package-manager-owned installs are detected by
+  receipt and refused with the owner's command; Windows and other unpublished
+  platforms report unsupported. Normal invocations only read a 24-hour local
+  cache (`~/.ohgo/update.json`) and may refresh it in the background; the hint
+  is header chrome in the TUI and one line in the plain REPL, never transcript,
+  never machine output. The TUI offers the same authority as `/update`; the
+  hint reports availability only and never installs by itself. Disable
+  automatic checks with `OHGO_UPDATE_CHECK=off` or
+  `"update": { "enabled": false }`. Self-update is not exposed as an agent
+  tool.
+
+- Post-update lifecycle: a verified explicit update records a pending
+  transition in `~/.ohgo/update-transition.json` and the TUI moves to a
+  restart-required screen that exits only on Enter. The next interactive
+  launch presents a centered, one-shot What's New card from release notes
+  embedded in the binary (`update/changelog.json`), acknowledged with Enter
+  and never shown again. Merely finding a newer release, a manual binary
+  replacement, a normal restart, or a rollback creates no notice. Non-
+  interactive commands such as `ohgo version` and `ohgo update --check`
+  never consume it.
+
 - MCP capability layer: normalized `<server>:<capability>` identities with
   server provenance, `read`/`execute`/`interact`/`mutate`/`unknown`
   classifications mapped to `READ`/`EXECUTE`/`EXTERNAL_SIDE_EFFECT`, explicit

@@ -27,6 +27,9 @@ Two rules frame everything below:
 | `sessions.db` (+ `-wal`, `-shm`) | SQLite session store: sessions, messages, artifacts | `session` | machine; authoritative; survives every project |
 | `cache/<provider>-models.json` | provider/model discovery rosters, `schema_version`-stamped | `catalog` | machine; **derived**, rebuildable |
 | `history` | plain-REPL prompt audit trail, last 1000 lines, commands excluded | `cmd/ohgo` | machine; ephemeral audit, best-effort |
+| `update.json` | latest observed release, provenance, ETag, last error, TTL timestamps; `0600`, atomic | `update` | machine; **derived**, rebuildable, never authority |
+| `update-transition.json` | last explicit version transition: operation, from/to release, completion time, post-update notice acknowledgement; `0600`, atomic | `update` | machine; authoritative lifecycle record, never inferred from version inequality |
+| `update.lock` | exclusive OS advisory installation claim; released automatically on process exit | `update` | transient; removed by its owner |
 
 `~/.ohgo` is resolved through one owner, the `state` package (`state.Dir()`,
 `state.Path(...)`). Before that change `config`, `session`, `creds`, `catalog`,
@@ -139,13 +142,31 @@ model output into durable state because no such path exists.
 ├── credentials.json              │                  project worker identity)
 ├── sessions.db      (session)    └── [graph.db]    (future; derived; disposable)
 ├── cache/           (derived)       [memory.db]    (only if ever justified)
-└── history          (audit)
+├── history          (audit)
+├── update.json      (derived)       [update.lock]  (transient install claim)
+└── update-transition.json (lifecycle)
 ```
 
-**No new files are created by this slice.** `graph.db` and `memory.db` appear
-here as reserved locations with a defined lifecycle, not as permission to write
-them. A store is added only when something reads it; a database with no reader
-is a speculative structure.
+The self-update slice adds `update.json`, `update-transition.json`, and
+`update.lock`. `update.json` is a cache: a tampered record can produce a wrong
+hint or a redundant request, but it cannot install anything, because
+`ohgo update` resolves the release again and verifies the artifact before
+replacement.
+
+`update-transition.json` is different: it is the authoritative record of the
+last explicit version transition. A successful verified update writes
+`operation: update` with a pending post-update notice; an acknowledgement
+consumes that notice exactly once; a rollback carries no post-update notice.
+The What's New card is presented only when the operation is `update`, the
+record is complete, the notice is still pending, and the record's target release
+matches the running binary. Release availability and the presence of a
+changelog entry never authorize the card.
+
+`changelog.json` is release content, not state. It is embedded into the binary
+from `update/changelog.json` and read locally; it is never fetched from a
+release API. `graph.db` and `memory.db` appear here as reserved locations with a
+defined lifecycle, not as permission to write them. A store is added only when
+something reads it; a database with no reader is a speculative structure.
 
 Five scopes, plus the memory seam, no more:
 
@@ -167,7 +188,9 @@ Project identity        <project>/.ohgo/project.yml  the sole authority
 Primary instructions    <project>/AGENTS.md          human-authored
 Supplementary instrs    <project>/.ohgo/AGENTS.md    optional, OHGO-local
 Session storage         ~/.ohgo/sessions.db          scoped by project_id
+Update lifecycle        ~/.ohgo/update-transition.json  explicit transition truth
 Derived state           ~/.ohgo/cache, future index  disposable, rebuildable
+Release notes           update/changelog.json        embedded content, not state
 ```
 
 Two separations carry the whole contract:

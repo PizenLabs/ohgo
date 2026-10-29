@@ -19,3 +19,4 @@
 - [ ] No new dependency the standard library already covers
 - [ ] No model/provider special-casing; no prompts in code outside `prompt/` or tool constructors
 - [ ] `CHANGELOG.md` has an `Unreleased` entry for user-visible changes
+- [ ] Release PRs follow `docs/RELEASING.md` and add the matching `update/changelog.json` entry

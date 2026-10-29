@@ -372,6 +372,17 @@ type Status struct {
 	// hides it: the header and the welcome frame show no version rather
 	// than an invented one.
 	Version string
+	// UpdateAvailable is a newer release found by the background check,
+	// e.g. "v1.2.3". Empty hides the hint. It is chrome, not transcript:
+	// the notification never enters the conversation or the model context.
+	UpdateAvailable string
+	// UpdateRunning reports that an explicit /update is in flight. The header
+	// then shows progress instead of the availability hint. It is chrome
+	// only: agent turns, tools, and typing keep running normally.
+	UpdateRunning bool
+	// UpdateStage is the current explicit-update phase, e.g. "downloading".
+	// Empty while no update is running.
+	UpdateStage string
 }
 
 // VersionLabel normalizes a raw version for display alongside the brand.
@@ -494,6 +505,16 @@ type State struct {
 	// reuses PendingApproval for its Yes/No choices so the conservative
 	// default and the no-wrap navigation match the tool approval dialog.
 	QuitConfirm *PendingApproval
+	// UpdateRestart is the terminal state of a successful explicit /update,
+	// or nil. The running process still executes the old binary, so the card
+	// says a restart is required and waits for an explicit Enter before the
+	// process exits. It never restarts automatically.
+	UpdateRestart *UpdateRestartView
+	// PostUpdate is the one-shot What's New acknowledgement for a pending
+	// transition created by a successful update, or nil. It is only opened by
+	// the host after verifying the persisted transition against the running
+	// version; an UpdateFound observation never sets it.
+	PostUpdate *PostUpdateView
 	// Transition is a pending workspace-transition proposal, or nil. While
 	// set it owns the keyboard and the decision surface: no turn may start
 	// until the user accepts or rejects it, so no provider request, tool, or
@@ -873,6 +894,56 @@ func (s *State) Apply(event Event) {
 	case Notice:
 		s.pushEntry(Entry{Kind: EntryNotice, Notice: e.Text})
 		s.growScroll(countLines(e.Text))
+
+	case UpdateFound:
+		// Availability is chrome, not conversation: it must never enter the
+		// transcript, the session store, or the model's context. An empty
+		// version is ignored rather than clearing an existing hint, so a
+		// failed or empty refresh cannot erase a real observation.
+		if version := strings.TrimSpace(e.Version); version != "" {
+			s.Status.UpdateAvailable = VersionLabel(version)
+		}
+
+	case UpdateStarted:
+		s.Status.UpdateRunning = true
+		s.Status.UpdateStage = "checking for updates"
+
+	case UpdateProgress:
+		if !s.Status.UpdateRunning {
+			return
+		}
+		if stage := strings.TrimSpace(e.Stage); stage != "" {
+			s.Status.UpdateStage = stage
+		}
+
+	case UpdateFinished:
+		s.Status.UpdateRunning = false
+		s.Status.UpdateStage = ""
+		// Only a real outcome invalidates the observation. A failure leaves
+		// the hint intact because the newer release is still known to exist.
+		if e.Err == "" && (e.InstalledVersion != "" || e.AlreadyCurrent) {
+			s.Status.UpdateAvailable = ""
+		}
+		// The installed binary is durable, but this process is still the old
+		// one. The card must stay until the user explicitly presses Enter.
+		if e.Err == "" && !e.AlreadyCurrent && strings.TrimSpace(e.InstalledVersion) != "" {
+			s.UpdateRestart = &UpdateRestartView{Version: VersionLabel(e.InstalledVersion)}
+		}
+
+	case PostUpdateOpened:
+		notice := e.Notice
+		notice.Version = strings.TrimSpace(notice.Version)
+		notice.Title = strings.TrimSpace(notice.Title)
+		notice.Changes = append([]PostUpdateChange(nil), notice.Changes...)
+		s.PostUpdate = &notice
+
+	case PostUpdateAcknowledged:
+		s.PostUpdate = nil
+
+	case PostUpdateAckFailed:
+		if s.PostUpdate != nil {
+			s.PostUpdate.Err = strings.TrimSpace(e.Err)
+		}
 
 	case TaskProjected:
 		// The projection replaces the current task block in place, so a long
@@ -1762,6 +1833,8 @@ func (s *State) Apply(event Event) {
 		s.Quit = true
 		s.QuitConfirm = nil
 		s.Transition = nil
+		s.UpdateRestart = nil
+		s.PostUpdate = nil
 
 	case SupportTurn:
 		// Legacy single-event form: the exchange lands in the overlay as a
@@ -2472,6 +2545,91 @@ type Notice struct{ Text string }
 
 func (Notice) eventKind() string { return "notice" }
 
+// UpdateFound reports a newer release discovered in the background. It is
+// chrome-only: it updates the header hint and never enters the transcript.
+//
+// This event is observation, not authority. Applying it must never start an
+// installation; only the explicit /update command crosses that boundary.
+type UpdateFound struct{ Version string }
+
+func (UpdateFound) eventKind() string { return "update_found" }
+
+// UpdateStarted marks an explicit /update in flight. It is emitted only by the
+// command handler, never by an observation.
+type UpdateStarted struct{}
+
+func (UpdateStarted) eventKind() string { return "update_started" }
+
+// UpdateProgress reports one stage of the explicit update already running.
+type UpdateProgress struct{ Stage string }
+
+func (UpdateProgress) eventKind() string { return "update_progress" }
+
+// UpdateFinished closes an explicit update attempt.
+//
+// A successful install, or a truthful "already current", invalidates the
+// availability hint. A failure keeps it: a newer release is still known to
+// exist, so hiding the hint would misreport the machine's state.
+type UpdateFinished struct {
+	// InstalledVersion is the release now on disk. Empty when nothing was
+	// installed.
+	InstalledVersion string
+	// AlreadyCurrent reports that the authority found no newer release.
+	AlreadyCurrent bool
+	// Err is the failure text. Non-empty preserves the availability hint.
+	Err string
+}
+
+func (UpdateFinished) eventKind() string { return "update_finished" }
+
+// UpdateRestartView is the restart-required card content. It is derived from
+// UpdateFinished{InstalledVersion}: a verified install, not a separate event,
+// is what makes a restart necessary.
+type UpdateRestartView struct {
+	// Version is the release now on disk.
+	Version string
+}
+
+// PostUpdateChange is one release note rendered by the What's New card. It is
+// presentation data: the host loads it from the binary's local changelog.
+type PostUpdateChange struct {
+	Type  string
+	Title string
+}
+
+// PostUpdateView is the centered one-shot What's New acknowledgement.
+//
+// It exists only because a verified /update created a pending transition. A
+// newer release merely being available, or a release having notes, never
+// creates it.
+type PostUpdateView struct {
+	// Version is the release the transition installed.
+	Version string
+	// Title is the release's local notes title, or empty when the release has
+	// no notes.
+	Title string
+	// Changes are bounded release notes, in changelog order.
+	Changes []PostUpdateChange
+	// Err reports that the acknowledgement could not be persisted. The card
+	// stays open so the user can retry or leave the pending state intact.
+	Err string
+}
+
+// PostUpdateOpened presents a pending post-update acknowledgement.
+type PostUpdateOpened struct{ Notice PostUpdateView }
+
+func (PostUpdateOpened) eventKind() string { return "post_update_opened" }
+
+// PostUpdateAcknowledged dismisses the card after the user pressed Enter.
+type PostUpdateAcknowledged struct{}
+
+func (PostUpdateAcknowledged) eventKind() string { return "post_update_acknowledged" }
+
+// PostUpdateAckFailed keeps the card open when persistence failed.
+type PostUpdateAckFailed struct{ Err string }
+
+func (PostUpdateAckFailed) eventKind() string { return "post_update_ack_failed" }
+
 // ContextUpdated sizes the budget display.
 type ContextUpdated struct {
 	Used   int
@@ -3149,6 +3307,7 @@ var Commands = []CommandSpec{
 	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
 	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
 	{Name: "status", Usage: "status", Description: "show workspace, session, and authority status", Category: CommandGroupControl},
+	{Name: "update", Usage: "update", Description: "install the latest release if one is available", Category: CommandGroupControl},
 	{Name: "usage", Usage: "usage", Description: "inspect token usage, cost, and providers", Category: CommandGroupControl},
 	{Name: "info", Usage: "info", Description: "show documentation and changelog", Category: CommandGroupControl},
 	{Name: "about", Usage: "about", Description: "show documentation and changelog", Hidden: true, Category: CommandGroupControl},
