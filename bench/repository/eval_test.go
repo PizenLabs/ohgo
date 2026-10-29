@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/internal/agent"
 )
 
 func TestParseFinalAnswerReadsExplicitJSON(t *testing.T) {

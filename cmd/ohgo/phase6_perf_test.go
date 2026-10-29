@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/ast"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 )
 
 type phase6PerfRow struct {

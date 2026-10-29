@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/gryhook"
 )
 

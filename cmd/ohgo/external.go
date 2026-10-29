@@ -5,11 +5,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/config"
-	"github.com/PizenLabs/ohgo/mcp"
-	"github.com/PizenLabs/ohgo/search"
-	"github.com/PizenLabs/ohgo/tools"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/execution/mcp"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
+	"github.com/PizenLabs/ohgo/internal/external/search"
 )
 
 // mcpRuntime holds the one MCP manager a session's tool set built. It exists

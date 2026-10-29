@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/recovery"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/continuity/recovery"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // isolateRecoveryState points the machine-level state directory at a temp home.

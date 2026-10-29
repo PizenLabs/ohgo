@@ -1,5 +1,10 @@
 # OHGO Core Architecture Contract v1
 
+> **Package paths:** this document predates the `internal/` migration. Package
+> *names* and behaviour are unchanged; their *locations* moved. Read
+> `OHGO_ARCHITECTURE_MAP.md` for the current tree and
+> `OHGO_ARCHITECTURE_RULES.md` for the enforced boundaries.
+
 > **Status:** Architecture Baseline (historical)
 > **Scope:** Core runtime, authority model, workspace model, persistence, model resolution, cross-workspace handoff
 > **Non-goal:** Rewriting or destabilizing the existing execution engine

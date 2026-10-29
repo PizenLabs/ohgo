@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/config"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 )
 
 // TestDoctorReportsAllChecks proves the diagnostic covers every subsystem that

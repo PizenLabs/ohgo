@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/tokens"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/tokens"
 )
 
 // errScriptExhausted means the scripted model was asked for a turn the scenario

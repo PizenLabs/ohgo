@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/tools"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 )
 
 // A read-only delegation must actually receive a read-only tool set. The

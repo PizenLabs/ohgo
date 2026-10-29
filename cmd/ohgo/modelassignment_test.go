@@ -3,10 +3,10 @@ package main
 import (
 	"testing"
 
-	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/config"
-	"github.com/PizenLabs/ohgo/tui"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // Model references shared by the assignment tests: one with an authoritative

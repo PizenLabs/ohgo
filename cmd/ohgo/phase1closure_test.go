@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/tools"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // TestBuildToolsExposesOneStructuralSource pins the Phase 6 extension of the

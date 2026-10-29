@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/config"
-	"github.com/PizenLabs/ohgo/prompt"
-	"github.com/PizenLabs/ohgo/tokens"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/prompt"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
+	"github.com/PizenLabs/ohgo/internal/tokens"
 )
 
 // supTestRoot builds a working directory that looks like a real project: an

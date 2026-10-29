@@ -1,5 +1,10 @@
 # State, Persistence & Memory Boundaries
 
+> **Package paths:** this document predates the `internal/` migration. Package
+> *names* and behaviour are unchanged; their *locations* moved. Read
+> `OHGO_ARCHITECTURE_MAP.md` for the current tree and
+> `OHGO_ARCHITECTURE_RULES.md` for the enforced boundaries.
+
 How OHGO separates machine, project, session, derived, and runtime state — and
 where each boundary is drawn, why, and what owns it.
 
@@ -163,7 +168,7 @@ matches the running binary. Release availability and the presence of a
 changelog entry never authorize the card.
 
 `changelog.json` is release content, not state. It is embedded into the binary
-from `update/changelog.json` and read locally; it is never fetched from a
+from `internal/update/changelog.json` and read locally; it is never fetched from a
 release API. `graph.db` and `memory.db` appear here as reserved locations with a
 defined lifecycle, not as permission to write them. A store is added only when
 something reads it; a database with no reader is a speculative structure.
@@ -190,7 +195,7 @@ Supplementary instrs    <project>/.ohgo/AGENTS.md    optional, OHGO-local
 Session storage         ~/.ohgo/sessions.db          scoped by project_id
 Update lifecycle        ~/.ohgo/update-transition.json  explicit transition truth
 Derived state           ~/.ohgo/cache, future index  disposable, rebuildable
-Release notes           update/changelog.json        embedded content, not state
+Release notes           internal/update/changelog.json embedded content, not state
 ```
 
 Two separations carry the whole contract:

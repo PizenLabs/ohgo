@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/update"
+	"github.com/PizenLabs/ohgo/internal/update"
 	"github.com/spf13/cobra"
 )
 

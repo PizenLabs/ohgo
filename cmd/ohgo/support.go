@@ -6,10 +6,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/config"
-	"github.com/PizenLabs/ohgo/prompt"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/prompt"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 )
 
 // supMaxTokens bounds one $sup completion.
@@ -173,13 +173,13 @@ func (h *harness) SupportInfo() (model, effort string) {
 	settings := h.settingsOrDefault()
 	resolved, eff, err := resolveSupModel(settings, catalog.Resolve)
 	if err == nil {
-		return resolved.Provider + "/" + resolved.ID, eff
+		return resolved.Ref(), eff
 	}
 	if ref, eff, _ := settings.RoleModel(string(config.RoleSup)); strings.TrimSpace(ref) != "" {
 		return strings.TrimSpace(ref), strings.TrimSpace(eff)
 	}
 	fallback := catalog.Default()
-	return fallback.Provider + "/" + fallback.ID, ""
+	return fallback.Ref(), ""
 }
 
 // CloseSupport discards the ephemeral conversation without touching the main
@@ -226,7 +226,7 @@ func resolveRoleModel(settings config.Settings, role config.Role, label string, 
 	if err != nil {
 		return ai.Model{}, "", err
 	}
-	canonical := model.Provider + "/" + model.ID
+	canonical := model.Ref()
 	if validate && effort != "" && effort != "off" {
 		if !catalog.ThinkingFor(canonical).Supports(effort) {
 			return ai.Model{}, "", fmt.Errorf("%s: %s does not expose thinking effort %q", label, canonical, effort)
@@ -266,5 +266,30 @@ func supReasoning(effort string) (bool, string) {
 		return false, ""
 	default:
 		return true, effort
+	}
+}
+
+// supportBuilder returns a builder for the ephemeral $sup runtime.
+//
+// The model and effort resolve through the SUP role on every invocation, so a
+// /model reassignment applies to the next $sup with no restart. The runtime is
+// only the shared provider transport plus the resolved model: $sup is an answer
+// surface, so it is built without the agent loop, the tool set, the repository
+// context, and the compaction machinery the workspaces carry (§1, §2, §4).
+//
+// It is built lazily on first use: resolving a second model eagerly would cost
+// a round trip for a capability most sessions never invoke.
+func supportBuilder(opts options, registry *ai.Registry) func() (supportBundle, error) {
+	return func() (supportBundle, error) {
+		supModel, effort, err := resolveSupModel(opts.settings, dynamicResolver(context.Background(), registry))
+		if err != nil {
+			return supportBundle{}, err
+		}
+		return supportBundle{
+			stream: registry.StreamFn(),
+			model:  supModel,
+			ref:    supModel.Ref(),
+			effort: effort,
+		}, nil
 	}
 }

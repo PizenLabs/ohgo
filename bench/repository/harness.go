@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/tools"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // benchmarkPrompt is identical for every track. It states the answer contract
@@ -405,7 +405,7 @@ func RunTask(ctx context.Context, root string, task Task, track Track, cfg RunCo
 		TaskID:   task.ID,
 		Category: task.Category,
 		Track:    track.Name,
-		Model:    cfg.Model.Provider + "/" + cfg.Model.ID,
+		Model:    cfg.Model.Ref(),
 	}
 
 	rec := newRecorder(root, task.Targets)

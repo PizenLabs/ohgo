@@ -11,19 +11,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PizenLabs/ohgo/tools"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"golang.org/x/term"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/budget"
-	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/config"
-	"github.com/PizenLabs/ohgo/creds"
-	"github.com/PizenLabs/ohgo/recovery"
-	"github.com/PizenLabs/ohgo/session"
-	"github.com/PizenLabs/ohgo/tui"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/continuity/recovery"
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
+	"github.com/PizenLabs/ohgo/internal/provider/creds"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // harness is the shared backend behind slash commands in both interfaces.
@@ -172,7 +172,7 @@ func (h *harness) ProviderPaneRows() []tui.ProviderRow {
 func (h *harness) RoleAssignments() []tui.RoleAssignment {
 	facts := map[string]catalog.SnapshotEntry{}
 	for _, entry := range h.snapshotEntries() {
-		facts[entry.Model.Provider+"/"+entry.Model.ID] = entry
+		facts[entry.Model.Ref()] = entry
 	}
 	settings := h.settingsOrDefault()
 	var out []tui.RoleAssignment
@@ -244,7 +244,7 @@ func (h *harness) AssignRole(update tui.RoleAssignment) (tui.RoleAssignment, []t
 	if err != nil {
 		return tui.RoleAssignment{}, h.RoleAssignments(), err
 	}
-	canonical := model.Provider + "/" + model.ID
+	canonical := model.Ref()
 	effort := strings.TrimSpace(update.Effort)
 	if effort != "" && effort != tui.EffortOff {
 		ladder := catalog.ThinkingFor(canonical)
@@ -273,13 +273,16 @@ func (h *harness) AssignRole(update tui.RoleAssignment) (tui.RoleAssignment, []t
 	return tui.RoleAssignment{Role: string(role), Model: canonical, Effort: effort}, h.RoleAssignments(), nil
 }
 
-// recordSessionAuthority updates the session's resolved-model snapshot after an
-// explicit reassignment of the session's own role, so the snapshot describes
-// what actually executes rather than what the configuration said at startup.
-// It mirrors applySessionAuthority: a storage failure is reported but never
-// fails the assignment, because the conversation is still correct in memory.
+// recordSessionAuthority is the single writer for the session's authority
+// snapshot: the workspace and model that will actually execute.
+//
+// Every path that changes either — an explicit role reassignment, a model
+// switch, a workspace switch — records it here, so a later --resume restores
+// what ran rather than what configuration happened to say. It mirrors
+// applySessionAuthority: a storage failure is reported but never fails the
+// transition, because the runtime state is still correct in memory.
 func (h *harness) recordSessionAuthority(model ai.Model) {
-	effective := model.Provider + "/" + model.ID
+	effective := model.Ref()
 	if h.sess != nil {
 		h.sess.Model = effective
 	}
@@ -466,7 +469,7 @@ func (h *harness) SetModel(ref string) (ai.Model, error) {
 	if !config.ValidRole(config.NormalizeRole(role)) {
 		role = string(config.RoleBuild)
 	}
-	canonical := model.Provider + "/" + model.ID
+	canonical := model.Ref()
 	// A model switch must not carry an effort the new model does not expose:
 	// the incompatible claim is dropped instead of persisted to fail at
 	// invocation time. A still-valid effort survives the switch.
@@ -675,7 +678,7 @@ func formatJobs(snapshots []tools.JobInfo) string {
 func (h *harness) ModelList() []string {
 	var ids []string
 	for _, model := range catalog.List() {
-		ids = append(ids, model.Provider+"/"+model.ID)
+		ids = append(ids, model.Ref())
 	}
 	sort.Strings(ids)
 	return ids
@@ -733,7 +736,7 @@ func (h *harness) SaveConnect(provider, key, modelRef string) error {
 		return err
 	}
 	if h.settings != nil {
-		h.settings.Model = model.Provider + "/" + model.ID
+		h.settings.Model = model.Ref()
 		if err := config.Save(*h.settings); err != nil {
 			return fmt.Errorf("connect: save settings: %w", err)
 		}
@@ -907,13 +910,11 @@ func (h *harness) SwitchWorkspace(name string) (workspace.Workspace, error) {
 	h.workspace = ws.Label()
 	if h.sess != nil {
 		h.sess.Workspace = ws.String()
-		h.sess.Model = h.model.Provider + "/" + h.model.ID
 	}
-	if h.store != nil && h.sess != nil {
-		if err := h.store.SetAuthority(h.sess.ID, ws.String(), h.model.Provider+"/"+h.model.ID); err != nil {
-			fmt.Fprintf(os.Stderr, "ohgo: could not record session authority: %v\n", err)
-		}
-	}
+	// The session's authority snapshot has one writer. AssignRole, SetModel and
+	// a workspace switch all describe the same persisted fact, so they must not
+	// each assemble it.
+	h.recordSessionAuthority(h.model)
 	return ws, nil
 }
 

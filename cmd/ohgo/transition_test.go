@@ -3,9 +3,9 @@ package main
 import (
 	"testing"
 
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/session"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // TestTurnTransitionPredictsWithoutMovingAuthority is invariant 1 and 2: the

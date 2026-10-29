@@ -21,8 +21,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/PizenLabs/ohgo/project"
-	"github.com/PizenLabs/ohgo/state"
+	"github.com/PizenLabs/ohgo/internal/project"
+	"github.com/PizenLabs/ohgo/internal/state"
 )
 
 // DefaultMaxEntries bounds each scope's history. It is the same order of

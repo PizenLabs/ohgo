@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/budget"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 const phase6LivePrompt = `You are answering a repository-discovery benchmark about a read-only Go module.

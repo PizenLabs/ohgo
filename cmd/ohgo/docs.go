@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/internal/tui"
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
 )

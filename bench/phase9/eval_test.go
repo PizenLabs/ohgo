@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/catalog"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 )
 
 // TestPhase9Matrix runs the controlled matrix in both modes.

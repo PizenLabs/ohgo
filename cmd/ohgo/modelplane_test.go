@@ -6,13 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/ai"
-	"github.com/PizenLabs/ohgo/catalog"
-	"github.com/PizenLabs/ohgo/config"
-	"github.com/PizenLabs/ohgo/session"
-	"github.com/PizenLabs/ohgo/tui"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/provider/catalog"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // modelControlHarness builds a harness whose settings are the durable

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PizenLabs/ohgo/tui"
-	"github.com/PizenLabs/ohgo/workspace"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // conventionFixture roots a harness at a fixture project with visible

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/PizenLabs/ohgo/agent"
-	"github.com/PizenLabs/ohgo/recovery"
-	"github.com/PizenLabs/ohgo/tui"
+	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/continuity/recovery"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // recoveryService is the CLI's adapter between the runtime and the recovery

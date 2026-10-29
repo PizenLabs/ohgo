@@ -30,7 +30,7 @@ immutable.
   transition in `~/.ohgo/update-transition.json` and the TUI moves to a
   restart-required screen that exits only on Enter. The next interactive
   launch presents a centered, one-shot What's New card from release notes
-  embedded in the binary (`update/changelog.json`), acknowledged with Enter
+  embedded in the binary (`internal/update/changelog.json`), acknowledged with Enter
   and never shown again. Merely finding a newer release, a manual binary
   replacement, a normal restart, or a rollback creates no notice. Non-
   interactive commands such as `ohgo version` and `ohgo update --check`
