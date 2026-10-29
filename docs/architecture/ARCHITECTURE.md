@@ -1,69 +1,18 @@
-# Architecture
+# Runtime Architecture
 
-> **Package paths:** this document predates the `internal/` migration. Package
-> *names* and behaviour are unchanged; their *locations* moved. Read
-> `OHGO_ARCHITECTURE_MAP.md` for the current tree and
-> `OHGO_ARCHITECTURE_RULES.md` for the enforced boundaries.
+> **Scope:** runtime behaviour — repository intelligence, authority, the turn,
+> completion, subagents, concurrency, errors, storage, startup, transports,
+> CLI/harness, terminal workspace, credentials, external knowledge, and
+> performance.
+> **Canonical topology:** [`OHGO_ARCHITECTURE_MAP.md`](../../OHGO_ARCHITECTURE_MAP.md)
+> is the single source for packages, domains, ownership, and dependency
+> direction.
+> **Permanent rules:** [`OHGO_ARCHITECTURE_RULES.md`](../../OHGO_ARCHITECTURE_RULES.md).
 
-How `ohgo` is structured, and why. The port invariants live in
-[`MEMORY.md`](MEMORY.md); this file is the map, that file is the law.
-
-## Layers
-
-```
-cmd/ohgo     CLI: flags, session wiring, REPL, TUI bridge, doctor, init, docs.
-             Builds a shared harness (slash-command backend) used by both UIs.
-  │ builds
-  ├─► agent    The model/tool loop. Sees only ai.StreamFn, never HTTP.
-  │     ├─► workspace Execution authorities (ASK/FUZZ/BUILD): capability
-  │     │             policy, tool admission, intent routing, semantic
-  │     │             identity, artifacts.
-  │     ├─► ai        Message model, three transports (Anthropic,
-  │     │             OpenAI-compatible, Ollama native), Registry, probe.
-  │     │             Imports creds for secrets, never catalog for facts.
-  │     ├─► catalog   Bundled model facts (379 models / 12 providers) plus
-  │     │             live discovery for 5 dynamic providers. Produces
-  │     │             ai.Model values; imports ai for the type only.
-  │     ├─► creds     Credential chain: explicit → file → env → shell text.
-  │     │             Single owner of ProviderEnvVars; secrets never printed.
-  │     ├─► tools     read write edit delete bash wait glob grep ls symbols
-  │     │             graph refs webfetch todo task (task only when maxDepth > 1;
-  │     │             wait shares bash's job table; artifact when a session is
-  │     │             attached). task imports agent for the subagent spec.
-  │     ├─► prompt    System prompt assembly + AGENTS.md discovery (root
-  │     │             primary, <root>/.ohgo/AGENTS.md supplementary).
-  │     ├─► project   Stable project identity + project-local metadata
-  │     │             (project name, project worker identity) at
-  │     │             <root>/.ohgo/project.yml.
-  ├─► startup  Startup lifecycle. Discover is read-only and classifies a
-  │             directory UNINITIALIZED/INITIALIZED; Ensure is the sole
-  │             creation authority for <root>/.ohgo (Git + worker + project
-  │             name decisions first, mutation last; a cancel creates nothing).
-  │             The worker name is project-local, never written to settings.
-  ├─► state    Machine-level state location (~/.ohgo): the one owner for
-  │             every machine-scoped path (settings, credentials, cache,
-  │             sessions, history).
-  │     ├─► session   SQLite transcript store (pure Go, no cgo), plus the
-  │     │             workspace/project/effective-model record and artifacts.
-  │     ├─► tokens    Heuristic token estimator + Tokenizer seam.
-  │     ├─► usage     (in agent/) Per-turn token/cost ledger.
-  │     └─► tui       State machine (no TTY) + renderer + Bubble Tea bridge.
-  ├─► vcs shell diff edit ast
-  │           Ported Rust core: git awareness, shell parsing, Myers diff,
-  │           fuzzy edit application, Go AST search. Pure Go, zero cgo.
-  ├─► config   ~/.ohgo/settings.json: model (+ per-workspace models), tokens,
-  │            reasoning, approvals, theme, compaction, and machine-global
-  │            user defaults (identity.name). AutoApprove wins over Approvals.
-  │            ModelFor(workspace) falls back to the global model.
-  └─► jsonschema  Reflection-free validator for tool schemas.
-```
-
-Dependency arrows point one way: `catalog → ai` (type only), `ai → creds`
-(secrets only), `tools → agent` (subagent spec only), `workspace → agent`
-(tool admission only), `prompt → project` (project root for `.ohgo/AGENTS.md`
-discovery), `cmd → everything`. Nothing in `ai` imports `catalog`;
-nothing in `agent` constructs HTTP; nothing outside `creds` reads a provider
-credential from env or shell. A cycle here is a bug, not a shortcut.
+This document explains how the current runtime behaves. It does not restate the
+package map; when a package or dependency question arises, the map and the
+executable governance in `internal/architecture` decide. A dependency cycle or
+an upward edge is a bug, not a shortcut.
 
 ## Repository intelligence
 
@@ -233,7 +182,8 @@ user's request before execution and the evidence the runtime observed.
 ## Subagents
 
 Delegation is the one capability that creates another agent, so isolation
-is structural, not advisory (`agent/subagent.go`, `tools/task.go`):
+is structural, not advisory (`internal/agent/subagent.go`,
+`internal/execution/tools/task.go`):
 
 - The child inherits stream, model, tools, budget, approval, compaction,
   summarizer. It drops `OnTurn`, `OnToolProgress`, `TransformContext`,
@@ -401,18 +351,18 @@ Derived display phases
 (`DeriveRuntime`: idle, working, streaming, running tool, awaiting
 approval, shutting down) are computed per render, never stored.
 
-- `tui/model.go`: the state machine — composer, viewport (scroll + sticky
+- `internal/tui/model.go`: the state machine — composer, viewport (scroll + sticky
   follow), queue, overlays, sessions (Session Manager) and providers (Connect
   Provider Manager and its API-key modal) plus the models/jobs pickers and the
   two-tab Command & Help Center (Commands / Shortcuts), theme, workspace,
   probe/doctor/usage wiring. Slash
   discovery state filters the authoritative
   `Commands` registry inline — never a second catalog.
-- `tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,
+- `internal/tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,
   prompt history with draft preservation.
-- `tui/entries.go`: transcript entries rebuilt from replayed messages (tool
+- `internal/tui/entries.go`: transcript entries rebuilt from replayed messages (tool
   cards from stored calls, orphans kept, UI-only skipped).
-- `tui/markdown.go`: dependency-free chat prose (fences, code, headings with
+- `internal/tui/markdown.go`: dependency-free chat prose (fences, code, headings with
   hierarchy, nested/ordered lists, quotes, rules, links, tables with
   terminal-width-aware columns and a stacked narrow fallback). One wrap
   ownership: plain cells are measured and folded first, ANSI applied after,
@@ -420,12 +370,12 @@ approval, shutting down) are computed per render, never stored.
   boundary. Partial streaming constructs render provisionally (unclosed
   markers stay literal) and converge on completion; rendering is a pure
   function of the accumulated text, so chunk splits cannot diverge it.
-- `tui/sanitize.go`: the trust boundary for everything else. Tool results,
+- `internal/tui/sanitize.go`: the trust boundary for everything else. Tool results,
   prompts, notices, composer input, and chrome fields pass here: SGR colors
   survive, cursor-movement CSI, OSC hyperlinks, carriage returns (folded to
   newlines, or spaces inline), and stray controls do not. A cursor-aware
   variant keeps composer cursor mapping exact across sanitization.
-- `tui/mode.go`: terminal mode control — alternate scroll (DEC 1007) and the
+- `internal/tui/mode.go`: terminal mode control — alternate scroll (DEC 1007) and the
   mouse-mode policy. Mouse reporting is **off by default** because requesting it
   makes the terminal stop doing its own selection. The default route to the
   wheel is 1007, which multiplexers do not forward (measured against tmux 3.7c:
@@ -435,44 +385,44 @@ approval, shutting down) are computed per render, never stored.
   drag-copy. `select` leaves drag-copy with the terminal; `report` activates the
   application-owned hit-test, expansion, and logical selection path. Both modes
   are bracketed on entry and restored on every exit path.
-- `tui/document.go`: the canonical transcript block model. `Entry` is the
+- `internal/tui/document.go`: the canonical transcript block model. `Entry` is the
   domain block; `BlockID` is allocated when a block enters the document and is
   never derived from a screen row. `BlockCopyText` projects logical content,
   stripping SGR/OSC and padding. Expansion goes through the same
   presentation-only transition as Ctrl+O.
-- `tui/transcript_layout.go`: the geometry authority. Each block is projected
+- `internal/tui/transcript_layout.go`: the geometry authority. Each block is projected
   once per revision and width into cached visual rows; a Fenwick tree maps
   document rows to blocks in O(log n). Width/theme/tier changes reflow all
   blocks; streaming and expansion render only the dirty block. Regex never
   determines row count, wrapping, or hit-testing.
-- `tui/viewport.go`: explicit FOLLOWING/DETACHED state. Detached mode anchors on
+- `internal/tui/viewport.go`: explicit FOLLOWING/DETACHED state. Detached mode anchors on
   `(BlockID, row)`, so appended output, expansion above the window, and resize
   preserve the reading position. The marker consumes a row and `MaxOffset` is
   clamped exactly.
-- `tui/selection.go`: logical selection by block/row/column, cell-aware copy
+- `internal/tui/selection.go`: logical selection by block/row/column, cell-aware copy
   (Unicode, wrapping, cross-block, reversed drags), and ANSI-aware reverse-video
   highlighting. Copy projects plain text; no renderer artifact can enter it.
-- `tui/clipboard.go`: OSC 52 framing (plain, tmux DCS passthrough, screen
+- `internal/tui/clipboard.go`: OSC 52 framing (plain, tmux DCS passthrough, screen
   chunking), Base64 encoding, and capability gating. No external clipboard
   process is spawned.
-- `tui/mouse_selection.go`: screen cell → visible frame row → `BlockID` +
+- `internal/tui/mouse_selection.go`: screen cell → visible frame row → `BlockID` +
   local row + column. Click toggles presentation state; drag updates the
   selection; release copies through OSC 52. Never maps a mouse Y to a
   scrollback line.
-- `tui/width.go`: cell-width measurement, truncation, wrapping
+- `internal/tui/width.go`: cell-width measurement, truncation, wrapping
   (ANSI-stripped, CJK/emoji-aware, hard-breaks unbroken runs, combining
   marks stay attached).
-- `tui/layout.go`: responsive tiers (wide ≥100, medium 70–99, narrow <70,
+- `internal/tui/layout.go`: responsive tiers (wide ≥100, medium 70–99, narrow <70,
   mini <40×8), content width, conversation height, bounded composer (two
   framing rules + input rows + slash suggestion rows + state line, all
   counted so reserved and rendered rows agree). Suggestion rows carry a
   viewport budget (`Layout.SlashLines`): on short screens they yield first
   so the transcript keeps a row. An open picker releases the composer rows
   it hides, and the picker area fills them instead.
-- `tui/style.go`: two palettes (dark/light) behind one resolver plus
+- `internal/tui/style.go`: two palettes (dark/light) behind one resolver plus
   semantic chrome (typo degrades to dark; text plus color, never color
   alone).
-- `tui/view.go`: adaptive header/conversation/composer/status, bounded
+- `internal/tui/view.go`: adaptive header/conversation/composer/status, bounded
   approval preview (cap derived from the computed chrome, not a constant;
   the separator blank yields on viewports too short to hold it),
   pickers, mini-mode notice, overlap-free slicing. The transcript and the
@@ -487,15 +437,15 @@ approval, shutting down) are computed per render, never stored.
   Command & Help Center from the registry; while composing it stays literal. Overlays take
   over (transcript + composer hidden) so streaming output never fights a
   moving cursor.
-- `tui/commands.go`: the shared `/` registry (`ParseCommand`, `HelpText`,
+- `internal/tui/commands.go`: the shared `/` registry (`ParseCommand`, `HelpText`,
   typo suggestions); both UIs dispatch through it.
-- `tui/picker.go`: the generic list state machine (query + cursor,
+- `internal/tui/picker.go`: the generic list state machine (query + cursor,
   highlight, scroll, window rows from `WindowSizeMsg`; whitespace-AND
   search with `provider:` pins and verified-price `free` matching;
   value-preserving `SetItems` under a generation guard). The model picker
   resolves native `provider/id` through the catalog with caller-built
   detail (context/price/local/caps).
-- Catalog freshness (`catalog/dynamic.go`, `snapshot`): `SnapshotAll`
+- Catalog freshness (`internal/provider/catalog/dynamic.go`, `snapshot`): `SnapshotAll`
   merges bundled + cached rows per (provider, id) with origins;
   `DiscoverModelsFresh` re-fetches one provider (24h disk cache in
   `~/.ohgo/cache`, stale fallback); pricing presence travels with each
@@ -522,7 +472,7 @@ approval, shutting down) are computed per render, never stored.
   rows are skipped, minimal gateway ids merge with bundled facts or not at
   all.
 
-## External knowledge (Phase 8)
+## External knowledge
 
 External knowledge is a capability family, not an escape from the control
 plane. Search, MCP, and Browser specialize one boundary:
@@ -546,7 +496,7 @@ CapabilityRequest → admission → root budget → bounded execution
   structure-checked, responses are byte/item/text bounded, discovery is cached
   with an explicit refresh, and cancellation kills the process. See
   [`MCP.md`](MCP.md).
-- **Browser** (`tools/browser.go`) is GET-only read/navigation. Sessions are
+- **Browser** (`internal/execution/tools/browser.go`) is GET-only read/navigation. Sessions are
   named and explicit, with an exact host policy, navigation/redirect/byte/
   char/link/session limits, a deadline, and a bounded history. Loopback,
   private, link-local, and metadata addresses are blocked; HTTPS-to-HTTP

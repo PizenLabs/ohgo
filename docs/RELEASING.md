@@ -55,8 +55,11 @@ Before tagging:
 | `CHANGELOG.md` | every public release | Human-readable release history |
 | `internal/update/changelog.json` | every public release | Local What's New content embedded in the binary |
 | `README.md` | install, update, or user-facing behaviour changes | User documentation |
+| `OHGO_ARCHITECTURE_MAP.md` | a package, domain, ownership, or placement answer changes | Canonical topology |
+| `OHGO_ARCHITECTURE_RULES.md` | a permanent architectural boundary or rule changes | Permanent contract |
+| `OHGO_ARCHITECTURE_MIGRATION.md` | a migration decision or topology change is recorded | Migration history |
 | `docs/architecture/STATE_AND_PERSISTENCE.md` | a new persistent file or state boundary appears | State ownership contract |
-| `docs/architecture/ARCHITECTURE.md` | an architectural contract changes | System contract |
+| `docs/architecture/ARCHITECTURE.md` | runtime behaviour changes | Runtime behaviour reference |
 | `SECURITY.md` | supported-version policy changes | Security policy |
 | `CONTRIBUTING.md` | the contributor or release process changes | Contributor guidance |
 | `AGENTS.md` | engineering rules or workflows change | Agent-facing conventions |
@@ -184,8 +187,11 @@ when the release changes what a document promises:
   `docs/architecture/STATE_AND_PERSISTENCE.md`. For example,
   `~/.ohgo/update-transition.json` is lifecycle truth, while
   `~/.ohgo/update.json` is a derived release-observation cache.
-- **Architecture** — update `docs/architecture/ARCHITECTURE.md` when a
-  boundary, lifecycle, or layer changes.
+- **Architecture** — update `OHGO_ARCHITECTURE_MAP.md` when topology or
+  ownership changes, `OHGO_ARCHITECTURE_RULES.md` when a permanent boundary
+  changes, and `docs/architecture/ARCHITECTURE.md` when runtime behaviour
+  changes. Record a completed topology change in
+  `OHGO_ARCHITECTURE_MIGRATION.md`.
 - **User instructions** — update `README.md` when a command, install path, or
   update behaviour changes. Keep example versions clearly illustrative; do not
   claim they are the current release.

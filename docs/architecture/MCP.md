@@ -1,9 +1,9 @@
 # MCP Capability Layer
 
-> **Package paths:** this document predates the `internal/` migration. Package
-> *names* and behaviour are unchanged; their *locations* moved. Read
-> `OHGO_ARCHITECTURE_MAP.md` for the current tree and
-> `OHGO_ARCHITECTURE_RULES.md` for the enforced boundaries.
+> **Scope:** the external MCP capability boundary and its authority path.
+> **Canonical topology:** [`OHGO_ARCHITECTURE_MAP.md`](../../OHGO_ARCHITECTURE_MAP.md).
+> **Permanent rules:** [`OHGO_ARCHITECTURE_RULES.md`](../../OHGO_ARCHITECTURE_RULES.md) §13–§15.
+> **Runtime behaviour:** [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 MCP is an **external capability protocol**. It is not an authority mechanism,
 not a second execution loop, and not an agent. The authority path is unchanged:

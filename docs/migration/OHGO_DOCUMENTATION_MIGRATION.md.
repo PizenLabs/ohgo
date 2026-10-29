@@ -1,0 +1,385 @@
+# OHGO Documentation Migration
+
+> **Status:** complete.
+> **Scope:** repository documentation only. No implementation package, source
+> behaviour, API, persistence format, provider, TUI, CLI, or test was changed.
+> **Result:** the active documentation surface is 19 Markdown files; 51 tracked
+> historical documents and 3 git-ignored local port logs moved to
+> `old_docs/`, which is a temporary archive for human removal.
+
+---
+
+## 1. Summary
+
+The repository had accumulated three documentation layers that no longer shared
+one authority model:
+
+1. current product and contributor documentation (`README.md`, `AGENTS.md`,
+   `CONTRIBUTING.md`, `docs/RELEASING.md`);
+2. current architecture governance (`OHGO_ARCHITECTURE_MAP.md`,
+   `OHGO_ARCHITECTURE_RULES.md`, `OHGO_ARCHITECTURE_MIGRATION.md`);
+3. a large body of port-era plans, phase reports, benchmark artifacts, and
+   pre-migration architecture snapshots.
+
+All three layers were active and discoverable. Several current documents still
+linked to the pre-`internal/` architecture or duplicated facts that now have a
+canonical owner. The cleanup established one canonical source per subject,
+kept the current behavioural references, and moved completed/historical
+material behind the explicit `old_docs/` boundary.
+
+### Scale
+
+| Item | Before | After |
+|---|---:|---:|
+| Active Markdown files (excluding `old_docs/`) | 69 tracked + 3 local | 19 |
+| Archived Markdown files | 0 | 55 (including the archive marker) |
+| Archived non-Markdown files | 0 | 41 benchmark result/script files |
+| Canonical architecture documents | 3 | 3 (unchanged set, clarified roles) |
+| Deleted documents | — | 0; one ignored OS metadata file removed |
+
+In addition to the 69 tracked Markdown files, three root documents were
+untracked and git-ignored (`MEMORY.md`, `PORT.md`, `PROGRESS.md`) only in the
+working tree. They were still part of the local documentation surface and were
+archived.
+
+---
+
+## 2. What documentation existed (inventory summary)
+
+Full classification is below. “Authority” means the document’s role after
+cleanup, not its age.
+
+| Document / group | Status | Purpose | Authority | Action |
+|---|---|---|---|---|
+| `README.md` | CURRENT | Product entry point, usage, install, architecture orientation | Canonical product entry | Rewritten architecture links |
+| `AGENTS.md` | CURRENT | Agent/contributor operating rules | Canonical working rules | Clarified scope; added documentation rules |
+| `CONTRIBUTING.md` | CURRENT | Contribution workflow and checklists | Supporting operational | Rewritten stale paths; linked canonical docs |
+| `SECURITY.md` | CURRENT | Vulnerability and supported-version policy | Canonical security policy | Keep |
+| `CODE_OF_CONDUCT.md` | CURRENT | Community conduct | Canonical conduct policy | Keep |
+| `CHANGELOG.md` | CURRENT | Release history | Canonical release history | Removed links to archived reports/plans |
+| `OHGO_ARCHITECTURE_MAP.md` | CANONICAL | Current topology, domains, ownership, placement | Canonical topology | Header/reference cleanup |
+| `OHGO_ARCHITECTURE_RULES.md` | CANONICAL | Permanent enforceable architectural contract | Canonical rules | Keep |
+| `OHGO_ARCHITECTURE_MIGRATION.md` | CANONICAL | Migration history and rejected decisions | Canonical migration record | Removed pointer to archived report |
+| `docs/RELEASING.md` | CURRENT | Release edit contract and verification | Canonical release process | Updated documentation matrix |
+| `docs/gry-hooks.md` | CURRENT | Opt-in GRY lifecycle-hook contract | Supporting integration | Keep; linked from README |
+| `docs/architecture/ARCHITECTURE.md` | SUPPORTING | Runtime behaviour: turn, completion, concurrency, storage, transports, TUI | Supporting runtime reference | Reframed as behaviour, not a second map; paths updated |
+| `docs/architecture/WORKSPACE_AUTHORITY.md` | SUPPORTING | ASK/FUZZ/BUILD authority and turn routing | Supporting authority reference | Header/path reference cleanup |
+| `docs/architecture/STATE_AND_PERSISTENCE.md` | SUPPORTING | State ownership and persistence boundaries | Supporting state contract | Header/reference cleanup |
+| `docs/architecture/INTENT_GROUNDING.md` | SUPPORTING | Deterministic semantic contract | Supporting behaviour reference | Header cleanup |
+| `docs/architecture/MCP.md` | SUPPORTING | External MCP capability boundary | Supporting behaviour reference | Header cleanup |
+| `internal/provider/catalog/models.md` | CURRENT / MACHINE-OWNED | Catalog source and regeneration procedure | In-package reference | Keep in place |
+| `.github/PULL_REQUEST_TEMPLATE.md` | CURRENT | PR checklist | Supporting operational | Keep |
+| `docs/architecture/ARCHITECTURE_CONTRACT_V1.md` | HISTORICAL / SUPERSEDED | Pre-migration architecture contract | Historical | Archive |
+| `docs/OHGO_ARCHITECTURE_BASELINE.md` | HISTORICAL | Pre-migration reconnaissance baseline | Historical | Archive |
+| `OHGO_OPTIMIZATION_REPORT.md` | HISTORICAL | Optimization and migration passes | Historical | Archive |
+| `MEMORY.md` | HISTORICAL | Port-era invariants, decisions, traps | Historical | Archive |
+| `PORT.md` | HISTORICAL | Original TypeScript→Go port plan | Historical | Archive |
+| `PROGRESS.md` | HISTORICAL | Port-phase progress log | Historical | Archive |
+| `docs/report/**` (41 files) | HISTORICAL | Phase closure, audit, benchmark, UI and defect reports | Historical | Archive |
+| `docs/benchmarks/**` (48 files) | HISTORICAL / GENERATED | Phase specs, benchmark scripts, and result artifacts | Historical evidence | Archive |
+
+---
+
+## 3. What is now canonical
+
+| Subject | Canonical source |
+|---|---|
+| What ohgo is, install, usage, product behaviour | `README.md` |
+| Where code belongs, package ownership, domains, dependency direction | `OHGO_ARCHITECTURE_MAP.md` |
+| Permanent architectural rules and review checklist | `OHGO_ARCHITECTURE_RULES.md` |
+| Why the tree is shaped this way; migration decisions and rejected alternatives | `OHGO_ARCHITECTURE_MIGRATION.md` |
+| Build, test, style, provider/tool conventions, documentation discipline | `AGENTS.md` |
+| Contribution workflow and release checklist | `CONTRIBUTING.md`, `docs/RELEASING.md` |
+| Security reporting and supported versions | `SECURITY.md` |
+| Runtime behaviour detail (turn, completion, storage, transports, TUI) | `docs/architecture/ARCHITECTURE.md` |
+| Authority semantics | `docs/architecture/WORKSPACE_AUTHORITY.md` |
+| Persisted state ownership | `docs/architecture/STATE_AND_PERSISTENCE.md` |
+| Semantic grounding | `docs/architecture/INTENT_GROUNDING.md` |
+| MCP boundary | `docs/architecture/MCP.md` |
+| GRY lifecycle hooks | `docs/gry-hooks.md` |
+
+The three architecture documents answer different questions and are deliberately
+not merged:
+
+```text
+OHGO_ARCHITECTURE_MAP.md       what exists, who owns it, where it goes
+OHGO_ARCHITECTURE_RULES.md     what is permanently allowed or forbidden
+OHGO_ARCHITECTURE_MIGRATION.md how the current tree was reached
+```
+
+---
+
+## 4. What was consolidated
+
+| Consolidation | Why |
+|---|---|
+| `README.md` architecture section now links to the three canonical architecture documents instead of presenting `docs/architecture/ARCHITECTURE.md` as the system map. | The README is an entry point, not a competing architecture authority. |
+| `docs/architecture/ARCHITECTURE.md` was reframed from “the map” to “runtime behaviour reference” and its package-layer diagram was removed. | The diagram duplicated `OHGO_ARCHITECTURE_MAP.md`; the file now keeps only behaviour that has no other owner. |
+| All five `docs/architecture/*.md` documents now declare the same canonical topology/rules links and defer package ownership to the map. | One topology authority; supporting documents explain subjects rather than redefine the tree. |
+| `CONTRIBUTING.md` now points to `AGENTS.md` and the canonical architecture documents, and its provider/tool paths were corrected to `internal/...`. | Removes duplicate, stale operational instructions without deleting the contributor checklist. |
+| `docs/RELEASING.md` now lists the map, rules, and migration record in the documentation-update matrix. | Release changes update the canonical source, not an obsolete “system contract”. |
+| `AGENTS.md` gained a short documentation-discipline section. | Future contributors know where facts belong and that `old_docs/` is not active. |
+
+No new architecture document was invented. The existing canonical set already
+had the right semantic split.
+
+---
+
+## 5. What was archived
+
+All archived material is under `old_docs/`, preserving the original relative
+paths so historical cross-links still resolve. `old_docs/README.md` is a new,
+minimal boundary marker; it is not active documentation.
+
+### 5.1 Root historical records
+
+| Document | Why it remains historically valuable |
+|---|---|
+| `old_docs/MEMORY.md` | Records the port-era invariants, provider/accumulator decisions, bug classes, and standing traps that explain why several current seams exist. |
+| `old_docs/PORT.md` | The original TypeScript→Go phase plan; documents scope, deliberate non-goals, and what was intentionally not ported. |
+| `old_docs/PROGRESS.md` | Dated progress log with defect narratives and metrics from the port phases. |
+| `old_docs/OHGO_OPTIMIZATION_REPORT.md` | Records the two behaviour-preserving optimization passes and the architectural migration; useful archaeology for rejected refactors. |
+
+### 5.2 Pre-migration architecture snapshots
+
+| Document | Why it remains historically valuable |
+|---|---|
+| `old_docs/docs/OHGO_ARCHITECTURE_BASELINE.md` | Detailed pre-`internal/` reconnaissance: package graph, runtime path, coupling, hazards, and documentation/implementation mismatches. |
+| `old_docs/docs/architecture/ARCHITECTURE_CONTRACT_V1.md` | The original architecture contract and authority vocabulary; explains the intent behind today’s shorter rules. |
+
+### 5.3 Phase and closure reports (`old_docs/docs/report/`)
+
+41 files: `PHASE1_CLOSURE.md` through `PHASE10_FINAL_SYNTHESIS.md`, the UI
+closure reports, `FINAL_CLOSURE.md`, `FINAL_RUNTIME_CLOSURE.md`,
+`GRY_MCP_INTEGRATION_REPORT_2026-10-26.md`,
+`INTENT_GROUNDING_CLOSURE.md`, `COMMIT_MODEL_EFFICIENCY.md`,
+`MODEL_PICKER_STALE_WHILE_REVALIDATE.md`,
+`POST_FREEZE_TASK_SESSION_FIX.md`, `recovery.md`,
+`UI_PROPOSAL_PERMISSION_RESET.md`, and the six `ui/*.md` design/decision
+records.
+
+Why valuable: they are the forensic record of how each capability was
+designed, what failed, what was measured, and why the current behaviour looks
+the way it does. They are superseded as guidance but not as history.
+
+### 5.4 Benchmark specifications and evidence (`old_docs/docs/benchmarks/`)
+
+48 files: two historical baseline reports, six phase specifications
+(`PHASE2_SPEC.md` … `PHASE6_SPEC.md`), five analysis/merge/summary scripts, and
+36 result artifacts under `results/`.
+
+Why valuable: they preserve the measurement methodology and the raw evidence
+behind historical performance and correctness claims. The results are
+machine-generated and should not be hand-edited.
+
+---
+
+## 6. What was deleted
+
+No Markdown document was deleted.
+
+One untracked, git-ignored macOS metadata file, `docs/.DS_Store`, was removed.
+It had no documentation value and is regenerated by the operating system.
+
+The three root port logs (`MEMORY.md`, `PORT.md`, `PROGRESS.md`) are listed in
+`.gitignore`; their archive copies remain untracked. The human archive step can
+move or discard them with `old_docs/`.
+
+---
+
+## 7. Reference changes
+
+Active documents were checked for links and textual references to moved paths.
+Repairs:
+
+| Source | Change |
+|---|---|
+| `README.md` | Architecture section now links to map/rules/migration; runtime and supporting docs linked explicitly. |
+| `CONTRIBUTING.md` | Provider/tool file paths corrected to `internal/...`; `envAPIKeyVars` corrected to `creds.ProviderEnvVars`; documentation section points at canonical sources. |
+| `CHANGELOG.md` | Removed links to the archived intent-grounding closure report and the archived port plan; the historical entries remain as prose. |
+| `AGENTS.md` | Scope now matches the source-of-truth hierarchy; added documentation ownership/archive rules. |
+| `OHGO_ARCHITECTURE_MAP.md` | Removed the pointer to the archived baseline; states that `docs/architecture/` defers topology to the map. |
+| `OHGO_ARCHITECTURE_MIGRATION.md` | Removed the pointer to the archived optimization report. |
+| `docs/architecture/ARCHITECTURE.md` | All concrete package/file paths updated to `internal/...`; removed `MEMORY.md` and the duplicate layer map. |
+| `docs/architecture/{WORKSPACE_AUTHORITY,STATE_AND_PERSISTENCE,INTENT_GROUNDING,MCP}.md` | Headers now link the canonical map and rules; superseded contract links replaced. |
+| `docs/RELEASING.md` | Documentation-update matrix now names the map, rules, migration record, and runtime reference. |
+| `docs/gry-hooks.md` | No content change; now discoverable from the README. |
+
+Historical documents inside `old_docs/` were not rewritten. Their internal
+links continue to resolve because the repository-relative layout was preserved.
+
+---
+
+## 8. Detected stale documentation
+
+The audit found these concrete drift sources, now resolved or recorded:
+
+| Stale claim / reference | Resolution |
+|---|---|
+| `README.md` presented `docs/architecture/ARCHITECTURE.md` as the system map. | README now points to the canonical map/rules/migration. |
+| `docs/architecture/*.md` all began with “this document predates the `internal/` migration” and left package locations ambiguous. | Headers now defer topology to the map; concrete paths in the runtime reference were updated. |
+| `CONTRIBUTING.md` used pre-migration paths (`ai/`, `tools/`, `catalog/`, `cmd/ohgo/run.go`) and `envAPIKeyVars`. | Corrected to current `internal/...` paths and `creds.ProviderEnvVars`. |
+| `docs/architecture/ARCHITECTURE.md` announced “379 models / 12 providers” and duplicated the layer map. | Duplicate map removed; provider counts are left to the README/catalog, which are current. |
+| `CHANGELOG.md` linked to phase reports and the port plan that are now historical. | Links removed; history preserved in the changelog prose. |
+| `OHGO_ARCHITECTURE_MAP.md` pointed readers at the pre-migration baseline as a current reference. | Pointer removed; migration history remains canonical. |
+| `docs/architecture/ARCHITECTURE_CONTRACT_V1.md` was still active despite being explicitly labelled historical. | Archived. |
+
+Known residual references that are intentionally **not** changed in this
+documentation-only task are listed under gaps below.
+
+---
+
+## 9. Documentation gaps
+
+These gaps remain and are recorded rather than filled with guessed content:
+
+1. **No automated documentation-governance test.** The repository already
+   machine-checks code architecture through `internal/architecture`. It has no
+   equivalent check for canonical-file existence, links into `old_docs/`, or
+   removed paths. Adding one is recommended, but it would be a test/code change
+   outside this task’s documentation-only boundary.
+2. **Source comments still cite `ARCHITECTURE_CONTRACT_V1` section numbers.**
+   `internal/memory/memory.go`, `internal/tui/permissions.go`,
+   `internal/prompt/prompt.go`, and `internal/control/workspace/workspace.go`
+   contain rationale comments referencing the archived contract. They still
+   describe real decisions, but a future comment-only cleanup should retarget
+   them at `OHGO_ARCHITECTURE_RULES.md`.
+3. **The repository benchmark harness is historically stale.** 
+   `bench/repository/tasks.go` contains pre-migration target paths
+   (`ai/openai.go`, `task/view.go`) and a documentation target at
+   `docs/architecture/ARCHITECTURE.md` line 23 whose expected phrase moved when
+   the duplicate layer map was removed; `bench/repository/main.go` still emits
+   results under `docs/benchmarks/results`. The harness is not part of the
+   active documentation set and was not modified.
+4. **No separate CLI/TUI reference manual.** The README documents the current
+   flags, slash commands, terminal modes, and completion verdicts; there is no
+   exhaustive per-command API reference. This was already true before the
+   cleanup and is not fabricated here.
+5. **The runtime reference is deliberately broad.** 
+   `docs/architecture/ARCHITECTURE.md` was canonicalized for ownership and
+   paths, but the implementation and tests remain the final authority for
+   behavioural detail. It is a supporting reference, not a second contract.
+
+---
+
+## 10. Final documentation topology
+
+```text
+ohgo/
+├── README.md                          product entry point
+├── AGENTS.md                          agent/contributor operating rules
+├── CONTRIBUTING.md                    contribution workflow
+├── SECURITY.md                        security policy
+├── CODE_OF_CONDUCT.md                 community policy
+├── CHANGELOG.md                       release history
+├── OHGO_ARCHITECTURE_MAP.md           canonical topology & ownership
+├── OHGO_ARCHITECTURE_RULES.md         canonical permanent rules
+├── OHGO_ARCHITECTURE_MIGRATION.md     canonical migration history
+├── OHGO_DOCUMENTATION_MIGRATION.md    this record
+├── docs/
+│   ├── RELEASING.md                   release process
+│   ├── gry-hooks.md                   GRY lifecycle-hook contract
+│   └── architecture/
+│       ├── ARCHITECTURE.md            runtime behaviour reference
+│       ├── WORKSPACE_AUTHORITY.md     authority and turn routing
+│       ├── STATE_AND_PERSISTENCE.md   persisted state ownership
+│       ├── INTENT_GROUNDING.md        semantic contract
+│       └── MCP.md                     external MCP boundary
+├── internal/provider/catalog/models.md  in-package catalog reference
+└── old_docs/                          temporary archive (human removal)
+    ├── README.md                      archive boundary marker
+    ├── MEMORY.md · PORT.md · PROGRESS.md
+    ├── OHGO_OPTIMIZATION_REPORT.md
+    └── docs/
+        ├── OHGO_ARCHITECTURE_BASELINE.md
+        ├── architecture/ARCHITECTURE_CONTRACT_V1.md
+        ├── report/                    41 historical reports
+        └── benchmarks/                48 historical specs/scripts/results
+```
+
+In one paragraph: the repository has one product entry point (`README.md`), one
+working-rules document (`AGENTS.md`), one contribution/release path
+(`CONTRIBUTING.md` + `docs/RELEASING.md`), one canonical architecture triplet
+(map, rules, migration), and a small `docs/architecture/` set of supporting
+behaviour references. Everything else is historical and isolated under
+`old_docs/`, which is not an active documentation domain.
+
+---
+
+## 11. Permanent documentation rules
+
+These rules now govern future documentation changes. The short operational form
+is in `AGENTS.md`.
+
+1. **Current facts have one canonical source.** Do not create a second
+   architecture map, rules document, or migration narrative.
+2. **Historical material is archived.** Move superseded designs, plans,
+   benchmarks, and reports to `old_docs/`; do not leave them active.
+3. **Do not duplicate architecture.** Summaries link to the canonical source
+   instead of reproducing it.
+4. **Documentation follows implementation.** Update the canonical document in
+   the same change that alters the fact.
+5. **Do not create versioned architecture filenames.** Use stable names such as
+   `OHGO_ARCHITECTURE_MAP.md`, never `*_V2`, `*_FINAL`, or `*_NEW`.
+6. **Documentation directories require semantic justification.** A new folder
+   must represent a real documentation domain with an owner and a purpose.
+7. **New documentation needs an owner.** Every permanent document must state
+   its scope and audience.
+8. **Obsolete documentation must not remain active.** Historical material must
+   not compete with current guidance.
+9. **`old_docs/` is not an active documentation domain.** It is a temporary
+   archive boundary for human removal; active documents must not depend on it.
+10. **Less documentation is preferable to contradictory documentation.**
+    Optimize for clarity per document, not document count.
+
+---
+
+## 12. Verification
+
+### Behavioural safety
+
+No implementation file changed. The diff is documentation and archive moves
+only:
+
+```text
+git status --short
+git diff --stat
+```
+
+Expected implementation diff: **zero**.
+
+### Commands run
+
+```sh
+go build ./...          # pass
+go vet ./...            # pass
+go test ./...           # pass
+go test -race ./...     # pass
+gofmt -l .              # empty
+```
+
+### Documentation checks performed
+
+- All active Markdown links resolve (`19` active Markdown files checked,
+  `0` broken relative links).
+- No active document references `docs/report`, `docs/benchmarks`,
+  `OHGO_ARCHITECTURE_BASELINE`, `ARCHITECTURE_CONTRACT_V1`, `MEMORY.md`,
+  `PORT.md`, `PROGRESS.md`, or `OHGO_OPTIMIZATION_REPORT`.
+- `old_docs/` preserves repository-relative paths, so historical cross-links
+  remain valid inside the archive.
+- The canonical architecture files exist at stable root names and are linked
+  from `README.md`, `AGENTS.md`, and `CONTRIBUTING.md`.
+
+### Recommended next governance step
+
+Add a small, test-only documentation check (likely in
+`internal/architecture` or a repository script) that asserts:
+
+```text
+- the three canonical architecture files exist
+- no active Markdown file links into old_docs/
+- no active Markdown file names a removed documentation path
+- README/AGENTS/CONTRIBUTING expose the canonical entry points
+```
+
+That is a code/test change and was intentionally not included here.

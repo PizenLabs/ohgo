@@ -83,8 +83,9 @@ version:
   the catalog resolves.
 - **No prompts in code.** System prompts and tool descriptions live in the
   `prompt` package or in the tool's own constructor.
-- **Centralise before adding a helper.** Check `tools/base.go`, `ai/sse.go`, and
-  the domain package before writing a utility. Two implementations of the same
+- **Centralise before adding a helper.** Check
+  `internal/execution/tools/base.go`, `internal/provider/ai/sse.go`, and the
+  domain package before writing a utility. Two implementations of the same
   thing is a bug even when both work.
 - **Prefer the standard library.** Do not add a dependency for something the
   standard library already covers. Intentional external dependencies are
@@ -128,24 +129,26 @@ test that cannot fail is not a test.
 
 ## Adding a provider
 
-1. Implement `ai.Provider` in `ai/<name>.go`, reusing `doJSON` and `readSSE`
-   from `ai/sse.go`.
+1. Implement `ai.Provider` in `internal/provider/ai/<name>.go`, reusing
+   `doJSON` and `readSSE` from `internal/provider/ai/sse.go`.
 2. Add the `api` constant and register it in `Registry.ProviderFor`.
-3. Add the credential lookup to `envAPIKeyVars`.
+3. Add the credential lookup to `creds.ProviderEnvVars` in
+   `internal/provider/creds`.
 4. Add SSE round-trip tests with an `httptest` server: text, tool calls with
    streamed argument fragments, usage, stop reason, and an error event.
 
 Model facts are data, not code. Update the catalog generator and regenerate
-`catalog/catalog.json`; never add an `if model == "..."` branch.
+`internal/provider/catalog/catalog.json`; never add an `if model == "..."` branch.
 
 ## Adding a tool
 
-1. Create the type in `tools/<name>.go`, embedding `tools.Base`.
+1. Create the type in `internal/execution/tools/<name>.go`, embedding
+   `tools.Base`.
 2. Write the JSON Schema as a `map[string]any` in the constructor. A malformed
    schema must panic at construction — never reach a call site.
 3. Declare the `agent.Approval` tier honestly. Omitted means "prompt every
    time", which is the correct default.
-4. Register it in `cmd/ohgo/run.go`'s `buildTools`.
+4. Register it in `cmd/ohgo/build.go`'s `buildTools`.
 5. Test the happy path, each rejection, cancellation, and root containment.
 
 If the tool reaches the network, it must go through the knowledge/external
@@ -191,13 +194,26 @@ changes in separate commits.
 
 ## Documentation
 
-- Architecture and invariants: [`docs/architecture/`](docs/architecture/).
+Canonical sources:
+
+- Architecture topology and ownership:
+  [`OHGO_ARCHITECTURE_MAP.md`](OHGO_ARCHITECTURE_MAP.md).
+- Permanent architectural rules:
+  [`OHGO_ARCHITECTURE_RULES.md`](OHGO_ARCHITECTURE_RULES.md).
+- Migration history:
+  [`OHGO_ARCHITECTURE_MIGRATION.md`](OHGO_ARCHITECTURE_MIGRATION.md).
 - User-facing behaviour: [`README.md`](README.md).
 - Release history: [`CHANGELOG.md`](CHANGELOG.md).
 - Agent-facing conventions: [`AGENTS.md`](AGENTS.md).
 
-When behaviour changes, update the document that describes the contract. A
-comment that only restates the code is noise; a missing invariant is a bug.
+Runtime behaviour, authority, persistence, intent grounding, and MCP are
+explained by supporting documents in [`docs/architecture/`](docs/architecture/).
+Those documents defer topology to the architecture map.
+
+When behaviour changes, update the document that describes the contract. Keep
+one canonical source per fact: link to it instead of restating it, and archive
+superseded material under `old_docs/` rather than leaving it active. A comment
+that only restates the code is noise; a missing invariant is a bug.
 
 ## Releases
 
