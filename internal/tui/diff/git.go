@@ -7,9 +7,9 @@
 // on the left and the hunks for the selected file on the right.
 //
 // The package is self-contained: it depends on the shared Myers diff engine in
-// github.com/PizenLabs/ohgo/diff, bubbletea, and lipgloss, and on nothing in
-// the tui package. That keeps the viewport, the parser, and the git driver
-// testable without a terminal and without an import cycle back into tui.
+// internal/diff, bubbletea, and lipgloss, and on nothing in the tui package.
+// That keeps the viewport, the parser, and the git driver testable without a
+// terminal and without an import cycle back into tui.
 package diff
 
 import (
