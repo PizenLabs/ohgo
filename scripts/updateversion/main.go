@@ -29,10 +29,10 @@ import (
 const (
 	versionPath   = "VERSION"
 	mainPath      = "cmd/ohgo/main.go"
-	infoPath      = "tui/infoview.go"
+	infoPath      = "internal/tui/infoview.go"
 	issuePath     = ".github/ISSUE_TEMPLATE/bug_report.yml"
 	changelogPath = "CHANGELOG.md"
-	notesPath     = "update/changelog.json"
+	notesPath     = "internal/update/changelog.json"
 )
 
 const dateLayout = "2006-01-02"
@@ -49,7 +49,7 @@ it first.
 options:
   --bump KIND        bump VERSION instead of reading it: major, minor, or patch
   --release          move [Unreleased] in CHANGELOG.md to [vVERSION] - DATE and
-                     generate its update/changelog.json release notes
+                     generate its internal/update/changelog.json release notes
   --check            report files that are out of sync and exit 1; writes nothing
   --dry-run          print what would change without writing it
   --date YYYY-MM-DD  release date for --release (default: today)

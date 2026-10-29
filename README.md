@@ -689,7 +689,7 @@ tests.
 Release preparation is documented in
 [`docs/RELEASING.md`](docs/RELEASING.md). `scripts/update-version.sh` propagates
 the version in `VERSION` to every file that embeds it, and `--release` cuts
-`CHANGELOG.md` and the binary-embedded `update/changelog.json` in one step;
+`CHANGELOG.md` and the binary-embedded `internal/update/changelog.json` in one step;
 `./scripts/update-version.sh --check` fails when the tree is stale. The doc also
 holds the upgrade/restart/acknowledgement smoke test.
 

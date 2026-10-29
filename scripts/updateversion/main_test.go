@@ -23,7 +23,7 @@ func fixtures(t *testing.T) string {
 		"cmd/ohgo/main.go": "package main\n\n" +
 			"// version is overridden at build time.\n" +
 			"var version = \"0.1.0-dev\"\n",
-		"tui/infoview.go": "package tui\n\nimport \"strings\"\n\n" +
+		"internal/tui/infoview.go": "package tui\n\nimport \"strings\"\n\n" +
 			"var defaultChangelog = strings.Join([]string{\n" +
 			"\t\"v0.1.0-dev\",\n" +
 			"\t\"  - Something.\",\n" +
@@ -45,7 +45,7 @@ func fixtures(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("encode fixture notes: %v", err)
 	}
-	writeFile(t, dir, "update/changelog.json", string(notes))
+	writeFile(t, dir, "internal/update/changelog.json", string(notes))
 	return dir
 }
 
@@ -117,7 +117,7 @@ func TestSyncWritesEveryVersionMarker(t *testing.T) {
 	if got := readFile(t, dir, "cmd/ohgo/main.go"); !strings.Contains(got, `var version = "0.4.0-dev"`) {
 		t.Errorf("main.go = %q", got)
 	}
-	if got := readFile(t, dir, "tui/infoview.go"); !strings.Contains(got, `"v0.4.0-dev"`) || strings.Contains(got, "v0.1.0-dev") {
+	if got := readFile(t, dir, "internal/tui/infoview.go"); !strings.Contains(got, `"v0.4.0-dev"`) || strings.Contains(got, "v0.1.0-dev") {
 		t.Errorf("infoview.go = %q", got)
 	}
 	if got := readFile(t, dir, ".github/ISSUE_TEMPLATE/bug_report.yml"); !strings.Contains(got, `placeholder: "v0.4.0 / ed60b2b-dirty"`) {
@@ -264,7 +264,7 @@ func TestReleaseMovesNotesIntoADatedSection(t *testing.T) {
 		t.Errorf("[Unreleased] still holds notes: %q", body)
 	}
 
-	notes := readFile(t, dir, "update/changelog.json")
+	notes := readFile(t, dir, "internal/update/changelog.json")
 	doc, err := update.ParseChangelog([]byte(notes))
 	if err != nil {
 		t.Fatalf("generated notes are invalid: %v", err)
@@ -333,7 +333,7 @@ func TestReleaseRefusesAnEmptyUnreleasedSection(t *testing.T) {
 func TestSyncReformatsNotesWithoutLosingEntries(t *testing.T) {
 	dir := fixtures(t)
 	raw := `{"schema":1,"releases":{"v0.0.2":{"title":"B","changes":[{"id":"b","type":"fixed","title":"B"}]},"v0.0.1":{"title":"A","changes":[{"id":"a","type":"added","title":"A"}]}}}`
-	writeFile(t, dir, "update/changelog.json", raw)
+	writeFile(t, dir, "internal/update/changelog.json", raw)
 
 	code, _, stderr := runScript(t, dir)
 	if code != 0 {
@@ -347,7 +347,7 @@ func TestSyncReformatsNotesWithoutLosingEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode expected notes: %v", err)
 	}
-	if got := readFile(t, dir, "update/changelog.json"); got != string(want) {
+	if got := readFile(t, dir, "internal/update/changelog.json"); got != string(want) {
 		t.Errorf("notes =\n%s\nwant\n%s", got, want)
 	}
 }
@@ -389,6 +389,27 @@ func TestDuplicateTitlesGetDistinctIDs(t *testing.T) {
 	}
 	if changes[0].ID == changes[1].ID {
 		t.Fatalf("both changes share id %q; ids must be unique within a release", changes[0].ID)
+	}
+}
+
+// TestOwnedPathsExistInThisTree guards the file list against the repository it
+// is meant to edit: moving a version-bearing file without updating the
+// constants makes --check fail with a bare read error, which is exactly how the
+// tui/ -> internal/tui/ move broke CI.
+func TestOwnedPathsExistInThisTree(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("test is not running inside the module: %v", err)
+	}
+	for _, rel := range []string{mainPath, infoPath, issuePath, changelogPath, notesPath} {
+		if info, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			t.Errorf("%s: the command cannot read this owned file: %v", rel, err)
+		} else if info.IsDir() {
+			t.Errorf("%s: owns a directory, want a file", rel)
+		}
 	}
 }
 
