@@ -3,7 +3,8 @@
 # reads the keys listed here, so leave unused platforms commented out.
 #
 # Founder PizenLabs
- github: [andev0x]
+ github: [PizenLabs]
+ open_collective: pizenlabs
 # patreon: # Replace with a single Patreon username
 # open_collective: # Replace with a single Open Collective name
 # ko_fi: # Replace with a single Ko-fi username
