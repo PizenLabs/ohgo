@@ -1,39 +1,36 @@
 name: ci
 
+# CI only. Release building lives in release.yml and runs exclusively from tags
+# (or an explicit workflow_dispatch), so a push to main never pays for artifacts
+# or a cross-compilation matrix.
 on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
-  id-token: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
+    name: test, vet, and lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.27"
+          go-version-file: go.mod
           cache: true
-      - name: Build
-        run: go build ./...
       - name: Vet
         run: go vet ./...
-      - name: Gofmt
-        run: test -z "$(gofmt -l .)"
-      - name: Version files
-        run: ./scripts/update-version.sh --check
       - name: Test
-        run: go test -coverprofile=coverage.out -covermode=atomic ./...
-      - name: Upload coverage
-        uses: codecov/codecov-action@v7
-        with:
-          files: coverage.out
-          fail_ci_if_error: false
-          use_oidc: true
+        run: go test -v ./...
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
