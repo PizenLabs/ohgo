@@ -1,29 +1,115 @@
 name: release
 
+# CD only. Every job runs on ubuntu-latest and Go cross-compiles from GOOS and
+# GOARCH, so publishing never schedules a non-Linux runner.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish (for example v0.0.4)"
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  verify:
+    name: verify release tree
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.27"
+          go-version-file: go.mod
           cache: true
-      - name: Build release tarballs
-        run: make release
+      - name: Verify tag, version files, and formatting
+        env:
+          VERSION: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          test "v$(cat VERSION)" = "${VERSION}"
+          test -z "$(gofmt -l .)"
+          ./scripts/update-version.sh --check
+          go build ./...
+
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep this list aligned with Target.Supported in
+        # internal/update/release.go: the updater only self-updates platforms
+        # that the release actually publishes.
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build archive
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.event.inputs.tag || github.ref_name }}
+        run: ./scripts/release-target.sh
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohgo-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/ohgo-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: dist
+        run: |
+          set -eu
+          sha256sum *.tar.gz > sha256sums.txt
+          cat sha256sums.txt
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
             dist/*.tar.gz
             dist/sha256sums.txt
+          fail_on_unmatched_files: true
           generate_release_notes: true

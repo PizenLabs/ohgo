@@ -270,10 +270,17 @@ git push origin main
 git push origin vX.Y.Z
 ```
 
-The tag starts `.github/workflows/release.yml`, which runs `make release`,
-publishes the four tarballs plus `sha256sums.txt`, and generates GitHub release
-notes. `CHANGELOG.md` remains the human-authored record; generated release notes
-are not a replacement for it.
+The tag starts `.github/workflows/release.yml`. Its verification job checks the
+tag against `VERSION`, the version markers, and formatting; then an
+`ubuntu-latest` matrix runs `scripts/release-target.sh` once per target with
+`CGO_ENABLED=0` and native `GOOS`/`GOARCH` cross-compilation; the final job
+writes `sha256sums.txt` and publishes the four tarballs with generated GitHub
+release notes. Every job runs on `ubuntu-latest`, so the release never consumes
+a paid macOS or Windows runner.
+
+To rebuild and republish an existing tag without creating a new one, run the
+workflow manually with that tag as the `tag` input. `CHANGELOG.md` remains the
+human-authored record; generated release notes are not a replacement for it.
 
 ## 8. Post-release verification
 

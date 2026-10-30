@@ -14,21 +14,24 @@ PREFIX ?= $(HOME)/.local
 DESTDIR ?=
 BINDIR ?= $(PREFIX)/bin
 
+# The release matrix. The workflow runs the same script once per entry, so a
+# local `make release` and a tagged release produce identical artifacts.
+RELEASE_TARGETS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+
 # release builds versioned static tarballs for the supported platforms plus
 # checksums. Everything is CGO_ENABLED=0: a release artifact must run anywhere
 # without a toolchain or shared libraries.
 release:
 	rm -rf dist && mkdir -p dist
-	for pair in "linux/amd64" "linux/arm64" "darwin/amd64" "darwin/arm64"; do \
-		os=$${pair%/*}; arch=$${pair#*/}; \
-		dir="dist/ohgo-$(VERSION)-$$os-$$arch"; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
-			-o "$$dir/ohgo" ./cmd/ohgo || exit 1; \
-		cp README.md LICENSE "$$dir/"; \
-		tar -czf "$$dir.tar.gz" -C dist "$$(basename $$dir)" || exit 1; \
-		rm -rf "$$dir"; \
+	for pair in $(RELEASE_TARGETS); do \
+		GOOS=$${pair%/*} GOARCH=$${pair#*/} VERSION="$(VERSION)" \
+			./scripts/release-target.sh || exit 1; \
 	done
-	cd dist && sha256sum *.tar.gz > sha256sums.txt && cat sha256sums.txt
+	cd dist && if command -v sha256sum >/dev/null 2>&1; then \
+		sha256sum *.tar.gz; \
+	else \
+		shasum -a 256 *.tar.gz; \
+	fi > sha256sums.txt && cat sha256sums.txt
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/ohgo
