@@ -196,6 +196,8 @@ func runLiveScenarioWithOptions(ctx context.Context, sc scenario, live liveModel
 		return metrics, nil
 	}
 	metrics.Authority = route.Active.String()
+	metrics.RoutedAuthority = benchmarkWorkspace.String()
+	metrics.AskRoute = routeOutcome(workspace.RouteTurn(workspace.Ask, promptText))
 	toolSet := builtTools(root)
 	metrics.ToolSetHash = toolSetHash(toolSet)
 	resolver := structuralResolver(toolSet)

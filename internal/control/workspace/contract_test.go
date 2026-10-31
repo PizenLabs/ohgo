@@ -312,3 +312,37 @@ func TestBuildIntentContractBoundsTargets(t *testing.T) {
 		t.Fatal("truncating a target list must be recorded")
 	}
 }
+
+// A hosting platform named in a request is context, not a code coordinate.
+// Treating "GitHub" as a symbol target made the contract demand index evidence
+// that cannot exist, so the request could never be called complete.
+func TestHostingNamesAreNotSymbolTargets(t *testing.T) {
+	contract := BuildIntentContract("Update this repository on GitHub.")
+	for _, target := range contract.Targets {
+		if target.Kind == TargetSymbol {
+			t.Errorf("BuildIntentContract produced symbol target %q from a hosting name", target.Value)
+		}
+	}
+	if !RequestsMutation("Update this repository on GitHub.") {
+		t.Fatal("a hosting name must not erase the mutation request")
+	}
+}
+
+// "Implement the fix for this failing test" names a check as the success
+// condition. The contract must recognise it as behavioural rather than
+// ambiguous, or the runtime cannot verify a change the user clearly asked for.
+func TestBehavioralFixObjectiveIsVerifiable(t *testing.T) {
+	contract := BuildIntentContract("Implement the fix for this failing test.")
+	if contract.Kind != ObjectiveMutation {
+		t.Fatalf("kind = %s, want mutation", contract.Kind)
+	}
+	if !contract.BehavioralObjective {
+		t.Fatal("a failing test is a behavioural success condition")
+	}
+	if contract.Ambiguous {
+		t.Fatalf("contract is ambiguous: %v", contract.Issues)
+	}
+	if len(contract.Verification) == 0 || contract.Verification[0].Scope != "*" {
+		t.Fatalf("verification = %+v, want a repository-scoped check", contract.Verification)
+	}
+}

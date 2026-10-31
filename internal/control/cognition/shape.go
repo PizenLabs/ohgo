@@ -438,21 +438,76 @@ func (s TaskShape) Summary() string {
 }
 
 // repositoryScope reports whether the request is about the repository itself.
+//
+// Two rules, both conservative. A determiner-bound repository noun ("this
+// workflow", "the tests") points at this repository's artifact. A deictic
+// reference ("this", "our") combined with a hosting or CI noun ("GitHub", "the
+// pipeline") also does: the question is about what this repository does, and
+// the answer lives in its configuration. A general knowledge question ("what is
+// a cron expression?", "what is the best CI?") matches neither.
 func repositoryScope(objective string, intent contract.IntentContract) bool {
 	normalized := " " + normalizeWords(objective) + " "
-	for _, phrase := range []string{
-		" this project ", " the project ", " this repository ", " the repository ",
-		" this repo ", " the repo ", " this codebase ", " the codebase ",
-		" this code ", " the code ", " this tool ", " the tool ",
-		" this application ", " the application ",
-	} {
+	for _, phrase := range repositoryPhrases {
 		if strings.Contains(normalized, phrase) {
 			return true
 		}
 	}
+	if hasDeicticReference(normalized) && containsAnyWord(normalized, repositoryArtifactWords) {
+		return true
+	}
 	// A mutation with no named coordinate is necessarily about the repository:
 	// there is no other place the change could go.
 	return intent.Kind == contract.ObjectiveMutation && len(intent.Targets) == 0
+}
+
+// repositoryPhrases are determiner-bound references to this repository or one of
+// its artifacts.
+var repositoryPhrases = []string{
+	" this project ", " the project ", " this repository ", " the repository ",
+	" this repo ", " the repo ", " this codebase ", " the codebase ",
+	" this code ", " the code ", " this tool ", " the tool ",
+	" this application ", " the application ", " this workspace ", " the workspace ",
+	" this workflow ", " the workflow ", " this ci ", " the ci ",
+	" this pipeline ", " the pipeline ", " this release ", " the release ",
+	" this deployment ", " the deployment ", " this deploy ", " the deploy ",
+	" this script ", " the script ", " this command ", " the command ",
+	" this commit ", " the commit ", " this branch ", " the branch ",
+	" this build ", " the build ", " this test ", " the test ",
+	" these tests ", " the tests ", " this suite ", " the suite ",
+	" this config ", " the config ", " this configuration ", " the configuration ",
+	" on github ", " to github ", " via github ",
+	" on gitlab ", " to gitlab ", " via gitlab ",
+}
+
+// repositoryArtifactWords are nouns that name a repository artifact or the
+// surface it is published to. They are only evidence of repository scope when
+// the request also points at one with a deictic reference.
+var repositoryArtifactWords = []string{
+	"github", "gitlab", "bitbucket", "workflow", "workflows", "actions",
+	"ci", "pipeline", "pipelines", "release", "releases", "deploy",
+	"deployment", "deployments", "build", "builds", "test", "tests",
+	"script", "config", "configuration", "command", "commit", "branch",
+}
+
+// hasDeicticReference reports whether the request points at something in the
+// speaker's context rather than at the world in general.
+func hasDeicticReference(normalized string) bool {
+	for _, word := range []string{"this", "these", "those", "our", "its"} {
+		if strings.Contains(normalized, " "+word+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAnyWord reports whether normalized text contains any whole word.
+func containsAnyWord(normalized string, words []string) bool {
+	for _, word := range words {
+		if strings.Contains(normalized, " "+word+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // needsCodeNavigation reports whether structural code navigation is relevant.

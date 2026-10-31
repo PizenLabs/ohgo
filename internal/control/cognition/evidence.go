@@ -348,9 +348,16 @@ func (s *EvidenceState) targetStateKnown(path string) bool {
 
 // ObserveTurns folds completed turns into the state. It is idempotent per tool
 // call, so a projector may call it on every model turn.
-func (s *EvidenceState) ObserveTurns(shape TaskShape, turns []agent.Turn) {
+//
+// It reports the evidence gain of the final turn: how many outcomes recorded a
+// repository fact, and how many of those facts were new. A turn that observed
+// the repository without adding a fact is a turn whose exploration is spent,
+// which is the only signal the runtime needs to stop offering tools. The
+// counters describe one turn, not the run, so a model is never stopped for the
+// total number of calls it made.
+func (s *EvidenceState) ObserveTurns(shape TaskShape, turns []agent.Turn) (observed, novel int) {
 	if s == nil {
-		return
+		return 0, 0
 	}
 	if s.ObservedCalls == nil {
 		s.ObservedCalls = map[string]bool{}
@@ -359,7 +366,8 @@ func (s *EvidenceState) ObserveTurns(shape TaskShape, turns []agent.Turn) {
 		s.LastMutationSeq = map[string]int{}
 	}
 	s.ensureRequirements(shape)
-	for _, turn := range turns {
+	last := len(turns) - 1
+	for index, turn := range turns {
 		for _, outcome := range turn.Results {
 			if outcome.CallID != "" && s.ObservedCalls[outcome.CallID] {
 				continue
@@ -367,10 +375,17 @@ func (s *EvidenceState) ObserveTurns(shape TaskShape, turns []agent.Turn) {
 			if outcome.CallID != "" {
 				s.ObservedCalls[outcome.CallID] = true
 			}
-			s.ObserveOutcome(outcome)
+			fact, changed := s.observe(outcome)
+			if index == last && fact {
+				observed++
+				if changed {
+					novel++
+				}
+			}
 		}
 	}
 	s.trim()
+	return observed, novel
 }
 
 // ensureRequirements records the shape's needs once.
@@ -389,13 +404,26 @@ func (s *EvidenceState) ensureRequirements(shape TaskShape) {
 	}
 }
 
-// ObserveOutcome folds one tool outcome into the state.
-func (s *EvidenceState) ObserveOutcome(outcome agent.ToolOutcome) {
+// ObserveOutcome folds one tool outcome into the state and reports whether it
+// recorded a repository fact the state did not already hold.
+//
+// A refusal, a diagnostic, and a generic tool result are control signals, not
+// repository facts: they never count as evidence gain, so a model that is
+// adapting to errors is not mistaken for a model that is repeating itself.
+func (s *EvidenceState) ObserveOutcome(outcome agent.ToolOutcome) bool {
+	_, changed := s.observe(outcome)
+	return changed
+}
+
+// observe is the one place the outcome-to-evidence switch lives. It reports
+// whether the outcome carried a repository fact and whether that fact was new.
+func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) {
 	if s == nil || outcome.Refused() {
 		// A withheld or denied action never ran. It is a control signal, not
 		// an observation about the repository, and must not become evidence.
-		return
+		return false, false
 	}
+	defer s.trim()
 	s.Seq++
 	seq := s.Seq
 	details := detailsMap(outcome.Result.Details)
@@ -406,36 +434,40 @@ func (s *EvidenceState) ObserveOutcome(outcome agent.ToolOutcome) {
 	tool := outcome.ToolName
 
 	if outcome.Result.IsError {
-		s.addError(outcome, path, seq)
-		return
+		// A diagnostic is not a repository observation. The one exception is a
+		// missing-file error, which establishes that the named path is absent.
+		// A turn made only of errors therefore never counts as stagnation: the
+		// model is correcting itself, not repeating a completed observation.
+		changed := s.addError(outcome, path, seq)
+		return changed, changed
 	}
 
 	switch tool {
 	case "read":
-		s.addRead(outcome, path, details, seq)
+		return true, s.addRead(outcome, path, details, seq)
 	case "ls":
-		s.addListing(outcome, path, details, seq)
+		return true, s.addListing(outcome, path, details, seq)
 	case "glob":
-		s.addSearch(outcome, details, seq)
+		return true, s.addSearch(outcome, details, seq)
 	case "grep":
-		s.addSearch(outcome, details, seq)
+		return true, s.addSearch(outcome, details, seq)
 	case "symbols":
-		s.addSymbols(outcome, details, seq)
+		return true, s.addSymbols(outcome, details, seq)
 	case "write", "edit", "delete":
-		s.addMutation(outcome, path, details, seq)
+		return true, s.addMutation(outcome, path, details, seq)
 	case "bash":
-		s.addBash(outcome, details, seq)
+		return true, s.addBash(outcome, details, seq)
 	case "web_fetch", "search", "browser", "mcp_list", "mcp_read", "mcp_call":
-		s.addExternal(outcome, details, seq)
+		return true, s.addExternal(outcome, details, seq)
 	default:
 		s.addGeneric(outcome, seq)
+		return false, false
 	}
-	s.trim()
 }
 
 // addError records an exact diagnostic. A missing-file error also establishes
 // that the named path is absent, which is legitimate target-state evidence.
-func (s *EvidenceState) addError(outcome agent.ToolOutcome, path string, seq int) {
+func (s *EvidenceState) addError(outcome agent.ToolOutcome, path string, seq int) bool {
 	text := bound(outcome.Result.Text, MaxDiagnosticValueBytes)
 	summary := firstLine(outcome.Result.Text)
 	id := "error:" + outcome.ToolName + ":" + outcome.CallID
@@ -450,7 +482,7 @@ func (s *EvidenceState) addError(outcome agent.ToolOutcome, path string, seq int
 		Seq:       seq,
 	})
 	if path != "" && isMissingFileError(outcome.Result.Text) {
-		s.upsert(EvidenceItem{
+		return s.upsert(EvidenceItem{
 			ID:        "file:" + cleanPath(path),
 			Status:    StatusKnown,
 			Retention: RetentionExact,
@@ -459,14 +491,15 @@ func (s *EvidenceState) addError(outcome agent.ToolOutcome, path string, seq int
 			Seq:       seq,
 		})
 	}
+	return false
 }
 
 // addRead records an exact file observation.
-func (s *EvidenceState) addRead(outcome agent.ToolOutcome, path string, details map[string]any, seq int) {
+func (s *EvidenceState) addRead(outcome agent.ToolOutcome, path string, details map[string]any, seq int) bool {
 	path = cleanPath(path)
 	if path == "" {
 		s.addGeneric(outcome, seq)
-		return
+		return false
 	}
 	text := bound(outcome.Result.Text, MaxEvidenceValueBytes)
 	totalLines := detailInt(details, "totalLines")
@@ -514,7 +547,7 @@ func (s *EvidenceState) addRead(outcome agent.ToolOutcome, path string, details 
 		// contradiction. Comparing their digests directly would manufacture a
 		// conflict when a model pages through a large file.
 	}
-	s.upsert(item)
+	return s.upsert(item)
 }
 
 // sameReadWindow reports whether two reads cover the same source range.
@@ -531,7 +564,7 @@ func sameReadWindow(previous, current EvidenceItem) bool {
 }
 
 // addListing records a directory listing as structural evidence.
-func (s *EvidenceState) addListing(outcome agent.ToolOutcome, path string, details map[string]any, seq int) {
+func (s *EvidenceState) addListing(outcome agent.ToolOutcome, path string, details map[string]any, seq int) bool {
 	path = cleanPath(path)
 	if path == "" {
 		path = "."
@@ -546,7 +579,7 @@ func (s *EvidenceState) addListing(outcome agent.ToolOutcome, path string, detai
 	if first := firstContentLine(text); first != "" {
 		summary += " — " + bound(first, 160)
 	}
-	s.upsert(EvidenceItem{
+	return s.upsert(EvidenceItem{
 		ID:        "dir:" + path,
 		Status:    StatusKnown,
 		Retention: RetentionStructural,
@@ -560,7 +593,7 @@ func (s *EvidenceState) addListing(outcome agent.ToolOutcome, path string, detai
 }
 
 // addSearch records a bounded search result as derived structure.
-func (s *EvidenceState) addSearch(outcome agent.ToolOutcome, details map[string]any, seq int) {
+func (s *EvidenceState) addSearch(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
 	pattern := detailString(details, "pattern")
 	path := detailString(details, "path")
 	if path == "" {
@@ -582,7 +615,7 @@ func (s *EvidenceState) addSearch(outcome agent.ToolOutcome, details map[string]
 		summary += " — " + bound(first, 140)
 	}
 	complete := !strings.Contains(text, "pass skip=") && !strings.Contains(text, "raise \"limit\"")
-	s.upsert(EvidenceItem{
+	return s.upsert(EvidenceItem{
 		ID:        id,
 		Status:    StatusDerived,
 		Retention: RetentionStructural,
@@ -597,7 +630,7 @@ func (s *EvidenceState) addSearch(outcome agent.ToolOutcome, details map[string]
 
 // addSymbols records structural coordinates. The aggregate item is bounded;
 // individual coordinates are retained up to a small cap.
-func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string]any, seq int) {
+func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
 	query := argString(outcome.Args, "symbol")
 	if query == "" {
 		query = argString(outcome.Args, "package")
@@ -606,7 +639,7 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 		query = argString(outcome.Args, "path")
 	}
 	text := bound(outcome.Result.Text, MaxEvidenceValueBytes)
-	s.upsert(EvidenceItem{
+	changed := s.upsert(EvidenceItem{
 		ID:        "symbols:" + query,
 		Status:    StatusDerived,
 		Retention: RetentionStructural,
@@ -627,7 +660,7 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 		if path == "" || symbol == "" {
 			continue
 		}
-		s.upsert(EvidenceItem{
+		if s.upsert(EvidenceItem{
 			ID:        "symbol:" + path + ":" + symbol,
 			Status:    StatusKnown,
 			Retention: RetentionStructural,
@@ -636,12 +669,15 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 			Source: Source{Tool: "symbols", CallID: outcome.CallID, Path: path,
 				StartLine: detailInt(coord, "start_line"), EndLine: detailInt(coord, "end_line")},
 			Seq: seq,
-		})
+		}) {
+			changed = true
+		}
 	}
+	return changed
 }
 
 // addMutation records a definite repository change.
-func (s *EvidenceState) addMutation(outcome agent.ToolOutcome, path string, details map[string]any, seq int) {
+func (s *EvidenceState) addMutation(outcome agent.ToolOutcome, path string, details map[string]any, seq int) bool {
 	path = cleanPath(path)
 	value := detailString(details, "diff")
 	if value == "" {
@@ -659,7 +695,7 @@ func (s *EvidenceState) addMutation(outcome agent.ToolOutcome, path string, deta
 	if path == "" {
 		id = "mutation:" + outcome.CallID
 	}
-	s.upsert(EvidenceItem{
+	changed := s.upsert(EvidenceItem{
 		ID:        id,
 		Status:    StatusKnown,
 		Retention: RetentionExact,
@@ -672,10 +708,11 @@ func (s *EvidenceState) addMutation(outcome agent.ToolOutcome, path string, deta
 	if path != "" {
 		s.LastMutationSeq[path] = seq
 	}
+	return changed
 }
 
 // addBash records command execution, verification, and mutation evidence.
-func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]any, seq int) {
+func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
 	command := detailString(details, "command")
 	if command == "" {
 		command = argString(outcome.Args, "command")
@@ -686,7 +723,7 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 	if exit != 0 {
 		summary += fmt.Sprintf(" (exit %d)", exit)
 	}
-	s.upsert(EvidenceItem{
+	changed := s.upsert(EvidenceItem{
 		ID:        "command:" + digest(command),
 		Status:    StatusKnown,
 		Retention: RetentionDiagnostic,
@@ -712,7 +749,7 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 			}
 		}
 		id := "verification:" + digest(command)
-		s.upsert(EvidenceItem{
+		if s.upsert(EvidenceItem{
 			ID:        id,
 			Status:    StatusKnown,
 			Retention: RetentionDiagnostic,
@@ -721,11 +758,13 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 			Digest:    digest(text),
 			Source:    Source{Tool: "bash", CallID: outcome.CallID, Check: check},
 			Seq:       seq,
-		})
+		}) {
+			changed = true
+		}
 	}
 	if outcome.Result.Mutates {
 		id := "mutation:" + digest(command)
-		s.upsert(EvidenceItem{
+		if s.upsert(EvidenceItem{
 			ID:        id,
 			Status:    StatusKnown,
 			Retention: RetentionExact,
@@ -734,10 +773,12 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 			Digest:    digest(text),
 			Source:    Source{Tool: "bash", CallID: outcome.CallID},
 			Seq:       seq,
-		})
+		}) {
+			changed = true
+		}
 	}
 	if outcome.Result.Executes && !outcome.Result.Finished {
-		s.upsert(EvidenceItem{
+		if s.upsert(EvidenceItem{
 			ID:        "background:" + outcome.CallID,
 			Status:    StatusKnown,
 			Retention: RetentionTransient,
@@ -746,12 +787,15 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 			Digest:    digest(text),
 			Source:    Source{Tool: "bash", CallID: outcome.CallID},
 			Seq:       seq,
-		})
+		}) {
+			changed = true
+		}
 	}
+	return changed
 }
 
 // addExternal records external evidence with mandatory provenance.
-func (s *EvidenceState) addExternal(outcome agent.ToolOutcome, details map[string]any, seq int) {
+func (s *EvidenceState) addExternal(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
 	url := detailString(details, "url")
 	if url == "" {
 		url = argString(outcome.Args, "url")
@@ -781,7 +825,7 @@ func (s *EvidenceState) addExternal(outcome agent.ToolOutcome, details map[strin
 		summaryLine = "remote_error: " + firstLine(remote)
 	}
 	id := "external:" + capability + ":" + firstNonEmpty(locator, digest(text))
-	s.upsert(EvidenceItem{
+	return s.upsert(EvidenceItem{
 		ID:        id,
 		Status:    StatusKnown,
 		Retention: RetentionExternal,
@@ -814,16 +858,23 @@ func (s *EvidenceState) addGeneric(outcome agent.ToolOutcome, seq int) {
 	})
 }
 
-// upsert replaces an item with the same id, preserving observation order.
-func (s *EvidenceState) upsert(item EvidenceItem) {
+// upsert replaces an item with the same id, preserving observation order. It
+// reports whether the item is new or its observed content changed: replaying the
+// same observation is not new evidence.
+func (s *EvidenceState) upsert(item EvidenceItem) bool {
 	for i := range s.Items {
 		if s.Items[i].ID != item.ID {
 			continue
 		}
+		changed := s.Items[i].Digest != item.Digest ||
+			s.Items[i].Status != item.Status ||
+			s.Items[i].Complete != item.Complete ||
+			s.Items[i].Value != item.Value
 		s.Items[i] = item
-		return
+		return changed
 	}
 	s.Items = append(s.Items, item)
+	return true
 }
 
 // Bytes returns the retained payload size, for checkpoints and tests.

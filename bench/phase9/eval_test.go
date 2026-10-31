@@ -167,3 +167,32 @@ func scenarioByID(t *testing.T, id string) scenario {
 	t.Fatalf("unknown scenario %q", id)
 	return scenario{}
 }
+
+// TestEvidenceMatrix is the authority, evidence, and stop-condition contract
+// for the runtime requirement tasks. It runs the same scripted actions through
+// the real router, gate, evidence projector, and completion evaluator, so a
+// regression in any layer changes a measured verdict rather than a comment.
+func TestEvidenceMatrix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evidence matrix runs real tool calls and go test in fixtures")
+	}
+	for _, sc := range evidenceMatrix() {
+		sc := sc
+		t.Run(sc.ID, func(t *testing.T) {
+			metrics, err := runEvidenceScenario(context.Background(), sc)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if !expectationMet(sc.Expect, metrics) {
+				t.Fatalf("outcome = %s (%s), authority=%s ask=%s mutated=%v verified=%v unexpected=%v",
+					metrics.ObjectiveStatus, metrics.CompletionReason, metrics.RoutedAuthority,
+					metrics.AskRoute, metrics.Mutated, metrics.Verified, metrics.Unexpected)
+			}
+			if !evidenceMet(sc.Expect, metrics) {
+				t.Fatalf("evidence contract: authority=%s ask=%s withheld=%d facts=%d/%d missing=%v",
+					metrics.RoutedAuthority, metrics.AskRoute, metrics.CandidateRejections,
+					metrics.FactsMatched, metrics.FactsExpected, metrics.FactsMissing)
+			}
+		})
+	}
+}

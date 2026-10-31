@@ -236,6 +236,30 @@ func operationsIntersect(requested, provided []contract.ChangeOp) bool {
 	return false
 }
 
+// withholdExploration removes every remaining tool once the run has stopped
+// gaining evidence, and records why.
+//
+// The refusal is the runtime's answer to "does the next action have a chance of
+// resolving an unresolved part of the request?". When the last observed turn
+// added no fact, another probe cannot change the conclusion, so the next request
+// is for the answer. The decision is per turn and derived from evidence, so it
+// is not a tool-call budget.
+func withholdExploration(set CandidateSet) CandidateSet {
+	const reason = "the last observation added no new evidence; answer from the evidence already established"
+	if len(set.Tools) == 0 {
+		return set
+	}
+	for _, tool := range set.Tools {
+		set.Excluded = append(set.Excluded, agent.CandidateExclusion{Tool: tool.Name(), Reason: reason})
+	}
+	// An empty, non-nil slice is the "no tools" request. A nil slice means
+	// "leave the tool set unchanged" to the loop, which would silently keep the
+	// surface open.
+	set.Tools = []agent.Tool{}
+	set.Notices = append(set.Notices, reason+" (all remaining tools)")
+	return set
+}
+
 // CandidateSummary renders the offered set for a state block.
 func (s CandidateSet) CandidateSummary(limit int) string {
 	names := make([]string, 0, len(s.Tools))

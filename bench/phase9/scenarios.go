@@ -34,6 +34,14 @@ type expectation struct {
 	// AllowUnexpected marks an adversarial scenario whose contract is to
 	// produce an out-of-scope mutation and have the runtime report it.
 	AllowUnexpected bool
+	// Authority is the workspace the router must select for the prompt. An
+	// empty value is not checked, so the frozen Phase 9/10 matrices keep their
+	// published contract.
+	Authority workspace.Workspace
+	// Withheld requires that the runtime withheld at least one proposed call:
+	// the evidence lifecycle had nothing left to gain, so the call was
+	// unnecessary work. It is a stop-condition assertion, not a call budget.
+	Withheld bool
 }
 
 // scenario is one controlled benchmark task.
@@ -333,6 +341,8 @@ func runScenario(ctx context.Context, sc scenario, projection string) (metrics r
 		ModelSettings:      "fixed-sequence",
 		RuntimeMode:        "scripted-" + projectionMode(projection),
 		Authority:          "build",
+		RoutedAuthority:    workspace.Classify(sc.Prompt).Handler().String(),
+		AskRoute:           routeOutcome(workspace.RouteTurn(workspace.Ask, sc.Prompt)),
 		TaskHash:           scenarioHash(sc),
 		Repository:         "fixture:" + string(sc.Fixture),
 		RepositoryRevision: "phase9-fixture-v1",

@@ -123,6 +123,11 @@ func buildGrounding(text string, intent contract.IntentContract) *contract.Inten
 
 // groundingActions returns every action the request appears to ask for, in
 // clause order, with duplicates removed.
+//
+// A clause that asks about an operation grounds READ, not the operation. The
+// semantic contract must agree with the router here: if "does this update
+// GitHub?" grounded MUTATE, semantic admission would consider a mutating call
+// permitted under a question.
 func groundingActions(text string) []contract.GroundingAction {
 	request := stripPoliteness(normalizeRequest(text))
 	if request == "" {
@@ -137,21 +142,25 @@ func groundingActions(text string) []contract.GroundingAction {
 		}
 		out = append(out, action)
 	}
-	for _, clause := range splitClauses(request) {
-		if negatedClause(clause) {
+	for _, entry := range requestClauses(request) {
+		if negatedClause(entry.text) {
 			// "Do not create it" constrains the request; it is not an action
 			// the model should perform.
 			continue
 		}
-		clause = stripNegatedTail(clause)
-		head := clauseHead(clause)
+		clauseText := stripNegatedTail(entry.text)
+		if entry.asked {
+			add(contract.GroundingRead)
+			continue
+		}
+		head := clauseHead(clauseText)
 		switch {
-		case headMatches(mutationHeads, head), containsPhrase(clause, mutationPhrases):
+		case headMatches(mutationHeads, head), containsPhrase(clauseText, mutationPhrases):
 			add(contract.GroundingMutate)
 		case headMatches(investigateHeads, head), groundingInvestigateHeads[head],
-			containsPhrase(clause, investigatePhrases):
+			containsPhrase(clauseText, investigatePhrases):
 			add(contract.GroundingInvestigate)
-		case headMatches(executeHeads, head), containsPhrase(clause, executePhrases):
+		case headMatches(executeHeads, head), containsPhrase(clauseText, executePhrases):
 			add(contract.GroundingExecute)
 		case headMatches(readHeads, head):
 			add(contract.GroundingRead)
