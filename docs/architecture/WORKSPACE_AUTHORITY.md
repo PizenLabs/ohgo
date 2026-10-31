@@ -66,11 +66,33 @@ question can carry execution intent and an imperative can be informational.
 | ------------- | ---------------------------------------------------------------- | ----------------- |
 | `READ`        | what is…, why does…, how does…, explain, describe, summarize, compare, what changed… | ASK |
 | `EXECUTE`     | implement, fix, modify, refactor, create, delete, apply, run, change… | BUILD |
-| `INVESTIGATE` | reproduce, stress, probe, try to break, find edge cases, benchmark, test failure modes… | FUZZ |
+| `INVESTIGATE` | reproduce, investigate, diagnose, troubleshoot, stress, probe, try to break, find edge cases, benchmark, test failure modes… | FUZZ |
 
 Classification is deterministic and small (`workspace.Classify`): no model, no
-embeddings, no intent model. It strips politeness wrappers, reads the leading
-verb, and matches a fixed phrase set.
+embeddings, no intent model. It strips politeness wrappers, splits the request
+into its clauses, reads each clause's head, and matches a fixed phrase set.
+
+**A question about an operation is not a request for it.** Before a clause can
+supply execution or mutation evidence, it must be a clause the user *asked for*.
+A clause is *asked* when it continues a question: the request opens with an
+interrogative head (`does`, `is`, `why`, `how`, `do`, `whether`, `if`, …), or a
+non-imperative clause carries a complement opener ("I want to ask if …"). A
+question continues through coordinated and alternative clauses until a new main
+clause begins at a comma boundary, so "if the tests fail, fix them" keeps its
+imperative while "does this run, or do I run it myself?" stays a question.
+
+The distinction is the difference between vocabulary and effect:
+
+```text
+"Does this automatically update GitHub, or do I have to run it manually?"  → READ
+"Update this repository on GitHub."                                        → EXECUTE
+```
+
+`update`, `run`, `build`, `commit`, and `GitHub` are not authority signals on
+their own. A verb only requests an effect in a clause that is not a question.
+The same rule governs `workspace.RequestsMutation` (the completion contract) and
+the grounding action extractor, so a question is never given a mutation
+objective that completion would then demand evidence for.
 
 **Ambiguity resolves downward.** A request the classifier cannot place becomes
 `READ`, the lowest-authority interpretation, so a misclassification can only

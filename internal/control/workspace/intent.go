@@ -128,7 +128,7 @@ func ClassifyPrediction(text string) Prediction {
 	if request == "" {
 		return Prediction{Intent: IntentRead, Strength: StrengthAmbiguous}
 	}
-	clauses := splitClauses(request)
+	clauses := requestClauses(request)
 
 	// The evidence each intent actually has, independent of precedence.
 	// A request is evaluated as a whole objective, not only by its first
@@ -139,12 +139,21 @@ func ClassifyPrediction(text string) Prediction {
 	// informational opener is not fabricated from a later noun phrase.
 	read := evidenceNone
 	if len(clauses) > 0 {
-		head := clauseHead(clauses[0])
-		if headMatches(readHeads, head) {
+		head := clauseHead(clauses[0].text)
+		switch {
+		case interrogativeHeads[head]:
+			// The request opens a question about an operation. Asking what
+			// something does is a request to understand it.
+			read = evidenceHead
+		case headMatches(readHeads, head):
 			read = evidenceHead
 			if headMatches(ambiguousReadHeads, head) {
 				read = evidencePhrase
 			}
+		case clauses[0].asked:
+			// A first-person question frame ("I want to ask if ...") carries
+			// no verb the classifier recognises, but it is still a question.
+			read = evidencePhrase
 		}
 	}
 	investigateHead := false
@@ -153,20 +162,30 @@ func ClassifyPrediction(text string) Prediction {
 	// read opener must not hide "inspect X and make sure Y": the phrase is the
 	// only mutation signal in that clause, so a head-only rule would drop it.
 	executeClause := false
-	for i, clause := range clauses {
-		token := clauseHead(clause)
+	// Only clauses that request an effect can supply imperative evidence. A
+	// verb inside a question describes what is being asked about, not what the
+	// runtime must do; treating it as an imperative is what escalated
+	// "does this update GitHub?" into BUILD authority.
+	var requested []string
+	for i, entry := range clauses {
+		if entry.asked {
+			continue
+		}
+		token := clauseHead(entry.text)
+		requested = append(requested, entry.text)
 		if headMatches(investigateHeads, token) {
 			investigateHead = true
 		}
 		if headMatches(executeHeads, token) {
 			executeHead = true
 		}
-		if i > 0 && !headMatches(readHeads, token) && containsPhrase(clause, executePhrases) {
+		if i > 0 && !headMatches(readHeads, token) && containsPhrase(entry.text, executePhrases) {
 			executeClause = true
 		}
 	}
-	investigate := phraseEvidence(investigateHead, containsPhrase(request, investigatePhrases))
-	execute := phraseEvidence(executeHead, containsPhrase(request, executePhrases) || executeClause)
+	requestedText := strings.Join(requested, " ")
+	investigate := phraseEvidence(investigateHead, containsPhrase(requestedText, investigatePhrases))
+	execute := phraseEvidence(executeHead, containsPhrase(requestedText, executePhrases) || executeClause)
 
 	// Precedence: investigate before execute (FUZZ is the lower authority
 	// when a request asks for both); an explicit mutation clause overrides a
@@ -434,10 +453,17 @@ func containsPhrase(text string, phrases []string) bool {
 }
 
 // politenessPrefixes are request wrappers stripped before classification.
+//
+// The question frames ("I want to ask", "I'd like to know") are wrappers too:
+// stripping them leaves the complement clause that carries the actual question,
+// so its interrogative head decides the effect. They never remove a request.
 var politenessPrefixes = []string{
 	"can you", "could you", "would you", "will you", "please",
 	"i want you to", "i'd like you to", "i would like you to",
 	"i need you to", "go ahead and", "help me",
+	"i want to ask", "i'd like to ask", "i would like to ask",
+	"i want to know", "i'd like to know", "i would like to know",
+	"i'm asking", "i am asking", "i was wondering", "i'm wondering", "i wonder",
 	"now", "then",
 }
 
@@ -473,6 +499,10 @@ var investigateHeads = map[string]bool{
 	"reproduce": true, "repro": true, "probe": true, "fuzz": true,
 	"stress": true, "benchmark": true, "challenge": true, "break": true,
 	"test": true, "attack": true, "exploit": true,
+	// Diagnostic verbs. "Investigate why this fails" asks for exploration, not
+	// for a repository change; mapping it to READ would let the runtime answer
+	// from configuration without ever observing the failure.
+	"investigate": true, "diagnose": true, "troubleshoot": true,
 }
 
 // executeHeads are leading verbs that ask for a change or a run. They map to
@@ -586,12 +616,18 @@ func RequestsMutation(text string) bool {
 	if request == "" {
 		return false
 	}
-	for _, clause := range splitClauses(request) {
-		head := clauseHead(clause)
+	for _, entry := range requestClauses(request) {
+		if entry.asked {
+			// A question about a change ("does this update GitHub?") does not
+			// request the change. Stating it as a mutation objective would make
+			// completion demand evidence the user never asked for.
+			continue
+		}
+		head := clauseHead(entry.text)
 		if headMatches(mutationHeads, head) {
 			return true
 		}
-		if !headMatches(readHeads, head) && containsPhrase(clause, mutationPhrases) {
+		if !headMatches(readHeads, head) && containsPhrase(entry.text, mutationPhrases) {
 			return true
 		}
 	}
@@ -646,35 +682,179 @@ func isVowel(r byte) bool {
 	return false
 }
 
-// splitClauses breaks a normalized request into its coordinated objectives so
-// a later mutation clause is visible even when the first clause is a
-// read/discovery verb. Splitting is deliberately limited to explicit
-// coordinators: a bare "and" inside a noun phrase is still a coordinator, but
-// subordination ("how to ...") is not split, so informational requests keep
-// their read opener.
-func splitClauses(request string) []string {
-	replaced := request
-	for _, sep := range []string{" and also ", " also ", " and ", " then ", " plus ", " & "} {
-		replaced = strings.ReplaceAll(replaced, sep, ",")
+// clause is one objective in a normalized request.
+//
+// Answering and requesting are different effects, so the text alone is not
+// enough: asked reports that the clause is part of a question or a condition
+// rather than a request. A verb in an asked clause describes what the user is
+// asking about; it is not evidence that the user asked the runtime to do it.
+type clause struct {
+	text  string
+	asked bool
+}
+
+// requestClauses splits a normalized request into its objectives and marks the
+// ones the user is asking about instead of asking for.
+//
+// The unit is the comma part, itself split on coordinators, because a comma is
+// the only boundary normalizeRequest preserves. A part that opens with a
+// coordinator ("or", "and", "but") continues the clause before it; any other
+// part starts a new main clause, which ends a question. That is what keeps
+// "if the tests fail, fix them" imperative while
+// "does this run, or do I run it myself?" stays a question.
+//
+// A question opens when the leading clause is interrogative or when a
+// non-imperative clause carries a complement opener ("I want to ask if ...").
+// It continues through coordinated and alternative parts until a new main
+// clause begins.
+func requestClauses(request string) []clause {
+	if strings.TrimSpace(request) == "" {
+		return nil
 	}
-	parts := strings.Split(replaced, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		// normalizeRequest has already removed the comma that " and then "
-		// would otherwise leave behind, so a sequencing word can survive as the
-		// clause's head and hide its verb ("inspect X and then add Y").
+	var out []clause
+	asked := false
+	for partIndex, part := range strings.Split(request, " , ") {
 		part = strings.TrimSpace(part)
-		for _, prefix := range []string{"then ", "also "} {
-			part = strings.TrimSpace(strings.TrimPrefix(part, prefix))
+		if part == "" {
+			continue
 		}
-		if part != "" {
-			out = append(out, part)
+		continues := partIndex > 0 && opensWithContinuation(part)
+		if continues {
+			// The coordinator belongs to the boundary, not to the clause: it
+			// must not survive as a clause head and hide the clause's verb
+			// ("review the package, and ensure it compiles").
+			part = stripLeadingCoordinator(part)
+		} else {
+			asked = false
+		}
+		for subIndex, sub := range coordinatedClauses(part) {
+			sub = strings.TrimSpace(sub)
+			if sub == "" {
+				continue
+			}
+			if subIndex == 0 && !continues {
+				asked = opensQuestion(sub)
+			}
+			out = append(out, clause{text: sub, asked: asked})
 		}
 	}
 	if len(out) == 0 {
-		return []string{request}
+		return []clause{{text: request}}
 	}
 	return out
+}
+
+// coordinatedClauses breaks one comma part into the clauses joined by an
+// explicit coordinator. A sequencing word left at the head of a clause is
+// dropped so "inspect X and then add Y" exposes "add Y" as the objective.
+func coordinatedClauses(part string) []string {
+	joined := part
+	for _, separator := range []string{" and also ", " also ", " and ", " then ", " plus ", " & "} {
+		joined = strings.ReplaceAll(joined, separator, " ,, ")
+	}
+	parts := strings.Split(joined, " ,, ")
+	out := make([]string, 0, len(parts))
+	for _, sub := range parts {
+		sub = strings.TrimSpace(sub)
+		for _, prefix := range []string{"then ", "also "} {
+			sub = strings.TrimSpace(strings.TrimPrefix(sub, prefix))
+		}
+		if sub != "" {
+			out = append(out, sub)
+		}
+	}
+	return out
+}
+
+// opensWithContinuation reports whether a comma part is joined to the clause
+// before it rather than starting a new main clause.
+func opensWithContinuation(part string) bool {
+	switch firstToken(part) {
+	case "or", "nor", "and", "but", "so", "yet":
+		return true
+	}
+	return false
+}
+
+// stripLeadingCoordinator removes the boundary word from a continuation part.
+func stripLeadingCoordinator(part string) string {
+	for _, coordinator := range []string{"or", "nor", "and", "but", "so", "yet"} {
+		if part == coordinator {
+			return ""
+		}
+		if strings.HasPrefix(part, coordinator+" ") {
+			return strings.TrimSpace(part[len(coordinator)+1:])
+		}
+	}
+	return part
+}
+
+// opensQuestion reports whether a clause frames what follows as something the
+// user is asking about rather than something they asked for.
+func opensQuestion(clause string) bool {
+	if interrogativeHeads[clauseHead(clause)] {
+		return true
+	}
+	// A clause that opens with a request verb is an instruction; an embedded
+	// "if" in it is a condition on the action, not the request's frame.
+	if requestsAction(clause) {
+		return false
+	}
+	return containsPhrase(clause, complementOpeners)
+}
+
+// requestsAction reports whether a clause opens with a form that asks the
+// runtime to do something.
+func requestsAction(clause string) bool {
+	head := clauseHead(clause)
+	if headMatches(readHeads, head) || headMatches(executeHeads, head) ||
+		headMatches(investigateHeads, head) {
+		return true
+	}
+	for _, phrase := range requestPhraseHeads {
+		if clause == phrase || strings.HasPrefix(clause, phrase+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// firstToken returns the first whitespace-delimited token of a normalized
+// clause.
+func firstToken(clause string) string {
+	fields := strings.Fields(clause)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+// complementOpeners introduce the thing a question is about. They are
+// load-bearing: without them "I want to ask if this runs" has no verb the
+// classifier recognises and would fall back to a workspace choice.
+var complementOpeners = []string{"if", "whether"}
+
+// requestPhraseHeads are multi-word request forms whose head token is not one of
+// the classifier's verbs.
+//
+// "see if" is a directive to determine something, not a question about the
+// world: the investigative phrase vocabulary already treats "see if it fails"
+// as a probe, so it must not be swallowed by the "if" complement opener.
+var requestPhraseHeads = []string{"make sure", "tidy up", "clean up", "see if", "see whether"}
+
+// interrogativeHeads are clause heads that open a question about an operation.
+// They are a subset of readHeads plus the auxiliaries that only appear in
+// questions ("do", "am") and the complement openers.
+var interrogativeHeads = map[string]bool{
+	"what": true, "what's": true, "whats": true,
+	"why": true, "why's": true,
+	"how": true, "how's": true,
+	"where": true, "where's": true,
+	"when": true, "which": true, "who": true, "who's": true, "whose": true,
+	"is": true, "are": true, "was": true, "were": true,
+	"does": true, "did": true, "do": true, "has": true, "have": true,
+	"can": true, "could": true, "would": true, "should": true, "will": true,
+	"am": true, "if": true, "whether": true,
 }
 
 // clauseHead skips command and discourse wrappers that do not change the

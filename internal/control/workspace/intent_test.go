@@ -1,6 +1,10 @@
 package workspace
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+)
 
 func TestClassifyReadsCapabilityNotGrammar(t *testing.T) {
 	// The classifier must key on the requested capability, not punctuation or
@@ -334,5 +338,120 @@ func TestRouteKeepsSelectedWorkspaceAndRefusesOnlyEscalation(t *testing.T) {
 	refused := RouteTurn(Fuzz, "fix it")
 	if refused.Allowed() || refused.Required != Build || refused.Message() == "" {
 		t.Errorf("FUZZ mutation was not refused with a BUILD boundary: %+v", refused)
+	}
+}
+
+// Questioning an operation is not requesting the operation. Mutation and
+// execution vocabulary inside an informational question must stay read-only:
+// otherwise the user is told to switch workspace and resend a question the
+// runtime could answer, and completion is asked to prove a change nobody
+// requested.
+func TestQuestionsAboutOperationsStayReadOnly(t *testing.T) {
+	cases := []string{
+		"I want to ask if this automatically runs and updates on GitHub, or if I have to run it manually.",
+		"Does this automatically update GitHub, or do I have to run it manually?",
+		"Does this workflow run automatically?",
+		"Does this update GitHub automatically?",
+		"Does this commit and push automatically?",
+		"How does the GitHub Actions workflow work?",
+		"Can you explain what this workflow does?",
+		"Why did this command modify the repository?",
+		"What does the build step do?",
+		"Is the release built automatically?",
+		"Do I need to run the tests?",
+		"Will this update the README?",
+	}
+	for _, text := range cases {
+		if got := Classify(text); got != IntentRead {
+			t.Errorf("Classify(%q) = %s, want %s", text, got, IntentRead)
+			continue
+		}
+		if RequestsMutation(text) {
+			t.Errorf("RequestsMutation(%q) = true, want false", text)
+		}
+		if kind := BuildIntentContract(text).Kind; kind != ObjectiveInformational {
+			t.Errorf("BuildIntentContract(%q).Kind = %s, want informational", text, kind)
+		}
+		// ASK holds the least authority that can answer a question, so the
+		// question must run there without a workspace change or a resend.
+		if route := RouteTurn(Ask, text); !route.Allowed() {
+			t.Errorf("RouteTurn(ASK, %q) = %+v, want allowed", text, route)
+		}
+		grounding := BuildIntentContract(text).Grounding
+		if grounding == nil || grounding.MutationIntent {
+			t.Errorf("grounding for %q requests a mutation: %+v", text, grounding)
+		}
+		if grounding != nil && grounding.Action != contract.GroundingRead {
+			t.Errorf("grounding action for %q = %s, want read", text, grounding.Action)
+		}
+	}
+}
+
+// Requests for the operation must still reach the authority that can perform
+// it. The question fix must not have turned an imperative into a question.
+func TestRequestsToOperateKeepTheirAuthority(t *testing.T) {
+	cases := []struct {
+		text   string
+		intent Intent
+		mutate bool
+	}{
+		{"Update this repository on GitHub.", IntentExecute, true},
+		{"Change the workflow.", IntentExecute, true},
+		{"Implement a fix.", IntentExecute, true},
+		{"Commit the changes.", IntentExecute, true},
+		{"Fix the failing test.", IntentExecute, true},
+		{"Run the tests and tell me whether they pass.", IntentExecute, false},
+		{"Investigate why the workflow failed.", IntentInvestigate, false},
+		{"Reproduce the workflow failure.", IntentInvestigate, false},
+		{"Investigate why this test is failing.", IntentInvestigate, false},
+	}
+	for _, tc := range cases {
+		if got := Classify(tc.text); got != tc.intent {
+			t.Errorf("Classify(%q) = %s, want %s", tc.text, got, tc.intent)
+		}
+		if got := RequestsMutation(tc.text); got != tc.mutate {
+			t.Errorf("RequestsMutation(%q) = %v, want %v", tc.text, got, tc.mutate)
+		}
+	}
+}
+
+// A conditional clause is asked about; the main clause after the comma is
+// requested. Swallowing the second half would silently drop the work.
+func TestConditionalKeepsTheMainClauseImperative(t *testing.T) {
+	for _, text := range []string{
+		"If the tests fail, fix them.",
+		"If the build is red, update the changelog.",
+		"When the check finishes, commit the change.",
+	} {
+		if got := Classify(text); got != IntentExecute {
+			t.Errorf("Classify(%q) = %s, want %s", text, got, IntentExecute)
+		}
+		if !RequestsMutation(text) {
+			t.Errorf("RequestsMutation(%q) = false, want true", text)
+		}
+	}
+}
+
+// The regression matrix from the runtime contract: the request's effect, not
+// its vocabulary, determines the minimum authority that can serve it.
+func TestIntentSelectsMinimumSufficientAuthority(t *testing.T) {
+	cases := []struct {
+		text string
+		want Workspace
+	}{
+		{"Explain what this workflow does.", Ask},
+		{"Does this workflow run automatically?", Ask},
+		{"Does this update GitHub automatically?", Ask},
+		{"Investigate why the workflow failed.", Fuzz},
+		{"Reproduce the workflow failure.", Fuzz},
+		{"Run the tests.", Build},
+		{"Change the workflow.", Build},
+		{"Implement a fix.", Build},
+		{"Commit the changes.", Build},
+	}
+	for _, tc := range cases {
+		if got := Classify(tc.text).Handler(); got != tc.want {
+			t.Errorf("Classify(%q).Handler() = %s, want %s", tc.text, got, tc.want)
+		}
 	}
 }

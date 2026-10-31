@@ -39,11 +39,18 @@ type runMetrics struct {
 
 	// Run identity and controlled variables. They are recorded for every
 	// result so a model-quality claim can be separated from a runtime effect.
-	Model              string    `json:"model,omitempty"`
-	Provider           string    `json:"provider,omitempty"`
-	ModelSettings      string    `json:"model_settings,omitempty"`
-	RuntimeMode        string    `json:"runtime_mode,omitempty"`
-	Authority          string    `json:"authority,omitempty"`
+	Model         string `json:"model,omitempty"`
+	Provider      string `json:"provider,omitempty"`
+	ModelSettings string `json:"model_settings,omitempty"`
+	RuntimeMode   string `json:"runtime_mode,omitempty"`
+	Authority     string `json:"authority,omitempty"`
+	// RoutedAuthority is the workspace the intent router selects for the
+	// prompt (READ→ASK, INVESTIGATE→FUZZ, EXECUTE→BUILD). It is the minimum
+	// authority that can serve the request's effect.
+	RoutedAuthority string `json:"routed_authority,omitempty"`
+	// AskRoute is what RouteTurn decides when the session is already in ASK:
+	// "allow" means the question needs no workspace switch.
+	AskRoute           string    `json:"ask_route,omitempty"`
 	TaskHash           string    `json:"task_hash,omitempty"`
 	Repository         string    `json:"repository,omitempty"`
 	RepositoryRevision string    `json:"repository_revision,omitempty"`

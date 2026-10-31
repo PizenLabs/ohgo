@@ -460,3 +460,53 @@ func TestEvaluateTaskCompletionRejectsScopeNarrowing(t *testing.T) {
 		t.Fatal("scope narrowing was reported complete")
 	}
 }
+
+// A local workflow file proves what is configured, never that a remote run
+// happened. An answer that converts local configuration into external fact is
+// the failure class this check exists for.
+func TestAssessGroundingRequiresAnObservationForExternalState(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective:  "Does this workflow run automatically?",
+		Action:     contract.GroundingRead,
+		Confidence: contract.GroundingConfidenceHigh,
+	})
+	localOnly := []Turn{{
+		Results: []ToolOutcome{{
+			ToolName: "read",
+			Args:     map[string]any{"path": ".github/workflows/telemetry.yml"},
+			Result:   Result{Text: "on:\n  schedule:\n    - cron: \"17 3 * * *\""},
+		}},
+		Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "reading"}}},
+	}}
+
+	claim := AssessGrounding(intent, localOnly, "The workflow ran successfully at 03:17 today and pushed the chart.")
+	if claim.Pass() {
+		t.Fatal("local configuration was accepted as proof that GitHub ran the workflow")
+	}
+
+	// A hedge in the same sentence is an epistemic report, not a claim, so the
+	// honest answer completes.
+	honest := AssessGrounding(intent, localOnly,
+		"The workflow is scheduled for 03:17 daily, but I cannot verify from here whether it ran today.")
+	if !honest.Pass() {
+		t.Fatalf("an honest uncertainty report was reviewed: %s", honest.Reason())
+	}
+
+	// A configuration sentence describes what can happen, not what did. The
+	// modal form is not a claim that the remote executed it.
+	configured := AssessGrounding(intent, localOnly,
+		"The workflow is set up to run on a schedule, and it can also be triggered by hand.")
+	if !configured.Pass() {
+		t.Fatalf("a configuration description was reviewed as an external claim: %s", configured.Reason())
+	}
+
+	// An observation of the remote surface is the evidence the claim needs.
+	observed := append(append([]Turn(nil), localOnly...), Turn{Results: []ToolOutcome{{
+		ToolName: "bash",
+		Args:     map[string]any{"command": "gh run list --workflow telemetry.yml --limit 1"},
+		Result:   Result{Text: "completed  success  telemetry  2026-10-31T03:17:00Z", Executes: true, Finished: true},
+	}}})
+	if verdict := AssessGrounding(intent, observed, "The workflow ran successfully at 03:17 today."); !verdict.Pass() {
+		t.Fatalf("an observed remote run was not accepted: %s", verdict.Reason())
+	}
+}

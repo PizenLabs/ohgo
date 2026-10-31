@@ -41,6 +41,32 @@ var (
 		`(?i)\b(?:the\s+task\s+is|the\s+objective\s+is|you\s+asked\s+me\s+to|you\s+want\s+me\s+to|i\s+was\s+asked\s+to)\b[^.\n]{0,100}`)
 	scopeNarrowPattern = regexp.MustCompile(
 		`(?i)\b(?:only|just)\b[^.\n]{0,40}\b(?:this|the|current)\s+(?:repository|repo|project|workspace)\b`)
+
+	// externalStatePattern matches an answer asserting that something happened
+	// outside the workspace: a CI run, a push, a deployment, or a publish.
+	// Present-tense configuration ("it runs on a schedule", "the job pushes
+	// telemetry.svg") describes what is configured, not what happened, so only
+	// completed-event words count as an assertion about external state. The verb
+	// is captured so a modal or configuration form ("can also be triggered")
+	// can be rejected before the claim is accepted.
+	externalStatePattern = regexp.MustCompile(
+		`(?i)\b(?:github|gitlab|bitbucket|ci|actions?|pipeline|workflow|deployment|release|origin|upstream|remote|server|production)\b[^.\n]{0,60}\b(ran|has run|already ran|executed|completed|succeeded|passed|triggered|pushed|deployed|published|went live)\b`)
+	externalPushPattern = regexp.MustCompile(
+		`(?i)\b(pushed|deployed|published)\b[^.\n]{0,40}\b(?:to|on|into)\s+(?:github|gitlab|bitbucket|origin|upstream|the remote|production|the server)\b`)
+	// modalEventPattern matches a modal or copular introduction to the captured
+	// verb. "can also be triggered" and "is triggered on a schedule" describe
+	// what is possible or configured; "was triggered at 03:17" is an event.
+	modalEventPattern = regexp.MustCompile(
+		`(?i)\b(?:can|could|may|might|will|would|should|must|is|are)\s+(?:also\s+|automatically\s+)?(?:be\s+)?$`)
+	// uncertaintyPattern marks an honest report about external state: the
+	// answer names the claim in order to say it cannot be established.
+	uncertaintyPattern = regexp.MustCompile(
+		`(?i)\b(?:cannot|can't|could not|couldn't|unable|not able|no evidence|not verified|unverified|unknown|not established|does not establish|whether|may have|might have|possibly|would need)\b`)
+	// remoteObservationPattern matches a command that actually talked to a
+	// remote surface. A successful result is the only local evidence that
+	// external state was observed rather than inferred.
+	remoteObservationPattern = regexp.MustCompile(
+		`(?i)\b(?:gh|git\s+push|git\s+ls-remote|git\s+fetch|git\s+remote|curl|wget|ssh|kubectl|terraform|aws|gcloud|az|docker\s+push|npm\s+publish|cargo\s+publish)\b`)
 )
 
 // ProposalForCall derives the model's concrete interpretation from trusted
@@ -181,6 +207,17 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 		add("scope_narrowed", "the answer narrows the request's named scope to the current repository")
 	}
 
+	// Evidence integrity: a conclusion about state outside the workspace needs
+	// an observation from outside the workspace. Local configuration proves
+	// what is configured, never that a remote run, push, or deployment
+	// happened.
+	if claims := externalClaims(answer); len(claims) > 0 {
+		if !collectGroundingCoverage(turns).external {
+			add("unsupported_external_state",
+				"the answer states external state the run never observed: "+claims[0])
+		}
+	}
+
 	// Evidence integrity: a negative conclusion must be earned by coverage
 	// that can actually establish absence.
 	if claims := negativeClaims(answer); len(claims) > 0 {
@@ -301,6 +338,86 @@ func claimContextIsGlobal(answer string, start, end int) bool {
 	return globalScopePattern.MatchString(answer[left:right])
 }
 
+// externalClaims returns the assertions an answer makes about state outside the
+// workspace. A sentence that names the claim only to report it as unverified
+// ("I cannot establish whether GitHub ran it") is an epistemic report, not a
+// claim, so it is not returned.
+func externalClaims(answer string) []string {
+	var out []string
+	consider := func(start, end int) {
+		if start < 0 || end <= start || end > len(answer) {
+			return
+		}
+		claim := strings.TrimSpace(answer[start:end])
+		if claim == "" {
+			return
+		}
+		if uncertaintyPattern.MatchString(claim) {
+			return
+		}
+		window := uncertaintyWindow(answer, start, end)
+		if uncertaintyPattern.MatchString(window) {
+			return
+		}
+		out = append(out, claim)
+	}
+	for _, pattern := range []*regexp.Regexp{externalStatePattern, externalPushPattern} {
+		for _, match := range pattern.FindAllStringSubmatchIndex(answer, -1) {
+			// Group 1 is the captured event verb. A modal or configuration form
+			// before it describes possibility, not a completed event.
+			if len(match) >= 4 && descriptiveEventForm(answer, match[2]) {
+				continue
+			}
+			consider(match[0], match[1])
+		}
+	}
+	return out
+}
+
+// descriptiveEventForm reports whether the event verb at position is introduced
+// by a modal or a configuration phrase, so the sentence describes what can or
+// should happen rather than what did happen.
+func descriptiveEventForm(answer string, verbStart int) bool {
+	const lookback = 64
+	start := verbStart - lookback
+	if start < 0 {
+		start = 0
+	}
+	before := strings.ToLower(answer[start:verbStart])
+	// Only the immediate clause matters: an earlier sentence's "can" must not
+	// excuse a later event claim.
+	if cut := strings.LastIndexAny(before, ".;,\n"); cut >= 0 {
+		before = before[cut+1:]
+	}
+	if modalEventPattern.MatchString(before) {
+		return true
+	}
+	for _, marker := range []string{
+		"set up to", "configured to", "scheduled to", "allows", "able to",
+		"capable of", "designed to",
+	} {
+		if strings.Contains(before, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// uncertaintyWindow returns the sentence around a claim, so a hedge in the same
+// sentence ("the workflow may have run, but not verified") is seen even when
+// the matched span is short.
+func uncertaintyWindow(answer string, start, end int) string {
+	left := start
+	for left > 0 && !strings.ContainsRune(".!?\n", rune(answer[left-1])) {
+		left--
+	}
+	right := end
+	for right < len(answer) && !strings.ContainsRune(".!?\n", rune(answer[right])) {
+		right++
+	}
+	return answer[left:right]
+}
+
 // cleanClaimSubject trims a captured negative subject to the thing named,
 // without swallowing a qualifier into the claim.
 func cleanClaimSubject(value string) string {
@@ -323,6 +440,10 @@ type groundingCoverage struct {
 	globPatterns []string
 	// rootListing is a complete listing of the repository root.
 	rootListing bool
+	// external reports a successful observation of a remote surface: a
+	// knowledge call, or a command that talked to a remote (a remote check, a
+	// push, an API call).
+	external bool
 }
 
 // supports reports whether the coverage can establish absence of claim.
@@ -387,6 +508,9 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 			if outcome.Result.IsError || outcome.Refused() {
 				continue
 			}
+			if observedExternal(outcome) {
+				coverage.external = true
+			}
 			text := strings.ToLower(outcome.Result.Text)
 			complete := !strings.Contains(text, "truncated") &&
 				!strings.Contains(text, "showing ") &&
@@ -409,6 +533,23 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 		}
 	}
 	return coverage
+}
+
+// observedExternal reports whether one successful outcome saw a remote surface.
+//
+// The decision is made from trusted metadata and arguments, never from the
+// model's narration: a knowledge tool is external by capability, and a shell
+// command is external only when the command it ran names a remote operation.
+func observedExternal(outcome ToolOutcome) bool {
+	switch outcome.ToolName {
+	case "web_fetch", "search", "browser":
+		return true
+	}
+	if strings.HasPrefix(outcome.ToolName, "mcp_") {
+		return true
+	}
+	command := proposalArgString(outcome.Args, "command")
+	return remoteObservationPattern.MatchString(command)
 }
 
 // proposalArgString reads a string argument without panicking on another type.

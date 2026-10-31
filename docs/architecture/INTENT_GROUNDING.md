@@ -116,6 +116,13 @@ request action = unknown
     + external access     → REVIEW
 ```
 
+A clause that asks about an operation grounds `read`, not the operation. The
+extractor works on the same clause model as the router: mutation, execution, and
+investigation vocabulary inside a question ("does this update GitHub?") is
+descriptive, so it cannot ground a mutation or an execution. Without that rule a
+read-only question would carry a mutation objective, and completion would wait
+for a change nobody requested.
+
 A read under an actionless request is allowed because evidence gathering is
 low-impact. It cannot become the objective: an answer that narrates an action
 the request never asked for is reviewed, and the request's action remains
@@ -155,12 +162,24 @@ local directory listing        ≠ repository-wide absence
 complete recursive file scan   → may prove a concrete file is absent
 file absence                   ≠ concept absence
 search returned nothing        ≠ concept does not exist
+local configuration            ≠ external state
 ```
 
 A supported file absence (for example a complete `glob "**/*"` with no
 `README.md`) can complete. A concept claim (“no documentation”, “no tests”)
 cannot be proven by a file scan and stays `NEEDS_REVIEW`. An answer that only
 reports “I could not find …” is an unverified negative result, not completion.
+
+A **local configuration** claim is different again from an **external state**
+claim. A workflow file proves what is configured: the schedule, the trigger, the
+command the job runs. It does not prove that the remote executed it. An answer
+that turns local evidence into a remote fact ("the workflow ran successfully
+today", "it was deployed", "the release is published") is reviewed unless the
+run observed the remote surface itself: a knowledge call, an MCP capability, or
+a command that talked to a remote (`gh`, `git push`, `git ls-remote`, `curl`,
+`ssh`, a cloud CLI). A sentence that names the claim only to report it as
+unverified ("I cannot establish whether it ran") is an epistemic report, not a
+claim, and completes.
 
 ### 4.6 Completion integrity
 
@@ -224,6 +243,14 @@ request path.
 - The answer check is English-pattern based. A paraphrased global conclusion
   outside the patterns is not detected; the structural completion rules still
   apply.
+- The external-state check matches event vocabulary near a remote or CI subject.
+  A descriptive sentence it cannot classify as configuration ("the release is
+  published by CI") may be reviewed, and a remote observation proves only that
+  the run talked to a remote, not that the specific claim is true. Both
+  directions can only downgrade completion.
+- The evidence gate requires a content-bearing observation, not a relevant one.
+  It can establish that the run looked at the repository; it cannot judge whether
+  the file it read answers the question.
 - `$sup` is not an automatic escalation path.
 - The layer narrows action space and completion; it does not make a wrong but
   verified change semantically correct.

@@ -5,6 +5,45 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- Evidence benchmark suite (`go run ./bench/phase9 -suite evidence`): the five
+  runtime requirement tasks plus the authority regression matrix, measured with
+  the real router, security gate, evidence projector, and completion evaluator.
+  It records routed authority, the ASK route decision, withheld exploration,
+  duplicate reads, tokens, and answer facts, and runs scripted or against a
+  live provider (`-live-model`, including a local Ollama model).
+- External-state claim review: an answer that turns local configuration into a
+  remote fact ("the workflow ran today", "it was pushed", "the release is
+  published") is `NEEDS_REVIEW` unless the run observed the remote surface
+  through a knowledge call, an MCP capability, or a command that talked to a
+  remote. A sentence that names the claim to report it as unverified is not a
+  claim and completes.
+- Evidence-aware stop: after a run's first observation turn, once a completed
+  turn observes the repository without adding a new fact, the next request for
+  an informational objective is offered no tools and the state block explains
+  why. The decision is derived from the turn's evidence gain, never from a
+  tool-call count, so a model that is still learning is never cut off.
+- Questions about this repository's behaviour ("does this workflow run
+  automatically?") now declare a `repository_overview` need, satisfied only by a
+  content-bearing observation. A listing or an answer from memory is
+  `NEEDS_REVIEW`, not `COMPLETED`.
+
+### Fixed
+
+- Authority admission no longer escalates an informational question that
+  contains execution or mutation vocabulary. "I want to ask if this
+  automatically runs and updates on GitHub, or if I have to run it manually"
+  classifies as READ and runs in ASK: a clause inside a question is not a
+  request, and the same clause model governs the mutation contract and the
+  grounding action extraction.
+- "Investigate …", "diagnose …", and "troubleshoot …" now classify as
+  INVESTIGATE (FUZZ) instead of falling back to READ.
+- Hosting and product names ("GitHub") are no longer extracted as code symbol
+  targets, so a request that mentions one no longer demands impossible
+  index evidence. "Implement the fix for this failing test" is recognised as a
+  behavioural objective whose success condition is the test suite.
+
 ## [v0.0.3] - 2026-10-29
 
 ### Added

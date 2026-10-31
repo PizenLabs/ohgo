@@ -179,6 +179,33 @@ user's request before execution and the evidence the runtime observed.
   Graph traversal checks cancellation every 256 edge inspections and returns
   the context error, never a truncated success.
 
+### Evidence sufficiency and the exploration stop
+
+The projector (`control/cognition`) maintains what the runtime knows, not what
+the model said. Two properties keep the loop honest and small:
+
+- **Required knowledge is derived from the request.** A question about this
+  repository's behaviour ("does this workflow run automatically?") declares a
+  `repository_overview` need, satisfied only by a content-bearing observation: a
+  file read, a search that returned content, or a structural query. A directory
+  listing is structure, not an answer. The final projection's sufficiency
+  verdict vetoes completion, so a model that answers without observing the
+  repository is `NEEDS_REVIEW`, not `COMPLETED`. A general knowledge question
+  declares no such need.
+- **The stop is evidence-driven, not a call budget.** After the run's first
+  observation turn, a completed turn that observed the repository but added no
+  new fact has no evidence gain left: for an informational objective the next
+  request is for the answer, so the projector withholds every remaining tool and
+  records why. A turn that learned something — including a different window of
+  the same file — keeps the full surface. Errors, refusals, and generic tool
+  output are control signals, so a model that is correcting itself is never
+  mistaken for one that is repeating itself. Change objectives are exempt: their
+  next action is the change, not another observation.
+
+Budgets remain safety bounds, never the reason a run concludes. A weaker model
+may therefore spend more turns reaching the same evidence; the stop follows the
+evidence, not the model.
+
 ## Subagents
 
 Delegation is the one capability that creates another agent, so isolation

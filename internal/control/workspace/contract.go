@@ -446,11 +446,23 @@ func mentionsCheck(text string) bool {
 
 // behavioralMutationObjective reports that the request's success condition is
 // a check rather than a named repository coordinate.
+//
+// The vocabulary is the request's own way of naming a check as the outcome:
+// "make the tests pass", "fix the failing test", "implement the fix for this
+// failing test". A mutation whose success condition is a failing test can be
+// verified without guessing a file, so it must not be reported as ambiguous.
 func behavioralMutationObjective(text string) bool {
 	normalized := " " + normalizeRequest(text) + " "
 	for _, phrase := range []string{
 		"fix the failing tests", "fix the failing test", "fix failing tests",
 		"fix the tests", "fix the test", "fix tests", "fix the build",
+		"fix this failing test", "fix this failing tests", "fix that failing test",
+		"fix the failing suite", "fix the failing build",
+		"implement the fix for this failing test", "implement the fix for the failing test",
+		"implement the fix for this failing tests", "implement the fix for the failing tests",
+		"implement the fix for the failing build", "implement the fix for this failing build",
+		"implement the fix for this broken test", "resolve the failing test",
+		"resolve the failing tests",
 		"make the tests pass", "make tests pass", "make the test pass",
 		"get the tests passing", "get tests passing", "get the test passing",
 		"so the tests pass", "so tests pass", "so the test passes",
@@ -596,7 +608,10 @@ var packageStopWords = map[string]bool{
 	"six": true, "seven": true, "eight": true, "nine": true, "ten": true,
 }
 
-// symbolStopWords are English words that happen to look like identifiers.
+// symbolStopWords are English words and product names that happen to look like
+// identifiers. A hosting platform or product named in a request is a location
+// or context, not a repository coordinate: demanding an index hit for "GitHub"
+// would make the evidence requirement impossible to satisfy.
 var symbolStopWords = map[string]bool{
 	"a": true, "an": true, "the": true, "this": true, "that": true,
 	"add": true, "apply": true, "build": true, "change": true, "check": true,
@@ -611,6 +626,9 @@ var symbolStopWords = map[string]bool{
 	"ok": true, "cli": true, "tui": true, "api": true, "url": true,
 	"json": true, "http": true, "https": true, "id": true, "ast": true,
 	"sse": true, "ui": true, "ai": true,
+	"github": true, "gitlab": true, "bitbucket": true, "npm": true, "pypi": true,
+	"dockerhub": true, "openai": true, "anthropic": true, "google": true,
+	"microsoft": true, "amazon": true, "aws": true, "azure": true, "gcp": true,
 }
 
 // extractSymbolTargets returns Go symbols the user named unambiguously:

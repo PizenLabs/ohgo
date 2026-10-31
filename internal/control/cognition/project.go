@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
@@ -85,6 +86,11 @@ type Projector struct {
 	Facts RepositoryFacts
 	// Options bounds the projection.
 	Options ProjectorOptions
+	// stopped records that the run reached the evidence-aware stop. Once a
+	// completed turn observed the repository without adding a fact, the next
+	// request is for the answer; re-offering tools would let a model spend
+	// turns on exploration that cannot change the conclusion.
+	stopped bool
 }
 
 // NewProjector returns a projector for one turn.
@@ -111,7 +117,7 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	shape.Budget.TurnsUsed += len(req.Turns)
 	shape.Budget.ToolCallsUsed += executionToolCalls(req.Turns)
 
-	p.Evidence.ObserveTurns(shape, req.Turns)
+	observed, novel := p.Evidence.ObserveTurns(shape, req.Turns)
 	execution := SummarizeExecution(req.Turns)
 	// Sufficiency is an evidence verdict, not a resource verdict. Budget
 	// exhaustion withholds tools (Candidates checks it directly), but a
@@ -119,6 +125,21 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// because the grant ran out at the closing answer.
 	suff := EvaluateSufficiency(shape, p.Evidence, execution, false)
 	candidates := Candidates(shape, p.Evidence, execution, req.Tools, p.Facts, suff)
+
+	// Evidence-aware stop: an informational objective is an answer, and an
+	// observation turn that added no fact has nothing left to contribute to it.
+	// The first turn of a run is not judged: a model may be re-establishing
+	// context from persisted evidence, and that is not a wasted turn. After
+	// that, the decision uses the last turn's evidence gain, never a call count,
+	// so a model that is still learning is never cut off. A change objective is
+	// exempt because its next action is the change itself, not another probe.
+	if !p.stopped && shape.Kind == contract.ObjectiveInformational &&
+		len(req.Turns) > 1 && observed > 0 && novel == 0 {
+		p.stopped = true
+	}
+	if p.stopped {
+		candidates = withholdExploration(candidates)
+	}
 
 	messages, report := projectMessages(req.Messages, p.Evidence, options)
 	state := RenderState(shape, p.Evidence, execution, suff, candidates,

@@ -19,8 +19,8 @@ import (
 
 func main() {
 	scenarioID := flag.String("scenario", "all", "scenario id, category, or all")
-	suite := flag.String("suite", "phase9", "scenario suite: phase9 or phase10")
-	mode := flag.String("projection", "off", "projection mode: off (control) or state (cognitive)")
+	suite := flag.String("suite", "phase9", "scenario suite: phase9, phase10, or evidence")
+	mode := flag.String("projection", "off", "projection mode: off (control) or state (cognitive); the evidence suite always projects")
 	outPath := flag.String("out", "", "write the JSON result to this path")
 	asJSON := flag.Bool("json", false, "print JSON instead of a table")
 	liveRef := flag.String("live-model", "", "run the matrix with a real provider/model reference")
@@ -61,8 +61,10 @@ func main() {
 	case "phase9":
 	case "phase10":
 		selected = phase10Matrix()
+	case "evidence":
+		selected = evidenceMatrix()
 	default:
-		fmt.Fprintf(os.Stderr, "phase9: unknown suite %q (want phase9 or phase10)\n", *suite)
+		fmt.Fprintf(os.Stderr, "phase9: unknown suite %q (want phase9, phase10, or evidence)\n", *suite)
 		os.Exit(2)
 	}
 	if *scenarioID != "all" {
@@ -81,11 +83,20 @@ func main() {
 
 	results := make([]runMetrics, 0, len(selected))
 	failures := 0
+	// The evidence suite's subject is the evidence lifecycle, so its projection
+	// arm is not optional: a live run must measure the same runtime the scripted
+	// arm does.
+	projectionMode := *mode
+	if *suite == "evidence" {
+		projectionMode = "state"
+	}
 	for _, sc := range selected {
 		var metrics runMetrics
 		var err error
 		if *liveRef != "" {
-			metrics, err = runLiveScenarioWithOptions(context.Background(), sc, live, *mode, options)
+			metrics, err = runLiveScenarioWithOptions(context.Background(), sc, live, projectionMode, options)
+		} else if *suite == "evidence" {
+			metrics, err = runEvidenceScenario(context.Background(), sc)
 		} else {
 			metrics, err = runScenario(context.Background(), sc, *mode)
 		}
@@ -97,8 +108,14 @@ func main() {
 		// A live model's failure is benchmark data, not a harness error. The
 		// scripted matrix is the controlled contract and must meet every
 		// expectation.
-		if *liveRef == "" && !expectationMet(sc.Expect, metrics) {
-			failures++
+		if *liveRef == "" {
+			met := expectationMet(sc.Expect, metrics)
+			if *suite == "evidence" {
+				met = met && evidenceMet(sc.Expect, metrics)
+			}
+			if !met {
+				failures++
+			}
 		}
 		results = append(results, metrics)
 	}
@@ -117,6 +134,8 @@ func main() {
 	if *asJSON {
 		encoded, _ := json.MarshalIndent(results, "", "  ")
 		fmt.Println(string(encoded))
+	} else if *suite == "evidence" {
+		printEvidenceTable(results)
 	} else if *liveRef != "" {
 		for _, result := range results {
 			fmt.Println(liveSummary(result))
