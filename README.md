@@ -90,13 +90,32 @@ it is done. ohgo is built around the opposite contract.
 ### Prebuilt release
 
 ```sh
-# Replace vX.Y.Z with the latest release tag.
-OHGO_VERSION=vX.Y.Z sh install.sh
+curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh | sh
 ```
 
-The script selects the tarball for your OS and architecture, verifies nothing
-is guessed about the install prefix, installs to `$PREFIX/bin` (default
-`/usr/local/bin`), and runs `ohgo version` as a smoke test.
+The script resolves the latest stable release, selects the tarball for your OS
+and architecture, and verifies it against the published `sha256sums.txt`
+before installing. It installs to `$PREFIX/bin` (default `$HOME/.local/bin`,
+already on a typical PATH) and runs `ohgo version` as a smoke test.
+
+Pin a release tag, or choose another prefix:
+
+```sh
+# Pin a release tag.
+curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh \
+  | OHGO_VERSION=vX.Y.Z sh
+
+# Install somewhere else.
+curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh \
+  | PREFIX="$HOME/bin" sh
+```
+
+For a system-wide install, run the script as root with the system prefix:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh \
+  | sudo env PREFIX=/usr/local sh
+```
 
 ### From source
 

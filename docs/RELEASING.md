@@ -301,7 +301,10 @@ so real machine state is untouched:
 Then check the published surface:
 
 - [ ] The GitHub release has all four archives and `sha256sums.txt`.
-- [ ] `install.sh` installs the new tag and `ohgo version` reports it.
+- [ ] `install.sh` installs the new tag and `ohgo version` reports it, both
+      with `OHGO_VERSION=<tag>` and through the default latest-resolution path.
+- [ ] A corrupted archive fails checksum verification before any existing
+      `ohgo` binary is replaced.
 - [ ] `ohgo update --check` sees the new tag from the previous release.
 - [ ] Updating from the previous release produces exactly one pending notice.
 - [ ] The next interactive launch shows What's New and acknowledges it once.
