@@ -37,20 +37,43 @@ jobs:
       issues: write
     env:
       # Prefer the bot identity when configured; fall back to the workflow token
-      # so the reviewer still works before the PAT exists.
+      # so the reviewer still works before the PAT exists. The bot token is a
+      # *preference*, not a requirement: a fine-grained PAT without `Issues:
+      # write` returns 403 on every write call, so each write below retries with
+      # WORKFLOW_TOKEN, which always carries the `issues: write` grant declared
+      # for this job. A mis-scoped PAT must never discard a finished review.
       GH_TOKEN: ${{ secrets.OHGO_GITHUB_TOKEN || github.token }}
+      WORKFLOW_TOKEN: ${{ github.token }}
     steps:
       - name: Acknowledge command
         uses: actions/github-script@v9
         with:
           github-token: ${{ env.GH_TOKEN }}
           script: |
-            await github.rest.reactions.createForIssueComment({
+            const params = {
               owner: context.repo.owner,
               repo: context.repo.repo,
               comment_id: context.payload.comment.id,
               content: 'eyes'
-            });
+            };
+            // Acknowledgement is cosmetic. Fall back to the workflow token on a
+            // permission error, and warn rather than abort the review if even
+            // that fails: the API quota should be spent on the review itself.
+            try {
+              try {
+                await github.rest.reactions.createForIssueComment(params);
+              } catch (error) {
+                if ((error.status !== 403 && error.status !== 404) ||
+                    process.env.GH_TOKEN === process.env.WORKFLOW_TOKEN) {
+                  throw error;
+                }
+                core.warning(`Bot token cannot react to the comment (${error.status}); retrying with the workflow token.`);
+                await getOctokit(process.env.WORKFLOW_TOKEN)
+                  .rest.reactions.createForIssueComment(params);
+              }
+            } catch (error) {
+              core.warning(`Could not add the eyes reaction: ${error.message}`);
+            }
 
       - name: Checkout trusted reviewer
         # No `ref`: the default-branch checkout is the point. See the contract
@@ -100,9 +123,23 @@ jobs:
               core.warning('Reviewer produced an empty comment; skipping post.');
               return;
             }
-            await github.rest.issues.createComment({
+            const params = {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
               body
-            });
+            };
+            try {
+              await github.rest.issues.createComment(params);
+            } catch (error) {
+              // A review that already cost API quota must not be lost to a
+              // token-scope problem. The workflow token can always write; the
+              // only cost is losing the bot identity.
+              if ((error.status !== 403 && error.status !== 404) ||
+                  process.env.GH_TOKEN === process.env.WORKFLOW_TOKEN) {
+                throw error;
+              }
+              core.warning(`Bot token cannot post comments (${error.status}); posting with the workflow token instead. Grant OHGO_GITHUB_TOKEN the \`Issues: write\` permission to restore the ohgo identity.`);
+              await getOctokit(process.env.WORKFLOW_TOKEN)
+                .rest.issues.createComment(params);
+            }
