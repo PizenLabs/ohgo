@@ -1557,6 +1557,14 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if msg.Type == tea.KeySpace {
 				text = " "
 			}
+			// Space is the reader's jump to latest: while detached with an
+			// idle composer, it re-engages the live edge instead of starting
+			// the next prompt with a blank. Any draft keeps it literal, so
+			// prose is never stolen. The scrolled-up marker advertises it.
+			if msg.Type == tea.KeySpace && p.live == nil && !p.state.Follow && wheelScrolls(p.state) {
+				p.state.Apply(ScrollToBottom{})
+				return p, nil
+			}
 			// "?" on an empty composer opens contextual help from the
 			// authoritative registry. While composing it stays literal:
 			// help must never steal a question mark being typed.

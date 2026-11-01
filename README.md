@@ -387,8 +387,8 @@ The transcript keeps stable block identities, computes visual rows at the
 current width, and slices only the rows on screen. Scrolling never rewrites
 terminal scrollback and never moves the cursor into history. New output follows
 the bottom while you are at the live edge; scrolling up detaches and pins the
-block you are reading, so streaming does not steal the viewport. `end` (or
-scrolling back down) reattaches.
+block you are reading, so streaming does not steal the viewport. `space` (with
+an idle composer), `end`, or scrolling back down reattaches.
 
 Pointer behaviour follows the `--mouse` setting:
 
@@ -409,10 +409,11 @@ only; it never reruns a tool, reads the repository, or changes authority.
 Shortcuts that are shown always work: `enter` send (queues while busy),
 `alt+enter`/`ctrl+j` insert a break, `↑` recalls history on a single line,
 `pgup`/`pgdn` scroll, `home` jumps to the transcript top while the composer is
-idle, `end` returns to the live edge, `esc` cancels a turn (never quits),
-`ctrl+c` cancels when busy, clears a non-empty draft, or points at the exit
-chords when idle, `ctrl+d` on an empty composer quits. Approval dialogs default
-to the conservative choice; closing, cancelling, or resizing never approves.
+idle, `space` (with an idle composer) or `end` returns to the live edge, `esc`
+cancels a turn (never quits), `ctrl+c` cancels when busy, clears a non-empty
+draft, or points at the exit chords when idle, `ctrl+d` on an empty composer
+quits. Approval dialogs default to the conservative choice; closing, cancelling,
+or resizing never approves.
 
 On an empty conversation the workspace shows a short welcome — identity, one
 invitation to describe a task, and at most three examples — as chrome, never as

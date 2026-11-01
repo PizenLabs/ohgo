@@ -72,8 +72,10 @@ func renderTranscriptArea(sb *strings.Builder, state State, pal *Palette, layout
 		if above < 1 {
 			above = 1
 		}
-		marker := "↑ " + strconv.Itoa(above) + " lines above — end to follow"
-		sb.WriteString(pal.Muted.Render(TruncateToWidth(marker, displayWidth(state, layout))) + "\n")
+		marker := pal.Muted.Render("↑ "+strconv.Itoa(above)+" lines above — ") +
+			pal.Bold.Render("space") +
+			pal.Muted.Render(": jump to latest")
+		sb.WriteString(TruncateToWidth(marker, displayWidth(state, layout)) + "\n")
 		budget--
 	}
 	rows := frame.index.Rows(frame.vp.Offset, budget)

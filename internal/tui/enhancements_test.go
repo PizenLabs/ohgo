@@ -90,6 +90,61 @@ func TestEndKeyReengagesFollowOnlyWhenScrolledUp(t *testing.T) {
 	}
 }
 
+// Space is the reader's one-key return to the live edge. After scrolling to
+// the transcript top the viewport is detached; with an idle composer the key
+// is not text, so it must jump rather than insert a leading blank into the
+// next prompt.
+func TestSpaceReturnsToLiveEdgeWhenScrolledUp(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 80, Height: 24})
+	p.state.Apply(ScrollMoved{Delta: 10000})
+	if p.state.Follow {
+		t.Fatal("scroll did not detach the transcript")
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeySpace})
+	if p.state.Scroll != 0 || !p.state.Follow {
+		t.Errorf("Scroll = %d Follow = %v, want the live edge back", p.state.Scroll, p.state.Follow)
+	}
+	if p.state.Input != "" {
+		t.Errorf("space jumped to the bottom but also typed %q", p.state.Input)
+	}
+}
+
+// A draft keeps space literal even while the reader had scrolled up: the
+// viewport must never eat a character the user is composing.
+func TestSpaceStaysLiteralWhileComposing(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 80, Height: 24})
+	p.state.Apply(ComposerChanged{Text: "ab", Cursor: 2})
+	p.state.Apply(ScrollMoved{Delta: 10})
+	keyPress(p, tea.KeyMsg{Type: tea.KeySpace})
+	if p.state.Input != "ab " {
+		t.Errorf("input = %q, want the space inserted", p.state.Input)
+	}
+	if p.state.Follow {
+		t.Error("typing must not reattach the transcript")
+	}
+}
+
+// The scrolled-up marker is the discovery surface for the jump binding: a
+// reader who scrolled away from the live edge must be told which key returns,
+// with the key itself standing out from the caption.
+func TestScrolledUpMarkerAdvertisesSpaceJump(t *testing.T) {
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 10})
+	for i := 0; i < 10; i++ {
+		s.Apply(Notice{Text: "older"})
+	}
+	s.Apply(ScrollMoved{Delta: 4})
+	out := Render(s)
+	if plain := ansi.Strip(out); !strings.Contains(plain, "space: jump to latest") {
+		t.Errorf("scrolled-up marker does not advertise the space jump:\n%s", plain)
+	}
+	if !strings.Contains(out, DarkPalette().Bold.Render("space")) {
+		t.Errorf("scrolled-up marker does not highlight the space key:\n%q", out)
+	}
+}
+
 // Header hierarchy is a colour contract: each level must resolve to its own
 // forest step in both themes so depth reads without parsing markers.
 
