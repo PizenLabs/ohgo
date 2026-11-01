@@ -1,0 +1,78 @@
+name: ohgo On-Demand Reviewer
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  review:
+    # Only execute if the comment is on a PR and contains '/ohgo review'
+    if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/ohgo review')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      # Step 1: React to the trigger comment with an eyes emoji
+      - name: Acknowledge Command
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.OHGO_GITHUB_TOKEN }}
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+      # Step 2: Fetch PR details to obtain git ref
+      - name: Fetch PR Details
+        id: pr_details
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('head_ref', pr.data.head.sha);
+            core.setOutput('base_ref', pr.data.base.sha);
+
+      # Step 3: Checkout repo code
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.pr_details.outputs.head_ref }}
+
+      # Step 4: Extract minimal diff
+      - name: Extract PR Diff
+        run: |
+          git diff ${{ steps.pr_details.outputs.base_ref }}...${{ steps.pr_details.outputs.head_ref }} > pr.diff
+
+      # Step 5: Run review script using free Gemini API
+      - name: Generate Review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 .github/scripts/review.py pr.diff > review_comment.md
+
+      # Step 6: Post comment under ohgo bot handle
+      - name: Post Comment as ohgo
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.OHGO_GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const commentBody = fs.readFileSync('review_comment.md', 'utf8');
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
