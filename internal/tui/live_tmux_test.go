@@ -116,6 +116,10 @@ func TestLiveSessionInsideTmux(t *testing.T) {
 	send("Enter")
 	waitFor("Session boundary inspection", 20*time.Second)
 	waitFor("sessionCheck", 20*time.Second)
+	// sessionCheck lands mid-answer. Reading the pane before the last line
+	// arrives would assert on a partial transcript, which on a slower host
+	// either leaves the table out of history or the closing line off screen.
+	waitFor("Closing line.", 20*time.Second)
 
 	// The transcript has to be in tmux's own history, not just on screen:
 	// scrolling back must still show the first line of the answer.
@@ -152,6 +156,9 @@ func TestLiveSessionInsideTmux(t *testing.T) {
 	waitFor("Do you want to proceed?", 20*time.Second)
 	send("y")
 	waitFor("demo tool finished", 20*time.Second)
+	// The outcome line precedes the follow-up answer; assertNothingPaintedTwice
+	// below requires that answer to have landed, so wait for it here.
+	waitFor("tool ran and the answer", 20*time.Second)
 
 	send("/status")
 	send("Enter")
