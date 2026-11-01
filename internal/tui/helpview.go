@@ -115,6 +115,7 @@ type ShortcutSpec struct {
 var Keybindings = []ShortcutSpec{
 	{Keys: "↑ / ↓", Description: "Move the selection, or recall prompt history.", Category: ShortcutGroupNavigation},
 	{Keys: "PgUp / PgDn", Description: "Scroll the transcript or page a list.", Category: ShortcutGroupNavigation},
+	{Keys: "Space", Description: "Return to the live edge when scrolled up.", Category: ShortcutGroupNavigation},
 	{Keys: "Home / End", Description: "Jump to the first or last row, or the line edge.", Category: ShortcutGroupNavigation},
 	{Keys: "Ctrl+O", Description: "Expand or collapse the latest activity block.", Category: ShortcutGroupNavigation},
 	{Keys: "Tab / Shift+Tab", Description: "Switch between the Commands and Shortcuts views.", Category: ShortcutGroupNavigation},

@@ -7,6 +7,10 @@ immutable.
 
 ### Added
 
+- `space` in the full-screen transcript returns to the live edge when the
+  composer is idle and the view is scrolled up, so a reader inspecting earlier
+  activity can jump back to the latest line with one key. The scrolled-up marker
+  advertises it, and a non-empty draft keeps space literal.
 - One-line install: `curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh | sh`
   resolves the latest stable release (or a pinned `OHGO_VERSION`), verifies
   the tarball against the published `sha256sums.txt`, smoke-tests the binary,
