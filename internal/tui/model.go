@@ -129,6 +129,11 @@ type ToolEntry struct {
 	Summary string
 	// Text is the outcome, set when the call finishes.
 	Text string
+	// Diff is the canonical unified diff a mutation tool reported, when the
+	// outcome carried one. It is copy material, never rendered in the
+	// transcript, so /copy can offer the actual change even when the model's
+	// prose does not repeat it.
+	Diff string
 	// StartedAt and EndedAt bound execution, for the duration display.
 	StartedAt time.Time
 	EndedAt   time.Time
@@ -834,6 +839,7 @@ func (s *State) Apply(event Event) {
 		// says what it produced.
 		tool.Summary = e.Summary
 		tool.Text = e.Text
+		tool.Diff = e.Diff
 		tool.Truncated = e.Truncated
 		if e.IsError {
 			tool.Status = ToolError
@@ -2477,9 +2483,13 @@ func (ToolPreview) eventKind() string { return "tool_preview" }
 // or truncated. IsError keeps success and failure distinct without
 // re-deriving it from the text.
 type ToolFinished struct {
-	ID        string
-	Text      string
-	Summary   string
+	ID      string
+	Text    string
+	Summary string
+	// Diff is the canonical unified diff from a mutation result, when the
+	// tool produced one. It never enters the rendered outcome; /copy uses it
+	// as the fallback for a code-edit turn whose prose contains no diff.
+	Diff      string
 	IsError   bool
 	Truncated bool
 	At        time.Time
@@ -3325,6 +3335,10 @@ var Commands = []CommandSpec{
 	{Name: "undo", Usage: "undo", Description: "revert the last agent edit", Category: CommandGroupControl},
 	{Name: "redo", Usage: "redo", Description: "restore an undone agent edit", Category: CommandGroupControl},
 	{Name: "retry", Usage: "retry", Description: "re-send the last prompt", Category: CommandGroupControl},
+	{Name: "copy", Usage: "copy [-a|--all|-c|--context]", Description: "copy the latest answer, all of it, or the session context", Category: CommandGroupControl, Subcommands: []CommandSubcommand{
+		{Usage: "-a", Description: "copy the entire latest answer (alias --all)"},
+		{Usage: "-c", Description: "copy the active session context (alias --context)"},
+	}},
 	{Name: "compact", Usage: "compact", Description: "summarise context now", Category: CommandGroupControl},
 	{Name: "quit", Usage: "quit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
 	{Name: "exit", Usage: "exit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},

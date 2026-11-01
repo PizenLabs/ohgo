@@ -32,6 +32,11 @@ import (
 func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) error {
 	reader := bufio.NewReader(in)
 	pending := ""
+	// lastEditDiff is the canonical diff from the previous turn's mutation
+	// tools. It is the fallback /copy uses when an edit turn's prose does not
+	// repeat the change, and it is replaced at every turn boundary so a later
+	// answer never inherits an earlier edit.
+	lastEditDiff := ""
 	for {
 		// A background release observation only ever becomes visible at a
 		// prompt boundary, never in the middle of a line the user is typing.
@@ -69,6 +74,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				continue
 			case "clear":
 				history = nil
+				lastEditDiff = ""
 				_, _ = fmt.Fprintln(out, "Transcript cleared.")
 				continue
 			case "model":
@@ -138,6 +144,9 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				}
 				pending = last
 				continue
+			case "copy":
+				copyREPL(out, history, lastEditDiff, command.Args)
+				continue
 			case "compact":
 				compacted, summary, err := h.CompactHistory(context.Background(), history)
 				if err != nil {
@@ -190,6 +199,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				}
 				history = nil
 				h.sess = &sess
+				lastEditDiff = ""
 				_, _ = fmt.Fprintf(out, "started new session %d\n", sess.ID)
 				continue
 			case "resume":
@@ -208,6 +218,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 					continue
 				}
 				history = relayed
+				lastEditDiff = ""
 				_, _ = fmt.Fprintln(out, notice)
 				continue
 			case "undo":
@@ -326,6 +337,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		// still real conversation: keeping it lets the next prompt continue
 		// from what the model actually saw.
 		history = rebaseHistory(request, turns)
+		lastEditDiff = toolDiffs(turns)
 	}
 }
 
@@ -402,6 +414,76 @@ func rotateReplHistory(path string) error {
 	}
 	tail := strings.Join(lines[len(lines)-replHistoryMaxLines:], "\n") + "\n"
 	return os.WriteFile(path, []byte(tail), 0o644)
+}
+
+// copyREPL serves /copy in the plain REPL through the same extraction and the
+// same OSC 52 transport as the full-screen command.
+//
+// The REPL has no transcript entries, so the latest answer is derived from
+// history. A missing transport is reported rather than printing the payload:
+// /copy promises the clipboard, and a terminal that cannot accept OSC 52 must
+// not look like it did.
+func copyREPL(out io.Writer, history []agent.Message, editDiff string, args []string) {
+	mode, err := tui.ParseCopyMode(args)
+	if err != nil {
+		_, _ = fmt.Fprintln(out, err)
+		return
+	}
+
+	var payload string
+	var kind tui.CopyKind
+	if mode == tui.CopyModeContext {
+		payload, kind = tui.ContextTranscript(history), tui.CopyKindContext
+		if payload == "" {
+			_, _ = fmt.Fprintln(out, "nothing to copy: the session context is empty")
+			return
+		}
+	} else {
+		response, ok := tui.LatestResponse(history)
+		if !ok && editDiff == "" {
+			_, _ = fmt.Fprintln(out, "nothing to copy: no response yet")
+			return
+		}
+		payload, kind, ok = tui.CopyPayload(mode, response, editDiff)
+		if !ok {
+			_, _ = fmt.Fprintln(out, "nothing to copy: the response is empty")
+			return
+		}
+	}
+
+	encode := tui.ClipboardForEnv(os.Getenv("TERM"), os.Getenv("TMUX"), os.Getenv("OHGO_CLIPBOARD"))
+	if encode == nil {
+		_, _ = fmt.Fprintln(out, "clipboard is unavailable: OSC 52 needs a terminal (OHGO_CLIPBOARD=off disables it)")
+		return
+	}
+	sequence := encode(payload)
+	if sequence == "" {
+		_, _ = fmt.Fprintln(out, "copy: the terminal did not accept the clipboard payload")
+		return
+	}
+	if _, err := io.WriteString(out, sequence); err != nil {
+		_, _ = fmt.Fprintf(out, "copy: %v\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(out, "Copied %s.\n", kind)
+}
+
+// toolDiffs joins the canonical mutation diffs from one turn. A duplicate is
+// dropped so a retried identical edit does not paste the same hunk twice.
+func toolDiffs(turns []agent.Turn) string {
+	var diffs []string
+	seen := map[string]bool{}
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			diff := strings.TrimSpace(tui.MutationDiff(outcome.Result.Details))
+			if diff == "" || seen[diff] {
+				continue
+			}
+			seen[diff] = true
+			diffs = append(diffs, diff)
+		}
+	}
+	return strings.Join(diffs, "\n")
 }
 
 // rebaseHistory rebuilds the running history after one turn.

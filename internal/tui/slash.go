@@ -209,7 +209,14 @@ func filterCommands(query string) []CommandSpec {
 
 // commandEntries builds the "/" palette rows for a query. current names the
 // workspace whose command carries the "· current" marker.
+//
+// A fully typed command also reveals its documented argument forms. The
+// registry already names them for help; showing the same rows here makes a
+// command with flags discoverable before the user commits to Enter. Only the
+// literal first token of a usage is offered ("inspect", not "inspect
+// <server>"), so accepting a row leaves the cursor ready for the argument.
 func commandEntries(query, current string) []paletteEntry {
+	filter := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(query)), "/")
 	var out []paletteEntry
 	for _, spec := range filterCommands(query) {
 		desc := spec.Description
@@ -228,8 +235,36 @@ func commandEntries(query, current string) []paletteEntry {
 			Insert: "/" + spec.Name + " ",
 			Group:  groupOf(spec),
 		})
+		if !strings.EqualFold(filter, spec.Name) {
+			continue
+		}
+		for _, sub := range spec.Subcommands {
+			word := subcommandWord(sub.Usage)
+			if word == "" {
+				continue
+			}
+			out = append(out, paletteEntry{
+				Name:   "/" + spec.Name + " " + word,
+				Detail: sub.Description,
+				Insert: "/" + spec.Name + " " + word + " ",
+				Group:  groupOf(spec),
+			})
+		}
 	}
 	return out
+}
+
+// subcommandWord returns the literal token a subcommand row inserts. A usage
+// such as "inspect <server>" contributes "inspect"; a placeholder belongs to
+// the argument the user is about to type, not to the completion.
+func subcommandWord(usage string) string {
+	for _, field := range strings.Fields(usage) {
+		if strings.HasPrefix(field, "<") || strings.HasPrefix(field, "[") || strings.HasPrefix(field, "(") {
+			continue
+		}
+		return field
+	}
+	return ""
 }
 
 // fileEntries builds the "@" palette rows for a query. Prefix matches rank
