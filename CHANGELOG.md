@@ -7,6 +7,11 @@ immutable.
 
 ### Added
 
+- One-line install: `curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh | sh`
+  resolves the latest stable release (or a pinned `OHGO_VERSION`), verifies
+  the tarball against the published `sha256sums.txt`, smoke-tests the binary,
+  and installs into `$HOME/.local/bin` by default. A mismatched checksum or
+  version leaves an existing installation untouched.
 - `/copy` in both interfaces: the default copies the most valuable part of the
   latest answer (its largest code block, else a unified diff from the answer or
   the turn's mutation tools, else the whole text) without fences; `-a`/`--all`
