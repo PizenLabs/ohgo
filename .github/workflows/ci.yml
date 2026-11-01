@@ -8,33 +8,95 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   check:
-    name: test, vet, and lint
+    name: build, vet, and test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+      - name: Check formatting
+        # AGENTS.md requires `gofmt -l .` to be empty. The repository uses the
+        # toolchain's gofmt, not a pinned third-party formatter, so a newer Go
+        # release may legitimately reformat and surface here first.
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            printf 'gofmt required for:\n%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./...
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test -v ./...
+        # -shuffle guards the full-suite safety rule in AGENTS.md: no test may
+        # depend on a previous file having run first.
+        run: go test -shuffle=on -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Upload coverage
+        # Coverage is optional: forks receive no secrets and an unconfigured
+        # repository has no token. The token stays scoped to this step so a test
+        # binary from a PR cannot read it. `continue-on-error` keeps a missing or
+        # misconfigured token from failing an otherwise green run.
+        continue-on-error: true
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.out
+          fail_ci_if_error: false
+
+  race:
+    name: race detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Separate job: the race build is ~4x slower, and a data race should not
+      # hide the ordinary test result behind it.
+      - name: Test with race detector
+        run: go test -race -shuffle=on ./...
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned so a linter release cannot turn an unrelated PR red. The
+          # configuration lives in .golangci.yml (schema version "2").
+          version: v2.15.0
           # The action injects the `run` subcommand itself; `args` must be the
           # flags/packages only. Passing `run ./...` here yields
           # `golangci-lint run run ./...`, which treats `run` as a package path.

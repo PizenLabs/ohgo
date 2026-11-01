@@ -58,13 +58,15 @@ make lint     # golangci-lint
 
 ## Before you open a pull request
 
-All four checks must pass:
+All of these must pass:
 
 ```sh
 go build ./...
 go test ./...
 go vet ./...
+go test -race ./...
 gofmt -l .          # must print nothing
+golangci-lint run ./...
 ```
 
 `go test ./...` must be full-suite safe. Never leave global mutable state,

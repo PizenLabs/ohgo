@@ -1,12 +1,9 @@
-# Funding options for ohgo.
-# Uncomment and fill in the handle(s) for the platforms you use. GitHub only
-# reads the keys listed here, so leave unused platforms commented out.
-#
-# Founder PizenLabs
- github: [PizenLabs]
- open_collective: pizenlabs
+# Funding options for ohgo. GitHub only reads the keys listed here, so leave
+# unused platforms commented out. Each active key must name an account that
+# actually exists, otherwise GitHub renders a broken sponsor button.
+github: [PizenLabs]
+open_collective: pizenlabs
 # patreon: # Replace with a single Patreon username
-# open_collective: # Replace with a single Open Collective name
 # ko_fi: # Replace with a single Ko-fi username
 # tidelift: # Replace with a single Tidelift platform-name/package-name
 # community_bridge: # Replace with a single Community Bridge project name

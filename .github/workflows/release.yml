@@ -16,14 +16,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  # Keyed by the release being published, not by github.ref: a manual dispatch
+  # runs on a branch ref, so keying by ref would serialise unrelated tags.
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   verify:
     name: verify release tree
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
@@ -33,7 +35,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Verify tag, version files, and formatting
+      - name: Verify tag, version files, formatting, and tests
         env:
           VERSION: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
@@ -42,6 +44,9 @@ jobs:
           test -z "$(gofmt -l .)"
           ./scripts/update-version.sh --check
           go build ./...
+          # The release is the last place a regression is cheap to stop: CI
+          # gated main, but the tag may point somewhere CI never saw.
+          go test ./...
 
   build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -113,3 +118,7 @@ jobs:
             dist/sha256sums.txt
           fail_on_unmatched_files: true
           generate_release_notes: true
+          # A suffixed tag is a prerelease. Publishing it as stable would make
+          # /releases/latest point at a build the updater refuses to install, so
+          # install.sh would resolve to something ohgo itself rejects.
+          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}

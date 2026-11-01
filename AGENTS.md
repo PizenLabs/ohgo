@@ -22,7 +22,7 @@ gofmt -l .          # must be empty
 golangci-lint run ./...
 ```
 
-Run all five before declaring work done. `go test ./...` must be full-suite
+Run all six before declaring work done. `go test ./...` must be full-suite
 safe: never leave global mutable state, `os.Chdir`, or an un-restored
 `t.Setenv` that can leak into another file's tests.
 

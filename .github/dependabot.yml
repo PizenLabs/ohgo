@@ -1,12 +1,47 @@
 version: 2
+
+# Weekly dependency updates, one grouped PR per ecosystem so a routine week
+# produces two reviewable diffs instead of one PR per module.
 updates:
   - package-ecosystem: gomod
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Etc/UTC"
     open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "build(deps)"
+    # Patch and minor bumps arrive together; every major bump keeps its own PR
+    # because a major needs the CHANGELOG and API review that a group hides.
+    groups:
+      go-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Etc/UTC"
     open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci(actions)"
+    # Action majors are usually a runtime bump (node20 -> node24) applied to
+    # every workflow at once; a group keeps the tree consistent.
+    groups:
+      actions:
+        patterns:
+          - "*"
