@@ -5,6 +5,8 @@ immutable.
 
 ## [Unreleased]
 
+## [v0.0.4] - 2026-11-02
+
 ### Added
 
 - `space` in the full-screen transcript returns to the live edge when the
