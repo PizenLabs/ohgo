@@ -786,11 +786,7 @@ func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOptio
 	// OSC 52 is the only clipboard transport. A dumb terminal or an explicit
 	// opt-out disables it; the copy is then a no-op rather than a spawned
 	// process or a false success.
-	term := os.Getenv("TERM")
-	if ClipboardAvailable(term) && !strings.EqualFold(os.Getenv("OHGO_CLIPBOARD"), "off") {
-		tmux := os.Getenv("TMUX") != ""
-		p.clipboard = func(text string) string { return OSC52SequenceFor(text, tmux, term) }
-	}
+	p.clipboard = ClipboardForEnv(os.Getenv("TERM"), os.Getenv("TMUX"), os.Getenv("OHGO_CLIPBOARD"))
 	return p
 }
 
@@ -1636,14 +1632,18 @@ func (p *Program) acceptPalette() (tea.Model, tea.Cmd) {
 	if !ok {
 		return p, nil
 	}
+	cur := ClampPaletteCursor(p.state.PaletteCursor, len(entries))
 	if trigger == paletteCommand {
 		if command, ok := ParseCommand(strings.TrimSpace(p.state.Input)); ok {
-			if _, known := LookupCommand(command.Name); known && len(command.Args) == 0 {
+			// Only the parent row runs the command. A subcommand row
+			// completes its form instead, so choosing "-a" cannot dispatch
+			// the bare command and silently ignore the selection.
+			if _, known := LookupCommand(command.Name); known && len(command.Args) == 0 &&
+				entries[cur].Name == "/"+command.Name {
 				return p, p.runCommand(command)
 			}
 		}
 	}
-	cur := ClampPaletteCursor(p.state.PaletteCursor, len(entries))
 	text, cursor := SpliceToken(p.state.Input, start, end, entries[cur].Insert)
 	p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 	// Hide until the next keystroke: the spliced token still holds the cursor,
@@ -1810,6 +1810,9 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	case "retry":
 		return p.retryLast()
+
+	case "copy":
+		return p.copyCommand(command.Args)
 
 	case "compact":
 		return p.compactNow()
@@ -4538,6 +4541,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				ID:        progress.CallID,
 				Text:      text,
 				Summary:   CompactResultSummary(progress.Result.Text, progress.Result.IsError),
+				Diff:      MutationDiff(progress.Result.Details),
 				IsError:   progress.Result.IsError,
 				Truncated: truncated,
 				At:        time.Now(),

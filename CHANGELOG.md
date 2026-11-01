@@ -7,6 +7,13 @@ immutable.
 
 ### Added
 
+- `/copy` in both interfaces: the default copies the most valuable part of the
+  latest answer (its largest code block, else a unified diff from the answer or
+  the turn's mutation tools, else the whole text) without fences; `-a`/`--all`
+  keeps the explanation and every code block, and `-c`/`--context` copies the
+  conversation context for transfer to another tool. The copy travels over the
+  existing OSC 52 transport, and a terminal that cannot accept it is reported
+  rather than claiming success.
 - Evidence benchmark suite (`go run ./bench/phase9 -suite evidence`): the five
   runtime requirement tasks plus the authority regression matrix, measured with
   the real router, security gate, evidence projector, and completion evaluator.

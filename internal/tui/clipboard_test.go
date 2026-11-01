@@ -61,6 +61,24 @@ func TestClipboardAvailability(t *testing.T) {
 	}
 }
 
+// Both interfaces resolve the transport through ClipboardForEnv, so the opt-out
+// and the tmux packaging cannot differ between the full-screen UI and the REPL.
+func TestClipboardForEnvResolvesTransport(t *testing.T) {
+	if ClipboardForEnv("dumb", "", "") != nil {
+		t.Fatal("a dumb terminal resolved a clipboard transport")
+	}
+	if ClipboardForEnv("xterm-256color", "", "off") != nil {
+		t.Fatal("OHGO_CLIPBOARD=off resolved a clipboard transport")
+	}
+	encode := ClipboardForEnv("xterm-256color", "/tmp/tmux-1000/default", "")
+	if encode == nil {
+		t.Fatal("a capable terminal resolved no transport")
+	}
+	if got, want := encode("hi"), OSC52Sequence("hi"); got != want {
+		t.Fatalf("inside tmux sequence = %q, want raw %q", got, want)
+	}
+}
+
 // In the default selection mode the terminal owns drag-copy. If a mouse event
 // still arrives, the application must not build a competing selection.
 func TestSelectionModeIgnoresPointerDrags(t *testing.T) {

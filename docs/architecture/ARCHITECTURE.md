@@ -431,7 +431,15 @@ approval, shutting down) are computed per render, never stored.
   highlighting. Copy projects plain text; no renderer artifact can enter it.
 - `internal/tui/clipboard.go`: OSC 52 framing (plain, tmux DCS passthrough, screen
   chunking), Base64 encoding, and capability gating. No external clipboard
-  process is spawned.
+  process is spawned. Both the full-screen UI and the plain REPL resolve the
+  transport through `ClipboardForEnv`, so the same terminal writes the same
+  bytes in either interface.
+- `internal/tui/copycommand.go`: `/copy` extraction. The smart default selects
+  the latest answer's largest fenced body, a unified diff from the answer or the
+  turn's mutation tools, or the whole text in that order; `-a` keeps the answer
+  verbatim and `-c` renders the conversation context. The extraction functions
+  are pure and never touch the transport, so a failed copy cannot look like a
+  success.
 - `internal/tui/mouse_selection.go`: screen cell → visible frame row → `BlockID` +
   local row + column. Click toggles presentation state; drag updates the
   selection; release copies through OSC 52. Never maps a mouse Y to a

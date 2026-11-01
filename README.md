@@ -261,6 +261,7 @@ ohgo version
 /doctor /diff [target]                  setup diagnosis, diff inspector
 /mcp [list|inspect|refresh]             MCP servers and capabilities
 /undo /redo                             revert or restore the last agent edit
+/copy [-a|--all|-c|--context]          copy the latest answer or its context
 /retry /compact /quit
 ```
 

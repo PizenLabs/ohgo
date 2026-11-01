@@ -453,6 +453,10 @@ type helpItem struct {
 	Usage string
 	// Command is the dispatch word for a command row, empty for a shortcut.
 	Command string
+	// Args are the literal arguments a subcommand row dispatches. Placeholder
+	// forms such as "<server>" are not included: they are for the user to
+	// supply, not for the row to invent.
+	Args []string
 }
 
 // commandItems normalizes command specs into roster rows.
@@ -468,9 +472,14 @@ func commandItems(specs []CommandSpec) []helpItem {
 			Command:     spec.Name,
 		})
 		for _, sub := range spec.Subcommands {
-			// A subcommand row names one argument form. Choosing it runs the
-			// parent command: there is no second dispatch table, and opening
-			// the manager is the safe action for every MCP form.
+			// A subcommand row names one argument form and dispatches that
+			// form. The parent is the fallback when the usage has no literal
+			// token (only a placeholder), so a row still runs something
+			// meaningful.
+			var args []string
+			if word := subcommandWord(sub.Usage); word != "" {
+				args = []string{word}
+			}
 			out = append(out, helpItem{
 				Name:        spec.Name,
 				Prefix:      "/",
@@ -478,6 +487,7 @@ func commandItems(specs []CommandSpec) []helpItem {
 				Description: sub.Description,
 				Usage:       sub.Usage,
 				Command:     spec.Name,
+				Args:        args,
 			})
 		}
 	}
@@ -1082,5 +1092,5 @@ func (p *Program) chooseHelpRow() (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	p.state.Apply(InputChanged{Text: ""})
-	return p, p.runCommand(Command{Name: item.Command, Raw: "/" + item.Command})
+	return p, p.runCommand(Command{Name: item.Command, Args: item.Args, Raw: "/" + item.Command})
 }

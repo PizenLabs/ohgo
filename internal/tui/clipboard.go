@@ -81,3 +81,20 @@ func ClipboardAvailable(term string) bool {
 	}
 	return true
 }
+
+// ClipboardForEnv resolves the clipboard encoder for a terminal environment.
+//
+// The full-screen program and the plain REPL share this one resolver, so the
+// same terminal writes the same bytes in either interface. A nil encoder means
+// OSC 52 is unavailable or explicitly disabled; callers must say so rather than
+// claim a copy happened.
+func ClipboardForEnv(term, tmuxEnv, optOut string) func(string) string {
+	if strings.EqualFold(strings.TrimSpace(optOut), "off") {
+		return nil
+	}
+	if !ClipboardAvailable(term) {
+		return nil
+	}
+	tmux := strings.TrimSpace(tmuxEnv) != ""
+	return func(text string) string { return OSC52SequenceFor(text, tmux, term) }
+}
