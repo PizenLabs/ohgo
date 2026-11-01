@@ -271,12 +271,18 @@ git push origin vX.Y.Z
 ```
 
 The tag starts `.github/workflows/release.yml`. Its verification job checks the
-tag against `VERSION`, the version markers, and formatting; then an
-`ubuntu-latest` matrix runs `scripts/release-target.sh` once per target with
-`CGO_ENABLED=0` and native `GOOS`/`GOARCH` cross-compilation; the final job
-writes `sha256sums.txt` and publishes the four tarballs with generated GitHub
-release notes. Every job runs on `ubuntu-latest`, so the release never consumes
-a paid macOS or Windows runner.
+tag against `VERSION`, the version markers, formatting, and the full test
+suite; then an `ubuntu-latest` matrix runs `scripts/release-target.sh` once per
+target with `CGO_ENABLED=0` and native `GOOS`/`GOARCH` cross-compilation; the
+final job writes `sha256sums.txt` and publishes the four tarballs with generated
+GitHub release notes. Every job runs on `ubuntu-latest`, so the release never
+consumes a paid macOS or Windows runner.
+
+A tag with a prerelease suffix (for example `v1.0.0-rc1`) is published with the
+GitHub prerelease flag. That keeps `/releases/latest`, and therefore
+`install.sh`, resolving to the last stable release: the updater rejects
+prereleases, so a prerelease marked stable would strand new installs on a build
+the client refuses to update from.
 
 To rebuild and republish an existing tag without creating a new one, run the
 workflow manually with that tag as the `tag` input. `CHANGELOG.md` remains the

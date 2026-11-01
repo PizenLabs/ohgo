@@ -5,7 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Keep it to one idea per issue. The TypeScript original is the contract authority — note any divergence there.
+        Keep it to one idea per issue. The current Go implementation and the
+        canonical architecture documents define the contract — describe the
+        observable behaviour you want, not only the implementation.
   - type: textarea
     id: problem
     attributes:

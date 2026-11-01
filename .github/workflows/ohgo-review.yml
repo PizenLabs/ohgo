@@ -1,25 +1,49 @@
 name: ohgo On-Demand Reviewer
 
+# Triggered by a `/ohgo review` comment on a pull request.
+#
+# Security contract: this workflow runs with repository secrets and write
+# permissions while its input is attacker-controlled (the PR diff). The code it
+# executes must therefore always come from the default branch, never from the PR
+# head. The PR head is fetched purely as *data* to diff against and is never
+# checked out, so a fork cannot modify `.github/scripts/review.py` and have it
+# run with `GEMINI_API_KEY` and the bot token in the environment.
 on:
   issue_comment:
     types: [created]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ohgo-review-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
-    # Only execute if the comment is on a PR and contains '/ohgo review'
-    if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/ohgo review')
+    # Only a PR comment from someone with write access may spend the API quota
+    # and post as the bot. Without the association gate any drive-by commenter
+    # could trigger reviews. Closed PRs are skipped because their
+    # `refs/pull/<n>/head` ref no longer exists to diff against.
+    if: >-
+      github.event.issue.pull_request != null &&
+      github.event.issue.state == 'open' &&
+      contains(github.event.comment.body, '/ohgo review') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
-      pull-requests: write
       issues: write
-
+    env:
+      # Prefer the bot identity when configured; fall back to the workflow token
+      # so the reviewer still works before the PAT exists.
+      GH_TOKEN: ${{ secrets.OHGO_GITHUB_TOKEN || github.token }}
     steps:
-      # Step 1: React to the trigger comment with an eyes emoji
-      - name: Acknowledge Command
-        uses: actions/github-script@v7
+      - name: Acknowledge command
+        uses: actions/github-script@v9
         with:
-          github-token: ${{ secrets.OHGO_GITHUB_TOKEN }}
+          github-token: ${{ env.GH_TOKEN }}
           script: |
             await github.rest.reactions.createForIssueComment({
               owner: context.repo.owner,
@@ -28,51 +52,57 @@ jobs:
               content: 'eyes'
             });
 
-      # Step 2: Fetch PR details to obtain git ref
-      - name: Fetch PR Details
-        id: pr_details
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number
-            });
-            core.setOutput('head_ref', pr.data.head.sha);
-            core.setOutput('base_ref', pr.data.base.sha);
-
-      # Step 3: Checkout repo code
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - name: Checkout trusted reviewer
+        # No `ref`: the default-branch checkout is the point. See the contract
+        # comment at the top of this file. Credentials stay persisted because
+        # the next step fetches the PR head from the same origin; the job token
+        # is `contents: read`, so it cannot push.
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ steps.pr_details.outputs.head_ref }}
 
-      # Step 4: Extract minimal diff
-      - name: Extract PR Diff
+      - name: Extract PR diff
+        # SHAs are hex, but they still reach the shell through env rather than
+        # through `${{ }}` interpolation so no expression value is ever parsed
+        # as shell syntax.
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+          BASE_REF: ${{ github.event.repository.default_branch }}
         run: |
-          git diff ${{ steps.pr_details.outputs.base_ref }}...${{ steps.pr_details.outputs.head_ref }} > pr.diff
+          set -eu
+          test "$(git rev-parse --is-shallow-repository)" = "false"
+          git fetch --no-tags origin "pull/${PR_NUMBER}/head:refs/remotes/origin/pr-head"
+          git merge-base "origin/${BASE_REF}" origin/pr-head
+          git diff --no-color "origin/${BASE_REF}...origin/pr-head" > pr.diff
+          wc -l pr.diff
 
-      # Step 5: Run review script using free Gemini API
-      - name: Generate Review
+      - name: Generate review
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        # A missing key is a configuration error, not a quota event: fail loudly
+        # instead of posting an "offline mode" table on every PR.
         run: |
+          set -eu
+          test -n "${GEMINI_API_KEY:-}" || {
+            echo "GEMINI_API_KEY is not configured for this repository." >&2
+            exit 1
+          }
           python3 .github/scripts/review.py pr.diff > review_comment.md
 
-      # Step 6: Post comment under ohgo bot handle
-      - name: Post Comment as ohgo
-        uses: actions/github-script@v7
+      - name: Post comment as ohgo
+        uses: actions/github-script@v9
         with:
-          github-token: ${{ secrets.OHGO_GITHUB_TOKEN }}
+          github-token: ${{ env.GH_TOKEN }}
           script: |
             const fs = require('fs');
-            const commentBody = fs.readFileSync('review_comment.md', 'utf8');
-            
+            const body = fs.readFileSync('review_comment.md', 'utf8').trim();
+            if (!body) {
+              core.warning('Reviewer produced an empty comment; skipping post.');
+              return;
+            }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: commentBody
+              body
             });
