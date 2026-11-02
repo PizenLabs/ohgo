@@ -10,6 +10,11 @@
 // The package is domain and persistence only. It never executes anything, never
 // talks to a provider, and never grants authority: every method here records
 // state, and state is evidence, not permission.
+//
+// A Task also owns the role-independent shared context (verified facts,
+// hypotheses, task-linked evidence, questions) and each role's execution
+// context. Those records are additive to the checkpoint and carry their own
+// schema version; see context.go.
 package task
 
 import (
@@ -22,6 +27,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 )
 
 // Status is where a task is in its lifecycle.
@@ -138,12 +144,32 @@ type Task struct {
 	Todos []Todo `json:"todos,omitempty"`
 	// ActiveStep is a one-line description of the current step.
 	ActiveStep string `json:"activeStep,omitempty"`
-	// Findings are things learned that outlive a single turn.
+	// Findings are legacy, unclassified notes. They are deliberately not
+	// verified facts: use RecordFact for evidence-backed knowledge and
+	// RecordHypothesis for proposals. They are retained so older checkpoints
+	// and projections keep loading.
 	Findings []string `json:"findings,omitempty"`
 	// NextAction is what should happen next, for orientation after a resume.
 	NextAction string `json:"nextAction,omitempty"`
 	// Status is the lifecycle position.
 	Status Status `json:"status"`
+	// Context is the structured, role-independent task knowledge plus each
+	// role's execution context. It is additive to the checkpoint and carries
+	// its own schema version.
+	Context SharedContext `json:"context,omitempty"`
+	// ActiveRole is the execution role the task last ran under. It is
+	// continuity metadata, never authority: the turn gate uses it to tell a
+	// role change on the same objective from a new request. It is additive and
+	// optional; a task written before it existed derives the same value from
+	// its role contexts.
+	ActiveRole workspace.Workspace `json:"activeRole,omitempty"`
+	// CreatedAt is when the task identity was minted. It never changes.
+	CreatedAt time.Time `json:"createdAt,omitempty"`
+	// ContextWarning reports that structured context was absent, refused, or
+	// repaired on load. It is diagnostic only, never persisted, and never
+	// authority: it exists so the runtime can expose incomplete continuity
+	// instead of silently fabricating it.
+	ContextWarning string `json:"-"`
 	// Contract is the completion contract the task was started under. It is
 	// authoritative across resumes: a later prompt cannot silently replace it,
 	// and completion evaluates the new turn's evidence against this contract.
@@ -183,6 +209,9 @@ func (t Task) Validate() error {
 	if !t.Status.Valid() {
 		return fmt.Errorf("%w: unknown status %q", ErrInvalidTask, t.Status)
 	}
+	if t.ActiveRole != "" && !t.ActiveRole.Valid() {
+		return fmt.Errorf("%w: unknown active role %q", ErrInvalidTask, t.ActiveRole)
+	}
 	for i, todo := range t.Todos {
 		if strings.TrimSpace(todo.ID) == "" {
 			return fmt.Errorf("%w: todo %d has an empty id", ErrInvalidTask, i)
@@ -190,6 +219,9 @@ func (t Task) Validate() error {
 		if !todo.Status.Valid() {
 			return fmt.Errorf("%w: todo %q has unknown status %q", ErrInvalidTask, todo.ID, todo.Status)
 		}
+	}
+	if err := t.Context.Validate(t.ID); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidTask, err)
 	}
 	return nil
 }
@@ -204,11 +236,13 @@ func New(objective string) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
+	now := time.Now().UTC()
 	return Task{
 		ID:        id,
 		Objective: strings.TrimSpace(objective),
 		Status:    StatusRunning,
-		UpdatedAt: time.Now().UTC(),
+		CreatedAt: now,
+		UpdatedAt: now,
 	}, nil
 }
 
@@ -219,6 +253,7 @@ func (t Task) Clone() Task {
 	out.Constraints = append([]string(nil), t.Constraints...)
 	out.Findings = append([]string(nil), t.Findings...)
 	out.Todos = append([]Todo(nil), t.Todos...)
+	out.Context = t.Context.Clone()
 	if t.Contract != nil {
 		cloned := cloneContract(*t.Contract)
 		out.Contract = &cloned
@@ -267,6 +302,18 @@ func cloneSnapshot(in agent.TargetSnapshot) agent.TargetSnapshot {
 		out.Entries[i].Symbols = append([]agent.SymbolState(nil), entry.Symbols...)
 	}
 	return out
+}
+
+// LastRole returns the execution role the task last ran under.
+//
+// The explicit field is authoritative; a task written before it existed falls
+// back to the most recently touched role context. It is continuity metadata,
+// never authority.
+func (t Task) LastRole() workspace.Workspace {
+	if t.ActiveRole.Valid() {
+		return t.ActiveRole
+	}
+	return t.Context.LastRole()
 }
 
 // Todo returns the item with the given id.

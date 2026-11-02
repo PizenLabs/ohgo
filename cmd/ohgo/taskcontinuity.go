@@ -8,6 +8,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/continuity/task"
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/tui"
 )
@@ -21,13 +22,15 @@ import (
 // session binding, and a new intent detaches the old task rather than being
 // blocked by it. The controller is bookkeeping only — the loop still owns
 // execution and the workspace still owns authority — so this wiring cannot
-// grant a capability.
+// grant a capability. role supplies the live execution role for role-scoped
+// context; it is nil-safe and a nil source keeps the pre-Phase-1 BUILD default.
 //
 // It returns the controller so the caller can hook a compaction report into a
 // checkpoint. A nil store or missing todo tool still installs a usable layer:
 // the objective and lifecycle are recorded even when no todo list exists.
-func installTaskContinuity(program *tui.Program, root string, toolSet []agent.Tool, holders ...*budget.Holder) *task.Controller {
+func installTaskContinuity(program *tui.Program, root string, toolSet []agent.Tool, role func() workspace.Workspace, holders ...*budget.Holder) *task.Controller {
 	controller := task.NewController(task.NewStore(root), todoSource(toolSet))
+	controller.SetRoleSource(role)
 	var holder *budget.Holder
 	if len(holders) > 0 {
 		holder = holders[0]
@@ -45,18 +48,7 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			if !ok {
 				return tui.TaskResume{}, false
 			}
-			resume := tui.TaskResume{
-				ID:           current.ID,
-				Status:       string(current.Status),
-				Objective:    current.Objective,
-				ReviewReason: current.ReviewReason,
-			}
-			if current.Contract != nil {
-				resume.Contract = *current.Contract
-				resume.HasContract = true
-			}
-			resume.Snapshot = current.Snapshot
-			return resume, true
+			return taskResume(current), true
 		},
 		Sync: func() tui.TaskProjection {
 			recorded, err := controller.Sync()
@@ -103,18 +95,7 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			}
 			out := make([]tui.TaskResume, 0, len(tasks))
 			for _, t := range tasks {
-				resume := tui.TaskResume{
-					ID:           t.ID,
-					Status:       string(t.Status),
-					Objective:    t.Objective,
-					ReviewReason: t.ReviewReason,
-				}
-				if t.Contract != nil {
-					resume.Contract = *t.Contract
-					resume.HasContract = true
-				}
-				resume.Snapshot = t.Snapshot
-				out = append(out, resume)
+				out = append(out, taskResume(t))
 			}
 			return out
 		},
@@ -127,6 +108,7 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			return taskProjection(recorded, err)
 		},
 		Context:          controller.Context,
+		ObserveTurns:     controller.ObserveTurns,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
 		ProjectionReview: func() string {
@@ -169,6 +151,27 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		}
 	}
 	return controller
+}
+
+// taskResume converts a durable task into the TUI's resume contract.
+//
+// Role is the task's explicit last role, with a role-context fallback for a
+// checkpoint written before the field existed. It is continuity metadata for
+// the turn gate, never an authority grant.
+func taskResume(recorded task.Task) tui.TaskResume {
+	resume := tui.TaskResume{
+		ID:           recorded.ID,
+		Status:       string(recorded.Status),
+		Objective:    recorded.Objective,
+		ReviewReason: recorded.ReviewReason,
+		Role:         string(recorded.LastRole()),
+	}
+	if recorded.Contract != nil {
+		resume.Contract = *recorded.Contract
+		resume.HasContract = true
+	}
+	resume.Snapshot = recorded.Snapshot
+	return resume
 }
 
 // taskProjection converts a domain task into the TUI projection.

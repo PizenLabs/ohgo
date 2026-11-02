@@ -259,7 +259,9 @@ func runSession(cmd *cobra.Command, args []string) error {
 		program.SetRecovery(recoverer)
 		program.SetCommitHooks(commitHooks(opts.root, &opts.settings, registry))
 		attachShellEscape(program, opts.root, opts.security)
-		controller := installTaskContinuity(program, opts.root, loop.Tools(), opts.budget)
+		controller := installTaskContinuity(program, opts.root, loop.Tools(), func() workspace.Workspace {
+			return opts.authority()
+		}, opts.budget)
 		program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
 		// A grant is bound to the task it was approved for, when the task layer
 		// knows one. The task remains authoritative for continuity; the gate

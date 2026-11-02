@@ -12,6 +12,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/control/cognition"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 )
 
 // Source supplies the current todo snapshot from the runtime's single todo
@@ -34,6 +35,18 @@ type Controller struct {
 	task       Task
 	lastAction string
 	restored   bool
+
+	// role is the execution role active at the last turn boundary. It is a
+	// context label, never authority: it decides which role context is
+	// assembled and written, not what any tool may do.
+	role workspace.Workspace
+	// roleKnown distinguishes "the task has run under a recorded role" from
+	// the pre-Phase-1 BUILD default. Continuation across a role change must
+	// not infer a role from a default that was never observed.
+	roleKnown bool
+	// roleSource reads the live execution role at a turn boundary. It is a
+	// function field so the controller does not import the host's state.
+	roleSource func() workspace.Workspace
 
 	// budgetLimits is the grant a new task starts under. The controller owns
 	// the durable ledger, never enforcement: the root loop and its
@@ -63,7 +76,45 @@ func NewController(store *Store, source Source) *Controller {
 		source:   source,
 		now:      time.Now,
 		evidence: cognition.NewEvidenceState(),
+		role:     workspace.Build,
 	}
+}
+
+// SetRoleSource installs the live execution-role reader. The controller reads
+// it at a turn boundary and when assembling context; it never changes
+// authority and a nil source keeps the pre-Phase-1 BUILD default.
+func (c *Controller) SetRoleSource(source func() workspace.Workspace) {
+	c.roleSource = source
+}
+
+// CurrentRole returns the role currently used for context assembly.
+func (c *Controller) CurrentRole() workspace.Workspace {
+	return c.currentRole()
+}
+
+// LastRole returns the role the task last executed under, or "" when no role
+// has been recorded. It is continuity metadata, never authority: the host uses
+// it to distinguish a role change from a new objective.
+func (c *Controller) LastRole() workspace.Workspace {
+	if !c.roleKnown {
+		return ""
+	}
+	return c.role
+}
+
+// currentRole resolves the active role without ever widening it. An unresolved
+// source is reported as unresolved rather than silently defaulting to BUILD.
+func (c *Controller) currentRole() workspace.Workspace {
+	if c.roleSource != nil {
+		if role := c.roleSource(); role.Valid() {
+			return role
+		}
+		return ""
+	}
+	if c.role.Valid() {
+		return c.role
+	}
+	return ""
 }
 
 // Store returns the store the controller writes through.
@@ -204,6 +255,8 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 	objective := strings.TrimSpace(intent.Objective)
 
 	now := c.now().UTC()
+	c.role = c.currentRole()
+	c.roleKnown = c.role.Valid()
 	switch {
 	case c.task.ID != "" && !c.task.Status.IsTerminal():
 		if c.task.Contract == nil {
@@ -249,6 +302,20 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 		c.auditMu.Unlock()
 	}
 
+	// The contract is the user-derived boundary, so its explicit constraints
+	// are trustworthy task context. The contract is immutable across a resume,
+	// which makes this deterministic and never a second source of truth.
+	if c.task.Contract != nil && c.task.Contract.Grounding != nil {
+		if constraints := boundConstraints(c.task.Contract.Grounding.Constraints); len(constraints) > 0 {
+			c.task.Constraints = constraints
+		}
+	}
+	if c.role.Valid() {
+		c.task.ActiveRole = c.role
+		if err := c.task.TouchRole(c.role, now); err != nil {
+			return Task{}, err
+		}
+	}
 	c.syncTodos()
 	c.lastAction = "started: " + describeObjective(c.task.Objective)
 	return c.task.Clone(), c.persist()
@@ -291,6 +358,7 @@ func (c *Controller) Pause(reason string) (Task, error) {
 		}
 	}
 	c.lastAction = firstNonEmpty(reason, "interrupted")
+	c.noteRoleProgress("paused: " + c.lastAction)
 	return c.task.Clone(), c.persist()
 }
 
@@ -312,12 +380,14 @@ func (c *Controller) Complete() (Task, error) {
 	if c.task.HasOpenTodos() {
 		c.task.UpdatedAt = now
 		c.lastAction = "turn finished with work remaining"
+		c.noteRoleProgress(c.lastAction)
 		return c.task.Clone(), c.persist()
 	}
 	if err := c.task.Complete(now); err != nil {
 		return c.task.Clone(), err
 	}
 	c.lastAction = "completed"
+	c.noteRoleProgress(c.lastAction)
 	return c.task.Clone(), c.persist()
 }
 
@@ -345,6 +415,7 @@ func (c *Controller) NeedsReview(reason string) (Task, error) {
 		}
 	}
 	c.lastAction = firstNonEmpty(reason, "needs review")
+	c.noteRoleProgress(c.lastAction)
 	return c.task.Clone(), c.persist()
 }
 
@@ -361,6 +432,7 @@ func (c *Controller) Fail(reason string) (Task, error) {
 		return c.task.Clone(), err
 	}
 	c.lastAction = firstNonEmpty(reason, "failed")
+	c.noteRoleProgress(c.lastAction)
 	return c.task.Clone(), c.persist()
 }
 
@@ -377,6 +449,7 @@ func (c *Controller) Cancel(reason string) (Task, error) {
 		return c.task.Clone(), err
 	}
 	c.lastAction = firstNonEmpty(reason, "cancelled")
+	c.noteRoleProgress(c.lastAction)
 	return c.task.Clone(), c.persist()
 }
 
@@ -389,7 +462,7 @@ func (c *Controller) Context() []string {
 	if c.task.ID == "" {
 		return nil
 	}
-	return Context(c.task, c.lastAction)
+	return ContextFor(c.task, c.currentRole(), c.lastAction)
 }
 
 // ensureLoaded loads the checkpoint once.
@@ -408,6 +481,13 @@ func (c *Controller) ensureLoaded() error {
 		return nil
 	}
 	c.task = NormalizeRecovered(snap.Task)
+	// Restore the role the task last executed under. The live authority is
+	// still read through roleSource at the next Begin; this value only keeps
+	// attribution and role-change detection truthful across a restart.
+	if last := c.task.LastRole(); last.Valid() {
+		c.role = last
+		c.roleKnown = true
+	}
 	// A non-terminal task from a version-1 checkpoint has no contract. It
 	// cannot be completed, and it must not be silently rebound to whatever the
 	// next prompt says; say why so the human can cancel or replace it.
@@ -439,6 +519,9 @@ func (c *Controller) ensureLoaded() error {
 		// state we could not read.
 		return fmt.Errorf("%w: %v", ErrCorruptTask, err)
 	}
+	if err != nil && c.task.ContextWarning == "" {
+		c.task.ContextWarning = "task context was not restored: " + err.Error()
+	}
 	if err == nil && snap.Progress.LastAction != "" {
 		c.lastAction = snap.Progress.LastAction
 	}
@@ -455,11 +538,28 @@ func (c *Controller) syncTodos() {
 	_ = c.task.SetTodos(c.source())
 }
 
+// noteRoleProgress appends one bounded progress line to the active role's
+// context. It is bookkeeping only; a failure never blocks the lifecycle
+// transition it describes.
+func (c *Controller) noteRoleProgress(note string) {
+	if !c.role.Valid() || c.task.ID == "" || strings.TrimSpace(note) == "" {
+		return
+	}
+	_, _ = c.task.UpdateRoleContext(c.role, RoleContextUpdate{
+		Role:     c.role,
+		Progress: []string{note},
+	}, c.now().UTC())
+}
+
 // persist writes the checkpoint and projection, stamping the last action.
 func (c *Controller) persist() error {
 	if c.task.ID == "" {
 		return nil
 	}
+	// A checkpoint is the host boundary where material observations become
+	// durable task context. Projection is best-effort: a full evidence log
+	// must not block the lifecycle transition it is describing.
+	c.projectTaskContext()
 	progress := ProgressFrom(c.task)
 	if progress.CheckpointAt.IsZero() {
 		progress.CheckpointAt = c.task.UpdatedAt
@@ -485,7 +585,7 @@ func (c *Controller) persist() error {
 // records an observed todo outcome. It is not exposed to the model.
 func (c *Controller) SetTodo(id string, status TodoStatus, evidence string) (Task, error) {
 	if c.task.ID == "" {
-		return Task{}, errors.New("task: no active task")
+		return Task{}, ErrNoActiveTask
 	}
 	if err := c.task.SetTodoStatus(id, status, evidence); err != nil {
 		return Task{}, err
@@ -514,6 +614,7 @@ func (c *Controller) Detach() (Task, bool, error) {
 	if c.task.ID == "" {
 		return Task{}, false, nil
 	}
+	c.projectTaskContext()
 	detached := c.task.Clone()
 	if detached.Status.IsTerminal() {
 		progress := ProgressFrom(c.task)
@@ -527,6 +628,7 @@ func (c *Controller) Detach() (Task, bool, error) {
 		}
 		_ = c.store.ArchiveTask(c.task, progress)
 		c.task = Task{}
+		c.roleKnown = false
 		c.evidence = cognition.NewEvidenceState()
 		c.auditMu.Lock()
 		c.audit = ""
@@ -568,6 +670,7 @@ func (c *Controller) Detach() (Task, bool, error) {
 	}
 	archived := c.task.Clone()
 	c.task = Task{}
+	c.roleKnown = false
 	c.evidence = cognition.NewEvidenceState()
 	c.auditMu.Lock()
 	c.audit = ""
@@ -641,6 +744,12 @@ func (c *Controller) ResumeTask(id string) (Task, error) {
 		}
 	}
 	c.task = target
+	// Attribute the resumed task's projection to the role it last ran under,
+	// not to whatever role the previously active task used.
+	if last := target.LastRole(); last.Valid() {
+		c.role = last
+		c.roleKnown = true
+	}
 	if stored := progress.Budget; stored != nil {
 		state := *stored
 		if c.budgetState == nil {
@@ -794,6 +903,168 @@ func (c *Controller) findResumable(id string) (Task, Progress, bool, error) {
 		consider(snap.Task, snap.Progress)
 	}
 	return best, bestProg, bestFound, nil
+}
+
+// withTask applies one context mutation atomically with its checkpoint. A
+// failure restores the prior in-memory task, so a rejected or unwritable
+// context change can never look applied.
+func withTask[T any](c *Controller, fn func() (T, error)) (T, error) {
+	var zero T
+	if err := c.ensureLoaded(); err != nil {
+		return zero, err
+	}
+	if c.task.ID == "" {
+		return zero, ErrNoActiveTask
+	}
+	before := c.task.Clone()
+	result, err := fn()
+	if err != nil {
+		c.task = before
+		return zero, err
+	}
+	c.task.UpdatedAt = c.now().UTC()
+	if err := c.persist(); err != nil {
+		c.task = before
+		return zero, err
+	}
+	return result, nil
+}
+
+// RecordEvidence appends a task-linked observation.
+func (c *Controller) RecordEvidence(in EvidenceInput) (EvidenceRecord, error) {
+	return withTask(c, func() (EvidenceRecord, error) {
+		if !in.Role.Valid() {
+			in.Role = c.currentRole()
+		}
+		return c.task.RecordEvidence(in)
+	})
+}
+
+// RecordFact appends an evidence-backed verified fact. A caller must supply
+// current supporting evidence; a model assertion belongs in RecordHypothesis.
+func (c *Controller) RecordFact(in FactInput) (Fact, error) {
+	return withTask(c, func() (Fact, error) {
+		if !in.Role.Valid() {
+			in.Role = c.currentRole()
+		}
+		return c.task.RecordFact(in)
+	})
+}
+
+// RecordHypothesis appends an unverified proposal.
+func (c *Controller) RecordHypothesis(in HypothesisInput) (Hypothesis, error) {
+	return withTask(c, func() (Hypothesis, error) {
+		if !in.Role.Valid() {
+			in.Role = c.currentRole()
+		}
+		return c.task.RecordHypothesis(in)
+	})
+}
+
+type confirmedHypothesis struct {
+	hypothesis Hypothesis
+	fact       Fact
+}
+
+// AttachEvidence adds current supporting evidence to an existing fact or
+// hypothesis without asserting that the claim is confirmed.
+func (c *Controller) AttachEvidence(claimID string, evidenceIDs []string) error {
+	_, err := withTask(c, func() (struct{}, error) {
+		return struct{}{}, c.task.AttachEvidence(claimID, evidenceIDs)
+	})
+	return err
+}
+
+// ConfirmHypothesis resolves a hypothesis with evidence and records the fact.
+func (c *Controller) ConfirmHypothesis(id string, evidenceIDs []string, role workspace.Workspace) (Hypothesis, Fact, error) {
+	result, err := withTask(c, func() (confirmedHypothesis, error) {
+		if !role.Valid() {
+			role = c.currentRole()
+		}
+		hypothesis, fact, err := c.task.ConfirmHypothesis(id, evidenceIDs, role, c.now().UTC())
+		return confirmedHypothesis{hypothesis: hypothesis, fact: fact}, err
+	})
+	return result.hypothesis, result.fact, err
+}
+
+// RejectHypothesis records a disposition without creating a fact.
+func (c *Controller) RejectHypothesis(id, reason string) (Hypothesis, error) {
+	return withTask(c, func() (Hypothesis, error) {
+		return c.task.RejectHypothesis(id, reason, c.currentRole(), c.now().UTC())
+	})
+}
+
+// SupersedeHypothesis replaces one hypothesis with another, retaining both.
+func (c *Controller) SupersedeHypothesis(id, byID string) (Hypothesis, error) {
+	return withTask(c, func() (Hypothesis, error) {
+		return c.task.SupersedeHypothesis(id, byID, c.currentRole(), c.now().UTC())
+	})
+}
+
+// SupersedeFact replaces one active fact with another, retaining both.
+func (c *Controller) SupersedeFact(id, byID string) (Fact, error) {
+	return withTask(c, func() (Fact, error) {
+		return c.task.SupersedeFact(id, byID)
+	})
+}
+
+// InvalidateEvidence marks an observation no longer applicable and invalidates
+// conclusions that depended only on it.
+func (c *Controller) InvalidateEvidence(id, reason string) (EvidenceRecord, error) {
+	return withTask(c, func() (EvidenceRecord, error) {
+		return c.task.InvalidateEvidence(id, reason)
+	})
+}
+
+// SupersedeEvidence marks one observation replaced by a later one.
+func (c *Controller) SupersedeEvidence(id, byID string) (EvidenceRecord, error) {
+	return withTask(c, func() (EvidenceRecord, error) {
+		return c.task.SupersedeEvidence(id, byID)
+	})
+}
+
+// AddQuestion records an outstanding question.
+func (c *Controller) AddQuestion(text string) (Question, error) {
+	return withTask(c, func() (Question, error) {
+		return c.task.AddQuestion(text, c.currentRole(), c.now().UTC())
+	})
+}
+
+// AnswerQuestion records an answer without deleting the question.
+func (c *Controller) AnswerQuestion(id, answer string) (Question, error) {
+	return withTask(c, func() (Question, error) {
+		return c.task.AnswerQuestion(id, answer, c.currentRole(), c.now().UTC())
+	})
+}
+
+// UpdateRoleContext appends to one role's execution context. It never touches
+// another role's record and never grants authority.
+func (c *Controller) UpdateRoleContext(role workspace.Workspace, update RoleContextUpdate) (RoleContext, error) {
+	return withTask(c, func() (RoleContext, error) {
+		return c.task.UpdateRoleContext(role, update, c.now().UTC())
+	})
+}
+
+// RoleContext returns one role's execution context from the active task.
+func (c *Controller) RoleContext(role workspace.Workspace) (RoleContext, bool) {
+	if c.task.ID == "" {
+		return RoleContext{}, false
+	}
+	return c.task.Context.Role(role)
+}
+
+// boundConstraints normalises the explicit limits the contract carries. The
+// cap keeps a pathological request from turning the constraint line into a
+// second brief.
+func boundConstraints(values []string) []string {
+	out := uniqueStrings(values)
+	if len(out) > 8 {
+		out = out[:8]
+	}
+	for i := range out {
+		out[i] = boundText(out[i], maxFactBytes)
+	}
+	return out
 }
 
 func describeObjective(objective string) string {

@@ -52,12 +52,20 @@ func (s *Store) ArchiveTask(t Task, progress Progress) error {
 	if strings.TrimSpace(t.ID) == "" {
 		return fmt.Errorf("%w: empty id", ErrInvalidTask)
 	}
+	if !t.Context.Empty() {
+		context := t.Context.Clone()
+		progress.Context = &context
+	} else {
+		progress.Context = nil
+	}
+	progress.CreatedAt = t.CreatedAt
 	if progress.TaskID == "" {
 		progress.TaskID = t.ID
 	}
 	if progress.Status == "" {
 		progress.Status = t.Status
 	}
+	progress.ActiveRole = t.LastRole()
 	if progress.Version == 0 {
 		progress.Version = ProgressVersion
 	}
@@ -105,6 +113,7 @@ func (s *Store) ListArchived() ([]Snapshot, error) {
 		if strings.TrimSpace(file.Task.ID) == "" || !file.Task.Status.Valid() {
 			continue
 		}
+		sanitizeArchived(&file)
 		out = append(out, Snapshot{Task: file.Task, Progress: file.Progress, Found: true})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -132,7 +141,37 @@ func (s *Store) LoadArchived(id string) (Snapshot, error) {
 	if strings.TrimSpace(file.Task.ID) == "" {
 		return Snapshot{}, fmt.Errorf("%w: empty task id", ErrCorruptCheckpoint)
 	}
+	sanitizeArchived(&file)
 	return Snapshot{Task: file.Task, Progress: file.Progress, Found: true}, nil
+}
+
+// sanitizeArchived repairs an archived task's optional structured context
+// without discarding the task itself. The same rules as the live checkpoint
+// apply: valid records survive, invalid ones are repaired or dropped, and a
+// future context version is refused rather than guessed at.
+func sanitizeArchived(file *archivedFile) {
+	// The active role is optional continuity metadata: a damaged value is
+	// dropped so the role-context fallback can supply the answer instead of
+	// making the archived task unwritable.
+	if file.Task.ActiveRole != "" && !file.Task.ActiveRole.Valid() {
+		file.Task.ActiveRole = ""
+	}
+	if file.Progress.ActiveRole != "" && !file.Progress.ActiveRole.Valid() {
+		file.Progress.ActiveRole = ""
+	}
+	context, changes := file.Task.Context.Sanitize(file.Task.ID)
+	file.Task.Context = context
+	if changes > 0 && file.Task.ContextWarning == "" {
+		file.Task.ContextWarning = fmt.Sprintf("%d task context record(s) were invalid and repaired or dropped on load", changes)
+	}
+	if file.Progress.Context != nil {
+		clean, _ := file.Progress.Context.Sanitize(file.Task.ID)
+		if clean.Empty() {
+			file.Progress.Context = nil
+		} else {
+			file.Progress.Context = &clean
+		}
+	}
 }
 
 // RemoveArchived drops one detached task. Missing is not an error: a resume

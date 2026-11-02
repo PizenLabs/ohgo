@@ -12,6 +12,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/control/cognition"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/project"
 )
 
@@ -28,6 +29,10 @@ import (
 // not change the meaning of an existing field, so the schema version stays 2;
 // older readers ignore them and a reader of an older checkpoint sees nil. A
 // field whose meaning changes would still require a version bump.
+//
+// Phase 1's structured context is the same kind of change: an additive,
+// self-versioned subdocument (ContextVersion) that an older reader ignores. It
+// does not change the meaning of any existing field, so ProgressVersion stays 2.
 const ProgressVersion = 2
 
 // File names inside the project-local .ohgo directory.
@@ -84,6 +89,25 @@ type Progress struct {
 	// Audit is the last context-projection audit, bounded. It is diagnostic
 	// state: editing it cannot change authority, evidence, or completion.
 	Audit string `json:"audit,omitempty"`
+	// CreatedAt is the task creation time. It is additive and optional; a
+	// checkpoint written before it existed loads with a zero value rather than
+	// a fabricated timestamp.
+	CreatedAt time.Time `json:"createdAt,omitempty"`
+	// Context is the structured shared task context and per-role execution
+	// contexts. It is additive and self-versioned (see ContextVersion), so the
+	// surrounding checkpoint schema does not change meaning.
+	Context *SharedContext `json:"context,omitempty"`
+	// ActiveRole is the execution role the task last ran under. It is additive
+	// and optional; it lets the turn gate distinguish a role change from a new
+	// objective without inferring one from prompt wording. It is never
+	// authority.
+	ActiveRole workspace.Workspace `json:"activeRole,omitempty"`
+	// ContextDropped reports how many structured context records were
+	// invalid or repaired on load. It is diagnostic only and is never written.
+	ContextDropped int `json:"-"`
+	// ContextProblem explains why the structured context could not be used at
+	// all. It is diagnostic only and is never written.
+	ContextProblem string `json:"-"`
 }
 
 // ProgressFrom projects a task into its checkpoint form.
@@ -94,7 +118,15 @@ func ProgressFrom(t Task) Progress {
 		Status:       t.Status,
 		Phase:        t.Phase,
 		CheckpointAt: t.UpdatedAt,
+		CreatedAt:    t.CreatedAt,
 	}
+	if !t.Context.Empty() {
+		context := t.Context.Clone()
+		p.Context = &context
+	}
+	// Persist the explicit role. A checkpoint written before the field existed
+	// migrates from its role contexts on the next save.
+	p.ActiveRole = t.LastRole()
 	if active, ok := t.ActiveTodo(); ok {
 		p.ActiveTodo = active.ID
 	}
@@ -173,12 +205,25 @@ func (s *Store) SaveCheckpoint(t Task, progress Progress) error {
 	if err := t.Validate(); err != nil {
 		return err
 	}
+	// The task is the single in-memory owner of structured context. Deriving
+	// the checkpoint's copy here prevents a caller-built Progress from writing
+	// a second, divergent representation of the same facts.
+	if !t.Context.Empty() {
+		context := t.Context.Clone()
+		progress.Context = &context
+	} else {
+		progress.Context = nil
+	}
+	progress.CreatedAt = t.CreatedAt
 	if progress.TaskID == "" {
 		progress.TaskID = t.ID
 	}
 	if progress.Status == "" {
 		progress.Status = t.Status
 	}
+	// The task is the single in-memory owner, like structured context: a
+	// caller-built checkpoint cannot persist a divergent active role.
+	progress.ActiveRole = t.LastRole()
 	if !progress.CheckpointAt.IsZero() && t.UpdatedAt.After(progress.CheckpointAt) {
 		progress.CheckpointAt = t.UpdatedAt
 	}
@@ -270,14 +315,40 @@ func (s *Store) Load() (Snapshot, error) {
 		if progress.CheckpointAt.After(t.UpdatedAt) {
 			t.UpdatedAt = progress.CheckpointAt
 		}
+		if !progress.CreatedAt.IsZero() {
+			t.CreatedAt = progress.CreatedAt
+		}
+		if progress.Context != nil {
+			t.Context = progress.Context.Clone()
+		}
+		t.ActiveRole = progress.ActiveRole
+		if !t.ActiveRole.Valid() {
+			// A checkpoint written before the explicit field existed derives
+			// the same value from its role contexts.
+			t.ActiveRole = t.Context.LastRole()
+		}
+		if progress.ContextDropped > 0 {
+			t.ContextWarning = fmt.Sprintf("%d task context record(s) were invalid and repaired or dropped on load", progress.ContextDropped)
+		}
+		if progress.ContextProblem != "" {
+			t.ContextWarning = "task context could not be restored: " + progress.ContextProblem
+		}
 	}
 
 	snap := Snapshot{Task: t, Progress: progress, Found: true}
 	switch {
 	case progressErr != nil:
+		if t.ID != "" && t.ContextWarning == "" {
+			t.ContextWarning = "task context was not restored: no readable progress checkpoint"
+		}
+		snap.Task = t
 		return snap, progressErr
 	case mdErr != nil:
 		return snap, mdErr
+	case !progressFound:
+		t.ContextWarning = "task context was not restored: no progress checkpoint"
+		snap.Task = t
+		return snap, nil
 	}
 	return snap, nil
 }
@@ -306,6 +377,26 @@ func (s *Store) LoadProgress() (Progress, bool, error) {
 	}
 	if !progress.Status.Valid() {
 		return progress, true, fmt.Errorf("%w: unknown status %q", ErrCorruptCheckpoint, progress.Status)
+	}
+	if progress.ActiveRole != "" && !progress.ActiveRole.Valid() {
+		// The role is optional continuity metadata, not the task's identity.
+		// Drop a damaged value and let the role-context fallback supply the
+		// answer instead of making the whole checkpoint unreadable.
+		progress.ActiveRole = ""
+	}
+	if progress.Context != nil {
+		if progress.Context.Version > ContextVersion {
+			progress.ContextProblem = fmt.Sprintf("context version %d is newer than this build supports (%d)", progress.Context.Version, ContextVersion)
+			progress.Context = nil
+		} else {
+			clean, changes := progress.Context.Sanitize(progress.TaskID)
+			progress.ContextDropped = changes
+			if clean.Empty() {
+				progress.Context = nil
+			} else {
+				progress.Context = &clean
+			}
+		}
 	}
 	return progress, true, nil
 }

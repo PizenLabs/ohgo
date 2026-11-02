@@ -48,6 +48,9 @@ function.
 | Path | Meaning | Owner | Lifecycle |
 | --- | --- | --- | --- |
 | `project.yml` | `{id, name, root, user.name}` — stable project identity, human-readable project name, and the project worker identity | `project` | project; authoritative; machine-local, gitignored |
+| `progress.json` | authoritative durable task checkpoint: identity, lifecycle, contract, snapshot, budget, evidence state, active role (continuity metadata, never authority), and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries |
+| `task.md` | human- and model-readable task projection | `task` | project; projection only; never authoritative over `progress.json` |
+| `tasks/<id>.json` | detached task archive, including its context | `task` | project; durable until resumed, cancelled, or deleted by the human |
 
 The project root is the Git worktree root when the directory is inside a repo,
 otherwise the directory itself (`project.Root`). A nested directory and the
@@ -226,7 +229,11 @@ never let global state become an accidental authority for project-local state.**
 | user preferences | `config` | `~/.ohgo/settings.json` | authoritative | machine | backup file |
 | credentials | `creds` | `~/.ohgo/credentials.json` (`0600`) | authoritative | machine | re-enter |
 | session history | `session` | `~/.ohgo/sessions.db` | authoritative | machine | backup DB |
-| session memory (task context, artifacts) | `session` | `~/.ohgo/sessions.db` | authoritative | session | backup DB |
+| session artifacts | `session` | `~/.ohgo/sessions.db` | authoritative | session | backup DB |
+| task identity and lifecycle | `task` | `<project>/.ohgo/progress.json` | authoritative | task | resume or archive |
+| task shared context (facts, hypotheses, evidence, questions) | `task` | `<project>/.ohgo/progress.json` (`context`) | authoritative | task | resume or archive |
+| role execution context (ASK/FUZZ/BUILD) | `task` | `<project>/.ohgo/progress.json` (`context.roles`) | authoritative for continuity; never authority | task | resume or archive |
+| detached task | `task` | `<project>/.ohgo/tasks/<id>.json` | authoritative until closed | task | `/task resume` |
 | project identity (`id`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-mint |
 | project name (`name`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-establish via gate |
 | project worker identity (`user.name`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-establish via gate |
@@ -259,7 +266,13 @@ A session owns everything needed to resume **one conversation**:
 - messages and turns (the transcript);
 - compaction summaries and the rebased history they produced;
 - structured artifacts (`workspace.Artifact`: plan, finding, change, verification);
-- active task context, files discussed, unresolved questions, observations.
+- files discussed, unresolved observations that belong to the conversation.
+
+**Task continuity is not session memory.** The durable task, its structured
+context, and the ASK/FUZZ/BUILD execution contexts live in the project-local
+`<project>/.ohgo/progress.json`. A task survives a session boundary, a role
+change, and an application restart; a session owns only the transcript and its
+artifacts. See [`TASK_CONTINUITY.md`](TASK_CONTINUITY.md).
 
 Physical storage stays machine-global at `~/.ohgo/sessions.db`. Logical
 ownership is the `project` column, queried by `session.Store.ListByProject`.
@@ -439,6 +452,7 @@ seam exists so the trust rule has exactly one owner when that day comes.
 | `rm <project>/.ohgo/project.yml` | survive | survive | re-minted/re-established on next run | re-created |
 | `rm -rf <project>/.ohgo` | survive | survive | re-minted (new id); worker re-established project-locally | re-created |
 | delete `graph.db` (future) | survive | survive | survives | project still opens; graph rebuilds |
+| delete or corrupt `progress.json` | survive | survive | survives | task may recover identity/objective from `task.md`, but structured context is reported unavailable |
 | delete `memory.db` (future) | survive | survive | survives | re-created empty; **durable knowledge is lost** — explicit action only |
 | project directory deleted | survive | survive (machine-global) | gone with the tree | gone |
 | project renamed/moved | survive | survive (keyed by id) | **survives** (`.ohgo` moves with the tree; stale `root` tolerated) | survives |
@@ -643,6 +657,15 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
     create `<project>/.ohgo`.
 19. Initialization requires explicit user commitment; a cancelled
     initialization leaves no partial project state.
+20. A task identity is independent of the active session and execution role.
+    Changing role never mints a new task.
+21. `progress.json` is the single authoritative task checkpoint; `task.md` is a
+    lossy projection and never outranks it.
+22. Verified facts require current, usable evidence. A hypothesis, a repeated
+    assertion, an inconclusive result, or a model claim never becomes a fact by
+    being recorded.
+23. Role execution contexts are isolated by role, survive recovery, and never
+    grant authority. Storing context is not a role handoff.
 
 ## Explicit Non-Goals
 

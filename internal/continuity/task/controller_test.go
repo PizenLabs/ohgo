@@ -9,6 +9,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 )
 
 func TestControllerExposesTheLastProjectionReview(t *testing.T) {
@@ -525,5 +526,48 @@ func TestControllerSyncLeavesTerminalTaskAlone(t *testing.T) {
 	}
 	if len(synced.Todos) != 1 {
 		t.Fatalf("terminal task picked up a new todo: %+v", synced.Todos)
+	}
+}
+
+// Resuming an archived task must attribute its projection to the role the task
+// last ran under, not to the role the previous active task used.
+func TestResumeTaskUsesTheResumedTasksRole(t *testing.T) {
+	role := workspace.Fuzz
+	controller := NewController(NewStore(t.TempDir()), nil)
+	controller.SetRoleSource(func() workspace.Workspace { return role })
+	intent := testIntent("resume the role")
+
+	archived, err := controller.Begin(intent, nil)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	controller.ObserveTurns([]agent.Turn{{Results: []agent.ToolOutcome{commandOutcome("go test ./...")}}})
+	if _, err := controller.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if _, err := controller.Pause("switch"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if _, _, err := controller.Detach(); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	role = workspace.Build
+	if _, err := controller.Begin(testIntent("another task"), nil); err != nil {
+		t.Fatalf("Begin other: %v", err)
+	}
+	if _, err := controller.Sync(); err != nil {
+		t.Fatalf("Sync other: %v", err)
+	}
+	if _, err := controller.ResumeTask(archived.ID); err != nil {
+		t.Fatalf("ResumeTask: %v", err)
+	}
+	current, _ := controller.Current()
+	fuzz, ok := current.Context.Role(workspace.Fuzz)
+	if !ok || !containsSubstring(fuzz.Progress, "go test") {
+		t.Fatalf("resumed FUZZ context = %+v", fuzz)
+	}
+	if build, ok := current.Context.Role(workspace.Build); ok && containsSubstring(build.Progress, "go test") {
+		t.Fatalf("FUZZ observation was attributed to BUILD: %+v", build)
 	}
 }

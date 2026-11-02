@@ -5,6 +5,38 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- Task continuity Phase 1: the durable task now owns structured, role-independent
+  context (verified facts, hypotheses, evidence references, questions) and
+  isolated ASK/FUZZ/BUILD execution contexts in `progress.json`. Context is
+  assembled deterministically for the active role with existing character and
+  token bounds; it survives restart, session continuation, and task resume, and
+  it never grants authority. Model assertions remain hypotheses until current
+  evidence confirms them, and contradictory evidence is retained without
+  overwriting facts.
+- Task continuity runtime population: material tool observations are folded into
+  task evidence references at the turn boundary, successful checks become
+  evidence-backed facts, and ASK/FUZZ/BUILD role contexts carry their own
+  observed progress. A role change on the same objective keeps the task and its
+  contexts instead of detaching it. Semantic hypotheses, questions, reasoning,
+  and strategy remain host writes because the runtime has no trustworthy signal
+  for them.
+
+### Fixed
+
+- Task context selection now uses the fixed budget with relevance ordering
+  instead of recency-only caps: older verified facts survive, the active role's
+  section is reserved, stale evidence cannot displace current evidence, and an
+  overfull section reports how many items it omitted.
+- Task-context repair now deduplicates role contexts across the whole
+  collection, clears dangling supersession pointers, rewrites invalidated
+  confirmations, and refuses to hand back a context that would make every later
+  checkpoint fail validation.
+- A dedup key can no longer silently reuse an earlier record for a different
+  observation, and a fact confirmed from a hypothesis records the confirming
+  role while the hypothesis keeps the proposing role.
+
 ## [v0.0.4] - 2026-11-02
 
 ### Added

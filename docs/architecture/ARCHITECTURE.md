@@ -163,6 +163,11 @@ user's request before execution and the evidence the runtime observed.
   different prompt is refused until the human runs `/task cancel` or
   `/task accept`. Both close the task as `CANCELLED`; neither claims the old
   objective completed, and the next prompt starts a new identity.
+- **Task context.** The same checkpoint carries structured, role-independent
+  context: evidence-backed facts, hypotheses and dispositions, task-linked
+  evidence, outstanding questions, and isolated ASK/FUZZ/BUILD execution
+  contexts. Context is assembled for the active role only, never grants
+  authority, and never completes a task. See [`TASK_CONTINUITY.md`](TASK_CONTINUITY.md).
 - **Stateless paths.** `ohgo run` and the plain REPL use the same evaluator and
   print one verdict: `COMPLETED`, `NEEDS_REVIEW: reason`, `PAUSED: reason`,
   `FAILED: reason`, or `CANCELLED: reason`. They do not create a durable task.

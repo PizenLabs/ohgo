@@ -4352,6 +4352,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	}
 	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
 
+	// The active authority is read before the task decision: a role change on
+	// the same objective is a continuation, not a new task. It is the
+	// control plane's current authority, never a prediction from the prompt.
+	activeAuthority := strings.ToLower(strings.TrimSpace(turn.Active))
+	if activeAuthority == "" && p.workspace.Current != nil {
+		activeAuthority = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
+	}
+
 	// The completion contract is extracted from the user's own text before any
 	// execution. It is the task's objective and the evidence boundary; the
 	// model cannot add to or reinterpret it.
@@ -4408,7 +4416,15 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	var targetSnapshot *agent.TargetSnapshot
 	if p.task.Current != nil {
 		if current, ok := p.task.Current(); ok && !taskStatusTerminal(current.Status) {
-			if continuationPrompt(text) {
+			continuing := continuationPrompt(text)
+			switch {
+			case continuing:
+				p.recordTaskDecision("EXPLICIT_RESUME")
+			case roleContinuation(current, intent, activeAuthority):
+				continuing = true
+				p.recordTaskDecision("ROLE_CONTINUATION")
+			}
+			if continuing {
 				if !current.HasContract {
 					abortTurn("an open task has no persisted completion contract; run /task cancel to abandon it, or start a new task with /task list to preserve it")
 					return
@@ -4421,7 +4437,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 					}
 					targetSnapshot = &cloned
 				}
-				p.recordTaskDecision("EXPLICIT_RESUME")
 			} else {
 				// New intent: detach the durable task so it survives the
 				// session boundary without owning the new intent, then
@@ -4487,10 +4502,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// evaluates every tool that remains, and completion still evaluates
 	// evidence the runtime observed. The shape is built after the fresh run
 	// grant is installed so an exhausted prior turn cannot poison this one.
-	authorityLabel := strings.ToLower(strings.TrimSpace(turn.Active))
-	if authorityLabel == "" && p.workspace.Current != nil {
-		authorityLabel = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
-	}
+	authorityLabel := activeAuthority
 	facts := cognition.ProbeFacts(p.completionRoot)
 	shape := cognition.BuildShape(intent, cognition.ShapeParams{
 		Authority: authorityLabel,
@@ -4732,6 +4744,13 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		evidenceReview = p.task.ProjectionReview()
 	}
 	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview)
+	// The turn boundary is also the evidence boundary. The loop projects
+	// before each request, but a run that stopped on a deadline, a turn limit,
+	// or its final answer may have an unobserved last turn. Folding it here
+	// keeps the checkpoint truthful without a second observation store.
+	if p.task.ObserveTurns != nil {
+		p.task.ObserveTurns(turns)
+	}
 	if p.beforeTaskTransition != nil {
 		p.beforeTaskTransition()
 	}

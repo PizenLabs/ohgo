@@ -68,9 +68,13 @@ type TaskResume struct {
 	Status       string
 	Objective    string
 	ReviewReason string
-	Contract     contract.IntentContract
-	HasContract  bool
-	Snapshot     *agent.TargetSnapshot
+	// Role is the execution role the task last ran under. It is continuity
+	// metadata, never authority: the turn gate uses it to tell a role change
+	// on the same objective from a genuinely new request.
+	Role        string
+	Contract    contract.IntentContract
+	HasContract bool
+	Snapshot    *agent.TargetSnapshot
 }
 
 // TaskHooks wire the durable task continuity layer into the program.
@@ -121,6 +125,10 @@ type TaskHooks struct {
 	CancelResumable func(id string) TaskProjection
 	// Context returns deterministic orientation blocks for the current task.
 	Context func() []string
+	// ObserveTurns folds a completed run's tool outcomes into the durable
+	// evidence state. It is called at the turn boundary so an interrupted or
+	// final run is observed even if no later projection request ran.
+	ObserveTurns func([]agent.Turn)
 	// Evidence returns the task's durable evidence state. The projector
 	// updates it in place; the controller checkpoints it at lifecycle
 	// boundaries. Nil disables task-shaped projection.
@@ -458,6 +466,26 @@ func taskStatusTerminal(status string) bool {
 	default:
 		return false
 	}
+}
+
+// roleContinuation reports whether this turn continues the current task
+// because the execution role changed while the objective did not.
+//
+// Prompt phrasing alone is not identity: a user who switches from BUILD to
+// FUZZ and repeats the same objective is continuing one task, not starting a
+// second one. A different objective still starts a new task, and an unchanged
+// role still requires an explicit continuation prompt, so neither unrelated
+// prompts nor repeated work attach themselves to the old task.
+func roleContinuation(current TaskResume, next contract.IntentContract, active string) bool {
+	if !current.HasContract || current.Role == "" || active == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(current.Role), strings.TrimSpace(active)) {
+		return false
+	}
+	persisted := strings.TrimSpace(current.Contract.Objective)
+	requested := strings.TrimSpace(next.Objective)
+	return persisted != "" && persisted == requested
 }
 
 // continuationPrompt recognizes a deliberate continuation of the open task.
