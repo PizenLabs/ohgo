@@ -3,7 +3,7 @@
 
 **Project:** ohgo  
 **Domain:** `internal/continuity/task` and its existing integration points  
-**Status:** Phase 1 implemented — pending architectural review and acceptance  
+**Status:** Phases 1–3 implemented and accepted  
 **Execution model:** Strictly phase-gated  
 **Authority:** Human-controlled phase authorization
 
@@ -227,7 +227,7 @@ Task continuity must not redefine, weaken, or bypass these boundaries.
 
 ## Phase 1 — Foundation: Shared Task Context
 
-**Status: IMPLEMENTED — PENDING ACCEPTANCE**
+**Status: IMPLEMENTED — ACCEPTED**
 
 ### 4.1 Objective
 
@@ -447,7 +447,7 @@ A passing unit-test suite alone is insufficient.
 
 ## Phase 2 — Handoff: Bidirectional Role Transition
 
-**Status: IMPLEMENTED — PENDING ARCHITECTURAL REVIEW AND ACCEPTANCE**
+**Status: IMPLEMENTED — ACCEPTED**
 
 ### 5.1 Objective
 
@@ -664,7 +664,7 @@ Do not begin Phase 3 automatically.
 
 ## Phase 3 — Continuity: Timeline, Recovery, and Verifiable Outcome
 
-**Status: NOT STARTED — NOT AUTHORIZED**
+**Status: IMPLEMENTED — ACCEPTED**
 
 ### 6.1 Objective
 
@@ -858,6 +858,25 @@ Provide:
 - Documentation updates.
 - Remaining limitations and explicit operational constraints.
 
+### 6.10 Correction Pass and Acceptance Evidence
+
+The final acceptance audit returned FAIL on four material defects. The correction
+pass resolved them without changing ownership or adding a store:
+
+| Original finding | Resolution |
+| --- | --- |
+| BLOCKER: a failed completion write could publish `COMPLETED`/`PROVEN` | The projection is written first and the checkpoint is the commit point. `CompleteWithEvidence` restores the prior task on a write error; the TUI repeats the guard. Regression: `TestFailedCompletionPersistLeavesTaskResumable`, `TestRefusedCompletionNeverClaimsSuccess`. |
+| HIGH: an execution proof could be answer-only | `CompletionEvidence` distinguishes answered, executed, observed, and verified. Execution requires a projected successful execution or the required verification. Regression: `TestExecutionObjectiveRequiresObservedExecution`, `TestSuccessfulCommandProjectionIsEvidence`. |
+| HIGH: a downgrade write could erase the timeline and proof | `ProgressVersion` is 3, a downgrade barrier. A version-2 binary refuses a version-3 checkpoint before it can rewrite it. Regression: `TestCheckpointVersionRefusesOlderWriters`. |
+| HIGH: the real mutation → proof path was untested | `TestPhase3ProductionMutationCompletionThroughRuntime` drives the real turn entrypoint and real tools against a temporary Go module, then restarts the task. |
+| MEDIUM: recovery could report `INTACT` after a repair | Completion-proof repair is part of the classification, archive sanitization returns its repairs, `ResumeTask` preserves the archive report, and corrupt archives are reported as `ArchiveProblem`s. |
+| MEDIUM: contradictions did not affect `PROVEN` | A contradiction downgrades the proof only when it targets a claim the proof depends on. Regression: `TestContradictionDowngradesOnlyWhenMaterial`. |
+
+Accepted limitations are recorded in [`TASK_CONTINUITY.md`](TASK_CONTINUITY.md)
+§9.7 and include: no independent semantic correctness verification, no
+filesystem artifact existence check, no journal for in-flight tool operations,
+and evaluator-owned target/behavioural-scope matching.
+
 ---
 
 # 7. Global Execution Protocol
@@ -1030,7 +1049,7 @@ Human review is the final acceptance authority.
 |---|---|---|
 | Phase 1 — Foundation | Implemented, correction reviewed; pending final acceptance | Phase 1 corrections authorized |
 | Phase 2 — Handoff | Implemented, pending review and acceptance | Explicitly authorized |
-| Phase 3 — Continuity | Not started | Not authorized |
+| Phase 3 — Continuity | Implemented; pending review and acceptance | Explicitly authorized |
 
 The existing Phase 1 implementation is the starting point for review.
 

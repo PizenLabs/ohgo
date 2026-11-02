@@ -100,6 +100,7 @@ func (c *Controller) projectObservation(item cognition.EvidenceItem, role worksp
 		Kind:     observationKind(item),
 		Role:     role,
 		Source:   observationSource(item),
+		Scope:    item.Source.Scope,
 		Artifact: "cognition:" + item.ID,
 		Summary:  item.Summary,
 		Outcome:  observationOutcome(item),
@@ -115,7 +116,7 @@ func (c *Controller) projectObservation(item cognition.EvidenceItem, role worksp
 	}
 	if item.Status != cognition.StatusConflicting {
 		if prior, ok := c.currentEvidenceByArtifact("cognition:" + item.ID); ok && prior.ID != record.ID {
-			_, _ = c.task.SupersedeEvidence(prior.ID, record.ID)
+			_, _ = c.task.SupersedeEvidence(prior.ID, record.ID, c.now().UTC())
 		}
 	}
 	if isVerificationObservation(item) {
@@ -296,8 +297,14 @@ func observationKind(item cognition.EvidenceItem) EvidenceKind {
 
 // observationOutcome separates what was observed from what can support a
 // claim. A conflict, a derived inference, and a diagnostic are honest records,
-// but none of them may establish a fact.
+// but none of them may establish a fact. A process that actually ran to a
+// successful terminal state is an observation even when its retention class is
+// diagnostic: that is what lets a projected successful command support an
+// execution objective.
 func observationOutcome(item cognition.EvidenceItem) EvidenceOutcome {
+	if item.Executed && item.Status == cognition.StatusKnown {
+		return EvidenceObserved
+	}
 	if item.Status == cognition.StatusConflicting || item.Status == cognition.StatusDerived {
 		return EvidenceInconclusive
 	}

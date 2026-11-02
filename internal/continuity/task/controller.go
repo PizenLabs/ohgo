@@ -35,6 +35,9 @@ type Controller struct {
 	task       Task
 	lastAction string
 	restored   bool
+	// recovery is the classification of the last load. It is derived and
+	// never persisted: it tells the user what the recovery actually restored.
+	recovery RecoveryReport
 
 	// role is the execution role active at the last turn boundary. It is a
 	// context label, never authority: it decides which role context is
@@ -238,6 +241,12 @@ func (c *Controller) Restore() (Task, bool, error) {
 	return c.task.Clone(), true, nil
 }
 
+// Recovery reports how the last load classified the restored task. It is empty
+// before a load and never persisted.
+func (c *Controller) Recovery() RecoveryReport {
+	return c.recovery
+}
+
 // Begin records that a turn is starting with this contract and pre-run target
 // evidence.
 //
@@ -256,7 +265,10 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 	if err := c.ensureLoaded(); err != nil {
 		return Task{}, err
 	}
+	before := c.snapshotState()
 	objective := strings.TrimSpace(intent.Objective)
+	previousStatus := c.task.Status
+	hadTask := c.task.ID != ""
 
 	now := c.now().UTC()
 	c.role = c.currentRole()
@@ -361,7 +373,29 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 	}
 	c.syncTodos()
 	c.lastAction = "started: " + describeObjective(c.task.Objective)
-	return c.task.Clone(), c.persist()
+	// The timeline records meaningful attachment boundaries, not every turn of
+	// a running task. A new identity, or work continuing from an interruption,
+	// is worth explaining later; an ordinary continuation is already covered by
+	// the checkpoint event.
+	switch {
+	case !hadTask:
+		c.task.AppendEvent(TimelineEvent{
+			At:      now,
+			Kind:    TimelineCreated,
+			Role:    c.role,
+			Status:  string(c.task.Status),
+			Summary: "task created: " + describeObjective(c.task.Objective),
+		})
+	case previousStatus == StatusPaused || previousStatus == StatusPending || previousStatus == StatusNeedsReview:
+		c.task.AppendEvent(TimelineEvent{
+			At:      now,
+			Kind:    TimelineResumed,
+			Role:    c.role,
+			Status:  string(c.task.Status),
+			Summary: "resumed " + describeObjective(c.task.Objective) + " from " + string(previousStatus),
+		})
+	}
+	return c.commitState(before)
 }
 
 // Sync refreshes the todo snapshot and checkpoints.
@@ -375,12 +409,20 @@ func (c *Controller) Sync() (Task, error) {
 	if c.task.ID == "" || c.task.Status.IsTerminal() {
 		return c.task.Clone(), nil
 	}
+	before, beforeAction := c.task.Clone(), c.lastAction
 	c.syncTodos()
 	c.task.UpdatedAt = c.now().UTC()
 	if active, ok := c.task.ActiveTodo(); ok {
 		c.lastAction = "working on: " + active.Label
 	}
-	return c.task.Clone(), c.persist()
+	c.task.AppendEventIfChanged(TimelineEvent{
+		At:      c.task.UpdatedAt,
+		Kind:    TimelineCheckpoint,
+		Role:    c.role,
+		Status:  string(c.task.Status),
+		Summary: c.lastAction,
+	})
+	return c.commit(before, beforeAction)
 }
 
 // Pause records an interruption at a recoverable checkpoint.
@@ -394,6 +436,7 @@ func (c *Controller) Pause(reason string) (Task, error) {
 	if c.task.ID == "" || c.task.Status.IsTerminal() {
 		return c.task.Clone(), nil
 	}
+	before, beforeAction := c.task.Clone(), c.lastAction
 	c.syncTodos()
 	if c.task.Status != StatusPaused {
 		if err := c.task.Pause(c.now().UTC()); err != nil {
@@ -402,7 +445,14 @@ func (c *Controller) Pause(reason string) (Task, error) {
 	}
 	c.lastAction = firstNonEmpty(reason, "interrupted")
 	c.noteRoleProgress("paused: " + c.lastAction)
-	return c.task.Clone(), c.persist()
+	c.task.AppendEventIfChanged(TimelineEvent{
+		At:      c.task.UpdatedAt,
+		Kind:    TimelinePaused,
+		Role:    c.role,
+		Status:  string(c.task.Status),
+		Summary: c.lastAction,
+	})
+	return c.commit(before, beforeAction)
 }
 
 // Complete records a successful end when the work is actually finished.
@@ -418,20 +468,32 @@ func (c *Controller) Complete() (Task, error) {
 	if c.task.ID == "" || c.task.Status.IsTerminal() {
 		return c.task.Clone(), nil
 	}
+	before, beforeAction := c.task.Clone(), c.lastAction
 	c.syncTodos()
 	now := c.now().UTC()
 	if c.task.HasOpenTodos() {
 		c.task.UpdatedAt = now
 		c.lastAction = "turn finished with work remaining"
 		c.noteRoleProgress(c.lastAction)
-		return c.task.Clone(), c.persist()
+		return c.commit(before, beforeAction)
 	}
 	if err := c.task.Complete(now); err != nil {
 		return c.task.Clone(), err
 	}
 	c.lastAction = "completed"
 	c.noteRoleProgress(c.lastAction)
-	return c.task.Clone(), c.persist()
+	// Complete() is the legacy lifecycle transition: it records the status
+	// without a proof, so the objective projection reports COMPLETED_UNPROVEN
+	// rather than claiming evidence it never saw. Phase 3 hosts use
+	// CompleteWithEvidence.
+	c.task.AppendEvent(TimelineEvent{
+		At:      now,
+		Kind:    TimelineCompleted,
+		Role:    c.role,
+		Status:  string(c.task.ObjectiveState()),
+		Summary: "completed without a recorded evidence proof",
+	})
+	return c.commit(before, beforeAction)
 }
 
 // NeedsReview records that a turn ended without enough runtime evidence to
@@ -448,6 +510,7 @@ func (c *Controller) NeedsReview(reason string) (Task, error) {
 	if c.task.ID == "" || c.task.Status.IsTerminal() {
 		return c.task.Clone(), nil
 	}
+	before, beforeAction := c.task.Clone(), c.lastAction
 	c.syncTodos()
 	if reviewed := strings.TrimSpace(reason); reviewed != "" {
 		c.task.ReviewReason = reviewed
@@ -459,7 +522,14 @@ func (c *Controller) NeedsReview(reason string) (Task, error) {
 	}
 	c.lastAction = firstNonEmpty(reason, "needs review")
 	c.noteRoleProgress(c.lastAction)
-	return c.task.Clone(), c.persist()
+	c.task.AppendEventIfChanged(TimelineEvent{
+		At:      c.task.UpdatedAt,
+		Kind:    TimelineReview,
+		Role:    c.role,
+		Status:  string(c.task.Status),
+		Summary: c.lastAction,
+	})
+	return c.commit(before, beforeAction)
 }
 
 // Fail records an unrecoverable execution error.
@@ -470,13 +540,21 @@ func (c *Controller) Fail(reason string) (Task, error) {
 	if c.task.ID == "" || c.task.Status.IsTerminal() {
 		return c.task.Clone(), nil
 	}
+	before, beforeAction := c.task.Clone(), c.lastAction
 	c.syncTodos()
 	if err := c.task.Fail(c.now().UTC()); err != nil {
 		return c.task.Clone(), err
 	}
 	c.lastAction = firstNonEmpty(reason, "failed")
 	c.noteRoleProgress(c.lastAction)
-	return c.task.Clone(), c.persist()
+	c.task.AppendEvent(TimelineEvent{
+		At:      c.task.UpdatedAt,
+		Kind:    TimelineFailed,
+		Role:    c.role,
+		Status:  string(c.task.Status),
+		Summary: c.lastAction,
+	})
+	return c.commit(before, beforeAction)
 }
 
 // Cancel records a deliberate abandon by the user.
@@ -487,13 +565,21 @@ func (c *Controller) Cancel(reason string) (Task, error) {
 	if c.task.ID == "" || c.task.Status.IsTerminal() {
 		return c.task.Clone(), nil
 	}
+	before, beforeAction := c.task.Clone(), c.lastAction
 	c.syncTodos()
 	if err := c.task.Cancel(c.now().UTC()); err != nil {
 		return c.task.Clone(), err
 	}
 	c.lastAction = firstNonEmpty(reason, "cancelled")
 	c.noteRoleProgress(c.lastAction)
-	return c.task.Clone(), c.persist()
+	c.task.AppendEvent(TimelineEvent{
+		At:      c.task.UpdatedAt,
+		Kind:    TimelineCancelled,
+		Role:    c.role,
+		Status:  string(c.task.Status),
+		Summary: c.lastAction,
+	})
+	return c.commit(before, beforeAction)
 }
 
 // Context returns deterministic orientation blocks for the current task.
@@ -524,6 +610,8 @@ func (c *Controller) ensureLoaded() error {
 		return nil
 	}
 	c.task = NormalizeRecovered(snap.Task)
+	c.recovery = snap.Recovery
+	c.task.Recovery = snap.Recovery
 	// Restore the role the task last executed under. The live authority is
 	// still read through roleSource at the next Begin; this value only keeps
 	// attribution and role-change detection truthful across a restart.
@@ -560,10 +648,14 @@ func (c *Controller) ensureLoaded() error {
 	if err != nil && c.task.ID == "" {
 		// Nothing recoverable: report rather than silently starting over a
 		// state we could not read.
+		c.recovery = RecoveryReport{
+			State:  RecoveryBlocked,
+			Detail: "the checkpoint could not be read and no task could be recovered",
+		}
 		return fmt.Errorf("%w: %v", ErrCorruptTask, err)
 	}
 	if err != nil && c.task.ContextWarning == "" {
-		c.task.ContextWarning = "task context was not restored: " + err.Error()
+		c.task.ContextWarning = "task state could not be fully restored: " + err.Error()
 	}
 	if err == nil && snap.Progress.LastAction != "" {
 		c.lastAction = snap.Progress.LastAction
@@ -592,6 +684,78 @@ func (c *Controller) noteRoleProgress(note string) {
 		Role:     c.role,
 		Progress: []string{note},
 	}, c.now().UTC())
+}
+
+// commit persists the current in-memory transition. On failure it restores the
+// prior task and last action, so the authoritative state never advances past a
+// checkpoint that did not land. It is the shared shape for every lifecycle
+// transition: memory is not the commit point, the checkpoint is.
+func (c *Controller) commit(before Task, beforeAction string) (Task, error) {
+	if err := c.persist(); err != nil {
+		c.task = before
+		c.lastAction = beforeAction
+		return c.task.Clone(), err
+	}
+	return c.task.Clone(), nil
+}
+
+// controllerState is the full in-memory state a transition may replace. Begin
+// and ResumeTask change more than the task, so they snapshot the whole set to
+// roll back a failed checkpoint without leaving a half-attached task.
+type controllerState struct {
+	task       Task
+	lastAction string
+	role       workspace.Workspace
+	roleKnown  bool
+	budget     *budget.State
+	evidence   *cognition.EvidenceState
+	audit      string
+	report     agent.ProjectionReport
+	hasReport  bool
+}
+
+func (c *Controller) snapshotState() controllerState {
+	var b *budget.State
+	if c.budgetState != nil {
+		copied := *c.budgetState
+		b = &copied
+	}
+	c.auditMu.Lock()
+	audit, report, has := c.audit, c.lastReport, c.hasReport
+	c.auditMu.Unlock()
+	return controllerState{
+		task:       c.task.Clone(),
+		lastAction: c.lastAction,
+		role:       c.role,
+		roleKnown:  c.roleKnown,
+		budget:     b,
+		evidence:   c.evidence.Clone(),
+		audit:      audit,
+		report:     report,
+		hasReport:  has,
+	}
+}
+
+func (c *Controller) restoreState(s controllerState) {
+	c.task = s.task
+	c.lastAction = s.lastAction
+	c.role = s.role
+	c.roleKnown = s.roleKnown
+	c.budgetState = s.budget
+	c.evidence = s.evidence
+	c.auditMu.Lock()
+	c.audit, c.lastReport, c.hasReport = s.audit, s.report, s.hasReport
+	c.auditMu.Unlock()
+}
+
+// commitState persists a multi-field transition and restores everything on
+// failure.
+func (c *Controller) commitState(s controllerState) (Task, error) {
+	if err := c.persist(); err != nil {
+		c.restoreState(s)
+		return c.task.Clone(), err
+	}
+	return c.task.Clone(), nil
 }
 
 // persist writes the checkpoint and projection, stamping the last action.
@@ -660,6 +824,13 @@ func (c *Controller) Detach() (Task, bool, error) {
 	c.projectTaskContext()
 	detached := c.task.Clone()
 	if detached.Status.IsTerminal() {
+		c.task.AppendEvent(TimelineEvent{
+			At:      c.task.UpdatedAt,
+			Kind:    TimelineDetached,
+			Role:    c.role,
+			Status:  string(c.task.Status),
+			Summary: "detached terminal task: " + describeObjective(c.task.Objective),
+		})
 		progress := ProgressFrom(c.task)
 		if progress.CheckpointAt.IsZero() {
 			progress.CheckpointAt = c.task.UpdatedAt
@@ -669,7 +840,20 @@ func (c *Controller) Detach() (Task, bool, error) {
 			state := *c.budgetState
 			progress.Budget = &state
 		}
-		_ = c.store.ArchiveTask(c.task, progress)
+		// A terminal archive keeps the observation state too, so a completed
+		// task's lineage artifacts still resolve after the session boundary.
+		if c.evidence != nil && !c.evidence.Empty() {
+			progress.EvidenceState = c.evidence.Clone()
+		}
+		c.auditMu.Lock()
+		audit := c.audit
+		c.auditMu.Unlock()
+		if audit != "" {
+			progress.Audit = audit
+		}
+		if err := c.store.ArchiveTask(c.task, progress); err != nil {
+			return Task{}, false, err
+		}
 		c.task = Task{}
 		c.roleKnown = false
 		c.evidence = cognition.NewEvidenceState()
@@ -690,6 +874,13 @@ func (c *Controller) Detach() (Task, bool, error) {
 		detached = c.task.Clone()
 		c.lastAction = firstNonEmpty(c.lastAction, "interrupted")
 	}
+	c.task.AppendEvent(TimelineEvent{
+		At:      c.task.UpdatedAt,
+		Kind:    TimelineDetached,
+		Role:    c.role,
+		Status:  string(c.task.Status),
+		Summary: "detached for a new session: " + describeObjective(c.task.Objective),
+	})
 	progress := ProgressFrom(c.task)
 	if progress.CheckpointAt.IsZero() {
 		progress.CheckpointAt = c.task.UpdatedAt
@@ -758,6 +949,13 @@ func (c *Controller) ListResumable() ([]Task, error) {
 	return out, nil
 }
 
+// ArchiveProblems returns the corrupt detached-task files observed by the most
+// recent archive listing. It is diagnostic only: naming a lost archive never
+// grants authority and never fabricates a task.
+func (c *Controller) ArchiveProblems() []ArchiveProblem {
+	return c.store.ArchiveProblems()
+}
+
 // ResumeTask attaches a resumable task to the current session.
 //
 // An empty id resumes the latest resumable task (newest stamp, ID tie-break);
@@ -771,7 +969,7 @@ func (c *Controller) ResumeTask(id string) (Task, error) {
 	if err := c.ensureLoaded(); err != nil {
 		return Task{}, err
 	}
-	target, progress, found, err := c.findResumable(id)
+	target, progress, recovery, found, err := c.findResumable(id)
 	if err != nil {
 		return Task{}, err
 	}
@@ -786,6 +984,7 @@ func (c *Controller) ResumeTask(id string) (Task, error) {
 			return Task{}, err
 		}
 	}
+	wasLive := c.task.ID == target.ID
 	c.task = target
 	// Attribute the resumed task's projection to the role it last ran under,
 	// not to whatever role the previously active task used.
@@ -828,6 +1027,29 @@ func (c *Controller) ResumeTask(id string) (Task, error) {
 		c.task.UpdatedAt = now
 	}
 	c.lastAction = "resumed: " + describeObjective(c.task.Objective)
+	c.task.AppendEvent(TimelineEvent{
+		At:      now,
+		Kind:    TimelineResumed,
+		Role:    c.role,
+		Status:  string(c.task.Status),
+		Summary: c.lastAction + " from the detached archive",
+	})
+	// Keep the classification the archive sanitizer produced. Claiming INTACT
+	// after a repair would tell the user nothing was dropped when something
+	// was; append the resume detail without erasing the truth.
+	if recovery.Empty() {
+		detail := "resumed from the detached archive"
+		if wasLive {
+			detail = "resumed the active task"
+		}
+		recovery = RecoveryReport{State: RecoveryIntact, Detail: detail}
+	} else if recovery.Detail != "" {
+		recovery.Detail += "; resumed from the detached archive"
+	} else {
+		recovery.Detail = "resumed from the detached archive"
+	}
+	c.recovery = recovery
+	c.task.Recovery = c.recovery
 	if err := c.persist(); err != nil {
 		return Task{}, err
 	}
@@ -897,55 +1119,60 @@ func (c *Controller) CancelResumable(id, reason string) (Task, error) {
 }
 
 // findResumable locates one resumable task and its progress, latest when empty.
-func (c *Controller) findResumable(id string) (Task, Progress, bool, error) {
+//
+// The returned recovery report is the classification of the artifact the task
+// actually came from, so a resumed archive keeps the truth of what sanitizing
+// it repaired.
+func (c *Controller) findResumable(id string) (Task, Progress, RecoveryReport, bool, error) {
 	id = strings.TrimSpace(id)
 	if id != "" && c.task.ID == id && IsResumable(c.task.Status) {
 		progress := ProgressFrom(c.task)
 		progress.LastAction = c.lastAction
-		return c.task.Clone(), progress, true, nil
+		return c.task.Clone(), progress, c.recovery, true, nil
 	}
 	archived, err := c.store.ListArchived()
 	if err != nil {
-		return Task{}, Progress{}, false, err
+		return Task{}, Progress{}, RecoveryReport{}, false, err
 	}
 	if id != "" {
 		for _, snap := range archived {
 			if snap.Task.ID == id && IsResumable(NormalizeRecovered(snap.Task).Status) {
 				t := NormalizeRecovered(snap.Task)
-				return t.Clone(), snap.Progress, true, nil
+				return t.Clone(), snap.Progress, snap.Recovery, true, nil
 			}
 		}
 		if c.task.ID == id {
 			progress := ProgressFrom(c.task)
-			return c.task.Clone(), progress, IsResumable(c.task.Status), nil
+			return c.task.Clone(), progress, c.recovery, IsResumable(c.task.Status), nil
 		}
-		return Task{}, Progress{}, false, nil
+		return Task{}, Progress{}, RecoveryReport{}, false, nil
 	}
 	var (
-		best      Task
-		bestProg  Progress
-		bestFound bool
+		best       Task
+		bestProg   Progress
+		bestReport RecoveryReport
+		bestFound  bool
 	)
-	consider := func(t Task, p Progress) {
+	consider := func(t Task, p Progress, report RecoveryReport) {
 		t = NormalizeRecovered(t)
 		if !IsResumable(t.Status) {
 			return
 		}
 		if !bestFound || p.CheckpointAt.After(bestProg.CheckpointAt) ||
 			(p.CheckpointAt.Equal(bestProg.CheckpointAt) && t.ID > best.ID) {
-			best, bestProg, bestFound = t.Clone(), p, true
+			best, bestProg, bestReport, bestFound = t.Clone(), p, report, true
 		}
 	}
 	if c.task.ID != "" {
 		p := ProgressFrom(c.task)
 		p.CheckpointAt = c.task.UpdatedAt
 		p.LastAction = c.lastAction
-		consider(c.task, p)
+		consider(c.task, p, c.recovery)
 	}
 	for _, snap := range archived {
-		consider(snap.Task, snap.Progress)
+		consider(snap.Task, snap.Progress, snap.Recovery)
 	}
-	return best, bestProg, bestFound, nil
+	return best, bestProg, bestReport, bestFound, nil
 }
 
 // withTask applies one context mutation atomically with its checkpoint. A
@@ -1013,7 +1240,7 @@ type confirmedHypothesis struct {
 // hypothesis without asserting that the claim is confirmed.
 func (c *Controller) AttachEvidence(claimID string, evidenceIDs []string) error {
 	_, err := withTask(c, func() (struct{}, error) {
-		return struct{}{}, c.task.AttachEvidence(claimID, evidenceIDs)
+		return struct{}{}, c.task.AttachEvidence(claimID, evidenceIDs, c.now().UTC())
 	})
 	return err
 }
@@ -1047,7 +1274,7 @@ func (c *Controller) SupersedeHypothesis(id, byID string) (Hypothesis, error) {
 // SupersedeFact replaces one active fact with another, retaining both.
 func (c *Controller) SupersedeFact(id, byID string) (Fact, error) {
 	return withTask(c, func() (Fact, error) {
-		return c.task.SupersedeFact(id, byID)
+		return c.task.SupersedeFact(id, byID, c.now().UTC())
 	})
 }
 
@@ -1055,14 +1282,14 @@ func (c *Controller) SupersedeFact(id, byID string) (Fact, error) {
 // conclusions that depended only on it.
 func (c *Controller) InvalidateEvidence(id, reason string) (EvidenceRecord, error) {
 	return withTask(c, func() (EvidenceRecord, error) {
-		return c.task.InvalidateEvidence(id, reason)
+		return c.task.InvalidateEvidence(id, reason, c.now().UTC())
 	})
 }
 
 // SupersedeEvidence marks one observation replaced by a later one.
 func (c *Controller) SupersedeEvidence(id, byID string) (EvidenceRecord, error) {
 	return withTask(c, func() (EvidenceRecord, error) {
-		return c.task.SupersedeEvidence(id, byID)
+		return c.task.SupersedeEvidence(id, byID, c.now().UTC())
 	})
 }
 

@@ -85,6 +85,10 @@ type Source struct {
 	Trust    string `json:"trust,omitempty"`
 	// Check names a verification kind, when the observation is a check.
 	Check string `json:"check,omitempty"`
+	// Scope is the repository-relative coverage a check reported, "*" for
+	// every package. It lets the durable completion boundary verify that a
+	// check covers what the contract asked for without re-deriving it.
+	Scope string `json:"scope,omitempty"`
 }
 
 // EvidenceItem is one durable fact.
@@ -110,6 +114,12 @@ type EvidenceItem struct {
 	Seq int `json:"seq,omitempty"`
 	// Conflict explains a status of CONFLICTING.
 	Conflict string `json:"conflict,omitempty"`
+	// Executed reports that the observation came from a process that ran to a
+	// successful terminal state. It is what separates a successful command,
+	// which can support an execution objective, from a failed one, which is a
+	// diagnostic. It is additive and optional: a legacy item without it is
+	// treated as unknown, never as success.
+	Executed bool `json:"executed,omitempty"`
 }
 
 // Requirement is one evidence need declared by a task shape.
@@ -723,6 +733,7 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 	if exit != 0 {
 		summary += fmt.Sprintf(" (exit %d)", exit)
 	}
+	executed := outcome.Result.Executes && outcome.Result.Finished && !outcome.Result.IsError
 	changed := s.upsert(EvidenceItem{
 		ID:        "command:" + digest(command),
 		Status:    StatusKnown,
@@ -732,6 +743,7 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 		Digest:    digest(text),
 		Source:    Source{Tool: "bash", CallID: outcome.CallID},
 		Seq:       seq,
+		Executed:  executed,
 	})
 	if outcome.Result.Verifies {
 		check := ""
@@ -756,8 +768,9 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 			Summary:   bound("verification "+check+" "+scope+": "+summary, MaxEvidenceSummaryBytes),
 			Value:     text,
 			Digest:    digest(text),
-			Source:    Source{Tool: "bash", CallID: outcome.CallID, Check: check},
+			Source:    Source{Tool: "bash", CallID: outcome.CallID, Check: check, Scope: scope},
 			Seq:       seq,
+			Executed:  executed,
 		}) {
 			changed = true
 		}

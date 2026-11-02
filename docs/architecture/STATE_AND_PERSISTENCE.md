@@ -48,7 +48,7 @@ function.
 | Path | Meaning | Owner | Lifecycle |
 | --- | --- | --- | --- |
 | `project.yml` | `{id, name, root, user.name}` — stable project identity, human-readable project name, and the project worker identity | `project` | project; authoritative; machine-local, gitignored |
-| `progress.json` | authoritative durable task checkpoint: identity, lifecycle, contract, snapshot, budget, evidence state, active role and handoff record (continuity metadata, never authority), and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries |
+| `progress.json` | authoritative durable task checkpoint (schema version 3, read-old/refuse-newer): identity, lifecycle, contract, snapshot, budget, evidence state, active role and handoff record (continuity metadata, never authority), the bounded timeline and completion proof, and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries, checkpoint write is the commit point |
 | `task.md` | human- and model-readable task projection | `task` | project; projection only; never authoritative over `progress.json` |
 | `tasks/<id>.json` | detached task archive, including its context | `task` | project; durable until resumed, cancelled, or deleted by the human |
 
@@ -661,7 +661,9 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
 20. A task identity is independent of the active session and execution role.
     Changing role never mints a new task.
 21. `progress.json` is the single authoritative task checkpoint; `task.md` is a
-    lossy projection and never outranks it.
+    lossy projection and never outranks it. The checkpoint schema is version 3:
+    a newer reader accepts older versions, and an older reader refuses a newer
+    version rather than rewriting it without the fields it does not know.
 22. Verified facts require current, usable evidence. A hypothesis, a repeated
     assertion, an inconclusive result, or a model claim never becomes a fact by
     being recorded.
@@ -672,6 +674,27 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
     reconciled against the restored workspace: matching the target is applied
     without a switch, matching the source is interrupted, and any third role is
     a reported discrepancy that does not rewrite the recorded role.
+24. The task timeline is a bounded index derived from recorded transitions, not a
+    second transcript or a second source of truth. It references authoritative
+    records by id, never copies their payloads, elides observation events before
+    lifecycle boundaries, and reports a dropped-event gap instead of silently
+    rewriting history.
+25. Completion is proven only by the evaluator's verdict plus the task's
+    recorded observations, and the requirement is explicit per contract kind:
+    an answer for informational, a successful execution for execution, and an
+    observed change plus a later verification for mutation. `COMPLETED` without
+    a resolving proof projects as `COMPLETED_UNPROVEN`; invalidating, superseding,
+    or materially contradicting the proof's evidence never rewrites the
+    historical lifecycle record.
+26. A completion transition is committed only when its checkpoint write
+    succeeds. On failure the prior task state is restored, so an uncommitted
+    proof or `COMPLETED` status is never published.
+27. Recovery classification is derived on load, never persisted. It covers the
+    live checkpoint and detached archives, includes a dropped completion proof,
+    and names missing or repaired information. Corrupt archive files are
+    recorded as diagnostics rather than silently skipped. Authority is never
+    inferred from recovery, and a task that cannot progress without a human
+    decision is reported as such.
 
 ## Explicit Non-Goals
 

@@ -177,9 +177,14 @@ func (t *runtimeWriteTool) Execute(agent.Context, map[string]any) agent.Result {
 
 func runtimeProjection(recorded task.Task, err error) TaskProjection {
 	projection := TaskProjection{
-		ID:        recorded.ID,
-		Status:    string(recorded.Status),
-		Objective: recorded.Objective,
+		ID:             recorded.ID,
+		Status:         string(recorded.Status),
+		Objective:      recorded.Objective,
+		ObjectiveState: string(recorded.ObjectiveState()),
+		Warning:        recorded.ContextWarning,
+	}
+	if !recorded.Recovery.Empty() && recorded.Recovery.State != task.RecoveryIntact {
+		projection.Recovery = recorded.Recovery.Label()
 	}
 	for _, item := range task.Items(recorded) {
 		projection.Items = append(projection.Items, TaskItem{
@@ -424,6 +429,13 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 				ID: current.ID, Status: string(current.Status), Objective: current.Objective,
 				ReviewReason: current.ReviewReason, Role: string(current.LastRole()),
 			}
+			resume.ObjectiveState = string(current.ObjectiveState())
+			resume.CompletionSummary = current.CompletionSummary()
+			resume.Warning = current.ContextWarning
+			if !current.Recovery.Empty() {
+				resume.RecoveryState = string(current.Recovery.State)
+				resume.RecoveryDetail = current.Recovery.Detail
+			}
 			if current.Handoff != nil {
 				resume.HandoffStatus = string(current.Handoff.Status)
 				resume.HandoffTo = current.Handoff.To.String()
@@ -455,6 +467,14 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 			recorded, err := controller.Complete()
 			return runtimeProjection(recorded, err)
 		},
+		CompleteWithEvidence: func(evidence CompletionEvidence) TaskProjection {
+			recorded, err := controller.CompleteWithEvidence(task.CompletionEvidence{
+				Complete: evidence.Complete,
+				Reason:   evidence.Reason,
+				Answered: evidence.Answered,
+			})
+			return runtimeProjection(recorded, err)
+		},
 		Fail: func(reason string) TaskProjection {
 			recorded, err := controller.Fail(reason)
 			return runtimeProjection(recorded, err)
@@ -481,7 +501,59 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 		ObserveTurns:     controller.ObserveTurns,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
+		Timeline: func(limit int) []TimelineView {
+			current, ok := controller.Current()
+			if !ok {
+				return nil
+			}
+			events := current.Timeline
+			if limit > 0 && limit < len(events) {
+				events = events[len(events)-limit:]
+			}
+			out := make([]TimelineView, 0, len(events))
+			for _, event := range events {
+				view := TimelineView{
+					Seq: event.Seq, At: event.At, Kind: string(event.Kind),
+					Status: event.Status, Summary: event.Summary, Refs: event.Refs,
+				}
+				if event.Role.Valid() {
+					view.Role = event.Role.Label()
+				}
+				out = append(out, view)
+			}
+			return out
+		},
+		Lineage: func(id string) (LineageView, []LineageView, bool) {
+			if _, ok := controller.Current(); !ok {
+				return LineageView{}, nil, false
+			}
+			if id == "" {
+				return LineageView{}, runtimeLineageViews(controller.Lineage()), true
+			}
+			focus, related, found := controller.TraceLineage(id)
+			return runtimeLineageView(focus), runtimeLineageViews(related), found
+		},
 	}
+}
+
+func runtimeLineageViews(entries []task.LineageEntry) []LineageView {
+	out := make([]LineageView, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, runtimeLineageView(entry))
+	}
+	return out
+}
+
+func runtimeLineageView(entry task.LineageEntry) LineageView {
+	view := LineageView{
+		Kind: entry.Kind, ID: entry.ID, Stage: string(entry.Stage), Status: entry.Status,
+		Text: entry.Text, Note: entry.Note, Artifact: entry.Artifact,
+		EvidenceIDs: entry.EvidenceIDs, Contradictions: entry.Contradicts, Missing: entry.Missing,
+	}
+	if entry.Role.Valid() {
+		view.Role = entry.Role.Label()
+	}
+	return view
 }
 
 func runtimeHandoffView(recorded task.Handoff) HandoffView {

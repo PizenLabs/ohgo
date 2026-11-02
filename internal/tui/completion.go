@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
@@ -55,4 +57,16 @@ func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.In
 	default: // agent.RunPaused
 		return taskActionPause, reason
 	}
+}
+
+// hasOpenTaskItems reports whether a projection still shows work that is not
+// done. A completion refusal caused by outstanding work keeps the task active;
+// any other refusal is reviewable.
+func hasOpenTaskItems(projection TaskProjection) bool {
+	for _, item := range projection.Items {
+		if !strings.EqualFold(strings.TrimSpace(item.State), taskStateDone) {
+			return true
+		}
+	}
+	return false
 }

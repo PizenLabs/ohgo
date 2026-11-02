@@ -40,8 +40,53 @@ immutable.
   valid narrowing, and a checkpoint recovered without `task.md` reconstructs the
   objective from the contract so its handoff stays valid and writable.
 
+- Task continuity Phase 3: progression, lineage, recovery, and evidence-backed
+  completion. `progress.json` now carries a bounded timeline of meaningful task
+  events (creation, checkpoints, findings, evidence and hypothesis
+  dispositions, handoffs, verification, detach/resume, completion, failure)
+  that references authoritative records instead of copying payloads, plus an
+  evidence proof for COMPLETED tasks. `Task.ObjectiveState` distinguishes
+  `ACTIVE`, `INTERRUPTED`, `NEEDS_REVIEW`, `BLOCKED`, `PROVEN`,
+  `COMPLETED_UNPROVEN`, and `CANCELLED`. Completion is explicit per contract kind:
+  an informational objective needs an answer, an execution objective needs a
+  projected successful execution (an answer alone is refused), and a mutation
+  objective needs an observed change plus a verification that followed it. A
+  proof that is invalidated, superseded, evicted, or materially contradicted
+  downgrades to `COMPLETED_UNPROVEN` without rewriting the lifecycle record.
+  Load reports whether recovery was intact, reconstructed with named missing
+  information, in need of a human decision, or blocked; detached archives carry
+  the same classification and corrupt archive files are reported instead of
+  silently skipped. `/task status`, `/task show`, `/task timeline`, and
+  `/task lineage` expose the same read-only facts through the existing
+  interaction surface.
+
+### Changed
+
+- `progress.json` is now schema version 3. The bump is a downgrade barrier, not
+  a shape change: a newer binary still reads version 1 and 2 checkpoints, while
+  an older binary refuses version 3 instead of silently rewriting it without
+  the timeline and completion proof it cannot parse. The projection is written
+  before the checkpoint, and the checkpoint write is the commit point.
+- The task timeline elides observation events before lifecycle history and
+  counts dropped events from the retained sequence numbers rather than assuming
+  the first retained event is the creation event. Repeated pause and review
+  boundaries are idempotent, and task-context mutations use the injected clock.
+
 ### Fixed
 
+- A failed completion checkpoint can no longer be published as
+  `COMPLETED`/`PROVEN`: the controller restores the prior task and the TUI
+  refuses to surface an uncommitted completion. The same task stays resumable.
+- A successful command is projected as an observation, so an execution
+  objective can be backed by real execution evidence rather than only by a
+  final answer. The durable boundary also carries a check's reported scope and
+  refuses a verification that does not cover the contract's declared kind and
+  scope.
+- Recovery no longer reports `INTACT` after dropping or repairing a completion
+  proof, archive sanitization reports its repairs, and resuming an archive
+  preserves that classification.
+- A contradiction now downgrades `PROVEN` when it targets a claim the proof
+  depends on, and leaves an unrelated proof intact.
 - Task context selection now uses the fixed budget with relevance ordering
   instead of recency-only caps: older verified facts survive, the active role's
   section is reserved, stale evidence cannot displace current evidence, and an

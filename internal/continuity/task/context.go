@@ -162,6 +162,9 @@ type EvidenceRecord struct {
 	Role workspace.Workspace `json:"role"`
 	// Source is the execution reference: tool/call id, command, or path.
 	Source string `json:"source,omitempty"`
+	// Scope is the repository-relative coverage a check reported, when the
+	// record is a verification. Empty means the scope was not recorded.
+	Scope string `json:"scope,omitempty"`
 	// Artifact references a persisted result or artifact. It is a pointer, not
 	// a copy of the artifact.
 	Artifact string `json:"artifact,omitempty"`
@@ -420,6 +423,9 @@ type EvidenceInput struct {
 	Role workspace.Workspace
 	// Source is a tool/call id, command, or path.
 	Source string
+	// Scope is the repository-relative coverage a check reported, when the
+	// observation is a verification.
+	Scope string
 	// Artifact references a persisted result.
 	Artifact string
 	// Summary is the bounded description.
@@ -1252,6 +1258,7 @@ func (t *Task) RecordEvidence(in EvidenceInput) (EvidenceRecord, error) {
 		Kind:        in.Kind,
 		Role:        in.Role,
 		Source:      boundText(in.Source, maxEvidenceRefBytes),
+		Scope:       boundText(strings.TrimSpace(in.Scope), maxEvidenceRefBytes),
 		Artifact:    boundText(in.Artifact, maxEvidenceRefBytes),
 		Summary:     boundText(summary, maxEvidenceSummaryBytes),
 		Outcome:     in.Outcome,
@@ -1263,6 +1270,22 @@ func (t *Task) RecordEvidence(in EvidenceInput) (EvidenceRecord, error) {
 	}
 	t.Context.ensureVersion()
 	t.Context.Evidence = append(t.Context.Evidence, record)
+	kind := TimelineEvidence
+	if record.Kind == EvidenceTest || strings.Contains(record.Source, "check:") {
+		kind = TimelineVerification
+	}
+	refs := []string{record.ID}
+	if record.Artifact != "" {
+		refs = append(refs, record.Artifact)
+	}
+	t.AppendEvent(TimelineEvent{
+		At:      record.At,
+		Kind:    kind,
+		Role:    record.Role,
+		Status:  string(record.Outcome),
+		Summary: record.Summary,
+		Refs:    refs,
+	})
 	return record, nil
 }
 
@@ -1311,6 +1334,14 @@ func (t *Task) RecordFact(in FactInput) (Fact, error) {
 	}
 	t.Context.ensureVersion()
 	t.Context.Facts = append(t.Context.Facts, fact)
+	t.AppendEvent(TimelineEvent{
+		At:      fact.At,
+		Kind:    TimelineFact,
+		Role:    fact.Role,
+		Status:  string(fact.Status),
+		Summary: fact.Text,
+		Refs:    []string{fact.ID},
+	})
 	return fact, nil
 }
 
@@ -1343,13 +1374,21 @@ func (t *Task) RecordHypothesis(in HypothesisInput) (Hypothesis, error) {
 	}
 	t.Context.ensureVersion()
 	t.Context.Hypotheses = append(t.Context.Hypotheses, hypothesis)
+	t.AppendEvent(TimelineEvent{
+		At:      hypothesis.At,
+		Kind:    TimelineHypothesis,
+		Role:    hypothesis.Role,
+		Status:  string(hypothesis.Status),
+		Summary: hypothesis.Text,
+		Refs:    []string{hypothesis.ID},
+	})
 	return hypothesis, nil
 }
 
 // AttachEvidence adds current supporting evidence to an existing fact or
 // hypothesis without changing its disposition. Evidence never promotes a
 // hypothesis by itself.
-func (t *Task) AttachEvidence(claimID string, evidenceIDs []string) error {
+func (t *Task) AttachEvidence(claimID string, evidenceIDs []string, at time.Time) error {
 	ids := uniqueStrings(evidenceIDs)
 	if len(ids) == 0 {
 		return fmt.Errorf("%w: no evidence to attach", ErrInvalidContext)
@@ -1363,6 +1402,14 @@ func (t *Task) AttachEvidence(claimID string, evidenceIDs []string) error {
 		}
 		fact.EvidenceIDs = uniqueStrings(append(fact.EvidenceIDs, ids...))
 		t.Context.Facts[index] = fact
+		t.AppendEvent(TimelineEvent{
+			At:      stamp(at),
+			Kind:    TimelineEvidence,
+			Role:    fact.Role,
+			Status:  "attached",
+			Summary: "attached evidence to fact " + fact.ID,
+			Refs:    append([]string{fact.ID}, ids...),
+		})
 		return nil
 	}
 	if hypothesis, index := t.hypothesisIndex(claimID); index >= 0 {
@@ -1373,6 +1420,14 @@ func (t *Task) AttachEvidence(claimID string, evidenceIDs []string) error {
 		}
 		hypothesis.EvidenceIDs = uniqueStrings(append(hypothesis.EvidenceIDs, ids...))
 		t.Context.Hypotheses[index] = hypothesis
+		t.AppendEvent(TimelineEvent{
+			At:      stamp(at),
+			Kind:    TimelineEvidence,
+			Role:    hypothesis.Role,
+			Status:  "attached",
+			Summary: "attached evidence to hypothesis " + hypothesis.ID,
+			Refs:    append([]string{hypothesis.ID}, ids...),
+		})
 		return nil
 	}
 	return fmt.Errorf("%w: claim %q", ErrUnknownRecord, claimID)
@@ -1425,6 +1480,14 @@ func (t *Task) ConfirmHypothesis(id string, evidenceIDs []string, role workspace
 	hypothesis.ResolvedAt = resolved
 	hypothesis.Resolution = "confirmed by supporting evidence"
 	t.Context.Hypotheses[index] = hypothesis
+	t.AppendEvent(TimelineEvent{
+		At:      resolved,
+		Kind:    TimelineHypothesisConfirmed,
+		Role:    role,
+		Status:  string(hypothesis.Status),
+		Summary: "hypothesis confirmed: " + hypothesis.Text,
+		Refs:    []string{hypothesis.ID, fact.ID},
+	})
 	return hypothesis, fact, nil
 }
 
@@ -1449,6 +1512,14 @@ func (t *Task) RejectHypothesis(id, reason string, role workspace.Workspace, at 
 	hypothesis.ResolvedBy = role
 	hypothesis.ResolvedAt = stamp(at)
 	t.Context.Hypotheses[index] = hypothesis
+	t.AppendEvent(TimelineEvent{
+		At:      hypothesis.ResolvedAt,
+		Kind:    TimelineHypothesisRejected,
+		Role:    role,
+		Status:  string(hypothesis.Status),
+		Summary: "hypothesis rejected: " + hypothesis.Text,
+		Refs:    []string{hypothesis.ID},
+	})
 	return hypothesis, nil
 }
 
@@ -1477,11 +1548,19 @@ func (t *Task) SupersedeHypothesis(id, byID string, role workspace.Workspace, at
 	target.ResolvedBy = role
 	target.ResolvedAt = stamp(at)
 	t.Context.Hypotheses[index] = target
+	t.AppendEvent(TimelineEvent{
+		At:      target.ResolvedAt,
+		Kind:    TimelineHypothesisSuperseded,
+		Role:    role,
+		Status:  string(target.Status),
+		Summary: "hypothesis superseded: " + target.Text,
+		Refs:    []string{target.ID, replacement.ID},
+	})
 	return target, nil
 }
 
 // SupersedeFact replaces one active fact with another, retaining both.
-func (t *Task) SupersedeFact(id, byID string) (Fact, error) {
+func (t *Task) SupersedeFact(id, byID string, at time.Time) (Fact, error) {
 	target, index := t.factIndex(id)
 	if index < 0 {
 		return Fact{}, fmt.Errorf("%w: fact %q", ErrUnknownRecord, id)
@@ -1502,13 +1581,21 @@ func (t *Task) SupersedeFact(id, byID string) (Fact, error) {
 	target.Status = FactSuperseded
 	target.SupersededBy = replacement.ID
 	t.Context.Facts[index] = target
+	t.AppendEvent(TimelineEvent{
+		At:      stamp(at),
+		Kind:    TimelineFactSuperseded,
+		Role:    target.Role,
+		Status:  string(target.Status),
+		Summary: "fact superseded: " + target.Text,
+		Refs:    []string{target.ID, replacement.ID},
+	})
 	return target, nil
 }
 
 // InvalidateEvidence marks an observation as no longer applicable. Facts and
 // confirmed hypotheses that lose their last current support are invalidated,
 // never deleted, so the trail remains inspectable.
-func (t *Task) InvalidateEvidence(id, reason string) (EvidenceRecord, error) {
+func (t *Task) InvalidateEvidence(id, reason string, at time.Time) (EvidenceRecord, error) {
 	index := -1
 	for i := range t.Context.Evidence {
 		if t.Context.Evidence[i].ID == id {
@@ -1527,11 +1614,19 @@ func (t *Task) InvalidateEvidence(id, reason string) (EvidenceRecord, error) {
 	record.Note = boundText(strings.TrimSpace(reason), maxEvidenceSummaryBytes)
 	t.Context.Evidence[index] = record
 	t.invalidateUnsupported()
+	t.AppendEvent(TimelineEvent{
+		At:      stamp(at),
+		Kind:    TimelineEvidenceInvalidated,
+		Role:    record.Role,
+		Status:  string(record.Validity),
+		Summary: "evidence invalidated: " + record.Summary,
+		Refs:    []string{record.ID},
+	})
 	return record, nil
 }
 
 // SupersedeEvidence marks one observation as replaced by a later one.
-func (t *Task) SupersedeEvidence(id, byID string) (EvidenceRecord, error) {
+func (t *Task) SupersedeEvidence(id, byID string, at time.Time) (EvidenceRecord, error) {
 	index := -1
 	for i := range t.Context.Evidence {
 		if t.Context.Evidence[i].ID == id {
@@ -1560,6 +1655,14 @@ func (t *Task) SupersedeEvidence(id, byID string) (EvidenceRecord, error) {
 	record.Note = "superseded by #" + replacement.ID
 	t.Context.Evidence[index] = record
 	t.invalidateUnsupported()
+	t.AppendEvent(TimelineEvent{
+		At:      stamp(at),
+		Kind:    TimelineEvidenceSuperseded,
+		Role:    record.Role,
+		Status:  string(record.Validity),
+		Summary: "evidence superseded: " + record.Summary,
+		Refs:    []string{record.ID, replacement.ID},
+	})
 	return record, nil
 }
 
@@ -1618,6 +1721,14 @@ func (t *Task) AddQuestion(text string, role workspace.Workspace, at time.Time) 
 	question := Question{ID: id, TaskID: t.ID, Text: boundText(text, maxFactBytes), Role: role, Status: QuestionOpen, At: stamp(at)}
 	t.Context.ensureVersion()
 	t.Context.Questions = append(t.Context.Questions, question)
+	t.AppendEvent(TimelineEvent{
+		At:      question.At,
+		Kind:    TimelineQuestion,
+		Role:    question.Role,
+		Status:  string(question.Status),
+		Summary: "question raised: " + question.Text,
+		Refs:    []string{question.ID},
+	})
 	return question, nil
 }
 
@@ -1649,6 +1760,14 @@ func (t *Task) AnswerQuestion(id, answer string, role workspace.Workspace, at ti
 	question.AnsweredBy = role
 	question.AnsweredAt = stamp(at)
 	t.Context.Questions[index] = question
+	t.AppendEvent(TimelineEvent{
+		At:      question.AnsweredAt,
+		Kind:    TimelineQuestion,
+		Role:    role,
+		Status:  string(question.Status),
+		Summary: "question answered: " + question.Text,
+		Refs:    []string{question.ID},
+	})
 	return question, nil
 }
 

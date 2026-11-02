@@ -115,6 +115,17 @@ func ContextFor(t Task, role workspace.Workspace, lastAction string) []string {
 	if t.Status != "" {
 		b.addBlock("Status", string(t.Status))
 	}
+	// The objective projection answers whether the result is actually proven.
+	// It is only added when it carries information the lifecycle status does
+	// not: a completion claim, a recorded proof, a blocked contract, or a
+	// non-intact recovery.
+	if state := t.ObjectiveState(); state == ObjectiveProven || state == ObjectiveCompletedUnproven ||
+		state == ObjectiveBlocked || t.Completion != nil {
+		b.addBlock("Objective state", t.CompletionSummary())
+	}
+	if !t.Recovery.Empty() {
+		b.addBlock("Recovery", t.Recovery.Label())
+	}
 	if warning := strings.TrimSpace(t.ContextWarning); warning != "" {
 		b.addBlock("Continuity", warning)
 	}
@@ -136,6 +147,9 @@ func ContextFor(t Task, role workspace.Workspace, lastAction string) []string {
 	}
 	b.addBlock("Next action", t.NextAction)
 	b.addBlock("Last action", lastAction)
+	if recent := recentTimeline(t, 4); recent != "" {
+		b.addBlock("Recent timeline", recent)
+	}
 
 	b.addItems("Verified facts", factItems(t, role))
 	b.addItems("Hypotheses", hypothesisItems(t, role))
@@ -498,6 +512,40 @@ func renderEvidence(record EvidenceRecord) string {
 	}
 	return truncate(entry, 420)
 }
+
+// recentTimeline renders the newest lifecycle events as a bounded orientation
+// line. Record-bearing events are deliberately excluded: their authoritative
+// records already appear in the sections below, and repeating a stale or
+// invalidated statement here would present it as current.
+func recentTimeline(t Task, limit int) string {
+	if len(t.Timeline) == 0 || limit <= 0 {
+		return ""
+	}
+	parts := make([]string, 0, limit)
+	for i := len(t.Timeline) - 1; i >= 0 && len(parts) < limit; i-- {
+		event := t.Timeline[i]
+		switch event.Kind {
+		case TimelineCreated, TimelineResumed, TimelineCheckpoint, TimelinePaused,
+			TimelineReview, TimelineCompleted, TimelineFailed, TimelineCancelled,
+			TimelineDetached, TimelineHandoff:
+		default:
+			continue
+		}
+		entry := event.Kind.String() + ": " + event.Summary
+		parts = append(parts, truncate(entry, 160))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	// Reverse so the line reads oldest to newest among the selected events.
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+	return truncate(strings.Join(parts, "; "), 520)
+}
+
+// String renders the kind without a package prefix for presentation.
+func (k TimelineKind) String() string { return string(k) }
 
 // findingsItems renders the tail of the legacy, unclassified finding log,
 // newest last. These are explicitly not verified facts.

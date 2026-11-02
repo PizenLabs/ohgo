@@ -251,6 +251,14 @@ func (c *Controller) RecordWorkspaceSwitch(from, to workspace.Workspace, workspa
 		return err
 	}
 	c.lastAction = "workspace switched: " + from.Label() + " -> " + to.Label()
+	c.task.AppendEvent(TimelineEvent{
+		At:      now,
+		Kind:    TimelineHandoff,
+		Role:    to,
+		Status:  string(HandoffApplied),
+		Summary: "workspace switched by explicit human command: " + from.Label() + " -> " + to.Label(),
+		Refs:    []string{handoff.ID},
+	})
 	return c.persist()
 }
 
@@ -307,10 +315,20 @@ func (c *Controller) ProposeHandoff(in HandoffInput) (Handoff, error) {
 	c.task.Handoff = &handoff
 	c.task.UpdatedAt = now
 	c.lastAction = "handoff proposed: " + from.Label() + " -> " + in.To.Label()
+	beforeTimeline := cloneTimeline(c.task.Timeline)
+	c.task.AppendEvent(TimelineEvent{
+		At:      now,
+		Kind:    TimelineHandoff,
+		Role:    from,
+		Status:  string(HandoffProposed),
+		Summary: "handoff proposed: " + from.Label() + " -> " + in.To.Label(),
+		Refs:    []string{handoff.ID},
+	})
 	if err := c.persist(); err != nil {
 		// A failed write must not leave a proposal in memory that the durable
 		// state does not contain.
 		c.task.Handoff = nil
+		c.task.Timeline = beforeTimeline
 		return Handoff{}, err
 	}
 	return handoff.Clone(), nil
@@ -416,6 +434,14 @@ func (c *Controller) ApproveHandoff(id string) (Handoff, error) {
 	}
 	handoff.ApprovedBy = "human"
 	c.task.Handoff = &handoff
+	c.task.AppendEvent(TimelineEvent{
+		At:      handoff.UpdatedAt,
+		Kind:    TimelineHandoff,
+		Role:    handoff.From,
+		Status:  string(handoff.Status),
+		Summary: "handoff approved: " + handoff.From.Label() + " -> " + handoff.To.Label(),
+		Refs:    []string{handoff.ID},
+	})
 	if err := c.persist(); err != nil {
 		return Handoff{}, err
 	}
@@ -463,6 +489,14 @@ func (c *Controller) applyApprovedHandoff(now time.Time) error {
 		return err
 	}
 	c.lastAction = "handoff applied: " + handoff.From.Label() + " -> " + handoff.To.Label()
+	c.task.AppendEvent(TimelineEvent{
+		At:      now,
+		Kind:    TimelineHandoff,
+		Role:    handoff.To,
+		Status:  string(handoff.Status),
+		Summary: "handoff applied: " + handoff.From.Label() + " -> " + handoff.To.Label(),
+		Refs:    []string{handoff.ID},
+	})
 	return nil
 }
 
@@ -476,6 +510,14 @@ func (c *Controller) RejectHandoff(id, reason string) (Handoff, error) {
 		handoff.Failure = boundText(trimmed, maxHandoffText)
 	}
 	c.task.Handoff = &handoff
+	c.task.AppendEvent(TimelineEvent{
+		At:      handoff.UpdatedAt,
+		Kind:    TimelineHandoff,
+		Role:    handoff.From,
+		Status:  string(handoff.Status),
+		Summary: "handoff rejected: " + handoff.From.Label() + " -> " + handoff.To.Label(),
+		Refs:    []string{handoff.ID},
+	})
 	if err := c.persist(); err != nil {
 		return Handoff{}, err
 	}
@@ -494,6 +536,14 @@ func (c *Controller) FailHandoff(id, reason string) (Handoff, error) {
 		handoff.Failure = boundText(trimmed, maxHandoffText)
 	}
 	c.task.Handoff = &handoff
+	c.task.AppendEvent(TimelineEvent{
+		At:      handoff.UpdatedAt,
+		Kind:    TimelineHandoff,
+		Role:    handoff.From,
+		Status:  string(handoff.Status),
+		Summary: "handoff failed: " + handoff.From.Label() + " -> " + handoff.To.Label(),
+		Refs:    []string{handoff.ID},
+	})
 	if err := c.persist(); err != nil {
 		return Handoff{}, err
 	}
@@ -632,6 +682,14 @@ func (c *Controller) ReconcileRecoveredHandoff(live workspace.Workspace) (Handof
 	c.task.Handoff = &current
 	c.task.UpdatedAt = now
 	c.lastAction = "handoff recovery: " + handoffStatusLabel(current)
+	c.task.AppendEvent(TimelineEvent{
+		At:      now,
+		Kind:    TimelineHandoff,
+		Role:    live,
+		Status:  string(current.Status),
+		Summary: "handoff recovery: " + current.From.Label() + " -> " + current.To.Label() + " " + string(current.Status),
+		Refs:    []string{current.ID},
+	})
 	if err := c.persist(); err != nil {
 		return HandoffRecovery{Handoff: current.Clone(), Changed: true, Notice: notice}, err
 	}

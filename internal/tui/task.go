@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/budget"
@@ -56,6 +58,15 @@ type TaskProjection struct {
 	// the status check prevents a premature or stale value from claiming a
 	// finish.
 	Recap string
+	// ObjectiveState projects whether the objective is actually proven. It is
+	// empty for a layer that does not report it.
+	ObjectiveState string
+	// Recovery classifies the last load when it could not restore everything.
+	// Empty means the checkpoint was intact.
+	Recovery string
+	// Warning reports a continuity warning that did not prevent recovery, such
+	// as a bounded log refusing a new record. It is diagnostic, never status.
+	Warning string
 }
 
 // TaskResume is the durable state a new prompt must be checked against.
@@ -83,6 +94,53 @@ type TaskResume struct {
 	Contract        contract.IntentContract
 	HasContract     bool
 	Snapshot        *agent.TargetSnapshot
+	// ObjectiveState is the truthful completion projection (PROVEN,
+	// NEEDS_REVIEW, BLOCKED, ...). It is read-only.
+	ObjectiveState string
+	// CompletionSummary explains the objective state in observed terms.
+	CompletionSummary string
+	// RecoveryState and RecoveryDetail classify what the last load restored.
+	// They are empty when the checkpoint was intact.
+	RecoveryState  string
+	RecoveryDetail string
+	// Warning is a continuity warning that did not block recovery.
+	Warning string
+}
+
+// TimelineView is the UI projection of one durable task event.
+type TimelineView struct {
+	Seq     int
+	At      time.Time
+	Kind    string
+	Role    string
+	Status  string
+	Summary string
+	Refs    []string
+}
+
+// LineageView is the UI projection of one conclusion or observation.
+type LineageView struct {
+	Kind           string
+	ID             string
+	Stage          string
+	Status         string
+	Role           string
+	Text           string
+	Note           string
+	Artifact       string
+	EvidenceIDs    []string
+	Contradictions []string
+	Missing        []string
+}
+
+// CompletionEvidence is the host's evaluated completion decision.
+type CompletionEvidence struct {
+	// Complete is the evaluator's verdict.
+	Complete bool
+	// Reason explains a review verdict.
+	Reason string
+	// Answered reports a non-empty answer for an informational objective.
+	Answered bool
 }
 
 // HandoffView is the UI projection of one durable role transition.
@@ -139,6 +197,10 @@ type TaskHooks struct {
 	NeedsReview func(reason string) TaskProjection
 	// Complete records a successful end and returns the projection.
 	Complete func() TaskProjection
+	// CompleteWithEvidence records a successful end only when the durable
+	// task carries the observations the objective requires. It is the Phase 3
+	// completion path; Complete remains for hosts that predate proofs.
+	CompleteWithEvidence func(CompletionEvidence) TaskProjection
 	// Fail records an execution failure and returns the projection.
 	Fail func(reason string) TaskProjection
 	// Cancel closes the task as deliberately abandoned. It never claims the
@@ -201,6 +263,11 @@ type TaskHooks struct {
 	// RecordBudget folds a finished run's consumption into the durable task
 	// ledger. It does not reset the in-memory grant.
 	RecordBudget func(snapshot budget.Snapshot)
+	// Timeline returns the durable task events, newest last, bounded by limit.
+	Timeline func(limit int) []TimelineView
+	// Lineage returns one record and its related records, or every record when
+	// id is empty. It is read-only.
+	Lineage func(id string) (LineageView, []LineageView, bool)
 }
 
 // TaskProjected publishes a task projection into the transcript.
@@ -281,12 +348,64 @@ func (p *Program) taskCommand(args []string) {
 		if !ok {
 			return
 		}
-		text := "task " + resume.Status + ": " + resume.Objective
-		if resume.ReviewReason != "" {
-			text += "\nneeds review: " + resume.ReviewReason
+		p.state.Apply(Notice{Text: taskStatusText(resume, true)})
+		return
+	case "timeline":
+		if p.task.Timeline == nil {
+			p.state.Apply(Notice{Text: "task timeline is unavailable"})
+			return
 		}
-		text += "\nid: " + resume.ID
-		p.state.Apply(Notice{Text: text})
+		limit := 20
+		if len(rest) > 0 {
+			if parsed, err := parsePositiveInt(rest[0]); err == nil {
+				limit = parsed
+			}
+		}
+		if limit > 100 {
+			limit = 100
+		}
+		events := p.task.Timeline(limit)
+		if len(events) == 0 {
+			p.state.Apply(Notice{Text: "no task events recorded"})
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("task timeline (newest last):")
+		for _, event := range events {
+			sb.WriteString("\n")
+			sb.WriteString(formatTimelineEvent(event))
+		}
+		p.state.Apply(Notice{Text: sb.String()})
+		return
+	case "lineage", "trace", "evidence":
+		if p.task.Lineage == nil {
+			p.state.Apply(Notice{Text: "task lineage is unavailable"})
+			return
+		}
+		target := strings.Join(rest, " ")
+		focus, related, ok := p.task.Lineage(target)
+		if !ok {
+			if target == "" {
+				p.state.Apply(Notice{Text: "no conclusions or observations recorded"})
+			} else {
+				p.state.Apply(Notice{Text: "no task record matches " + target})
+			}
+			return
+		}
+		var sb strings.Builder
+		if focus.ID != "" {
+			sb.WriteString(formatLineageEntry(focus))
+			if len(related) > 0 {
+				sb.WriteString("\nrelated:")
+			}
+		} else {
+			sb.WriteString("task lineage:")
+		}
+		for _, entry := range related {
+			sb.WriteString("\n")
+			sb.WriteString(formatLineageEntry(entry))
+		}
+		p.state.Apply(Notice{Text: sb.String()})
 		return
 	case "resume":
 		if p.task.ResumeTask == nil {
@@ -365,11 +484,7 @@ func (p *Program) taskCommand(args []string) {
 			p.state.Apply(Notice{Text: "no task is active"})
 			return
 		}
-		text := "task " + current.Status + ": " + current.Objective
-		if current.ReviewReason != "" {
-			text += "\nneeds review: " + current.ReviewReason
-		}
-		p.state.Apply(Notice{Text: text})
+		p.state.Apply(Notice{Text: taskStatusText(current, false)})
 		return
 	case "accept":
 		current, ok := p.task.Current()
@@ -389,8 +504,119 @@ func (p *Program) taskCommand(args []string) {
 		p.state.Apply(Notice{Text: "review closed without completion; the next prompt starts a new task"})
 		return
 	default:
-		p.state.Apply(Notice{Text: "usage: /task [status|list|show [id]|resume [id]|cancel [id]|accept]"})
+		p.state.Apply(Notice{Text: "usage: /task [status|list|show [id]|timeline [n]|lineage [id]|resume [id]|cancel [id]|accept]"})
 	}
+}
+
+// taskStatusText renders the read-only status view. It names the objective
+// state and the recovery classification only when they add information the
+// lifecycle status does not already carry.
+func taskStatusText(task TaskResume, includeID bool) string {
+	var sb strings.Builder
+	sb.WriteString("task ")
+	sb.WriteString(task.Status)
+	if task.ObjectiveState != "" && task.ObjectiveState != "ACTIVE" {
+		sb.WriteString(" · ")
+		sb.WriteString(strings.ToUpper(task.ObjectiveState))
+	}
+	sb.WriteString(": ")
+	sb.WriteString(task.Objective)
+	if task.ReviewReason != "" {
+		sb.WriteString("\nneeds review: ")
+		sb.WriteString(task.ReviewReason)
+	}
+	if task.CompletionSummary != "" {
+		switch task.ObjectiveState {
+		case "PROVEN", "COMPLETED_UNPROVEN", "BLOCKED":
+			sb.WriteString("\n")
+			sb.WriteString(task.CompletionSummary)
+		}
+	}
+	if task.RecoveryState != "" && task.RecoveryState != "INTACT" {
+		sb.WriteString("\nrecovery: ")
+		sb.WriteString(task.RecoveryState)
+		if task.RecoveryDetail != "" {
+			sb.WriteString(" — ")
+			sb.WriteString(task.RecoveryDetail)
+		}
+	}
+	if task.Warning != "" {
+		sb.WriteString("\ncontinuity: ")
+		sb.WriteString(task.Warning)
+	}
+	if includeID {
+		sb.WriteString("\nid: ")
+		sb.WriteString(task.ID)
+	}
+	return sb.String()
+}
+
+// formatTimelineEvent renders one durable event without its payload.
+func formatTimelineEvent(event TimelineView) string {
+	when := ""
+	if !event.At.IsZero() {
+		when = event.At.Local().Format("15:04:05") + " "
+	}
+	role := ""
+	if event.Role != "" {
+		role = event.Role + " "
+	}
+	status := ""
+	if event.Status != "" {
+		status = " [" + event.Status + "]"
+	}
+	refs := ""
+	if len(event.Refs) > 0 {
+		refs = " (" + strings.Join(event.Refs, ",") + ")"
+	}
+	return fmt.Sprintf("  %d %s%s%s%s: %s%s", event.Seq, when, role, event.Kind, status, event.Summary, refs)
+}
+
+// formatLineageEntry renders one conclusion or observation with its stage.
+func formatLineageEntry(entry LineageView) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "  %s#%s [%s/%s]", entry.Kind, entry.ID, entry.Stage, entry.Status)
+	if entry.Role != "" {
+		sb.WriteString(" ")
+		sb.WriteString(entry.Role)
+	}
+	if entry.Text != "" {
+		sb.WriteString(": ")
+		sb.WriteString(entry.Text)
+	}
+	if len(entry.EvidenceIDs) > 0 {
+		sb.WriteString(" evidence:")
+		sb.WriteString(strings.Join(entry.EvidenceIDs, ","))
+	}
+	if entry.Artifact != "" {
+		sb.WriteString(" artifact:")
+		sb.WriteString(entry.Artifact)
+	}
+	if len(entry.Contradictions) > 0 {
+		sb.WriteString(" contradicts:")
+		sb.WriteString(strings.Join(entry.Contradictions, ","))
+	}
+	if len(entry.Missing) > 0 {
+		sb.WriteString(" missing:")
+		sb.WriteString(strings.Join(entry.Missing, ","))
+	}
+	if entry.Note != "" {
+		sb.WriteString(" — ")
+		sb.WriteString(entry.Note)
+	}
+	return sb.String()
+}
+
+// parsePositiveInt parses a bounded positive integer argument.
+func parsePositiveInt(text string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil {
+		return 0, err
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("not a positive integer")
+	}
+	return n, nil
 }
 
 // selectTask locates one task for /task show by ID, objective substring, or
@@ -652,6 +878,9 @@ func taskLines(projection *TaskProjection, pal *Palette, layout Layout) []string
 	if projection.Status != "" {
 		header += "  " + strings.ToLower(projection.Status)
 	}
+	if state := strings.ToUpper(strings.TrimSpace(projection.ObjectiveState)); state == "PROVEN" || state == "COMPLETED_UNPROVEN" {
+		header += "  · " + strings.ToLower(state)
+	}
 	lines := []string{pal.Notice.Render(fit(header))}
 
 	if len(projection.Items) == 0 {
@@ -675,6 +904,12 @@ func taskLines(projection *TaskProjection, pal *Palette, layout Layout) []string
 	}
 	if projection.Err != "" {
 		lines = append(lines, pal.ToolError.Render(fit("  ! "+projection.Err)))
+	}
+	if recovery := strings.TrimSpace(projection.Recovery); recovery != "" {
+		lines = append(lines, pal.Status.Render(fit("  recovery: "+recovery)))
+	}
+	if warning := strings.TrimSpace(projection.Warning); warning != "" {
+		lines = append(lines, pal.Status.Render(fit("  ! "+warning)))
 	}
 	return lines
 }

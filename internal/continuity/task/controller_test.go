@@ -458,7 +458,7 @@ func TestControllerContextCarriesOrientationAndStaysBounded(t *testing.T) {
 		t.Fatalf("activate: %v", err)
 	}
 	for i := 0; i < 500; i++ {
-		controller.task.AddFinding(strings.Repeat("finding ", 40))
+		controller.task.AddFinding(workspace.Build, strings.Repeat("finding ", 40), time.Now().UTC())
 	}
 
 	blocks := controller.Context()

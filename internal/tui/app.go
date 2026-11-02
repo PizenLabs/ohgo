@@ -4909,18 +4909,49 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	}
 	switch action {
 	case taskActionComplete:
-		if p.task.Complete != nil {
-			projection := p.task.Complete()
-			// The recap is derived here, at the only place that owns both
-			// the completion decision and the run's evidence. It narrates
-			// what the run accomplished from observed tool outcomes and the
-			// assistant's own closing answer; the durable task layer never
-			// stores it.
-			objective := projection.Objective
-			if strings.TrimSpace(objective) == "" {
-				objective = intent.Objective
+		answered := false
+		if len(turns) > 0 {
+			answered = strings.TrimSpace(turns[len(turns)-1].Assistant.Text()) != ""
+		}
+		evidence := CompletionEvidence{Complete: true, Answered: answered}
+		var projection TaskProjection
+		switch {
+		case p.task.CompleteWithEvidence != nil:
+			projection = p.task.CompleteWithEvidence(evidence)
+		case p.task.Complete != nil:
+			projection = p.task.Complete()
+		}
+		// A completion that could not be durably committed is never published
+		// as COMPLETED, whatever the in-memory status says. The task layer
+		// rolls back on a failed persist; this guard is repeated here so a
+		// host hook with different semantics cannot leak a false PROVEN.
+		if projection.ID != "" && projection.Err != "" {
+			switch {
+			case hasOpenTaskItems(projection) || p.task.NeedsReview == nil:
+				// Work remains or no review seam is installed: the task stays
+				// active with the recorded error, never falsely done.
+				p.PublishTask(projection)
+			default:
+				// The evaluator said complete but the durable task could not
+				// prove or commit it. Review is the truthful non-terminal
+				// transition.
+				p.PublishTask(p.task.NeedsReview("completion evidence: " + projection.Err))
 			}
-			projection.Recap = recapNarrative(objective, turns)
+			projection = TaskProjection{}
+		}
+		if projection.ID != "" {
+			if strings.EqualFold(projection.Status, "COMPLETED") {
+				// The recap is derived here, at the only place that owns both
+				// the completion decision and the run's evidence. It narrates
+				// what the run accomplished from observed tool outcomes and the
+				// assistant's own closing answer; the durable task layer never
+				// stores it.
+				objective := projection.Objective
+				if strings.TrimSpace(objective) == "" {
+					objective = intent.Objective
+				}
+				projection.Recap = recapNarrative(objective, turns)
+			}
 			p.PublishTask(projection)
 		}
 	case taskActionReview:

@@ -168,6 +168,18 @@ type Task struct {
 	// an interrupted approval diagnosable, and an applied handoff names the
 	// role that actually took over. It is never authority.
 	Handoff *Handoff `json:"handoff,omitempty"`
+	// Timeline is the bounded index of meaningful task events. It references
+	// the authoritative records instead of copying them, and is never
+	// authority or a completion signal. It is additive and optional.
+	Timeline []TimelineEvent `json:"timeline,omitempty"`
+	// Completion is the evidence proof attached to a COMPLETED task. It is
+	// additive and optional; a historical completion without one reports as
+	// COMPLETED_UNPROVEN rather than claiming success.
+	Completion *CompletionProof `json:"completion,omitempty"`
+	// Recovery classifies the load that produced this task. It is diagnostic
+	// only, never persisted, and never authority: it tells the runtime what a
+	// restart could actually restore.
+	Recovery RecoveryReport `json:"-"`
 	// CreatedAt is when the task identity was minted. It never changes.
 	CreatedAt time.Time `json:"createdAt,omitempty"`
 	// ContextWarning reports that structured context was absent, refused, or
@@ -230,6 +242,14 @@ func (t Task) Validate() error {
 			return fmt.Errorf("%w: todo %q has unknown status %q", ErrInvalidTask, todo.ID, todo.Status)
 		}
 	}
+	if err := t.ValidateTimeline(); err != nil {
+		return err
+	}
+	if t.Completion != nil {
+		if err := validateCompletionProofShape(*t.Completion); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidTask, err)
+		}
+	}
 	if err := t.Context.Validate(t.ID); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidTask, err)
 	}
@@ -276,6 +296,15 @@ func (t Task) Clone() Task {
 		cloned := t.Handoff.Clone()
 		out.Handoff = &cloned
 	}
+	if t.Completion != nil {
+		cloned := t.Completion.Clone()
+		out.Completion = &cloned
+	}
+	out.Timeline = make([]TimelineEvent, len(t.Timeline))
+	for i, event := range t.Timeline {
+		out.Timeline[i] = event.Clone()
+	}
+	out.Recovery.Missing = append([]string(nil), t.Recovery.Missing...)
 	return out
 }
 
@@ -536,10 +565,22 @@ func (t *Task) RemoveTodo(id string) bool {
 	return removed
 }
 
-// AddFinding records something learned that outlives the turn.
-func (t *Task) AddFinding(text string) {
+// AddFinding records something learned that outlives the turn. The role is
+// provenance for the timeline event; an invalid role records none rather than
+// inventing one. The clock is supplied by the caller so the event is
+// deterministic under an injected clock.
+func (t *Task) AddFinding(role workspace.Workspace, text string, at time.Time) {
 	if text = strings.TrimSpace(text); text != "" {
 		t.Findings = append(t.Findings, text)
+		event := TimelineEvent{
+			At:      stamp(at),
+			Kind:    TimelineFinding,
+			Summary: text,
+		}
+		if role.Valid() {
+			event.Role = role
+		}
+		t.AppendEvent(event)
 	}
 }
 

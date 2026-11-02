@@ -72,6 +72,13 @@ func (s *Store) ArchiveTask(t Task, progress Progress) error {
 	} else {
 		progress.Handoff = nil
 	}
+	progress.Timeline = cloneTimeline(t.Timeline)
+	if t.Completion != nil {
+		cloned := t.Completion.Clone()
+		progress.Completion = &cloned
+	} else {
+		progress.Completion = nil
+	}
 	if progress.Version == 0 {
 		progress.Version = ProgressVersion
 	}
@@ -82,46 +89,94 @@ func (s *Store) ArchiveTask(t Task, progress Progress) error {
 	if err != nil {
 		return fmt.Errorf("task: encode archived task: %w", err)
 	}
-	if err := writeFileAtomic(s.archivePath(t.ID), append(data, '\n')); err != nil {
+	if err := s.writeFile(s.archivePath(t.ID), append(data, '\n')); err != nil {
 		return err
 	}
 	return nil
 }
 
+// ArchiveProblem is one detached-task file that could not be listed.
+//
+// A corrupt archive is not silently indistinguishable from a task that never
+// existed: the store records the file and the reason so the host can surface a
+// lost resumable task instead of hiding it.
+type ArchiveProblem struct {
+	// Path is the unreadable archive file.
+	Path string
+	// Reason explains why it was skipped.
+	Reason string
+}
+
+// ArchiveProblems returns the corrupt archive files observed by the most recent
+// listing. It is diagnostic only: naming a lost archive never grants authority
+// and never fabricates a task.
+func (s *Store) ArchiveProblems() []ArchiveProblem {
+	s.problemsMu.Lock()
+	defer s.problemsMu.Unlock()
+	return append([]ArchiveProblem(nil), s.archiveProblems...)
+}
+
+// recordProblems replaces the diagnostic list from one listing.
+func (s *Store) recordProblems(problems []ArchiveProblem) {
+	s.problemsMu.Lock()
+	s.archiveProblems = problems
+	s.problemsMu.Unlock()
+}
+
 // ListArchived returns every detached task, oldest first by checkpoint stamp.
 //
 // A corrupt archive file is skipped rather than failing the whole list: one
-// bad detachment must not hide every other resumable task. The caller can
-// still reach the live checkpoint; the skip is silent because the file name
-// carries the ID and a later detach overwrites it.
+// bad detachment must not hide every other resumable task. The skip is
+// recorded as an ArchiveProblem so the loss is observable rather than silent.
 func (s *Store) ListArchived() ([]Snapshot, error) {
 	dir := s.ArchiveDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			s.recordProblems(nil)
 			return nil, nil
 		}
 		return nil, fmt.Errorf("task: read %s: %w", dir, err)
 	}
-	var out []Snapshot
+	var (
+		out      []Snapshot
+		problems []ArchiveProblem
+	)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path)
 		if err != nil {
+			problems = append(problems, ArchiveProblem{Path: path, Reason: "the file could not be read"})
 			continue
 		}
 		var file archivedFile
 		if err := json.Unmarshal(data, &file); err != nil {
+			problems = append(problems, ArchiveProblem{Path: path, Reason: "the file is not a valid detached task"})
 			continue
 		}
 		if strings.TrimSpace(file.Task.ID) == "" || !file.Task.Status.Valid() {
+			problems = append(problems, ArchiveProblem{Path: path, Reason: "the file carries no valid task identity or status"})
 			continue
 		}
-		sanitizeArchived(&file)
-		out = append(out, Snapshot{Task: file.Task, Progress: file.Progress, Found: true})
+		if file.Progress.Version > ProgressVersion {
+			problems = append(problems, ArchiveProblem{
+				Path:   path,
+				Reason: fmt.Sprintf("checkpoint version %d is newer than this build supports (%d)", file.Progress.Version, ProgressVersion),
+			})
+			continue
+		}
+		repairs := sanitizeArchived(&file)
+		out = append(out, Snapshot{
+			Task:     file.Task,
+			Progress: file.Progress,
+			Recovery: archiveRecoveryReport(file.Task, repairs),
+			Found:    true,
+		})
 	}
+	s.recordProblems(problems)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Task.UpdatedAt.Equal(out[j].Task.UpdatedAt) {
 			return out[i].Task.ID < out[j].Task.ID
@@ -147,31 +202,95 @@ func (s *Store) LoadArchived(id string) (Snapshot, error) {
 	if strings.TrimSpace(file.Task.ID) == "" {
 		return Snapshot{}, fmt.Errorf("%w: empty task id", ErrCorruptCheckpoint)
 	}
-	sanitizeArchived(&file)
-	return Snapshot{Task: file.Task, Progress: file.Progress, Found: true}, nil
+	if file.Progress.Version > ProgressVersion {
+		return Snapshot{}, fmt.Errorf("%w: archived %d > %d", ErrCheckpointVersion, file.Progress.Version, ProgressVersion)
+	}
+	repairs := sanitizeArchived(&file)
+	return Snapshot{
+		Task:     file.Task,
+		Progress: file.Progress,
+		Recovery: archiveRecoveryReport(file.Task, repairs),
+		Found:    true,
+	}, nil
+}
+
+// archiveRepairs records what sanitizing one archived task changed. It is the
+// input to the recovery classification, so a repaired archive can never report
+// INTACT.
+type archiveRepairs struct {
+	count   int
+	detail  string
+	missing []string
+}
+
+func (r *archiveRepairs) add(detail string, missing ...string) {
+	r.count++
+	if r.detail == "" {
+		r.detail = detail
+	}
+	r.missing = append(r.missing, missing...)
+}
+
+// archiveRecoveryReport classifies one archived task from the repairs it needed.
+//
+// It describes structural recovery only: it never claims that a filesystem
+// artifact still exists or that an in-flight tool operation can be replayed.
+func archiveRecoveryReport(t Task, repairs archiveRepairs) RecoveryReport {
+	report := RecoveryReport{State: RecoveryIntact}
+	if repairs.count > 0 {
+		report.State = RecoveryReconstructed
+		report.Detail = repairs.detail
+		report.Missing = uniqueStrings(repairs.missing)
+	}
+	if report.State != RecoveryBlocked && !t.Status.IsTerminal() && t.Contract == nil {
+		if report.Detail != "" {
+			report.Detail += "; "
+		}
+		report.Detail += "the task has no completion contract; it can be cancelled or replaced, not completed"
+		report.State = RecoveryNeedsHuman
+	}
+	if report.State == RecoveryIntact {
+		report.Detail = "detached task restored from its archive"
+	}
+	for _, todo := range t.Todos {
+		if todo.Status != TodoDone {
+			report.Outstanding++
+		}
+	}
+	return report
 }
 
 // sanitizeArchived repairs an archived task's optional structured context
 // without discarding the task itself. The same rules as the live checkpoint
 // apply: valid records survive, invalid ones are repaired or dropped, and a
-// future context version is refused rather than guessed at.
-func sanitizeArchived(file *archivedFile) {
+// future context version is refused rather than guessed at. It returns what it
+// changed so recovery can classify the archive truthfully.
+func sanitizeArchived(file *archivedFile) archiveRepairs {
+	var repairs archiveRepairs
 	// The active role is optional continuity metadata: a damaged value is
 	// dropped so the role-context fallback can supply the answer instead of
 	// making the archived task unwritable.
 	if file.Task.ActiveRole != "" && !file.Task.ActiveRole.Valid() {
 		file.Task.ActiveRole = ""
+		repairs.add("the archived active role was invalid and was dropped", "active role")
 	}
 	if file.Progress.ActiveRole != "" && !file.Progress.ActiveRole.Valid() {
 		file.Progress.ActiveRole = ""
+		repairs.add("the archived checkpoint role was invalid and was dropped", "active role")
 	}
 	context, changes := file.Task.Context.Sanitize(file.Task.ID)
 	file.Task.Context = context
-	if changes > 0 && file.Task.ContextWarning == "" {
-		file.Task.ContextWarning = fmt.Sprintf("%d task context record(s) were invalid and repaired or dropped on load", changes)
+	if changes > 0 {
+		if file.Task.ContextWarning == "" {
+			file.Task.ContextWarning = fmt.Sprintf("%d task context record(s) were invalid and repaired or dropped on load", changes)
+		}
+		repairs.add(fmt.Sprintf("%d archived context record(s) were invalid and were repaired or dropped", changes), "structured context")
 	}
 	if file.Progress.Context != nil {
-		clean, _ := file.Progress.Context.Sanitize(file.Task.ID)
+		clean, changes := file.Progress.Context.Sanitize(file.Task.ID)
+		if changes > 0 {
+			repairs.add(fmt.Sprintf("%d archived checkpoint context record(s) were invalid and were repaired or dropped", changes), "structured context")
+		}
 		if clean.Empty() {
 			file.Progress.Context = nil
 		} else {
@@ -182,17 +301,64 @@ func sanitizeArchived(file *archivedFile) {
 		clean, changes, problem := sanitizeHandoff(file.Task.Handoff, file.Task)
 		file.Task.Handoff = clean
 		file.Progress.Handoff = clean
-		if clean == nil && problem != "" && file.Task.ContextWarning == "" {
-			file.Task.ContextWarning = "task handoff was not restored: " + problem
+		if clean == nil && problem != "" {
+			if file.Task.ContextWarning == "" {
+				file.Task.ContextWarning = "task handoff was not restored: " + problem
+			}
+			repairs.add("the archived handoff was not restored: "+problem, "handoff record")
 		}
-		if changes > 0 && file.Task.ContextWarning == "" {
-			file.Task.ContextWarning = fmt.Sprintf("%d task handoff reference(s) were invalid and repaired or dropped on load", changes)
+		if changes > 0 {
+			if file.Task.ContextWarning == "" {
+				file.Task.ContextWarning = fmt.Sprintf("%d task handoff reference(s) were invalid and repaired or dropped on load", changes)
+			}
+			repairs.add(fmt.Sprintf("%d archived handoff reference(s) were invalid and were repaired or dropped", changes), "handoff record")
 		}
 		if clean != nil && clean.Status == HandoffApplied {
 			file.Task.ActiveRole = clean.To
 			file.Progress.ActiveRole = clean.To
 		}
 	}
+	if len(file.Task.Timeline) == 0 && len(file.Progress.Timeline) > 0 {
+		clean, changes := sanitizeTimeline(file.Progress.Timeline)
+		file.Task.Timeline = cloneTimeline(clean)
+		if changes > 0 {
+			repairs.add(fmt.Sprintf("%d archived timeline event(s) were invalid and were repaired or dropped", changes), "timeline")
+		}
+	}
+	if len(file.Task.Timeline) > 0 {
+		clean, changes := sanitizeTimeline(file.Task.Timeline)
+		file.Task.Timeline = clean
+		file.Progress.Timeline = cloneTimeline(clean)
+		if changes > 0 {
+			if file.Task.ContextWarning == "" {
+				file.Task.ContextWarning = fmt.Sprintf("%d task timeline event(s) were invalid and repaired or dropped on load", changes)
+			}
+			repairs.add(fmt.Sprintf("%d archived timeline event(s) were invalid and were repaired or dropped", changes), "timeline")
+		}
+	}
+	if file.Task.Completion == nil && file.Progress.Completion != nil && file.Task.Status == StatusCompleted {
+		cloned := file.Progress.Completion.Clone()
+		file.Task.Completion = &cloned
+	}
+	if file.Task.Status != StatusCompleted && file.Task.Completion != nil {
+		if file.Task.ContextWarning == "" {
+			file.Task.ContextWarning = "task completion proof was not restored: it belongs to a non-completed task"
+		}
+		repairs.add("a completion proof for a non-completed task was dropped", "completion proof")
+		file.Task.Completion = nil
+		file.Progress.Completion = nil
+	}
+	if file.Task.Status == StatusCompleted && file.Task.Completion != nil {
+		if err := validateCompletionProofShape(*file.Task.Completion); err != nil {
+			if file.Task.ContextWarning == "" {
+				file.Task.ContextWarning = "task completion proof was not restored: " + err.Error()
+			}
+			repairs.add("the archived completion proof was invalid: "+err.Error(), "completion proof")
+			file.Task.Completion = nil
+			file.Progress.Completion = nil
+		}
+	}
+	return repairs
 }
 
 // RemoveArchived drops one detached task. Missing is not an error: a resume

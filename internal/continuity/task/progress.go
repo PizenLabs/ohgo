@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -21,24 +22,25 @@ import (
 // refuses a checkpoint it does not understand rather than guessing at a shape,
 // because a silently misread recovery artifact is worse than a reported one.
 //
-// Version 2 adds the persisted completion contract, pre-run target snapshot,
+// Version 2 added the persisted completion contract, pre-run target snapshot,
 // and review reason. Version 1 checkpoints still load: they simply cannot
 // authorize completion, because a task with no contract has no evidence
 // boundary. They are resolvable only by an explicit human cancel/replace.
 //
-// Phase 9's evidenceState and audit fields are additive and optional. They do
-// not change the meaning of an existing field, so the schema version stays 2;
-// older readers ignore them and a reader of an older checkpoint sees nil. A
-// field whose meaning changes would still require a version bump.
+// Version 3 is a downgrade barrier, not a shape change. Timeline and completion
+// proof are still additive optional fields, so a version-2 reader can parse a
+// version-3 file and ignore them — and then erase them on its next write,
+// because encoding/json does not preserve unknown fields. The version bump is
+// therefore the only reliable protection available with this architecture: a
+// version-2 binary refuses a version-3 checkpoint with ErrCheckpointVersion
+// before it can rewrite it. Newer binaries keep reading 1 and 2.
 //
-// Phase 1's structured context is the same kind of change: an additive,
-// self-versioned subdocument (ContextVersion) that an older reader ignores. It
-// does not change the meaning of any existing field, so ProgressVersion stays 2.
-//
-// Phase 2's handoff record is additive and optional in the same way: an older
-// reader ignores it, and a newer reader treats its absence as "no transition".
-// No existing field changes meaning, so the schema version still does not move.
-const ProgressVersion = 2
+// Phase 9's evidenceState and audit fields are additive and optional. Phase 1's
+// structured context is an additive, self-versioned subdocument
+// (ContextVersion), and Phase 2's handoff record is additive in the same way.
+// None of them change the meaning of an existing field, so none of them move
+// the version on their own.
+const ProgressVersion = 3
 
 // File names inside the project-local .ohgo directory.
 const (
@@ -111,6 +113,17 @@ type Progress struct {
 	// additive and optional; a checkpoint written before it existed loads with
 	// no transition. It is recovery metadata, never authority.
 	Handoff *Handoff `json:"handoff,omitempty"`
+	// Timeline is the bounded task-progression index. It is additive and
+	// optional; an older reader ignores it. It references the authoritative
+	// records instead of copying them.
+	Timeline []TimelineEvent `json:"timeline,omitempty"`
+	// Completion is the proof attached to a COMPLETED task. It is additive and
+	// optional; a historical checkpoint without one loads as an unproven
+	// completion instead of claiming evidence it never recorded.
+	Completion *CompletionProof `json:"completion,omitempty"`
+	// CompletionProblem explains why a completion proof was dropped on load.
+	// It is diagnostic only and is never written.
+	CompletionProblem string `json:"-"`
 	// HandoffProblem explains why the handoff record could not be used. It is
 	// diagnostic only and is never written.
 	HandoffProblem string `json:"-"`
@@ -142,6 +155,14 @@ func ProgressFrom(t Task) Progress {
 	if t.Handoff != nil {
 		cloned := t.Handoff.Clone()
 		p.Handoff = &cloned
+	}
+	if t.Completion != nil {
+		cloned := t.Completion.Clone()
+		p.Completion = &cloned
+	}
+	p.Timeline = make([]TimelineEvent, len(t.Timeline))
+	for i, event := range t.Timeline {
+		p.Timeline[i] = event.Clone()
 	}
 	if active, ok := t.ActiveTodo(); ok {
 		p.ActiveTodo = active.ID
@@ -184,15 +205,34 @@ var (
 // It is the single writer for both files. Writes are atomic (temp-then-rename)
 // so a crash mid-write can never leave a half-written checkpoint a later run
 // would refuse to read or, worse, misread as a different task.
+//
+// write is a function field so a test can inject a deterministic write failure
+// at the persistence boundary; production always uses writeFileAtomic.
 type Store struct {
-	root string
+	root  string
+	write func(path string, data []byte) error
+
+	// archiveProblems is the diagnostic result of the last archive listing. It
+	// is guarded because the TUI update goroutine may read it while a turn
+	// goroutine lists archives.
+	problemsMu      sync.Mutex
+	archiveProblems []ArchiveProblem
 }
 
 // NewStore returns a store rooted at a project root.
-func NewStore(root string) *Store { return &Store{root: root} }
+func NewStore(root string) *Store { return &Store{root: root, write: writeFileAtomic} }
 
 // Root returns the project root the store writes under.
 func (s *Store) Root() string { return s.root }
+
+// writeFile is the store's one write path. A zero-value Store (only a test
+// constructs one) still writes atomically rather than panicking.
+func (s *Store) writeFile(path string, data []byte) error {
+	if s.write == nil {
+		return writeFileAtomic(path, data)
+	}
+	return s.write(path, data)
+}
 
 // Dir returns the project-local .ohgo directory.
 func (s *Store) Dir() string { return filepath.Join(s.root, project.DirName) }
@@ -214,9 +254,9 @@ func (s *Store) Save(t Task) error {
 // It exists so the controller can record a "last meaningful action" that is
 // recovery context rather than part of the task contract. It refuses a write
 // whose checkpoint stamp predates what is already on disk: a resume that raced
-// a newer checkpoint must never roll recovery backwards. The markdown write is
-// best-effort — a projection failure must not lose the authoritative
-// checkpoint — so its error is returned but the checkpoint has already landed.
+// a newer checkpoint must never roll recovery backwards. The projection is
+// written before the checkpoint, and the checkpoint is the commit point, so a
+// returned error always means the authoritative transition did not land.
 func (s *Store) SaveCheckpoint(t Task, progress Progress) error {
 	if err := t.Validate(); err != nil {
 		return err
@@ -245,6 +285,19 @@ func (s *Store) SaveCheckpoint(t Task, progress Progress) error {
 		progress.Handoff = &cloned
 	} else {
 		progress.Handoff = nil
+	}
+	// The timeline and completion proof are owned by the task, like context and
+	// the handoff: a caller-built checkpoint cannot persist a divergent history
+	// or proof.
+	progress.Timeline = make([]TimelineEvent, len(t.Timeline))
+	for i, event := range t.Timeline {
+		progress.Timeline[i] = event.Clone()
+	}
+	if t.Completion != nil {
+		cloned := t.Completion.Clone()
+		progress.Completion = &cloned
+	} else {
+		progress.Completion = nil
 	}
 	progress.ActiveRole = t.LastRole()
 	if !progress.CheckpointAt.IsZero() && t.UpdatedAt.After(progress.CheckpointAt) {
@@ -277,14 +330,19 @@ func (s *Store) SaveCheckpoint(t Task, progress Progress) error {
 	if err != nil {
 		return fmt.Errorf("task: encode progress: %w", err)
 	}
-	// The checkpoint lands first: it is the recovery artifact, and a crash
-	// between the two writes leaves an older human projection over a valid
-	// checkpoint, which recovery reads correctly.
-	if err := writeFileAtomic(s.ProgressPath(), append(progressData, '\n')); err != nil {
-		return err
-	}
-	if err := writeFileAtomic(s.TaskPath(), []byte(RenderMarkdown(t))); err != nil {
+	// The projection lands first and the checkpoint last. The checkpoint is the
+	// commit point: a caller that receives an error therefore knows the
+	// authoritative transition did not land, so it can roll the in-memory task
+	// back without leaving memory and disk disagreeing. A crash between the two
+	// writes leaves a newer human projection over the older checkpoint; Load
+	// takes status, contract, timeline, and proof from the checkpoint, so the
+	// newer projection can never claim a completion the checkpoint did not
+	// record.
+	if err := s.writeFile(s.TaskPath(), []byte(RenderMarkdown(t))); err != nil {
 		return fmt.Errorf("task: write projection: %w", err)
+	}
+	if err := s.writeFile(s.ProgressPath(), append(progressData, '\n')); err != nil {
+		return err
 	}
 	return nil
 }
@@ -296,6 +354,9 @@ type Snapshot struct {
 	Task Task
 	// Progress is the checkpoint, zero when none was present.
 	Progress Progress
+	// Recovery classifies what the load could actually restore. It is derived,
+	// never persisted, and empty when nothing was found.
+	Recovery RecoveryReport
 	// Found reports whether either artifact existed.
 	Found bool
 }
@@ -375,6 +436,37 @@ func (s *Store) Load() (Snapshot, error) {
 				if clean.Status == HandoffApplied && clean.To.Valid() {
 					t.ActiveRole = clean.To
 				}
+				if clean.Status == HandoffInterrupted && !t.HasEvent(TimelineHandoff, clean.ID, string(clean.Status)) {
+					t.AppendEvent(TimelineEvent{
+						At:      clean.UpdatedAt,
+						Kind:    TimelineHandoff,
+						Role:    clean.From,
+						Status:  string(clean.Status),
+						Summary: "handoff interrupted on load: " + clean.From.Label() + " -> " + clean.To.Label(),
+						Refs:    []string{clean.ID},
+					})
+				}
+			}
+		}
+		if len(progress.Timeline) > 0 {
+			clean, changes := sanitizeTimeline(progress.Timeline)
+			progress.Timeline = clean
+			t.Timeline = cloneTimeline(clean)
+			progress.ContextDropped += changes
+		}
+		if progress.Completion != nil {
+			problem := ""
+			if t.Status != StatusCompleted {
+				problem = "a completion proof exists for a non-completed task"
+			} else if err := validateCompletionProofShape(*progress.Completion); err != nil {
+				problem = err.Error()
+			}
+			if problem != "" {
+				progress.CompletionProblem = problem
+				progress.Completion = nil
+			} else {
+				cloned := progress.Completion.Clone()
+				t.Completion = &cloned
 			}
 		}
 		switch {
@@ -382,12 +474,15 @@ func (s *Store) Load() (Snapshot, error) {
 			t.ContextWarning = "task context could not be restored: " + progress.ContextProblem
 		case progress.HandoffProblem != "":
 			t.ContextWarning = "task handoff was not restored: " + progress.HandoffProblem
+		case progress.CompletionProblem != "":
+			t.ContextWarning = "task completion proof was not restored: " + progress.CompletionProblem
 		case progress.ContextDropped > 0:
 			t.ContextWarning = fmt.Sprintf("%d task context record(s) were invalid and repaired or dropped on load", progress.ContextDropped)
 		}
 	}
 
 	snap := Snapshot{Task: t, Progress: progress, Found: true}
+	snap.Recovery = recoveryReport(progressFound, mdFound, progressErr, mdErr, progress, t)
 	switch {
 	case progressErr != nil:
 		if t.ID != "" && t.ContextWarning == "" {
@@ -396,6 +491,13 @@ func (s *Store) Load() (Snapshot, error) {
 		snap.Task = t
 		return snap, progressErr
 	case mdErr != nil:
+		// The checkpoint was readable, so the structured task state is intact;
+		// only the human projection was lost. Say that precisely instead of
+		// implying the context itself was not restored.
+		if t.ContextWarning == "" {
+			t.ContextWarning = "the task projection could not be read; the checkpoint supplied the task state"
+		}
+		snap.Task = t
 		return snap, mdErr
 	case !progressFound:
 		t.ContextWarning = "task context was not restored: no progress checkpoint"
@@ -403,6 +505,18 @@ func (s *Store) Load() (Snapshot, error) {
 		return snap, nil
 	}
 	return snap, nil
+}
+
+// cloneTimeline deep-copies a sanitized event log.
+func cloneTimeline(events []TimelineEvent) []TimelineEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]TimelineEvent, len(events))
+	for i, event := range events {
+		out[i] = event.Clone()
+	}
+	return out
 }
 
 // LoadProgress reads and validates the JSON checkpoint.

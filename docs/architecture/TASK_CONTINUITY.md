@@ -1,7 +1,8 @@
 # Task Continuity
 
-> **Scope:** the durable, role-independent task context introduced by Phase 1
-> and the controlled role handoff introduced by Phase 2.
+> **Scope:** the durable, role-independent task context introduced by Phase 1,
+> the controlled role handoff introduced by Phase 2, and the progression,
+> lineage, recovery, and evidence-backed completion introduced by Phase 3.
 > **Canonical topology:** [`OHGO_ARCHITECTURE_MAP.md`](OHGO_ARCHITECTURE_MAP.md).
 > **Permanent rules:** [`OHGO_ARCHITECTURE_RULES.md`](../migration/OHGO_ARCHITECTURE_RULES.md).
 > **State ownership:** [`STATE_AND_PERSISTENCE.md`](STATE_AND_PERSISTENCE.md).
@@ -30,9 +31,12 @@ workspace, completes a task, or promotes model output into verified fact.
 | Verified facts, hypotheses, evidence, questions | `task.Task.Context` | `progress.json` (`context`) | `task.ContextFor` |
 | Role-specific execution context | `task.Task.Context.Roles` | `progress.json` (`context.roles`) | `task.ContextFor` |
 | Role handoff and its disposition | `task.Task.Handoff` | `progress.json` (`handoff`) | `task.ContextFor`, TUI transition card |
+| Task progression timeline | `task.Task.Timeline` | `progress.json` (`timeline`) | `task.ContextFor`, `/task timeline` |
+| Completion proof | `task.Task.Completion` | `progress.json` (`completion`) | `task.ObjectiveState`, `/task status` |
+| Recovery classification | `task.Store.Load` | never (derived) | task block, `/task status` |
 | Handoff authorization policy | `workspace.ProposeHandoff` | never (derived) | TUI transition card |
 | Detached tasks | `task.Store` archive | `.ohgo/tasks/<id>.json` | `/task list`, `/task resume` |
-| Completion verdict | `agent.Evaluate*Completion` | `task.Status` | TUI verdict |
+| Completion verdict | `agent.Evaluate*Completion` | `task.Status` + proof | TUI verdict |
 
 The task checkpoint is **project-local**, not session-local:
 
@@ -75,6 +79,15 @@ The lifecycle vocabulary (`PENDING`, `RUNNING`, `PAUSED`, `NEEDS_REVIEW`,
 `COMPLETED`, `FAILED`, `CANCELLED`) is unchanged. Context never sets a status:
 a passing test, a recorded fact, or a confirmed hypothesis does not complete the
 objective. Completion remains the `agent` evaluator's evidence-backed verdict.
+
+`Task.Timeline` is a bounded, additive index of meaningful events. Each event
+carries a sequence number, time, kind, role, resulting status, a bounded
+summary, and references. It never stores a tool payload, a conversation
+message, or a second copy of a fact. When the bound is reached, the creation
+event and the newest events are retained and the sequence gap reports how many
+were dropped. `Task.Completion` is the durable proof for a COMPLETED task:
+the evaluator verdict, the observed check summaries, the evidence references,
+and whether an informational answer was produced.
 
 ---
 
@@ -232,11 +245,30 @@ checkpoint.
 
 ## 6. Persistence and compatibility
 
-`ProgressVersion` remains **2**. Structured context is an additive,
-self-versioned subdocument (`ContextVersion = 1`), and `activeRole` is an
-additive optional field:
+`ProgressVersion` is **3**. Version 2 added the persisted completion contract,
+pre-run target snapshot, and review reason; version 3 is a **downgrade
+barrier**, not a shape change. Structured context is an additive,
+self-versioned subdocument (`ContextVersion = 1`), and `activeRole`, `handoff`,
+`timeline`, and `completion` are additive optional fields.
 
-- an older reader ignores the unknown `context` and `activeRole` fields;
+The exact read/write boundary:
+
+| Writer / reader | Result |
+| --- | --- |
+| New binary reads a version-1 or version-2 checkpoint | Supported. Missing fields are zero values; a completed task with no proof reports `COMPLETED_UNPROVEN`. |
+| New binary reads a version-2 checkpoint that carries timeline and proof | Supported; both are restored. |
+| Version-2 binary reads a version-3 checkpoint | Refused with `ErrCheckpointVersion`. It never reaches a rewrite. |
+| Version-2 binary writes a checkpoint | Only possible for a version-2 file; it cannot load a version-3 file, so it cannot erase the Phase 3 fields. |
+| New binary reads a checkpoint written by a version-2 binary | Supported. If that write happened before Phase 3, the timeline and proof are absent and the completion reports `COMPLETED_UNPROVEN`. |
+
+Compatibility is therefore **read-old, refuse-newer**: an older reader may read
+older checkpoints, but it must refuse a newer checkpoint rather than silently
+rewriting it. `encoding/json` does not preserve unknown fields, so a version
+bump is the only reliable protection available in this architecture; there is
+no sidecar and no preservation framework.
+
+Further persistence rules:
+
 - a newer reader refuses a `context.version` it does not understand, keeps the
   task, and reports the problem;
 - missing context means "not recorded", not "corrupt";
@@ -252,12 +284,17 @@ additive optional field:
   still cannot validate is dropped with a warning rather than left in a state
   that would make every later write fail;
 - an invalid context is rejected before write, and writes remain atomic
-  (temp-then-rename). A failed write returns an error and restores the prior
-  in-memory task.
+  (temp-then-rename);
+- the projection is written before the checkpoint, and the checkpoint is the
+  commit point. A returned write error therefore means the authoritative
+  transition did not land, so the controller restores the prior in-memory task.
+  `Controller.CompleteWithEvidence` uses the same rollback, which is what makes
+  a failed completion resumable instead of falsely published.
 
-`task.md` remains a projection. It does not carry the structured context, so
-`progress.json` outranks it always. Detached tasks archive the full task and
-progress, including context.
+`task.md` remains a projection. It does not carry the structured context,
+timeline, or proof, so `progress.json` outranks it always. Detached tasks
+archive the full task and progress, including context, evidence state, audit,
+timeline, and completion proof.
 
 ---
 
@@ -287,15 +324,82 @@ Implemented in Phase 2 (handoff):
 - interrupted and failed transitions that leave the last valid role and task
   state recoverable and report the outcome truthfully.
 
+Implemented in Phase 3 (progression and outcome):
+
+- a bounded durable timeline of creation, checkpoints, findings,
+  hypothesis/evidence dispositions, role transitions and approvals, detach and
+  resume, verification, completion, and failure;
+- evidence and artifact lineage derived from the authoritative records, with
+  proposed, executed, observed, verified, uncertain, invalidated, and
+  superseded states kept distinct;
+- recovery classification that distinguishes an intact checkpoint, a
+  reconstruction with named missing information, a state requiring a human
+  decision, and an unrecoverable load;
+- an evidence-backed completion proof and an objective-state projection
+  (`ACTIVE`, `INTERRUPTED`, `NEEDS_REVIEW`, `BLOCKED`, `PROVEN`,
+  `COMPLETED_UNPROVEN`, `CANCELLED`);
+- read-only `/task status`, `/task timeline`, and `/task lineage` views and a
+  bounded progression section in the task briefing.
+
 Not implemented:
 
 - automatic role switching, parallel role instances, or agent cloning;
 - a general workflow orchestration framework or a second approval system;
-- unified timeline, transition history, checkpoints, or cross-role execution
-  orchestration (Phase 3);
+- cross-role execution orchestration;
 - model-facing tools that create evidence, promote a claim, edit role context,
   or request a handoff; the host classifies the request and the human decides;
-- a new task database, knowledge graph, memory subsystem, or completion rule.
+- a new task database, knowledge graph, memory subsystem, or completion rule;
+- a general project-management dashboard, event-sourcing framework, or second
+  verification engine.
+
+### Workstream status
+
+| Phase | Status | Acceptance evidence |
+| --- | --- | --- |
+| Phase 1 — shared task context | Complete | identity, role-scoped context, projection, restart tests |
+| Phase 2 — bidirectional role transition | Complete | handoff proposal/approval/application, crash reconciliation, recovery tests |
+| Phase 3 — timeline, recovery, verifiable outcome | Complete | bounded timeline, derived lineage, recovery classification, atomic completion proof, production mutation test |
+
+The Phase 3 correction pass resolved the final audit's blocker and high
+findings: completion is atomic with its checkpoint, execution objectives require
+a projected execution observation, downgrade writes are refused by the version
+barrier, and the real production mutation path is covered end to end.
+
+### Final domain distinctions
+
+| Concept | Owner and responsibility |
+| --- | --- |
+| Task | `internal/continuity/task`; durable project-scoped unit of work |
+| Session | `internal/continuity/session`; conversation and interaction continuity |
+| Role | `internal/control/workspace`; current execution authority |
+| Contract | `internal/control/contract`; objective, target, and completion requirements |
+| Context | `task.SharedContext`; role-scoped working information |
+| Evidence | `cognition` observations projected as `task.EvidenceRecord`; what supports or challenges a claim |
+| Timeline | `task.Timeline`; bounded lifecycle and audit index |
+| Lineage | derived by `task.Lineage`; relationships between claims, evidence, and artifacts |
+| Recovery | derived by `task.recoveryReport`; classification of restored integrity |
+| Completion proof | `task.CompletionProof`; durable evidence that the contract's deterministic requirements were satisfied |
+
+### Verification and acceptance evidence
+
+The final pass executed, in this repository:
+
+```text
+gofmt -l .        # empty
+go build ./...
+go vet ./...
+golangci-lint run ./...   # 0 issues
+go test -count=1 ./...
+go test -race ./internal/continuity/task/ ./internal/tui/
+```
+
+The production acceptance test is
+`internal/tui/phase3_acceptance_test.go::TestPhase3ProductionMutationCompletionThroughRuntime`.
+It drives the real turn entrypoint with the real write and bash tools against a
+temporary Go module, observes the mutation and verification through the
+projection, asserts `PROVEN` only after the whole path succeeds, and restores
+the task with the same identity and a valid proof. The controller-level
+regressions live in `internal/continuity/task/phase3_corrections_test.go`.
 
 ---
 
@@ -429,7 +533,9 @@ case, and notices name only facts the restored state establishes.
 
 ### 8.6 Explicit limits
 
-- Only the most recent handoff is retained; full transition history is Phase 3.
+- `Task.Handoff` retains only the most recent transition record. The durable
+  timeline retains the disposition of every transition, so history is
+  traceable without a second handoff store.
 - Explicit `/ask`, `/fuzz`, and `/build` commands are direct human authority
   changes. They need no proposal or second approval, but they are recorded as an
   applied handoff so the next turn stays attached to the same task. The record
@@ -440,3 +546,188 @@ case, and notices name only facts the restored state establishes.
   existing recovery service remains the only edit-history authority. A dirty
   tree is preserved by the switch, and the handoff reports the measured state;
   it does not attempt to reconcile unrelated concurrent edits.
+
+---
+
+## 9. Progression, Lineage, Recovery, and Proven Completion (Phase 3)
+
+### 9.1 Ownership
+
+Phase 3 adds no package, store, manager, or orchestration layer. It extends the
+existing task record and derives every view from state that already has an
+owner.
+
+| Concern | Owner |
+| --- | --- |
+| Meaningful event history | `task.Task.Timeline` in `progress.json` |
+| Conclusion/observation lineage | derived by `task.Lineage` / `task.TraceLineage` from `Task.Context` |
+| Recovery classification | derived by `task.Store.Load`, exposed as `Controller.Recovery` |
+| Completion proof | `task.Task.Completion`, produced by `Controller.CompleteWithEvidence` |
+| Completion verdict | `agent.ClassifyRun` / `agent.EvaluateTaskCompletion` (unchanged) |
+| Presentation | existing task block and `/task` command surface |
+
+The timeline is an index, never a second source of truth. A fact, hypothesis,
+or evidence record remains authoritative for its own statement, status, and
+references; the timeline only names the transition and the record id. Historical
+events are append-only and are never rewritten by a later state change.
+
+### 9.2 Timeline
+
+Bounded by `MaxTimelineEvents`; each event carries `Seq`, `At`, `Kind`, `Role`,
+`Status`, a summary of at most 320 bytes, and at most 16 references. Events are
+recorded at the existing mutation boundaries:
+
+- task creation, resume, checkpoints, pause, review, completion, failure,
+  cancellation, and detach;
+- evidence and verification observations, facts, hypotheses, questions, and
+  their confirmation, rejection, supersession, invalidation, and attached
+  evidence;
+- handoff proposal, approval, rejection, failure, application, explicit
+  workspace commands, and recovery dispositions.
+
+A repeated checkpoint of the same action, a repeated pause, or a repeated review
+does not append a duplicate event. Task-context mutations use the caller's
+clock, so the log is deterministic under an injected clock.
+
+When the bound is reached, the first retained event is the anchor and is never
+dropped. Within the rest, observation events (evidence, verification, finding,
+fact, hypothesis, question) are elided before lifecycle boundaries, so a long
+investigation cannot push pause, review, completion, or handoff out of the
+record. `TimelineDropped` counts the sequence gaps: it derives the number from
+the retained sequence numbers themselves, so it stays accurate even when the
+creation event was repaired away or an earlier truncation already removed it.
+
+### 9.3 Lineage
+
+`Lineage` returns facts, hypotheses, and evidence in record order, each with a
+stage: `PROPOSED`, `EXECUTED`, `OBSERVED`, `VERIFIED`, `CONTRADICTED`,
+`UNCERTAIN`, `INVALIDATED`, or `SUPERSEDED`. `TraceLineage` follows a record in
+both directions: a fact or hypothesis to its supporting evidence and the fact a
+hypothesis produced, an evidence record to the facts and hypotheses that cite it
+and the claims it contradicts. Artifacts remain references; a `cognition:`
+reference is checked against the durable observation state and reported as
+missing when it no longer resolves. A path or external artifact is preserved
+verbatim because this package cannot prove a filesystem path still exists.
+
+### 9.4 Recovery
+
+`Store.Load` classifies what it actually restored:
+
+- `INTACT` — the checkpoint and projection were readable, no record needed
+  repair, the completion proof (when present) is valid, and a non-terminal task
+  has a contract;
+- `RECONSTRUCTED` — a projection or checkpoint was missing/unreadable, or a
+  record (context, handoff, timeline, or completion proof) was repaired or
+  dropped; the report names what was absent;
+- `NEEDS_HUMAN` — the task is valid but cannot progress without an explicit
+  decision (for example, a non-terminal task with no completion contract);
+- `BLOCKED` — nothing consistent could be recovered.
+
+`INTACT` guarantees only structural recovery: both files parsed, the schema is
+supported, the optional records sanitized with zero repairs, and a non-terminal
+task has a contract. It does **not** claim that a `cognition:` artifact still
+exists, that a filesystem path exists, that the workspace still matches the
+checkpoint, or that an in-flight tool operation can be replayed. Tool calls are
+not journaled; the session store remains their owner.
+
+Archives derive the same vocabulary. `LoadArchived` and `ListArchived` sanitize
+through the same rules and attach a `RecoveryReport` to each snapshot;
+`ResumeTask` preserves that classification instead of overwriting it with
+`INTACT`. A corrupt archive file is skipped from the resumable list and recorded
+as an `ArchiveProblem` with its path and reason, so a lost task is observable
+rather than silently indistinguishable from one that never existed.
+
+The classification is derived on every load and never persisted. The report also
+counts outstanding todos. Recovery never invents progress, never marks an
+interrupted task complete, and never changes authority.
+
+### 9.5 Objective state and proven completion
+
+`Task.ObjectiveState` projects the lifecycle and proof into `ACTIVE`,
+`INTERRUPTED`, `NEEDS_REVIEW`, `BLOCKED`, `PROVEN`, `COMPLETED_UNPROVEN`, or
+`CANCELLED`. It is a projection, not a second lifecycle.
+
+`Controller.CompleteWithEvidence` accepts the host evaluator's verdict
+(`agent.ClassifyRun` / `agent.EvaluateTaskCompletion` remains the semantic
+authority) and records a proof only when the durable task carries the
+observations the objective requires. Each contract kind has an explicit
+requirement:
+
+| Kind | Durable requirement | What `PROVEN` means |
+| --- | --- | --- |
+| `informational` | a non-empty final answer | an answer was produced; its correctness is not verified |
+| `execution` | a current, attributable execution observation, or the contract's required verification | a process or check reached a successful terminal state |
+| `mutation` | an observed definite change **and** a current verification that followed it and covers the contract's declared check kind and scope | the named change was made and checked afterwards |
+| unsupported | refused | no claim |
+
+The four evidence notions stay distinct: `Answered` is answer production,
+`Executed` is a successful terminal execution, `Observed` is a definite change,
+and `Verified` is a check that passed under recorded conditions. `PROVEN`
+requires the contract's combination of them; it never means independent
+semantic correctness.
+
+Specific rules:
+
+- an answer alone never proves an execution objective;
+- a successful command exit establishes execution only when its observation was
+  projected into the task and associated with it;
+- a verification that predates the last observed change is not accepted; the
+  runtime's observation order is authoritative, with the durable record
+  timestamp as the fallback for host-recorded evidence;
+- the proof's `Verified` list contains only checks that followed the last
+  change, not every current check;
+- open todo work refuses completion and leaves the task active;
+- a non-complete evaluation is refused;
+- a task must be `RUNNING`: `PAUSED` and `NEEDS_REVIEW` resume through `Begin`
+  first, so the boundary that reconciles the live workspace is not skipped.
+
+The proof stores the verdict, the `Answered`/`Executed`/`Observed` flags, the
+bounded check summaries, the evidence ids, and the timestamp. It never stores
+the assistant's answer or a tool payload.
+
+A later invalidation, supersession, or eviction of the proof's evidence does not
+rewrite the lifecycle record; it downgrades the projection to
+`COMPLETED_UNPROVEN`. A contradiction downgrades the proof only when it targets
+a claim the proof depends on (a fact or confirmed hypothesis backed by the
+proof's evidence, or an evidence id the proof names); an unrelated
+contradiction does not. The current objective state always reflects the current
+proof validity, while the historical timeline events remain unchanged.
+
+The legacy `Controller.Complete` remains for compatibility and records
+`COMPLETED_UNPROVEN`: it may not claim a proof it never saw.
+
+If the completion checkpoint cannot be written, the in-memory task is restored
+to its prior state: no proof, no completion event, and no `COMPLETED` status is
+published, and the same task remains resumable. The TUI repeats that guard, so a
+host hook cannot surface an uncommitted completion either.
+
+### 9.6 Observability
+
+The existing task block shows a proven/unproven completion, a non-intact
+recovery, and a continuity warning that did not block recovery. `/task status` and `/task show` add the objective state, the completion
+summary, the recovery classification, continuity warnings, and outstanding work. `/task timeline [n]`
+shows the bounded event log and `/task lineage [id]` traces a record to its
+evidence. All three are read-only; no new dashboard or interaction model is
+introduced.
+
+### 9.7 Limits
+
+- The timeline is bounded; old observations are dropped first, and the visible
+  sequence gap reports the loss. It is an index, not an event-sourcing archive.
+- Lineage is derived per call. It does not verify external artifacts or prove
+  that a filesystem path still exists.
+- `PROVEN` depends on the evaluator's verdict plus the task's recorded
+  observation. It is not an independent semantic proof, and an informational
+  proof does not establish answer correctness. A proof written before the
+  explicit `Answered`/`Executed`/`Observed` flags existed projects as
+  `COMPLETED_UNPROVEN`; it is not silently upgraded.
+- The durable boundary re-checks ordering, currentness, the contract kind, and
+  the declared check kind and scope. Full target and behavioural-scope
+  analysis remains the evaluator's job; a check that covers the declared scope
+  can still be weaker than the change it is said to cover.
+- In-flight tool operations are not journaled. Recovery classifies the durable
+  checkpoint and the session store remains the owner of an interrupted call.
+- Concurrent edits outside the task are still the recovery service's concern;
+  the timeline reports the measured workspace state but does not reconcile it.
+- There is no model-facing tool for completion, evidence, or handoff. The host
+  evaluates and the human decides.

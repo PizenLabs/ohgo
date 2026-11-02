@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/continuity/task"
@@ -64,6 +65,14 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		},
 		Complete: func() tui.TaskProjection {
 			recorded, err := controller.Complete()
+			return taskProjection(recorded, err)
+		},
+		CompleteWithEvidence: func(evidence tui.CompletionEvidence) tui.TaskProjection {
+			recorded, err := controller.CompleteWithEvidence(task.CompletionEvidence{
+				Complete: evidence.Complete,
+				Reason:   evidence.Reason,
+				Answered: evidence.Answered,
+			})
 			return taskProjection(recorded, err)
 		},
 		Fail: func(reason string) tui.TaskProjection {
@@ -150,6 +159,51 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			return report.EvidenceReview()
 		},
 		Audit: controller.Audit,
+		Timeline: func(limit int) []tui.TimelineView {
+			current, ok := controller.Current()
+			if !ok {
+				return nil
+			}
+			views := timelineViews(current.Timeline, limit)
+			if dropped := current.TimelineDropped(); dropped > 0 {
+				views = append([]tui.TimelineView{{
+					Kind:    "timeline",
+					Summary: fmt.Sprintf("%d older event(s) elided by the timeline bound", dropped),
+				}}, views...)
+			}
+			return views
+		},
+		Lineage: func(id string) (tui.LineageView, []tui.LineageView, bool) {
+			if _, ok := controller.Current(); !ok {
+				return tui.LineageView{}, nil, false
+			}
+			if strings.TrimSpace(id) == "" {
+				entries := controller.Lineage()
+				if len(entries) > 40 {
+					views := lineageViews(entries[:40])
+					views = append(views, tui.LineageView{
+						Kind: "lineage",
+						ID:   "…",
+						Text: fmt.Sprintf("%d more records; use /task lineage <id>", len(entries)-40),
+					})
+					return tui.LineageView{}, views, true
+				}
+				return tui.LineageView{}, lineageViews(entries), len(entries) > 0
+			}
+			focus, related, found := controller.TraceLineage(id)
+			if !found {
+				// A prefix or statement fragment is a convenience, not a
+				// second index: resolve it against the same derived lineage.
+				for _, entry := range controller.Lineage() {
+					if strings.HasPrefix(strings.ToLower(entry.ID), strings.ToLower(id)) ||
+						strings.Contains(strings.ToLower(entry.Text), strings.ToLower(id)) {
+						focus, related, found = controller.TraceLineage(entry.ID)
+						break
+					}
+				}
+			}
+			return lineageView(focus), lineageViews(related), found
+		},
 	}
 	if holder != nil {
 		// The TUI grants a fresh run budget at each turn boundary through the
@@ -174,6 +228,12 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 	case err != nil:
 		fmt.Fprintf(os.Stderr, "ohgo: task continuity unavailable: %v\n", err)
 	case found:
+		// The recovery classification describes what the load could actually
+		// restore. It is reported once, before any other recovery narrative, so
+		// a reconstructed or blocked task is never mistaken for an intact one.
+		if report := controller.Recovery(); !report.Empty() && report.State != task.RecoveryIntact {
+			program.PublishNotice("task recovery: " + report.Label())
+		}
 		// Approval is not proof that the switch happened, and it is not proof
 		// that it did not. Reconcile an approved record against the authority
 		// that was actually restored before any recovery narrative is shown.
@@ -191,6 +251,14 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			if resumable, lerr := controller.ListResumable(); lerr == nil && len(resumable) > 0 {
 				program.PublishNotice("1 resumable task available (see /task list)")
 			}
+		} else {
+			// Listing is also what detects unreadable archives; a terminal live
+			// task must not hide a lost detached one.
+			_, _ = controller.ListResumable()
+		}
+		if problems := controller.ArchiveProblems(); len(problems) > 0 {
+			program.PublishNotice(fmt.Sprintf(
+				"%d detached task file(s) could not be read (see /task list)", len(problems)))
 		}
 		if recovered.Handoff != nil && recovered.Handoff.Status == task.HandoffInterrupted && handoffNotice == "" {
 			// An unapproved proposal is closed at load. Report only what the
@@ -240,6 +308,13 @@ func taskResume(recorded task.Task) tui.TaskResume {
 		ReviewReason: recorded.ReviewReason,
 		Role:         string(recorded.LastRole()),
 	}
+	resume.ObjectiveState = string(recorded.ObjectiveState())
+	resume.CompletionSummary = recorded.CompletionSummary()
+	resume.Warning = recorded.ContextWarning
+	if !recorded.Recovery.Empty() {
+		resume.RecoveryState = string(recorded.Recovery.State)
+		resume.RecoveryDetail = recorded.Recovery.Detail
+	}
 	if recorded.Handoff != nil {
 		resume.HandoffStatus = string(recorded.Handoff.Status)
 		resume.HandoffTo = recorded.Handoff.To.String()
@@ -280,9 +355,12 @@ func handoffView(recorded task.Handoff) tui.HandoffView {
 // taskProjection converts a domain task into the TUI projection.
 func taskProjection(recorded task.Task, err error) tui.TaskProjection {
 	projection := tui.TaskProjection{
-		ID:        recorded.ID,
-		Status:    string(recorded.Status),
-		Objective: recorded.Objective,
+		ID:             recorded.ID,
+		Status:         string(recorded.Status),
+		Objective:      recorded.Objective,
+		ObjectiveState: string(recorded.ObjectiveState()),
+		Recovery:       recoveryLabel(recorded),
+		Warning:        recorded.ContextWarning,
 	}
 	for _, item := range task.Items(recorded) {
 		projection.Items = append(projection.Items, tui.TaskItem{
@@ -294,6 +372,71 @@ func taskProjection(recorded task.Task, err error) tui.TaskProjection {
 		projection.Err = err.Error()
 	}
 	return projection
+}
+
+// recoveryLabel reports a non-intact recovery, or "" when the checkpoint was
+// intact. An intact recovery is not repeated in every task block.
+func recoveryLabel(recorded task.Task) string {
+	if recorded.Recovery.Empty() || recorded.Recovery.State == task.RecoveryIntact {
+		return ""
+	}
+	return recorded.Recovery.Label()
+}
+
+// timelineViews converts durable events into the TUI's read-only projection.
+func timelineViews(events []task.TimelineEvent, limit int) []tui.TimelineView {
+	if len(events) == 0 {
+		return nil
+	}
+	if limit <= 0 || limit > len(events) {
+		limit = len(events)
+	}
+	events = events[len(events)-limit:]
+	out := make([]tui.TimelineView, 0, len(events))
+	for _, event := range events {
+		view := tui.TimelineView{
+			Seq:     event.Seq,
+			At:      event.At,
+			Kind:    event.Kind.String(),
+			Status:  event.Status,
+			Summary: event.Summary,
+			Refs:    append([]string(nil), event.Refs...),
+		}
+		if event.Role.Valid() {
+			view.Role = event.Role.Label()
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
+// lineageView converts one derived lineage entry into the TUI projection.
+func lineageView(entry task.LineageEntry) tui.LineageView {
+	view := tui.LineageView{
+		Kind:           entry.Kind,
+		ID:             entry.ID,
+		Stage:          string(entry.Stage),
+		Status:         entry.Status,
+		Text:           entry.Text,
+		Note:           entry.Note,
+		Artifact:       entry.Artifact,
+		EvidenceIDs:    append([]string(nil), entry.EvidenceIDs...),
+		Contradictions: append([]string(nil), entry.Contradicts...),
+		Missing:        append([]string(nil), entry.Missing...),
+	}
+	if entry.Role.Valid() {
+		view.Role = entry.Role.Label()
+	}
+	return view
+}
+
+// lineageViews converts a bounded set of lineage entries.
+func lineageViews(entries []task.LineageEntry) []tui.LineageView {
+	out := make([]tui.LineageView, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, lineageView(entry))
+	}
+	return out
 }
 
 // structuralResolver returns the existing symbol index through the symbols
