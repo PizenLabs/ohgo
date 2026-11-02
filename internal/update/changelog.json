@@ -23,6 +23,71 @@
           "description": "The update hint remains informational, installation stays explicit, and the restart requirement is named truthfully."
         }
       ]
+    },
+    "v0.0.4": {
+      "title": "What's new in v0.0.4",
+      "changes": [
+        {
+          "id": "space-in-the-full-screen-transcript-returns-to-t",
+          "type": "added",
+          "title": "Space jumps to the live edge",
+          "description": "In the full-screen transcript, `space` returns to the latest line when the composer is idle and the view is scrolled up. A non-empty draft keeps space literal."
+        },
+        {
+          "id": "one-line-install",
+          "type": "added",
+          "title": "One-line install",
+          "description": "`curl -fsSL https://raw.githubusercontent.com/PizenLabs/ohgo/main/install.sh | sh` resolves the latest stable release (or a pinned `OHGO_VERSION`), verifies the tarball against `sha256sums.txt`, smoke-tests the binary, and installs into `$HOME/.local/bin`. A mismatch leaves an existing installation untouched."
+        },
+        {
+          "id": "copy-in-both-interfaces",
+          "type": "added",
+          "title": "`/copy` with `-a` and `-c` scopes",
+          "description": "The default copies the most valuable part of the latest answer without fences; `-a`/`--all` keeps the explanation and every code block, and `-c`/`--context` copies the conversation context. A terminal that cannot accept OSC 52 is reported rather than claiming success."
+        },
+        {
+          "id": "evidence-benchmark-suite-go-run-bench-phase9-sui",
+          "type": "added",
+          "title": "Evidence benchmark suite",
+          "description": "`go run ./bench/phase9 -suite evidence` measures the five runtime requirement tasks and the authority regression matrix with the real router, security gate, evidence projector, and completion evaluator. It also runs against a live provider with `-live-model`."
+        },
+        {
+          "id": "external-state-claim-review",
+          "type": "added",
+          "title": "External-state claims need observation",
+          "description": "An answer that turns local configuration into a remote fact (\"the workflow ran today\", \"it was pushed\") is `NEEDS_REVIEW` unless the run observed the remote surface through a knowledge call, an MCP capability, or a command that talked to a remote."
+        },
+        {
+          "id": "evidence-aware-stop",
+          "type": "added",
+          "title": "Evidence-aware stop",
+          "description": "After the first observation turn, a turn that observes the repository without adding a new fact stops informational work from starting another tool round. The decision derives from evidence gain, never from a tool-call count."
+        },
+        {
+          "id": "questions-about-this-repository-s-behaviour-does",
+          "type": "added",
+          "title": "Repository questions demand evidence",
+          "description": "Questions about this repository's behaviour (\"does this workflow run automatically?\") declare a `repository_overview` need that only a content-bearing observation satisfies; a listing or an answer from memory is `NEEDS_REVIEW`."
+        },
+        {
+          "id": "authority-admission-no-longer-escalates-an-infor",
+          "type": "fixed",
+          "title": "Questions are not execution requests",
+          "description": "Authority admission no longer escalates an informational question that contains execution or mutation vocabulary, so \"I want to ask if this automatically runs\" classifies as READ and runs in ASK."
+        },
+        {
+          "id": "investigate-diagnose-and-troubleshoot-now-classi",
+          "type": "fixed",
+          "title": "\"Investigate\" routes to FUZZ",
+          "description": "\"Investigate …\", \"diagnose …\", and \"troubleshoot …\" now classify as INVESTIGATE (FUZZ) instead of falling back to READ."
+        },
+        {
+          "id": "hosting-and-product-names-github-are-no-longer-e",
+          "type": "fixed",
+          "title": "Hosting names are not code symbols",
+          "description": "Hosting and product names such as \"GitHub\" are no longer extracted as code symbol targets, so a request that mentions one no longer demands impossible index evidence."
+        }
+      ]
     }
   }
 }
