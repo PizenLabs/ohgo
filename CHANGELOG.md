@@ -31,8 +31,14 @@ immutable.
   state, and references to the shared facts, hypotheses, questions, evidence,
   and artifacts) in `progress.json`. Applied handoffs keep one task identity
   and all role contexts in both directions; rejected, failed, and interrupted
-  handoffs never change the recorded role, and a restart surfaces an interrupted
-  transition instead of applying it.
+  handoffs never change the recorded role. A restart reconciles an approved
+  handoff against the authority that was actually restored: a matching target is
+  recorded as applied without a second switch or a resumed turn, a matching
+  source is reported as not applied, and any third role is reported as a
+  recovery discrepancy without rewriting the recorded role. A transition's
+  source is the live authority, so recovered stale task metadata cannot block a
+  valid narrowing, and a checkpoint recovered without `task.md` reconstructs the
+  objective from the contract so its handoff stays valid and writable.
 
 ### Fixed
 

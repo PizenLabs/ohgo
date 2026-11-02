@@ -224,6 +224,10 @@ func (c *Controller) Current() (Task, bool) {
 // without a terminal transition, so the runtime has no evidence the objective
 // was reached. Restore never rewrites the files itself; the next recorded
 // transition persists the normalized status.
+//
+// An approved handoff is returned undecided. Restore only knows durable state,
+// not the workspace that was actually restored, so the caller that knows both
+// must call ReconcileRecoveredHandoff before reporting the transition.
 func (c *Controller) Restore() (Task, bool, error) {
 	if err := c.ensureLoaded(); err != nil {
 		return Task{}, false, err

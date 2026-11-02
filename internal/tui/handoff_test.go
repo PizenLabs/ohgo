@@ -10,6 +10,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/continuity/task"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
@@ -402,9 +403,17 @@ func TestInterruptedHandoffIsVisibleAfterRestart(t *testing.T) {
 
 	reopened := task.NewController(task.NewStore(root), nil)
 	reopened.SetRoleSource(func() workspace.Workspace { return workspace.Fuzz })
-	restored, found, err := reopened.Restore()
-	if err != nil || !found {
+	if _, found, err := reopened.Restore(); err != nil || !found {
 		t.Fatalf("Restore: found=%v err=%v", found, err)
+	}
+	// The data layer leaves an approved record undecided; the application
+	// boundary reconciles it with the restored workspace.
+	if _, err := reopened.ReconcileRecoveredHandoff(workspace.Fuzz); err != nil {
+		t.Fatalf("ReconcileRecoveredHandoff: %v", err)
+	}
+	restored, ok := reopened.Current()
+	if !ok {
+		t.Fatal("recovery lost the task")
 	}
 	brief := strings.Join(task.ContextFor(restored, workspace.Fuzz, ""), "\n")
 	if !strings.Contains(brief, "INTERRUPTED") {
@@ -529,5 +538,82 @@ func TestHandoffContinuationConsumesAppliedTransitionOnce(t *testing.T) {
 	}
 	if handoffContinuation(approved, "fuzz") {
 		t.Fatal("a handoff continued a different role")
+	}
+}
+
+// A restored BUILD workspace with stale FUZZ task metadata must still record a
+// valid BUILD -> FUZZ narrowing. The source comes from the live authority, so
+// the transition is neither refused as "already active" nor mislabelled.
+func TestNarrowingUsesLiveAuthorityAfterStaleRecovery(t *testing.T) {
+	root := t.TempDir()
+	role := workspace.Fuzz
+	controller := task.NewController(task.NewStore(root), nil)
+	controller.SetRoleSource(func() workspace.Workspace { return role })
+	intent := contract.IntentContract{Objective: "fix the flaky test", Kind: contract.ObjectiveInformational}
+	started, err := controller.Begin(intent, nil)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	// Restart with the live authority at BUILD while the task still records
+	// FUZZ. This is the stale metadata F2 describes.
+	role = workspace.Build
+	reopened := task.NewController(task.NewStore(root), nil)
+	reopened.SetRoleSource(func() workspace.Workspace { return role })
+	restored, found, err := reopened.Restore()
+	if err != nil || !found {
+		t.Fatalf("Restore: found=%v err=%v", found, err)
+	}
+	if restored.ActiveRole != workspace.Fuzz {
+		t.Fatalf("precondition: recorded role = %s, want the stale FUZZ", restored.ActiveRole)
+	}
+
+	program := NewProgram(scriptedLoop(t), "test", 0)
+	program.SetWorkspaceSwitcher(WorkspaceHooks{
+		Current: func() string { return string(role) },
+		Switch: func(name string) error {
+			ws, err := workspace.Parse(name)
+			if err != nil {
+				return err
+			}
+			role = ws
+			return nil
+		},
+		Predict: predictTransition(func() workspace.Workspace { return role }),
+	})
+	program.SetTaskHooks(runtimeHooks(reopened))
+
+	if cmd := program.submit("reproduce the failure"); cmd != nil {
+		t.Fatal("the narrowing transition ran before the decision")
+	}
+	pending := program.state.Transition
+	if pending == nil || pending.Proposed != "FUZZ" {
+		t.Fatalf("transition = %+v, want a BUILD -> FUZZ proposal", pending)
+	}
+	_, cmd := program.resolveTransition(true)
+	if cmd == nil {
+		handoff, _ := reopened.Current()
+		t.Fatalf("the narrowing was refused; handoff = %+v", handoff.Handoff)
+	}
+	if role != workspace.Fuzz {
+		t.Fatalf("accepted narrowing left the role at %s", role)
+	}
+	cmd()
+
+	current, ok := reopened.Current()
+	if !ok {
+		t.Fatal("no task after the narrowing")
+	}
+	if current.ID != started.ID {
+		t.Fatalf("the narrowing recreated the task: %q -> %q", started.ID, current.ID)
+	}
+	if current.Handoff == nil || current.Handoff.From != workspace.Build || current.Handoff.To != workspace.Fuzz {
+		t.Fatalf("handoff = %+v, want BUILD -> FUZZ", current.Handoff)
+	}
+	if current.Handoff.Status != task.HandoffApplied {
+		t.Fatalf("handoff status = %s, want APPLIED", current.Handoff.Status)
+	}
+	if current.ActiveRole != workspace.Fuzz {
+		t.Fatalf("active role = %s, want FUZZ", current.ActiveRole)
 	}
 }

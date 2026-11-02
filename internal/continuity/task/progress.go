@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -328,6 +329,13 @@ func (s *Store) Load() (Snapshot, error) {
 		if progress.Contract != nil {
 			cloned := cloneContract(*progress.Contract)
 			t.Contract = &cloned
+			// A checkpoint-only recovery has no task.md to carry the objective.
+			// The contract is authoritative for it, so reconstruct it here
+			// rather than leaving the task with an empty objective that a
+			// handoff written against the same contract can never agree with.
+			if strings.TrimSpace(t.Objective) == "" {
+				t.Objective = strings.TrimSpace(progress.Contract.Objective)
+			}
 		}
 		if progress.Snapshot != nil {
 			cloned := cloneSnapshot(*progress.Snapshot)
@@ -351,8 +359,13 @@ func (s *Store) Load() (Snapshot, error) {
 		}
 		if progress.Handoff != nil {
 			// The handoff is checked against the real task, not the probe the
-			// checkpoint loader used. A record for a different objective is
-			// dropped rather than attached to this one.
+			// checkpoint loader used. Reconstruct the objective when the
+			// projection is gone; the handoff's own copy is the only remaining
+			// source. A later mismatch is then a real conflict and is dropped
+			// with a diagnostic instead of leaving an unwritable task.
+			if strings.TrimSpace(t.Objective) == "" {
+				t.Objective = strings.TrimSpace(progress.Handoff.Objective)
+			}
 			clean, _, problem := sanitizeHandoff(progress.Handoff, t)
 			if clean == nil {
 				progress.HandoffProblem = problem

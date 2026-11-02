@@ -667,8 +667,11 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
     being recorded.
 23. Role execution contexts are isolated by role, survive recovery, and never
     grant authority. A handoff record describes a transition and also never
-    grants authority: only the workspace owner applies it. A handoff left
-    pending by a restart is interrupted, not silently applied.
+    grants authority: only the workspace owner applies it. A proposal that was
+    never approved is interrupted, never applied. An approved record is
+    reconciled against the restored workspace: matching the target is applied
+    without a switch, matching the source is interrupted, and any third role is
+    a reported discrepancy that does not rewrite the recorded role.
 
 ## Explicit Non-Goals
 

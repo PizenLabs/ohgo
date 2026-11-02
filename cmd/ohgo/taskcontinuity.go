@@ -101,7 +101,17 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		},
 		ResumeTask: func(id string) tui.TaskProjection {
 			recorded, err := controller.ResumeTask(id)
-			return taskProjection(recorded, err)
+			if err != nil {
+				return taskProjection(recorded, err)
+			}
+			// An archived task can carry an approved-but-unresolved transition.
+			// The restored workspace is available at this boundary too, so
+			// resolve it before the next turn instead of letting Begin guess.
+			recorded, notice := reconcileHandoff(controller, recorded, role)
+			if notice != "" {
+				program.PublishNotice(notice)
+			}
+			return taskProjection(recorded, nil)
 		},
 		CancelResumable: func(id string) tui.TaskProjection {
 			recorded, err := controller.CancelResumable(id, "cancelled by user")
@@ -164,18 +174,57 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 	case err != nil:
 		fmt.Fprintf(os.Stderr, "ohgo: task continuity unavailable: %v\n", err)
 	case found:
+		// Approval is not proof that the switch happened, and it is not proof
+		// that it did not. Reconcile an approved record against the authority
+		// that was actually restored before any recovery narrative is shown.
+		// This is the only boundary where both facts are available; the task
+		// data layer never reads the session store.
+		handoffNotice := ""
+		if recovered.Handoff != nil && recovered.Handoff.Status == task.HandoffApproved {
+			recovered, handoffNotice = reconcileHandoff(controller, recovered, role)
+			if handoffNotice != "" {
+				program.PublishNotice(handoffNotice)
+			}
+		}
 		if !recovered.Status.IsTerminal() {
 			program.PublishTask(taskProjection(recovered, nil))
 			if resumable, lerr := controller.ListResumable(); lerr == nil && len(resumable) > 0 {
 				program.PublishNotice("1 resumable task available (see /task list)")
 			}
 		}
-		if recovered.Handoff != nil && recovered.Handoff.Status == task.HandoffInterrupted {
-			program.PublishNotice("interrupted handoff " + recovered.Handoff.From.Label() +
-				" -> " + recovered.Handoff.To.Label() + " was preserved; authority did not move")
+		if recovered.Handoff != nil && recovered.Handoff.Status == task.HandoffInterrupted && handoffNotice == "" {
+			// An unapproved proposal is closed at load. Report only what the
+			// durable state establishes rather than asserting a workspace
+			// movement the recovery never observed.
+			notice := "interrupted handoff " + recovered.Handoff.From.Label() + " -> " + recovered.Handoff.To.Label()
+			if recovered.Handoff.Failure != "" {
+				notice += ": " + recovered.Handoff.Failure
+			}
+			program.PublishNotice(notice)
 		}
 	}
 	return controller
+}
+
+// reconcileHandoff resolves an approved transition against the restored
+// workspace. The controller owns the decision; this function only supplies the
+// live authority and projects the truthful notice.
+func reconcileHandoff(controller *task.Controller, current task.Task, role func() workspace.Workspace) (task.Task, string) {
+	if current.Handoff == nil || current.Handoff.Status != task.HandoffApproved {
+		return current, ""
+	}
+	live := workspace.Workspace("")
+	if role != nil {
+		live = role()
+	}
+	recovery, err := controller.ReconcileRecoveredHandoff(live)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ohgo: task handoff recovery: %v\n", err)
+	}
+	if updated, ok := controller.Current(); ok {
+		current = updated
+	}
+	return current, recovery.Notice
 }
 
 // taskResume converts a durable task into the TUI's resume contract.

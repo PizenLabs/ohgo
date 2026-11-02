@@ -326,23 +326,39 @@ PROPOSED ──approve──> APPROVED ──turn Begin──> APPLIED
     │                    └──switch refused / live role mismatch──> FAILED
     └──decline──> REJECTED
 
-PROPOSED or APPROVED found on load after a restart ──> INTERRUPTED
+PROPOSED found on load after a restart ──> INTERRUPTED (never approved)
+
+APPROVED found on load after a restart ──> decided by the live workspace:
+    restored role == target ──> APPLIED (no switch, no turn, consumed)
+    restored role == source ──> INTERRUPTED (the switch did not happen)
+    restored role == neither ──> INTERRUPTED with a recovery discrepancy
 ```
 
-- `PROPOSED` is recorded before the decision. Authority has not moved.
-- `APPROVED` records the human's authorization. Authority still has not moved.
-- `APPLIED` is written after `Switch` moved the live authority. It is the only
-  status that changes `Task.ActiveRole`. An applied record is consumed by the
-  next turn that attaches through it, so it continues that turn once and then
-  stops acting as a continuation signal.
+- `PROPOSED` is recorded before the decision. Authority has not moved. It can
+  never be applied by recovery: only an explicit human approval can.
+- `APPROVED` records the human's authorization. It proves neither that authority
+  moved nor that it did not. The data layer therefore leaves an approved record
+  undecided; the application boundary reconciles it against the authority that
+  was actually restored.
+- `APPLIED` is written after authority moved. It is the only status that changes
+  `Task.ActiveRole`. An applied record is consumed by the next turn that attaches
+  through it, so it continues that turn once and then stops acting as a
+  continuation signal. A reconciled applied record is marked consumed at
+  recovery, so recovery never resumes a turn by itself.
 - `REJECTED`, `FAILED`, and `INTERRUPTED` are terminal for that record and never
   change the recorded role.
 - `APPLIED` is terminal for that record; a later transition creates a new one.
 
-`Begin` applies an approved handoff only when the handoff objective matches the
-task and the approved target equals the live role. Otherwise it records `FAILED`
-and continues under the live role. This makes an interrupted or contradicted
-transition diagnosable instead of falsely successful.
+`Begin` remains a fallback application boundary: it applies an approved handoff
+only when the handoff objective matches the task and the approved target equals
+the live role. Otherwise it records `FAILED` and continues under the live role.
+
+Recovery ownership is deliberately split. `Load` knows the record but not the
+restored authority, so it decides only what the durable status alone proves
+(`PROPOSED`). The startup boundary knows both and calls
+`Controller.ReconcileRecoveredHandoff`, which records the disposition and never
+performs a switch. A restored role that matches neither endpoint is reported as
+a discrepancy and the task's recorded role is left untouched.
 
 ### 8.3 What a handoff carries
 
@@ -356,6 +372,10 @@ The record snapshots references, never payloads:
 - artifact references from every role (patch, reproduction, benchmark);
 - the source role, target role, objective, reason, and a concise summary;
 - the measured workspace state (branch and status) when the host has it.
+
+The source role is the live authority at the moment the transition is recorded,
+not the task's stored role. Continuity metadata can lag a recovered switch, and
+using it as the source would refuse or mislabel a valid transition.
 
 Each list is bounded (`maxHandoffRefs`, the role-note bound), and repair prunes a
 reference whose record no longer exists. The target role receives its own role
@@ -372,6 +392,14 @@ progress.
   somewhere the policy never allowed.
 - The only authority move is `SwitchWorkspace`, which parses the target, updates
   the live gate, the effective role model, and the session snapshot together.
+- Recovery never switches authority. It compares an approved record with the
+  authority that was restored: a matching target is recorded as applied, a
+  matching source stays unapplied, and any third role is reported as a
+  discrepancy without rewriting the task role.
+- A source that is missing from `task.md` is reconstructed from the persisted
+  contract, so a recovered task and its handoff satisfy the same validation and
+  persistence rules as a normally loaded task; an objective conflict drops the
+  handoff with a diagnostic and leaves the task writable.
 - Switching authority does not read, rewrite, stage, or discard project files.
   Dirty work is preserved by construction; the handoff records the measured
   workspace summary so the user can see what was there.
@@ -389,9 +417,15 @@ target roles, the objective, the counts of carried records, the measured
 workspace state, and that approval is required. The conservative choice keeps
 the current role; Enter confirms only after a deliberate move.
 
-On restart, a pending or approved record becomes `INTERRUPTED`, the recorded
-role stays the source role, the briefing shows the interruption, and the runtime
-publishes a notice. The task remains writable and resumable.
+On restart, recovery reconciles an approved record with the authority that was
+actually restored. The record is applied only when the live role is the approved
+target; it stops being a continuation signal at that point, so recovery cannot
+resume a turn by itself. When the live role is the source, the transition is
+reported as not applied and the source role is preserved. When the live role is
+neither endpoint, the record is reported as a recovery discrepancy and the task's
+recorded role is left untouched. A proposal that was never approved is always
+interrupted, never applied. The task remains writable and resumable in every
+case, and notices name only facts the restored state establishes.
 
 ### 8.6 Explicit limits
 

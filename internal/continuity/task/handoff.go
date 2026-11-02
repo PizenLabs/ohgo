@@ -285,16 +285,13 @@ func (c *Controller) ProposeHandoff(in HandoffInput) (Handoff, error) {
 	if !in.To.Valid() {
 		return Handoff{}, fmt.Errorf("%w: unknown target %q", ErrInvalidHandoff, in.To)
 	}
-	from := c.task.LastRole()
+	// The source is the live authority, never the task's recorded role: after a
+	// recovered transition the recorded role can still name the previous
+	// workspace while the live gate already moved. Deriving the source from
+	// continuity metadata would then refuse a valid narrowing or mislabel it.
+	from := c.currentRole()
 	if !from.Valid() {
-		if c.role.Valid() {
-			from = c.role
-		} else {
-			from = c.currentRole()
-		}
-	}
-	if !from.Valid() {
-		return Handoff{}, fmt.Errorf("%w: the task has no recorded source role", ErrInvalidHandoff)
+		return Handoff{}, fmt.Errorf("%w: the live workspace is unresolved", ErrInvalidHandoff)
 	}
 	if from == in.To {
 		return Handoff{}, fmt.Errorf("%w: %q is already the active role", ErrInvalidHandoff, in.To)
@@ -325,12 +322,9 @@ func (c *Controller) PreviewHandoff(in HandoffInput) (Handoff, error) {
 	if c.task.ID == "" {
 		return Handoff{}, ErrNoActiveTask
 	}
-	from := c.task.LastRole()
+	from := c.currentRole()
 	if !from.Valid() {
-		from = c.currentRole()
-	}
-	if !from.Valid() {
-		return Handoff{}, fmt.Errorf("%w: the task has no recorded source role", ErrInvalidHandoff)
+		return Handoff{}, fmt.Errorf("%w: the live workspace is unresolved", ErrInvalidHandoff)
 	}
 	if !in.To.Valid() || in.To == from {
 		return Handoff{}, fmt.Errorf("%w: no transition from %q to %q", ErrInvalidHandoff, from, in.To)
@@ -541,12 +535,121 @@ func (c *Controller) PendingHandoff() (Handoff, bool) {
 	return c.task.Handoff.Clone(), true
 }
 
+// HandoffRecovery is the outcome of reconciling a recovered transition with the
+// authority that was actually restored.
+type HandoffRecovery struct {
+	// Handoff is the reconciled record. It is the record after the decision,
+	// even when persisting it failed.
+	Handoff Handoff
+	// Changed reports whether the record or the task role changed.
+	Changed bool
+	// Notice is a truthful, user-facing sentence for the recovery boundary. It
+	// names only facts the restored state establishes. Empty when there is
+	// nothing to report.
+	Notice string
+}
+
+// ReconcileRecoveredHandoff resolves an approved transition after a restart.
+//
+// Approval is not evidence that the authority switch happened, and it is not
+// evidence that it did not. The live workspace is the only authority that can
+// settle the question, so this method takes it explicitly and never reads the
+// session store. It is the application boundary's job to supply the restored
+// authority.
+//
+// The rules are deliberately narrow:
+//
+//   - an unapproved proposal is closed as interrupted; it never moves authority;
+//   - an approved record whose target is the live role is recorded as applied
+//     without switching anything, and is marked consumed so recovery cannot
+//     resume a model turn by itself;
+//   - an approved record whose source is the live role stays unapplied and is
+//     reported as interrupted;
+//   - any other restored role is a discrepancy: the record is closed as
+//     interrupted, the task's recorded role is left untouched, and the caller
+//     reports what it actually observed.
+//
+// Reconciliation never grants authority, never switches authority, and never
+// starts a turn. It only makes the durable narrative match the restored state.
+func (c *Controller) ReconcileRecoveredHandoff(live workspace.Workspace) (HandoffRecovery, error) {
+	if err := c.ensureLoaded(); err != nil {
+		return HandoffRecovery{}, err
+	}
+	if c.task.Handoff == nil || c.task.Status.IsTerminal() {
+		return HandoffRecovery{}, nil
+	}
+	current := c.task.Handoff.Clone()
+	now := c.now().UTC()
+	notice := ""
+	switch current.Status {
+	case HandoffProposed:
+		// Sanitization normally closes this before the boundary sees it. Keep
+		// the rule here too, so a host that builds a task in memory cannot
+		// treat an unapproved proposal as anything else.
+		current.Status = HandoffInterrupted
+		current.Failure = "the handoff was never approved; the transition was not applied"
+		notice = "handoff " + current.From.Label() + " -> " + current.To.Label() + ": " + current.Failure
+	case HandoffApproved:
+		switch {
+		case !live.Valid():
+			current.Status = HandoffInterrupted
+			current.Failure = "the restored workspace is unresolved; the handoff was not applied"
+			notice = "handoff " + current.From.Label() + " -> " + current.To.Label() + ": " + current.Failure
+		case live == current.To:
+			current.Status = HandoffApplied
+			current.AppliedAt = now
+			current.Failure = ""
+			// Recovery reconciles the record; it does not continue work. Marking
+			// it consumed keeps the approval from attaching an unrelated next
+			// prompt to this task. The human can still continue explicitly.
+			current.Consumed = true
+			if _, err := c.task.UpdateRoleContext(current.To, RoleContextUpdate{
+				Progress: []string{"recovered applied handoff from " + current.From.Label()},
+			}, now); err != nil {
+				// The record is still the loaded APPROVED one; do not report a
+				// disposition the task does not carry.
+				return HandoffRecovery{Handoff: c.task.Handoff.Clone()}, err
+			}
+			c.task.ActiveRole = current.To
+			c.role = current.To
+			c.roleKnown = true
+			notice = "approved handoff " + current.From.Label() + " -> " + current.To.Label() +
+				" matches the restored " + current.To.Label() + " workspace; recorded as applied, no turn was executed"
+		case live == current.From:
+			current.Status = HandoffInterrupted
+			current.Failure = "the application stopped after approval and before the authority switch; the workspace is still " + current.From.Label()
+			notice = "handoff " + current.From.Label() + " -> " + current.To.Label() + " was not applied; the workspace is still " + current.From.Label()
+		default:
+			current.Status = HandoffInterrupted
+			current.Failure = "the restored workspace " + live.Label() + " matches neither the handoff source " +
+				current.From.Label() + " nor target " + current.To.Label() + "; the handoff was not applied"
+			notice = "recovery discrepancy: " + current.Failure
+		}
+	default:
+		return HandoffRecovery{Handoff: current}, nil
+	}
+	current.UpdatedAt = now
+	c.task.Handoff = &current
+	c.task.UpdatedAt = now
+	c.lastAction = "handoff recovery: " + handoffStatusLabel(current)
+	if err := c.persist(); err != nil {
+		return HandoffRecovery{Handoff: current.Clone(), Changed: true, Notice: notice}, err
+	}
+	return HandoffRecovery{Handoff: current.Clone(), Changed: true, Notice: notice}, nil
+}
+
+// handoffStatusLabel names a disposition for the last-action diagnostic.
+func handoffStatusLabel(h Handoff) string {
+	return h.From.Label() + " -> " + h.To.Label() + " " + string(h.Status)
+}
+
 // sanitizeHandoff repairs a loaded record.
 //
-// A pending transition that survived a restart is interrupted, not applied:
-// the runtime cannot prove the authority switch happened. The task's recorded
-// role stays the source role, so the last valid state remains recoverable. When
-// the record is unrecoverable the caller drops it and reports the loss.
+// A proposal that was never approved cannot have moved authority, so it is
+// closed as interrupted. An approved record is deliberately left untouched:
+// approval proves the human consented, not that the switch happened, and not
+// that it did not. Only the application boundary, which can compare the record
+// with the restored workspace, may decide an approved transition.
 func sanitizeHandoff(h *Handoff, t Task) (*Handoff, int, string) {
 	if h == nil {
 		return nil, 0, ""
@@ -576,9 +679,9 @@ func sanitizeHandoff(h *Handoff, t Task) (*Handoff, int, string) {
 	if !out.From.Valid() || !out.To.Valid() || out.From == out.To || !out.Status.Valid() || out.ID == "" {
 		return nil, changes + 1, "the handoff record is incomplete"
 	}
-	if out.Status.Pending() {
+	if out.Status == HandoffProposed {
 		out.Status = HandoffInterrupted
-		out.Failure = "the application stopped before the handoff completed; authority did not move"
+		out.Failure = "the handoff was never approved; the transition was not applied"
 		out.UpdatedAt = time.Now().UTC()
 		changes++
 	}
