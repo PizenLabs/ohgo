@@ -33,53 +33,53 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      # Only the checkout needs GITHUB_TOKEN. Writes must come from the
+      # ohgo-agent PAT so the review is authored by that account; granting
+      # `issues`/`pull-requests` write here would only make it possible to post
+      # as github-actions[bot]. Keep those grants off the workflow token.
       contents: read
-      # `issues: write` alone is not enough for PR threads. GitHub checks
-      # `pull-requests: write` for comments and reactions on a pull request even
-      # though the reaction endpoint advertises `issues=write`; without this
-      # grant the workflow token fails with `Resource not accessible by
-      # integration` on every write.
-      issues: write
-      pull-requests: write
     env:
-      # Prefer the bot identity when configured; fall back to the workflow token
-      # so the reviewer still works before the PAT exists. The bot token is a
-      # *preference*, not a requirement: a fine-grained PAT without `Issues:
-      # write` / `Pull requests: write` returns 403 on every write call, so each
-      # write below retries with WORKFLOW_TOKEN, which always carries the
-      # `issues: write` and `pull-requests: write` grants declared for this job.
-      # A mis-scoped PAT must never discard a finished review.
-      GH_TOKEN: ${{ secrets.OHGO_GITHUB_TOKEN || github.token }}
-      WORKFLOW_TOKEN: ${{ github.token }}
+      # The sole write identity. There is deliberately no fallback to
+      # `github.token`: a review posted as github-actions[bot] is misattributed,
+      # so a missing or under-scoped PAT fails the job instead of silently
+      # changing who authored the review.
+      GH_TOKEN: ${{ secrets.OHGO_GITHUB_TOKEN }}
     steps:
       - name: Acknowledge command
         uses: actions/github-script@v9
         with:
-          github-token: ${{ env.GH_TOKEN }}
+          # Keep the client valid even when the secret is unset; the script
+          # below refuses to write in that case, so the fallback token is never
+          # used to author a review.
+          github-token: ${{ env.GH_TOKEN || github.token }}
           script: |
-            const params = {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: context.payload.comment.id,
-              content: 'eyes'
-            };
-            // Acknowledgement is cosmetic. Fall back to the workflow token on a
-            // permission error, and warn rather than abort the review if even
-            // that fails: the API quota should be spent on the review itself.
+            // The reaction doubles as the permission probe: creating it needs
+            // the same `Issues: read and write` / `Pull requests: read and
+            // write` grants as posting the review. Failing here keeps a
+            // mis-scoped token from spending API quota and from being papered
+            // over by a github-actions[bot] comment.
+            if (!process.env.GH_TOKEN) {
+              core.setFailed(
+                'OHGO_GITHUB_TOKEN is not configured. Add the ohgo-agent ' +
+                'fine-grained PAT as a repository secret; refusing to post as ' +
+                'github-actions[bot].'
+              );
+              return;
+            }
             try {
-              try {
-                await github.rest.reactions.createForIssueComment(params);
-              } catch (error) {
-                if ((error.status !== 403 && error.status !== 404) ||
-                    process.env.GH_TOKEN === process.env.WORKFLOW_TOKEN) {
-                  throw error;
-                }
-                core.warning(`Bot token cannot react to the comment (${error.status}); retrying with the workflow token.`);
-                await getOctokit(process.env.WORKFLOW_TOKEN)
-                  .rest.reactions.createForIssueComment(params);
-              }
+              await github.rest.reactions.createForIssueComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: context.payload.comment.id,
+                content: 'eyes'
+              });
             } catch (error) {
-              core.warning(`Could not add the eyes reaction: ${error.message}`);
+              core.setFailed(
+                `OHGO_GITHUB_TOKEN cannot write to this pull request ` +
+                `(${error.status}: ${error.message}). Grant the ohgo-agent ` +
+                'token "Issues: Read and write" and "Pull requests: Read and ' +
+                'write"; refusing to post as github-actions[bot].'
+              );
             }
 
       - name: Checkout trusted reviewer
@@ -122,7 +122,7 @@ jobs:
       - name: Post comment as ohgo
         uses: actions/github-script@v9
         with:
-          github-token: ${{ env.GH_TOKEN }}
+          github-token: ${{ env.GH_TOKEN || github.token }}
           script: |
             const fs = require('fs');
             const body = fs.readFileSync('review_comment.md', 'utf8').trim();
@@ -139,14 +139,12 @@ jobs:
             try {
               await github.rest.issues.createComment(params);
             } catch (error) {
-              // A review that already cost API quota must not be lost to a
-              // token-scope problem. The workflow token can always write; the
-              // only cost is losing the bot identity.
-              if ((error.status !== 403 && error.status !== 404) ||
-                  process.env.GH_TOKEN === process.env.WORKFLOW_TOKEN) {
-                throw error;
-              }
-              core.warning(`Bot token cannot post comments (${error.status}); posting with the workflow token instead. Grant OHGO_GITHUB_TOKEN \`Issues: write\` and \`Pull requests: write\` to restore the ohgo identity.`);
-              await getOctokit(process.env.WORKFLOW_TOKEN)
-                .rest.issues.createComment(params);
+              // The acknowledgement already proved the token can write, so this
+              // is a genuine failure (network, throttling, revoked token). Fail
+              // rather than retrying as github-actions[bot].
+              core.setFailed(
+                `OHGO_GITHUB_TOKEN cannot post comments ` +
+                `(${error.status}: ${error.message}); refusing to post as ` +
+                'github-actions[bot].'
+              );
             }
