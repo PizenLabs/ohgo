@@ -48,7 +48,7 @@ function.
 | Path | Meaning | Owner | Lifecycle |
 | --- | --- | --- | --- |
 | `project.yml` | `{id, name, root, user.name}` — stable project identity, human-readable project name, and the project worker identity | `project` | project; authoritative; machine-local, gitignored |
-| `progress.json` | authoritative durable task checkpoint: identity, lifecycle, contract, snapshot, budget, evidence state, active role (continuity metadata, never authority), and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries |
+| `progress.json` | authoritative durable task checkpoint: identity, lifecycle, contract, snapshot, budget, evidence state, active role and handoff record (continuity metadata, never authority), and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries |
 | `task.md` | human- and model-readable task projection | `task` | project; projection only; never authoritative over `progress.json` |
 | `tasks/<id>.json` | detached task archive, including its context | `task` | project; durable until resumed, cancelled, or deleted by the human |
 
@@ -233,6 +233,7 @@ never let global state become an accidental authority for project-local state.**
 | task identity and lifecycle | `task` | `<project>/.ohgo/progress.json` | authoritative | task | resume or archive |
 | task shared context (facts, hypotheses, evidence, questions) | `task` | `<project>/.ohgo/progress.json` (`context`) | authoritative | task | resume or archive |
 | role execution context (ASK/FUZZ/BUILD) | `task` | `<project>/.ohgo/progress.json` (`context.roles`) | authoritative for continuity; never authority | task | resume or archive |
+| role handoff (source/target, disposition, carried references) | `task` | `<project>/.ohgo/progress.json` (`handoff`) | authoritative for recovery; never authority | task | resume or archive |
 | detached task | `task` | `<project>/.ohgo/tasks/<id>.json` | authoritative until closed | task | `/task resume` |
 | project identity (`id`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-mint |
 | project name (`name`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-establish via gate |
@@ -665,7 +666,9 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
     assertion, an inconclusive result, or a model claim never becomes a fact by
     being recorded.
 23. Role execution contexts are isolated by role, survive recovery, and never
-    grant authority. Storing context is not a role handoff.
+    grant authority. A handoff record describes a transition and also never
+    grants authority: only the workspace owner applies it. A handoff left
+    pending by a restart is interrupted, not silently applied.
 
 ## Explicit Non-Goals
 

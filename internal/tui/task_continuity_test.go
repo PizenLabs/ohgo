@@ -424,6 +424,11 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 				ID: current.ID, Status: string(current.Status), Objective: current.Objective,
 				ReviewReason: current.ReviewReason, Role: string(current.LastRole()),
 			}
+			if current.Handoff != nil {
+				resume.HandoffStatus = string(current.Handoff.Status)
+				resume.HandoffTo = current.Handoff.To.String()
+				resume.HandoffConsumed = current.Handoff.Consumed
+			}
 			if current.Contract != nil {
 				resume.Contract = *current.Contract
 				resume.HasContract = true
@@ -454,10 +459,39 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 			recorded, err := controller.Fail(reason)
 			return runtimeProjection(recorded, err)
 		},
+		PreviewHandoff: func(target workspace.Workspace) (HandoffView, error) {
+			recorded, err := controller.PreviewHandoff(task.HandoffInput{To: target})
+			return runtimeHandoffView(recorded), err
+		},
+		ProposeHandoff: func(target workspace.Workspace, reason, summary, workspaceState string) (HandoffView, error) {
+			recorded, err := controller.ProposeHandoff(task.HandoffInput{
+				To: target, Reason: reason, Summary: summary, Workspace: workspaceState,
+			})
+			return runtimeHandoffView(recorded), err
+		},
+		ApproveHandoff: func(id string) (HandoffView, error) {
+			recorded, err := controller.ApproveHandoff(id)
+			return runtimeHandoffView(recorded), err
+		},
+		FailHandoff: func(id, reason string) error {
+			_, err := controller.FailHandoff(id, reason)
+			return err
+		},
 		Context:          controller.Context,
 		ObserveTurns:     controller.ObserveTurns,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
+	}
+}
+
+func runtimeHandoffView(recorded task.Handoff) HandoffView {
+	carried := recorded.Carried()
+	return HandoffView{
+		ID: recorded.ID, From: recorded.From.Label(), To: recorded.To.Label(),
+		Status: string(recorded.Status), Objective: recorded.Objective,
+		Reason: recorded.Reason, Summary: recorded.Summary, Workspace: recorded.Workspace,
+		Facts: carried.Facts, Hypotheses: carried.Hypotheses, Questions: carried.Questions,
+		Evidence: carried.Evidence, Artifacts: carried.Artifacts, Constraints: carried.Constraints,
 	}
 }
 

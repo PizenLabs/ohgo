@@ -66,6 +66,12 @@ func (s *Store) ArchiveTask(t Task, progress Progress) error {
 		progress.Status = t.Status
 	}
 	progress.ActiveRole = t.LastRole()
+	if t.Handoff != nil {
+		cloned := t.Handoff.Clone()
+		progress.Handoff = &cloned
+	} else {
+		progress.Handoff = nil
+	}
 	if progress.Version == 0 {
 		progress.Version = ProgressVersion
 	}
@@ -170,6 +176,21 @@ func sanitizeArchived(file *archivedFile) {
 			file.Progress.Context = nil
 		} else {
 			file.Progress.Context = &clean
+		}
+	}
+	if file.Task.Handoff != nil {
+		clean, changes, problem := sanitizeHandoff(file.Task.Handoff, file.Task)
+		file.Task.Handoff = clean
+		file.Progress.Handoff = clean
+		if clean == nil && problem != "" && file.Task.ContextWarning == "" {
+			file.Task.ContextWarning = "task handoff was not restored: " + problem
+		}
+		if changes > 0 && file.Task.ContextWarning == "" {
+			file.Task.ContextWarning = fmt.Sprintf("%d task handoff reference(s) were invalid and repaired or dropped on load", changes)
+		}
+		if clean != nil && clean.Status == HandoffApplied {
+			file.Task.ActiveRole = clean.To
+			file.Progress.ActiveRole = clean.To
 		}
 	}
 }

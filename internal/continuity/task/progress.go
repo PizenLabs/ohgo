@@ -33,6 +33,10 @@ import (
 // Phase 1's structured context is the same kind of change: an additive,
 // self-versioned subdocument (ContextVersion) that an older reader ignores. It
 // does not change the meaning of any existing field, so ProgressVersion stays 2.
+//
+// Phase 2's handoff record is additive and optional in the same way: an older
+// reader ignores it, and a newer reader treats its absence as "no transition".
+// No existing field changes meaning, so the schema version still does not move.
 const ProgressVersion = 2
 
 // File names inside the project-local .ohgo directory.
@@ -102,6 +106,13 @@ type Progress struct {
 	// objective without inferring one from prompt wording. It is never
 	// authority.
 	ActiveRole workspace.Workspace `json:"activeRole,omitempty"`
+	// Handoff is the task's current cross-role transition record. It is
+	// additive and optional; a checkpoint written before it existed loads with
+	// no transition. It is recovery metadata, never authority.
+	Handoff *Handoff `json:"handoff,omitempty"`
+	// HandoffProblem explains why the handoff record could not be used. It is
+	// diagnostic only and is never written.
+	HandoffProblem string `json:"-"`
 	// ContextDropped reports how many structured context records were
 	// invalid or repaired on load. It is diagnostic only and is never written.
 	ContextDropped int `json:"-"`
@@ -127,6 +138,10 @@ func ProgressFrom(t Task) Progress {
 	// Persist the explicit role. A checkpoint written before the field existed
 	// migrates from its role contexts on the next save.
 	p.ActiveRole = t.LastRole()
+	if t.Handoff != nil {
+		cloned := t.Handoff.Clone()
+		p.Handoff = &cloned
+	}
 	if active, ok := t.ActiveTodo(); ok {
 		p.ActiveTodo = active.ID
 	}
@@ -222,7 +237,14 @@ func (s *Store) SaveCheckpoint(t Task, progress Progress) error {
 		progress.Status = t.Status
 	}
 	// The task is the single in-memory owner, like structured context: a
-	// caller-built checkpoint cannot persist a divergent active role.
+	// caller-built checkpoint cannot persist a divergent active role or
+	// handoff record.
+	if t.Handoff != nil {
+		cloned := t.Handoff.Clone()
+		progress.Handoff = &cloned
+	} else {
+		progress.Handoff = nil
+	}
 	progress.ActiveRole = t.LastRole()
 	if !progress.CheckpointAt.IsZero() && t.UpdatedAt.After(progress.CheckpointAt) {
 		progress.CheckpointAt = t.UpdatedAt
@@ -327,11 +349,28 @@ func (s *Store) Load() (Snapshot, error) {
 			// the same value from its role contexts.
 			t.ActiveRole = t.Context.LastRole()
 		}
-		if progress.ContextDropped > 0 {
-			t.ContextWarning = fmt.Sprintf("%d task context record(s) were invalid and repaired or dropped on load", progress.ContextDropped)
+		if progress.Handoff != nil {
+			// The handoff is checked against the real task, not the probe the
+			// checkpoint loader used. A record for a different objective is
+			// dropped rather than attached to this one.
+			clean, _, problem := sanitizeHandoff(progress.Handoff, t)
+			if clean == nil {
+				progress.HandoffProblem = problem
+			} else {
+				t.Handoff = clean
+				progress.Handoff = clean
+				if clean.Status == HandoffApplied && clean.To.Valid() {
+					t.ActiveRole = clean.To
+				}
+			}
 		}
-		if progress.ContextProblem != "" {
+		switch {
+		case progress.ContextProblem != "":
 			t.ContextWarning = "task context could not be restored: " + progress.ContextProblem
+		case progress.HandoffProblem != "":
+			t.ContextWarning = "task handoff was not restored: " + progress.HandoffProblem
+		case progress.ContextDropped > 0:
+			t.ContextWarning = fmt.Sprintf("%d task context record(s) were invalid and repaired or dropped on load", progress.ContextDropped)
 		}
 	}
 
@@ -396,6 +435,21 @@ func (s *Store) LoadProgress() (Progress, bool, error) {
 			} else {
 				progress.Context = &clean
 			}
+		}
+	}
+	if progress.Handoff != nil {
+		probe := Task{ID: progress.TaskID, Objective: progress.Handoff.Objective}
+		if progress.Context != nil {
+			probe.Context = progress.Context.Clone()
+		}
+		clean, changes, problem := sanitizeHandoff(progress.Handoff, probe)
+		progress.ContextDropped += changes
+		if clean == nil {
+			progress.Handoff = nil
+			progress.HandoffProblem = problem
+		} else {
+			progress.Handoff = clean
+			progress.HandoffProblem = problem
 		}
 	}
 	return progress, true, nil

@@ -463,6 +463,10 @@ const (
 	// path. Authority does not move; the human resolves the decision through
 	// the same permission surface a tool approval uses.
 	TransitionKindProposal = "proposal"
+	// TransitionKindHandoff moves the session to a stronger authority. It
+	// always requires explicit approval: classification can request a handoff,
+	// never grant one.
+	TransitionKindHandoff = "handoff"
 )
 
 // TurnTransition is the UI projection of one pending decision: a workspace
@@ -487,6 +491,10 @@ type TurnTransition struct {
 	ProposedAccent string
 	// Proposal is the request-derived decision for the proposal kind.
 	Proposal *workspace.Proposal
+	// Handoff is the transition payload for the handoff kind. It is filled
+	// from the durable task record before the decision is presented, so the
+	// human sees exactly what will be carried.
+	Handoff *HandoffView
 	// Intent is the classified request, e.g. "READ".
 	Intent string
 	// Strength is the classifier's evidence level, e.g. "strong".
@@ -3839,6 +3847,38 @@ func (p *Program) submit(text string) tea.Cmd {
 				p.openAuthorityChoice(text, proposed.Reason)
 				return nil
 			}
+			if proposed.Kind == TransitionKindHandoff {
+				// The durable preview is filled before the decision is shown,
+				// so the human sees the objective and what will be carried.
+				// It is a read: nothing is recorded and no authority moves.
+				if p.task.PreviewHandoff != nil {
+					if target, err := workspace.Parse(proposed.Proposed); err == nil {
+						if preview, err := p.task.PreviewHandoff(target); err == nil {
+							if preview.Summary == "" {
+								preview.Summary = "Shared task context and role progress are preserved."
+							}
+							// The workspace summary is measured state from the
+							// footer, never an invented "clean tree".
+							preview.Workspace = p.handoffWorkspaceState()
+							proposed.Handoff = &preview
+						}
+					}
+				}
+				p.state.Apply(TransitionProposed{
+					Text:           text,
+					Current:        proposed.Current,
+					Proposed:       proposed.Proposed,
+					CurrentAccent:  proposed.CurrentAccent,
+					ProposedAccent: proposed.ProposedAccent,
+					Intent:         proposed.Intent,
+					Strength:       proposed.Strength,
+					Question:       proposed.Question,
+					Reason:         proposed.Reason,
+					Kind:           proposed.Kind,
+					Handoff:        proposed.Handoff,
+				})
+				return nil
+			}
 			if proposed.Kind == TransitionKindProposal && proposed.Proposal != nil {
 				labels := make([]string, len(proposed.Proposal.Options))
 				for i, option := range proposed.Proposal.Options {
@@ -3869,6 +3909,8 @@ func (p *Program) submit(text string) tea.Cmd {
 				Strength:       proposed.Strength,
 				Question:       proposed.Question,
 				Reason:         proposed.Reason,
+				Kind:           proposed.Kind,
+				Handoff:        proposed.Handoff,
 			})
 			return nil
 		}
@@ -3908,10 +3950,15 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	text, proposed := pending.Text, pending.Proposed
+	summary, workspaceState := "", ""
+	if pending.Handoff != nil {
+		summary = pending.Handoff.Summary
+		workspaceState = pending.Handoff.Workspace
+	}
 	p.state.Apply(TransitionResolved{})
 	if !accept {
-		p.restoreAuthorityRequest(text)
 		p.state.Apply(Notice{Text: "request cancelled; choose its workspace explicitly, then resend"})
+		p.restoreAuthorityRequest(text)
 		return p, nil
 	}
 	if p.workspace.Switch == nil {
@@ -3919,20 +3966,105 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 		p.restoreAuthorityRequest(text)
 		return p, nil
 	}
+	target, err := workspace.Parse(proposed)
+	if err != nil {
+		p.state.Apply(Notice{Text: "workspace: " + err.Error()})
+		p.restoreAuthorityRequest(text)
+		return p, nil
+	}
+	// The pending decision is data, not authority. Re-derive the policy answer
+	// for this exact request and require it to name the same target, so a
+	// stale, corrupted, or misproduced prompt cannot move authority somewhere
+	// the policy never allowed.
+	if p.workspace.Current != nil {
+		if current, err := workspace.Parse(p.workspace.Current()); err == nil {
+			prediction := workspace.ClassifyPrediction(text)
+			allowed := false
+			if pending.Kind == TransitionKindHandoff {
+				if candidate, ok := workspace.ProposeHandoff(current, prediction); ok && candidate.Proposed == target {
+					allowed = true
+				}
+			} else if candidate, ok := workspace.ProposeTransition(current, prediction); ok && candidate.Proposed == target {
+				allowed = true
+			}
+			if !allowed {
+				p.state.Apply(Notice{Text: "this transition is no longer authorized; resend the request"})
+				p.restoreAuthorityRequest(text)
+				return p, nil
+			}
+		}
+	}
 	if p.workspace.Current != nil && strings.EqualFold(p.workspace.Current(), proposed) {
 		// Already there (an external switch landed between prediction and
 		// decision): run the turn without a redundant transition.
 		return p, p.startTurn(text)
 	}
+	// A transition on an existing task is recorded durably before authority
+	// moves, so an interruption between approval and application is
+	// diagnosable. With no task yet there is no continuity to preserve: the
+	// turn will create one under the target role.
+	handoffID := ""
+	if p.task.ProposeHandoff != nil && p.hasOpenTask() {
+		view, err := p.task.ProposeHandoff(target, pending.Reason, summary, workspaceState)
+		if err != nil {
+			p.state.Apply(Notice{Text: "handoff: " + err.Error()})
+			p.restoreAuthorityRequest(text)
+			return p, nil
+		}
+		handoffID = view.ID
+		if p.task.ApproveHandoff != nil {
+			if _, err := p.task.ApproveHandoff(handoffID); err != nil {
+				if p.task.FailHandoff != nil {
+					_ = p.task.FailHandoff(handoffID, "approval could not be recorded: "+err.Error())
+				}
+				p.state.Apply(Notice{Text: "handoff: " + err.Error()})
+				p.restoreAuthorityRequest(text)
+				return p, nil
+			}
+		}
+	}
 	if err := p.workspace.Switch(proposed); err != nil {
 		// The accepted authority is not in force, so running the turn would
 		// silently execute under the workspace the user declined. Report and
 		// drop the prompt; the user can resend.
+		if handoffID != "" && p.task.FailHandoff != nil {
+			_ = p.task.FailHandoff(handoffID, "authority switch failed: "+err.Error())
+		}
 		p.state.Apply(Notice{Text: "workspace: " + err.Error()})
 		p.restoreAuthorityRequest(text)
 		return p, nil
 	}
+	// The handoff stays APPROVED here. The turn's Begin is the boundary where
+	// the live role is known and the task is attached, so it applies the
+	// transition and keeps the task identity in one step.
 	return p, p.startTurn(text)
+}
+
+// handoffWorkspaceState is the measured workspace summary shown before a
+// transition. It comes from the same footer facts the user already sees, and
+// stays empty when the runtime has not measured them: a handoff never claims a
+// clean tree it did not observe.
+func (p *Program) handoffWorkspaceState() string {
+	branch := strings.TrimSpace(p.state.Status.GitBranch)
+	status := strings.TrimSpace(p.state.Status.GitStatus)
+	switch {
+	case branch != "" && status != "":
+		return branch + "; " + status
+	case branch != "":
+		return branch
+	default:
+		return status
+	}
+}
+
+// hasOpenTask reports whether a non-terminal task exists, so a transition can
+// be recorded without creating a task before its first turn.
+func (p *Program) hasOpenTask() bool {
+	if p.task.Current == nil {
+		return false
+	}
+	current, ok := p.task.Current()
+	return ok && current.ID != "" && !taskStatusTerminal(current.Status)
 }
 
 // supportIdentity reads the effective SUP model and effort for display.
@@ -4420,6 +4552,9 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			switch {
 			case continuing:
 				p.recordTaskDecision("EXPLICIT_RESUME")
+			case handoffContinuation(current, activeAuthority):
+				continuing = true
+				p.recordTaskDecision("HANDOFF_CONTINUATION")
 			case roleContinuation(current, intent, activeAuthority):
 				continuing = true
 				p.recordTaskDecision("ROLE_CONTINUATION")

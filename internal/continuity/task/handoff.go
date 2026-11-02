@@ -113,6 +113,11 @@ type Handoff struct {
 	ApprovedBy string `json:"approvedBy,omitempty"`
 	// Failure explains a failed or interrupted transition.
 	Failure string `json:"failure,omitempty"`
+	// Consumed records that a turn has already attached to this task through
+	// the handoff. An applied-but-unconsumed handoff is the next turn's
+	// continuation signal; after that turn it stops being one, so the approval
+	// does not make every later prompt attach to the task.
+	Consumed bool `json:"consumed,omitempty"`
 	// CreatedAt is when the handoff was proposed.
 	CreatedAt time.Time `json:"createdAt"`
 	// UpdatedAt is when the record last changed.
@@ -120,9 +125,6 @@ type Handoff struct {
 	// AppliedAt is when the target role actually became active.
 	AppliedAt time.Time `json:"appliedAt,omitempty"`
 }
-
-// ErrNoActiveTask means an operation needs a task and none is active.
-var ErrNoActiveTask = errors.New("task: no active task")
 
 // ErrHandoffPending means another transition is already awaiting a decision.
 var ErrHandoffPending = errors.New("task: a handoff is already pending")
@@ -179,12 +181,12 @@ func (h Handoff) Validate(t Task) error {
 // record text. It is descriptive, never a permission.
 func (h Handoff) Carried() HandoffCarried {
 	return HandoffCarried{
-		Facts:        len(h.FactIDs),
-		Hypotheses:   len(h.HypothesisIDs),
-		Questions:    len(h.QuestionIDs),
-		Evidence:     len(h.EvidenceIDs),
-		Artifacts:    len(h.Artifacts),
-		Constraints:  len(h.Constraints),
+		Facts:       len(h.FactIDs),
+		Hypotheses:  len(h.HypothesisIDs),
+		Questions:   len(h.QuestionIDs),
+		Evidence:    len(h.EvidenceIDs),
+		Artifacts:   len(h.Artifacts),
+		Constraints: len(h.Constraints),
 	}
 }
 
@@ -196,6 +198,60 @@ type HandoffCarried struct {
 	Evidence    int `json:"evidence"`
 	Artifacts   int `json:"artifacts"`
 	Constraints int `json:"constraints"`
+}
+
+// RecordWorkspaceSwitch records an explicit human workspace command as an
+// already-applied transition.
+//
+// A slash command is itself the human's decision, so it needs no proposal and
+// no second approval. Recording it keeps the next turn attached to the same
+// task (the applied-but-unconsumed signal) and leaves a truthful recovery
+// record. It never performs the switch: the caller must already have moved the
+// live authority through the workspace owner.
+func (c *Controller) RecordWorkspaceSwitch(from, to workspace.Workspace, workspaceState string) error {
+	if err := c.ensureLoaded(); err != nil {
+		return err
+	}
+	if c.task.ID == "" || c.task.Status.IsTerminal() {
+		return nil
+	}
+	if !from.Valid() || !to.Valid() || from == to {
+		return nil
+	}
+	// A transition proposal already recorded this exact move. Leave it in its
+	// approved state so the turn boundary applies it with the human's reason
+	// and summary instead of replacing it with the generic command record.
+	if existing := c.task.Handoff; existing != nil && existing.From == from && existing.To == to &&
+		(existing.Status == HandoffApproved || existing.Status == HandoffApplied) {
+		return nil
+	}
+	now := c.now().UTC()
+	handoff, err := c.snapshotHandoff(from, HandoffInput{
+		To:        to,
+		Reason:    "explicit workspace command",
+		Summary:   "the authority changed by an explicit human command",
+		Workspace: workspaceState,
+	}, now)
+	if err != nil {
+		return err
+	}
+	handoff.Status = HandoffApplied
+	handoff.ApprovedBy = "human"
+	handoff.AppliedAt = now
+	handoff.UpdatedAt = now
+	handoff.Consumed = false
+	c.task.Handoff = &handoff
+	c.task.ActiveRole = to
+	c.role = to
+	c.roleKnown = true
+	c.task.UpdatedAt = now
+	if _, err := c.task.UpdateRoleContext(to, RoleContextUpdate{
+		Progress: []string{"resumed via explicit workspace switch from " + from.Label()},
+	}, now); err != nil {
+		return err
+	}
+	c.lastAction = "workspace switched: " + from.Label() + " -> " + to.Label()
+	return c.persist()
 }
 
 // HandoffInput is the host's request to begin a transition.
@@ -317,7 +373,28 @@ func (c *Controller) snapshotHandoff(from workspace.Workspace, in HandoffInput, 
 			handoff.QuestionIDs = appendBound(handoff.QuestionIDs, question.ID)
 		}
 	}
+	// Evidence is relevance-ordered, not recency-only: the records an active
+	// fact or hypothesis cites come first, then the newest current records.
+	// The target still gets the full briefing through ContextFor; this is the
+	// bounded transition snapshot.
+	referenced := make(map[string]bool)
+	for _, fact := range c.task.Context.Facts {
+		for _, id := range fact.EvidenceIDs {
+			referenced[id] = true
+		}
+	}
+	for _, hypothesis := range c.task.Context.Hypotheses {
+		for _, id := range hypothesis.EvidenceIDs {
+			referenced[id] = true
+		}
+	}
 	for _, record := range c.task.Context.Evidence {
+		if record.Validity == EvidenceCurrent && referenced[record.ID] {
+			handoff.EvidenceIDs = appendBound(handoff.EvidenceIDs, record.ID)
+		}
+	}
+	for i := len(c.task.Context.Evidence) - 1; i >= 0 && len(handoff.EvidenceIDs) < maxHandoffRefs; i-- {
+		record := c.task.Context.Evidence[i]
 		if record.Validity == EvidenceCurrent {
 			handoff.EvidenceIDs = appendBound(handoff.EvidenceIDs, record.ID)
 		}
@@ -360,16 +437,26 @@ func (c *Controller) ApplyHandoff(id string) (Task, error) {
 	if c.task.Handoff == nil || c.task.Handoff.ID != id {
 		return Task{}, fmt.Errorf("%w: %q", ErrUnknownHandoff, id)
 	}
-	if c.task.Handoff.Status != HandoffApproved {
-		return Task{}, fmt.Errorf("%w: %q is %s, want APPROVED", ErrInvalidHandoff, id, c.task.Handoff.Status)
+	if err := c.applyApprovedHandoff(c.now().UTC()); err != nil {
+		return Task{}, err
 	}
-	now := c.now().UTC()
-	handoff := *c.task.Handoff
+	return c.task.Clone(), c.persist()
+}
+
+// applyApprovedHandoff records the completed transition in memory. It is the
+// single place that changes the task's active role through a handoff, and it
+// never performs the authority switch itself: the caller must already have
+// applied that through the workspace owner.
+func (c *Controller) applyApprovedHandoff(now time.Time) error {
+	handoff := c.task.Handoff
+	if handoff == nil || handoff.Status != HandoffApproved {
+		return fmt.Errorf("%w: no approved handoff to apply", ErrInvalidHandoff)
+	}
 	handoff.Status = HandoffApplied
 	handoff.UpdatedAt = now
 	handoff.AppliedAt = now
 	handoff.Failure = ""
-	c.task.Handoff = &handoff
+	handoff.Consumed = false
 	c.task.ActiveRole = handoff.To
 	c.role = handoff.To
 	c.roleKnown = true
@@ -379,10 +466,10 @@ func (c *Controller) ApplyHandoff(id string) (Task, error) {
 		note += ": " + handoff.Summary
 	}
 	if _, err := c.task.UpdateRoleContext(handoff.To, RoleContextUpdate{Progress: []string{note}}, now); err != nil {
-		return Task{}, err
+		return err
 	}
 	c.lastAction = "handoff applied: " + handoff.From.Label() + " -> " + handoff.To.Label()
-	return c.task.Clone(), c.persist()
+	return nil
 }
 
 // RejectHandoff records a human decline. Authority did not move.
@@ -481,7 +568,9 @@ func sanitizeHandoff(h *Handoff, t Task) (*Handoff, int, string) {
 		out.Objective = t.Objective
 		changes++
 	}
-	if out.Objective != t.Objective {
+	// A projection-less recovery has no task objective to compare against; the
+	// handoff's own objective is the only readable copy and is accepted.
+	if t.Objective != "" && out.Objective != t.Objective {
 		return nil, changes + 1, "the handoff objective does not match the task"
 	}
 	if !out.From.Valid() || !out.To.Valid() || out.From == out.To || !out.Status.Valid() || out.ID == "" {
@@ -524,7 +613,7 @@ func pruneHandoffRefs(h Handoff, t Task) int {
 	h.HypothesisIDs = hypotheses
 	questions := h.QuestionIDs[:0]
 	for _, id := range h.QuestionIDs {
-		if _, ok := t.Context.questionByID(id); ok {
+		if t.Context.hasQuestion(id) {
 			questions = append(questions, id)
 		} else {
 			removed++

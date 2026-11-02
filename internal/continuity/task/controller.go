@@ -257,6 +257,45 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 	now := c.now().UTC()
 	c.role = c.currentRole()
 	c.roleKnown = c.role.Valid()
+
+	// An approved handoff is applied at the turn boundary, where the live role
+	// is known and the task is being attached. Applying it here keeps identity
+	// detection working: the turn gate still sees the source role and treats
+	// the same objective as a continuation, then this records the target.
+	if handoff := c.task.Handoff; handoff != nil {
+		switch handoff.Status {
+		case HandoffApproved:
+			switch {
+			case handoff.Objective != objective:
+				handoff.Status = HandoffFailed
+				handoff.Failure = "the requested objective does not match the approved handoff"
+				handoff.UpdatedAt = now
+			case !c.role.Valid() || handoff.To != c.role:
+				handoff.Status = HandoffFailed
+				handoff.Failure = "the live role " + c.role.Label() + " does not match the approved target " + handoff.To.Label()
+				handoff.UpdatedAt = now
+			default:
+				if err := c.applyApprovedHandoff(now); err != nil {
+					return Task{}, err
+				}
+				handoff.Consumed = true
+			}
+		case HandoffApplied:
+			// An explicit workspace command records an applied handoff before
+			// the next turn. Consuming it here is what attaches the turn to
+			// the same task without also making every later prompt attach.
+			if !handoff.Consumed {
+				if !c.role.Valid() || handoff.To != c.role {
+					handoff.Status = HandoffFailed
+					handoff.Failure = "the live role " + c.role.Label() + " does not match the applied target " + handoff.To.Label()
+				} else {
+					handoff.Consumed = true
+				}
+				handoff.UpdatedAt = now
+			}
+		}
+	}
+
 	switch {
 	case c.task.ID != "" && !c.task.Status.IsTerminal():
 		if c.task.Contract == nil {

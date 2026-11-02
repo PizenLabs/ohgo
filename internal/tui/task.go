@@ -8,6 +8,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/control/cognition"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 )
 
 // Task state values the task domain projects. They are duplicated here as
@@ -71,10 +72,49 @@ type TaskResume struct {
 	// Role is the execution role the task last ran under. It is continuity
 	// metadata, never authority: the turn gate uses it to tell a role change
 	// on the same objective from a genuinely new request.
-	Role        string
-	Contract    contract.IntentContract
-	HasContract bool
-	Snapshot    *agent.TargetSnapshot
+	Role string
+	// HandoffStatus and HandoffTo describe an approved transition awaiting its
+	// turn boundary. An approved handoff is the human's explicit continuation
+	// decision for this task, so the next turn attaches without re-asking for
+	// a phrase. They are continuity metadata, never authority.
+	HandoffStatus   string
+	HandoffTo       string
+	HandoffConsumed bool
+	Contract        contract.IntentContract
+	HasContract     bool
+	Snapshot        *agent.TargetSnapshot
+}
+
+// HandoffView is the UI projection of one durable role transition.
+//
+// It is descriptive, never authority: the counts come from the task record and
+// the status is the record's own disposition. The program never derives a role
+// or a capability from it.
+type HandoffView struct {
+	// ID is the durable handoff identity. Empty means a preview that has not
+	// been recorded yet.
+	ID string
+	// From and To are workspace labels, e.g. "FUZZ" and "BUILD".
+	From string
+	To   string
+	// Status is the durable lifecycle position (PROPOSED, APPLIED, ...).
+	Status string
+	// Objective is the task objective the transition preserves.
+	Objective string
+	// Reason explains why the transition is needed.
+	Reason string
+	// Summary is the concise description the target role will see.
+	Summary string
+	// Workspace is the measured workspace state at proposal time, or "" when
+	// the host could not measure it.
+	Workspace string
+	// Carried is the number of shared records the transition references.
+	Facts       int
+	Hypotheses  int
+	Questions   int
+	Evidence    int
+	Artifacts   int
+	Constraints int
 }
 
 // TaskHooks wire the durable task continuity layer into the program.
@@ -123,6 +163,19 @@ type TaskHooks struct {
 	// CancelResumable closes one resumable task by ID, or the latest when id
 	// is empty. It never claims completion and the task stops being resumable.
 	CancelResumable func(id string) TaskProjection
+	// PreviewHandoff describes the transition that would be recorded for a
+	// target role, without creating it. It is used to show what will be
+	// carried before the human approves. Nil disables the preview, not the
+	// transition.
+	PreviewHandoff func(target workspace.Workspace) (HandoffView, error)
+	// ProposeHandoff records a pending transition without moving authority.
+	ProposeHandoff func(target workspace.Workspace, reason, summary, workspaceState string) (HandoffView, error)
+	// ApproveHandoff records the human's authorization before the host moves
+	// authority. It does not move authority itself.
+	ApproveHandoff func(id string) (HandoffView, error)
+	// FailHandoff records that an approved transition could not be applied.
+	// It never changes the recorded role.
+	FailHandoff func(id, reason string) error
 	// Context returns deterministic orientation blocks for the current task.
 	Context func() []string
 	// ObserveTurns folds a completed run's tool outcomes into the durable
@@ -486,6 +539,26 @@ func roleContinuation(current TaskResume, next contract.IntentContract, active s
 	persisted := strings.TrimSpace(current.Contract.Objective)
 	requested := strings.TrimSpace(next.Objective)
 	return persisted != "" && persisted == requested
+}
+
+// handoffContinuation reports whether an approved handoff is the explicit
+// continuation decision for this turn.
+//
+// The human approved moving this task to exactly the live role, so the next
+// prompt is the work that follows the handoff, not a new objective. After the
+// handoff is applied this is false again: later turns use the ordinary
+// continuation policy, so the approval does not make every future prompt
+// attach to the task.
+func handoffContinuation(current TaskResume, active string) bool {
+	// APPROVED is a proposal awaiting its turn boundary. APPLIED but not
+	// consumed is an explicit workspace command awaiting its next turn. Either
+	// one is the human's continuation decision for exactly this task.
+	pending := current.HandoffStatus == "APPROVED" ||
+		(current.HandoffStatus == "APPLIED" && !current.HandoffConsumed)
+	if !pending || current.HandoffTo == "" || active == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(current.HandoffTo), strings.TrimSpace(active))
 }
 
 // continuationPrompt recognizes a deliberate continuation of the open task.

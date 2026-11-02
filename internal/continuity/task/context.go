@@ -1146,6 +1146,15 @@ func (c SharedContext) hypothesisByID(id string) (Hypothesis, bool) {
 	return Hypothesis{}, false
 }
 
+func (c SharedContext) hasQuestion(id string) bool {
+	for _, question := range c.Questions {
+		if question.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (t Task) hasClaim(id string) bool {
 	if _, ok := t.Context.factByID(id); ok {
 		return true

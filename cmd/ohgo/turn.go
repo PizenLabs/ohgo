@@ -76,6 +76,25 @@ func turnTransition(held *harness, text string) (tui.TurnTransition, bool) {
 		}, true
 	}
 
+	// A request that needs stronger authority is a handoff, not a transition:
+	// classification may ask for it, but only the human can approve widening.
+	// The proposal is side-effect-free like everything else here; the TUI
+	// records and applies it only after the answer.
+	if handoff, ok := workspace.ProposeHandoff(active, prediction); ok {
+		current, proposed := handoff.Current.Style(), handoff.Proposed.Style()
+		return tui.TurnTransition{
+			Kind:           tui.TransitionKindHandoff,
+			Current:        current.Label,
+			Proposed:       proposed.Label,
+			CurrentAccent:  current.Accent,
+			ProposedAccent: proposed.Accent,
+			Intent:         strings.ToUpper(string(handoff.Intent)),
+			Strength:       string(handoff.Strength),
+			Question:       handoff.Question(),
+			Reason:         handoff.Reason,
+		}, true
+	}
+
 	proposal, ok := workspace.AssessProposal(active, text, proposalFacts(held.root))
 	if !ok {
 		return tui.TurnTransition{}, false

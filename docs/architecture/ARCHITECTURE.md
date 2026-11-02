@@ -67,6 +67,11 @@ execution`:
 - Cross-workspace handoff is artifact-based: `workspace.Artifact` (plan,
   finding, change, verification) is validated and persisted per session; the
   `artifact` tool enforces that a workspace only authors its own kind.
+- A widening role transition is a Phase 2 handoff: `workspace.ProposeHandoff`
+  only asks, the human approves through the existing transition decision, and
+  `harness.SwitchWorkspace` remains the single authority move. `task.Handoff`
+  records the transition and its carried references in `progress.json`; it is
+  recovery metadata, never a capability.
 
 ### Intent-aware turns
 

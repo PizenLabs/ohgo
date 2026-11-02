@@ -107,6 +107,27 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			recorded, err := controller.CancelResumable(id, "cancelled by user")
 			return taskProjection(recorded, err)
 		},
+		PreviewHandoff: func(target workspace.Workspace) (tui.HandoffView, error) {
+			recorded, err := controller.PreviewHandoff(task.HandoffInput{To: target})
+			return handoffView(recorded), err
+		},
+		ProposeHandoff: func(target workspace.Workspace, reason, summary, workspaceState string) (tui.HandoffView, error) {
+			recorded, err := controller.ProposeHandoff(task.HandoffInput{
+				To:        target,
+				Reason:    reason,
+				Summary:   summary,
+				Workspace: workspaceState,
+			})
+			return handoffView(recorded), err
+		},
+		ApproveHandoff: func(id string) (tui.HandoffView, error) {
+			recorded, err := controller.ApproveHandoff(id)
+			return handoffView(recorded), err
+		},
+		FailHandoff: func(id, reason string) error {
+			_, err := controller.FailHandoff(id, reason)
+			return err
+		},
 		Context:          controller.Context,
 		ObserveTurns:     controller.ObserveTurns,
 		Evidence:         controller.Evidence,
@@ -149,6 +170,10 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 				program.PublishNotice("1 resumable task available (see /task list)")
 			}
 		}
+		if recovered.Handoff != nil && recovered.Handoff.Status == task.HandoffInterrupted {
+			program.PublishNotice("interrupted handoff " + recovered.Handoff.From.Label() +
+				" -> " + recovered.Handoff.To.Label() + " was preserved; authority did not move")
+		}
 	}
 	return controller
 }
@@ -166,12 +191,41 @@ func taskResume(recorded task.Task) tui.TaskResume {
 		ReviewReason: recorded.ReviewReason,
 		Role:         string(recorded.LastRole()),
 	}
+	if recorded.Handoff != nil {
+		resume.HandoffStatus = string(recorded.Handoff.Status)
+		resume.HandoffTo = recorded.Handoff.To.String()
+		resume.HandoffConsumed = recorded.Handoff.Consumed
+	}
 	if recorded.Contract != nil {
 		resume.Contract = *recorded.Contract
 		resume.HasContract = true
 	}
 	resume.Snapshot = recorded.Snapshot
 	return resume
+}
+
+// handoffView converts a durable handoff into the TUI projection.
+//
+// The projection carries counts and labels, never record text: the UI can show
+// what will be carried without becoming a second copy of the task context.
+func handoffView(recorded task.Handoff) tui.HandoffView {
+	carried := recorded.Carried()
+	return tui.HandoffView{
+		ID:          recorded.ID,
+		From:        recorded.From.Label(),
+		To:          recorded.To.Label(),
+		Status:      string(recorded.Status),
+		Objective:   recorded.Objective,
+		Reason:      recorded.Reason,
+		Summary:     recorded.Summary,
+		Workspace:   recorded.Workspace,
+		Facts:       carried.Facts,
+		Hypotheses:  carried.Hypotheses,
+		Questions:   carried.Questions,
+		Evidence:    carried.Evidence,
+		Artifacts:   carried.Artifacts,
+		Constraints: carried.Constraints,
+	}
 }
 
 // taskProjection converts a domain task into the TUI projection.

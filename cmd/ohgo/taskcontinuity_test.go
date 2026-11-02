@@ -128,3 +128,29 @@ func TestTaskResumeCarriesLastRole(t *testing.T) {
 		t.Fatalf("resume identity = %+v", resume)
 	}
 }
+
+// The resume projection carries an explicit switch so the next turn stays
+// attached to the same task. It remains continuity metadata, never authority.
+func TestTaskResumeCarriesAnExplicitSwitch(t *testing.T) {
+	controller := task.NewController(task.NewStore(t.TempDir()), nil)
+	controller.SetRoleSource(func() workspace.Workspace { return workspace.Fuzz })
+	if _, err := controller.Begin(contract.IntentContract{
+		Objective: "fix the flaky test", Kind: contract.ObjectiveInformational,
+	}, nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := controller.RecordWorkspaceSwitch(workspace.Fuzz, workspace.Build, "main; clean"); err != nil {
+		t.Fatalf("RecordWorkspaceSwitch: %v", err)
+	}
+	current, _ := controller.Current()
+	resume := taskResume(current)
+	if resume.HandoffStatus != string(task.HandoffApplied) {
+		t.Fatalf("handoff status = %q, want APPLIED", resume.HandoffStatus)
+	}
+	if resume.HandoffTo != "build" {
+		t.Fatalf("handoff target = %q, want build", resume.HandoffTo)
+	}
+	if resume.HandoffConsumed {
+		t.Fatal("a switch awaiting its next turn was reported consumed")
+	}
+}

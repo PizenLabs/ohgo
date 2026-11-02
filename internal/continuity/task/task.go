@@ -163,6 +163,11 @@ type Task struct {
 	// optional; a task written before it existed derives the same value from
 	// its role contexts.
 	ActiveRole workspace.Workspace `json:"activeRole,omitempty"`
+	// Handoff is the task's current cross-role transition record, when one
+	// exists. It is continuity and recovery metadata: a pending handoff makes
+	// an interrupted approval diagnosable, and an applied handoff names the
+	// role that actually took over. It is never authority.
+	Handoff *Handoff `json:"handoff,omitempty"`
 	// CreatedAt is when the task identity was minted. It never changes.
 	CreatedAt time.Time `json:"createdAt,omitempty"`
 	// ContextWarning reports that structured context was absent, refused, or
@@ -211,6 +216,11 @@ func (t Task) Validate() error {
 	}
 	if t.ActiveRole != "" && !t.ActiveRole.Valid() {
 		return fmt.Errorf("%w: unknown active role %q", ErrInvalidTask, t.ActiveRole)
+	}
+	if t.Handoff != nil {
+		if err := t.Handoff.Validate(t); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidTask, err)
+		}
 	}
 	for i, todo := range t.Todos {
 		if strings.TrimSpace(todo.ID) == "" {
@@ -261,6 +271,10 @@ func (t Task) Clone() Task {
 	if t.Snapshot != nil {
 		cloned := cloneSnapshot(*t.Snapshot)
 		out.Snapshot = &cloned
+	}
+	if t.Handoff != nil {
+		cloned := t.Handoff.Clone()
+		out.Handoff = &cloned
 	}
 	return out
 }

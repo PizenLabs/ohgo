@@ -23,6 +23,17 @@ immutable.
   and strategy remain host writes because the runtime has no trustworthy signal
   for them.
 
+- Task continuity Phase 2: a widening role transition is now a controlled
+  handoff. `workspace.ProposeHandoff` asks for the authority the request needs;
+  the human approves through the existing in-chat transition decision; the
+  existing `SwitchWorkspace` seam performs the only authority move. The task
+  records a bounded handoff (roles, objective, truthfully measured workspace
+  state, and references to the shared facts, hypotheses, questions, evidence,
+  and artifacts) in `progress.json`. Applied handoffs keep one task identity
+  and all role contexts in both directions; rejected, failed, and interrupted
+  handoffs never change the recorded role, and a restart surfaces an interrupted
+  transition instead of applying it.
+
 ### Fixed
 
 - Task context selection now uses the fixed budget with relevance ordering

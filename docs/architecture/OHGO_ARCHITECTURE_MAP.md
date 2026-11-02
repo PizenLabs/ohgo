@@ -191,6 +191,8 @@ Read this before adding a field to anything.
 | Task shared context, facts, hypotheses, evidence, questions | `task.SharedContext` | `task.Controller` | `task.ContextFor` | `progress.json` (`context`) |
 | Role execution context | `task.RoleContext` | the task | `task.ContextFor` (active role only) | `progress.json` (`context.roles`) |
 | Task active role (continuity metadata, never authority) | `task.Task.ActiveRole` | `task.Controller` | `task.ContextFor`, turn gate | `progress.json` (`activeRole`) |
+| Role handoff (continuity and recovery metadata, never authority) | `task.Handoff` | `task.Controller` | `task.ContextFor`, TUI transition card | `progress.json` (`handoff`) |
+| Handoff authorization policy | `workspace.ProposeHandoff` | `control/workspace` | TUI transition proposal | never (derived) |
 | Evidence for the verdict | `agent.scanCompletionEvidence` (run-local) | the run | — | never |
 | Evidence for projection | `cognition.EvidenceState` | the task | state block, sufficiency | `progress.json` |
 | Budget ledger | `budget.Budget` | run holder | TUI usage | `progress.json` (`budget.State`) |

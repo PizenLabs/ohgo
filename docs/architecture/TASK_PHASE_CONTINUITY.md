@@ -447,7 +447,7 @@ A passing unit-test suite alone is insufficient.
 
 ## Phase 2 — Handoff: Bidirectional Role Transition
 
-**Status: NOT STARTED — NOT AUTHORIZED**
+**Status: IMPLEMENTED — PENDING ARCHITECTURAL REVIEW AND ACCEPTANCE**
 
 ### 5.1 Objective
 
@@ -1028,8 +1028,8 @@ Human review is the final acceptance authority.
 
 | Phase | Status | Authorization |
 |---|---|---|
-| Phase 1 — Foundation | Implemented, pending review and acceptance | Review only until explicitly authorized otherwise |
-| Phase 2 — Handoff | Not started | Not authorized |
+| Phase 1 — Foundation | Implemented, correction reviewed; pending final acceptance | Phase 1 corrections authorized |
+| Phase 2 — Handoff | Implemented, pending review and acceptance | Explicitly authorized |
 | Phase 3 — Continuity | Not started | Not authorized |
 
 The existing Phase 1 implementation is the starting point for review.

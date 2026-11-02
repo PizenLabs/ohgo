@@ -123,6 +123,9 @@ func ContextFor(t Task, role workspace.Workspace, lastAction string) []string {
 	} else {
 		b.addBlock("Authority", "unresolved (context only; no execution role active)")
 	}
+	if t.Handoff != nil {
+		b.addBlock("Handoff", renderHandoff(*t.Handoff))
+	}
 	b.addBlock("Phase", t.Phase)
 	b.addBlock("Current step", t.ActiveStep)
 	b.addBlock("Review reason", t.ReviewReason)
@@ -440,6 +443,43 @@ func evidenceItems(t Task, role workspace.Workspace) []string {
 		out[i] = item.text
 	}
 	return out
+}
+
+// renderHandoff describes a transition without copying the records it carries.
+// It is orientation: which roles, which disposition, what the target should
+// know, and how much shared context is reachable by reference.
+func renderHandoff(handoff Handoff) string {
+	entry := handoff.From.Label() + " → " + handoff.To.Label() + " [" + string(handoff.Status) + "]"
+	carried := handoff.Carried()
+	var parts []string
+	if carried.Facts > 0 {
+		parts = append(parts, fmt.Sprintf("%d facts", carried.Facts))
+	}
+	if carried.Hypotheses > 0 {
+		parts = append(parts, fmt.Sprintf("%d hypotheses", carried.Hypotheses))
+	}
+	if carried.Questions > 0 {
+		parts = append(parts, fmt.Sprintf("%d questions", carried.Questions))
+	}
+	if carried.Evidence > 0 {
+		parts = append(parts, fmt.Sprintf("%d evidence refs", carried.Evidence))
+	}
+	if carried.Artifacts > 0 {
+		parts = append(parts, fmt.Sprintf("%d artifacts", carried.Artifacts))
+	}
+	if len(parts) > 0 {
+		entry += " carries " + strings.Join(parts, ", ")
+	}
+	if handoff.Summary != "" {
+		entry += " — " + truncate(handoff.Summary, 240)
+	}
+	if handoff.Workspace != "" {
+		entry += " (workspace: " + truncate(handoff.Workspace, 120) + ")"
+	}
+	if handoff.Failure != "" {
+		entry += " — " + truncate(handoff.Failure, 200)
+	}
+	return truncate(entry, 480)
 }
 
 // renderEvidence renders one evidence reference: summary, source, and

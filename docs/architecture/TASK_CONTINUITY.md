@@ -1,6 +1,7 @@
 # Task Continuity
 
-> **Scope:** the durable, role-independent task context introduced by Phase 1.
+> **Scope:** the durable, role-independent task context introduced by Phase 1
+> and the controlled role handoff introduced by Phase 2.
 > **Canonical topology:** [`OHGO_ARCHITECTURE_MAP.md`](OHGO_ARCHITECTURE_MAP.md).
 > **Permanent rules:** [`OHGO_ARCHITECTURE_RULES.md`](../migration/OHGO_ARCHITECTURE_RULES.md).
 > **State ownership:** [`STATE_AND_PERSISTENCE.md`](STATE_AND_PERSISTENCE.md).
@@ -28,6 +29,8 @@ workspace, completes a task, or promotes model output into verified fact.
 | Completion contract and pre-run snapshot | `task.Task.Contract` / `.Snapshot` | `progress.json` | `task.md`, TUI task block |
 | Verified facts, hypotheses, evidence, questions | `task.Task.Context` | `progress.json` (`context`) | `task.ContextFor` |
 | Role-specific execution context | `task.Task.Context.Roles` | `progress.json` (`context.roles`) | `task.ContextFor` |
+| Role handoff and its disposition | `task.Task.Handoff` | `progress.json` (`handoff`) | `task.ContextFor`, TUI transition card |
+| Handoff authorization policy | `workspace.ProposeHandoff` | never (derived) | TUI transition card |
 | Detached tasks | `task.Store` archive | `.ohgo/tasks/<id>.json` | `/task list`, `/task resume` |
 | Completion verdict | `agent.Evaluate*Completion` | `task.Status` | TUI verdict |
 
@@ -177,8 +180,8 @@ they are not inferred from model prose.
 **A role context is not authority.** A BUILD plan or mutation scope in the
 record does not permit a write; a FUZZ strategy does not grant execution; an ASK
 fact does not grant a read. The workspace gate and the security gate remain the
-only authority paths. Storing role context does not implement a role handoff:
-authority transfer is outside Phase 1.
+only authority paths. Storing role context never moves authority; Phase 2 adds a
+separate, host-approved handoff record for that (section 8).
 
 ---
 
@@ -191,13 +194,14 @@ order:
 1. objective and lifecycle status;
 2. a continuity warning when context is missing, repaired, or unavailable;
 3. the active authority label;
-4. constraints, todos, current step, next action, and last action;
-5. active verified facts (with evidence references and disputes);
-6. hypotheses and dispositions;
-7. open questions;
-8. the active role's execution context;
-9. current evidence references;
-10. legacy unclassified notes, explicitly labelled as unverified.
+4. the current handoff (roles, disposition, carried counts) when one exists;
+5. constraints, todos, current step, next action, and last action;
+6. active verified facts (with evidence references and disputes);
+7. hypotheses and dispositions;
+8. open questions;
+9. the active role's execution context;
+10. current evidence references;
+11. legacy unclassified notes, explicitly labelled as unverified.
 
 Bounds are fixed: 6000 characters and 1500 estimated tokens, reusing
 `internal/tokens`. Selection is by relevance under the budget, not by a fixed
@@ -272,13 +276,133 @@ Implemented in Phase 1:
 - persistence and recovery;
 - deterministic, bounded, role-scoped context assembly.
 
+Implemented in Phase 2 (handoff):
+
+- a controlled widening transition from ASK or FUZZ to the role the request
+  needs, approved by the human through the existing decision surface;
+- a durable, bounded handoff record in `progress.json` that preserves identity,
+  shared references, source-role progress, and measured workspace state;
+- role restoration in both directions, including BUILD → FUZZ and repeated
+  transitions;
+- interrupted and failed transitions that leave the last valid role and task
+  state recoverable and report the outcome truthfully.
+
 Not implemented:
 
-- automatic role switching or handoff orchestration (Phase 2);
-- handoff approval UI or workspace transfer (Phase 2);
+- automatic role switching, parallel role instances, or agent cloning;
+- a general workflow orchestration framework or a second approval system;
 - unified timeline, transition history, checkpoints, or cross-role execution
   orchestration (Phase 3);
-- model-facing tools that create evidence, promote a claim, or edit role
-  context; semantic hypotheses, questions, reasoning, and strategy remain host
-  writes because the runtime has no trustworthy signal for them;
+- model-facing tools that create evidence, promote a claim, edit role context,
+  or request a handoff; the host classifies the request and the human decides;
 - a new task database, knowledge graph, memory subsystem, or completion rule.
+
+---
+
+## 8. Handoff (Phase 2)
+
+### 8.1 Ownership
+
+A role transition spans four existing owners and adds no package:
+
+| Concern | Owner |
+| --- | --- |
+| Whether authority may widen | `workspace.ProposeHandoff` (policy) |
+| The durable transition record | `task.Handoff` in `progress.json` |
+| The human decision and its presentation | `internal/tui` transition surface |
+| The actual authority move | `harness.SwitchWorkspace` (the existing seam) |
+
+`workspace.ProposeHandoff` is the exact complement of
+`workspace.ProposeTransition`: the transition policy narrows, the handoff
+policy widens, and neither changes authority by being computed. A widening
+proposal therefore always requires an explicit human decision, while a
+narrowing request keeps its existing prompt.
+
+### 8.2 State model
+
+```text
+PROPOSED ──approve──> APPROVED ──turn Begin──> APPLIED
+    │                    │
+    │                    └──switch refused / live role mismatch──> FAILED
+    └──decline──> REJECTED
+
+PROPOSED or APPROVED found on load after a restart ──> INTERRUPTED
+```
+
+- `PROPOSED` is recorded before the decision. Authority has not moved.
+- `APPROVED` records the human's authorization. Authority still has not moved.
+- `APPLIED` is written after `Switch` moved the live authority. It is the only
+  status that changes `Task.ActiveRole`. An applied record is consumed by the
+  next turn that attaches through it, so it continues that turn once and then
+  stops acting as a continuation signal.
+- `REJECTED`, `FAILED`, and `INTERRUPTED` are terminal for that record and never
+  change the recorded role.
+- `APPLIED` is terminal for that record; a later transition creates a new one.
+
+`Begin` applies an approved handoff only when the handoff objective matches the
+task and the approved target equals the live role. Otherwise it records `FAILED`
+and continues under the live role. This makes an interrupted or contradicted
+transition diagnosable instead of falsely successful.
+
+### 8.3 What a handoff carries
+
+The record snapshots references, never payloads:
+
+- active verified facts;
+- active and confirmed hypotheses;
+- open questions;
+- current evidence records;
+- task constraints;
+- artifact references from every role (patch, reproduction, benchmark);
+- the source role, target role, objective, reason, and a concise summary;
+- the measured workspace state (branch and status) when the host has it.
+
+Each list is bounded (`maxHandoffRefs`, the role-note bound), and repair prunes a
+reference whose record no longer exists. The target role receives its own role
+context plus a `handoff from <source>` progress note. The source role's context
+is never rewritten, so returning to it restores its plan, scope, strategy, and
+progress.
+
+### 8.4 Authority and workspace
+
+- A handoff is a request, never a grant. No fact, reference, or record enables a
+  tool; `workspace.Admit` and the security gate are unchanged.
+- The accepted target is re-derived from policy at decision time and must match
+  the pending proposal, so a stale or corrupted prompt cannot move authority
+  somewhere the policy never allowed.
+- The only authority move is `SwitchWorkspace`, which parses the target, updates
+  the live gate, the effective role model, and the session snapshot together.
+- Switching authority does not read, rewrite, stage, or discard project files.
+  Dirty work is preserved by construction; the handoff records the measured
+  workspace summary so the user can see what was there.
+- Experimental artifacts stay distinguishable by their reference kind
+  (`cognition:command:*` for FUZZ, `cognition:mutation:*` for BUILD); the handoff
+  never reclassifies one as the other.
+- FUZZ cannot mutate through a handoff, and ASK remains read-only.
+
+### 8.5 Presentation and recovery
+
+The handoff reuses the existing in-chat workspace-transition decision card, the
+same permission surface that already asks a human to confirm a transition; no
+new popup, picker, or workflow surface is introduced. It shows the current and
+target roles, the objective, the counts of carried records, the measured
+workspace state, and that approval is required. The conservative choice keeps
+the current role; Enter confirms only after a deliberate move.
+
+On restart, a pending or approved record becomes `INTERRUPTED`, the recorded
+role stays the source role, the briefing shows the interruption, and the runtime
+publishes a notice. The task remains writable and resumable.
+
+### 8.6 Explicit limits
+
+- Only the most recent handoff is retained; full transition history is Phase 3.
+- Explicit `/ask`, `/fuzz`, and `/build` commands are direct human authority
+  changes. They need no proposal or second approval, but they are recorded as an
+  applied handoff so the next turn stays attached to the same task. The record
+  is consumed by that turn; later turns use the ordinary continuation policy.
+- The handoff request is host-classified from the user's request. There is no
+  model-facing handoff tool, and the model cannot approve or apply one.
+- The workspace summary is diagnostic, not a rollback or merge mechanism; the
+  existing recovery service remains the only edit-history authority. A dirty
+  tree is preserved by the switch, and the handoff reports the measured state;
+  it does not attempt to reconcile unrelated concurrent edits.
