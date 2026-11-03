@@ -289,13 +289,23 @@ func (r *Registry) ProviderFor(model Model) (Provider, error) {
 type StreamFn func(ctx context.Context, req Request) (*Stream, error)
 
 // RegistryStream adapts a Registry to StreamFn.
+//
+// This is the production boundary from a provider's wire representation to
+// ohgo's canonical events. Every stream opened here is normalized: a serialized
+// tool call emitted inside assistant text becomes the same ai.ToolCall a native
+// tool call uses, before the agent loop, the authority gate, or the TUI sees
+// it. A provider that already emits native calls is unchanged.
 func (r *Registry) StreamFn() StreamFn {
 	return func(ctx context.Context, req Request) (*Stream, error) {
 		provider, err := r.ProviderFor(req.Model)
 		if err != nil {
 			return nil, err
 		}
-		return provider.Stream(ctx, req)
+		stream, err := provider.Stream(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return NormalizeStream(ctx, stream, NormalizeOptions{Tools: req.Tools}), nil
 	}
 }
 

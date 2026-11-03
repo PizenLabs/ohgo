@@ -396,6 +396,9 @@ func (a *ollamaAccumulator) apply(ctx context.Context, chunk ollamaChunk) []Stre
 			_ = json.Unmarshal([]byte(rawArgs), &decoded)
 			out = append(out, EventToolCallStart{ID: id, Name: name})
 			out = append(out, EventToolCallDelta{ID: id, Delta: rawArgs})
+			// Place the call in the content sequence when it arrives, not at
+			// finish: text that follows it belongs after it.
+			a.msg.Content = append(a.msg.Content, ToolCall{ID: id, Name: name, Arguments: decoded})
 			a.calls = append(a.calls, ollamaCall{id: id, name: name, arguments: decoded})
 		}
 	}
@@ -417,7 +420,6 @@ func (a *ollamaAccumulator) apply(ctx context.Context, chunk ollamaChunk) []Stre
 func (a *ollamaAccumulator) finish() []StreamEvent {
 	var out []StreamEvent
 	for _, call := range a.calls {
-		a.msg.Content = append(a.msg.Content, ToolCall{ID: call.id, Name: call.name, Arguments: call.arguments})
 		out = append(out, EventToolCallEnd{ID: call.id, Name: call.name, Arguments: call.arguments})
 	}
 	out = append(out, EventDone{Message: *a.msg})
@@ -428,14 +430,15 @@ func (a *ollamaAccumulator) closeText() {
 	a.textOpen = false
 }
 
-// appendText extends the trailing text block. Chunks fragment mid-word, and
-// the joiner puts newlines between blocks, so each fragment must extend
-// rather than append.
+// appendText extends the trailing text block. Chunks fragment mid-word, so
+// each fragment must extend rather than append. Only the trailing block is
+// eligible: text emitted after a tool call belongs after that call, and
+// merging it backwards would corrupt text/tool ordering.
 func (a *ollamaAccumulator) appendText(text string) {
-	for i := len(a.msg.Content) - 1; i >= 0; i-- {
-		if t, ok := a.msg.Content[i].(TextContent); ok {
+	if n := len(a.msg.Content); n > 0 {
+		if t, ok := a.msg.Content[n-1].(TextContent); ok {
 			t.Text += text
-			a.msg.Content[i] = t
+			a.msg.Content[n-1] = t
 			return
 		}
 	}
@@ -444,10 +447,10 @@ func (a *ollamaAccumulator) appendText(text string) {
 
 // appendThinking extends the trailing thinking block for the same reason.
 func (a *ollamaAccumulator) appendThinking(text string) {
-	for i := len(a.msg.Content) - 1; i >= 0; i-- {
-		if t, ok := a.msg.Content[i].(ThinkingContent); ok {
+	if n := len(a.msg.Content); n > 0 {
+		if t, ok := a.msg.Content[n-1].(ThinkingContent); ok {
 			t.Thinking += text
-			a.msg.Content[i] = t
+			a.msg.Content[n-1] = t
 			return
 		}
 	}

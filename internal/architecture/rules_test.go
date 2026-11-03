@@ -1,6 +1,7 @@
 package architecture
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -240,6 +241,59 @@ func TestPresentationDoesNotConstructCapabilitiesOrTaskState(t *testing.T) {
 			if imp == bad {
 				t.Errorf("internal/tui imports %s: the TUI drives the loop through hooks and projects task state, it must not construct capabilities or reach the task controller (OHGO_ARCHITECTURE_RULES.md §8)", imp)
 			}
+		}
+	}
+}
+
+// TestPresentationDoesNotParseProviderToolSyntax keeps serialized tool-call
+// protocols below the projection boundary.
+//
+// The TUI renders canonical events; it must not learn that one model writes
+// <dotsfunctioncall> or another writes <tool_call>. A literal marker in
+// production presentation code is the first sign that a provider detail has
+// escaped the stream normalizer and become a rendering concern.
+func TestPresentationDoesNotParseProviderToolSyntax(t *testing.T) {
+	markers := []string{
+		"dotsfunctioncall",
+		"<invoke",
+		"<parameter",
+		"<tool_call>",
+		"</tool_call>",
+	}
+	for _, dir := range []string{"tui", "tui/diff"} {
+		root := filepath.Join(repoRoot(t), "internal", dir)
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			if err != nil {
+				return err
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				literal, ok := node.(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
+					return true
+				}
+				value, err := strconv.Unquote(literal.Value)
+				if err != nil {
+					return true
+				}
+				for _, marker := range markers {
+					if strings.Contains(value, marker) {
+						t.Errorf("%s contains provider tool-call syntax %q: normalization belongs in provider/ai, not presentation",
+							path, marker)
+					}
+				}
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan presentation %s: %v", dir, err)
 		}
 	}
 }

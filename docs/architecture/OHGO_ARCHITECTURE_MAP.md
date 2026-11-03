@@ -76,7 +76,7 @@ create a boundary that does not exist.
 | **control** | `control/contract`, `control/budget`, `control/workspace`, `control/cognition`, `security` | Completion vocabulary; resource admission; authority policy + routing + intent contracts + transition proposals; task shape + evidence + narrowing; the authorization kernel | Execution, persistence, presentation |
 | **execution** | `execution/tools`, `execution/mcp`, `execution/sandbox`, `execution/shell`, `execution/exec` | Concrete capabilities; MCP transport + classification; the OS read-only boundary; shell-output decoding; the human `!` escape | The decision to allow an operation |
 | **intelligence** | `intelligence/ast`, `intelligence/ignore` | One in-process Go index (symbols, package graph, refs); repository scoping | Anything about the agent, models, or UI |
-| **provider** | `provider/ai`, `provider/catalog`, `provider/creds` | Wire protocols and streams; model facts and discovery; credential resolution | Policy, routing, cost decisions |
+| **provider** | `provider/ai`, `provider/catalog`, `provider/creds` | Wire protocols and streams; canonical stream normalization (native and serialized tool calls); model facts and discovery; credential resolution | Policy, routing, cost decisions, execution authority |
 | **continuity** | `continuity/session`, `continuity/task`, `continuity/recovery`, `memory` | The durable transcript; the durable task checkpoint; the edit history; the project-memory trust boundary | What should be recorded (that is control-plane) |
 | **external** | `external/knowledge`, `external/search` | The external-evidence envelope; the web-search client | Repository knowledge |
 | **configuration** | `config`, `state`, `project` | Machine settings; the single `~/.ohgo` path owner; project identity | Runtime authority (that is `workspace` + the gate) |
@@ -161,6 +161,13 @@ verification describe the same repository snapshot.
 `provider/*` may depend only on itself and `state`. It has no notion of a turn,
 a task, a workspace, or an approval. That is why `agent` can be tested with a
 fake `StreamFn` and why a new provider is a leaf-level addition.
+
+`provider/ai` also owns the canonical stream boundary. `Registry.StreamFn`
+normalizes heterogeneous provider output — including serialized tool calls
+embedded in text — into the same `ai.ToolCall` representation a native call
+uses. Normalization is a transport concern, not an authority decision: it ends
+at canonical events, and the call still crosses the agent's full authority,
+budget, execution, and evidence sequence.
 
 ### 4.5 Presentation is a projection boundary
 

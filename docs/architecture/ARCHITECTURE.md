@@ -149,6 +149,45 @@ Compaction itself is injected, never constructed in the loop: `New` fails
 without a summarizer when compaction is enabled, and the summarizer takes
 its `StreamFn` as a parameter so tests substitute a stub.
 
+### Provider stream normalization
+
+`ai.Stream` is the canonical event boundary between a provider's wire
+representation and the rest of ohgo. `Registry.StreamFn` is the production
+adapter that crosses it: every provider stream is wrapped by
+`ai.NormalizeStream` before the agent loop, authority gate, projection,
+persistence, or TUI can observe it.
+
+The rule is:
+
+> Provider-specific model output is normalized into canonical `ai` events
+> before it enters agent execution or rendering.
+
+Native tool calls and serialized tool calls inside assistant text are two
+transport representations of the same logical intent. Both converge on
+`ai.ToolCall`. A recognized serialized envelope is converted at the boundary;
+it is not executed there. The resulting call still passes through grounding,
+authorization, budget, execution, evidence, failure classification, and run
+outcome exactly like a native call.
+
+Recognition is an incremental, bounded state machine:
+
+- Opening and closing markers may be split across arbitrary provider chunks;
+  an ambiguous suffix is retained, never rendered, until it is resolved.
+- Ordinary text continues streaming; only a possible marker prefix is held
+  back, so normalization does not buffer the whole answer.
+- Recognized protocols live behind a small registry in `provider/ai`. Another
+  provider representation is a new descriptor there, never a TUI or execution
+  change and never a model-id branch.
+- A complete envelope is consumed only when its payload parses into canonical
+  tool calls. Malformed, incomplete, oversized, duplicate, or otherwise
+  ambiguous envelopes are returned as ordinary text with a diagnostic; nothing
+  is silently discarded and no call is fabricated.
+- Text/tool ordering is preserved, including multiple and interleaved calls.
+
+The TUI receives only canonical assistant text and tool events. It does not
+parse protocol markers, and `internal/architecture` fails the build if provider
+tool syntax appears in production presentation code.
+
 ## Completion, task state, and exit status
 
 Completion is a state transition, not the model's stop reason. The one

@@ -175,6 +175,53 @@ func TestOpenAIStreamKeepsInterleavedToolCallsInDistinctBlocks(t *testing.T) {
 	}
 }
 
+// TestOpenAIStreamPreservesTextAfterNativeToolCall pins content ordering.
+//
+// The accumulator used to extend the last text block it could find, so text
+// emitted after a native tool call was moved ahead of the call. The canonical
+// message must keep the provider's logical sequence.
+func TestOpenAIStreamPreservesTextAfterNativeToolCall(t *testing.T) {
+	body := `data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"before"}}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c0","type":"function","function":{"name":"read","arguments":"{\"path\":\"a.go\"}"}}]}}]}
+
+data: {"choices":[{"index":0,"delta":{"content":" after"}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	server, _ := sseServer(t, body, 0)
+	provider := &OpenAIProvider{APIKey: "sk-test", BaseURL: server.URL}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:     testOpenAIModel(),
+		Messages:  []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "hi"}}}},
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	msg, err := stream.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+
+	if len(msg.Content) != 3 {
+		t.Fatalf("blocks = %d, want text, call, text", len(msg.Content))
+	}
+	if text, ok := msg.Content[0].(TextContent); !ok || text.Text != "before" {
+		t.Errorf("block 0 = %#v, want text before", msg.Content[0])
+	}
+	if call, ok := msg.Content[1].(ToolCall); !ok || call.ID != "c0" {
+		t.Errorf("block 1 = %#v, want the native call", msg.Content[1])
+	}
+	if text, ok := msg.Content[2].(TextContent); !ok || text.Text != " after" {
+		t.Errorf("block 2 = %#v, want text after the call", msg.Content[2])
+	}
+}
+
 func strptr(s string) *string { return &s }
 
 func TestOpenAIStreamSurfacesHTTPError(t *testing.T) {
