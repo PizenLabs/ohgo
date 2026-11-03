@@ -171,6 +171,29 @@
           "description": "confirmed from a hypothesis records the confirming role while the hypothesis keeps the proposing role."
         }
       ]
+    },
+    "v0.0.6": {
+      "title": "What's new in v0.0.6",
+      "changes": [
+        {
+          "id": "a-quit-now-cancels-an-in-flight-background-updat",
+          "type": "fixed",
+          "title": "A quit now cancels an in-flight background update check",
+          "description": "the observer is bound to the TUI program or plain-REPL lifetime, so leaving ohgo stops the request instead of leaving it running behind a surface that no longer exists."
+        },
+        {
+          "id": "the-background-check-and-update-now-share-one-up",
+          "type": "fixed",
+          "title": "The background check and `/update` now share one update service",
+          "description": "discovery and installation read and write the same cache, so a hint and an explicit update cannot disagree about which release is current."
+        },
+        {
+          "id": "a-cancelled-update-check-is-no-longer-persisted",
+          "type": "fixed",
+          "title": "A cancelled update check is no longer persisted",
+          "description": "quitting during a check no longer records a failed attempt that suppressed the next eligible check for a TTL."
+        }
+      ]
     }
   }
 }
