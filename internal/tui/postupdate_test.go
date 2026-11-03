@@ -15,6 +15,7 @@ func samplePostUpdate() PostUpdateView {
 	return PostUpdateView{
 		Version: "v0.8.3",
 		Title:   "What's new in v0.8.3",
+		URL:     "https://github.com/PizenLabs/ohgo/releases/",
 		Changes: []PostUpdateChange{
 			{Type: "added", Title: "Complete update lifecycle"},
 			{Type: "improved", Title: "Improved TUI update handling"},
@@ -265,7 +266,8 @@ func TestPostUpdateCardIsChromeNotTranscript(t *testing.T) {
 		"Complete update lifecycle",
 		"Improved TUI update handling",
 		"Fixed concurrent update behavior",
-		"Press Enter",
+		"https://github.com/PizenLabs/ohgo/releases/",
+		"Enter dismiss",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("frame does not show %q:\n%s", want, out)
@@ -292,5 +294,138 @@ func TestPostUpdateCardBoundsALongRelease(t *testing.T) {
 	out := ansi.Strip(Render(state))
 	if !strings.Contains(out, "and 4 more") {
 		t.Fatalf("the bounded card did not report hidden changes:\n%s", out)
+	}
+}
+
+// The highlight moves through the visible notes and parks on the release link
+// at the bottom. Clamping keeps a repeated arrow from wrapping onto a row the
+// user did not intend to select.
+func TestPostUpdateArrowKeysMoveTheHighlightToTheReleaseLink(t *testing.T) {
+	p := newUpdateProgram(t)
+	p.ShowPostUpdateNotice(samplePostUpdate(), nil)
+	if got := p.state.PostUpdate.Cursor; got != 0 {
+		t.Fatalf("opening cursor = %d, want the first note", got)
+	}
+
+	press(p, tea.KeyMsg{Type: tea.KeyUp})
+	if got := p.state.PostUpdate.Cursor; got != 0 {
+		t.Fatalf("up at the top moved the highlight to %d", got)
+	}
+	press(p, tea.KeyMsg{Type: tea.KeyDown})
+	if got := p.state.PostUpdate.Cursor; got != 1 {
+		t.Fatalf("down cursor = %d, want 1", got)
+	}
+	for i := 0; i < 4; i++ {
+		press(p, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if got := p.state.PostUpdate.Cursor; got != 3 {
+		t.Fatalf("down past the link cursor = %d, want the link row 3", got)
+	}
+	press(p, tea.KeyMsg{Type: tea.KeyDown})
+	if got := p.state.PostUpdate.Cursor; got != 3 {
+		t.Fatalf("down past the link moved off it to %d", got)
+	}
+	press(p, tea.KeyMsg{Type: tea.KeyUp})
+	if got := p.state.PostUpdate.Cursor; got != 2 {
+		t.Fatalf("up from the link cursor = %d, want 2", got)
+	}
+
+	press(p, runes("m"))
+	if got := p.state.PostUpdate.Cursor; got != 3 {
+		t.Fatalf("m cursor = %d, want the release link", got)
+	}
+}
+
+// Enter on a note acknowledges as before. Only the selected release link adds
+// the browser launch, and the notice is consumed after the launch succeeds.
+func TestPostUpdateLinkOpensOnEnterOnlyWhenSelected(t *testing.T) {
+	p := newUpdateProgram(t)
+	var opened []string
+	p.SetURLOpener(func(target string) error {
+		opened = append(opened, target)
+		return nil
+	})
+	acks := 0
+	ack := func() error {
+		acks++
+		return nil
+	}
+
+	p.ShowPostUpdateNotice(samplePostUpdate(), ack)
+	press(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(opened) != 0 {
+		t.Fatalf("Enter on a note opened %v", opened)
+	}
+	if acks != 1 || p.state.PostUpdate != nil {
+		t.Fatalf("Enter on a note: acks=%d cardOpen=%v", acks, p.state.PostUpdate != nil)
+	}
+
+	p.ShowPostUpdateNotice(samplePostUpdate(), ack)
+	press(p, runes("m"))
+	press(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(opened) != 1 || opened[0] != samplePostUpdate().URL {
+		t.Fatalf("opened = %v, want the release URL", opened)
+	}
+	if acks != 2 || p.state.PostUpdate != nil {
+		t.Fatalf("Enter on the link: acks=%d cardOpen=%v", acks, p.state.PostUpdate != nil)
+	}
+}
+
+// A release with no local notes still shows the link, but it opens without a
+// highlight: a plain Enter keeps its old dismiss meaning until the user
+// chooses the link with "m" or Down.
+func TestPostUpdateNoNotesEnterStillDismisses(t *testing.T) {
+	p := newUpdateProgram(t)
+	opened := false
+	p.SetURLOpener(func(string) error {
+		opened = true
+		return nil
+	})
+	acks := 0
+	p.ShowPostUpdateNotice(PostUpdateView{
+		Version: "v0.8.3",
+		URL:     samplePostUpdate().URL,
+	}, func() error {
+		acks++
+		return nil
+	})
+	if got := p.state.PostUpdate.Cursor; got != -1 {
+		t.Fatalf("opening cursor = %d, want no highlight", got)
+	}
+
+	press(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if opened {
+		t.Fatal("Enter opened the release page without selecting its link")
+	}
+	if acks != 1 || p.state.PostUpdate != nil {
+		t.Fatalf("Enter: acks=%d cardOpen=%v", acks, p.state.PostUpdate != nil)
+	}
+}
+
+// A failed browser launch must not consume the notice: the user has not seen
+// the release the card owes them.
+func TestPostUpdateLinkFailureKeepsTheCardOpen(t *testing.T) {
+	p := newUpdateProgram(t)
+	p.SetURLOpener(func(string) error { return errors.New("no browser") })
+	acks := 0
+	p.ShowPostUpdateNotice(samplePostUpdate(), func() error {
+		acks++
+		return nil
+	})
+
+	press(p, runes("m"))
+	press(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if p.state.PostUpdate == nil {
+		t.Fatal("a failed launch dismissed the card")
+	}
+	if acks != 0 {
+		t.Fatalf("a failed launch acknowledged the notice %d times", acks)
+	}
+	if p.state.PostUpdate.LinkErr == "" {
+		t.Fatal("the card did not report the failed launch")
+	}
+	p.state.Apply(TerminalResized{Width: 100, Height: 30})
+	if out := ansi.Strip(Render(p.state)); !strings.Contains(out, "Could not open the release page.") {
+		t.Fatalf("frame does not report the failed launch:\n%s", out)
 	}
 }

@@ -18,6 +18,11 @@ import (
 // the process needs.
 const updateCheckTimeout = 20 * time.Second
 
+// releaseNotesURL is the human-facing release index the What's New card links
+// to. It is derived from the repository the updater defaults to, so the card
+// and the update authority name the same project.
+const releaseNotesURL = "https://github.com/" + update.DefaultRepo + "/releases/"
+
 // updateChecksEnabled resolves the automatic-check switch.
 //
 // Precedence is environment, then configuration, then the built-in default
@@ -125,6 +130,9 @@ func announceUpdate(out io.Writer, current, latest string) {
 // acknowledgement. It never installs anything during startup; only a human
 // invoking /update crosses that boundary.
 func installUpdateLifecycle(program *tui.Program, settings config.Settings, current string) {
+	// The What's New link hands its URL to the platform browser through a
+	// presentation seam; the TUI itself never spawns a process.
+	program.SetURLOpener(openExternalURL)
 	svc := update.NewService(update.Config{
 		CurrentVersion: current,
 		Progress: func(stage update.Stage) {
@@ -167,7 +175,10 @@ func pendingPostUpdate(store *update.TransitionStore, current string, load func(
 	if !ok {
 		return tui.PostUpdateView{}, nil, false
 	}
-	notice := tui.PostUpdateView{Version: displayVersion(transition.To)}
+	notice := tui.PostUpdateView{
+		Version: displayVersion(transition.To),
+		URL:     releaseNotesURL,
+	}
 	// Missing or malformed release notes must not corrupt update state or
 	// block the acknowledgement: the card still truthfully reports the
 	// version and says no notes are available.
