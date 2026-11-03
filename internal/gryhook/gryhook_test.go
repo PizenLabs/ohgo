@@ -200,7 +200,10 @@ func TestInvalidProjectIsRejected(t *testing.T) {
 
 func TestOversizedOutputIsRejected(t *testing.T) {
 	dir := t.TempDir()
-	bin := writeScript(t, dir, "gry", `i=0; while [ $i -lt 20000 ]; do printf 'aaaaaaaaaaaaaaaa'; i=$((i+1)); done`)
+	// Generate the oversize output in one buffered pipeline. A shell loop is
+	// slow enough that a loaded machine can trip the hook's timeout before
+	// the adapter ever sees the output it is meant to reject.
+	bin := writeScript(t, dir, "gry", `head -c 200000 /dev/zero | tr '\0' a`)
 	runner, err := New(enabledConfig(t, bin, "proj", filepath.Join(dir, "log")))
 	if err != nil {
 		t.Fatal(err)
