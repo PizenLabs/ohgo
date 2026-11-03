@@ -5,6 +5,8 @@ immutable.
 
 ## [Unreleased]
 
+## [v0.0.5] - 2026-11-03
+
 ### Added
 
 - Task continuity Phase 1: the durable task now owns structured, role-independent

@@ -96,7 +96,7 @@ func versionCmd() *cobra.Command {
 }
 
 // version is overridden at build time.
-var version = "0.0.4-dev"
+var version = "0.0.5-dev"
 
 func modelsCmd() *cobra.Command {
 	return &cobra.Command{
