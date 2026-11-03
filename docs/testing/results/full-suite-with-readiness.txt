@@ -1,0 +1,46 @@
+$ go test -count=1 ./...
+?   	github.com/PizenLabs/ohgo/bench/intent	[no test files]
+ok  	github.com/PizenLabs/ohgo/bench/phase9	101.716s
+ok  	github.com/PizenLabs/ohgo/bench/repository	0.113s
+ok  	github.com/PizenLabs/ohgo/cmd/ohgo	16.638s
+ok  	github.com/PizenLabs/ohgo/internal/agent	0.453s
+ok  	github.com/PizenLabs/ohgo/internal/architecture	0.348s
+ok  	github.com/PizenLabs/ohgo/internal/commit	14.747s
+ok  	github.com/PizenLabs/ohgo/internal/config	0.099s
+ok  	github.com/PizenLabs/ohgo/internal/continuity/recovery	1.001s
+ok  	github.com/PizenLabs/ohgo/internal/continuity/session	0.626s
+ok  	github.com/PizenLabs/ohgo/internal/continuity/task	1.647s
+ok  	github.com/PizenLabs/ohgo/internal/control/budget	0.128s
+ok  	github.com/PizenLabs/ohgo/internal/control/cognition	0.137s
+ok  	github.com/PizenLabs/ohgo/internal/control/contract	0.115s
+ok  	github.com/PizenLabs/ohgo/internal/control/workspace	0.326s
+ok  	github.com/PizenLabs/ohgo/internal/diff	0.581s
+ok  	github.com/PizenLabs/ohgo/internal/edit	0.114s
+ok  	github.com/PizenLabs/ohgo/internal/execution/exec	0.544s
+ok  	github.com/PizenLabs/ohgo/internal/execution/mcp	0.215s
+ok  	github.com/PizenLabs/ohgo/internal/execution/sandbox	0.138s
+ok  	github.com/PizenLabs/ohgo/internal/execution/shell	0.138s
+ok  	github.com/PizenLabs/ohgo/internal/execution/tools	10.653s
+ok  	github.com/PizenLabs/ohgo/internal/external/knowledge	0.102s
+ok  	github.com/PizenLabs/ohgo/internal/external/search	0.159s
+ok  	github.com/PizenLabs/ohgo/internal/gryhook	3.061s
+ok  	github.com/PizenLabs/ohgo/internal/history	0.095s
+ok  	github.com/PizenLabs/ohgo/internal/intelligence/ast	0.571s
+?   	github.com/PizenLabs/ohgo/internal/intelligence/ignore	[no test files]
+ok  	github.com/PizenLabs/ohgo/internal/jsonschema	0.096s
+ok  	github.com/PizenLabs/ohgo/internal/memory	0.239s
+ok  	github.com/PizenLabs/ohgo/internal/project	0.250s
+ok  	github.com/PizenLabs/ohgo/internal/prompt	0.158s
+ok  	github.com/PizenLabs/ohgo/internal/provider/ai	1.533s
+ok  	github.com/PizenLabs/ohgo/internal/provider/catalog	0.649s
+ok  	github.com/PizenLabs/ohgo/internal/provider/creds	0.094s
+ok  	github.com/PizenLabs/ohgo/internal/security	0.128s
+ok  	github.com/PizenLabs/ohgo/internal/startup	0.898s
+ok  	github.com/PizenLabs/ohgo/internal/state	0.292s
+?   	github.com/PizenLabs/ohgo/internal/tokens	[no test files]
+ok  	github.com/PizenLabs/ohgo/internal/tui	26.727s
+ok  	github.com/PizenLabs/ohgo/internal/tui/diff	1.591s
+ok  	github.com/PizenLabs/ohgo/internal/update	1.436s
+ok  	github.com/PizenLabs/ohgo/internal/vcs	3.167s
+ok  	github.com/PizenLabs/ohgo/scripts/updateversion	0.181s
+exit=0

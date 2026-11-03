@@ -6,6 +6,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // TestTurnTransitionPredictsWithoutMovingAuthority is invariant 1 and 2: the
@@ -45,13 +46,15 @@ func TestTurnTransitionMatrixMatchesThePolicy(t *testing.T) {
 	}{
 		{"ASK", "explain this", "", false},
 		{"ASK", "try to break this", "", true},
-		{"ASK", "fix the bug", "", false},
+		// Widening is a handoff: it proposes the target but changes nothing
+		// until the human approves.
+		{"ASK", "fix the bug", "BUILD", true},
 		{"BUILD", "why does this work?", "ASK", true},
 		{"BUILD", "reproduce the failure", "FUZZ", true},
 		{"BUILD", "implement the fix", "", false},
 		{"FUZZ", "explain this", "ASK", true},
 		{"FUZZ", "try to break this", "", false},
-		{"FUZZ", "fix the bug", "", false},
+		{"FUZZ", "fix the bug", "BUILD", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.active+"_"+tc.text, func(t *testing.T) {
@@ -72,16 +75,34 @@ func TestTurnTransitionMatrixMatchesThePolicy(t *testing.T) {
 	}
 }
 
-// TestTurnTransitionNeverProposesEscalation is the negative authority contract
-// at the seam (I8, I9): no classifier output may propose BUILD (or FUZZ, from
-// ASK) to the UI.
-func TestTurnTransitionNeverProposesEscalation(t *testing.T) {
+// TestWideningIsOnlyAHandoff is the authority contract at the seam (I8, I9):
+// a classifier may describe that a request needs more authority, but only as a
+// handoff that requires explicit approval. It must never move the gate itself,
+// and it must never present widening as an ordinary already-authorized change.
+func TestWideningIsOnlyAHandoff(t *testing.T) {
 	for _, active := range []string{"ASK", "FUZZ"} {
-		gate := newAuthorityGate(workspace.Workspace(active))
+		activeWS, err := workspace.Parse(active)
+		if err != nil {
+			t.Fatalf("parse %s: %v", active, err)
+		}
+		gate := newAuthorityGate(activeWS)
 		h := routedHarness(gate, nil, active)
 		for _, text := range []string{"implement the fix", "fix the bug", "run the tests", "reproduce the failure"} {
-			if proposal, ok := turnTransition(h, text); ok {
-				t.Errorf("%s proposed %s for %q", active, proposal.Proposed, text)
+			proposal, ok := turnTransition(h, text)
+			if !ok {
+				continue
+			}
+			if proposal.Kind != tui.TransitionKindHandoff {
+				t.Errorf("%s proposed a %q decision for %q, want a handoff", active, proposal.Kind, text)
+			}
+			if proposal.Proposed == "" || proposal.Proposed == active {
+				t.Errorf("%s produced an empty or unchanged handoff target for %q", active, text)
+			}
+			if gate.Workspace() != activeWS {
+				t.Errorf("%s handoff moved the live gate to %s before approval", active, gate.Workspace())
+			}
+			if h.activeWorkspace() != activeWS {
+				t.Errorf("%s handoff moved the workspace to %s before approval", active, h.activeWorkspace())
 			}
 		}
 	}

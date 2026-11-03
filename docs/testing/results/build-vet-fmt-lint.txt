@@ -1,0 +1,12 @@
+$ go build ./...
+exit=0
+
+$ go vet ./...
+exit=0
+
+$ gofmt -l .
+exit=0
+
+$ golangci-lint run ./...
+0 issues.
+exit=0

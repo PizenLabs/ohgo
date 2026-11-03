@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/continuity/task"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/tui"
 )
@@ -76,7 +78,7 @@ func TestTaskProjectionConvertsDomain(t *testing.T) {
 func TestInstallTaskContinuityWritesAndRecoversArtifacts(t *testing.T) {
 	root := t.TempDir()
 	program := tui.NewProgram(nil, "test", 0)
-	controller := installTaskContinuity(program, root, []agent.Tool{tools.NewTodoTool()})
+	controller := installTaskContinuity(program, root, []agent.Tool{tools.NewTodoTool()}, nil)
 
 	if _, err := controller.Begin(contract.IntentContract{Objective: "ship phase 1", Kind: contract.ObjectiveInformational}, nil); err != nil {
 		t.Fatalf("Begin: %v", err)
@@ -91,12 +93,67 @@ func TestInstallTaskContinuityWritesAndRecoversArtifacts(t *testing.T) {
 		}
 	}
 
-	recovered := installTaskContinuity(tui.NewProgram(nil, "test", 0), root, []agent.Tool{tools.NewTodoTool()})
+	recovered := installTaskContinuity(tui.NewProgram(nil, "test", 0), root, []agent.Tool{tools.NewTodoTool()}, nil)
 	taskState, found, err := recovered.Restore()
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	if !found || taskState.Status != task.StatusPaused {
 		t.Fatalf("recovered = %+v (found=%v), want PAUSED", taskState, found)
+	}
+}
+
+// The resume projection carries the role the task last ran under, so the turn
+// gate can distinguish a role change from a new objective. It is metadata for
+// continuity, never authority.
+func TestTaskResumeCarriesLastRole(t *testing.T) {
+	recorded := task.Task{
+		ID:        "task-1",
+		Status:    task.StatusPaused,
+		Objective: "fix the flaky test",
+		Contract:  &contract.IntentContract{Objective: "fix the flaky test"},
+		Context: task.SharedContext{Roles: []task.RoleContext{
+			{Role: workspace.Ask, UpdatedAt: time.Now().Add(-time.Minute)},
+			{Role: workspace.Fuzz, UpdatedAt: time.Now()},
+		}},
+	}
+	resume := taskResume(recorded)
+	if resume.Role != string(workspace.Fuzz) {
+		t.Fatalf("resume role = %q, want %q", resume.Role, workspace.Fuzz)
+	}
+	if !resume.HasContract || resume.Contract.Objective != recorded.Objective {
+		t.Fatalf("resume lost the completion contract: %+v", resume)
+	}
+	if resume.ID != recorded.ID || resume.Status != string(recorded.Status) {
+		t.Fatalf("resume identity = %+v", resume)
+	}
+}
+
+// The resume projection carries an explicit switch so the next turn stays
+// attached to the same task. It remains continuity metadata, never authority.
+func TestTaskResumeCarriesAnExplicitSwitch(t *testing.T) {
+	controller := task.NewController(task.NewStore(t.TempDir()), nil)
+	role := workspace.Fuzz
+	controller.SetRoleSource(func() workspace.Workspace { return role })
+	if _, err := controller.Begin(contract.IntentContract{
+		Objective: "fix the flaky test", Kind: contract.ObjectiveInformational,
+	}, nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	// A host records only after it has moved the live authority.
+	role = workspace.Build
+	if err := controller.RecordWorkspaceSwitch(workspace.Fuzz, workspace.Build, "main; clean"); err != nil {
+		t.Fatalf("RecordWorkspaceSwitch: %v", err)
+	}
+	current, _ := controller.Current()
+	resume := taskResume(current)
+	if resume.HandoffStatus != string(task.HandoffApplied) {
+		t.Fatalf("handoff status = %q, want APPLIED", resume.HandoffStatus)
+	}
+	if resume.HandoffTo != "build" {
+		t.Fatalf("handoff target = %q, want build", resume.HandoffTo)
+	}
+	if resume.HandoffConsumed {
+		t.Fatal("a switch awaiting its next turn was reported consumed")
 	}
 }

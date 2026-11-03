@@ -48,6 +48,9 @@ function.
 | Path | Meaning | Owner | Lifecycle |
 | --- | --- | --- | --- |
 | `project.yml` | `{id, name, root, user.name}` — stable project identity, human-readable project name, and the project worker identity | `project` | project; authoritative; machine-local, gitignored |
+| `progress.json` | authoritative durable task checkpoint (schema version 3, read-old/refuse-newer): identity, lifecycle, contract, snapshot, budget, evidence state, active role and handoff record (continuity metadata, never authority), the bounded timeline and completion proof, and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries, checkpoint write is the commit point |
+| `task.md` | human- and model-readable task projection | `task` | project; projection only; never authoritative over `progress.json` |
+| `tasks/<id>.json` | detached task archive, including its context | `task` | project; durable until resumed, cancelled, or deleted by the human |
 
 The project root is the Git worktree root when the directory is inside a repo,
 otherwise the directory itself (`project.Root`). A nested directory and the
@@ -226,7 +229,12 @@ never let global state become an accidental authority for project-local state.**
 | user preferences | `config` | `~/.ohgo/settings.json` | authoritative | machine | backup file |
 | credentials | `creds` | `~/.ohgo/credentials.json` (`0600`) | authoritative | machine | re-enter |
 | session history | `session` | `~/.ohgo/sessions.db` | authoritative | machine | backup DB |
-| session memory (task context, artifacts) | `session` | `~/.ohgo/sessions.db` | authoritative | session | backup DB |
+| session artifacts | `session` | `~/.ohgo/sessions.db` | authoritative | session | backup DB |
+| task identity and lifecycle | `task` | `<project>/.ohgo/progress.json` | authoritative | task | resume or archive |
+| task shared context (facts, hypotheses, evidence, questions) | `task` | `<project>/.ohgo/progress.json` (`context`) | authoritative | task | resume or archive |
+| role execution context (ASK/FUZZ/BUILD) | `task` | `<project>/.ohgo/progress.json` (`context.roles`) | authoritative for continuity; never authority | task | resume or archive |
+| role handoff (source/target, disposition, carried references) | `task` | `<project>/.ohgo/progress.json` (`handoff`) | authoritative for recovery; never authority | task | resume or archive |
+| detached task | `task` | `<project>/.ohgo/tasks/<id>.json` | authoritative until closed | task | `/task resume` |
 | project identity (`id`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-mint |
 | project name (`name`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-establish via gate |
 | project worker identity (`user.name`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-establish via gate |
@@ -259,7 +267,13 @@ A session owns everything needed to resume **one conversation**:
 - messages and turns (the transcript);
 - compaction summaries and the rebased history they produced;
 - structured artifacts (`workspace.Artifact`: plan, finding, change, verification);
-- active task context, files discussed, unresolved questions, observations.
+- files discussed, unresolved observations that belong to the conversation.
+
+**Task continuity is not session memory.** The durable task, its structured
+context, and the ASK/FUZZ/BUILD execution contexts live in the project-local
+`<project>/.ohgo/progress.json`. A task survives a session boundary, a role
+change, and an application restart; a session owns only the transcript and its
+artifacts. See [`TASK_CONTINUITY.md`](TASK_CONTINUITY.md).
 
 Physical storage stays machine-global at `~/.ohgo/sessions.db`. Logical
 ownership is the `project` column, queried by `session.Store.ListByProject`.
@@ -439,6 +453,7 @@ seam exists so the trust rule has exactly one owner when that day comes.
 | `rm <project>/.ohgo/project.yml` | survive | survive | re-minted/re-established on next run | re-created |
 | `rm -rf <project>/.ohgo` | survive | survive | re-minted (new id); worker re-established project-locally | re-created |
 | delete `graph.db` (future) | survive | survive | survives | project still opens; graph rebuilds |
+| delete or corrupt `progress.json` | survive | survive | survives | task may recover identity/objective from `task.md`, but structured context is reported unavailable |
 | delete `memory.db` (future) | survive | survive | survives | re-created empty; **durable knowledge is lost** — explicit action only |
 | project directory deleted | survive | survive (machine-global) | gone with the tree | gone |
 | project renamed/moved | survive | survive (keyed by id) | **survives** (`.ohgo` moves with the tree; stale `root` tolerated) | survives |
@@ -643,6 +658,43 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
     create `<project>/.ohgo`.
 19. Initialization requires explicit user commitment; a cancelled
     initialization leaves no partial project state.
+20. A task identity is independent of the active session and execution role.
+    Changing role never mints a new task.
+21. `progress.json` is the single authoritative task checkpoint; `task.md` is a
+    lossy projection and never outranks it. The checkpoint schema is version 3:
+    a newer reader accepts older versions, and an older reader refuses a newer
+    version rather than rewriting it without the fields it does not know.
+22. Verified facts require current, usable evidence. A hypothesis, a repeated
+    assertion, an inconclusive result, or a model claim never becomes a fact by
+    being recorded.
+23. Role execution contexts are isolated by role, survive recovery, and never
+    grant authority. A handoff record describes a transition and also never
+    grants authority: only the workspace owner applies it. A proposal that was
+    never approved is interrupted, never applied. An approved record is
+    reconciled against the restored workspace: matching the target is applied
+    without a switch, matching the source is interrupted, and any third role is
+    a reported discrepancy that does not rewrite the recorded role.
+24. The task timeline is a bounded index derived from recorded transitions, not a
+    second transcript or a second source of truth. It references authoritative
+    records by id, never copies their payloads, elides observation events before
+    lifecycle boundaries, and reports a dropped-event gap instead of silently
+    rewriting history.
+25. Completion is proven only by the evaluator's verdict plus the task's
+    recorded observations, and the requirement is explicit per contract kind:
+    an answer for informational, a successful execution for execution, and an
+    observed change plus a later verification for mutation. `COMPLETED` without
+    a resolving proof projects as `COMPLETED_UNPROVEN`; invalidating, superseding,
+    or materially contradicting the proof's evidence never rewrites the
+    historical lifecycle record.
+26. A completion transition is committed only when its checkpoint write
+    succeeds. On failure the prior task state is restored, so an uncommitted
+    proof or `COMPLETED` status is never published.
+27. Recovery classification is derived on load, never persisted. It covers the
+    live checkpoint and detached archives, includes a dropped completion proof,
+    and names missing or repaired information. Corrupt archive files are
+    recorded as diagnostics rather than silently skipped. Authority is never
+    inferred from recovery, and a task that cannot progress without a human
+    decision is reported as such.
 
 ## Explicit Non-Goals
 

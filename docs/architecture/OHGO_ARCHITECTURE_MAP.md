@@ -109,7 +109,7 @@ edges that are architecturally forbidden (the ones enforced today are marked).
 | `internal/intelligence/ignore` | repo scoping | stdlib only **\[ENFORCED]** | every module package |
 | `internal/provider/*` | wire, facts, secrets | `internal/provider/*`, `state` — **only** | `agent`, `control/*`, `execution/*`, `continuity/*`, `intelligence/*`, `tui` **\[ENFORCED]** |
 | `internal/continuity/session` | transcript | `agent`, `provider/ai`, `state`, `tokens`, `control/workspace` | `tui`, `commit`, `startup`, `update`, `history` **\[ENFORCED]** |
-| `internal/continuity/task` | durable task | `agent`, `control/{budget,cognition,contract}`, `project` | `tui` **\[ENFORCED]**; also `execution/*` by direction |
+| `internal/continuity/task` | durable task | `agent`, `control/{budget,cognition,contract,workspace}`, `project` | `tui` **\[ENFORCED]**; also `execution/*` by direction |
 | `internal/continuity/recovery` | edit history | `agent`, `intelligence/ignore`, `state`, `vcs` | `tui`, `commit`, … **\[ENFORCED]** |
 | `internal/configuration` (`config`, `state`, `project`) | settings, paths, identity | `state`, `vcs` | `agent`, `execution/*`, `tui` |
 | `internal/tui` | presentation | the whole tree **except** concrete capabilities and the task controller | `execution/tools`, `execution/mcp`, `continuity/task` **\[ENFORCED]** |
@@ -188,6 +188,11 @@ Read this before adding a field to anything.
 | Session authority snapshot | `session.Session` | in-memory session | harness rows | `session.Store.SetAuthority` (one writer) |
 | Completion verdict | `agent.Evaluate*Completion` | the run | `runState`, `task.Action` | `task.Status` |
 | Task objective/contract | `contract.IntentContract` | `task.Task` | `task.md` | `progress.json` |
+| Task shared context, facts, hypotheses, evidence, questions | `task.SharedContext` | `task.Controller` | `task.ContextFor` | `progress.json` (`context`) |
+| Role execution context | `task.RoleContext` | the task | `task.ContextFor` (active role only) | `progress.json` (`context.roles`) |
+| Task active role (continuity metadata, never authority) | `task.Task.ActiveRole` | `task.Controller` | `task.ContextFor`, turn gate | `progress.json` (`activeRole`) |
+| Role handoff (continuity and recovery metadata, never authority) | `task.Handoff` | `task.Controller` | `task.ContextFor`, TUI transition card | `progress.json` (`handoff`) |
+| Handoff authorization policy | `workspace.ProposeHandoff` | `control/workspace` | TUI transition proposal | never (derived) |
 | Evidence for the verdict | `agent.scanCompletionEvidence` (run-local) | the run | — | never |
 | Evidence for projection | `cognition.EvidenceState` | the task | state block, sufficiency | `progress.json` |
 | Budget ledger | `budget.Budget` | run holder | TUI usage | `progress.json` (`budget.State`) |
@@ -307,4 +312,6 @@ decision:
 5. `internal/control/workspace` — the authority table and the intent contract.
 6. `internal/continuity/task` — the durable task, and `progress.json` as the
    source of truth.
-7. `internal/architecture/rules_test.go` — the boundaries, executable.
+7. `TASK_CONTINUITY.md` — task identity, shared context, evidence, and role
+   context ownership.
+8. `internal/architecture/rules_test.go` — the boundaries, executable.

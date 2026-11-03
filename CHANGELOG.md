@@ -5,6 +5,100 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- Task continuity Phase 1: the durable task now owns structured, role-independent
+  context (verified facts, hypotheses, evidence references, questions) and
+  isolated ASK/FUZZ/BUILD execution contexts in `progress.json`. Context is
+  assembled deterministically for the active role with existing character and
+  token bounds; it survives restart, session continuation, and task resume, and
+  it never grants authority. Model assertions remain hypotheses until current
+  evidence confirms them, and contradictory evidence is retained without
+  overwriting facts.
+- Task continuity runtime population: material tool observations are folded into
+  task evidence references at the turn boundary, successful checks become
+  evidence-backed facts, and ASK/FUZZ/BUILD role contexts carry their own
+  observed progress. A role change on the same objective keeps the task and its
+  contexts instead of detaching it. Semantic hypotheses, questions, reasoning,
+  and strategy remain host writes because the runtime has no trustworthy signal
+  for them.
+
+- Task continuity Phase 2: a widening role transition is now a controlled
+  handoff. `workspace.ProposeHandoff` asks for the authority the request needs;
+  the human approves through the existing in-chat transition decision; the
+  existing `SwitchWorkspace` seam performs the only authority move. The task
+  records a bounded handoff (roles, objective, truthfully measured workspace
+  state, and references to the shared facts, hypotheses, questions, evidence,
+  and artifacts) in `progress.json`. Applied handoffs keep one task identity
+  and all role contexts in both directions; rejected, failed, and interrupted
+  handoffs never change the recorded role. A restart reconciles an approved
+  handoff against the authority that was actually restored: a matching target is
+  recorded as applied without a second switch or a resumed turn, a matching
+  source is reported as not applied, and any third role is reported as a
+  recovery discrepancy without rewriting the recorded role. A transition's
+  source is the live authority, so recovered stale task metadata cannot block a
+  valid narrowing, and a checkpoint recovered without `task.md` reconstructs the
+  objective from the contract so its handoff stays valid and writable.
+
+- Task continuity Phase 3: progression, lineage, recovery, and evidence-backed
+  completion. `progress.json` now carries a bounded timeline of meaningful task
+  events (creation, checkpoints, findings, evidence and hypothesis
+  dispositions, handoffs, verification, detach/resume, completion, failure)
+  that references authoritative records instead of copying payloads, plus an
+  evidence proof for COMPLETED tasks. `Task.ObjectiveState` distinguishes
+  `ACTIVE`, `INTERRUPTED`, `NEEDS_REVIEW`, `BLOCKED`, `PROVEN`,
+  `COMPLETED_UNPROVEN`, and `CANCELLED`. Completion is explicit per contract kind:
+  an informational objective needs an answer, an execution objective needs a
+  projected successful execution (an answer alone is refused), and a mutation
+  objective needs an observed change plus a verification that followed it. A
+  proof that is invalidated, superseded, evicted, or materially contradicted
+  downgrades to `COMPLETED_UNPROVEN` without rewriting the lifecycle record.
+  Load reports whether recovery was intact, reconstructed with named missing
+  information, in need of a human decision, or blocked; detached archives carry
+  the same classification and corrupt archive files are reported instead of
+  silently skipped. `/task status`, `/task show`, `/task timeline`, and
+  `/task lineage` expose the same read-only facts through the existing
+  interaction surface.
+
+### Changed
+
+- `progress.json` is now schema version 3. The bump is a downgrade barrier, not
+  a shape change: a newer binary still reads version 1 and 2 checkpoints, while
+  an older binary refuses version 3 instead of silently rewriting it without
+  the timeline and completion proof it cannot parse. The projection is written
+  before the checkpoint, and the checkpoint write is the commit point.
+- The task timeline elides observation events before lifecycle history and
+  counts dropped events from the retained sequence numbers rather than assuming
+  the first retained event is the creation event. Repeated pause and review
+  boundaries are idempotent, and task-context mutations use the injected clock.
+
+### Fixed
+
+- A failed completion checkpoint can no longer be published as
+  `COMPLETED`/`PROVEN`: the controller restores the prior task and the TUI
+  refuses to surface an uncommitted completion. The same task stays resumable.
+- A successful command is projected as an observation, so an execution
+  objective can be backed by real execution evidence rather than only by a
+  final answer. The durable boundary also carries a check's reported scope and
+  refuses a verification that does not cover the contract's declared kind and
+  scope.
+- Recovery no longer reports `INTACT` after dropping or repairing a completion
+  proof, archive sanitization reports its repairs, and resuming an archive
+  preserves that classification.
+- A contradiction now downgrades `PROVEN` when it targets a claim the proof
+  depends on, and leaves an unrelated proof intact.
+- Task context selection now uses the fixed budget with relevance ordering
+  instead of recency-only caps: older verified facts survive, the active role's
+  section is reserved, stale evidence cannot displace current evidence, and an
+  overfull section reports how many items it omitted.
+- Task-context repair now deduplicates role contexts across the whole
+  collection, clears dangling supersession pointers, rewrites invalidated
+  confirmations, and refuses to hand back a context that would make every later
+  checkpoint fail validation.
+- A dedup key can no longer silently reuse an earlier record for a different
+  observation, and a fact confirmed from a hypothesis records the confirming
+  role while the hypothesis keeps the proposing role.
+
 ## [v0.0.4] - 2026-11-02
 
 ### Added

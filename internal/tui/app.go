@@ -463,6 +463,10 @@ const (
 	// path. Authority does not move; the human resolves the decision through
 	// the same permission surface a tool approval uses.
 	TransitionKindProposal = "proposal"
+	// TransitionKindHandoff moves the session to a stronger authority. It
+	// always requires explicit approval: classification can request a handoff,
+	// never grant one.
+	TransitionKindHandoff = "handoff"
 )
 
 // TurnTransition is the UI projection of one pending decision: a workspace
@@ -487,6 +491,10 @@ type TurnTransition struct {
 	ProposedAccent string
 	// Proposal is the request-derived decision for the proposal kind.
 	Proposal *workspace.Proposal
+	// Handoff is the transition payload for the handoff kind. It is filled
+	// from the durable task record before the decision is presented, so the
+	// human sees exactly what will be carried.
+	Handoff *HandoffView
 	// Intent is the classified request, e.g. "READ".
 	Intent string
 	// Strength is the classifier's evidence level, e.g. "strong".
@@ -3839,6 +3847,38 @@ func (p *Program) submit(text string) tea.Cmd {
 				p.openAuthorityChoice(text, proposed.Reason)
 				return nil
 			}
+			if proposed.Kind == TransitionKindHandoff {
+				// The durable preview is filled before the decision is shown,
+				// so the human sees the objective and what will be carried.
+				// It is a read: nothing is recorded and no authority moves.
+				if p.task.PreviewHandoff != nil {
+					if target, err := workspace.Parse(proposed.Proposed); err == nil {
+						if preview, err := p.task.PreviewHandoff(target); err == nil {
+							if preview.Summary == "" {
+								preview.Summary = "Shared task context and role progress are preserved."
+							}
+							// The workspace summary is measured state from the
+							// footer, never an invented "clean tree".
+							preview.Workspace = p.handoffWorkspaceState()
+							proposed.Handoff = &preview
+						}
+					}
+				}
+				p.state.Apply(TransitionProposed{
+					Text:           text,
+					Current:        proposed.Current,
+					Proposed:       proposed.Proposed,
+					CurrentAccent:  proposed.CurrentAccent,
+					ProposedAccent: proposed.ProposedAccent,
+					Intent:         proposed.Intent,
+					Strength:       proposed.Strength,
+					Question:       proposed.Question,
+					Reason:         proposed.Reason,
+					Kind:           proposed.Kind,
+					Handoff:        proposed.Handoff,
+				})
+				return nil
+			}
 			if proposed.Kind == TransitionKindProposal && proposed.Proposal != nil {
 				labels := make([]string, len(proposed.Proposal.Options))
 				for i, option := range proposed.Proposal.Options {
@@ -3869,6 +3909,8 @@ func (p *Program) submit(text string) tea.Cmd {
 				Strength:       proposed.Strength,
 				Question:       proposed.Question,
 				Reason:         proposed.Reason,
+				Kind:           proposed.Kind,
+				Handoff:        proposed.Handoff,
 			})
 			return nil
 		}
@@ -3908,10 +3950,15 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	text, proposed := pending.Text, pending.Proposed
+	summary, workspaceState := "", ""
+	if pending.Handoff != nil {
+		summary = pending.Handoff.Summary
+		workspaceState = pending.Handoff.Workspace
+	}
 	p.state.Apply(TransitionResolved{})
 	if !accept {
-		p.restoreAuthorityRequest(text)
 		p.state.Apply(Notice{Text: "request cancelled; choose its workspace explicitly, then resend"})
+		p.restoreAuthorityRequest(text)
 		return p, nil
 	}
 	if p.workspace.Switch == nil {
@@ -3919,20 +3966,105 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 		p.restoreAuthorityRequest(text)
 		return p, nil
 	}
+	target, err := workspace.Parse(proposed)
+	if err != nil {
+		p.state.Apply(Notice{Text: "workspace: " + err.Error()})
+		p.restoreAuthorityRequest(text)
+		return p, nil
+	}
+	// The pending decision is data, not authority. Re-derive the policy answer
+	// for this exact request and require it to name the same target, so a
+	// stale, corrupted, or misproduced prompt cannot move authority somewhere
+	// the policy never allowed.
+	if p.workspace.Current != nil {
+		if current, err := workspace.Parse(p.workspace.Current()); err == nil {
+			prediction := workspace.ClassifyPrediction(text)
+			allowed := false
+			if pending.Kind == TransitionKindHandoff {
+				if candidate, ok := workspace.ProposeHandoff(current, prediction); ok && candidate.Proposed == target {
+					allowed = true
+				}
+			} else if candidate, ok := workspace.ProposeTransition(current, prediction); ok && candidate.Proposed == target {
+				allowed = true
+			}
+			if !allowed {
+				p.state.Apply(Notice{Text: "this transition is no longer authorized; resend the request"})
+				p.restoreAuthorityRequest(text)
+				return p, nil
+			}
+		}
+	}
 	if p.workspace.Current != nil && strings.EqualFold(p.workspace.Current(), proposed) {
 		// Already there (an external switch landed between prediction and
 		// decision): run the turn without a redundant transition.
 		return p, p.startTurn(text)
 	}
+	// A transition on an existing task is recorded durably before authority
+	// moves, so an interruption between approval and application is
+	// diagnosable. With no task yet there is no continuity to preserve: the
+	// turn will create one under the target role.
+	handoffID := ""
+	if p.task.ProposeHandoff != nil && p.hasOpenTask() {
+		view, err := p.task.ProposeHandoff(target, pending.Reason, summary, workspaceState)
+		if err != nil {
+			p.state.Apply(Notice{Text: "handoff: " + err.Error()})
+			p.restoreAuthorityRequest(text)
+			return p, nil
+		}
+		handoffID = view.ID
+		if p.task.ApproveHandoff != nil {
+			if _, err := p.task.ApproveHandoff(handoffID); err != nil {
+				if p.task.FailHandoff != nil {
+					_ = p.task.FailHandoff(handoffID, "approval could not be recorded: "+err.Error())
+				}
+				p.state.Apply(Notice{Text: "handoff: " + err.Error()})
+				p.restoreAuthorityRequest(text)
+				return p, nil
+			}
+		}
+	}
 	if err := p.workspace.Switch(proposed); err != nil {
 		// The accepted authority is not in force, so running the turn would
 		// silently execute under the workspace the user declined. Report and
 		// drop the prompt; the user can resend.
+		if handoffID != "" && p.task.FailHandoff != nil {
+			_ = p.task.FailHandoff(handoffID, "authority switch failed: "+err.Error())
+		}
 		p.state.Apply(Notice{Text: "workspace: " + err.Error()})
 		p.restoreAuthorityRequest(text)
 		return p, nil
 	}
+	// The handoff stays APPROVED here. The turn's Begin is the boundary where
+	// the live role is known and the task is attached, so it applies the
+	// transition and keeps the task identity in one step.
 	return p, p.startTurn(text)
+}
+
+// handoffWorkspaceState is the measured workspace summary shown before a
+// transition. It comes from the same footer facts the user already sees, and
+// stays empty when the runtime has not measured them: a handoff never claims a
+// clean tree it did not observe.
+func (p *Program) handoffWorkspaceState() string {
+	branch := strings.TrimSpace(p.state.Status.GitBranch)
+	status := strings.TrimSpace(p.state.Status.GitStatus)
+	switch {
+	case branch != "" && status != "":
+		return branch + "; " + status
+	case branch != "":
+		return branch
+	default:
+		return status
+	}
+}
+
+// hasOpenTask reports whether a non-terminal task exists, so a transition can
+// be recorded without creating a task before its first turn.
+func (p *Program) hasOpenTask() bool {
+	if p.task.Current == nil {
+		return false
+	}
+	current, ok := p.task.Current()
+	return ok && current.ID != "" && !taskStatusTerminal(current.Status)
 }
 
 // supportIdentity reads the effective SUP model and effort for display.
@@ -4352,6 +4484,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	}
 	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
 
+	// The active authority is read before the task decision: a role change on
+	// the same objective is a continuation, not a new task. It is the
+	// control plane's current authority, never a prediction from the prompt.
+	activeAuthority := strings.ToLower(strings.TrimSpace(turn.Active))
+	if activeAuthority == "" && p.workspace.Current != nil {
+		activeAuthority = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
+	}
+
 	// The completion contract is extracted from the user's own text before any
 	// execution. It is the task's objective and the evidence boundary; the
 	// model cannot add to or reinterpret it.
@@ -4405,10 +4545,49 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// task remains durable (detached, not deleted) and stays reachable through
 	// /task list and /task resume. Relatedness — same repository, same files —
 	// never implies continuation.
+	//
+	// A terminal task is never overwritten. It is archived through the same
+	// Detach path before the new objective starts, so its objective, evidence,
+	// proof, and timeline remain recoverable.
 	var targetSnapshot *agent.TargetSnapshot
+	priorChange := false
 	if p.task.Current != nil {
-		if current, ok := p.task.Current(); ok && !taskStatusTerminal(current.Status) {
-			if continuationPrompt(text) {
+		current, ok := p.task.Current()
+		switch {
+		case !ok:
+			p.recordTaskDecision("NEW_INTENT")
+		case taskStatusTerminal(current.Status):
+			if p.task.Detach != nil {
+				detached := p.task.Detach()
+				if detached.Err != "" {
+					abortTurn("task state was not recorded: " + detached.Err)
+					return
+				}
+				if detached.ID != "" {
+					p.PublishTask(detached)
+				}
+			}
+			p.recordTaskDecision("NEW_INTENT")
+		default:
+			continuing := continuationPrompt(text)
+			switch {
+			case continuing:
+				p.recordTaskDecision("EXPLICIT_RESUME")
+			case handoffContinuation(current, activeAuthority):
+				continuing = true
+				p.recordTaskDecision("HANDOFF_CONTINUATION")
+			case roleContinuation(current, intent, activeAuthority):
+				continuing = true
+				p.recordTaskDecision("ROLE_CONTINUATION")
+			case objectiveContinuation(current, intent):
+				// Repeating the open objective is another turn on the same
+				// work, not a second task. Without this, an ordinary
+				// follow-up silently fragments identity and detaches the
+				// context the next turn needs.
+				continuing = true
+				p.recordTaskDecision("OBJECTIVE_CONTINUATION")
+			}
+			if continuing {
 				if !current.HasContract {
 					abortTurn("an open task has no persisted completion contract; run /task cancel to abandon it, or start a new task with /task list to preserve it")
 					return
@@ -4421,13 +4600,16 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 					}
 					targetSnapshot = &cloned
 				}
-				p.recordTaskDecision("EXPLICIT_RESUME")
+				// Read the durable evidence boundary before Begin starts this
+				// turn: a resumed verification-only run may prove the change a
+				// prior run already observed.
+				if p.task.HasCurrentChange != nil {
+					priorChange = p.task.HasCurrentChange()
+				}
 			} else {
 				// New intent: detach the durable task so it survives the
 				// session boundary without owning the new intent, then
-				// proceed with the fresh contract. COMPLETED/FAILED/CANCELLED
-				// never reach here (terminal), so no continuation prompt is
-				// ever shown for them.
+				// proceed with the fresh contract.
 				if p.task.Detach != nil {
 					detached := p.task.Detach()
 					if detached.Err != "" {
@@ -4440,8 +4622,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				}
 				p.recordTaskDecision("NEW_INTENT")
 			}
-		} else {
-			p.recordTaskDecision("NEW_INTENT")
 		}
 	} else {
 		p.recordTaskDecision("NEW_INTENT")
@@ -4487,10 +4667,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// evaluates every tool that remains, and completion still evaluates
 	// evidence the runtime observed. The shape is built after the fresh run
 	// grant is installed so an exhausted prior turn cannot poison this one.
-	authorityLabel := strings.ToLower(strings.TrimSpace(turn.Active))
-	if authorityLabel == "" && p.workspace.Current != nil {
-		authorityLabel = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
-	}
+	authorityLabel := activeAuthority
 	facts := cognition.ProbeFacts(p.completionRoot)
 	shape := cognition.BuildShape(intent, cognition.ShapeParams{
 		Authority: authorityLabel,
@@ -4731,7 +4908,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if p.task.ProjectionReview != nil {
 		evidenceReview = p.task.ProjectionReview()
 	}
-	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview)
+	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange)
+	// The turn boundary is also the evidence boundary. The loop projects
+	// before each request, but a run that stopped on a deadline, a turn limit,
+	// or its final answer may have an unobserved last turn. Folding it here
+	// keeps the checkpoint truthful without a second observation store.
+	if p.task.ObserveTurns != nil {
+		p.task.ObserveTurns(turns)
+	}
 	if p.beforeTaskTransition != nil {
 		p.beforeTaskTransition()
 	}
@@ -4755,18 +4939,49 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	}
 	switch action {
 	case taskActionComplete:
-		if p.task.Complete != nil {
-			projection := p.task.Complete()
-			// The recap is derived here, at the only place that owns both
-			// the completion decision and the run's evidence. It narrates
-			// what the run accomplished from observed tool outcomes and the
-			// assistant's own closing answer; the durable task layer never
-			// stores it.
-			objective := projection.Objective
-			if strings.TrimSpace(objective) == "" {
-				objective = intent.Objective
+		answered := false
+		if len(turns) > 0 {
+			answered = strings.TrimSpace(turns[len(turns)-1].Assistant.Text()) != ""
+		}
+		evidence := CompletionEvidence{Complete: true, Answered: answered}
+		var projection TaskProjection
+		switch {
+		case p.task.CompleteWithEvidence != nil:
+			projection = p.task.CompleteWithEvidence(evidence)
+		case p.task.Complete != nil:
+			projection = p.task.Complete()
+		}
+		// A completion that could not be durably committed is never published
+		// as COMPLETED, whatever the in-memory status says. The task layer
+		// rolls back on a failed persist; this guard is repeated here so a
+		// host hook with different semantics cannot leak a false PROVEN.
+		if projection.ID != "" && projection.Err != "" {
+			switch {
+			case hasOpenTaskItems(projection) || p.task.NeedsReview == nil:
+				// Work remains or no review seam is installed: the task stays
+				// active with the recorded error, never falsely done.
+				p.PublishTask(projection)
+			default:
+				// The evaluator said complete but the durable task could not
+				// prove or commit it. Review is the truthful non-terminal
+				// transition.
+				p.PublishTask(p.task.NeedsReview("completion evidence: " + projection.Err))
 			}
-			projection.Recap = recapNarrative(objective, turns)
+			projection = TaskProjection{}
+		}
+		if projection.ID != "" {
+			if strings.EqualFold(projection.Status, "COMPLETED") {
+				// The recap is derived here, at the only place that owns both
+				// the completion decision and the run's evidence. It narrates
+				// what the run accomplished from observed tool outcomes and the
+				// assistant's own closing answer; the durable task layer never
+				// stores it.
+				objective := projection.Objective
+				if strings.TrimSpace(objective) == "" {
+					objective = intent.Objective
+				}
+				projection.Recap = recapNarrative(objective, turns)
+			}
 			p.PublishTask(projection)
 		}
 	case taskActionReview:

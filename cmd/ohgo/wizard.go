@@ -12,6 +12,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/history"
 	"github.com/PizenLabs/ohgo/internal/project"
@@ -79,7 +80,9 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	program.SetRecovery(recoverer)
 	program.SetCommitHooks(commitHooks(opts.root, &opts.settings, registry))
 	attachShellEscape(program, opts.root, opts.security)
-	controller := installTaskContinuity(program, opts.root, loop.Tools(), opts.budget)
+	controller := installTaskContinuity(program, opts.root, loop.Tools(), func() workspace.Workspace {
+		return opts.authority()
+	}, opts.budget)
 	program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
 	opts.security.SetTaskSource(func() string {
 		if current, ok := controller.Current(); ok {
@@ -172,9 +175,19 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	program.SetWorkspaceSwitcher(tui.WorkspaceHooks{
 		Current: func() string { return held.workspace },
 		Switch: func(name string) error {
+			from := held.activeWorkspace()
 			ws, err := held.SwitchWorkspace(name)
 			if err != nil {
 				return err
+			}
+			// A slash command is itself the human's transition decision.
+			// Recording it keeps the next turn attached to the same task and
+			// leaves a recovery record; a write failure is reported but does
+			// not undo the authority the user just chose.
+			if controller != nil {
+				if err := controller.RecordWorkspaceSwitch(from, ws, ""); err != nil {
+					program.PublishNotice("workspace switched; task continuity was not recorded: " + err.Error())
+				}
 			}
 			opts.setAuthority(ws)
 			style := ws.Style()

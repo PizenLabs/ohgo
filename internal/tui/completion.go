@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
@@ -22,7 +24,7 @@ const (
 // completion comes from agent.EvaluateTaskCompletion, which requires the
 // contract's target evidence and a verification that covers it.
 func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver) (taskAction, string) {
-	return turnTaskOutcomeWithReview(err, turns, intent, snapshot, resolver, "")
+	return turnTaskOutcomeWithReview(err, turns, intent, snapshot, resolver, "", false)
 }
 
 // turnTaskOutcomeWithReview is turnTaskOutcome with the cognitive layer's
@@ -30,15 +32,20 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 // a proven mutation on a resource stop remains governed by
 // EvaluateBudgetCompletion, which deliberately ignores it.
 //
+// priorChange says the durable task already observed a current change before
+// this run. It lets a resumed verification-only turn reach the durable
+// completion boundary; it never proves the objective by itself.
+//
 // The stop classification and the completion rules belong to agent.ClassifyRun;
 // this function only projects its verdict into the durable task lifecycle.
-func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string) (taskAction, string) {
+func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool) (taskAction, string) {
 	verdict, reason := agent.ClassifyRun(err, agent.CompletionInput{
 		Turns:          turns,
 		Contract:       intent,
 		Snapshot:       snapshot,
 		Resolver:       resolver,
 		EvidenceReview: evidenceReview,
+		PriorChange:    priorChange,
 	}, false)
 
 	switch verdict {
@@ -55,4 +62,16 @@ func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.In
 	default: // agent.RunPaused
 		return taskActionPause, reason
 	}
+}
+
+// hasOpenTaskItems reports whether a projection still shows work that is not
+// done. A completion refusal caused by outstanding work keeps the task active;
+// any other refusal is reviewable.
+func hasOpenTaskItems(projection TaskProjection) bool {
+	for _, item := range projection.Items {
+		if !strings.EqualFold(strings.TrimSpace(item.State), taskStateDone) {
+			return true
+		}
+	}
+	return false
 }

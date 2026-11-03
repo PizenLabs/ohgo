@@ -2101,7 +2101,23 @@ func transitionCard(prompt *TransitionPrompt, cardW int) string {
 	hints := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(wizardGrey)).
 		Render("Enter to confirm · Esc keeps " + prompt.Current)
-	inner := lipgloss.JoinVertical(lipgloss.Left, title, reason, "", buttons, "", hints)
+	rows := []string{title, reason}
+	if prompt.Handoff != nil {
+		detail := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(wizardGrey))
+		if prompt.Handoff.Objective != "" {
+			rows = append(rows, detail.Render("Task: "+TruncateToWidth(prompt.Handoff.Objective, cardW)))
+		}
+		if carried := handoffCarriedLine(*prompt.Handoff); carried != "" {
+			rows = append(rows, detail.Render("Carries: "+carried))
+		}
+		if prompt.Handoff.Workspace != "" {
+			rows = append(rows, detail.Render("Workspace: "+TruncateToWidth(prompt.Handoff.Workspace, cardW)))
+		}
+		rows = append(rows, detail.Render("Authority change requires your approval"))
+	}
+	rows = append(rows, "", buttons, "", hints)
+	inner := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(prompt.ProposedAccent)).
@@ -2109,6 +2125,31 @@ func transitionCard(prompt *TransitionPrompt, cardW int) string {
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
+}
+
+// handoffCarriedLine summarises the shared records a handoff references. It
+// names only counts: the dialog never copies evidence text or a tool payload.
+func handoffCarriedLine(handoff HandoffView) string {
+	var parts []string
+	if handoff.Facts > 0 {
+		parts = append(parts, fmt.Sprintf("%d facts", handoff.Facts))
+	}
+	if handoff.Hypotheses > 0 {
+		parts = append(parts, fmt.Sprintf("%d hypotheses", handoff.Hypotheses))
+	}
+	if handoff.Questions > 0 {
+		parts = append(parts, fmt.Sprintf("%d questions", handoff.Questions))
+	}
+	if handoff.Evidence > 0 {
+		parts = append(parts, fmt.Sprintf("%d evidence", handoff.Evidence))
+	}
+	if handoff.Artifacts > 0 {
+		parts = append(parts, fmt.Sprintf("%d artifacts", handoff.Artifacts))
+	}
+	if handoff.Constraints > 0 {
+		parts = append(parts, fmt.Sprintf("%d constraints", handoff.Constraints))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // transitionButton renders one workspace choice: its own accent when

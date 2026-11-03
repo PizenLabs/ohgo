@@ -228,6 +228,8 @@ generic package converts a design question into permanent ambiguity.
 | Persisted authority snapshot | `session.Store` via **one** writer | projects it |
 | Completion verdict | `agent` evaluators + `ClassifyRun` | projects it |
 | Task objective | `contract.IntentContract` in `progress.json` | never re-derives it from model output |
+| Task shared/role context | `task.Task.Context` → `progress.json` (`context`) | assembles it, never rewrites authority from it |
+| Task evidence/facts/hypotheses | `task.Task.Context` | reference by ID; never duplicate the statement in role context |
 | Budget ledger | `budget.Budget` | reads `Snapshot()` |
 | Transcript | `session` | mirrors it, never re-stores it |
 | Repository symbols | one `ast.Index` | queries it |
@@ -252,9 +254,9 @@ projection semantics · compatibility requirement
 ```
 
 Serialized today: `progress.json` (contract, target snapshot, evidence state,
-budget state, status), `task.md` (projection only, never authoritative),
-`sessions.db`, `recovery.db`, `settings.json`, `credentials.json`,
-`project.yml`, `cache/*.json`, `update*.json`.
+budget state, status, structured task context), `task.md` (projection only,
+never authoritative), `sessions.db`, `recovery.db`, `settings.json`,
+`credentials.json`, `project.yml`, `cache/*.json`, `update*.json`.
 
 Rules:
 

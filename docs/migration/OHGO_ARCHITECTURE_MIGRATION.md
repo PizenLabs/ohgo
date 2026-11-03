@@ -317,3 +317,23 @@ What remains is structural file organisation (two large files) and
 behaviour-changing product decisions — both explicitly out of scope for a
 behaviour-preserving migration. A further *architecture* pass is not justified;
 the architecture now defends itself.
+
+---
+
+## 11. Task continuity Phase 1 (additive)
+
+`internal/continuity/task` gained structured shared context and per-role
+execution context. The change is additive and does not move ownership:
+
+* `ProgressVersion` stays **2**. The context is a self-versioned subdocument
+  (`context.version = 1`), so an older reader ignores it and a newer reader
+  refuses only the context it cannot understand, while the task still loads.
+* `task.md` is unchanged and remains a projection. No field moved between
+  packages, no existing JSON tag changed, and no existing checkpoint requires
+  rewriting.
+* Missing context means "not recorded". Malformed context is sanitized on load
+  and reported through a transient continuity warning; invalid context is
+  refused before write.
+* The task package now imports `control/workspace` to name the three execution
+  roles. The edge points downward, and no authority decision moved into the
+  task layer.

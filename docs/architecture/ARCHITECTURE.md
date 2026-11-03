@@ -67,6 +67,11 @@ execution`:
 - Cross-workspace handoff is artifact-based: `workspace.Artifact` (plan,
   finding, change, verification) is validated and persisted per session; the
   `artifact` tool enforces that a workspace only authors its own kind.
+- A widening role transition is a Phase 2 handoff: `workspace.ProposeHandoff`
+  only asks, the human approves through the existing transition decision, and
+  `harness.SwitchWorkspace` remains the single authority move. `task.Handoff`
+  records the transition and its carried references in `progress.json`; it is
+  recovery metadata, never a capability.
 
 ### Intent-aware turns
 
@@ -163,6 +168,11 @@ user's request before execution and the evidence the runtime observed.
   different prompt is refused until the human runs `/task cancel` or
   `/task accept`. Both close the task as `CANCELLED`; neither claims the old
   objective completed, and the next prompt starts a new identity.
+- **Task context.** The same checkpoint carries structured, role-independent
+  context: evidence-backed facts, hypotheses and dispositions, task-linked
+  evidence, outstanding questions, and isolated ASK/FUZZ/BUILD execution
+  contexts. Context is assembled for the active role only, never grants
+  authority, and never completes a task. See [`TASK_CONTINUITY.md`](TASK_CONTINUITY.md).
 - **Stateless paths.** `ohgo run` and the plain REPL use the same evaluator and
   print one verdict: `COMPLETED`, `NEEDS_REVIEW: reason`, `PAUSED: reason`,
   `FAILED: reason`, or `CANCELLED: reason`. They do not create a durable task.

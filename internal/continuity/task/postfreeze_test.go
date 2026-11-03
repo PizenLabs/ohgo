@@ -171,7 +171,9 @@ func TestMultipleResumableListDeterministically(t *testing.T) {
 	}
 }
 
-// A terminal task is never resumable and detach does not archive it.
+// A terminal task is archived but never resumable: Detach returns the archived
+// task so the host can project it, reports ok=false, and removes it from the
+// resumable list.
 func TestTerminalTaskIsNeverResumable(t *testing.T) {
 	controller := NewController(NewStore(t.TempDir()), nil)
 	begun, err := controller.Begin(postfreezeIntent("done work"), nil)
@@ -182,9 +184,16 @@ func TestTerminalTaskIsNeverResumable(t *testing.T) {
 		// No todos, so Complete should succeed.
 		t.Fatalf("Complete: %v", err)
 	}
-	_ = begun
-	if _, ok, err := controller.Detach(); err != nil || ok {
+	detached, ok, err := controller.Detach()
+	if err != nil || ok {
 		t.Fatalf("Detach terminal = (%v, %v), want (false, nil)", ok, err)
+	}
+	if detached.ID != begun.ID {
+		t.Fatalf("Detach terminal returned %q, want the archived task %q", detached.ID, begun.ID)
+	}
+	archived, err := controller.Store().LoadArchived(begun.ID)
+	if err != nil || !archived.Found {
+		t.Fatalf("the terminal task was not archived: found=%v err=%v", archived.Found, err)
 	}
 	resumable, err := controller.ListResumable()
 	if err != nil {

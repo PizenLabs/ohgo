@@ -2,12 +2,15 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/control/cognition"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 )
 
 // Task state values the task domain projects. They are duplicated here as
@@ -55,6 +58,15 @@ type TaskProjection struct {
 	// the status check prevents a premature or stale value from claiming a
 	// finish.
 	Recap string
+	// ObjectiveState projects whether the objective is actually proven. It is
+	// empty for a layer that does not report it.
+	ObjectiveState string
+	// Recovery classifies the last load when it could not restore everything.
+	// Empty means the checkpoint was intact.
+	Recovery string
+	// Warning reports a continuity warning that did not prevent recovery, such
+	// as a bounded log refusing a new record. It is diagnostic, never status.
+	Warning string
 }
 
 // TaskResume is the durable state a new prompt must be checked against.
@@ -68,9 +80,99 @@ type TaskResume struct {
 	Status       string
 	Objective    string
 	ReviewReason string
-	Contract     contract.IntentContract
-	HasContract  bool
-	Snapshot     *agent.TargetSnapshot
+	// Role is the execution role the task last ran under. It is continuity
+	// metadata, never authority: the turn gate uses it to tell a role change
+	// on the same objective from a genuinely new request.
+	Role string
+	// HandoffStatus and HandoffTo describe an approved transition awaiting its
+	// turn boundary. An approved handoff is the human's explicit continuation
+	// decision for this task, so the next turn attaches without re-asking for
+	// a phrase. They are continuity metadata, never authority.
+	HandoffStatus   string
+	HandoffTo       string
+	HandoffConsumed bool
+	Contract        contract.IntentContract
+	HasContract     bool
+	Snapshot        *agent.TargetSnapshot
+	// ObjectiveState is the truthful completion projection (PROVEN,
+	// NEEDS_REVIEW, BLOCKED, ...). It is read-only.
+	ObjectiveState string
+	// CompletionSummary explains the objective state in observed terms.
+	CompletionSummary string
+	// RecoveryState and RecoveryDetail classify what the last load restored.
+	// They are empty when the checkpoint was intact.
+	RecoveryState  string
+	RecoveryDetail string
+	// Warning is a continuity warning that did not block recovery.
+	Warning string
+}
+
+// TimelineView is the UI projection of one durable task event.
+type TimelineView struct {
+	Seq     int
+	At      time.Time
+	Kind    string
+	Role    string
+	Status  string
+	Summary string
+	Refs    []string
+}
+
+// LineageView is the UI projection of one conclusion or observation.
+type LineageView struct {
+	Kind           string
+	ID             string
+	Stage          string
+	Status         string
+	Role           string
+	Text           string
+	Note           string
+	Artifact       string
+	EvidenceIDs    []string
+	Contradictions []string
+	Missing        []string
+}
+
+// CompletionEvidence is the host's evaluated completion decision.
+type CompletionEvidence struct {
+	// Complete is the evaluator's verdict.
+	Complete bool
+	// Reason explains a review verdict.
+	Reason string
+	// Answered reports a non-empty answer for an informational objective.
+	Answered bool
+}
+
+// HandoffView is the UI projection of one durable role transition.
+//
+// It is descriptive, never authority: the counts come from the task record and
+// the status is the record's own disposition. The program never derives a role
+// or a capability from it.
+type HandoffView struct {
+	// ID is the durable handoff identity. Empty means a preview that has not
+	// been recorded yet.
+	ID string
+	// From and To are workspace labels, e.g. "FUZZ" and "BUILD".
+	From string
+	To   string
+	// Status is the durable lifecycle position (PROPOSED, APPLIED, ...).
+	Status string
+	// Objective is the task objective the transition preserves.
+	Objective string
+	// Reason explains why the transition is needed.
+	Reason string
+	// Summary is the concise description the target role will see.
+	Summary string
+	// Workspace is the measured workspace state at proposal time, or "" when
+	// the host could not measure it.
+	Workspace string
+	// Carried is the number of shared records the transition references.
+	Facts       int
+	Hypotheses  int
+	Questions   int
+	Evidence    int
+	Artifacts   int
+	Constraints int
 }
 
 // TaskHooks wire the durable task continuity layer into the program.
@@ -95,6 +197,10 @@ type TaskHooks struct {
 	NeedsReview func(reason string) TaskProjection
 	// Complete records a successful end and returns the projection.
 	Complete func() TaskProjection
+	// CompleteWithEvidence records a successful end only when the durable
+	// task carries the observations the objective requires. It is the Phase 3
+	// completion path; Complete remains for hosts that predate proofs.
+	CompleteWithEvidence func(CompletionEvidence) TaskProjection
 	// Fail records an execution failure and returns the projection.
 	Fail func(reason string) TaskProjection
 	// Cancel closes the task as deliberately abandoned. It never claims the
@@ -112,6 +218,9 @@ type TaskHooks struct {
 	// ListResumable returns every resumable durable task, oldest first. Empty
 	// when no layer is installed or nothing is resumable.
 	ListResumable func() []TaskResume
+	// ListArchived returns every archived task, oldest first, including
+	// terminal history. It is read-only: listing never resumes or mutates.
+	ListArchived func() []TaskResume
 	// ResumeTask attaches one resumable task to the current session by ID, or
 	// the latest when id is empty. It restores durable state and moves the
 	// task to RUNNING.
@@ -119,8 +228,31 @@ type TaskHooks struct {
 	// CancelResumable closes one resumable task by ID, or the latest when id
 	// is empty. It never claims completion and the task stops being resumable.
 	CancelResumable func(id string) TaskProjection
+	// PreviewHandoff describes the transition that would be recorded for a
+	// target role, without creating it. It is used to show what will be
+	// carried before the human approves. Nil disables the preview, not the
+	// transition.
+	PreviewHandoff func(target workspace.Workspace) (HandoffView, error)
+	// ProposeHandoff records a pending transition without moving authority.
+	ProposeHandoff func(target workspace.Workspace, reason, summary, workspaceState string) (HandoffView, error)
+	// ApproveHandoff records the human's authorization before the host moves
+	// authority. It does not move authority itself.
+	ApproveHandoff func(id string) (HandoffView, error)
+	// FailHandoff records that an approved transition could not be applied.
+	// It never changes the recorded role.
+	FailHandoff func(id, reason string) error
 	// Context returns deterministic orientation blocks for the current task.
 	Context func() []string
+	// ObserveTurns folds a completed run's tool outcomes into the durable
+	// evidence state. It is called at the turn boundary so an interrupted or
+	// final run is observed even if no later projection request ran.
+	ObserveTurns func([]agent.Turn)
+	// HasCurrentChange reports whether the active task already carries a
+	// current observed change. The turn evaluator uses it to let a resumed
+	// verification-only turn reach the durable completion boundary instead of
+	// refusing it for observing no mutation in the current run. It is evidence
+	// metadata, never authorization, and it never completes a task by itself.
+	HasCurrentChange func() bool
 	// Evidence returns the task's durable evidence state. The projector
 	// updates it in place; the controller checkpoints it at lifecycle
 	// boundaries. Nil disables task-shaped projection.
@@ -140,6 +272,11 @@ type TaskHooks struct {
 	// RecordBudget folds a finished run's consumption into the durable task
 	// ledger. It does not reset the in-memory grant.
 	RecordBudget func(snapshot budget.Snapshot)
+	// Timeline returns the durable task events, newest last, bounded by limit.
+	Timeline func(limit int) []TimelineView
+	// Lineage returns one record and its related records, or every record when
+	// id is empty. It is read-only.
+	Lineage func(id string) (LineageView, []LineageView, bool)
 }
 
 // TaskProjected publishes a task projection into the transcript.
@@ -214,18 +351,97 @@ func (p *Program) taskCommand(args []string) {
 		}
 		p.state.Apply(Notice{Text: sb.String()})
 		return
+	case "history":
+		if p.task.ListArchived == nil {
+			p.state.Apply(Notice{Text: "task history is unavailable"})
+			return
+		}
+		archived := p.task.ListArchived()
+		var terminal []TaskResume
+		for _, r := range archived {
+			if taskStatusTerminal(r.Status) {
+				terminal = append(terminal, r)
+			}
+		}
+		if len(terminal) == 0 {
+			p.state.Apply(Notice{Text: "no completed task history"})
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("task history (newest last):")
+		for i := len(terminal) - 1; i >= 0; i-- {
+			r := terminal[i]
+			fmt.Fprintf(&sb, "\n  %s %s: %s", r.Status, shortTaskID(r.ID), r.Objective)
+			if state := strings.TrimSpace(r.ObjectiveState); state != "" {
+				sb.WriteString(" (" + state + ")")
+			}
+		}
+		p.state.Apply(Notice{Text: sb.String()})
+		return
 	case "show":
 		target := strings.Join(rest, " ")
 		resume, ok := p.selectTask(target)
 		if !ok {
 			return
 		}
-		text := "task " + resume.Status + ": " + resume.Objective
-		if resume.ReviewReason != "" {
-			text += "\nneeds review: " + resume.ReviewReason
+		p.state.Apply(Notice{Text: taskStatusText(resume, true)})
+		return
+	case "timeline":
+		if p.task.Timeline == nil {
+			p.state.Apply(Notice{Text: "task timeline is unavailable"})
+			return
 		}
-		text += "\nid: " + resume.ID
-		p.state.Apply(Notice{Text: text})
+		limit := 20
+		if len(rest) > 0 {
+			if parsed, err := parsePositiveInt(rest[0]); err == nil {
+				limit = parsed
+			}
+		}
+		if limit > 100 {
+			limit = 100
+		}
+		events := p.task.Timeline(limit)
+		if len(events) == 0 {
+			p.state.Apply(Notice{Text: "no task events recorded"})
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("task timeline (newest last):")
+		for _, event := range events {
+			sb.WriteString("\n")
+			sb.WriteString(formatTimelineEvent(event))
+		}
+		p.state.Apply(Notice{Text: sb.String()})
+		return
+	case "lineage", "trace", "evidence":
+		if p.task.Lineage == nil {
+			p.state.Apply(Notice{Text: "task lineage is unavailable"})
+			return
+		}
+		target := strings.Join(rest, " ")
+		focus, related, ok := p.task.Lineage(target)
+		if !ok {
+			if target == "" {
+				p.state.Apply(Notice{Text: "no conclusions or observations recorded"})
+			} else {
+				p.state.Apply(Notice{Text: "no task record matches " + target})
+			}
+			return
+		}
+		var sb strings.Builder
+		if focus.ID != "" {
+			sb.WriteString(formatLineageEntry(focus))
+			if len(related) > 0 {
+				sb.WriteString("\nrelated:")
+			}
+		} else {
+			sb.WriteString("task lineage:")
+		}
+		for _, entry := range related {
+			sb.WriteString("\n")
+			sb.WriteString(formatLineageEntry(entry))
+		}
+		p.state.Apply(Notice{Text: sb.String()})
 		return
 	case "resume":
 		if p.task.ResumeTask == nil {
@@ -304,11 +520,7 @@ func (p *Program) taskCommand(args []string) {
 			p.state.Apply(Notice{Text: "no task is active"})
 			return
 		}
-		text := "task " + current.Status + ": " + current.Objective
-		if current.ReviewReason != "" {
-			text += "\nneeds review: " + current.ReviewReason
-		}
-		p.state.Apply(Notice{Text: text})
+		p.state.Apply(Notice{Text: taskStatusText(current, false)})
 		return
 	case "accept":
 		current, ok := p.task.Current()
@@ -328,8 +540,119 @@ func (p *Program) taskCommand(args []string) {
 		p.state.Apply(Notice{Text: "review closed without completion; the next prompt starts a new task"})
 		return
 	default:
-		p.state.Apply(Notice{Text: "usage: /task [status|list|show [id]|resume [id]|cancel [id]|accept]"})
+		p.state.Apply(Notice{Text: "usage: /task [status|list|history|show [id]|timeline [n]|lineage [id]|resume [id]|cancel [id]|accept]"})
 	}
+}
+
+// taskStatusText renders the read-only status view. It names the objective
+// state and the recovery classification only when they add information the
+// lifecycle status does not already carry.
+func taskStatusText(task TaskResume, includeID bool) string {
+	var sb strings.Builder
+	sb.WriteString("task ")
+	sb.WriteString(task.Status)
+	if task.ObjectiveState != "" && task.ObjectiveState != "ACTIVE" {
+		sb.WriteString(" · ")
+		sb.WriteString(strings.ToUpper(task.ObjectiveState))
+	}
+	sb.WriteString(": ")
+	sb.WriteString(task.Objective)
+	if task.ReviewReason != "" {
+		sb.WriteString("\nneeds review: ")
+		sb.WriteString(task.ReviewReason)
+	}
+	if task.CompletionSummary != "" {
+		switch task.ObjectiveState {
+		case "PROVEN", "COMPLETED_UNPROVEN", "BLOCKED":
+			sb.WriteString("\n")
+			sb.WriteString(task.CompletionSummary)
+		}
+	}
+	if task.RecoveryState != "" && task.RecoveryState != "INTACT" {
+		sb.WriteString("\nrecovery: ")
+		sb.WriteString(task.RecoveryState)
+		if task.RecoveryDetail != "" {
+			sb.WriteString(" — ")
+			sb.WriteString(task.RecoveryDetail)
+		}
+	}
+	if task.Warning != "" {
+		sb.WriteString("\ncontinuity: ")
+		sb.WriteString(task.Warning)
+	}
+	if includeID {
+		sb.WriteString("\nid: ")
+		sb.WriteString(task.ID)
+	}
+	return sb.String()
+}
+
+// formatTimelineEvent renders one durable event without its payload.
+func formatTimelineEvent(event TimelineView) string {
+	when := ""
+	if !event.At.IsZero() {
+		when = event.At.Local().Format("15:04:05") + " "
+	}
+	role := ""
+	if event.Role != "" {
+		role = event.Role + " "
+	}
+	status := ""
+	if event.Status != "" {
+		status = " [" + event.Status + "]"
+	}
+	refs := ""
+	if len(event.Refs) > 0 {
+		refs = " (" + strings.Join(event.Refs, ",") + ")"
+	}
+	return fmt.Sprintf("  %d %s%s%s%s: %s%s", event.Seq, when, role, event.Kind, status, event.Summary, refs)
+}
+
+// formatLineageEntry renders one conclusion or observation with its stage.
+func formatLineageEntry(entry LineageView) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "  %s#%s [%s/%s]", entry.Kind, entry.ID, entry.Stage, entry.Status)
+	if entry.Role != "" {
+		sb.WriteString(" ")
+		sb.WriteString(entry.Role)
+	}
+	if entry.Text != "" {
+		sb.WriteString(": ")
+		sb.WriteString(entry.Text)
+	}
+	if len(entry.EvidenceIDs) > 0 {
+		sb.WriteString(" evidence:")
+		sb.WriteString(strings.Join(entry.EvidenceIDs, ","))
+	}
+	if entry.Artifact != "" {
+		sb.WriteString(" artifact:")
+		sb.WriteString(entry.Artifact)
+	}
+	if len(entry.Contradictions) > 0 {
+		sb.WriteString(" contradicts:")
+		sb.WriteString(strings.Join(entry.Contradictions, ","))
+	}
+	if len(entry.Missing) > 0 {
+		sb.WriteString(" missing:")
+		sb.WriteString(strings.Join(entry.Missing, ","))
+	}
+	if entry.Note != "" {
+		sb.WriteString(" — ")
+		sb.WriteString(entry.Note)
+	}
+	return sb.String()
+}
+
+// parsePositiveInt parses a bounded positive integer argument.
+func parsePositiveInt(text string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil {
+		return 0, err
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("not a positive integer")
+	}
+	return n, nil
 }
 
 // selectTask locates one task for /task show by ID, objective substring, or
@@ -348,26 +671,48 @@ func (p *Program) selectTask(query string) (TaskResume, bool) {
 		p.state.Apply(Notice{Text: "no task is active"})
 		return TaskResume{}, false
 	}
-	resumable := p.task.ListResumable()
-	if len(resumable) == 0 {
-		p.state.Apply(Notice{Text: "no task is active"})
-		return TaskResume{}, false
+	// Resumable work is the common case. Only read the archive when the query
+	// does not resolve there, so an ordinary /task show never scans history.
+	if match, ok := matchTaskResume(p.task.ListResumable(), query); ok {
+		return match, true
+	}
+	if p.task.ListArchived != nil {
+		// Terminal work is archived, not resumable, but it remains inspectable.
+		// Searching history here keeps /task show truthful for completed tasks.
+		if match, ok := matchTaskResume(p.task.ListArchived(), query); ok {
+			return match, true
+		}
 	}
 	if query == "" {
-		return resumable[len(resumable)-1], true
+		p.state.Apply(Notice{Text: "no task is active"})
+	} else {
+		p.state.Apply(Notice{Text: "no task matches " + query})
 	}
-	for _, r := range resumable {
+	return TaskResume{}, false
+}
+
+// matchTaskResume finds one task by exact/prefix ID, then objective substring.
+// An empty query selects the newest candidate. It is a pure projection helper:
+// it never mutates a task or changes which task is active.
+func matchTaskResume(candidates []TaskResume, query string) (TaskResume, bool) {
+	if len(candidates) == 0 {
+		return TaskResume{}, false
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return candidates[len(candidates)-1], true
+	}
+	for _, r := range candidates {
 		if strings.EqualFold(r.ID, query) || strings.HasPrefix(strings.ToLower(r.ID), strings.ToLower(query)) {
 			return r, true
 		}
 	}
 	lowered := strings.ToLower(query)
-	for _, r := range resumable {
+	for _, r := range candidates {
 		if strings.Contains(strings.ToLower(r.Objective), lowered) {
 			return r, true
 		}
 	}
-	p.state.Apply(Notice{Text: "no resumable task matches " + query})
 	return TaskResume{}, false
 }
 
@@ -458,6 +803,66 @@ func taskStatusTerminal(status string) bool {
 	default:
 		return false
 	}
+}
+
+// objectiveContinuation reports whether this turn repeats the open task's own
+// objective with the same completion contract.
+//
+// An exact repeat is another turn on the work already in flight, not a second
+// task: detaching would silently split the evidence, timeline, and proof across
+// two identities. The rule is deliberately narrower than semantic similarity —
+// only the same normalized objective and the same contract kind continue.
+// Anything else still starts a new task.
+func objectiveContinuation(current TaskResume, next contract.IntentContract) bool {
+	if !current.HasContract {
+		return false
+	}
+	persisted := strings.TrimSpace(current.Contract.Objective)
+	requested := strings.TrimSpace(next.Objective)
+	if persisted == "" || !strings.EqualFold(persisted, requested) {
+		return false
+	}
+	return current.Contract.Kind == next.Kind
+}
+
+// roleContinuation reports whether this turn continues the current task
+// because the execution role changed while the objective did not.
+//
+// Prompt phrasing alone is not identity: a user who switches from BUILD to
+// FUZZ and repeats the same objective is continuing one task, not starting a
+// second one. A different objective still starts a new task, and an unchanged
+// role still requires an explicit continuation prompt, so neither unrelated
+// prompts nor repeated work attach themselves to the old task.
+func roleContinuation(current TaskResume, next contract.IntentContract, active string) bool {
+	if !current.HasContract || current.Role == "" || active == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(current.Role), strings.TrimSpace(active)) {
+		return false
+	}
+	persisted := strings.TrimSpace(current.Contract.Objective)
+	requested := strings.TrimSpace(next.Objective)
+	return persisted != "" && persisted == requested
+}
+
+// handoffContinuation reports whether an approved handoff is the explicit
+// continuation decision for this turn.
+//
+// The human approved moving this task to exactly the live role, so the next
+// prompt is the work that follows the handoff, not a new objective. After the
+// handoff is applied this is false again: later turns use the ordinary
+// continuation policy, so the approval does not make every future prompt
+// attach to the task.
+func handoffContinuation(current TaskResume, active string) bool {
+	// APPROVED is a proposal awaiting its turn boundary. APPLIED but not
+	// consumed is an explicit workspace command awaiting its next turn. Either
+	// one is the human's continuation decision for exactly this task.
+	pending := current.HandoffStatus == "APPROVED" ||
+		(current.HandoffStatus == "APPLIED" && !current.HandoffConsumed)
+	if !pending || current.HandoffTo == "" || active == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(current.HandoffTo), strings.TrimSpace(active))
 }
 
 // continuationPrompt recognizes a deliberate continuation of the open task.
@@ -551,6 +956,9 @@ func taskLines(projection *TaskProjection, pal *Palette, layout Layout) []string
 	if projection.Status != "" {
 		header += "  " + strings.ToLower(projection.Status)
 	}
+	if state := strings.ToUpper(strings.TrimSpace(projection.ObjectiveState)); state == "PROVEN" || state == "COMPLETED_UNPROVEN" {
+		header += "  · " + strings.ToLower(state)
+	}
 	lines := []string{pal.Notice.Render(fit(header))}
 
 	if len(projection.Items) == 0 {
@@ -574,6 +982,12 @@ func taskLines(projection *TaskProjection, pal *Palette, layout Layout) []string
 	}
 	if projection.Err != "" {
 		lines = append(lines, pal.ToolError.Render(fit("  ! "+projection.Err)))
+	}
+	if recovery := strings.TrimSpace(projection.Recovery); recovery != "" {
+		lines = append(lines, pal.Status.Render(fit("  recovery: "+recovery)))
+	}
+	if warning := strings.TrimSpace(projection.Warning); warning != "" {
+		lines = append(lines, pal.Status.Render(fit("  ! "+warning)))
 	}
 	return lines
 }

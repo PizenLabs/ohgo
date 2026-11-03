@@ -26,6 +26,13 @@ func RenderMarkdown(t Task) string {
 	}
 	fmt.Fprintf(&sb, "## Status\n\n%s\n\n", status)
 
+	if state := t.ObjectiveState(); state == ObjectiveProven || state == ObjectiveCompletedUnproven || state == ObjectiveBlocked {
+		fmt.Fprintf(&sb, "## Objective State\n\n%s\n\n", state)
+		if summary := strings.TrimSpace(t.CompletionSummary()); summary != "" {
+			fmt.Fprintf(&sb, "%s\n\n", sanitizeLine(summary))
+		}
+	}
+
 	sb.WriteString("## Objective\n\n")
 	if obj := strings.TrimSpace(t.Objective); obj != "" {
 		sb.WriteString(obj + "\n\n")

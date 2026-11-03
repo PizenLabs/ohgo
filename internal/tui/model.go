@@ -301,6 +301,11 @@ type TransitionPrompt struct {
 	Question string
 	// Reason is the one-line explanation under the heading.
 	Reason string
+	// Kind names the decision, e.g. "handoff".
+	Kind string
+	// Handoff carries the transition's carried-context and workspace facts for
+	// the handoff kind. Nil for an ordinary narrowing transition.
+	Handoff *HandoffView
 	// Selection is the highlighted choice: 0 keeps the current workspace
 	// (the conservative default), 1 accepts the proposed one.
 	Selection int
@@ -1093,6 +1098,8 @@ func (s *State) Apply(event Event) {
 			Strength:       e.Strength,
 			Question:       e.Question,
 			Reason:         e.Reason,
+			Kind:           e.Kind,
+			Handoff:        e.Handoff,
 			Selection:      0,
 		}
 
@@ -2751,6 +2758,10 @@ type TransitionProposed struct {
 	Question string
 	// Reason is the one-line explanation under the heading.
 	Reason string
+	// Kind names the decision, e.g. "handoff".
+	Kind string
+	// Handoff carries the transition's carried-context and workspace facts.
+	Handoff *HandoffView
 }
 
 func (TransitionProposed) eventKind() string { return "transition_proposed" }
