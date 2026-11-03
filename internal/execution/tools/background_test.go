@@ -182,27 +182,51 @@ func TestBackgroundOutputCollectedViaWait(t *testing.T) {
 }
 
 // TestWaitIsIncremental keeps repeated waits from refilling the context with
-// the same build log: the second wait must not repeat the first.
+// the same build log. The two echo lines are separate writes, so a wait may
+// legitimately see only the first before the second exists; each line must be
+// delivered once, never twice, and once the job is drained a further wait
+// adds nothing and is marked elidable.
 func TestWaitIsIncremental(t *testing.T) {
 	bash, wait := spawnPair(t.TempDir())
 
 	if spawned := bash.Execute(bgCtx(), bgArgs("echo one && echo two")); spawned.IsError {
 		t.Fatalf("spawn: %s", spawned.Text)
 	}
-	first := wait.Execute(bgCtx(), map[string]any{"jobId": "job-1", "timeout": float64(10000)})
-	if first.IsError {
-		t.Fatalf("first wait: %s", first.Text)
+
+	seen := map[string]bool{}
+	finished := false
+	for attempt := 1; attempt <= 10 && !finished; attempt++ {
+		result := wait.Execute(bgCtx(), map[string]any{"jobId": "job-1", "timeout": float64(10000)})
+		if result.IsError {
+			t.Fatalf("wait %d: %s", attempt, result.Text)
+		}
+		for _, line := range []string{"one", "two"} {
+			if !strings.Contains(result.Text, line) {
+				continue
+			}
+			if seen[line] {
+				t.Fatalf("wait %d repeated %q: %q", attempt, line, result.Text)
+			}
+			seen[line] = true
+		}
+		finished = result.Finished
+	}
+	if !finished {
+		t.Fatalf("job did not finish within %d waits", 10)
+	}
+	if !seen["one"] || !seen["two"] {
+		t.Fatalf("delivered output = %v, want both lines", seen)
 	}
 
-	second := wait.Execute(bgCtx(), map[string]any{"jobId": "job-1", "timeout": float64(2000)})
-	if second.IsError {
-		t.Fatalf("second wait: %s", second.Text)
+	final := wait.Execute(bgCtx(), map[string]any{"jobId": "job-1", "timeout": float64(2000)})
+	if final.IsError {
+		t.Fatalf("final wait: %s", final.Text)
 	}
-	if strings.Contains(second.Text, "one") || strings.Contains(second.Text, "two") {
-		t.Errorf("second wait = %q, want no repeated output", second.Text)
+	if strings.Contains(final.Text, "one") || strings.Contains(final.Text, "two") {
+		t.Errorf("final wait = %q, want no repeated output", final.Text)
 	}
-	if !second.Useless {
-		t.Errorf("second wait = %q, want it marked elidable: it adds nothing to context", second.Text)
+	if !final.Useless {
+		t.Errorf("final wait = %q, want it marked elidable: it adds nothing to context", final.Text)
 	}
 }
 
