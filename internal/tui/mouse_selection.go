@@ -194,10 +194,10 @@ func (p *Program) positionAt(x, y int, clamp bool) (Position, bool) {
 // landed on something expandable.
 func (p *Program) toggleBlockAt(pos Position) bool {
 	index := p.state.BlockIndex(pos.BlockID)
-	if index < 0 || p.state.Entries[index].Kind != EntryTool || p.state.Entries[index].Tool == nil {
+	if index < 0 || !entryExpandable(p.state.Entries[index]) {
 		return false
 	}
-	expanded := p.state.Entries[index].Tool.Expanded
+	expanded := entryExpanded(p.state.Entries[index])
 	if !p.state.ToggleBlock(pos.BlockID) {
 		return false
 	}

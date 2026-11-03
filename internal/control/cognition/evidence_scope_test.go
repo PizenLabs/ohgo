@@ -57,6 +57,45 @@ func TestRepositoryBehaviourQuestionRequiresAnObservation(t *testing.T) {
 	}
 }
 
+// A single file is partial evidence. "I found the README" is not an overview of
+// the project, so the runtime must not conclude that it can answer yet.
+func TestSingleFileIsPartialRepositoryOverview(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "check this project and analyze what this project is about?",
+	}, ShapeParams{Authority: "ask"})
+	if !requirementKeys(shape.RequiredKnowledge)["repository_overview"] {
+		t.Fatalf("required knowledge = %+v, want repository_overview", shape.RequiredKnowledge)
+	}
+
+	evidence := NewEvidenceState()
+	evidence.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-1", ToolName: "read", Args: map[string]any{"path": "README.md"},
+		Result: agent.Result{
+			Text: "1\t# ohgo", Details: map[string]any{
+				"path": "README.md", "totalLines": 1, "offset": 1, "limit": 2000,
+			},
+		},
+	})
+	if suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false); suff.State != Insufficient || suff.Stage != StageExplore {
+		t.Fatalf("one file: sufficiency = %s/%s, want INSUFFICIENT/explore", suff.State, suff.Stage)
+	}
+
+	// A second content observation (the module manifest) establishes the
+	// project's stack as well as its purpose.
+	evidence.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-2", ToolName: "read", Args: map[string]any{"path": "go.mod"},
+		Result: agent.Result{
+			Text: "1\tmodule example.com/ohgo", Details: map[string]any{
+				"path": "go.mod", "totalLines": 1, "offset": 1, "limit": 2000,
+			},
+		},
+	})
+	if suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false); suff.State != Sufficient || suff.Stage != StageAnswer {
+		t.Fatalf("two observations: sufficiency = %s/%s, want SUFFICIENT/answer", suff.State, suff.Stage)
+	}
+}
+
 // The repository requirement is not a blanket tax on questions. A general
 // knowledge question has no repository coordinate to establish and completes
 // with an answer.

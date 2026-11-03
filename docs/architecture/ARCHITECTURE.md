@@ -82,15 +82,15 @@ an explicit transition table (`workspace.RouteTurn`). The `authorityGate` in
 `cmd/ohgo` is the single live authority that both the loop's admission hook
 and any subagent read at call time:
 
-- BUILD and FUZZ answer an informational READ turn with ASK semantics for that
-  turn only. The active workspace is unchanged, and the turn is projected
-  truthfully as `BUILD · ASK / READ` in the composer prefix for the turn's
-  duration, then cleared. The UI never represents delegation as a workspace
-  switch.
-- ASK + EXECUTE or ASK + INVESTIGATE is refused before the model is called;
-  the user must switch workspace explicitly.
-- FUZZ + EXECUTE is refused likewise: a discovered defect is never BUILD
-  authority.
+- BUILD + READ and FUZZ + READ are refused before the model is called; the
+  route names the ASK authority the request needs. The interactive UI offers
+  the narrowing transition (`ProposeTransition`), and only the human's accepted
+  switch moves the gate. The headless paths print the same requirement instead
+  of switching silently. The active workspace is never inferred from the
+  request.
+- ASK + EXECUTE or ASK + INVESTIGATE is refused likewise; the user must switch
+  workspace explicitly.
+- FUZZ + EXECUTE is refused: a discovered defect is never BUILD authority.
 - Delegation may only narrow authority. Removing or changing the mode prompt
   does not widen it — the gate denies the call regardless.
 
@@ -179,14 +179,26 @@ Recognition is an incremental, bounded state machine:
   provider representation is a new descriptor there, never a TUI or execution
   change and never a model-id branch.
 - A complete envelope is consumed only when its payload parses into canonical
-  tool calls. Malformed, incomplete, oversized, duplicate, or otherwise
-  ambiguous envelopes are returned as ordinary text with a diagnostic; nothing
-  is silently discarded and no call is fabricated.
+  tool calls. A recognized envelope that is malformed, incomplete, oversized,
+  duplicate, or otherwise ambiguous becomes a bounded diagnostic record, never
+  assistant prose: the provider's serialization is not persisted as an answer
+  and no call is fabricated. The message is marked as protocol residue, so
+  completion reports `NEEDS_REVIEW` instead of success.
+- The registry recognizes the provider's observed spellings
+  (`<dotsfunctioncall>`, `<dots_function_call>`, and their mixed closing
+  markers) as one protocol family. A new spelling is a descriptor there, never
+  a TUI or execution change.
 - Text/tool ordering is preserved, including multiple and interleaved calls.
 
 The TUI receives only canonical assistant text and tool events. It does not
 parse protocol markers, and `internal/architecture` fails the build if provider
 tool syntax appears in production presentation code.
+
+Reasoning is a distinct canonical channel, not prose the renderer mines for a
+marker. `EventThinkingDelta` reaches the runtime through its own hook
+(`ai.DrainStreamHooks`), becomes its own presentation block, and is collapsed
+by default. The completed `AssistantMessage` keeps the same thinking block, so
+a resumed transcript renders it without re-parsing provider output.
 
 ## Completion, task state, and exit status
 
@@ -318,7 +330,12 @@ work they were entitled to keep.
 
 The session store keeps the **agent view** of the transcript, not the wire
 shape, so a later run with a different model is not fed host-specific
-extensions. UI-only messages are dropped at write time. Writes use one
+extensions. An assistant turn's content is persisted as **ordered blocks**
+(text, thinking, tool call) rather than a flattened text-plus-calls pair: the
+order is what makes a resumed transcript render the same sequence the live
+turn did, and reasoning survives the round trip. Legacy rows without ordered
+blocks still replay through their stored text and calls. UI-only messages are
+dropped at write time. Writes use one
 connection and one transaction per append (WAL on), which is what keeps
 `modernc.org/sqlite` from reporting "database is locked" under its default
 pool. A store that will not open degrades to running without persistence;
@@ -436,8 +453,12 @@ approval, shutting down) are computed per render, never stored.
   `Commands` registry inline — never a second catalog.
 - `internal/tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,
   prompt history with draft preservation.
-- `internal/tui/entries.go`: transcript entries rebuilt from replayed messages (tool
-  cards from stored calls, orphans kept, UI-only skipped).
+- `internal/tui/entries.go`: transcript entries rebuilt from replayed messages in
+  canonical content order (text, reasoning, tool cards), with tool results
+  paired by call id, orphans kept, and UI-only messages skipped. Stored
+  assistant content is re-canonicalized here, at the history boundary, so a
+  session written before stream normalization cannot leak provider protocol
+  into the viewport; the renderer never sees that syntax.
 - `internal/tui/markdown.go`: dependency-free chat prose (fences, code, headings with
   hierarchy, nested/ordered lists, quotes, rules, links, tables with
   terminal-width-aware columns and a stacked narrow fallback). One wrap
@@ -460,17 +481,37 @@ approval, shutting down) are computed per render, never stored.
   override it; anything unrecognised degrades to `select` so a typo never costs
   drag-copy. `select` leaves drag-copy with the terminal; `report` activates the
   application-owned hit-test, expansion, and logical selection path. Both modes
-  are bracketed on entry and restored on every exit path.
+  are bracketed on entry and restored on every exit path. Bubble Tea decodes a
+  whole SGR report, but a report split across reads can degrade to an esc plus
+  a printable `[<Cb;Cx;CyM` tail, to an `Alt+[` followed by the remainder, or to
+  several reports concatenated into one rune batch; `terminal_input.go` is an
+  explicit `Normal → Escape → CSI → SGRMouse → Complete` recogniser at the input
+  boundary. It consumes any number of reports, retains a partial one until its
+  terminator arrives, and never returns protocol bytes as composer text. A lone
+  ESC is deferred for one frame while reporting is on so a fragmented report can
+  claim it; a real Escape still dispatches through the semantic key path.
 - `internal/tui/document.go`: the canonical transcript block model. `Entry` is the
   domain block; `BlockID` is allocated when a block enters the document and is
-  never derived from a screen row. `BlockCopyText` projects logical content,
-  stripping SGR/OSC and padding. Expansion goes through the same
-  presentation-only transition as Ctrl+O.
+  never derived from a screen row. Tools and reasoning share the same
+  presentation-only expansion transition, selected by Ctrl+O or a click.
+  `BlockCopyText` projects logical content, stripping SGR/OSC and padding.
 - `internal/tui/transcript_layout.go`: the geometry authority. Each block is projected
   once per revision and width into cached visual rows; a Fenwick tree maps
   document rows to blocks in O(log n). Width/theme/tier changes reflow all
   blocks; streaming and expansion render only the dirty block. Regex never
   determines row count, wrapping, or hit-testing.
+- Frame coalescing: one `Update` applies the event it received and every event
+  already queued before the renderer paints, so a burst of stream deltas, tool
+  progress, and metrics becomes one state transition and one layout pass. Bubble
+  Tea's renderer then paints at its own 60 Hz cadence from the latest `View`, so
+  runtime event rate and presentation frame rate are independent. The bound only
+  prevents one producer from monopolising a frame; no event is dropped and the
+  next event resumes the same path.
+- Activity grouping: adjacent tool blocks render as one compact action stream.
+  Only the last call in the run keeps the separator row; earlier calls stay
+  click-expandable but no longer read as independent cards. The activity line
+  carries the persistent workspace authority (`ASK`, `BUILD`, `FUZZ`) alongside
+  the current phase and the argument-derived action detail.
 - `internal/tui/viewport.go`: explicit FOLLOWING/DETACHED state. Detached mode anchors on
   `(BlockID, row)`, so appended output, expansion above the window, and resize
   preserve the reading position. The marker consumes a row and `MaxOffset` is

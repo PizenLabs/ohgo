@@ -39,6 +39,29 @@ func TestReadToolNumbersLinesAndPagesWithOffset(t *testing.T) {
 	}
 }
 
+// Tool evidence is repository-scoped. A model may name an absolute path, but
+// the Details metadata must stay relative or the runtime cannot attribute the
+// observation to the workspace and completion cannot see that it happened.
+func TestReadToolReportsRepositoryRelativePathForAbsoluteArgument(t *testing.T) {
+	root := t.TempDir()
+	absolute := filepath.Join(root, "README.md")
+	if err := os.WriteFile(absolute, []byte("# project\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := NewReadTool(root).Execute(testContext(), map[string]any{"path": absolute})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Text)
+	}
+	details, ok := result.Details.(map[string]any)
+	if !ok {
+		t.Fatalf("Details = %T, want map[string]any", result.Details)
+	}
+	if got := details["path"]; got != "README.md" {
+		t.Fatalf("details path = %#v, want repository-relative %q", got, "README.md")
+	}
+}
+
 func TestReadToolRejectsOffsetPastEnd(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("one\ntwo\n"), 0o644); err != nil {
@@ -74,8 +97,12 @@ func TestReadToolReportsDirectoryAndMissingFile(t *testing.T) {
 	if !strings.Contains(result.Text, "a.go") {
 		t.Errorf("directory error should list entries, got %q", result.Text)
 	}
-	if result := tool.Execute(testContext(), map[string]any{"path": "missing.go"}); !result.IsError {
+	missing := tool.Execute(testContext(), map[string]any{"path": "missing.go"})
+	if !missing.IsError {
 		t.Error("expected a missing file to be rejected")
+	}
+	if !missing.ObservedAbsence {
+		t.Error("a missing file is an absence observation, not an unrecovered failure")
 	}
 }
 
@@ -125,6 +152,27 @@ func TestWriteToolCreatesFileAndParents(t *testing.T) {
 	}
 	if string(data) != "package main\n" {
 		t.Errorf("contents = %q, want %q", data, "package main\n")
+	}
+}
+
+// A mutation's evidence must be attributable to the same repository-relative
+// path the contract names, even when the model used an absolute path.
+func TestWriteToolReportsRepositoryRelativePathForAbsoluteArgument(t *testing.T) {
+	root := t.TempDir()
+	absolute := filepath.Join(root, "notes.md")
+
+	result := NewWriteTool(root).Execute(testContext(), map[string]any{
+		"path": absolute, "content": "hello\n",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Text)
+	}
+	details, ok := result.Details.(map[string]any)
+	if !ok {
+		t.Fatalf("Details = %T, want map[string]any", result.Details)
+	}
+	if got := details["path"]; got != "notes.md" {
+		t.Fatalf("details path = %#v, want repository-relative %q", got, "notes.md")
 	}
 }
 

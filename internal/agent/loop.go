@@ -126,6 +126,10 @@ type Config struct {
 	// generated instead of landing as one block when the turn completes.
 	// Nil disables it; transports that never token-stream never fire it.
 	OnTextDelta func(delta string)
+	// OnThinkingDelta receives reasoning deltas while a stream is still open,
+	// in order. It is separate from OnTextDelta because reasoning is a
+	// presentation block of its own, never assistant prose.
+	OnThinkingDelta func(delta string)
 	// Admit decides whether a call is permitted at all, before approval.
 	//
 	// It is the legacy runtime authority seam, superseded by Authorize. When
@@ -370,6 +374,17 @@ func (l *Loop) SetTextDeltaHook(hook func(delta string)) {
 	l.cfg.OnTextDelta = hook
 }
 
+// SetThinkingDeltaHook installs the live-reasoning reporter after
+// construction.
+//
+// It has the same construction-order and boundary contracts as
+// SetTextDeltaHook: the UI is built after the loop, and the hook must be
+// installed before Run. Reasoning stays a separate channel so no consumer has
+// to infer it from model prose.
+func (l *Loop) SetThinkingDeltaHook(hook func(delta string)) {
+	l.cfg.OnThinkingDelta = hook
+}
+
 // SetApprovalHook installs the approval gate after construction.
 //
 // A UI is the case that needs this: the loop must be built before the UI
@@ -564,6 +579,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		requestMessages := live
 		requestSystem := l.system()
 		activeTools := tools
+		answerEligible := false
 		if l.cfg.Project != nil {
 			projected := l.cfg.Project(ProjectionRequest{
 				Messages: copyMessages(live),
@@ -591,6 +607,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				requestSystem = append(append([]ai.SystemPromptBlock(nil), requestSystem...), projected.System...)
 			}
 			report := projected.Report
+			answerEligible = report.AnswerEligible
 			report.Applied = true
 			report.Turn = len(turns)
 			if emptyProjection {
@@ -684,6 +701,18 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			return turns, nil
 		}
 
+		// The runtime already holds the evidence an informational objective
+		// requires, and the model produced visible text. That text is the
+		// candidate answer; calls emitted with it are continuation after the
+		// answer. Execute none of them: an empty action surface makes each one
+		// an answer-required refusal, and the turn becomes final below. The
+		// completion evaluator, not the model's appetite for another call,
+		// decides whether the answer is proven.
+		answerStop := answerEligible && strings.TrimSpace(assistant.Text()) != ""
+		if answerStop {
+			activeByName = map[string]Tool{}
+		}
+
 		// Steering arrives only at a boundary: mid-batch injection would
 		// orphan results for calls that already ran.
 		if l.cfg.GetSteeringMessages != nil {
@@ -713,6 +742,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// still inspect exactly what happened.
 		if admissionErr != nil {
 			return turns, admissionErr
+		}
+		if answerStop {
+			return turns, nil
+		}
+		// The runtime offered no tools because the evidence lifecycle is
+		// answer-only (or the objective's proof is complete). A model that
+		// ignores the empty action surface and proposes another call executes
+		// nothing: every call was refused above. If it already produced text,
+		// that text is the answer and the turn is final. Otherwise continue so
+		// the refusal reaches the model; the finite grant, not an unbounded
+		// loop, is what bounds a model that never answers.
+		if len(activeTools) == 0 && len(calls) > 0 && strings.TrimSpace(assistant.Text()) != "" {
+			return turns, nil
 		}
 	}
 }
@@ -880,7 +922,10 @@ func (l *Loop) convert(messages []Message) ([]ai.Message, error) {
 // cannot drift on what draining a stream means: the loop's contract is still
 // the completed message.
 func (l *Loop) drain(ctx context.Context, stream *ai.Stream) (ai.AssistantMessage, error) {
-	return ai.DrainStream(ctx, stream, l.cfg.OnTextDelta)
+	return ai.DrainStreamHooks(ctx, stream, ai.DrainHooks{
+		OnText:     l.cfg.OnTextDelta,
+		OnThinking: l.cfg.OnThinkingDelta,
+	})
 }
 
 // runEdit tracks one run's optional edit transaction.
@@ -1064,6 +1109,7 @@ func (l *Loop) execute(
 						call.Name, strings.Join(sorted(names), ", ")),
 					IsError:           true,
 					CandidateRejected: true,
+					AnswerRequired:    len(byName) == 0,
 				},
 			}
 		}

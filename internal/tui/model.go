@@ -60,6 +60,9 @@ type Entry struct {
 	UserText string
 	// AssistantText is set when Kind is EntryAssistant.
 	AssistantText string
+	// Reasoning is set when Kind is EntryReasoning: the model's own thinking
+	// trace, represented as a block rather than inferred from prose.
+	Reasoning *ReasoningEntry
 	// Tool is set when Kind is EntryTool.
 	Tool *ToolEntry
 	// Shell is set when Kind is EntryShell: a "!" escape command and its
@@ -90,6 +93,11 @@ const (
 	EntryUser EntryKind = "user"
 	// EntryAssistant is text the model produced.
 	EntryAssistant EntryKind = "assistant"
+	// EntryReasoning is the model's reasoning trace. It is a real runtime
+	// block, not text the renderer guessed at: the provider's thinking channel
+	// produces it, and it is collapsed by default so it cannot dominate the
+	// transcript.
+	EntryReasoning EntryKind = "reasoning"
 	// EntryTool is a tool call and its outcome.
 	EntryTool EntryKind = "tool"
 	// EntryShell is a "!" escape command and its streamed output. It is an
@@ -111,6 +119,48 @@ const (
 	// but never persisted and never enters the model's context (§10.2, I17).
 	EntrySupport EntryKind = "support"
 )
+
+// ReasoningEntry is the live state of one reasoning trace.
+//
+// It is a presentation block over a provider thinking channel. Its lifecycle is
+// the same shape as a tool's: it opens when the first delta arrives, updates in
+// place, and ends when the runtime moves on to visible text or an action.
+type ReasoningEntry struct {
+	// Text is the reasoning content accumulated so far.
+	Text string
+	// StartedAt and EndedAt bound the trace. Zero means the runtime did not
+	// measure that instant; the renderer then shows no fabricated duration.
+	StartedAt time.Time
+	EndedAt   time.Time
+	// Closed reports the trace stopped growing. It is independent of the
+	// timestamps so a fixture with no clock still has a definite lifecycle.
+	Closed bool
+	// Expanded is presentation-only. Reasoning is collapsed by default so a
+	// long trace stays available without displacing the answer.
+	Expanded bool
+}
+
+// Duration returns how long the trace took, or zero when it is unknown.
+//
+// An open trace measures against now, because it is still running. A closed
+// trace whose end was not measured reports zero rather than growing with render
+// time.
+func (r *ReasoningEntry) Duration(now time.Time) time.Duration {
+	if r == nil || r.StartedAt.IsZero() {
+		return 0
+	}
+	end := r.EndedAt
+	if end.IsZero() {
+		if r.Closed || r.Text == "" {
+			return 0
+		}
+		end = now
+	}
+	if end.Before(r.StartedAt) {
+		return 0
+	}
+	return end.Sub(r.StartedAt)
+}
 
 // ToolEntry is the live state of one tool call.
 type ToolEntry struct {
@@ -716,6 +766,16 @@ func (s *State) Apply(event Event) {
 		s.Selection = nil
 		s.growScroll(countLines(e.Text))
 
+	case ReasoningDelta:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		if s.Cancelled {
+			return
+		}
+		s.appendReasoning(e.Text, e.At)
+		s.growScroll(strings.Count(e.Text, "\n"))
+
 	case AssistantDelta:
 		if e.Seq != 0 && e.Seq != s.TurnSeq {
 			return
@@ -723,6 +783,10 @@ func (s *State) Apply(event Event) {
 		if s.Cancelled {
 			return
 		}
+		// Visible text ends any open reasoning trace: the model has moved from
+		// thinking to answering, so the collapsed block must stop claiming to
+		// be live.
+		s.closeReasoning(e.At)
 		s.appendAssistant(e.Text)
 		s.OutputTokens = s.currentOutputTokens()
 		s.growScroll(strings.Count(e.Text, "\n"))
@@ -737,6 +801,7 @@ func (s *State) Apply(event Event) {
 		}
 		// Close the trailing assistant entry: without this the next turn would
 		// append to it and the transcript would read as one continuous answer.
+		s.closeReasoning(e.At)
 		if open := s.openAssistant(); open >= 0 {
 			s.closedAssistant = true
 		}
@@ -758,6 +823,7 @@ func (s *State) Apply(event Event) {
 		s.Cancelled = true
 		s.Status.Busy = false
 		s.Queued = nil
+		s.closeReasoning(e.At)
 		if open := s.openAssistant(); open >= 0 {
 			s.closedAssistant = true
 		}
@@ -787,6 +853,9 @@ func (s *State) Apply(event Event) {
 		if s.Cancelled {
 			return
 		}
+		// An action ends any open reasoning trace: the model stopped thinking
+		// and asked the runtime to do something.
+		s.closeReasoning(e.At)
 		// A second announcement for the same call updates nothing: an
 		// empty partial report must never open a duplicate block next to
 		// the running one.
@@ -859,6 +928,14 @@ func (s *State) Apply(event Event) {
 		// tool, mutates its result, or touches approval state.
 		if idx := s.toolIndex(e.ID); idx >= 0 {
 			s.Entries[idx].Tool.Expanded = !s.Entries[idx].Tool.Expanded
+			s.bumpEntry(idx)
+		}
+
+	case ReasoningToggled:
+		// Reasoning expansion is the same presentation-only contract as a
+		// tool body: it changes what is visible, never what ran.
+		if idx := s.BlockIndex(e.ID); idx >= 0 && s.Entries[idx].Kind == EntryReasoning && s.Entries[idx].Reasoning != nil {
+			s.Entries[idx].Reasoning.Expanded = !s.Entries[idx].Reasoning.Expanded
 			s.bumpEntry(idx)
 		}
 
@@ -2290,7 +2367,7 @@ func (s *State) appendTaskRecap() {
 // streamSettled reports whether the active turn has finished emitting: no
 // busy turn, no open assistant block, and no tool still running.
 func (s *State) streamSettled() bool {
-	return !s.Status.Busy && s.openAssistant() < 0 && !hasRunningTool(*s)
+	return !s.Status.Busy && s.openAssistant() < 0 && s.openReasoning() < 0 && !hasRunningTool(*s)
 }
 
 // tailTask returns the most recent task projection, or nil when the transcript
@@ -2312,6 +2389,63 @@ func (s *State) openAssistant() int {
 	}
 	last := len(s.Entries) - 1
 	if s.Entries[last].Kind != EntryAssistant {
+		return -1
+	}
+	return last
+}
+
+// appendReasoning extends the open reasoning entry, or starts one.
+//
+// Reasoning is appended in place while the model is thinking. A new trace
+// starts only after a non-reasoning block, so text, a tool call, and a second
+// thinking phase stay in the order the provider produced them.
+func (s *State) appendReasoning(text string, at time.Time) {
+	if text == "" {
+		return
+	}
+	if index := s.openReasoning(); index >= 0 {
+		if s.Entries[index].Reasoning.StartedAt.IsZero() {
+			s.Entries[index].Reasoning.StartedAt = at
+		}
+		s.Entries[index].Reasoning.Text += text
+		s.bumpEntry(index)
+		return
+	}
+	entry := Entry{Kind: EntryReasoning, Reasoning: &ReasoningEntry{Text: text, StartedAt: at}}
+	s.Entries = append(s.Entries, entry)
+	s.assignIdentity(len(s.Entries) - 1)
+}
+
+// closeReasoning marks the open reasoning trace finished at at.
+//
+// When the runtime did not measure the end, the start is used: the duration is
+// then zero rather than growing with render time, which would fabricate time
+// the runtime never observed.
+func (s *State) closeReasoning(at time.Time) {
+	index := s.openReasoning()
+	if index < 0 {
+		return
+	}
+	reasoning := s.Entries[index].Reasoning
+	reasoning.Closed = true
+	if !reasoning.StartedAt.IsZero() {
+		if at.IsZero() {
+			at = reasoning.StartedAt
+		}
+		reasoning.EndedAt = at
+	}
+	s.bumpEntry(index)
+}
+
+// openReasoning returns the trailing reasoning entry that can still grow, or
+// -1. It must be the trailing block: any later text or action ends the trace.
+func (s *State) openReasoning() int {
+	if len(s.Entries) == 0 {
+		return -1
+	}
+	last := len(s.Entries) - 1
+	entry := &s.Entries[last]
+	if entry.Kind != EntryReasoning || entry.Reasoning == nil || entry.Reasoning.Closed {
 		return -1
 	}
 	return last
@@ -2386,6 +2520,21 @@ func (s *State) LatestToolID() string {
 	return ""
 }
 
+// LatestExpandableBlockID names the most recent block with a hidden body, or
+// false when there is none.
+//
+// Ctrl+O operates on this block. Tools and reasoning share one rule because
+// both are presentation-only bodies; the rule stays deterministic by selecting
+// the block the user just watched arrive.
+func (s *State) LatestExpandableBlockID() (BlockID, bool) {
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		if entryExpandable(s.Entries[i]) {
+			return blockIDAt(s.Entries, i), true
+		}
+	}
+	return "", false
+}
+
 // toolIndex returns the transcript index of a tool block, or -1.
 func (s *State) toolIndex(id string) int {
 	for i := len(s.Entries) - 1; i >= 0; i-- {
@@ -2443,9 +2592,28 @@ type UserSubmitted struct {
 
 func (UserSubmitted) eventKind() string { return "user_submitted" }
 
+// ReasoningDelta is streamed model reasoning text.
+//
+// It travels on its own channel because a reasoning trace is a different
+// presentation block from the visible answer: it must be collapsible and must
+// never be mistaken for prose the user asked for.
+type ReasoningDelta struct {
+	Text string
+	// At is when the runtime received this delta. Zero means unknown, in
+	// which case no duration is invented.
+	At time.Time
+	// Seq identifies the turn. Zero accepts any turn for legacy callers.
+	Seq int
+}
+
+func (ReasoningDelta) eventKind() string { return "reasoning_delta" }
+
 // AssistantDelta is streamed model text.
 type AssistantDelta struct {
 	Text string
+	// At is when the runtime received this delta. It closes an open reasoning
+	// trace at the moment the visible answer began.
+	At time.Time
 	// Seq identifies the turn. Zero accepts any turn for legacy callers.
 	Seq int
 }
@@ -2454,6 +2622,8 @@ func (AssistantDelta) eventKind() string { return "assistant_delta" }
 
 // AssistantDone marks the end of a turn.
 type AssistantDone struct {
+	// At is when the turn settled. Zero means unknown.
+	At time.Time
 	// Seq identifies the turn. Zero accepts any turn for legacy callers.
 	Seq int
 }
@@ -2469,6 +2639,8 @@ type TurnCancelled struct {
 	Seq int
 	// Text is the user-visible cancellation line. Empty renders "cancelled".
 	Text string
+	// At is when cancellation settled. Zero means unknown.
+	At time.Time
 }
 
 func (TurnCancelled) eventKind() string { return "turn_cancelled" }
@@ -2530,6 +2702,16 @@ type ToolToggled struct {
 }
 
 func (ToolToggled) eventKind() string { return "tool_toggled" }
+
+// ReasoningToggled flips one reasoning block between collapsed and expanded.
+// It carries the transcript block identity, not a provider call id, because
+// reasoning has no execution identity.
+type ReasoningToggled struct {
+	// ID is the reasoning block's stable transcript identity.
+	ID BlockID
+}
+
+func (ReasoningToggled) eventKind() string { return "reasoning_toggled" }
 
 // ShellStarted announces a "!" escape command beginning.
 type ShellStarted struct {

@@ -170,6 +170,20 @@ func boolArg(args map[string]any, key string, fallback bool) (bool, error) {
 //
 // The containment check lives here rather than at every tool call site: a
 // caller that forgets it must fail loudly, not silently read outside Root.
+// repositoryPath is the tool's canonical path metadata for a resolved target.
+//
+// Details carry repository-relative paths because every downstream consumer of
+// tool evidence (cognition, completion, continuity) is repository-scoped. The
+// model may name a target with an absolute path, but an absolute Details value
+// would be unattributable evidence: the runtime could not tell that the
+// observation concerned a file inside the workspace.
+func repositoryPath(root, resolved, fallback string) string {
+	if rel := relativeToRoot(root, resolved); rel != "" {
+		return rel
+	}
+	return fallback
+}
+
 func resolvePath(root, path string) (string, error) {
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {

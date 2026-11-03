@@ -80,7 +80,14 @@ func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.To
 	// the deterministic stop for "exploration continued because the model could
 	// think of one more file": the proof is complete, so the next turn is for
 	// the model's report, not another call.
-	if suff.Stage == StageComplete && shape.Kind != contract.ObjectiveInformational {
+	//
+	// An informational objective reaches the equivalent boundary at StageAnswer:
+	// the evidence its contract requires is known, so the next request is for
+	// the answer. Continuing to offer read/search tools there let a model observe
+	// a whole repository after the runtime already had enough to answer, and
+	// burn the turn budget without ever producing one.
+	if suff.Stage == StageComplete ||
+		(shape.Kind == contract.ObjectiveInformational && shape.RepositoryScope && suff.Stage == StageAnswer) {
 		return "the objective's evidence is complete; answer without further tools", true
 	}
 	if suff.Stage == StageBlocked && agent.HasActionClass(tool, agent.ActionMutate) &&

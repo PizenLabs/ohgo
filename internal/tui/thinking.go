@@ -56,6 +56,10 @@ type ThinkingState struct {
 	// Label is presentation vocabulary for the phase ("Thinking…",
 	// "Running", "Waiting for approval"). It carries no execution authority.
 	Label string
+	// Role is the workspace authority label (ASK, BUILD, FUZZ) the activity
+	// is running under. Empty stays absent. It is the persistent context the
+	// reader keeps while the current label changes.
+	Role string
 	// Detail is truthful runtime detail — currently a running tool's own,
 	// argument-derived summary. It is never inferred from model prose.
 	Detail string
@@ -63,6 +67,11 @@ type ThinkingState struct {
 	// unknown, in which case no elapsed time is shown: substituting render
 	// time would fabricate a duration.
 	StartedAt time.Time
+	// TurnStartedAt is when the whole turn began. It is the long-running
+	// context: during a tool it differs from StartedAt, so the line can show
+	// both the action's duration and the task's elapsed time. Zero means
+	// unknown and stays absent.
+	TurnStartedAt time.Time
 	// Interruptible reports that the runtime can actually interrupt the
 	// operation, so the line may advertise esc. Waiting for approval is not
 	// interruptible from the line: the approval dialog owns the keyboard.
@@ -80,6 +89,7 @@ type ThinkingState struct {
 // selection defers to DeriveRuntime, the existing single owner of "which phase
 // is this", so the activity line can never drift from the header's phase word.
 func ProjectThinking(s State) ThinkingState {
+	role := strings.TrimSpace(s.Status.Workspace)
 	// /commit owns its own lifecycle and runs while the agent turn is idle.
 	// Read it first so the activity line names the work that is actually in
 	// flight rather than reporting an idle session.
@@ -92,7 +102,9 @@ func ProjectThinking(s State) ThinkingState {
 			Active:        true,
 			Phase:         ThinkingCommit,
 			Label:         label,
+			Role:          role,
 			StartedAt:     s.Commit.StartedAt,
+			TurnStartedAt: s.TurnStartedAt,
 			Interruptible: s.Commit.Phase == CommitProposing,
 		}
 	}
@@ -101,10 +113,10 @@ func ProjectThinking(s State) ThinkingState {
 		// A blocked tool is not running, so waiting gets no elapsed timer
 		// and no interrupt hint: the approval dialog owns the keyboard, and
 		// advertising esc here would name a key the dialog has taken over.
-		return ThinkingState{Active: true, Phase: ThinkingWaiting, Label: "Waiting for approval"}
+		return ThinkingState{Active: true, Phase: ThinkingWaiting, Label: "Waiting for approval", Role: role, TurnStartedAt: s.TurnStartedAt}
 
 	case RuntimeRunningTool:
-		ts := ThinkingState{Active: true, Phase: ThinkingTool, Label: "Running", Interruptible: true}
+		ts := ThinkingState{Active: true, Phase: ThinkingTool, Label: "Running", Role: role, TurnStartedAt: s.TurnStartedAt, Interruptible: true}
 		if tool := latestRunningTool(s); tool != nil {
 			ts.Detail = tool.Summary
 			if ts.Detail == "" {
@@ -123,7 +135,9 @@ func ProjectThinking(s State) ThinkingState {
 			Active:        true,
 			Phase:         ThinkingModel,
 			Label:         "Responding…",
+			Role:          role,
 			StartedAt:     s.TurnStartedAt,
+			TurnStartedAt: s.TurnStartedAt,
 			Interruptible: true,
 			OutputTokens:  s.OutputTokens,
 		}
@@ -133,7 +147,9 @@ func ProjectThinking(s State) ThinkingState {
 			Active:        true,
 			Phase:         ThinkingModel,
 			Label:         "Thinking…",
+			Role:          role,
 			StartedAt:     s.TurnStartedAt,
+			TurnStartedAt: s.TurnStartedAt,
 			Interruptible: true,
 		}
 
@@ -247,7 +263,11 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 	if state.Phase == ThinkingWaiting {
 		// Blocked on the user, not executing: the whole row parks in the
 		// muted zone with no timer and no interrupt hint.
-		return []string{formatThinkingLine(z.waiting(thinkingGlyphAt(state.Phase, tick)), z.waiting(state.Label), "", width, z)}
+		content := state.Label
+		if state.Role != "" {
+			content = z.meta(state.Role) + z.dim(" · ") + content
+		}
+		return []string{formatThinkingLine(z.waiting(thinkingGlyphAt(state.Phase, tick)), z.waiting(content), "", width, z)}
 	}
 	// The shimmer wraps only label runes and its stripped width always
 	// equals the plain width, so the trailing metadata never shifts across
@@ -263,6 +283,11 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 	if state.Detail != "" {
 		content += " " + z.active(oneLine(state.Detail))
 	}
+	if state.Role != "" {
+		// The authority is the persistent context: it stays put while the
+		// label moves from Thinking to Running to Responding.
+		content = z.meta(state.Role) + z.dim(" · ") + content
+	}
 	// Metadata is one parenthesised block directly above the composer
 	// divider: (↓tokens · elapsed · esc). Tokens carry the ↓ prefix so the
 	// count reads without colour; elapsed derives from the real start;
@@ -276,6 +301,15 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 	// truncation because it carries the live affordances.
 	if elapsed := elapsedLabel(state.StartedAt, now); elapsed != "" {
 		metaParts = append(metaParts, z.tail(elapsed))
+	}
+	// The whole-turn elapsed is the long-running context. It only appears
+	// when it differs from the action's own start, so "Thinking…" does not
+	// print the same duration twice; a running tool shows both its own time
+	// and how long the task has been going.
+	if !state.TurnStartedAt.IsZero() && !state.TurnStartedAt.Equal(state.StartedAt) {
+		if total := elapsedLabel(state.TurnStartedAt, now); total != "" {
+			metaParts = append(metaParts, z.tail("turn "+total))
+		}
 	}
 	// The interrupt hint is only ever emitted when the runtime proved the
 	// operation is interruptible, and it names the key the existing turn

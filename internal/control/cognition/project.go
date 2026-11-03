@@ -153,6 +153,12 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	report.Excluded = candidates.Excluded
 	report.Sufficiency = string(suff.State)
 	report.Stage = string(suff.Stage)
+	// An informational task whose required evidence is known is done
+	// observing. If the model answers in the same turn as a tool call, the
+	// answer is final and the call is continuation, not evidence gathering.
+	report.AnswerEligible = shape.Kind == contract.ObjectiveInformational &&
+		shape.RepositoryScope &&
+		(suff.Stage == StageAnswer || suff.Stage == StageComplete)
 	report.Shape = shape.Summary()
 	report.Evidence = evidenceSummary(p.Evidence, suff, execution)
 	report.RetentionPolicy = fmt.Sprintf(

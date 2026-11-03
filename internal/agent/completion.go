@@ -67,8 +67,11 @@ func EvaluateCompletion(turns []Turn, mutationIntent bool) Completion {
 		}
 	}
 	last := turns[len(turns)-1]
-	if len(last.Results) > 0 {
+	if outstandingCalls(last) > 0 {
 		return needsReview("the run stopped with tool calls still outstanding")
+	}
+	if last.Assistant.ProtocolResidue {
+		return needsReview("the model emitted serialized tool syntax that could not be normalized")
 	}
 
 	evidence := scanCompletionEvidence(turns, mutationIntent)
@@ -151,7 +154,7 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 	for _, turn := range turns {
 		for _, outcome := range turn.Results {
 			if outcome.Result.IsError {
-				if !outcome.Refused() {
+				if !outcome.Refused() && !outcome.Result.ObservedAbsence {
 					evidence.pendingFailures[outcome.ToolName]++
 				}
 				position++
@@ -194,6 +197,21 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 		}
 	}
 	return evidence
+}
+
+// outstandingCalls counts the last turn's results that represent work the run
+// left undone. A call withheld because the runtime offered no tools is not
+// outstanding: nothing was expected to run, and the same turn carries the
+// candidate answer. Counting it would make an answered run undecidable forever.
+func outstandingCalls(turn Turn) int {
+	count := 0
+	for _, outcome := range turn.Results {
+		if outcome.Result.AnswerRequired {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func needsReview(format string, args ...any) Completion {
@@ -308,8 +326,11 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		}
 	}
 	last := input.Turns[len(input.Turns)-1]
-	if len(last.Results) > 0 {
+	if outstandingCalls(last) > 0 {
 		return needsReview("the run stopped with tool calls still outstanding")
+	}
+	if last.Assistant.ProtocolResidue {
+		return needsReview("the model emitted serialized tool syntax that could not be normalized")
 	}
 
 	intent := input.Contract

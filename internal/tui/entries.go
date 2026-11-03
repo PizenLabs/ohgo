@@ -10,15 +10,26 @@ import (
 // EntriesFromMessages rebuilds a transcript view from agent messages.
 //
 // It exists for session resume: history continues the conversation for the
-// model, and these entries continue it for the eyes. Tool calls pair with
-// their results by call id; an unpaired call keeps its card with a note
-// rather than vanishing, because a transcript that drops work it did lies
-// about what happened.
+// model, and these entries continue it for the eyes. Both paths consume the
+// same canonical content blocks — text, reasoning, and tool calls in the order
+// the provider produced them — so scrolling cannot reveal a representation the
+// live transcript never had.
+//
+// Stored assistant content is re-canonicalized here because sessions written
+// before stream normalization persisted provider protocol inside ordinary
+// text. That repair happens at the history boundary, never in the renderer: a
+// viewport must not know a provider's wire syntax exists.
 func EntriesFromMessages(messages []agent.Message) []Entry {
 	results := map[string]agent.ToolResultMessage{}
+	paired := map[string]bool{}
 	for _, msg := range messages {
-		if result, ok := msg.(agent.ToolResultMessage); ok {
-			results[result.ToolCallID] = result
+		switch m := msg.(type) {
+		case agent.ToolResultMessage:
+			results[m.ToolCallID] = m
+		case agent.AssistantMessage:
+			for _, call := range toolCallsOf(m.Message) {
+				paired[call.ID] = true
+			}
 		}
 	}
 
@@ -31,16 +42,20 @@ func EntriesFromMessages(messages []agent.Message) []Entry {
 			}
 			entries = append(entries, Entry{Kind: EntryUser, UserText: m.Text})
 		case agent.AssistantMessage:
-			if text := strings.TrimSpace(m.Message.Text()); text != "" {
-				entries = append(entries, Entry{Kind: EntryAssistant, AssistantText: text})
-			}
-			for _, call := range toolCallsOf(m.Message) {
-				entries = append(entries, toolEntryFor(call, results[call.ID]))
+			for _, block := range canonicalAssistantBlocks(m.Message) {
+				switch b := block.(type) {
+				case ai.TextContent:
+					entries = appendAssistantEntry(entries, b.Text)
+				case ai.ThinkingContent:
+					entries = appendReasoningEntry(entries, b.Thinking)
+				case ai.ToolCall:
+					entries = append(entries, toolEntryFor(b, results[b.ID]))
+				}
 			}
 		case agent.ToolResultMessage:
 			// Rendered with its call above; a result without a recorded call
 			// still deserves a line rather than silence.
-			if !pairedCall(messages, m.ToolCallID) {
+			if !paired[m.ToolCallID] {
 				entries = append(entries, Entry{
 					Kind: EntryTool,
 					Tool: &ToolEntry{
@@ -60,35 +75,50 @@ func EntriesFromMessages(messages []agent.Message) []Entry {
 	return entries
 }
 
+// canonicalAssistantBlocks returns the stored message's content blocks in
+// canonical provider-neutral form.
+//
+// NormalizeMessage is idempotent for content produced after stream
+// normalization, so it repairs legacy rows without changing new ones.
+func canonicalAssistantBlocks(msg ai.AssistantMessage) []ai.ContentBlock {
+	return ai.NormalizeMessage(msg, ai.NormalizeOptions{}).Content
+}
+
+// appendAssistantEntry merges adjacent text blocks, matching the live path's
+// one-assistant-block-per-text-run rule.
+func appendAssistantEntry(entries []Entry, text string) []Entry {
+	if strings.TrimSpace(text) == "" {
+		return entries
+	}
+	if len(entries) > 0 && entries[len(entries)-1].Kind == EntryAssistant {
+		entries[len(entries)-1].AssistantText += text
+		return entries
+	}
+	return append(entries, Entry{Kind: EntryAssistant, AssistantText: text})
+}
+
+// appendReasoningEntry merges adjacent reasoning blocks. It stays collapsed:
+// the default review surface is the answer, with the trace one chord away.
+func appendReasoningEntry(entries []Entry, text string) []Entry {
+	if strings.TrimSpace(text) == "" {
+		return entries
+	}
+	if len(entries) > 0 && entries[len(entries)-1].Kind == EntryReasoning && entries[len(entries)-1].Reasoning != nil {
+		entries[len(entries)-1].Reasoning.Text += text
+		return entries
+	}
+	return append(entries, Entry{Kind: EntryReasoning, Reasoning: &ReasoningEntry{Text: text}})
+}
+
 // toolCallsOf extracts the tool calls a stored assistant message requested.
 func toolCallsOf(msg ai.AssistantMessage) []ai.ToolCall {
 	var out []ai.ToolCall
-	for _, block := range msg.Content {
+	for _, block := range canonicalAssistantBlocks(msg) {
 		if call, ok := block.(ai.ToolCall); ok {
 			out = append(out, call)
 		}
 	}
 	return out
-}
-
-// pairedCall reports whether a call id was requested by any assistant turn,
-// so orphan results can be detected without a second index.
-func pairedCall(messages []agent.Message, id string) bool {
-	if id == "" {
-		return false
-	}
-	for _, msg := range messages {
-		assistant, ok := msg.(agent.AssistantMessage)
-		if !ok {
-			continue
-		}
-		for _, call := range toolCallsOf(assistant.Message) {
-			if call.ID == id {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // toolEntryFor pairs one call with its result, if any arrived.

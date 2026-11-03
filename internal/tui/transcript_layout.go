@@ -78,6 +78,11 @@ type blockLayout struct {
 	spinner  int
 	kind     EntryKind
 	expanded bool
+	// groupEnd records whether this block closes a compact action group.
+	// Consecutive tool calls share one visual stream; only the last call in
+	// the run keeps the separator row. Adjacency is part of the cached
+	// projection, so appending a tool must invalidate the previous tool.
+	groupEnd bool
 	lines    []string
 	widths   []int
 }
@@ -121,7 +126,7 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 		l.byID = make(map[BlockID]int, len(entries))
 		for i := range entries {
 			id := blockIDAt(entries, i)
-			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner))
+			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner), entryGroupEnd(entries, i))
 			l.byID[id] = i
 			l.LastRendered++
 		}
@@ -162,12 +167,12 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 			// hint list already names them.
 			continue
 		}
-		if l.blocks[i].id == blockIDAt(entries, i) && !blockStale(l.blocks[i], entries[i], entrySpinner(entries[i], spinner)) {
+		if l.blocks[i].id == blockIDAt(entries, i) && !blockStale(l.blocks[i], entries[i], entrySpinner(entries[i], spinner), entryGroupEnd(entries, i)) {
 			continue
 		}
 		oldID := l.blocks[i].id
 		id := blockIDAt(entries, i)
-		l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner))
+		l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner), entryGroupEnd(entries, i))
 		if l.byID != nil && oldID != id {
 			delete(l.byID, oldID)
 			l.byID[id] = i
@@ -177,9 +182,21 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 	}
 	if grown > 0 {
 		newStart := len(l.blocks) - grown
+		// The first appended block may close a previous tool group. Its
+		// adjacency changed from "end of document" to "followed by a tool",
+		// so its cached separator must be recomputed even though Apply never
+		// named it dirty.
+		if newStart > 0 {
+			prev := newStart - 1
+			if l.blocks[prev].groupEnd != entryGroupEnd(entries, prev) {
+				l.blocks[prev] = l.renderBlock(entries[prev], prev, blockIDAt(entries, prev), pal, layout, frame, entrySpinner(entries[prev], spinner), entryGroupEnd(entries, prev))
+				l.LastRendered++
+				changed = append(changed, prev)
+			}
+		}
 		for i := newStart; i < len(entries); i++ {
 			id := blockIDAt(entries, i)
-			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner))
+			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner), entryGroupEnd(entries, i))
 			if l.byID == nil {
 				l.byID = make(map[BlockID]int, len(entries))
 				for j := 0; j < i; j++ {
@@ -216,13 +233,14 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 	}
 }
 
-func blockStale(cached blockLayout, entry Entry, spinner int) bool {
+func blockStale(cached blockLayout, entry Entry, spinner int, groupEnd bool) bool {
+	adjacency := cached.groupEnd != groupEnd
 	if entry.rev == 0 {
 		return cached.rev != fixtureRevision(entry) || cached.spinner != spinner ||
-			cached.kind != entry.Kind || cached.expanded != entryExpanded(entry)
+			cached.kind != entry.Kind || cached.expanded != entryExpanded(entry) || adjacency
 	}
 	return cached.rev != entry.rev || cached.spinner != spinner ||
-		cached.kind != entry.Kind || cached.expanded != entryExpanded(entry)
+		cached.kind != entry.Kind || cached.expanded != entryExpanded(entry) || adjacency
 }
 
 // entrySpinner isolates the one animation input that changes a block's
@@ -244,6 +262,15 @@ func fixtureRevision(entry Entry) uint64 {
 	_, _ = h.Write([]byte(entry.ID))
 	_, _ = h.Write([]byte(entry.UserText))
 	_, _ = h.Write([]byte(entry.AssistantText))
+	if entry.Reasoning != nil {
+		_, _ = h.Write([]byte(entry.Reasoning.Text))
+		if entry.Reasoning.Expanded {
+			_, _ = h.Write([]byte{1})
+		}
+		if entry.Reasoning.Closed {
+			_, _ = h.Write([]byte{2})
+		}
+	}
 	_, _ = h.Write([]byte(entry.Notice))
 	_, _ = h.Write([]byte(entry.SupportText))
 	if entry.Tool != nil {
@@ -275,7 +302,7 @@ func fixtureRevision(entry Entry) uint64 {
 	return h.Sum64()
 }
 
-func (l *TranscriptLayout) renderBlock(entry Entry, index int, id BlockID, pal *Palette, layout Layout, frame string, spinner int) blockLayout {
+func (l *TranscriptLayout) renderBlock(entry Entry, index int, id BlockID, pal *Palette, layout Layout, frame string, spinner int, groupEnd bool) blockLayout {
 	b := blockLayout{
 		id:       id,
 		index:    index,
@@ -283,18 +310,35 @@ func (l *TranscriptLayout) renderBlock(entry Entry, index int, id BlockID, pal *
 		spinner:  spinner,
 		kind:     entry.Kind,
 		expanded: entryExpanded(entry),
+		groupEnd: groupEnd,
 	}
 	if entry.rev == 0 {
 		b.rev = fixtureRevision(entry)
 	}
 	var sb strings.Builder
-	renderEntry(&sb, entry, pal, layout, frame)
+	renderEntryGrouped(&sb, entry, pal, layout, frame, groupEnd)
 	b.lines = entryLines(sb.String())
 	b.widths = make([]int, len(b.lines))
 	for i, line := range b.lines {
 		b.widths[i] = CellWidth(line)
 	}
 	return b
+}
+
+// entryGroupEnd reports whether index closes a compact action group.
+//
+// A run of adjacent tool calls is one visual stream: only the last call keeps
+// the separator row. Everything else is its own block and keeps its existing
+// spacing. Adjacency is a projection fact, not semantic state, so it lives
+// with the layout rather than on the Entry.
+func entryGroupEnd(entries []Entry, index int) bool {
+	if index < 0 || index >= len(entries) {
+		return false
+	}
+	if entries[index].Kind != EntryTool {
+		return false
+	}
+	return index+1 >= len(entries) || entries[index+1].Kind != EntryTool
 }
 
 // entryLines turns one entry's rendered projection into its visual rows.

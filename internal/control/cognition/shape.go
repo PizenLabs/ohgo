@@ -647,6 +647,33 @@ func requestsContent(objective string) bool {
 	return false
 }
 
+// broadRepositoryAnalysis reports whether the request asks for a whole-project
+// account rather than one targeted fact. Only the broad form needs a survey:
+// purpose, structure, and stack cannot be established by a single file.
+func broadRepositoryAnalysis(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	for _, phrase := range []string{
+		" what this project is about ", " what the project is about ",
+		" what this repository is about ", " what the repository is about ",
+		" analyze this project ", " analyse this project ",
+		" analyze the project ", " analyse the project ",
+		" overview of this project ", " overview of the project ",
+		" what this project does ", " what the project does ",
+		" what does this project do ", " what does the project do ",
+		" what this tool does ", " what this application does ",
+		" explain this project ", " explain the project ",
+		" explain what it does ", " explain what this does ",
+		" describe this project ", " describe the project ",
+		" summarize this project ", " summarise this project ",
+		" tell me about this project ", " tell me about the project ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // requiredKnowledge derives the evidence needs from the shape.
 func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []KnowledgeNeed {
 	var needs []KnowledgeNeed
@@ -695,6 +722,9 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 		}
 		if shape.RepositoryScope {
 			add("repository_overview", "the answer is about the repository")
+			if broadRepositoryAnalysis(shape.Objective) {
+				add("repository_survey", "a broad overview needs a second content observation or the repository's structure")
+			}
 		}
 	}
 	return needs

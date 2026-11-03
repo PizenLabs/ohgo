@@ -42,7 +42,7 @@ func informationalProjection(t *testing.T, shape TaskShape, turns []agent.Turn) 
 func TestProjectorStopsWhenATurnAddsNoEvidence(t *testing.T) {
 	shape := BuildShape(contract.IntentContract{
 		Kind:      contract.ObjectiveInformational,
-		Objective: "Does this workflow run automatically?",
+		Objective: "check this project and analyze what this project is about?",
 	}, ShapeParams{Authority: "ask"})
 
 	first := readTurn("c1", ".github/workflows/telemetry.yml", "1\ton: schedule")
@@ -72,12 +72,37 @@ func TestProjectorStopsWhenATurnAddsNoEvidence(t *testing.T) {
 	}
 }
 
+// A read the runtime cannot attribute to a repository path recorded no usable
+// evidence. It must not be counted as an observation, because "observed but not
+// novel" is exactly the signal that withholds every tool and asks for an answer.
+func TestUnattributableReadIsNotEvidenceGain(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "check this project and analyze what this project is about?",
+	}, ShapeParams{Authority: "ask"})
+
+	// The read succeeded, but the metadata names an absolute path outside the
+	// repository-relative vocabulary. Nothing can be attributed.
+	first := readTurn("c1", "/tmp/workspace/README.md", "# project")
+	state := NewEvidenceState()
+	observed, novel := state.ObserveTurns(shape, []agent.Turn{first})
+	if observed != 0 || novel != 0 {
+		t.Fatalf("unattributable read counted as evidence: observed=%d novel=%d", observed, novel)
+	}
+
+	duplicate := readTurn("c2", "/tmp/workspace/README.md", "# project")
+	projected := informationalProjection(t, shape, []agent.Turn{first, duplicate})
+	if len(projected.Tools) == 0 {
+		t.Fatalf("an unattributable read triggered the answer-only stop: %+v", projected.Report.Excluded)
+	}
+}
+
 // A different range of the same file is new information, so it must not be
 // mistaken for a repeat.
 func TestProjectorKeepsToolsWhenTheObservationAddsAFact(t *testing.T) {
 	shape := BuildShape(contract.IntentContract{
 		Kind:      contract.ObjectiveInformational,
-		Objective: "Does this workflow run automatically?",
+		Objective: "check this project and analyze what this project is about?",
 	}, ShapeParams{Authority: "ask"})
 	first := readTurn("c1", "main.go", "1\tpackage main")
 	second := agent.Turn{Results: []agent.ToolOutcome{{
@@ -100,7 +125,7 @@ func TestProjectorKeepsToolsWhenTheObservationAddsAFact(t *testing.T) {
 func TestProjectorDoesNotStopOnTheFirstTurnOfARun(t *testing.T) {
 	shape := BuildShape(contract.IntentContract{
 		Kind:      contract.ObjectiveInformational,
-		Objective: "Does this workflow run automatically?",
+		Objective: "check this project and analyze what this project is about?",
 	}, ShapeParams{Authority: "ask"})
 	evidence := NewEvidenceState()
 	// A fact persisted from an earlier user turn.
@@ -129,7 +154,7 @@ func TestProjectorDoesNotStopOnTheFirstTurnOfARun(t *testing.T) {
 func TestProjectorDoesNotStopOnARefusedTurn(t *testing.T) {
 	shape := BuildShape(contract.IntentContract{
 		Kind:      contract.ObjectiveInformational,
-		Objective: "Does this workflow run automatically?",
+		Objective: "check this project and analyze what this project is about?",
 	}, ShapeParams{Authority: "ask"})
 	first := readTurn("c1", "main.go", "1\tpackage main")
 	refused := agent.Turn{Results: []agent.ToolOutcome{{

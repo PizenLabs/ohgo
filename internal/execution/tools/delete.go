@@ -62,7 +62,7 @@ func (t *DeleteTool) Execute(ctx agent.Context, args map[string]any) agent.Resul
 	p := makePreview(raw, agent.MutationDelete, original, "", binary)
 	ev := evidenceFromPreview(p, "success")
 	details := map[string]any{
-		"path":              raw,
+		"path":              repositoryPath(t.Root, path, raw),
 		"operation":         string(agent.MutationDelete),
 		"mutation":          string(agent.MutationDelete),
 		"mutation_type":     string(agent.MutationDelete),

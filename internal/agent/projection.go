@@ -72,6 +72,12 @@ type ProjectionReport struct {
 	Sufficiency string `json:"sufficiency,omitempty"`
 	// Stage is the projected task stage.
 	Stage string `json:"stage,omitempty"`
+	// AnswerEligible reports that the runtime already holds the evidence an
+	// informational objective requires. The next visible assistant text is a
+	// candidate final answer, so tool calls emitted alongside it are
+	// continuation after the answer, not new evidence. The loop refuses those
+	// calls instead of executing them.
+	AnswerEligible bool `json:"answer_eligible,omitempty"`
 	// Shape is a one-line task-shape summary.
 	Shape string `json:"shape,omitempty"`
 	// Evidence is a bounded evidence-state summary.

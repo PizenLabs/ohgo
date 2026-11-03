@@ -107,6 +107,18 @@ type Result struct {
 	// model, which must choose another action, but it is not an execution
 	// failure: nothing ran, so completion must not treat it as a failed call.
 	CandidateRejected bool
+	// ObservedAbsence marks an error that is itself a successful observation:
+	// a probe established that the named path does not exist. The model still
+	// sees an error (absence is not a value), but completion must not treat it
+	// as an unrecovered execution failure.
+	ObservedAbsence bool
+	// AnswerRequired marks a withheld call made when the runtime offered no
+	// tools at all: the evidence lifecycle asked for an answer, not another
+	// action. Nothing ran, and the assistant text in the same turn is the
+	// candidate answer, so completion may consider that turn final. Unlike a
+	// generic candidate rejection, this is not a request to choose another
+	// tool; there is no other tool.
+	AnswerRequired bool
 	// Exhausted is set when the tool refused work because the root budget
 	// could not admit it. The loop records it as a resource stop after the
 	// turn, so a budget refusal inside a tool is visible to the root instead

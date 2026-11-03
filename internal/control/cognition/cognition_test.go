@@ -491,6 +491,60 @@ func TestCandidatesKeepConfiguredExternalTools(t *testing.T) {
 	}
 }
 
+// Once a repository overview question has the evidence its contract requires,
+// the next request is for the answer: every observation tool is withheld.
+func TestRepositoryOverviewAtStageAnswerWithholdsAllTools(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "check this project and analyze what this project is about?",
+	}, ShapeParams{Authority: "ask"})
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "ls", tier: agent.TierRead},
+	}
+
+	evidence := NewEvidenceState()
+	for _, path := range []string{"README.md", "go.mod"} {
+		evidence.ObserveOutcome(agent.ToolOutcome{
+			CallID: "read-" + path, ToolName: "read", Args: map[string]any{"path": path},
+			Result: agent.Result{
+				Text: "1\tcontent", Details: map[string]any{
+					"path": path, "totalLines": 1, "offset": 1, "limit": 2000,
+				},
+			},
+		})
+	}
+	suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false)
+	if suff.Stage != StageAnswer {
+		t.Fatalf("sufficiency stage = %s, want answer", suff.Stage)
+	}
+	set := Candidates(shape, evidence, ExecutionState{}, tools, RepositoryFacts{}, suff)
+	if len(set.Tools) != 0 {
+		t.Fatalf("offered %d tool(s) after sufficient evidence: %+v", len(set.Tools), set.Tools)
+	}
+	if len(set.Excluded) == 0 || !strings.Contains(set.Excluded[0].Reason, "answer without further tools") {
+		t.Fatalf("the answer boundary was not explained: %+v", set.Excluded)
+	}
+}
+
+// A question that is not about this repository must keep its tools even though
+// it has no repository evidence requirement to satisfy.
+func TestNonRepositoryInformationalQuestionKeepsToolsAtStageAnswer(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "who calls parse",
+	}, ShapeParams{Authority: "ask"})
+	if shape.RepositoryScope {
+		t.Fatal("the test objective must not be repository-scoped")
+	}
+	suff := EvaluateSufficiency(shape, NewEvidenceState(), ExecutionState{}, false)
+	set := Candidates(shape, NewEvidenceState(), ExecutionState{},
+		[]agent.Tool{testTool{name: "read", tier: agent.TierRead}}, RepositoryFacts{}, suff)
+	if len(set.Tools) != 1 {
+		t.Fatalf("offered %d tool(s), want the read tool", len(set.Tools))
+	}
+}
+
 func TestExplorationObjectiveNeedsStructureAndExternalContext(t *testing.T) {
 	shape := BuildShape(contract.IntentContract{
 		Kind:      contract.ObjectiveInformational,

@@ -9,6 +9,7 @@ package ai
 
 import (
 	"encoding/base64"
+	"strings"
 )
 
 // Role identifies the author of a message.
@@ -143,6 +144,12 @@ type AssistantMessage struct {
 	StopReason StopReason
 	// ErrorMessage is set when StopReason is StopError.
 	ErrorMessage string
+	// ProtocolResidue reports that visible text still contains serialized
+	// provider tool syntax after normalization. It is set at the provider
+	// boundary when an envelope is malformed, incomplete, oversized, or uses
+	// an unknown spelling. The text is preserved truthfully, but it is not an
+	// ordinary answer: completion must not report success for it.
+	ProtocolResidue bool
 }
 
 // Role implements Message.
@@ -150,6 +157,20 @@ func (AssistantMessage) Role() Role { return RoleAssistant }
 
 // Text joins every text block in the message with newlines.
 func (m AssistantMessage) Text() string { return joinText(m.Content) }
+
+// ThinkingText joins every reasoning block in the message with newlines.
+//
+// It exists so a transcript can compare what was revealed live with the
+// authoritative completed message without mining prose for a thinking marker.
+func (m AssistantMessage) ThinkingText() string {
+	var out []string
+	for _, block := range m.Content {
+		if thinking, ok := block.(ThinkingContent); ok && thinking.Thinking != "" {
+			out = append(out, thinking.Thinking)
+		}
+	}
+	return strings.Join(out, "\n")
+}
 
 // ToolCalls returns the tool-call blocks in stream order.
 func (m AssistantMessage) ToolCalls() []ToolCall {

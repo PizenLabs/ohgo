@@ -105,7 +105,7 @@ func SummarizeExecution(turns []agent.Turn) ExecutionState {
 		for _, outcome := range turn.Results {
 			state.ToolCalls++
 			if outcome.Result.IsError {
-				if !outcome.Refused() {
+				if !outcome.Refused() && !outcome.Result.ObservedAbsence {
 					state.FailedActions++
 					state.PendingFailures[outcome.ToolName]++
 				}
@@ -192,6 +192,11 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 	if evidence == nil {
 		evidence = NewEvidenceState()
 	}
+	// The shape declares the needs; sufficiency must consider them even when a
+	// caller evaluated the verdict before any turn was observed. Without this,
+	// an empty state looked "sufficient" and the candidate layer withheld every
+	// tool from a repository question that had read nothing.
+	evidence.ensureRequirements(shape)
 	if conflicts := evidence.Conflicts(); len(conflicts) > 0 {
 		result.State = Conflicting
 		result.Stage = StageExplore

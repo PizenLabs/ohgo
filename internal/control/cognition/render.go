@@ -94,6 +94,13 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 		fmt.Fprintf(&suffLine, "Next evidence: %s\n", bound(strings.Join(uniqueStrings(suff.Next), "; "), 320))
 	}
 	fmt.Fprintf(&suffLine, "Available actions: %s\n", candidates.CandidateSummary(420))
+	if len(candidates.Tools) == 0 && (suff.Stage == StageAnswer || suff.Stage == StageComplete) {
+		// This is runtime state, not a provider prompt: the evidence lifecycle
+		// is at the answer/report boundary, so the only correct next output is
+		// prose. Stating it removes an ambiguity some models resolve by naming
+		// a tool anyway.
+		suffLine.WriteString("Next action: answer from the evidence above. No tool is available.\n")
+	}
 	if len(candidates.Notices) > 0 {
 		fmt.Fprintf(&suffLine, "Withheld: %s\n", bound(strings.Join(candidates.Notices, "; "), 420))
 	}

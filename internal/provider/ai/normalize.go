@@ -142,6 +142,13 @@ func NormalizeStream(ctx context.Context, stream *Stream, opts NormalizeOptions)
 			if text == "" {
 				return true
 			}
+			if hasProtocolResidue(text) {
+				// An unregistered spelling reached the live path. Replace it
+				// here, at the provider boundary, so the renderer never sees
+				// protocol bytes even before the final message is assembled.
+				text = protocolFailureText(DiagnosticMalformedPseudoToolCall, "serialized-tool-call")
+				normalizer.residue = true
+			}
 			if textBreak && sawText {
 				text = "\n" + text
 			}
@@ -335,6 +342,20 @@ func normalizeAssistantMessage(msg AssistantMessage, opts NormalizeOptions) Assi
 	appendItems(normalizer.flush(DiagnosticIncompletePseudoToolCall))
 
 	msg.Content = out
+	msg.ProtocolResidue = normalizer.residue
+	// A spelling the registry does not know still belongs to the protocol
+	// family when it names a dots/tool_call envelope. It reached this point as
+	// text because there was no descriptor to parse it; replace it with the
+	// same truthful diagnostic rather than persist it as an answer.
+	for i, block := range msg.Content {
+		text, ok := block.(TextContent)
+		if !ok || !hasProtocolResidue(text.Text) {
+			continue
+		}
+		msg.Content[i] = TextContent{Text: protocolFailureText(
+			DiagnosticMalformedPseudoToolCall, "serialized-tool-call")}
+		msg.ProtocolResidue = true
+	}
 	if hasToolCall(out) && (msg.StopReason == "" || msg.StopReason == StopEndTurn) {
 		// A recognized pseudo call is a tool-use turn even when the transport
 		// reported a plain stop: downstream consumers must see the canonical
@@ -342,6 +363,51 @@ func normalizeAssistantMessage(msg AssistantMessage, opts NormalizeOptions) Assi
 		msg.StopReason = StopToolUse
 	}
 	return msg
+}
+
+// protocolFailureText is the user-visible record of a recognized envelope that
+// could not be normalized.
+//
+// It names the failure without reproducing the provider's serialization. The
+// raw bytes are still observed through the diagnostic sink for debugging, but
+// they are not assistant prose and must not be persisted as such.
+func protocolFailureText(kind NormalizationDiagnosticKind, protocol string) string {
+	label := string(kind)
+	if label == "" {
+		label = string(DiagnosticMalformedPseudoToolCall)
+	}
+	if protocol == "" {
+		protocol = "serialized-tool-call"
+	}
+	return fmt.Sprintf("[provider tool-call syntax could not be normalized: %s in %s; the call was not executed]", label, protocol)
+}
+
+// hasProtocolResidue reports whether text still contains a serialized
+// tool-call marker after normalization.
+//
+// It is deliberately limited to the registered protocol families. Prose that
+// merely mentions `<invoke>` or `<parameter>` is not a tool envelope, and
+// treating it as one would turn ordinary documentation into a failure. The
+// markers here are the ones a model emits when it intends a call.
+func hasProtocolResidue(text string) bool {
+	lower := strings.ToLower(text)
+	// Any <dots...call> spelling belongs to the same protocol family, even
+	// when the registry has not seen the exact separators before.
+	if strings.Contains(lower, "<dots") && strings.Contains(lower, "call") {
+		return true
+	}
+	for _, marker := range []string{
+		"<dotsfunctioncall", "</dotsfunctioncall",
+		"<dots_function_call", "</dots_function_call",
+		"<dots_functioncall", "</dots_functioncall",
+		"<dotsfunction_call", "</dotsfunction_call",
+		"<tool_call", "</tool_call",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // appendTextBlock merges adjacent text so normalization never inserts the
@@ -386,9 +452,24 @@ type pseudoProtocol struct {
 	// recognized.
 	open  []byte
 	close []byte
+	// extraCloses are alternative closing markers for the same opening. The
+	// provider has emitted `</dotsfunctioncall>` and `</dots_function_call>`
+	// for one envelope shape; requiring an exact pair would leak the envelope
+	// as prose on the other spelling.
+	extraCloses [][]byte
 	// parse turns the inner body into canonical calls. A non-nil error means
 	// the envelope is not trusted and must remain visible text.
 	parse func(body string, coercer *argumentCoercer) ([]ToolCall, error)
+}
+
+// closingMarkers returns every accepted close for the protocol.
+func (p pseudoProtocol) closingMarkers() [][]byte {
+	if len(p.extraCloses) == 0 {
+		return [][]byte{p.close}
+	}
+	out := make([][]byte, 0, 1+len(p.extraCloses))
+	out = append(out, p.close)
+	return append(out, p.extraCloses...)
 }
 
 // defaultPseudoProtocols returns the built-in serialized protocols.
@@ -396,12 +477,36 @@ type pseudoProtocol struct {
 // The XML-invoke envelope is the first observed representation, not the shape
 // of the fix. A new provider adds another descriptor here.
 func defaultPseudoProtocols() []pseudoProtocol {
+	closeStandard := []byte("</dotsfunctioncall>")
+	closeUnderscored := []byte("</dots_function_call>")
 	return []pseudoProtocol{
 		{
-			name:  "xml_invoke",
-			open:  []byte("<dotsfunctioncall>"),
-			close: []byte("</dotsfunctioncall>"),
-			parse: parseXMLInvokeEnvelope,
+			name:        "xml_invoke",
+			open:        []byte("<dotsfunctioncall>"),
+			close:       closeStandard,
+			extraCloses: [][]byte{closeUnderscored},
+			parse:       parseXMLInvokeEnvelope,
+		},
+		{
+			name:        "xml_invoke_underscored",
+			open:        []byte("<dots_function_call>"),
+			close:       closeUnderscored,
+			extraCloses: [][]byte{closeStandard},
+			parse:       parseXMLInvokeEnvelope,
+		},
+		{
+			name:        "xml_invoke_functioncall",
+			open:        []byte("<dots_functioncall>"),
+			close:       closeUnderscored,
+			extraCloses: [][]byte{closeStandard},
+			parse:       parseXMLInvokeEnvelope,
+		},
+		{
+			name:        "xml_invoke_function_call",
+			open:        []byte("<dotsfunction_call>"),
+			close:       closeUnderscored,
+			extraCloses: [][]byte{closeStandard},
+			parse:       parseXMLInvokeEnvelope,
 		},
 		{
 			name:  "tool_call",
@@ -419,6 +524,7 @@ func defaultPseudoProtocols() []pseudoProtocol {
 // discarded; failed recognition returns the retained bytes as text.
 type textNormalizer struct {
 	protocols   []pseudoProtocol
+	closes      [][]byte
 	coercer     *argumentCoercer
 	diagnostic  func(NormalizationDiagnostic)
 	maxEnvelope int
@@ -430,6 +536,8 @@ type textNormalizer struct {
 	body       []byte
 	raw        []byte
 	calls      int
+	// residue records that a recognized envelope could not be normalized.
+	residue bool
 }
 
 func newTextNormalizer(opts NormalizeOptions) *textNormalizer {
@@ -452,6 +560,7 @@ func newTextNormalizer(opts NormalizeOptions) *textNormalizer {
 		if len(protocol.open) > 0 {
 			n.firstBytes[protocol.open[0]] = true
 		}
+		n.closes = append(n.closes, protocol.closingMarkers()...)
 	}
 	return n
 }
@@ -489,7 +598,11 @@ func (n *textNormalizer) flush(kind NormalizationDiagnosticKind) []parsedItem {
 	raw = append(raw, n.raw...)
 	raw = append(raw, n.pending...)
 	if len(raw) > 0 {
-		out = append(out, parsedItem{text: string(raw)})
+		// The bytes are recognized protocol, not prose. Keep the fact that
+		// normalization failed, but never publish the serialization as an
+		// ordinary assistant sentence or persist it into history.
+		out = append(out, parsedItem{text: protocolFailureText(kind, n.proto.name)})
+		n.residue = true
 	}
 	if kind != "" {
 		n.report(kind, n.proto.name, "pseudo-tool envelope did not complete", 0)
@@ -504,14 +617,15 @@ func (n *textNormalizer) process() []parsedItem {
 	var out []parsedItem
 	for {
 		if n.inEnvelope {
-			if idx := bytes.Index(n.pending, n.proto.close); idx >= 0 {
-				end := idx + len(n.proto.close)
+			if idx, closeLen := indexAny(n.pending, n.proto.closingMarkers()); idx >= 0 {
+				end := idx + closeLen
 				n.body = append(n.body, n.pending[:idx]...)
 				n.raw = append(n.raw, n.pending[:end]...)
 				n.pending = append(n.pending[:0], n.pending[end:]...)
 
 				if len(n.raw) > n.maxEnvelope {
-					out = appendTextItem(out, string(n.raw))
+					out = appendTextItem(out, protocolFailureText(DiagnosticOversizedPseudoToolCall, n.proto.name))
+					n.residue = true
 					n.report(DiagnosticOversizedPseudoToolCall, n.proto.name,
 						fmt.Sprintf("envelope exceeded %d bytes", n.maxEnvelope), 0)
 					n.resetEnvelope()
@@ -521,10 +635,12 @@ func (n *textNormalizer) process() []parsedItem {
 				calls, err := n.proto.parse(string(n.body), n.coercer)
 				switch {
 				case err != nil:
-					out = appendTextItem(out, string(n.raw))
+					out = appendTextItem(out, protocolFailureText(DiagnosticMalformedPseudoToolCall, n.proto.name))
+					n.residue = true
 					n.report(DiagnosticMalformedPseudoToolCall, n.proto.name, err.Error(), 0)
 				case len(calls) == 0:
-					out = appendTextItem(out, string(n.raw))
+					out = appendTextItem(out, protocolFailureText(DiagnosticMalformedPseudoToolCall, n.proto.name))
+					n.residue = true
 					n.report(DiagnosticMalformedPseudoToolCall, n.proto.name, "envelope contained no tool call", 0)
 				default:
 					for i := range calls {
@@ -538,9 +654,9 @@ func (n *textNormalizer) process() []parsedItem {
 				continue
 			}
 
-			// Keep only a suffix that could begin the closing marker; the rest
+			// Keep only a suffix that could begin a closing marker; the rest
 			// is safely part of the payload.
-			keep := longestSuffixPrefix(n.pending, n.proto.close)
+			keep := longestSuffixPrefixAny(n.pending, n.proto.closingMarkers())
 			cut := len(n.pending) - keep
 			if cut > 0 {
 				n.body = append(n.body, n.pending[:cut]...)
@@ -548,10 +664,8 @@ func (n *textNormalizer) process() []parsedItem {
 				n.pending = append(n.pending[:0], n.pending[cut:]...)
 			}
 			if len(n.raw) > n.maxEnvelope {
-				raw := make([]byte, 0, len(n.raw)+len(n.pending))
-				raw = append(raw, n.raw...)
-				raw = append(raw, n.pending...)
-				out = appendTextItem(out, string(raw))
+				out = appendTextItem(out, protocolFailureText(DiagnosticOversizedPseudoToolCall, n.proto.name))
+				n.residue = true
 				n.report(DiagnosticOversizedPseudoToolCall, n.proto.name,
 					fmt.Sprintf("envelope exceeded %d bytes", n.maxEnvelope), 0)
 				n.pending = n.pending[:0]
@@ -562,6 +676,18 @@ func (n *textNormalizer) process() []parsedItem {
 		}
 
 		idx, protocol := n.earliestOpen()
+		// A closing marker that appears before any opening marker has no
+		// envelope to close. It is still protocol, not prose; drop it and
+		// record that the message is not a clean answer.
+		if closeIdx, length := indexAny(n.pending, n.closes); closeIdx >= 0 && (idx < 0 || closeIdx < idx) {
+			if closeIdx > 0 {
+				out = appendTextItem(out, string(n.pending[:closeIdx]))
+			}
+			n.residue = true
+			n.pending = append(n.pending[:0], n.pending[closeIdx+length:]...)
+			continue
+		}
+
 		if idx >= 0 {
 			if idx > 0 {
 				out = appendTextItem(out, string(n.pending[:idx]))
@@ -607,6 +733,42 @@ func (n *textNormalizer) retainedSuffix() int {
 	keep := 0
 	for _, protocol := range n.protocols {
 		if length := longestSuffixPrefix(n.pending, protocol.open); length > keep {
+			keep = length
+		}
+	}
+	if length := longestSuffixPrefixAny(n.pending, n.closes); length > keep {
+		keep = length
+	}
+	return keep
+}
+
+// indexAny returns the earliest occurrence of any marker and the matched
+// marker's length. When several start at the same index the longest wins, so a
+// shared prefix cannot end the envelope early.
+func indexAny(buf []byte, markers [][]byte) (int, int) {
+	best := -1
+	bestLen := 0
+	for _, marker := range markers {
+		if len(marker) == 0 {
+			continue
+		}
+		idx := bytes.Index(buf, marker)
+		if idx < 0 {
+			continue
+		}
+		if best < 0 || idx < best || (idx == best && len(marker) > bestLen) {
+			best = idx
+			bestLen = len(marker)
+		}
+	}
+	return best, bestLen
+}
+
+// longestSuffixPrefixAny is longestSuffixPrefix across several markers.
+func longestSuffixPrefixAny(buf []byte, markers [][]byte) int {
+	keep := 0
+	for _, marker := range markers {
+		if length := longestSuffixPrefix(buf, marker); length > keep {
 			keep = length
 		}
 	}

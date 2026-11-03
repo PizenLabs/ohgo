@@ -613,8 +613,39 @@ type StoredMessage struct {
 	Model string `json:"model,omitempty"`
 	// StopReason is why an assistant turn ended.
 	StopReason string `json:"stopReason,omitempty"`
-	// Calls holds the tool calls an assistant turn requested.
+	// Calls holds the tool calls an assistant turn requested. It remains the
+	// legacy projection for rows written before ordered blocks were stored.
 	Calls []StoredToolCall `json:"calls,omitempty"`
+	// Blocks preserves the assistant turn's content order. Text, reasoning,
+	// and tool calls are different presentation blocks and different model
+	// context; flattening them into Text plus Calls made a resumed transcript
+	// reorder the conversation and lose reasoning entirely.
+	Blocks []StoredBlock `json:"blocks,omitempty"`
+}
+
+// Stored block kinds.
+const (
+	StoredBlockText     = "text"
+	StoredBlockThinking = "thinking"
+	StoredBlockToolCall = "toolCall"
+)
+
+// StoredBlock is one ordered content block of an assistant turn.
+//
+// It is a durable projection of the canonical ai.ContentBlock, not a provider
+// wire shape: a resumed session can rebuild exactly what the model saw and
+// what the transcript showed, while still being transport-neutral.
+type StoredBlock struct {
+	// Kind is text, thinking, or toolCall.
+	Kind string `json:"kind"`
+	// Text is the content for text and thinking blocks.
+	Text string `json:"text,omitempty"`
+	// Signature is the provider proof attached to a thinking block.
+	Signature string `json:"signature,omitempty"`
+	// ID, Name, and Arguments identify a tool call.
+	ID        string         `json:"id,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
 // StoredToolCall is one persisted tool call.
@@ -637,9 +668,25 @@ func FromAgentMessage(msg agent.Message) (StoredMessage, error) {
 			StopReason: string(m.Message.StopReason),
 		}
 		for _, block := range m.Message.Content {
-			if call, ok := block.(ai.ToolCall); ok {
+			switch b := block.(type) {
+			case ai.TextContent:
+				if b.Text == "" {
+					continue
+				}
+				out.Blocks = append(out.Blocks, StoredBlock{Kind: StoredBlockText, Text: b.Text})
+			case ai.ThinkingContent:
+				if b.Thinking == "" && b.Signature == "" {
+					continue
+				}
+				out.Blocks = append(out.Blocks, StoredBlock{
+					Kind: StoredBlockThinking, Text: b.Thinking, Signature: b.Signature,
+				})
+			case ai.ToolCall:
 				out.Calls = append(out.Calls, StoredToolCall{
-					ID: call.ID, Name: call.Name, Arguments: call.Arguments,
+					ID: b.ID, Name: b.Name, Arguments: b.Arguments,
+				})
+				out.Blocks = append(out.Blocks, StoredBlock{
+					Kind: StoredBlockToolCall, ID: b.ID, Name: b.Name, Arguments: b.Arguments,
 				})
 			}
 		}
@@ -668,15 +715,38 @@ func ToAgentMessage(stored StoredMessage) (agent.Message, error) {
 		return agent.UserMessage{Text: stored.Text}, nil
 	case "assistant":
 		var content []ai.ContentBlock
-		if stored.Text != "" {
-			content = append(content, ai.TextContent{Text: stored.Text})
-		}
-		for _, call := range stored.Calls {
-			args := call.Arguments
-			if args == nil {
-				args = map[string]any{}
+		if len(stored.Blocks) > 0 {
+			for _, block := range stored.Blocks {
+				switch block.Kind {
+				case StoredBlockText:
+					if block.Text != "" {
+						content = append(content, ai.TextContent{Text: block.Text})
+					}
+				case StoredBlockThinking:
+					content = append(content, ai.ThinkingContent{
+						Thinking: block.Text, Signature: block.Signature,
+					})
+				case StoredBlockToolCall:
+					args := block.Arguments
+					if args == nil {
+						args = map[string]any{}
+					}
+					content = append(content, ai.ToolCall{ID: block.ID, Name: block.Name, Arguments: args})
+				}
 			}
-			content = append(content, ai.ToolCall{ID: call.ID, Name: call.Name, Arguments: args})
+		} else {
+			// Rows written before ordered blocks: rebuild the historical
+			// projection exactly as it was stored.
+			if stored.Text != "" {
+				content = append(content, ai.TextContent{Text: stored.Text})
+			}
+			for _, call := range stored.Calls {
+				args := call.Arguments
+				if args == nil {
+					args = map[string]any{}
+				}
+				content = append(content, ai.ToolCall{ID: call.ID, Name: call.Name, Arguments: args})
+			}
 		}
 		return agent.AssistantMessage{Message: ai.AssistantMessage{
 			Content:    content,

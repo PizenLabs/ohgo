@@ -260,6 +260,8 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 		return s.containsEvidence("symbol", value)
 	case key == "repository_overview":
 		return s.hasRepositoryOverview()
+	case key == "repository_survey":
+		return s.hasRepositorySurvey()
 	case key == "verification":
 		return execution.VerifiedAfterMutation || len(execution.Verifications) > 0
 	case key == "execution_result":
@@ -305,6 +307,37 @@ func (s *EvidenceState) hasRepositoryOverview() bool {
 		}
 	}
 	return false
+}
+
+// hasRepositorySurvey reports whether the evidence supports a *broad* overview
+// of the project rather than one targeted answer.
+//
+// A specific question ("does this workflow run automatically?") is answered by
+// one content observation. "Analyze what this project is about" is not: purpose,
+// structure, and stack need at least a second content observation or a
+// structural listing. Keeping this separate prevents a targeted question from
+// being forced to read more files than its answer requires.
+func (s *EvidenceState) hasRepositorySurvey() bool {
+	content, structure := 0, 0
+	for _, item := range s.Items {
+		if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(item.ID, "file:"):
+			// A missing-file observation is target-state, not content.
+			if item.Retention == RetentionExact && strings.TrimSpace(item.Value) != "" {
+				content++
+			}
+		case strings.HasPrefix(item.ID, "search:grep:"), strings.HasPrefix(item.ID, "symbols:"):
+			if strings.TrimSpace(item.Value) != "" {
+				content++
+			}
+		case strings.HasPrefix(item.ID, "dir:"):
+			structure++
+		}
+	}
+	return content > 0 && (content >= 2 || structure > 0)
 }
 
 // containsEvidence reports whether an item kind contains value.
@@ -454,6 +487,14 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 
 	switch tool {
 	case "read":
+		// A read the runtime cannot attribute to a repository path is not a
+		// repository observation. Counting it as "observed but not novel"
+		// would tell the projector that exploration had stopped producing
+		// facts and withhold every tool, even though nothing was learned.
+		if cleanPath(path) == "" {
+			s.addGeneric(outcome, seq)
+			return false, false
+		}
 		return true, s.addRead(outcome, path, details, seq)
 	case "ls":
 		return true, s.addListing(outcome, path, details, seq)

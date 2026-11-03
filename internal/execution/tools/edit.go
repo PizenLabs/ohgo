@@ -142,7 +142,7 @@ func (t *EditTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		Text:    text,
 		Mutates: true,
 		Details: map[string]any{
-			"path":              raw,
+			"path":              repositoryPath(t.Root, path, raw),
 			"line":              line,
 			"confidence":        match.Confidence,
 			"operation":         string(op),

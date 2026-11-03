@@ -726,8 +726,8 @@ func showWelcome(state State) bool {
 func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 	var body strings.Builder
 	frame := spinnerFrame(state.Status.Spinner)
-	for _, entry := range state.Entries {
-		renderEntry(&body, entry, pal, layout, frame)
+	for i, entry := range state.Entries {
+		renderEntryGrouped(&body, entry, pal, layout, frame, entryGroupEnd(state.Entries, i))
 	}
 	return body.String()
 }
@@ -1638,13 +1638,17 @@ func composerStateLine(state State, pal *Palette, layout Layout) string {
 	return pal.Queued.Render(label + " · " + first)
 }
 
-// renderEntry writes one transcript entry, wrapped to the content width.
+// renderEntryGrouped writes one transcript entry, wrapped to the content width.
 // frame is the current spinner frame, shared with the status line so a running
 // tool and the footer animate in step.
 //
+// toolGroupEnd is true when this block closes the adjacent run of tool calls.
+// Only that last block keeps a separator row, so a sequence of completed calls
+// reads as one stream instead of one card per call.
+//
 // The question renders as a faint background block across the content width,
 // with no label prefix: the surface alone separates it from the answer.
-func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, frame string) {
+func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, frame string, toolGroupEnd bool) {
 	switch entry.Kind {
 	case EntryUser:
 		renderUserBlock(sb, entry.UserText, pal, layout)
@@ -1663,9 +1667,14 @@ func renderEntry(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, 
 		}
 		sb.WriteString("\n")
 
+	case EntryReasoning:
+		if entry.Reasoning != nil {
+			renderReasoning(sb, entry.Reasoning, pal, layout)
+		}
+
 	case EntryTool:
 		if entry.Tool != nil {
-			renderTool(sb, entry.Tool, pal, layout, frame)
+			renderTool(sb, entry.Tool, pal, layout, frame, toolGroupEnd, toolGroupEnd)
 		}
 
 	case EntryShell:
@@ -1717,6 +1726,61 @@ func renderSupportEntry(sb *strings.Builder, entry Entry, pal *Palette, layout L
 	sb.WriteString("\n")
 }
 
+// renderReasoning projects one reasoning trace.
+//
+// The default is collapsed to a single status row. The body is a real block
+// payload, not text mined out of the answer: expansion reveals the provider's
+// own thinking channel, bounded so one long trace cannot flood the transcript.
+func renderReasoning(sb *strings.Builder, reasoning *ReasoningEntry, pal *Palette, layout Layout) {
+	if reasoning == nil {
+		return
+	}
+	head := "▸ thinking"
+	if reasoning.Expanded {
+		head = "▾ thinking"
+	}
+	if elapsed := reasoning.Duration(time.Now()); elapsed > 0 {
+		head += " · " + formatDurationText(elapsed)
+	}
+	hint := ""
+	if !reasoning.Expanded && entryExpandable(Entry{Kind: EntryReasoning, Reasoning: reasoning}) {
+		hint = "  (ctrl+o to expand)"
+	}
+	sb.WriteString(pal.Status.Render(head) + pal.Muted.Render(hint) + "\n")
+	if !reasoning.Expanded || strings.TrimSpace(reasoning.Text) == "" {
+		sb.WriteString("\n")
+		return
+	}
+	width := textWidth(layout) - 2
+	if width < 10 {
+		width = 10
+	}
+	rendered := RenderMarkdownWrapped(reasoning.Text, pal, width)
+	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+	limit := maxReasoningLines(layout)
+	shown := 0
+	for _, line := range lines {
+		if shown >= limit {
+			break
+		}
+		sb.WriteString("  " + line + "\n")
+		shown++
+	}
+	if len(lines) > shown {
+		sb.WriteString(pal.Truncated.Render("  … [truncated]") + "\n")
+	}
+	sb.WriteString("\n")
+}
+
+// maxReasoningLines bounds the expanded trace so one long reasoning run cannot
+// displace the answer it produced. It matches the tool-body budget.
+func maxReasoningLines(layout Layout) int {
+	if layout.Mode == LayoutNarrow {
+		return 12
+	}
+	return 24
+}
+
 // renderTool writes a tool call and, once finished, its outcome.
 //
 // The default projection is collapsed and compact: one badge line naming
@@ -1728,7 +1792,7 @@ func renderSupportEntry(sb *strings.Builder, entry Entry, pal *Palette, layout L
 // pending, so nothing depends on hue alone. Output is bounded and wrapped;
 // large results collapse to the limit with a truncation marker rather than
 // flooding the conversation.
-func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, frame string) {
+func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, frame string, separate, showHint bool) {
 	// The badge names the invocation (tool plus its bounded arguments),
 	// falling back to the bare tool name for blocks that predate it.
 	// The invocation is truncated against the viewport minus the badge
@@ -1752,9 +1816,15 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	case ToolRunning:
 		badge = pal.ToolRun.Render(frame+" "+invocation) + "  " + pal.Status.Render("running")
 	case ToolDone:
-		badge = pal.ToolDone.Render("✓ "+invocation) + "  " + pal.Status.Render(elapsed)
+		badge = pal.ToolDone.Render("✓ " + invocation)
+		if elapsed != "" {
+			badge += "  " + pal.Status.Render(elapsed)
+		}
 	case ToolError:
-		badge = pal.ToolError.Render("✗ "+invocation) + "  " + pal.Status.Render(elapsed)
+		badge = pal.ToolError.Render("✗ " + invocation)
+		if elapsed != "" {
+			badge += "  " + pal.Status.Render(elapsed)
+		}
 	case ToolPending:
 		badge = pal.ToolRun.Render("· " + invocation)
 	}
@@ -1767,7 +1837,10 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	if tool.Status != ToolRunning {
 		if outcome := collapsedOutcome(tool); outcome != "" {
 			hint := ""
-			if toolExpandable(tool) && !tool.Expanded {
+			// Ctrl+O targets the latest expandable block, so the affordance
+			// belongs on the last call of the run rather than repeated under
+			// every earlier one. Earlier blocks remain click-expandable.
+			if toolExpandable(tool) && !tool.Expanded && showHint {
 				hint = "  (ctrl+o to expand)"
 			}
 			budget := dialogWidth(layout) - 4 - CellWidth(hint)
@@ -1786,9 +1859,10 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	// Expansion is presentation-only — the same semantic Text, bounded by
 	// the same truncation, wrapping, and sanitization as before.
 	if !tool.Expanded || tool.Text == "" {
-		// A finished block keeps its blank separator so sequential calls
-		// stay distinct; a running one stays tight while it streams.
-		if tool.Status == ToolDone || tool.Status == ToolError {
+		// Only the last call in an adjacent run keeps the separator row.
+		// A completed action stream therefore stacks as one compact block
+		// instead of one visually independent card per call.
+		if separate && (tool.Status == ToolDone || tool.Status == ToolError) {
 			sb.WriteString("\n")
 		}
 		return
