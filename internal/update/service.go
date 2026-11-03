@@ -280,9 +280,16 @@ func (s *Service) Check(ctx context.Context) (Status, error) {
 	release, cache, notModified, err := s.resolveLatest(ctx, true)
 	now := s.now().UTC()
 	if err != nil {
-		cache.LastAttemptAt = now
-		cache.LastError = err.Error()
-		s.saveCache(cache)
+		// A caller-cancelled check is not evidence about the endpoint. The
+		// process is shutting down or the operation was abandoned, so
+		// recording an attempt would suppress the next eligible check for one
+		// TTL without having learned anything. A deadline still records: the
+		// endpoint had its full budget and failed to answer.
+		if !errors.Is(err, context.Canceled) {
+			cache.LastAttemptAt = now
+			cache.LastError = err.Error()
+			s.saveCache(cache)
+		}
 		status := s.statusFrom(cache)
 		return status, err
 	}

@@ -69,10 +69,7 @@ func (p *Program) startUpdate() tea.Cmd {
 	p.state.Apply(UpdateStarted{})
 	// Derive cancellation from the program lifetime so quitting stops a
 	// stalled network operation instead of leaving it behind a dead UI.
-	base := p.catalogCtx
-	if base == nil {
-		base = context.Background()
-	}
+	base := p.Context()
 	fn := p.updateFn
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(base, updateCommandTimeout)
