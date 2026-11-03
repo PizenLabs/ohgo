@@ -5,6 +5,20 @@ immutable.
 
 ## [Unreleased]
 
+## [v0.0.6] - 2026-11-03
+
+### Fixed
+
+- A quit now cancels an in-flight background update check: the observer is bound
+  to the TUI program or plain-REPL lifetime, so leaving ohgo stops the request
+  instead of leaving it running behind a surface that no longer exists.
+- The background check and `/update` now share one update service: discovery and
+  installation read and write the same cache, so a hint and an explicit update
+  cannot disagree about which release is current.
+- A cancelled update check is no longer persisted: quitting during a check no
+  longer records a failed attempt that suppressed the next eligible check for a
+  TTL.
+
 ## [v0.0.5] - 2026-11-03
 
 ### Added

@@ -30,7 +30,7 @@ body:
     attributes:
       label: Version
       description: From `ohgo --version` or `git describe --tags --always --dirty`.
-      placeholder: "v0.0.5 / ed60b2b-dirty"
+      placeholder: "v0.0.6 / ed60b2b-dirty"
     validations:
       required: true
   - type: input
