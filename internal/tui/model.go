@@ -945,8 +945,23 @@ func (s *State) Apply(event Event) {
 		notice := e.Notice
 		notice.Version = strings.TrimSpace(notice.Version)
 		notice.Title = strings.TrimSpace(notice.Title)
+		notice.URL = strings.TrimSpace(notice.URL)
+		notice.LinkErr = ""
+		notice.Cursor = 0
 		notice.Changes = append([]PostUpdateChange(nil), notice.Changes...)
+		resetPostUpdateCursor(&notice)
 		s.PostUpdate = &notice
+
+	case PostUpdateMoved:
+		movePostUpdateCursor(s.PostUpdate, e.Delta)
+
+	case PostUpdateLinkFocused:
+		focusPostUpdateLink(s.PostUpdate)
+
+	case PostUpdateLinkFailed:
+		if s.PostUpdate != nil {
+			s.PostUpdate.LinkErr = strings.TrimSpace(e.Err)
+		}
 
 	case PostUpdateAcknowledged:
 		s.PostUpdate = nil
@@ -2627,15 +2642,43 @@ type PostUpdateView struct {
 	Title string
 	// Changes are bounded release notes, in changelog order.
 	Changes []PostUpdateChange
+	// URL is the human-facing release page the card links to. Empty hides the
+	// link row; the card never invents a destination the host did not supply.
+	URL string
+	// Cursor is the highlighted row among the visible notes and, last, the
+	// release link. It is presentation state, reset whenever the card opens.
+	Cursor int
 	// Err reports that the acknowledgement could not be persisted. The card
 	// stays open so the user can retry or leave the pending state intact.
 	Err string
+	// LinkErr reports that the release page could not be opened. The card
+	// stays open so the user can retry or dismiss it with Enter.
+	LinkErr string
 }
 
 // PostUpdateOpened presents a pending post-update acknowledgement.
 type PostUpdateOpened struct{ Notice PostUpdateView }
 
 func (PostUpdateOpened) eventKind() string { return "post_update_opened" }
+
+// PostUpdateMoved shifts the highlighted row within the visible notes and the
+// release link. The highlight clamps at both ends so a repeated arrow key
+// cannot leave the selectable rows.
+type PostUpdateMoved struct{ Delta int }
+
+func (PostUpdateMoved) eventKind() string { return "post_update_moved" }
+
+// PostUpdateLinkFocused parks the highlight on the release link, which is how
+// the "m" shortcut reaches it without walking the list.
+type PostUpdateLinkFocused struct{}
+
+func (PostUpdateLinkFocused) eventKind() string { return "post_update_link_focused" }
+
+// PostUpdateLinkFailed keeps the card open when the release page could not be
+// opened, so the notice is not consumed by an action that never happened.
+type PostUpdateLinkFailed struct{ Err string }
+
+func (PostUpdateLinkFailed) eventKind() string { return "post_update_link_failed" }
 
 // PostUpdateAcknowledged dismisses the card after the user pressed Enter.
 type PostUpdateAcknowledged struct{}

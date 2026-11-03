@@ -44,6 +44,9 @@ func TestPendingPostUpdateRequiresATransitionForTheRunningRelease(t *testing.T) 
 	if notice.Version != "v0.8.3" {
 		t.Fatalf("notice version = %q", notice.Version)
 	}
+	if notice.URL != releaseNotesURL {
+		t.Fatalf("notice URL = %q, want %q", notice.URL, releaseNotesURL)
+	}
 	if acknowledge == nil {
 		t.Fatal("the authorized card has no acknowledgement path")
 	}

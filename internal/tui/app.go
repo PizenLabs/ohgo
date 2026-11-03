@@ -404,6 +404,10 @@ type Program struct {
 	// pressed Enter; a nil function is a test seam that still dismisses the
 	// in-memory card. Update-goroutine-owned.
 	ackPostUpdate func() error
+	// openURL hands an external release page to the user's browser. Nil
+	// reports the action unavailable rather than spawning a process the TUI
+	// does not own. Update-goroutine-owned.
+	openURL func(string) error
 
 	// task is the durable task continuity layer, nil-safe. When set, runTurn
 	// records lifecycle boundaries (turn start, interruption, completion,
@@ -1007,6 +1011,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(PickerMoved{Delta: -1})
 			return p, nil
 		}
+		if p.state.PostUpdate != nil {
+			p.state.Apply(PostUpdateMoved{Delta: -1})
+			return p, nil
+		}
 		p.state.Apply(ScrollMoved{Delta: mouseScrollLines})
 		return p, nil
 	case tea.MouseButtonWheelDown:
@@ -1024,6 +1032,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		if p.state.Picker != nil {
 			p.state.Apply(PickerMoved{Delta: 1})
+			return p, nil
+		}
+		if p.state.PostUpdate != nil {
+			p.state.Apply(PostUpdateMoved{Delta: 1})
 			return p, nil
 		}
 		p.state.Apply(ScrollMoved{Delta: -mouseScrollLines})
@@ -1102,10 +1114,24 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	// A pending post-update notice is consumed only by an explicit Enter. Esc
 	// and stray keys neither dismiss it nor acknowledge it; Ctrl+C exits while
-	// leaving the notice pending for the next interactive launch.
+	// leaving the notice pending for the next interactive launch. Up/down move
+	// the highlight through the notes and the release link, and "m" parks it
+	// on the link so Enter can open the release page.
 	if p.state.PostUpdate != nil {
 		switch msg.String() {
+		case "up", "k":
+			p.state.Apply(PostUpdateMoved{Delta: -1})
+			return p, nil
+		case "down", "j":
+			p.state.Apply(PostUpdateMoved{Delta: 1})
+			return p, nil
+		case "m", "M":
+			p.state.Apply(PostUpdateLinkFocused{})
+			return p, nil
 		case "enter":
+			if postUpdateLinkSelected(p.state.PostUpdate) {
+				return p.openPostUpdateLink()
+			}
 			return p.acknowledgePostUpdate()
 		case "ctrl+c":
 			return p, p.quitNow()
