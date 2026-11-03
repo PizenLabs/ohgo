@@ -425,32 +425,33 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 			if !ok {
 				return TaskResume{}, false
 			}
-			resume := TaskResume{
-				ID: current.ID, Status: string(current.Status), Objective: current.Objective,
-				ReviewReason: current.ReviewReason, Role: string(current.LastRole()),
+			return runtimeResume(current), true
+		},
+		ListResumable: func() []TaskResume {
+			tasks, err := controller.ListResumable()
+			if err != nil {
+				return nil
 			}
-			resume.ObjectiveState = string(current.ObjectiveState())
-			resume.CompletionSummary = current.CompletionSummary()
-			resume.Warning = current.ContextWarning
-			if !current.Recovery.Empty() {
-				resume.RecoveryState = string(current.Recovery.State)
-				resume.RecoveryDetail = current.Recovery.Detail
+			out := make([]TaskResume, 0, len(tasks))
+			for _, t := range tasks {
+				out = append(out, runtimeResume(t))
 			}
-			if current.Handoff != nil {
-				resume.HandoffStatus = string(current.Handoff.Status)
-				resume.HandoffTo = current.Handoff.To.String()
-				resume.HandoffConsumed = current.Handoff.Consumed
+			return out
+		},
+		ListArchived: func() []TaskResume {
+			tasks, err := controller.ArchivedTasks()
+			if err != nil {
+				return nil
 			}
-			if current.Contract != nil {
-				resume.Contract = *current.Contract
-				resume.HasContract = true
+			out := make([]TaskResume, 0, len(tasks))
+			for _, t := range tasks {
+				out = append(out, runtimeResume(t))
 			}
-			resume.Snapshot = current.Snapshot
-			return resume, true
+			return out
 		},
 		Detach: func() TaskProjection {
-			detached, ok, err := controller.Detach()
-			if !ok {
+			detached, _, err := controller.Detach()
+			if detached.ID == "" && err == nil {
 				return TaskProjection{}
 			}
 			return runtimeProjection(detached, err)
@@ -499,6 +500,7 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 		},
 		Context:          controller.Context,
 		ObserveTurns:     controller.ObserveTurns,
+		HasCurrentChange: controller.HasCurrentChange,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
 		Timeline: func(limit int) []TimelineView {
@@ -534,6 +536,31 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 			return runtimeLineageView(focus), runtimeLineageViews(related), found
 		},
 	}
+}
+
+func runtimeResume(current task.Task) TaskResume {
+	resume := TaskResume{
+		ID: current.ID, Status: string(current.Status), Objective: current.Objective,
+		ReviewReason: current.ReviewReason, Role: string(current.LastRole()),
+	}
+	resume.ObjectiveState = string(current.ObjectiveState())
+	resume.CompletionSummary = current.CompletionSummary()
+	resume.Warning = current.ContextWarning
+	if !current.Recovery.Empty() {
+		resume.RecoveryState = string(current.Recovery.State)
+		resume.RecoveryDetail = current.Recovery.Detail
+	}
+	if current.Handoff != nil {
+		resume.HandoffStatus = string(current.Handoff.Status)
+		resume.HandoffTo = current.Handoff.To.String()
+		resume.HandoffConsumed = current.Handoff.Consumed
+	}
+	if current.Contract != nil {
+		resume.Contract = *current.Contract
+		resume.HasContract = true
+	}
+	resume.Snapshot = current.Snapshot
+	return resume
 }
 
 func runtimeLineageViews(entries []task.LineageEntry) []LineageView {

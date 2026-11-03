@@ -465,8 +465,23 @@ func completionEventSummary(kind contract.ObjectiveKind, proof CompletionProof) 
 	}
 }
 
-// latestChangeRecord returns the current evidence record for the most recent
-// definite change, preferring the runtime's own observation order.
+// HasCurrentChange reports whether the durable task carries a current observed
+// change. It is a read-only projection for the turn evaluator: a resumed turn
+// may verify a change a prior run already recorded without repeating it.
+//
+// It never establishes completion by itself. The task layer still requires the
+// verification to follow that change and to cover the contract, so this only
+// lets the runtime ask the durable completion boundary instead of refusing at
+// the per-run gate.
+func (c *Controller) HasCurrentChange() bool {
+	if err := c.ensureLoaded(); err != nil {
+		return false
+	}
+	_, ok := c.latestChangeRecord()
+	return ok
+}
+
+// latestChangeRecord returns the newest current, supporting change observation.
 func (c *Controller) latestChangeRecord() (EvidenceRecord, bool) {
 	if c.evidence != nil {
 		bestID, bestSeq := "", -1

@@ -222,6 +222,13 @@ type CompletionInput struct {
 	// conflicting, or blocked at the last request. It can only downgrade a
 	// completion; the completion evaluator still owns the final decision.
 	EvidenceReview string
+	// PriorChange reports that the durable task already recorded a current
+	// observed change before this run. A resumed turn that only verifies that
+	// change must not be refused as "no change was observed"; the durable
+	// completion boundary still requires the verification to follow the change
+	// and cover the contract. It can only enable that boundary, never complete
+	// the objective by itself.
+	PriorChange bool
 }
 
 // Alignment is the bounded semantic verdict.
@@ -314,7 +321,7 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		return needsReview("a tool call failed and no later success or verification recovered it: %s",
 			pendingFailureNames(evidence.pendingFailures))
 	}
-	if intent.Kind == contract.ObjectiveMutation && !evidence.mutated {
+	if intent.Kind == contract.ObjectiveMutation && !evidence.mutated && !input.PriorChange {
 		return needsReview("the request asked for a repository change but no change was observed")
 	}
 	if intent.Kind == contract.ObjectiveExecution && len(intent.Verification) == 0 && !evidence.executed {

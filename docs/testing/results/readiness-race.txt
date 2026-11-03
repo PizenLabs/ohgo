@@ -1,0 +1,5 @@
+$ go test -race -count=1 -run '^TestReadiness' ./internal/continuity/task/ ./internal/tui/ ./cmd/ohgo/
+ok  	github.com/PizenLabs/ohgo/internal/continuity/task	2.183s
+ok  	github.com/PizenLabs/ohgo/internal/tui	6.511s
+ok  	github.com/PizenLabs/ohgo/cmd/ohgo	5.949s
+exit=0

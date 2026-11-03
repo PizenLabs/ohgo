@@ -956,6 +956,25 @@ func (c *Controller) ArchiveProblems() []ArchiveProblem {
 	return c.store.ArchiveProblems()
 }
 
+// ArchivedTasks returns every archived task, oldest first, including terminal
+// history as well as resumable work.
+//
+// It is read-only recovery evidence: a completed task that was archived before
+// a new objective stays inspectable through /task history. Listing never
+// resumes, mutates, or deletes durable work, and a corrupt archive is reported
+// through ArchiveProblems rather than silently skipped.
+func (c *Controller) ArchivedTasks() ([]Task, error) {
+	archived, err := c.store.ListArchived()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Task, 0, len(archived))
+	for _, snap := range archived {
+		out = append(out, NormalizeRecovered(snap.Task))
+	}
+	return out, nil
+}
+
 // ResumeTask attaches a resumable task to the current session.
 //
 // An empty id resumes the latest resumable task (newest stamp, ID tie-break);

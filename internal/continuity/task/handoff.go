@@ -218,6 +218,26 @@ func (c *Controller) RecordWorkspaceSwitch(from, to workspace.Workspace, workspa
 	if !from.Valid() || !to.Valid() || from == to {
 		return nil
 	}
+	// The caller contract is "the authority already moved". Verify it against
+	// the live gate when one is installed: recording a switch the host did not
+	// perform would make the task metadata disagree with the only real
+	// authority, and recovery would then describe a role that never existed.
+	// Without a role source the controller cannot observe the gate, so it keeps
+	// the documented host-only contract.
+	if c.roleSource != nil {
+		live := c.currentRole()
+		if !live.Valid() || live != to {
+			return fmt.Errorf("%w: the live workspace is %q, not the claimed target %q",
+				ErrInvalidHandoff, live, to)
+		}
+	}
+	// The source is the role the task actually ran under. Rejecting a claimed
+	// source keeps the recovery narrative from naming a role this task never
+	// held; the live gate above is still the only authority.
+	if recorded := c.task.LastRole(); recorded.Valid() && recorded != from {
+		return fmt.Errorf("%w: the task last ran under %q, not the claimed source %q",
+			ErrInvalidHandoff, recorded, from)
+	}
 	// A transition proposal already recorded this exact move. Leave it in its
 	// approved state so the turn boundary applies it with the human's reason
 	// and summary instead of replacing it with the generic command record.
@@ -225,6 +245,7 @@ func (c *Controller) RecordWorkspaceSwitch(from, to workspace.Workspace, workspa
 		(existing.Status == HandoffApproved || existing.Status == HandoffApplied) {
 		return nil
 	}
+	before := c.snapshotState()
 	now := c.now().UTC()
 	handoff, err := c.snapshotHandoff(from, HandoffInput{
 		To:        to,
@@ -259,7 +280,10 @@ func (c *Controller) RecordWorkspaceSwitch(from, to workspace.Workspace, workspa
 		Summary: "workspace switched by explicit human command: " + from.Label() + " -> " + to.Label(),
 		Refs:    []string{handoff.ID},
 	})
-	return c.persist()
+	if _, err := c.commitState(before); err != nil {
+		return err
+	}
+	return nil
 }
 
 // HandoffInput is the host's request to begin a transition.
@@ -428,6 +452,10 @@ func (c *Controller) snapshotHandoff(from workspace.Workspace, in HandoffInput, 
 // ApproveHandoff records the human's authorization. Authority still does not
 // move: the host applies the transition next.
 func (c *Controller) ApproveHandoff(id string) (Handoff, error) {
+	if err := c.ensureLoaded(); err != nil {
+		return Handoff{}, err
+	}
+	before := c.snapshotState()
 	handoff, err := c.transitionHandoff(id, HandoffApproved)
 	if err != nil {
 		return Handoff{}, err
@@ -442,7 +470,7 @@ func (c *Controller) ApproveHandoff(id string) (Handoff, error) {
 		Summary: "handoff approved: " + handoff.From.Label() + " -> " + handoff.To.Label(),
 		Refs:    []string{handoff.ID},
 	})
-	if err := c.persist(); err != nil {
+	if _, err := c.commitState(before); err != nil {
 		return Handoff{}, err
 	}
 	return handoff.Clone(), nil
@@ -454,13 +482,17 @@ func (c *Controller) ApproveHandoff(id string) (Handoff, error) {
 // The caller must have already applied the authoritative workspace switch: this
 // method records the completed transition, it never performs the switch.
 func (c *Controller) ApplyHandoff(id string) (Task, error) {
+	if err := c.ensureLoaded(); err != nil {
+		return Task{}, err
+	}
 	if c.task.Handoff == nil || c.task.Handoff.ID != id {
 		return Task{}, fmt.Errorf("%w: %q", ErrUnknownHandoff, id)
 	}
+	before := c.snapshotState()
 	if err := c.applyApprovedHandoff(c.now().UTC()); err != nil {
 		return Task{}, err
 	}
-	return c.task.Clone(), c.persist()
+	return c.commitState(before)
 }
 
 // applyApprovedHandoff records the completed transition in memory. It is the
@@ -502,6 +534,10 @@ func (c *Controller) applyApprovedHandoff(now time.Time) error {
 
 // RejectHandoff records a human decline. Authority did not move.
 func (c *Controller) RejectHandoff(id, reason string) (Handoff, error) {
+	if err := c.ensureLoaded(); err != nil {
+		return Handoff{}, err
+	}
+	before := c.snapshotState()
 	handoff, err := c.transitionHandoff(id, HandoffRejected)
 	if err != nil {
 		return Handoff{}, err
@@ -518,7 +554,7 @@ func (c *Controller) RejectHandoff(id, reason string) (Handoff, error) {
 		Summary: "handoff rejected: " + handoff.From.Label() + " -> " + handoff.To.Label(),
 		Refs:    []string{handoff.ID},
 	})
-	if err := c.persist(); err != nil {
+	if _, err := c.commitState(before); err != nil {
 		return Handoff{}, err
 	}
 	return handoff.Clone(), nil
@@ -528,6 +564,10 @@ func (c *Controller) RejectHandoff(id, reason string) (Handoff, error) {
 // recorded active role is left untouched, so the last valid role remains
 // authoritative.
 func (c *Controller) FailHandoff(id, reason string) (Handoff, error) {
+	if err := c.ensureLoaded(); err != nil {
+		return Handoff{}, err
+	}
+	before := c.snapshotState()
 	handoff, err := c.transitionHandoff(id, HandoffFailed)
 	if err != nil {
 		return Handoff{}, err
@@ -544,7 +584,7 @@ func (c *Controller) FailHandoff(id, reason string) (Handoff, error) {
 		Summary: "handoff failed: " + handoff.From.Label() + " -> " + handoff.To.Label(),
 		Refs:    []string{handoff.ID},
 	})
-	if err := c.persist(); err != nil {
+	if _, err := c.commitState(before); err != nil {
 		return Handoff{}, err
 	}
 	return handoff.Clone(), nil
@@ -588,8 +628,9 @@ func (c *Controller) PendingHandoff() (Handoff, bool) {
 // HandoffRecovery is the outcome of reconciling a recovered transition with the
 // authority that was actually restored.
 type HandoffRecovery struct {
-	// Handoff is the reconciled record. It is the record after the decision,
-	// even when persisting it failed.
+	// Handoff is the record the caller may trust. On success it is the record
+	// after the decision; when persisting failed it is the prior durable record
+	// because the decision was rolled back.
 	Handoff Handoff
 	// Changed reports whether the record or the task role changed.
 	Changed bool
@@ -628,6 +669,7 @@ func (c *Controller) ReconcileRecoveredHandoff(live workspace.Workspace) (Handof
 	if c.task.Handoff == nil || c.task.Status.IsTerminal() {
 		return HandoffRecovery{}, nil
 	}
+	before := c.snapshotState()
 	current := c.task.Handoff.Clone()
 	now := c.now().UTC()
 	notice := ""
@@ -691,7 +733,15 @@ func (c *Controller) ReconcileRecoveredHandoff(live workspace.Workspace) (Handof
 		Refs:    []string{current.ID},
 	})
 	if err := c.persist(); err != nil {
-		return HandoffRecovery{Handoff: current.Clone(), Changed: true, Notice: notice}, err
+		// The reconciliation is a decision, not a fact until the checkpoint
+		// commit lands. Restore the loaded record so this boundary cannot
+		// expose an APPLIED/INTERRUPTED disposition the durable state never
+		// recorded; the next boundary reconciles again.
+		c.restoreState(before)
+		return HandoffRecovery{
+			Handoff: before.task.Handoff.Clone(),
+			Notice:  notice + " (not recorded: " + err.Error() + ")",
+		}, err
 	}
 	return HandoffRecovery{Handoff: current.Clone(), Changed: true, Notice: notice}, nil
 }

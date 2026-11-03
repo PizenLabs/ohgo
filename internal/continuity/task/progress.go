@@ -249,14 +249,20 @@ func (s *Store) Save(t Task) error {
 	return s.SaveCheckpoint(t, ProgressFrom(t))
 }
 
-// SaveCheckpoint writes the markdown projection and a caller-built checkpoint.
+// SaveCheckpoint writes the JSON checkpoint and then the markdown projection.
 //
 // It exists so the controller can record a "last meaningful action" that is
 // recovery context rather than part of the task contract. It refuses a write
 // whose checkpoint stamp predates what is already on disk: a resume that raced
-// a newer checkpoint must never roll recovery backwards. The projection is
-// written before the checkpoint, and the checkpoint is the commit point, so a
-// returned error always means the authoritative transition did not land.
+// a newer checkpoint must never roll recovery backwards.
+//
+// The checkpoint is the commit point, so it is written first. A failed
+// checkpoint therefore returns an error without touching the human projection,
+// which keeps task.md from announcing a status, proof, or role that was never
+// committed. The projection is derived presentation: once the checkpoint has
+// landed, a projection write failure is not a rollback signal (rolling memory
+// back would make disk newer than memory), so it is left for the next
+// checkpoint to refresh.
 func (s *Store) SaveCheckpoint(t Task, progress Progress) error {
 	if err := t.Validate(); err != nil {
 		return err
@@ -330,19 +336,22 @@ func (s *Store) SaveCheckpoint(t Task, progress Progress) error {
 	if err != nil {
 		return fmt.Errorf("task: encode progress: %w", err)
 	}
-	// The projection lands first and the checkpoint last. The checkpoint is the
-	// commit point: a caller that receives an error therefore knows the
-	// authoritative transition did not land, so it can roll the in-memory task
-	// back without leaving memory and disk disagreeing. A crash between the two
-	// writes leaves a newer human projection over the older checkpoint; Load
-	// takes status, contract, timeline, and proof from the checkpoint, so the
-	// newer projection can never claim a completion the checkpoint did not
-	// record.
-	if err := s.writeFile(s.TaskPath(), []byte(RenderMarkdown(t))); err != nil {
-		return fmt.Errorf("task: write projection: %w", err)
-	}
+	// The checkpoint lands first. It is the commit point: a caller that
+	// receives an error therefore knows the authoritative transition did not
+	// land, so it can roll the in-memory task back without leaving memory and
+	// disk disagreeing. The human projection is then written from the same
+	// committed task; a crash between the two writes leaves a stale projection
+	// over a newer checkpoint, and Load takes status, contract, timeline, and
+	// proof from the checkpoint, so the projection can never claim a
+	// completion the checkpoint did not record.
 	if err := s.writeFile(s.ProgressPath(), append(progressData, '\n')); err != nil {
 		return err
+	}
+	if err := s.writeFile(s.TaskPath(), []byte(RenderMarkdown(t))); err != nil {
+		// The checkpoint already committed, so this is not a rollback signal.
+		// Keep the operation successful; the next checkpoint rewrites the
+		// projection from the authoritative task.
+		return nil
 	}
 	return nil
 }
@@ -390,12 +399,12 @@ func (s *Store) Load() (Snapshot, error) {
 		if progress.Contract != nil {
 			cloned := cloneContract(*progress.Contract)
 			t.Contract = &cloned
-			// A checkpoint-only recovery has no task.md to carry the objective.
-			// The contract is authoritative for it, so reconstruct it here
-			// rather than leaving the task with an empty objective that a
-			// handoff written against the same contract can never agree with.
-			if strings.TrimSpace(t.Objective) == "" {
-				t.Objective = strings.TrimSpace(progress.Contract.Objective)
+			// The checkpoint is authoritative, so its contract supplies the
+			// objective. A stale projection from an earlier task must not keep
+			// describing a different intent after the checkpoint committed a
+			// replacement.
+			if objective := strings.TrimSpace(progress.Contract.Objective); objective != "" {
+				t.Objective = objective
 			}
 		}
 		if progress.Snapshot != nil {

@@ -35,7 +35,7 @@ workspace, completes a task, or promotes model output into verified fact.
 | Completion proof | `task.Task.Completion` | `progress.json` (`completion`) | `task.ObjectiveState`, `/task status` |
 | Recovery classification | `task.Store.Load` | never (derived) | task block, `/task status` |
 | Handoff authorization policy | `workspace.ProposeHandoff` | never (derived) | TUI transition card |
-| Detached tasks | `task.Store` archive | `.ohgo/tasks/<id>.json` | `/task list`, `/task resume` |
+| Detached tasks | `task.Store` archive | `.ohgo/tasks/<id>.json` | `/task list`, `/task history`, `/task show`, `/task resume` |
 | Completion verdict | `agent.Evaluate*Completion` | `task.Status` + proof | TUI verdict |
 
 The task checkpoint is **project-local**, not session-local:
@@ -50,7 +50,10 @@ A session is one conversation (`sessions.db`). A task is one objective that may
 survive a session, an interruption, a restart, and a role change. A role change
 never by itself recreates the task: the same objective continues. A new session
 keeps the task durably resumable, an explicit continuation re-attaches it, and a
-genuinely new objective starts a new task.
+genuinely new objective starts a new task. A terminal task is archived through
+the same detach path before the new objective starts, so its objective,
+evidence, proof, and timeline remain inspectable through `/task history` rather
+than being overwritten by the replacement checkpoint.
 
 **One writer:** `task.Store` writes the live checkpoint and the archive. The
 controller derives the checkpoint's context copy from the in-memory task, so a
@@ -285,9 +288,13 @@ Further persistence rules:
   that would make every later write fail;
 - an invalid context is rejected before write, and writes remain atomic
   (temp-then-rename);
-- the projection is written before the checkpoint, and the checkpoint is the
-  commit point. A returned write error therefore means the authoritative
-  transition did not land, so the controller restores the prior in-memory task.
+- the checkpoint is written first and the projection second. The checkpoint is
+  the commit point, so a returned write error means the authoritative transition
+  did not land and the controller restores the prior in-memory task. A failed
+  checkpoint also leaves `task.md` at its prior state, so the human artifact
+  cannot announce a status or proof the checkpoint never committed. A projection
+  failure after a committed checkpoint is not a rollback signal; the next
+  checkpoint rewrites the projection from the authoritative task.
   `Controller.CompleteWithEvidence` uses the same rollback, which is what makes
   a failed completion resumable instead of falsely published.
 
@@ -674,6 +681,9 @@ Specific rules:
 - a verification that predates the last observed change is not accepted; the
   runtime's observation order is authoritative, with the durable record
   timestamp as the fallback for host-recorded evidence;
+- a resumed turn may prove a change a prior run already recorded without
+  repeating it, but only when the new check follows that change and covers the
+  contract; a read-only resume or an unrelated check still cannot complete;
 - the proof's `Verified` list contains only checks that followed the last
   change, not every current check;
 - open todo work refuses completion and leaves the task active;

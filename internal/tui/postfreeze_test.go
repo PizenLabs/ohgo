@@ -38,11 +38,11 @@ func wirePostfreezeController(t *testing.T, p *Program, root string) *task.Contr
 			return resume, true
 		},
 		Detach: func() TaskProjection {
-			detached, ok, err := controller.Detach()
+			detached, _, err := controller.Detach()
 			if err != nil {
 				return TaskProjection{Err: err.Error()}
 			}
-			if !ok {
+			if detached.ID == "" {
 				return TaskProjection{}
 			}
 			return postfreezeTaskProjection(detached, nil)

@@ -1,0 +1,30 @@
+$ go version
+go version go1.27.3 darwin/arm64
+
+$ git rev-parse HEAD
+624aef05c136d198bb832150b65f78c0a87fffdf
+
+$ git status --porcelain=v1
+ M cmd/ohgo/handoff_recovery_test.go
+ M cmd/ohgo/taskcontinuity.go
+ M cmd/ohgo/taskcontinuity_test.go
+ M docs/architecture/TASK_CONTINUITY.md
+ M internal/agent/completion.go
+ M internal/continuity/task/completion.go
+ M internal/continuity/task/controller.go
+ M internal/continuity/task/handoff.go
+ M internal/continuity/task/handoff_test.go
+ M internal/continuity/task/postfreeze_test.go
+ M internal/continuity/task/progress.go
+ M internal/tui/app.go
+ M internal/tui/completion.go
+ M internal/tui/completion_test.go
+ M internal/tui/postfreeze_test.go
+ M internal/tui/task.go
+ M internal/tui/task_continuity_test.go
+ M internal/tui/task_test.go
+?? cmd/ohgo/readiness_process_test.go
+?? docs/testing/
+?? internal/continuity/task/readiness_component_test.go
+?? internal/tui/readiness_process_test.go
+?? internal/tui/readiness_runtime_test.go

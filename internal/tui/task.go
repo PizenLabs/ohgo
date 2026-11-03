@@ -218,6 +218,9 @@ type TaskHooks struct {
 	// ListResumable returns every resumable durable task, oldest first. Empty
 	// when no layer is installed or nothing is resumable.
 	ListResumable func() []TaskResume
+	// ListArchived returns every archived task, oldest first, including
+	// terminal history. It is read-only: listing never resumes or mutates.
+	ListArchived func() []TaskResume
 	// ResumeTask attaches one resumable task to the current session by ID, or
 	// the latest when id is empty. It restores durable state and moves the
 	// task to RUNNING.
@@ -244,6 +247,12 @@ type TaskHooks struct {
 	// evidence state. It is called at the turn boundary so an interrupted or
 	// final run is observed even if no later projection request ran.
 	ObserveTurns func([]agent.Turn)
+	// HasCurrentChange reports whether the active task already carries a
+	// current observed change. The turn evaluator uses it to let a resumed
+	// verification-only turn reach the durable completion boundary instead of
+	// refusing it for observing no mutation in the current run. It is evidence
+	// metadata, never authorization, and it never completes a task by itself.
+	HasCurrentChange func() bool
 	// Evidence returns the task's durable evidence state. The projector
 	// updates it in place; the controller checkpoints it at lifecycle
 	// boundaries. Nil disables task-shaped projection.
@@ -339,6 +348,33 @@ func (p *Program) taskCommand(args []string) {
 		sb.WriteString("resumable tasks:")
 		for _, r := range resumable {
 			fmt.Fprintf(&sb, "\n  %s %s: %s", r.Status, shortTaskID(r.ID), r.Objective)
+		}
+		p.state.Apply(Notice{Text: sb.String()})
+		return
+	case "history":
+		if p.task.ListArchived == nil {
+			p.state.Apply(Notice{Text: "task history is unavailable"})
+			return
+		}
+		archived := p.task.ListArchived()
+		var terminal []TaskResume
+		for _, r := range archived {
+			if taskStatusTerminal(r.Status) {
+				terminal = append(terminal, r)
+			}
+		}
+		if len(terminal) == 0 {
+			p.state.Apply(Notice{Text: "no completed task history"})
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("task history (newest last):")
+		for i := len(terminal) - 1; i >= 0; i-- {
+			r := terminal[i]
+			fmt.Fprintf(&sb, "\n  %s %s: %s", r.Status, shortTaskID(r.ID), r.Objective)
+			if state := strings.TrimSpace(r.ObjectiveState); state != "" {
+				sb.WriteString(" (" + state + ")")
+			}
 		}
 		p.state.Apply(Notice{Text: sb.String()})
 		return
@@ -504,7 +540,7 @@ func (p *Program) taskCommand(args []string) {
 		p.state.Apply(Notice{Text: "review closed without completion; the next prompt starts a new task"})
 		return
 	default:
-		p.state.Apply(Notice{Text: "usage: /task [status|list|show [id]|timeline [n]|lineage [id]|resume [id]|cancel [id]|accept]"})
+		p.state.Apply(Notice{Text: "usage: /task [status|list|history|show [id]|timeline [n]|lineage [id]|resume [id]|cancel [id]|accept]"})
 	}
 }
 
@@ -635,26 +671,48 @@ func (p *Program) selectTask(query string) (TaskResume, bool) {
 		p.state.Apply(Notice{Text: "no task is active"})
 		return TaskResume{}, false
 	}
-	resumable := p.task.ListResumable()
-	if len(resumable) == 0 {
-		p.state.Apply(Notice{Text: "no task is active"})
-		return TaskResume{}, false
+	// Resumable work is the common case. Only read the archive when the query
+	// does not resolve there, so an ordinary /task show never scans history.
+	if match, ok := matchTaskResume(p.task.ListResumable(), query); ok {
+		return match, true
+	}
+	if p.task.ListArchived != nil {
+		// Terminal work is archived, not resumable, but it remains inspectable.
+		// Searching history here keeps /task show truthful for completed tasks.
+		if match, ok := matchTaskResume(p.task.ListArchived(), query); ok {
+			return match, true
+		}
 	}
 	if query == "" {
-		return resumable[len(resumable)-1], true
+		p.state.Apply(Notice{Text: "no task is active"})
+	} else {
+		p.state.Apply(Notice{Text: "no task matches " + query})
 	}
-	for _, r := range resumable {
+	return TaskResume{}, false
+}
+
+// matchTaskResume finds one task by exact/prefix ID, then objective substring.
+// An empty query selects the newest candidate. It is a pure projection helper:
+// it never mutates a task or changes which task is active.
+func matchTaskResume(candidates []TaskResume, query string) (TaskResume, bool) {
+	if len(candidates) == 0 {
+		return TaskResume{}, false
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return candidates[len(candidates)-1], true
+	}
+	for _, r := range candidates {
 		if strings.EqualFold(r.ID, query) || strings.HasPrefix(strings.ToLower(r.ID), strings.ToLower(query)) {
 			return r, true
 		}
 	}
 	lowered := strings.ToLower(query)
-	for _, r := range resumable {
+	for _, r := range candidates {
 		if strings.Contains(strings.ToLower(r.Objective), lowered) {
 			return r, true
 		}
 	}
-	p.state.Apply(Notice{Text: "no resumable task matches " + query})
 	return TaskResume{}, false
 }
 
@@ -745,6 +803,26 @@ func taskStatusTerminal(status string) bool {
 	default:
 		return false
 	}
+}
+
+// objectiveContinuation reports whether this turn repeats the open task's own
+// objective with the same completion contract.
+//
+// An exact repeat is another turn on the work already in flight, not a second
+// task: detaching would silently split the evidence, timeline, and proof across
+// two identities. The rule is deliberately narrower than semantic similarity —
+// only the same normalized objective and the same contract kind continue.
+// Anything else still starts a new task.
+func objectiveContinuation(current TaskResume, next contract.IntentContract) bool {
+	if !current.HasContract {
+		return false
+	}
+	persisted := strings.TrimSpace(current.Contract.Objective)
+	requested := strings.TrimSpace(next.Objective)
+	if persisted == "" || !strings.EqualFold(persisted, requested) {
+		return false
+	}
+	return current.Contract.Kind == next.Kind
 }
 
 // roleContinuation reports whether this turn continues the current task

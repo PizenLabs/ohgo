@@ -88,17 +88,31 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			return taskProjection(recorded, err)
 		},
 		Detach: func() tui.TaskProjection {
-			detached, ok, err := controller.Detach()
+			detached, _, err := controller.Detach()
 			if err != nil {
 				return tui.TaskProjection{Err: err.Error()}
 			}
-			if !ok {
+			// A terminal task is archived, not resumable, but it is still a
+			// real detachment the transcript must show. Only an empty ID means
+			// there was no active task.
+			if detached.ID == "" {
 				return tui.TaskProjection{}
 			}
 			return taskProjection(detached, nil)
 		},
 		ListResumable: func() []tui.TaskResume {
 			tasks, err := controller.ListResumable()
+			if err != nil {
+				return nil
+			}
+			out := make([]tui.TaskResume, 0, len(tasks))
+			for _, t := range tasks {
+				out = append(out, taskResume(t))
+			}
+			return out
+		},
+		ListArchived: func() []tui.TaskResume {
+			tasks, err := controller.ArchivedTasks()
 			if err != nil {
 				return nil
 			}
@@ -149,6 +163,7 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		},
 		Context:          controller.Context,
 		ObserveTurns:     controller.ObserveTurns,
+		HasCurrentChange: controller.HasCurrentChange,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
 		ProjectionReview: func() string {

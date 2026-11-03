@@ -4545,9 +4545,30 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// task remains durable (detached, not deleted) and stays reachable through
 	// /task list and /task resume. Relatedness — same repository, same files —
 	// never implies continuation.
+	//
+	// A terminal task is never overwritten. It is archived through the same
+	// Detach path before the new objective starts, so its objective, evidence,
+	// proof, and timeline remain recoverable.
 	var targetSnapshot *agent.TargetSnapshot
+	priorChange := false
 	if p.task.Current != nil {
-		if current, ok := p.task.Current(); ok && !taskStatusTerminal(current.Status) {
+		current, ok := p.task.Current()
+		switch {
+		case !ok:
+			p.recordTaskDecision("NEW_INTENT")
+		case taskStatusTerminal(current.Status):
+			if p.task.Detach != nil {
+				detached := p.task.Detach()
+				if detached.Err != "" {
+					abortTurn("task state was not recorded: " + detached.Err)
+					return
+				}
+				if detached.ID != "" {
+					p.PublishTask(detached)
+				}
+			}
+			p.recordTaskDecision("NEW_INTENT")
+		default:
 			continuing := continuationPrompt(text)
 			switch {
 			case continuing:
@@ -4558,6 +4579,13 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			case roleContinuation(current, intent, activeAuthority):
 				continuing = true
 				p.recordTaskDecision("ROLE_CONTINUATION")
+			case objectiveContinuation(current, intent):
+				// Repeating the open objective is another turn on the same
+				// work, not a second task. Without this, an ordinary
+				// follow-up silently fragments identity and detaches the
+				// context the next turn needs.
+				continuing = true
+				p.recordTaskDecision("OBJECTIVE_CONTINUATION")
 			}
 			if continuing {
 				if !current.HasContract {
@@ -4572,12 +4600,16 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 					}
 					targetSnapshot = &cloned
 				}
+				// Read the durable evidence boundary before Begin starts this
+				// turn: a resumed verification-only run may prove the change a
+				// prior run already observed.
+				if p.task.HasCurrentChange != nil {
+					priorChange = p.task.HasCurrentChange()
+				}
 			} else {
 				// New intent: detach the durable task so it survives the
 				// session boundary without owning the new intent, then
-				// proceed with the fresh contract. COMPLETED/FAILED/CANCELLED
-				// never reach here (terminal), so no continuation prompt is
-				// ever shown for them.
+				// proceed with the fresh contract.
 				if p.task.Detach != nil {
 					detached := p.task.Detach()
 					if detached.Err != "" {
@@ -4590,8 +4622,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				}
 				p.recordTaskDecision("NEW_INTENT")
 			}
-		} else {
-			p.recordTaskDecision("NEW_INTENT")
 		}
 	} else {
 		p.recordTaskDecision("NEW_INTENT")
@@ -4878,7 +4908,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if p.task.ProjectionReview != nil {
 		evidenceReview = p.task.ProjectionReview()
 	}
-	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview)
+	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange)
 	// The turn boundary is also the evidence boundary. The loop projects
 	// before each request, but a run that stopped on a deadline, a turn limit,
 	// or its final answer may have an unobserved last turn. Folding it here

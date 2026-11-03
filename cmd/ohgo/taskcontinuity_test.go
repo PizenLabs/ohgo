@@ -133,12 +133,15 @@ func TestTaskResumeCarriesLastRole(t *testing.T) {
 // attached to the same task. It remains continuity metadata, never authority.
 func TestTaskResumeCarriesAnExplicitSwitch(t *testing.T) {
 	controller := task.NewController(task.NewStore(t.TempDir()), nil)
-	controller.SetRoleSource(func() workspace.Workspace { return workspace.Fuzz })
+	role := workspace.Fuzz
+	controller.SetRoleSource(func() workspace.Workspace { return role })
 	if _, err := controller.Begin(contract.IntentContract{
 		Objective: "fix the flaky test", Kind: contract.ObjectiveInformational,
 	}, nil); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	// A host records only after it has moved the live authority.
+	role = workspace.Build
 	if err := controller.RecordWorkspaceSwitch(workspace.Fuzz, workspace.Build, "main; clean"); err != nil {
 		t.Fatalf("RecordWorkspaceSwitch: %v", err)
 	}

@@ -151,11 +151,11 @@ func TestStartupConsumesAppliedHandoffOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	role = workspace.Build
 	if err := controller.RecordWorkspaceSwitch(workspace.Fuzz, workspace.Build, "main; clean"); err != nil {
 		t.Fatalf("RecordWorkspaceSwitch: %v", err)
 	}
 
-	role = workspace.Build
 	recovered := installRecovery(t, root, &role)
 	survived, ok := recovered.Current()
 	if !ok {

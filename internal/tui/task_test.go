@@ -647,6 +647,43 @@ func TestTaskCommandCancelDoesNotComplete(t *testing.T) {
 	}
 }
 
+// /task history lists archived terminal work, and /task show can still find it
+// after the live task has moved on. This is the UI half of the
+// archive-before-overwrite contract: preserving the record is only useful if a
+// human can reach it.
+func TestReadinessH09TaskHistoryReachesArchivedWork(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.SetTaskHooks(TaskHooks{
+		Current: func() (TaskResume, bool) {
+			return TaskResume{ID: "live1", Status: "RUNNING", Objective: "new work"}, true
+		},
+		ListResumable: func() []TaskResume {
+			return []TaskResume{{ID: "open1234", Status: "PAUSED", Objective: "unfinished work"}}
+		},
+		ListArchived: func() []TaskResume {
+			return []TaskResume{
+				{ID: "open1234", Status: "PAUSED", Objective: "unfinished work"},
+				{ID: "done1234", Status: "COMPLETED", Objective: "explain the parser", ObjectiveState: "PROVEN"},
+			}
+		},
+	})
+
+	p.taskCommand([]string{"history"})
+	history := lastNotice(p)
+	if !strings.Contains(history, "explain the parser") || !strings.Contains(history, "PROVEN") {
+		t.Fatalf("history did not show the archived completed task: %q", history)
+	}
+	if strings.Contains(history, "unfinished work") {
+		t.Fatalf("history listed resumable work as completed history: %q", history)
+	}
+
+	p.taskCommand([]string{"show", "done1234"})
+	shown := lastNotice(p)
+	if !strings.Contains(shown, "explain the parser") || !strings.Contains(shown, "done1234") {
+		t.Fatalf("show could not reach the archived completed task: %q", shown)
+	}
+}
+
 // A task projection is display-only: it must never flip execution state. This
 // is the negative half of "TUI and task.md are projections, not authorities".
 func TestTaskProjectionDoesNotChangeExecutionState(t *testing.T) {

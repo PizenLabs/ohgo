@@ -428,6 +428,9 @@ func TestExplicitWorkspaceSwitchRecordsAndContinuesTheTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	// The host has already moved the live authority; recording only describes
+	// the completed switch.
+	role = workspace.Build
 	if err := controller.RecordWorkspaceSwitch(workspace.Fuzz, workspace.Build, "main; clean"); err != nil {
 		t.Fatalf("RecordWorkspaceSwitch: %v", err)
 	}
@@ -445,7 +448,6 @@ func TestExplicitWorkspaceSwitchRecordsAndContinuesTheTask(t *testing.T) {
 		t.Fatal("explicit switch did not create the target role context")
 	}
 
-	role = workspace.Build
 	resumed, err := controller.Begin(intent, nil)
 	if err != nil {
 		t.Fatalf("Begin after switch: %v", err)
@@ -476,6 +478,8 @@ func TestExplicitSwitchDoesNotReplaceAnApprovedProposal(t *testing.T) {
 	if _, err := controller.ApproveHandoff(handoff.ID); err != nil {
 		t.Fatalf("ApproveHandoff: %v", err)
 	}
+	// The human's switch already moved the live authority.
+	role = workspace.Build
 	if err := controller.RecordWorkspaceSwitch(workspace.Fuzz, workspace.Build, ""); err != nil {
 		t.Fatalf("RecordWorkspaceSwitch: %v", err)
 	}
@@ -871,6 +875,9 @@ func TestAppliedHandoffSurvivesRestartAndConsumesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	// The host moved the authority first; the record describes that completed
+	// switch.
+	role = workspace.Build
 	if err := controller.RecordWorkspaceSwitch(workspace.Fuzz, workspace.Build, "main; clean"); err != nil {
 		t.Fatalf("RecordWorkspaceSwitch: %v", err)
 	}
