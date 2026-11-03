@@ -404,6 +404,30 @@ func TestServiceCheckFailurePreservesLastObservation(t *testing.T) {
 	}
 }
 
+// A cancelled check says nothing about the endpoint. Recording it would hide
+// the next launch's eligible check for a full TTL even though no request
+// completed.
+func TestServiceCheckCancellationDoesNotSuppressTheNextAttempt(t *testing.T) {
+	root := t.TempDir()
+	store := NewCacheStoreAt(filepath.Join(root, "update.json"))
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	service := NewService(Config{
+		CurrentVersion: "v1.0.0",
+		Source:         &staticSource{err: context.Canceled},
+		Cache:          store,
+		Now:            func() time.Time { return now },
+		CheckInterval:  time.Hour,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := service.Check(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Check error = %v, want context.Canceled", err)
+	}
+	if cache, ok := store.Load(); ok {
+		t.Fatalf("cancelled check wrote an attempt record: %+v", cache)
+	}
+}
+
 func TestManagedErrorExplainsTheOwningManager(t *testing.T) {
 	withCommand := (&ManagedError{Manager: "Homebrew", Command: "brew upgrade ohgo"}).Error()
 	if withCommand == "" || !bytes.Contains([]byte(withCommand), []byte("brew upgrade ohgo")) {

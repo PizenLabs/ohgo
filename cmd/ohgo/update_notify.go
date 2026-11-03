@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/config"
@@ -49,7 +50,22 @@ func updateChecksEnabled(settings config.Settings, getenv func(string) string) b
 	return true
 }
 
-// startUpdateObserver reports a cached newer release and, when allowed,
+// updateObservation is the slice of update.Service the background observer
+// needs. It is deliberately read-only: Observe is a local cache read and Check
+// only refreshes the observation. Nothing here can install a release.
+type updateObservation interface {
+	Observe() update.Status
+	Check(context.Context) (update.Status, error)
+}
+
+// startUpdateObserver is the process-lifetime form of
+// startUpdateObserverContext. It is used when the caller has no shorter
+// lifetime to bind the optional check to.
+func startUpdateObserver(settings config.Settings, current string, publish func(string)) func(io.Writer) {
+	return startUpdateObserverContext(context.Background(), settings, current, publish)
+}
+
+// startUpdateObserverContext reports a cached newer release and, when allowed,
 // refreshes the cache once in the background.
 //
 // publish, when non-nil, receives a cached observation immediately and a
@@ -60,7 +76,21 @@ func updateChecksEnabled(settings config.Settings, getenv func(string) string) b
 // The returned function, when non-nil, reads the local cache and prints a
 // single hint per release. It performs no network I/O and is safe to call
 // before every prompt.
-func startUpdateObserver(settings config.Settings, current string, publish func(string)) func(io.Writer) {
+//
+// Cancelling ctx stops an in-flight metadata request, which is how a session
+// ensures the check does not outlive the surface that asked for it.
+func startUpdateObserverContext(ctx context.Context, settings config.Settings, current string, publish func(string)) func(io.Writer) {
+	return startUpdateObserverWith(ctx, settings, current, update.NewService(update.Config{CurrentVersion: current}), publish)
+}
+
+// startUpdateObserverWith lets the host share the one update.Service it
+// already gave /update, so discovery and installation observe the same cache
+// and authority. It owns no network work itself: observeUpdate starts at most
+// one bounded background check and returns immediately.
+func startUpdateObserverWith(ctx context.Context, settings config.Settings, current string, svc updateObservation, publish func(string)) func(io.Writer) {
+	if svc == nil {
+		return nil
+	}
 	if !isTerminal(os.Stdout) {
 		// Pipes, CI logs, and machine-readable output never receive an
 		// update line.
@@ -69,18 +99,39 @@ func startUpdateObserver(settings config.Settings, current string, publish func(
 	if !updateChecksEnabled(settings, os.Getenv) {
 		return nil
 	}
-	svc := update.NewService(update.Config{CurrentVersion: current})
+	return observeUpdate(ctx, current, svc, updateCheckTimeout, publish)
+}
+
+// observeUpdate is the testable observer core. It never blocks: the cached
+// view is published synchronously, and any refresh runs in one goroutine
+// bounded by ctx and timeout.
+func observeUpdate(ctx context.Context, current string, svc updateObservation, timeout time.Duration, publish func(string)) func(io.Writer) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = updateCheckTimeout
+	}
 	status := svc.Observe()
 
-	var announced string
+	var mu sync.Mutex
+	announced := ""
 	record := func(observation update.Status, out io.Writer) {
 		if !observation.Available || observation.Reason != update.ReasonAvailable {
 			return
 		}
-		if observation.LatestVersion == "" || observation.LatestVersion == announced {
+		if observation.LatestVersion == "" {
 			return
 		}
-		announced = observation.LatestVersion
+		mu.Lock()
+		duplicate := observation.LatestVersion == announced
+		if !duplicate {
+			announced = observation.LatestVersion
+		}
+		mu.Unlock()
+		if duplicate {
+			return
+		}
 		if publish != nil {
 			publish(observation.LatestVersion)
 			return
@@ -104,12 +155,14 @@ func startUpdateObserver(settings config.Settings, current string, publish func(
 		return alert
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
+		checkCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		fresh, err := svc.Check(ctx)
+		fresh, err := svc.Check(checkCtx)
 		if err != nil || publish == nil {
 			// Without a UI callback the result is simply persisted: the next
-			// prompt (or the next launch) reads it locally.
+			// prompt (or the next launch) reads it locally. A failed check is
+			// quiet by design; the explicit /update path reports its own
+			// errors.
 			return
 		}
 		record(fresh, nil)
@@ -140,7 +193,11 @@ func installUpdateLifecycle(program *tui.Program, settings config.Settings, curr
 		},
 	})
 	program.SetUpdateFunc(svc.Update)
-	startUpdateObserver(settings, current, func(v string) {
+	// The observer shares the same service as /update, so discovery and
+	// installation read and write one cache. The check derives from the
+	// program lifetime: quitting cancels it instead of leaving a request
+	// behind a dead UI.
+	startUpdateObserverWith(program.Context(), settings, current, svc, func(v string) {
 		program.PublishUpdateAvailable(v)
 	})
 	showPendingPostUpdate(program, current)

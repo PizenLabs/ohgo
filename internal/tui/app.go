@@ -3700,6 +3700,17 @@ func (p *Program) RunLive() error {
 	return err
 }
 
+// Context returns the program lifetime context. Work that belongs to the UI
+// can derive from it and stop when Run returns instead of outliving the
+// surface that asked for it. A zero Program reports a background context
+// rather than panicking.
+func (p *Program) Context() context.Context {
+	if p == nil || p.catalogCtx == nil {
+		return context.Background()
+	}
+	return p.catalogCtx
+}
+
 // closeDone releases tools blocked past shutdown. Idempotent: Run defers it,
 // and headless tests drive shutdown without Run.
 func (p *Program) closeDone() {

@@ -523,8 +523,11 @@ func runSession(cmd *cobra.Command, args []string) error {
 	_, _ = fmt.Fprintln(out, "Type your request, or /quit to exit.")
 	// The plain REPL reads a terminal, so a cached update hint is safe to
 	// print once here. A background refresh is persisted and picked up at the
-	// next prompt boundary, never while the user is typing.
-	updateAlert := startUpdateObserver(boot.Settings, version, nil)
+	// next prompt boundary, never while the user is typing. The context keeps
+	// the one bounded check inside the REPL lifetime.
+	updateCtx, cancelUpdate := context.WithCancel(context.Background())
+	defer cancelUpdate()
+	updateAlert := startUpdateObserverContext(updateCtx, boot.Settings, version, nil)
 
 	var history []agent.Message
 	if sess != nil && resumeID > 0 {

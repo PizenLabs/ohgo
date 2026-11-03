@@ -74,6 +74,25 @@ func TestApprovalAfterShutdownIsDenied(t *testing.T) {
 	}
 }
 
+// Background work derived from the program lifetime must stop when the UI
+// stops; otherwise a metadata request can outlive the surface that asked for
+// it.
+func TestProgramContextEndsWithShutdown(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	ctx := p.Context()
+	select {
+	case <-ctx.Done():
+		t.Fatal("live program context was already cancelled")
+	default:
+	}
+	p.closeDone()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("program context survived shutdown")
+	}
+}
+
 // Closing the shutdown release twice must be safe: Run defers it and tests
 // drive it by hand, and the two must never meet as a close of a closed
 // channel.
