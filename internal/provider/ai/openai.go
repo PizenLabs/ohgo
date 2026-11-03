@@ -460,10 +460,14 @@ func reasoningTokens(details *struct {
 }
 
 func (a *openAIAccumulator) appendText(text string) {
-	for i := len(a.msg.Content) - 1; i >= 0; i-- {
-		if t, ok := a.msg.Content[i].(TextContent); ok {
+	// Extend only the trailing text block. A text delta that follows a tool
+	// call is later in the logical sequence; merging it backwards into an
+	// earlier text block would move the assistant's words ahead of the call
+	// and corrupt text/tool ordering.
+	if n := len(a.msg.Content); n > 0 {
+		if t, ok := a.msg.Content[n-1].(TextContent); ok {
 			t.Text += text
-			a.msg.Content[i] = t
+			a.msg.Content[n-1] = t
 			return
 		}
 	}

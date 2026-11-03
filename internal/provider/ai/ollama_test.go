@@ -115,6 +115,34 @@ func TestOllamaReassemblesToolCalls(t *testing.T) {
 	}
 }
 
+// TestOllamaPreservesTextAfterNativeToolCall keeps the content sequence the
+// model produced: a call that arrives between two text chunks stays between
+// them, rather than being moved to the end.
+func TestOllamaPreservesTextAfterNativeToolCall(t *testing.T) {
+	h := newOllamaHarness(t, 200, []string{
+		`{"message":{"role":"assistant","content":"before"},"done":false}`,
+		`{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"read","arguments":{"path":"a.go"}}}]},"done":false}`,
+		`{"message":{"role":"assistant","content":" after"},"done":false}`,
+		`{"done":true,"done_reason":"tool_calls"}`,
+	})
+	msg, err := runOllama(t, h, ollamaTestModel(""))
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if len(msg.Content) != 3 {
+		t.Fatalf("blocks = %d, want text, call, text", len(msg.Content))
+	}
+	if text, ok := msg.Content[0].(TextContent); !ok || text.Text != "before" {
+		t.Errorf("block 0 = %#v, want text before", msg.Content[0])
+	}
+	if call, ok := msg.Content[1].(ToolCall); !ok || call.Name != "read" {
+		t.Errorf("block 1 = %#v, want the native call", msg.Content[1])
+	}
+	if text, ok := msg.Content[2].(TextContent); !ok || text.Text != " after" {
+		t.Errorf("block 2 = %#v, want text after the call", msg.Content[2])
+	}
+}
+
 func toolCallsOf(msg AssistantMessage) []ToolCall {
 	var out []ToolCall
 	for _, block := range msg.Content {
