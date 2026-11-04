@@ -262,8 +262,10 @@ func runLiveScenarioWithOptions(ctx context.Context, sc scenario, live liveModel
 	summarizeTurns(&metrics, turns)
 	scoreAnswer(&metrics, sc.Facts)
 	review := ""
+	provenance := agent.EvidenceProvenance{}
 	if n := len(metrics.ProjectionReports); n > 0 {
 		review = metrics.ProjectionReports[n-1].EvidenceReview()
+		provenance = metrics.ProjectionReports[n-1].Provenance
 	}
 	metrics.EvidenceReview = review
 	for _, turn := range turns {
@@ -306,11 +308,12 @@ func runLiveScenarioWithOptions(ctx context.Context, sc scenario, live liveModel
 		Resolver:       resolver,
 		Root:           root,
 		EvidenceReview: review,
+		Provenance:     provenance,
 	})
 	if deadlineExpired {
 		completion = agent.EvaluateBudgetCompletion(agent.CompletionInput{
 			Turns: turns, Contract: contract, Snapshot: snapshot, Resolver: resolver, Root: root,
-			EvidenceReview: review,
+			EvidenceReview: review, Provenance: provenance,
 		}, true)
 		if !completion.Complete() {
 			metrics.CompletionReason = "deadline reached"

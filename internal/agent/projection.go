@@ -37,6 +37,12 @@ type ProjectionResult struct {
 	Tools []Tool
 	// System is appended after the base system prompt.
 	System []ai.SystemPromptBlock
+	// Refusals maps a call signature (agent.CallSignature) to the runtime
+	// reason it must not execute again. It is how the control plane's failure
+	// memory reaches the execution boundary: a repeated failed proposal is
+	// refused before any tool runs, while a different proposal stays possible.
+	// A refusal narrows the action space and never grants authority.
+	Refusals map[string]string
 	// Report describes what the projection did, for audit.
 	Report ProjectionReport
 }
@@ -78,6 +84,15 @@ type ProjectionReport struct {
 	// continuation after the answer, not new evidence. The loop refuses those
 	// calls instead of executing them.
 	AnswerEligible bool `json:"answer_eligible,omitempty"`
+	// Terminal reports that the runtime has closed the task. The loop must not
+	// start another unrestricted reasoning cycle after the current request.
+	Terminal bool `json:"terminal,omitempty"`
+	// StopReason explains a terminal verdict in evidence terms.
+	StopReason string `json:"stop_reason,omitempty"`
+	// Provenance summarizes what kind of evidence the answer may rely on:
+	// observed implementation, documentation, or external content. Completion
+	// uses it to keep documentation claims distinguishable from observed facts.
+	Provenance EvidenceProvenance `json:"provenance,omitempty"`
 	// Shape is a one-line task-shape summary.
 	Shape string `json:"shape,omitempty"`
 	// Evidence is a bounded evidence-state summary.
@@ -125,4 +140,31 @@ func (r ProjectionReport) EvidenceReview() string {
 type CandidateExclusion struct {
 	Tool   string `json:"tool"`
 	Reason string `json:"reason"`
+}
+
+// EvidenceProvenance is what a task's evidence can truthfully support.
+//
+// The distinction is load-bearing: a README is evidence of what the project
+// says about itself, while a source read is evidence of what the implementation
+// does. DocumentationTerms are the answer terms that appear in documentation
+// but not in any observed implementation, so a completion check can require
+// attribution instead of silently presenting a README claim as a repository
+// fact. Nothing here is authority or proof by itself.
+type EvidenceProvenance struct {
+	// RequireAttribution reports that the objective is a broad repository
+	// account, so documentation-only claims must be attributed.
+	RequireAttribution bool `json:"require_attribution,omitempty"`
+	// HasImplementation reports at least one observed source or structural
+	// implementation fact.
+	HasImplementation bool `json:"has_implementation,omitempty"`
+	// HasDocumentation reports at least one documentation observation.
+	HasDocumentation bool `json:"has_documentation,omitempty"`
+	// ExternalRequired reports that the request explicitly needs external
+	// knowledge.
+	ExternalRequired bool `json:"external_required,omitempty"`
+	// ExternalObserved reports at least one successful external observation.
+	ExternalObserved bool `json:"external_observed,omitempty"`
+	// DocumentationTerms are bounded lower-case answer terms that appear only
+	// in documentation evidence. They are audit data, never authority.
+	DocumentationTerms []string `json:"documentation_terms,omitempty"`
 }

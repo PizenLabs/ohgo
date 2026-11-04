@@ -46,6 +46,33 @@ func (evidenceReadTool) Execute(_ agent.Context, args map[string]any) agent.Resu
 	}
 }
 
+// evidenceListTool is a second real observation tool. Adversarial scripts use
+// it to alternate tools while proving the action surface still bounds them.
+type evidenceListTool struct{}
+
+func (evidenceListTool) Name() string        { return "ls" }
+func (evidenceListTool) Description() string { return "list a directory" }
+func (evidenceListTool) Parameters() *jsonschema.Schema {
+	return jsonschema.MustCompile([]byte(`{
+		"type":"object",
+		"properties":{"path":{"type":"string"}}
+	}`))
+}
+func (evidenceListTool) Approval() agent.Approval      { return agent.Approval{Tier: agent.TierRead} }
+func (evidenceListTool) Exclusive(map[string]any) bool { return false }
+func (evidenceListTool) Execute(_ agent.Context, args map[string]any) agent.Result {
+	path, _ := args["path"].(string)
+	if path == "" {
+		path = "."
+	}
+	return agent.Result{
+		Text: "README.md\ngo.mod\ncmd",
+		Details: map[string]any{
+			"path": path, "entries": 3,
+		},
+	}
+}
+
 // allowRead authorizes a read-only test capability.
 type allowRead struct{}
 
@@ -76,6 +103,9 @@ func runInformational(t *testing.T, script []ai.AssistantMessage) informationalR
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# ohgo\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	prompt := "check this project and analyze what this project is about?"
 	intent := workspace.BuildIntentContract(prompt)
@@ -97,7 +127,7 @@ func runInformational(t *testing.T, script []ai.AssistantMessage) informationalR
 			}
 			return ai.NewCompletedStream(script[index]), nil
 		},
-		Tools:     []agent.Tool{evidenceReadTool{}},
+		Tools:     []agent.Tool{evidenceReadTool{}, evidenceListTool{}},
 		Project:   projector.Project,
 		Authorize: allowRead{},
 		MaxTurns:  6,
@@ -125,6 +155,7 @@ func overviewCall(id string) []ai.ContentBlock {
 	return []ai.ContentBlock{
 		ai.ToolCall{ID: id + "-readme", Name: "read", Arguments: map[string]any{"path": "README.md"}},
 		ai.ToolCall{ID: id + "-mod", Name: "read", Arguments: map[string]any{"path": "go.mod"}},
+		ai.ToolCall{ID: id + "-main", Name: "read", Arguments: map[string]any{"path": "main.go"}},
 	}
 }
 
@@ -285,6 +316,194 @@ func TestProtocolResidueVetoesInformationalCompletion(t *testing.T) {
 
 // A model that never answers is bounded by the turn grant. Its refusals execute
 // nothing, and the run is never reported as a successful analysis.
+func listCall(id string) []ai.ContentBlock {
+	return []ai.ContentBlock{ai.ToolCall{
+		ID: id, Name: "ls", Arguments: map[string]any{"path": "."},
+	}}
+}
+
+func invalidReadCall(id string) []ai.ContentBlock {
+	return []ai.ContentBlock{ai.ToolCall{
+		ID: id, Name: "read", Arguments: map[string]any{},
+	}}
+}
+
+// A model that alternates between different tools after the action surface is
+// empty still terminates. Every call is refused, nothing executes, and the run
+// cannot be reported complete.
+func TestNonAnsweringModelAlternatingToolsIsBounded(t *testing.T) {
+	script := []ai.AssistantMessage{
+		{Content: overviewCall("turn-1"), StopReason: ai.StopToolUse},
+	}
+	for i := 0; i < 5; i++ {
+		if i%2 == 0 {
+			script = append(script, ai.AssistantMessage{
+				Content: readCall("read-" + string(rune('a'+i))), StopReason: ai.StopToolUse,
+			})
+			continue
+		}
+		script = append(script, ai.AssistantMessage{
+			Content: listCall("ls-" + string(rune('a'+i))), StopReason: ai.StopToolUse,
+		})
+	}
+	result := runInformational(t, script)
+
+	if !errors.Is(result.err, agent.ErrTaskBlocked) {
+		t.Fatalf("Run error = %v, want ErrTaskBlocked", result.err)
+	}
+	if result.requests != 3 {
+		t.Fatalf("model requests = %d, want the bounded answer-only surface (3)", result.requests)
+	}
+	last := result.turns[len(result.turns)-1]
+	for _, outcome := range last.Results {
+		if !outcome.Result.AnswerRequired {
+			t.Fatalf("post-answer call was not refused: %+v", outcome)
+		}
+	}
+	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: result.turns, Contract: result.intent,
+		EvidenceReview: result.report.EvidenceReview(),
+	})
+	if got.Complete() {
+		t.Fatal("an alternating non-answering model was reported complete")
+	}
+	if strings.TrimSpace(got.Reason) == "" {
+		t.Fatal("a non-complete run must explain its verdict")
+	}
+}
+
+// Malformed tool calls (schema violations) never become evidence and never
+// produce an answer. The runtime records the failure class, refuses the
+// identical repeat, and closes the task instead of spending the turn grant.
+func TestNonAnsweringModelWithMalformedCallsIsBounded(t *testing.T) {
+	script := make([]ai.AssistantMessage, 0, 6)
+	for i := 0; i < 6; i++ {
+		script = append(script, ai.AssistantMessage{
+			Content: invalidReadCall("bad-" + string(rune('a'+i))), StopReason: ai.StopToolUse,
+		})
+	}
+	result := runInformational(t, script)
+
+	if !errors.Is(result.err, agent.ErrTaskBlocked) {
+		t.Fatalf("Run error = %v, want ErrTaskBlocked", result.err)
+	}
+	if result.requests > 3 {
+		t.Fatalf("model requests = %d, want a bounded decision", result.requests)
+	}
+	failureRejected := 0
+	for _, turn := range result.turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.FailureRejected {
+				failureRejected++
+			}
+		}
+	}
+	if failureRejected == 0 {
+		t.Fatal("the identical failed proposal was executed again instead of refused")
+	}
+	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: result.turns, Contract: result.intent,
+		EvidenceReview: result.report.EvidenceReview(),
+	})
+	if got.Complete() {
+		t.Fatal("a run of malformed calls was reported complete")
+	}
+}
+
+// An empty or whitespace-only final message is not an answer, even after the
+// evidence was acquired.
+func TestEmptyAndWhitespaceAnswersAreNotCompletion(t *testing.T) {
+	for name, answer := range map[string]string{
+		"empty":      "",
+		"whitespace": "  \n\t ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := runInformational(t, []ai.AssistantMessage{
+				{Content: overviewCall("turn-1"), StopReason: ai.StopToolUse},
+				{Content: []ai.ContentBlock{ai.TextContent{Text: answer}}},
+			})
+			if result.err != nil {
+				t.Fatalf("Run: %v", result.err)
+			}
+			got := agent.EvaluateTaskCompletion(agent.CompletionInput{
+				Turns: result.turns, Contract: result.intent,
+				EvidenceReview: result.report.EvidenceReview(),
+			})
+			if got.Complete() {
+				t.Fatalf("%s answer was reported complete", name)
+			}
+			if !strings.Contains(got.Reason, "empty") {
+				t.Fatalf("reason = %q, want an empty-answer reason", got.Reason)
+			}
+		})
+	}
+}
+
+// An answer-shaped message emitted before any observation is not evidence. The
+// projector's review vetoes it even though the text looks like a result.
+func TestAnswerShapedMessageWithoutEvidenceIsNotCompletion(t *testing.T) {
+	result := runInformational(t, []ai.AssistantMessage{{
+		Content: []ai.ContentBlock{ai.TextContent{
+			Text: "This project is a coding agent with a controlled runtime and explicit authority.",
+		}},
+	}})
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	if result.requests != 1 {
+		t.Fatalf("model requests = %d, want 1", result.requests)
+	}
+	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: result.turns, Contract: result.intent,
+		EvidenceReview: result.report.EvidenceReview(),
+	})
+	if got.Complete() {
+		t.Fatal("an answer with no repository evidence was reported complete")
+	}
+	if !strings.Contains(got.Reason, "not sufficient") {
+		t.Fatalf("reason = %q, want an evidence-sufficiency reason", got.Reason)
+	}
+}
+
+// Quoted protocol documentation is assistant content. It must not set the
+// residue flag or veto completion; unquoted provider bytes still do.
+func TestQuotedProtocolContentDoesNotVetoCompletion(t *testing.T) {
+	quoted := ai.NormalizeMessage(ai.AssistantMessage{
+		Content: []ai.ContentBlock{ai.TextContent{
+			Text: "Use `<dotsfunctioncall>` and `</dotsfunctioncall>` in the docs.",
+		}},
+	}, ai.NormalizeOptions{})
+	if quoted.ProtocolResidue {
+		t.Fatal("quoted documentation was marked as protocol residue")
+	}
+	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: []agent.Turn{{Assistant: quoted}},
+		Contract: contract.IntentContract{
+			Kind:      contract.ObjectiveInformational,
+			Objective: "What is a cron expression?",
+		},
+	})
+	if !got.Complete() {
+		t.Fatalf("quoted documentation vetoed completion: %s", got.Reason)
+	}
+
+	unquoted := ai.NormalizeMessage(ai.AssistantMessage{
+		Content: []ai.ContentBlock{ai.TextContent{
+			Text: `<dots_protocol_call><invoke name="ls"><parameter name="path">x</parameter></invoke></dots_protocol_call>`,
+		}},
+	}, ai.NormalizeOptions{})
+	got = agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: []agent.Turn{{Assistant: unquoted}},
+		Contract: contract.IntentContract{
+			Kind:      contract.ObjectiveInformational,
+			Objective: "What is a cron expression?",
+		},
+	})
+	if got.Complete() {
+		t.Fatal("unquoted provider protocol was reported complete")
+	}
+}
+
 func TestAnswerlessContinuationIsBoundedAndNotCompleted(t *testing.T) {
 	script := []ai.AssistantMessage{
 		{Content: overviewCall("turn-1"), StopReason: ai.StopToolUse},
@@ -296,16 +515,53 @@ func TestAnswerlessContinuationIsBoundedAndNotCompleted(t *testing.T) {
 	}
 	result := runInformational(t, script)
 
-	if !errors.Is(result.err, agent.ErrTurnLimit) {
-		t.Fatalf("Run error = %v, want ErrTurnLimit", result.err)
+	if !errors.Is(result.err, agent.ErrTaskBlocked) {
+		t.Fatalf("Run error = %v, want ErrTaskBlocked", result.err)
 	}
-	if result.requests != 6 {
-		t.Fatalf("model requests = %d, want the turn grant (6)", result.requests)
+	if result.requests != 3 {
+		t.Fatalf("model requests = %d, want the bounded answer-only surface (3)", result.requests)
 	}
 	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
 		Turns: result.turns, Contract: result.intent,
 	})
 	if got.Complete() {
 		t.Fatal("a run with no answer was reported complete")
+	}
+}
+
+// A call to a capability the loop was never built with is still an
+// answer-required refusal once the action surface is empty. Nothing ran, and
+// the call must not remain outstanding work after an answer.
+func TestUnknownCallOnEmptySurfaceIsAnswerRequired(t *testing.T) {
+	answer := "ohgo is a coding agent with a controlled runtime."
+	result := runInformational(t, []ai.AssistantMessage{
+		{Content: overviewCall("turn-1"), StopReason: ai.StopToolUse},
+		{
+			Content: []ai.ContentBlock{
+				ai.TextContent{Text: answer},
+				ai.ToolCall{ID: "unknown-1", Name: "gry:index_status"},
+			},
+			StopReason: ai.StopToolUse,
+		},
+	})
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	if result.requests != 2 {
+		t.Fatalf("model requests = %d, want 2", result.requests)
+	}
+	last := result.turns[len(result.turns)-1]
+	if len(last.Results) != 1 || !last.Results[0].Result.AnswerRequired {
+		t.Fatalf("last results = %+v, want one answer-required refusal", last.Results)
+	}
+	if !last.Results[0].Refused() {
+		t.Fatal("the unknown call was counted as executed work")
+	}
+	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: result.turns, Contract: result.intent,
+		EvidenceReview: result.report.EvidenceReview(),
+	})
+	if strings.Contains(got.Reason, "outstanding") {
+		t.Fatalf("a refused unknown call was counted as outstanding work: %s", got.Reason)
 	}
 }

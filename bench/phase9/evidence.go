@@ -233,8 +233,10 @@ func runEvidenceScenario(ctx context.Context, sc scenario) (metrics runMetrics, 
 	scoreAnswer(&metrics, sc.Facts)
 
 	review := ""
+	provenance := agent.EvidenceProvenance{}
 	if n := len(reports); n > 0 {
 		review = reports[n-1].EvidenceReview()
+		provenance = reports[n-1].Provenance
 	}
 	metrics.EvidenceReview = review
 
@@ -251,6 +253,7 @@ func runEvidenceScenario(ctx context.Context, sc scenario) (metrics runMetrics, 
 		Resolver:       resolver,
 		Root:           root,
 		EvidenceReview: review,
+		Provenance:     provenance,
 	})
 	metrics.CompletionReason = completion.Reason
 	if completion.Complete() {

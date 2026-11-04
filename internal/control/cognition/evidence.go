@@ -48,6 +48,35 @@ const (
 	RetentionTransient  Retention = "transient"
 )
 
+// Provenance is what a repository observation actually observes.
+//
+// It keeps a README's description of the project distinct from a source read:
+// both can be exact content, but only the source read establishes what the
+// implementation does. The classification is derived from the path and the
+// producing capability, never from model text.
+type Provenance string
+
+// Provenance classes.
+const (
+	// ProvenanceObservation is source code, configuration, or a structural
+	// query: evidence of what the implementation does.
+	ProvenanceObservation Provenance = "observation"
+	// ProvenanceDocumentation is README, docs, or another prose artifact: it
+	// is evidence of what the project says about itself.
+	ProvenanceDocumentation Provenance = "documentation"
+	// ProvenanceManifest is a module or package manifest. It states dependency
+	// or language facts, not architecture.
+	ProvenanceManifest Provenance = "manifest"
+	// ProvenanceGenerated is vendored or generated content. It is retained as
+	// evidence but does not prove the project's own implementation.
+	ProvenanceGenerated Provenance = "generated"
+	// ProvenanceExternal is untrusted content from outside the workspace.
+	ProvenanceExternal Provenance = "external"
+	// ProvenanceDiagnostic is an error, check, or command result: a control
+	// observation rather than a description of the implementation.
+	ProvenanceDiagnostic Provenance = "diagnostic"
+)
+
 // Evidence bounds.
 const (
 	// MaxEvidenceValueBytes bounds one retained payload.
@@ -99,6 +128,10 @@ type EvidenceItem struct {
 	Status EvidenceStatus `json:"status"`
 	// Retention is how the evidence survives projection.
 	Retention Retention `json:"retention"`
+	// Provenance is what the observation actually observes: implementation,
+	// documentation, manifest, generated/vendored content, external content,
+	// or a diagnostic.
+	Provenance Provenance `json:"provenance,omitempty"`
 	// Summary is a bounded model-facing description.
 	Summary string `json:"summary"`
 	// Value is the bounded retained payload. It is not sent whole by default;
@@ -152,6 +185,14 @@ type EvidenceState struct {
 	// mutation per path, so a later differing read is not mistaken for a
 	// conflict when the runtime itself changed the file.
 	LastMutationSeq map[string]int `json:"lastMutationSeq,omitempty"`
+	// Failures is the durable capability-failure ledger. It is separate from
+	// Items because a failure is not a repository fact: it is a control
+	// observation that decides whether the same proposal may execute again.
+	Failures []FailureRecord `json:"failures,omitempty"`
+	// Facts is the bounded workspace probe the requirements were derived from.
+	// It lets sufficiency distinguish a documentation-only project from a code
+	// project whose broad account still lacks an implementation observation.
+	Facts RepositoryFacts `json:"facts,omitempty"`
 }
 
 // NewEvidenceState returns an empty state.
@@ -180,6 +221,7 @@ func (s *EvidenceState) Clone() *EvidenceState {
 	for key, value := range s.LastMutationSeq {
 		out.LastMutationSeq[key] = value
 	}
+	out.Failures = append([]FailureRecord(nil), s.Failures...)
 	return &out
 }
 
@@ -211,6 +253,30 @@ func (s *EvidenceState) Conflicts() []EvidenceItem {
 		}
 	}
 	return out
+}
+
+// HasExternalObservation reports whether a successful external observation was
+// recorded.
+//
+// Discovery is not an observation: it names capabilities without acquiring
+// knowledge. An item is external evidence only when it carries the external
+// provenance and a payload or summary to support a claim.
+func (s *EvidenceState) HasExternalObservation() bool {
+	if s == nil {
+		return false
+	}
+	for _, item := range s.Items {
+		if item.Provenance != ProvenanceExternal {
+			continue
+		}
+		if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
+			continue
+		}
+		if strings.TrimSpace(item.Value) != "" || strings.TrimSpace(item.Summary) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Missing returns the declared requirements the state cannot satisfy.
@@ -261,7 +327,9 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 	case key == "repository_overview":
 		return s.hasRepositoryOverview()
 	case key == "repository_survey":
-		return s.hasRepositorySurvey()
+		return s.hasRepositorySurvey(s.Facts)
+	case key == "external_observation":
+		return s.HasExternalObservation()
 	case key == "verification":
 		return execution.VerifiedAfterMutation || len(execution.Verifications) > 0
 	case key == "execution_result":
@@ -315,10 +383,11 @@ func (s *EvidenceState) hasRepositoryOverview() bool {
 // A specific question ("does this workflow run automatically?") is answered by
 // one content observation. "Analyze what this project is about" is not: purpose,
 // structure, and stack need at least a second content observation or a
-// structural listing. Keeping this separate prevents a targeted question from
-// being forced to read more files than its answer requires.
-func (s *EvidenceState) hasRepositorySurvey() bool {
-	content, structure := 0, 0
+// structural listing. A project that has source code additionally needs at least
+// one implementation observation: two documentation artifacts describe what the
+// project says about itself, not what its implementation does.
+func (s *EvidenceState) hasRepositorySurvey(facts RepositoryFacts) bool {
+	content, implementation, structure := 0, 0, 0
 	for _, item := range s.Items {
 		if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
 			continue
@@ -328,16 +397,28 @@ func (s *EvidenceState) hasRepositorySurvey() bool {
 			// A missing-file observation is target-state, not content.
 			if item.Retention == RetentionExact && strings.TrimSpace(item.Value) != "" {
 				content++
+				if isImplementationObservation(item) {
+					implementation++
+				}
 			}
 		case strings.HasPrefix(item.ID, "search:grep:"), strings.HasPrefix(item.ID, "symbols:"):
 			if strings.TrimSpace(item.Value) != "" {
 				content++
+				if isImplementationObservation(item) {
+					implementation++
+				}
 			}
 		case strings.HasPrefix(item.ID, "dir:"):
 			structure++
 		}
 	}
-	return content > 0 && (content >= 2 || structure > 0)
+	if content == 0 {
+		return false
+	}
+	if facts.HasSourceCode() && implementation == 0 {
+		return false
+	}
+	return content >= 2 || structure > 0
 }
 
 // containsEvidence reports whether an item kind contains value.
@@ -433,6 +514,7 @@ func (s *EvidenceState) ObserveTurns(shape TaskShape, turns []agent.Turn) (obser
 
 // ensureRequirements records the shape's needs once.
 func (s *EvidenceState) ensureRequirements(shape TaskShape) {
+	s.Facts = shape.RepositoryFacts
 	for _, need := range shape.RequiredKnowledge {
 		found := false
 		for _, existing := range s.Requirements {
@@ -461,9 +543,18 @@ func (s *EvidenceState) ObserveOutcome(outcome agent.ToolOutcome) bool {
 // observe is the one place the outcome-to-evidence switch lives. It reports
 // whether the outcome carried a repository fact and whether that fact was new.
 func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) {
-	if s == nil || outcome.Refused() {
+	if s == nil {
+		return false, false
+	}
+	if outcome.Refused() {
 		// A withheld or denied action never ran. It is a control signal, not
 		// an observation about the repository, and must not become evidence.
+		// A failure refusal is still a repeated proposal, so it counts against
+		// the capability's retry budget without executing.
+		if outcome.Result.FailureRejected {
+			s.Seq++
+			s.recordFailureRefusal(outcome, s.Seq)
+		}
 		return false, false
 	}
 	defer s.trim()
@@ -481,9 +572,25 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 		// missing-file error, which establishes that the named path is absent.
 		// A turn made only of errors therefore never counts as stagnation: the
 		// model is correcting itself, not repeating a completed observation.
+		//
+		// The failure ledger is separate: an absence and a resource stop are
+		// successful control observations, while an execution failure is a
+		// capability fact the next projection must be able to refuse.
+		if !outcome.Result.ObservedAbsence && outcome.Result.Exhausted == nil {
+			s.recordFailure(outcome, seq)
+		}
 		changed := s.addError(outcome, path, seq)
 		return changed, changed
 	}
+
+	// A successful observation of the same coordinate recovers an earlier
+	// failure. A definite workspace change also invalidates non-fatal failures:
+	// the same command or read is a different proposal once the code it
+	// observes has changed, so a failed test must be retryable after the fix.
+	if outcome.Result.Mutates || (outcome.Authorization != nil && outcome.Authorization.Mutates) {
+		s.resolveNonFatalFailures()
+	}
+	s.resolveFailure(outcome)
 
 	switch tool {
 	case "read":
@@ -523,23 +630,25 @@ func (s *EvidenceState) addError(outcome agent.ToolOutcome, path string, seq int
 	summary := firstLine(outcome.Result.Text)
 	id := "error:" + outcome.ToolName + ":" + outcome.CallID
 	s.upsert(EvidenceItem{
-		ID:        id,
-		Status:    StatusKnown,
-		Retention: RetentionDiagnostic,
-		Summary:   bound("error from "+outcome.ToolName+": "+summary, MaxEvidenceSummaryBytes),
-		Value:     text,
-		Digest:    digest(text),
-		Source:    Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: path},
-		Seq:       seq,
+		ID:         id,
+		Status:     StatusKnown,
+		Retention:  RetentionDiagnostic,
+		Provenance: ProvenanceDiagnostic,
+		Summary:    bound("error from "+outcome.ToolName+": "+summary, MaxEvidenceSummaryBytes),
+		Value:      text,
+		Digest:     digest(text),
+		Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: path},
+		Seq:        seq,
 	})
 	if path != "" && isMissingFileError(outcome.Result.Text) {
 		return s.upsert(EvidenceItem{
-			ID:        "file:" + cleanPath(path),
-			Status:    StatusKnown,
-			Retention: RetentionExact,
-			Summary:   cleanPath(path) + ": absent (observed by " + outcome.ToolName + ")",
-			Source:    Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: cleanPath(path)},
-			Seq:       seq,
+			ID:         "file:" + cleanPath(path),
+			Status:     StatusKnown,
+			Retention:  RetentionExact,
+			Provenance: classifyPathProvenance(path),
+			Summary:    cleanPath(path) + ": absent (observed by " + outcome.ToolName + ")",
+			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: cleanPath(path)},
+			Seq:        seq,
 		})
 	}
 	return false
@@ -568,15 +677,16 @@ func (s *EvidenceState) addRead(outcome agent.ToolOutcome, path string, details 
 		summary += " — " + bound(first, 120)
 	}
 	item := EvidenceItem{
-		ID:        "file:" + path,
-		Status:    StatusKnown,
-		Retention: RetentionExact,
-		Summary:   bound(summary, MaxEvidenceSummaryBytes),
-		Value:     text,
-		Digest:    digest(text),
-		Complete:  complete,
-		Source:    Source{Tool: "read", CallID: outcome.CallID, Path: path, StartLine: max(offset, 1)},
-		Seq:       seq,
+		ID:         "file:" + path,
+		Status:     StatusKnown,
+		Retention:  RetentionExact,
+		Provenance: classifyPathProvenance(path),
+		Summary:    bound(summary, MaxEvidenceSummaryBytes),
+		Value:      text,
+		Digest:     digest(text),
+		Complete:   complete,
+		Source:     Source{Tool: "read", CallID: outcome.CallID, Path: path, StartLine: max(offset, 1)},
+		Seq:        seq,
 	}
 	if item.Source.StartLine > 0 && totalLines > 0 {
 		item.Source.EndLine = min(item.Source.StartLine+max(limit, 1)-1, totalLines)
@@ -631,15 +741,16 @@ func (s *EvidenceState) addListing(outcome agent.ToolOutcome, path string, detai
 		summary += " — " + bound(first, 160)
 	}
 	return s.upsert(EvidenceItem{
-		ID:        "dir:" + path,
-		Status:    StatusKnown,
-		Retention: RetentionStructural,
-		Summary:   bound(summary, MaxEvidenceSummaryBytes),
-		Value:     text,
-		Digest:    digest(text),
-		Complete:  complete,
-		Source:    Source{Tool: "ls", CallID: outcome.CallID, Path: path},
-		Seq:       seq,
+		ID:         "dir:" + path,
+		Status:     StatusKnown,
+		Retention:  RetentionStructural,
+		Provenance: ProvenanceObservation,
+		Summary:    bound(summary, MaxEvidenceSummaryBytes),
+		Value:      text,
+		Digest:     digest(text),
+		Complete:   complete,
+		Source:     Source{Tool: "ls", CallID: outcome.CallID, Path: path},
+		Seq:        seq,
 	})
 }
 
@@ -667,15 +778,16 @@ func (s *EvidenceState) addSearch(outcome agent.ToolOutcome, details map[string]
 	}
 	complete := !strings.Contains(text, "pass skip=") && !strings.Contains(text, "raise \"limit\"")
 	return s.upsert(EvidenceItem{
-		ID:        id,
-		Status:    StatusDerived,
-		Retention: RetentionStructural,
-		Summary:   bound(summary, MaxEvidenceSummaryBytes),
-		Value:     text,
-		Digest:    digest(text),
-		Complete:  complete,
-		Source:    Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: path},
-		Seq:       seq,
+		ID:         id,
+		Status:     StatusDerived,
+		Retention:  RetentionStructural,
+		Provenance: classifyPathProvenance(path),
+		Summary:    bound(summary, MaxEvidenceSummaryBytes),
+		Value:      text,
+		Digest:     digest(text),
+		Complete:   complete,
+		Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: path},
+		Seq:        seq,
 	})
 }
 
@@ -691,15 +803,16 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 	}
 	text := bound(outcome.Result.Text, MaxEvidenceValueBytes)
 	changed := s.upsert(EvidenceItem{
-		ID:        "symbols:" + query,
-		Status:    StatusDerived,
-		Retention: RetentionStructural,
-		Summary:   bound("symbol query "+query+": "+firstLine(text), MaxEvidenceSummaryBytes),
-		Value:     text,
-		Digest:    digest(text),
-		Complete:  !detailBool(details, "truncated"),
-		Source:    Source{Tool: "symbols", CallID: outcome.CallID},
-		Seq:       seq,
+		ID:         "symbols:" + query,
+		Status:     StatusDerived,
+		Retention:  RetentionStructural,
+		Provenance: ProvenanceObservation,
+		Summary:    bound("symbol query "+query+": "+firstLine(text), MaxEvidenceSummaryBytes),
+		Value:      text,
+		Digest:     digest(text),
+		Complete:   !detailBool(details, "truncated"),
+		Source:     Source{Tool: "symbols", CallID: outcome.CallID},
+		Seq:        seq,
 	})
 	coords := coordinateMaps(details["coordinates"])
 	for i, coord := range coords {
@@ -712,9 +825,10 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 			continue
 		}
 		if s.upsert(EvidenceItem{
-			ID:        "symbol:" + path + ":" + symbol,
-			Status:    StatusKnown,
-			Retention: RetentionStructural,
+			ID:         "symbol:" + path + ":" + symbol,
+			Status:     StatusKnown,
+			Retention:  RetentionStructural,
+			Provenance: ProvenanceObservation,
 			Summary: bound(symbol+" at "+path+":"+itoa(detailInt(coord, "start_line"))+
 				"-"+itoa(detailInt(coord, "end_line")), MaxEvidenceSummaryBytes),
 			Source: Source{Tool: "symbols", CallID: outcome.CallID, Path: path,
@@ -747,14 +861,15 @@ func (s *EvidenceState) addMutation(outcome agent.ToolOutcome, path string, deta
 		id = "mutation:" + outcome.CallID
 	}
 	changed := s.upsert(EvidenceItem{
-		ID:        id,
-		Status:    StatusKnown,
-		Retention: RetentionExact,
-		Summary:   bound(summary, MaxEvidenceSummaryBytes),
-		Value:     value,
-		Digest:    digest(value),
-		Source:    Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: path},
-		Seq:       seq,
+		ID:         id,
+		Status:     StatusKnown,
+		Retention:  RetentionExact,
+		Provenance: ProvenanceObservation,
+		Summary:    bound(summary, MaxEvidenceSummaryBytes),
+		Value:      value,
+		Digest:     digest(value),
+		Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: path},
+		Seq:        seq,
 	})
 	if path != "" {
 		s.LastMutationSeq[path] = seq
@@ -776,15 +891,16 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 	}
 	executed := outcome.Result.Executes && outcome.Result.Finished && !outcome.Result.IsError
 	changed := s.upsert(EvidenceItem{
-		ID:        "command:" + digest(command),
-		Status:    StatusKnown,
-		Retention: RetentionDiagnostic,
-		Summary:   bound(summary, MaxEvidenceSummaryBytes),
-		Value:     text,
-		Digest:    digest(text),
-		Source:    Source{Tool: "bash", CallID: outcome.CallID},
-		Seq:       seq,
-		Executed:  executed,
+		ID:         "command:" + digest(command),
+		Status:     StatusKnown,
+		Retention:  RetentionDiagnostic,
+		Provenance: ProvenanceDiagnostic,
+		Summary:    bound(summary, MaxEvidenceSummaryBytes),
+		Value:      text,
+		Digest:     digest(text),
+		Source:     Source{Tool: "bash", CallID: outcome.CallID},
+		Seq:        seq,
+		Executed:   executed,
 	})
 	if outcome.Result.Verifies {
 		check := ""
@@ -803,15 +919,16 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 		}
 		id := "verification:" + digest(command)
 		if s.upsert(EvidenceItem{
-			ID:        id,
-			Status:    StatusKnown,
-			Retention: RetentionDiagnostic,
-			Summary:   bound("verification "+check+" "+scope+": "+summary, MaxEvidenceSummaryBytes),
-			Value:     text,
-			Digest:    digest(text),
-			Source:    Source{Tool: "bash", CallID: outcome.CallID, Check: check, Scope: scope},
-			Seq:       seq,
-			Executed:  executed,
+			ID:         id,
+			Status:     StatusKnown,
+			Retention:  RetentionDiagnostic,
+			Provenance: ProvenanceDiagnostic,
+			Summary:    bound("verification "+check+" "+scope+": "+summary, MaxEvidenceSummaryBytes),
+			Value:      text,
+			Digest:     digest(text),
+			Source:     Source{Tool: "bash", CallID: outcome.CallID, Check: check, Scope: scope},
+			Seq:        seq,
+			Executed:   executed,
 		}) {
 			changed = true
 		}
@@ -819,28 +936,30 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 	if outcome.Result.Mutates {
 		id := "mutation:" + digest(command)
 		if s.upsert(EvidenceItem{
-			ID:        id,
-			Status:    StatusKnown,
-			Retention: RetentionExact,
-			Summary:   bound("command may have changed the workspace: "+summary, MaxEvidenceSummaryBytes),
-			Value:     text,
-			Digest:    digest(text),
-			Source:    Source{Tool: "bash", CallID: outcome.CallID},
-			Seq:       seq,
+			ID:         id,
+			Status:     StatusKnown,
+			Retention:  RetentionExact,
+			Provenance: ProvenanceObservation,
+			Summary:    bound("command may have changed the workspace: "+summary, MaxEvidenceSummaryBytes),
+			Value:      text,
+			Digest:     digest(text),
+			Source:     Source{Tool: "bash", CallID: outcome.CallID},
+			Seq:        seq,
 		}) {
 			changed = true
 		}
 	}
 	if outcome.Result.Executes && !outcome.Result.Finished {
 		if s.upsert(EvidenceItem{
-			ID:        "background:" + outcome.CallID,
-			Status:    StatusKnown,
-			Retention: RetentionTransient,
-			Summary:   bound("background job started: "+summary, MaxEvidenceSummaryBytes),
-			Value:     text,
-			Digest:    digest(text),
-			Source:    Source{Tool: "bash", CallID: outcome.CallID},
-			Seq:       seq,
+			ID:         "background:" + outcome.CallID,
+			Status:     StatusKnown,
+			Retention:  RetentionTransient,
+			Provenance: ProvenanceDiagnostic,
+			Summary:    bound("background job started: "+summary, MaxEvidenceSummaryBytes),
+			Value:      text,
+			Digest:     digest(text),
+			Source:     Source{Tool: "bash", CallID: outcome.CallID},
+			Seq:        seq,
 		}) {
 			changed = true
 		}
@@ -875,15 +994,27 @@ func (s *EvidenceState) addExternal(outcome agent.ToolOutcome, details map[strin
 	}
 	text := bound(outcome.Result.Text, MaxEvidenceValueBytes)
 	summaryLine := firstContentLine(text)
+	provenance := ProvenanceExternal
+	retention := RetentionExternal
+	displayCapability := capability
+	if capability == string(knowledge.CapabilityMCPDiscovery) || detailBool(details, "discovery_only") {
+		// Discovery names capabilities; it is not knowledge about the world.
+		// Keeping it as external evidence would let an explicit "use MCP"
+		// requirement look satisfied before any content was observed.
+		provenance = ProvenanceDiagnostic
+		retention = RetentionDiagnostic
+		displayCapability = "mcp discovery"
+	}
 	if remote := detailString(details, "remote_error"); remote != "" {
 		summaryLine = "remote_error: " + firstLine(remote)
 	}
 	id := "external:" + capability + ":" + firstNonEmpty(locator, digest(text))
 	return s.upsert(EvidenceItem{
-		ID:        id,
-		Status:    StatusKnown,
-		Retention: RetentionExternal,
-		Summary: bound("UNTRUSTED "+capability+" from "+firstNonEmpty(source, url, "unknown")+
+		ID:         id,
+		Status:     StatusKnown,
+		Retention:  retention,
+		Provenance: provenance,
+		Summary: bound("UNTRUSTED "+displayCapability+" from "+firstNonEmpty(source, url, "unknown")+
 			": "+summaryLine, MaxEvidenceSummaryBytes),
 		Value:  text,
 		Digest: digest(text),
@@ -901,14 +1032,15 @@ func (s *EvidenceState) addGeneric(outcome agent.ToolOutcome, seq int) {
 		retention = RetentionExact
 	}
 	s.upsert(EvidenceItem{
-		ID:        "tool:" + outcome.ToolName + ":" + outcome.CallID,
-		Status:    StatusKnown,
-		Retention: retention,
-		Summary:   bound(outcome.ToolName+": "+firstLine(text), MaxEvidenceSummaryBytes),
-		Value:     text,
-		Digest:    digest(text),
-		Source:    Source{Tool: outcome.ToolName, CallID: outcome.CallID},
-		Seq:       seq,
+		ID:         "tool:" + outcome.ToolName + ":" + outcome.CallID,
+		Status:     StatusKnown,
+		Retention:  retention,
+		Provenance: ProvenanceDiagnostic,
+		Summary:    bound(outcome.ToolName+": "+firstLine(text), MaxEvidenceSummaryBytes),
+		Value:      text,
+		Digest:     digest(text),
+		Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID},
+		Seq:        seq,
 	})
 }
 
@@ -997,6 +1129,7 @@ func (s *EvidenceState) trim() {
 			delete(s.LastMutationSeq, item.key)
 		}
 	}
+	s.trimFailures()
 }
 
 // detailsMap returns a tool result's details as a map.
@@ -1065,6 +1198,69 @@ func isMissingFileError(text string) bool {
 	return strings.Contains(lower, "no such file") ||
 		strings.Contains(lower, "does not exist") ||
 		strings.Contains(lower, "cannot find")
+}
+
+// classifyPathProvenance decides what a path observation can support.
+//
+// The classification is path-based and deterministic. Documentation is what
+// the project says about itself; a manifest states dependencies; vendored and
+// generated files are not the project's own implementation. Everything else
+// that a source tool read is treated as an implementation observation.
+func classifyPathProvenance(path string) Provenance {
+	normalized := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+	if normalized == "" {
+		return ProvenanceObservation
+	}
+	base := filepath.Base(normalized)
+	for _, prefix := range []string{"vendor/", "node_modules/", "third_party/", "third-party/", "dist/", "build/", "gen/", "generated/"} {
+		if strings.HasPrefix(normalized, prefix) || strings.Contains(normalized, "/"+prefix) {
+			return ProvenanceGenerated
+		}
+	}
+	if strings.Contains(base, ".pb.") || strings.Contains(base, "_generated.") ||
+		strings.Contains(base, ".gen.") || strings.HasSuffix(base, ".min.js") ||
+		strings.HasSuffix(base, ".min.css") {
+		return ProvenanceGenerated
+	}
+	switch base {
+	case "go.mod", "go.sum", "go.work", "package.json", "package-lock.json",
+		"yarn.lock", "pnpm-lock.yaml", "cargo.toml", "cargo.lock",
+		"pyproject.toml", "requirements.txt", "poetry.lock", "pipfile",
+		"pipfile.lock", "pom.xml", "build.gradle", "build.gradle.kts",
+		"settings.gradle", "settings.gradle.kts", "gemfile", "gemfile.lock",
+		"composer.json", "composer.lock", "mix.exs", "mix.lock":
+		return ProvenanceManifest
+	}
+	if strings.HasPrefix(normalized, "docs/") || strings.HasPrefix(normalized, "doc/") ||
+		strings.HasPrefix(normalized, "documentation/") ||
+		strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog") ||
+		strings.HasPrefix(base, "contributing") || strings.HasPrefix(base, "license") ||
+		strings.HasPrefix(base, "licence") || strings.HasPrefix(base, "notice") ||
+		strings.HasSuffix(base, ".md") || strings.HasSuffix(base, ".markdown") ||
+		strings.HasSuffix(base, ".rst") || strings.HasSuffix(base, ".adoc") ||
+		strings.HasSuffix(base, ".org") || strings.HasSuffix(base, ".txt") {
+		return ProvenanceDocumentation
+	}
+	return ProvenanceObservation
+}
+
+// isImplementationObservation reports whether an evidence item proves what the
+// implementation does rather than what its documentation claims.
+func isImplementationObservation(item EvidenceItem) bool {
+	if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
+		return false
+	}
+	switch item.Provenance {
+	case ProvenanceObservation:
+		// A directory listing is structure, not implementation. Symbol and
+		// source reads are the observations that can support an architecture
+		// or behaviour claim.
+		return !strings.HasPrefix(item.ID, "dir:")
+	case ProvenanceManifest:
+		return false
+	default:
+		return false
+	}
 }
 
 func firstLine(text string) string {

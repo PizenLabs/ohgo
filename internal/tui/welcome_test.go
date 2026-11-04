@@ -185,8 +185,11 @@ func TestHeaderAndFooterDoNotDuplicateIdentity(t *testing.T) {
 	if !strings.Contains(header, "groq/some-model") {
 		t.Errorf("header = %q, want the model there", header)
 	}
-	if !strings.Contains(header, "working") {
-		t.Errorf("header = %q, want the runtime phase there", header)
+	if strings.Contains(header, "working") {
+		t.Errorf("header = %q, want no duplicate active phase", header)
+	}
+	if !strings.Contains(out, "Thinking") {
+		t.Errorf("busy view = %q, want the one activity surface to name the phase", out)
 	}
 	// The footer only claims its row once the turn ends: while busy the
 	// hint row belongs to cancellation keys, never to telemetry.

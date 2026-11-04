@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 )
@@ -65,6 +66,12 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 		return budgetVerdict(input, reason)
 	case errors.Is(err, ErrTurnLimit):
 		return RunPaused, "turn limit reached"
+	case errors.Is(err, ErrTaskBlocked):
+		reason := strings.TrimSpace(strings.TrimPrefix(err.Error(), ErrTaskBlocked.Error()+": "))
+		if reason == "" {
+			reason = "the runtime closed the task because no further action can make progress"
+		}
+		return RunNeedsReview, reason
 	case err != nil:
 		return RunFailed, err.Error()
 	}

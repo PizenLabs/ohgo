@@ -437,18 +437,21 @@ const (
 	headerCompactMax = 54
 )
 
-// renderHeader draws product identity, the current model, the runtime phase,
-// and the connection state. It is the only place identity and phase appear:
-// the hint bar below carries session metrics and path, never a second copy.
+// renderHeader draws product identity, the current model, the resting runtime
+// phase, and the connection state. It is the only place identity appears.
 //
-// The line reads `ohgo v1.0.0 · model · phase · check`, each segment in its
-// chrome role: the brand in primary, the release label muted beside it, the
-// model in sage, an active phase in bold accent (idle in muted), the check
-// status in amber, and every separator in dim slate. A known newer release
-// appends an update segment last: availability, or the stage of an explicit
-// /update. Phase and connection stay words, never colour alone. An unknown
-// version hides rather than rendering as a placeholder, and the model budget
-// shrinks to pay for the label so the header stays one row.
+// Active work is deliberately absent here: the activity line, a running tool
+// entry, an open reasoning entry, or the dialog that owns the screen already
+// names it exactly once. The header keeps only idle and shutting down, the
+// phases no other surface owns. The line reads `ohgo v1.0.0 · model · phase ·
+// check` at rest and drops the phase segment while work is represented below.
+// Each segment resolves through its chrome role: the brand in primary, the
+// release label muted beside it, the model in sage, a resting phase in muted,
+// the check status in amber, and every separator in dim slate. A known newer
+// release appends an update segment last: availability, or the stage of an
+// explicit /update. Phase and connection stay words, never colour alone. An
+// unknown version hides rather than rendering as a placeholder, and the model
+// budget shrinks to pay for the label so the header stays one row.
 //
 // Width sheds detail, never rows: full terminals show the whole model id and
 // probe detail; medium terminals keep the state word and shorten the model;
@@ -459,8 +462,13 @@ const (
 // ANSI never inflates the measurement and the header is always one row.
 func renderHeader(state State, pal *Palette, layout Layout) string {
 	chrome := ChromeFor(state.Theme)
-	runtime := DeriveRuntime(state)
-	marker := RuntimeMarker(runtime)
+	runtime, showPhase := HeaderPhase(state)
+	marker := ""
+	phase := ""
+	if showPhase {
+		marker = RuntimeMarker(runtime)
+		phase = string(runtime)
+	}
 	// Model ids and probe details arrive from catalogs and networks:
 	// untrusted, sanitized inline. Effort arrives from configuration with
 	// the same trust level, so it is sanitized the same way.
@@ -480,7 +488,6 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	// The release label arrives from build metadata: trusted but
 	// normalized and sanitized like any other chrome text.
 	version := sanitizeInline(VersionLabel(state.Status.Version))
-	phase := string(runtime)
 	tier := headerTier(state.Width)
 	conn, showConn := headerConn(state, tier)
 	updateHint := headerUpdateHint(state, tier)
@@ -501,18 +508,19 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	// and only then shortens the leaf.
 	modelShown, effortShown := FitHeaderModelWithEffort(baseModel, effectiveEffort, width-headerChromeOverhead(marker, phase, conn, showConn, version, updateHint)-reserved)
 
+	// The header only ever names a resting phase (see HeaderPhase), so it
+	// always uses the idle chrome role; activity surfaces carry the live accent.
 	phaseStyle := chrome.Idle
-	if headerRuntimeActive(runtime) {
-		phaseStyle = chrome.Active
-	}
 	var sb strings.Builder
 	sb.WriteString(chrome.Brand.Render("ohgo"))
 	if version != "" {
 		sb.WriteString(chrome.Version.Render(" " + version))
 	}
 	sb.WriteString(" ")
-	sb.WriteString(phaseStyle.Render(marker))
-	sb.WriteString(" ")
+	if marker != "" {
+		sb.WriteString(phaseStyle.Render(marker))
+		sb.WriteString(" ")
+	}
 	sb.WriteString(chrome.Model.Render(modelShown))
 	if effortShown != "" {
 		// The badge reads in the check amber for the glyph and muted
@@ -523,8 +531,12 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 		sb.WriteString(" ")
 		sb.WriteString(chrome.Context.Render(effortShown))
 	}
-	sb.WriteString(chrome.Separator.Render(" · "))
-	sb.WriteString(phaseStyle.Render(phase))
+	if phase != "" {
+		// The header names only a resting phase. While work is active, the one
+		// activity surface below owns the word, so this segment stays absent.
+		sb.WriteString(chrome.Separator.Render(" · "))
+		sb.WriteString(phaseStyle.Render(phase))
+	}
 	if showConn {
 		sb.WriteString(chrome.Separator.Render(" · "))
 		sb.WriteString(chrome.Check.Render(conn))
@@ -652,9 +664,15 @@ func headerUpdateHint(state State, tier string) string {
 // headerChromeOverhead counts every header cell except the model itself, so
 // the model receives exactly the remaining budget.
 func headerChromeOverhead(marker, phase, conn string, showConn bool, version, updateHint string) int {
-	n := CellWidth("ohgo " + marker + " " + " · " + phase)
+	n := CellWidth("ohgo")
 	if version != "" {
 		n += CellWidth(" " + version)
+	}
+	if marker != "" {
+		n += CellWidth(" " + marker)
+	}
+	if phase != "" {
+		n += CellWidth(" · " + phase)
 	}
 	if showConn {
 		n += CellWidth(" · " + conn)
@@ -663,18 +681,6 @@ func headerChromeOverhead(marker, phase, conn string, showConn bool, version, up
 		n += CellWidth(" · " + updateHint)
 	}
 	return n
-}
-
-// headerRuntimeActive reports the phase renders in the active style: anything
-// busier than idle. Shutting down reads as idle chrome; the word itself
-// carries the state.
-func headerRuntimeActive(runtime RuntimeState) bool {
-	switch runtime {
-	case RuntimeIdle, RuntimeShuttingDown:
-		return false
-	default:
-		return true
-	}
 }
 
 // fitHeaderModel shortens a model id to a cell budget, provider prefix first:
@@ -1801,8 +1807,11 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	invBudget := dialogWidth(layout)
 	switch tool.Status {
 	case ToolRunning:
-		invBudget -= CellWidth("⠋  running")
-	case ToolDone, ToolError:
+		invBudget -= CellWidth(frame + "   running")
+		if elapsed != "" {
+			invBudget -= CellWidth("  " + elapsed)
+		}
+	case ToolDone, ToolError, ToolCancelled:
 		invBudget -= 4 + CellWidth(elapsed)
 	default:
 		invBudget -= 2
@@ -1814,7 +1823,14 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	var badge string
 	switch tool.Status {
 	case ToolRunning:
-		badge = pal.ToolRun.Render(frame+" "+invocation) + "  " + pal.Status.Render("running")
+		// The running badge is the one live representation of this call. It
+		// updates in place: the spinner frame and the measured elapsed time
+		// change, but the block identity, row count, and history do not.
+		badge = pal.ToolRun.Render(frame + " " + invocation)
+		if elapsed != "" {
+			badge += "  " + pal.Status.Render(elapsed)
+		}
+		badge += "  " + pal.Status.Render("running")
 	case ToolDone:
 		badge = pal.ToolDone.Render("✓ " + invocation)
 		if elapsed != "" {
@@ -1822,6 +1838,11 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 		}
 	case ToolError:
 		badge = pal.ToolError.Render("✗ " + invocation)
+		if elapsed != "" {
+			badge += "  " + pal.Status.Render(elapsed)
+		}
+	case ToolCancelled:
+		badge = pal.Muted.Render("⊘ " + invocation)
 		if elapsed != "" {
 			badge += "  " + pal.Status.Render(elapsed)
 		}
@@ -1862,7 +1883,7 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 		// Only the last call in an adjacent run keeps the separator row.
 		// A completed action stream therefore stacks as one compact block
 		// instead of one visually independent card per call.
-		if separate && (tool.Status == ToolDone || tool.Status == ToolError) {
+		if separate && (tool.Status == ToolDone || tool.Status == ToolError || tool.Status == ToolCancelled) {
 			sb.WriteString("\n")
 		}
 		return
@@ -2327,20 +2348,26 @@ func renderQuitConfirmArea(sb *strings.Builder, state State, _ *Palette, layout 
 	}
 }
 
-// renderThinkingArea writes the projected activity line, when one exists.
+// renderThinkingArea writes the activity line, when the line owns it.
 //
 // The row is reserved by Layout.ThinkingLines, so the transcript budget already
 // excludes it and this must emit exactly that many rows. It renders the pure
 // projection and nothing else: it never mutates state, issues a command, or
-// decides for itself whether the runtime is working. Waiting reads muted so the
-// blocked-on-human state is visually distinct from active execution.
+// decides for itself whether the runtime is working. An open reasoning trace or
+// a running tool already presents the activity in its own entry, so the line
+// deliberately stays absent then; that is what prevents two copies of the same
+// state. Waiting reads muted so the blocked-on-human state is visually distinct
+// from active execution.
 func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout Layout) {
 	if layout.ThinkingLines == 0 {
 		return
 	}
-	ts := ProjectThinking(state)
+	activity := ProjectActivity(state)
+	if activity.Surface != ActivityLine {
+		return
+	}
 	style := pal.ToolRun
-	if ts.Phase == ThinkingWaiting {
+	if activity.Thinking.Phase == ThinkingWaiting {
 		style = pal.Muted
 	}
 	// now is read once here, at the single render seam, and handed to the
@@ -2351,12 +2378,12 @@ func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout L
 	// palette without animation.
 	now := time.Now()
 	tick := state.Status.Spinner
-	lines := RenderThinking(ts, now, displayWidth(state, layout))
+	lines := RenderThinking(activity.Thinking, now, displayWidth(state, layout))
 	// The commit glyph is the shared spinner, so it needs the tick even on a
 	// terminal that declines the TrueColor shimmer. The tick is pure and the
 	// commit label never shimmers, so this cannot enable reduced motion.
-	if shimmerSupported() || ts.Phase == ThinkingCommit {
-		lines = RenderThinkingTick(ts, now, tick, displayWidth(state, layout))
+	if shimmerSupported() || activity.Thinking.Phase == ThinkingCommit {
+		lines = RenderThinkingTick(activity.Thinking, now, tick, displayWidth(state, layout))
 	}
 	for _, line := range lines {
 		sb.WriteString(style.Render(line) + "\n")

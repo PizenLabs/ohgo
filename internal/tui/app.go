@@ -984,13 +984,13 @@ func wheelScrolls(s State) bool {
 }
 
 // composerMoveWidth is the wrap width the active composer renderer folds to.
-// The full-screen composer subtracts the live mode prefix ("ask > " is wider
-// than "> "), while live mode draws a fixed two-cell prompt. Movement must use
-// the same width the visible rows used, or up/down hop rows that are not there.
+// Both modes subtract the same authority prefix ("ask > " is wider than "> "),
+// so cursor movement uses the width the visible rows used and up/down never hop
+// rows that are not there.
 func (p *Program) composerMoveWidth() int {
 	layout := ComputeLayout(p.state)
 	if p.live != nil {
-		return liveComposerWidth(layout)
+		return liveComposerWidth(p.state, layout)
 	}
 	return composerTextWidthFor(p.state, layout)
 }
@@ -5076,17 +5076,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		}
 	}
 
-	if err != nil {
-		// A cancelled turn is an interruption, not a failure: reporting
-		// it as an error would read as though something broke. The single
-		// semantic cancellation already reached the transcript through
-		// TurnCancelled, so only real failures publish here.
-		if errors.Is(err, context.Canceled) {
-			p.publish(TurnCancelled{Seq: seq, Text: "cancelled", At: time.Now()})
-		} else {
-			p.publish(Notice{Text: "error: " + err.Error()})
-		}
-	}
+	// The run's own error is announced at the end of the turn, after its tool
+	// outcomes and text have reached the transcript. Publishing it here made a
+	// terminal verdict appear before the refused proposals that produced it, so
+	// the transcript looked as though work continued after the task closed.
+	loopErr := err
 
 	// A loop that stops at the wall-clock bound returns nil; the deadline is
 	// still authoritative. Represent it as the resource stop it is, so the
@@ -5105,7 +5099,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if p.task.ProjectionReview != nil {
 		evidenceReview = p.task.ProjectionReview()
 	}
-	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange)
+	provenance := agent.EvidenceProvenance{}
+	if p.task.ProjectionProvenance != nil {
+		provenance = p.task.ProjectionProvenance()
+	}
+	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance)
 	// The turn boundary is also the evidence boundary. The loop projects
 	// before each request, but a run that stopped on a deadline, a turn limit,
 	// or its final answer may have an unobserved last turn. Folding it here
@@ -5314,6 +5312,20 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
 				IsError:    outcome.Result.IsError,
 			})
+		}
+	}
+	// The terminal verdict is the last content of the turn. Every outcome the
+	// run produced has already been published and persisted, so nothing can
+	// appear to happen after the runtime closed the task.
+	if loopErr != nil {
+		// A cancelled turn is an interruption, not a failure: reporting
+		// it as an error would read as though something broke. The single
+		// semantic cancellation already reached the transcript through
+		// TurnCancelled, so only real failures publish here.
+		if errors.Is(loopErr, context.Canceled) {
+			p.publish(TurnCancelled{Seq: seq, Text: "cancelled", At: time.Now()})
+		} else {
+			p.publish(Notice{Text: "error: " + loopErr.Error()})
 		}
 	}
 	p.publish(AssistantDone{Seq: seq, At: time.Now()})

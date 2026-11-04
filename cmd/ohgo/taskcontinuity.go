@@ -173,6 +173,13 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			}
 			return report.EvidenceReview()
 		},
+		ProjectionProvenance: func() agent.EvidenceProvenance {
+			report, ok := controller.LastProjection()
+			if !ok {
+				return agent.EvidenceProvenance{}
+			}
+			return report.Provenance
+		},
 		Audit: controller.Audit,
 		Timeline: func(limit int) []tui.TimelineView {
 			current, ok := controller.Current()

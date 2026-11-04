@@ -47,6 +47,27 @@ const (
 	Blocked SufficiencyState = "BLOCKED"
 )
 
+// BlockKind explains why sufficiency is blocked, so the projection can choose
+// between keeping a truthful observation surface and closing every action.
+type BlockKind string
+
+// Block kinds.
+const (
+	// BlockNone means the task is not blocked.
+	BlockNone BlockKind = ""
+	// BlockBudget means the root grant is exhausted.
+	BlockBudget BlockKind = "budget"
+	// BlockUnauthorizedMutation means a change occurred under an objective that
+	// did not permit one.
+	BlockUnauthorizedMutation BlockKind = "unauthorized_mutation"
+	// BlockScopeViolation means a change fell outside the requested scope.
+	BlockScopeViolation BlockKind = "scope_violation"
+	// BlockCapabilityFailure means a required capability failed and the
+	// remaining evidence cannot satisfy the objective. No further tool can
+	// make progress, so the next request is for an answer or a review report.
+	BlockCapabilityFailure BlockKind = "capability_failure"
+)
+
 // VerificationRecord is one successful check at a run position.
 type VerificationRecord struct {
 	Position int
@@ -148,10 +169,9 @@ func SummarizeExecution(turns []agent.Turn) ExecutionState {
 				state.PendingFailures = map[string]int{}
 			}
 			if state.PendingFailures[outcome.ToolName] > 0 {
-				state.PendingFailures[outcome.ToolName]--
-				if state.PendingFailures[outcome.ToolName] == 0 {
-					delete(state.PendingFailures, outcome.ToolName)
-				}
+				// A later success of the same capability supersedes its earlier
+				// failures, regardless of how many failed probes preceded it.
+				delete(state.PendingFailures, outcome.ToolName)
 			}
 			position++
 		}
@@ -168,6 +188,8 @@ type Sufficiency struct {
 	State SufficiencyState
 	// Stage is what the evidence supports.
 	Stage Stage
+	// Kind explains a Blocked verdict.
+	Kind BlockKind
 	// Reasons explains the verdict in evidence terms.
 	Reasons []string
 	// Missing names the requirements that are not satisfied.
@@ -186,12 +208,14 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 	if budgetExhausted {
 		result.State = Blocked
 		result.Stage = StageBlocked
+		result.Kind = BlockBudget
 		result.Reasons = append(result.Reasons, "the root budget is exhausted")
 		return result
 	}
 	if evidence == nil {
 		evidence = NewEvidenceState()
 	}
+	failures := evidence.FailureState()
 	// The shape declares the needs; sufficiency must consider them even when a
 	// caller evaluated the verdict before any turn was observed. Without this,
 	// an empty state looked "sufficient" and the candidate layer withheld every
@@ -219,6 +243,7 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 	if !shape.Mutation.Allowed && execution.Mutated {
 		result.State = Blocked
 		result.Stage = StageBlocked
+		result.Kind = BlockUnauthorizedMutation
 		result.Reasons = append(result.Reasons, "a repository mutation was observed but the task shape does not permit one")
 		result.Next = append(result.Next, "report the unexpected change and require review")
 		return result
@@ -231,6 +256,7 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 		if execution.MutatedUnattributed {
 			result.State = Blocked
 			result.Stage = StageBlocked
+			result.Kind = BlockScopeViolation
 			result.Reasons = append(result.Reasons, "a mutation could not be attributed to a requested path")
 			result.Next = append(result.Next, "report the unattributed change and require review")
 			return result
@@ -239,6 +265,7 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 			if !containsString(shape.Mutation.Paths, path) {
 				result.State = Blocked
 				result.Stage = StageBlocked
+				result.Kind = BlockScopeViolation
 				result.Reasons = append(result.Reasons, "a change outside the requested scope was observed: "+path)
 				result.Next = append(result.Next, "report the scope violation; do not continue mutating")
 				return result
@@ -248,6 +275,42 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 
 	missing := missingForAction(shape, evidence, execution)
 	if len(missing) > 0 {
+		// A request that explicitly needs external knowledge cannot recover by
+		// guessing capability names forever. Different failed capabilities are
+		// legitimate recovery attempts up to a bounded number; after that the
+		// required capability is treated as unavailable and the task closes.
+		if shape.External.Required && failures.ExternalFailures() >= MaxRequiredExternalFailures {
+			result.State = Blocked
+			result.Stage = StageBlocked
+			result.Kind = BlockCapabilityFailure
+			result.Reasons = append(result.Reasons,
+				"the required external capability failed repeatedly without an observation")
+			for _, requirement := range missing {
+				result.Missing = append(result.Missing, requirement.Key)
+			}
+			result.Next = append(result.Next,
+				"report the unavailable external capability and the evidence gap; do not guess another capability")
+			return result
+		}
+		// A required capability that failed non-retryably and left the
+		// objective's evidence missing is a terminal boundary: another model
+		// turn cannot make progress by repeating it. The runtime closes the
+		// action surface and asks for an answer or a review report instead.
+		if failures.Blocking != nil {
+			result.State = Blocked
+			result.Stage = StageBlocked
+			result.Kind = BlockCapabilityFailure
+			result.Reasons = append(result.Reasons, failureRecordReason(*failures.Blocking))
+			for _, requirement := range missing {
+				result.Missing = append(result.Missing, requirement.Key)
+				if requirement.Reason != "" {
+					result.Reasons = append(result.Reasons, requirement.Reason)
+				}
+			}
+			result.Next = append(result.Next,
+				"report the failed capability and the evidence gap; do not repeat the failed call")
+			return result
+		}
 		result.State = Insufficient
 		result.Stage = StageExplore
 		for _, requirement := range missing {
@@ -255,6 +318,13 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 			result.Next = append(result.Next, nextEvidence(requirement.Key))
 			if requirement.Reason != "" {
 				result.Reasons = append(result.Reasons, requirement.Reason)
+			}
+		}
+		for _, record := range failures.Records {
+			result.Reasons = append(result.Reasons, failureRecordReason(record))
+			if record.Refuses() {
+				result.Next = append(result.Next,
+					"do not repeat "+record.Tool+" with the same arguments; change the capability or the arguments")
 			}
 		}
 		return result
@@ -352,6 +422,21 @@ func mutationTargetsDone(shape TaskShape, execution ExecutionState) bool {
 	return true
 }
 
+// failureRecordReason renders one failure in evidence terms for the model and
+// audit. It names the class, not vendor prose.
+func failureRecordReason(record FailureRecord) string {
+	class := string(record.Class)
+	if class == "" {
+		class = "unclassified"
+	}
+	reason := record.Tool + " failed with " + class + " (" +
+		itoa(record.Failures) + " attempt(s)"
+	if record.Refusals > 0 {
+		reason += ", " + itoa(record.Refusals) + " identical refusal(s)"
+	}
+	return reason + ")"
+}
+
 // nextEvidence renders the highest-value next observation for a requirement.
 func nextEvidence(key string) string {
 	switch {
@@ -367,6 +452,8 @@ func nextEvidence(key string) string {
 		return "locate the requested declaration with the symbols tool"
 	case key == "repository_overview":
 		return "list the repository root and read the entry point or module file"
+	case key == "external_observation":
+		return "use the external capability the request named and observe its result"
 	case key == "verification":
 		return "run the requested check and require a successful result"
 	case key == "execution_result":

@@ -94,17 +94,41 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 		fmt.Fprintf(&suffLine, "Next evidence: %s\n", bound(strings.Join(uniqueStrings(suff.Next), "; "), 320))
 	}
 	fmt.Fprintf(&suffLine, "Available actions: %s\n", candidates.CandidateSummary(420))
-	if len(candidates.Tools) == 0 && (suff.Stage == StageAnswer || suff.Stage == StageComplete) {
+	if len(candidates.Tools) == 0 &&
+		(suff.Stage == StageAnswer || suff.Stage == StageComplete || suff.Kind == BlockCapabilityFailure) {
 		// This is runtime state, not a provider prompt: the evidence lifecycle
 		// is at the answer/report boundary, so the only correct next output is
 		// prose. Stating it removes an ambiguity some models resolve by naming
 		// a tool anyway.
-		suffLine.WriteString("Next action: answer from the evidence above. No tool is available.\n")
+		if suff.Kind == BlockCapabilityFailure {
+			suffLine.WriteString("Next action: report the block and the evidence gap. No tool is available.\n")
+		} else {
+			suffLine.WriteString("Next action: answer from the evidence above. No tool is available.\n")
+		}
 	}
 	if len(candidates.Notices) > 0 {
 		fmt.Fprintf(&suffLine, "Withheld: %s\n", bound(strings.Join(candidates.Notices, "; "), 420))
 	}
 	sections = append(sections, suffLine.String())
+
+	failures := evidence.FailureState()
+	if len(failures.Records) > 0 {
+		var sb strings.Builder
+		sb.WriteString("Failed capabilities (do not repeat an identical call):\n")
+		for i, record := range failures.Records {
+			if i >= 5 {
+				break
+			}
+			class := string(record.Class)
+			if class == "" {
+				class = "unclassified"
+			}
+			fmt.Fprintf(&sb, "- %s [%s] attempts=%d refusals=%d%s\n",
+				bound(record.Tool, 80), class, record.Failures, record.Refusals,
+				boundFailureSummary(record.Summary))
+		}
+		sections = append(sections, sb.String())
+	}
 
 	var required []string
 	for _, missing := range suff.Missing {
@@ -200,6 +224,15 @@ func evidencePriority(item EvidenceItem) int {
 	}
 }
 
+// boundFailureSummary renders one bounded failure detail for the state block.
+func boundFailureSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return ""
+	}
+	return " — " + bound(summary, 180)
+}
+
 // sourceSuffix renders bounded provenance for one evidence line.
 func sourceSuffix(source Source) string {
 	var parts []string
@@ -260,6 +293,15 @@ func RenderAudit(report agent.ProjectionReport) string {
 	}
 	if report.Sufficiency != "" || report.Stage != "" {
 		fmt.Fprintf(&sb, "sufficiency: %s stage=%s\n", report.Sufficiency, report.Stage)
+	}
+	if report.Terminal {
+		fmt.Fprintf(&sb, "terminal: %s\n", report.StopReason)
+	}
+	if report.Provenance.HasImplementation || report.Provenance.HasDocumentation || report.Provenance.ExternalRequired {
+		fmt.Fprintf(&sb, "provenance: implementation=%t documentation=%t external_required=%t external_observed=%t doc_terms=%d\n",
+			report.Provenance.HasImplementation, report.Provenance.HasDocumentation,
+			report.Provenance.ExternalRequired, report.Provenance.ExternalObserved,
+			len(report.Provenance.DocumentationTerms))
 	}
 	if report.Shape != "" {
 		fmt.Fprintf(&sb, "shape: %s\n", report.Shape)

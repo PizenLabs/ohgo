@@ -10,11 +10,15 @@ import (
 //
 // Runtime state is authoritative; the activity line is only a projection of
 // it. ProjectThinking reads the same State that drives the transcript and the
-// header, RenderThinking turns that projection into one bounded row, and the
 // renderer never decides for itself what the runtime is doing. There is no
 // second state machine, no timer goroutine, and no clock inside the renderer:
 // elapsing is derived from the activity's real start time, which the runtime
 // stamped.
+//
+// ProjectThinking is the semantic projection. ProjectActivity (activity.go) is
+// the presentation owner: it decides whether this line or an existing entry
+// renders the activity. The workspace role is never part of this projection;
+// the prompt boundary owns it.
 
 // ThinkingPhase is the authoritative execution category the activity line
 // projects.
@@ -56,10 +60,6 @@ type ThinkingState struct {
 	// Label is presentation vocabulary for the phase ("Thinking…",
 	// "Running", "Waiting for approval"). It carries no execution authority.
 	Label string
-	// Role is the workspace authority label (ASK, BUILD, FUZZ) the activity
-	// is running under. Empty stays absent. It is the persistent context the
-	// reader keeps while the current label changes.
-	Role string
 	// Detail is truthful runtime detail — currently a running tool's own,
 	// argument-derived summary. It is never inferred from model prose.
 	Detail string
@@ -89,7 +89,6 @@ type ThinkingState struct {
 // selection defers to DeriveRuntime, the existing single owner of "which phase
 // is this", so the activity line can never drift from the header's phase word.
 func ProjectThinking(s State) ThinkingState {
-	role := strings.TrimSpace(s.Status.Workspace)
 	// /commit owns its own lifecycle and runs while the agent turn is idle.
 	// Read it first so the activity line names the work that is actually in
 	// flight rather than reporting an idle session.
@@ -102,7 +101,6 @@ func ProjectThinking(s State) ThinkingState {
 			Active:        true,
 			Phase:         ThinkingCommit,
 			Label:         label,
-			Role:          role,
 			StartedAt:     s.Commit.StartedAt,
 			TurnStartedAt: s.TurnStartedAt,
 			Interruptible: s.Commit.Phase == CommitProposing,
@@ -113,10 +111,10 @@ func ProjectThinking(s State) ThinkingState {
 		// A blocked tool is not running, so waiting gets no elapsed timer
 		// and no interrupt hint: the approval dialog owns the keyboard, and
 		// advertising esc here would name a key the dialog has taken over.
-		return ThinkingState{Active: true, Phase: ThinkingWaiting, Label: "Waiting for approval", Role: role, TurnStartedAt: s.TurnStartedAt}
+		return ThinkingState{Active: true, Phase: ThinkingWaiting, Label: "Waiting for approval", TurnStartedAt: s.TurnStartedAt}
 
 	case RuntimeRunningTool:
-		ts := ThinkingState{Active: true, Phase: ThinkingTool, Label: "Running", Role: role, TurnStartedAt: s.TurnStartedAt, Interruptible: true}
+		ts := ThinkingState{Active: true, Phase: ThinkingTool, Label: "Running", TurnStartedAt: s.TurnStartedAt, Interruptible: true}
 		if tool := latestRunningTool(s); tool != nil {
 			ts.Detail = tool.Summary
 			if ts.Detail == "" {
@@ -135,7 +133,6 @@ func ProjectThinking(s State) ThinkingState {
 			Active:        true,
 			Phase:         ThinkingModel,
 			Label:         "Responding…",
-			Role:          role,
 			StartedAt:     s.TurnStartedAt,
 			TurnStartedAt: s.TurnStartedAt,
 			Interruptible: true,
@@ -147,7 +144,6 @@ func ProjectThinking(s State) ThinkingState {
 			Active:        true,
 			Phase:         ThinkingModel,
 			Label:         "Thinking…",
-			Role:          role,
 			StartedAt:     s.TurnStartedAt,
 			TurnStartedAt: s.TurnStartedAt,
 			Interruptible: true,
@@ -168,16 +164,26 @@ func ProjectThinking(s State) ThinkingState {
 // deterministic and selects among tools the runtime actually holds — it never
 // invents one.
 func latestRunningTool(s State) *ToolEntry {
+	if index := latestRunningToolIndex(s); index >= 0 {
+		return s.Entries[index].Tool
+	}
+	return nil
+}
+
+// latestRunningToolIndex is latestRunningTool as a transcript position. The
+// activity projection needs the identity so it can hand presentation to that
+// exact entry instead of rendering a second copy on the activity line.
+func latestRunningToolIndex(s State) int {
 	if s.runtimeTracked && s.runningTools == 0 {
-		return nil
+		return -1
 	}
 	for i := len(s.Entries) - 1; i >= 0; i-- {
 		entry := &s.Entries[i]
 		if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.Status == ToolRunning {
-			return entry.Tool
+			return i
 		}
 	}
-	return nil
+	return -1
 }
 
 // RenderThinking renders the activity line for a projected state.
@@ -263,11 +269,7 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 	if state.Phase == ThinkingWaiting {
 		// Blocked on the user, not executing: the whole row parks in the
 		// muted zone with no timer and no interrupt hint.
-		content := state.Label
-		if state.Role != "" {
-			content = z.meta(state.Role) + z.dim(" · ") + content
-		}
-		return []string{formatThinkingLine(z.waiting(thinkingGlyphAt(state.Phase, tick)), z.waiting(content), "", width, z)}
+		return []string{formatThinkingLine(z.waiting(thinkingGlyphAt(state.Phase, tick)), z.waiting(state.Label), "", width, z)}
 	}
 	// The shimmer wraps only label runes and its stripped width always
 	// equals the plain width, so the trailing metadata never shifts across
@@ -282,11 +284,6 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 	content := label
 	if state.Detail != "" {
 		content += " " + z.active(oneLine(state.Detail))
-	}
-	if state.Role != "" {
-		// The authority is the persistent context: it stays put while the
-		// label moves from Thinking to Running to Responding.
-		content = z.meta(state.Role) + z.dim(" · ") + content
 	}
 	// Metadata is one parenthesised block directly above the composer
 	// divider: (↓tokens · elapsed · esc). Tokens carry the ↓ prefix so the

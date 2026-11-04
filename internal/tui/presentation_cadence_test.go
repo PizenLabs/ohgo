@@ -57,34 +57,46 @@ func TestAppendingToolInvalidatesPreviousGroupBoundary(t *testing.T) {
 	}
 }
 
-// The activity line carries the persistent authority context and the current
-// argument-derived action, not prose inferred from the model.
-func TestActivityLineCarriesRoleAndCurrentAction(t *testing.T) {
+// The prompt boundary owns the workspace role. A running tool owns the current
+// activity through its own entry, so the activity line must not render a second
+// "ASK · Running ..." copy for the same call.
+func TestRunningToolOwnsActivityAndPromptOwnsRole(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 100, Height: 30})
 	s.Apply(WorkspaceUpdated{Workspace: "ASK", WorkspaceAccent: "39", HasWorkspace: true})
 	s.Apply(UserSubmitted{Text: "analyze this project", At: time.Now()})
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "inspecting backend/internal", At: time.Now()})
 
-	line := ansi.Strip(RenderThinking(ProjectThinking(s), time.Now(), 100)[0])
-	if !strings.Contains(line, "ASK") {
-		t.Fatalf("activity line lost the persistent role context: %q", line)
+	activity := ProjectActivity(s)
+	if activity.Surface != ActivityEntry || activity.EntryIndex != 1 {
+		t.Fatalf("activity = %+v, want the running tool entry to own it", activity)
 	}
-	if !strings.Contains(line, "inspecting backend/internal") {
-		t.Fatalf("activity line lost the runtime action detail: %q", line)
+	if line := ActivityLineText(s, time.Now(), 0, 100); line != "" {
+		t.Fatalf("activity line = %q, want no second representation of the running call", line)
+	}
+	out := ansi.Strip(Render(s))
+	if strings.Count(out, "ask > ") != 1 {
+		t.Fatalf("prompt role appeared %d times, want exactly one:\n%s", strings.Count(out, "ask > "), out)
+	}
+	if strings.Contains(out, "✳ Running") {
+		t.Fatalf("running call also rendered an activity line:\n%s", out)
+	}
+	if !strings.Contains(out, "inspecting backend/internal") {
+		t.Fatalf("running call lost its action detail:\n%s", out)
 	}
 }
 
-// A long task shows both the current action's measured duration and the whole
-// turn's elapsed time, without inventing either.
+// A long action still shows both the action's measured duration and the whole
+// turn's elapsed time. The formatter contract is tested directly because the
+// tool entry, not the line, now presents the call.
 func TestActivityLineShowsActionAndTurnElapsed(t *testing.T) {
 	start := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
-	s := New()
-	s.Apply(WorkspaceUpdated{Workspace: "BUILD", HasWorkspace: true})
-	s.Apply(UserSubmitted{Text: "implement it", At: start})
-	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "go test ./...", At: start.Add(60 * time.Second)})
+	state := ThinkingState{
+		Active: true, Phase: ThinkingTool, Label: "Running", Detail: "go test ./...",
+		StartedAt: start.Add(60 * time.Second), TurnStartedAt: start, Interruptible: true,
+	}
 
-	line := ansi.Strip(RenderThinking(ProjectThinking(s), start.Add(70*time.Second), 100)[0])
+	line := ansi.Strip(RenderThinking(state, start.Add(70*time.Second), 100)[0])
 	if !strings.Contains(line, "10s") {
 		t.Fatalf("activity line lost the action duration: %q", line)
 	}

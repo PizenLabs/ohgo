@@ -137,6 +137,7 @@ func externalFailureResult(failure knowledge.Failure, details map[string]any) ag
 		details["classification"] = string(failure.Class)
 	}
 	details["failure_classification"] = string(failure.Class)
+	details["retryable"] = failure.Retryable
 	text := fmt.Sprintf("external capability failed: %s", failure.Class)
 	if failure.Message != "" {
 		text += ": " + failure.Message
@@ -144,7 +145,13 @@ func externalFailureResult(failure knowledge.Failure, details map[string]any) ag
 	if failure.Retryable {
 		text += " (retryable)"
 	}
-	return agent.Result{Text: text, IsError: true, Details: details}
+	return agent.Result{
+		Text:             text,
+		IsError:          true,
+		FailureClass:     string(failure.Class),
+		FailureRetryable: failure.Retryable,
+		Details:          details,
+	}
 }
 
 // externalErrorResult classifies any external error for the model.
@@ -178,9 +185,10 @@ func externalCancelledResult(ctx agent.Context, details map[string]any) agent.Re
 	details["status"] = "cancelled"
 	details["cancelled"] = true
 	return agent.Result{
-		Text:    fmt.Sprintf("cancelled: %v", ctx.Ctx.Err()),
-		IsError: true,
-		Details: details,
+		Text:         fmt.Sprintf("cancelled: %v", ctx.Ctx.Err()),
+		IsError:      true,
+		FailureClass: string(knowledge.FailureCancelled),
+		Details:      details,
 	}
 }
 

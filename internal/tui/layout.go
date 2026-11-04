@@ -181,18 +181,15 @@ func ComputeLayout(s State) Layout {
 // misreported. Unknown sizes (zero) are unbudgeted and always paint it.
 const thinkingMinHeight = 10
 
-// thinkingRows is the rows the activity line claims: one while an activity is
-// active on the normal surface, none otherwise. A modal overlay owns the
-// screen, so the line stays out of that surface's budget rather than shrinking
-// a region it does not paint on; the header still carries the phase there.
+// thinkingRows is the rows the activity line claims: one only when the line,
+// not an entry or a dialog, owns the activity. An overlay owns the screen, so
+// the line stays out of that surface's budget rather than shrinking a region it
+// does not paint on.
 func thinkingRows(s State) int {
-	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.Permissions != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil || s.SessionModal != nil || s.HelpModal != nil || s.ConnectModal != nil || s.ConnectKey != nil || s.UpdateRestart != nil || s.PostUpdate != nil || s.Diff != nil {
-		return 0
-	}
 	if s.Height > 0 && s.Height < thinkingMinHeight {
 		return 0
 	}
-	if ProjectThinking(s).Active {
+	if ProjectActivity(s).Surface == ActivityLine {
 		return 1
 	}
 	return 0

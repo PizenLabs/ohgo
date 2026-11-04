@@ -967,8 +967,10 @@ func publishMCPTool(ctx agent.Context, details map[string]any, requestID, server
 		}
 	}
 	status := "ok"
+	failureClass := ""
 	if result.IsError {
 		status = "remote_tool_error"
+		failureClass = string(knowledge.FailureToolError)
 	} else if result.Truncated {
 		status = "truncated"
 	}
@@ -1011,9 +1013,11 @@ func publishMCPTool(ctx agent.Context, details map[string]any, requestID, server
 		}
 	}
 	return agent.Result{
-		Text:    knowledge.Envelope(header, result.Text),
-		Details: details,
-		IsError: result.IsError,
+		Text:             knowledge.Envelope(header, result.Text),
+		Details:          details,
+		IsError:          result.IsError,
+		FailureClass:     failureClass,
+		FailureRetryable: false,
 	}
 }
 

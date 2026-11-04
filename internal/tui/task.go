@@ -263,6 +263,10 @@ type TaskHooks struct {
 	// when the runtime had enough evidence. It is a completion veto, never an
 	// authorization.
 	ProjectionReview func() string
+	// ProjectionProvenance returns the last projection's evidence provenance.
+	// Completion uses it to keep documentation claims distinct from observed
+	// implementation facts. It is a completion veto, never an authorization.
+	ProjectionProvenance func() agent.EvidenceProvenance
 	// Audit returns the last projection audit, for /audit.
 	Audit func() string
 	// RunBudget returns the fresh root grant for one turn. The host installs

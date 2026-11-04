@@ -799,24 +799,20 @@ func liveConnectKeyLines(s State, pal *Palette, layout Layout) []string {
 
 // liveStatusLine is the one-line runtime footer. It names the phase in words
 // so nothing depends on colour, and stays quiet at idle rather than repeating
-// what the composer already shows.
+// what the composer already shows. It asks ProjectActivity for the line text:
+// when a running tool or an open reasoning entry owns the activity, the footer
+// must not print a second copy of it.
 func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	var parts []string
-	// The activity line is the same pure projection the full-screen surface
-	// paints, so both modes name the runtime state identically. The phase
-	// word remains the fallback for the one non-idle state the activity line
-	// deliberately does not claim: shutting down.
-	if ts := ProjectThinking(s); ts.Active {
-		now := time.Now()
-		lines := RenderThinking(ts, now, 0)
-		if shimmerSupported() || ts.Phase == ThinkingCommit {
-			lines = RenderThinkingTick(ts, now, s.Status.Spinner, 0)
+	activity := ProjectActivity(s)
+	if text := ActivityLineText(s, time.Now(), s.Status.Spinner, 0); text != "" {
+		parts = append(parts, text)
+	} else if !activity.Thinking.Active {
+		// The phase word remains the fallback for the one non-idle state the
+		// activity projection deliberately does not claim: shutting down.
+		if runtime := DeriveRuntime(s); runtime != RuntimeIdle {
+			parts = append(parts, RuntimeMarker(runtime)+" "+string(runtime))
 		}
-		if len(lines) > 0 {
-			parts = append(parts, lines[0])
-		}
-	} else if runtime := DeriveRuntime(s); runtime != RuntimeIdle {
-		parts = append(parts, RuntimeMarker(runtime)+" "+string(runtime))
 	}
 	if s.Status.Model != "" {
 		parts = append(parts, s.Status.Model)
@@ -847,8 +843,10 @@ func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	return pal.Muted.Render(TruncateToWidth(strings.Join(parts, " · "), displayWidth(s, layout)))
 }
 
-// liveComposerWidth is the text budget after the "> " prompt.
-func liveComposerWidth(layout Layout) int {
+// liveComposerWidth is the text budget after the live prompt prefix. The
+// prefix is the same authority boundary the full-screen composer uses
+// ("build > "), so the role has one representation in both modes.
+func liveComposerWidth(s State, layout Layout) int {
 	w := layout.ContentWidth
 	if w <= 0 {
 		w = 80
@@ -856,7 +854,14 @@ func liveComposerWidth(layout Layout) int {
 	if w < 3 {
 		w = 3
 	}
-	return w - 2
+	pw := CellWidth(composerPrefix(s))
+	if pw < 1 {
+		pw = 2
+	}
+	if budget := w - pw; budget >= 1 {
+		return budget
+	}
+	return 1
 }
 
 // liveComposerLines renders the input block: the prompt, wrapped rows with the
@@ -871,12 +876,12 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 		return nil
 	}
 	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)
-	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, liveComposerWidth(layout))
+	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, liveComposerWidth(s, layout))
 	// Same cursor-following window as the framed composer: the caret must stay
 	// painted however far the input folds past the row cap.
 	shown, start := composerWindow(rows, cursorRow, s.ComposerScroll, maxComposerRows)
 	ghost := s.suggestionTail()
-	width := liveComposerWidth(layout)
+	width := liveComposerWidth(s, layout)
 
 	var out []string
 	// The palette sits strictly above the input line it completes. It is
@@ -898,11 +903,14 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
 			text = appendGhost(text, ghost, width, pal.Ghost)
 		}
+		prefix := composerContPrefix(s)
+		prefixStyle := composerPrefixStyle(s, pal)
 		if i == 0 {
-			out = append(out, pal.Prompt.Render("> ")+text)
-			continue
+			// The prompt boundary is the one authoritative role
+			// representation. The activity projection never carries the role.
+			prefix = composerPrefix(s)
 		}
-		out = append(out, "  "+text)
+		out = append(out, prefixStyle.Render(prefix)+text)
 	}
 	if queued := composerStateLine(s, pal, layout); queued != "" {
 		out = append(out, queued)

@@ -22,6 +22,7 @@ func TestTurnTaskOutcomeHonorsEvidenceReview(t *testing.T) {
 		nil, turns, workspace.BuildIntentContract("Explain this project."), nil, nil,
 		"runtime evidence was not sufficient for the objective (INSUFFICIENT) at stage explore",
 		false,
+		agent.EvidenceProvenance{},
 	)
 	if action != taskActionReview {
 		t.Fatalf("action = %v, want review (reason %q)", action, reason)

@@ -107,8 +107,8 @@ func TestHeaderFitsAcrossWidths(t *testing.T) {
 				if !strings.Contains(header, "ohgo") {
 					t.Errorf("width %d: header lost identity: %q", width, header)
 				}
-				if busy && !strings.Contains(header, "working") {
-					t.Errorf("width %d: busy header lost the phase: %q", width, header)
+				if busy && strings.Contains(header, "working") {
+					t.Errorf("width %d: busy header repeated the active phase: %q", width, header)
 				}
 				if !busy && !strings.Contains(header, "idle") {
 					t.Errorf("width %d: idle header lost the phase: %q", width, header)

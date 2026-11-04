@@ -205,9 +205,9 @@ func TestLiveComposerRendersChips(t *testing.T) {
 	}
 }
 
-// Vertical movement folds at the width the active renderer used. Live mode
-// draws a fixed two-cell prompt, so a BUILD prefix must not shrink its wrap
-// budget to the full-screen composer's.
+// Vertical movement folds at the width the active renderer used. Live mode now
+// renders the same authority prefix as the full-screen composer, so movement
+// must subtract it instead of assuming the two-cell "> " prompt.
 func TestLiveMovementUsesTheLiveComposerWidth(t *testing.T) {
 	p, _ := newLiveProgram()
 	p.state.Apply(TerminalResized{Width: 12, Height: 24})
@@ -215,8 +215,8 @@ func TestLiveMovementUsesTheLiveComposerWidth(t *testing.T) {
 	p.state.Apply(ComposerChanged{Text: strings.Repeat("a", 15), Cursor: 14})
 
 	pos, ok := p.composerLineAbove()
-	if !ok || pos != 6 {
-		t.Errorf("live up = (%d, %v), want (6, true): live folds at 8 cells, not the BUILD prefix width", pos, ok)
+	if !ok || pos != 12 {
+		t.Errorf("live up = (%d, %v), want (12, true): live folds at the BUILD prefix width", pos, ok)
 	}
 }
 

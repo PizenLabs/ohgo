@@ -188,10 +188,11 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 				evidence.pendingFailures = map[string]int{}
 			}
 			if evidence.pendingFailures[outcome.ToolName] > 0 {
-				evidence.pendingFailures[outcome.ToolName]--
-				if evidence.pendingFailures[outcome.ToolName] == 0 {
-					delete(evidence.pendingFailures, outcome.ToolName)
-				}
+				// Any later success of the same capability supersedes its
+				// earlier failures. Keeping a count would make two probes of
+				// different coordinates require two successes, so a model that
+				// recovered once would still be reported as unrecovered.
+				delete(evidence.pendingFailures, outcome.ToolName)
 			}
 			position++
 		}
@@ -200,13 +201,14 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 }
 
 // outstandingCalls counts the last turn's results that represent work the run
-// left undone. A call withheld because the runtime offered no tools is not
-// outstanding: nothing was expected to run, and the same turn carries the
-// candidate answer. Counting it would make an answered run undecidable forever.
+// left undone. A refusal is a control decision: the call did not run and the
+// runtime did not leave it pending, so it is never outstanding. Counting it
+// would make an answered turn undecidable forever merely because the model
+// proposed one action the runtime had already closed.
 func outstandingCalls(turn Turn) int {
 	count := 0
 	for _, outcome := range turn.Results {
-		if outcome.Result.AnswerRequired {
+		if outcome.Refused() {
 			continue
 		}
 		count++
@@ -247,6 +249,11 @@ type CompletionInput struct {
 	// and cover the contract. It can only enable that boundary, never complete
 	// the objective by itself.
 	PriorChange bool
+	// Provenance summarizes what kind of evidence the run can truthfully rely
+	// on. It can only downgrade completion: an explicit external requirement
+	// that was never observed, or a documentation-only claim presented as an
+	// implementation fact, is a review boundary.
+	Provenance EvidenceProvenance
 }
 
 // Alignment is the bounded semantic verdict.
@@ -430,6 +437,16 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	grounding := AssessGrounding(intent, input.Turns, last.Assistant.Text())
 	if !grounding.Pass() {
 		return needsReview("intent grounding: %s", boundedReason(grounding.Reason()))
+	}
+	provenance := AssessAnswerProvenance(intent, last.Assistant.Text(), input.Provenance)
+	if !provenance.Pass() {
+		return needsReview("answer provenance: %s", boundedReason(provenance.Reason()))
+	}
+	if input.Provenance.ExternalRequired && !input.Provenance.ExternalObserved {
+		// A request that explicitly needs external knowledge is not complete
+		// because a local answer exists. The required capability either
+		// produced an observation or the task is a review.
+		return needsReview("the request required external knowledge but no external observation succeeded")
 	}
 	if review := strings.TrimSpace(input.EvidenceReview); review != "" {
 		// The cognitive layer is authoritative about what evidence it has.

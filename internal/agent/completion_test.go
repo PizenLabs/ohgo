@@ -304,3 +304,48 @@ func TestCompletionEvidenceCountsAuthorizedMutation(t *testing.T) {
 		t.Fatal("an authorized mutation was not counted as evidence")
 	}
 }
+
+func TestLaterToolSuccessSupersedesAllEarlierFailures(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{
+			toolOutcome("read", Result{Text: "read a: no such file", IsError: true}),
+			toolOutcome("read", Result{Text: "read b: no such file", IsError: true}),
+		}},
+		{Results: []ToolOutcome{
+			toolOutcome("read", Result{Text: "README.md", Details: map[string]any{
+				"path": "README.md", "totalLines": 1, "offset": 1, "limit": 2000,
+			}}),
+		}},
+		answerTurn("README.md describes the project."),
+	}
+	got := EvaluateTaskCompletion(CompletionInput{
+		Turns: turns,
+		Contract: contract.IntentContract{
+			Kind:      contract.ObjectiveInformational,
+			Objective: "Explain this project.",
+		},
+	})
+	if !got.Complete() {
+		t.Fatalf("a later success did not recover the earlier failures: %s", got.Reason)
+	}
+}
+
+func TestRefusedCallsAreNotOutstandingWork(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{
+			toolOutcome("read", Result{Text: "Tool \"read\" is not offered", IsError: true, CandidateRejected: true}),
+		}, Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{
+			ai.TextContent{Text: "The project is a small HTTP server."},
+		}}},
+	}
+	got := EvaluateTaskCompletion(CompletionInput{
+		Turns: turns,
+		Contract: contract.IntentContract{
+			Kind:      contract.ObjectiveInformational,
+			Objective: "Explain this project.",
+		},
+	})
+	if strings.Contains(got.Reason, "outstanding") {
+		t.Fatalf("a refused call was counted as outstanding work: %s", got.Reason)
+	}
+}

@@ -273,18 +273,12 @@ func runSession(cmd *cobra.Command, args []string) error {
 			return ""
 		})
 
-		// Output-first mode is a different interaction boundary, not a
-		// different program: the same loop, the same state machine, the same
-		// approval and command paths. The terminal scrolls, selects and
-		// copies; ohgo writes the transcript and keeps the composer. It
-		// rejects mouse reporting outright, so the mouse policy above is
-		// ignored there.
-		if live, _ := cmd.Flags().GetBool("live"); live {
-			return program.RunLive()
-		}
-
 		// One harness serves the UI's commands; the REPL builds its own
-		// further down from the same pieces, so both agree.
+		// further down from the same pieces, so both agree. It is installed
+		// before the presentation choice below: output-first mode is a
+		// different interaction boundary, not a different program, and it
+		// must receive the same authority, session, approval, and command
+		// seams the full-screen surface does.
 		held := newHarness(registry, loop, store, sess, &agent.UsageLog{}, &opts.settings, opts.root, opts.model)
 		held.mcp = opts.mcpRuntime
 		held.usage.SetCost(opts.model.Cost)
@@ -513,6 +507,13 @@ func runSession(cmd *cobra.Command, args []string) error {
 			// between compaction and the next turn resumes the same task.
 			program.SyncTask()
 		})
+		// The presentation boundary is the last choice: everything above is
+		// the one program both surfaces render. Output-first writes the
+		// transcript to the terminal and keeps a single live region; the
+		// full-screen surface owns a viewport instead.
+		if live, _ := cmd.Flags().GetBool("live"); live {
+			return program.RunLive()
+		}
 		return program.Run()
 	}
 

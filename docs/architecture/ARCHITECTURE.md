@@ -188,6 +188,18 @@ Recognition is an incremental, bounded state machine:
   (`<dotsfunctioncall>`, `<dots_function_call>`, and their mixed closing
   markers) as one protocol family. A new spelling is a descriptor there, never
   a TUI or execution change.
+- Recognition is family-based, not spelling-list based. An opening tag that
+  names the dots/call family but is not a registered descriptor is consumed
+  through its family closing tag, replaced by one bounded diagnostic, and
+  marked as residue. Because the family prefix and the closing tag are subject
+  to the same retained-suffix rule, this holds under arbitrary byte
+  fragmentation, including one byte per chunk; an unterminated family opening
+  is bounded rather than buffered without limit.
+- Markdown quoting is content, not residue: protocol-looking text inside a
+  fenced block, an inline code span, or after a backslash escape is preserved
+  verbatim and is not executed. Raw provider bytes outside a quote are protocol
+  and are never published. The distinction is lexical and deterministic; it
+  does not depend on a second model call or on provider identity.
 - Text/tool ordering is preserved, including multiple and interleaved calls.
 
 The TUI receives only canonical assistant text and tool events. It does not
@@ -212,7 +224,13 @@ user's request before execution and the evidence the runtime observed.
   process that reached a successful terminal state (`Executes` + `Finished`);
   a started background spawn is not evidence. An informational objective needs
   non-empty visible assistant text in the final turn. Empty or whitespace text
-  is `NEEDS_REVIEW`. The evaluator does not judge answer relevance.
+  is `NEEDS_REVIEW`. A request that explicitly required external knowledge also
+  needs a successful external observation; a local answer does not satisfy it.
+  A broad repository account keeps documentation claims distinguishable from
+  observed implementation facts: a term that appears only in README/docs, never
+  in a source or structural observation, must be attributed ("the README
+  describes ...") or the verdict is `NEEDS_REVIEW`. The evaluator does not judge
+  answer relevance beyond these deterministic provenance boundaries.
 - **TUI task path.** `task.Begin` persists the contract, the pre-run target
   snapshot, and later the review reason. `NEEDS_REVIEW` is non-terminal. A
   continuation reuses the persisted contract and snapshot; a materially
@@ -253,6 +271,55 @@ the model said. Two properties keep the loop honest and small:
   verdict vetoes completion, so a model that answers without observing the
   repository is `NEEDS_REVIEW`, not `COMPLETED`. A general knowledge question
   declares no such need.
+- **Breadth is semantic, not a phrase list.** A repository subject ("this
+  project", "the codebase", "the system") combined with an
+  understanding/overview/architecture concept declares a `repository_survey`
+  need: at least two content observations or one content observation plus
+  structure. A named coordinate or a specific artifact ("this project's
+  license", the test suite, one file) stays targeted even when the sentence
+  contains a broad verb. The classification is deterministic and derived from
+  the objective and the contract's targets, so unusual wording does not fall
+  back to the single-observation policy and narrow questions are not forced
+  into a repository-wide survey. A repository that has source code also needs
+  at least one implementation observation; two documentation artifacts describe
+  what the project says about itself, not what its implementation does.
+- **Failure is durable evidence, not a transient error string.** Every failed
+  execution is recorded under `agent.CallSignature` with its target, failure
+  class, and retryability. A class is fatal (`authentication_failure`,
+  `not_configured`, `unsupported_operation`, `protocol_error`) when no retry can
+  recover it; a retryable class gets one retry; an unclassified or
+  non-retryable class is refused on the identical repeat. The ledger is
+  persisted in `EvidenceState`, so a resumed turn cannot replay a spent failure.
+  A definite workspace change invalidates non-fatal failures, because the same
+  command observes a different state after the fix. A refusal is a control
+  decision: nothing executes and completion does not count it as a failed call.
+- **Closure is one semantic state, not an empty tool slice.** A projection's
+  `AnswerEligible` or `Terminal` verdict is the control plane's declaration that
+  the action surface is closed. The loop owns the request shape, so it withdraws
+  every tool itself; a projector cannot leave a callable tool on a surface it
+  has already closed. A blocked capability (`BlockCapabilityFailure`) is
+  terminal: the first stale proposal without an answer reports
+  `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`.
+- **An unproductive turn is counted from outcomes, never from the offered
+  slice.** A refusal is a control decision, not work. If every call in a turn was
+  refused and the model produced no answer, the turn could not change the
+  runtime's state; this is true even when the projection still offered other
+  tools. One recovery request is allowed. A second consecutive unproductive turn
+  reports `agent.ErrTaskBlocked` before another model request, so a model that
+  keeps proposing a withdrawn capability cannot walk the turn grant. A turn with
+  any non-refused outcome is work and resets the count. A refused proposal
+  accompanied by visible text is the candidate answer, and the run stops there:
+  the refusal leaves no outstanding work. The presentation layer publishes the
+  terminal verdict after the turn's outcomes and text, so the transcript ends at
+  the decision instead of appearing to execute work after it.
+- **Required external knowledge is real evidence.** An explicit external
+  requirement declares an `external_observation` need, so local files cannot
+  make the task answer-eligible. While it is the only missing requirement, the
+  projector offers only external-capable tools; discovery is not an observation.
+  If the constructed action space contains no external capability, the
+  projection is terminally blocked and names that gap. Once the external
+  capability produces a successful observation, normal sufficiency and the
+  answer boundary apply.
 - **The stop is evidence-driven, not a call budget.** After the run's first
   observation turn, a completed turn that observed the repository but added no
   new fact has no evidence gain left: for an informational objective the next
@@ -509,9 +576,14 @@ approval, shutting down) are computed per render, never stored.
   next event resumes the same path.
 - Activity grouping: adjacent tool blocks render as one compact action stream.
   Only the last call in the run keeps the separator row; earlier calls stay
-  click-expandable but no longer read as independent cards. The activity line
-  carries the persistent workspace authority (`ASK`, `BUILD`, `FUZZ`) alongside
-  the current phase and the argument-derived action detail.
+  click-expandable but no longer read as independent cards. `ProjectActivity`
+  is the single owner decision: a running tool or an open reasoning trace
+  presents the activity through its own entry, otherwise the one-row activity
+  line carries the current phase and argument-derived action detail. The
+  active runtime phase is therefore absent from the header, and the workspace
+  authority (`ASK`, `BUILD`, `FUZZ`) appears only at the prompt boundary. A
+  tool finalizes into that same block, so no live copy survives next to its
+  stable representation.
 - `internal/tui/viewport.go`: explicit FOLLOWING/DETACHED state. Detached mode anchors on
   `(BlockID, row)`, so appended output, expansion above the window, and resize
   preserve the reading position. The marker consumes a row and `MaxOffset` is

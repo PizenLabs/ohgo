@@ -35,6 +35,10 @@ const (
 	ToolDone ToolStatus = "done"
 	// ToolError means the tool completed with an error.
 	ToolError ToolStatus = "error"
+	// ToolCancelled means the turn was cancelled while the call was running.
+	// It is terminal and distinct from a tool failure: the operation never
+	// produced an outcome, so presenting it as an error would be false.
+	ToolCancelled ToolStatus = "cancelled"
 )
 
 // Entry is one line in the transcript.
@@ -830,7 +834,7 @@ func (s *State) Apply(event Event) {
 		for i := range s.Entries {
 			entry := &s.Entries[i]
 			if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.Status == ToolRunning {
-				entry.Tool.Status = ToolError
+				entry.Tool.Status = ToolCancelled
 				entry.Tool.Summary = "cancelled"
 				entry.Tool.Text = "cancelled"
 				s.bumpEntry(i)

@@ -41,11 +41,12 @@ type BlockState string
 // Block states. They are derived from the entry payload, never stored as a
 // second source of truth.
 const (
-	BlockStatic  BlockState = "static"
-	BlockPending BlockState = "pending"
-	BlockRunning BlockState = "running"
-	BlockDone    BlockState = "done"
-	BlockError   BlockState = "error"
+	BlockStatic    BlockState = "static"
+	BlockPending   BlockState = "pending"
+	BlockRunning   BlockState = "running"
+	BlockDone      BlockState = "done"
+	BlockError     BlockState = "error"
+	BlockCancelled BlockState = "cancelled"
 )
 
 // State reports the block's lifecycle position.
@@ -62,6 +63,8 @@ func (b Block) State() BlockState {
 			return BlockRunning
 		case ToolError:
 			return BlockError
+		case ToolCancelled:
+			return BlockCancelled
 		default:
 			return BlockDone
 		}

@@ -22,6 +22,13 @@ var ErrNoTools = errors.New("agent: no tools registered")
 // the turns completed so far are returned intact and the task can resume.
 var ErrTurnLimit = errors.New("agent: turn limit reached")
 
+// ErrTaskBlocked means the runtime closed the task before the model stopped on
+// its own: a required capability failed non-retryably, or the model kept
+// proposing actions against an answer-only surface after the bounded recovery
+// turn. It is a terminal semantic verdict, not a resource stop, and the caller
+// must report it as review rather than success.
+var ErrTaskBlocked = errors.New("agent: task blocked")
+
 // DefaultMaxTurns bounds a run when the caller does not choose a budget.
 //
 // The deadline bounds money spent on wall-clock time; this bounds the number
@@ -70,7 +77,7 @@ type ToolOutcome struct {
 // pending execution failure, or a model that adapts after a denied call would
 // be punished for the runtime's refusal.
 func (o ToolOutcome) Refused() bool {
-	if o.Result.CandidateRejected {
+	if o.Result.CandidateRejected || o.Result.FailureRejected {
 		return true
 	}
 	return o.Authorization != nil && o.Authorization.Outcome == security.OutcomeDeny
@@ -538,8 +545,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	live := make([]Message, len(messages))
 	copy(live, messages)
 
+	// maxUnproductiveTurns is a semantic bound, not a resource bound. A turn
+	// that executed nothing and produced no answer cannot change the runtime's
+	// state, so one recovery request is enough; a second such turn is terminal.
+	// Counting this from outcomes rather than from the offered tool slice is
+	// load-bearing: a projector may withhold the tool a model keeps proposing
+	// while still offering others, and the refusal must still influence the
+	// continuation decision.
+	const maxUnproductiveTurns = 2
+
 	tools := l.cfg.Tools
 
+	unproductiveTurns := 0
+	stopReason := ""
 	turns = nil
 	for {
 		if err := ctx.Err(); err != nil {
@@ -580,6 +598,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		requestSystem := l.system()
 		activeTools := tools
 		answerEligible := false
+		terminal := false
+		closed := false
+		refusals := map[string]string(nil)
 		if l.cfg.Project != nil {
 			projected := l.cfg.Project(ProjectionRequest{
 				Messages: copyMessages(live),
@@ -608,6 +629,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			}
 			report := projected.Report
 			answerEligible = report.AnswerEligible
+			terminal = report.Terminal
+			stopReason = report.StopReason
+			refusals = projected.Refusals
 			report.Applied = true
 			report.Turn = len(turns)
 			if emptyProjection {
@@ -621,6 +645,15 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// projector may have supplied a different value under a known
 			// name, and the loop must execute its own capability instance.
 			activeTools = filtered
+			// AnswerEligible and Terminal are the control plane's semantic
+			// closure, not hints. The loop owns the request shape, so it must
+			// withdraw every tool rather than trusting a projector to also
+			// return an empty slice. Otherwise a model could execute a call on
+			// a surface the runtime already declared closed.
+			if answerEligible || terminal {
+				activeTools = []Tool{}
+			}
+			closed = answerEligible || terminal || len(activeTools) == 0
 			if removed > 0 {
 				report.Reason = joinReason(report.Reason,
 					fmt.Sprintf("projection proposed %d tool(s) outside the loop's tool set; ignored", removed))
@@ -698,18 +731,31 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			if l.cfg.OnTurn != nil {
 				l.cfg.OnTurn(turn)
 			}
+			// A terminal surface with neither a proposal nor an answer is a
+			// blocked task, not a clean model stop. Preserve the terminal reason
+			// for the outcome layer instead of letting an empty turn look like a
+			// plausible completion attempt.
+			if terminal && strings.TrimSpace(assistant.Text()) == "" {
+				reason := strings.TrimSpace(stopReason)
+				if reason == "" {
+					reason = "the runtime closed the task because no further action can make progress"
+				}
+				return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
+			}
 			return turns, nil
 		}
 
 		// The runtime already holds the evidence an informational objective
 		// requires, and the model produced visible text. That text is the
 		// candidate answer; calls emitted with it are continuation after the
-		// answer. Execute none of them: an empty action surface makes each one
+		// answer. Execute none of them: a closed action surface makes each one
 		// an answer-required refusal, and the turn becomes final below. The
 		// completion evaluator, not the model's appetite for another call,
 		// decides whether the answer is proven.
-		answerStop := answerEligible && strings.TrimSpace(assistant.Text()) != ""
-		if answerStop {
+		answerStop := closed && strings.TrimSpace(assistant.Text()) != ""
+		if closed {
+			// Defence in depth: even if a later change stops zeroing
+			// activeTools, a closed surface must never execute a stale call.
 			activeByName = map[string]Tool{}
 		}
 
@@ -721,7 +767,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			}
 		}
 
-		outcomes, admissionErr := l.dispatch(ctx, activeByName, assistant, calls, turn, len(turns), edit)
+		outcomes, admissionErr := l.dispatch(ctx, activeByName, refusals, assistant, calls, turn, len(turns), edit)
 		turn.Results = outcomes
 		for _, outcome := range outcomes {
 			live = append(live, ToolResultMessage{
@@ -746,16 +792,56 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if answerStop {
 			return turns, nil
 		}
-		// The runtime offered no tools because the evidence lifecycle is
-		// answer-only (or the objective's proof is complete). A model that
-		// ignores the empty action surface and proposes another call executes
-		// nothing: every call was refused above. If it already produced text,
-		// that text is the answer and the turn is final. Otherwise continue so
-		// the refusal reaches the model; the finite grant, not an unbounded
-		// loop, is what bounds a model that never answers.
-		if len(activeTools) == 0 && len(calls) > 0 && strings.TrimSpace(assistant.Text()) != "" {
+		// A terminal projection has closed the task. If the model used the
+		// request to answer, keep that answer for the completion evaluator;
+		// otherwise the run ends here rather than spending another generation
+		// rediscovering that no action is available.
+		if terminal {
+			if strings.TrimSpace(assistant.Text()) != "" {
+				return turns, nil
+			}
+			reason := strings.TrimSpace(stopReason)
+			if reason == "" {
+				reason = "the runtime closed the task because no further action can make progress"
+			}
+			return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
+		}
+
+		// The continuation decision belongs here, once, and it is derived from
+		// what the turn actually did. A non-refused outcome is work: it may add
+		// evidence, run a check, or fail in a way the failure ledger records.
+		// A refused outcome is a control decision, not work. A turn made only
+		// of refusals cannot change the runtime's state, so it is unproductive
+		// regardless of how many other tools the projection still offered.
+		executed := 0
+		for _, outcome := range outcomes {
+			if !outcome.Refused() {
+				executed++
+			}
+		}
+		if executed > 0 {
+			unproductiveTurns = 0
+			continue
+		}
+		// Nothing ran. If the model produced visible text, that text is the
+		// candidate answer; there is no outstanding work and no reason to ask
+		// again. Completion decides whether it is proven.
+		if strings.TrimSpace(assistant.Text()) != "" {
 			return turns, nil
 		}
+		unproductiveTurns++
+		if unproductiveTurns < maxUnproductiveTurns {
+			continue
+		}
+		reason := strings.TrimSpace(stopReason)
+		if reason == "" {
+			if closed {
+				reason = "the runtime offered no tool and the model did not answer"
+			} else {
+				reason = "the runtime refused every proposed action and the model did not answer"
+			}
+		}
+		return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
 	}
 }
 
@@ -942,6 +1028,7 @@ type runEdit struct {
 func (l *Loop) dispatch(
 	ctx context.Context,
 	byName map[string]Tool,
+	refusals map[string]string,
 	assistant ai.AssistantMessage,
 	calls []ai.ToolCall,
 	turn Turn,
@@ -1004,7 +1091,7 @@ func (l *Loop) dispatch(
 		wg.Add(1)
 		go func(position int, call ai.ToolCall) {
 			defer wg.Done()
-			record(position, l.execute(ctx, byName, assistant, call, turn, turnIndex))
+			record(position, l.execute(ctx, byName, refusals, assistant, call, turn, turnIndex))
 		}(i, call)
 
 		if exclusive {
@@ -1080,6 +1167,7 @@ func isExclusive(byName map[string]Tool, call ai.ToolCall) bool {
 func (l *Loop) execute(
 	ctx context.Context,
 	byName map[string]Tool,
+	refusals map[string]string,
 	assistant ai.AssistantMessage,
 	call ai.ToolCall,
 	turn Turn,
@@ -1089,16 +1177,56 @@ func (l *Loop) execute(
 		return ToolOutcome{CallID: call.ID, ToolName: call.Name, Result: Result{Text: text, IsError: true}}
 	}
 
+	// A repeated failed proposal is decided before the capability boundary.
+	// The control plane recorded the failure class and retry budget; this
+	// refusal is how that memory becomes effective without executing the call
+	// again. It is a control decision, not an execution failure, so completion
+	// does not punish the model for a refusal the runtime chose.
+	if reason, refused := refusals[CallSignature(call.Name, call.Arguments)]; refused && reason != "" {
+		return ToolOutcome{
+			CallID:   call.ID,
+			ToolName: call.Name,
+			Args:     call.Arguments,
+			Result: Result{
+				Text:              reason,
+				IsError:           true,
+				CandidateRejected: true,
+				FailureRejected:   true,
+				AnswerRequired:    len(byName) == 0,
+			},
+		}
+	}
+
 	tool, ok := byName[call.Name]
 	if !ok {
 		names := make([]string, 0, len(byName))
 		for name := range byName {
 			names = append(names, name)
 		}
+		// When the runtime offers no tools at all, any call is an
+		// answer-required refusal, whether or not the loop was constructed with
+		// that name. This is the closed-surface case: there is no other tool to
+		// choose, and a call that is visibly refused must not remain
+		// outstanding work after the answer. It is checked before the
+		// partial-surface branch so the model is never told tools are
+		// "available" when the surface is closed.
+		if l.cfg.Project != nil && len(byName) == 0 {
+			return ToolOutcome{
+				CallID:   call.ID,
+				ToolName: call.Name,
+				Args:     call.Arguments,
+				Result: Result{
+					Text:              fmt.Sprintf("No tool is available in the current task stage; this call is not offered for the objective. Answer from the evidence already established. Ignored call: %q.", call.Name),
+					IsError:           true,
+					CandidateRejected: true,
+					AnswerRequired:    true,
+				},
+			}
+		}
 		// A tool the loop was built with but the task-shaped projection
 		// withheld is a runtime action-space refusal, not an execution
-		// failure. The model is told which tools are available; completion
-		// does not count the refusal as a failed call.
+		// failure. The model is told which tools are still available;
+		// completion does not count the refusal as a failed call.
 		if l.cfg.Project != nil && l.hasTool(call.Name) {
 			return ToolOutcome{
 				CallID:   call.ID,
@@ -1109,7 +1237,6 @@ func (l *Loop) execute(
 						call.Name, strings.Join(sorted(names), ", ")),
 					IsError:           true,
 					CandidateRejected: true,
-					AnswerRequired:    len(byName) == 0,
 				},
 			}
 		}
