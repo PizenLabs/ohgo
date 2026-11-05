@@ -43,7 +43,7 @@ func TestRecapNarrativeDescribesChangeAndVerification(t *testing.T) {
 	)}
 
 	got := recapNarrative("refactor the rendering engine", turns)
-	want := "Updated tui/view.go, then verified the change with go test ./..."
+	want := "Updated tui/view.go, then verified the change with go test ./... — Moved the renderer behind the layout seam."
 	if got != want {
 		t.Fatalf("recap = %q, want %q", got, want)
 	}
@@ -68,7 +68,7 @@ func TestRecapNarrativeDescribesAnswerWithoutEchoingPrompt(t *testing.T) {
 	)}
 
 	got := recapNarrative("what are goroutines?", turns)
-	want := "Read docs/concurrency.md and answered: Go's concurrency primitives are goroutines and channels. Included a worked example."
+	want := "Inspected docs/concurrency.md — Go's concurrency primitives are goroutines and channels; included a worked example."
 	if got != want {
 		t.Fatalf("recap = %q, want %q", got, want)
 	}
@@ -90,7 +90,7 @@ func TestRecapNarrativeDescribesExecution(t *testing.T) {
 		},
 	)}
 	got := recapNarrative("run the tests", turns)
-	want := "Ran go test ./... and reported the result."
+	want := "Ran go test ./... — the suite is green."
 	if got != want {
 		t.Fatalf("recap = %q, want %q", got, want)
 	}
@@ -99,7 +99,7 @@ func TestRecapNarrativeDescribesExecution(t *testing.T) {
 // Every footer carries the stable marker exactly once, even when the stored
 // narrative already names it.
 func TestRecapLineCarriesMarkerOnce(t *testing.T) {
-	if got := recapLine("Updated the parser."); got != "※ recap: Updated the parser." {
+	if got := recapLine("Updated the parser."); got != "※ recap · Updated the parser." {
 		t.Fatalf("recapLine = %q", got)
 	}
 	if got := recapLine(recapPrefix + " Updated the parser."); strings.Count(got, recapPrefix) != 1 {
@@ -220,9 +220,15 @@ func TestRecapNamesOnlyFilesActuallyRead(t *testing.T) {
 		},
 	)}
 	got := recapNarrative("Use ls to inspect backend/, read backend/go.mod, then tell me the module name.", turns)
-	want := "Read backend/go.mod and answered: The module name is ecommerce."
+	want := "Inspected backend/go.mod — the module name is ecommerce."
 	if got != want {
 		t.Fatalf("recap = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "Answered:") {
+		t.Fatalf("recap fell back to an answer label: %q", got)
+	}
+	if strings.Count(got, "backend/go.mod") != 1 {
+		t.Fatalf("recap repeated the inspected path: %q", got)
 	}
 }
 
@@ -230,8 +236,11 @@ func TestRecapNamesOnlyFilesActuallyRead(t *testing.T) {
 // answer it cannot show.
 func TestRecapWithoutAnAnswerIsHonest(t *testing.T) {
 	got := recapNarrative("do the work", []agent.Turn{{}})
-	if got != "Closed the task." {
-		t.Fatalf("recap = %q, want the closed-task fallback", got)
+	if got != "" {
+		t.Fatalf("recap = %q, want no fabricated closure", got)
+	}
+	if strings.Contains(got, "Closed the task") || strings.Contains(got, "returned to the prompt") {
+		t.Fatalf("recap fabricated boilerplate: %q", got)
 	}
 }
 
@@ -260,7 +269,7 @@ func TestRecapSkipsAnAnalysisLeadIn(t *testing.T) {
 		},
 	)}
 	got := recapNarrative("check this project", turns)
-	want := "Read backend/go.mod and answered: The services are health-check skeletons."
+	want := "Inspected backend/go.mod — the services are health-check skeletons."
 	if got != want {
 		t.Fatalf("recap = %q, want %q", got, want)
 	}

@@ -1,0 +1,332 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/x/ansi"
+)
+
+// TestFastToolCompletesWithoutSpinnerDelay: a call that finishes in
+// milliseconds renders only its stable outcome. No frame is spent pretending
+// the operation took longer than it did.
+func TestFastToolCompletesWithoutSpinnerDelay(t *testing.T) {
+	start := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: start})
+	s.Apply(ToolFinished{ID: "c1", Text: "package a\n", Summary: "1 line", At: start.Add(2 * time.Millisecond)})
+
+	out := ansi.Strip(Render(s))
+	if !strings.Contains(out, "✓ read a.go") {
+		t.Fatalf("fast tool lost its stable success row:\n%s", out)
+	}
+	if !strings.Contains(out, "2ms") {
+		t.Fatalf("fast tool lost its measured duration:\n%s", out)
+	}
+	for _, frame := range spinnerFrames {
+		if strings.Contains(out, frame) {
+			t.Fatalf("fast tool rendered spinner frame %q:\n%s", frame, out)
+		}
+	}
+
+	// A tick must not disturb settled history.
+	s.Status.Spinner = 7
+	if again := ansi.Strip(Render(s)); again != out {
+		t.Fatalf("completed history changed across a tick:\nbefore:\n%s\nafter:\n%s", out, again)
+	}
+}
+
+// TestRunningToolShowsStaticGlyphAndMeasuredElapsed: a long call remains
+// readable without a per-tool spinner, and its duration is the right-aligned
+// measured one.
+func TestRunningToolShowsStaticGlyphAndMeasuredElapsed(t *testing.T) {
+	start := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: start})
+	// The render seam measures an elapsed duration from real time; pin the
+	// end so this test asserts the formatter rather than the wall clock.
+	s.Entries[0].Tool.EndedAt = start.Add(3200 * time.Millisecond)
+
+	out := ansi.Strip(Render(s))
+	if !strings.Contains(out, "◌ bash go test ./...") {
+		t.Fatalf("running tool lost its static glyph or invocation:\n%s", out)
+	}
+	if !strings.Contains(out, "3.2s") {
+		t.Fatalf("running tool lost its measured elapsed time:\n%s", out)
+	}
+	for _, frame := range spinnerFrames {
+		if strings.Contains(out, frame) {
+			t.Fatalf("running tool rendered spinner frame %q:\n%s", frame, out)
+		}
+	}
+}
+
+// TestStreamingToolReplacesTransientRow: partial output has an explicit
+// intermediate state, and completion replaces it rather than leaving both.
+func TestStreamingToolReplacesTransientRow(t *testing.T) {
+	start := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read README.md", At: start})
+	s.Apply(ToolPreview{ID: "c1", Summary: "receiving headers"})
+
+	streaming := ansi.Strip(Render(s))
+	if !strings.Contains(streaming, "└─ receiving") {
+		t.Fatalf("streaming tool lost its intermediate state:\n%s", streaming)
+	}
+	if got := strings.Count(streaming, "read README.md"); got != 1 {
+		t.Fatalf("streaming invocation appeared %d times, want one:\n%s", got, streaming)
+	}
+
+	s.Apply(ToolFinished{ID: "c1", Text: "line one\nline two\n", Summary: "2 lines", At: start.Add(1200 * time.Millisecond)})
+	done := ansi.Strip(Render(s))
+	if strings.Contains(done, "receiving") {
+		t.Fatalf("completed tool kept the transient streaming row:\n%s", done)
+	}
+	if got := strings.Count(done, "read README.md"); got != 1 {
+		t.Fatalf("completed invocation appeared %d times, want one:\n%s", got, done)
+	}
+	if !strings.Contains(done, "└─ 2 lines") {
+		t.Fatalf("completed tool lost its compact outcome:\n%s", done)
+	}
+}
+
+// TestToolFailureStaysToolLevel: a failed read is an operation outcome, not a
+// global task failure, and its summary is the short truthful reason.
+func TestToolFailureStaysToolLevel(t *testing.T) {
+	at := time.Now()
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read .env.example", At: at})
+	s.Apply(ToolFinished{
+		ID: "c1", IsError: true,
+		Text:    "stat \"/repo/.env.example\": no such file or directory\n",
+		Summary: CompactResultSummary("stat \"/repo/.env.example\": no such file or directory\n", true),
+		At:      at.Add(time.Millisecond),
+	})
+
+	if got := DeriveRuntime(s); got != RuntimeIdle {
+		t.Fatalf("tool failure changed the runtime to %q, want idle", got)
+	}
+	out := ansi.Strip(Render(s))
+	if !strings.Contains(out, "✗ read .env.example") {
+		t.Fatalf("failure lost its tool-level marker:\n%s", out)
+	}
+	if !strings.Contains(out, "└─ file not found") {
+		t.Fatalf("failure summary is not compact and truthful:\n%s", out)
+	}
+}
+
+// TestOnlyCurrentRunningToolIsLive: concurrent calls all remain truthful, but
+// only one carries the live clock; the others settle to their static glyph.
+func TestOnlyCurrentRunningToolIsLive(t *testing.T) {
+	start := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: start})
+	s.Apply(ToolStarted{ID: "c2", Name: "read", Summary: "read b.go", At: start})
+	s.Entries[0].Tool.EndedAt = start.Add(3 * time.Second)
+	s.Entries[1].Tool.EndedAt = start.Add(3 * time.Second)
+
+	if index := latestRunningToolIndex(s); index != 1 {
+		t.Fatalf("current running tool = %d, want the latest call", index)
+	}
+	pal := PaletteFor(s.Theme)
+	layout := ComputeLayout(s)
+	var current, other strings.Builder
+	renderTool(&current, s.Entries[1].Tool, pal, layout, true, false, false)
+	renderTool(&other, s.Entries[0].Tool, pal, layout, false, false, false)
+	if !strings.Contains(ansi.Strip(current.String()), "3s") {
+		t.Fatalf("current tool lost its elapsed clock: %q", current.String())
+	}
+	if strings.Contains(ansi.Strip(other.String()), "3s") {
+		t.Fatalf("non-current tool kept a competing live clock: %q", other.String())
+	}
+}
+
+// TestReasoningIsSubordinateAndSettles: reasoning is always a collapsed,
+// recessive block. It updates its duration while open but never borrows the
+// current-action glyph or exposes its trace by default.
+func TestReasoningIsSubordinateAndSettles(t *testing.T) {
+	at := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(UserSubmitted{Text: "go", At: at})
+	s.Apply(ReasoningDelta{Text: "inspect the cache", At: at})
+
+	live := ansi.Strip(Render(s))
+	if !strings.Contains(live, "▸ reasoning") {
+		t.Fatalf("open reasoning lost its collapsed head:\n%s", live)
+	}
+	if strings.Contains(live, "◌ reasoning") {
+		t.Fatalf("reasoning borrowed the current-action glyph:\n%s", live)
+	}
+	if strings.Contains(live, "inspect the cache") {
+		t.Fatalf("collapsed reasoning leaked its trace:\n%s", live)
+	}
+
+	s.Apply(AssistantDelta{Text: "answer", At: at.Add(2 * time.Second)})
+	settled := ansi.Strip(Render(s))
+	if !strings.Contains(settled, "▸ reasoning") {
+		t.Fatalf("closed reasoning lost its collapsed marker:\n%s", settled)
+	}
+	if strings.Contains(settled, "inspect the cache") {
+		t.Fatalf("closed reasoning leaked its trace:\n%s", settled)
+	}
+}
+
+// TestCancellationLeavesNoLiveTool: cancellations converge tool and UI state
+// on the same terminal transition.
+func TestCancellationLeavesNoLiveTool(t *testing.T) {
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(UserSubmitted{Text: "go", Seq: 1})
+	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "go test ./...", At: time.Now(), Seq: 1})
+	s.Apply(TurnCancelled{Seq: 1, Text: "cancelled", At: time.Now()})
+
+	out := ansi.Strip(Render(s))
+	for _, marker := range []string{"◌", "⠋"} {
+		if strings.Contains(out, marker) {
+			t.Fatalf("cancelled view kept live marker %q:\n%s", marker, out)
+		}
+	}
+	if !strings.Contains(out, "⊘ go test ./...") {
+		t.Fatalf("cancelled tool lost its terminal marker:\n%s", out)
+	}
+}
+
+// TestPathTruncationKeepsBasename: a long path is cut in the middle so the
+// operation and the file name both survive, and the result is width-stable.
+func TestPathTruncationKeepsBasename(t *testing.T) {
+	path := "/Users/anvndev/Documents/Project/Golang/go-ecommerce/src/App.tsx"
+	for width := 12; width <= 50; width++ {
+		got := TruncateMiddleToWidth(path, width)
+		if w := CellWidth(got); w > width {
+			t.Fatalf("width %d: result is %d cells: %q", width, w, got)
+		}
+		if !strings.Contains(got, "…") {
+			t.Fatalf("width %d: result did not mark the cut: %q", width, got)
+		}
+	}
+	got := TruncateMiddleToWidth(path, 32)
+	if !strings.HasSuffix(got, "App.tsx") {
+		t.Fatalf("middle truncation lost the basename: %q", got)
+	}
+	if !strings.HasPrefix(got, "/Users") {
+		t.Fatalf("middle truncation lost the path head: %q", got)
+	}
+	if again := TruncateMiddleToWidth(path, 32); again != got {
+		t.Fatalf("middle truncation is not deterministic: %q vs %q", got, again)
+	}
+
+	s := New()
+	s.Apply(TerminalResized{Width: 44, Height: 24})
+	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read " + path, At: time.Now()})
+	out := ansi.Strip(Render(s))
+	if !strings.Contains(out, "App.tsx") {
+		t.Fatalf("narrow tool row lost the target basename:\n%s", out)
+	}
+	if again := ansi.Strip(Render(s)); again != out {
+		t.Fatalf("resize-stable render changed across frames:\n%s\n%s", out, again)
+	}
+}
+
+// TestTranscriptReadsAsStateTransitions: the finished rows, the settled
+// reasoning footer, and the one live call appear in execution order, and no
+// historical row keeps a live marker.
+func TestTranscriptReadsAsStateTransitions(t *testing.T) {
+	at := time.Now().Add(-time.Minute)
+	s := New()
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Apply(UserSubmitted{Text: "analyze this project", At: at, Seq: 1})
+	s.Apply(ToolStarted{ID: "c1", Name: "ls", Summary: "ls /go-ecommerce", At: at, Seq: 1})
+	s.Apply(ToolFinished{ID: "c1", Text: "a\nb\n", Summary: "21 lines", At: at.Add(time.Millisecond), Seq: 1})
+	s.Apply(ToolStarted{ID: "c2", Name: "read", Summary: "read package.json", At: at, Seq: 1})
+	s.Apply(ToolFinished{ID: "c2", Text: "x\ny\n", Summary: "35 lines", At: at.Add(2 * time.Millisecond), Seq: 1})
+	s.Apply(ReasoningDelta{Text: "inspect the backend", At: at, Seq: 1})
+	s.Apply(AssistantDelta{Text: "I will inspect the backend.", At: at.Add(13 * time.Second), Seq: 1})
+	s.Apply(ToolStarted{ID: "c3", Name: "glob", Summary: "glob backend/**/*.go", At: at.Add(13 * time.Second), Seq: 1})
+
+	out := ansi.Strip(Render(s))
+	ordered := []string{
+		"✓ ls /go-ecommerce",
+		"✓ read package.json",
+		"▸ reasoning",
+		"◌ glob backend/**/*.go",
+	}
+	last := -1
+	for _, marker := range ordered {
+		index := strings.Index(out, marker)
+		if index < 0 {
+			t.Fatalf("transcript lost %q:\n%s", marker, out)
+		}
+		if index <= last {
+			t.Fatalf("transcript order is wrong at %q:\n%s", marker, out)
+		}
+		last = index
+	}
+	if got := strings.Count(out, "◌"); got != 1 {
+		t.Fatalf("transcript has %d live markers, want exactly one:\n%s", got, out)
+	}
+	if strings.Contains(out, "running") {
+		t.Fatalf("transcript used generic running vocabulary:\n%s", out)
+	}
+}
+
+// TestCompletedHistoryIsNotRepaintedByTicks: the live clock advances the one
+// active block only. Settled rows keep their cached projection, which is what
+// makes history stable and rendering cheap during a long run.
+func TestCompletedHistoryIsNotRepaintedByTicks(t *testing.T) {
+	at := time.Now()
+	s := New()
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	for i := 0; i < 12; i++ {
+		id := "c" + string(rune('a'+i))
+		s.Apply(ToolStarted{ID: id, Name: "read", Summary: "read file", At: at})
+		s.Apply(ToolFinished{ID: id, Text: "a\nb\n", Summary: "2 lines", At: at.Add(time.Millisecond)})
+	}
+	layout := &TranscriptLayout{}
+	layout.Refresh(&s, ComputeLayout(s))
+	if layout.LastRendered != 12 {
+		t.Fatalf("initial render count = %d, want 12", layout.LastRendered)
+	}
+	s.Status.Spinner = 9
+	layout.Refresh(&s, ComputeLayout(s))
+	if layout.LastRendered != 0 {
+		t.Fatalf("settled history repainted %d blocks on a tick, want 0", layout.LastRendered)
+	}
+
+	// Adding one running call re-renders exactly that new block on a tick.
+	s.Apply(ToolStarted{ID: "live", Name: "bash", Summary: "go test ./...", At: time.Now()})
+	layout.Refresh(&s, ComputeLayout(s))
+	// The append closes the previous tool group, so the prior row's hint is
+	// recomputed alongside the new block: two projections, never a full reflow.
+	if layout.LastRendered != 2 {
+		t.Fatalf("new live call rendered %d blocks, want the new block plus its group neighbour", layout.LastRendered)
+	}
+	s.Status.Spinner = 10
+	layout.Refresh(&s, ComputeLayout(s))
+	if layout.LastRendered != 1 {
+		t.Fatalf("tick rendered %d blocks, want only the live call", layout.LastRendered)
+	}
+}
+
+// TestLongPathSummaryKeepsTail: the invocation summary is bounded before it
+// reaches the renderer, so its own cut must preserve the basename too. Fixing
+// only the final paint would still lose the target.
+func TestLongPathSummaryKeepsTail(t *testing.T) {
+	path := "/Users/anvndev/Documents/Project/Golang/go-ecommerce/src/App.tsx"
+	got := ToolSummaryForCall("read", map[string]any{"path": path})
+	if CellWidth(got) > 80 {
+		t.Fatalf("summary = %q (%d cells), want a bounded target", got, CellWidth(got))
+	}
+	if !strings.HasSuffix(got, "App.tsx") {
+		t.Fatalf("summary lost the basename: %q", got)
+	}
+	if !strings.HasPrefix(got, "read /Users") {
+		t.Fatalf("summary lost the operation and path head: %q", got)
+	}
+}

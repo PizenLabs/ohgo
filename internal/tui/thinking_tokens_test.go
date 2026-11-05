@@ -16,25 +16,25 @@ func TestRenderThinkingTokensFormatCleanly(t *testing.T) {
 	now := start.Add(5 * time.Second)
 
 	withTokens := ThinkingState{
-		Active: true, Phase: ThinkingModel, Label: "Responding…",
+		Active: true, Phase: ThinkingRespond, Label: "respond",
 		StartedAt: start, Interruptible: true, OutputTokens: 248,
 	}
 	line := RenderThinking(withTokens, now, 0)[0]
-	for _, want := range []string{"Responding", "248 tokens", "5s", "esc"} {
+	for _, want := range []string{"respond", "248 tokens", "5s", "esc"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("line = %q, want %q", line, want)
 		}
 	}
 
 	withoutTokens := ThinkingState{
-		Active: true, Phase: ThinkingModel, Label: "Responding…",
+		Active: true, Phase: ThinkingRespond, Label: "respond",
 		StartedAt: start, Interruptible: true,
 	}
 	plain := RenderThinking(withoutTokens, now, 0)[0]
 	if strings.Contains(strings.ToLower(plain), "token") {
 		t.Fatalf("line = %q, want no token segment when count is zero", plain)
 	}
-	for _, want := range []string{"Responding", "5s", "esc"} {
+	for _, want := range []string{"respond", "5s", "esc"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("line = %q, want %q", plain, want)
 		}
@@ -51,8 +51,8 @@ func TestProjectThinkingCarriesStreamTokens(t *testing.T) {
 	}
 	s.Apply(AssistantDelta{Text: "hello world, this is streamed text"})
 	got := ProjectThinking(s)
-	if got.Label != "Responding…" {
-		t.Fatalf("label = %q, want Responding… while streaming", got.Label)
+	if got.Label != "respond" {
+		t.Fatalf("label = %q, want the respond phase while streaming", got.Label)
 	}
 	if got.OutputTokens <= 0 {
 		t.Fatalf("streaming tokens = %d, want positive after a delta", got.OutputTokens)
@@ -86,7 +86,7 @@ func TestRenderThinkingTickKeepsWidth(t *testing.T) {
 	start := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	now := start.Add(5 * time.Second)
 	state := ThinkingState{
-		Active: true, Phase: ThinkingModel, Label: "Responding…",
+		Active: true, Phase: ThinkingRespond, Label: "respond",
 		StartedAt: start, Interruptible: true, OutputTokens: 248,
 	}
 	for _, width := range []int{20, 40, 80} {
@@ -114,10 +114,10 @@ func TestFormatThinkingLineIsCompact(t *testing.T) {
 	start := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	now := start.Add(5 * time.Second)
 	state := ThinkingState{
-		Active: true, Phase: ThinkingModel, Label: "Responding…",
+		Active: true, Phase: ThinkingRespond, Label: "respond",
 		StartedAt: start, Interruptible: true, OutputTokens: 248,
 	}
-	if got, want := RenderThinking(state, now, 0)[0], "✳ Responding… · (↓248 tokens · 5s · esc)"; got != want {
+	if got, want := RenderThinking(state, now, 0)[0], "◌ respond · (↓248 tokens · 5s · esc)"; got != want {
 		t.Fatalf("line = %q, want %q", got, want)
 	}
 	wide := RenderThinking(state, now, 80)[0]

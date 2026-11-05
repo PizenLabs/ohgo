@@ -154,7 +154,7 @@ func ActivityLineText(s State, now time.Time, tick int, width int) string {
 		return ""
 	}
 	lines := RenderThinking(activity.Thinking, now, width)
-	if shimmerSupported() || activity.Thinking.Phase == ThinkingCommit {
+	if shimmerSupported() {
 		lines = RenderThinkingTick(activity.Thinking, now, tick, width)
 	}
 	if len(lines) == 0 {

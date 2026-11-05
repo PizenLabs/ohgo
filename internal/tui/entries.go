@@ -107,7 +107,7 @@ func appendReasoningEntry(entries []Entry, text string) []Entry {
 		entries[len(entries)-1].Reasoning.Text += text
 		return entries
 	}
-	return append(entries, Entry{Kind: EntryReasoning, Reasoning: &ReasoningEntry{Text: text}})
+	return append(entries, Entry{Kind: EntryReasoning, Reasoning: &ReasoningEntry{Text: text, Closed: true}})
 }
 
 // toolCallsOf extracts the tool calls a stored assistant message requested.

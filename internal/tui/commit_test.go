@@ -350,21 +350,23 @@ func TestCommitShowsImmediateProgressAndKeepsTheLoopResponsive(t *testing.T) {
 		t.Fatalf("phase = %q active=%v immediately after /commit, want proposing", p.state.CommitPhase(), p.state.CommitActive())
 	}
 	out := stripANSI(Render(p.state))
-	if !strings.Contains(out, "Preparing commit") {
+	if !strings.Contains(out, "prepare commit") {
 		t.Errorf("render = %q, want the commit activity line before the model answers", out)
 	}
-	if !strings.Contains(out, spinnerFrames[0]) {
-		t.Errorf("render = %q, want the first spinner frame", out)
+	for _, frame := range spinnerFrames {
+		if strings.Contains(out, frame) {
+			t.Errorf("render = %q, want the activity line free of spinner glyphs", out)
+		}
 	}
 
 	// The provider is still blocked; the update loop must still process ticks.
 	before := p.state.Status.Spinner
 	p.Update(tickMsg(time.Now()))
 	if p.state.Status.Spinner == before {
-		t.Error("the commit spinner did not advance while the provider was pending")
+		t.Error("the activity tick did not advance while the provider was pending")
 	}
-	if out := stripANSI(Render(p.state)); !strings.Contains(out, spinnerFrames[p.state.Status.Spinner]) {
-		t.Errorf("render = %q, want the advanced spinner frame", out)
+	if out := stripANSI(Render(p.state)); !strings.Contains(out, "prepare commit") {
+		t.Errorf("render = %q, want the stable activity label", out)
 	}
 
 	// Release the command and deliver its result through the normal Update
@@ -416,10 +418,10 @@ func TestCommitModelFailureStopsTheSpinnerAndStaysConcise(t *testing.T) {
 		t.Errorf("notices = %q, want no nested sentinel", text)
 	}
 	out := stripANSI(Render(p.state))
-	if strings.Contains(out, "Preparing commit") {
+	if strings.Contains(out, "prepare commit") {
 		t.Error("the activity line survived a terminal failure")
 	}
-	if strings.Contains(out, "Creating commit") {
+	if strings.Contains(out, "execute commit") {
 		t.Error("an execution spinner appeared for a failed proposal")
 	}
 	before := p.state.Status.Spinner

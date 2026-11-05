@@ -34,9 +34,15 @@ type ThinkingPhase string
 const (
 	// ThinkingNone means no activity line exists.
 	ThinkingNone ThinkingPhase = ""
-	// ThinkingModel means the model is generating or awaiting its response.
+	// ThinkingModel means the model is working without visible text yet. The
+	// user-facing label is "reason": it names the runtime phase rather than
+	// the model's private process.
 	ThinkingModel ThinkingPhase = "model"
-	// ThinkingTool means a tool call is executing.
+	// ThinkingRespond means visible answer text is streaming, so the truthful
+	// phase is responding rather than reasoning.
+	ThinkingRespond ThinkingPhase = "respond"
+	// ThinkingTool means a tool call is executing. The user-facing label is
+	// "execute": the runtime is running an action, not merely "working".
 	ThinkingTool ThinkingPhase = "tool"
 	// ThinkingWaiting means the turn is blocked on human approval.
 	ThinkingWaiting ThinkingPhase = "waiting"
@@ -57,8 +63,9 @@ type ThinkingState struct {
 	Active bool
 	// Phase is the authoritative execution category.
 	Phase ThinkingPhase
-	// Label is presentation vocabulary for the phase ("Thinking…",
-	// "Running", "Waiting for approval"). It carries no execution authority.
+	// Label is the deterministic runtime phase word ("reason", "respond",
+	// "execute", "prepare", "waiting for approval"). It carries no execution
+	// authority and is never model-generated prose.
 	Label string
 	// Detail is truthful runtime detail — currently a running tool's own,
 	// argument-derived summary. It is never inferred from model prose.
@@ -93,14 +100,15 @@ func ProjectThinking(s State) ThinkingState {
 	// Read it first so the activity line names the work that is actually in
 	// flight rather than reporting an idle session.
 	if s.CommitActive() && !s.Quit {
-		label := "Preparing commit…"
+		label := "prepare"
 		if s.Commit.Phase == CommitExecuting {
-			label = "Creating commit…"
+			label = "execute"
 		}
 		return ThinkingState{
 			Active:        true,
 			Phase:         ThinkingCommit,
 			Label:         label,
+			Detail:        "commit",
 			StartedAt:     s.Commit.StartedAt,
 			TurnStartedAt: s.TurnStartedAt,
 			Interruptible: s.Commit.Phase == CommitProposing,
@@ -111,10 +119,10 @@ func ProjectThinking(s State) ThinkingState {
 		// A blocked tool is not running, so waiting gets no elapsed timer
 		// and no interrupt hint: the approval dialog owns the keyboard, and
 		// advertising esc here would name a key the dialog has taken over.
-		return ThinkingState{Active: true, Phase: ThinkingWaiting, Label: "Waiting for approval", TurnStartedAt: s.TurnStartedAt}
+		return ThinkingState{Active: true, Phase: ThinkingWaiting, Label: "waiting for approval", TurnStartedAt: s.TurnStartedAt}
 
 	case RuntimeRunningTool:
-		ts := ThinkingState{Active: true, Phase: ThinkingTool, Label: "Running", TurnStartedAt: s.TurnStartedAt, Interruptible: true}
+		ts := ThinkingState{Active: true, Phase: ThinkingTool, Label: "execute", TurnStartedAt: s.TurnStartedAt, Interruptible: true}
 		if tool := latestRunningTool(s); tool != nil {
 			ts.Detail = tool.Summary
 			if ts.Detail == "" {
@@ -125,14 +133,14 @@ func ProjectThinking(s State) ThinkingState {
 		return ts
 
 	case RuntimeStreaming:
-		// Text is already visible, so the truthful word is "Responding…",
-		// not "Thinking…". The distinction already exists in DeriveRuntime.
+		// Text is already visible, so the truthful phase is responding, not
+		// reasoning. The distinction already exists in DeriveRuntime.
 		// OutputTokens is the running estimate counted from streamed deltas
 		// in State.Apply, so the line reports what arrived, never a guess.
 		return ThinkingState{
 			Active:        true,
-			Phase:         ThinkingModel,
-			Label:         "Responding…",
+			Phase:         ThinkingRespond,
+			Label:         "respond",
 			StartedAt:     s.TurnStartedAt,
 			TurnStartedAt: s.TurnStartedAt,
 			Interruptible: true,
@@ -143,7 +151,7 @@ func ProjectThinking(s State) ThinkingState {
 		return ThinkingState{
 			Active:        true,
 			Phase:         ThinkingModel,
-			Label:         "Thinking…",
+			Label:         "reason",
 			StartedAt:     s.TurnStartedAt,
 			TurnStartedAt: s.TurnStartedAt,
 			Interruptible: true,
@@ -152,7 +160,7 @@ func ProjectThinking(s State) ThinkingState {
 	default:
 		// Idle and shutting down have no activity to claim. Completion,
 		// failure, and cancellation all leave nothing behind, so a stale
-		// "Thinking…" can never outlive the turn.
+		// activity line can never outlive the turn.
 		return ThinkingState{}
 	}
 }
@@ -202,10 +210,10 @@ func RenderThinking(state ThinkingState, now time.Time, width int) []string {
 
 // RenderThinkingTick renders the activity line with a frame index for the
 // shimmer wave. It is pure like RenderThinking: tick is supplied rather than
-// read, so output is deterministic. Only the Responding label shimmers, so
-// Thinking, Running, and Waiting lines keep their stable text. Width handling
-// matches RenderThinking; a truncated shimmer degrades to plain text rather
-// than overflowing.
+// read, so output is deterministic. Only the phase word shimmers, so the
+// elapsed time and the tool detail keep stable text. Width handling matches
+// RenderThinking; a truncated shimmer degrades to plain text rather than
+// overflowing.
 func RenderThinkingTick(state ThinkingState, now time.Time, tick int, width int) []string {
 	return renderThinking(state, now, tick, true, width)
 }
@@ -271,12 +279,12 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 		// muted zone with no timer and no interrupt hint.
 		return []string{formatThinkingLine(z.waiting(thinkingGlyphAt(state.Phase, tick)), z.waiting(state.Label), "", width, z)}
 	}
-	// The shimmer wraps only label runes and its stripped width always
+	// The shimmer wraps only phase-label runes and its stripped width always
 	// equals the plain width, so the trailing metadata never shifts across
 	// ticks. Styles apply after the text blocks are built, so color codes
 	// never enter length math: CellWidth and TruncateToWidth strip them.
 	label := state.Label
-	if shimmer && state.Phase == ThinkingModel && label == "Responding…" {
+	if shimmer && state.Phase != ThinkingWaiting {
 		label = z.wave(label, tick)
 	} else {
 		label = z.active(label)
@@ -300,7 +308,7 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 		metaParts = append(metaParts, z.tail(elapsed))
 	}
 	// The whole-turn elapsed is the long-running context. It only appears
-	// when it differs from the action's own start, so "Thinking…" does not
+	// when it differs from the action's own start, so "reason" does not
 	// print the same duration twice; a running tool shows both its own time
 	// and how long the task has been going.
 	if !state.TurnStartedAt.IsZero() && !state.TurnStartedAt.Equal(state.StartedAt) {
@@ -322,7 +330,7 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 }
 
 // formatThinkingLine joins glyph, content, and parenthesised tail into one
-// compact row: "✳ Responding… · (↓248 tokens · 5s · esc)".
+// compact row: "◌ respond · (↓248 tokens · 5s · esc)".
 //
 // The head yields before the tail under truncation, so the timer and the esc
 // hint survive a narrow terminal while a long tool summary trims first. The
@@ -370,23 +378,21 @@ func formatOutputTokens(n int) string {
 }
 
 // thinkingGlyph is a static phase marker. It is presentation only: the phase
-// is the authority and the glyph merely distinguishes active work (✳) from
-// waiting (◇). Animation is deliberately not owned here — the existing
-// spinner remains the only animated indicator, so the activity line adds no
-// second clock and no independent lifecycle.
+// is the authority and the glyph merely distinguishes active work (◌) from
+// waiting (◇). Animation is deliberately not owned here, so the activity line
+// adds no clock and no independent lifecycle. The shimmer tick changes only
+// the styling of the phase word, never its content.
 func thinkingGlyph(phase ThinkingPhase) string {
 	if phase == ThinkingWaiting {
 		return "◇"
 	}
-	return "✳"
+	return "◌"
 }
 
-// thinkingGlyphAt adds the one animated glyph: /commit uses the existing tool
-// spinner frames, driven by the existing tick, so it needs no second timer.
-func thinkingGlyphAt(phase ThinkingPhase, tick int) string {
-	if phase == ThinkingCommit {
-		return spinnerFrame(tick)
-	}
+// thinkingGlyphAt keeps the tick parameter for the existing render seam, but
+// no phase uses a spinner glyph: motion is a styling layer over a stable
+// state, never a frame-indexed character.
+func thinkingGlyphAt(phase ThinkingPhase, _ int) string {
 	return thinkingGlyph(phase)
 }
 
@@ -402,6 +408,11 @@ func elapsedLabel(started, now time.Time) string {
 	d := now.Sub(started)
 	if d < 0 {
 		d = 0
+	}
+	// Sub-second ages are not information a transcript reader can use, and
+	// showing "0s" makes every line look laggy at the moment it starts.
+	if d < time.Second {
+		return ""
 	}
 	return formatDurationText(d)
 }

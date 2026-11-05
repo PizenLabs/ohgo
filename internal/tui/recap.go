@@ -7,17 +7,17 @@ import (
 	"github.com/PizenLabs/ohgo/internal/agent"
 )
 
-// recapPrefix is the single marker every completion recap carries.
+// recapPrefix is the single recap marker every finished turn carries.
 //
-// It is a text marker, not decoration: the recap must read as closure even in
-// a monochrome terminal, and a user scanning scrollback finds the end of a
-// task by one stable prefix rather than by a colour.
-const recapPrefix = "※ recap:"
+// It is a reference mark, not a completion badge: the line closes the turn
+// without competing with the tool outcomes above it. The glyph names the state
+// independently of colour, so the footer survives a monochrome terminal.
+const recapPrefix = "※ recap ·"
 
 // recapGreeting is the narrative for a conversational turn that asked for no
-// work. It is deliberately static: a greeting produced no files, commands, or
+// work. It is deliberately short: a greeting produced no files, commands, or
 // findings to summarise, and inventing evidence would make the recap lie.
-const recapGreeting = "No task in progress yet; you greeted and returned. Ready to help — got a specific file or bug?"
+const recapGreeting = "Greeted and returned to the prompt."
 
 // recapNarrative derives a semantic completion summary from the run's own
 // evidence.
@@ -26,21 +26,38 @@ const recapGreeting = "No task in progress yet; you greeted and returned. Ready 
 // counts: those are telemetry, available elsewhere, while the transcript needs
 // a human sentence about what actually happened. Classification is by observed
 // work, not by model identity or by wording: a turn that changed files is
-// described as a change, a turn that only answered is described as an answer,
-// and a greeting stays a greeting.
+// described as a change, a read-only turn names the inspected files and its
+// finding, and a greeting stays a greeting. A turn with no evidence and no
+// finding produces no footer rather than boilerplate.
 func recapNarrative(objective string, turns []agent.Turn) string {
 	if recapIsGreeting(objective) {
 		return recapGreeting
 	}
 	evidence := collectRecapEvidence(turns)
+	finding := recapFinding(turns)
 	switch {
 	case len(evidence.changed) > 0:
-		return mutationRecap(evidence)
+		return mutationRecap(evidence, finding)
 	case len(evidence.commands) > 0:
-		return executionRecap(evidence)
+		return executionRecap(evidence, finding)
+	case len(recapPaths(evidence.read, 2)) > 0:
+		return inspectionRecap(evidence, finding)
 	default:
-		return answerRecap(turns, evidence)
+		return finishSentence(finding)
 	}
+}
+
+// recapFinding is the answer's substantive finding plus one useful detail: when
+// the answer includes fenced code, the recap names the worked example instead
+// of leaving a reader to scroll back to discover it.
+func recapFinding(turns []agent.Turn) string {
+	answer := finalAssistantText(turns)
+	finding := answerSubject(answer)
+	if finding == "" || !strings.Contains(answer, "```") {
+		return finding
+	}
+	finding = strings.TrimRight(finding, " .!?;:")
+	return finding + "; included a worked example."
 }
 
 // recapChange is one file the run successfully wrote, edited, or removed.
@@ -121,7 +138,7 @@ func recapIsGreeting(text string) bool {
 
 // mutationRecap narrates a turn that changed repository files. The verb follows
 // the observed operation: a pure deletion is never reported as an update.
-func mutationRecap(evidence recapEvidence) string {
+func mutationRecap(evidence recapEvidence, finding string) string {
 	mutations := 0
 	for _, change := range evidence.changed {
 		if change.remove {
@@ -139,49 +156,99 @@ func mutationRecap(evidence recapEvidence) string {
 	if command := recapVerification(evidence.commands); command != "" {
 		recap += ", then verified the change with " + command
 	}
-	return finishSentence(recap)
+	return finishSentence(appendFinding(recap, finding))
 }
 
 // executionRecap narrates a turn that ran a process without changing files.
-func executionRecap(evidence recapEvidence) string {
+// The assistant's own closing sentence is appended as the observed outcome;
+// without one the recap names only the command it can prove ran.
+func executionRecap(evidence recapEvidence, finding string) string {
 	recap := "Ran " + recapList(evidence.commands)
-	return finishSentence(recap + " and reported the result")
+	return finishSentence(appendFinding(recap, finding))
 }
 
-// answerRecap narrates an informational turn from its final answer and the
-// files it read.
-//
-// The answer is directly above the recap, so this is closure, not a second
-// answer. It names only files actually read, carries the answer's own subject
-// (never the objective), and does not dress a one-line fact up as an
-// explanation.
-func answerRecap(turns []agent.Turn, evidence recapEvidence) string {
-	answer := strings.TrimSpace(finalAssistantText(turns))
-	if answer == "" {
-		return "Closed the task."
-	}
-	subject := answerSubject(answer)
-	hasExample := strings.Contains(answer, "```")
-
-	recap := "Answered"
-	if len(evidence.read) > 0 {
-		recap = "Read " + recapList(recapPaths(evidence.read, 2)) + " and answered"
-	}
-	if subject != "" {
-		recap += ": " + subject
-	} else if !hasExample {
-		recap += " the question"
-	}
-	if hasExample {
-		recap += ". Included a worked example"
-	}
-	return finishSentence(recap)
+// inspectionRecap narrates an informational turn from the files it actually
+// read and the finding above it. Paths are removed from the finding first so
+// "Inspected backend/go.mod — the module name in backend/go.mod is ecommerce"
+// does not repeat the same file twice.
+func inspectionRecap(evidence recapEvidence, finding string) string {
+	recap := "Inspected " + recapList(recapPaths(evidence.read, 2))
+	finding = stripRecapPaths(finding, evidence.read)
+	return finishSentence(appendFinding(recap, finding))
 }
 
-// answerSubject returns the first substantive prose line of an answer, bounded
-// for the footer. Headings, tables, rules, and fenced code are skipped; Markdown
-// emphasis and list markers are removed so the line reads as prose.
+// appendFinding joins the observed action with the answer's substantive
+// finding. A finding that simply repeats the action ("Updated…", "Read…") adds
+// no information and is omitted; a distinct conclusion is set off with an em
+// dash so the footer reads as one short paragraph rather than two fragments.
+func appendFinding(recap, finding string) string {
+	finding = strings.TrimSpace(finding)
+	if finding == "" || recapEchoesAction(finding) {
+		return recap
+	}
+	return recap + " — " + lowerClause(finding)
+}
+
+// recapEchoesAction reports whether the answer merely restates the operation
+// the recap already narrates.
+func recapEchoesAction(finding string) bool {
+	lowered := strings.ToLower(strings.TrimSpace(finding))
+	for _, prefix := range []string{
+		"updated ", "changed ", "removed ", "wrote ", "edited ", "deleted ",
+		"ran ", "inspected ", "read ", "checked ",
+	} {
+		if strings.HasPrefix(lowered, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// lowerClause lowercases a clause's first letter when the first word is a
+// common article or pronoun. Proper nouns ("Go", "GitHub") keep their case.
+func lowerClause(text string) string {
+	for _, prefix := range []string{
+		"The ", "This ", "These ", "Those ", "It ", "Its ", "All ", "Every ",
+		"Most ", "Some ", "No ", "There ", "A ", "An ", "If ", "When ",
+	} {
+		if strings.HasPrefix(text, prefix) {
+			return strings.ToLower(prefix[:1]) + strings.TrimPrefix(text, prefix[:1])
+		}
+	}
+	return text
+}
+
+// stripRecapPaths removes the inspected paths from a finding, including the
+// preposition that introduced them, so the recap does not name the same file
+// twice. Both the original path and the two-segment display form are removed.
+func stripRecapPaths(text string, paths []string) string {
+	for _, path := range paths {
+		variants := []string{strings.TrimSpace(path)}
+		if short := recapPath(path); short != "" {
+			variants = append(variants, short)
+		}
+		for _, variant := range variants {
+			if variant == "" {
+				continue
+			}
+			for _, lead := range []string{" in ", " from ", " at "} {
+				text = strings.ReplaceAll(text, lead+variant, "")
+			}
+			text = strings.ReplaceAll(text, variant, "")
+		}
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	text = strings.ReplaceAll(text, " ,", ",")
+	text = strings.ReplaceAll(text, " .", ".")
+	return strings.TrimSpace(text)
+}
+
+// answerSubject returns the first substantive, non-announcement sentence of an
+// answer, extended with the next sentence when the first is short. The bound is
+// larger than a badge because this is the recap paragraph, but still small
+// enough to stay within two transcript rows on a normal terminal.
 func answerSubject(text string) string {
+	const maxSubject = 180
 	inFence := false
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -214,23 +281,58 @@ func answerSubject(text string) string {
 			}
 		}
 		trimmed = strings.TrimSpace(strings.Trim(trimmed, "\"'“”‘’ "))
-		trimmed = strings.TrimRight(trimmed, " .,!?;:")
-		if answerLeadIn(trimmed) {
-			// "Based on the evidence gathered, here's my analysis…" is a
-			// pointer to the answer, not the answer. Keep scanning for the
-			// first substantive prose line; if none exists, the caller falls
-			// back to a neutral closure.
+
+		var picked []string
+		for _, sentence := range splitRecapSentences(trimmed) {
+			sentence = strings.TrimSpace(sentence)
+			if sentence == "" || answerLeadIn(sentence) {
+				continue
+			}
+			picked = append(picked, sentence)
+			if len([]rune(strings.Join(picked, " "))) >= 90 {
+				break
+			}
+		}
+		if len(picked) == 0 {
 			continue
 		}
-		subject := truncateClause(trimmed, 88)
-		if len([]rune(trimmed)) > 88 {
-			// The footer is a pointer, not a complete quotation. Mark the cut
-			// so a bounded subject cannot read as the whole sentence.
-			subject += "…"
+		subject := strings.Join(picked, " ")
+		if len([]rune(subject)) > maxSubject {
+			subject = truncateClause(subject, maxSubject) + "…"
 		}
 		return subject
 	}
 	return ""
+}
+
+// splitRecapSentences splits a prose line at sentence punctuation. A period
+// inside a decimal or version number is not followed by a space, so "Go 1.11"
+// stays one sentence.
+func splitRecapSentences(text string) []string {
+	runes := []rune(text)
+	var out []string
+	start := 0
+	for i, r := range runes {
+		if r != '.' && r != '!' && r != '?' {
+			continue
+		}
+		if i+1 < len(runes) && runes[i+1] != ' ' {
+			continue
+		}
+		if sentence := strings.TrimSpace(string(runes[start : i+1])); sentence != "" {
+			out = append(out, sentence)
+		}
+		start = i + 1
+	}
+	if start < len(runes) {
+		if sentence := strings.TrimSpace(string(runes[start:])); sentence != "" {
+			out = append(out, sentence)
+		}
+	}
+	if len(out) == 0 {
+		return []string{strings.TrimSpace(text)}
+	}
+	return out
 }
 
 // answerLeadIn reports whether a line only announces the answer that follows.
@@ -246,6 +348,11 @@ func answerLeadIn(line string) bool {
 		"below is", "the following is",
 		"let me explain", "let me summarize", "let me summarise",
 		"i'll explain", "i will explain",
+		"i'll inspect", "i will inspect", "i'll analyze", "i will analyze",
+		"i'll analyse", "i will analyse", "i'll examine", "i will examine",
+		"i'll check", "i will check", "i inspected", "i analyzed",
+		"i analysed", "i examined", "i checked", "i reviewed",
+		"based on the evidence", "based on my inspection", "based on my analysis",
 	} {
 		if strings.Contains(lower, phrase) {
 			return true
@@ -421,21 +528,18 @@ func appendUniqueChange(values []recapChange, change recapChange) []recapChange 
 }
 
 // taskRecapText returns the completion footer text for a task, or empty when
-// the task has not actually completed.
+// the task has not actually completed or carries no useful narrative.
 //
 // The status check is deliberate: the recap is metadata, not a lifecycle
 // authority, so a projection carrying one while still RUNNING must never emit a
 // footer. Completion is decided by the task transition, never by the presence
-// of a string. The fallback closes an otherwise silent completed task without
-// echoing the objective.
+// of a string. A task with no evidence and no finding stays silent rather than
+// printing a boilerplate sentence that says nothing.
 func taskRecapText(projection *TaskProjection) string {
 	if projection == nil || !strings.EqualFold(strings.TrimSpace(projection.Status), "COMPLETED") {
 		return ""
 	}
-	if recap := strings.TrimSpace(sanitizeInline(projection.Recap)); recap != "" {
-		return recap
-	}
-	return "Closed the completed task and returned to the prompt."
+	return strings.TrimSpace(sanitizeInline(projection.Recap))
 }
 
 // recapLine renders a completion footer's display form: the stable marker and

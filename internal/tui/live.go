@@ -475,7 +475,7 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		var b strings.Builder
 		// Live mode groups by leading gaps (see liveEntryLines), so a tool
 		// never writes its own trailing separator.
-		renderTool(&b, e.Tool, pal, layout, spinnerFrame(s.Status.Spinner), false, entryGroupEnd(s.Entries, index))
+		renderTool(&b, e.Tool, pal, layout, latestRunningToolIndex(s) == index, false, entryGroupEnd(s.Entries, index))
 		return splitLines(b.String())
 
 	case EntryShell:
@@ -552,7 +552,7 @@ func expandedBlockLines(s State, id BlockID) []string {
 		}
 		cpy := *entry.Tool
 		cpy.Expanded = true
-		renderTool(&b, &cpy, pal, layout, spinnerFrame(s.Status.Spinner), true, true)
+		renderTool(&b, &cpy, pal, layout, false, true, true)
 	case EntryReasoning:
 		if entry.Reasoning == nil {
 			return nil
@@ -804,10 +804,12 @@ func liveConnectKeyLines(s State, pal *Palette, layout Layout) []string {
 // must not print a second copy of it.
 func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	var parts []string
+	// The activity line already carries its own semantic zones; keep it out
+	// of the muted telemetry wrapper so the current activity stays the most
+	// prominent row in the footer.
+	activityLine := ActivityLineText(s, time.Now(), s.Status.Spinner, 0)
 	activity := ProjectActivity(s)
-	if text := ActivityLineText(s, time.Now(), s.Status.Spinner, 0); text != "" {
-		parts = append(parts, text)
-	} else if !activity.Thinking.Active {
+	if activityLine == "" && !activity.Thinking.Active {
 		// The phase word remains the fallback for the one non-idle state the
 		// activity projection deliberately does not claim: shutting down.
 		if runtime := DeriveRuntime(s); runtime != RuntimeIdle {
@@ -837,10 +839,18 @@ func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	if path := sessionPathBranch(s); path != "" {
 		parts = append(parts, path)
 	}
+	width := displayWidth(s, layout)
+	if activityLine != "" {
+		if len(parts) == 0 {
+			return activityLine
+		}
+		tail := pal.Muted.Render(TruncateToWidth(strings.Join(parts, " · "), maxInt(width-CellWidth(activityLine)-3, 0)))
+		return activityLine + " · " + tail
+	}
 	if len(parts) == 0 {
 		return ""
 	}
-	return pal.Muted.Render(TruncateToWidth(strings.Join(parts, " · "), displayWidth(s, layout)))
+	return pal.Muted.Render(TruncateToWidth(strings.Join(parts, " · "), width))
 }
 
 // liveComposerWidth is the text budget after the live prompt prefix. The

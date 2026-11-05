@@ -181,6 +181,11 @@ type ToolEntry struct {
 	// Summary is a short human-readable description of what the call is doing.
 	// It is filled from streamed arguments while the call runs.
 	Summary string
+	// Streaming reports that the running call has produced partial output.
+	// It is a presentation fact, not a second lifecycle: the call is still
+	// ToolRunning, and the partial text is replaced by the final outcome rather
+	// than appended to it.
+	Streaming bool
 	// Text is the outcome, set when the call finishes.
 	Text string
 	// Diff is the canonical unified diff a mutation tool reported, when the
@@ -835,6 +840,7 @@ func (s *State) Apply(event Event) {
 			entry := &s.Entries[i]
 			if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.Status == ToolRunning {
 				entry.Tool.Status = ToolCancelled
+				entry.Tool.Streaming = false
 				entry.Tool.Summary = "cancelled"
 				entry.Tool.Text = "cancelled"
 				s.bumpEntry(i)
@@ -893,6 +899,7 @@ func (s *State) Apply(event Event) {
 		// of the real outcome.
 		if idx := s.toolIndex(e.ID); idx >= 0 && s.Entries[idx].Tool != nil && s.Entries[idx].Tool.Status == ToolRunning {
 			s.Entries[idx].Tool.Summary = e.Summary
+			s.Entries[idx].Tool.Streaming = true
 			s.bumpEntry(idx)
 		}
 
@@ -916,6 +923,7 @@ func (s *State) Apply(event Event) {
 		// stays: the badge keeps saying what ran while the summary line
 		// says what it produced.
 		tool.Summary = e.Summary
+		tool.Streaming = false
 		tool.Text = e.Text
 		tool.Diff = e.Diff
 		tool.Truncated = e.Truncated
@@ -3337,11 +3345,30 @@ func toolSummaryBody(name string, args map[string]any) string {
 	for _, key := range []string{"path", "command", "pattern", "url", "file"} {
 		if value, ok := args[key]; ok {
 			if text, ok := value.(string); ok && text != "" {
+				// Paths and URLs are identified by their tail (the basename or
+				// host), so their summary keeps both ends. Commands and patterns
+				// keep their head because the verb and leading literal matter
+				// more than the final argument.
+				if key == "path" || key == "file" || key == "url" {
+					return fmt.Sprintf("%s %s", name, oneLineKeepingTail(text))
+				}
 				return fmt.Sprintf("%s %s", name, oneLine(text))
 			}
 		}
 	}
 	return name
+}
+
+// oneLineKeepingTail collapses whitespace and middle-truncates a target that is
+// identified by its tail, such as a path's basename. The bound matches oneLine
+// so summaries stay the same shape whether they are cut at one end or both.
+func oneLineKeepingTail(text string) string {
+	const max = 60
+	collapsed := strings.Join(strings.Fields(text), " ")
+	if utf8.RuneCountInString(collapsed) <= max {
+		return collapsed
+	}
+	return TruncateMiddleToWidth(collapsed, max)
 }
 
 // CompactResultSummary derives the one-line outcome description for a
@@ -3362,6 +3389,20 @@ func CompactResultSummary(text string, isError bool) string {
 		first = oneLine(first)
 		if first == "" {
 			return "error"
+		}
+		// Filesystem errors are the common exploratory failure, and their raw
+		// form ("stat \"…\": no such file or directory") is long enough to
+		// truncate away the part that matters. Reduce only states the text
+		// actually proves; anything else keeps its own first line.
+		lower := strings.ToLower(first)
+		switch {
+		case strings.Contains(lower, "no such file or directory"),
+			strings.Contains(lower, "file does not exist"):
+			return "file not found"
+		case strings.Contains(lower, "permission denied"):
+			return "permission denied"
+		case strings.Contains(lower, "is a directory"):
+			return "is a directory"
 		}
 		return "error: " + first
 	}

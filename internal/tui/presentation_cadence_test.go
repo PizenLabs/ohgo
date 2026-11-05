@@ -29,13 +29,13 @@ func TestConsecutiveToolsRenderAsOneCompactStream(t *testing.T) {
 	s.Apply(AssistantDelta{Text: "The project is a Go service."})
 
 	out := ansi.Strip(Render(s))
-	if strings.Contains(out, "⎿ 1 line\n\n✓") {
+	if strings.Contains(out, "└─ 1 line\n\n✓") {
 		t.Fatalf("consecutive tools kept a blank card boundary:\n%s", out)
 	}
-	if !strings.Contains(out, "⎿ 1 line\n✓ ls .") {
+	if !strings.Contains(out, "└─ 1 line\n✓ ls .") {
 		t.Fatalf("tool stream is not compact:\n%s", out)
 	}
-	if !strings.Contains(out, "⎿ 1 line\n\nThe project is a Go service.") {
+	if !strings.Contains(out, "└─ 1 line\n\nThe project is a Go service.") {
 		t.Fatalf("the end of the action run lost its separator:\n%s", out)
 	}
 }
@@ -56,7 +56,7 @@ func TestAppendingToolDoesNotReflowPreviousTool(t *testing.T) {
 	if after != before {
 		t.Fatalf("previous tool rows = %d after append, want %d (no reflow)", after, before)
 	}
-	if out := ansi.Strip(Render(s)); strings.Contains(out, "⎿ 1 line\n\n✓") {
+	if out := ansi.Strip(Render(s)); strings.Contains(out, "└─ 1 line\n\n✓") {
 		t.Fatalf("consecutive tools kept a blank card boundary:\n%s", out)
 	}
 }
@@ -82,7 +82,7 @@ func TestRunningToolOwnsActivityAndPromptOwnsRole(t *testing.T) {
 	if strings.Count(out, "ask > ") != 1 {
 		t.Fatalf("prompt role appeared %d times, want exactly one:\n%s", strings.Count(out, "ask > "), out)
 	}
-	if strings.Contains(out, "✳ Running") {
+	if strings.Contains(out, "◌ execute") || strings.Contains(out, "✳ Running") {
 		t.Fatalf("running call also rendered an activity line:\n%s", out)
 	}
 	if !strings.Contains(out, "inspecting backend/internal") {
@@ -166,7 +166,7 @@ func TestRunningActionStaysDistinct(t *testing.T) {
 	if !strings.Contains(out, "go test ./...") {
 		t.Fatalf("running action disappeared from the stream:\n%s", out)
 	}
-	if !strings.Contains(out, "running") {
+	if !strings.Contains(out, "◌ go test ./...") {
 		t.Fatalf("running action lost its lifecycle marker:\n%s", out)
 	}
 }

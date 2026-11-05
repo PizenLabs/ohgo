@@ -203,7 +203,10 @@ func PaletteFor(theme string) *Palette {
 	return DarkPalette()
 }
 
-// spinnerFrames is the animation used for running tools.
+// spinnerFrames is the tick modulus shared by the activity clock and the
+// label sweep. No production renderer draws these glyphs any more: the slice is
+// retained as the stable frame count, and tests use it to prove that no spinner
+// glyph leaks into a transcript.
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // Render produces the full view for a state.
@@ -275,7 +278,7 @@ func renderState(state State, frame *transcriptFrame) string {
 		renderApproval(&sb, state.Pending, state.Theme, layout)
 	}
 
-	renderThinkingArea(&sb, state, pal, layout)
+	renderThinkingArea(&sb, state, layout)
 
 	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.InfoModal == nil && state.InformationModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Transition == nil && state.UpdateRestart == nil && state.PostUpdate == nil && state.Permissions == nil && state.Diff == nil {
 		// Main canvas. No middle status line while the hint bar owns the
@@ -731,9 +734,9 @@ func showWelcome(state State) bool {
 // the retained viewport replaces.
 func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 	var body strings.Builder
-	frame := spinnerFrame(state.Status.Spinner)
+	current := latestRunningToolIndex(state)
 	for i, entry := range state.Entries {
-		renderEntryGrouped(&body, entry, pal, layout, frame, entryGroupEnd(state.Entries, i), entryLeadingGap(state.Entries, i))
+		renderEntryGrouped(&body, entry, pal, layout, current == i, entryGroupEnd(state.Entries, i), entryLeadingGap(state.Entries, i))
 	}
 	return body.String()
 }
@@ -1645,8 +1648,8 @@ func composerStateLine(state State, pal *Palette, layout Layout) string {
 }
 
 // renderEntryGrouped writes one transcript entry, wrapped to the content width.
-// frame is the current spinner frame, shared with the status line so a running
-// tool and the footer animate in step.
+// current is true when this block is the one live activity the runtime owns.
+// Only that block may show a live projection; every other row is stable.
 //
 // toolGroupEnd is true when this block closes the adjacent run of tool calls.
 // Only that last block carries the expand hint, so a sequence of completed
@@ -1659,7 +1662,7 @@ func composerStateLine(state State, pal *Palette, layout Layout) string {
 //
 // The question renders as a faint background block across the content width,
 // with no label prefix: the surface alone separates it from the answer.
-func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, frame string, toolGroupEnd, leadingGap bool) {
+func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, current bool, toolGroupEnd, leadingGap bool) {
 	writeGap := func() {
 		if leadingGap {
 			sb.WriteString("\n")
@@ -1695,7 +1698,7 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 		if entry.Tool != nil {
 			// A tool never owns a trailing separator: the block after the run
 			// owns the gap, so appending another tool cannot move this one.
-			renderTool(sb, entry.Tool, pal, layout, frame, false, toolGroupEnd)
+			renderTool(sb, entry.Tool, pal, layout, current, false, toolGroupEnd)
 		}
 
 	case EntryShell:
@@ -1753,16 +1756,22 @@ func renderSupportEntry(sb *strings.Builder, entry Entry, pal *Palette, layout L
 
 // renderReasoning projects one reasoning trace.
 //
-// The default is collapsed to a single status row. The body is a real block
-// payload, not text mined out of the answer: expansion reveals the provider's
-// own thinking channel, bounded so one long trace cannot flood the transcript.
+// The default is collapsed to a single subordinate status row. The body is a
+// real block payload, not text mined out of the answer: expansion reveals the
+// provider's own thinking channel, bounded so one long trace cannot flood the
+// transcript.
+//
+// The ▸/▾ glyphs are the collapse markers, not liveness markers: a reasoning
+// trace updates its measured duration in place while open, but it never takes
+// the ◌ glyph reserved for the runtime's current tool action. Reasoning is
+// secondary information, never a tool.
 func renderReasoning(sb *strings.Builder, reasoning *ReasoningEntry, pal *Palette, layout Layout) {
 	if reasoning == nil {
 		return
 	}
-	head := "▸ thinking"
+	head := "▸ reasoning"
 	if reasoning.Expanded {
-		head = "▾ thinking"
+		head = "▾ reasoning"
 	}
 	if elapsed := reasoning.Duration(time.Now()); elapsed > 0 {
 		head += " · " + formatDurationText(elapsed)
@@ -1808,73 +1817,98 @@ func maxReasoningLines(layout Layout) int {
 
 // renderTool writes a tool call and, once finished, its outcome.
 //
-// The default projection is collapsed and compact: one badge line naming
-// the invocation plus one ⎿ outcome line. The bounded body appears only
-// when the block is expanded via Ctrl+O, so a long agent run stays
-// scannable without losing the deeper content.
+// The default projection is collapsed and compact: one row naming the
+// invocation with the duration right-aligned, plus one outcome row. The
+// bounded body appears only when the block is expanded via Ctrl+O, so a long
+// agent run stays scannable without losing the deeper content.
 //
-// States are text plus color: running spinner, ✓ success, ✗ failure, ·
-// pending, so nothing depends on hue alone. Output is bounded and wrapped;
+// Current is true only for the one running call that owns the activity. A
+// non-current running call is still running, so it keeps the truthful ◌ glyph,
+// but it is muted and carries no live clock: concurrent calls never compete
+// for attention. Completed calls are static; nothing here animates.
+//
+// States are text plus color: ◌ running, ✓ success, ✗ failure, ⊘ cancelled,
+// · pending, so nothing depends on hue alone. Output is bounded and wrapped;
 // large results collapse to the limit with a truncation marker rather than
 // flooding the conversation.
-func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, frame string, separate, showHint bool) {
-	// The badge names the invocation (tool plus its bounded arguments),
-	// falling back to the bare tool name for blocks that predate it.
-	// The invocation is truncated against the viewport minus the badge
-	// chrome around it, so a long path can never soft-wrap the terminal.
-	elapsed := tool.elapsed()
-	invBudget := dialogWidth(layout)
+func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, current bool, separate, showHint bool) {
+	width := dialogWidth(layout)
+	glyph := "·"
+	style := pal.Muted
 	switch tool.Status {
 	case ToolRunning:
-		invBudget -= CellWidth(frame + "   running")
-		if elapsed != "" {
-			invBudget -= CellWidth("  " + elapsed)
+		glyph = "◌"
+		if current {
+			style = pal.ToolRun
 		}
-	case ToolDone, ToolError, ToolCancelled:
-		invBudget -= 4 + CellWidth(elapsed)
-	default:
-		invBudget -= 2
-	}
-	if invBudget < 8 {
-		invBudget = 8
-	}
-	invocation := TruncateToWidth(sanitizeInline(toolInvocation(tool)), invBudget)
-	var badge string
-	switch tool.Status {
-	case ToolRunning:
-		// The running badge is the one live representation of this call. It
-		// updates in place: the spinner frame and the measured elapsed time
-		// change, but the block identity, row count, and history do not.
-		badge = pal.ToolRun.Render(frame + " " + invocation)
-		if elapsed != "" {
-			badge += "  " + pal.Status.Render(elapsed)
-		}
-		badge += "  " + pal.Status.Render("running")
 	case ToolDone:
-		badge = pal.ToolDone.Render("✓ " + invocation)
-		if elapsed != "" {
-			badge += "  " + pal.Status.Render(elapsed)
-		}
+		glyph, style = "✓", pal.ToolDone
 	case ToolError:
-		badge = pal.ToolError.Render("✗ " + invocation)
-		if elapsed != "" {
-			badge += "  " + pal.Status.Render(elapsed)
-		}
+		glyph, style = "✗", pal.ToolError
 	case ToolCancelled:
-		badge = pal.Muted.Render("⊘ " + invocation)
-		if elapsed != "" {
-			badge += "  " + pal.Status.Render(elapsed)
-		}
-	case ToolPending:
-		badge = pal.ToolRun.Render("· " + invocation)
+		glyph, style = "⊘", pal.Muted
 	}
-	sb.WriteString(badge + "\n")
 
-	// The compact outcome lands on one ⎿ line: the finished summary when
+	// Duration is right-aligned so a stream of calls reads down one axis. A
+	// running call exposes its clock only after it has lasted long enough to
+	// be meaningful, and only while it owns the activity; a completed call
+	// always shows its measured duration.
+	rightText := ""
+	if tool.Status != ToolPending && (tool.Status != ToolRunning || current) {
+		if tool.Status != ToolRunning || tool.Duration() >= 100*time.Millisecond {
+			rightText = tool.elapsed()
+		}
+	}
+	leftBudget := width - CellWidth(glyph+" ") - 2
+	if rightText != "" {
+		leftBudget -= CellWidth(rightText)
+	}
+	if leftBudget < 6 && rightText != "" {
+		rightText = ""
+		leftBudget = width - CellWidth(glyph+" ") - 2
+	}
+	if leftBudget < 1 {
+		leftBudget = 1
+	}
+	invocation := TruncateMiddleToWidth(sanitizeInline(toolInvocation(tool)), leftBudget)
+	left := style.Render(glyph + " " + invocation)
+	if rightText != "" {
+		right := pal.Status.Render(rightText)
+		if gap := width - CellWidth(left) - CellWidth(right); gap >= 2 {
+			sb.WriteString(left + strings.Repeat(" ", gap) + right + "\n")
+		} else {
+			sb.WriteString(left + "  " + right + "\n")
+		}
+	} else {
+		sb.WriteString(left + "\n")
+	}
+
+	// A running call that has produced partial output states that explicitly.
+	// The final outcome replaces this row rather than leaving both visible.
+	if tool.Status == ToolRunning && tool.Streaming {
+		progress := sanitizeInline(tool.Summary)
+		switch {
+		case progress == "" || progress == sanitizeInline(tool.Invocation):
+			progress = "receiving…"
+		default:
+			progress = "receiving · " + progress
+		}
+		budget := width - 4
+		if budget < 1 {
+			budget = 1
+		}
+		line := "  " + pal.Status.Render("└─ "+TruncateToWidth(progress, budget))
+		if width > 0 && CellWidth(line) > width {
+			line = TruncateToWidth(line, width)
+		}
+		sb.WriteString(line + "\n")
+	}
+
+	// The compact outcome lands on one └─ row: the finished summary when
 	// the executor provided one, else a bounded first-line fallback so a
 	// single-line result stays visible even with its body collapsed.
 	// The hint width is reserved up front so the whole row stays bounded.
-	if tool.Status != ToolRunning {
+	if tool.Status != ToolRunning && tool.Status != ToolPending {
 		if outcome := collapsedOutcome(tool); outcome != "" {
 			hint := ""
 			// Ctrl+O targets the latest expandable block, so the affordance
@@ -1883,15 +1917,22 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 			if toolExpandable(tool) && !tool.Expanded && showHint {
 				hint = "  (ctrl+o to expand)"
 			}
-			budget := dialogWidth(layout) - 4 - CellWidth(hint)
-			if budget < 8 {
-				budget = 8
+			budget := width - 4 - CellWidth(hint)
+			if budget < 1 {
+				budget = 1
 			}
-			sb.WriteString("  " + pal.Status.Render("⎿ "+TruncateToWidth(outcome, budget)))
+			outcomeStyle := pal.Status
+			if tool.Status == ToolError {
+				outcomeStyle = pal.ToolError
+			}
+			line := "  " + outcomeStyle.Render("└─ "+TruncateToWidth(outcome, budget))
 			if hint != "" {
-				sb.WriteString(pal.Muted.Render(hint))
+				line += pal.Muted.Render(hint)
 			}
-			sb.WriteString("\n")
+			if width > 0 && CellWidth(line) > width {
+				line = TruncateToWidth(line, width)
+			}
+			sb.WriteString(line + "\n")
 		}
 	}
 
@@ -1913,13 +1954,13 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	// the child process: keep the colors, neutralize the cursor control,
 	// then wrap what the terminal will actually lay out.
 	body = sanitizeBlock(body)
-	width := textWidth(layout) - 4
-	if width < 10 {
-		width = 10
+	bodyWidth := textWidth(layout) - 4
+	if bodyWidth < 1 {
+		bodyWidth = 1
 	}
 	shown := 0
 	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
-		for _, wl := range WrapToWidth(line, width) {
+		for _, wl := range WrapToWidth(line, bodyWidth) {
 			if shown >= maxToolLines(layout) {
 				break
 			}
@@ -2000,11 +2041,24 @@ func (t *ToolEntry) elapsed() string {
 	if t.StartedAt.IsZero() {
 		return ""
 	}
-	d := t.Duration().Round(time.Millisecond)
-	if d <= 0 {
-		return ""
+	d := t.Duration()
+	if d < 0 {
+		d = 0
 	}
-	return d.String()
+	// Fast calls stay in milliseconds; ordinary calls get one decimal so
+	// 1.2s is visible; long calls collapse to the same compact vocabulary the
+	// activity line uses. The exact nanosecond string is not information a
+	// transcript reader can use.
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Round(time.Millisecond).Milliseconds())
+	}
+	if d < 10*time.Second {
+		if d%time.Second == 0 {
+			return fmt.Sprintf("%ds", int(d/time.Second))
+		}
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return formatDurationText(d)
 }
 
 // renderShell writes one "!" escape block: the echoed command, its streamed
@@ -2378,17 +2432,13 @@ func renderQuitConfirmArea(sb *strings.Builder, state State, _ *Palette, layout 
 // deliberately stays absent then; that is what prevents two copies of the same
 // state. Waiting reads muted so the blocked-on-human state is visually distinct
 // from active execution.
-func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout Layout) {
+func renderThinkingArea(sb *strings.Builder, state State, layout Layout) {
 	if layout.ThinkingLines == 0 {
 		return
 	}
 	activity := ProjectActivity(state)
 	if activity.Surface != ActivityLine {
 		return
-	}
-	style := pal.ToolRun
-	if activity.Thinking.Phase == ThinkingWaiting {
-		style = pal.Muted
 	}
 	// now is read once here, at the single render seam, and handed to the
 	// otherwise clock-free renderer: elapsed derives from the activity's real
@@ -2399,14 +2449,14 @@ func renderThinkingArea(sb *strings.Builder, state State, pal *Palette, layout L
 	now := time.Now()
 	tick := state.Status.Spinner
 	lines := RenderThinking(activity.Thinking, now, displayWidth(state, layout))
-	// The commit glyph is the shared spinner, so it needs the tick even on a
-	// terminal that declines the TrueColor shimmer. The tick is pure and the
-	// commit label never shimmers, so this cannot enable reduced motion.
-	if shimmerSupported() || activity.Thinking.Phase == ThinkingCommit {
+	if shimmerSupported() {
 		lines = RenderThinkingTick(activity.Thinking, now, tick, displayWidth(state, layout))
 	}
 	for _, line := range lines {
-		sb.WriteString(style.Render(line) + "\n")
+		// RenderThinking already applies the semantic zones. Wrapping the
+		// whole row in one style here would flatten that hierarchy and make
+		// the active label read like ordinary status text.
+		sb.WriteString(line + "\n")
 	}
 }
 
@@ -2580,21 +2630,6 @@ func wrapPlain(text string, layout Layout) []string {
 		return []string{""}
 	}
 	return out
-}
-
-// spinnerFrame returns the animation glyph for an index, normalised so a
-// negative or oversized value can never index out of range: Render must not
-// panic on any state a caller can build.
-func spinnerFrame(index int) string {
-	n := len(spinnerFrames)
-	if n == 0 {
-		return ""
-	}
-	index %= n
-	if index < 0 {
-		index += n
-	}
-	return spinnerFrames[index]
 }
 
 // AdvanceSpinner returns the next frame index.

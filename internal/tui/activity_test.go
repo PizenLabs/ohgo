@@ -120,8 +120,7 @@ func TestRunningToolUsesItsEntryNotTheActivityLine(t *testing.T) {
 }
 
 // TestOpenReasoningOwnsThinking: while a reasoning trace is growing, its own
-// collapsed head is the one thinking representation; the activity line stays
-// absent.
+// head is the one activity representation; the activity line stays absent.
 func TestOpenReasoningOwnsThinking(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 96, Height: 30})
@@ -129,10 +128,10 @@ func TestOpenReasoningOwnsThinking(t *testing.T) {
 	s.Apply(ReasoningDelta{Text: "inspect the cache", At: time.Now(), Seq: 1})
 
 	out := ansi.Strip(Render(s))
-	if got := strings.Count(out, "▸ thinking"); got != 1 {
-		t.Fatalf("thinking head appeared %d times, want one:\n%s", got, out)
+	if got := strings.Count(out, "▸ reasoning"); got != 1 {
+		t.Fatalf("reasoning head appeared %d times, want one:\n%s", got, out)
 	}
-	if strings.Contains(out, "✳ Thinking") {
+	if strings.Contains(out, "◌ reason ·") {
 		t.Fatalf("activity line duplicated the open reasoning trace:\n%s", out)
 	}
 }
@@ -146,8 +145,8 @@ func TestToolFinalizationReplacesLiveRepresentationExactlyOnce(t *testing.T) {
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: time.Now(), Seq: 1})
 	id := s.Entries[1].ID
 
-	running := Render(s)
-	if !strings.Contains(ansi.Strip(running), "read a.go") || !strings.Contains(ansi.Strip(running), "running") {
+	running := ansi.Strip(Render(s))
+	if !strings.Contains(running, "◌ read a.go") || strings.Contains(running, "⠋") {
 		t.Fatalf("running render lost its live representation:\n%s", running)
 	}
 
@@ -283,7 +282,7 @@ func TestLivePainterKeepsOneLiveRowAndSealsItOnce(t *testing.T) {
 	if got := countStripped(history, "inspecting backend/internal") + countStripped(painter.live, "inspecting backend/internal"); got != 1 {
 		t.Fatalf("running action appeared %d times across history+live, want one", got)
 	}
-	if got := countStripped(painter.live, "running"); got != 1 {
+	if got := countStripped(painter.live, "◌"); got != 1 {
 		t.Fatalf("live region has %d running markers, want one: %q", got, painter.live)
 	}
 
@@ -295,8 +294,8 @@ func TestLivePainterKeepsOneLiveRowAndSealsItOnce(t *testing.T) {
 	if countStripped(painter.live, "inspecting backend/internal") != 0 {
 		t.Fatalf("finished action stayed in the live region: %q", painter.live)
 	}
-	if got := countStripped(painter.live, "running"); got != 0 {
-		t.Fatalf("live region still claims running: %q", painter.live)
+	if countStripped(painter.live, "◌ inspecting") != 0 {
+		t.Fatalf("live region still claims the finished call is running: %q", painter.live)
 	}
 	if again := painter.render(s); len(again) != 0 {
 		t.Fatalf("completion was sealed twice: %q", again)
@@ -453,21 +452,21 @@ func TestBuildInvestigationRegression(t *testing.T) {
 	if got := strings.Count(out, "build > "); got != 1 {
 		t.Fatalf("BUILD role appeared %d times, want one:\n%s", got, out)
 	}
-	if got := strings.Count(out, "▸ thinking"); got != 1 {
-		t.Fatalf("thinking appeared %d times, want one:\n%s", got, out)
+	if got := strings.Count(out, "▸ reasoning"); got != 1 {
+		t.Fatalf("reasoning appeared %d times, want one:\n%s", got, out)
 	}
 	for _, call := range completed {
 		if got := strings.Count(out, call.summary); got != 1 {
 			t.Fatalf("completed %q appeared %d times, want one:\n%s", call.summary, got, out)
 		}
 	}
-	if got := strings.Count(out, "inspecting backend/internal"); got != 1 {
+	if got := strings.Count(out, "◌ inspecting backend/internal"); got != 1 {
 		t.Fatalf("live action appeared %d times, want one:\n%s", got, out)
 	}
-	if got := strings.Count(out, "running"); got != 1 {
-		t.Fatalf("live marker appeared %d times, want one:\n%s", got, out)
+	if got := strings.Count(out, "⠋"); got != 0 {
+		t.Fatalf("live view kept a spinner frame %d times, want none:\n%s", got, out)
 	}
-	for _, forbidden := range []string{"✳ BUILD", "✳ Running", "✳ · Running"} {
+	for _, forbidden := range []string{"✳ BUILD", "✳ Running", "✳ · Running", "⠋"} {
 		if strings.Contains(out, forbidden) {
 			t.Fatalf("duplicate activity representation %q:\n%s", forbidden, out)
 		}

@@ -880,9 +880,8 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, p.waitForApproval()
 
 	case tickMsg:
-		// The commit spinner shares the one spinner index and the one tick.
-		// Advancing it here keeps the activity line animating without a second
-		// timer, and the tick itself never blocks the update goroutine.
+		// The commit activity shares the one tick. Advancing it keeps the
+		// elapsed clocks and the label sweep moving without a second timer.
 		if p.state.Status.Busy || p.state.SupportBusy() || p.state.CommitActive() {
 			p.state.Status.Spinner = AdvanceSpinner(p.state.Status.Spinner, len(spinnerFrames))
 		}

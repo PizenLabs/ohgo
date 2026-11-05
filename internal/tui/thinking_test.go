@@ -32,8 +32,8 @@ func TestProjectThinkingModelPhase(t *testing.T) {
 	if !got.Active || got.Phase != ThinkingModel {
 		t.Fatalf("busy turn projected %+v, want active model phase", got)
 	}
-	if got.Label != "Thinking…" {
-		t.Fatalf("label = %q, want the working vocabulary", got.Label)
+	if got.Label != "reason" {
+		t.Fatalf("label = %q, want the reason phase vocabulary", got.Label)
 	}
 	if !got.StartedAt.Equal(start) {
 		t.Fatalf("started at %v, want the real turn start %v", got.StartedAt, start)
@@ -51,8 +51,8 @@ func TestProjectThinkingStreamingIsResponding(t *testing.T) {
 	s.Apply(UserSubmitted{Text: "go"})
 	s.Apply(AssistantDelta{Text: "answer"})
 	got := ProjectThinking(s)
-	if got.Phase != ThinkingModel || got.Label != "Responding…" {
-		t.Fatalf("streaming projected %+v, want responding model phase", got)
+	if got.Phase != ThinkingRespond || got.Label != "respond" {
+		t.Fatalf("streaming projected %+v, want the respond phase", got)
 	}
 }
 
@@ -65,8 +65,8 @@ func TestProjectThinkingToolPhaseCarriesTruthfulDetail(t *testing.T) {
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: at})
 
 	got := ProjectThinking(s)
-	if got.Phase != ThinkingTool || got.Label != "Running" {
-		t.Fatalf("running tool projected %+v, want tool phase", got)
+	if got.Phase != ThinkingTool || got.Label != "execute" {
+		t.Fatalf("running tool projected %+v, want the execute phase", got)
 	}
 	if got.Detail != "bash go test ./..." {
 		t.Fatalf("detail = %q, want the tool's own summary", got.Detail)
@@ -102,7 +102,7 @@ func TestProjectThinkingWaitingIsDistinct(t *testing.T) {
 	s.Apply(ApprovalAsked{ToolName: "bash", Summary: "run it", Choices: []string{"Yes", "No"}})
 
 	got := ProjectThinking(s)
-	if got.Phase != ThinkingWaiting || got.Label != "Waiting for approval" {
+	if got.Phase != ThinkingWaiting || got.Label != "waiting for approval" {
 		t.Fatalf("approval projected %+v, want the waiting phase", got)
 	}
 	if got.Interruptible {
@@ -118,7 +118,7 @@ func TestProjectThinkingWaitingIsDistinct(t *testing.T) {
 
 // TestProjectThinkingTerminalStatesAreInactive covers every way a turn ends:
 // completion, cancellation, and failure all leave nothing to claim, so a stale
-// "Thinking…" can never outlive the turn.
+// activity line can never outlive the turn.
 func TestProjectThinkingTerminalStatesAreInactive(t *testing.T) {
 	completed := New()
 	completed.Apply(UserSubmitted{Text: "go"})
@@ -157,7 +157,7 @@ func TestProjectThinkingShuttingDownIsInactive(t *testing.T) {
 func TestRenderThinkingElapsedDerivesFromStartedAt(t *testing.T) {
 	start := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	now := start.Add(4 * time.Second)
-	state := ThinkingState{Active: true, Phase: ThinkingModel, Label: "Thinking…", StartedAt: start}
+	state := ThinkingState{Active: true, Phase: ThinkingModel, Label: "reason", StartedAt: start}
 
 	lines := RenderThinking(state, now, 60)
 	if len(lines) != 1 {
@@ -166,7 +166,7 @@ func TestRenderThinkingElapsedDerivesFromStartedAt(t *testing.T) {
 	if !strings.Contains(lines[0], "4s") {
 		t.Fatalf("line = %q, want the real 4s elapsed", lines[0])
 	}
-	if !strings.Contains(lines[0], "Thinking") {
+	if !strings.Contains(lines[0], "reason") {
 		t.Fatalf("line = %q, want the label kept", lines[0])
 	}
 }
@@ -174,7 +174,7 @@ func TestRenderThinkingElapsedDerivesFromStartedAt(t *testing.T) {
 // TestRenderThinkingUnknownStartShowsNoTimer: an unknown start must not become
 // a fabricated duration.
 func TestRenderThinkingUnknownStartShowsNoTimer(t *testing.T) {
-	state := ThinkingState{Active: true, Phase: ThinkingModel, Label: "Thinking…"}
+	state := ThinkingState{Active: true, Phase: ThinkingModel, Label: "reason"}
 	line := RenderThinking(state, time.Now(), 60)[0]
 	if strings.ContainsAny(line, "0123456789") {
 		t.Fatalf("line = %q, want no invented timer", line)
@@ -184,7 +184,7 @@ func TestRenderThinkingUnknownStartShowsNoTimer(t *testing.T) {
 // TestRenderThinkingNoFabricatedTelemetry: this slice has no token or progress
 // telemetry at the activity boundary, so none may appear.
 func TestRenderThinkingNoFabricatedTelemetry(t *testing.T) {
-	state := ThinkingState{Active: true, Phase: ThinkingModel, Label: "Thinking…", StartedAt: time.Now().Add(-9 * time.Second)}
+	state := ThinkingState{Active: true, Phase: ThinkingModel, Label: "reason", StartedAt: time.Now().Add(-9 * time.Second)}
 	line := RenderThinking(state, time.Now(), 80)[0]
 	lowered := strings.ToLower(line)
 	for _, forbidden := range []string{"token", "tok", "%", "eta"} {
@@ -197,11 +197,11 @@ func TestRenderThinkingNoFabricatedTelemetry(t *testing.T) {
 // TestRenderThinkingInterruptHintIsGated: the esc affordance appears only when
 // the runtime actually allows interruption.
 func TestRenderThinkingInterruptHintIsGated(t *testing.T) {
-	interruptible := ThinkingState{Active: true, Phase: ThinkingTool, Label: "Running", Interruptible: true}
+	interruptible := ThinkingState{Active: true, Phase: ThinkingTool, Label: "execute", Interruptible: true}
 	if line := RenderThinking(interruptible, time.Now(), 80)[0]; !strings.Contains(line, "esc") {
 		t.Fatalf("line = %q, want the esc hint when interruptible", line)
 	}
-	blocked := ThinkingState{Active: true, Phase: ThinkingWaiting, Label: "Waiting for approval"}
+	blocked := ThinkingState{Active: true, Phase: ThinkingWaiting, Label: "waiting for approval"}
 	if line := RenderThinking(blocked, time.Now(), 80)[0]; strings.Contains(line, "esc") {
 		t.Fatalf("line = %q, want no esc hint while waiting", line)
 	}
@@ -213,7 +213,7 @@ func TestRenderThinkingIsDeterministic(t *testing.T) {
 	state := ThinkingState{
 		Active:        true,
 		Phase:         ThinkingTool,
-		Label:         "Running",
+		Label:         "execute",
 		Detail:        "bash go test ./...",
 		StartedAt:     time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC),
 		Interruptible: true,
@@ -230,7 +230,7 @@ func TestRenderThinkingIsDeterministic(t *testing.T) {
 // the duration must survive the trim because it is right-aligned.
 func TestRenderThinkingRespectsWidth(t *testing.T) {
 	state := ThinkingState{
-		Active: true, Phase: ThinkingTool, Label: "Running",
+		Active: true, Phase: ThinkingTool, Label: "execute",
 		Detail:    strings.Repeat("very long tool summary ", 8),
 		StartedAt: time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC),
 	}
@@ -257,11 +257,11 @@ func TestViewShowsAndClearsThinkingLine(t *testing.T) {
 	s.Apply(UserSubmitted{Text: "go"})
 
 	out := Render(s)
-	if !strings.Contains(out, "Thinking") {
+	if !strings.Contains(out, "reason") {
 		t.Fatalf("busy view lost the activity line:\n%s", out)
 	}
 	s.Apply(AssistantDone{})
-	if out := Render(s); strings.Contains(out, "Thinking") {
+	if out := Render(s); strings.Contains(out, "◌ reason") {
 		t.Fatalf("completed view kept a stale activity line:\n%s", out)
 	}
 }
