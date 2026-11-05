@@ -12,7 +12,10 @@ import (
 // completedToolStream builds a transcript of finished calls.
 func completedToolStream(summaries ...string) State {
 	s := New()
-	s.Apply(TerminalResized{Width: 100, Height: 30})
+	// The compact-stream contract is about adjacent transcript rows, not the
+	// wide split canvas. Use the medium tier so the sidebar divider cannot
+	// interleave with the row adjacency this fixture asserts.
+	s.Apply(TerminalResized{Width: 80, Height: 30})
 	at := time.Now()
 	for i, summary := range summaries {
 		id := "c" + string(rune('a'+i))

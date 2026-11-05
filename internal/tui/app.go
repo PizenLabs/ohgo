@@ -56,10 +56,12 @@ type approvalAnswer struct {
 // The request carries its own reply channel, which is what routes an answer to
 // the specific tool that asked rather than to whichever one reads next.
 type approvalRequest struct {
-	toolName string
-	reason   string
-	summary  string
-	preview  agent.MutationPreview
+	toolName   string
+	reason     string
+	capability string
+	risk       string
+	summary    string
+	preview    agent.MutationPreview
 	// mutating marks a state-changing call, so the dialog can accent a
 	// destructive boundary differently from a read one.
 	mutating bool
@@ -81,9 +83,10 @@ type turnFinishedMsg struct{}
 // tickMsg advances the spinner and the thinking shimmer.
 type tickMsg time.Time
 
-// spinnerInterval bounds animation frame rate. 100ms keeps the shimmer wave
-// smooth without burning a core; the spinner shares the same tick.
-const spinnerInterval = 100 * time.Millisecond
+// spinnerInterval bounds animation frame rate. 90ms keeps the Braille spinner
+// and the shimmer wave smooth without burning a core; every animated surface
+// shares this one tick, so stream deltas cannot spin a glyph faster.
+const spinnerInterval = 90 * time.Millisecond
 
 // Program drives the interactive session.
 //
@@ -322,6 +325,9 @@ type Program struct {
 	// mcp inspects the session's configured MCP servers. Zero value reports
 	// MCP unavailable rather than opening a second registry.
 	mcp MCPHooks
+	// lsp is the optional language-server roster projected into the sidebar.
+	// The TUI owns no server process; the host reports only what is attached.
+	lsp LSPHooks
 	// mcpBefore records each server's actual enabled state when the /mcp
 	// manager opened, so Enter applies only rows the user changed and Esc can
 	// discard the rest. Update-goroutine-owned.
@@ -727,9 +733,11 @@ func (p *Program) SetSymbolStatusFunc(status func() StatusEngine) {
 	p.symbolStatus = status
 }
 
-// SetMCPHooks installs the MCP inspector behind /mcp.
+// SetMCPHooks installs the MCP inspector behind /mcp and publishes the cheap
+// integration snapshot the sidebar renders. It never connects to a server.
 func (p *Program) SetMCPHooks(hooks MCPHooks) {
 	p.mcp = hooks
+	p.syncIntegrations()
 }
 
 // SetCredentialDeleter installs removal behind /disconnect.
@@ -872,6 +880,8 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.state.Apply(ApprovalAsked{
 			ToolName:        request.toolName,
 			Reason:          request.reason,
+			Capability:      request.capability,
+			Risk:            request.risk,
 			Summary:         request.summary,
 			MutationPreview: request.preview,
 			Mutating:        request.mutating,
@@ -3695,7 +3705,7 @@ func (p *Program) syncTranscript() {
 	if p.transcriptIndex == nil {
 		p.transcriptIndex = &TranscriptLayout{}
 	}
-	layout := ComputeLayout(p.state)
+	layout := ComputeWorkspaceLayout(p.state)
 	p.transcriptIndex.Refresh(&p.state, layout)
 	if p.transcriptIndex.Reflowed {
 		p.trace(traceLayout)
@@ -4050,9 +4060,11 @@ func (p *Program) submit(text string) tea.Cmd {
 				// same dialog, the same frame, the same arrow/enter/esc
 				// interaction. Only its question and choices differ.
 				p.state.Apply(ApprovalAsked{
-					Prompt:  "Request",
-					Summary: text,
-					Reason:  proposed.Proposal.Reason,
+					Prompt:     "Request",
+					Summary:    text,
+					Reason:     proposed.Proposal.Reason,
+					Capability: "workspace decision",
+					Risk:       "standard",
 					// A proposal is a decision, not a destructive call: the
 					// amber read accent keeps it in the permission family.
 					Mutating: false,
@@ -4526,11 +4538,13 @@ func (p *Program) submitEscape(command string) tea.Cmd {
 func (p *Program) confirmEscape(command string) tea.Cmd {
 	p.pendingEscape = command
 	p.state.Apply(ApprovalAsked{
-		ToolName: "shell",
-		Prompt:   "Run shell command",
-		Summary:  command,
-		Mutating: true,
-		Choices:  approvalChoices,
+		ToolName:   "shell",
+		Prompt:     "Run shell command",
+		Summary:    command,
+		Capability: "shell",
+		Risk:       "elevated",
+		Mutating:   true,
+		Choices:    approvalChoices,
 	})
 	return nil
 }
@@ -4916,11 +4930,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		switch progress.Stage() {
 		case agent.ProgressFinished:
 			text, truncated := TruncateForDisplay(progress.Result.Text, toolOutputLimit)
+			path, operation, diff := MutationMetadata(progress.Result.Details)
 			ok := p.publishOK(ToolFinished{
 				ID:        progress.CallID,
 				Text:      text,
 				Summary:   CompactResultSummary(progress.Result.Text, progress.Result.IsError),
-				Diff:      MutationDiff(progress.Result.Details),
+				Diff:      diff,
+				Path:      path,
+				Operation: operation,
 				IsError:   progress.Result.IsError,
 				Truncated: truncated,
 				At:        time.Now(),
@@ -5300,11 +5317,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			}
 			if !state.finished || !state.started {
 				text, truncated := TruncateForDisplay(outcome.Result.Text, toolOutputLimit)
+				path, operation, diff := MutationMetadata(outcome.Result.Details)
 				p.publish(ToolFinished{
 					ID:        outcome.CallID,
 					Text:      text,
 					Summary:   CompactResultSummary(outcome.Result.Text, outcome.Result.IsError),
-					Diff:      MutationDiff(outcome.Result.Details),
+					Diff:      diff,
+					Path:      path,
+					Operation: operation,
 					IsError:   outcome.Result.IsError,
 					Truncated: truncated,
 					At:        time.Now(),
@@ -5631,14 +5651,25 @@ func (p *Program) ApprovalFunc() func(call ai.ToolCall, approval agent.Approval)
 			return true, ""
 		}
 		answer := make(chan approvalAnswer, 1)
+		mutating := approval.Tier != agent.TierRead
+		capability := strings.TrimSpace(string(approval.Tier))
+		if capability == "" {
+			capability = "unknown"
+		}
+		risk := "standard"
+		if mutating {
+			risk = "elevated"
+		}
 		request := approvalRequest{
-			toolName: call.Name,
-			reason:   approval.Reason,
-			summary:  ToolSummaryForCall(call.Name, call.Arguments),
-			preview:  approval.MutationPreview,
+			toolName:   call.Name,
+			reason:     approval.Reason,
+			capability: capability,
+			risk:       risk,
+			summary:    ToolSummaryForCall(call.Name, call.Arguments),
+			preview:    approval.MutationPreview,
 			// Anything but an explicit read is treated as state-changing:
 			// an undeclared tier must never look harmless in the dialog.
-			mutating: approval.Tier != agent.TierRead,
+			mutating: mutating,
 			answer:   answer,
 		}
 		select {

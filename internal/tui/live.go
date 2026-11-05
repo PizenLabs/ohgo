@@ -465,7 +465,7 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 			return nil
 		}
 		var b strings.Builder
-		renderReasoning(&b, e.Reasoning, pal, layout)
+		renderReasoning(&b, e.Reasoning, pal, layout, s.Status.Spinner)
 		return splitLines(b.String())
 
 	case EntryTool:
@@ -559,7 +559,7 @@ func expandedBlockLines(s State, id BlockID) []string {
 		}
 		cpy := *entry.Reasoning
 		cpy.Expanded = true
-		renderReasoning(&b, &cpy, pal, layout)
+		renderReasoning(&b, &cpy, pal, layout, s.Status.Spinner)
 	default:
 		return nil
 	}

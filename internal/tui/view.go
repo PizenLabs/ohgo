@@ -65,10 +65,18 @@ type Palette struct {
 	Bullet      lipgloss.Style
 	Muted       lipgloss.Style
 	// DiffAdd styles lines an edit introduced, in diff previews (approval
-	// cards and inline diffs).
+	// cards and inline diffs). The soft tint is part of the style so an
+	// approval row reads as an added line even when the terminal profile
+	// drops bold or italics.
 	DiffAdd lipgloss.Style
 	// DiffDelete styles lines an edit removed, in diff previews.
 	DiffDelete lipgloss.Style
+	// DiffAddBG and DiffDeleteBG are the row tints used when syntax colour
+	// must be layered over an added or deleted line.
+	DiffAddBG    lipgloss.Color
+	DiffDeleteBG lipgloss.Color
+	// DiffContext dims unchanged context rows so changes read first.
+	DiffContext lipgloss.Style
 	// Cyan is a context colour for hunk headers and metadata.
 	Cyan lipgloss.Style
 	// Comment styles secondary/explanatory text.
@@ -134,8 +142,11 @@ func DarkPalette() *Palette {
 		Quote:        fg(darkMuted).Italic(true),
 		Bullet:       fg(darkAccent),
 		Muted:        fg(ColorMuted),
-		DiffAdd:      fg("#a6e3a1"),
-		DiffDelete:   fg("#f38ba8"),
+		DiffAdd:      fg("#a6e3a1").Background(lipgloss.Color("#16281E")),
+		DiffDelete:   fg("#f38ba8").Background(lipgloss.Color("#2A191D")),
+		DiffAddBG:    lipgloss.Color("#16281E"),
+		DiffDeleteBG: lipgloss.Color("#2A191D"),
+		DiffContext:  fg("#6B6B6B"),
 		Cyan:         fg("#89dceb"),
 		Comment:      fg(ColorMuted).Italic(true),
 		Separator:    fg(ColorDim),
@@ -183,9 +194,12 @@ func LightPalette() *Palette {
 		Quote:        fg(lightMuted).Italic(true),
 		Bullet:       fg(lightAccent),
 		Muted:        fg(lightMuted),
-		DiffAdd:      fg("#a6e3a1"),
-		DiffDelete:   fg("#f38ba8"),
-		Cyan:         fg("#89dceb"),
+		DiffAdd:      fg("#166534").Background(lipgloss.Color("#E7F4EC")),
+		DiffDelete:   fg("#9F1239").Background(lipgloss.Color("#FCE9E7")),
+		DiffAddBG:    lipgloss.Color("#E7F4EC"),
+		DiffDeleteBG: lipgloss.Color("#FCE9E7"),
+		DiffContext:  fg("#4B5563"),
+		Cyan:         fg("#0B7285"),
 		Comment:      fg(lightMuted).Italic(true),
 		Separator:    fg(lightMuted),
 		Recap:        fg(chromeLightRecap).Italic(true),
@@ -203,10 +217,10 @@ func PaletteFor(theme string) *Palette {
 	return DarkPalette()
 }
 
-// spinnerFrames is the tick modulus shared by the activity clock and the
-// label sweep. No production renderer draws these glyphs any more: the slice is
-// retained as the stable frame count, and tests use it to prove that no spinner
-// glyph leaks into a transcript.
+// spinnerFrames is the Braille rhythm shared by the activity line and a live
+// reasoning trace. The shared tick advances one frame per spinnerInterval, so
+// a burst of stream deltas cannot spin faster than the throttled frame clock.
+// Settled transcript rows never draw these glyphs.
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // Render produces the full view for a state.
@@ -225,49 +239,72 @@ func Render(state State) string {
 // does for tests and standalone callers.
 func renderState(state State, frame *transcriptFrame) string {
 	pal := PaletteFor(state.Theme)
-	layout := ComputeLayout(state)
+	layout := ComputeWorkspaceLayout(state)
 	if layout.Mode == LayoutMini && state.Width > 0 && state.Height > 0 {
 		return renderMini(state, pal, layout)
 	}
+
+	var body strings.Builder
+	renderCanvasBody(&body, state, pal, layout, frame)
 
 	var sb strings.Builder
 	sb.WriteString(renderHeader(state, pal, layout) + "\n")
 	sb.WriteString(SeparatorLine(separatorWidth(state, layout), pal) + "\n")
 
+	if layout.Sidebar {
+		// The split canvas composes the conversation column and the sidebar
+		// at the row level. The sidebar is not a second viewport: it paints a
+		// fixed rail beside the one transcript owner, so scrolling the
+		// conversation can never move or repaint it.
+		sidebar := renderWorkspaceSidebar(state, pal, layout)
+		composeWorkspaceFrame(&sb, body.String(), sidebar, layout, pal)
+		return sb.String()
+	}
+	if layout.TaskLines > 0 {
+		sb.WriteString(renderStickyTaskRow(state, pal, layout) + "\n")
+	}
+	sb.WriteString(body.String())
+	return sb.String()
+}
+
+// renderCanvasBody writes the rows between the title bar and the frame edge:
+// the transcript or overlay, the activity line, and the composer or its
+// modal-owned context row.
+func renderCanvasBody(sb *strings.Builder, state State, pal *Palette, layout Layout, frame *transcriptFrame) {
 	if state.UpdateRestart != nil {
-		renderUpdateRestartArea(&sb, state, pal, layout)
+		renderUpdateRestartArea(sb, state, pal, layout)
 	} else if state.PostUpdate != nil {
-		renderPostUpdateArea(&sb, state, pal, layout)
+		renderPostUpdateArea(sb, state, pal, layout)
 	} else if state.Transition != nil {
-		renderTransitionArea(&sb, state, pal, layout)
+		renderTransitionArea(sb, state, pal, layout)
 	} else if state.QuitConfirm != nil {
-		renderQuitConfirmArea(&sb, state, pal, layout)
+		renderQuitConfirmArea(sb, state, pal, layout)
 	} else if state.Diff != nil {
-		renderDiffArea(&sb, state, pal, layout)
+		renderDiffArea(sb, state, pal, layout)
 	} else if state.Permissions != nil {
-		renderPermissionsArea(&sb, state, pal, layout)
+		renderPermissionsArea(sb, state, pal, layout)
 	} else if state.Plane != nil {
-		renderPlaneArea(&sb, state, pal, layout)
+		renderPlaneArea(sb, state, pal, layout)
 	} else if state.SupportPanel != nil {
-		renderSupportArea(&sb, state, pal, layout)
+		renderSupportArea(sb, state, pal, layout)
 	} else if state.StatusModal != nil {
-		renderStatusArea(&sb, state, pal, layout)
+		renderStatusArea(sb, state, pal, layout)
 	} else if state.UsageModal != nil {
-		renderUsageArea(&sb, state, pal, layout)
+		renderUsageArea(sb, state, pal, layout)
 	} else if state.InfoModal != nil || state.InformationModal != nil {
-		renderInfoArea(&sb, state, pal, layout)
+		renderInfoArea(sb, state, pal, layout)
 	} else if state.SessionModal != nil {
-		renderSessionArea(&sb, state, pal, layout)
+		renderSessionArea(sb, state, pal, layout)
 	} else if state.HelpModal != nil {
-		renderHelpArea(&sb, state, pal, layout)
+		renderHelpArea(sb, state, pal, layout)
 	} else if state.ConnectModal != nil {
-		renderConnectArea(&sb, state, pal, layout)
+		renderConnectArea(sb, state, pal, layout)
 	} else if state.ConnectKey != nil {
-		renderConnectKeyArea(&sb, state, pal, layout)
+		renderConnectKeyArea(sb, state, pal, layout)
 	} else if state.Picker != nil {
-		renderPickerArea(&sb, state, pal, layout)
+		renderPickerArea(sb, state, pal, layout)
 	} else {
-		renderTranscriptArea(&sb, state, pal, layout, frame)
+		renderTranscriptArea(sb, state, pal, layout, frame)
 	}
 
 	// A completed update or pending acknowledgement owns the surface until
@@ -275,12 +312,12 @@ func renderState(state State, frame *transcriptFrame) string {
 	// blocked: quitting denies it through the existing conservative path, and
 	// the lifecycle card never renders a second, conflicting dialog.
 	if state.Pending != nil && state.UpdateRestart == nil && state.PostUpdate == nil {
-		renderApproval(&sb, state.Pending, state.Theme, layout)
+		renderApproval(sb, state.Pending, state.Theme, layout)
 	}
 
-	renderThinkingArea(&sb, state, layout)
+	renderThinkingArea(sb, state, layout)
 
-	if state.Picker == nil && state.Plane == nil && state.SupportPanel == nil && state.StatusModal == nil && state.UsageModal == nil && state.InfoModal == nil && state.InformationModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.ConnectKey == nil && state.QuitConfirm == nil && state.Transition == nil && state.UpdateRestart == nil && state.PostUpdate == nil && state.Permissions == nil && state.Diff == nil {
+	if !overlayHidesComposer(state) {
 		// Main canvas. No middle status line while the hint bar owns the
 		// row (ShowHints): the header, composer prefix, and hint bar
 		// already own every fact it would repeat. A pending approval drops
@@ -292,7 +329,7 @@ func renderState(state State, frame *transcriptFrame) string {
 		}
 		sb.WriteString(renderComposer(state, pal, layout))
 		if layout.ShowHints {
-			sb.WriteString("\n" + pal.Muted.Render(composerHintBar(state, displayWidth(state, layout))))
+			sb.WriteString("\n" + pal.Muted.Render(composerHintBar(state, columnWidth(state, layout))))
 		}
 	} else {
 		// Modal overlays hide the composer (and the hint bar with it): the
@@ -308,7 +345,37 @@ func renderState(state State, frame *transcriptFrame) string {
 			}
 		}
 	}
-	return sb.String()
+}
+
+// composeWorkspaceFrame joins the conversation body and the sidebar row by
+// row, separated by one vertical rule. Both columns are measured in cells, so
+// an ANSI-styled row never shifts the divider. The body already claimed the
+// exact height, which keeps the frame anchored to the viewport instead of
+// floating when sidebar content is shorter.
+func composeWorkspaceFrame(sb *strings.Builder, body, sidebar string, layout Layout, pal *Palette) {
+	if layout.Height <= layout.HeaderLines {
+		return
+	}
+	height := layout.Height - layout.HeaderLines
+	left := splitLines(body)
+	right := splitLines(sidebar)
+	divider := pal.Separator.Render("│")
+	for i := 0; i < height; i++ {
+		leftLine := ""
+		if i < len(left) {
+			leftLine = left[i]
+		}
+		rightLine := ""
+		if i < len(right) {
+			rightLine = right[i]
+		}
+		sb.WriteString(padCells(TruncateToWidth(leftLine, layout.MainWidth), layout.MainWidth))
+		sb.WriteString(divider)
+		sb.WriteString(padCells(TruncateToWidth(rightLine, layout.SidebarWidth), layout.SidebarWidth))
+		if i < height-1 {
+			sb.WriteString("\n")
+		}
+	}
 }
 
 // composerHintsFor picks the hint row for the current interaction: slash
@@ -736,7 +803,7 @@ func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 	var body strings.Builder
 	current := latestRunningToolIndex(state)
 	for i, entry := range state.Entries {
-		renderEntryGrouped(&body, entry, pal, layout, current == i, entryGroupEnd(state.Entries, i), entryLeadingGap(state.Entries, i))
+		renderEntryGrouped(&body, entry, pal, layout, current == i, entryGroupEnd(state.Entries, i), entryLeadingGap(state.Entries, i), state.Status.Spinner)
 	}
 	return body.String()
 }
@@ -752,7 +819,7 @@ func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 // and medium box the composition, narrow renders it borderless.
 func renderWelcome(state State, pal *Palette, layout Layout) string {
 	facts := FactsFromStatus(state)
-	surface := RenderIdentitySurface(facts, state.Width)
+	surface := RenderIdentitySurface(facts, columnWidth(state, layout))
 	if state.Width > 0 {
 		// The transcript area slices by lines; style after measuring so ANSI
 		// never inflates the viewport budget. Keep it quiet: identity first,
@@ -1552,6 +1619,9 @@ func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
 // the modal state.
 func composerRule(state State, pal *Palette, layout Layout) string {
 	width := separatorWidth(state, layout)
+	if layout.Sidebar {
+		width = layout.MainWidth - 1
+	}
 	if width < 1 {
 		width = 1
 	}
@@ -1608,7 +1678,7 @@ func renderPaletteSuggestions(state State, layout Layout) string {
 		above:      hideAbove,
 		below:      hideBelow,
 		headers:    true,
-		width:      displayWidth(state, layout),
+		width:      columnWidth(state, layout),
 		exactRows:  layout.PaletteLines,
 		styles:     paletteStylesFor(state.Theme),
 	})
@@ -1640,7 +1710,7 @@ func composerStateLine(state State, pal *Palette, layout Layout) string {
 	if n > 1 {
 		label = fmt.Sprintf("%d queued", n)
 	}
-	first := TruncateToWidth(strings.TrimSpace(sanitizeInline(state.Queued[0])), displayWidth(state, layout)-CellWidth(label)-4)
+	first := TruncateToWidth(strings.TrimSpace(sanitizeInline(state.Queued[0])), columnWidth(state, layout)-CellWidth(label)-4)
 	if first == "" {
 		return pal.Queued.Render(label)
 	}
@@ -1662,7 +1732,7 @@ func composerStateLine(state State, pal *Palette, layout Layout) string {
 //
 // The question renders as a faint background block across the content width,
 // with no label prefix: the surface alone separates it from the answer.
-func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, current bool, toolGroupEnd, leadingGap bool) {
+func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, current bool, toolGroupEnd, leadingGap bool, tick int) {
 	writeGap := func() {
 		if leadingGap {
 			sb.WriteString("\n")
@@ -1693,7 +1763,7 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 	case EntryReasoning:
 		if entry.Reasoning != nil {
 			writeGap()
-			renderReasoning(sb, entry.Reasoning, pal, layout)
+			renderReasoning(sb, entry.Reasoning, pal, layout, tick)
 		}
 
 	case EntryTool:
@@ -1717,6 +1787,13 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 		sb.WriteString("\n")
 
 	case EntryTask:
+		// The persistent tracker owns the task when one is on screen: the
+		// sidebar carries the full list, and the sticky row carries the
+		// compact header. Rendering the in-transcript projection as well
+		// would print the same objective and todos twice.
+		if layout.TaskTracker || layout.TaskLines > 0 {
+			return
+		}
 		writeGap()
 		for _, line := range taskLines(entry.Task, pal, layout) {
 			sb.WriteString(line + "\n")
@@ -1767,13 +1844,21 @@ func renderSupportEntry(sb *strings.Builder, entry Entry, pal *Palette, layout L
 // trace updates its measured duration in place while open, but it never takes
 // the ◌ glyph reserved for the runtime's current tool action. Reasoning is
 // secondary information, never a tool.
-func renderReasoning(sb *strings.Builder, reasoning *ReasoningEntry, pal *Palette, layout Layout) {
+func renderReasoning(sb *strings.Builder, reasoning *ReasoningEntry, pal *Palette, layout Layout, tick int) {
 	if reasoning == nil {
 		return
 	}
-	head := "▸ reasoning"
+	marker := "▸"
 	if reasoning.Expanded {
-		head = "▾ reasoning"
+		marker = "▾"
+	}
+	head := marker + " reasoning"
+	if !reasoning.Closed && strings.TrimSpace(reasoning.Text) != "" {
+		// The live trace is still model work: the spinner replaces the static
+		// collapse marker while the trace grows. Once it settles the marker
+		// returns, so expansion remains discoverable without a permanent
+		// animation on historical rows.
+		head = spinnerGlyph(tick) + " reasoning"
 	}
 	if elapsed := reasoning.Duration(time.Now()); elapsed > 0 {
 		head += " · " + formatDurationText(elapsed)
@@ -1911,14 +1996,15 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	// single-line result stays visible even with its body collapsed.
 	// The hint width is reserved up front so the whole row stays bounded.
 	if tool.Status != ToolRunning && tool.Status != ToolPending {
-		if outcome := collapsedOutcome(tool); outcome != "" {
-			hint := ""
-			// Ctrl+O targets the latest expandable block, so the affordance
-			// belongs on the last call of the run rather than repeated under
-			// every earlier one. Earlier blocks remain click-expandable.
-			if toolExpandable(tool) && !tool.Expanded && showHint {
-				hint = "  (ctrl+o to expand)"
-			}
+		outcome := collapsedOutcome(tool)
+		hint := ""
+		// Ctrl+O targets the latest expandable block, so the affordance
+		// belongs on the last call of the run rather than repeated under
+		// every earlier one. Earlier blocks remain click-expandable.
+		if toolExpandable(tool) && !tool.Expanded && showHint {
+			hint = "  (ctrl+o to expand)"
+		}
+		if outcome != "" {
 			budget := width - 4 - CellWidth(hint)
 			if budget < 1 {
 				budget = 1
@@ -1935,13 +2021,18 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 				line = TruncateToWidth(line, width)
 			}
 			sb.WriteString(line + "\n")
+		} else if hint != "" {
+			// A mutation result may carry only a diff. The compact outcome is
+			// empty then, but the expansion affordance must still be visible
+			// or the diff would be unreachable.
+			sb.WriteString(pal.Muted.Render(TruncateToWidth(hint, width)) + "\n")
 		}
 	}
 
 	// Collapsed is the default: the body below only renders expanded.
 	// Expansion is presentation-only — the same semantic Text, bounded by
 	// the same truncation, wrapping, and sanitization as before.
-	if !tool.Expanded || tool.Text == "" {
+	if !tool.Expanded || (tool.Text == "" && strings.TrimSpace(tool.Diff) == "") {
 		// separate is only for a one-off projection (an expanded block printed
 		// into scrollback) that needs a trailing gap after it. Inline
 		// transcripts pass false and let the following block own the gap, so a
@@ -1949,6 +2040,10 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 		if separate && (tool.Status == ToolDone || tool.Status == ToolError || tool.Status == ToolCancelled) {
 			sb.WriteString("\n")
 		}
+		return
+	}
+	if renderExpandedCodeDiff(sb, tool, pal, layout) {
+		sb.WriteString("\n")
 		return
 	}
 	body, truncated := TruncateForDisplay(tool.Text, toolOutputLimit)
@@ -2012,6 +2107,9 @@ func collapsedOutcome(tool *ToolEntry) string {
 // line already says: multi-line or truncated outcomes only. Trivial
 // single-line results stay hint-free so sequential runs stay scannable.
 func toolExpandable(tool *ToolEntry) bool {
+	if strings.TrimSpace(tool.Diff) != "" {
+		return true
+	}
 	if tool.Text == "" {
 		return false
 	}
@@ -2450,9 +2548,10 @@ func renderThinkingArea(sb *strings.Builder, state State, layout Layout) {
 	// palette without animation.
 	now := time.Now()
 	tick := state.Status.Spinner
-	lines := RenderThinking(activity.Thinking, now, displayWidth(state, layout))
+	width := columnWidth(state, layout)
+	lines := RenderThinkingFrame(activity.Thinking, now, tick, width)
 	if shimmerSupported() {
-		lines = RenderThinkingTick(activity.Thinking, now, tick, displayWidth(state, layout))
+		lines = RenderThinkingTick(activity.Thinking, now, tick, width)
 	}
 	for _, line := range lines {
 		// RenderThinking already applies the semantic zones. Wrapping the
@@ -2513,8 +2612,9 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 	// workspace: the footer keeps naming the workspace authority while
 	// support is open. Support runtime state lives inside the overlay.
 	out := strings.Join(parts, "  ·  ")
+	width := columnWidth(state, layout)
 	if state.Width > 0 {
-		out = TruncateToWidth(out, state.Width-1)
+		out = TruncateToWidth(out, width)
 	}
 	if status.Workspace == "" {
 		return pal.Status.Render(out)
@@ -2525,11 +2625,11 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 	badge := sanitizeInline(status.Workspace)
 	const sep = "  ·  "
 	if state.Width > 0 {
-		restBudget := state.Width - 1 - CellWidth(badge) - CellWidth(sep)
+		restBudget := width - CellWidth(badge) - CellWidth(sep)
 		if restBudget < 0 {
 			// Too narrow for both: the authority identity is the part that
 			// must survive, so the context detail yields.
-			return WorkspaceBadge(status.WorkspaceAccent, TruncateToWidth(badge, state.Width-1))
+			return WorkspaceBadge(status.WorkspaceAccent, TruncateToWidth(badge, width))
 		}
 		out = TruncateToWidth(out, restBudget)
 	}
@@ -2566,12 +2666,25 @@ func textWidth(layout Layout) int {
 	return 80
 }
 
-// displayWidth is the budget for chrome lines (header, picker, composer).
+// displayWidth is the budget for full-width chrome lines (header, picker).
 func displayWidth(state State, layout Layout) int {
 	if state.Width > 0 {
 		return state.Width - 1
 	}
 	return 80
+}
+
+// columnWidth is the budget for chrome that lives inside the conversation
+// column. Without the split it is the full frame width; with the sidebar it
+// stops one cell before the divider so the rail never shifts.
+func columnWidth(state State, layout Layout) int {
+	if layout.Sidebar && layout.MainWidth > 0 {
+		if w := layout.MainWidth - 1; w > 0 {
+			return w
+		}
+		return 1
+	}
+	return displayWidth(state, layout)
 }
 
 // dialogWidth bounds approval and tool preview lines inside the viewport.

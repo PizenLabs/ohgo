@@ -128,8 +128,8 @@ func TestOpenReasoningOwnsThinking(t *testing.T) {
 	s.Apply(ReasoningDelta{Text: "inspect the cache", At: time.Now(), Seq: 1})
 
 	out := ansi.Strip(Render(s))
-	if got := strings.Count(out, "▸ reasoning"); got != 1 {
-		t.Fatalf("reasoning head appeared %d times, want one:\n%s", got, out)
+	if got := strings.Count(out, spinnerFrames[0]+" reasoning"); got != 1 {
+		t.Fatalf("reasoning head appeared %d times, want one live spinner:\n%s", got, out)
 	}
 	if strings.Contains(out, "◌ reason ·") {
 		t.Fatalf("activity line duplicated the open reasoning trace:\n%s", out)
@@ -163,8 +163,11 @@ func TestToolFinalizationReplacesLiveRepresentationExactlyOnce(t *testing.T) {
 	}
 
 	done := ansi.Strip(Render(s))
-	if strings.Contains(done, "⠋") || strings.Contains(done, "running") {
-		t.Fatalf("completed view kept the live representation:\n%s", done)
+	if strings.Contains(done, "◌ read a.go") || strings.Contains(done, "⠋ read a.go") || strings.Contains(done, "running") {
+		t.Fatalf("completed tool kept the live representation:\n%s", done)
+	}
+	if !strings.Contains(done, "⠋ reason") {
+		t.Fatalf("busy turn lost the reasoning spinner:\n%s", done)
 	}
 	if got := strings.Count(done, "read a.go"); got != 1 {
 		t.Fatalf("completed action appeared %d times, want one:\n%s", got, done)
@@ -253,8 +256,11 @@ func TestFailedToolFinalizesExactlyOnce(t *testing.T) {
 		t.Fatalf("tool = %+v, want the same block failed", s.Entries[1])
 	}
 	out := ansi.Strip(Render(s))
-	if strings.Contains(out, "⠋") || strings.Contains(out, "running") {
-		t.Fatalf("failed view kept a live representation:\n%s", out)
+	if strings.Contains(out, "◌ read missing.go") || strings.Contains(out, "⠋ read missing.go") || strings.Contains(out, "running") {
+		t.Fatalf("failed tool kept a live representation:\n%s", out)
+	}
+	if !strings.Contains(out, "⠋ reason") {
+		t.Fatalf("busy turn lost the reasoning spinner:\n%s", out)
 	}
 	if got := strings.Count(out, "✗ read missing.go"); got != 1 {
 		t.Fatalf("failure badge appeared %d times, want one:\n%s", got, out)

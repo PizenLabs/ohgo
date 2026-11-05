@@ -117,7 +117,7 @@ func TestFormatThinkingLineIsCompact(t *testing.T) {
 		Active: true, Phase: ThinkingRespond, Label: "respond",
 		StartedAt: start, Interruptible: true, OutputTokens: 248,
 	}
-	if got, want := RenderThinking(state, now, 0)[0], "◌ respond · (↓248 tokens · 5s · esc)"; got != want {
+	if got, want := RenderThinking(state, now, 0)[0], "⠋ respond · (↓248 tokens · 5s · esc)"; got != want {
 		t.Fatalf("line = %q, want %q", got, want)
 	}
 	wide := RenderThinking(state, now, 80)[0]
@@ -127,12 +127,15 @@ func TestFormatThinkingLineIsCompact(t *testing.T) {
 	if strings.HasSuffix(wide, " ") {
 		t.Fatalf("wide line = %q, want no fill padding", wide)
 	}
-	// Shimmer moves light across the label only: every frame strips to the
-	// same compact text, so metadata never shifts.
+	// The spinner frame is the only character that changes between ticks:
+	// the compact text and metadata stay fixed, so the row never shifts.
 	plain := ansi.Strip(RenderThinkingTick(state, now, 0, 80)[0])
+	plainTail := strings.TrimPrefix(plain, spinnerGlyph(0)+" ")
 	for tick := 1; tick < 8; tick++ {
-		if framed := ansi.Strip(RenderThinkingTick(state, now, tick, 80)[0]); framed != plain {
-			t.Fatalf("tick %d: stripped = %q, want %q", tick, framed, plain)
+		framed := ansi.Strip(RenderThinkingTick(state, now, tick, 80)[0])
+		tail := strings.TrimPrefix(framed, spinnerGlyph(tick)+" ")
+		if tail != plainTail {
+			t.Fatalf("tick %d: stripped = %q, want the same tail %q", tick, framed, plainTail)
 		}
 	}
 }

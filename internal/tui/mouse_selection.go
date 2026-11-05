@@ -127,7 +127,7 @@ func (p *Program) visibleRows() ([]LayoutRow, int, int, bool) {
 	if frame == nil || frame.index == nil {
 		return nil, 0, 0, false
 	}
-	layout := ComputeLayout(p.state)
+	layout := ComputeWorkspaceLayout(p.state)
 	if layout.Mode == LayoutMini || (layout.Mode == LayoutWide && p.state.Width <= 0) || p.transcriptModalOpen() {
 		return nil, 0, 0, false
 	}
@@ -140,7 +140,7 @@ func (p *Program) visibleRows() ([]LayoutRow, int, int, bool) {
 		markerRows = 1
 	}
 	rows := frame.index.Rows(frame.vp.Offset, frame.vp.Height)
-	return rows, markerRows, layout.HeaderLines, true
+	return rows, markerRows, layout.HeaderLines + layout.TaskLines, true
 }
 
 // transcriptModalOpen reports whether an overlay owns the canvas in place of
@@ -163,6 +163,12 @@ func (p *Program) transcriptModalOpen() bool {
 func (p *Program) positionAt(x, y int, clamp bool) (Position, bool) {
 	rows, markerRows, top, ok := p.visibleRows()
 	if !ok {
+		return Position{}, false
+	}
+	layout := ComputeWorkspaceLayout(p.state)
+	if layout.Sidebar && x >= layout.MainWidth {
+		// The rail is chrome, not transcript content: a click there must not
+		// select a cell on the row that happens to share its Y coordinate.
 		return Position{}, false
 	}
 	if len(rows) == 0 {

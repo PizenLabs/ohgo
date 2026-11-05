@@ -275,6 +275,7 @@ var knownCodeLangs = map[string]bool{
 	"yml": true, "json": true, "html": true, "css": true, "xml": true,
 	"toml": true, "dockerfile": true, "makefile": true, "lua": true,
 	"kotlin": true, "kt": true, "swift": true, "php": true,
+	"md": true, "markdown": true,
 }
 
 // hashCommentLangs use "#" for line comments; SQL uses "--"; the rest use
@@ -308,16 +309,50 @@ var codeKeywords = map[string]bool{
 	"string": true, "bool": true, "SELECT": true, "FROM": true, "WHERE": true,
 }
 
-// highlightCode colours one physical code line without adding or removing
-// cells: the return carries ANSI but strips to the input, and never contains
-// a newline, so wrapping done on the plain text stays truthful.
-//
-// An unterminated string or missing comment close colours to end of line:
-// provisional during streaming, convergent when the fence closes.
-func highlightCode(line, lang string, pal *Palette) string {
+// codeTokenKind classifies one lexical span of a code line.
+type codeTokenKind int
+
+const (
+	codeTokenPlain codeTokenKind = iota
+	codeTokenKeyword
+	codeTokenString
+	codeTokenComment
+	codeTokenNumber
+)
+
+// codeToken is a lexical span with its text unchanged.
+type codeToken struct {
+	text string
+	kind codeTokenKind
+}
+
+// codeTokenStyles resolves the style for each lexical span. Diff rows use
+// their own background-bearing bundle so syntax colour never erases the
+// add/delete tint.
+type codeTokenStyles struct {
+	plain   lipgloss.Style
+	keyword lipgloss.Style
+	string  lipgloss.Style
+	comment lipgloss.Style
+	number  lipgloss.Style
+}
+
+// scanCodeLine tokenizes one physical line with the comment marker for its
+// language. It returns false for an unknown language, so callers can fall back
+// to their plain code style rather than inventing colours.
+func scanCodeLine(line, lang string) ([]codeToken, bool) {
 	lang = strings.ToLower(strings.TrimSpace(lang))
 	if lang == "" || !knownCodeLangs[lang] {
-		return pal.Code.Render(line)
+		return nil, false
+	}
+	if lang == "md" || lang == "markdown" {
+		// Markdown headings are the one structural token that reads clearly
+		// inside a diff row. Prose stays plain: guessing emphasis would tint
+		// ordinary words.
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, ">") {
+			return []codeToken{{text: line, kind: codeTokenKeyword}}, true
+		}
 	}
 	comment := "//"
 	if hashCommentLangs[lang] {
@@ -326,22 +361,17 @@ func highlightCode(line, lang string, pal *Palette) string {
 		comment = "--"
 	}
 	runes := []rune(line)
-	type span struct {
-		text  string
-		style *lipgloss.Style
-	}
-	var spans []span
+	var spans []codeToken
 	var plain strings.Builder
 	flush := func() {
 		if plain.Len() > 0 {
-			spans = append(spans, span{text: plain.String()})
+			spans = append(spans, codeToken{text: plain.String(), kind: codeTokenPlain})
 			plain.Reset()
 		}
 	}
-	emit := func(text string, style lipgloss.Style) {
+	emit := func(text string, kind codeTokenKind) {
 		flush()
-		s := style
-		spans = append(spans, span{text: text, style: &s})
+		spans = append(spans, codeToken{text: text, kind: kind})
 	}
 	isDigit := func(c rune) bool { return c >= '0' && c <= '9' }
 	isWord := func(c rune) bool {
@@ -355,8 +385,7 @@ func highlightCode(line, lang string, pal *Palette) string {
 		// code ("http://x", "a//b" in shell paths) stay code-coloured.
 		if strings.HasPrefix(rest, comment) && (i == 0 || !isWord(runes[i-1])) {
 			flush()
-			s := pal.CodeComment
-			spans = append(spans, span{text: string(runes[i:]), style: &s})
+			spans = append(spans, codeToken{text: string(runes[i:]), kind: codeTokenComment})
 			break
 		}
 		switch c := runes[i]; {
@@ -375,14 +404,14 @@ func highlightCode(line, lang string, pal *Palette) string {
 				}
 				j++
 			}
-			emit(string(runes[i:j]), pal.CodeString)
+			emit(string(runes[i:j]), codeTokenString)
 			i = j
 		case isDigit(c) && (i == 0 || !isWord(runes[i-1])):
 			j := i + 1
 			for j < len(runes) && (isWord(runes[j]) || runes[j] == '.') {
 				j++
 			}
-			emit(string(runes[i:j]), pal.CodeNumber)
+			emit(string(runes[i:j]), codeTokenNumber)
 			i = j
 		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_':
 			j := i + 1
@@ -391,7 +420,7 @@ func highlightCode(line, lang string, pal *Palette) string {
 			}
 			word := string(runes[i:j])
 			if codeKeywords[word] {
-				emit(word, pal.CodeKeyword)
+				emit(word, codeTokenKeyword)
 			} else {
 				plain.WriteString(word)
 			}
@@ -402,15 +431,49 @@ func highlightCode(line, lang string, pal *Palette) string {
 		}
 	}
 	flush()
+	return spans, true
+}
+
+// highlightCodeWithStyles renders a scanned line through an injected style
+// bundle. Unknown languages and empty lines keep the caller's plain style, so
+// a diff row still carries its background.
+func highlightCodeWithStyles(line, lang string, styles codeTokenStyles) string {
+	tokens, known := scanCodeLine(line, lang)
+	if !known || len(tokens) == 0 {
+		return styles.plain.Render(line)
+	}
 	var sb strings.Builder
-	for _, sp := range spans {
-		if sp.style != nil {
-			sb.WriteString(sp.style.Render(sp.text))
-		} else {
-			sb.WriteString(pal.Code.Render(sp.text))
+	for _, token := range tokens {
+		switch token.kind {
+		case codeTokenKeyword:
+			sb.WriteString(styles.keyword.Render(token.text))
+		case codeTokenString:
+			sb.WriteString(styles.string.Render(token.text))
+		case codeTokenComment:
+			sb.WriteString(styles.comment.Render(token.text))
+		case codeTokenNumber:
+			sb.WriteString(styles.number.Render(token.text))
+		default:
+			sb.WriteString(styles.plain.Render(token.text))
 		}
 	}
 	return sb.String()
+}
+
+// highlightCode colours one physical code line without adding or removing
+// cells: the return carries ANSI but strips to the input, and never contains
+// a newline, so wrapping done on the plain text stays truthful.
+//
+// An unterminated string or missing comment close colours to end of line:
+// provisional during streaming, convergent when the fence closes.
+func highlightCode(line, lang string, pal *Palette) string {
+	return highlightCodeWithStyles(line, lang, codeTokenStyles{
+		plain:   pal.Code,
+		keyword: pal.CodeKeyword,
+		string:  pal.CodeString,
+		comment: pal.CodeComment,
+		number:  pal.CodeNumber,
+	})
 }
 
 // ---- quotes ----

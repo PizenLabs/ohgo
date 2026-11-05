@@ -331,6 +331,9 @@ func fixtureRevision(entry Entry) uint64 {
 		_, _ = h.Write([]byte(entry.Tool.Invocation))
 		_, _ = h.Write([]byte(entry.Tool.Summary))
 		_, _ = h.Write([]byte(entry.Tool.Text))
+		_, _ = h.Write([]byte(entry.Tool.Diff))
+		_, _ = h.Write([]byte(entry.Tool.Path))
+		_, _ = h.Write([]byte(entry.Tool.Operation))
 		if entry.Tool.Streaming {
 			_, _ = h.Write([]byte{3})
 		}
@@ -372,7 +375,7 @@ func (l *TranscriptLayout) renderBlock(entry Entry, index int, id BlockID, pal *
 		b.rev = fixtureRevision(entry)
 	}
 	var sb strings.Builder
-	renderEntryGrouped(&sb, entry, pal, layout, current, groupEnd, leadingGap)
+	renderEntryGrouped(&sb, entry, pal, layout, current, groupEnd, leadingGap, tick)
 	b.lines = entryLines(sb.String())
 	b.widths = make([]int, len(b.lines))
 	for i, line := range b.lines {

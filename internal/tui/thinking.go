@@ -209,13 +209,20 @@ func RenderThinking(state ThinkingState, now time.Time, width int) []string {
 }
 
 // RenderThinkingTick renders the activity line with a frame index for the
-// shimmer wave. It is pure like RenderThinking: tick is supplied rather than
-// read, so output is deterministic. Only the phase word shimmers, so the
-// elapsed time and the tool detail keep stable text. Width handling matches
-// RenderThinking; a truncated shimmer degrades to plain text rather than
-// overflowing.
+// spinner and the shimmer wave. It is pure like RenderThinking: tick is
+// supplied rather than read, so output is deterministic. Only the phase word
+// shimmers, so the elapsed time and the tool detail keep stable text. Width
+// handling matches RenderThinking; a truncated shimmer degrades to plain text
+// rather than overflowing.
 func RenderThinkingTick(state ThinkingState, now time.Time, tick int, width int) []string {
 	return renderThinking(state, now, tick, true, width)
+}
+
+// RenderThinkingFrame is the no-colour/no-shimmer animation path. The spinner
+// frame still advances with tick, so liveness survives a terminal without
+// TrueColor or with reduced motion.
+func RenderThinkingFrame(state ThinkingState, now time.Time, tick int, width int) []string {
+	return renderThinking(state, now, tick, false, width)
 }
 
 func renderThinking(state ThinkingState, now time.Time, tick int, shimmer bool, width int) []string {
@@ -377,11 +384,9 @@ func formatOutputTokens(n int) string {
 	return fmt.Sprintf("↓%d tokens", n)
 }
 
-// thinkingGlyph is a static phase marker. It is presentation only: the phase
-// is the authority and the glyph merely distinguishes active work (◌) from
-// waiting (◇). Animation is deliberately not owned here, so the activity line
-// adds no clock and no independent lifecycle. The shimmer tick changes only
-// the styling of the phase word, never its content.
+// thinkingGlyph is the static fallback marker for phases that do not animate
+// (waiting and commit preparation). The phase is the authority; the marker
+// only makes the row readable without colour.
 func thinkingGlyph(phase ThinkingPhase) string {
 	if phase == ThinkingWaiting {
 		return "◇"
@@ -389,11 +394,33 @@ func thinkingGlyph(phase ThinkingPhase) string {
 	return "◌"
 }
 
-// thinkingGlyphAt keeps the tick parameter for the existing render seam, but
-// no phase uses a spinner glyph: motion is a styling layer over a stable
-// state, never a frame-indexed character.
-func thinkingGlyphAt(phase ThinkingPhase, _ int) string {
-	return thinkingGlyph(phase)
+// spinnerGlyph returns one Braille animation frame. The caller supplies the
+// shared tick, which the program advances at spinnerInterval (90ms), so a
+// burst of stream deltas cannot spin the glyph faster than the throttled frame
+// clock.
+func spinnerGlyph(tick int) string {
+	if len(spinnerFrames) == 0 {
+		return "◌"
+	}
+	frame := tick % len(spinnerFrames)
+	if frame < 0 {
+		frame += len(spinnerFrames)
+	}
+	return spinnerFrames[frame]
+}
+
+// thinkingGlyphAt selects the marker for the phase. Reasoning and responding
+// are live model work, so they get the smooth Braille spinner. Waiting is
+// parked on a human, and commit preparation is a workflow phase rather than
+// model generation, so both keep a stable marker; the tick never invents
+// motion where the runtime is not generating.
+func thinkingGlyphAt(phase ThinkingPhase, tick int) string {
+	switch phase {
+	case ThinkingModel, ThinkingRespond:
+		return spinnerGlyph(tick)
+	default:
+		return thinkingGlyph(phase)
+	}
 }
 
 // elapsedLabel formats a truthful elapsed time from the activity's real start.

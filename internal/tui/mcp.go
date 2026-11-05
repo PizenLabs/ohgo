@@ -416,6 +416,7 @@ func (p *Program) mcpCommand(args []string) tea.Cmd {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			p.publish(Notice{Text: RenderMCPApplyResults(p.mcp.Apply(ctx, []MCPChange{change}))})
+			p.publishIntegrations()
 			return nil
 		}
 	case "inspect", "refresh":
@@ -462,6 +463,7 @@ func (p *Program) mcpCommand(args []string) tea.Cmd {
 						views = append(views, RenderMCPInspection(p.mcp.Inspect(ctx, name, true)))
 					}
 					p.publish(Notice{Text: strings.Join(views, "\n\n")})
+					p.publishIntegrations()
 					return nil
 				}
 			}
@@ -470,6 +472,7 @@ func (p *Program) mcpCommand(args []string) tea.Cmd {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			p.publish(Notice{Text: RenderMCPInspection(p.mcp.Inspect(ctx, target, refresh))})
+			p.publishIntegrations()
 			return nil
 		}
 	default:

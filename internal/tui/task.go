@@ -930,6 +930,31 @@ func containsContinuationVerb(normalized string) bool {
 	return false
 }
 
+// latestTaskProjection returns the most recent durable task projection, or
+// nil when the session has none. Apply keeps the pointer cached so the sticky
+// tracker never scans a long transcript; hand-built fixtures fall back to one
+// reverse scan and then cache the result.
+func latestTaskProjection(s *State) *TaskProjection {
+	if s == nil {
+		return nil
+	}
+	if s.task != nil && s.task.ID != "" {
+		return s.task
+	}
+	if s.taskKnown {
+		return nil
+	}
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		if s.Entries[i].Kind == EntryTask && s.Entries[i].Task != nil && s.Entries[i].Task.ID != "" {
+			s.task = s.Entries[i].Task
+			s.taskKnown = true
+			return s.task
+		}
+	}
+	s.taskKnown = true
+	return nil
+}
+
 // taskGlyph maps a projection state to its single status marker. One glyph
 // column, no colour-only signal: done, active, pending read apart in a
 // monochrome terminal.

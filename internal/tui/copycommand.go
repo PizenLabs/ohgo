@@ -116,6 +116,36 @@ func CopyPayload(mode CopyMode, response string, editDiff ...string) (string, Co
 	}
 }
 
+// MutationMetadata extracts the path, operation, and canonical diff a tool
+// reported in its structured details. The three facts travel together so the
+// expanded diff header never invents a path or guesses an operation.
+func MutationMetadata(details any) (path, operation, diff string) {
+	switch d := details.(type) {
+	case map[string]any:
+		path, _ = d["path"].(string)
+		for _, key := range []string{"operation", "op", "type", "mutation_type"} {
+			if value, ok := d[key].(string); ok && strings.TrimSpace(value) != "" {
+				operation = value
+				break
+			}
+		}
+		diff = MutationDiff(d)
+	case agent.MutationPreview:
+		return d.Path, string(d.Operation), strings.TrimSpace(d.Diff)
+	case *agent.MutationPreview:
+		if d != nil {
+			return d.Path, string(d.Operation), strings.TrimSpace(d.Diff)
+		}
+	case agent.MutationEvidence:
+		return d.Path, string(d.Operation), strings.TrimSpace(d.Diff)
+	case *agent.MutationEvidence:
+		if d != nil {
+			return d.Path, string(d.Operation), strings.TrimSpace(d.Diff)
+		}
+	}
+	return strings.TrimSpace(path), strings.TrimSpace(operation), strings.TrimSpace(diff)
+}
+
 // MutationDiff extracts the canonical unified diff a tool reported in its
 // structured details. Details is an arbitrary tool-owned payload, so this is
 // the one boundary where the shape is discovered rather than assumed.

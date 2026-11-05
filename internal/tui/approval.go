@@ -59,6 +59,7 @@ type approvalRowKind int
 const (
 	approvalRowPrompt approvalRowKind = iota
 	approvalRowCommand
+	approvalRowMeta
 	approvalRowReason
 	approvalRowPreview
 	approvalRowQuestion
@@ -77,6 +78,7 @@ const (
 // text describing what is being approved survives longest.
 const (
 	dropPadding = iota + 1
+	dropMetadata
 	dropSpacerTop
 	dropSpacerBottom
 	dropShellPrompt
@@ -89,12 +91,14 @@ const (
 )
 
 // approvalRow is one interior box row: its kind, its (plain, sanitized) text,
-// and the priority at which it may be shed.
+// the diff semantics when it is a preview row, and the priority at which it
+// may be shed.
 type approvalRow struct {
-	kind  approvalRowKind
-	index int
-	text  string
-	drop  int
+	kind     approvalRowKind
+	index    int
+	text     string
+	diffKind codeDiffKind
+	drop     int
 }
 
 // approvalBorderColor is the frame accent, keyed to the call's blast radius:
@@ -166,50 +170,72 @@ func approvalPlan(pending *PendingApproval, layout Layout) []approvalRow {
 	for _, line := range WrapToWidth(approvalTarget(pending), body) {
 		rows = append(rows, approvalRow{kind: approvalRowCommand, text: line, drop: dropCommand})
 	}
+	// Metadata is a separate hierarchy from the payload: capability and risk
+	// answer "what boundary is this?" before the diff answers "what changes?".
+	if capability := pending.capabilityLabel(); capability != "" {
+		for _, line := range WrapToWidth("Capability · "+capability, body) {
+			rows = append(rows, approvalRow{kind: approvalRowMeta, text: line, drop: dropMetadata})
+		}
+	}
+	if risk := pending.riskLabel(); risk != "" {
+		for _, line := range WrapToWidth("Risk · "+risk, body) {
+			rows = append(rows, approvalRow{kind: approvalRowMeta, text: line, drop: dropMetadata})
+		}
+	}
 	if reason := strings.TrimSpace(sanitizeInline(pending.Reason)); reason != "" {
 		for _, line := range WrapToWidth(reason, body) {
 			rows = append(rows, approvalRow{kind: approvalRowReason, text: line, drop: dropReason})
 		}
 	}
 	// Dedicated mutation preview block, separate from Reason. Bounded so a
-	// large file cannot make the dialog unbounded.
+	// large file cannot make the dialog unbounded. The header names the target
+	// and the change density; the body uses the same add/delete/context
+	// semantics as the expanded transcript diff.
 	preview := pending.MutationPreview
 	op := preview.Operation
 	if op == "" {
 		op = agent.MutationOp("MUTATION")
 	}
 	if preview.Diff != "" || preview.Unsupported || preview.Path != "" {
+		previewText, _ := TruncateForDisplay(preview.Diff, 4000)
+		view := parseCodeDiff(previewText)
+		path := strings.TrimSpace(preview.Path)
+		if path == "" {
+			path = view.path
+		}
 		header := fmt.Sprintf("Preview · %s", op)
-		rows = append(rows, approvalRow{kind: approvalRowPreview, text: header, drop: protectedRow})
-		text := preview.Diff
-		if text == "" {
+		if path != "" {
+			header += " · " + path
+		}
+		header += fmt.Sprintf("  [+%d, -%d]", view.add, view.del)
+		for _, line := range WrapToWidth(header, body) {
+			rows = append(rows, approvalRow{kind: approvalRowPreview, text: line, diffKind: codeDiffHunk, drop: protectedRow})
+		}
+		if len(view.lines) == 0 {
+			text := "(no changes)"
 			if preview.Unsupported {
 				text = "(no textual preview available)"
-			} else {
-				text = "(no changes)"
 			}
-		}
-		text = sanitizeBlock(text)
-		lines := strings.Split(text, "\n")
-		const maxPreviewLines = 16
-		if len(lines) > maxPreviewLines {
-			lines = append(lines[:maxPreviewLines], "... (truncated)")
-		}
-		// Byte bound as a backstop.
-		var bounded []string
-		bytes := 0
-		const maxPreviewBytes = 4000
-		for _, line := range lines {
-			if bytes+len(line) > maxPreviewBytes && len(bounded) > 0 {
-				bounded = append(bounded, "... (truncated)")
-				break
-			}
-			bounded = append(bounded, line)
-			bytes += len(line) + 1
-		}
-		for _, line := range bounded {
-			for _, wrapped := range WrapToWidth(line, body) {
-				rows = append(rows, approvalRow{kind: approvalRowPreview, text: wrapped, drop: dropPreview})
+			rows = append(rows, approvalRow{kind: approvalRowPreview, text: text, diffKind: codeDiffContext, drop: dropPreview})
+		} else {
+			const maxPreviewLines = 16
+			shown := 0
+			for _, line := range view.lines {
+				if shown >= maxPreviewLines {
+					rows = append(rows, approvalRow{kind: approvalRowPreview, text: "... (truncated)", diffKind: codeDiffMeta, drop: dropPreview})
+					break
+				}
+				width := body
+				if line.kind == codeDiffAdd || line.kind == codeDiffDelete || line.kind == codeDiffContext {
+					width = body - 2
+				}
+				if width < 1 {
+					width = 1
+				}
+				for _, wrapped := range WrapToWidth(line.text, width) {
+					rows = append(rows, approvalRow{kind: approvalRowPreview, text: wrapped, diffKind: line.kind, drop: dropPreview})
+					shown++
+				}
 			}
 		}
 	}
@@ -281,6 +307,42 @@ func (p *PendingApproval) question() string {
 		return p.Proposal.Question
 	}
 	return approvalQuestion
+}
+
+// capabilityLabel describes the boundary being exercised. An explicit
+// producer label wins; otherwise the call's own blast-radius projection is
+// used, so an old caller still gets a truthful row.
+func (p *PendingApproval) capabilityLabel() string {
+	if p == nil {
+		return ""
+	}
+	if label := strings.TrimSpace(sanitizeInline(p.Capability)); label != "" {
+		return label
+	}
+	if p.Commit != nil {
+		return "git commit"
+	}
+	if p.IsProposal() {
+		return "workspace decision"
+	}
+	if p.Mutating {
+		return "workspace mutation"
+	}
+	return "read / inspect"
+}
+
+// riskLabel describes the approval's blast radius without inventing a score.
+func (p *PendingApproval) riskLabel() string {
+	if p == nil {
+		return ""
+	}
+	if label := strings.TrimSpace(sanitizeInline(p.Risk)); label != "" {
+		return label
+	}
+	if p.Mutating {
+		return "elevated"
+	}
+	return "standard"
 }
 
 // footerHint names the keys this prompt actually captures.
@@ -468,6 +530,8 @@ func approvalRowStyle(row approvalRow, pending *PendingApproval, border string, 
 		return approvalIndent + row.text, fg(ColorMuted)
 	case approvalRowCommand:
 		return approvalIndent + row.text, fg(ColorText).Bold(true)
+	case approvalRowMeta:
+		return approvalIndent + row.text, fg(ColorMuted).Italic(true)
 	case approvalRowReason:
 		return approvalIndent + row.text, fg(ColorMuted)
 	case approvalRowPreview:
@@ -475,6 +539,8 @@ func approvalRowStyle(row approvalRow, pending *PendingApproval, border string, 
 			return approvalIndent + row.text, fg(border).Bold(true)
 		}
 		pal := PaletteFor(theme)
+		// Legacy preview rows carry their own prefix rather than a structured
+		// kind; keep their semantics even if a caller builds one directly.
 		switch {
 		case strings.HasPrefix(row.text, "+"):
 			return approvalIndent + row.text, pal.DiffAdd
@@ -482,6 +548,18 @@ func approvalRowStyle(row approvalRow, pending *PendingApproval, border string, 
 			return approvalIndent + row.text, pal.DiffDelete
 		case strings.HasPrefix(row.text, "@@"):
 			return approvalIndent + row.text, pal.Cyan
+		}
+		switch row.diffKind {
+		case codeDiffAdd:
+			return approvalIndent + "+ " + row.text, pal.DiffAdd
+		case codeDiffDelete:
+			return approvalIndent + "- " + row.text, pal.DiffDelete
+		case codeDiffHunk:
+			return approvalIndent + row.text, pal.Cyan
+		case codeDiffMeta:
+			return approvalIndent + row.text, pal.Truncated
+		case codeDiffContext:
+			return approvalIndent + "  " + row.text, pal.DiffContext
 		}
 		return approvalIndent + row.text, fg(ColorText)
 	case approvalRowQuestion:
