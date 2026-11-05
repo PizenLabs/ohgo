@@ -629,6 +629,16 @@ type State struct {
 	// keyboard, filters its roster live, and runs the highlighted command. It
 	// never enters the transcript, history, or session itself.
 	HelpModal *HelpCenterState
+	// SettingsModal is the open /settings preferences surface, or nil. It is a
+	// working modal: it owns the keyboard, toggles the preferences the host
+	// exposes, and returns to the composer on close. It never enters the
+	// transcript, history, or session.
+	SettingsModal *SettingsState
+	// TaskRailDisabled records the user's durable task-rail preference. The
+	// zero value keeps the rail enabled; only an explicit setting or /settings
+	// toggle suppresses it. The rail still stays hidden unless an open task has
+	// at least one open todo.
+	TaskRailDisabled bool
 	// InfoModal is the open /info page, or nil. It is a read-only modal like
 	// the /status card: any key dismisses it. It never enters the transcript,
 	// history, or session.
@@ -1286,6 +1296,20 @@ func (s *State) Apply(event Event) {
 
 	case StatusModalClosed:
 		s.StatusModal = nil
+
+	case SettingsOpened:
+		s.SettingsModal = &SettingsState{}
+
+	case SettingsMoved:
+		if s.SettingsModal != nil {
+			s.SettingsModal.Move(e.Delta)
+		}
+
+	case SettingsClosed:
+		s.SettingsModal = nil
+
+	case TaskRailToggled:
+		s.TaskRailDisabled = !e.Enabled
 
 	case UsageModalOpened:
 		// Same snapshot contract as the status card: the facts are frozen at
@@ -2161,6 +2185,7 @@ func (s *State) Apply(event Event) {
 		s.UsageModal = nil
 		s.SessionModal = nil
 		s.HelpModal = nil
+		s.SettingsModal = nil
 		s.ConnectModal = nil
 		s.ConnectKey = nil
 		s.Queued = nil
@@ -3115,6 +3140,28 @@ type StatusModalClosed struct{}
 
 func (StatusModalClosed) eventKind() string { return "status_modal_closed" }
 
+// SettingsOpened shows the /settings preferences surface.
+type SettingsOpened struct{}
+
+func (SettingsOpened) eventKind() string { return "settings_opened" }
+
+// SettingsMoved shifts the settings highlight. Positive goes down; the row
+// registry is small and wraps at both ends.
+type SettingsMoved struct{ Delta int }
+
+func (SettingsMoved) eventKind() string { return "settings_moved" }
+
+// SettingsClosed dismisses the preferences surface without changing anything.
+type SettingsClosed struct{}
+
+func (SettingsClosed) eventKind() string { return "settings_closed" }
+
+// TaskRailToggled applies the durable task-rail preference. The host owns
+// persistence; the state event only makes the view obey the new value.
+type TaskRailToggled struct{ Enabled bool }
+
+func (TaskRailToggled) eventKind() string { return "task_rail_toggled" }
+
 // UsageModalOpened shows the /usage inspector with a snapshot of the ledger
 // and provider roster. The view is copied, so the card is a stable read of the
 // moment it opened.
@@ -3657,6 +3704,7 @@ var Commands = []CommandSpec{
 	{Name: "task", Usage: "task [status|list|show|resume|cancel|accept]", Description: "manage durable tasks: inspect, list, resume, or abandon", Category: CommandGroupControl},
 	{Name: "audit", Usage: "audit", Description: "explain the last context projection and action surface", Category: CommandGroupControl},
 	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette", Category: CommandGroupControl},
+	{Name: "settings", Usage: "settings", Description: "configure interface preferences", Category: CommandGroupControl},
 	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
 	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
 	{Name: "status", Usage: "status", Description: "show workspace, session, and authority status", Category: CommandGroupControl},

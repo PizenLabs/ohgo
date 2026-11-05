@@ -245,6 +245,13 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 			fmt.Fprintf(os.Stderr, "ohgo: could not save theme: %v\n", err)
 		}
 	})
+	program.SetTaskRailEnabled(opts.settings.TaskRailEnabled())
+	program.SetTaskRailChangedHandler(func(enabled bool) {
+		opts.settings.TaskRail = &enabled
+		if err := config.Save(opts.settings); err != nil {
+			fmt.Fprintf(os.Stderr, "ohgo: could not save task rail preference: %v\n", err)
+		}
+	})
 	style := opts.authority().Style()
 	program.PublishWorkspace(tui.WorkspaceUpdated{
 		Cwd:             opts.root,

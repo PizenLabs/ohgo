@@ -274,6 +274,7 @@ ohgo version
 /task [status|list|show|resume|cancel|accept]
 /audit                                 explain the last context projection
 /theme [dark|light]                    show or switch the palette
+/settings                              configure interface preferences
 /connect /disconnect [provider]        provider credentials
 /status /usage /info                    workspace, cost, docs
 /update                                 install the latest release
@@ -456,13 +457,16 @@ is verification evidence.
   "model": "groq/llama-3.1-8b-instant",
   "maxTokens": 32000,
   "theme": "dark",
+  "taskRail": true,
   "approvals": { "bash": "deny", "write": "allow" }
 }
 ```
 
 `"allow"` never asks, `"deny"` never runs; anything else (or absent) prompts
 each time. `ohgo init` writes `model` and `theme`; `/theme` updates `theme` in
-place.
+place. `taskRail` controls the contextual task rail: it defaults to enabled,
+appears only while an execution task has open todos, and `/settings` toggles it
+in place.
 
 Precedence for the model: `--model` flag, then settings, then `OHGO_MODEL`,
 then the catalog default (`anthropic/claude-sonnet-4-5`). An unknown name is an

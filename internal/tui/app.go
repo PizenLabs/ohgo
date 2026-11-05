@@ -306,6 +306,9 @@ type Program struct {
 	lastJobs []JobItem
 	// onThemeChanged persists a theme switch. Nil means session-only.
 	onThemeChanged func(theme string)
+	// onTaskRailChanged persists the task-rail preference. Nil means
+	// session-only, which is also the safe default for embedded hosts.
+	onTaskRailChanged func(enabled bool)
 
 	// usage accumulates token totals for /usage. Nil means unavailable.
 	usage *agent.UsageLog
@@ -986,7 +989,7 @@ const mouseScrollLines = 3
 // owning the keyboard. That is the state a reader is in, and the one where
 // scrolling is what the user means. Typing keeps the arrows for editing.
 func wheelScrolls(s State) bool {
-	if s.Picker != nil || s.Plane != nil || s.ConnectKey != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil || s.HelpModal != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil {
+	if s.Picker != nil || s.Plane != nil || s.ConnectKey != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil || s.SupportPanel != nil || s.Permissions != nil || s.Diff != nil || s.HelpModal != nil || s.SettingsModal != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil {
 		return false
 	}
 	return s.Input == ""
@@ -1066,6 +1069,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 			p.state.Apply(HelpCenterMoved{Delta: -1})
 			return p, nil
 		}
+		if p.state.SettingsModal != nil {
+			p.state.Apply(SettingsMoved{Delta: -1})
+			return p, nil
+		}
 		if p.state.Picker != nil {
 			p.state.Apply(PickerMoved{Delta: -1})
 			return p, nil
@@ -1087,6 +1094,10 @@ func (p *Program) handleMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		if p.state.HelpModal != nil {
 			p.state.Apply(HelpCenterMoved{Delta: 1})
+			return p, nil
+		}
+		if p.state.SettingsModal != nil {
+			p.state.Apply(SettingsMoved{Delta: 1})
 			return p, nil
 		}
 		if p.state.Picker != nil {
@@ -1414,6 +1425,10 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if p.state.HelpModal != nil {
 		return p.handleHelpCenterKey(msg)
+	}
+
+	if p.state.SettingsModal != nil {
+		return p.handleSettingsKey(msg)
 	}
 
 	if p.state.Picker != nil {
@@ -1928,6 +1943,10 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		p.applyThemeCommand(command.Args)
 		return nil
 
+	case "settings":
+		p.openSettings()
+		return nil
+
 	case "models":
 		return p.openModelPicker()
 
@@ -2384,6 +2403,10 @@ func (p *Program) interruptOrClear() (tea.Model, tea.Cmd) {
 	}
 	if p.state.HelpModal != nil {
 		p.closeHelpCenter()
+		return p, nil
+	}
+	if p.state.SettingsModal != nil {
+		p.closeSettings()
 		return p, nil
 	}
 	if p.state.InfoModal != nil || p.state.InformationModal != nil {

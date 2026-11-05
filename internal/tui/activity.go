@@ -124,6 +124,7 @@ func activityDialogOwns(s State) bool {
 		s.InformationModal != nil ||
 		s.SessionModal != nil ||
 		s.HelpModal != nil ||
+		s.SettingsModal != nil ||
 		s.ConnectModal != nil ||
 		s.ConnectKey != nil ||
 		s.Diff != nil

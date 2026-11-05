@@ -5,14 +5,17 @@ import (
 	"strings"
 )
 
-// Persistent workspace chrome.
+// Contextual workspace chrome.
 //
 // The task tracker and integrations are projections of state the runtime
-// already owns. They are rendered beside the transcript rather than inside it,
-// so scrolling the conversation cannot move them and a tick never repaints the
-// transcript just to keep a panel current. The sidebar never duplicates the
-// global status bar: token usage, context percentage, path, branch, session,
-// and workspace authority stay in the footer and composer prefix.
+// already owns. They are rendered beside the transcript only while an open
+// task has at least one open todo, so an idle, question-only, or completed
+// session keeps the full-width conversation. The rail sits outside the
+// transcript, so scrolling the conversation cannot move it and a tick never
+// repaints the transcript just to keep a panel current. The sidebar never
+// duplicates the global status bar: token usage, context percentage, path,
+// branch, session, and workspace authority stay in the footer and composer
+// prefix.
 
 // Sidebar content bounds. They keep a pathological todo list or a large MCP
 // roster from turning the rail into an unbounded per-frame walk.
@@ -25,12 +28,13 @@ const (
 
 // renderStickyTaskRow is the narrow-terminal fallback: exactly one row under
 // the title bar, carrying only the facts needed to keep the current task
-// anchored while the transcript scrolls. The full todo list stays available
-// through the transcript's task projection when a sidebar is not rendered.
+// anchored while the transcript scrolls. It exists only while an open task has
+// at least one open todo; the transcript's own task block returns once the task
+// ends.
 func renderStickyTaskRow(state State, pal *Palette, layout Layout) string {
-	task := latestTaskProjection(&state)
+	task := activeTaskProjection(&state)
 	if task == nil {
-		return pal.Notice.Render("task")
+		return ""
 	}
 	parts := []string{"task"}
 	if objective := strings.TrimSpace(sanitizeInline(task.Objective)); objective != "" {
@@ -64,6 +68,10 @@ func renderWorkspaceSidebar(state State, pal *Palette, layout Layout) string {
 	if height <= 0 || layout.SidebarWidth <= 0 {
 		return ""
 	}
+	task := activeTaskProjection(&state)
+	if task == nil {
+		return ""
+	}
 	inner := layout.SidebarWidth - 2
 	if inner < 1 {
 		inner = 1
@@ -78,36 +86,31 @@ func renderWorkspaceSidebar(state State, pal *Palette, layout Layout) string {
 	}
 	blank := func() { lines = append(lines, "") }
 
-	task := latestTaskProjection(&state)
 	add("TASK", pal.Notice.Bold(true))
-	if task == nil {
-		add("no active task", pal.Status)
-	} else {
-		if objective := strings.TrimSpace(sanitizeInline(task.Objective)); objective != "" {
-			add(objective, pal.Status)
-		}
-		add(sidebarTaskSummary(task), pal.Status)
-		itemBudget := sidebarTaskItemBudget(height, len(task.Items))
-		for i, item := range task.Items {
-			if i >= itemBudget {
-				remaining := len(task.Items) - itemBudget
-				if remaining > 0 {
-					add(fmt.Sprintf("… +%d more", remaining), pal.Muted)
-				}
-				break
+	if objective := strings.TrimSpace(sanitizeInline(task.Objective)); objective != "" {
+		add(objective, pal.Status)
+	}
+	add(sidebarTaskSummary(task), pal.Status)
+	itemBudget := sidebarTaskItemBudget(height, len(task.Items))
+	for i, item := range task.Items {
+		if i >= itemBudget {
+			remaining := len(task.Items) - itemBudget
+			if remaining > 0 {
+				add(fmt.Sprintf("… +%d more", remaining), pal.Muted)
 			}
-			style := pal.Status
-			switch item.State {
-			case taskStateDone:
-				style = pal.ToolDone
-			case taskStateActive:
-				style = pal.ToolRun
-			}
-			add(taskGlyph(item.State)+" "+sanitizeInline(item.Label), style)
+			break
 		}
-		if len(task.Items) == 0 && task.ReviewReason == "" {
-			add("no todos", pal.Muted)
+		style := pal.Status
+		switch item.State {
+		case taskStateDone:
+			style = pal.ToolDone
+		case taskStateActive:
+			style = pal.ToolRun
 		}
+		add(taskGlyph(item.State)+" "+sanitizeInline(item.Label), style)
+	}
+	if len(task.Items) == 0 && task.ReviewReason == "" {
+		add("no todos", pal.Muted)
 	}
 
 	blank()

@@ -2,7 +2,7 @@
 
 > Enhancement note: `SPEC_UIUX_ENHANCEMENTS.md` supersedes §7.1 for the
 > throttled responding/reasoning spinner and the sidebar prohibition in §19 for
-> the persistent task/integrations rail. Everything else here remains in force.
+> the contextual task/integrations rail. Everything else here remains in force.
 
 ## 1. Objective
 

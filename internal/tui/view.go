@@ -297,6 +297,8 @@ func renderCanvasBody(sb *strings.Builder, state State, pal *Palette, layout Lay
 		renderSessionArea(sb, state, pal, layout)
 	} else if state.HelpModal != nil {
 		renderHelpArea(sb, state, pal, layout)
+	} else if state.SettingsModal != nil {
+		renderSettingsArea(sb, state, pal, layout)
 	} else if state.ConnectModal != nil {
 		renderConnectArea(sb, state, pal, layout)
 	} else if state.ConnectKey != nil {
@@ -790,7 +792,7 @@ func compactModel(model string) string {
 // it is only ever rendered — never applied as an Entry — it cannot leak into
 // the persisted session or reappear over a resumed transcript.
 func showWelcome(state State) bool {
-	return !state.SessionActive && len(state.Entries) == 0 && state.Picker == nil && state.ConnectKey == nil && state.Pending == nil && state.QuitConfirm == nil && state.Transition == nil && state.Permissions == nil && state.StatusModal == nil && state.UsageModal == nil && state.InfoModal == nil && state.InformationModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.ConnectModal == nil && state.Diff == nil
+	return !state.SessionActive && len(state.Entries) == 0 && state.Picker == nil && state.ConnectKey == nil && state.Pending == nil && state.QuitConfirm == nil && state.Transition == nil && state.Permissions == nil && state.StatusModal == nil && state.UsageModal == nil && state.InfoModal == nil && state.InformationModal == nil && state.SessionModal == nil && state.HelpModal == nil && state.SettingsModal == nil && state.ConnectModal == nil && state.Diff == nil
 }
 
 // renderTranscriptBody renders every entry wrapped to the content width.
@@ -1606,7 +1608,7 @@ func appendGhost(text, tail string, width int, style lipgloss.Style) string {
 // composerPrefixStyle so the frame and the "ask > "/"build > "/"fuzz > "
 // text read as one boundary.
 func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
-	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.InfoModal != nil || state.InformationModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.ConnectModal != nil || state.Diff != nil {
+	if state.Picker != nil || state.ConnectKey != nil || state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil || state.Permissions != nil || state.StatusModal != nil || state.UsageModal != nil || state.InfoModal != nil || state.InformationModal != nil || state.SessionModal != nil || state.HelpModal != nil || state.SettingsModal != nil || state.ConnectModal != nil || state.Diff != nil {
 		return pal.Separator
 	}
 	return composerPrefixStyle(state, pal).Bold(true)

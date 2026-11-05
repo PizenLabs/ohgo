@@ -43,6 +43,105 @@ func TestWorkspaceLayoutSplitsWideAndFallsBackToStickyTask(t *testing.T) {
 	}
 }
 
+// The rail is transient chrome, not the default canvas. Idle sessions and
+// terminal tasks keep the full-width transcript, even when integrations are
+// available; a completed task settles back into history instead of pinning a
+// panel beside every later turn.
+func TestWorkspaceRailOnlyExistsWhileTaskIsOpen(t *testing.T) {
+	integrations := IntegrationsUpdated{Items: []IntegrationStatus{
+		{Kind: IntegrationMCP, Name: "github", State: "connected", Active: true},
+	}}
+	assertNoRail := func(t *testing.T, state State) {
+		t.Helper()
+		layout := ComputeWorkspaceLayout(state)
+		if layout.Sidebar || layout.TaskLines != 0 || layout.TaskTracker {
+			t.Fatalf("layout = sidebar:%v taskRows:%d tracker:%v, want no rail",
+				layout.Sidebar, layout.TaskLines, layout.TaskTracker)
+		}
+		if layout.MainWidth != state.Width || layout.ContentWidth != ComputeLayout(state).ContentWidth {
+			t.Fatalf("main = %d/%d, want the full-width transcript", layout.MainWidth, state.Width)
+		}
+		out := ansi.Strip(Render(state))
+		for _, heading := range []string{"TASK", "ACTIVE INTEGRATIONS", "INSIGHTS"} {
+			if strings.Contains(out, heading) {
+				t.Fatalf("hidden rail still rendered %q:\n%s", heading, out)
+			}
+		}
+	}
+
+	idle := New()
+	idle.Apply(TerminalResized{Width: 140, Height: 40})
+	idle.Apply(integrations)
+	assertNoRail(t, idle)
+
+	done := New()
+	done.Apply(TerminalResized{Width: 140, Height: 40})
+	done.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "prove the parser",
+		Items: []TaskItem{{State: taskStateActive, Label: "run the suite"}},
+	}})
+	done.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "COMPLETED", Objective: "prove the parser",
+		Items: []TaskItem{{State: taskStateDone, Label: "run the suite"}},
+	}})
+	done.Apply(integrations)
+	assertNoRail(t, done)
+
+	// Narrow tiers follow the same lifecycle: the sticky fallback is not a
+	// permanent row under the title bar either.
+	narrowDone := done
+	narrowDone.Apply(TerminalResized{Width: 80, Height: 24})
+	assertNoRail(t, narrowDone)
+
+	// The completed projection is no longer pinned, but it remains history:
+	// the transcript owns it again after the rail releases the fact.
+	if out := ansi.Strip(Render(done)); !strings.Contains(out, "prove the parser") {
+		t.Fatalf("completed task vanished from history:\n%s", out)
+	}
+}
+
+// A task without a todo plan is still a normal question even though the task
+// layer records an objective. The rail must not take over the canvas until the
+// execution request has produced an actual todo plan.
+func TestWorkspaceRailRequiresTodoPlan(t *testing.T) {
+	s := New()
+	s.Apply(TerminalResized{Width: 140, Height: 40})
+	s.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "explain the module",
+	}})
+	layout := ComputeWorkspaceLayout(s)
+	if layout.Sidebar || layout.TaskLines != 0 || layout.TaskTracker {
+		t.Fatalf("question layout = sidebar:%v taskRows:%d tracker:%v, want the normal transcript",
+			layout.Sidebar, layout.TaskLines, layout.TaskTracker)
+	}
+	out := ansi.Strip(Render(s))
+	if strings.Contains(out, "ACTIVE INTEGRATIONS") || strings.Contains(out, "INSIGHTS") {
+		t.Fatalf("a question opened the task rail:\n%s", out)
+	}
+	if !strings.Contains(out, "explain the module") {
+		t.Fatalf("the task projection vanished from the transcript:\n%s", out)
+	}
+
+	// A stale finished plan is not work to track either: the rail waits for an
+	// open todo, not merely a todo list.
+	s.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "explain the module",
+		Items: []TaskItem{{State: taskStateDone, Label: "read go.mod"}},
+	}})
+	if layout := ComputeWorkspaceLayout(s); layout.Sidebar || layout.TaskTracker {
+		t.Fatalf("layout = sidebar:%v tracker:%v, want no rail for a finished plan", layout.Sidebar, layout.TaskTracker)
+	}
+
+	// Once the request creates open todos, the rail has something to track.
+	s.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "explain the module",
+		Items: []TaskItem{{State: taskStateActive, Label: "read go.mod"}},
+	}})
+	if layout := ComputeWorkspaceLayout(s); !layout.Sidebar {
+		t.Fatalf("layout = %+v, want the rail after the todo plan appeared", layout)
+	}
+}
+
 // The sidebar owns the task projection on wide terminals. The transcript must
 // not print the same objective or todo rows a second time, and the right rail
 // must not repeat the global footer's tokens, path, branch, or session.

@@ -151,6 +151,7 @@ func (p *Program) transcriptModalOpen() bool {
 	return s.Picker != nil || s.Plane != nil || s.SupportPanel != nil ||
 		s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil ||
 		s.InformationModal != nil || s.SessionModal != nil || s.HelpModal != nil ||
+		s.SettingsModal != nil ||
 		s.ConnectModal != nil || s.ConnectKey != nil || s.Diff != nil ||
 		s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil || s.Permissions != nil
 }

@@ -35,6 +35,39 @@ func TestModelIDSplitsProviderAndID(t *testing.T) {
 	}
 }
 
+func TestTaskRailPreferenceDefaultsEnabled(t *testing.T) {
+	if !(Settings{}).TaskRailEnabled() {
+		t.Fatal("an omitted taskRail must default to enabled")
+	}
+	off := false
+	if (Settings{TaskRail: &off}).TaskRailEnabled() {
+		t.Fatal("an explicit taskRail:false must disable the rail")
+	}
+	on := true
+	if !(Settings{TaskRail: &on}).TaskRailEnabled() {
+		t.Fatal("an explicit taskRail:true must keep the rail enabled")
+	}
+}
+
+func TestTaskRailPreferenceRoundTrips(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	off := false
+	want := Default()
+	want.TaskRail = &off
+	if err := Save(want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.TaskRailEnabled() {
+		t.Fatal("a persisted taskRail:false was not read back")
+	}
+}
+
 func TestApprovalForPrefersAutoApproveOverDeny(t *testing.T) {
 	// A user who lists a tool in AutoApprove has overridden an explicit deny;
 	// silently prompting again would make the override useless.

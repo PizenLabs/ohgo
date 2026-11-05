@@ -590,6 +590,8 @@ func liveOverlay(s State, pal *Palette, layout Layout) []string {
 		return liveSessionManagerLines(s, pal, layout)
 	case s.HelpModal != nil:
 		return liveHelpCenterLines(s, pal, layout)
+	case s.SettingsModal != nil:
+		return liveSettingsLines(s, pal, layout)
 	case s.ConnectModal != nil:
 		return liveConnectModalLines(s, pal, layout)
 	case s.ConnectKey != nil:
@@ -667,6 +669,17 @@ func liveHelpCenterLines(s State, pal *Palette, layout Layout) []string {
 	}
 	return liveModalCardLinesWidth(s, pal, layout, helpCardWidth, func(width, height int) string {
 		return RenderHelpCenter(*s.HelpModal, pal, width, height)
+	})
+}
+
+// liveSettingsLines renders /settings in output-first mode with the same
+// centering and bound as the other working modals.
+func liveSettingsLines(s State, pal *Palette, layout Layout) []string {
+	if s.SettingsModal == nil {
+		return nil
+	}
+	return liveModalCardLinesWidth(s, pal, layout, settingsCardWidth, func(width, height int) string {
+		return RenderSettingsModal(*s.SettingsModal, !s.TaskRailDisabled, pal, width, height)
 	})
 }
 
@@ -882,7 +895,7 @@ func liveComposerWidth(s State, layout Layout) int {
 // is simply the last thing on screen, which is where the terminal already
 // puts it.
 func liveComposerLines(s State, pal *Palette, layout Layout) []string {
-	if s.ConnectKey != nil || s.Picker != nil || s.HelpModal != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil {
+	if s.ConnectKey != nil || s.Picker != nil || s.HelpModal != nil || s.SettingsModal != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil || s.Pending != nil || s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil {
 		return nil
 	}
 	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)

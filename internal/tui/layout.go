@@ -51,15 +51,19 @@ type Layout struct {
 	HeaderLines   int
 	ComposerLines int
 	StatusLines   int
-	// TaskLines is the sticky task row below the title bar on tiers that do
-	// not render the sidebar. Wide terminals keep the tracker in the sidebar
-	// instead, so exactly one task surface is ever visible.
+	// TaskLines is the sticky active-task row below the title bar on tiers
+	// that do not render the sidebar. It is zero whenever no open task has an
+	// open todo: wide terminals keep the tracker in the sidebar instead, so
+	// exactly one task surface is ever visible and idle or question-only
+	// sessions render none.
 	TaskLines int
 	// TaskTracker reports that the sticky/sidebar task surface owns the
 	// projection, so the in-transcript task block must not repeat it.
 	TaskTracker bool
 	// Sidebar reports that the full-screen canvas is split into the
-	// conversation column and the persistent right sidebar.
+	// conversation column and the contextual right sidebar. It is only true
+	// while an open task has at least one open todo; without one the
+	// transcript keeps the full width.
 	Sidebar bool
 	// SidebarWidth is the sidebar's cell budget, excluding the one-cell
 	// divider that separates it from the conversation.
@@ -155,17 +159,23 @@ const (
 
 // ComputeWorkspaceLayout derives the full-screen canvas.
 //
-// Wide terminals get the split workspace: the conversation is narrowed to the
-// left column and the sidebar owns a fixed proportional rail. Narrower tiers
-// hide the sidebar and reserve one sticky task row immediately below the title
-// bar instead. The task row and the sidebar are mutually exclusive: one fact
-// has one home.
+// The task rail is transient chrome, not the default canvas. It exists only
+// while an open task has at least one open todo: wide terminals narrow the
+// conversation and give it a fixed proportional rail, while narrower tiers
+// reserve one sticky task row immediately below the title bar. An idle session,
+// a question with no todos, and every terminal task keep the full-width
+// transcript, so a completed projection settles into history. The task row and
+// the sidebar are mutually exclusive: one fact has one home.
 func ComputeWorkspaceLayout(s State) Layout {
 	base := ComputeLayout(s)
 	if s.Width <= 0 || s.Height <= 0 || base.Mode == LayoutMini {
 		return base
 	}
-	if mainCanvasAvailable(s) && base.Mode == LayoutWide && s.Height >= sidebarMinHeight {
+	task := activeTaskProjection(&s)
+	if task == nil || !mainCanvasAvailable(s) {
+		return base
+	}
+	if base.Mode == LayoutWide && s.Height >= sidebarMinHeight {
 		sidebar := s.Width * sidebarPercent / 100
 		if sidebar < sidebarMinWidth {
 			sidebar = sidebarMinWidth
@@ -183,21 +193,18 @@ func ComputeWorkspaceLayout(s State) Layout {
 			layout.Sidebar = true
 			layout.SidebarWidth = sidebar
 			layout.MainWidth = main
-			layout.TaskTracker = latestTaskProjection(&s) != nil
+			layout.TaskTracker = true
 			return layout
 		}
 	}
-	if mainCanvasAvailable(s) && latestTaskProjection(&s) != nil {
-		layout := ComputeLayout(s)
-		layout.TaskLines = 1
-		layout.TaskTracker = true
-		layout.ConversationHeight--
-		if layout.ConversationHeight < 1 {
-			layout.ConversationHeight = 1
-		}
-		return layout
+	layout := ComputeLayout(s)
+	layout.TaskLines = 1
+	layout.TaskTracker = true
+	layout.ConversationHeight--
+	if layout.ConversationHeight < 1 {
+		layout.ConversationHeight = 1
 	}
-	return base
+	return layout
 }
 
 // computeLayoutWith is the shared geometry engine. content is the message wrap
@@ -272,6 +279,7 @@ func canvasOwnedByModal(s State) bool {
 	return s.Picker != nil || s.Plane != nil || s.SupportPanel != nil ||
 		s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil ||
 		s.InformationModal != nil || s.SessionModal != nil || s.HelpModal != nil ||
+		s.SettingsModal != nil ||
 		s.ConnectModal != nil || s.ConnectKey != nil || s.Pending != nil ||
 		s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil ||
 		s.PostUpdate != nil || s.Permissions != nil || s.Diff != nil
@@ -289,6 +297,7 @@ func overlayHidesComposer(s State) bool {
 	return s.Picker != nil || s.Plane != nil || s.SupportPanel != nil ||
 		s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil ||
 		s.InformationModal != nil || s.SessionModal != nil || s.HelpModal != nil ||
+		s.SettingsModal != nil ||
 		s.ConnectModal != nil || s.ConnectKey != nil || s.QuitConfirm != nil ||
 		s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil ||
 		s.Permissions != nil || s.Diff != nil
