@@ -9,6 +9,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
@@ -300,5 +301,97 @@ func TestRefusedProposalWithTextEndsTheRun(t *testing.T) {
 	}
 	if len(last.Results) != 1 || !last.Results[0].Refused() {
 		t.Fatalf("outcomes = %+v, want one refusal", last.Results)
+	}
+}
+
+// A final answer and tool calls can share one assistant message. On a closed
+// surface those calls are continuation after the answer, not actions. The run
+// must store only the answer: dispatching them would put red refusal cards
+// after a finished answer and leave the stored conversation with a tool call
+// that has no result.
+func TestClosedSurfaceFinalAnswerDropsContinuationCalls(t *testing.T) {
+	const answer = "The project is a controlled coding agent with a read-only evidence loop."
+	result := runSurface(t,
+		[]agent.Tool{evidenceListTool{}, evidenceReadTool{}},
+		[]ai.AssistantMessage{{
+			Content: []ai.ContentBlock{
+				ai.TextContent{Text: answer},
+				ai.ToolCall{ID: "stale", Name: "ls", Arguments: map[string]any{"path": "."}},
+			},
+			StopReason: ai.StopToolUse,
+		}},
+		func(agent.ProjectionRequest) agent.ProjectionResult { return closedProjection() },
+		6)
+
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	if result.requests != 1 {
+		t.Fatalf("model requests = %d, want exactly one", result.requests)
+	}
+	if len(result.turns) != 1 {
+		t.Fatalf("turns = %d, want one", len(result.turns))
+	}
+	last := result.turns[0]
+	if last.Assistant.Text() != answer {
+		t.Fatalf("answer = %q, want the model's text", last.Assistant.Text())
+	}
+	if len(last.Results) != 0 {
+		t.Fatalf("outcomes = %+v, want no dispatched continuation", last.Results)
+	}
+	if calls := last.Assistant.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("stored tool calls = %+v, want none", calls)
+	}
+	if last.Assistant.StopReason != ai.StopEndTurn {
+		t.Fatalf("stop reason = %q, want end_turn after the answer", last.Assistant.StopReason)
+	}
+
+	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns:    result.turns,
+		Contract: contract.IntentContract{Kind: contract.ObjectiveInformational, Objective: "analyze this project"},
+	})
+	if !got.Complete() {
+		t.Fatalf("answer = %s (%s), want COMPLETED", got.State, got.Reason)
+	}
+}
+
+type surfaceWriteTool struct{}
+
+func (surfaceWriteTool) Name() string        { return "write" }
+func (surfaceWriteTool) Description() string { return "write a file" }
+func (surfaceWriteTool) Parameters() *jsonschema.Schema {
+	return jsonschema.MustCompile([]byte(`{"type":"object","properties":{"path":{"type":"string"}}}`))
+}
+func (surfaceWriteTool) Approval() agent.Approval      { return agent.Approval{Tier: agent.TierWrite} }
+func (surfaceWriteTool) Exclusive(map[string]any) bool { return false }
+func (surfaceWriteTool) Execute(agent.Context, map[string]any) agent.Result {
+	return agent.Result{Text: "should not run", Mutates: true}
+}
+
+// A mutation proposed on a closed surface is a policy refusal, not post-answer
+// continuation. It stays visible in the transcript because it is an attempted
+// action the user may need to review; only observation calls are projected out.
+func TestClosedSurfacePolicyRefusalStaysVisible(t *testing.T) {
+	result := runSurface(t,
+		[]agent.Tool{surfaceWriteTool{}},
+		[]ai.AssistantMessage{
+			surfaceCall("write-1", "write", map[string]any{"path": "x"}),
+			surfaceAnswer("the write was refused"),
+		},
+		func(agent.ProjectionRequest) agent.ProjectionResult { return closedProjection() },
+		3)
+
+	if len(result.turns) == 0 || len(result.turns[0].Results) != 1 {
+		t.Fatalf("turns = %+v, want one refused write", result.turns)
+	}
+	outcome := result.turns[0].Results[0]
+	if !outcome.Result.CandidateRejected || !outcome.Refused() {
+		t.Fatalf("outcome = %+v, want a control refusal", outcome)
+	}
+	if outcome.Result.AnswerRequired {
+		t.Fatal("a policy-sensitive mutation was classified as answer continuation")
+	}
+	if projected := agent.TranscriptTurn(result.turns[0]); len(projected.Results) != 1 {
+		t.Fatalf("projected results = %+v, want the policy refusal preserved", projected.Results)
 	}
 }

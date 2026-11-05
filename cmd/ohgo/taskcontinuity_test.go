@@ -50,9 +50,10 @@ func TestTodoSnapshotProjectsStatusAndClaim(t *testing.T) {
 // nothing the renderer needs.
 func TestTaskProjectionConvertsDomain(t *testing.T) {
 	projection := taskProjection(task.Task{
-		ID:        "x",
-		Status:    task.StatusPaused,
-		Objective: "objective",
+		ID:           "x",
+		Status:       task.StatusPaused,
+		Objective:    "objective",
+		ReviewReason: "the change was not verified",
 		Todos: []task.Todo{
 			{ID: "1", Label: "done item", Status: task.TodoDone},
 			{ID: "2", Label: "active item", Status: task.TodoActive},
@@ -61,6 +62,9 @@ func TestTaskProjectionConvertsDomain(t *testing.T) {
 
 	if projection.ID != "x" || projection.Status != "PAUSED" || projection.Objective != "objective" {
 		t.Fatalf("projection header = %+v", projection)
+	}
+	if projection.ReviewReason != "the change was not verified" {
+		t.Fatalf("review reason = %q, want the durable reason", projection.ReviewReason)
 	}
 	if len(projection.Items) != 2 {
 		t.Fatalf("items = %d, want 2", len(projection.Items))

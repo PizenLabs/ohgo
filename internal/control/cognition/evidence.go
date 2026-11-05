@@ -304,10 +304,21 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 		}
 		return s.targetStateKnown(path)
 	case strings.HasPrefix(key, "target_content:"):
-		path := strings.TrimPrefix(key, "target_content:")
+		path := cleanPath(strings.TrimPrefix(key, "target_content:"))
+		if path == "" {
+			return false
+		}
 		if item, ok := s.Find("file:" + path); ok && item.Status != StatusConflicting &&
 			item.Status != StatusRequired && item.Status != StatusUnknown &&
 			strings.TrimSpace(item.Value) != "" {
+			return true
+		}
+		// A directory's content is its listing. An explicitly directory-scoped
+		// target ("inspect backend/") cannot be satisfied by a file read, and
+		// a truncated listing cannot prove the directory's contents.
+		if item, ok := s.Find("dir:" + path); ok && item.Complete &&
+			item.Status != StatusConflicting && item.Status != StatusRequired &&
+			item.Status != StatusUnknown {
 			return true
 		}
 		// A structural query naming the exact path is content-bearing

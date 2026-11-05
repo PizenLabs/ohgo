@@ -380,6 +380,7 @@ func taskProjection(recorded task.Task, err error) tui.TaskProjection {
 		ID:             recorded.ID,
 		Status:         string(recorded.Status),
 		Objective:      recorded.Objective,
+		ReviewReason:   recorded.ReviewReason,
 		ObjectiveState: string(recorded.ObjectiveState()),
 		Recovery:       recoveryLabel(recorded),
 		Warning:        recorded.ContextWarning,

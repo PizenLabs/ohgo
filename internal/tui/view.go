@@ -733,7 +733,7 @@ func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 	var body strings.Builder
 	frame := spinnerFrame(state.Status.Spinner)
 	for i, entry := range state.Entries {
-		renderEntryGrouped(&body, entry, pal, layout, frame, entryGroupEnd(state.Entries, i))
+		renderEntryGrouped(&body, entry, pal, layout, frame, entryGroupEnd(state.Entries, i), entryLeadingGap(state.Entries, i))
 	}
 	return body.String()
 }
@@ -1649,14 +1649,25 @@ func composerStateLine(state State, pal *Palette, layout Layout) string {
 // tool and the footer animate in step.
 //
 // toolGroupEnd is true when this block closes the adjacent run of tool calls.
-// Only that last block keeps a separator row, so a sequence of completed calls
-// reads as one stream instead of one card per call.
+// Only that last block carries the expand hint, so a sequence of completed
+// calls reads as one stream instead of one card per call.
+//
+// leadingGap is true when this block follows a tool run. The gap belongs to
+// the block after the run, never to the last tool: appending another tool must
+// not rewrite the previous block's height. This is the same ownership rule the
+// output-first live painter uses, so both surfaces converge.
 //
 // The question renders as a faint background block across the content width,
 // with no label prefix: the surface alone separates it from the answer.
-func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, frame string, toolGroupEnd bool) {
+func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, frame string, toolGroupEnd, leadingGap bool) {
+	writeGap := func() {
+		if leadingGap {
+			sb.WriteString("\n")
+		}
+	}
 	switch entry.Kind {
 	case EntryUser:
+		writeGap()
 		renderUserBlock(sb, entry.UserText, pal, layout)
 		sb.WriteString("\n")
 
@@ -1664,6 +1675,7 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 		if entry.AssistantText == "" {
 			return
 		}
+		writeGap()
 		// The markdown layer owns wrapping: it measures plain cells first
 		// and styles after, so one width calculation governs and ANSI
 		// never inflates the budget. Never re-wrap styled output here.
@@ -1675,26 +1687,32 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 
 	case EntryReasoning:
 		if entry.Reasoning != nil {
+			writeGap()
 			renderReasoning(sb, entry.Reasoning, pal, layout)
 		}
 
 	case EntryTool:
 		if entry.Tool != nil {
-			renderTool(sb, entry.Tool, pal, layout, frame, toolGroupEnd, toolGroupEnd)
+			// A tool never owns a trailing separator: the block after the run
+			// owns the gap, so appending another tool cannot move this one.
+			renderTool(sb, entry.Tool, pal, layout, frame, false, toolGroupEnd)
 		}
 
 	case EntryShell:
 		if entry.Shell != nil {
+			writeGap()
 			renderShell(sb, entry.Shell, pal, layout)
 		}
 
 	case EntryNotice:
+		writeGap()
 		for _, wl := range wrapPlain(entry.Notice, layout) {
 			sb.WriteString(pal.Notice.Render(wl) + "\n")
 		}
 		sb.WriteString("\n")
 
 	case EntryTask:
+		writeGap()
 		for _, line := range taskLines(entry.Task, pal, layout) {
 			sb.WriteString(line + "\n")
 		}
@@ -1703,6 +1721,7 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 	case EntryRecap:
 		// No separator row: this is the terminal footer of the task, so the
 		// next prompt follows it directly. The footer owns at most two rows.
+		writeGap()
 		for _, line := range recapLines(entry.Recap, textWidth(layout)) {
 			sb.WriteString(pal.Recap.Render(line) + "\n")
 		}
@@ -1880,9 +1899,10 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	// Expansion is presentation-only — the same semantic Text, bounded by
 	// the same truncation, wrapping, and sanitization as before.
 	if !tool.Expanded || tool.Text == "" {
-		// Only the last call in an adjacent run keeps the separator row.
-		// A completed action stream therefore stacks as one compact block
-		// instead of one visually independent card per call.
+		// separate is only for a one-off projection (an expanded block printed
+		// into scrollback) that needs a trailing gap after it. Inline
+		// transcripts pass false and let the following block own the gap, so a
+		// stream of calls never reflows an earlier block.
 		if separate && (tool.Status == ToolDone || tool.Status == ToolError || tool.Status == ToolCancelled) {
 			sb.WriteString("\n")
 		}

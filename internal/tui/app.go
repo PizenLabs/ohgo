@@ -5081,6 +5081,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// terminal verdict appear before the refused proposals that produced it, so
 	// the transcript looked as though work continued after the task closed.
 	loopErr := err
+	reviewNotice := ""
 
 	// A loop that stops at the wall-clock bound returns nil; the deadline is
 	// still authoritative. Represent it as the resource stop it is, so the
@@ -5185,6 +5186,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		} else if p.task.Pause != nil {
 			p.PublishTask(p.task.Pause(reason))
 		}
+		reviewNotice = strings.TrimSpace(reason)
 	case taskActionPause:
 		if p.task.Pause != nil {
 			p.PublishTask(p.task.Pause(reason))
@@ -5269,7 +5271,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// here (the loop's turn hook only publishes live metrics in UI mode —
 	// transcript text still travels through AssistantDelta events).
 	// They land in the turn's own session, never in a session created mid-turn.
-	for _, turn := range turns {
+	for _, rawTurn := range turns {
+		turn := agent.TranscriptTurn(rawTurn)
+		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
+			// The turn contained only answer-required control refusals. It
+			// produced no action and no visible text, so it has no transcript
+			// record.
+			continue
+		}
 		// A call that never reached execution (denied authority, grounding
 		// refusal, invalid arguments, budget stop) still produced a real
 		// outcome. Publish its block now so the live view shows what failed
@@ -5327,6 +5336,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		} else {
 			p.publish(Notice{Text: "error: " + loopErr.Error()})
 		}
+	}
+	// A review is the turn's terminal verdict, so it belongs at the end of
+	// the turn, where the reader looks after the answer. The task block also
+	// carries the durable reason, but it can be above the viewport by then.
+	if reviewNotice != "" {
+		p.publish(Notice{Text: reviewPrefix + " " + reviewNotice})
 	}
 	p.publish(AssistantDone{Seq: seq, At: time.Now()})
 }
@@ -5543,9 +5558,15 @@ func (p *Program) PublishUpdateAvailable(version string) {
 }
 
 // rebase rebuilds history from the request that was sent plus the new turns.
+// Answer-required control refusals are projected out so the next turn does not
+// inherit tool calls that were never actions.
 func rebase(request []agent.Message, turns []agent.Turn) []agent.Message {
 	out := append([]agent.Message(nil), request...)
-	for _, turn := range turns {
+	for _, rawTurn := range turns {
+		turn := agent.TranscriptTurn(rawTurn)
+		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
+			continue
+		}
 		out = append(out, agent.AssistantMessage{Message: turn.Assistant})
 		for _, outcome := range turn.Results {
 			out = append(out, agent.ToolResultMessage{

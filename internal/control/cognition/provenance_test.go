@@ -134,7 +134,7 @@ func TestDocumentationTitleAndGenericNounsAreNotClaims(t *testing.T) {
 	}
 	foundMetric := false
 	for _, term := range summary.DocumentationTerms {
-		if term == "100" || term == "99.9" {
+		if term == "100" || term == "100+" || term == "99.9" || term == "99.9%" {
 			foundMetric = true
 		}
 	}
@@ -226,6 +226,58 @@ func TestPathProvenanceClassification(t *testing.T) {
 	for path, want := range cases {
 		if got := classifyPathProvenance(path); got != want {
 			t.Errorf("classifyPathProvenance(%q) = %s, want %s", path, got, want)
+		}
+	}
+}
+
+// Documentation claim terms must not include a bare small integer. A README
+// line such as "React 18" contributes its named technology; the number alone
+// would match unrelated counts in an answer and cause a false review.
+func TestBareSmallIntegerIsNotADocumentationClaimTerm(t *testing.T) {
+	terms := documentationClaimTerms("The app uses React 18 with 18 build scripts.")
+	for _, term := range terms {
+		if term == "18" {
+			t.Fatalf("documentation terms = %v, want the bare count excluded", terms)
+		}
+	}
+	for _, want := range []string{"react"} {
+		found := false
+		for _, term := range terms {
+			if term == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("documentation terms = %v, want %q retained", terms, want)
+		}
+	}
+
+	// Concrete metrics remain claims.
+	terms = documentationClaimTerms("It handles 100+ requests per second at 99.9% uptime.")
+	for _, want := range []string{"100+", "99.9%"} {
+		found := false
+		for _, term := range terms {
+			if term == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("documentation terms = %v, want %q retained", terms, want)
+		}
+	}
+}
+
+// A capitalized domain noun in a heading or table header is ordinary project
+// language, not a specific implementation claim. "Shopping Cart Service" must
+// not make the word "shopping" a documentation term that any overview answer
+// then has to attribute.
+func TestDomainHeadingIsNotAProvenanceClaim(t *testing.T) {
+	terms := documentationClaimTerms("### Shopping Cart Service\n\n| Shopping Cart | Redis |\n|---|---|\n")
+	for _, term := range terms {
+		if term == "shopping" || term == "cart" {
+			t.Fatalf("documentation terms = %v, want the domain heading excluded", terms)
 		}
 	}
 }

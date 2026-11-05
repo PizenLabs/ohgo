@@ -3,7 +3,6 @@ package tui
 import (
 	"path/filepath"
 	"strings"
-	"unicode"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 )
@@ -85,8 +84,10 @@ func collectRecapEvidence(turns []agent.Turn) recapEvidence {
 				if command := recapStringArg(outcome.Args, "command"); command != "" {
 					evidence.commands = appendUnique(evidence.commands, recapCommand(command))
 				}
-			case "read", "grep", "glob", "ls", "symbols", "search", "refs",
-				"graph", "web_fetch", "browser", "mcp_read":
+			case "read":
+				// Only a file read is a "Read X" claim. A listing, grep, or
+				// structural query names a directory or a scope; calling that
+				// a read would misdescribe the work.
 				if path := recapPathArg(outcome.Args); path != "" {
 					evidence.read = appendUnique(evidence.read, path)
 				}
@@ -148,34 +149,109 @@ func executionRecap(evidence recapEvidence) string {
 }
 
 // answerRecap narrates an informational turn from its final answer and the
-// files it inspected.
+// files it read.
 //
-// The subject comes from the assistant's own prose, never from the prompt, so
-// the line describes what was explained rather than restating what was asked.
+// The answer is directly above the recap, so this is closure, not a second
+// answer. It names only files actually read, carries the answer's own subject
+// (never the objective), and does not dress a one-line fact up as an
+// explanation.
 func answerRecap(turns []agent.Turn, evidence recapEvidence) string {
-	answer := finalAssistantText(turns)
-	gist := answerGist(answer)
+	answer := strings.TrimSpace(finalAssistantText(turns))
+	if answer == "" {
+		return "Closed the task."
+	}
+	subject := answerSubject(answer)
 	hasExample := strings.Contains(answer, "```")
 
-	var recap string
+	recap := "Answered"
 	if len(evidence.read) > 0 {
-		recap = "Read " + recapList(recapPaths(evidence.read, 2)) + " and explained"
-	} else {
-		recap = "Explained"
+		recap = "Read " + recapList(recapPaths(evidence.read, 2)) + " and answered"
 	}
-	switch {
-	case gist != "":
-		recap += " the core idea: " + gist
-	case hasExample:
-		recap += " the key concepts and provided a worked example"
-	default:
-		recap += " the answer"
+	if subject != "" {
+		recap += ": " + subject
+	} else if !hasExample {
+		recap += " the question"
 	}
-	recap = finishSentence(recap)
-	if hasExample && gist != "" {
-		recap += " Included a worked example."
+	if hasExample {
+		recap += ". Included a worked example"
 	}
-	return recap
+	return finishSentence(recap)
+}
+
+// answerSubject returns the first substantive prose line of an answer, bounded
+// for the footer. Headings, tables, rules, and fenced code are skipped; Markdown
+// emphasis and list markers are removed so the line reads as prose.
+func answerSubject(text string) string {
+	inFence := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "|") ||
+			strings.HasPrefix(trimmed, "---") ||
+			strings.HasPrefix(trimmed, "===") {
+			continue
+		}
+		trimmed = strings.TrimSpace(strings.TrimLeft(trimmed, "-*+> "))
+		if runes := []rune(trimmed); len(runes) > 2 &&
+			runes[0] >= '0' && runes[0] <= '9' && (runes[1] == '.' || runes[1] == ')') && runes[2] == ' ' {
+			trimmed = strings.TrimSpace(string(runes[3:]))
+		}
+		trimmed = strings.NewReplacer(
+			"`", "", "**", "", "__", "", "*", "", "_", "",
+		).Replace(trimmed)
+		trimmed = strings.Join(strings.Fields(trimmed), " ")
+		for _, lead := range []string{"sure,", "of course,", "certainly,", "absolutely,"} {
+			if strings.HasPrefix(strings.ToLower(trimmed), lead) {
+				trimmed = strings.TrimSpace(trimmed[len(lead):])
+				break
+			}
+		}
+		trimmed = strings.TrimSpace(strings.Trim(trimmed, "\"'“”‘’ "))
+		trimmed = strings.TrimRight(trimmed, " .,!?;:")
+		if answerLeadIn(trimmed) {
+			// "Based on the evidence gathered, here's my analysis…" is a
+			// pointer to the answer, not the answer. Keep scanning for the
+			// first substantive prose line; if none exists, the caller falls
+			// back to a neutral closure.
+			continue
+		}
+		subject := truncateClause(trimmed, 88)
+		if len([]rune(trimmed)) > 88 {
+			// The footer is a pointer, not a complete quotation. Mark the cut
+			// so a bounded subject cannot read as the whole sentence.
+			subject += "…"
+		}
+		return subject
+	}
+	return ""
+}
+
+// answerLeadIn reports whether a line only announces the answer that follows.
+// The subject must be the answer's own content; repeating "here is my analysis"
+// in the footer adds no information and displaces the real finding.
+func answerLeadIn(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	for _, phrase := range []string{
+		"here's my analysis", "here is my analysis",
+		"here's the analysis", "here is the analysis",
+		"here's a summary", "here is a summary",
+		"here's what", "here is what",
+		"below is", "the following is",
+		"let me explain", "let me summarize", "let me summarise",
+		"i'll explain", "i will explain",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // finalAssistantText returns the last completed assistant text in a run.
@@ -186,143 +262,6 @@ func finalAssistantText(turns []agent.Turn) string {
 		}
 	}
 	return ""
-}
-
-// answerGist condenses an answer to one display-sized clause.
-//
-// It skips headings, rules, tables, and fenced code, strips inline emphasis,
-// and keeps the first prose sentence. The bound is a presentation budget, not
-// a summary: the full answer remains directly above the recap.
-func answerGist(text string) string {
-	if strings.TrimSpace(text) == "" {
-		return ""
-	}
-	var prose strings.Builder
-	inFence := false
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") {
-			inFence = !inFence
-			continue
-		}
-		if inFence {
-			continue
-		}
-		if trimmed == "" {
-			if prose.Len() > 0 {
-				break
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "#") ||
-			strings.HasPrefix(trimmed, "|") ||
-			strings.HasPrefix(trimmed, "---") ||
-			strings.HasPrefix(trimmed, "===") {
-			if prose.Len() > 0 {
-				break
-			}
-			continue
-		}
-		trimmed = stripListMarker(trimmed)
-		if prose.Len() > 0 {
-			prose.WriteString(" ")
-		}
-		prose.WriteString(trimmed)
-		if endsSentence(trimmed) {
-			break
-		}
-	}
-
-	gist := stripInlineMarkdown(prose.String())
-	gist = stripAnswerLeadIn(gist)
-	gist = firstClause(gist)
-	gist = strings.TrimSpace(strings.Trim(gist, "\"'“”‘’ "))
-	gist = strings.TrimRight(gist, " .,!?;:")
-	return truncateClause(gist, 88)
-}
-
-// stripListMarker removes a leading Markdown list or quote marker so a bullet
-// answer reads as prose in the recap.
-func stripListMarker(line string) string {
-	line = strings.TrimSpace(line)
-	line = strings.TrimPrefix(line, "> ")
-	for _, marker := range []string{"- ", "* ", "+ "} {
-		line = strings.TrimPrefix(line, marker)
-	}
-	// Ordered markers ("1. ", "2) ") are one or two leading digits.
-	runes := []rune(line)
-	digits := 0
-	for digits < len(runes) && digits < 2 && runes[digits] >= '0' && runes[digits] <= '9' {
-		digits++
-	}
-	if digits > 0 && digits+1 < len(runes) &&
-		(runes[digits] == '.' || runes[digits] == ')') && runes[digits+1] == ' ' {
-		line = string(runes[digits+2:])
-	}
-	return strings.TrimSpace(line)
-}
-
-// stripInlineMarkdown removes the emphasis syntax that would otherwise appear
-// as literal punctuation inside the recap. Code spans and links lose their
-// delimiters but keep their text.
-func stripInlineMarkdown(text string) string {
-	text = strings.NewReplacer(
-		"`", "",
-		"**", "",
-		"__", "",
-		"*", "",
-		"_", "",
-	).Replace(text)
-	return strings.Join(strings.Fields(text), " ")
-}
-
-// answerLeadIns are conversational openers that carry no content. Removing
-// them is what makes the clause read as a recap instead of a quoted reply.
-var answerLeadIns = []string{
-	"sure,", "sure thing,", "of course,", "certainly,", "absolutely,",
-	"great question,", "good question,", "yes,", "no,", "well,",
-	"here's", "here is", "in short,", "short answer:", "to answer your question,",
-}
-
-// stripAnswerLeadIn removes one conversational opener, if present.
-func stripAnswerLeadIn(text string) string {
-	trimmed := strings.TrimSpace(text)
-	lowered := strings.ToLower(trimmed)
-	for _, lead := range answerLeadIns {
-		if !strings.HasPrefix(lowered, lead) {
-			continue
-		}
-		rest := strings.TrimSpace(trimmed[len(lead):])
-		if rest == "" {
-			continue
-		}
-		return rest
-	}
-	return trimmed
-}
-
-// firstClause returns the first sentence of text, without its terminator.
-func firstClause(text string) string {
-	runes := []rune(text)
-	for i, r := range runes {
-		if r != '.' && r != '!' && r != '?' {
-			continue
-		}
-		if i+1 == len(runes) || unicode.IsSpace(runes[i+1]) {
-			return string(runes[:i])
-		}
-	}
-	return text
-}
-
-// endsSentence reports whether a line already closes a sentence.
-func endsSentence(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" {
-		return false
-	}
-	last := []rune(trimmed)[len([]rune(trimmed))-1]
-	return last == '.' || last == '!' || last == '?'
 }
 
 // truncateClause bounds a clause at a word boundary, without adding an
@@ -416,7 +355,7 @@ func finishSentence(text string) string {
 		return ""
 	}
 	last := []rune(trimmed)[len([]rune(trimmed))-1]
-	if last == '.' || last == '!' || last == '?' {
+	if last == '.' || last == '!' || last == '?' || last == '…' {
 		return trimmed
 	}
 	return trimmed + "."

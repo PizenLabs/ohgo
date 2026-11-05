@@ -182,3 +182,25 @@ func TestRequiredExternalObservationIsPartOfCompletion(t *testing.T) {
 		t.Fatalf("an observed external requirement was rejected: %s", got.Reason)
 	}
 }
+
+// A bare small integer in documentation is too ambiguous to be a specific
+// claim. "18 entries present" is the model's own count, not an assertion about
+// the documented "React 18"; matching the token alone manufactured a false
+// provenance review. Metrics and longer identifiers still count.
+func TestBareSmallIntegerIsNotADocumentationClaim(t *testing.T) {
+	provenance := EvidenceProvenance{
+		RequireAttribution: true,
+		HasDocumentation:   true,
+		DocumentationTerms: []string{"18"},
+	}
+	answer := "The backend directory has 18 entries present locally."
+	if assessment := AssessAnswerProvenance(provenanceContract("analyze this project"), answer, provenance); !assessment.Pass() {
+		t.Fatalf("an unrelated count was treated as a documentation claim: %s", assessment.Reason())
+	}
+
+	provenance.DocumentationTerms = []string{"100"}
+	answer = "The service handles 100 requests per second."
+	if assessment := AssessAnswerProvenance(provenanceContract("analyze this project"), answer, provenance); assessment.Pass() {
+		t.Fatal("a concrete documented metric passed as an observed fact")
+	}
+}

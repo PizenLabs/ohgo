@@ -748,14 +748,24 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// The runtime already holds the evidence an informational objective
 		// requires, and the model produced visible text. That text is the
 		// candidate answer; calls emitted with it are continuation after the
-		// answer. Execute none of them: a closed action surface makes each one
-		// an answer-required refusal, and the turn becomes final below. The
-		// completion evaluator, not the model's appetite for another call,
-		// decides whether the answer is proven.
-		answerStop := closed && strings.TrimSpace(assistant.Text()) != ""
+		// answer. They were never actions: execute none of them and record
+		// none of them. Publishing them as failed calls put red error cards
+		// after a finished answer and made the transcript look broken.
+		//
+		// The call blocks are dropped from the stored assistant message too.
+		// A persisted tool call with no result is an invalid conversation for
+		// the next provider request; the answer is the whole final message.
+		if closed && strings.TrimSpace(assistant.Text()) != "" {
+			turn.Assistant = answerWithoutToolCalls(assistant)
+			turns = append(turns, turn)
+			if l.cfg.OnTurn != nil {
+				l.cfg.OnTurn(turn)
+			}
+			return turns, nil
+		}
 		if closed {
-			// Defence in depth: even if a later change stops zeroing
-			// activeTools, a closed surface must never execute a stale call.
+			// Defence in depth: a closed surface must never execute a stale
+			// call even when the model emitted no answer text.
 			activeByName = map[string]Tool{}
 		}
 
@@ -788,9 +798,6 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// still inspect exactly what happened.
 		if admissionErr != nil {
 			return turns, admissionErr
-		}
-		if answerStop {
-			return turns, nil
 		}
 		// A terminal projection has closed the task. If the model used the
 		// request to answer, keep that answer for the completion evaluator;
@@ -1112,12 +1119,18 @@ func (l *Loop) dispatch(
 
 // hasTool reports whether the loop was constructed with a tool of this name.
 func (l *Loop) hasTool(name string) bool {
+	_, ok := l.builtTool(name)
+	return ok
+}
+
+// builtTool returns the loop's own capability under name.
+func (l *Loop) builtTool(name string) (Tool, bool) {
 	for _, tool := range l.cfg.Tools {
 		if tool.Name() == name {
-			return true
+			return tool, true
 		}
 	}
-	return false
+	return nil, false
 }
 
 // batchMayMutate reports whether any call in a batch can change the workspace.
@@ -1139,6 +1152,31 @@ func batchMayMutate(byName map[string]Tool, calls []ai.ToolCall) bool {
 		}
 	}
 	return false
+}
+
+// answerWithoutToolCalls returns the answer-shaped projection of a final
+// assistant message.
+//
+// A model can emit visible prose and tool calls in one message. When the
+// action surface is already closed and the prose is the answer, the calls are
+// continuation after the answer, not actions the runtime performed. Keeping
+// them would either force a dispatch that can only produce a refusal or leave
+// an invalid tool call without a result in the stored conversation. The text,
+// reasoning, and usage are preserved; only call blocks and the tool-use stop
+// reason are removed.
+func answerWithoutToolCalls(message ai.AssistantMessage) ai.AssistantMessage {
+	content := make([]ai.ContentBlock, 0, len(message.Content))
+	for _, block := range message.Content {
+		if _, isCall := block.(ai.ToolCall); isCall {
+			continue
+		}
+		content = append(content, block)
+	}
+	message.Content = content
+	if message.StopReason == ai.StopToolUse {
+		message.StopReason = ai.StopEndTurn
+	}
+	return message
 }
 
 // batchToolNames lists the tools in a batch, in call order.
@@ -1211,6 +1249,21 @@ func (l *Loop) execute(
 		// partial-surface branch so the model is never told tools are
 		// "available" when the surface is closed.
 		if l.cfg.Project != nil && len(byName) == 0 {
+			// A mutating, executing, delegating, or external proposal on a
+			// closed surface is a policy refusal, not merely continuation
+			// after an answer: it is an attempted action the user may need to
+			// see. Observation calls after the answer are continuation and are
+			// projected out of the transcript (see TranscriptTurn).
+			policyRefusal := false
+			if tool, ok := l.builtTool(call.Name); ok {
+				for _, class := range ToolActionClasses(tool) {
+					switch class {
+					case ActionMutate, ActionExecute, ActionDelegate,
+						ActionExternal, ActionConfigured:
+						policyRefusal = true
+					}
+				}
+			}
 			return ToolOutcome{
 				CallID:   call.ID,
 				ToolName: call.Name,
@@ -1219,7 +1272,7 @@ func (l *Loop) execute(
 					Text:              fmt.Sprintf("No tool is available in the current task stage; this call is not offered for the objective. Answer from the evidence already established. Ignored call: %q.", call.Name),
 					IsError:           true,
 					CandidateRejected: true,
-					AnswerRequired:    true,
+					AnswerRequired:    !policyRefusal,
 				},
 			}
 		}

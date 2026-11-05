@@ -116,21 +116,20 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: open %s: %w", path, err)
 	}
-	// A single writer connection serialises writes without relying on SQLite's
-	// busy timeout, which is the common source of "database is locked" under
-	// the driver's default pool.
+	// A single writer connection serialises writes within this process. A
+	// second process can still hold SQLite's write lock, so a busy timeout is
+	// required: without it the driver fails immediately with SQLITE_BUSY and
+	// the host disables session persistence for the rest of the run. Set it
+	// before the schema so concurrent startup is covered too.
 	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("session: enable busy timeout: %w", err)
+	}
 
-	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("session: apply schema: %w", err)
-	}
-	if err := migrate(db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	// Writes must survive a crash mid-session, otherwise a resumed
-	// conversation silently loses turns.
+	// conversation silently loses turns. Enable WAL before the schema so
+	// concurrent startup is covered by the same journal mode.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("session: enable WAL: %w", err)
@@ -138,6 +137,14 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("session: enable foreign keys: %w", err)
+	}
+	if _, err := db.Exec(schema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("session: apply schema: %w", err)
+	}
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
 	return &Store{db: db, path: path}, nil
@@ -328,31 +335,29 @@ func scanSessions(rows *sql.Rows) ([]Session, error) {
 
 // Append stores one message at the end of a session's transcript.
 //
-// The sequence number is assigned inside the same transaction as the insert so
-// a concurrent append cannot interleave and leave a gap or a duplicate.
+// The sequence number is assigned inside the INSERT statement, not by a
+// separate SELECT. Two processes appending to the same session therefore
+// serialise at SQLite's write lock and the second sees the first's row; with a
+// separate MAX query both could read the same value and one would fail the
+// UNIQUE(session_id, seq) constraint after waiting for the lock.
 func (s *Store) Append(sessionID int64, msg StoredMessage) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("session: encode message: %w", err)
 	}
 
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("session: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var next int
-	if err := tx.QueryRow(
-		`SELECT COALESCE(MAX(seq), -1) + 1 FROM messages WHERE session_id = ?`, sessionID,
-	).Scan(&next); err != nil {
-		return fmt.Errorf("session: next seq: %w", err)
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.Exec(
-		`INSERT INTO messages (session_id, seq, role, payload, created_at) VALUES (?, ?, ?, ?, ?)`,
-		sessionID, next, msg.Role, payload, now,
+		`INSERT INTO messages (session_id, seq, role, payload, created_at)
+		 SELECT ?, COALESCE(MAX(seq), -1) + 1, ?, ?, ?
+		 FROM messages WHERE session_id = ?`,
+		sessionID, msg.Role, payload, now, sessionID,
 	); err != nil {
 		return fmt.Errorf("session: insert message: %w", err)
 	}

@@ -873,8 +873,12 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 	if shape.External.Required {
 		add("external_observation", "the request explicitly requires knowledge from an external capability")
 	}
+	stateReason := "the named repository path must be known"
+	if shape.Kind == contract.ObjectiveMutation {
+		stateReason = "the target's pre-change state must be known before it is changed"
+	}
 	for _, path := range shape.Mutation.Paths {
-		add("target_state:"+path, "the target's pre-change state must be known before it is changed")
+		add("target_state:"+path, stateReason)
 	}
 	for _, target := range intent.Targets {
 		switch target.Kind {
@@ -899,7 +903,7 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 		for _, path := range shape.Mutation.Paths {
 			add("target_state:"+path, "the answer names a concrete repository path")
 			if requestsContent(shape.Objective) {
-				add("target_content:"+path, "the answer needs the file's contents, not merely its presence")
+				add("target_content:"+path, "the answer needs the path's contents, not merely its presence")
 			}
 		}
 		for _, target := range intent.Targets {

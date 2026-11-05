@@ -128,11 +128,13 @@ func ClaimTerms(text string) []string {
 			}
 		}
 		if numeric {
-			// Keep the numeric shape, not the punctuation around it. A metric
-			// such as "99.9%" and a version such as "v2" both identify a
-			// concrete claim.
+			// A bare small integer is not a specific claim: "18 entries" and
+			// "React 18" share the token but mean different things. Keep
+			// metrics (100+, 99.9%) and longer identifiers; a technology name
+			// attached to a version is still the substantive claim.
+			original := normalized
 			normalized = strings.TrimRight(normalized, "%+")
-			if len(normalized) < 2 {
+			if len(normalized) < 3 && !strings.ContainsAny(original, ".%+") {
 				continue
 			}
 		} else if !upper || len(normalized) < 2 {

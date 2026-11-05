@@ -133,7 +133,22 @@ func DocumentationTitleTerms(text string) []string {
 
 // numericClaimPattern keeps a metric such as "99.9%" or "100+" comparable even
 // though surrounding prose punctuation is not part of the claim.
-var numericClaimPattern = regexp.MustCompile(`\d+(?:\.\d+)?`)
+var numericClaimPattern = regexp.MustCompile(`\d+(?:\.\d+)?[%+]?`)
+
+// numericFragment reports whether a whitespace token contains only digits and
+// metric punctuation. Such a token is already represented by the regex pass;
+// admitting it again would split "99.9%" into a bogus "9" claim.
+func numericFragment(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if (r < '0' || r > '9') && r != '%' && r != '+' {
+			return false
+		}
+	}
+	return true
+}
 
 // documentationClaimTerms returns the specific claim-shaped terms in a
 // documentation text: proper-name tokens and numbers. Lower-case generic words
@@ -153,39 +168,81 @@ func documentationClaimTerms(text string) []string {
 		out = append(out, term)
 	}
 	for _, numeric := range numericClaimPattern.FindAllString(text, -1) {
-		if len(numeric) >= 2 {
-			add(numeric)
+		// A bare small integer is too ambiguous to be a documentation-only
+		// claim: "18 entries present" and "React 18" are different facts that
+		// share the token. Keep metrics and longer identifiers; the technology
+		// name attached to a version remains the substantive claim.
+		if len(numeric) < 3 && !strings.ContainsAny(numeric, ".%+") {
+			continue
 		}
+		add(numeric)
 	}
-	for _, raw := range strings.Fields(splitTermText(text)) {
-		token := strings.Trim(raw, " \t\r\n.,;:!?()[]{}<>\"'`*_#|/-")
-		if token == "" {
-			continue
-		}
-		normalized := strings.ToLower(token)
-		normalized = stripVersionSuffix(normalized)
-		if len(normalized) < 2 || genericProvenanceTerm(normalized) {
-			continue
-		}
-		numeric := false
-		upper := false
-		for _, r := range token {
-			if r >= '0' && r <= '9' {
-				numeric = true
+	for _, line := range strings.Split(text, "\n") {
+		previous := ""
+		for _, raw := range strings.Fields(splitTermText(line)) {
+			token := strings.Trim(raw, " \t\r\n.,;:!?()[]{}<>\"'`*_#|/-")
+			if token == "" {
+				previous = token
+				continue
 			}
-			if r >= 'A' && r <= 'Z' {
-				upper = true
+			normalized := strings.ToLower(token)
+			if !strings.Contains(token, ".") {
+				normalized = stripVersionSuffix(normalized)
 			}
-		}
-		if !numeric && !upper {
-			continue
-		}
-		add(normalized)
-		if len(out) >= MaxDocumentationTerms*2 {
-			return out
+			if len(normalized) < 2 || genericProvenanceTerm(normalized) {
+				previous = token
+				continue
+			}
+			numeric := false
+			upper := false
+			innerUpper := false
+			allUpper := true
+			for i, r := range token {
+				if r >= '0' && r <= '9' {
+					numeric = true
+				}
+				if r >= 'A' && r <= 'Z' {
+					upper = true
+					if i > 0 {
+						innerUpper = true
+					}
+				} else {
+					allUpper = false
+				}
+			}
+			if !numeric && !upper {
+				previous = token
+				continue
+			}
+			// A first-letter capital is ambiguous: it may be a heading,
+			// table, or sentence start ("Shopping"), not a proper name. It
+			// becomes a claim when it appears mid-sentence after a lowercase
+			// word ("uses Redis") or when its spelling itself is unmistakable
+			// (PostgreSQL, RabbitMQ, gRPC, JWT, Go1.23). This keeps ordinary
+			// domain nouns out of the documentation vocabulary.
+			strong := innerUpper || numeric || (allUpper && upper)
+			if !strong && startsLowerWord(previous) {
+				strong = true
+			}
+			if !strong || (numeric && numericFragment(normalized)) {
+				previous = token
+				continue
+			}
+			add(normalized)
+			previous = token
+			if len(out) >= MaxDocumentationTerms*2 {
+				return out
+			}
 		}
 	}
 	return out
+}
+
+// startsLowerWord reports whether a token begins with a lowercase ASCII
+// letter. It is the context test for a mid-sentence proper name: "uses Redis"
+// is a name, while "Redis" at the start of a heading is ambiguous.
+func startsLowerWord(token string) bool {
+	return token != "" && token[0] >= 'a' && token[0] <= 'z'
 }
 
 // termSet returns the content terms in the supplied texts.

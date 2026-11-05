@@ -11,10 +11,10 @@ import (
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
-// A terminal run must publish its verdict after the outcomes that led to it.
-// Publishing the error first made the transcript look as though refused tools
-// were still executing after the runtime had closed the task.
-func TestRunTurnPublishesTerminalVerdictAfterRefusedOutcomes(t *testing.T) {
+// A terminal run must publish its verdict without turning control refusals
+// into tool cards. The refused calls were never actions; a red card for them
+// made the transcript look broken after the runtime had closed the task.
+func TestRunTurnPublishesTerminalVerdictWithoutControlRefusalCards(t *testing.T) {
 	loop, err := agent.New(agent.Config{
 		Model:    ai.Model{ID: "m", Provider: "p"},
 		MaxTurns: 5,
@@ -70,7 +70,7 @@ func TestRunTurnPublishesTerminalVerdictAfterRefusedOutcomes(t *testing.T) {
 		break
 	}
 	verdict := -1
-	lastOutcome := -1
+	toolCards := 0
 	lastEvent := -1
 	for i, event := range events {
 		switch typed := event.(type) {
@@ -79,7 +79,7 @@ func TestRunTurnPublishesTerminalVerdictAfterRefusedOutcomes(t *testing.T) {
 				verdict = i
 			}
 		case ToolStarted, ToolFinished:
-			lastOutcome = i
+			toolCards++
 		case AssistantDone:
 			lastEvent = i
 		}
@@ -87,11 +87,8 @@ func TestRunTurnPublishesTerminalVerdictAfterRefusedOutcomes(t *testing.T) {
 	if verdict < 0 {
 		t.Fatalf("no terminal verdict reached the transcript: %+v", events)
 	}
-	if lastOutcome < 0 {
-		t.Fatal("the refused outcome never reached the transcript")
-	}
-	if verdict < lastOutcome {
-		t.Fatalf("terminal verdict at %d preceded outcome at %d: %+v", verdict, lastOutcome, events)
+	if toolCards != 0 {
+		t.Fatalf("control refusals reached the transcript as %d tool cards: %+v", toolCards, events)
 	}
 	if lastEvent < verdict {
 		t.Fatalf("turn was marked done before its verdict: done=%d verdict=%d", lastEvent, verdict)

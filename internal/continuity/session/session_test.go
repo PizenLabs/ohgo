@@ -5,6 +5,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -480,5 +481,129 @@ func TestStoreStats(t *testing.T) {
 	// No ids is a cheap no-op, not a query with an empty IN clause.
 	if out, err := store.Stats(nil); err != nil || out != nil {
 		t.Errorf("Stats(nil) = %v, %v; want nil, nil", out, err)
+	}
+}
+
+// Two processes share one sessions.db. A write already in flight must make the
+// second writer wait for the lock, not disable persistence for that process.
+func TestConcurrentWriterWaitsForTheLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open first: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open second: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	firstSession, err := first.Create("/tmp/first", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSession, err := second.Create("/tmp/second", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold the single SQLite writer lock through a transaction.
+	tx, err := first.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET updated_at = updated_at WHERE id = ?`, firstSession.ID); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("hold write lock: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- second.Append(secondSession.ID, StoredMessage{Role: "user", Text: "hello"})
+	}()
+
+	// Give the second writer time to hit the lock, then release it.
+	time.Sleep(150 * time.Millisecond)
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("release write lock: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("concurrent append failed instead of waiting: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent append never completed")
+	}
+}
+
+// Two processes appending to the same session must not collide on seq. The
+// sequence is computed in the INSERT itself, so the second writer sees the
+// first writer's row after waiting for the lock.
+func TestConcurrentAppendsToTheSameSessionStayOrdered(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open first: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open second: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	session, err := first.Create("/tmp/shared", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const writers, each = 2, 10
+	errs := make(chan error, writers*each)
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		store := first
+		if w == 1 {
+			store = second
+		}
+		wg.Add(1)
+		go func(store *Store) {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				errs <- store.Append(session.ID, StoredMessage{Role: "user", Text: "message"})
+			}
+		}(store)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent append: %v", err)
+		}
+	}
+
+	rows, err := first.db.Query(`SELECT seq FROM messages WHERE session_id = ? ORDER BY seq`, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	seen := map[int]bool{}
+	for rows.Next() {
+		var seq int
+		if err := rows.Scan(&seq); err != nil {
+			t.Fatal(err)
+		}
+		if seen[seq] {
+			t.Fatalf("duplicate seq %d", seq)
+		}
+		seen[seq] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != writers*each {
+		t.Fatalf("stored %d messages, want %d", len(seen), writers*each)
 	}
 }

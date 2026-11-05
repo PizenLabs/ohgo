@@ -22,6 +22,11 @@ const (
 	taskStateDone    = "done"
 )
 
+// reviewPrefix is the terminal marker for a turn that stopped at an evidence
+// boundary. It is the review counterpart of the completion recap: the answer
+// remains above, and this line says why the runtime did not claim completion.
+const reviewPrefix = "needs review:"
+
 // TaskItem is one projected todo row.
 type TaskItem struct {
 	// State is one of pending, active, or done.
@@ -44,6 +49,10 @@ type TaskProjection struct {
 	Status string
 	// Objective is what the task is trying to accomplish.
 	Objective string
+	// ReviewReason explains a NEEDS_REVIEW transition in evidence terms. It is
+	// the durable reviewer-facing reason, not a model claim. Empty means the
+	// mode has no review boundary or the projection does not carry one.
+	ReviewReason string
 	// Items are the todos, in order.
 	Items []TaskItem
 	// Err reports a projection or checkpoint failure, empty on success.
@@ -965,7 +974,29 @@ func taskLines(projection *TaskProjection, pal *Palette, layout Layout) []string
 	}
 	lines := []string{pal.Notice.Render(fit(header))}
 
-	if len(projection.Items) == 0 {
+	// A review is waiting on a human decision, so the reason is the most
+	// useful row. Render it wrapped instead of leaving the user with an
+	// unexplained status; the "no todos" placeholder would only crowd it out.
+	review := strings.TrimSpace(projection.ReviewReason)
+	if review != "" && strings.EqualFold(projection.Status, "needs_review") {
+		const prefix = "  ⎿ "
+		avail := width
+		if avail > 0 {
+			avail -= len(prefix)
+			if avail < 20 {
+				avail = width
+			}
+		}
+		wrapped := WrapToWidth(sanitizeInline(review), avail)
+		for i, line := range wrapped {
+			if i == 0 {
+				line = prefix + line
+			} else {
+				line = "    " + line
+			}
+			lines = append(lines, pal.Notice.Render(fit(line)))
+		}
+	} else if len(projection.Items) == 0 {
 		lines = append(lines, pal.Status.Render(fit("  ◻ no todos")))
 	}
 	for i, item := range projection.Items {

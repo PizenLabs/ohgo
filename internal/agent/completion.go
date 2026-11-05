@@ -3,11 +3,55 @@ package agent
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
+
+// deferredAnswerPattern matches a sentence that only announces an action the
+// assistant still intends to take. It is the shape a model falls into when the
+// runtime asks it to answer while it would rather keep exploring. Once the
+// action surface is closed that promised observation cannot happen, so the
+// sentence cannot be the result the user asked for.
+//
+// The verb list is deliberately limited to observation/execution verbs. An
+// explanatory lead ("let me summarise…") is an answer, and "let me know…" is a
+// closing courtesy; neither is a deferred action.
+var deferredAnswerPattern = regexp.MustCompile(
+	`(?i)^(?:so|first|next|now)?\s*(?:let\s+me|i(?:['’]ll|\s+will|\s+am\s+going\s+to|['’]m\s+going\s+to)|we(?:['’]ll|\s+will|\s+are\s+going\s+to|['’]re\s+going\s+to))\s+(?:now\s+|first\s+|also\s+|quickly\s+|just\s+)?(?:explore|check|look|inspect|read|search|find|list|examine|investigate|scan|try|run|gather|review|open|locate|analy[sz]e|probe|walk)\b`)
+
+// answerSentenceBoundary splits an answer into the clauses that must each be
+// substantive. The separator requires whitespace so a period inside a path or
+// a package name ("auth.go") does not turn one sentence into two. It is
+// intentionally crude: this is a conservative completion gate, so
+// under-splitting can only make the check less likely to reject.
+var answerSentenceBoundary = regexp.MustCompile(`[.!?]+[ \t]+|\n+`)
+
+// answerIsDeferredPlan reports whether the whole message only announces
+// actions it has not performed. A clause that carries content after a colon is
+// not a bare plan ("let me summarise: the project is a Go service"), and a
+// message with any substantive clause is an answer.
+func answerIsDeferredPlan(answer string) bool {
+	clauses := answerSentenceBoundary.Split(strings.TrimSpace(answer), -1)
+	seen := false
+	for _, clause := range clauses {
+		clause = strings.TrimSpace(clause)
+		if clause == "" {
+			continue
+		}
+		seen = true
+		if !deferredAnswerPattern.MatchString(clause) {
+			return false
+		}
+		if colon := strings.IndexByte(clause, ':'); colon >= 0 &&
+			strings.TrimSpace(clause[colon+1:]) != "" {
+			return false
+		}
+	}
+	return seen
+}
 
 // CompletionState is the runtime's verdict on whether a run reached its
 // objective.
@@ -363,6 +407,14 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		// "visible text exists": judging relevance would require an LLM judge.
 		return needsReview("the request asked for an answer but the final assistant message was empty")
 	}
+	if intent.Kind == contract.ObjectiveInformational && answerIsDeferredPlan(last.Assistant.Text()) {
+		// A plan is not a result. The model says "let me check…" because it
+		// intends to keep acting; on a closed surface that action is refused,
+		// so accepting the sentence would report a completion the user never
+		// saw. This is narrower than relevance judging: it only rejects a
+		// message whose every clause is an unperformed observation.
+		return needsReview("the request asked for an answer but the final assistant message only announces a further action")
+	}
 	if evidence.lastVerification < evidence.lastPotentialMutation {
 		return needsReview("the repository change or execution was not followed by a successful verification")
 	}
@@ -447,6 +499,15 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		// because a local answer exists. The required capability either
 		// produced an observation or the task is a review.
 		return needsReview("the request required external knowledge but no external observation succeeded")
+	}
+	if input.Provenance.RequireAttribution {
+		// A broad repository account can make an exclusive file-count claim.
+		// When the run's own glob or listing observed more files than the
+		// answer claims, the answer contradicts its evidence; completion must
+		// not claim a result the user can see is false.
+		if issue := inventoryClaimIssue(root, last.Assistant.Text(), input.Turns); issue != "" {
+			return needsReview("%s", issue)
+		}
 	}
 	if review := strings.TrimSpace(input.EvidenceReview); review != "" {
 		// The cognitive layer is authoritative about what evidence it has.

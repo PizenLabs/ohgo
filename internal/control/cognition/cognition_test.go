@@ -908,3 +908,32 @@ func TestCandidatesKeepConfiguredMCPForExecutionAndMutation(t *testing.T) {
 		t.Fatalf("ASK informational candidates = %q, want mcp_call withheld", got)
 	}
 }
+
+// A directory-scoped target's content is its complete listing. This is the
+// counterpart of TestInformationalContentQuestionNeedsAFileRead: a file still
+// needs its bytes, but "inspect backend/" is answered by the directory itself.
+func TestDirectoryContentIsItsCompleteListing(t *testing.T) {
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "backend"},
+		Result: agent.Result{
+			Text:    "cmd\ninternal\npkg\ngo.mod",
+			Details: map[string]any{"path": "backend", "entries": 4},
+		},
+	})
+	if !state.Satisfied("target_content:backend", ExecutionState{}) {
+		t.Fatal("a complete directory listing did not satisfy directory content")
+	}
+
+	truncated := NewEvidenceState()
+	truncated.ObserveOutcome(agent.ToolOutcome{
+		CallID: "ls-2", ToolName: "ls", Args: map[string]any{"path": "backend"},
+		Result: agent.Result{
+			Text:    "cmd\ninternal\n[showing 2 of 10 entries]",
+			Details: map[string]any{"path": "backend", "entries": 10},
+		},
+	})
+	if truncated.Satisfied("target_content:backend", ExecutionState{}) {
+		t.Fatal("a truncated directory listing satisfied directory content")
+	}
+}

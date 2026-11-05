@@ -40,9 +40,10 @@ func TestConsecutiveToolsRenderAsOneCompactStream(t *testing.T) {
 	}
 }
 
-// The layout cache must notice that appending another tool removed the
-// previous tool's separator, even though Apply never named it dirty.
-func TestAppendingToolInvalidatesPreviousGroupBoundary(t *testing.T) {
+// Appending another tool must not reflow the tool already on screen. The gap
+// after a run belongs to the block that follows the run, never to its last
+// tool, so a stream of calls grows downward instead of shifting existing rows.
+func TestAppendingToolDoesNotReflowPreviousTool(t *testing.T) {
 	s := completedToolStream("ls backend")
 	layout := &TranscriptLayout{}
 	layout.Refresh(&s, ComputeLayout(s))
@@ -52,8 +53,11 @@ func TestAppendingToolInvalidatesPreviousGroupBoundary(t *testing.T) {
 	s.Apply(ToolFinished{ID: "c2", Text: "module x\n", Summary: "1 line", At: time.Now()})
 	layout.Refresh(&s, ComputeLayout(s))
 	after := len(layout.blocks[0].lines)
-	if after != before-1 {
-		t.Fatalf("previous tool rows = %d after append, want %d (separator removed)", after, before-1)
+	if after != before {
+		t.Fatalf("previous tool rows = %d after append, want %d (no reflow)", after, before)
+	}
+	if out := ansi.Strip(Render(s)); strings.Contains(out, "⎿ 1 line\n\n✓") {
+		t.Fatalf("consecutive tools kept a blank card boundary:\n%s", out)
 	}
 }
 

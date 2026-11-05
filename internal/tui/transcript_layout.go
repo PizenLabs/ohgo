@@ -80,11 +80,15 @@ type blockLayout struct {
 	expanded bool
 	// groupEnd records whether this block closes a compact action group.
 	// Consecutive tool calls share one visual stream; only the last call in
-	// the run keeps the separator row. Adjacency is part of the cached
-	// projection, so appending a tool must invalidate the previous tool.
+	// the run carries the expand hint. Adjacency is part of the cached
+	// projection, so appending a tool invalidates the previous tool's hint.
 	groupEnd bool
-	lines    []string
-	widths   []int
+	// leadingGap records that this block owns the gap after a tool run.
+	// The gap is never owned by the tool, so appending another tool does not
+	// change the previous block's height.
+	leadingGap bool
+	lines      []string
+	widths     []int
 }
 
 func keyFor(state State, layout Layout) layoutKey {
@@ -126,7 +130,7 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 		l.byID = make(map[BlockID]int, len(entries))
 		for i := range entries {
 			id := blockIDAt(entries, i)
-			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner), entryGroupEnd(entries, i))
+			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner), entryGroupEnd(entries, i), entryLeadingGap(entries, i))
 			l.byID[id] = i
 			l.LastRendered++
 		}
@@ -167,12 +171,12 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 			// hint list already names them.
 			continue
 		}
-		if l.blocks[i].id == blockIDAt(entries, i) && !blockStale(l.blocks[i], entries[i], entrySpinner(entries[i], spinner), entryGroupEnd(entries, i)) {
+		if l.blocks[i].id == blockIDAt(entries, i) && !blockStale(l.blocks[i], entries[i], entrySpinner(entries[i], spinner), entryGroupEnd(entries, i), entryLeadingGap(entries, i)) {
 			continue
 		}
 		oldID := l.blocks[i].id
 		id := blockIDAt(entries, i)
-		l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner), entryGroupEnd(entries, i))
+		l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner), entryGroupEnd(entries, i), entryLeadingGap(entries, i))
 		if l.byID != nil && oldID != id {
 			delete(l.byID, oldID)
 			l.byID[id] = i
@@ -189,14 +193,14 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 		if newStart > 0 {
 			prev := newStart - 1
 			if l.blocks[prev].groupEnd != entryGroupEnd(entries, prev) {
-				l.blocks[prev] = l.renderBlock(entries[prev], prev, blockIDAt(entries, prev), pal, layout, frame, entrySpinner(entries[prev], spinner), entryGroupEnd(entries, prev))
+				l.blocks[prev] = l.renderBlock(entries[prev], prev, blockIDAt(entries, prev), pal, layout, frame, entrySpinner(entries[prev], spinner), entryGroupEnd(entries, prev), entryLeadingGap(entries, prev))
 				l.LastRendered++
 				changed = append(changed, prev)
 			}
 		}
 		for i := newStart; i < len(entries); i++ {
 			id := blockIDAt(entries, i)
-			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner), entryGroupEnd(entries, i))
+			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner), entryGroupEnd(entries, i), entryLeadingGap(entries, i))
 			if l.byID == nil {
 				l.byID = make(map[BlockID]int, len(entries))
 				for j := 0; j < i; j++ {
@@ -233,8 +237,8 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 	}
 }
 
-func blockStale(cached blockLayout, entry Entry, spinner int, groupEnd bool) bool {
-	adjacency := cached.groupEnd != groupEnd
+func blockStale(cached blockLayout, entry Entry, spinner int, groupEnd, leadingGap bool) bool {
+	adjacency := cached.groupEnd != groupEnd || cached.leadingGap != leadingGap
 	if entry.rev == 0 {
 		return cached.rev != fixtureRevision(entry) || cached.spinner != spinner ||
 			cached.kind != entry.Kind || cached.expanded != entryExpanded(entry) || adjacency
@@ -302,21 +306,22 @@ func fixtureRevision(entry Entry) uint64 {
 	return h.Sum64()
 }
 
-func (l *TranscriptLayout) renderBlock(entry Entry, index int, id BlockID, pal *Palette, layout Layout, frame string, spinner int, groupEnd bool) blockLayout {
+func (l *TranscriptLayout) renderBlock(entry Entry, index int, id BlockID, pal *Palette, layout Layout, frame string, spinner int, groupEnd, leadingGap bool) blockLayout {
 	b := blockLayout{
-		id:       id,
-		index:    index,
-		rev:      entry.rev,
-		spinner:  spinner,
-		kind:     entry.Kind,
-		expanded: entryExpanded(entry),
-		groupEnd: groupEnd,
+		id:         id,
+		index:      index,
+		rev:        entry.rev,
+		spinner:    spinner,
+		kind:       entry.Kind,
+		expanded:   entryExpanded(entry),
+		groupEnd:   groupEnd,
+		leadingGap: leadingGap,
 	}
 	if entry.rev == 0 {
 		b.rev = fixtureRevision(entry)
 	}
 	var sb strings.Builder
-	renderEntryGrouped(&sb, entry, pal, layout, frame, groupEnd)
+	renderEntryGrouped(&sb, entry, pal, layout, frame, groupEnd, leadingGap)
 	b.lines = entryLines(sb.String())
 	b.widths = make([]int, len(b.lines))
 	for i, line := range b.lines {
@@ -339,6 +344,18 @@ func entryGroupEnd(entries []Entry, index int) bool {
 		return false
 	}
 	return index+1 >= len(entries) || entries[index+1].Kind != EntryTool
+}
+
+// entryLeadingGap reports whether this block owns the gap after a tool run.
+//
+// A tool never writes a trailing separator. The next non-tool block writes the
+// leading gap instead, so appending a tool to a run cannot change the height
+// of a block that is already on screen.
+func entryLeadingGap(entries []Entry, index int) bool {
+	if index <= 0 || index >= len(entries) {
+		return false
+	}
+	return entries[index-1].Kind == EntryTool && entries[index].Kind != EntryTool
 }
 
 // entryLines turns one entry's rendered projection into its visual rows.

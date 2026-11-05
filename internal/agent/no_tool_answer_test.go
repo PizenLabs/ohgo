@@ -192,7 +192,8 @@ func TestSufficientInformationalEvidenceMakesTheNextTurnAnswerOnly(t *testing.T)
 
 // A model that answers and still asks for another action after the runtime
 // moved to answer-only must not keep the run alive. The answer is preserved,
-// the call is visibly refused without execution, and the loop stops.
+// the continuation call is dropped without dispatch (so no red refusal card
+// appears after the answer), and the loop stops.
 func TestAnswerWithUnnecessaryCallStopsAndStaysComplete(t *testing.T) {
 	answer := "ohgo is a coding agent with a controlled runtime."
 	result := runInformational(t, []ai.AssistantMessage{
@@ -219,11 +220,11 @@ func TestAnswerWithUnnecessaryCallStopsAndStaysComplete(t *testing.T) {
 	if last.Assistant.Text() != answer {
 		t.Fatalf("answer lost: %q", last.Assistant.Text())
 	}
-	if len(last.Results) != 1 || !last.Results[0].Result.AnswerRequired {
-		t.Fatalf("last results = %+v, want one answer-required refusal", last.Results)
+	if len(last.Results) != 0 {
+		t.Fatalf("last results = %+v, want no dispatched continuation", last.Results)
 	}
-	if !last.Results[0].Result.IsError {
-		t.Fatal("a withheld call must remain visibly refused")
+	if calls := last.Assistant.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("stored tool calls = %+v, want none", calls)
 	}
 	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
 		Turns: result.turns, Contract: result.intent,
@@ -529,10 +530,10 @@ func TestAnswerlessContinuationIsBoundedAndNotCompleted(t *testing.T) {
 	}
 }
 
-// A call to a capability the loop was never built with is still an
-// answer-required refusal once the action surface is empty. Nothing ran, and
-// the call must not remain outstanding work after an answer.
-func TestUnknownCallOnEmptySurfaceIsAnswerRequired(t *testing.T) {
+// A call to a capability the loop was never built with is continuation after
+// the answer once the action surface is empty. Nothing ran, and no refusal is
+// recorded as outstanding work or shown after a finished answer.
+func TestUnknownCallAfterAnswerIsNotRecordedAsWork(t *testing.T) {
 	answer := "ohgo is a coding agent with a controlled runtime."
 	result := runInformational(t, []ai.AssistantMessage{
 		{Content: overviewCall("turn-1"), StopReason: ai.StopToolUse},
@@ -551,17 +552,55 @@ func TestUnknownCallOnEmptySurfaceIsAnswerRequired(t *testing.T) {
 		t.Fatalf("model requests = %d, want 2", result.requests)
 	}
 	last := result.turns[len(result.turns)-1]
-	if len(last.Results) != 1 || !last.Results[0].Result.AnswerRequired {
-		t.Fatalf("last results = %+v, want one answer-required refusal", last.Results)
+	if len(last.Results) != 0 {
+		t.Fatalf("last results = %+v, want no dispatched continuation", last.Results)
 	}
-	if !last.Results[0].Refused() {
-		t.Fatal("the unknown call was counted as executed work")
+	if calls := last.Assistant.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("stored tool calls = %+v, want none", calls)
 	}
 	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
 		Turns: result.turns, Contract: result.intent,
 		EvidenceReview: result.report.EvidenceReview(),
 	})
 	if strings.Contains(got.Reason, "outstanding") {
-		t.Fatalf("a refused unknown call was counted as outstanding work: %s", got.Reason)
+		t.Fatalf("a dropped continuation was counted as outstanding work: %s", got.Reason)
+	}
+}
+
+// A model that narrates an impending action instead of answering has not
+// produced the answer the informational objective requires. Once the runtime
+// closes the action surface, that narration cannot be executed either; the run
+// must end in review, not in a completion the user can observe as false.
+func TestPreparatoryPlanIsNotAnAnswerOnAClosedSurface(t *testing.T) {
+	result := runInformational(t, []ai.AssistantMessage{
+		{Content: overviewCall("turn-1"), StopReason: ai.StopToolUse},
+		{
+			Content: []ai.ContentBlock{
+				ai.TextContent{Text: "Let me explore the backend directory structure more thoroughly to find Go files."},
+				ai.ToolCall{ID: "read-after-answer", Name: "read", Arguments: map[string]any{"path": "README.md"}},
+			},
+			StopReason: ai.StopToolUse,
+		},
+	})
+
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	if result.requests != 2 {
+		t.Fatalf("model requests = %d, want 2", result.requests)
+	}
+	last := result.turns[len(result.turns)-1]
+	if len(last.Results) != 0 {
+		t.Fatalf("last results = %+v, want no dispatched continuation", last.Results)
+	}
+	got := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: result.turns, Contract: result.intent,
+		EvidenceReview: result.report.EvidenceReview(),
+	})
+	if got.Complete() {
+		t.Fatal("a promise to keep exploring was reported as the requested answer")
+	}
+	if !strings.Contains(got.Reason, "answer") {
+		t.Fatalf("completion reason = %q, want an answer-substance reason", got.Reason)
 	}
 }

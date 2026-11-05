@@ -179,3 +179,38 @@ func TestProjectorDoesNotStopAChangeObjective(t *testing.T) {
 		t.Fatal("a change objective was stopped before it could act")
 	}
 }
+
+// An explicitly directory-scoped prompt reaches the answer stage once the
+// directory has been listed and the named file has been read. The directory
+// target must not demand file bytes it can never have.
+func TestDirectoryScopedPromptReachesAnswerAfterListingAndFileRead(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Use ls to inspect the project root and backend/, read backend/go.mod, then tell me the module name.",
+		Targets: []contract.Target{
+			{Kind: contract.TargetPath, Value: "backend/"},
+			{Kind: contract.TargetPath, Value: "backend/go.mod"},
+		},
+	}, ShapeParams{Authority: "ask", Facts: RepositoryFacts{Go: true}})
+
+	turns := []agent.Turn{{Results: []agent.ToolOutcome{
+		{
+			CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "."},
+			Result: agent.Result{Text: "backend\nREADME.md", Details: map[string]any{"path": ".", "entries": 2}},
+		},
+		{
+			CallID: "ls-2", ToolName: "ls", Args: map[string]any{"path": "backend"},
+			Result: agent.Result{Text: "cmd\ninternal\ngo.mod", Details: map[string]any{"path": "backend", "entries": 3}},
+		},
+		readTurn("read-1", "backend/go.mod", "1\tmodule ecommerce").Results[0],
+	}}}
+
+	projected := informationalProjection(t, shape, turns)
+	if projected.Report.Sufficiency != string(Sufficient) {
+		t.Fatalf("sufficiency = %s (%s), want SUFFICIENT; excluded=%+v",
+			projected.Report.Sufficiency, projected.Report.Evidence, projected.Report.Excluded)
+	}
+	if !projected.Report.AnswerEligible {
+		t.Fatal("the answer stage was not reachable after the directory listing and file read")
+	}
+}

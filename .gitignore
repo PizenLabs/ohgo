@@ -1,6 +1,7 @@
 # Binaries
 /ohgo
 *.exe
+.debug/
 
 # Test output
 *.test
