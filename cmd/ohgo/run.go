@@ -459,6 +459,13 @@ func runSession(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(os.Stderr, "ohgo: could not save theme: %v\n", err)
 			}
 		})
+		program.SetTaskRailEnabled(opts.settings.TaskRailEnabled())
+		program.SetTaskRailChangedHandler(func(enabled bool) {
+			opts.settings.TaskRail = &enabled
+			if err := config.Save(opts.settings); err != nil {
+				fmt.Fprintf(os.Stderr, "ohgo: could not save task rail preference: %v\n", err)
+			}
+		})
 		style := opts.authority().Style()
 		program.PublishWorkspace(tui.WorkspaceUpdated{
 			Cwd:             opts.root,

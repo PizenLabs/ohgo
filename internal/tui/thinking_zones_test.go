@@ -35,11 +35,11 @@ func TestThinkingZonesSeparateLabelFromMetadata(t *testing.T) {
 		StartedAt: start, Interruptible: true, OutputTokens: 248,
 	}
 	got := renderThinkingZoned(state, now, 0, false, 0, zoneMarkers())[0]
-	want := "[A]◌[/A] [A]respond[/A] [D]·[/D] [D]([/D][M]↓248 tokens[/M] [D]·[/D] [T]5s[/T] [D]·[/D] [T]esc[/T][D])[/D]"
+	want := "[A]⠋[/A] [A]respond[/A] [D]·[/D] [D]([/D][M]↓248 tokens[/M] [D]·[/D] [T]5s[/T] [D]·[/D] [T]esc[/T][D])[/D]"
 	if got != want {
 		t.Fatalf("zoned line = %q, want %q", got, want)
 	}
-	if stripped := stripZoneMarkers(got); stripped != "◌ respond · (↓248 tokens · 5s · esc)" {
+	if stripped := stripZoneMarkers(got); stripped != "⠋ respond · (↓248 tokens · 5s · esc)" {
 		t.Fatalf("stripped line = %q, want the compact plain text", stripped)
 	}
 }
@@ -96,9 +96,12 @@ func TestThinkingZonesConfineShimmerToLabel(t *testing.T) {
 		StartedAt: start, Interruptible: true, OutputTokens: 248,
 	}
 	first := renderThinkingZoned(state, now, 0, true, 0, zoneMarkers())[0]
+	firstTail := strings.TrimPrefix(first, "[A]"+spinnerGlyph(0)+"[/A]")
 	for tick := 1; tick < 8; tick++ {
-		if framed := renderThinkingZoned(state, now, tick, true, 0, zoneMarkers())[0]; framed != first {
-			t.Fatalf("tick %d: zoned = %q, want %q", tick, framed, first)
+		framed := renderThinkingZoned(state, now, tick, true, 0, zoneMarkers())[0]
+		tail := strings.TrimPrefix(framed, "[A]"+spinnerGlyph(tick)+"[/A]")
+		if tail != firstTail {
+			t.Fatalf("tick %d: zoned = %q, want the stable tail %q", tick, framed, firstTail)
 		}
 	}
 	if !strings.Contains(first, "[S]respond[/S]") {

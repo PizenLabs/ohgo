@@ -124,6 +124,7 @@ func activityDialogOwns(s State) bool {
 		s.InformationModal != nil ||
 		s.SessionModal != nil ||
 		s.HelpModal != nil ||
+		s.SettingsModal != nil ||
 		s.ConnectModal != nil ||
 		s.ConnectKey != nil ||
 		s.Diff != nil
@@ -153,7 +154,7 @@ func ActivityLineText(s State, now time.Time, tick int, width int) string {
 	if activity.Surface != ActivityLine {
 		return ""
 	}
-	lines := RenderThinking(activity.Thinking, now, width)
+	lines := RenderThinkingFrame(activity.Thinking, now, tick, width)
 	if shimmerSupported() {
 		lines = RenderThinkingTick(activity.Thinking, now, tick, width)
 	}

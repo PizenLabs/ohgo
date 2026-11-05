@@ -47,10 +47,30 @@ type Layout struct {
 	ContentWidth int
 	// ConversationHeight is the rows reserved for the transcript.
 	ConversationHeight int
-	// HeaderLines, ComposerLines, StatusLines size the chrome.
+	// HeaderLines, TaskLines, ComposerLines, StatusLines size the chrome.
 	HeaderLines   int
 	ComposerLines int
 	StatusLines   int
+	// TaskLines is the sticky active-task row below the title bar on tiers
+	// that do not render the sidebar. It is zero whenever no open task has an
+	// open todo: wide terminals keep the tracker in the sidebar instead, so
+	// exactly one task surface is ever visible and idle or question-only
+	// sessions render none.
+	TaskLines int
+	// TaskTracker reports that the sticky/sidebar task surface owns the
+	// projection, so the in-transcript task block must not repeat it.
+	TaskTracker bool
+	// Sidebar reports that the full-screen canvas is split into the
+	// conversation column and the contextual right sidebar. It is only true
+	// while an open task has at least one open todo; without one the
+	// transcript keeps the full width.
+	Sidebar bool
+	// SidebarWidth is the sidebar's cell budget, excluding the one-cell
+	// divider that separates it from the conversation.
+	SidebarWidth int
+	// MainWidth is the conversation column's cell budget, excluding the
+	// divider. It is the terminal width when Sidebar is false.
+	MainWidth int
 	// ThinkingLines is the rows the projected activity line claims (0 or 1).
 	// Render emits exactly this many rows, so the transcript budget and the
 	// painted frame agree and the chrome never floats.
@@ -87,25 +107,30 @@ func LayoutForMode(width, height int) LayoutMode {
 	}
 }
 
-// ComputeLayout derives geometry from state and terminal size.
+// ComputeLayout derives the base geometry from state and terminal size.
 //
 // The conversation receives whatever the chrome does not claim; the composer
 // stays visible; header and hint bar stay compact. Dialogs are bounded by the
-// caller against ConversationHeight so they never exceed the viewport.
+// caller against ConversationHeight so they never exceed the viewport. The
+// full-screen canvas applies the responsive workspace split on top of this
+// base through ComputeWorkspaceLayout; output-first mode deliberately keeps
+// the full width because the terminal owns its scrollback and no sidebar is
+// painted there.
 func ComputeLayout(s State) Layout {
-	mode := LayoutForMode(s.Width, s.Height)
 	if s.Width <= 0 || s.Height <= 0 {
 		return Layout{
 			Mode:          LayoutWide,
 			Width:         s.Width,
 			Height:        s.Height,
 			ContentWidth:  0, // zero means "do not wrap"
+			MainWidth:     s.Width,
 			ShowDetail:    true,
 			ShowHints:     true,
 			PaletteLines:  -1, // uncapped: render everything
 			ThinkingLines: thinkingRows(s),
 		}
 	}
+	mode := LayoutForMode(s.Width, s.Height)
 	content := s.Width - 2
 	if content < 10 {
 		content = 10
@@ -116,6 +141,76 @@ func ComputeLayout(s State) Layout {
 			content = 10
 		}
 	}
+	return computeLayoutWith(s, content, 0)
+}
+
+// Workspace split geometry. The right rail is a proportional column with a
+// floor and ceiling so it stays readable on a laptop and never becomes a
+// second conversation on an ultrawide terminal. A minimum conversation width
+// keeps the split from crushing the transcript on the first wide tier.
+const (
+	sidebarPercent      = 28
+	sidebarMinWidth     = 26
+	sidebarMaxWidth     = 56
+	sidebarMinMain      = 48
+	sidebarMinHeight    = 12
+	sidebarDividerWidth = 1
+)
+
+// ComputeWorkspaceLayout derives the full-screen canvas.
+//
+// The task rail is transient chrome, not the default canvas. It exists only
+// while an open task has at least one open todo: wide terminals narrow the
+// conversation and give it a fixed proportional rail, while narrower tiers
+// reserve one sticky task row immediately below the title bar. An idle session,
+// a question with no todos, and every terminal task keep the full-width
+// transcript, so a completed projection settles into history. The task row and
+// the sidebar are mutually exclusive: one fact has one home.
+func ComputeWorkspaceLayout(s State) Layout {
+	base := ComputeLayout(s)
+	if s.Width <= 0 || s.Height <= 0 || base.Mode == LayoutMini {
+		return base
+	}
+	task := activeTaskProjection(&s)
+	if task == nil || !mainCanvasAvailable(s) {
+		return base
+	}
+	if base.Mode == LayoutWide && s.Height >= sidebarMinHeight {
+		sidebar := s.Width * sidebarPercent / 100
+		if sidebar < sidebarMinWidth {
+			sidebar = sidebarMinWidth
+		}
+		if sidebar > sidebarMaxWidth {
+			sidebar = sidebarMaxWidth
+		}
+		main := s.Width - sidebar - sidebarDividerWidth
+		if main >= sidebarMinMain {
+			content := main - 2
+			if content < 10 {
+				content = 10
+			}
+			layout := computeLayoutWith(s, content, 0)
+			layout.Sidebar = true
+			layout.SidebarWidth = sidebar
+			layout.MainWidth = main
+			layout.TaskTracker = true
+			return layout
+		}
+	}
+	layout := ComputeLayout(s)
+	layout.TaskLines = 1
+	layout.TaskTracker = true
+	layout.ConversationHeight--
+	if layout.ConversationHeight < 1 {
+		layout.ConversationHeight = 1
+	}
+	return layout
+}
+
+// computeLayoutWith is the shared geometry engine. content is the message wrap
+// budget; taskLines is the sticky task row claimed above the transcript.
+func computeLayoutWith(s State, content int, taskLines int) Layout {
+	mode := LayoutForMode(s.Width, s.Height)
 	header := 2 // header line + separator
 	// No middle status row on the main canvas: the header owns identity,
 	// the composer prefix owns the authority, and the hint bar owns metrics
@@ -133,7 +228,7 @@ func ComputeLayout(s State) Layout {
 	// every tier: like the old status row it is the one context row narrow
 	// and medium screens get, so gating it on width would drop session and
 	// path exactly where space is scarcest.
-	if s.Picker == nil && s.Plane == nil && s.SupportPanel == nil && s.StatusModal == nil && s.UsageModal == nil && s.InfoModal == nil && s.InformationModal == nil && s.SessionModal == nil && s.HelpModal == nil && s.ConnectModal == nil && s.ConnectKey == nil && s.Pending == nil && s.QuitConfirm == nil && s.Transition == nil && s.UpdateRestart == nil && s.PostUpdate == nil && s.Permissions == nil && s.Diff == nil {
+	if !canvasOwnedByModal(s) {
 		hints = 1
 	}
 	if hints == 0 {
@@ -149,12 +244,12 @@ func ComputeLayout(s State) Layout {
 	// The overlay area fills the released rows instead. The quit popup is a
 	// centered modal like the plane and support surfaces, so it hides the
 	// composer the same way.
-	if s.Picker != nil || s.Plane != nil || s.SupportPanel != nil || s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil || s.InformationModal != nil || s.SessionModal != nil || s.HelpModal != nil || s.ConnectModal != nil || s.ConnectKey != nil || s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil || s.Permissions != nil || s.Diff != nil {
+	if overlayHidesComposer(s) {
 		composer = 0
 		sugg = 0
 	}
 	thinking := thinkingRows(s)
-	chrome := header + status + hints + composer + thinking
+	chrome := header + taskLines + status + hints + composer + thinking
 	conv := s.Height - chrome
 	if conv < 1 {
 		conv = 1
@@ -166,6 +261,8 @@ func ComputeLayout(s State) Layout {
 		ContentWidth:       content,
 		ConversationHeight: conv,
 		HeaderLines:        header,
+		TaskLines:          taskLines,
+		MainWidth:          s.Width,
 		ComposerLines:      composer,
 		StatusLines:        status,
 		ThinkingLines:      thinking,
@@ -173,6 +270,37 @@ func ComputeLayout(s State) Layout {
 		ShowHints:          hints > 0,
 		PaletteLines:       sugg,
 	}
+}
+
+// canvasOwnedByModal reports whether a modal owns the main canvas. The
+// workspace split and sticky task row are hidden then: the dialog needs the
+// width and its own keys, and the sidebar would compete with the decision.
+func canvasOwnedByModal(s State) bool {
+	return s.Picker != nil || s.Plane != nil || s.SupportPanel != nil ||
+		s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil ||
+		s.InformationModal != nil || s.SessionModal != nil || s.HelpModal != nil ||
+		s.SettingsModal != nil ||
+		s.ConnectModal != nil || s.ConnectKey != nil || s.Pending != nil ||
+		s.QuitConfirm != nil || s.Transition != nil || s.UpdateRestart != nil ||
+		s.PostUpdate != nil || s.Permissions != nil || s.Diff != nil
+}
+
+// mainCanvasAvailable reports whether the ordinary conversation canvas — not
+// a modal — currently owns the screen.
+func mainCanvasAvailable(s State) bool { return !canvasOwnedByModal(s) }
+
+// overlayHidesComposer reports whether an overlay replaces the composer. The
+// quit popup is a centered modal, so it hides the composer like the others;
+// a tool approval keeps the composer echo underneath its own dialog, so it is
+// deliberately absent here.
+func overlayHidesComposer(s State) bool {
+	return s.Picker != nil || s.Plane != nil || s.SupportPanel != nil ||
+		s.StatusModal != nil || s.UsageModal != nil || s.InfoModal != nil ||
+		s.InformationModal != nil || s.SessionModal != nil || s.HelpModal != nil ||
+		s.SettingsModal != nil ||
+		s.ConnectModal != nil || s.ConnectKey != nil || s.QuitConfirm != nil ||
+		s.Transition != nil || s.UpdateRestart != nil || s.PostUpdate != nil ||
+		s.Permissions != nil || s.Diff != nil
 }
 
 // thinkingMinHeight is the shortest viewport that still paints the activity

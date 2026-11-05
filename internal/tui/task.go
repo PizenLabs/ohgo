@@ -930,6 +930,50 @@ func containsContinuationVerb(normalized string) bool {
 	return false
 }
 
+// latestTaskProjection returns the most recent durable task projection, or
+// nil when the session has none. Apply keeps the pointer cached so the sticky
+// tracker never scans a long transcript; hand-built fixtures fall back to one
+// reverse scan and then cache the result.
+func latestTaskProjection(s *State) *TaskProjection {
+	if s == nil {
+		return nil
+	}
+	if s.task != nil && s.task.ID != "" {
+		return s.task
+	}
+	if s.taskKnown {
+		return nil
+	}
+	for i := len(s.Entries) - 1; i >= 0; i-- {
+		if s.Entries[i].Kind == EntryTask && s.Entries[i].Task != nil && s.Entries[i].Task.ID != "" {
+			s.task = s.Entries[i].Task
+			s.taskKnown = true
+			return s.task
+		}
+	}
+	s.taskKnown = true
+	return nil
+}
+
+// activeTaskProjection returns the latest task only while it still owns work.
+//
+// The task rail is transient chrome, not a transcript for every request. It
+// appears only when three facts hold: the preference is enabled, the task is
+// still open, and the task has at least one open todo. An ordinary question, a
+// task with no todos or only finished todos, and a terminal task all keep the
+// ordinary full-width transcript; the completed projection then settles back
+// into history rather than staying pinned beside every later turn.
+func activeTaskProjection(s *State) *TaskProjection {
+	if s == nil || s.TaskRailDisabled {
+		return nil
+	}
+	task := latestTaskProjection(s)
+	if task == nil || taskStatusTerminal(task.Status) || !hasOpenTaskItems(*task) {
+		return nil
+	}
+	return task
+}
+
 // taskGlyph maps a projection state to its single status marker. One glyph
 // column, no colour-only signal: done, active, pending read apart in a
 // monochrome terminal.

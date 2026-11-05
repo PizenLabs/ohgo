@@ -189,10 +189,15 @@ type ToolEntry struct {
 	// Text is the outcome, set when the call finishes.
 	Text string
 	// Diff is the canonical unified diff a mutation tool reported, when the
-	// outcome carried one. It is copy material, never rendered in the
-	// transcript, so /copy can offer the actual change even when the model's
-	// prose does not repeat it.
+	// outcome carried one. It is copy material, and expanding the block
+	// renders it as a syntax-highlighted diff rather than raw result text.
 	Diff string
+	// Path is the modified file's path, when the mutation result identified
+	// one. It names the expanded diff header and chooses its language.
+	Path string
+	// Operation is the mutation kind (CREATE, MODIFY, DELETE) when the
+	// producer reported it. Empty stays absent rather than being guessed.
+	Operation string
 	// StartedAt and EndedAt bound execution, for the duration display.
 	StartedAt time.Time
 	EndedAt   time.Time
@@ -270,6 +275,11 @@ type PendingApproval struct {
 	Prompt string
 	// Reason is why the prompt appears, when the tool declared one.
 	Reason string
+	// Capability and Risk are the approval's metadata projection. Empty
+	// values derive from Mutating, so a caller that predates the fields still
+	// gets a truthful boundary description.
+	Capability string
+	Risk       string
 	// Summary describes what this particular call will do.
 	Summary string
 	// MutationPreview is the dedicated mutation preview, rendered separately
@@ -488,6 +498,10 @@ type State struct {
 	Entries []Entry
 	// Status is the footer.
 	Status Status
+	// Integrations is the sidebar's snapshot of active MCP and LSP
+	// connections. It is a projection with no connection authority: the
+	// managers remain the owners and the view never probes a server.
+	Integrations []IntegrationStatus
 	// Input is the text being composed.
 	Input string
 	// Cursor is the rune offset in Input where typing lands.
@@ -615,6 +629,16 @@ type State struct {
 	// keyboard, filters its roster live, and runs the highlighted command. It
 	// never enters the transcript, history, or session itself.
 	HelpModal *HelpCenterState
+	// SettingsModal is the open /settings preferences surface, or nil. It is a
+	// working modal: it owns the keyboard, toggles the preferences the host
+	// exposes, and returns to the composer on close. It never enters the
+	// transcript, history, or session.
+	SettingsModal *SettingsState
+	// TaskRailDisabled records the user's durable task-rail preference. The
+	// zero value keeps the rail enabled; only an explicit setting or /settings
+	// toggle suppresses it. The rail still stays hidden unless an open task has
+	// at least one open todo.
+	TaskRailDisabled bool
 	// InfoModal is the open /info page, or nil. It is a read-only modal like
 	// the /status card: any key dismisses it. It never enters the transcript,
 	// history, or session.
@@ -651,6 +675,13 @@ type State struct {
 	// the dedup memory that keeps a repeated projection from stacking a second
 	// line. A new task identity is a new footer.
 	recapEmitted map[string]bool
+	// task is the latest projected task state. The transcript keeps its
+	// EntryTask for history and live mode; the sticky sidebar/header reads
+	// this cached projection so a canvas frame never scans a long transcript
+	// to find it. taskKnown distinguishes "no task" from "not scanned yet" so
+	// an idle 10k-block transcript is not walked on every frame.
+	task      *TaskProjection
+	taskKnown bool
 	// Support reports that the ephemeral $sup surface is open. It is UI state
 	// only: the workspace and session authority are unchanged while it is set
 	// (§34). It is derived from SupportPanel: non-nil means open.
@@ -741,6 +772,13 @@ func (s *State) Apply(event Event) {
 				break
 			}
 		}
+		for i := len(s.Entries) - 1; i >= 0; i-- {
+			if s.Entries[i].Kind == EntryTask && s.Entries[i].Task != nil && s.Entries[i].Task.ID != "" {
+				s.task = s.Entries[i].Task
+				break
+			}
+		}
+		s.taskKnown = true
 		s.runtimeTracked = true
 	}
 	switch e := event.(type) {
@@ -926,6 +964,8 @@ func (s *State) Apply(event Event) {
 		tool.Streaming = false
 		tool.Text = e.Text
 		tool.Diff = e.Diff
+		tool.Path = e.Path
+		tool.Operation = e.Operation
 		tool.Truncated = e.Truncated
 		if e.IsError {
 			tool.Status = ToolError
@@ -1068,6 +1108,8 @@ func (s *State) Apply(event Event) {
 			return
 		}
 		projection := e.Projection
+		s.task = &projection
+		s.taskKnown = true
 		index := -1
 		for i := len(s.Entries) - 1; i >= 0; i-- {
 			if s.Entries[i].Kind == EntryTask {
@@ -1094,6 +1136,10 @@ func (s *State) Apply(event Event) {
 		// boundary, so the progressive-disclosure telemetry restarts clean:
 		// the prior session's token counts and clock do not belong to it.
 		s.replaceEntries(e.Entries)
+		s.task = nil
+		s.taskKnown = false
+		s.task = latestTaskProjection(s)
+		s.taskKnown = true
 		s.closedAssistant = true
 		s.recapEmitted = nil
 		s.OutputTokens = 0
@@ -1113,6 +1159,12 @@ func (s *State) Apply(event Event) {
 		if !s.CommitActive() {
 			s.Commit = nil
 		}
+
+	case IntegrationsUpdated:
+		// A complete snapshot, not a delta: the sidebar never has to
+		// reconcile stale rows after a server is disabled or a language
+		// server exits.
+		s.Integrations = append([]IntegrationStatus(nil), e.Items...)
 
 	case ContextUpdated:
 		s.Status.ContextUsed = e.Used
@@ -1156,6 +1208,8 @@ func (s *State) Apply(event Event) {
 			ToolName:        e.ToolName,
 			Prompt:          e.Prompt,
 			Reason:          e.Reason,
+			Capability:      e.Capability,
+			Risk:            e.Risk,
 			Summary:         e.Summary,
 			MutationPreview: e.MutationPreview,
 			Mutating:        e.Mutating,
@@ -1242,6 +1296,20 @@ func (s *State) Apply(event Event) {
 
 	case StatusModalClosed:
 		s.StatusModal = nil
+
+	case SettingsOpened:
+		s.SettingsModal = &SettingsState{}
+
+	case SettingsMoved:
+		if s.SettingsModal != nil {
+			s.SettingsModal.Move(e.Delta)
+		}
+
+	case SettingsClosed:
+		s.SettingsModal = nil
+
+	case TaskRailToggled:
+		s.TaskRailDisabled = !e.Enabled
 
 	case UsageModalOpened:
 		// Same snapshot contract as the status card: the facts are frozen at
@@ -2117,6 +2185,7 @@ func (s *State) Apply(event Event) {
 		s.UsageModal = nil
 		s.SessionModal = nil
 		s.HelpModal = nil
+		s.SettingsModal = nil
 		s.ConnectModal = nil
 		s.ConnectKey = nil
 		s.Queued = nil
@@ -2704,9 +2773,14 @@ type ToolFinished struct {
 	Text    string
 	Summary string
 	// Diff is the canonical unified diff from a mutation result, when the
-	// tool produced one. It never enters the rendered outcome; /copy uses it
-	// as the fallback for a code-edit turn whose prose contains no diff.
-	Diff      string
+	// tool produced one. /copy uses it as the fallback for a code-edit turn
+	// whose prose contains no diff; Ctrl+O renders it as an expanded diff.
+	Diff string
+	// Path and Operation describe the mutation target when the result
+	// carried structured mutation evidence. They stay empty for ordinary
+	// tool calls rather than being inferred from the summary.
+	Path      string
+	Operation string
 	IsError   bool
 	Truncated bool
 	At        time.Time
@@ -2936,6 +3010,8 @@ type ApprovalAsked struct {
 	// call.
 	Prompt          string
 	Reason          string
+	Capability      string
+	Risk            string
 	Summary         string
 	MutationPreview agent.MutationPreview
 	// Mutating marks a call that changes state; the dialog accents a
@@ -3063,6 +3139,28 @@ func (StatusModalOpened) eventKind() string { return "status_modal_opened" }
 type StatusModalClosed struct{}
 
 func (StatusModalClosed) eventKind() string { return "status_modal_closed" }
+
+// SettingsOpened shows the /settings preferences surface.
+type SettingsOpened struct{}
+
+func (SettingsOpened) eventKind() string { return "settings_opened" }
+
+// SettingsMoved shifts the settings highlight. Positive goes down; the row
+// registry is small and wraps at both ends.
+type SettingsMoved struct{ Delta int }
+
+func (SettingsMoved) eventKind() string { return "settings_moved" }
+
+// SettingsClosed dismisses the preferences surface without changing anything.
+type SettingsClosed struct{}
+
+func (SettingsClosed) eventKind() string { return "settings_closed" }
+
+// TaskRailToggled applies the durable task-rail preference. The host owns
+// persistence; the state event only makes the view obey the new value.
+type TaskRailToggled struct{ Enabled bool }
+
+func (TaskRailToggled) eventKind() string { return "task_rail_toggled" }
 
 // UsageModalOpened shows the /usage inspector with a snapshot of the ledger
 // and provider roster. The view is copied, so the card is a stable read of the
@@ -3606,6 +3704,7 @@ var Commands = []CommandSpec{
 	{Name: "task", Usage: "task [status|list|show|resume|cancel|accept]", Description: "manage durable tasks: inspect, list, resume, or abandon", Category: CommandGroupControl},
 	{Name: "audit", Usage: "audit", Description: "explain the last context projection and action surface", Category: CommandGroupControl},
 	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette", Category: CommandGroupControl},
+	{Name: "settings", Usage: "settings", Description: "configure interface preferences", Category: CommandGroupControl},
 	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
 	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
 	{Name: "status", Usage: "status", Description: "show workspace, session, and authority status", Category: CommandGroupControl},

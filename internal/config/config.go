@@ -127,6 +127,10 @@ type Settings struct {
 	// value behaves as dark, so a typo degrades to the default rather than
 	// an error.
 	Theme string `json:"theme,omitempty"`
+	// TaskRail enables the contextual task rail for execution tasks with open
+	// todos. Absence means enabled; the rail still stays hidden until such a
+	// task is open.
+	TaskRail *bool `json:"taskRail,omitempty"`
 	// Mouse selects how the full-screen UI receives the wheel.
 	//
 	// "select" (the default) never requests mouse reporting, so the terminal
@@ -435,6 +439,15 @@ func Save(settings Settings) error {
 // authoritative project worker identity.
 func (s Settings) GlobalName() string {
 	return strings.TrimSpace(s.UserDefaults.Name)
+}
+
+// TaskRailEnabled reports whether the contextual task rail may appear.
+//
+// The preference defaults to enabled: an omitted value keeps the rail
+// available for execution tasks with open todos. The rail's own lifecycle
+// still keeps it hidden when no such task is open.
+func (s Settings) TaskRailEnabled() bool {
+	return s.TaskRail == nil || *s.TaskRail
 }
 
 // ApprovalFor reports the approval policy for a tool.

@@ -158,8 +158,8 @@ func TestReasoningIsSubordinateAndSettles(t *testing.T) {
 	s.Apply(ReasoningDelta{Text: "inspect the cache", At: at})
 
 	live := ansi.Strip(Render(s))
-	if !strings.Contains(live, "▸ reasoning") {
-		t.Fatalf("open reasoning lost its collapsed head:\n%s", live)
+	if !strings.Contains(live, spinnerFrames[0]+" reasoning") {
+		t.Fatalf("open reasoning lost its live spinner head:\n%s", live)
 	}
 	if strings.Contains(live, "◌ reasoning") {
 		t.Fatalf("reasoning borrowed the current-action glyph:\n%s", live)

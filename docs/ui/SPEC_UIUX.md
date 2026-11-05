@@ -1,5 +1,9 @@
 # Ohgo Execution UI/UX Redesign Specification
 
+> Enhancement note: `SPEC_UIUX_ENHANCEMENTS.md` supersedes §7.1 for the
+> throttled responding/reasoning spinner and the sidebar prohibition in §19 for
+> the contextual task/integrations rail. Everything else here remains in force.
+
 ## 1. Objective
 
 Redesign the Ohgo runtime execution interface so that active agent work is presented as a **clear, sequential, information-dense execution transcript**, rather than a stream of disconnected terminal-like output blocks.

@@ -314,12 +314,14 @@ func (p *Program) showCommitProposal(request *commit.Request, reason string) {
 		p.state.Apply(Notice{Text: commit.FormatProposal(request)})
 	}
 	p.state.Apply(ApprovalAsked{
-		ToolName: "commit",
-		Summary:  request.Proposal.Subject(),
-		Reason:   reason,
-		Mutating: true,
-		Choices:  append([]string(nil), commitChoices...),
-		Commit:   commitView(request),
+		ToolName:   "commit",
+		Summary:    request.Proposal.Subject(),
+		Reason:     reason,
+		Capability: "git commit",
+		Risk:       "elevated",
+		Mutating:   true,
+		Choices:    append([]string(nil), commitChoices...),
+		Commit:     commitView(request),
 	})
 }
 
