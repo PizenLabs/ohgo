@@ -102,11 +102,39 @@ type Result struct {
 	// Useless marks a result that adds nothing to context and may be elided by
 	// compaction (zero matches, a timeout). Ignored when IsError is set.
 	Useless bool
+	// FailureClass is the provider-agnostic category of an execution failure,
+	// when the producer can classify it (a missing credential, an unknown
+	// capability, a timeout). Empty means unclassified.
+	//
+	// It is separate from Error text because the control plane must reason about
+	// retryability, not match prose. It narrows nothing and authorizes nothing.
+	FailureClass string
+	// FailureRetryable reports that another attempt with the same invocation
+	// may succeed. It is meaningful only when FailureClass is set; the zero
+	// value means non-retryable, which is the conservative default.
+	FailureRetryable bool
 	// CandidateRejected marks a call the runtime withheld because the task
 	// shape's action surface did not include the tool. It is an error for the
 	// model, which must choose another action, but it is not an execution
 	// failure: nothing ran, so completion must not treat it as a failed call.
 	CandidateRejected bool
+	// FailureRejected marks a call the runtime refused before execution because
+	// the identical capability and arguments already failed and the retry
+	// budget for that failure class is spent. Nothing ran; it is a control
+	// decision, never an execution failure.
+	FailureRejected bool
+	// ObservedAbsence marks an error that is itself a successful observation:
+	// a probe established that the named path does not exist. The model still
+	// sees an error (absence is not a value), but completion must not treat it
+	// as an unrecovered execution failure.
+	ObservedAbsence bool
+	// AnswerRequired marks a withheld call made when the runtime offered no
+	// tools at all: the evidence lifecycle asked for an answer, not another
+	// action. Nothing ran, and the assistant text in the same turn is the
+	// candidate answer, so completion may consider that turn final. Unlike a
+	// generic candidate rejection, this is not a request to choose another
+	// tool; there is no other tool.
+	AnswerRequired bool
 	// Exhausted is set when the tool refused work because the root budget
 	// could not admit it. The loop records it as a resource stop after the
 	// turn, so a budget refusal inside a tool is visible to the root instead

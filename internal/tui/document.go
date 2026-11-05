@@ -41,11 +41,12 @@ type BlockState string
 // Block states. They are derived from the entry payload, never stored as a
 // second source of truth.
 const (
-	BlockStatic  BlockState = "static"
-	BlockPending BlockState = "pending"
-	BlockRunning BlockState = "running"
-	BlockDone    BlockState = "done"
-	BlockError   BlockState = "error"
+	BlockStatic    BlockState = "static"
+	BlockPending   BlockState = "pending"
+	BlockRunning   BlockState = "running"
+	BlockDone      BlockState = "done"
+	BlockError     BlockState = "error"
+	BlockCancelled BlockState = "cancelled"
 )
 
 // State reports the block's lifecycle position.
@@ -62,6 +63,8 @@ func (b Block) State() BlockState {
 			return BlockRunning
 		case ToolError:
 			return BlockError
+		case ToolCancelled:
+			return BlockCancelled
 		default:
 			return BlockDone
 		}
@@ -108,8 +111,23 @@ func (d Document) At(index int) (Block, bool) {
 		Entry:    entry,
 		Expanded: entryExpanded(entry),
 	}
-	block.Expandable = block.Kind == EntryTool && entry.Tool != nil && toolExpandable(entry.Tool)
+	block.Expandable = entryExpandable(entry)
 	return block, true
+}
+
+// entryExpandable reports whether a block has a body hidden by its collapsed
+// projection.
+func entryExpandable(entry Entry) bool {
+	switch entry.Kind {
+	case EntryTool:
+		// A running tool is expandable even before output arrives: the block
+		// must be able to open in place while it is still producing text.
+		return entry.Tool != nil && (toolExpandable(entry.Tool) || entry.Tool.Status == ToolRunning)
+	case EntryReasoning:
+		return entry.Reasoning != nil && strings.TrimSpace(entry.Reasoning.Text) != ""
+	default:
+		return false
+	}
 }
 
 // ByID resolves a block without depending on its current position.
@@ -147,7 +165,14 @@ func blockIndex(entries []Entry, id BlockID) int {
 
 // entryExpanded reports whether the block projects an expanded body.
 func entryExpanded(entry Entry) bool {
-	return entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.Expanded
+	switch entry.Kind {
+	case EntryTool:
+		return entry.Tool != nil && entry.Tool.Expanded
+	case EntryReasoning:
+		return entry.Reasoning != nil && entry.Reasoning.Expanded
+	default:
+		return false
+	}
 }
 
 // BlockIndex resolves a block ID to its current document position.
@@ -166,11 +191,17 @@ func (s *State) ToggleBlock(id BlockID) bool {
 		return false
 	}
 	entry := &s.Entries[index]
-	if entry.Kind != EntryTool || entry.Tool == nil || !toolExpandable(entry.Tool) {
+	if !entryExpandable(*entry) {
 		return false
 	}
-	toolID := entry.Tool.ID
-	s.Apply(ToolToggled{ID: toolID})
+	switch entry.Kind {
+	case EntryTool:
+		s.Apply(ToolToggled{ID: entry.Tool.ID})
+	case EntryReasoning:
+		s.Apply(ReasoningToggled{ID: id})
+	default:
+		return false
+	}
 	return true
 }
 
@@ -186,6 +217,10 @@ func BlockCopyText(entry Entry) string {
 		text = entry.UserText
 	case EntryAssistant:
 		text = entry.AssistantText
+	case EntryReasoning:
+		if entry.Reasoning != nil {
+			text = entry.Reasoning.Text
+		}
 	case EntrySupport:
 		text = entry.SupportText
 	case EntryNotice:

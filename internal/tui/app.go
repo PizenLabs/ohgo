@@ -137,6 +137,34 @@ type Program struct {
 	// mouseReporting records whether the terminal is asked for mouse events.
 	// Off by default: see WithMouseReporting for the trade it avoids.
 	mouseReporting bool
+	// mouseInput holds a possible SGR mouse report that arrived split across
+	// key reads. Bubble Tea's decoder can degrade a fragmented report to an
+	// esc plus a KeyRunes tail; this buffer lets the terminal-input boundary
+	// consume that tail instead of typing it into the composer.
+	mouseInput string
+	// pendingEsc holds a lone ESC until the next input message proves whether
+	// it begins a fragmented SGR report. Only set when mouse reporting is on;
+	// a real Escape is dispatched by escFlushMsg or by the next ordinary key.
+	pendingEsc bool
+	// escSeq invalidates a timer whose ESC has already been claimed or
+	// dispatched.
+	escSeq int
+	// mouseEscSeen remembers that the immediately preceding key was ESC, so a
+	// bare "[" or "[<..." tail is recognised as protocol even after the
+	// deferred Escape timer has fired.
+	mouseEscSeen bool
+	// mouseEvents counts semantic reports recovered from printable runes.
+	// mouseReports counts every semantic report applied, including the whole
+	// ones Bubble Tea decoded itself. They are diagnostics for tests and trace
+	// output, never rendered.
+	mouseEvents  int
+	mouseReports int
+	// eventsApplied and viewsRendered are cadence diagnostics: one Update
+	// can fold many runtime events into one state transition, while Bubble
+	// Tea's renderer paints at its own 60 Hz cadence from the latest View.
+	// They are never rendered.
+	eventsApplied int
+	viewsRendered int
 
 	// live is the output-first presenter, set by RunLive and nil otherwise.
 	// When it is set, View returns only the live region and transcript blocks
@@ -829,7 +857,12 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p.handleKey(m)
 
 	case teaEvent:
+		// Apply the event we were handed and every event already waiting.
+		// One Update, one frame: a burst of stream deltas, tool progress, and
+		// metric updates is folded into one state transition before the
+		// renderer paints, instead of repainting once per fragment.
 		p.apply(m.event)
+		p.drainPendingEvents()
 		return p, p.waitForEvent()
 
 	case approvalPrompt:
@@ -847,13 +880,22 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, p.waitForApproval()
 
 	case tickMsg:
-		// The commit spinner shares the one spinner index and the one tick.
-		// Advancing it here keeps the activity line animating without a second
-		// timer, and the tick itself never blocks the update goroutine.
+		// The commit activity shares the one tick. Advancing it keeps the
+		// elapsed clocks and the label sweep moving without a second timer.
 		if p.state.Status.Busy || p.state.SupportBusy() || p.state.CommitActive() {
 			p.state.Status.Spinner = AdvanceSpinner(p.state.Status.Spinner, len(spinnerFrames))
 		}
 		return p, tick()
+
+	case escFlushMsg:
+		// The deferred Escape was not claimed by a fragmented report. Dispatch
+		// it now through the semantic path; a newer candidate has already
+		// advanced escSeq and makes this stale.
+		if m.seq != p.escSeq || !p.pendingEsc {
+			return p, nil
+		}
+		p.pendingEsc = false
+		return p.handleKeyCore(tea.KeyMsg{Type: tea.KeyEscape})
 
 	case turnFinishedMsg:
 		return p.drainQueue()
@@ -893,6 +935,13 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case tea.MouseMsg:
+		// A whole report from the terminal proves the preceding ESC (if any)
+		// belonged to protocol rather than the Escape key.
+		p.pendingEsc = false
+		p.escSeq++
+		p.mouseEscSeen = false
+		p.mouseInput = ""
+		p.mouseReports++
 		if p.live != nil {
 			// Output-first mode never requests a mouse mode, so the terminal
 			// never sends these and the handler below is unreachable here.
@@ -934,13 +983,13 @@ func wheelScrolls(s State) bool {
 }
 
 // composerMoveWidth is the wrap width the active composer renderer folds to.
-// The full-screen composer subtracts the live mode prefix ("ask > " is wider
-// than "> "), while live mode draws a fixed two-cell prompt. Movement must use
-// the same width the visible rows used, or up/down hop rows that are not there.
+// Both modes subtract the same authority prefix ("ask > " is wider than "> "),
+// so cursor movement uses the width the visible rows used and up/down never hop
+// rows that are not there.
 func (p *Program) composerMoveWidth() int {
 	layout := ComputeLayout(p.state)
 	if p.live != nil {
-		return liveComposerWidth(layout)
+		return liveComposerWidth(p.state, layout)
 	}
 	return composerTextWidthFor(p.state, layout)
 }
@@ -1079,6 +1128,7 @@ func (p *Program) onModelsRefreshed(m modelsRefreshedMsg) (tea.Model, tea.Cmd) {
 
 // apply folds an event into the state and reacts to the ones the program owns.
 func (p *Program) apply(event Event) {
+	p.eventsApplied++
 	p.state.Apply(event)
 	// A prompt joins durable history only when it actually becomes a turn.
 	// Drafts, ghost suggestions, queued lines that never run, and slash or
@@ -1093,13 +1143,65 @@ func (p *Program) apply(event Event) {
 	}
 }
 
-// handleKey processes a keypress.
+// handleKey isolates terminal protocol before any surface owns the key.
+//
+// Mouse reports recovered from printable runes are applied here, not in the
+// composer branch: a fragmented report must not reach a picker filter, a rename
+// buffer, or an approval prompt either. A deferred Escape is dispatched before
+// the key that disambiguated it, so ordering matches what the user pressed.
+func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	decoded := p.decodeTerminalInput(msg)
+	var cmds []tea.Cmd
+	cmds = append(cmds, decoded.cmds...)
+	if len(decoded.reports) > 0 {
+		cmds = append(cmds, p.dispatchTerminalMouse(decoded.reports)...)
+	}
+	model := tea.Model(p)
+	if decoded.flushEsc {
+		model, cmd := p.handleKeyCore(tea.KeyMsg{Type: tea.KeyEscape})
+		cmds = append(cmds, cmd)
+		if decoded.done {
+			return model, tea.Batch(cmds...)
+		}
+	}
+	if decoded.done {
+		return model, tea.Batch(cmds...)
+	}
+	model, cmd := p.handleKeyCore(decoded.msg)
+	cmds = append(cmds, cmd)
+	return model, tea.Batch(cmds...)
+}
+
+// dispatchTerminalMouse routes recovered reports through the same handler a
+// whole report uses. Live mode never requests a mouse mode, so it consumes the
+// bytes without inventing a viewport to hit-test.
+func (p *Program) dispatchTerminalMouse(reports []tea.MouseMsg) []tea.Cmd {
+	if len(reports) == 0 {
+		return nil
+	}
+	p.mouseEvents += len(reports)
+	p.mouseReports += len(reports)
+	if p.live != nil {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for _, report := range reports {
+		_, cmd := p.handleMouse(report)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return cmds
+}
+
+// handleKeyCore processes a semantic keypress after terminal protocol has been
+// removed.
 //
 // The wizard owns the keyboard while open: onboarding must finish before
 // any turn, command, or overlay can start underneath it. While an approval
 // prompt is open, keys answer it rather than compose a line: a tool is
 // blocked on that answer, so the prompt has to be modal.
-func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// A completed update owns the screen until the user explicitly exits. The
 	// running process is still the old binary, so ordinary interaction must
 	// not resume around a change that only takes effect on the next launch.
@@ -1351,15 +1453,18 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// the tool, mutates its result, or touches approval state. A
 		// modal overlay owns the keyboard while open, so this is a no-op
 		// until it closes.
-		id := p.state.LatestToolID()
-		if id == "" {
+		id, ok := p.state.LatestExpandableBlockID()
+		if !ok {
 			return p, nil
 		}
+		idx := p.state.BlockIndex(id)
 		expanding := true
-		if tool := p.state.tool(id); tool != nil {
-			expanding = !tool.Expanded
+		if idx >= 0 {
+			expanding = !entryExpanded(p.state.Entries[idx])
 		}
-		p.state.Apply(ToolToggled{ID: id})
+		if !p.state.ToggleBlock(id) {
+			return p, nil
+		}
 		if p.live != nil && expanding {
 			// Output-first owns sealed lines: a still-live block
 			// re-renders in place on the next frame, but an
@@ -1367,8 +1472,8 @@ func (p *Program) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// expanded projection prints once below as new scrollback.
 			// Collapsing flips state only — sealed lines stay where the
 			// terminal put them.
-			if idx := p.state.toolIndex(id); idx >= 0 && idx < p.live.painted {
-				if lines := expandedToolLines(p.state, id); len(lines) > 0 {
+			if idx >= 0 && idx < p.live.painted {
+				if lines := expandedBlockLines(p.state, id); len(lines) > 0 {
 					return p, printTranscript(lines)
 				}
 			}
@@ -2408,7 +2513,7 @@ func (p *Program) cancelTurnNow(note string) {
 	if text == "" {
 		text = "cancelled"
 	}
-	p.state.Apply(TurnCancelled{Seq: p.state.TurnSeq, Text: text})
+	p.state.Apply(TurnCancelled{Seq: p.state.TurnSeq, Text: text, At: time.Now()})
 }
 
 // queue holds a prompt typed while a turn runs. Past the cap it refuses with
@@ -3572,6 +3677,7 @@ func (p *Program) answer(approved bool, reason string) (tea.Model, tea.Cmd) {
 // commands, and re-rendering it as a frame would make the renderer own a
 // second copy of the scrollback.
 func (p *Program) View() string {
+	p.viewsRendered++
 	if p.wizard != nil {
 		return p.renderWizardFrame()
 	}
@@ -3725,6 +3831,25 @@ func (p *Program) closeDone() {
 		}
 		close(p.done)
 	})
+}
+
+// drainPendingEvents folds every already-published event into the current
+// frame.
+//
+// It never waits: an empty queue returns immediately, so the renderer is not
+// delayed and no event is dropped. The bound exists only so a producer that
+// outruns the update goroutine cannot monopolise a single frame indefinitely;
+// the next waitForEvent picks up anything left.
+func (p *Program) drainPendingEvents() {
+	const frameEventBudget = 512
+	for i := 0; i < frameEventBudget; i++ {
+		select {
+		case event := <-p.events:
+			p.apply(event)
+		default:
+			return
+		}
+	}
 }
 
 // waitForEvent returns a command that blocks for the next state event.
@@ -4744,22 +4869,54 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// open instead of dumping as one block when the turn completes. Only
 	// deltas that reach the event channel count as revealed — a dropped
 	// delta stays the completed turn's job below, never silently lost.
-	var live strings.Builder
+	var live, liveThinking strings.Builder
 	p.loop.SetTextDeltaHook(func(delta string) {
 		if delta == "" {
 			return
 		}
 		for _, chunk := range splitAssistantChunks(delta) {
-			if p.publishOK(AssistantDelta{Text: chunk, Seq: seq}) {
+			if p.publishOK(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq}) {
 				live.WriteString(chunk)
 			}
 		}
 	})
+	// Reasoning is its own channel, so the transcript can represent it as a
+	// collapsed block. It is published live for the same reason text is: a
+	// long trace must be observable while it is happening, not reconstructed
+	// from the completed message after the fact.
+	p.loop.SetThinkingDeltaHook(func(delta string) {
+		if delta == "" {
+			return
+		}
+		for _, chunk := range splitAssistantChunks(delta) {
+			if p.publishOK(ReasoningDelta{Text: chunk, At: time.Now(), Seq: seq}) {
+				liveThinking.WriteString(chunk)
+			}
+		}
+	})
+	// The progress hook carries only calls that reached execution. A refused,
+	// denied, or schema-invalid call never fires it, so the post-run pass
+	// below uses this ledger to publish the missing block with its real
+	// outcome. Without it the live transcript would hide exactly the failures
+	// the user most needs to see.
+	type publishedTool struct{ started, finished bool }
+	var (
+		publishedMu sync.Mutex
+		published   = map[string]publishedTool{}
+	)
+	recordTool := func(id string, started, finished bool) {
+		publishedMu.Lock()
+		state := published[id]
+		state.started = state.started || started
+		state.finished = state.finished || finished
+		published[id] = state
+		publishedMu.Unlock()
+	}
 	p.loop.SetToolProgressHook(func(progress agent.ToolProgress) {
 		switch progress.Stage() {
 		case agent.ProgressFinished:
 			text, truncated := TruncateForDisplay(progress.Result.Text, toolOutputLimit)
-			p.publish(ToolFinished{
+			ok := p.publishOK(ToolFinished{
 				ID:        progress.CallID,
 				Text:      text,
 				Summary:   CompactResultSummary(progress.Result.Text, progress.Result.IsError),
@@ -4769,6 +4926,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				At:        time.Now(),
 				Seq:       seq,
 			})
+			recordTool(progress.CallID, false, ok)
 			// A todo mutation is a meaningful task boundary: checkpoint it so
 			// an interruption afterwards recovers the real progress. The todo
 			// tool owns the list; the task layer only records its snapshot.
@@ -4779,15 +4937,16 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			// The announcement carries the call's arguments but no outcome
 			// yet, so the block opens with what the call will do rather
 			// than a blank name.
-			p.publish(ToolStarted{
+			ok := p.publishOK(ToolStarted{
 				ID:      progress.CallID,
 				Name:    progress.ToolName,
 				Summary: ToolSummaryForCall(progress.ToolName, progress.Args),
 				At:      time.Now(),
 				Seq:     seq,
 			})
+			recordTool(progress.CallID, ok, false)
 		default:
-			p.publish(ToolPreview{
+			p.publishOK(ToolPreview{
 				ID:      progress.CallID,
 				Summary: oneLine(progress.Result.Text),
 				Seq:     seq,
@@ -4916,17 +5075,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		}
 	}
 
-	if err != nil {
-		// A cancelled turn is an interruption, not a failure: reporting
-		// it as an error would read as though something broke. The single
-		// semantic cancellation already reached the transcript through
-		// TurnCancelled, so only real failures publish here.
-		if errors.Is(err, context.Canceled) {
-			p.publish(TurnCancelled{Seq: seq, Text: "cancelled"})
-		} else {
-			p.publish(Notice{Text: "error: " + err.Error()})
-		}
-	}
+	// The run's own error is announced at the end of the turn, after its tool
+	// outcomes and text have reached the transcript. Publishing it here made a
+	// terminal verdict appear before the refused proposals that produced it, so
+	// the transcript looked as though work continued after the task closed.
+	loopErr := err
+	reviewNotice := ""
 
 	// A loop that stops at the wall-clock bound returns nil; the deadline is
 	// still authoritative. Represent it as the resource stop it is, so the
@@ -4945,7 +5099,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if p.task.ProjectionReview != nil {
 		evidenceReview = p.task.ProjectionReview()
 	}
-	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange)
+	provenance := agent.EvidenceProvenance{}
+	if p.task.ProjectionProvenance != nil {
+		provenance = p.task.ProjectionProvenance()
+	}
+	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance)
 	// The turn boundary is also the evidence boundary. The loop projects
 	// before each request, but a run that stopped on a deadline, a turn limit,
 	// or its final answer may have an unobserved last turn. Folding it here
@@ -5027,6 +5185,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		} else if p.task.Pause != nil {
 			p.PublishTask(p.task.Pause(reason))
 		}
+		reviewNotice = strings.TrimSpace(reason)
 	case taskActionPause:
 		if p.task.Pause != nil {
 			p.PublishTask(p.task.Pause(reason))
@@ -5071,6 +5230,24 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// common prefix, so the tail publishes without duplicating: without live
 	// deltas (replayed or non-streaming transports) nothing was revealed and
 	// the whole turn publishes in bounded chunks as before.
+	// Reasoning omitted by a non-streaming transport is revealed before the
+	// answer, which is the order providers produce it. Text already revealed
+	// live is skipped by common prefix, exactly as before.
+	streamedThinking := liveThinking.String()
+	consumedThinking := 0
+	for _, turn := range turns {
+		if thinking := turn.Assistant.ThinkingText(); thinking != "" {
+			rest := thinking
+			if consumedThinking < len(streamedThinking) {
+				skip := commonPrefixLen(thinking, streamedThinking[consumedThinking:])
+				rest = thinking[skip:]
+				consumedThinking += skip
+			}
+			for _, chunk := range splitAssistantChunks(rest) {
+				p.publish(ReasoningDelta{Text: chunk, At: time.Now(), Seq: seq})
+			}
+		}
+	}
 	streamed := live.String()
 	consumed := 0
 	for _, turn := range turns {
@@ -5082,7 +5259,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				consumed += skip
 			}
 			for _, chunk := range splitAssistantChunks(rest) {
-				p.publish(AssistantDelta{Text: chunk, Seq: seq})
+				p.publish(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq})
 			}
 		}
 	}
@@ -5093,7 +5270,48 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// here (the loop's turn hook only publishes live metrics in UI mode —
 	// transcript text still travels through AssistantDelta events).
 	// They land in the turn's own session, never in a session created mid-turn.
-	for _, turn := range turns {
+	for _, rawTurn := range turns {
+		turn := agent.TranscriptTurn(rawTurn)
+		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
+			// The turn contained only answer-required control refusals. It
+			// produced no action and no visible text, so it has no transcript
+			// record.
+			continue
+		}
+		// A call that never reached execution (denied authority, grounding
+		// refusal, invalid arguments, budget stop) still produced a real
+		// outcome. Publish its block now so the live view shows what failed
+		// and the persisted result has a matching transcript card.
+		for _, outcome := range turn.Results {
+			publishedMu.Lock()
+			state := published[outcome.CallID]
+			publishedMu.Unlock()
+			if state.started && state.finished {
+				continue
+			}
+			if !state.started {
+				p.publish(ToolStarted{
+					ID:      outcome.CallID,
+					Name:    outcome.ToolName,
+					Summary: ToolSummaryForCall(outcome.ToolName, outcome.Args),
+					At:      time.Now(),
+					Seq:     seq,
+				})
+			}
+			if !state.finished || !state.started {
+				text, truncated := TruncateForDisplay(outcome.Result.Text, toolOutputLimit)
+				p.publish(ToolFinished{
+					ID:        outcome.CallID,
+					Text:      text,
+					Summary:   CompactResultSummary(outcome.Result.Text, outcome.Result.IsError),
+					Diff:      MutationDiff(outcome.Result.Details),
+					IsError:   outcome.Result.IsError,
+					Truncated: truncated,
+					At:        time.Now(),
+					Seq:       seq,
+				})
+			}
+		}
 		persistTo(agent.AssistantMessage{Message: turn.Assistant})
 		for _, outcome := range turn.Results {
 			persistTo(agent.ToolResultMessage{
@@ -5104,7 +5322,27 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			})
 		}
 	}
-	p.publish(AssistantDone{Seq: seq})
+	// The terminal verdict is the last content of the turn. Every outcome the
+	// run produced has already been published and persisted, so nothing can
+	// appear to happen after the runtime closed the task.
+	if loopErr != nil {
+		// A cancelled turn is an interruption, not a failure: reporting
+		// it as an error would read as though something broke. The single
+		// semantic cancellation already reached the transcript through
+		// TurnCancelled, so only real failures publish here.
+		if errors.Is(loopErr, context.Canceled) {
+			p.publish(TurnCancelled{Seq: seq, Text: "cancelled", At: time.Now()})
+		} else {
+			p.publish(Notice{Text: "error: " + loopErr.Error()})
+		}
+	}
+	// A review is the turn's terminal verdict, so it belongs at the end of
+	// the turn, where the reader looks after the answer. The task block also
+	// carries the durable reason, but it can be above the viewport by then.
+	if reviewNotice != "" {
+		p.publish(Notice{Text: reviewPrefix + " " + reviewNotice})
+	}
+	p.publish(AssistantDone{Seq: seq, At: time.Now()})
 }
 
 // resetSessionTelemetryLocked zeroes the live session's progressive-disclosure
@@ -5319,9 +5557,15 @@ func (p *Program) PublishUpdateAvailable(version string) {
 }
 
 // rebase rebuilds history from the request that was sent plus the new turns.
+// Answer-required control refusals are projected out so the next turn does not
+// inherit tool calls that were never actions.
 func rebase(request []agent.Message, turns []agent.Turn) []agent.Message {
 	out := append([]agent.Message(nil), request...)
-	for _, turn := range turns {
+	for _, rawTurn := range turns {
+		turn := agent.TranscriptTurn(rawTurn)
+		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
+			continue
+		}
 		out = append(out, agent.AssistantMessage{Message: turn.Assistant})
 		for _, outcome := range turn.Results {
 			out = append(out, agent.ToolResultMessage{

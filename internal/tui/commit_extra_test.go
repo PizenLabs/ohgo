@@ -355,8 +355,8 @@ func TestEditingEscapeCancelsTheEditNotTheProposal(t *testing.T) {
 func TestProjectThinkingNamesCommitExecution(t *testing.T) {
 	state := State{Commit: &CommitActivity{Phase: CommitExecuting, StartedAt: time.Now()}}
 	got := ProjectThinking(state)
-	if got.Phase != ThinkingCommit || got.Label != "Creating commit…" {
-		t.Errorf("ProjectThinking = %+v, want the execution label", got)
+	if got.Phase != ThinkingCommit || got.Label != "execute" || got.Detail != "commit" {
+		t.Errorf("ProjectThinking = %+v, want the execution phase", got)
 	}
 	if got.Interruptible {
 		t.Error("an execution was advertised as interruptible")

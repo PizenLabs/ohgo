@@ -116,21 +116,20 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: open %s: %w", path, err)
 	}
-	// A single writer connection serialises writes without relying on SQLite's
-	// busy timeout, which is the common source of "database is locked" under
-	// the driver's default pool.
+	// A single writer connection serialises writes within this process. A
+	// second process can still hold SQLite's write lock, so a busy timeout is
+	// required: without it the driver fails immediately with SQLITE_BUSY and
+	// the host disables session persistence for the rest of the run. Set it
+	// before the schema so concurrent startup is covered too.
 	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("session: enable busy timeout: %w", err)
+	}
 
-	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("session: apply schema: %w", err)
-	}
-	if err := migrate(db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	// Writes must survive a crash mid-session, otherwise a resumed
-	// conversation silently loses turns.
+	// conversation silently loses turns. Enable WAL before the schema so
+	// concurrent startup is covered by the same journal mode.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("session: enable WAL: %w", err)
@@ -138,6 +137,14 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("session: enable foreign keys: %w", err)
+	}
+	if _, err := db.Exec(schema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("session: apply schema: %w", err)
+	}
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
 	return &Store{db: db, path: path}, nil
@@ -328,31 +335,29 @@ func scanSessions(rows *sql.Rows) ([]Session, error) {
 
 // Append stores one message at the end of a session's transcript.
 //
-// The sequence number is assigned inside the same transaction as the insert so
-// a concurrent append cannot interleave and leave a gap or a duplicate.
+// The sequence number is assigned inside the INSERT statement, not by a
+// separate SELECT. Two processes appending to the same session therefore
+// serialise at SQLite's write lock and the second sees the first's row; with a
+// separate MAX query both could read the same value and one would fail the
+// UNIQUE(session_id, seq) constraint after waiting for the lock.
 func (s *Store) Append(sessionID int64, msg StoredMessage) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("session: encode message: %w", err)
 	}
 
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("session: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var next int
-	if err := tx.QueryRow(
-		`SELECT COALESCE(MAX(seq), -1) + 1 FROM messages WHERE session_id = ?`, sessionID,
-	).Scan(&next); err != nil {
-		return fmt.Errorf("session: next seq: %w", err)
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.Exec(
-		`INSERT INTO messages (session_id, seq, role, payload, created_at) VALUES (?, ?, ?, ?, ?)`,
-		sessionID, next, msg.Role, payload, now,
+		`INSERT INTO messages (session_id, seq, role, payload, created_at)
+		 SELECT ?, COALESCE(MAX(seq), -1) + 1, ?, ?, ?
+		 FROM messages WHERE session_id = ?`,
+		sessionID, msg.Role, payload, now, sessionID,
 	); err != nil {
 		return fmt.Errorf("session: insert message: %w", err)
 	}
@@ -613,8 +618,39 @@ type StoredMessage struct {
 	Model string `json:"model,omitempty"`
 	// StopReason is why an assistant turn ended.
 	StopReason string `json:"stopReason,omitempty"`
-	// Calls holds the tool calls an assistant turn requested.
+	// Calls holds the tool calls an assistant turn requested. It remains the
+	// legacy projection for rows written before ordered blocks were stored.
 	Calls []StoredToolCall `json:"calls,omitempty"`
+	// Blocks preserves the assistant turn's content order. Text, reasoning,
+	// and tool calls are different presentation blocks and different model
+	// context; flattening them into Text plus Calls made a resumed transcript
+	// reorder the conversation and lose reasoning entirely.
+	Blocks []StoredBlock `json:"blocks,omitempty"`
+}
+
+// Stored block kinds.
+const (
+	StoredBlockText     = "text"
+	StoredBlockThinking = "thinking"
+	StoredBlockToolCall = "toolCall"
+)
+
+// StoredBlock is one ordered content block of an assistant turn.
+//
+// It is a durable projection of the canonical ai.ContentBlock, not a provider
+// wire shape: a resumed session can rebuild exactly what the model saw and
+// what the transcript showed, while still being transport-neutral.
+type StoredBlock struct {
+	// Kind is text, thinking, or toolCall.
+	Kind string `json:"kind"`
+	// Text is the content for text and thinking blocks.
+	Text string `json:"text,omitempty"`
+	// Signature is the provider proof attached to a thinking block.
+	Signature string `json:"signature,omitempty"`
+	// ID, Name, and Arguments identify a tool call.
+	ID        string         `json:"id,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
 // StoredToolCall is one persisted tool call.
@@ -637,9 +673,25 @@ func FromAgentMessage(msg agent.Message) (StoredMessage, error) {
 			StopReason: string(m.Message.StopReason),
 		}
 		for _, block := range m.Message.Content {
-			if call, ok := block.(ai.ToolCall); ok {
+			switch b := block.(type) {
+			case ai.TextContent:
+				if b.Text == "" {
+					continue
+				}
+				out.Blocks = append(out.Blocks, StoredBlock{Kind: StoredBlockText, Text: b.Text})
+			case ai.ThinkingContent:
+				if b.Thinking == "" && b.Signature == "" {
+					continue
+				}
+				out.Blocks = append(out.Blocks, StoredBlock{
+					Kind: StoredBlockThinking, Text: b.Thinking, Signature: b.Signature,
+				})
+			case ai.ToolCall:
 				out.Calls = append(out.Calls, StoredToolCall{
-					ID: call.ID, Name: call.Name, Arguments: call.Arguments,
+					ID: b.ID, Name: b.Name, Arguments: b.Arguments,
+				})
+				out.Blocks = append(out.Blocks, StoredBlock{
+					Kind: StoredBlockToolCall, ID: b.ID, Name: b.Name, Arguments: b.Arguments,
 				})
 			}
 		}
@@ -668,15 +720,38 @@ func ToAgentMessage(stored StoredMessage) (agent.Message, error) {
 		return agent.UserMessage{Text: stored.Text}, nil
 	case "assistant":
 		var content []ai.ContentBlock
-		if stored.Text != "" {
-			content = append(content, ai.TextContent{Text: stored.Text})
-		}
-		for _, call := range stored.Calls {
-			args := call.Arguments
-			if args == nil {
-				args = map[string]any{}
+		if len(stored.Blocks) > 0 {
+			for _, block := range stored.Blocks {
+				switch block.Kind {
+				case StoredBlockText:
+					if block.Text != "" {
+						content = append(content, ai.TextContent{Text: block.Text})
+					}
+				case StoredBlockThinking:
+					content = append(content, ai.ThinkingContent{
+						Thinking: block.Text, Signature: block.Signature,
+					})
+				case StoredBlockToolCall:
+					args := block.Arguments
+					if args == nil {
+						args = map[string]any{}
+					}
+					content = append(content, ai.ToolCall{ID: block.ID, Name: block.Name, Arguments: args})
+				}
 			}
-			content = append(content, ai.ToolCall{ID: call.ID, Name: call.Name, Arguments: args})
+		} else {
+			// Rows written before ordered blocks: rebuild the historical
+			// projection exactly as it was stored.
+			if stored.Text != "" {
+				content = append(content, ai.TextContent{Text: stored.Text})
+			}
+			for _, call := range stored.Calls {
+				args := call.Arguments
+				if args == nil {
+					args = map[string]any{}
+				}
+				content = append(content, ai.ToolCall{ID: call.ID, Name: call.Name, Arguments: args})
+			}
 		}
 		return agent.AssistantMessage{Message: ai.AssistantMessage{
 			Content:    content,

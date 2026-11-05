@@ -47,6 +47,16 @@ type TaskShape struct {
 	// RepositoryScope reports that the request is about the repository itself
 	// rather than a general question.
 	RepositoryScope bool `json:"repositoryScope,omitempty"`
+	// BroadRepositoryAnalysis reports that the objective is a repository-wide
+	// account (purpose, structure, stack) rather than one targeted fact. It is
+	// the boundary where documentation claims must stay distinguishable from
+	// observed implementation facts.
+	BroadRepositoryAnalysis bool `json:"broadRepositoryAnalysis,omitempty"`
+	// RepositoryFacts is the bounded workspace probe captured when the shape
+	// was built. Sufficiency uses it to decide whether a broad account needs an
+	// implementation observation or documentation alone is all the project
+	// has.
+	RepositoryFacts RepositoryFacts `json:"repositoryFacts,omitempty"`
 	// NeedsCodeNavigation reports that structural code navigation is relevant
 	// (a symbol/package target, debugging, refactoring, or test work).
 	NeedsCodeNavigation bool `json:"needsCodeNavigation,omitempty"`
@@ -196,6 +206,14 @@ func (f RepositoryFacts) HasLanguage(language string) bool {
 	}
 }
 
+// HasSourceCode reports whether the probe found a language whose
+// implementation can be observed directly. A project with only documentation
+// may still have a complete survey; a code project needs at least one source
+// or structural observation before a broad account can be called sufficient.
+func (f RepositoryFacts) HasSourceCode() bool {
+	return f.Go || f.JavaScript || f.Python || f.Rust
+}
+
 // ProbeFacts reads a few marker files at the workspace root.
 //
 // The probe is deliberately bounded and silent: a missing or unreadable marker
@@ -284,10 +302,11 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		authority = "build"
 	}
 	shape := TaskShape{
-		Version:   ShapeVersion,
-		Objective: strings.TrimSpace(intent.Objective),
-		Kind:      intent.Kind,
-		Intent:    strings.ToLower(strings.TrimSpace(params.Intent)),
+		Version:         ShapeVersion,
+		Objective:       strings.TrimSpace(intent.Objective),
+		Kind:            intent.Kind,
+		Intent:          strings.ToLower(strings.TrimSpace(params.Intent)),
+		RepositoryFacts: params.Facts,
 		Authority: Authority{
 			Workspace:        authority,
 			ExecutionAllowed: authority == "build" || authority == "fuzz",
@@ -308,6 +327,7 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 	}
 
 	shape.RepositoryScope = repositoryScope(shape.Objective, intent)
+	shape.BroadRepositoryAnalysis = shape.RepositoryScope && broadRepositoryAnalysis(shape.Objective, intent)
 	shape.NeedsCodeNavigation = needsCodeNavigation(shape.Objective, intent)
 	shape.NeedsRelationshipNavigation = needsRelationshipNavigation(shape.Objective)
 	// An explicit Gry/MCP request is structural by definition.
@@ -439,18 +459,35 @@ func (s TaskShape) Summary() string {
 
 // repositoryScope reports whether the request is about the repository itself.
 //
-// Two rules, both conservative. A determiner-bound repository noun ("this
+// The rules are conservative. A determiner-bound repository noun ("this
 // workflow", "the tests") points at this repository's artifact. A deictic
 // reference ("this", "our") combined with a hosting or CI noun ("GitHub", "the
 // pipeline") also does: the question is about what this repository does, and
-// the answer lives in its configuration. A general knowledge question ("what is
-// a cron expression?", "what is the best CI?") matches neither.
+// the answer lives in its configuration. A short compound such as "project
+// overview" carries the subject itself, and a breadth word with a structural
+// concept ("overall structure") refers to the object in front of the agent. A
+// general knowledge question ("what is a cron expression?", "what is the best
+// CI?") matches none of them.
 func repositoryScope(objective string, intent contract.IntentContract) bool {
 	normalized := " " + normalizeWords(objective) + " "
 	for _, phrase := range repositoryPhrases {
 		if strings.Contains(normalized, phrase) {
 			return true
 		}
+	}
+	if containsAnyPhrase(normalized, repositorySubjectPhrases) {
+		return true
+	}
+	if containsAnyPhrase(normalized, wholeRepositoryPhrases) ||
+		containsAnyPhrase(normalized, shortRepositorySubjectPhrases) {
+		return true
+	}
+	// "Investigate the overall structure" refers to the object in front of the
+	// agent even though it does not repeat "repository". The breadth word and
+	// a structural concept together are the repository-scope signal.
+	if containsAnyPhrase(normalized, broadScopePhrases) &&
+		containsAnyPhrase(normalized, structuralConceptPhrases) {
+		return true
 	}
 	if hasDeicticReference(normalized) && containsAnyWord(normalized, repositoryArtifactWords) {
 		return true
@@ -466,7 +503,10 @@ var repositoryPhrases = []string{
 	" this project ", " the project ", " this repository ", " the repository ",
 	" this repo ", " the repo ", " this codebase ", " the codebase ",
 	" this code ", " the code ", " this tool ", " the tool ",
-	" this application ", " the application ", " this workspace ", " the workspace ",
+	" this application ", " the application ", " this app ", " the app ",
+	" this workspace ", " the workspace ",
+	" this system ", " the system ", " this program ", " the program ",
+	" this product ", " the product ",
 	" this workflow ", " the workflow ", " this ci ", " the ci ",
 	" this pipeline ", " the pipeline ", " this release ", " the release ",
 	" this deployment ", " the deployment ", " this deploy ", " the deploy ",
@@ -647,6 +687,174 @@ func requestsContent(objective string) bool {
 	return false
 }
 
+// broadRepositoryAnalysis reports whether the request's objective is a
+// repository-wide account rather than one targeted fact.
+//
+// The decision is semantic and deterministic: an explicit repository subject
+// ("this project", "the codebase", "the system") combined with an
+// understanding/overview/architecture concept is broad, even when the wording
+// is not one of the canonical phrases. A named coordinate or a specific
+// artifact ("this project's license", "the test suite") stays narrow unless
+// the request explicitly widens to the whole repository. This is deliberately
+// concept-based rather than a phrase whitelist: unusual formulations of the
+// same objective must not fall back to the single-observation policy.
+func broadRepositoryAnalysis(objective string, intent contract.IntentContract) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	subject := containsAnyPhrase(normalized, repositorySubjectPhrases) ||
+		containsAnyPhrase(normalized, shortRepositorySubjectPhrases)
+	wholeRepository := containsAnyPhrase(normalized, wholeRepositoryPhrases)
+	wholeScope := wholeRepository || containsAnyPhrase(normalized, broadScopePhrases)
+	structural := containsAnyPhrase(normalized, structuralConceptPhrases)
+	understanding := containsAnyPhrase(normalized, understandingConceptPhrases)
+	narrowArtifact := containsAnyPhrase(normalized, narrowArtifactPhrases)
+
+	// A named coordinate is a targeted objective. Only an explicit "whole
+	// repository" request widens it again; "overall structure of the parser
+	// package" is still about one package.
+	if len(intent.Targets) > 0 && !wholeRepository {
+		return false
+	}
+	// A specific artifact is narrow even when the sentence says "explain" or
+	// "summarize". "Explain this project's license" is not an architecture
+	// survey.
+	if narrowArtifact && !wholeRepository && !structural {
+		return false
+	}
+	if wholeScope && (subject || structural || understanding) {
+		return true
+	}
+	if subject && (understanding || structural) {
+		return true
+	}
+	if subject && strings.Contains(normalized, " about ") {
+		return true
+	}
+	if subject && purposeQuestion(normalized) {
+		return true
+	}
+	if subject && howItWorks(normalized) {
+		return true
+	}
+	return false
+}
+
+// repositorySubjectPhrases are determiner-bound references to the repository
+// as the subject of the request. They are matched with surrounding spaces.
+var repositorySubjectPhrases = []string{
+	" this project ", " the project ", " this repository ", " the repository ",
+	" this repo ", " the repo ", " this codebase ", " the codebase ",
+	" this code ", " the code ", " this workspace ", " the workspace ",
+	" this system ", " the system ", " this application ", " the application ",
+	" this app ", " the app ", " this program ", " the program ",
+	" this product ", " the product ", " this tool ", " the tool ",
+	" project is this ", " repository is this ", " repo is this ",
+	" codebase is this ", " system is this ", " application is this ",
+	" app is this ", " tool is this ", " product is this ",
+}
+
+// shortRepositorySubjectPhrases are compact, unambiguous projections of the
+// repository subject ("project overview", "repo architecture"). They carry a
+// structural or overview concept themselves, so they cannot be mistaken for a
+// general question about an arbitrary project.
+var shortRepositorySubjectPhrases = []string{
+	" project overview ", " repository overview ", " repo overview ",
+	" codebase overview ", " system overview ", " project architecture ",
+	" repository architecture ", " repo architecture ", " codebase architecture ",
+	" project structure ", " repository structure ", " repo structure ",
+	" codebase structure ",
+}
+
+// wholeRepositoryPhrases explicitly widen the objective to the entire
+// repository. They are the only phrases that override a named coordinate.
+var wholeRepositoryPhrases = []string{
+	" as a whole ", " whole project ", " whole repository ", " whole repo ",
+	" whole codebase ", " whole system ", " entire project ", " entire repository ",
+	" entire repo ", " entire codebase ", " entire system ", " end to end ",
+	" everything in this project ", " everything in the project ",
+	" everything in this repository ", " everything in the repository ",
+}
+
+// broadScopePhrases widen the objective without necessarily naming the whole
+// repository. "Investigate the overall structure" is broad even though it does
+// not repeat "repository".
+var broadScopePhrases = []string{
+	" overall ", " high level ", " high-level ", " big picture ",
+	" comprehensive ", " comprehensive overview ", " general overview ",
+	" full overview ", " broad overview ", " complete overview ",
+}
+
+// structuralConceptPhrases name the architecture/structure family.
+var structuralConceptPhrases = []string{
+	" architecture ", " architectural ", " structure ", " structural ",
+	" component ", " components ", " module ", " modules ", " subsystem ",
+	" subsystems ", " organization ", " organisation ", " layout ",
+	" design ", " stack ", " technology stack ", " technologies ",
+	" directory layout ", " directory structure ",
+}
+
+// understandingConceptPhrases name an objective to understand, explain, or
+// summarize. The stems cover inflections without listing every phrase.
+var understandingConceptPhrases = []string{
+	" understand ", " understanding ", " explain ", " explains ", " explaining ",
+	" explanation ", " describe ", " describes ", " describing ", " description ",
+	" summarize ", " summarise ", " summarizes ", " summarises ", " summary ",
+	" analyze ", " analyse ", " analyzes ", " analyses ", " analysis ",
+	" inspect ", " inspection ", " investigate ", " investigation ",
+	" explore ", " exploration ", " review ", " overview ", " walkthrough ",
+	" purpose ", " functionality ", " capabilities ", " works ", " working ",
+	" operate ", " operates ", " how it works ", " how this works ",
+	" figure out ", " learn ", " tell me ", " help me ",
+	" walk me through ", " get oriented ", " break down ",
+}
+
+// narrowArtifactPhrases name a specific repository artifact. A question about
+// one of these is targeted, not a whole-project account.
+var narrowArtifactPhrases = []string{
+	" license ", " licence ", " version ", " readme ", " test ", " tests ",
+	" suite ", " workflow ", " workflows ", " ci ", " pipeline ", " pipelines ",
+	" config ", " configuration ", " script ", " scripts ", " command ",
+	" commands ", " commit ", " commits ", " branch ", " branches ",
+	" build ", " builds ", " release ", " releases ", " deploy ", " deployment ",
+	" dependency ", " dependencies ", " file ", " files ", " line ", " lines ",
+	" function ", " functions ", " symbol ", " symbols ", " package ",
+	" packages ", " struct ", " interface ", " method ", " methods ",
+	" error ", " errors ", " bug ", " bugs ", " issue ", " issues ",
+}
+
+// containsAnyPhrase reports whether normalized text contains any phrase. The
+// phrase list is expected to carry its own surrounding spaces.
+func containsAnyPhrase(normalized string, phrases []string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// purposeQuestion reports whether the request asks what the repository is or
+// does. A yes/no question ("does this system run automatically?") is targeted
+// behaviour, not a whole-project account.
+func purposeQuestion(normalized string) bool {
+	trimmed := strings.TrimSpace(normalized)
+	if !strings.HasPrefix(trimmed, "what ") && !strings.HasPrefix(trimmed, "whats ") {
+		return false
+	}
+	return strings.Contains(trimmed, " is ") || strings.Contains(trimmed, " are ") ||
+		strings.Contains(trimmed, " does ") || strings.Contains(trimmed, " do ")
+}
+
+// howItWorks reports an objective to understand the mechanism of the whole.
+func howItWorks(normalized string) bool {
+	if !strings.Contains(normalized, " how ") {
+		return false
+	}
+	return containsAnyPhrase(normalized, []string{
+		" works ", " work ", " operates ", " functions ", " fits together ",
+		" put together ", " organized ", " organised ", " structured ",
+	})
+}
+
 // requiredKnowledge derives the evidence needs from the shape.
 func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []KnowledgeNeed {
 	var needs []KnowledgeNeed
@@ -658,8 +866,19 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 		}
 		needs = append(needs, KnowledgeNeed{Key: key, Reason: reason})
 	}
+	// An explicit external requirement is evidence the runtime must observe,
+	// not a preference. Treating it as satisfied by local files let the
+	// projector close the action surface and demand an answer that the
+	// completion evaluator would then reject for lacking external evidence.
+	if shape.External.Required {
+		add("external_observation", "the request explicitly requires knowledge from an external capability")
+	}
+	stateReason := "the named repository path must be known"
+	if shape.Kind == contract.ObjectiveMutation {
+		stateReason = "the target's pre-change state must be known before it is changed"
+	}
 	for _, path := range shape.Mutation.Paths {
-		add("target_state:"+path, "the target's pre-change state must be known before it is changed")
+		add("target_state:"+path, stateReason)
 	}
 	for _, target := range intent.Targets {
 		switch target.Kind {
@@ -684,7 +903,7 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 		for _, path := range shape.Mutation.Paths {
 			add("target_state:"+path, "the answer names a concrete repository path")
 			if requestsContent(shape.Objective) {
-				add("target_content:"+path, "the answer needs the file's contents, not merely its presence")
+				add("target_content:"+path, "the answer needs the path's contents, not merely its presence")
 			}
 		}
 		for _, target := range intent.Targets {
@@ -695,6 +914,9 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 		}
 		if shape.RepositoryScope {
 			add("repository_overview", "the answer is about the repository")
+			if shape.BroadRepositoryAnalysis {
+				add("repository_survey", "a broad overview needs a second content observation or the repository's structure")
+			}
 		}
 	}
 	return needs

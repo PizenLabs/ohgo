@@ -54,6 +54,16 @@ type TranscriptLayout struct {
 	blocks []blockLayout
 	rows   *fenwick
 	byID   map[BlockID]int
+	// activity is the transcript position of the one running tool that owns
+	// the current activity, or -1. Tracking the previous owner lets an append
+	// re-render the old live row when a newer call takes over: two concurrent
+	// tools must not both keep the prominent running projection.
+	activity int
+	// tick is the shared animation/elapsed frame last folded into the cached
+	// projections, and tickValid distinguishes "frame zero" from "not yet
+	// seen". A changed tick re-renders the one live clock, never history.
+	tick      int
+	tickValid bool
 	// LastRendered is the number of block projections produced by the most
 	// recent Refresh. It exists for benchmarks and diagnostics: viewport
 	// interaction must not grow this with total document size.
@@ -75,11 +85,21 @@ type blockLayout struct {
 	id       BlockID
 	index    int
 	rev      uint64
-	spinner  int
+	tick     int
+	current  bool
 	kind     EntryKind
 	expanded bool
-	lines    []string
-	widths   []int
+	// groupEnd records whether this block closes a compact action group.
+	// Consecutive tool calls share one visual stream; only the last call in
+	// the run carries the expand hint. Adjacency is part of the cached
+	// projection, so appending a tool invalidates the previous tool's hint.
+	groupEnd bool
+	// leadingGap records that this block owns the gap after a tool run.
+	// The gap is never owned by the tool, so appending another tool does not
+	// change the previous block's height.
+	leadingGap bool
+	lines      []string
+	widths     []int
 }
 
 func keyFor(state State, layout Layout) layoutKey {
@@ -105,8 +125,11 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 	defer state.clearDirty()
 	key := keyFor(*state, layout)
 	entries := state.Entries
-	frame := spinnerFrame(state.Status.Spinner)
-	spinner := state.Status.Spinner
+	tick := state.Status.Spinner
+	current := latestRunningToolIndex(*state)
+	tickChanged := l.tickValid && l.tick != tick
+	l.tick = tick
+	l.tickValid = true
 	l.LastRendered = 0
 	l.Reflowed = false
 	keyChanged := l.rows != nil && l.key != key
@@ -117,11 +140,12 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 		pal := PaletteFor(state.Theme)
 		l.Reflowed = keyChanged
 		l.key = key
+		l.activity = current
 		l.blocks = make([]blockLayout, len(entries))
 		l.byID = make(map[BlockID]int, len(entries))
 		for i := range entries {
 			id := blockIDAt(entries, i)
-			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner))
+			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, tick, current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i))
 			l.byID[id] = i
 			l.LastRendered++
 		}
@@ -140,16 +164,40 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 	// changed, so this path never scans the whole history: untouched blocks
 	// keep their cached rows and their cached heights.
 	grown := len(entries) - len(l.blocks)
-	if grown == 0 && len(state.dirty) == 0 {
+	dirty := state.dirty
+	previousActivity := l.activity
+	l.activity = current
+	if previousActivity != current {
+		// The live row is a projection of "who owns the activity", not only of
+		// the entry it belongs to. Re-render the old owner when a newer call
+		// takes over, so exactly one row stays visually live.
+		if previousActivity >= 0 && previousActivity < len(entries) {
+			dirty = append(append([]int(nil), dirty...), previousActivity)
+		}
+		if current >= 0 && current < len(entries) {
+			dirty = append(dirty, current)
+		}
+	}
+	if tickChanged {
+		// Only the one live clock and an open reasoning head depend on the
+		// tick. Appending just those indices keeps settled history cached.
+		if current >= 0 && current < len(entries) {
+			dirty = append(dirty, current)
+		}
+		if open := state.openReasoning(); open >= 0 {
+			dirty = append(dirty, open)
+		}
+	}
+	if grown == 0 && len(dirty) == 0 {
 		return
 	}
 	pal := PaletteFor(state.Theme)
 	if grown > 0 {
 		l.blocks = append(l.blocks, make([]blockLayout, grown)...)
 	}
-	changed := make([]int, 0, len(state.dirty)+grown)
-	seen := make(map[int]struct{}, len(state.dirty))
-	for _, i := range state.dirty {
+	changed := make([]int, 0, len(dirty)+grown)
+	seen := make(map[int]struct{}, len(dirty))
+	for _, i := range dirty {
 		if i < 0 || i >= len(entries) {
 			continue
 		}
@@ -162,12 +210,12 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 			// hint list already names them.
 			continue
 		}
-		if l.blocks[i].id == blockIDAt(entries, i) && !blockStale(l.blocks[i], entries[i], entrySpinner(entries[i], spinner)) {
+		if l.blocks[i].id == blockIDAt(entries, i) && !blockStale(l.blocks[i], entries[i], entryTick(entries[i], tick, current == i), current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i)) {
 			continue
 		}
 		oldID := l.blocks[i].id
 		id := blockIDAt(entries, i)
-		l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner))
+		l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, tick, current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i))
 		if l.byID != nil && oldID != id {
 			delete(l.byID, oldID)
 			l.byID[id] = i
@@ -177,9 +225,21 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 	}
 	if grown > 0 {
 		newStart := len(l.blocks) - grown
+		// The first appended block may close a previous tool group. Its
+		// adjacency changed from "end of document" to "followed by a tool",
+		// so its cached separator must be recomputed even though Apply never
+		// named it dirty.
+		if newStart > 0 {
+			prev := newStart - 1
+			if l.blocks[prev].groupEnd != entryGroupEnd(entries, prev) {
+				l.blocks[prev] = l.renderBlock(entries[prev], prev, blockIDAt(entries, prev), pal, layout, tick, current == prev, entryGroupEnd(entries, prev), entryLeadingGap(entries, prev))
+				l.LastRendered++
+				changed = append(changed, prev)
+			}
+		}
 		for i := newStart; i < len(entries); i++ {
 			id := blockIDAt(entries, i)
-			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, frame, entrySpinner(entries[i], spinner))
+			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, tick, current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i))
 			if l.byID == nil {
 				l.byID = make(map[BlockID]int, len(entries))
 				for j := 0; j < i; j++ {
@@ -216,21 +276,30 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 	}
 }
 
-func blockStale(cached blockLayout, entry Entry, spinner int) bool {
+func blockStale(cached blockLayout, entry Entry, tick int, current bool, groupEnd, leadingGap bool) bool {
+	adjacency := cached.groupEnd != groupEnd || cached.leadingGap != leadingGap
 	if entry.rev == 0 {
-		return cached.rev != fixtureRevision(entry) || cached.spinner != spinner ||
-			cached.kind != entry.Kind || cached.expanded != entryExpanded(entry)
+		return cached.rev != fixtureRevision(entry) || cached.tick != tick || cached.current != current ||
+			cached.kind != entry.Kind || cached.expanded != entryExpanded(entry) || adjacency
 	}
-	return cached.rev != entry.rev || cached.spinner != spinner ||
-		cached.kind != entry.Kind || cached.expanded != entryExpanded(entry)
+	return cached.rev != entry.rev || cached.tick != tick || cached.current != current ||
+		cached.kind != entry.Kind || cached.expanded != entryExpanded(entry) || adjacency
 }
 
-// entrySpinner isolates the one animation input that changes a block's
-// projection without changing its entry. Elapsed time in the badge is the
-// reason a running block must repaint on the tick.
-func entrySpinner(entry Entry, spinner int) int {
-	if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.Status == ToolRunning {
-		return spinner
+// entryTick isolates the one presentation input that changes a running block
+// without changing its entry: the live elapsed time. Only the current activity
+// owns that clock, so concurrent calls keep stable rows and only one of them is
+// visually live.
+func entryTick(entry Entry, tick int, current bool) int {
+	if current {
+		return tick
+	}
+	// An open reasoning head carries an elapsed time, so it also needs the
+	// tick while the runtime is still producing the trace. It is not the
+	// prominent activity (the reasoning glyph is deliberately subordinate),
+	// but its measured duration must keep advancing.
+	if entry.Kind == EntryReasoning && entry.Reasoning != nil && !entry.Reasoning.Closed {
+		return tick
 	}
 	return 0
 }
@@ -244,6 +313,15 @@ func fixtureRevision(entry Entry) uint64 {
 	_, _ = h.Write([]byte(entry.ID))
 	_, _ = h.Write([]byte(entry.UserText))
 	_, _ = h.Write([]byte(entry.AssistantText))
+	if entry.Reasoning != nil {
+		_, _ = h.Write([]byte(entry.Reasoning.Text))
+		if entry.Reasoning.Expanded {
+			_, _ = h.Write([]byte{1})
+		}
+		if entry.Reasoning.Closed {
+			_, _ = h.Write([]byte{2})
+		}
+	}
 	_, _ = h.Write([]byte(entry.Notice))
 	_, _ = h.Write([]byte(entry.SupportText))
 	if entry.Tool != nil {
@@ -253,6 +331,9 @@ func fixtureRevision(entry Entry) uint64 {
 		_, _ = h.Write([]byte(entry.Tool.Invocation))
 		_, _ = h.Write([]byte(entry.Tool.Summary))
 		_, _ = h.Write([]byte(entry.Tool.Text))
+		if entry.Tool.Streaming {
+			_, _ = h.Write([]byte{3})
+		}
 		if entry.Tool.Expanded {
 			_, _ = h.Write([]byte{1})
 		}
@@ -275,26 +356,57 @@ func fixtureRevision(entry Entry) uint64 {
 	return h.Sum64()
 }
 
-func (l *TranscriptLayout) renderBlock(entry Entry, index int, id BlockID, pal *Palette, layout Layout, frame string, spinner int) blockLayout {
+func (l *TranscriptLayout) renderBlock(entry Entry, index int, id BlockID, pal *Palette, layout Layout, tick int, current bool, groupEnd, leadingGap bool) blockLayout {
 	b := blockLayout{
-		id:       id,
-		index:    index,
-		rev:      entry.rev,
-		spinner:  spinner,
-		kind:     entry.Kind,
-		expanded: entryExpanded(entry),
+		id:         id,
+		index:      index,
+		rev:        entry.rev,
+		tick:       entryTick(entry, tick, current),
+		current:    current,
+		kind:       entry.Kind,
+		expanded:   entryExpanded(entry),
+		groupEnd:   groupEnd,
+		leadingGap: leadingGap,
 	}
 	if entry.rev == 0 {
 		b.rev = fixtureRevision(entry)
 	}
 	var sb strings.Builder
-	renderEntry(&sb, entry, pal, layout, frame)
+	renderEntryGrouped(&sb, entry, pal, layout, current, groupEnd, leadingGap)
 	b.lines = entryLines(sb.String())
 	b.widths = make([]int, len(b.lines))
 	for i, line := range b.lines {
 		b.widths[i] = CellWidth(line)
 	}
 	return b
+}
+
+// entryGroupEnd reports whether index closes a compact action group.
+//
+// A run of adjacent tool calls is one visual stream: only the last call keeps
+// the separator row. Everything else is its own block and keeps its existing
+// spacing. Adjacency is a projection fact, not semantic state, so it lives
+// with the layout rather than on the Entry.
+func entryGroupEnd(entries []Entry, index int) bool {
+	if index < 0 || index >= len(entries) {
+		return false
+	}
+	if entries[index].Kind != EntryTool {
+		return false
+	}
+	return index+1 >= len(entries) || entries[index+1].Kind != EntryTool
+}
+
+// entryLeadingGap reports whether this block owns the gap after a tool run.
+//
+// A tool never writes a trailing separator. The next non-tool block writes the
+// leading gap instead, so appending a tool to a run cannot change the height
+// of a block that is already on screen.
+func entryLeadingGap(entries []Entry, index int) bool {
+	if index <= 0 || index >= len(entries) {
+		return false
+	}
+	return entries[index-1].Kind == EntryTool && entries[index].Kind != EntryTool
 }
 
 // entryLines turns one entry's rendered projection into its visual rows.

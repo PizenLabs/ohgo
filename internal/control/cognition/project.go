@@ -124,6 +124,20 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// proven change followed by a successful check must not be downgraded just
 	// because the grant ran out at the closing answer.
 	suff := EvaluateSufficiency(shape, p.Evidence, execution, false)
+	// An external requirement with no external capability in the constructed
+	// action space cannot be satisfied by another model turn. Treat it as the
+	// capability failure it is, so the model gets one report opportunity and
+	// the terminal reason names the real gap instead of a generic empty surface.
+	if onlyExternalRemains(shape, suff) && !hasExternalCapability(req.Tools) {
+		suff.State = Blocked
+		suff.Stage = StageBlocked
+		suff.Kind = BlockCapabilityFailure
+		suff.Reasons = append([]string{
+			"the request requires external knowledge but no external capability is available",
+		}, suff.Reasons...)
+		suff.Missing = []string{"external_observation"}
+	}
+	failures := p.Evidence.FailureState()
 	candidates := Candidates(shape, p.Evidence, execution, req.Tools, p.Facts, suff)
 
 	// Evidence-aware stop: an informational objective is an answer, and an
@@ -153,6 +167,19 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	report.Excluded = candidates.Excluded
 	report.Sufficiency = string(suff.State)
 	report.Stage = string(suff.Stage)
+	// An informational task whose required evidence is known is done
+	// observing. If the model answers in the same turn as a tool call, the
+	// answer is final and the call is continuation, not evidence gathering.
+	// A blocked capability has the same answer boundary: the runtime cannot
+	// acquire more evidence, so the next visible text is the candidate report.
+	report.AnswerEligible = shape.Kind == contract.ObjectiveInformational &&
+		((shape.RepositoryScope && (suff.Stage == StageAnswer || suff.Stage == StageComplete)) ||
+			suff.Kind == BlockCapabilityFailure)
+	report.Terminal = suff.Kind == BlockCapabilityFailure
+	if report.Terminal {
+		report.StopReason = "the task is blocked: " + strings.Join(suff.Reasons, "; ")
+	}
+	report.Provenance = p.Evidence.Provenance(shape)
 	report.Shape = shape.Summary()
 	report.Evidence = evidenceSummary(p.Evidence, suff, execution)
 	report.RetentionPolicy = fmt.Sprintf(
@@ -166,6 +193,7 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	result := agent.ProjectionResult{
 		Messages: messages,
 		Tools:    candidates.Tools,
+		Refusals: failures.Refusals,
 		Report:   report,
 	}
 	if state != "" {

@@ -472,11 +472,14 @@ func TestComposerHasTwoRulesAndTruthfulState(t *testing.T) {
 	if strings.Contains(idle, "working") || strings.Contains(idle, "queued") {
 		t.Errorf("idle composer claims work that is not happening:\n%s", idle)
 	}
-	// Busy is truthful in the header phase, not restated under the input.
+	// Busy is truthful in the activity surface, not restated in the header.
 	s.Apply(UserSubmitted{Text: "go"})
 	busy := Render(s)
-	if !strings.Contains(strings.Split(busy, "\n")[0], "working") {
-		t.Errorf("busy header lost the runtime phase:\n%s", busy)
+	if strings.Contains(strings.Split(busy, "\n")[0], "working") {
+		t.Errorf("busy header repeated the active phase:\n%s", busy)
+	}
+	if !strings.Contains(busy, "reason") {
+		t.Errorf("busy activity surface lost the runtime phase:\n%s", busy)
 	}
 	if strings.Contains(busy, "queued") {
 		t.Errorf("busy composer invents queued prompts:\n%s", busy)

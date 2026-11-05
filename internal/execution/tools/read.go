@@ -76,6 +76,16 @@ func (t *ReadTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 
 	info, err := os.Stat(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// Absence is a fact the model asked for. It remains an error in
+			// the tool result so the model does not treat it as content, but
+			// completion records it as an observation rather than a failure.
+			return agent.Result{
+				Text:            fmt.Sprintf("stat %q: %v", raw, err),
+				IsError:         true,
+				ObservedAbsence: true,
+			}
+		}
 		return agent.ErrorResult("stat %q: %v", raw, err)
 	}
 	if info.IsDir() {
@@ -125,6 +135,13 @@ func (t *ReadTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return agent.Result{
+				Text:            fmt.Sprintf("read %q: %v", raw, err),
+				IsError:         true,
+				ObservedAbsence: true,
+			}
+		}
 		return agent.ErrorResult("read %q: %v", raw, err)
 	}
 	if len(data) == 0 {
@@ -167,7 +184,7 @@ func (t *ReadTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	return agent.Result{
 		Text: sb.String(),
 		Details: map[string]any{
-			"path":       raw,
+			"path":       repositoryPath(t.Root, path, raw),
 			"offset":     offset,
 			"limit":      limit,
 			"totalLines": total,
@@ -254,7 +271,7 @@ func (t *WriteTool) Execute(ctx agent.Context, args map[string]any) agent.Result
 		Text:    fmt.Sprintf("Wrote %d bytes to %s.", len(content), raw),
 		Mutates: true,
 		Details: map[string]any{
-			"path":              raw,
+			"path":              repositoryPath(t.Root, path, raw),
 			"bytes":             len(content),
 			"lines":             strings.Count(content, "\n") + 1,
 			"operation":         string(op),

@@ -192,7 +192,7 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	defer cancel()
 
 	ignorer := newIgnorer(t.Root, useGitignore)
-	matches, timedOut := t.scan(scanCtx, scanRoot, pattern, hidden, ignorer)
+	matches, timedOut, ignored := t.scan(scanCtx, scanRoot, pattern, hidden, ignorer)
 
 	sort.SliceStable(matches, func(i, j int) bool {
 		if matches[i].modTime.Equal(matches[j].modTime) {
@@ -230,14 +230,41 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 				timeout, len(matches), totalMatches)
 		}
 	} else if len(matches) == 0 {
+		// A silent ignore rule is indistinguishable from an empty tree, and a
+		// model will conclude the files do not exist. Name the exclusion and
+		// the one argument that can override it; only do so when a path was
+		// actually pruned, never as a generic disclaimer.
+		text := "No files matched."
+		if useGitignore && ignored > 0 {
+			noun := "paths were"
+			if ignored == 1 {
+				noun = "path was"
+			}
+			text = fmt.Sprintf(
+				"No files matched. %d %s excluded by .gitignore; pass \"gitignore\": false to include ignored paths.",
+				ignored, noun)
+		}
 		return agent.Result{
-			Text:    "No files matched.",
-			Details: map[string]any{"matches": 0, "pattern": pattern},
+			Text:    text,
+			Details: map[string]any{"matches": 0, "pattern": pattern, "ignored": ignored},
 			Useless: true,
 		}
 	}
 
 	text := sb.String()
+	if useGitignore && ignored > 0 {
+		// A non-empty result still hides pruned subtrees. "44 matches" looks
+		// like a complete tree even when .gitignore excluded a whole service
+		// directory, and a model will conclude the missing tree does not
+		// exist. Name the exclusion whenever a rule actually pruned a path.
+		noun := "paths were"
+		if ignored == 1 {
+			noun = "path was"
+		}
+		text += fmt.Sprintf(
+			"\n\n[%d %s excluded by .gitignore; pass \"gitignore\": false to include ignored paths.]",
+			ignored, noun)
+	}
 	if truncated {
 		text += fmt.Sprintf("\n\n[showing %d of %d matches — raise \"limit\" or narrow the pattern]", limit, totalMatches)
 	}
@@ -248,19 +275,22 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 			"pattern":  pattern,
 			"path":     relativeToRoot(t.Root, scanRoot),
 			"timedOut": timedOut,
+			"ignored":  ignored,
 		},
 	}
 }
 
 // scan walks scanRoot and collects matches.
 //
-// It returns the matches found and whether the deadline was hit. Pruning a
-// directory requires knowing whether anything beneath it can match, so the
-// walker consults the pattern per directory rather than per file.
-func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bool, ignorer *ignorer) ([]globResult, bool) {
+// It returns the matches found, whether the deadline was hit, and how many
+// paths were pruned by .gitignore. The ignored count is evidence for the
+// caller: "no matches" must not be presented as an empty tree when the only
+// reason is a rule.
+func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bool, ignorer *ignorer) ([]globResult, bool, int) {
 	var (
 		matches  []globResult
 		timedOut bool
+		ignored  int
 	)
 
 	walkErr := filepath.WalkDir(scanRoot, func(path string, entry fs.DirEntry, err error) error {
@@ -299,6 +329,7 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 				return filepath.SkipDir
 			}
 			if ignorer.ignored(rel, true) {
+				ignored++
 				return filepath.SkipDir
 			}
 			return nil
@@ -308,6 +339,7 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 			return nil
 		}
 		if ignorer.ignored(rel, false) {
+			ignored++
 			return nil
 		}
 
@@ -326,9 +358,9 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 	if walkErr != nil {
 		// The walk failed at the root of the scan; the caller converts this
 		// into a tool error.
-		return matches, timedOut
+		return matches, timedOut, ignored
 	}
-	return matches, timedOut || ctx.Err() != nil
+	return matches, timedOut || ctx.Err() != nil, ignored
 }
 
 // matchGlob reports whether a pattern matches a path.

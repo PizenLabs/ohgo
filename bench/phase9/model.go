@@ -32,6 +32,11 @@ type step struct {
 type scriptedModel struct {
 	steps []step
 	index int
+	// emptyServed records that the script already proposed one action against
+	// an answer-only surface. It lets the script model make one stale proposal
+	// (so the benchmark can observe the runtime's refusal) and then answer on
+	// the bounded recovery request instead of repeating forever.
+	emptyServed bool
 
 	mu       sync.Mutex
 	requests []ai.Request
@@ -48,6 +53,22 @@ func (m *scriptedModel) stream(ctx context.Context, req ai.Request) (*ai.Stream,
 	m.requests = append(m.requests, req)
 	position := m.index
 	m.index++
+	// A model that is offered no tools answers from the evidence it already
+	// has. The script is a fixed action list, so it would otherwise keep
+	// proposing steps the runtime has deliberately withdrawn; that would test
+	// the script's stubbornness rather than the runtime's answer boundary.
+	// Jump to the next planned final answer when the action surface closes.
+	if len(req.Tools) == 0 {
+		if !m.emptyServed {
+			// Serve one planned action as-is so the runtime's refusal is
+			// observable; this is the stale post-answer proposal the benchmark
+			// measures.
+			m.emptyServed = true
+		} else if answer := m.nextAnswer(position); answer >= 0 {
+			position = answer
+			m.index = answer + 1
+		}
+	}
 	m.mu.Unlock()
 
 	if err := ctx.Err(); err != nil {
@@ -90,6 +111,17 @@ func (m *scriptedModel) stream(ctx context.Context, req ai.Request) (*ai.Stream,
 	}
 	msg.Usage.Total = msg.Usage.Input + msg.Usage.Output
 	return ai.NewCompletedStream(msg), nil
+}
+
+// nextAnswer returns the index of the next planned final answer at or after
+// position, or -1 when the script has none. The caller holds m.mu.
+func (m *scriptedModel) nextAnswer(position int) int {
+	for i := position; i < len(m.steps); i++ {
+		if m.steps[i].Tool == "" {
+			return i
+		}
+	}
+	return -1
 }
 
 // snapshotRequests returns the recorded requests.

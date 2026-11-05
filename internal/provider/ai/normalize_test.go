@@ -102,10 +102,24 @@ func describeBlocks(blocks []ContentBlock) []string {
 func assertNoProtocolSyntax(t *testing.T, text string) {
 	t.Helper()
 	for _, marker := range []string{
-		"<dotsfunctioncall>", "</dotsfunctioncall>", "<invoke", "<parameter",
+		"<dotsfunctioncall", "</dotsfunctioncall", "<dots_function_call", "</dots_function_call",
+		"<dots_functioncall", "<dotsfunction_call", "<invoke", "<parameter", "<tool_call", "</tool_call",
 	} {
 		if strings.Contains(text, marker) {
 			t.Errorf("visible text leaked protocol syntax %q: %q", marker, text)
+		}
+	}
+}
+
+// assertNoDotsFamily checks the whole family, including spellings this build
+// has never registered. A test that only names the known spellings cannot
+// prove the live-stream class is closed.
+func assertNoDotsFamily(t *testing.T, text string) {
+	t.Helper()
+	lower := strings.ToLower(text)
+	for _, marker := range []string{"<dots", "</dots", "<invoke", "<parameter", "<tool_call", "</tool_call"} {
+		if strings.Contains(lower, marker) {
+			t.Errorf("visible text leaked protocol bytes %q: %q", marker, text)
 		}
 	}
 }
@@ -364,8 +378,12 @@ func TestNormalizeMessageRejectsMalformedGenericToolCall(t *testing.T) {
 		if calls := got.ToolCalls(); len(calls) != 0 {
 			t.Errorf("input %q fabricated calls %+v", input, calls)
 		}
-		if got.Text() != input {
-			t.Errorf("text = %q, want raw payload preserved as %q", got.Text(), input)
+		assertNoProtocolSyntax(t, got.Text())
+		if !strings.Contains(got.Text(), "could not be normalized") {
+			t.Errorf("text = %q, want a truthful normalization failure", got.Text())
+		}
+		if !got.ProtocolResidue {
+			t.Errorf("input %q was not marked as protocol residue", input)
 		}
 	}
 }
@@ -435,8 +453,12 @@ func TestNormalizeMessageRejectsMalformedEnvelope(t *testing.T) {
 			if calls := got.ToolCalls(); len(calls) != 0 {
 				t.Fatalf("fabricated calls = %+v, want none", calls)
 			}
-			if got.Text() != input {
-				t.Errorf("text = %q, want the raw bytes preserved as %q", got.Text(), input)
+			assertNoProtocolSyntax(t, got.Text())
+			if !strings.Contains(got.Text(), "could not be normalized") {
+				t.Errorf("text = %q, want a truthful normalization failure", got.Text())
+			}
+			if !got.ProtocolResidue {
+				t.Errorf("%s was not marked as protocol residue", name)
 			}
 		})
 	}
@@ -450,12 +472,13 @@ func TestNormalizeMessageRejectsDuplicateEnvelopeMarkers(t *testing.T) {
 	if calls := got.ToolCalls(); len(calls) != 0 {
 		t.Fatalf("fabricated calls = %+v, want none", calls)
 	}
-	if got.Text() != input {
-		t.Errorf("text = %q, want the raw bytes preserved as %q", got.Text(), input)
+	assertNoProtocolSyntax(t, got.Text())
+	if !got.ProtocolResidue {
+		t.Error("duplicate envelope markers were not marked as residue")
 	}
 }
 
-func TestNormalizeMessageKeepsIncompleteEnvelopeAsText(t *testing.T) {
+func TestNormalizeMessageReplacesIncompleteEnvelopeWithDiagnostic(t *testing.T) {
 	input := "before <dotsfunctioncall><invoke name=\"ls\"><parameter name=\"path\">x"
 	var diags []NormalizationDiagnostic
 	got := NormalizeMessage(AssistantMessage{
@@ -465,8 +488,12 @@ func TestNormalizeMessageKeepsIncompleteEnvelopeAsText(t *testing.T) {
 	if calls := got.ToolCalls(); len(calls) != 0 {
 		t.Fatalf("fabricated calls = %+v, want none", calls)
 	}
-	if got.Text() != input {
-		t.Errorf("text = %q, want the raw bytes preserved as %q", got.Text(), input)
+	assertNoProtocolSyntax(t, got.Text())
+	if !strings.Contains(got.Text(), "before ") || !strings.Contains(got.Text(), "could not be normalized") {
+		t.Errorf("text = %q, want ordinary prose plus a truthful failure", got.Text())
+	}
+	if !got.ProtocolResidue {
+		t.Error("an incomplete envelope was not marked as residue")
 	}
 	if !hasDiagnostic(diags, DiagnosticIncompletePseudoToolCall) {
 		t.Errorf("diagnostics = %+v, want an incomplete-envelope report", diags)
@@ -505,8 +532,12 @@ func TestNormalizeMessageReturnsOversizedEnvelopeAsText(t *testing.T) {
 	if calls := got.ToolCalls(); len(calls) != 0 {
 		t.Fatalf("fabricated calls = %+v, want none", calls)
 	}
-	if got.Text() != input {
-		t.Errorf("oversized envelope bytes were lost: got %d bytes, want %d", len(got.Text()), len(input))
+	assertNoProtocolSyntax(t, got.Text())
+	if !strings.Contains(got.Text(), "could not be normalized") {
+		t.Errorf("text = %q, want a truthful normalization failure", got.Text())
+	}
+	if !got.ProtocolResidue {
+		t.Error("an oversized envelope was not marked as residue")
 	}
 	if !hasDiagnostic(diags, DiagnosticOversizedPseudoToolCall) {
 		t.Errorf("diagnostics = %+v, want an oversized-envelope report", diags)
@@ -769,8 +800,9 @@ func TestNormalizeMessageDoesNotFabricateFromEmptyEnvelope(t *testing.T) {
 	if calls := got.ToolCalls(); len(calls) != 0 {
 		t.Fatalf("fabricated calls = %+v, want none", calls)
 	}
-	if got.Text() != envelope {
-		t.Errorf("text = %q, want raw envelope preserved", got.Text())
+	assertNoProtocolSyntax(t, got.Text())
+	if !got.ProtocolResidue {
+		t.Error("an empty envelope was not marked as residue")
 	}
 }
 
@@ -784,6 +816,359 @@ func TestNormalizeMessageReportsRecognizedCall(t *testing.T) {
 	}
 	if !hasDiagnostic(diags, DiagnosticPseudoToolCall) {
 		t.Errorf("diagnostics = %+v, want a recognized-call report", diags)
+	}
+}
+
+// The provider has emitted the underscored spelling in production. It is the
+// same logical envelope and must converge on the same canonical call.
+func TestNormalizeMessageRecognizesUnderscoredDotsEnvelope(t *testing.T) {
+	envelope := `<dots_function_call>
+  <invoke name="ls"><parameter name="path">cmd</parameter></invoke>
+</dots_function_call>`
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: envelope}},
+	}, NormalizeOptions{})
+	calls := got.ToolCalls()
+	if len(calls) != 1 || calls[0].Name != "ls" || calls[0].Arguments["path"] != "cmd" {
+		t.Fatalf("calls = %+v, want the canonical ls call", calls)
+	}
+	if got.Text() != "" {
+		t.Fatalf("text = %q, want the envelope consumed", got.Text())
+	}
+	if got.ProtocolResidue {
+		t.Fatal("a fully normalized envelope was reported as residue")
+	}
+}
+
+// An opening without underscores can be closed with the underscored marker;
+// both spellings belong to one envelope family.
+func TestNormalizeMessageAcceptsMixedCloseMarker(t *testing.T) {
+	envelope := `<dotsfunctioncall><invoke name="read"><parameter name="path">a.go</parameter></invoke></dots_function_call>`
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: envelope}},
+	}, NormalizeOptions{})
+	calls := got.ToolCalls()
+	if len(calls) != 1 || calls[0].Name != "read" {
+		t.Fatalf("calls = %+v, want the canonical read call", calls)
+	}
+}
+
+// Arbitrary fragmentation of the underscored envelope must converge exactly.
+func TestNormalizeStreamRecognizesUnderscoredEnvelopeAcrossFragmentation(t *testing.T) {
+	envelope := `<dots_function_call><invoke name="ls"><parameter name="path">x</parameter></invoke></dots_function_call>`
+	for split := 1; split < len(envelope); split++ {
+		run := runNormalize(t, []string{envelope[:split], envelope[split:]}, NormalizeOptions{})
+		if len(run.calls) != 1 || run.calls[0].Name != "ls" {
+			t.Fatalf("split %d: calls = %+v, want one ls call", split, run.calls)
+		}
+		for _, marker := range []string{"<dots_function_call", "</dots_function_call", "<invoke", "<parameter"} {
+			if strings.Contains(run.text, marker) {
+				t.Fatalf("split %d leaked %q into live text: %q", split, marker, run.text)
+			}
+		}
+		if run.msg.ProtocolResidue {
+			t.Fatalf("split %d: recognized envelope flagged as residue", split)
+		}
+	}
+}
+
+// An unknown spelling in the dots-call family is still protocol, not prose.
+// The final message carries a truthful diagnostic and cannot complete.
+func TestNormalizeMessageSanitizesUnknownDotsSpelling(t *testing.T) {
+	input := `<dots_protocol_call><invoke name="ls"><parameter name="path">x</parameter></invoke></dots_protocol_call>`
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: input}},
+	}, NormalizeOptions{})
+	assertNoProtocolSyntax(t, got.Text())
+	if strings.Contains(strings.ToLower(got.Text()), "<dots") {
+		t.Fatalf("unknown protocol spelling leaked: %q", got.Text())
+	}
+	if !got.ProtocolResidue {
+		t.Fatal("an unknown dots spelling was not marked as residue")
+	}
+	if len(got.ToolCalls()) != 0 {
+		t.Fatalf("fabricated calls = %+v", got.ToolCalls())
+	}
+}
+
+// The live path must not publish an unknown dots-family spelling either; the
+// replacement happens at the provider boundary before the renderer sees it.
+func TestNormalizeStreamReplacesUnknownDotsSpellingLive(t *testing.T) {
+	input := `before <dots_protocol_call><invoke name="ls"><parameter name="path">x</parameter></invoke></dots_protocol_call> after`
+	run := runNormalize(t, []string{input}, NormalizeOptions{})
+	assertNoProtocolSyntax(t, run.text)
+	if !strings.Contains(run.text, "could not be normalized") {
+		t.Fatalf("live text = %q, want a truthful normalization failure", run.text)
+	}
+	if !run.msg.ProtocolResidue {
+		t.Fatal("the live message was not marked as protocol residue")
+	}
+}
+
+// An envelope that is recognized but cannot be completed is preserved as
+// truthful text, and the message is marked so completion cannot call it an
+// ordinary answer.
+func TestNormalizeMessageFlagsIncompleteEnvelopeAsResidue(t *testing.T) {
+	envelope := `<dots_function_call><invoke name="ls"><parameter name="path">x`
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: envelope}},
+	}, NormalizeOptions{})
+	if !got.ProtocolResidue {
+		t.Fatal("an incomplete serialized call was not marked as residue")
+	}
+	assertNoProtocolSyntax(t, got.Text())
+	if len(got.ToolCalls()) != 0 {
+		t.Fatalf("fabricated calls = %+v", got.ToolCalls())
+	}
+}
+
+// An unknown dots-family spelling must not become visible merely because the
+// provider split it inside the family name, before a separator, or at any
+// other byte. Every split is exercised, plus the one-byte-at-a-time stream.
+func TestNormalizeStreamUnknownDotsSpellingNeverLeaksUnderFragmenting(t *testing.T) {
+	envelope := `<dots_protocol_call><invoke name="ls"><parameter name="path">x</parameter></invoke></dots_protocol_call>`
+	input := "before " + envelope + " after"
+
+	check := func(name, text string, run normalizationRun) {
+		t.Helper()
+		assertNoDotsFamily(t, text)
+		assertNoDotsFamily(t, run.msg.Text())
+		if len(run.calls) != 0 {
+			t.Fatalf("%s: unknown spelling fabricated calls %+v", name, run.calls)
+		}
+		if !run.msg.ProtocolResidue {
+			t.Fatalf("%s: unknown spelling was not marked as residue", name)
+		}
+		if !strings.Contains(run.text, "could not be normalized") {
+			t.Fatalf("%s: live text = %q, want a truthful diagnostic", name, run.text)
+		}
+		if run.text != run.msg.Text() {
+			t.Fatalf("%s: live text %q != final text %q", name, run.text, run.msg.Text())
+		}
+	}
+
+	for split := 0; split <= len(input); split++ {
+		run := runNormalize(t, []string{input[:split], input[split:]}, NormalizeOptions{})
+		check(fmt.Sprintf("split_%d", split), run.text, run)
+	}
+
+	chunks := make([]string, 0, len(input))
+	for i := 0; i < len(input); i++ {
+		chunks = append(chunks, input[i:i+1])
+	}
+	run := runNormalize(t, chunks, NormalizeOptions{})
+	check("byte_at_a_time", run.text, run)
+}
+
+// Multiple adjacent unknown envelopes must each be consumed. The scanner may
+// not fall out of family mode after the first close.
+func TestNormalizeStreamConsumesAdjacentUnknownDotsEnvelopes(t *testing.T) {
+	envelope := `<dots_protocol_call><invoke name="ls"><parameter name="path">x</parameter></invoke></dots_protocol_call>`
+	input := envelope + envelope
+	run := runNormalize(t, []string{input}, NormalizeOptions{})
+	assertNoDotsFamily(t, run.text)
+	assertNoDotsFamily(t, run.msg.Text())
+	if !run.msg.ProtocolResidue {
+		t.Fatal("adjacent unknown envelopes were not marked as residue")
+	}
+	if got := strings.Count(run.text, "could not be normalized"); got != 2 {
+		t.Fatalf("diagnostic count = %d, want one per envelope: %q", got, run.text)
+	}
+}
+
+// A known spelling still canonicalizes when an unknown sibling appears in the
+// same message. The unknown one is residue; the known one is a real call.
+func TestNormalizeStreamKnownAndUnknownDotsSpellingsCoexist(t *testing.T) {
+	unknown := `<dots_protocol_call><invoke name="ls"><parameter name="path">x</parameter></invoke></dots_protocol_call>`
+	input := "before " + pseudoEnvelope("read", "README.md") + unknown + " after"
+	run := runNormalize(t, []string{input}, NormalizeOptions{})
+
+	if len(run.calls) != 1 || run.calls[0].Name != "read" {
+		t.Fatalf("calls = %+v, want the registered read call", run.calls)
+	}
+	assertNoDotsFamily(t, run.text)
+	assertNoDotsFamily(t, run.msg.Text())
+	if !run.msg.ProtocolResidue {
+		t.Fatal("the unknown sibling was not marked as residue")
+	}
+}
+
+// An oversized unknown envelope must not resume publishing its body just
+// because the retained bound was reached. Markers inside the discarded body
+// are protocol bytes, not prose.
+func TestNormalizeStreamOversizedUnknownEnvelopeDoesNotLeakBody(t *testing.T) {
+	body := `<invoke name="ls"><parameter name="path">` + strings.Repeat("a", 500) + `</parameter></invoke>`
+	input := "before <dots_protocol_call>" + body + "</dots_protocol_call> after"
+	run := runNormalize(t, []string{input}, NormalizeOptions{MaxEnvelopeBytes: 64})
+
+	assertNoDotsFamily(t, run.text)
+	assertNoDotsFamily(t, run.msg.Text())
+	if !run.msg.ProtocolResidue {
+		t.Fatal("an oversized unknown envelope was not marked as residue")
+	}
+	if !strings.Contains(run.text, "could not be normalized") {
+		t.Fatalf("live text = %q, want a truthful diagnostic", run.text)
+	}
+	if !strings.Contains(run.text, "after") || !strings.Contains(run.msg.Text(), "after") {
+		t.Fatalf("ordinary text after the envelope was lost: %q / %q", run.text, run.msg.Text())
+	}
+	if len(run.calls) != 0 {
+		t.Fatalf("an oversized envelope fabricated calls %+v", run.calls)
+	}
+}
+
+// Family recognition is case-insensitive; an uppercase spelling fragmented
+// byte-by-byte is still one protocol envelope.
+func TestNormalizeStreamUppercaseUnknownSpellingIsConsumed(t *testing.T) {
+	input := "<DOTS_PROTOCOL_CALL><invoke name=\"ls\"><parameter name=\"path\">x</parameter></invoke></DOTS_PROTOCOL_CALL>"
+	chunks := make([]string, 0, len(input))
+	for i := 0; i < len(input); i++ {
+		chunks = append(chunks, input[i:i+1])
+	}
+	run := runNormalize(t, chunks, NormalizeOptions{})
+	assertNoDotsFamily(t, run.text)
+	assertNoDotsFamily(t, run.msg.Text())
+	if !run.msg.ProtocolResidue {
+		t.Fatal("an uppercase unknown spelling was not marked as residue")
+	}
+}
+
+// The bounded scanner must not accumulate an unfinished unknown opening tag
+// forever. Over the bound it is treated as residue and consumed.
+func TestNormalizeStreamUnknownOpeningTagIsBounded(t *testing.T) {
+	input := "<dots" + strings.Repeat("x", maxOpenTagBytes*4)
+	run := runNormalize(t, []string{input}, NormalizeOptions{})
+	assertNoDotsFamily(t, run.text)
+	if !run.msg.ProtocolResidue {
+		t.Fatal("an overlong family opening was not marked as residue")
+	}
+	if !strings.Contains(run.text, "could not be normalized") {
+		t.Fatalf("live text = %q, want a truthful diagnostic", run.text)
+	}
+}
+
+// An unknown family envelope that never closes is incomplete protocol, not an
+// answer. Its raw bytes must not survive to the final message.
+func TestNormalizeStreamIncompleteUnknownEnvelopeIsDiagnosedAtEOF(t *testing.T) {
+	input := "before <dots_protocol_call><invoke name=\"ls\"><parameter name=\"path\">x"
+	var diags []NormalizationDiagnostic
+	run := runNormalize(t, []string{input}, NormalizeOptions{
+		OnDiagnostic: func(d NormalizationDiagnostic) { diags = append(diags, d) },
+	})
+	assertNoDotsFamily(t, run.text)
+	assertNoDotsFamily(t, run.msg.Text())
+	if !run.msg.ProtocolResidue {
+		t.Fatal("an incomplete unknown envelope was not marked as residue")
+	}
+	if !hasDiagnostic(diags, DiagnosticIncompletePseudoToolCall) {
+		t.Fatalf("diagnostics = %+v, want an incomplete-envelope report", diags)
+	}
+}
+
+// A closing marker that never completes and has no opening is still protocol
+// bytes at EOF, not prose. It must not survive into live text or persistence.
+func TestNormalizeStreamIncompleteStrayCloseIsResidue(t *testing.T) {
+	input := "before </dots_protocol_call"
+	run := runNormalize(t, []string{input}, NormalizeOptions{})
+	assertNoDotsFamily(t, run.text)
+	assertNoDotsFamily(t, run.msg.Text())
+	if !run.msg.ProtocolResidue {
+		t.Fatal("an incomplete stray close was not marked as residue")
+	}
+	if run.text != run.msg.Text() {
+		t.Fatalf("live text %q != final text %q", run.text, run.msg.Text())
+	}
+	if !strings.HasPrefix(run.text, "before ") {
+		t.Fatalf("ordinary prose before the stray close was lost: %q", run.text)
+	}
+}
+
+// Documentation is content. A protocol example in inline code, a fenced block,
+// or a backslash escape must survive normalization verbatim and must not
+// execute anything.
+func TestNormalizeQuotedProtocolExamplesRemainContent(t *testing.T) {
+	envelope := pseudoEnvelope("ls", "x")
+	cases := map[string]string{
+		"inline code":    "Use `<dotsfunctioncall>` and `</dotsfunctioncall>` to delimit a call.",
+		"fenced block":   "Example:\n```text\n" + envelope + "\n```\nThat is the wire shape.",
+		"tilde fence":    "Example:\n~~~\n" + envelope + "\n~~~",
+		"escaped marker": `Write \<dotsfunctioncall> literally to mention it.`,
+		"several inline": "- `<dots_function_call>`\n- `<dotsfunctioncall>`\n- `</dots_protocol_call>`",
+		"plain xml":      "The tool uses <invoke name=\"ls\"> and <parameter name=\"path\">.",
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := NormalizeMessage(AssistantMessage{
+				Content: []ContentBlock{TextContent{Text: input}},
+			}, NormalizeOptions{})
+			if got.Text() != input {
+				t.Fatalf("quoted content changed:\n got %q\nwant %q", got.Text(), input)
+			}
+			if got.ProtocolResidue {
+				t.Fatal("quoted content was classified as protocol residue")
+			}
+			if calls := got.ToolCalls(); len(calls) != 0 {
+				t.Fatalf("a quoted example executed as a call: %+v", calls)
+			}
+		})
+	}
+}
+
+// Quote state must survive provider fragmentation exactly like protocol state.
+// A fence emitted in one delta and an example in the next is still content.
+func TestNormalizeStreamQuotedExampleAcrossDeltasIsContent(t *testing.T) {
+	envelope := pseudoEnvelope("ls", "x")
+	run := runNormalize(t, []string{
+		"```text\n",
+		envelope,
+		"\n```\n",
+	}, NormalizeOptions{})
+
+	want := "```text\n" + envelope + "\n```\n"
+	if run.text != want {
+		t.Fatalf("live text = %q, want the quoted example preserved", run.text)
+	}
+	if run.msg.Text() != want {
+		t.Fatalf("final text = %q, want the quoted example preserved", run.msg.Text())
+	}
+	if run.msg.ProtocolResidue {
+		t.Fatal("a quoted example was classified as protocol residue")
+	}
+	if len(run.calls) != 0 {
+		t.Fatalf("a quoted example executed as a call: %+v", run.calls)
+	}
+}
+
+// An unquoted opening marker in prose is indistinguishable from incomplete
+// provider protocol, so it remains a protocol problem. Text before it is kept;
+// the unterminated envelope body is consumed rather than published as prose.
+func TestNormalizeUnquotedProtocolMentionPreservesLeadingProse(t *testing.T) {
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: "The marker <dotsfunctioncall> starts a call."}},
+	}, NormalizeOptions{})
+	if !got.ProtocolResidue {
+		t.Fatal("an unquoted marker was not marked as residue")
+	}
+	assertNoDotsFamily(t, got.Text())
+	if !strings.HasPrefix(got.Text(), "The marker ") ||
+		!strings.Contains(got.Text(), "could not be normalized") {
+		t.Fatalf("leading prose or diagnostic was lost: %q", got.Text())
+	}
+}
+
+// Quoted content must not weaken unquoted detection: an unknown spelling
+// outside the quote remains residue and still vetoes completion.
+func TestNormalizeUnquotedUnknownSpellingStillVetoes(t *testing.T) {
+	unknown := `<dots_protocol_call><invoke name="ls"><parameter name="path">x</parameter></invoke></dots_protocol_call>`
+	input := "Example in a fence:\n```\n" + unknown + "\n```\nThen emitted: " + unknown
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: input}},
+	}, NormalizeOptions{})
+	if !got.ProtocolResidue {
+		t.Fatal("the unquoted occurrence was not marked as residue")
+	}
+	if !strings.Contains(got.Text(), "could not be normalized") {
+		t.Fatalf("text = %q, want a truthful diagnostic for the unquoted occurrence", got.Text())
 	}
 }
 

@@ -55,7 +55,17 @@ func Candidates(shape TaskShape, evidence *EvidenceState, execution ExecutionSta
 		addNotice(reason)
 	}
 
+	// When external knowledge is the only missing requirement, local
+	// observation cannot close the gap. Offering it anyway let a model spend
+	// turns re-reading files after the runtime already had every local fact,
+	// then propose tools the action surface had withdrawn. The only useful
+	// action is the external capability the request named.
+	externalOnly := onlyExternalRemains(shape, suff)
 	for _, tool := range tools {
+		if externalOnly && !agent.HasActionClass(tool, agent.ActionExternal) {
+			exclude(tool, "the remaining evidence requires the external capability the request named")
+			continue
+		}
 		if reason, excluded := candidateExclusion(shape, execution, tool, facts, suff); excluded {
 			exclude(tool, reason)
 			continue
@@ -74,14 +84,59 @@ func Candidates(shape TaskShape, evidence *EvidenceState, execution ExecutionSta
 	return set
 }
 
+// onlyExternalRemains reports that the request explicitly requires external
+// knowledge and every other declared requirement is already satisfied.
+//
+// The check reads the sufficiency verdict rather than re-deriving missing
+// evidence: sufficiency owns the requirement rules, including verification and
+// post-mutation target state. A blocked shape is left to its own rule so this
+// narrowing never masks a scope or budget verdict.
+func onlyExternalRemains(shape TaskShape, suff Sufficiency) bool {
+	if !shape.External.Required || suff.Kind != BlockNone || len(suff.Missing) == 0 {
+		return false
+	}
+	for _, missing := range suff.Missing {
+		if missing != "external_observation" {
+			return false
+		}
+	}
+	return true
+}
+
+// hasExternalCapability reports whether the constructed tool set contains any
+// tool that can acquire external knowledge. Configured MCP tools carry the
+// external class, so a provider-backed capability counts without naming it.
+func hasExternalCapability(tools []agent.Tool) bool {
+	for _, tool := range tools {
+		if agent.HasActionClass(tool, agent.ActionExternal) {
+			return true
+		}
+	}
+	return false
+}
+
 // candidateExclusion returns the reason a tool is not offered, if any.
 func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.Tool, facts RepositoryFacts, suff Sufficiency) (string, bool) {
 	// A completed evidence lifecycle has nothing left for a tool to do. This is
 	// the deterministic stop for "exploration continued because the model could
 	// think of one more file": the proof is complete, so the next turn is for
 	// the model's report, not another call.
-	if suff.Stage == StageComplete && shape.Kind != contract.ObjectiveInformational {
+	//
+	// An informational objective reaches the equivalent boundary at StageAnswer:
+	// the evidence its contract requires is known, so the next request is for
+	// the answer. Continuing to offer read/search tools there let a model observe
+	// a whole repository after the runtime already had enough to answer, and
+	// burn the turn budget without ever producing one.
+	if suff.Stage == StageComplete ||
+		(shape.Kind == contract.ObjectiveInformational && shape.RepositoryScope && suff.Stage == StageAnswer) {
 		return "the objective's evidence is complete; answer without further tools", true
+	}
+	if suff.Stage == StageBlocked && suff.Kind == BlockCapabilityFailure {
+		// The failed capability cannot make progress, and the remaining tools
+		// cannot acquire the evidence the task requires. Keeping any tool here
+		// is what let a model spend a whole turn grant rediscovering the same
+		// failure; the next request is for an answer or a review report.
+		return "a required capability failed; answer from the evidence already established", true
 	}
 	if suff.Stage == StageBlocked && agent.HasActionClass(tool, agent.ActionMutate) &&
 		(!agent.HasActionClass(tool, agent.ActionExecute) || agent.HasActionClass(tool, agent.ActionConfigured)) {

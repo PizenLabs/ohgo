@@ -304,3 +304,70 @@ func TestCompletionEvidenceCountsAuthorizedMutation(t *testing.T) {
 		t.Fatal("an authorized mutation was not counted as evidence")
 	}
 }
+
+func TestLaterToolSuccessSupersedesAllEarlierFailures(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{
+			toolOutcome("read", Result{Text: "read a: no such file", IsError: true}),
+			toolOutcome("read", Result{Text: "read b: no such file", IsError: true}),
+		}},
+		{Results: []ToolOutcome{
+			toolOutcome("read", Result{Text: "README.md", Details: map[string]any{
+				"path": "README.md", "totalLines": 1, "offset": 1, "limit": 2000,
+			}}),
+		}},
+		answerTurn("README.md describes the project."),
+	}
+	got := EvaluateTaskCompletion(CompletionInput{
+		Turns: turns,
+		Contract: contract.IntentContract{
+			Kind:      contract.ObjectiveInformational,
+			Objective: "Explain this project.",
+		},
+	})
+	if !got.Complete() {
+		t.Fatalf("a later success did not recover the earlier failures: %s", got.Reason)
+	}
+}
+
+func TestRefusedCallsAreNotOutstandingWork(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{
+			toolOutcome("read", Result{Text: "Tool \"read\" is not offered", IsError: true, CandidateRejected: true}),
+		}, Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{
+			ai.TextContent{Text: "The project is a small HTTP server."},
+		}}},
+	}
+	got := EvaluateTaskCompletion(CompletionInput{
+		Turns: turns,
+		Contract: contract.IntentContract{
+			Kind:      contract.ObjectiveInformational,
+			Objective: "Explain this project.",
+		},
+	})
+	if strings.Contains(got.Reason, "outstanding") {
+		t.Fatalf("a refused call was counted as outstanding work: %s", got.Reason)
+	}
+}
+
+// The deferred-plan rule must not turn an honest answer into a review. Only a
+// message made entirely of unperformed observation verbs is a plan; an
+// explanatory lead, a closing courtesy, or a substantive clause is an answer.
+func TestDeferredPlanDetectionIsNarrow(t *testing.T) {
+	cases := map[string]bool{
+		"Let me explore the backend directory structure.":                   true,
+		"I'll inspect the auth.go file.":                                    true,
+		"Let me explore the backend.\nI'll list the Go files.":              true,
+		"Let me check the README: it declares module example.com/ohgo.":     false,
+		"Let me summarize: the project is a Go service.":                    false,
+		"Let me know if you need more detail.":                              false,
+		"The project is a Go service. Let me check one more file.":          false,
+		"Let me check the README.\nIt declares module example.com/ohgo.":    false,
+		"Let me walk you through the layout: cmd contains the entry point.": false,
+	}
+	for answer, want := range cases {
+		if got := answerIsDeferredPlan(answer); got != want {
+			t.Errorf("answerIsDeferredPlan(%q) = %v, want %v", answer, got, want)
+		}
+	}
+}

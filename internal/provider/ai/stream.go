@@ -190,6 +190,18 @@ func (s *Stream) Result() (AssistantMessage, error) {
 	return s.msg, s.err
 }
 
+// DrainHooks receives live content while a stream is still open.
+//
+// Text and reasoning are separate channels because they become separate
+// presentation blocks downstream. A nil hook skips that channel; it never
+// changes what the stream assembles.
+type DrainHooks struct {
+	// OnText receives visible assistant text deltas in order.
+	OnText func(string)
+	// OnThinking receives reasoning deltas in order.
+	OnThinking func(string)
+}
+
 // DrainStream consumes a stream to completion and returns the assembled message.
 //
 // Visible text deltas are forwarded to onDelta in order as they arrive, while
@@ -199,12 +211,28 @@ func (s *Stream) Result() (AssistantMessage, error) {
 // Events even when it only wants the final message. Result is consulted after
 // the channel closes, which is what makes the returned message authoritative.
 func DrainStream(ctx context.Context, stream *Stream, onDelta func(string)) (AssistantMessage, error) {
+	return DrainStreamHooks(ctx, stream, DrainHooks{OnText: onDelta})
+}
+
+// DrainStreamHooks is DrainStream with both live content channels.
+//
+// It is the single drain implementation: every consumer sees the same event
+// ordering and the same context-cancellation contract, whether it displays only
+// the answer or both the answer and the reasoning behind it.
+func DrainStreamHooks(ctx context.Context, stream *Stream, hooks DrainHooks) (AssistantMessage, error) {
 	if stream == nil {
 		return AssistantMessage{}, errors.New("ai: nil stream")
 	}
 	for event := range stream.Events {
-		if delta, ok := event.(EventTextDelta); ok && onDelta != nil && delta.Delta != "" {
-			onDelta(delta.Delta)
+		switch e := event.(type) {
+		case EventTextDelta:
+			if hooks.OnText != nil && e.Delta != "" {
+				hooks.OnText(e.Delta)
+			}
+		case EventThinkingDelta:
+			if hooks.OnThinking != nil && e.Delta != "" {
+				hooks.OnThinking(e.Delta)
+			}
 		}
 		select {
 		case <-ctx.Done():

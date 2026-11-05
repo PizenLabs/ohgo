@@ -31,15 +31,15 @@ func TestThinkingZonesSeparateLabelFromMetadata(t *testing.T) {
 	start := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	now := start.Add(5 * time.Second)
 	state := ThinkingState{
-		Active: true, Phase: ThinkingModel, Label: "Responding…",
+		Active: true, Phase: ThinkingRespond, Label: "respond",
 		StartedAt: start, Interruptible: true, OutputTokens: 248,
 	}
 	got := renderThinkingZoned(state, now, 0, false, 0, zoneMarkers())[0]
-	want := "[A]✳[/A] [A]Responding…[/A] [D]·[/D] [D]([/D][M]↓248 tokens[/M] [D]·[/D] [T]5s[/T] [D]·[/D] [T]esc[/T][D])[/D]"
+	want := "[A]◌[/A] [A]respond[/A] [D]·[/D] [D]([/D][M]↓248 tokens[/M] [D]·[/D] [T]5s[/T] [D]·[/D] [T]esc[/T][D])[/D]"
 	if got != want {
 		t.Fatalf("zoned line = %q, want %q", got, want)
 	}
-	if stripped := stripZoneMarkers(got); stripped != "✳ Responding… · (↓248 tokens · 5s · esc)" {
+	if stripped := stripZoneMarkers(got); stripped != "◌ respond · (↓248 tokens · 5s · esc)" {
 		t.Fatalf("stripped line = %q, want the compact plain text", stripped)
 	}
 }
@@ -61,9 +61,9 @@ func stripZoneMarkers(s string) string {
 // TestThinkingZonesParkWaiting: a turn blocked on approval zones the whole
 // row muted with no timer and no interrupt hint.
 func TestThinkingZonesParkWaiting(t *testing.T) {
-	state := ThinkingState{Active: true, Phase: ThinkingWaiting, Label: "Waiting for approval"}
+	state := ThinkingState{Active: true, Phase: ThinkingWaiting, Label: "waiting for approval"}
 	got := renderThinkingZoned(state, time.Now(), 0, false, 0, zoneMarkers())[0]
-	want := "[W]◇[/W] [W]Waiting for approval[/W]"
+	want := "[W]◇[/W] [W]waiting for approval[/W]"
 	if got != want {
 		t.Fatalf("zoned line = %q, want %q", got, want)
 	}
@@ -75,12 +75,12 @@ func TestThinkingZonesParkWaiting(t *testing.T) {
 func TestThinkingZonesKeepToolDetailActive(t *testing.T) {
 	start := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	state := ThinkingState{
-		Active: true, Phase: ThinkingTool, Label: "Running",
+		Active: true, Phase: ThinkingTool, Label: "execute",
 		Detail: "bash go test", StartedAt: start.Add(-12 * time.Second),
 		Interruptible: true,
 	}
 	got := renderThinkingZoned(state, start, 0, false, 0, zoneMarkers())[0]
-	want := "[A]✳[/A] [A]Running[/A] [A]bash go test[/A] [D]·[/D] [D]([/D][T]12s[/T] [D]·[/D] [T]esc[/T][D])[/D]"
+	want := "[A]◌[/A] [A]execute[/A] [A]bash go test[/A] [D]·[/D] [D]([/D][T]12s[/T] [D]·[/D] [T]esc[/T][D])[/D]"
 	if got != want {
 		t.Fatalf("zoned line = %q, want %q", got, want)
 	}
@@ -92,7 +92,7 @@ func TestThinkingZonesConfineShimmerToLabel(t *testing.T) {
 	start := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	now := start.Add(5 * time.Second)
 	state := ThinkingState{
-		Active: true, Phase: ThinkingModel, Label: "Responding…",
+		Active: true, Phase: ThinkingRespond, Label: "respond",
 		StartedAt: start, Interruptible: true, OutputTokens: 248,
 	}
 	first := renderThinkingZoned(state, now, 0, true, 0, zoneMarkers())[0]
@@ -101,7 +101,7 @@ func TestThinkingZonesConfineShimmerToLabel(t *testing.T) {
 			t.Fatalf("tick %d: zoned = %q, want %q", tick, framed, first)
 		}
 	}
-	if !strings.Contains(first, "[S]Responding…[/S]") {
+	if !strings.Contains(first, "[S]respond[/S]") {
 		t.Fatalf("zoned line = %q, want the wave confined to the label", first)
 	}
 	if strings.Contains(first, "[S]5s") || strings.Contains(first, "tokens[/S]") {

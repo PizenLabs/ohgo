@@ -16,6 +16,46 @@ func requirementKeys(needs []KnowledgeNeed) map[string]bool {
 	return keys
 }
 
+// A glob that pruned .gitignore paths is not a complete survey of the tree.
+// The evidence must not mark it complete even when it returned matches, or a
+// later absence claim can be accepted against a subtree that was never scanned.
+func TestPrunedGlobIsNotCompleteEvidence(t *testing.T) {
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "glob-1", ToolName: "glob",
+		Args: map[string]any{"pattern": "**/*"},
+		Result: agent.Result{
+			Text: "main.go\n\n[1 path was excluded by .gitignore; " +
+				`pass "gitignore": false to include ignored paths.]`,
+			Details: map[string]any{"pattern": "**/*", "path": ".", "matches": 1, "ignored": 1},
+		},
+	})
+	item, ok := state.Find("search:glob:**/*:.")
+	if !ok {
+		t.Fatalf("pruned glob was not recorded: %+v", state.Items)
+	}
+	if item.Complete {
+		t.Fatal("a pruned glob was recorded as a complete scan")
+	}
+
+	state = NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "glob-2", ToolName: "glob",
+		Args: map[string]any{"pattern": "**/*"},
+		Result: agent.Result{
+			Text:    "main.go\nnotes.md",
+			Details: map[string]any{"pattern": "**/*", "path": ".", "matches": 2, "ignored": 0},
+		},
+	})
+	item, ok = state.Find("search:glob:**/*:.")
+	if !ok {
+		t.Fatalf("complete glob was not recorded: %+v", state.Items)
+	}
+	if !item.Complete {
+		t.Fatal("a glob with no exclusions was recorded as incomplete")
+	}
+}
+
 // A question about how this repository behaves cannot be answered from model
 // knowledge: the answer lives in a file. The shape must declare that need, and
 // sufficiency must stay INSUFFICIENT until something content-bearing is read.
@@ -54,6 +94,45 @@ func TestRepositoryBehaviourQuestionRequiresAnObservation(t *testing.T) {
 	})
 	if suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false); suff.State != Sufficient || suff.Stage != StageAnswer {
 		t.Fatalf("after read: sufficiency = %s/%s, want SUFFICIENT/answer", suff.State, suff.Stage)
+	}
+}
+
+// A single file is partial evidence. "I found the README" is not an overview of
+// the project, so the runtime must not conclude that it can answer yet.
+func TestSingleFileIsPartialRepositoryOverview(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "check this project and analyze what this project is about?",
+	}, ShapeParams{Authority: "ask"})
+	if !requirementKeys(shape.RequiredKnowledge)["repository_overview"] {
+		t.Fatalf("required knowledge = %+v, want repository_overview", shape.RequiredKnowledge)
+	}
+
+	evidence := NewEvidenceState()
+	evidence.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-1", ToolName: "read", Args: map[string]any{"path": "README.md"},
+		Result: agent.Result{
+			Text: "1\t# ohgo", Details: map[string]any{
+				"path": "README.md", "totalLines": 1, "offset": 1, "limit": 2000,
+			},
+		},
+	})
+	if suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false); suff.State != Insufficient || suff.Stage != StageExplore {
+		t.Fatalf("one file: sufficiency = %s/%s, want INSUFFICIENT/explore", suff.State, suff.Stage)
+	}
+
+	// A second content observation (the module manifest) establishes the
+	// project's stack as well as its purpose.
+	evidence.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-2", ToolName: "read", Args: map[string]any{"path": "go.mod"},
+		Result: agent.Result{
+			Text: "1\tmodule example.com/ohgo", Details: map[string]any{
+				"path": "go.mod", "totalLines": 1, "offset": 1, "limit": 2000,
+			},
+		},
+	})
+	if suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false); suff.State != Sufficient || suff.Stage != StageAnswer {
+		t.Fatalf("two observations: sufficiency = %s/%s, want SUFFICIENT/answer", suff.State, suff.Stage)
 	}
 }
 

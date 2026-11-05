@@ -213,10 +213,10 @@ func (v *livePainter) sealUpTo(s State, first int, pal *Palette, layout Layout) 
 	for i := v.painted; i < first && i < len(s.Entries); i++ {
 		e := s.Entries[i]
 		if e.Kind == EntryAssistant && v.streamIndex == i {
-			f.history = append(f.history, v.streamTail(e, pal, layout)...)
+			f.history = append(f.history, v.streamTail(s, i, e, pal, layout)...)
 			continue
 		}
-		f.history = append(f.history, liveEntryLines(s, e, pal, layout)...)
+		f.history = append(f.history, liveEntryLines(s, i, e, pal, layout)...)
 	}
 	v.painted = first
 	return f
@@ -224,13 +224,18 @@ func (v *livePainter) sealUpTo(s State, first int, pal *Palette, layout Layout) 
 
 // streamTail renders the part of a streaming assistant entry that has not
 // been sealed yet, and closes the stream.
-func (v *livePainter) streamTail(e Entry, pal *Palette, layout Layout) []string {
+func (v *livePainter) streamTail(s State, index int, e Entry, pal *Palette, layout Layout) []string {
 	rest := []rune(e.AssistantText)
+	gap := v.streamRunes == 0 && index > 0 && s.Entries[index-1].Kind == EntryTool
 	if v.streamRunes > 0 && v.streamRunes <= len(rest) {
 		rest = rest[v.streamRunes:]
 	}
 	v.streamIndex, v.streamRunes = -1, 0
-	return liveMarkdownLines(string(rest), pal, layout)
+	lines := liveMarkdownLines(string(rest), pal, layout)
+	if gap && len(lines) > 0 {
+		lines = append([]string{""}, lines...)
+	}
+	return lines
 }
 
 // frameSealed resolves a state with no live region at all: everything is
@@ -240,15 +245,20 @@ func (v *livePainter) frameSealed(s State) liveFrame {
 	layout := ComputeLayout(s)
 	var f liveFrame
 	for i := v.painted; i < len(s.Entries); i++ {
-		f.history = append(f.history, liveEntryLines(s, s.Entries[i], pal, layout)...)
+		f.history = append(f.history, liveEntryLines(s, i, s.Entries[i], pal, layout)...)
 	}
 	if open := s.openAssistant(); open >= 0 && open >= v.painted {
 		// An interrupted answer: render its tail and give up streaming it.
 		rest := []rune(s.Entries[open].AssistantText)
+		gap := v.streamRunes == 0 && open > 0 && s.Entries[open-1].Kind == EntryTool
 		if v.streamIndex == open && v.streamRunes <= len(rest) {
 			rest = rest[v.streamRunes:]
 		}
-		f.history = append(f.history, liveMarkdownLines(string(rest), pal, layout)...)
+		lines := liveMarkdownLines(string(rest), pal, layout)
+		if gap && len(lines) > 0 {
+			lines = append([]string{""}, lines...)
+		}
+		f.history = append(f.history, lines...)
 	}
 	v.painted = len(s.Entries)
 	v.streamIndex, v.streamRunes = -1, 0
@@ -262,12 +272,18 @@ func (v *livePainter) streamLines(s State, first int, pal *Palette, layout Layou
 	for i := first; i < len(s.Entries); i++ {
 		e := s.Entries[i]
 		if e.Kind == EntryAssistant && s.openAssistant() == i {
+			gap := i > 0 && s.Entries[i-1].Kind == EntryTool && v.streamRunes == 0
 			committed, kept := v.assistantBlock(s, i, pal, layout, budget)
+			if gap && len(committed) > 0 {
+				committed = append([]string{""}, committed...)
+			} else if gap && len(kept) > 0 {
+				live = append(live, "")
+			}
 			history = append(history, committed...)
 			live = append(live, kept...)
 			continue
 		}
-		live = append(live, liveEntryLines(s, e, pal, layout)...)
+		live = append(live, liveEntryLines(s, i, e, pal, layout)...)
 	}
 	return history, live
 }
@@ -402,6 +418,9 @@ func firstUnstable(s State) int {
 	if open := s.openAssistant(); open >= 0 {
 		first = open
 	}
+	if open := s.openReasoning(); open >= 0 && open < first {
+		first = open
+	}
 	for i, e := range s.Entries {
 		if i >= first {
 			break
@@ -419,7 +438,21 @@ func firstUnstable(s State) int {
 // liveEntryLines renders one sealed entry as permanent scrollback.
 // The question uses the same faint background block as the fullscreen
 // view, with no label prefix, so both modes distinguish it identically.
-func liveEntryLines(s State, e Entry, pal *Palette, layout Layout) []string {
+//
+// Live mode cannot rewrite a line once the terminal owns it, so grouping is
+// expressed without adjacency lookahead: a tool never emits its own separator,
+// and the first non-tool block after a tool carries the gap. A run of calls
+// therefore stays compact even when each one was sealed on a different frame.
+func liveEntryLines(s State, index int, e Entry, pal *Palette, layout Layout) []string {
+	lines := liveEntryLinesRaw(s, index, e, pal, layout)
+	if len(lines) > 0 && index > 0 && index <= len(s.Entries) &&
+		s.Entries[index-1].Kind == EntryTool && e.Kind != EntryTool {
+		lines = append([]string{""}, lines...)
+	}
+	return lines
+}
+
+func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout) []string {
 	switch e.Kind {
 	case EntryUser:
 		return liveUserLines(e.UserText, pal, layout)
@@ -427,12 +460,22 @@ func liveEntryLines(s State, e Entry, pal *Palette, layout Layout) []string {
 	case EntryAssistant:
 		return liveMarkdownLines(e.AssistantText, pal, layout)
 
+	case EntryReasoning:
+		if e.Reasoning == nil {
+			return nil
+		}
+		var b strings.Builder
+		renderReasoning(&b, e.Reasoning, pal, layout)
+		return splitLines(b.String())
+
 	case EntryTool:
 		if e.Tool == nil {
 			return nil
 		}
 		var b strings.Builder
-		renderTool(&b, e.Tool, pal, layout, spinnerFrame(s.Status.Spinner))
+		// Live mode groups by leading gaps (see liveEntryLines), so a tool
+		// never writes its own trailing separator.
+		renderTool(&b, e.Tool, pal, layout, latestRunningToolIndex(s) == index, false, entryGroupEnd(s.Entries, index))
 		return splitLines(b.String())
 
 	case EntryShell:
@@ -486,28 +529,41 @@ func liveUserLines(text string, pal *Palette, layout Layout) []string {
 	return out
 }
 
-// expandedToolLines renders one tool block's expanded projection as new
-// scrollback lines for live mode.
+// expandedBlockLines renders one sealed expandable block's expanded projection
+// as new scrollback lines for live mode.
 //
-// A sealed block cannot be rewritten — the terminal owns those rows now —
-// so expanding one prints the same bounded projection fullscreen renders
-// inline (badge, compact outcome, bounded body), correlated by the
-// identical badge. Collapsing flips state only: sealed lines stay where
-// the terminal put them.
-func expandedToolLines(s State, id string) []string {
-	for _, e := range s.Entries {
-		if e.Kind != EntryTool || e.Tool == nil || e.Tool.ID != id {
-			continue
-		}
-		cpy := *e.Tool
-		cpy.Expanded = true
-		pal := PaletteFor(s.Theme)
-		layout := ComputeLayout(s)
-		var b strings.Builder
-		renderTool(&b, &cpy, pal, layout, spinnerFrame(s.Status.Spinner))
-		return splitLines(b.String())
+// A sealed block cannot be rewritten — the terminal owns those rows now — so
+// expanding one prints the same bounded projection fullscreen renders inline,
+// correlated by the identical content. Collapsing flips state only: sealed
+// lines stay where the terminal put them.
+func expandedBlockLines(s State, id BlockID) []string {
+	index := s.BlockIndex(id)
+	if index < 0 || index >= len(s.Entries) {
+		return nil
 	}
-	return nil
+	entry := s.Entries[index]
+	pal := PaletteFor(s.Theme)
+	layout := ComputeLayout(s)
+	var b strings.Builder
+	switch entry.Kind {
+	case EntryTool:
+		if entry.Tool == nil {
+			return nil
+		}
+		cpy := *entry.Tool
+		cpy.Expanded = true
+		renderTool(&b, &cpy, pal, layout, false, true, true)
+	case EntryReasoning:
+		if entry.Reasoning == nil {
+			return nil
+		}
+		cpy := *entry.Reasoning
+		cpy.Expanded = true
+		renderReasoning(&b, &cpy, pal, layout)
+	default:
+		return nil
+	}
+	return splitLines(b.String())
 }
 
 // liveOverlay renders a modal overlay in place of the answer. Precedence
@@ -743,24 +799,22 @@ func liveConnectKeyLines(s State, pal *Palette, layout Layout) []string {
 
 // liveStatusLine is the one-line runtime footer. It names the phase in words
 // so nothing depends on colour, and stays quiet at idle rather than repeating
-// what the composer already shows.
+// what the composer already shows. It asks ProjectActivity for the line text:
+// when a running tool or an open reasoning entry owns the activity, the footer
+// must not print a second copy of it.
 func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	var parts []string
-	// The activity line is the same pure projection the full-screen surface
-	// paints, so both modes name the runtime state identically. The phase
-	// word remains the fallback for the one non-idle state the activity line
-	// deliberately does not claim: shutting down.
-	if ts := ProjectThinking(s); ts.Active {
-		now := time.Now()
-		lines := RenderThinking(ts, now, 0)
-		if shimmerSupported() || ts.Phase == ThinkingCommit {
-			lines = RenderThinkingTick(ts, now, s.Status.Spinner, 0)
+	// The activity line already carries its own semantic zones; keep it out
+	// of the muted telemetry wrapper so the current activity stays the most
+	// prominent row in the footer.
+	activityLine := ActivityLineText(s, time.Now(), s.Status.Spinner, 0)
+	activity := ProjectActivity(s)
+	if activityLine == "" && !activity.Thinking.Active {
+		// The phase word remains the fallback for the one non-idle state the
+		// activity projection deliberately does not claim: shutting down.
+		if runtime := DeriveRuntime(s); runtime != RuntimeIdle {
+			parts = append(parts, RuntimeMarker(runtime)+" "+string(runtime))
 		}
-		if len(lines) > 0 {
-			parts = append(parts, lines[0])
-		}
-	} else if runtime := DeriveRuntime(s); runtime != RuntimeIdle {
-		parts = append(parts, RuntimeMarker(runtime)+" "+string(runtime))
 	}
 	if s.Status.Model != "" {
 		parts = append(parts, s.Status.Model)
@@ -785,14 +839,24 @@ func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	if path := sessionPathBranch(s); path != "" {
 		parts = append(parts, path)
 	}
+	width := displayWidth(s, layout)
+	if activityLine != "" {
+		if len(parts) == 0 {
+			return activityLine
+		}
+		tail := pal.Muted.Render(TruncateToWidth(strings.Join(parts, " · "), maxInt(width-CellWidth(activityLine)-3, 0)))
+		return activityLine + " · " + tail
+	}
 	if len(parts) == 0 {
 		return ""
 	}
-	return pal.Muted.Render(TruncateToWidth(strings.Join(parts, " · "), displayWidth(s, layout)))
+	return pal.Muted.Render(TruncateToWidth(strings.Join(parts, " · "), width))
 }
 
-// liveComposerWidth is the text budget after the "> " prompt.
-func liveComposerWidth(layout Layout) int {
+// liveComposerWidth is the text budget after the live prompt prefix. The
+// prefix is the same authority boundary the full-screen composer uses
+// ("build > "), so the role has one representation in both modes.
+func liveComposerWidth(s State, layout Layout) int {
 	w := layout.ContentWidth
 	if w <= 0 {
 		w = 80
@@ -800,7 +864,14 @@ func liveComposerWidth(layout Layout) int {
 	if w < 3 {
 		w = 3
 	}
-	return w - 2
+	pw := CellWidth(composerPrefix(s))
+	if pw < 1 {
+		pw = 2
+	}
+	if budget := w - pw; budget >= 1 {
+		return budget
+	}
+	return 1
 }
 
 // liveComposerLines renders the input block: the prompt, wrapped rows with the
@@ -815,12 +886,12 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 		return nil
 	}
 	clean, cleanCursor := sanitizeWithCursor(s.Input, s.Cursor)
-	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, liveComposerWidth(layout))
+	rows, cursorRow, cursorRune, haveCursor := layoutComposer(clean, cleanCursor, liveComposerWidth(s, layout))
 	// Same cursor-following window as the framed composer: the caret must stay
 	// painted however far the input folds past the row cap.
 	shown, start := composerWindow(rows, cursorRow, s.ComposerScroll, maxComposerRows)
 	ghost := s.suggestionTail()
-	width := liveComposerWidth(layout)
+	width := liveComposerWidth(s, layout)
 
 	var out []string
 	// The palette sits strictly above the input line it completes. It is
@@ -842,11 +913,14 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
 			text = appendGhost(text, ghost, width, pal.Ghost)
 		}
+		prefix := composerContPrefix(s)
+		prefixStyle := composerPrefixStyle(s, pal)
 		if i == 0 {
-			out = append(out, pal.Prompt.Render("> ")+text)
-			continue
+			// The prompt boundary is the one authoritative role
+			// representation. The activity projection never carries the role.
+			prefix = composerPrefix(s)
 		}
-		out = append(out, "  "+text)
+		out = append(out, prefixStyle.Render(prefix)+text)
 	}
 	if queued := composerStateLine(s, pal, layout); queued != "" {
 		out = append(out, queued)

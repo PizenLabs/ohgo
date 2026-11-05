@@ -478,6 +478,61 @@ drain:
 	}
 }
 
+// A review verdict is the terminal content of the turn, so it must appear after
+// the answer and not only in the task block at the top of a long transcript.
+func TestRunTurnAppendsReviewReasonAtTheEnd(t *testing.T) {
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content: []ai.ContentBlock{ai.TextContent{Text: "Let me explore the repository structure and key files."}},
+			}), nil
+		},
+		Tools: []agent.Tool{&idleTool{}},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	p := NewProgram(loop, "test", 0)
+	p.SetTaskHooks(TaskHooks{
+		Begin: func(contract.IntentContract, *agent.TargetSnapshot) TaskProjection {
+			return TaskProjection{ID: "t1", Status: "RUNNING", Objective: "check this project"}
+		},
+		NeedsReview: func(reason string) TaskProjection {
+			return TaskProjection{ID: "t1", Status: "NEEDS_REVIEW", Objective: "check this project", ReviewReason: reason}
+		},
+	})
+
+	p.runTurn("check this project and analyze what this project is about?")
+drain:
+	for {
+		select {
+		case event := <-p.events:
+			p.state.Apply(event)
+		default:
+			break drain
+		}
+	}
+
+	var task *TaskProjection
+	for i := range p.state.Entries {
+		if p.state.Entries[i].Kind == EntryTask {
+			task = p.state.Entries[i].Task
+		}
+	}
+	if task == nil || task.Status != "NEEDS_REVIEW" {
+		t.Fatalf("task = %+v, want NEEDS_REVIEW", task)
+	}
+	if !strings.Contains(task.ReviewReason, "announces a further action") {
+		t.Fatalf("task review reason = %q", task.ReviewReason)
+	}
+	last := p.state.Entries[len(p.state.Entries)-1]
+	if last.Kind != EntryNotice || !strings.Contains(last.Notice, reviewPrefix) ||
+		!strings.Contains(last.Notice, "announces a further action") {
+		t.Fatalf("last entry = %+v, want the review verdict after the answer", last)
+	}
+}
+
 // A continuation of a review task is judged against the persisted contract, not
 // the continuation prompt. A clean informational answer cannot complete a
 // mutation objective that still has no observed change.
@@ -754,5 +809,34 @@ func TestRunTurnInjectsTaskContext(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("system prompt is missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// A NEEDS_REVIEW task must say why. The status alone left the user with a full
+// answer and no way to tell which evidence boundary stopped completion.
+func TestTaskReviewRendersItsReason(t *testing.T) {
+	reason := "answer provenance: the answer presents documentation-only term postgresql as an observed repository fact; attribute it to the documentation or verify it in the implementation"
+	projection := &TaskProjection{
+		ID:           "t1",
+		Status:       "NEEDS_REVIEW",
+		Objective:    "check this project",
+		ReviewReason: reason,
+	}
+	joined := ansi.Strip(strings.Join(taskLines(projection, DarkPalette(), Layout{ContentWidth: 80}), "\n"))
+
+	if !strings.Contains(joined, "needs_review") {
+		t.Fatalf("the review status disappeared:\n%s", joined)
+	}
+	if !strings.Contains(joined, "answer provenance:") ||
+		!strings.Contains(joined, "documentation-only term postgresql") {
+		t.Fatalf("the review reason is not rendered:\n%s", joined)
+	}
+	if strings.Contains(joined, "no todos") {
+		t.Fatalf("the review reason was crowded out by the todo placeholder:\n%s", joined)
+	}
+	// The reason wraps instead of being cut at the header width.
+	flat := strings.Join(strings.Fields(joined), " ")
+	if !strings.Contains(flat, strings.Join(strings.Fields(reason), " ")) {
+		t.Fatalf("the full review reason was truncated:\n%s", joined)
 	}
 }

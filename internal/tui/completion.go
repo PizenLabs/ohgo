@@ -24,7 +24,7 @@ const (
 // completion comes from agent.EvaluateTaskCompletion, which requires the
 // contract's target evidence and a verification that covers it.
 func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver) (taskAction, string) {
-	return turnTaskOutcomeWithReview(err, turns, intent, snapshot, resolver, "", false)
+	return turnTaskOutcomeWithReview(err, turns, intent, snapshot, resolver, "", false, agent.EvidenceProvenance{})
 }
 
 // turnTaskOutcomeWithReview is turnTaskOutcome with the cognitive layer's
@@ -38,7 +38,7 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 //
 // The stop classification and the completion rules belong to agent.ClassifyRun;
 // this function only projects its verdict into the durable task lifecycle.
-func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool) (taskAction, string) {
+func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance) (taskAction, string) {
 	verdict, reason := agent.ClassifyRun(err, agent.CompletionInput{
 		Turns:          turns,
 		Contract:       intent,
@@ -46,6 +46,7 @@ func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.In
 		Resolver:       resolver,
 		EvidenceReview: evidenceReview,
 		PriorChange:    priorChange,
+		Provenance:     provenance,
 	}, false)
 
 	switch verdict {

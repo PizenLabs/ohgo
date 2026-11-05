@@ -255,8 +255,8 @@ func TestToolBlockRenderStates(t *testing.T) {
 	running.Apply(TerminalResized{Width: 80, Height: 24})
 	running.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: now})
 	out := stripForTest(t, Render(running))
-	if !strings.Contains(out, "bash") || !strings.Contains(out, "running") {
-		t.Errorf("running block = %q, want the tool name and its running state", out)
+	if !strings.Contains(out, "◌ bash") || strings.Contains(out, "⠋") {
+		t.Errorf("running block = %q, want the tool name and its static running glyph", out)
 	}
 	if !strings.Contains(out, "go test") {
 		t.Errorf("running block = %q, want the call's summary", out)

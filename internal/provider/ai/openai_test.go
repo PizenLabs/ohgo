@@ -9,6 +9,62 @@ import (
 	"testing"
 )
 
+// A real provider stream can split an unknown dots-family envelope across SSE
+// content deltas. The normalization boundary must consume it before any
+// renderer sees the bytes.
+func TestNormalizeOpenAIStreamUnknownProtocolFragmented(t *testing.T) {
+	parts := []string{
+		"before <dot",
+		`s_protocol_call><invoke name="ls"><parameter name="path">x`,
+		"</parameter></invoke></dots_protocol_call> after",
+	}
+	var body strings.Builder
+	for _, part := range parts {
+		encoded, err := json.Marshal(part)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body.WriteString(`data: {"choices":[{"index":0,"delta":{"content":`)
+		body.Write(encoded)
+		body.WriteString("}}]}\n\n")
+	}
+	body.WriteString(`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n")
+	body.WriteString("data: [DONE]\n\n")
+
+	server, _ := sseServer(t, body.String(), 0)
+	provider := &OpenAIProvider{APIKey: "sk-test", BaseURL: server.URL}
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:     testOpenAIModel(),
+		Messages:  []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "hi"}}}},
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	normalized := NormalizeStream(context.Background(), stream, NormalizeOptions{})
+	var text strings.Builder
+	for event := range normalized.Events {
+		if delta, ok := event.(EventTextDelta); ok {
+			text.WriteString(delta.Delta)
+		}
+	}
+	msg, err := normalized.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	assertNoDotsFamily(t, text.String())
+	assertNoDotsFamily(t, msg.Text())
+	if !msg.ProtocolResidue {
+		t.Fatal("the fragmented unknown envelope was not marked as residue")
+	}
+	if !strings.Contains(text.String(), "could not be normalized") {
+		t.Fatalf("live text = %q, want a truthful diagnostic", text.String())
+	}
+	if len(msg.ToolCalls()) != 0 {
+		t.Fatalf("fabricated calls = %+v", msg.ToolCalls())
+	}
+}
+
 func TestOpenAIStreamAccumulatesTextAndUsage(t *testing.T) {
 	body := `data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"}}]}
 

@@ -102,6 +102,10 @@ func writeCall() ai.ToolCall {
 	return ai.ToolCall{ID: "call_1", Name: "write", Arguments: map[string]any{"path": "x.go"}}
 }
 
+func readCall() ai.ToolCall {
+	return ai.ToolCall{ID: "call_1", Name: "read", Arguments: map[string]any{"path": "x.go"}}
+}
+
 // TestAskRefusesExecutionWithoutCallingTheModel is invariant A: ASK + EXECUTE
 // must not reach a mutation, and must not even be handed to the model to
 // attempt.
@@ -421,6 +425,102 @@ func TestRouteNeverNarrowedTheBuildGate(t *testing.T) {
 	}
 	if h.activeWorkspace() != workspace.Build {
 		t.Errorf("active workspace = %s, want BUILD", h.activeWorkspace())
+	}
+}
+
+// A refused BUILD+READ must leave the live gate and the following mutation
+// path intact. This is the observable half of "an explicit switch is
+// required": refusal is not a silent transition.
+func TestRefusedBuildReadDoesNotPoisonLaterMutation(t *testing.T) {
+	t.Setenv("OHGO_HISTORY_FILE", "")
+	write := &spyTool{name: "write", tier: agent.TierWrite}
+	stream := &routeStream{call: writeCall()}
+	gate := newAuthorityGate(workspace.Build)
+	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, write), "BUILD")
+
+	var out strings.Builder
+	input := "why does this work?\n" + "implement the fix\n" + "/quit\n"
+	if err := repl(h, &out, strings.NewReader(input), nil); err != nil {
+		t.Fatalf("repl: %v", err)
+	}
+	if got := write.executions(); got != 1 {
+		t.Fatalf("mutations = %d, want the one explicit execution turn", got)
+	}
+	if got := stream.requests(); got != 2 {
+		t.Fatalf("provider requests = %d, want only the admitted mutation round trip", got)
+	}
+	if gate.Workspace() != workspace.Build || h.activeWorkspace() != workspace.Build {
+		t.Fatalf("authority moved after a refused read: gate=%s active=%s",
+			gate.Workspace(), h.activeWorkspace())
+	}
+	if !strings.Contains(out.String(), "this request needs ASK authority") {
+		t.Fatalf("the refused read did not explain the ASK requirement:\n%s", out.String())
+	}
+}
+
+// Repeating the explicit transition is idempotent and stays inside the new
+// read-only authority. The model runs, the read executes, and no write can
+// follow from the same switch.
+func TestRepeatedExplicitSwitchIsIdempotentAndReadOnly(t *testing.T) {
+	t.Setenv("OHGO_HISTORY_FILE", "")
+	read := &spyTool{name: "read", tier: agent.TierRead}
+	write := &spyTool{name: "write", tier: agent.TierWrite}
+	stream := &routeStream{call: readCall()}
+	gate := newAuthorityGate(workspace.Build)
+	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, read, write), "BUILD")
+
+	var out strings.Builder
+	input := "/ask\n/ask\nwhy does this work?\n/quit\n"
+	if err := repl(h, &out, strings.NewReader(input), nil); err != nil {
+		t.Fatalf("repl: %v", err)
+	}
+	if got := read.executions(); got != 1 {
+		t.Fatalf("reads = %d, want 1 after the explicit ASK switch", got)
+	}
+	if got := write.executions(); got != 0 {
+		t.Fatalf("mutations = %d, want 0 under ASK", got)
+	}
+	if gate.Workspace() != workspace.Ask || h.activeWorkspace() != workspace.Ask {
+		t.Fatalf("authority = %s/%s, want ASK after repeated switches", gate.Workspace(), h.activeWorkspace())
+	}
+}
+
+// A transition followed by work in the new role is explicit and observable:
+// ASK → BUILD executes the mutation at the authority the user chose, and a
+// later BUILD → ASK read does not inherit the mutation authority.
+func TestTransitionThenMutationThenNarrowingKeepsAuthorityTruthful(t *testing.T) {
+	t.Setenv("OHGO_HISTORY_FILE", "")
+	write := &spyTool{name: "write", tier: agent.TierWrite}
+	stream := &routeStream{call: writeCall()}
+	gate := newAuthorityGate(workspace.Ask)
+	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, write), "ASK")
+
+	var out strings.Builder
+	input := "/build\nimplement the fix\n/ask\nwhy does this work?\n/quit\n"
+	if err := repl(h, &out, strings.NewReader(input), nil); err != nil {
+		t.Fatalf("repl: %v", err)
+	}
+	if got := write.executions(); got != 1 {
+		t.Fatalf("mutations = %d, want 1 under the explicit BUILD transition", got)
+	}
+	if gate.Workspace() != workspace.Ask || h.activeWorkspace() != workspace.Ask {
+		t.Fatalf("authority = %s/%s, want the final explicit ASK", gate.Workspace(), h.activeWorkspace())
+	}
+}
+
+// A failed transition installs nothing. The invalid name is rejected and the
+// live gate still enforces the original workspace.
+func TestFailedTransitionLeavesAuthorityUntouched(t *testing.T) {
+	gate := newAuthorityGate(workspace.Ask)
+	h := &harness{gate: gate, workspace: "ASK"}
+	if _, err := h.SwitchWorkspace("not-a-workspace"); err == nil {
+		t.Fatal("an invalid workspace transition succeeded")
+	}
+	if got := gate.Workspace(); got != workspace.Ask {
+		t.Fatalf("gate = %s, want ASK after a failed transition", got)
+	}
+	if h.activeWorkspace() != workspace.Ask {
+		t.Fatalf("active workspace = %s, want ASK", h.activeWorkspace())
 	}
 }
 

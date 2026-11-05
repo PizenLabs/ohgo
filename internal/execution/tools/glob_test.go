@@ -214,3 +214,88 @@ func TestGlobHonoursCancellation(t *testing.T) {
 func fileNameFor(i int) string {
 	return fmt.Sprintf("f%02d.go", i)
 }
+
+// When every candidate is pruned by .gitignore, the model must be told why and
+// how to override it. "No files matched." alone is indistinguishable from an
+// empty tree and invites a false conclusion that the files do not exist.
+func TestGlobReportsGitignoreExclusionWhenNoMatchesRemain(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		".gitignore":      "backend/\n",
+		"backend/main.go": "package main",
+	})
+
+	result := NewGlobTool(root).Execute(testContext(), map[string]any{"pattern": "**/*.go"})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Text)
+	}
+	if !strings.Contains(result.Text, "excluded by .gitignore") {
+		t.Fatalf("text = %q, want the ignore exclusion named", result.Text)
+	}
+	if !strings.Contains(result.Text, `"gitignore": false`) {
+		t.Fatalf("text = %q, want the override argument", result.Text)
+	}
+	details, _ := result.Details.(map[string]any)
+	if got, _ := details["ignored"].(int); got == 0 {
+		t.Fatalf("details = %+v, want a non-zero ignored count", result.Details)
+	}
+
+	all := NewGlobTool(root).Execute(testContext(), map[string]any{
+		"pattern": "**/*.go", "gitignore": false,
+	})
+	if !strings.Contains(all.Text, "backend/main.go") {
+		t.Fatalf("gitignore=false did not include the ignored file: %q", all.Text)
+	}
+}
+
+// A glob that returns matches can still have pruned a whole subtree through
+// .gitignore. "44 matches" without a notice reads as the complete tree and lets
+// a model conclude the ignored directory does not exist.
+func TestGlobReportsGitignoreExclusionWhenMatchesRemain(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		".gitignore":      "backend/\n",
+		"main.go":         "package main",
+		"backend/main.go": "package main",
+	})
+
+	result := NewGlobTool(root).Execute(testContext(), map[string]any{"pattern": "**/*.go"})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Text)
+	}
+	if !strings.Contains(result.Text, "main.go") {
+		t.Fatalf("text = %q, want the visible match", result.Text)
+	}
+	if !strings.Contains(result.Text, "excluded by .gitignore") {
+		t.Fatalf("text = %q, want the pruned subtree named", result.Text)
+	}
+	if !strings.Contains(result.Text, `"gitignore": false`) {
+		t.Fatalf("text = %q, want the override argument", result.Text)
+	}
+	details, _ := result.Details.(map[string]any)
+	if got, _ := details["ignored"].(int); got == 0 {
+		t.Fatalf("details = %+v, want a non-zero ignored count", result.Details)
+	}
+
+	all := NewGlobTool(root).Execute(testContext(), map[string]any{
+		"pattern": "**/*.go", "gitignore": false,
+	})
+	if !strings.Contains(all.Text, "backend/main.go") {
+		t.Fatalf("gitignore=false did not include the ignored tree: %q", all.Text)
+	}
+}
+
+// An empty tree must not invent an ignore exclusion. The hint is evidence, not
+// a generic disclaimer.
+func TestGlobDoesNotInventGitignoreWhenNothingWasIgnored(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{"notes.md": "text"})
+	result := NewGlobTool(root).Execute(testContext(), map[string]any{"pattern": "**/*.go"})
+	if strings.Contains(result.Text, "gitignore") {
+		t.Fatalf("text = %q, want no ignore claim in an empty tree", result.Text)
+	}
+	details, _ := result.Details.(map[string]any)
+	if got, _ := details["ignored"].(int); got != 0 {
+		t.Fatalf("details = %#v, want ignored=0", result.Details)
+	}
+}

@@ -79,3 +79,47 @@ func TestReplaySkipsUIOnlyAndEmpty(t *testing.T) {
 		t.Errorf("entries = %+v, want only the real prompt", entries)
 	}
 }
+
+// A tool round framed by whitespace-only text must replay as one contiguous
+// run, not as tools separated by an empty answer block.
+func TestReplayDropsWhitespaceBetweenToolCalls(t *testing.T) {
+	history := []agent.Message{
+		agent.AssistantMessage{Message: ai.AssistantMessage{
+			Content: []ai.ContentBlock{
+				ai.ToolCall{ID: "c1", Name: "ls", Arguments: map[string]any{"path": "/repo"}},
+				ai.TextContent{Text: "\n\n"},
+				ai.ToolCall{ID: "c2", Name: "read", Arguments: map[string]any{"path": "/repo/go.mod"}},
+			},
+		}},
+	}
+	entries := EntriesFromMessages(history)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want the two calls with no answer block", len(entries))
+	}
+	for i, entry := range entries {
+		if entry.Kind != EntryTool {
+			t.Fatalf("entry %d = %q, want a tool row", i, entry.Kind)
+		}
+	}
+}
+
+// Whitespace between two text blocks is a paragraph break in the answer and
+// must survive replay; only whitespace that would open a block is framing.
+func TestReplayKeepsWhitespaceInsideAnAnswer(t *testing.T) {
+	history := []agent.Message{
+		agent.AssistantMessage{Message: ai.AssistantMessage{
+			Content: []ai.ContentBlock{
+				ai.TextContent{Text: "First paragraph."},
+				ai.TextContent{Text: "\n\n"},
+				ai.TextContent{Text: "Second paragraph."},
+			},
+		}},
+	}
+	entries := EntriesFromMessages(history)
+	if len(entries) != 1 || entries[0].Kind != EntryAssistant {
+		t.Fatalf("entries = %+v, want one merged answer block", entries)
+	}
+	if entries[0].AssistantText != "First paragraph.\n\nSecond paragraph." {
+		t.Fatalf("answer = %q, want the paragraph break preserved", entries[0].AssistantText)
+	}
+}

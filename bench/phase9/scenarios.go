@@ -330,6 +330,27 @@ func phase10Matrix() []scenario {
 	return out
 }
 
+// cloneSteps copies the action script, including each argument map.
+//
+// The baseline and projected arms both interpolate the external URL into their
+// steps. Sharing the maps would let the first arm replace the placeholder, so
+// the second arm silently fetched the first arm's closed server.
+func cloneSteps(steps []step) []step {
+	out := make([]step, len(steps))
+	for i, source := range steps {
+		out[i] = source
+		if source.Args == nil {
+			continue
+		}
+		args := make(map[string]any, len(source.Args))
+		for key, value := range source.Args {
+			args[key] = value
+		}
+		out[i].Args = args
+	}
+	return out
+}
+
 // runScenario executes one scenario and returns its measured metrics.
 // projection is "off" for the baseline or "state" for the task-shaped layer.
 func runScenario(ctx context.Context, sc scenario, projection string) (metrics runMetrics, err error) {
@@ -355,7 +376,7 @@ func runScenario(ctx context.Context, sc scenario, projection string) (metrics r
 	}
 	defer func() { _ = os.RemoveAll(root) }()
 
-	steps := append([]step(nil), sc.Steps...)
+	steps := cloneSteps(sc.Steps)
 	external := ""
 	if sc.Expect.External {
 		server := externalServer()
@@ -430,8 +451,10 @@ func runScenario(ctx context.Context, sc scenario, projection string) (metrics r
 	summarizeTurns(&metrics, turns)
 	scoreAnswer(&metrics, sc.Facts)
 	review := ""
+	provenance := agent.EvidenceProvenance{}
 	if n := len(metrics.ProjectionReports); n > 0 {
 		review = metrics.ProjectionReports[n-1].EvidenceReview()
+		provenance = metrics.ProjectionReports[n-1].Provenance
 	}
 	metrics.EvidenceReview = review
 
@@ -448,6 +471,7 @@ func runScenario(ctx context.Context, sc scenario, projection string) (metrics r
 		Resolver:       resolver,
 		Root:           root,
 		EvidenceReview: review,
+		Provenance:     provenance,
 	})
 	metrics.CompletionReason = completion.Reason
 	if completion.Complete() {
@@ -522,13 +546,18 @@ func builtTools(root string) []agent.Tool {
 // documentation. The content is untrusted external evidence even though it is
 // served from loopback: the trust class comes from the capability, not the host.
 func externalServer() *httptest.Server {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
+	doc := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = fmt.Fprint(w, `<html><body><h1>Nimbus Notes documentation</h1>
 <p>Features: offline note capture, browser-local persistence, a responsive reading layout.</p>
 <p>No account is required and no note leaves the browser.</p></body></html>`)
-	})
+	}
+	mux := http.NewServeMux()
+	// The scenario interpolates the origin into the prompt, so the document
+	// must be served at the root. Serving it only at /docs made every
+	// "external" fetch a 404 and silently skipped the evidence it claimed.
+	mux.HandleFunc("/", doc)
+	mux.HandleFunc("/docs", doc)
 	return httptest.NewServer(mux)
 }
 

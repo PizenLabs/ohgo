@@ -160,15 +160,24 @@ tool error                     ≠ absence
 failed read at one path        ≠ global absence
 local directory listing        ≠ repository-wide absence
 complete recursive file scan   → may prove a concrete file is absent
+scan pruned by .gitignore      ≠ complete recursive file scan
+timed-out or truncated scan    ≠ complete recursive file scan
 file absence                   ≠ concept absence
 search returned nothing        ≠ concept does not exist
 local configuration            ≠ external state
 ```
 
 A supported file absence (for example a complete `glob "**/*"` with no
-`README.md`) can complete. A concept claim (“no documentation”, “no tests”)
+`README.md`) can complete. The scan must actually cover the tree: a recursive
+glob that pruned `.gitignore` paths, a timed-out scan, or a truncated result
+cannot prove absence. The glob tool names an exclusion so the answer can widen
+the scan with `"gitignore": false` instead of concluding the pruned subtree does
+not exist. A concept claim (“no documentation”, “no tests”)
 cannot be proven by a file scan and stays `NEEDS_REVIEW`. An answer that only
 reports “I could not find …” is an unverified negative result, not completion.
+The failure form includes passive voice (“could not be read”), and a qualifier
+does not turn a category into a file coordinate: “no Go source files” is still a
+category absence, not a concrete file claim.
 
 A **local configuration** claim is different again from an **external state**
 claim. A workflow file proves what is configured: the schedule, the trigger, the

@@ -373,10 +373,21 @@ func TestStatusShowsWorkspaceMeta(t *testing.T) {
 func TestHeaderShowsPhaseInWords(t *testing.T) {
 	s := New()
 	s.Status.Model = "groq/m"
-	s.Apply(UserSubmitted{Text: "go"})
+	s.Apply(TerminalResized{Width: 80, Height: 24})
 	out := Render(s)
-	if !strings.Contains(strings.Split(out, "\n")[0], "working") {
-		t.Errorf("header = %q, want the phase in words, not color alone", out)
+	if !strings.Contains(strings.Split(out, "\n")[0], "idle") {
+		t.Errorf("header = %q, want the resting phase in words, not color alone", out)
+	}
+	// While work runs the phase moves to the activity surface; the header
+	// must not name it a second time.
+	s.Apply(UserSubmitted{Text: "go"})
+	busy := Render(s)
+	header := strings.Split(busy, "\n")[0]
+	if strings.Contains(header, "working") {
+		t.Errorf("busy header repeated the active phase: %q", header)
+	}
+	if !strings.Contains(busy, "reason") {
+		t.Errorf("busy view = %q, want the activity surface to name the phase", busy)
 	}
 }
 

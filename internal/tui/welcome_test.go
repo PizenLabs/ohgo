@@ -185,8 +185,11 @@ func TestHeaderAndFooterDoNotDuplicateIdentity(t *testing.T) {
 	if !strings.Contains(header, "groq/some-model") {
 		t.Errorf("header = %q, want the model there", header)
 	}
-	if !strings.Contains(header, "working") {
-		t.Errorf("header = %q, want the runtime phase there", header)
+	if strings.Contains(header, "working") {
+		t.Errorf("header = %q, want no duplicate active phase", header)
+	}
+	if !strings.Contains(out, "reason") {
+		t.Errorf("busy view = %q, want the one activity surface to name the phase", out)
 	}
 	// The footer only claims its row once the turn ends: while busy the
 	// hint row belongs to cancellation keys, never to telemetry.
@@ -292,9 +295,9 @@ func TestLayoutComposerMapsCursorOnWrappedRow(t *testing.T) {
 	}
 }
 
-// A running tool and the footer animate on the same spinner frame.
+// A running tool uses a static liveness glyph, never a spinner frame.
 
-func TestRunningToolUsesTheLiveSpinnerFrame(t *testing.T) {
+func TestRunningToolUsesTheLiveActivityGlyph(t *testing.T) {
 	s := New()
 	s.Status.Model = "groq/m"
 	s.Status.Spinner = 3
@@ -303,8 +306,13 @@ func TestRunningToolUsesTheLiveSpinnerFrame(t *testing.T) {
 	s.Apply(ToolPreview{ID: "c1", Summary: "read a.go"})
 
 	out := Render(s)
-	if !strings.Contains(out, spinnerFrames[3]) {
-		t.Errorf("render = %q, want the live spinner frame %q on the running tool", out, spinnerFrames[3])
+	if !strings.Contains(out, "◌") {
+		t.Errorf("render = %q, want the static running glyph on the running tool", out)
+	}
+	for _, frame := range spinnerFrames {
+		if strings.Contains(out, frame) {
+			t.Errorf("render = %q, want no spinner frame %q", out, frame)
+		}
 	}
 }
 

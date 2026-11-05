@@ -97,6 +97,69 @@ func TruncateToWidth(s string, width int) string {
 	return runewidth.Truncate(stripped, width-1, "…")
 }
 
+// TruncateMiddleToWidth cuts s to at most width cells, keeping both the head
+// and the tail and replacing the removed middle with one ellipsis cell.
+//
+// A tool target is usually a path: its operation lives at the head and its
+// basename at the tail. Suffix truncation loses the basename, which is the part
+// a reader uses to identify the action, so paths get deterministic middle
+// truncation instead. The result is stable for a given width and never
+// animates.
+func TruncateMiddleToWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	s = expandTabsStyled(s)
+	stripped := ansi.Strip(s)
+	if runewidth.StringWidth(stripped) <= width {
+		return s
+	}
+	if width == 1 {
+		return "…"
+	}
+	budget := width - 1
+	left := budget / 2
+	right := budget - left
+	return prefixCells(stripped, left) + "…" + suffixCells(stripped, right)
+}
+
+// prefixCells returns at most width cells from the start of s.
+func prefixCells(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	var sb strings.Builder
+	used := 0
+	for _, r := range s {
+		rw := runewidth.RuneWidth(r)
+		if rw > 0 && used+rw > width {
+			break
+		}
+		sb.WriteRune(r)
+		used += rw
+	}
+	return sb.String()
+}
+
+// suffixCells returns at most width cells from the end of s.
+func suffixCells(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	used := 0
+	start := len(runes)
+	for i := len(runes) - 1; i >= 0; i-- {
+		rw := runewidth.RuneWidth(runes[i])
+		if rw > 0 && used+rw > width {
+			break
+		}
+		used += rw
+		start = i
+	}
+	return string(runes[start:])
+}
+
 // WrapToWidth folds text to the available cells.
 //
 // Lines break at spaces when one falls within the width; long unbroken runs

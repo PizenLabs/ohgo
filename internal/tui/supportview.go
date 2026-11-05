@@ -419,7 +419,7 @@ func supportResponseLines(panel *SupportPanel, pal *Palette, width int, state St
 	switch panel.Status {
 	case SupportRunning:
 		if strings.TrimSpace(body) == "" {
-			return []string{pal.Muted.Render(TruncateToWidth(spinnerFrame(state.Status.Spinner)+" working", width))}
+			return []string{pal.Muted.Render(TruncateToWidth("◌ respond", width))}
 		}
 	case SupportIdle:
 		if strings.TrimSpace(body) == "" {
@@ -482,7 +482,7 @@ func supportInputStatusLine(panel *SupportPanel, pal *Palette, state State, widt
 	}
 	var left string
 	if panel.Status == SupportRunning {
-		left = pal.Muted.Render(TruncateToWidth("… working — Ctrl+C cancels", leftBudget))
+		left = pal.Muted.Render(TruncateToWidth("… responding — Ctrl+C cancels", leftBudget))
 	} else {
 		left = supportInputText(panel, pal, leftBudget)
 	}
@@ -581,7 +581,7 @@ func supportCursorRow(logical []string, cursor, inner int) (int, int) {
 func supportStatusMark(panel *SupportPanel, pal *Palette, state State) (string, lipgloss.Style) {
 	switch panel.Status {
 	case SupportRunning:
-		return spinnerFrame(state.Status.Spinner) + " working", pal.ToolRun
+		return "◌ respond", pal.ToolRun
 	case SupportCompleted:
 		return "✓ done", pal.ToolDone
 	case SupportCancelled:

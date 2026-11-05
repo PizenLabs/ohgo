@@ -416,6 +416,154 @@ func TestEvaluateTaskCompletionAcceptsProvenFileAbsence(t *testing.T) {
 	}
 }
 
+// A recursive glob that pruned .gitignore paths did not cover the repository,
+// even when it returned other matches. It cannot prove a file absent: the
+// missing file may live in the pruned subtree.
+func TestEvaluateTaskCompletionRejectsAbsenceFromPrunedGlob(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective: "Check whether README.md exists.",
+		Action:    contract.GroundingRead,
+		Actions:   []contract.GroundingAction{contract.GroundingRead},
+	})
+	verdict := EvaluateTaskCompletion(CompletionInput{
+		Turns: []Turn{
+			{Results: []ToolOutcome{{
+				ToolName: "glob",
+				Args:     map[string]any{"pattern": "**/*"},
+				Result: Result{Text: "main.go\n\n[1 path was excluded by .gitignore; " +
+					`pass "gitignore": false to include ignored paths.]`},
+			}}},
+			answerTurnNoTools("README.md does not exist in this repository."),
+		},
+		Contract: intent,
+	})
+	if verdict.Complete() {
+		t.Fatal("a pruned recursive scan was accepted as proof of file absence")
+	}
+}
+
+// A timed-out recursive scan is incomplete even when it returned no matches.
+// The tool reports the deadline; completion must not read that absence as proof.
+func TestEvaluateTaskCompletionRejectsAbsenceFromTimedOutGlob(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective: "Check whether README.md exists.",
+		Action:    contract.GroundingRead,
+		Actions:   []contract.GroundingAction{contract.GroundingRead},
+	})
+	verdict := EvaluateTaskCompletion(CompletionInput{
+		Turns: []Turn{
+			{Results: []ToolOutcome{{
+				ToolName: "glob",
+				Args:     map[string]any{"pattern": "**/*"},
+				Result: Result{Text: "glob timed out after 5s before finding any matches — " +
+					"results are incomplete, NOT proof of absence."},
+			}}},
+			answerTurnNoTools("README.md does not exist in this repository."),
+		},
+		Contract: intent,
+	})
+	if verdict.Complete() {
+		t.Fatal("a timed-out recursive scan was accepted as proof of file absence")
+	}
+}
+
+// A failed lookup at a guessed path is not evidence that a documented subsystem
+// is absent. "Could not be read" and "no files matched" report an unverified
+// search result; they cannot support a conclusion that the backend is not
+// implemented.
+func TestEvaluateTaskCompletionRejectsBackendAbsenceFromGuessedPath(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective: "check this project and analyze what this project is about?",
+		Action:    contract.GroundingRead,
+		Actions:   []contract.GroundingAction{contract.GroundingRead},
+	})
+	answer := "The backend/ folder exists, but backend/go-ecommerce could not be read and no Go source files " +
+		"matched backend/go-ecommerce/**/*.go (glob returned nothing, with 4 paths excluded by .gitignore). " +
+		"So the Go microservices backend described in the README appears to be planned/stubbed rather than " +
+		"implemented and checked in."
+	verdict := EvaluateTaskCompletion(CompletionInput{
+		Turns: []Turn{
+			{Results: []ToolOutcome{
+				{ToolName: "ls", Args: map[string]any{"path": "."},
+					Result: Result{Text: "README.md\nbackend\npackage.json\nsrc\nsupabase\n"}},
+				{ToolName: "ls", Args: map[string]any{"path": "backend"},
+					Result: Result{Text: "cmd\ninternal\npkg\ngo.mod\ngo.sum\ngo.work\n"}},
+				{ToolName: "glob", Args: map[string]any{"pattern": "backend/go-ecommerce/**/*.go"},
+					Result: Result{Text: "No files matched. 4 paths were excluded by .gitignore; " +
+						`pass "gitignore": false to include ignored paths.`}},
+				{ToolName: "ls", Args: map[string]any{"path": "backend/go-ecommerce"},
+					Result: Result{Text: "read directory: no such file or directory", IsError: true}},
+				{ToolName: "ls", Args: map[string]any{"path": "src/client"},
+					Result: Result{Text: "ClientApp.tsx\ncomponents\n"}},
+				{ToolName: "read", Args: map[string]any{"path": "src/client/ClientApp.tsx"},
+					Result: Result{Text: "import React from 'react';"}},
+			}},
+			answerTurnNoTools(answer),
+		},
+		Contract: intent,
+	})
+	if verdict.Complete() {
+		t.Fatal("an absence conclusion from a failed guessed path was reported complete")
+	}
+	if !strings.Contains(verdict.Reason, "intent grounding") {
+		t.Fatalf("reason = %q, want a grounding boundary", verdict.Reason)
+	}
+}
+
+// An adjective between "no" and a file category ("no Go source files") does not
+// turn the claim into a concrete file coordinate. It is still a concept absence
+// and needs evidence the run does not have.
+func TestEvaluateTaskCompletionRejectsQualifiedFileAbsence(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective: "check this project and analyze what this project is about?",
+		Action:    contract.GroundingRead,
+		Actions:   []contract.GroundingAction{contract.GroundingRead},
+	})
+	verdict := EvaluateTaskCompletion(CompletionInput{
+		Turns: []Turn{
+			{Results: []ToolOutcome{
+				{ToolName: "ls", Args: map[string]any{"path": "backend"},
+					Result: Result{Text: "cmd\ninternal\npkg\ngo.mod\n"}},
+			}},
+			answerTurnNoTools("No Go source files are present in the backend."),
+		},
+		Contract: intent,
+	})
+	if verdict.Complete() {
+		t.Fatal("a qualified file-category absence was reported complete")
+	}
+	if !strings.Contains(verdict.Reason, "intent grounding") {
+		t.Fatalf("reason = %q, want a grounding boundary", verdict.Reason)
+	}
+}
+
+// Reporting a failed read as the basis for the answer is an unverified negative
+// result even when the sentence has no "no X" claim. The passive form
+// ("could not be read") must count the same as "could not read".
+func TestEvaluateTaskCompletionRejectsPassiveSearchFailure(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective: "check this project and analyze what this project is about?",
+		Action:    contract.GroundingRead,
+		Actions:   []contract.GroundingAction{contract.GroundingRead},
+	})
+	verdict := EvaluateTaskCompletion(CompletionInput{
+		Turns: []Turn{
+			{Results: []ToolOutcome{
+				{ToolName: "ls", Args: map[string]any{"path": "backend"},
+					Result: Result{Text: "cmd\ninternal\npkg\ngo.mod\n"}},
+			}},
+			answerTurnNoTools("The backend/go-ecommerce directory could not be read, so the backend is likely a stub."),
+		},
+		Contract: intent,
+	})
+	if verdict.Complete() {
+		t.Fatal("a passive search failure was accepted as a completed answer")
+	}
+	if !strings.Contains(verdict.Reason, "intent grounding") {
+		t.Fatalf("reason = %q, want a grounding boundary", verdict.Reason)
+	}
+}
+
 // A category ("documentation") is not a file, so even a complete glob cannot
 // prove its absence.
 func TestEvaluateTaskCompletionRejectsProvenConceptAbsence(t *testing.T) {

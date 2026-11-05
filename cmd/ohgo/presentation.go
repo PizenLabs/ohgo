@@ -26,7 +26,15 @@ func promptBlocks(opts options, extra string) []ai.SystemPromptBlock {
 }
 
 // printTurn streams a completed turn to the output.
+//
+// Answer-required control refusals are not actions the runtime performed; they
+// are projected out here as well as in the UI so the plain transcript never
+// shows an internal refusal as a tool failure.
 func printTurn(out io.Writer, turn agent.Turn) {
+	turn = agent.TranscriptTurn(turn)
+	if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
+		return
+	}
 	for _, block := range turn.Assistant.Content {
 		switch b := block.(type) {
 		case ai.TextContent:

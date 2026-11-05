@@ -20,6 +20,10 @@ import (
 // still correct in memory, and aborting a working turn because a log insert
 // failed would be the worse trade.
 func persistTurn(store *session.Store, sess session.Session, turn agent.Turn) {
+	turn = agent.TranscriptTurn(turn)
+	if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
+		return
+	}
 	assistant, err := session.FromAgentMessage(agent.AssistantMessage{Message: turn.Assistant})
 	if err == nil && assistant.Role != "" {
 		if err := store.Append(sess.ID, assistant); err != nil {

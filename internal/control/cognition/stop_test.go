@@ -42,7 +42,7 @@ func informationalProjection(t *testing.T, shape TaskShape, turns []agent.Turn) 
 func TestProjectorStopsWhenATurnAddsNoEvidence(t *testing.T) {
 	shape := BuildShape(contract.IntentContract{
 		Kind:      contract.ObjectiveInformational,
-		Objective: "Does this workflow run automatically?",
+		Objective: "check this project and analyze what this project is about?",
 	}, ShapeParams{Authority: "ask"})
 
 	first := readTurn("c1", ".github/workflows/telemetry.yml", "1\ton: schedule")
@@ -72,12 +72,37 @@ func TestProjectorStopsWhenATurnAddsNoEvidence(t *testing.T) {
 	}
 }
 
+// A read the runtime cannot attribute to a repository path recorded no usable
+// evidence. It must not be counted as an observation, because "observed but not
+// novel" is exactly the signal that withholds every tool and asks for an answer.
+func TestUnattributableReadIsNotEvidenceGain(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "check this project and analyze what this project is about?",
+	}, ShapeParams{Authority: "ask"})
+
+	// The read succeeded, but the metadata names an absolute path outside the
+	// repository-relative vocabulary. Nothing can be attributed.
+	first := readTurn("c1", "/tmp/workspace/README.md", "# project")
+	state := NewEvidenceState()
+	observed, novel := state.ObserveTurns(shape, []agent.Turn{first})
+	if observed != 0 || novel != 0 {
+		t.Fatalf("unattributable read counted as evidence: observed=%d novel=%d", observed, novel)
+	}
+
+	duplicate := readTurn("c2", "/tmp/workspace/README.md", "# project")
+	projected := informationalProjection(t, shape, []agent.Turn{first, duplicate})
+	if len(projected.Tools) == 0 {
+		t.Fatalf("an unattributable read triggered the answer-only stop: %+v", projected.Report.Excluded)
+	}
+}
+
 // A different range of the same file is new information, so it must not be
 // mistaken for a repeat.
 func TestProjectorKeepsToolsWhenTheObservationAddsAFact(t *testing.T) {
 	shape := BuildShape(contract.IntentContract{
 		Kind:      contract.ObjectiveInformational,
-		Objective: "Does this workflow run automatically?",
+		Objective: "check this project and analyze what this project is about?",
 	}, ShapeParams{Authority: "ask"})
 	first := readTurn("c1", "main.go", "1\tpackage main")
 	second := agent.Turn{Results: []agent.ToolOutcome{{
@@ -100,7 +125,7 @@ func TestProjectorKeepsToolsWhenTheObservationAddsAFact(t *testing.T) {
 func TestProjectorDoesNotStopOnTheFirstTurnOfARun(t *testing.T) {
 	shape := BuildShape(contract.IntentContract{
 		Kind:      contract.ObjectiveInformational,
-		Objective: "Does this workflow run automatically?",
+		Objective: "check this project and analyze what this project is about?",
 	}, ShapeParams{Authority: "ask"})
 	evidence := NewEvidenceState()
 	// A fact persisted from an earlier user turn.
@@ -129,7 +154,7 @@ func TestProjectorDoesNotStopOnTheFirstTurnOfARun(t *testing.T) {
 func TestProjectorDoesNotStopOnARefusedTurn(t *testing.T) {
 	shape := BuildShape(contract.IntentContract{
 		Kind:      contract.ObjectiveInformational,
-		Objective: "Does this workflow run automatically?",
+		Objective: "check this project and analyze what this project is about?",
 	}, ShapeParams{Authority: "ask"})
 	first := readTurn("c1", "main.go", "1\tpackage main")
 	refused := agent.Turn{Results: []agent.ToolOutcome{{
@@ -152,5 +177,40 @@ func TestProjectorDoesNotStopAChangeObjective(t *testing.T) {
 	projected := informationalProjection(t, shape, []agent.Turn{first, duplicate})
 	if len(projected.Tools) == 0 {
 		t.Fatal("a change objective was stopped before it could act")
+	}
+}
+
+// An explicitly directory-scoped prompt reaches the answer stage once the
+// directory has been listed and the named file has been read. The directory
+// target must not demand file bytes it can never have.
+func TestDirectoryScopedPromptReachesAnswerAfterListingAndFileRead(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Use ls to inspect the project root and backend/, read backend/go.mod, then tell me the module name.",
+		Targets: []contract.Target{
+			{Kind: contract.TargetPath, Value: "backend/"},
+			{Kind: contract.TargetPath, Value: "backend/go.mod"},
+		},
+	}, ShapeParams{Authority: "ask", Facts: RepositoryFacts{Go: true}})
+
+	turns := []agent.Turn{{Results: []agent.ToolOutcome{
+		{
+			CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "."},
+			Result: agent.Result{Text: "backend\nREADME.md", Details: map[string]any{"path": ".", "entries": 2}},
+		},
+		{
+			CallID: "ls-2", ToolName: "ls", Args: map[string]any{"path": "backend"},
+			Result: agent.Result{Text: "cmd\ninternal\ngo.mod", Details: map[string]any{"path": "backend", "entries": 3}},
+		},
+		readTurn("read-1", "backend/go.mod", "1\tmodule ecommerce").Results[0],
+	}}}
+
+	projected := informationalProjection(t, shape, turns)
+	if projected.Report.Sufficiency != string(Sufficient) {
+		t.Fatalf("sufficiency = %s (%s), want SUFFICIENT; excluded=%+v",
+			projected.Report.Sufficiency, projected.Report.Evidence, projected.Report.Excluded)
+	}
+	if !projected.Report.AnswerEligible {
+		t.Fatal("the answer stage was not reachable after the directory listing and file read")
 	}
 }
