@@ -2464,6 +2464,14 @@ func (s *State) openReasoning() int {
 }
 
 // appendAssistant extends the open assistant entry, or starts one.
+//
+// Whitespace that arrives while an answer is open is real content: it is the
+// paragraph break the markdown renderer needs. Whitespace that would *start* a
+// block is provider framing around a tool round, not an answer, so it is
+// dropped. Creating an entry for it would split the surrounding tool run: the
+// transcript would gain an empty gap and the expand hint would jump to two
+// calls instead of one. This matches the replay path, which never materialises
+// a whitespace-only assistant block.
 func (s *State) appendAssistant(text string) {
 	if text == "" {
 		return
@@ -2472,6 +2480,9 @@ func (s *State) appendAssistant(text string) {
 		s.Entries[index].AssistantText += text
 		s.assistantText = true
 		s.bumpEntry(index)
+		return
+	}
+	if strings.TrimSpace(text) == "" {
 		return
 	}
 	s.Entries = append(s.Entries, Entry{Kind: EntryAssistant, AssistantText: text})

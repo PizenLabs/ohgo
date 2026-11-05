@@ -330,3 +330,64 @@ func TestLongPathSummaryKeepsTail(t *testing.T) {
 		t.Fatalf("summary lost the operation and path head: %q", got)
 	}
 }
+
+// TestWhitespaceBetweenToolRoundsDoesNotSplitTheRun: providers frame a tool
+// round with whitespace-only text. That is not an answer, so it must not open
+// an assistant block: a blank gap between consecutive calls and a second
+// expand hint are both visible proof that the transcript split one run in two.
+func TestWhitespaceBetweenToolRoundsDoesNotSplitTheRun(t *testing.T) {
+	start := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Apply(UserSubmitted{Text: "inspect the module"})
+	s.Apply(ToolStarted{ID: "c1", Name: "ls", Summary: "ls /repo/backend", At: start})
+	s.Apply(ToolFinished{ID: "c1", Text: "a\nb", Summary: "19 lines", At: start.Add(time.Millisecond)})
+	s.Apply(ToolStarted{ID: "c2", Name: "ls", Summary: "ls /repo", At: start})
+	s.Apply(ToolFinished{ID: "c2", Text: "a\nb", Summary: "17 lines", At: start.Add(time.Millisecond)})
+	// The provider's own framing between the round's results and the next call.
+	s.Apply(AssistantDelta{Text: "\n\n", At: start.Add(2 * time.Millisecond)})
+	s.Apply(ToolStarted{ID: "c3", Name: "read", Summary: "read /repo/go.mod", At: start})
+	s.Apply(ToolFinished{ID: "c3", Text: "a\nb", Summary: "52 lines", At: start.Add(time.Millisecond)})
+
+	rows := strings.Split(ansi.Strip(Render(s)), "\n")
+	outcome, next := -1, -1
+	for i, row := range rows {
+		if strings.Contains(row, "17 lines") {
+			outcome = i
+		}
+		if strings.Contains(row, "read /repo/go.mod") {
+			next = i
+		}
+	}
+	if outcome < 0 || next < 0 {
+		t.Fatalf("transcript lost a call row:\n%s", strings.Join(rows, "\n"))
+	}
+	if next != outcome+1 {
+		t.Fatalf("gap of %d blank rows split one tool run:\n%s", next-outcome-1, strings.Join(rows[outcome:next+1], "\n"))
+	}
+	if got := strings.Count(strings.Join(rows, "\n"), "(ctrl+o to expand)"); got != 1 {
+		t.Fatalf("expand hint appeared %d times in one run, want once on the last call", got)
+	}
+}
+
+// TestAssistantWhitespaceInsideAnAnswerIsKept: dropping framing whitespace
+// must not collapse a paragraph break the answer itself streamed.
+func TestAssistantWhitespaceInsideAnAnswerIsKept(t *testing.T) {
+	s := New()
+	s.Apply(AssistantDelta{Text: "First paragraph."})
+	s.Apply(AssistantDelta{Text: "\n\n"})
+	s.Apply(AssistantDelta{Text: "Second paragraph."})
+
+	var assistant *Entry
+	for i := range s.Entries {
+		if s.Entries[i].Kind == EntryAssistant {
+			assistant = &s.Entries[i]
+		}
+	}
+	if assistant == nil {
+		t.Fatal("the answer produced no transcript entry")
+	}
+	if assistant.AssistantText != "First paragraph.\n\nSecond paragraph." {
+		t.Fatalf("answer text = %q, want the streamed paragraph break preserved", assistant.AssistantText)
+	}
+}

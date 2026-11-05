@@ -1675,7 +1675,9 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 		sb.WriteString("\n")
 
 	case EntryAssistant:
-		if entry.AssistantText == "" {
+		// A whitespace-only block renders no rows, so it must not claim the
+		// gap that follows a tool run: the gap belongs to visible content.
+		if strings.TrimSpace(entry.AssistantText) == "" {
 			return
 		}
 		writeGap()

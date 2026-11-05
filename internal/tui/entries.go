@@ -86,12 +86,17 @@ func canonicalAssistantBlocks(msg ai.AssistantMessage) []ai.ContentBlock {
 
 // appendAssistantEntry merges adjacent text blocks, matching the live path's
 // one-assistant-block-per-text-run rule.
+//
+// Whitespace inside a run is preserved because it is the paragraph break the
+// markdown renderer needs. Whitespace that would open a block is provider
+// framing around a tool round, so it is dropped rather than materialised as an
+// empty gap between tool rows.
 func appendAssistantEntry(entries []Entry, text string) []Entry {
-	if strings.TrimSpace(text) == "" {
-		return entries
-	}
 	if len(entries) > 0 && entries[len(entries)-1].Kind == EntryAssistant {
 		entries[len(entries)-1].AssistantText += text
+		return entries
+	}
+	if strings.TrimSpace(text) == "" {
 		return entries
 	}
 	return append(entries, Entry{Kind: EntryAssistant, AssistantText: text})
