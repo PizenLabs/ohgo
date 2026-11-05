@@ -787,7 +787,11 @@ func (s *EvidenceState) addSearch(outcome agent.ToolOutcome, details map[string]
 	if first := firstContentLine(text); first != "" {
 		summary += " — " + bound(first, 140)
 	}
-	complete := !strings.Contains(text, "pass skip=") && !strings.Contains(text, "raise \"limit\"")
+	// A scan that pruned .gitignore paths did not cover the tree. It may still
+	// return useful matches, but it cannot establish that something absent from
+	// the result is absent from the repository.
+	complete := detailInt(details, "ignored") == 0 &&
+		!strings.Contains(text, "pass skip=") && !strings.Contains(text, "raise \"limit\"")
 	return s.upsert(EvidenceItem{
 		ID:         id,
 		Status:     StatusDerived,
@@ -1211,6 +1215,24 @@ func isMissingFileError(text string) bool {
 		strings.Contains(lower, "cannot find")
 }
 
+// repositoryManifestLanguages maps a manifest base name to the implementation
+// language it identifies. An empty language marks a manifest for a language the
+// runtime does not model (Java, Ruby, PHP, Elixir): it is still manifest
+// evidence, but it contributes no language identity to provenance.
+var repositoryManifestLanguages = map[string]string{
+	"go.mod": "go", "go.sum": "go", "go.work": "go",
+	"package.json": "javascript", "package-lock.json": "javascript",
+	"yarn.lock": "javascript", "pnpm-lock.yaml": "javascript",
+	"cargo.toml": "rust", "cargo.lock": "rust",
+	"pyproject.toml": "python", "requirements.txt": "python",
+	"poetry.lock": "python", "pipfile": "python", "pipfile.lock": "python",
+	"pom.xml": "", "build.gradle": "", "build.gradle.kts": "",
+	"settings.gradle": "", "settings.gradle.kts": "",
+	"gemfile": "", "gemfile.lock": "",
+	"composer.json": "", "composer.lock": "",
+	"mix.exs": "", "mix.lock": "",
+}
+
 // classifyPathProvenance decides what a path observation can support.
 //
 // The classification is path-based and deterministic. Documentation is what
@@ -1233,13 +1255,7 @@ func classifyPathProvenance(path string) Provenance {
 		strings.HasSuffix(base, ".min.css") {
 		return ProvenanceGenerated
 	}
-	switch base {
-	case "go.mod", "go.sum", "go.work", "package.json", "package-lock.json",
-		"yarn.lock", "pnpm-lock.yaml", "cargo.toml", "cargo.lock",
-		"pyproject.toml", "requirements.txt", "poetry.lock", "pipfile",
-		"pipfile.lock", "pom.xml", "build.gradle", "build.gradle.kts",
-		"settings.gradle", "settings.gradle.kts", "gemfile", "gemfile.lock",
-		"composer.json", "composer.lock", "mix.exs", "mix.lock":
+	if _, ok := repositoryManifestLanguages[base]; ok {
 		return ProvenanceManifest
 	}
 	if strings.HasPrefix(normalized, "docs/") || strings.HasPrefix(normalized, "doc/") ||

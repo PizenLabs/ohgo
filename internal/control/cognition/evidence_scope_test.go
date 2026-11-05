@@ -16,6 +16,46 @@ func requirementKeys(needs []KnowledgeNeed) map[string]bool {
 	return keys
 }
 
+// A glob that pruned .gitignore paths is not a complete survey of the tree.
+// The evidence must not mark it complete even when it returned matches, or a
+// later absence claim can be accepted against a subtree that was never scanned.
+func TestPrunedGlobIsNotCompleteEvidence(t *testing.T) {
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "glob-1", ToolName: "glob",
+		Args: map[string]any{"pattern": "**/*"},
+		Result: agent.Result{
+			Text: "main.go\n\n[1 path was excluded by .gitignore; " +
+				`pass "gitignore": false to include ignored paths.]`,
+			Details: map[string]any{"pattern": "**/*", "path": ".", "matches": 1, "ignored": 1},
+		},
+	})
+	item, ok := state.Find("search:glob:**/*:.")
+	if !ok {
+		t.Fatalf("pruned glob was not recorded: %+v", state.Items)
+	}
+	if item.Complete {
+		t.Fatal("a pruned glob was recorded as a complete scan")
+	}
+
+	state = NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "glob-2", ToolName: "glob",
+		Args: map[string]any{"pattern": "**/*"},
+		Result: agent.Result{
+			Text:    "main.go\nnotes.md",
+			Details: map[string]any{"pattern": "**/*", "path": ".", "matches": 2, "ignored": 0},
+		},
+	})
+	item, ok = state.Find("search:glob:**/*:.")
+	if !ok {
+		t.Fatalf("complete glob was not recorded: %+v", state.Items)
+	}
+	if !item.Complete {
+		t.Fatal("a glob with no exclusions was recorded as incomplete")
+	}
+}
+
 // A question about how this repository behaves cannot be answered from model
 // knowledge: the answer lives in a file. The shape must declare that need, and
 // sufficiency must stay INSUFFICIENT until something content-bearing is read.

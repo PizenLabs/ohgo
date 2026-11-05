@@ -24,7 +24,7 @@ var (
 	negativeThereIsPattern = regexp.MustCompile(
 		`(?i)\bthere\s+(?:is|are)\s+no\s+([a-z0-9][a-z0-9 _./-]{0,40})`)
 	negativeNoPattern = regexp.MustCompile(
-		`(?i)\bno\s+(README(?:\.md)?|documentation|docs|tests?|config(?:uration)?|source\s+files?|files?)\b`)
+		`(?i)\bno\s+((?:[a-z0-9_.+#-]+\s+){0,3}?(?:README(?:\.md)?|documentation|docs|tests?|config(?:uration)?|source\s+files?|files?))\b`)
 	negativeExistPattern = regexp.MustCompile(
 		`(?i)\b([a-z0-9][a-z0-9_./-]{1,60})\s+(?:does\s+not|doesn't|do\s+not|don't)\s+(?:exist|contain|include)\b`)
 	negativeAbsentPattern = regexp.MustCompile(
@@ -34,7 +34,7 @@ var (
 	globalScopePattern = regexp.MustCompile(
 		`(?i)\b(?:repository|repo|project|codebase|workspace)\b`)
 	insufficientSearchPattern = regexp.MustCompile(
-		`(?i)\b(?:i\s+)?(?:could\s+not|couldn't|cannot|can't|was\s+unable\s+to|unable\s+to)\s+(?:find|locate|read|access|see)\b`)
+		`(?i)\b(?:i\s+)?(?:could\s+not|couldn't|cannot|can't|was\s+unable\s+to|unable\s+to)\s+(?:be\s+)?(?:find|found|locate|located|read|access|accessed|see|seen)\b`)
 	performedActionPattern = regexp.MustCompile(
 		`(?i)\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?(?:inspected|checked|reviewed|read|examined|scanned|analy[sz]ed|searched|looked\s+at|opened)\b`)
 	restatedObjectivePattern = regexp.MustCompile(
@@ -512,10 +512,15 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 				coverage.external = true
 			}
 			text := strings.ToLower(outcome.Result.Text)
+			// A scan is complete only when it covered the whole requested
+			// tree. Truncation, a deadline, or a pruned .gitignore subtree all
+			// leave the result unable to prove that something is absent.
 			complete := !strings.Contains(text, "truncated") &&
 				!strings.Contains(text, "showing ") &&
 				!strings.Contains(text, "limit reached") &&
-				!strings.Contains(text, "more results")
+				!strings.Contains(text, "more results") &&
+				!strings.Contains(text, "timed out") &&
+				!strings.Contains(text, "excluded by .gitignore")
 			switch outcome.ToolName {
 			case "ls":
 				path := proposalArgString(outcome.Args, "path")

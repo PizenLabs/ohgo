@@ -1,6 +1,7 @@
 package cognition
 
 import (
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -36,6 +37,7 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 		return summary
 	}
 	var documentation, implementation, external []string
+	var manifests []string
 	titles := map[string]bool{}
 	for _, item := range s.Items {
 		if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
@@ -60,6 +62,9 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 			}
 		case ProvenanceManifest:
 			implementation = append(implementation, item.Value)
+			if path := strings.TrimSpace(item.Source.Path); path != "" {
+				manifests = append(manifests, path)
+			}
 		}
 	}
 	// External content is not implementation, but a term confirmed there is
@@ -67,28 +72,56 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 	// successful external observation is not forced to attribute what it
 	// actually observed.
 	observed := termSet(append(append([]string(nil), implementation...), external...))
-	// The workspace probe and module manifest establish the implementation
-	// language even when the short token ("go", "js") is below the content-term
-	// length floor. A language is an observed property of the repository, not a
-	// documentation claim.
+	// The workspace probe and a module manifest read by the agent both
+	// establish the implementation language even when the short token ("go",
+	// "js") is below the content-term length floor. A language is an observed
+	// property of the repository, not a documentation claim. The probe sees
+	// only the root, so a nested backend/go.mod must contribute its language
+	// from the observation itself.
 	if shape.RepositoryFacts.Go {
-		observed["go"] = true
-		observed["golang"] = true
+		addLanguageIdentity(observed, "go")
 	}
 	if shape.RepositoryFacts.JavaScript {
+		addLanguageIdentity(observed, "javascript")
+	}
+	if shape.RepositoryFacts.Python {
+		addLanguageIdentity(observed, "python")
+	}
+	if shape.RepositoryFacts.Rust {
+		addLanguageIdentity(observed, "rust")
+	}
+	for _, path := range manifests {
+		if language := repositoryManifestLanguages[manifestBase(path)]; language != "" {
+			addLanguageIdentity(observed, language)
+		}
+	}
+	summary.DocumentationTerms = documentationOnlyTerms(documentation, observed, titles)
+	return summary
+}
+
+// addLanguageIdentity marks the answer vocabulary tokens that name one
+// implementation language. The short forms are below the content-term length
+// floor, so they must be added explicitly.
+func addLanguageIdentity(observed map[string]bool, language string) {
+	switch language {
+	case "go":
+		observed["go"] = true
+		observed["golang"] = true
+	case "javascript":
 		observed["javascript"] = true
 		observed["typescript"] = true
 		observed["js"] = true
 		observed["ts"] = true
-	}
-	if shape.RepositoryFacts.Python {
+	case "python":
 		observed["python"] = true
-	}
-	if shape.RepositoryFacts.Rust {
+	case "rust":
 		observed["rust"] = true
 	}
-	summary.DocumentationTerms = documentationOnlyTerms(documentation, observed, titles)
-	return summary
+}
+
+// manifestBase returns the lower-case base name of a manifest path.
+func manifestBase(path string) string {
+	return strings.ToLower(filepath.Base(filepath.ToSlash(strings.TrimSpace(path))))
 }
 
 // documentationOnlyTerms returns bounded specific terms that appear in

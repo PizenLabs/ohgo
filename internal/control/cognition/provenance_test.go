@@ -204,6 +204,34 @@ func TestMCPDiscoveryIsNotExternalObservation(t *testing.T) {
 	}
 }
 
+// A nested module manifest read by the agent establishes the implementation
+// language even when the root probe saw only the frontend package.json. Without
+// it, "Go 1.23" read from backend/go.mod is reclassified as a documentation-only
+// claim and completion is vetoed.
+func TestNestedManifestEstablishesImplementationLanguage(t *testing.T) {
+	shape := broadShape(RepositoryFacts{JavaScript: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md",
+			"# go-ecommerce\n\nA full-stack platform with a Golang microservices backend.\nThe backend uses Go 1.23.0."),
+		readEvidenceForTest("read-2", "backend/go.mod", "module ecommerce\n\ngo 1.23.0\n"),
+		readEvidenceForTest("read-3", "backend/cmd/product/main.go", "package main"),
+	)
+	summary := state.Provenance(shape)
+	for _, term := range summary.DocumentationTerms {
+		if term == "go" || term == "golang" {
+			t.Fatalf("a manifest-observed language was reported as documentation-only: %+v", summary.DocumentationTerms)
+		}
+	}
+	answer := "Backend (`backend/`, Go 1.23.0, module `ecommerce`): six service entrypoints."
+	if assessment := agent.AssessAnswerProvenance(contract.IntentContract{
+		Objective: "analyze what this project is about",
+		Kind:      contract.ObjectiveInformational,
+	}, answer, summary); !assessment.Pass() {
+		t.Fatalf("an answer grounded in the read manifest was rejected: %s", assessment.Reason())
+	}
+}
+
 // Path classification is deterministic and keeps README, manifests, source,
 // and generated content distinct.
 func TestPathProvenanceClassification(t *testing.T) {

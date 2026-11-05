@@ -252,6 +252,19 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 
 	text := sb.String()
+	if useGitignore && ignored > 0 {
+		// A non-empty result still hides pruned subtrees. "44 matches" looks
+		// like a complete tree even when .gitignore excluded a whole service
+		// directory, and a model will conclude the missing tree does not
+		// exist. Name the exclusion whenever a rule actually pruned a path.
+		noun := "paths were"
+		if ignored == 1 {
+			noun = "path was"
+		}
+		text += fmt.Sprintf(
+			"\n\n[%d %s excluded by .gitignore; pass \"gitignore\": false to include ignored paths.]",
+			ignored, noun)
+	}
 	if truncated {
 		text += fmt.Sprintf("\n\n[showing %d of %d matches — raise \"limit\" or narrow the pattern]", limit, totalMatches)
 	}
