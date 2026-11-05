@@ -5,6 +5,66 @@ immutable.
 
 ## [Unreleased]
 
+## [v0.0.8] - 2026-11-05
+
+### Added
+
+- Provider tool-call normalization: assistant text that carries a serialized
+  `<invoke>` or `<tool_call>` envelope becomes a canonical tool call before the
+  agent loop or transcript sees it. Every provider stream is normalized, native
+  calls pass through unchanged, and malformed, incomplete, or oversized
+  envelopes stay visible as ordinary text instead of being fabricated or
+  silently dropped.
+- Contextual task rail: a responsive right-hand rail shows the active task, its
+  open todos, active integrations, and task insights only while an execution
+  request has open todos. Idle, question-only, and completed or cancelled tasks
+  keep the full-width transcript; a sticky row keeps the task anchored when the
+  rail does not fit, and every section is row-bounded for steady frame cost.
+- `/settings` preferences: the new preferences surface toggles the task rail in
+  place and persists it as `taskRail` in `settings.json`, defaulting to enabled.
+  It participates in the shared modal, keyboard, wheel, overlay, composer, and
+  welcome ownership rules.
+- Syntax-highlighted diffs: approvals and expanded tool blocks render tinted
+  additions and removals so a mutation can be reviewed without leaving the
+  transcript.
+- Live reasoning and activity: throttled Braille spinners mark responding and
+  live-reasoning phases, and one live activity row carries a measured duration
+  plus streaming tool output.
+
+### Changed
+
+- Transcript presentation: tool runs stay contiguous across streamed text,
+  markdown paragraph breaks survive, reasoning collapses behind a toggle, paths
+  and URLs middle-truncate, and filesystem errors reduce to one-line summaries.
+  Reasoning and tool identity survive session resume, and the recap footer comes
+  from observed evidence and the answer's finding rather than the tool list.
+- Evidence and grounding: pruned, truncated, or timed-out scans are incomplete
+  evidence rather than proof of absence; glob output names gitignore-skipped
+  paths, passive search failures are detected, and implementation language is
+  derived from nested manifests the run actually read.
+- Task closure and final answers: an answer-only surface withdraws every tool,
+  unproductive turns are bounded, and a failure ledger with provenance
+  attribution keeps the final answer truthful. A blocked task is reported as
+  review rather than success.
+- Provider stream ordering: OpenAI and Ollama keep text emitted after a native
+  tool call in its logical position instead of merging it into the trailing
+  block.
+
+### Fixed
+
+- Closed-surface answers: post-answer tool calls are dropped instead of
+  appearing as refusal cards, while policy refusals remain visible in the
+  transcript and session.
+- Informational completion: deferred-plan narration ("I will …") no longer
+  completes an informational objective; the run needs an answer.
+- File-count claims: exclusive counts are checked against the files the run
+  actually observed.
+- Tool-call leakage: serialized calls inside assistant prose no longer leak into
+  visible content or bypass execution; diagnostics name malformed or incomplete
+  envelopes rather than guessing.
+- Session concurrency: session startup and sequence allocation are hardened for
+  concurrent writers.
+
 ## [v0.0.6] - 2026-11-03
 
 ### Fixed

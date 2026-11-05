@@ -92,7 +92,7 @@ var defaultDocumentation = strings.Join([]string{
 
 // defaultChangelog is the bundled change log summary.
 var defaultChangelog = strings.Join([]string{
-	"v0.0.6-dev",
+	"v0.0.8-dev",
 	"  - Additional information page with Documentation and Changelog sections.",
 	"  - TUI modals for status, usage, sessions, help, and connect.",
 	"  - Symbol, graph, and refs tools sharing one repository index.",
