@@ -321,24 +321,25 @@ func (r Route) Message() string {
 // RouteTurn derives the authority decision for a request in the active
 // workspace.
 //
-// The authority table is explicit and boring by design (§8, §24):
+// The guard is capability-based, not intent-handler equality:
 //
-//	ACTIVE   INTENT        RESULT
-//	ASK      READ          ASK (read-only)
-//	ASK      EXECUTE       refused — requires an explicit BUILD switch
-//	ASK      INVESTIGATE   refused — requires an explicit FUZZ switch
-//	BUILD    READ          refused — requires an explicit ASK switch
-//	BUILD    EXECUTE       BUILD
-//	BUILD    INVESTIGATE   refused — requires an explicit FUZZ switch
-//	FUZZ     READ          refused — requires an explicit ASK switch
-//	FUZZ     INVESTIGATE   FUZZ
-//	FUZZ     EXECUTE       refused — requires an explicit BUILD switch
+//	ACTIVE   REQUIREMENT                    RESULT
+//	ASK      READ                           ASK (read-only)
+//	ASK      EXECUTE / MUTATE               refused -> BUILD
+//	ASK      INVESTIGATE                    refused -> FUZZ
+//	BUILD    READ / EXECUTE / INVESTIGATE   BUILD
+//	BUILD    MUTATE                         BUILD
+//	FUZZ     READ / EXECUTE / INVESTIGATE   FUZZ
+//	FUZZ     MUTATE                         refused -> BUILD
 //
-// Workspace changes are explicit user decisions. Intent classification only
-// prevents ASK and FUZZ from executing work outside their contracts.
+// BUILD may inspect and investigate; the transition policy decides whether a
+// narrower workspace is a better surface. It may not mutate from FUZZ because
+// the capability is absent, not because the intent handler differs. Workspace
+// changes remain explicit or control-plane decisions; this guard only prevents
+// an authority from performing work outside its contract.
 func RouteTurn(active Workspace, text string) Route {
-	intent := Classify(text)
-	route := Route{Active: active, Intent: intent, Outcome: Allow}
+	requirement := AnalyzeRequest(text)
+	route := Route{Active: active, Intent: requirement.Intent, Outcome: Allow}
 	if !active.Valid() {
 		// An unresolved workspace is denied, never defaulted to one of the
 		// three (see Workspace's doc comment).
@@ -350,24 +351,14 @@ func RouteTurn(active Workspace, text string) Route {
 	}
 	switch active {
 	case Ask:
-		switch intent {
-		case IntentExecute:
+		switch requirement.Capability {
+		case CapabilityMutate, CapabilityExecute:
 			route.Outcome, route.Required = Require, Build
-		case IntentInvestigate:
-			route.Outcome, route.Required = Require, Fuzz
-		}
-	case Build:
-		switch intent {
-		case IntentRead:
-			route.Outcome, route.Required = Require, Ask
-		case IntentInvestigate:
+		case CapabilityInvestigate:
 			route.Outcome, route.Required = Require, Fuzz
 		}
 	case Fuzz:
-		switch intent {
-		case IntentRead:
-			route.Outcome, route.Required = Require, Ask
-		case IntentExecute:
+		if requirement.Capability == CapabilityMutate {
 			route.Outcome, route.Required = Require, Build
 		}
 	}
@@ -384,6 +375,192 @@ func IsConversationalAcknowledgement(text string) bool {
 	default:
 		return false
 	}
+}
+
+// IsContinuation reports whether a request explicitly continues work already
+// in progress rather than stating a new objective.
+//
+// A continuation is task-local. It carries no new intent for the classifier to
+// place, so treating it as the READ fallback would force a workspace change or
+// refusal for a turn the active task already owns. This predicate is vocabulary,
+// not a grant: the turn still runs under the current authority, and every action
+// remains subject to the security gate.
+func IsContinuation(text string) bool {
+	normalized := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(text))), " ")
+	switch normalized {
+	case "continue", "continue.", "go on", "keep going", "resume", "resume.",
+		"retry", "retry.", "try again", "finish", "finish it", "carry on",
+		"verify", "verify the fix", "verify the change", "run the check",
+		"run the verification", "run the tests", "run the test":
+		return true
+	}
+	words := strings.Fields(normalized)
+	if len(words) == 0 {
+		return false
+	}
+	// A continuation verb is a request head, not an incidental word. "update my
+	// resume" and "compare this with the previous task" are new objectives even
+	// though they contain continuation vocabulary.
+	switch strings.Trim(words[0], ".,!?;:") {
+	case "continue", "continues", "resume", "resumes", "resuming",
+		"retry", "retries", "retrying", "finish", "finishes", "finishing":
+		return true
+	}
+	for _, phrase := range []string{"try again", "keep going", "go on", "carry on"} {
+		if strings.HasPrefix(normalized, phrase) {
+			return true
+		}
+	}
+	return strings.Contains(normalized, "where we left off")
+}
+
+// IsTaskFollowUp reports whether a short request refers to the open task's own
+// object rather than naming a new objective.
+//
+// It is narrower than continuation vocabulary. "Fix it" and "implement the
+// fix" have no target of their own; they inherit the open task's result and
+// evidence. "Fix the checkout bug" names a subject and is a new objective even
+// if it is related. The predicate decides attachment only; it grants no
+// authority, and the capability gate still evaluates every action.
+func IsTaskFollowUp(text string) bool {
+	normalized := normalizeRequest(text)
+	if isTaskFollowUpCore(normalized) {
+		return true
+	}
+	// A follow-up may append its own verification ("implement the fix and
+	// verify it"). The head still refers to the open task's result; a named
+	// subject ("fix the checkout bug and run tests") does not.
+	for _, separator := range []string{" and ", " then "} {
+		if index := strings.LastIndex(normalized, separator); index > 0 {
+			if isTaskFollowUpCore(strings.TrimSpace(normalized[:index])) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isTaskFollowUpCore reports a short request whose object is the open task's
+// own result.
+func isTaskFollowUpCore(normalized string) bool {
+	switch normalized {
+	case "do it", "go ahead", "proceed", "make it so",
+		"fix it", "fix this", "fix that", "fix the issue", "fix the bug",
+		"fix the failure", "fix the problem", "resolve it", "resolve the issue",
+		"implement it", "implement that", "implement the fix", "apply it",
+		"apply the fix", "make the change", "make the fix", "correct it",
+		"patch it", "reproduce it", "reproduce that", "investigate it",
+		"verify it", "verify the fix", "verify the change", "check it",
+		"check the fix", "test it", "address it":
+		return true
+	}
+	return false
+}
+
+// IsVerificationContinuation reports whether a request asks whether work
+// already in progress now holds, rather than naming a new subject to inspect.
+//
+// It is the natural-language companion to IsContinuation: "check whether the
+// fix worked" refers to the existing change, while "check the authentication
+// flow" names a new READ request. That distinction needs both a check/question
+// cue and a reference to the result of existing work; either half alone is not
+// enough. Like IsContinuation this is vocabulary, not authority: the caller
+// still decides whether an open task owns the turn, and the gate still admits
+// every tool.
+func IsVerificationContinuation(text string) bool {
+	// Verification wording inside a new mutation request is part of that
+	// objective, not a continuation of the old one. "implement the fix and
+	// verify it" must still route as BUILD work requiring approval. A pure
+	// check/run request is allowed: "run the verification" names the existing
+	// contract, not a new change.
+	if RequestsMutation(text) {
+		return false
+	}
+	normalized := normalizeRequest(text)
+	if normalized == "" {
+		return false
+	}
+	if !hasExistingResultReference(normalized) {
+		return false
+	}
+	if hasVerificationAction(normalized) {
+		return true
+	}
+	return hasOutcomeQuestion(normalized) && hasOutcomeWord(normalized)
+}
+
+// hasVerificationAction reports an explicit check or run request.
+func hasVerificationAction(normalized string) bool {
+	padded := " " + normalized + " "
+	for _, phrase := range []string{
+		"check", "checks", "checking", "recheck", "re check",
+		"verify", "verifies", "verifying", "verification",
+		"confirm", "confirms", "confirming", "validate", "validates", "validating",
+		"test", "retest", "re test", "run", "runs", "running", "rerun", "re run",
+		"see", "prove", "proves",
+	} {
+		if strings.Contains(padded, " "+phrase+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasOutcomeQuestion reports a yes/no question about the result of work.
+func hasOutcomeQuestion(normalized string) bool {
+	words := strings.Fields(normalized)
+	if len(words) == 0 {
+		return false
+	}
+	switch strings.Trim(words[0], ".,!?;:") {
+	case "did", "does", "do", "is", "are", "was", "were", "has", "have",
+		"can", "could", "should", "will", "would":
+		return true
+	}
+	return false
+}
+
+// hasOutcomeWord reports language that names a result state rather than a new
+// subject. It is used only with a question head, so "are the tests flaky?"
+// stays a new investigation while "are the tests passing?" is verification.
+func hasOutcomeWord(normalized string) bool {
+	padded := " " + normalized + " "
+	for _, phrase := range []string{
+		"work", "works", "worked", "working",
+		"fix", "fixed", "fixes", "change", "changed", "changes",
+		"pass", "passes", "passed", "passing", "green",
+		"fail", "fails", "failed", "failing",
+		"compile", "compiles", "compiled", "build", "builds", "built",
+		"succeed", "succeeds", "succeeded", "success", "successful",
+		"done", "landed", "ready", "proven",
+	} {
+		if strings.Contains(padded, " "+phrase+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasExistingResultReference reports a reference to work already in progress:
+// an anaphor ("it", "that") or the generic outcome of a task ("the fix", "the
+// change", "the tests"). A new named subject does not qualify.
+func hasExistingResultReference(normalized string) bool {
+	padded := " " + normalized + " "
+	for _, phrase := range []string{
+		"it", "the fix", "this fix", "that fix",
+		"the change", "this change", "that change", "the changes", "these changes",
+		"the work", "this work", "that work",
+		"the task", "this task", "that task",
+		"the test", "the tests", "this test", "these tests",
+		"the test suite", "the suite", "the build", "this build",
+		"the verification", "the check", "the result", "the results",
+		"the outcome", "tests", "verification",
+	} {
+		if strings.Contains(padded, " "+phrase+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeRequest lowercases a request and collapses every run of
@@ -617,21 +794,32 @@ func RequestsMutation(text string) bool {
 		return false
 	}
 	for _, entry := range requestClauses(request) {
-		if entry.asked {
-			// A question about a change ("does this update GitHub?") does not
-			// request the change. Stating it as a mutation objective would make
-			// completion demand evidence the user never asked for.
-			continue
-		}
-		head := clauseHead(entry.text)
-		if headMatches(mutationHeads, head) {
-			return true
-		}
-		if !headMatches(readHeads, head) && containsPhrase(entry.text, mutationPhrases) {
+		if clauseRequestsMutation(entry) {
 			return true
 		}
 	}
 	return false
+}
+
+// clauseRequestsMutation reports whether one parsed clause asks for a
+// repository change.
+//
+// The clause is the unit because a question about a change is not a request for
+// it, and a read-headed clause is not promoted by a mutation phrase alone. The
+// helper is shared with the conditional-workflow analysis so the two cannot
+// disagree about which clause carries the change.
+func clauseRequestsMutation(entry clause) bool {
+	if entry.asked {
+		// A question about a change ("does this update GitHub?") does not
+		// request the change. Stating it as a mutation objective would make
+		// completion demand evidence the user never asked for.
+		return false
+	}
+	head := clauseHead(entry.text)
+	if headMatches(mutationHeads, head) {
+		return true
+	}
+	return !headMatches(readHeads, head) && containsPhrase(entry.text, mutationPhrases)
 }
 
 // headMatches reports whether token is a recognised head verb, including

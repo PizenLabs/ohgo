@@ -23,78 +23,49 @@ func turnAuthority(held *harness, text string) tui.TurnAuthority {
 	}
 }
 
-// turnTransition projects a pending decision into the TUI's proposal shape, or
-// reports that the policy wants no decision.
+// turnTransition projects the control plane's transition decision into the
+// TUI's proposal shape, or reports that no decision is pending.
 //
-// It consults two boundaries in order. The workspace transition answers
-// whether the request belongs to a narrower authority; the proposal
-// assessment answers whether an authorized request leaves a decision the
-// request itself opened. The two are disjoint by intent — transitions fire on
-// READ and INVESTIGATE, proposals on EXECUTE — so at most one proposes, and
-// the workspace narrowing keeps precedence.
-//
-// It is deliberately side-effect-free, unlike turnAuthority: prediction runs
-// before the turn is decided, so it must not install the handler or move the
-// gate. The accepted transition is applied later, through Switch; the
-// resolved proposal is recorded by the program when the human answers. It is
-// the single place the workspace package's policy vocabulary is translated for
-// the UI, so both full-screen entry points agree.
+// The decision itself lives in workspace.DecideTransition: it is capability
+// based, automatic between BUILD and FUZZ, and confirmed whenever ASK is
+// crossed. This function only translates that decision for the UI. It remains
+// side-effect-free: prediction runs before the turn, so it must not install a
+// handler or move the gate. The accepted or automatic move is applied later
+// through the workspace owner.
 func turnTransition(held *harness, text string) (tui.TurnTransition, bool) {
 	active := held.activeWorkspace()
+	// A continuation of an open task is resolved by the task layer before
+	// prediction. A standalone "run the tests" is not a continuation, though:
+	// without task ownership it is an execution request and must be routed.
+	requirement := workspace.AnalyzeRequest(text)
+	decision := workspace.DecideTransition(active, requirement)
+	if decision.Proposed() {
+		current, proposed := decision.Current.Style(), decision.Target.Style()
+		kind := tui.TransitionKindWorkspace
+		if decision.NeedsConfirmation() && !active.Encompasses(decision.Target) {
+			// A widening decision is a handoff: classification may ask for it,
+			// but only the human can approve stronger authority.
+			kind = tui.TransitionKindHandoff
+		}
+		return tui.TurnTransition{
+			Kind:           kind,
+			Current:        current.Label,
+			Proposed:       proposed.Label,
+			CurrentAccent:  current.Accent,
+			ProposedAccent: proposed.Accent,
+			Intent:         strings.ToUpper(string(requirement.Intent)),
+			Strength:       string(requirement.Strength),
+			Question:       decision.Question,
+			Reason:         decision.Reason,
+			Automatic:      decision.Automatic(),
+		}, true
+	}
+
+	// The workspace decision stayed. A request can still carry a decision about
+	// the execution path (for example, which implementation approach to take).
+	// That proposal is independent of authority and uses the existing approval
+	// surface.
 	prediction := workspace.ClassifyPrediction(text)
-	// A moderate or contested prediction may not choose the authority. A
-	// no-signal objective also needs a human choice; a plain greeting is not a
-	// workspace decision and remains in the explicitly selected workspace.
-	noSignalChoice := prediction.Strength == workspace.StrengthAmbiguous &&
-		prediction.Competing == "" && prediction.Intent.Handler() != active &&
-		!workspace.IsConversationalAcknowledgement(text)
-	if prediction.Intent.Handler() != active &&
-		(prediction.Strength == workspace.StrengthModerate ||
-			prediction.Strength == workspace.StrengthAmbiguous && prediction.Competing != "" ||
-			noSignalChoice) {
-		return tui.TurnTransition{
-			Kind:     tui.TransitionKindAmbiguous,
-			Intent:   strings.ToUpper(string(prediction.Intent)),
-			Strength: string(prediction.Strength),
-			Question: "Choose a workspace for this request",
-			Reason:   "The request contains competing or incomplete intent signals. The workspace is yours to choose.",
-		}, true
-	}
-	transition, ok := workspace.ProposeTransition(active, prediction)
-	if ok {
-		current, proposed := transition.Current.Style(), transition.Proposed.Style()
-		return tui.TurnTransition{
-			Kind:           tui.TransitionKindWorkspace,
-			Current:        current.Label,
-			Proposed:       proposed.Label,
-			CurrentAccent:  current.Accent,
-			ProposedAccent: proposed.Accent,
-			Intent:         strings.ToUpper(string(transition.Intent)),
-			Strength:       string(transition.Strength),
-			Question:       transition.Question(),
-			Reason:         transition.Reason,
-		}, true
-	}
-
-	// A request that needs stronger authority is a handoff, not a transition:
-	// classification may ask for it, but only the human can approve widening.
-	// The proposal is side-effect-free like everything else here; the TUI
-	// records and applies it only after the answer.
-	if handoff, ok := workspace.ProposeHandoff(active, prediction); ok {
-		current, proposed := handoff.Current.Style(), handoff.Proposed.Style()
-		return tui.TurnTransition{
-			Kind:           tui.TransitionKindHandoff,
-			Current:        current.Label,
-			Proposed:       proposed.Label,
-			CurrentAccent:  current.Accent,
-			ProposedAccent: proposed.Accent,
-			Intent:         strings.ToUpper(string(handoff.Intent)),
-			Strength:       string(handoff.Strength),
-			Question:       handoff.Question(),
-			Reason:         handoff.Reason,
-		}, true
-	}
-
 	proposal, ok := workspace.AssessProposal(active, text, proposalFacts(held.root))
 	if !ok {
 		return tui.TurnTransition{}, false

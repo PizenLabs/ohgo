@@ -84,9 +84,44 @@ func runOnce(cmd *cobra.Command, text string) error {
 		}
 	}
 
-	// The one-shot path routes the same way an interactive turn does: a
-	// request the active workspace may not answer is refused before the model
-	// is called, never handed to it to attempt (§3, §11).
+	// The one-shot path uses the same capability policy as an interactive
+	// turn. BUILD <-> FUZZ moves automatically; crossing ASK is a human
+	// decision, and a one-shot command has no decision surface, so it reports
+	// the workspace the request needs instead of silently running elsewhere.
+	decision := workspace.DecideTransition(opts.authority(), workspace.AnalyzeRequest(text))
+	switch {
+	case decision.Automatic():
+		opts.setAuthority(decision.Target)
+		// The one-shot turn still uses the target role's model specialization.
+		// A workspace switch that kept the previous role's model would make the
+		// authority label disagree with the model actually called.
+		model, err := resolveWorkspaceModel(opts.settings, decision.Target,
+			flagValue(cmd, "model"), os.Getenv("OHGO_MODEL"),
+			dynamicResolver(context.Background(), registry))
+		if err != nil {
+			return err
+		}
+		opts.model = model
+		opts.maxTokens = resolveMaxTokens(opts.settings, model)
+		if sess != nil {
+			sess.Workspace = decision.Target.String()
+			sess.Model = model.Ref()
+		}
+		_, _ = fmt.Fprintf(out, "workspace %s -> %s: %s\n",
+			decision.Current.Label(), decision.Target.Label(), decision.Reason)
+	case decision.NeedsConfirmation():
+		route := workspace.Route{
+			Active:   decision.Current,
+			Intent:   decision.Requirement.Intent,
+			Outcome:  workspace.Require,
+			Required: decision.Target,
+		}
+		outcome := refuseHeadless(out, route)
+		return &headlessExit{outcome: outcome}
+	}
+	// The capability guard still validates the selected authority: an
+	// automatic move that could not be applied, or an unresolved workspace,
+	// never reaches the model.
 	route := workspace.RouteTurn(opts.authority(), text)
 	if !route.Allowed() {
 		outcome := refuseHeadless(out, route)
@@ -383,51 +418,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		})
 		// Workspace commands route through the harness seam: the program never
 		// owns authority, it asks the owner to move it at a turn boundary.
-		program.SetWorkspaceSwitcher(tui.WorkspaceHooks{
-			Current: func() string { return held.workspace },
-			Switch: func(name string) error {
-				from := held.activeWorkspace()
-				ws, err := held.SwitchWorkspace(name)
-				if err != nil {
-					return err
-				}
-				// A slash command is itself the human's transition decision.
-				// Recording it keeps the next turn attached to the same task
-				// and leaves a recovery record; a write failure is reported but
-				// does not undo the authority the user just chose.
-				if controller != nil {
-					if err := controller.RecordWorkspaceSwitch(from, ws, ""); err != nil {
-						program.PublishNotice("workspace switched; task continuity was not recorded: " + err.Error())
-					}
-				}
-				opts.setAuthority(ws)
-				style := ws.Style()
-				program.PublishWorkspace(tui.WorkspaceUpdated{
-					Workspace:       style.Label,
-					WorkspaceAccent: style.Accent,
-					HasWorkspace:    true,
-				})
-				// A workspace move rebinds the session's model and effort:
-				// the header follows the newly effective role rather than
-				// naming a model the loop no longer calls.
-				program.PublishModel(held.model.Ref())
-				program.PublishEffort(func() string {
-					role := held.sessionRole()
-					if role == "" {
-						role = strings.ToLower(ws.String())
-					}
-					enabled, level := held.reasoningFor(held.roleEffortFor(role))
-					if !enabled {
-						return ""
-					}
-					return level
-				}())
-				program.PublishNotice("switched to " + style.Label)
-				return nil
-			},
-			PrepareTurn: func(text string) tui.TurnAuthority { return turnAuthority(held, text) },
-			Predict:     func(text string) (tui.TurnTransition, bool) { return turnTransition(held, text) },
-		})
+		installWorkspaceHooks(program, held, controller, &opts)
 		program.SetJobsLister(func() []tui.JobItem {
 			for _, tool := range loop.Tools() {
 				bash, ok := tool.(*tools.BashTool)

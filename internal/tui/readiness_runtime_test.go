@@ -91,6 +91,20 @@ func newReadinessRuntime(t *testing.T, root string, initial workspace.Workspace,
 			}
 			return nil
 		},
+		SwitchWithReason: func(name, reason, workspaceState string) error {
+			next, err := workspace.Parse(name)
+			if err != nil {
+				return err
+			}
+			from := role
+			role = next
+			if controller != nil {
+				if err := controller.RecordAutomaticSwitch(from, next, reason, workspaceState); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 		PrepareTurn: func(text string) TurnAuthority {
 			route := workspace.RouteTurn(role, text)
 			return TurnAuthority{
@@ -101,36 +115,28 @@ func newReadinessRuntime(t *testing.T, root string, initial workspace.Workspace,
 			}
 		},
 		Predict: func(text string) (TurnTransition, bool) {
-			prediction := workspace.ClassifyPrediction(text)
-			if transition, ok := workspace.ProposeTransition(role, prediction); ok {
-				current, proposed := transition.Current.Style(), transition.Proposed.Style()
-				return TurnTransition{
-					Kind:           TransitionKindWorkspace,
-					Current:        current.Label,
-					Proposed:       proposed.Label,
-					CurrentAccent:  current.Accent,
-					ProposedAccent: proposed.Accent,
-					Intent:         strings.ToUpper(string(transition.Intent)),
-					Strength:       string(transition.Strength),
-					Question:       transition.Question(),
-					Reason:         transition.Reason,
-				}, true
+			requirement := workspace.AnalyzeRequest(text)
+			decision := workspace.DecideTransition(role, requirement)
+			if !decision.Proposed() {
+				return TurnTransition{}, false
 			}
-			if handoff, ok := workspace.ProposeHandoff(role, prediction); ok {
-				current, proposed := handoff.Current.Style(), handoff.Proposed.Style()
-				return TurnTransition{
-					Kind:           TransitionKindHandoff,
-					Current:        current.Label,
-					Proposed:       proposed.Label,
-					CurrentAccent:  current.Accent,
-					ProposedAccent: proposed.Accent,
-					Intent:         strings.ToUpper(string(handoff.Intent)),
-					Strength:       string(handoff.Strength),
-					Question:       handoff.Question(),
-					Reason:         handoff.Reason,
-				}, true
+			current, proposed := decision.Current.Style(), decision.Target.Style()
+			kind := TransitionKindWorkspace
+			if decision.NeedsConfirmation() && !role.Encompasses(decision.Target) {
+				kind = TransitionKindHandoff
 			}
-			return TurnTransition{}, false
+			return TurnTransition{
+				Kind:           kind,
+				Current:        current.Label,
+				Proposed:       proposed.Label,
+				CurrentAccent:  current.Accent,
+				ProposedAccent: proposed.Accent,
+				Intent:         strings.ToUpper(string(requirement.Intent)),
+				Strength:       string(requirement.Strength),
+				Question:       decision.Question,
+				Reason:         decision.Reason,
+				Automatic:      decision.Automatic(),
+			}, true
 		},
 	})
 	program.SetTaskHooks(runtimeHooks(controller))
@@ -203,26 +209,20 @@ func readinessAnswer(text string) ai.AssistantMessage {
 	}
 }
 
-// RC-C06 characterizes the widening policy boundary that makes the literal
-// ASK -> FUZZ approval step impossible for a mutation objective: an execute
-// request proposes BUILD directly, a mixed investigate+mutate request is
-// ambiguous and proposes nothing, and only a pure investigate request proposes
-// FUZZ. The runtime test I01 therefore uses the explicit selector/workspace
-// command for the ASK and FUZZ phases.
+// RC-C06 characterizes the capability policy: ASK must ask before any work it
+// cannot perform, and every such decision is a human-boundary confirmation.
 func TestReadinessC06WideningPolicyShape(t *testing.T) {
-	mutation := workspace.ClassifyPrediction("Fix GrepTool in tools/grep.go and run go test ./tools")
-	proposal, ok := workspace.ProposeHandoff(workspace.Ask, mutation)
-	if !ok || proposal.Proposed != workspace.Build {
-		t.Fatalf("RC-C06: ASK + mutation proposed %+v ok=%v, want BUILD", proposal, ok)
+	mutation := workspace.DecideTransition(workspace.Ask, workspace.AnalyzeRequest("Fix GrepTool in tools/grep.go and run go test ./tools"))
+	if !mutation.NeedsConfirmation() || mutation.Target != workspace.Build {
+		t.Fatalf("RC-C06: ASK + mutation = %+v, want confirmed BUILD", mutation)
 	}
-	mixed := workspace.ClassifyPrediction("investigate the flaky test in tools/grep.go then fix it and run go test ./tools")
-	if proposal, ok := workspace.ProposeHandoff(workspace.Ask, mixed); ok {
-		t.Fatalf("RC-C06: an ambiguous mixed request proposed %s", proposal.Proposed)
+	mixed := workspace.DecideTransition(workspace.Ask, workspace.AnalyzeRequest("investigate the flaky test in tools/grep.go then fix it and run go test ./tools"))
+	if !mixed.NeedsConfirmation() || mixed.Target != workspace.Fuzz {
+		t.Fatalf("RC-C06: ASK + mixed investigation = %+v, want the investigation phase under FUZZ", mixed)
 	}
-	pure := workspace.ClassifyPrediction("investigate why tools/grep.go is slow")
-	proposal, ok = workspace.ProposeHandoff(workspace.Ask, pure)
-	if !ok || proposal.Proposed != workspace.Fuzz {
-		t.Fatalf("RC-C06: ASK + investigate proposed %+v ok=%v, want FUZZ", proposal, ok)
+	pure := workspace.DecideTransition(workspace.Ask, workspace.AnalyzeRequest("investigate why tools/grep.go is slow"))
+	if !pure.NeedsConfirmation() || pure.Target != workspace.Fuzz {
+		t.Fatalf("RC-C06: ASK + investigate = %+v, want FUZZ", pure)
 	}
 }
 
@@ -240,22 +240,28 @@ func TestReadinessC07FailedSwitchDoesNotReportApplied(t *testing.T) {
 			return os.ErrPermission
 		},
 		Predict: func(text string) (TurnTransition, bool) {
-			prediction := workspace.ClassifyPrediction(text)
-			if handoff, ok := workspace.ProposeHandoff(role, prediction); ok {
-				current, proposed := handoff.Current.Style(), handoff.Proposed.Style()
-				return TurnTransition{
-					Kind:           TransitionKindHandoff,
-					Current:        current.Label,
-					Proposed:       proposed.Label,
-					CurrentAccent:  current.Accent,
-					ProposedAccent: proposed.Accent,
-					Intent:         strings.ToUpper(string(handoff.Intent)),
-					Strength:       string(handoff.Strength),
-					Question:       handoff.Question(),
-					Reason:         handoff.Reason,
-				}, true
+			requirement := workspace.AnalyzeRequest(text)
+			decision := workspace.DecideTransition(role, requirement)
+			if !decision.Proposed() {
+				return TurnTransition{}, false
 			}
-			return TurnTransition{}, false
+			current, proposed := decision.Current.Style(), decision.Target.Style()
+			kind := TransitionKindWorkspace
+			if decision.NeedsConfirmation() && !role.Encompasses(decision.Target) {
+				kind = TransitionKindHandoff
+			}
+			return TurnTransition{
+				Kind:           kind,
+				Current:        current.Label,
+				Proposed:       proposed.Label,
+				CurrentAccent:  current.Accent,
+				ProposedAccent: proposed.Accent,
+				Intent:         strings.ToUpper(string(requirement.Intent)),
+				Strength:       string(requirement.Strength),
+				Question:       decision.Question,
+				Reason:         decision.Reason,
+				Automatic:      decision.Automatic(),
+			}, true
 		},
 	})
 	program.SetTaskHooks(runtimeHooks(controller))
@@ -263,8 +269,12 @@ func TestReadinessC07FailedSwitchDoesNotReportApplied(t *testing.T) {
 	if _, ok := controller.Current(); !ok {
 		t.Fatal("RC-C07: the initial turn recorded no task")
 	}
-	if cmd := program.submit("implement the fix"); cmd != nil {
+	program.state.Apply(InputChanged{Text: "why does this work?"})
+	if cmd := program.submit("why does this work?"); cmd != nil {
 		t.Fatal("RC-C07: the handoff ran before the decision")
+	}
+	if program.state.Transition == nil {
+		t.Fatal("RC-C07: no ASK-boundary decision was proposed")
 	}
 	program.resolveTransition(true)
 	if role != workspace.Fuzz {
@@ -277,7 +287,7 @@ func TestReadinessC07FailedSwitchDoesNotReportApplied(t *testing.T) {
 	if current.Handoff.Status == task.HandoffApplied || current.ActiveRole == workspace.Build {
 		t.Fatalf("RC-C07: a failed switch was reported as applied: %+v", current)
 	}
-	if !strings.Contains(program.state.Input, "implement the fix") {
+	if !strings.Contains(program.state.Input, "why does this work?") {
 		t.Fatalf("RC-C07: the refused request was not restored: %q", program.state.Input)
 	}
 }
@@ -427,23 +437,20 @@ func TestReadinessI01UnderstandInvestigateImplementVerifyRestart(t *testing.T) {
 		t.Fatalf("RI-I01: FUZZ turn role = %s", fuzz.ActiveRole)
 	}
 
-	// BUILD: widening requires an explicit human approval. The turn must not
-	// start until the decision is accepted.
-	if cmd := r.program.submit("implement the fix and verify it"); cmd != nil {
-		t.Fatal("RI-I01: the BUILD handoff ran before approval")
+	// BUILD: FUZZ -> BUILD is cooperative execution-workspace movement. The
+	// control plane applies it automatically and the same task continues.
+	cmd := r.program.submit("implement the fix and verify it")
+	if cmd == nil {
+		t.Fatal("RI-I01: the automatic BUILD handoff did not start the turn")
 	}
-	if *r.role != workspace.Fuzz {
-		t.Fatalf("RI-I01: the proposal moved authority to %s", *r.role)
+	if *r.role != workspace.Build {
+		t.Fatalf("RI-I01: automatic handoff left authority at %s", *r.role)
 	}
-	if r.program.state.Transition == nil {
-		t.Fatal("RI-I01: no BUILD handoff was proposed")
+	if r.program.state.Transition != nil {
+		t.Fatalf("RI-I01: automatic handoff opened a decision surface: %+v", r.program.state.Transition)
 	}
 	// The next message is the BUILD write/check/answer sequence.
-	if _, cmd := r.program.resolveTransition(true); cmd == nil {
-		t.Fatal("RI-I01: the accepted handoff did not release the turn")
-	} else {
-		cmd()
-	}
+	cmd()
 	drainProgram(r.program)
 
 	if *r.role != workspace.Build {
@@ -473,7 +480,7 @@ func TestReadinessI01UnderstandInvestigateImplementVerifyRestart(t *testing.T) {
 	}
 	buildCtx, _ := completed.Context.Role(workspace.Build)
 	joinedProgress := strings.Join(buildCtx.Progress, "\n")
-	if !strings.Contains(joinedProgress, "resumed via handoff from FUZZ") {
+	if !strings.Contains(joinedProgress, "control-plane workspace switch from FUZZ") {
 		t.Fatalf("RI-I01: BUILD context did not receive the handoff summary: %+v", buildCtx)
 	}
 	for _, id := range proof.EvidenceIDs {

@@ -1,9 +1,10 @@
 # Workspace Authority: Intent-Aware Transitions
 
 > **Status:** implemented.
-> **Scope:** ASK / BUILD / FUZZ authority, turn routing, delegation, escalation.
+> **Scope:** ASK / BUILD / FUZZ authority, turn routing, cooperation, boundaries.
 > **Canonical topology:** [`OHGO_ARCHITECTURE_MAP.md`](../../OHGO_ARCHITECTURE_MAP.md).
-> **Permanent rules:** [`OHGO_ARCHITECTURE_RULES.md`](../../OHGO_ARCHITECTURE_RULES.md) §13–§14.
+> **Permanent rules:** [`AGENTS.md`](../../AGENTS.md) and the architecture
+> constraints enforced by `internal/architecture`.
 > **Runtime behaviour:** [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 This document describes the authority model that is actually implemented. It
@@ -118,91 +119,197 @@ nothing may render one (§9).
 
 ---
 
-## 4. Transition matrix
+## 4. Transition policy
 
-ASK is execution-closed: it cannot execute and it cannot mutate. BUILD and FUZZ
-may delegate an informational READ turn to ASK semantics and then return.
-Delegation does not transfer authority.
+Capability, not intent-handler equality, decides whether the current workspace
+can serve a request. `workspace.AnalyzeRequest` maps the request to one of four
+capabilities:
+
+| Capability | Meaning | ASK | FUZZ | BUILD |
+| --- | --- | --- | --- | --- |
+| `READ` | inspect, search, reason, explain | yes | yes | yes |
+| `EXECUTE` | run a process or check | no | yes | yes |
+| `INVESTIGATE` | reproduce, probe, experiment | no | yes | yes |
+| `MUTATE` | change repository source | no | no | yes |
+
+A staged request (`investigate first; if confirmed, implement the fix`) starts
+in `INVESTIGATE`, even when a later clause names a mutation. The mutation
+remains in the contract for the branch, but it does not classify the current
+turn as a mutation objective.
+
+`workspace.DecideTransition` owns the policy. It is pure and returns one of:
+
+- `stay` — the current workspace can serve the request;
+- `automatic` — a cooperative BUILD ↔ FUZZ handoff;
+- `confirm` — a human authority-boundary decision.
 
 ```text
-ACTIVE       INTENT          RESULT
-──────────────────────────────────────────────────────────────
-ASK          READ            ASK                    (read-only)
-ASK          EXECUTE         REFUSED — requires an explicit BUILD switch
-ASK          INVESTIGATE     REFUSED — requires an explicit FUZZ switch
+ACTIVE   REQUEST                         DECISION
+────────────────────────────────────────────────────────────────────
+ASK      READ / analysis                 stay ASK
+ASK      greeting / continuation         stay ASK
+ASK      EXECUTE / MUTATE                confirm BUILD
+ASK      INVESTIGATE                     confirm FUZZ
 
-BUILD        READ            ASK semantics, BUILD remains active
-BUILD        EXECUTE         BUILD
-BUILD        INVESTIGATE     FUZZ semantics, BUILD remains active
+BUILD    READ (ambiguous/moderate)       stay BUILD
+BUILD    READ (strong question)          confirm ASK
+BUILD    EXECUTE / MUTATE                stay BUILD
+BUILD    INVESTIGATE (strong/staged)     automatic FUZZ
+BUILD    INVESTIGATE (weak/moderate)     stay BUILD
 
-FUZZ         READ            ASK semantics, FUZZ remains active
-FUZZ         INVESTIGATE     FUZZ
-FUZZ         EXECUTE         REFUSED — requires an explicit BUILD switch
+FUZZ     READ (ambiguous/moderate)       stay FUZZ
+FUZZ     READ (strong question)          confirm ASK
+FUZZ     EXECUTE (non-mutating)          stay FUZZ
+FUZZ     INVESTIGATE                     stay FUZZ
+FUZZ     MUTATE                          automatic BUILD
 ```
 
-The last row is deliberately conservative: a FUZZ finding never grants BUILD
-mutation authority, so an executable-sounding request is refused until the user
-switches. The rule behind every row is that a route is never a superset of the
-active workspace's authority.
+The thresholds are deliberate:
+
+- crossing **into ASK** requires strong READ evidence, so a vague "check this"
+  does not interrupt a BUILD/FUZZ session;
+- crossing **out of ASK** requires at least moderate evidence for a new
+  capability; an explicit mutation always qualifies;
+- BUILD → FUZZ requires a strong investigation signal;
+- FUZZ → BUILD is automatic whenever the request actually needs mutation;
+- every automatic decision has BUILD and FUZZ as both endpoints. ASK is never
+  crossed automatically in either direction.
+
+An automatic or confirmed target is applied only through
+`harness.SwitchWorkspace`, which moves the live gate, resolves the target role's
+model, and records the transition on the same task. A rejected BUILD/FUZZ → ASK
+decision keeps the capable current workspace and runs the turn there. A rejected
+ASK → BUILD/FUZZ decision never runs the request with insufficient authority.
+
+`workspace.RouteTurn` is the capability guard, not the transition policy:
+
+```text
+ASK   READ                           allowed
+ASK   EXECUTE / MUTATE               refused -> BUILD
+ASK   INVESTIGATE                    refused -> FUZZ
+FUZZ  READ / EXECUTE / INVESTIGATE   allowed
+FUZZ  MUTATE                         refused -> BUILD
+BUILD READ / EXECUTE / INVESTIGATE   allowed
+BUILD MUTATE                         allowed
+```
+
+The guard prevents an authority from performing work outside its contract. It
+does not force a workspace move when the authority already holds the
+capability.
+
+A **task-local continuation** (`continue`, `verify the fix`, `run the
+verification`, …) is not a new capability request. It runs under the active
+authority so the open task can finish its persisted contract; the task layer
+resolves ownership before workspace prediction or routing. This grants nothing:
+the gate still admits each tool, so a continuation under ASK cannot execute
+merely because verification was named.
+
+Natural verification wording (`check whether the fix worked`, `did it work?`,
+`are the tests passing?`) follows the same rule when an execution or mutation
+task owns the result. The predicate needs both a check cue and a reference to
+existing work; `check the authentication flow` remains a new request. A short
+follow-up that refers to the task's own object (`fix it`, `implement the fix and
+verify it`) also attaches to the open task. A prompt that names a new subject
+(`fix the checkout bug and run tests`) remains a new objective. A terminal task
+owns no continuation: repeating `verify the fix` after `PROVEN` reports the
+finished state instead of archiving the proof and starting a duplicate task.
+
+### Conditional objectives and phase completion
+
+A contract records `ConditionalMutation` when the request stages an
+investigation/understanding phase before a conditional future change. `Kind`
+remains `ObjectiveMutation` so the change is authorized and grounded when the
+branch is reached; the marker says the current phase is not yet that change.
+
+A task contract can require a change while the current turn runs under ASK or
+FUZZ. The turn cannot perform the change, but it can still produce the
+understanding or investigation the task needs first. Completion therefore
+judges the phase the active authority can actually perform:
+
+- a mutation objective under ASK or FUZZ, or an execution objective under ASK,
+  is evaluated as an informational phase;
+- a substantive, grounded answer completes the phase but **does not** complete
+  the task. The task remains `RUNNING` (`ACTIVE`), keeps its identity,
+  contract, and evidence, and records no completion proof;
+- the next turn under the required authority continues the same task and may
+  complete it;
+- the phase boundary is not a pass. An empty or deferred answer, an
+  unrecovered tool failure, a grounding failure, or an observed mutation
+  outside authority still enters review.
+
+A conditional mutation under BUILD follows the same phase rule before the
+branch is entered. With no observed change and no prior durable change, the
+turn is judged as the investigation answer, not as a failed mutation. Once a
+change is observed (or a prior change exists), the full mutation contract
+applies: targets, behavioural checks, and a successful verification after the
+change.
+
+Phase completion narrows the completion requirement; it does not erase an
+explicit request constraint. For a staged conditional objective, `without
+changing anything` and `without modifying source code` are scoped to the
+investigation phase. That phase runs under ASK or FUZZ, whose gate already
+prevented mutation; the wording is not carried as a global `no_mutation` veto
+on the later BUILD branch. An unconditional `do not modify anything` remains a
+task-global constraint. `do not create a new task` is a continuity instruction,
+not a repository `no_creation` limit.
+
+This is why a FUZZ or BUILD investigation of a request that also says "if
+confirmed, implement the fix" is not reported as "the request asked for a
+repository change but no change was observed": the investigation phase is
+complete, and the mutation remains a later, explicitly authorized phase.
 
 ---
 
-## 5. Delegation and return
+## 5. Capability guard and turn state
 
-An informational turn delegated from BUILD or FUZZ is temporary. The system
-distinguishes:
-
-```text
-active workspace   — the session's authority; only an explicit switch moves it
-turn handler       — the semantics answering the current turn
-turn authority     — the capability actually admitted for the turn
-```
-
-A BUILD informational turn is:
+There is no second "handler authority" behind the active workspace. The turn
+runs under the live workspace, and `RouteTurn` either admits the request because
+the workspace holds the capability or refuses it:
 
 ```text
-activeWorkspace = BUILD
-currentTurn.handler = ASK
-admitted authority for the turn = ASK
+active workspace   — the session's authority; only a switch moves it
+turn intent        — the classified request (ephemeral)
+turn capability    — READ / EXECUTE / INVESTIGATE / MUTATE
+admitted authority — the active workspace for this turn
 ```
 
-not:
+BUILD answering a read request remains BUILD; it does not impersonate ASK. If
+the transition policy prefers ASK for a clear human-facing question, it asks
+first, and the accepted switch changes the live workspace. If the user declines,
+BUILD answers the question because reading is within BUILD's authority.
 
-```text
-activeWorkspace = ASK
-authority = ASK
-```
-
-After the turn the handler is recomputed from scratch, so the next turn is
-routed from the unchanged active workspace — no state is carried back. This is
-why "implement the fix" after an informational turn still mutates: BUILD was
-never left.
-
-Delegation only ever **narrows**. BUILD → ASK drops execution; FUZZ → ASK drops
-execution. Nothing delegates to a stronger authority.
+A turn is a boundary: the next turn is routed from the workspace in force at
+that point. No transient handler state is carried back.
 
 ---
 
-## 6. Escalation
+## 6. Escalation and cooperation
 
-There is no implicit escalation path:
+The human boundary is asymmetric:
 
-- ASK never becomes BUILD or FUZZ because a request was phrased executably or
-  investigatively. The request is refused and the user is asked to switch.
-- FUZZ never becomes BUILD because a defect was found. A finding is reported;
-  mutation requires an explicit BUILD transition.
-- BUILD's authority is preserved but not exercised for an informational
-  request.
+- **ASK never escalates implicitly.** An executable or investigative request
+  under ASK is a confirmation, never a silent move. Declining leaves the
+  request unrun because ASK cannot perform it.
+- **BUILD ↔ FUZZ cooperate automatically.** BUILD may hand an investigative
+  request to FUZZ; FUZZ may hand a repository-change request to BUILD. The
+  control plane selects the target, and the owner applies it before the turn.
+- **FUZZ still cannot mutate.** The FUZZ → BUILD handoff happens first; the
+  per-call gate remains the safety boundary. A finding from FUZZ never grants
+  mutation authority inside FUZZ.
+- **BUILD retains mutation authority**, but it is not obliged to mutate an
+  investigation it can answer.
 
 The only ways authority changes are:
 
 1. an explicit user switch — `/ask`, `/fuzz`, `/build`, the authority selector
-   (`/permissions`, `/mode`), the `--workspace` flag, a resumed session's
-   snapshot, or accepting a transition proposal (§10);
-2. delegation to a **lower** authority for one turn.
+   (`/permissions`, `/mode`), the `--workspace` flag, or a resumed session's
+   snapshot;
+2. an accepted human-boundary decision;
+3. an automatic BUILD ↔ FUZZ decision from `workspace.DecideTransition`.
 
-The agent can suggest ("this request needs BUILD authority", or a transition
-proposal) but cannot perform an escalation itself.
+The agent may propose intent through its request text, but it cannot move
+authority. The control plane owns the decision, and only
+`harness.SwitchWorkspace` performs it.
 
 ---
 
@@ -212,11 +319,12 @@ Enforcement is structural, below the UI and above execution:
 
 ```text
 cmd/ohgo
-  authorityGate            the session's single live authority
-    ▲                       read at call time by the loop and by subagents
-    │ Set()
-    ├── options.setAuthority / SwitchWorkspace   explicit transitions
-    └── harness.RouteTurn                         delegated turns
+  workspace.DecideTransition  pure policy: stay | automatic | confirm
+    └── TUI/REPL applies the decision
+          └── harness.SwitchWorkspace          the single authority move
+                └── authorityGate.Set()        live authority for the turn
+  task.Controller.RecordAutomaticSwitch /
+  RecordWorkspaceSwitch                        continuity record, same task
 
 agent.Loop.execute
   Config.Authorize(call, tool)  the production admission path
@@ -229,8 +337,8 @@ agent.Loop.execute
   `Config.Authorize` (`securityGate`); `Config.Admit`/`Config.Approve` remain
   only as the legacy fallback when no authorizer is installed.
 - `authorityGate` is the only mutable authority. Because the loop's admission
-  hook and the subagent spawner both read the gate at call time, a delegated
-  turn's narrowing applies to anything the turn delegates.
+  hook and the subagent spawner both read the gate at call time, a switch
+  applies to anything the turn delegates.
 - A refused route never reaches the model: `harness.RouteTurn` is consulted in
   `repl`, in `tui.Program.runTurn`, and in `runOnce` before `Loop.Run`.
 
@@ -242,7 +350,7 @@ call regardless.
 
 ## 8. Session state
 
-The session keeps the active workspace durably; the turn handler is transient
+The session keeps the active workspace durably; the turn intent is transient
 and derived.
 
 ```text
@@ -251,7 +359,7 @@ session
 ├── effective model      resolved per workspace role, persisted
 └── turn
     ├── intent           classified per request
-    ├── handler          derived from intent
+    ├── capability       READ / EXECUTE / INVESTIGATE / MUTATE
     └── admitted gate    active gate value for the turn
 ```
 
@@ -262,144 +370,125 @@ the gate together. `RouteTurn` never persists anything.
 
 ## 9. Truthful state
 
-The UI is a projection, never a router. It consumes the routing result and
-renders two facts without conflating them:
+The UI is a projection, never a router. It consumes the control-plane decision
+and renders the facts without conflating them:
 
 ```text
 activeWorkspace     the session's authority boundary  (persistent)
-turn.handler        the semantics answering the turn  (ephemeral)
 turn.intent         the classified request            (ephemeral)
-effectiveAuthority  the authority available this turn (ephemeral)
+turn.capability     what the request needs            (ephemeral)
+transitionDecision  stay / automatic / confirm        (ephemeral)
 ```
 
-The ephemeral projection lives only for the turn. The composer prefix carries
-it directly after the persistent workspace:
+A transition is visible because the owner publishes the new workspace and a
+notice. A turn refused by the capability guard publishes no workspace change:
+it reports the authority it needs and the command that grants it (`this request
+needs BUILD authority; switch with /build and resend it`). The refusal happens
+before the model is called, so no artificial turn is simulated.
 
-```text
-BUILD + READ          build · ask/read >       (BUILD stays active)
-BUILD + INVESTIGATE   build · fuzz/investigate >
-FUZZ + READ           fuzz · ask/read >
-BUILD + EXECUTE       build >                  (workspace already answers)
-ASK + READ            ask >                    (workspace already answers)
-```
-
-The TUI receives the route through `WorkspaceHooks.PrepareTurn` (which wraps
-`harness.RouteTurn`), stores it as `State.Status.Turn`, and clears it when the
-turn reaches `AssistantDone` or `TurnCancelled`. `Status.Workspace` is never
-written by a route, so the active workspace badge cannot move because a turn
-was delegated. The plain REPL prints the same indicator in the canonical
-`BUILD · ASK / READ` form via `workspace.Route.Indicator`.
-
-A refused turn publishes no indicator and no workspace change: it reports the
-authority it needs and the command that grants it (`this request needs BUILD
-authority; switch with /build and resend it`). The refusal happens before the
-model is called, so no artificial turn is simulated.
+The plain REPL applies automatic BUILD ↔ FUZZ decisions and prints the move. It
+has no confirmation surface, so crossing ASK prints the required target and
+waits for an explicit command.
 
 ### Canonical lifecycle
 
 ```text
 idle
   ↓  user: "What is Go?"          (activeWorkspace = BUILD)
-turn routed: READ intent → ASK handler → ASK effective authority
+request analysed: READ, strong
+decision: confirm ASK
   ↓
-turn active:  build · ask/read
-  ↓  answer streams under READ authority
-turn completed
+human accepts
   ↓
-turn state cleared
+SwitchWorkspace -> ASK          (same session, same task if one is open)
   ↓
-idle: BUILD, unchanged — the next turn is routed independently
+turn runs under ASK             (read-only)
+  ↓
+idle: ASK
 ```
 
-> The UI must never represent turn delegation as an implicit workspace
-> transition.
+```text
+idle
+  ↓  user: "reproduce the failure" (activeWorkspace = BUILD)
+request analysed: INVESTIGATE, strong
+decision: automatic FUZZ
+  ↓
+SwitchWorkspace -> FUZZ          (same session/task, recorded handoff)
+  ↓
+turn runs under FUZZ             (execute, no mutation)
+  ↓
+idle: FUZZ
+```
+
+> The UI must never represent an automatic handoff as an implicit silent
+> authority change: the target, reason, and new workspace are published.
 
 ---
 
-## 10. Transition proposals
+## 10. Decisions and the decision surface
 
-Delegation answers an informational request *inside* the active workspace. A
-strong prediction can additionally *recommend* a real workspace move, without
-ever moving authority by itself:
+The control plane produces one `workspace.TransitionDecision` per request:
 
 ```text
-ClassifyPrediction → Prediction (intent + evidence)
-        ↓
-ProposeTransition  → TransitionProposal?      (policy: safe and strong enough?)
-        ↓
-TransitionPrompt                              (TUI decision surface)
-        ↓
-human: accept / reject / cancel
-        ↓
-SwitchWorkspace                               (the one authority owner)
-        ↓
-RouteTurn → Loop.Run → authorityGate           (unchanged enforcement)
+request text
+  -> workspace.AnalyzeRequest      capability + evidence + staged phase
+  -> workspace.DecideTransition    stay | automatic | confirm
+  -> TUI apply / render             owner seam or confirmation dialog
+  -> SwitchWorkspace                the one authority move
+  -> RouteTurn -> Loop.Run          unchanged enforcement
 ```
 
-Every arrow above the human decision is pure. `workspace.ClassifyPrediction` and
-`workspace.ProposeTransition` change nothing; `WorkspaceHooks.Predict` is
+`AnalyzeRequest` and `DecideTransition` are pure. `WorkspaceHooks.Predict` is
 side-effect-free by contract, unlike `PrepareTurn`, which installs the turn's
-handler. Only an accepted proposal reaches `harness.SwitchWorkspace` — the same
-owner `/ask`, `/fuzz`, and `/build` use — so authority moves through exactly one
-seam and is still enforced by the runtime gate.
+handler. Only an automatic decision or an accepted confirmation reaches
+`harness.SwitchWorkspace` — the same owner `/ask`, `/fuzz`, and `/build` use.
 
-### What may be proposed
+### Automatic: BUILD ↔ FUZZ
 
-Only safe narrowings, and only on strong evidence:
+The TUI applies an automatic decision before starting the turn:
 
 ```text
-ACTIVE   INTENT        PROPOSAL
-────────────────────────────────
-ASK      READ          none
-ASK      INVESTIGATE   none   (would widen)
-ASK      EXECUTE       none   (would widen)
-
-BUILD    READ          switch to ASK
-BUILD    INVESTIGATE   switch to FUZZ
-BUILD    EXECUTE       none   (already the workspace)
-
-FUZZ     READ          switch to ASK
-FUZZ     INVESTIGATE   none   (already the workspace)
-FUZZ     EXECUTE       none   (would widen)
+BUILD -> FUZZ   "investigation / reproduction"
+FUZZ  -> BUILD  "repository change"
 ```
 
-Three guards make the table safe even if it were edited wrongly: the policy
-refuses an unresolved workspace, refuses any target `active.Encompasses` does
-not cover, and refuses evidence below `proposalThreshold` (currently `strong`).
-A proposal is a request, never a grant.
+The switch is recorded on the existing task handoff as `APPLIED`, with
+`ApprovedBy = control-plane` and the measured workspace state. The next turn
+consumes that record and continues the same task identity. An unrelated new
+objective does not inherit the old contract merely because the switch was
+automatic; the ordinary new-intent boundary detaches the old task.
 
-### What the decision surface does
+### Confirm: the ASK boundary
 
-The TUI stores the proposal as `State.Transition` and renders it as a compact
-centered dialog:
+A confirmation uses the existing typed transition dialog:
 
 ```text
 Switch to ASK?
 
-This request appears informational.
+This request asks for a human-facing explanation; ASK keeps the session read-only.
 
 [ Keep BUILD ]   [ ASK ]
 Enter to confirm · Esc keeps BUILD
 ```
 
 The highlight opens on **keep current**, and left/right move it without wrapping,
-so a stray Enter never changes authority. **Enter** confirms the highlighted
-choice; **Esc** declines the transition and runs the turn under the current
-workspace (whose own delegation still applies); **Ctrl+C** abandons the pending
-turn and keeps the typed prompt. Each choice carries its workspace's own semantic
-accent; no percentage is ever shown.
+so a stray Enter never changes authority. **Enter** confirms; **Esc** declines.
+Declining a narrowing decision (BUILD/FUZZ → ASK) keeps the capable current
+workspace and runs the turn there. Declining a widening decision (ASK → BUILD or
+FUZZ) restores the request without running it, because the current authority
+cannot perform it. **Ctrl+C** abandons the pending turn and keeps the typed
+prompt. Each choice carries its workspace's own semantic accent; no percentage
+is ever shown.
 
 While the dialog is open the composer is hidden and key handling is captured, so
 no turn — and therefore no provider request, tool, or mutation — can start. The
-proposal is cleared on accept, reject, cancel, turn completion, cancellation,
-history replacement, an explicit workspace change, or a clear, so it can never
-survive into another turn. Because an accepted proposal goes through
-`SwitchWorkspace`, the session is the same one: only its workspace changed.
+decision is cleared on accept, reject, cancel, turn completion, cancellation,
+history replacement, an explicit workspace change, or a clear.
 
-The plain REPL keeps its existing behaviour — delegation and refusal — and does
-not raise the interactive proposal. The proposal is a full-screen decision
-surface; a line-oriented equivalent would need its own y/N contract and is
-deliberately out of scope for this slice.
+The plain REPL has no confirmation surface. BUILD ↔ FUZZ moves automatically;
+crossing ASK prints the required target and asks for an explicit `/ask`,
+`/fuzz`, or `/build`, then the user resends the request. It never runs a
+human-boundary request under the wrong authority.
 
 ## 11. Tests
 
@@ -410,28 +499,38 @@ that a classifier returned a string.
 | --------- | ---- |
 | A — ASK cannot escalate to BUILD | `cmd/ohgo.TestAskRefusesExecutionWithoutCallingTheModel` |
 | B — ASK cannot escalate to FUZZ | `cmd/ohgo.TestAskRefusesInvestigation` |
-| C — BUILD informational delegation preserves BUILD | `cmd/ohgo.TestBuildDelegatesReadTurnsToAsk`, `TestBuildExecutesExplicitMutation` |
-| D — FUZZ informational delegation preserves FUZZ | `cmd/ohgo.TestFuzzDelegatesReadTurnsAndStaysFuzz` |
+| C — BUILD may read and investigate | `cmd/ohgo.TestBuildExecutesExplicitMutation`, `tui.TestBuildInvestigationStaysBuildWithoutPickerOrMutation` |
+| D — BUILD investigation does not force mutation | `tui.TestBuildInvestigationStaysBuildWithoutPickerOrMutation` |
 | E — a FUZZ finding does not authorize mutation | `cmd/ohgo.TestFuzzFindingDoesNotAuthorizeMutation` |
-| F — mutation requires explicit BUILD intent | `cmd/ohgo.TestFuzzRefusesExecutionWithoutTheModel`, `workspace.TestRouteTurnTransitionMatrix` |
-| G — workspace and turn handler are distinct | `workspace.TestRouteTurnNeverChangesTheActiveWorkspace`, `cmd/ohgo.TestRouteTurnInstallsTheHandlerForDelegatedTurns` |
+| F — mutation requires BUILD, automatically from FUZZ | `cmd/ohgo.TestFuzzMutationHandsOffToBuild`, `workspace.TestRouteTurnTransitionMatrix` |
+| G — routing never changes authority | `workspace.TestRouteTurnNeverChangesTheActiveWorkspace`, `cmd/ohgo.TestRouteTurnKeepsBuildAuthority` |
 | H — authority is runtime-enforced, not prompt-enforced | `cmd/ohgo.TestAuthorityIsEnforcedWithoutPromptInstructions` |
 | Classifier contract | `workspace.TestClassifyReadsCapabilityNotGrammar`, `TestClassifyFallsBackToTheLowerAuthority` |
 | UI consults the router | `tui.TestRunTurnRefusesBlockedIntentBeforeTheModel`, `tui.TestRunTurnProjectsDelegatedRouteTruthfully` |
 | UI never moves the workspace | `tui.TestDelegatedTurnNeverSwitchesWorkspace`, `tui.TestRenderShowsTurnSemanticsWithoutMovingTheWorkspace` |
 | Turn state is ephemeral | `tui.TestTurnSemanticsAreClearedOnCompletion`, `cmd/ohgo.TestDelegatedTurnDoesNotLeakIntoTheNextRoute` |
+| Task continuation keeps the active authority | `workspace.TestRouteTurnKeepsTaskContinuationInTheActiveWorkspace`, `workspace.TestVerificationContinuationIsAboutExistingWork`, `cmd/ohgo.TestTurnTransitionDoesNotAskWorkspaceForTaskContinuation`, `tui.TestVerificationContinuationRunsUnderBuildAndProves`, `tui.TestVerificationQuestionContinuationKeepsTaskIdentityAndProves`, `tui.TestOpenFuzzTaskContinueStaysInFuzz`, `tui.TestLifecycleUnderstandInvestigateImplementThenVerify` |
+| Lower authority completes a phase, not the task | `workspace.TestPhaseContractDefersObjectivesTheAuthorityCannotPerform`, `tui.TestFuzzInvestigationPhaseOfMutationTaskStaysActive`, `tui.TestFuzzInvestigationPhaseContinuesIntoBuildSameTask`, `tui.TestFuzzInvestigationPhaseRejectsADeferredPlan`, `tui.TestLifecycleUnderstandInvestigateImplementThenVerify` |
+| Continuation grants no authority | `tui.TestVerificationContinuationUnderAskCannotExecute` |
+| Failed verification stays unproven | `tui.TestFailingVerificationContinuationDoesNotProve` |
+| Proven objectives terminate | `tui.TestProvenTaskRejectsRedundantContinuation` |
 | Effective authority is bounded | `workspace.TestRouteEffectiveAuthorityNeverExceedsTheWorkspace`, `cmd/ohgo.TestRefusedRouteLeavesAuthorityUntouched` |
 | Cross-workspace scenario | `cmd/ohgo.TestCrossWorkspaceSessionKeepsAuthority` |
 | Classifier evidence levels | `workspace.TestClassifyPredictionReportsStrength`, `TestClassifyPredictionMarksContestedPredictionsAmbiguous` |
-| Policy matrix and floor | `workspace.TestProposeTransitionMatrix`, `TestProposalThresholdRequiresStrongEvidence`, `TestProposeTransitionRefusesWeakAndAmbiguousEvidence` |
-| No proposed escalation | `workspace.TestProposeNeverEscalates`, `cmd/ohgo.TestTurnTransitionNeverProposesEscalation` |
+| Policy matrix | `workspace.TestDecideTransitionMatrix`, `workspace.TestTransitionDecisionIsDataOnly` |
+| Automatic only on the execution side | `workspace.TestDecideTransitionMatrix`, `cmd/ohgo.TestWideningFromAskIsOnlyAHandoff` |
 | Prediction moves nothing | `cmd/ohgo.TestTurnTransitionPredictsWithoutMovingAuthority` |
 | Acceptance uses the owner | `tui.TestAcceptedProposalSwitchesThroughTheOwner`, `cmd/ohgo.TestAcceptedTransitionUsesTheAuthoritativeSwitch` |
 | Rejection cannot escalate | `tui.TestRejectedProposalKeepsAuthorityAndRunsTheTurn`, `TestEscRejectsWithoutSwitching`, `cmd/ohgo.TestRejectedTransitionLeavesAuthorityUntouched` |
 | No execution while pending | `tui.TestProposalBlocksTheTurnUntilDecided`, `TestAcceptedSwitchFailureDoesNotRunTheTurn` |
 | Same session across a switch | `cmd/ohgo.TestTransitionKeepsTheSameSession` |
 | Ephemeral proposal state | `tui.TestStaleProposalCannotSurviveALifecycleEvent`, `TestProposalNavigationClampsAtTheEnds` |
-| No fabricated confidence | `workspace.TestTransitionProposalNeverCarriesAProbability`, `cmd/ohgo.TestTurnTransitionCarriesNoProbability`, `tui.TestTransitionPromptRendersTheDecision` |
+| No fabricated confidence | `cmd/ohgo.TestTurnTransitionCarriesNoProbability`, `tui.TestTransitionPromptRendersTheDecision` |
+| Automatic BUILD <-> FUZZ cooperation | `tui.TestHandoffThroughTurnEntrypointPreservesTaskAndAuthority`, `TestBuildToFuzzTransitionPreservesImplementationContext`, `TestRepeatedHandoffsPreserveContextsAndWorkspace` |
+| ASK boundary confirmation | `tui.TestBuildStrongQuestionConfirmsAskBoundary`, `TestAskMutationRequiresBuildConfirmation`, `cmd/ohgo.TestWideningFromAskIsOnlyAHandoff` |
+| Staged conditional workflow | `workspace.TestConditionalWorkflowRequiresAStagedInvestigation`, `tui.TestConditionalWorkflowStartsInvestigatingThenContinuesIntoBuild` |
+| Conditional completion is phase-aware | `agent.TestConditionalMutationCompletesInvestigationWithoutAChange`, `tui.TestBuildConditionalInvestigationStaysActiveWithoutMutation` |
+| Model specialization survives a switch | `cmd/ohgo.TestSwitchWorkspaceRebindsTheRoleModel` |
 
 Run the full suite:
 
@@ -452,10 +551,10 @@ This model deliberately does **not** introduce:
 - a general intent engine, planner, or multi-agent router;
 - a second execution engine or an agent clone;
 - per-request model switching beyond the existing workspace role binding;
-- automatic authority escalation of any kind;
+- automatic escalation across ASK (only BUILD <-> FUZZ cooperate automatically);
 - a calibrated confidence score (evidence levels only);
 - an interactive transition prompt in the plain REPL;
 - a new session, task file, or persistence layer for a workspace move.
 
-The design is a small classifier, an explicit transition table, and a runtime
+The design is a small classifier, an explicit transition policy, and a runtime
 gate. It optimises for predictable behaviour, not maximum autonomy.

@@ -209,6 +209,33 @@ type HandoffCarried struct {
 // record. It never performs the switch: the caller must already have moved the
 // live authority through the workspace owner.
 func (c *Controller) RecordWorkspaceSwitch(from, to workspace.Workspace, workspaceState string) error {
+	return c.recordWorkspaceSwitch(from, to,
+		"explicit workspace command",
+		"human",
+		"workspace switched by explicit human command",
+		workspaceState)
+}
+
+// RecordAutomaticSwitch records a control-plane BUILD <-> FUZZ handoff as an
+// already-applied transition.
+//
+// The control plane, not the human, selected this execution-workspace move, so
+// the record names that provenance. It is still a transition of the same task:
+// the record preserves identity and evidence, and it grants no capability. The
+// caller must already have moved the live authority through the workspace
+// owner, exactly like RecordWorkspaceSwitch.
+func (c *Controller) RecordAutomaticSwitch(from, to workspace.Workspace, reason, workspaceState string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "control-plane workspace transition"
+	}
+	return c.recordWorkspaceSwitch(from, to, reason, "control-plane",
+		"workspace switched by the control plane: "+reason, workspaceState)
+}
+
+// recordWorkspaceSwitch is the shared recording path for an already-applied
+// authority move.
+func (c *Controller) recordWorkspaceSwitch(from, to workspace.Workspace, reason, approvedBy, summary, workspaceState string) error {
 	if err := c.ensureLoaded(); err != nil {
 		return err
 	}
@@ -232,11 +259,15 @@ func (c *Controller) RecordWorkspaceSwitch(from, to workspace.Workspace, workspa
 		}
 	}
 	// The source is the role the task actually ran under. Rejecting a claimed
-	// source keeps the recovery narrative from naming a role this task never
-	// held; the live gate above is still the only authority.
-	if recorded := c.task.LastRole(); recorded.Valid() && recorded != from {
-		return fmt.Errorf("%w: the task last ran under %q, not the claimed source %q",
-			ErrInvalidHandoff, recorded, from)
+	// human source keeps the recovery narrative from naming a role this task
+	// never held; the live gate above is still the only authority. An automatic
+	// control-plane move may repair stale metadata after a restart: the live
+	// workspace is the source, and the transition records that fact.
+	if approvedBy == "human" {
+		if recorded := c.task.LastRole(); recorded.Valid() && recorded != from {
+			return fmt.Errorf("%w: the task last ran under %q, not the claimed source %q",
+				ErrInvalidHandoff, recorded, from)
+		}
 	}
 	// A transition proposal already recorded this exact move. Leave it in its
 	// approved state so the turn boundary applies it with the human's reason
@@ -249,15 +280,15 @@ func (c *Controller) RecordWorkspaceSwitch(from, to workspace.Workspace, workspa
 	now := c.now().UTC()
 	handoff, err := c.snapshotHandoff(from, HandoffInput{
 		To:        to,
-		Reason:    "explicit workspace command",
-		Summary:   "the authority changed by an explicit human command",
+		Reason:    reason,
+		Summary:   summary,
 		Workspace: workspaceState,
 	}, now)
 	if err != nil {
 		return err
 	}
 	handoff.Status = HandoffApplied
-	handoff.ApprovedBy = "human"
+	handoff.ApprovedBy = approvedBy
 	handoff.AppliedAt = now
 	handoff.UpdatedAt = now
 	handoff.Consumed = false
@@ -267,7 +298,7 @@ func (c *Controller) RecordWorkspaceSwitch(from, to workspace.Workspace, workspa
 	c.roleKnown = true
 	c.task.UpdatedAt = now
 	if _, err := c.task.UpdateRoleContext(to, RoleContextUpdate{
-		Progress: []string{"resumed via explicit workspace switch from " + from.Label()},
+		Progress: []string{"resumed via " + approvedBy + " workspace switch from " + from.Label()},
 	}, now); err != nil {
 		return err
 	}
@@ -277,7 +308,7 @@ func (c *Controller) RecordWorkspaceSwitch(from, to workspace.Workspace, workspa
 		Kind:    TimelineHandoff,
 		Role:    to,
 		Status:  string(HandoffApplied),
-		Summary: "workspace switched by explicit human command: " + from.Label() + " -> " + to.Label(),
+		Summary: summary + ": " + from.Label() + " -> " + to.Label(),
 		Refs:    []string{handoff.ID},
 	})
 	if _, err := c.commitState(before); err != nil {

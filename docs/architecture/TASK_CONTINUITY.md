@@ -34,7 +34,7 @@ workspace, completes a task, or promotes model output into verified fact.
 | Task progression timeline | `task.Task.Timeline` | `progress.json` (`timeline`) | `task.ContextFor`, `/task timeline` |
 | Completion proof | `task.Task.Completion` | `progress.json` (`completion`) | `task.ObjectiveState`, `/task status` |
 | Recovery classification | `task.Store.Load` | never (derived) | task block, `/task status` |
-| Handoff authorization policy | `workspace.ProposeHandoff` | never (derived) | TUI transition card |
+| Transition policy | `workspace.DecideTransition` | never (derived) | TUI decision card |
 | Detached tasks | `task.Store` archive | `.ohgo/tasks/<id>.json` | `/task list`, `/task history`, `/task show`, `/task resume` |
 | Completion verdict | `agent.Evaluate*Completion` | `task.Status` + proof | TUI verdict |
 
@@ -48,9 +48,15 @@ The task checkpoint is **project-local**, not session-local:
 
 A session is one conversation (`sessions.db`). A task is one objective that may
 survive a session, an interruption, a restart, and a role change. A role change
-never by itself recreates the task: the same objective continues. A new session
-keeps the task durably resumable, an explicit continuation re-attaches it, and a
-genuinely new objective starts a new task. A terminal task is archived through
+never by itself recreates the task: the same objective continues. An automatic
+BUILD ↔ FUZZ handoff is recorded as an applied control-plane transition, so the
+same task and evidence continue. A new session keeps the task durably
+resumable, an explicit continuation or a natural verification request about the
+task's own result re-attaches it, and a genuinely new objective starts a new
+task. The task layer resolves that ownership before workspace prediction or
+routing. A terminal task owns no continuation: a repeated verification prompt
+reports the finished state instead of replacing the proof with a duplicate
+task. A terminal task is archived through
 the same detach path before the new objective starts, so its objective,
 evidence, proof, and timeline remain inspectable through `/task history` rather
 than being overwritten by the replacement checkpoint.
@@ -418,16 +424,16 @@ A role transition spans four existing owners and adds no package:
 
 | Concern | Owner |
 | --- | --- |
-| Whether authority may widen | `workspace.ProposeHandoff` (policy) |
+| Whether authority may move and where | `workspace.DecideTransition` (policy) |
 | The durable transition record | `task.Handoff` in `progress.json` |
-| The human decision and its presentation | `internal/tui` transition surface |
+| The human decision and its presentation | `internal/tui` decision surface |
 | The actual authority move | `harness.SwitchWorkspace` (the existing seam) |
 
-`workspace.ProposeHandoff` is the exact complement of
-`workspace.ProposeTransition`: the transition policy narrows, the handoff
-policy widens, and neither changes authority by being computed. A widening
-proposal therefore always requires an explicit human decision, while a
-narrowing request keeps its existing prompt.
+`workspace.DecideTransition` classifies each request as `stay`, an automatic
+BUILD ↔ FUZZ handoff, or a human confirmation across ASK. It never changes
+authority by being computed; the TUI applies the automatic target or presents
+the confirmation. The plain REPL applies automatic BUILD ↔ FUZZ moves and asks
+for an explicit command before crossing ASK.
 
 ### 8.2 State model
 
@@ -690,6 +696,29 @@ Specific rules:
 - a non-complete evaluation is refused;
 - a task must be `RUNNING`: `PAUSED` and `NEEDS_REVIEW` resume through `Begin`
   first, so the boundary that reconciles the live workspace is not skipped.
+
+#### Phase completion under a lower authority
+
+A turn may run under an authority that cannot perform the persisted contract
+(for example, a FUZZ investigation of a mutation objective). A conditional
+mutation under BUILD follows the same rule before its branch is entered:
+`IntentContract.ConditionalMutation` records that the change is deferred, and
+no observed change means the turn is judged as the investigation answer rather
+than a failed mutation. Completion then evaluates the informational phase the
+authority can perform. A completed phase keeps the task `RUNNING` (`ACTIVE`)
+and records no proof: it is neither `NEEDS_REVIEW` nor `COMPLETED`. The
+checkpoint still records the phase evidence, and the same task continues when
+the human authorizes the required workspace or the branch is entered. A phase
+answer that is empty, only announces further work, or fails grounding still
+enters review.
+
+Phase completion narrows the completion requirement; an explicit constraint
+that survives the phase still applies. For a staged conditional objective,
+wording such as "without modifying source code" applies to the investigation
+phase, which runs under ASK or FUZZ authority. It is not carried as a global
+`no_mutation` veto on the later BUILD branch. An unconditional "do not modify
+anything" remains global. A task-continuity instruction such as "do not create a
+new task" is not a repository `no_creation` constraint.
 
 The proof stores the verdict, the `Answered`/`Executed`/`Observed` flags, the
 bounded check summaries, the evidence ids, and the timestamp. It never stores

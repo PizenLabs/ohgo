@@ -73,7 +73,7 @@ create a boundary that does not exist.
 | Domain | Packages | Owns | Does **not** own |
 |---|---|---|---|
 | **runtime** | `agent` | The turn loop, tool dispatch, the authorization sequence, grounding admission, completion evaluation, subagent execution, the projection seam, the edit-journal seam | Tool implementations, workspace policy, persistence, rendering |
-| **control** | `control/contract`, `control/budget`, `control/workspace`, `control/cognition`, `security` | Completion vocabulary; resource admission; authority policy + routing + intent contracts + transition proposals; task shape + evidence + narrowing; the authorization kernel | Execution, persistence, presentation |
+| **control** | `control/contract`, `control/budget`, `control/workspace`, `control/cognition`, `security` | Completion vocabulary; resource admission; authority policy + routing + intent contracts + transition decisions; task shape + evidence + narrowing; the authorization kernel | Execution, persistence, presentation |
 | **execution** | `execution/tools`, `execution/mcp`, `execution/sandbox`, `execution/shell`, `execution/exec` | Concrete capabilities; MCP transport + classification; the OS read-only boundary; shell-output decoding; the human `!` escape | The decision to allow an operation |
 | **intelligence** | `intelligence/ast`, `intelligence/ignore` | One in-process Go index (symbols, package graph, refs); repository scoping | Anything about the agent, models, or UI |
 | **provider** | `provider/ai`, `provider/catalog`, `provider/creds` | Wire protocols and streams; canonical stream normalization (native and serialized tool calls); model facts and discovery; credential resolution | Policy, routing, cost decisions, execution authority |
@@ -199,7 +199,7 @@ Read this before adding a field to anything.
 | Role execution context | `task.RoleContext` | the task | `task.ContextFor` (active role only) | `progress.json` (`context.roles`) |
 | Task active role (continuity metadata, never authority) | `task.Task.ActiveRole` | `task.Controller` | `task.ContextFor`, turn gate | `progress.json` (`activeRole`) |
 | Role handoff (continuity and recovery metadata, never authority) | `task.Handoff` | `task.Controller` | `task.ContextFor`, TUI transition card | `progress.json` (`handoff`) |
-| Handoff authorization policy | `workspace.ProposeHandoff` | `control/workspace` | TUI transition proposal | never (derived) |
+| Transition policy | `workspace.DecideTransition` | `control/workspace` | TUI decision surface | never (derived) |
 | Evidence for the verdict | `agent.scanCompletionEvidence` (run-local) | the run | — | never |
 | Evidence for projection | `cognition.EvidenceState` | the task | state block, sufficiency | `progress.json` |
 | Budget ledger | `budget.Budget` | run holder | TUI usage | `progress.json` (`budget.State`) |

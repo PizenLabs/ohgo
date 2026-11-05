@@ -67,32 +67,37 @@ execution`:
 - Cross-workspace handoff is artifact-based: `workspace.Artifact` (plan,
   finding, change, verification) is validated and persisted per session; the
   `artifact` tool enforces that a workspace only authors its own kind.
-- A widening role transition is a Phase 2 handoff: `workspace.ProposeHandoff`
-  only asks, the human approves through the existing transition decision, and
+- `workspace.DecideTransition` owns the transition policy: stay, automatic
+  BUILD ↔ FUZZ cooperation, or a human confirmation when ASK is crossed.
   `harness.SwitchWorkspace` remains the single authority move. `task.Handoff`
-  records the transition and its carried references in `progress.json`; it is
-  recovery metadata, never a capability.
+  records both human and control-plane transitions and their carried references
+  in `progress.json`; it is recovery metadata, never a capability.
 
 ### Intent-aware turns
 
 Authority is a runtime property, not a construction-time constant. Each turn
 is classified by a deterministic, model-free classifier
-(`workspace.Classify` → `READ` / `EXECUTE` / `INVESTIGATE`) and routed through
-an explicit transition table (`workspace.RouteTurn`). The `authorityGate` in
+(`workspace.Classify` → `READ` / `EXECUTE` / `INVESTIGATE`) and analysed for the
+capability it needs (`workspace.AnalyzeRequest` → `READ` / `EXECUTE` /
+`INVESTIGATE` / `MUTATE`). `workspace.RouteTurn` is the capability guard and
+`workspace.DecideTransition` is the transition policy. The `authorityGate` in
 `cmd/ohgo` is the single live authority that both the loop's admission hook
 and any subagent read at call time:
 
-- BUILD + READ and FUZZ + READ are refused before the model is called; the
-  route names the ASK authority the request needs. The interactive UI offers
-  the narrowing transition (`ProposeTransition`), and only the human's accepted
-  switch moves the gate. The headless paths print the same requirement instead
-  of switching silently. The active workspace is never inferred from the
-  request.
-- ASK + EXECUTE or ASK + INVESTIGATE is refused likewise; the user must switch
-  workspace explicitly.
-- FUZZ + EXECUTE is refused: a discovered defect is never BUILD authority.
-- Delegation may only narrow authority. Removing or changing the mode prompt
-  does not widen it — the gate denies the call regardless.
+- ASK can READ. EXECUTE and MUTATE require a confirmed BUILD switch;
+  INVESTIGATE requires a confirmed FUZZ switch.
+- BUILD can READ, EXECUTE, and INVESTIGATE. A strong human-facing question
+  offers a confirmed ASK switch; a strong investigation moves to FUZZ
+  automatically.
+- FUZZ can READ, EXECUTE, and INVESTIGATE. A repository-change request moves to
+  BUILD automatically. Mutation is still denied inside FUZZ by the per-call
+  gate.
+- Every automatic transition is limited to BUILD ↔ FUZZ. Crossing ASK is always
+  a human decision. Removing or changing the mode prompt does not widen
+  authority — the gate denies the call regardless.
+- A staged request ("investigate first; if confirmed, implement") starts in
+  investigation. Its conditional mutation is retained for the later branch but
+  does not make the current turn a mutation objective.
 
 The full matrix, state model, and invariants are in
 [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
@@ -237,6 +242,15 @@ user's request before execution and the evidence the runtime observed.
   different prompt is refused until the human runs `/task cancel` or
   `/task accept`. Both close the task as `CANCELLED`; neither claims the old
   objective completed, and the next prompt starts a new identity.
+- **Phase completion.** A turn can run under ASK or FUZZ while the persisted
+  contract needs BUILD, or under BUILD before a conditional mutation branch is
+  entered. `workspace.PhaseContract` and `contract.IntentContract.
+  InformationalPhase` narrow that turn to an informational phase; a substantive
+  answer leaves the task `RUNNING` (`ACTIVE`) with the same identity and no
+  proof. It is not `NEEDS_REVIEW` for a change the authority never permitted or
+  the branch has not reached. The next turn under the required authority
+  continues the same task. See [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md)
+  and [`TASK_CONTINUITY.md`](TASK_CONTINUITY.md).
 - **Task context.** The same checkpoint carries structured, role-independent
   context: evidence-backed facts, hypotheses and dispositions, task-linked
   evidence, outstanding questions, and isolated ASK/FUZZ/BUILD execution

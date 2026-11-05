@@ -59,11 +59,19 @@ func buildGrounding(text string, intent contract.IntentContract) *contract.Inten
 		actions = append(actions, contract.GroundingMutate)
 	}
 	grounding.Actions = actions
-	grounding.Action = primaryGroundingAction(actions, grounding.MutationIntent)
+	grounding.Action = primaryGroundingAction(actions, grounding.MutationIntent, intent.ConditionalMutation)
 
 	grounding.Entities = groundingEntities(text, intent)
 	grounding.Scope = groundingScope(text, grounding.Entities)
 	grounding.Constraints = groundingConstraints(text)
+	if intent.ConditionalMutation {
+		// "Investigate without changing anything; if the issue is confirmed,
+		// fix it" scopes the no-change limit to the investigation phase. The
+		// phase runs under ASK or FUZZ authority, so the gate already enforces
+		// it; carrying it as a global task constraint would veto the later
+		// BUILD branch the user explicitly requested.
+		grounding.Constraints = withoutConstraints(grounding.Constraints, "no_mutation", "no_creation")
+	}
 	grounding.ExpectedOutcome = groundingOutcome(grounding)
 
 	if grounding.Action == contract.GroundingUnknown {
@@ -199,11 +207,27 @@ func stripNegatedTail(clause string) string {
 	return strings.TrimSpace(clause[:cut])
 }
 
-// primaryGroundingAction chooses the action that governs completion. A
+// primaryGroundingAction chooses the action that governs the current phase. A
 // mutation wins because it carries the strongest authority requirement; a
-// compound request still keeps the other actions in Actions.
-func primaryGroundingAction(actions []contract.GroundingAction, mutation bool) contract.GroundingAction {
-	if mutation {
+// compound request still keeps the other actions in Actions. A staged
+// conditional mutation starts in investigation: the change is still grounded
+// through Actions and MutationIntent, but it is not presented as the action to
+// perform before the condition is evaluated.
+func primaryGroundingAction(actions []contract.GroundingAction, mutation, staged bool) contract.GroundingAction {
+	if mutation && !staged {
+		return contract.GroundingMutate
+	}
+	if staged {
+		for _, action := range actions {
+			if action == contract.GroundingInvestigate {
+				return action
+			}
+		}
+		for _, action := range actions {
+			if action == contract.GroundingRead {
+				return action
+			}
+		}
 		return contract.GroundingMutate
 	}
 	for _, action := range actions {
@@ -495,21 +519,43 @@ func groundingConstraints(text string) []string {
 			}
 		}
 	}
-	add("no_mutation", "do not modify", "do not change", "read only", "without modifying")
-	add("no_creation", "do not create")
+	add("no_mutation", "do not modify", "do not change", "read only",
+		"without modifying", "without changing")
+	// "Do not create a new task" is a continuity instruction, not a repository
+	// limit. Only object-shaped creation limits become constraints.
+	add("no_creation", "do not create it", "do not create the file",
+		"do not create any file", "do not create files", "do not create new files")
 	add("no_external", "do not use the web", "do not browse", "no external")
+	return out
+}
+
+// withoutConstraints removes named constraints from a list, preserving order.
+func withoutConstraints(values []string, drop ...string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	removed := make(map[string]bool, len(drop))
+	for _, key := range drop {
+		removed[key] = true
+	}
+	out := values[:0]
+	for _, value := range values {
+		if !removed[value] {
+			out = append(out, value)
+		}
+	}
 	return out
 }
 
 // groundingOutcome states what a truthful completion would demonstrate.
 func groundingOutcome(grounding *contract.IntentGrounding) string {
 	switch {
+	case grounding.Action == contract.GroundingInvestigate:
+		return "an answer grounded in observed evidence, without a global negative conclusion"
 	case grounding.MutationIntent:
 		return "the named targets changed and a successful check followed"
 	case grounding.Action == contract.GroundingExecute:
 		return "the requested process reached a successful terminal state"
-	case grounding.Action == contract.GroundingInvestigate:
-		return "an answer grounded in observed evidence, without a global negative conclusion"
 	case grounding.Action == contract.GroundingRead:
 		return "an answer grounded in observed evidence that preserves the named entities"
 	default:

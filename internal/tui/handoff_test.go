@@ -55,16 +55,10 @@ func TestHandoffThroughTurnEntrypointPreservesTaskAndAuthority(t *testing.T) {
 	}
 	program := NewProgram(loop, "test", 0)
 	program.SetWorkspaceSwitcher(WorkspaceHooks{
-		Current: func() string { return string(role) },
-		Switch: func(name string) error {
-			ws, err := workspace.Parse(name)
-			if err != nil {
-				return err
-			}
-			role = ws
-			return nil
-		},
-		Predict: predictTransition(func() workspace.Workspace { return role }),
+		Current:          func() string { return string(role) },
+		Switch:           switchWorkspaceForTest(&role, controller),
+		SwitchWithReason: switchWorkspaceWithReasonForTest(&role, controller),
+		Predict:          predictTransition(func() workspace.Workspace { return role }),
 	})
 	program.SetTaskHooks(runtimeHooks(controller))
 
@@ -97,38 +91,21 @@ func TestHandoffThroughTurnEntrypointPreservesTaskAndAuthority(t *testing.T) {
 		t.Fatalf("FUZZ context: %v", err)
 	}
 
-	// Before the decision, the request is only proposed. No authority moved.
-	if cmd := program.submit("implement the fix"); cmd != nil {
-		t.Fatal("a handoff proposal ran the turn before the decision")
+	// FUZZ -> BUILD is cooperative execution-workspace movement: the control
+	// plane applies it automatically, without a human decision, and records it
+	// on the same task.
+	cmd := program.submit("implement the fix")
+	if cmd == nil {
+		t.Fatal("the automatic FUZZ -> BUILD handoff did not start the turn")
 	}
-	pending := program.state.Transition
-	if pending == nil {
-		t.Fatal("no handoff proposal was shown")
+	if program.state.Transition != nil {
+		t.Fatalf("automatic handoff opened a decision surface: %+v", program.state.Transition)
 	}
-	if pending.Kind != TransitionKindHandoff {
-		t.Fatalf("transition kind = %q, want handoff", pending.Kind)
-	}
-	if pending.Handoff == nil || pending.Handoff.From != "FUZZ" || pending.Handoff.To != "BUILD" {
-		t.Fatalf("handoff preview = %+v", pending.Handoff)
-	}
-	if pending.Handoff.Objective != objective {
-		t.Fatalf("preview objective = %q, want %q", pending.Handoff.Objective, objective)
-	}
-	if role != workspace.Fuzz {
-		t.Fatalf("the proposal moved authority to %s before approval", role)
+	if role != workspace.Build {
+		t.Fatalf("automatic handoff left the role at %s", role)
 	}
 	if err := workspace.Admit(workspace.Fuzz, workspace.OpWrite); err == nil {
-		t.Fatal("the proposal granted FUZZ mutation authority")
-	}
-
-	// Accept: the host records, approves, switches, and the turn applies the
-	// handoff at the task boundary.
-	_, cmd := program.resolveTransition(true)
-	if role != workspace.Build {
-		t.Fatalf("accepted handoff left the role at %s", role)
-	}
-	if cmd == nil {
-		t.Fatal("the accepted handoff did not release the turn")
+		t.Fatal("FUZZ mutation authority was granted by leaving FUZZ")
 	}
 	cmd()
 
@@ -153,7 +130,7 @@ func TestHandoffThroughTurnEntrypointPreservesTaskAndAuthority(t *testing.T) {
 		t.Fatalf("FUZZ context did not survive: %+v", fuzz)
 	}
 	build, ok := after.Context.Role(workspace.Build)
-	if !ok || !hasSubstring(build.Progress, "resumed via handoff from FUZZ") {
+	if !ok || !hasSubstring(build.Progress, "FUZZ") {
 		t.Fatalf("BUILD context = %+v, want the transition summary", build)
 	}
 	if err := workspace.Admit(workspace.Fuzz, workspace.OpWrite); err == nil {
@@ -184,31 +161,28 @@ func TestHandoffThroughTurnEntrypointPreservesTaskAndAuthority(t *testing.T) {
 	}
 }
 
-// Declining a handoff leaves authority, task identity, and context untouched.
-func TestDeclinedHandoffLeavesAuthorityAndTaskUnchanged(t *testing.T) {
+// Declining an ASK-boundary handoff leaves authority, task identity, and
+// context untouched. The request is restored, never run under FUZZ just because
+// the user declined the read-only workspace.
+func TestDeclinedAskHandoffLeavesAuthorityAndTaskUnchanged(t *testing.T) {
 	role := workspace.Fuzz
 	controller := task.NewController(task.NewStore(t.TempDir()), nil)
 	controller.SetRoleSource(func() workspace.Workspace { return role })
 	program := NewProgram(scriptedLoop(t), "test", 0)
 	program.SetWorkspaceSwitcher(WorkspaceHooks{
-		Current: func() string { return string(role) },
-		Switch: func(name string) error {
-			ws, err := workspace.Parse(name)
-			if err != nil {
-				return err
-			}
-			role = ws
-			return nil
-		},
-		Predict: predictTransition(func() workspace.Workspace { return role }),
+		Current:          func() string { return string(role) },
+		Switch:           switchWorkspaceForTest(&role, controller),
+		SwitchWithReason: switchWorkspaceWithReasonForTest(&role, controller),
+		Predict:          predictTransition(func() workspace.Workspace { return role }),
 	})
 	program.SetTaskHooks(runtimeHooks(controller))
 
 	program.runTurn("fix the flaky test")
 	first, _ := controller.Current()
-	program.submit("implement the fix")
+	program.state.Apply(InputChanged{Text: "why does this work?"})
+	program.submit("why does this work?")
 	if program.state.Transition == nil {
-		t.Fatal("no handoff proposal was shown")
+		t.Fatal("no ASK handoff proposal was shown")
 	}
 	program.resolveTransition(false)
 	if role != workspace.Fuzz {
@@ -221,7 +195,7 @@ func TestDeclinedHandoffLeavesAuthorityAndTaskUnchanged(t *testing.T) {
 	if after.Handoff != nil {
 		t.Fatalf("declining recorded a handoff: %+v", after.Handoff)
 	}
-	if !strings.Contains(program.state.Input, "implement the fix") {
+	if !strings.Contains(program.state.Input, "why does this work?") {
 		t.Fatalf("declining lost the request: %q", program.state.Input)
 	}
 }
@@ -236,36 +210,27 @@ func predictTransition(active func() workspace.Workspace) func(string) (TurnTran
 		if !current.Valid() {
 			return TurnTransition{}, false
 		}
-		prediction := workspace.ClassifyPrediction(text)
-		if transition, ok := workspace.ProposeTransition(current, prediction); ok {
-			from, to := transition.Current.Style(), transition.Proposed.Style()
-			return TurnTransition{
-				Kind:           TransitionKindWorkspace,
-				Current:        from.Label,
-				Proposed:       to.Label,
-				CurrentAccent:  from.Accent,
-				ProposedAccent: to.Accent,
-				Intent:         strings.ToUpper(string(transition.Intent)),
-				Strength:       string(transition.Strength),
-				Question:       transition.Question(),
-				Reason:         transition.Reason,
-			}, true
-		}
-		handoff, ok := workspace.ProposeHandoff(current, prediction)
-		if !ok {
+		requirement := workspace.AnalyzeRequest(text)
+		decision := workspace.DecideTransition(current, requirement)
+		if !decision.Proposed() {
 			return TurnTransition{}, false
 		}
-		from, to := handoff.Current.Style(), handoff.Proposed.Style()
+		from, to := decision.Current.Style(), decision.Target.Style()
+		kind := TransitionKindWorkspace
+		if decision.NeedsConfirmation() && !current.Encompasses(decision.Target) {
+			kind = TransitionKindHandoff
+		}
 		return TurnTransition{
-			Kind:           TransitionKindHandoff,
+			Kind:           kind,
 			Current:        from.Label,
 			Proposed:       to.Label,
 			CurrentAccent:  from.Accent,
 			ProposedAccent: to.Accent,
-			Intent:         strings.ToUpper(string(handoff.Intent)),
-			Strength:       string(handoff.Strength),
-			Question:       handoff.Question(),
-			Reason:         handoff.Reason,
+			Intent:         strings.ToUpper(string(requirement.Intent)),
+			Strength:       string(requirement.Strength),
+			Question:       decision.Question,
+			Reason:         decision.Reason,
+			Automatic:      decision.Automatic(),
 		}, true
 	}
 }
@@ -313,16 +278,10 @@ func TestBuildToFuzzTransitionPreservesImplementationContext(t *testing.T) {
 	}
 	program := NewProgram(loop, "test", 0)
 	program.SetWorkspaceSwitcher(WorkspaceHooks{
-		Current: func() string { return string(role) },
-		Switch: func(name string) error {
-			ws, err := workspace.Parse(name)
-			if err != nil {
-				return err
-			}
-			role = ws
-			return nil
-		},
-		Predict: predictTransition(func() workspace.Workspace { return role }),
+		Current:          func() string { return string(role) },
+		Switch:           switchWorkspaceForTest(&role, controller),
+		SwitchWithReason: switchWorkspaceWithReasonForTest(&role, controller),
+		Predict:          predictTransition(func() workspace.Workspace { return role }),
 	})
 	program.SetTaskHooks(runtimeHooks(controller))
 
@@ -341,19 +300,15 @@ func TestBuildToFuzzTransitionPreservesImplementationContext(t *testing.T) {
 		t.Fatalf("BUILD plan: %v", err)
 	}
 
-	if cmd := program.submit("reproduce the failure under load"); cmd != nil {
-		t.Fatal("the narrowing transition ran before the decision")
+	cmd := program.submit("reproduce it")
+	if cmd == nil {
+		t.Fatal("the automatic BUILD -> FUZZ handoff did not start the turn")
 	}
-	pending := program.state.Transition
-	if pending == nil || pending.Proposed != "FUZZ" {
-		t.Fatalf("transition = %+v, want a BUILD -> FUZZ proposal", pending)
+	if program.state.Transition != nil {
+		t.Fatalf("automatic handoff opened a decision surface: %+v", program.state.Transition)
 	}
-	if role != workspace.Build {
-		t.Fatalf("the proposal moved authority to %s before approval", role)
-	}
-	_, cmd := program.resolveTransition(true)
 	if role != workspace.Fuzz {
-		t.Fatalf("accepted transition left the role at %s", role)
+		t.Fatalf("automatic transition left the role at %s", role)
 	}
 	cmd()
 
@@ -438,16 +393,10 @@ func TestRepeatedHandoffsPreserveContextsAndWorkspace(t *testing.T) {
 	controller.SetRoleSource(func() workspace.Workspace { return role })
 	program := NewProgram(scriptedLoop(t), "test", 0)
 	program.SetWorkspaceSwitcher(WorkspaceHooks{
-		Current: func() string { return string(role) },
-		Switch: func(name string) error {
-			ws, err := workspace.Parse(name)
-			if err != nil {
-				return err
-			}
-			role = ws
-			return nil
-		},
-		Predict: predictTransition(func() workspace.Workspace { return role }),
+		Current:          func() string { return string(role) },
+		Switch:           switchWorkspaceForTest(&role, controller),
+		SwitchWithReason: switchWorkspaceWithReasonForTest(&role, controller),
+		Predict:          predictTransition(func() workspace.Workspace { return role }),
 	})
 	program.SetTaskHooks(runtimeHooks(controller))
 	program.state.Apply(IdentityUpdated{GitBranch: "main", GitStatus: "3 modified"})
@@ -463,12 +412,14 @@ func TestRepeatedHandoffsPreserveContextsAndWorkspace(t *testing.T) {
 		t.Fatalf("FUZZ strategy: %v", err)
 	}
 
-	// FUZZ -> BUILD.
-	program.submit("implement the fix")
-	if program.state.Transition == nil {
-		t.Fatal("no FUZZ -> BUILD handoff")
+	// FUZZ -> BUILD is automatic.
+	cmd := program.submit("implement the fix")
+	if cmd == nil {
+		t.Fatal("the automatic FUZZ -> BUILD handoff did not start the turn")
 	}
-	_, cmd := program.resolveTransition(true)
+	if program.state.Transition != nil {
+		t.Fatalf("automatic handoff opened a decision surface: %+v", program.state.Transition)
+	}
 	cmd()
 	buildTask, _ := controller.Current()
 	if buildTask.Handoff == nil || buildTask.Handoff.Status != task.HandoffApplied {
@@ -483,12 +434,14 @@ func TestRepeatedHandoffsPreserveContextsAndWorkspace(t *testing.T) {
 		t.Fatalf("BUILD plan: %v", err)
 	}
 
-	// BUILD -> FUZZ.
-	program.submit("reproduce the failure again")
-	if program.state.Transition == nil {
-		t.Fatal("no BUILD -> FUZZ transition")
+	// BUILD -> FUZZ is automatic too.
+	cmd = program.submit("reproduce it")
+	if cmd == nil {
+		t.Fatal("the automatic BUILD -> FUZZ handoff did not start the turn")
 	}
-	_, cmd = program.resolveTransition(true)
+	if program.state.Transition != nil {
+		t.Fatalf("automatic handoff opened a decision surface: %+v", program.state.Transition)
+	}
 	cmd()
 	after, _ := controller.Current()
 	if after.ID != first.ID {
@@ -523,21 +476,38 @@ func TestRepeatedHandoffsPreserveContextsAndWorkspace(t *testing.T) {
 // Only an unconsumed applied handoff continues the next turn; once consumed,
 // the ordinary continuation policy resumes.
 func TestHandoffContinuationConsumesAppliedTransitionOnce(t *testing.T) {
-	applied := TaskResume{HandoffStatus: "APPLIED", HandoffTo: "build", HandoffConsumed: false}
-	if !handoffContinuation(applied, "build") {
-		t.Fatal("an unconsumed applied handoff did not continue the next turn")
+	intent := contract.IntentContract{Objective: "fix the flaky test", Kind: contract.ObjectiveMutation}
+	current := TaskResume{
+		HandoffStatus: "APPLIED", HandoffTo: "build", HandoffConsumed: false,
+		HandoffBy: "human", HasContract: true, Contract: intent,
 	}
-	consumed := applied
+	if !handoffContinuation(current, "build", "fix the flaky test", intent) {
+		t.Fatal("an unconsumed applied human handoff did not continue the next turn")
+	}
+	consumed := current
 	consumed.HandoffConsumed = true
-	if handoffContinuation(consumed, "build") {
+	if handoffContinuation(consumed, "build", "fix the flaky test", intent) {
 		t.Fatal("a consumed handoff still continued a later turn")
 	}
-	approved := TaskResume{HandoffStatus: "APPROVED", HandoffTo: "build"}
-	if !handoffContinuation(approved, "build") {
+	approved := current
+	approved.HandoffStatus = "APPROVED"
+	if !handoffContinuation(approved, "build", "fix the flaky test", intent) {
 		t.Fatal("an approved handoff did not continue the next turn")
 	}
-	if handoffContinuation(approved, "fuzz") {
+	if handoffContinuation(approved, "fuzz", "fix the flaky test", intent) {
 		t.Fatal("a handoff continued a different role")
+	}
+
+	// An automatic handoff does not make an unrelated objective a continuation.
+	automatic := current
+	automatic.HandoffBy = "control-plane"
+	unrelated := contract.IntentContract{Objective: "write a README", Kind: contract.ObjectiveMutation}
+	if handoffContinuation(automatic, "build", "write a README", unrelated) {
+		t.Fatal("an automatic handoff attached an unrelated objective")
+	}
+	followUp := contract.IntentContract{Objective: "fix it", Kind: contract.ObjectiveMutation}
+	if !handoffContinuation(automatic, "build", "fix it", followUp) {
+		t.Fatal("an automatic handoff did not attach a task follow-up")
 	}
 }
 
@@ -549,7 +519,7 @@ func TestNarrowingUsesLiveAuthorityAfterStaleRecovery(t *testing.T) {
 	role := workspace.Fuzz
 	controller := task.NewController(task.NewStore(root), nil)
 	controller.SetRoleSource(func() workspace.Workspace { return role })
-	intent := contract.IntentContract{Objective: "fix the flaky test", Kind: contract.ObjectiveInformational}
+	intent := contract.IntentContract{Objective: "fix the flaky test", Kind: contract.ObjectiveMutation}
 	started, err := controller.Begin(intent, nil)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
@@ -570,33 +540,22 @@ func TestNarrowingUsesLiveAuthorityAfterStaleRecovery(t *testing.T) {
 
 	program := NewProgram(scriptedLoop(t), "test", 0)
 	program.SetWorkspaceSwitcher(WorkspaceHooks{
-		Current: func() string { return string(role) },
-		Switch: func(name string) error {
-			ws, err := workspace.Parse(name)
-			if err != nil {
-				return err
-			}
-			role = ws
-			return nil
-		},
-		Predict: predictTransition(func() workspace.Workspace { return role }),
+		Current:          func() string { return string(role) },
+		Switch:           switchWorkspaceForTest(&role, reopened),
+		SwitchWithReason: switchWorkspaceWithReasonForTest(&role, reopened),
+		Predict:          predictTransition(func() workspace.Workspace { return role }),
 	})
 	program.SetTaskHooks(runtimeHooks(reopened))
 
-	if cmd := program.submit("reproduce the failure"); cmd != nil {
-		t.Fatal("the narrowing transition ran before the decision")
-	}
-	pending := program.state.Transition
-	if pending == nil || pending.Proposed != "FUZZ" {
-		t.Fatalf("transition = %+v, want a BUILD -> FUZZ proposal", pending)
-	}
-	_, cmd := program.resolveTransition(true)
+	cmd := program.submit("reproduce it")
 	if cmd == nil {
-		handoff, _ := reopened.Current()
-		t.Fatalf("the narrowing was refused; handoff = %+v", handoff.Handoff)
+		t.Fatal("the automatic BUILD -> FUZZ handoff did not start the turn")
+	}
+	if program.state.Transition != nil {
+		t.Fatalf("automatic handoff opened a decision surface: %+v", program.state.Transition)
 	}
 	if role != workspace.Fuzz {
-		t.Fatalf("accepted narrowing left the role at %s", role)
+		t.Fatalf("automatic narrowing left the role at %s", role)
 	}
 	cmd()
 
@@ -615,5 +574,43 @@ func TestNarrowingUsesLiveAuthorityAfterStaleRecovery(t *testing.T) {
 	}
 	if current.ActiveRole != workspace.Fuzz {
 		t.Fatalf("active role = %s, want FUZZ", current.ActiveRole)
+	}
+}
+
+// switchWorkspaceForTest moves the live role and records the applied switch,
+// matching the production workspace owner.
+func switchWorkspaceForTest(role *workspace.Workspace, controller *task.Controller) func(string) error {
+	return func(name string) error {
+		ws, err := workspace.Parse(name)
+		if err != nil {
+			return err
+		}
+		from := *role
+		*role = ws
+		if controller != nil {
+			if err := controller.RecordWorkspaceSwitch(from, ws, ""); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// switchWorkspaceWithReasonForTest mirrors the automatic control-plane seam:
+// it records the measured state and the control-plane provenance.
+func switchWorkspaceWithReasonForTest(role *workspace.Workspace, controller *task.Controller) func(string, string, string) error {
+	return func(name, reason, workspaceState string) error {
+		ws, err := workspace.Parse(name)
+		if err != nil {
+			return err
+		}
+		from := *role
+		*role = ws
+		if controller != nil {
+			if err := controller.RecordAutomaticSwitch(from, ws, reason, workspaceState); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 }

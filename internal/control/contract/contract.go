@@ -154,6 +154,13 @@ type IntentContract struct {
 	// no behavioural success condition. It is the only field that downgrades a
 	// run before any execution happens; it never grants anything.
 	Ambiguous bool
+	// ConditionalMutation reports that the request stages an investigation or
+	// understanding phase before a conditional future change ("investigate
+	// first; if the issue is confirmed, fix it"). Kind remains Mutation so the
+	// change remains authorized and grounded when the branch is reached, but
+	// completion must not require the change until it is observed. The field is
+	// additive and false for an unconditional mutation request.
+	ConditionalMutation bool
 	// Grounding is the structured semantic reading of the request: action,
 	// entities, scope, assumptions, and ambiguities. It is the reference the
 	// runtime validates a model proposal and final answer against. It is
@@ -161,6 +168,23 @@ type IntentContract struct {
 	Grounding *IntentGrounding
 	// Issues are deterministic extraction notes, used in the review reason.
 	Issues []string
+}
+
+// InformationalPhase returns the contract evaluated as the informational or
+// investigation phase of a deferred objective.
+//
+// The objective, targets, and grounding stay attached so task identity and the
+// eventual mutation branch survive. Mutation-only completion requirements are
+// removed: the current authority or conditional branch cannot satisfy them
+// yet, and judging the phase against them would report a false evidence gap.
+func (c IntentContract) InformationalPhase() IntentContract {
+	phase := c
+	phase.Kind = ObjectiveInformational
+	phase.Verification = nil
+	phase.BehavioralObjective = false
+	phase.Ambiguous = false
+	phase.Issues = nil
+	return phase
 }
 
 // OperationFor returns the requested operation for a target.

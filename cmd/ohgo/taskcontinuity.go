@@ -340,6 +340,7 @@ func taskResume(recorded task.Task) tui.TaskResume {
 	if recorded.Handoff != nil {
 		resume.HandoffStatus = string(recorded.Handoff.Status)
 		resume.HandoffTo = recorded.Handoff.To.String()
+		resume.HandoffBy = recorded.Handoff.ApprovedBy
 		resume.HandoffConsumed = recorded.Handoff.Consumed
 	}
 	if recorded.Contract != nil {

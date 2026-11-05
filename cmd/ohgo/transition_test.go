@@ -45,7 +45,7 @@ func TestTurnTransitionMatrixMatchesThePolicy(t *testing.T) {
 		want     bool
 	}{
 		{"ASK", "explain this", "", false},
-		{"ASK", "try to break this", "", true},
+		{"ASK", "try to break this", "FUZZ", true},
 		// Widening is a handoff: it proposes the target but changes nothing
 		// until the human approves.
 		{"ASK", "fix the bug", "BUILD", true},
@@ -67,6 +67,14 @@ func TestTurnTransitionMatrixMatchesThePolicy(t *testing.T) {
 			if ok && proposal.Proposed != tc.proposed {
 				t.Errorf("Proposed = %q, want %q", proposal.Proposed, tc.proposed)
 			}
+			if ok {
+				executionHandoff := (tc.active == "BUILD" && proposal.Proposed == "FUZZ") ||
+					(tc.active == "FUZZ" && proposal.Proposed == "BUILD")
+				if proposal.Automatic != executionHandoff {
+					t.Errorf("Automatic = %v for %s -> %s, want %v",
+						proposal.Automatic, tc.active, proposal.Proposed, executionHandoff)
+				}
+			}
 			// Whatever the outcome, prediction leaves authority alone.
 			if gate.Workspace() != workspace.Workspace(tc.active) {
 				t.Errorf("prediction moved the gate to %s", gate.Workspace())
@@ -79,31 +87,29 @@ func TestTurnTransitionMatrixMatchesThePolicy(t *testing.T) {
 // a classifier may describe that a request needs more authority, but only as a
 // handoff that requires explicit approval. It must never move the gate itself,
 // and it must never present widening as an ordinary already-authorized change.
-func TestWideningIsOnlyAHandoff(t *testing.T) {
-	for _, active := range []string{"ASK", "FUZZ"} {
-		activeWS, err := workspace.Parse(active)
-		if err != nil {
-			t.Fatalf("parse %s: %v", active, err)
+func TestWideningFromAskIsOnlyAHandoff(t *testing.T) {
+	gate := newAuthorityGate(workspace.Ask)
+	h := routedHarness(gate, nil, "ASK")
+	for _, text := range []string{"implement the fix", "fix the bug", "run the tests", "reproduce the failure"} {
+		proposal, ok := turnTransition(h, text)
+		if !ok {
+			t.Errorf("ASK produced no boundary decision for %q", text)
+			continue
 		}
-		gate := newAuthorityGate(activeWS)
-		h := routedHarness(gate, nil, active)
-		for _, text := range []string{"implement the fix", "fix the bug", "run the tests", "reproduce the failure"} {
-			proposal, ok := turnTransition(h, text)
-			if !ok {
-				continue
-			}
-			if proposal.Kind != tui.TransitionKindHandoff {
-				t.Errorf("%s proposed a %q decision for %q, want a handoff", active, proposal.Kind, text)
-			}
-			if proposal.Proposed == "" || proposal.Proposed == active {
-				t.Errorf("%s produced an empty or unchanged handoff target for %q", active, text)
-			}
-			if gate.Workspace() != activeWS {
-				t.Errorf("%s handoff moved the live gate to %s before approval", active, gate.Workspace())
-			}
-			if h.activeWorkspace() != activeWS {
-				t.Errorf("%s handoff moved the workspace to %s before approval", active, h.activeWorkspace())
-			}
+		if proposal.Kind != tui.TransitionKindHandoff {
+			t.Errorf("ASK proposed a %q decision for %q, want a handoff", proposal.Kind, text)
+		}
+		if proposal.Automatic {
+			t.Errorf("ASK marked %q automatic; the human boundary is always confirmed", text)
+		}
+		if proposal.Proposed == "" || proposal.Proposed == "ASK" {
+			t.Errorf("ASK produced an empty or unchanged handoff target for %q", text)
+		}
+		if gate.Workspace() != workspace.Ask {
+			t.Errorf("ASK handoff moved the live gate to %s before approval", gate.Workspace())
+		}
+		if h.activeWorkspace() != workspace.Ask {
+			t.Errorf("ASK handoff moved the workspace to %s before approval", h.activeWorkspace())
 		}
 	}
 }
