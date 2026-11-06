@@ -328,13 +328,13 @@ func TestSpinnerFramesAreThrottledAndReasoningAnimated(t *testing.T) {
 	s.Apply(UserSubmitted{Text: "go", At: time.Now()})
 	s.Apply(ReasoningDelta{Text: "inspect the parser", At: time.Now()})
 	live := ansi.Strip(Render(s))
-	if !strings.Contains(live, spinnerFrames[0]+" reasoning") {
+	if !strings.Contains(live, spinnerFrames[0]+" Thought") {
 		t.Fatalf("open reasoning lost its spinner head:\n%s", live)
 	}
 	s.Apply(AssistantDelta{Text: "answer"})
 	settled := ansi.Strip(Render(s))
 	for _, line := range strings.Split(settled, "\n") {
-		if strings.Contains(line, "reasoning") && strings.ContainsAny(line, "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") {
+		if strings.Contains(line, "Thought") && strings.ContainsAny(line, "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") {
 			t.Fatalf("settled reasoning kept a spinner: %q", line)
 		}
 	}

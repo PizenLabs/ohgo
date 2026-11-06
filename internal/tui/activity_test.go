@@ -128,7 +128,7 @@ func TestOpenReasoningOwnsThinking(t *testing.T) {
 	s.Apply(ReasoningDelta{Text: "inspect the cache", At: time.Now(), Seq: 1})
 
 	out := ansi.Strip(Render(s))
-	if got := strings.Count(out, spinnerFrames[0]+" reasoning"); got != 1 {
+	if got := strings.Count(out, spinnerFrames[0]+" Thought"); got != 1 {
 		t.Fatalf("reasoning head appeared %d times, want one live spinner:\n%s", got, out)
 	}
 	if strings.Contains(out, "◌ reason ·") {
@@ -458,7 +458,7 @@ func TestBuildInvestigationRegression(t *testing.T) {
 	if got := strings.Count(out, "build > "); got != 1 {
 		t.Fatalf("BUILD role appeared %d times, want one:\n%s", got, out)
 	}
-	if got := strings.Count(out, "▸ reasoning"); got != 1 {
+	if got := strings.Count(out, "▸ Thought"); got != 1 {
 		t.Fatalf("reasoning appeared %d times, want one:\n%s", got, out)
 	}
 	for _, call := range completed {

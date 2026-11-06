@@ -297,7 +297,29 @@ func renderCodeDiffHeader(path string, add, del int, operation string, width int
 	if budget < 1 {
 		budget = 1
 	}
-	path = TruncateMiddleToWidth(sanitizeInline(path), budget)
+	path = sanitizeInline(path)
+	if CellWidth(path) > budget {
+		// The block is expanded, so the complete mutation target is the
+		// content the user asked for. Keep the identity/metrics row and put
+		// the whole path on its own wrapped rows rather than middle-cutting
+		// it; the collapsed badge already showed the abbreviated form.
+		head := indent + "⏺ " + label + " " + suffix + trailer
+		if width > 0 && CellWidth(head) > width {
+			head = TruncateToWidth(head, width)
+		}
+		var out strings.Builder
+		out.WriteString(head)
+		pathIndent := indent + "  "
+		pathWidth := width - CellWidth(pathIndent)
+		if pathWidth < 1 {
+			pathWidth = 1
+		}
+		for _, part := range WrapToWidth(path, pathWidth) {
+			out.WriteString("\n")
+			out.WriteString(pathIndent + pal.Cyan.Render(part))
+		}
+		return out.String()
+	}
 	line := prefix + path + close + suffix
 	if trailer != "" {
 		line += trailer

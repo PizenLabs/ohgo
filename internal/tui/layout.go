@@ -309,15 +309,26 @@ func overlayHidesComposer(s State) bool {
 // misreported. Unknown sizes (zero) are unbudgeted and always paint it.
 const thinkingMinHeight = 10
 
-// thinkingRows is the rows the activity line claims: one only when the line,
-// not an entry or a dialog, owns the activity. An overlay owns the screen, so
-// the line stays out of that surface's budget rather than shrinking a region it
-// does not paint on.
+// thinkingRows is the rows the response band claims.
+//
+// The band is a fixed slot, not a function of which surface happens to present
+// the activity. If it appeared only while the one-row activity line owned the
+// phase, a running tool entry taking over (or handing back) would change the
+// conversation budget mid-turn: every row above the composer would shift by one
+// and a streamed answer would visibly tear. Keeping the slot reserved for the
+// whole active turn means the spinner can hand off to a tool badge, a reasoning
+// head, or the answer without moving the bounding box.
+//
+// An overlay owns the screen instead, so the lone exception is a dialog or
+// modal: reserving a row it never paints would short its own body.
 func thinkingRows(s State) int {
 	if s.Height > 0 && s.Height < thinkingMinHeight {
 		return 0
 	}
-	if ProjectActivity(s).Surface == ActivityLine {
+	if activityDialogOwns(s) {
+		return 0
+	}
+	if ProjectActivity(s).Thinking.Active {
 		return 1
 	}
 	return 0

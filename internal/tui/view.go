@@ -1837,10 +1837,12 @@ func renderSupportEntry(sb *strings.Builder, entry Entry, pal *Palette, layout L
 
 // renderReasoning projects one reasoning trace.
 //
-// The default is collapsed to a single subordinate status row. The body is a
-// real block payload, not text mined out of the answer: expansion reveals the
-// provider's own thinking channel, bounded so one long trace cannot flood the
-// transcript.
+// The default is collapsed to a single subordinate header: "▸ Thought · 12s".
+// The body is a real block payload, not text mined out of the answer: expansion
+// reveals the provider's own thinking channel, bounded so one long trace cannot
+// flood the transcript. The header carries no separate "ctrl+o" hint — the
+// disclosure marker is the affordance, and repeating the key on every trace
+// would duplicate both the marker's meaning and the help surface.
 //
 // The ▸/▾ glyphs are the collapse markers, not liveness markers: a reasoning
 // trace updates its measured duration in place while open, but it never takes
@@ -1854,22 +1856,18 @@ func renderReasoning(sb *strings.Builder, reasoning *ReasoningEntry, pal *Palett
 	if reasoning.Expanded {
 		marker = "▾"
 	}
-	head := marker + " reasoning"
+	head := marker + " Thought"
 	if !reasoning.Closed && strings.TrimSpace(reasoning.Text) != "" {
 		// The live trace is still model work: the spinner replaces the static
 		// collapse marker while the trace grows. Once it settles the marker
 		// returns, so expansion remains discoverable without a permanent
 		// animation on historical rows.
-		head = spinnerGlyph(tick) + " reasoning"
+		head = spinnerGlyph(tick) + " Thought"
 	}
 	if elapsed := reasoning.Duration(time.Now()); elapsed > 0 {
 		head += " · " + formatDurationText(elapsed)
 	}
-	hint := ""
-	if !reasoning.Expanded && entryExpandable(Entry{Kind: EntryReasoning, Reasoning: reasoning}) {
-		hint = "  (ctrl+o to expand)"
-	}
-	sb.WriteString(pal.Status.Render(head) + pal.Muted.Render(hint) + "\n")
+	sb.WriteString(pal.Status.Render(head) + "\n")
 	if !reasoning.Expanded || strings.TrimSpace(reasoning.Text) == "" {
 		sb.WriteString("\n")
 		return
@@ -1959,17 +1957,25 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	if leftBudget < 1 {
 		leftBudget = 1
 	}
-	invocation := TruncateMiddleToWidth(sanitizeInline(toolInvocation(tool)), leftBudget)
-	left := style.Render(glyph + " " + invocation)
-	if rightText != "" {
-		right := pal.Status.Render(rightText)
-		if gap := width - CellWidth(left) - CellWidth(right); gap >= 2 {
-			sb.WriteString(left + strings.Repeat(" ", gap) + right + "\n")
-		} else {
-			sb.WriteString(left + "  " + right + "\n")
-		}
+	invocationText := sanitizeInline(toolInvocation(tool))
+	if tool.Expanded && CellWidth(invocationText) > leftBudget {
+		// Expansion is the user asking to see the whole target. Never
+		// middle-cut it then: wrap the complete invocation across rows so a
+		// long path stays fully readable instead of collapsing to "…".
+		writeExpandedInvocation(sb, glyph, invocationText, rightText, style, pal, width)
 	} else {
-		sb.WriteString(left + "\n")
+		invocation := TruncateMiddleToWidth(invocationText, leftBudget)
+		left := style.Render(glyph + " " + invocation)
+		if rightText != "" {
+			right := pal.Status.Render(rightText)
+			if gap := width - CellWidth(left) - CellWidth(right); gap >= 2 {
+				sb.WriteString(left + strings.Repeat(" ", gap) + right + "\n")
+			} else {
+				sb.WriteString(left + "  " + right + "\n")
+			}
+		} else {
+			sb.WriteString(left + "\n")
+		}
 	}
 
 	// A running call that has produced partial output states that explicitly.
@@ -2074,6 +2080,46 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 		sb.WriteString(pal.Truncated.Render("    … [truncated]") + "\n")
 	}
 	sb.WriteString("\n")
+}
+
+// writeExpandedInvocation writes an expanded badge whose full target does not
+// fit on one row. Continuations align under the first text cell and no row is
+// truncated, so every path segment survives; the duration is kept only when
+// the first row has room for it.
+func writeExpandedInvocation(sb *strings.Builder, glyph, invocation, rightText string, style lipgloss.Style, pal *Palette, width int) {
+	const maxLines = 64
+	prefix := glyph + " "
+	prefixWidth := CellWidth(prefix)
+	budget := width - prefixWidth
+	if budget < 1 {
+		budget = 1
+	}
+	chunks := WrapToWidth(invocation, budget)
+	right := ""
+	if rightText != "" {
+		right = pal.Status.Render(rightText)
+	}
+	for i, chunk := range chunks {
+		if i >= maxLines {
+			// A pathological argument still cannot flood the transcript: the
+			// cut is marked, never silent, and every ordinary path fits well
+			// inside this bound.
+			sb.WriteString(strings.Repeat(" ", prefixWidth) + pal.Truncated.Render("… [truncated]") + "\n")
+			break
+		}
+		var line string
+		if i == 0 {
+			line = style.Render(prefix + chunk)
+			if right != "" {
+				if gap := width - CellWidth(line) - CellWidth(right); gap >= 2 {
+					line += strings.Repeat(" ", gap) + right
+				}
+			}
+		} else {
+			line = strings.Repeat(" ", prefixWidth) + style.Render(chunk)
+		}
+		sb.WriteString(line + "\n")
+	}
 }
 
 // toolInvocation names what the call does: the captured invocation when the
@@ -2540,6 +2586,13 @@ func renderThinkingArea(sb *strings.Builder, state State, layout Layout) {
 	}
 	activity := ProjectActivity(state)
 	if activity.Surface != ActivityLine {
+		// The entry already presents the activity, so printing the line too
+		// would duplicate it. The reserved band stays in place as an empty row:
+		// that is what keeps the composer and transcript pinned when ownership
+		// passes between the line and an entry.
+		for i := 0; i < layout.ThinkingLines; i++ {
+			sb.WriteString("\n")
+		}
 		return
 	}
 	// now is read once here, at the single render seam, and handed to the
@@ -2560,6 +2613,9 @@ func renderThinkingArea(sb *strings.Builder, state State, layout Layout) {
 		// whole row in one style here would flatten that hierarchy and make
 		// the active label read like ordinary status text.
 		sb.WriteString(line + "\n")
+	}
+	for i := len(lines); i < layout.ThinkingLines; i++ {
+		sb.WriteString("\n")
 	}
 }
 

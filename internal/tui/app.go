@@ -88,6 +88,14 @@ type tickMsg time.Time
 // shares this one tick, so stream deltas cannot spin a glyph faster.
 const spinnerInterval = 90 * time.Millisecond
 
+// renderFPS is the viewport paint ceiling. Token deltas can arrive hundreds of
+// times a second, but the terminal only needs a coherent frame: the renderer
+// keeps the latest View and paints at this rate, so stream bursts are folded
+// into one repaint instead of racing the emulator with partial rows. 30 Hz is
+// fast enough to read as continuous text while leaving headroom for the
+// spinner's 90ms tick.
+const renderFPS = 30
+
 // Program drives the interactive session.
 //
 // It bridges two concurrency models: the agent loop calls back synchronously
@@ -3816,7 +3824,7 @@ func (p *Program) Run() error {
 	release := p.enterAlternateScroll()
 	defer release()
 
-	opts := []tea.ProgramOption{tea.WithAltScreen()}
+	opts := []tea.ProgramOption{tea.WithAltScreen(), tea.WithFPS(renderFPS)}
 	if p.mouseReporting {
 		opts = append(opts, tea.WithMouseCellMotion())
 	}
@@ -3852,7 +3860,7 @@ func (p *Program) RunLive() error {
 
 	painter := newLivePainter()
 	p.live = painter
-	_, err := tea.NewProgram(p).Run()
+	_, err := tea.NewProgram(p, tea.WithFPS(renderFPS)).Run()
 
 	// Bubble Tea has stopped and restored the terminal, so what follows is
 	// plain output: an answer whose turn was interrupted, or one still hidden
@@ -5070,11 +5078,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			// yet, so the block opens with what the call will do rather
 			// than a blank name.
 			ok := p.publishOK(ToolStarted{
-				ID:      progress.CallID,
-				Name:    progress.ToolName,
-				Summary: ToolSummaryForCall(progress.ToolName, progress.Args),
-				At:      time.Now(),
-				Seq:     seq,
+				ID:         progress.CallID,
+				Name:       progress.ToolName,
+				Summary:    ToolSummaryForCall(progress.ToolName, progress.Args),
+				Invocation: ToolInvocationForCall(progress.ToolName, progress.Args),
+				At:         time.Now(),
+				Seq:        seq,
 			})
 			recordTool(progress.CallID, ok, false)
 		default:
@@ -5435,11 +5444,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			}
 			if !state.started {
 				p.publish(ToolStarted{
-					ID:      outcome.CallID,
-					Name:    outcome.ToolName,
-					Summary: ToolSummaryForCall(outcome.ToolName, outcome.Args),
-					At:      time.Now(),
-					Seq:     seq,
+					ID:         outcome.CallID,
+					Name:       outcome.ToolName,
+					Summary:    ToolSummaryForCall(outcome.ToolName, outcome.Args),
+					Invocation: ToolInvocationForCall(outcome.ToolName, outcome.Args),
+					At:         time.Now(),
+					Seq:        seq,
 				})
 			}
 			if !state.finished || !state.started {

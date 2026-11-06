@@ -913,13 +913,17 @@ func (s *State) Apply(event Event) {
 		if existing := s.tool(e.ID); existing != nil {
 			return
 		}
+		invocation := e.Invocation
+		if invocation == "" {
+			invocation = e.Summary
+		}
 		s.Entries = append(s.Entries, Entry{
 			Kind: EntryTool,
 			Tool: &ToolEntry{
 				ID:         e.ID,
 				Name:       e.Name,
 				Status:     ToolRunning,
-				Invocation: e.Summary,
+				Invocation: invocation,
 				Summary:    e.Summary,
 				StartedAt:  e.At,
 			},
@@ -2749,7 +2753,12 @@ type ToolStarted struct {
 	ID      string
 	Name    string
 	Summary string
-	At      time.Time
+	// Invocation is the full, untruncated target of the call. Summary is the
+	// compact display form; the badge keeps this one so expanding a long
+	// path or command reveals every segment instead of the cut summary.
+	// Empty falls back to Summary for legacy callers.
+	Invocation string
+	At         time.Time
 	// Seq identifies the turn. Zero accepts any turn for legacy callers.
 	Seq int
 }
@@ -3405,11 +3414,23 @@ func (QuitRequested) eventKind() string { return "quit_requested" }
 // an explicit "external" marker so network activity never reads as local
 // execution.
 func ToolSummaryForCall(name string, args map[string]any) string {
-	summary := toolSummaryBody(name, args)
+	summary := toolSummaryBody(name, args, false)
 	if IsExternalTool(name) {
 		return "external " + summary
 	}
 	return summary
+}
+
+// ToolInvocationForCall renders the same description as ToolSummaryForCall but
+// keeps every argument value whole. Paths and URLs are already complete in the
+// summary; this form additionally leaves long commands and patterns intact so
+// expanding a block reveals every argument, not only its first 60 characters.
+func ToolInvocationForCall(name string, args map[string]any) string {
+	invocation := toolSummaryBody(name, args, true)
+	if IsExternalTool(name) {
+		return "external " + invocation
+	}
+	return invocation
 }
 
 // IsExternalTool reports whether a tool talks to an external actor.
@@ -3425,7 +3446,12 @@ func IsExternalTool(name string) bool {
 }
 
 // toolSummaryBody renders the tool-specific part of a call summary.
-func toolSummaryBody(name string, args map[string]any) string {
+//
+// full leaves commands and patterns unbounded for the expandable invocation;
+// the compact summary keeps them short for the collapsed badge. Path and URL
+// targets are always complete: their collapsed form is bounded at paint time,
+// so the semantic value stays recoverable.
+func toolSummaryBody(name string, args map[string]any, full bool) string {
 	switch name {
 	case "search":
 		if query, ok := args["query"].(string); ok && query != "" {
@@ -3466,7 +3492,14 @@ func toolSummaryBody(name string, args map[string]any) string {
 				// keep their head because the verb and leading literal matter
 				// more than the final argument.
 				if key == "path" || key == "file" || key == "url" {
-					return fmt.Sprintf("%s %s", name, oneLineKeepingTail(text))
+					// Targets identified by their tail stay complete in the
+					// semantic summary. The collapsed badge bounds them at
+					// paint time; pre-cutting here would make the full path
+					// unrecoverable when the block is expanded.
+					return fmt.Sprintf("%s %s", name, oneLineFull(text))
+				}
+				if full {
+					return fmt.Sprintf("%s %s", name, oneLineFull(text))
 				}
 				return fmt.Sprintf("%s %s", name, oneLine(text))
 			}
@@ -3475,16 +3508,11 @@ func toolSummaryBody(name string, args map[string]any) string {
 	return name
 }
 
-// oneLineKeepingTail collapses whitespace and middle-truncates a target that is
-// identified by its tail, such as a path's basename. The bound matches oneLine
-// so summaries stay the same shape whether they are cut at one end or both.
-func oneLineKeepingTail(text string) string {
-	const max = 60
-	collapsed := strings.Join(strings.Fields(text), " ")
-	if utf8.RuneCountInString(collapsed) <= max {
-		return collapsed
-	}
-	return TruncateMiddleToWidth(collapsed, max)
+// oneLineFull collapses whitespace without bounding the result. It exists for
+// presentation state that must remain recoverable in full, such as a path the
+// user explicitly expands; the renderer still wraps it to the terminal.
+func oneLineFull(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }
 
 // CompactResultSummary derives the one-line outcome description for a

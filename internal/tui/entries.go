@@ -128,14 +128,15 @@ func toolCallsOf(msg ai.AssistantMessage) []ai.ToolCall {
 
 // toolEntryFor pairs one call with its result, if any arrived.
 func toolEntryFor(call ai.ToolCall, result agent.ToolResultMessage) Entry {
-	invocation := ToolSummaryForCall(call.Name, call.Arguments)
+	invocation := ToolInvocationForCall(call.Name, call.Arguments)
+	summary := ToolSummaryForCall(call.Name, call.Arguments)
 	entry := Entry{
 		Kind: EntryTool,
 		Tool: &ToolEntry{
 			ID:         call.ID,
 			Name:       call.Name,
 			Invocation: invocation,
-			Summary:    invocation,
+			Summary:    summary,
 			Status:     ToolDone,
 		},
 	}

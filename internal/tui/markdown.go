@@ -54,6 +54,10 @@ func RenderMarkdownWrapped(text string, pal *Palette, width int) string {
 	// path, so all render boundaries agree on what a line is.
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
+	// Repair streaming noise before the parser measures or styles anything.
+	// The pass is lexical and code-aware: it never touches fenced or inline
+	// code, paths, URLs, or identifiers, and the stored text stays untouched.
+	text = correctStreamingText(text)
 	r := &blockRenderer{pal: pal, width: width}
 	return r.render(text)
 }
