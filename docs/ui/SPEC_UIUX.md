@@ -441,6 +441,11 @@ Better:
 
 The target should remain identifiable whenever possible.
 
+Collapsed rows may middle-truncate a path so its operation and basename both
+survive. Expanding the row reveals the complete path across wrapped rows rather
+than middle-cutting it. Only a pathological target that exceeds the bounded
+expanded region is cut, and that cut carries an explicit truncation marker.
+
 Path truncation must be:
 
 - deterministic
@@ -520,18 +525,22 @@ The redesign must preserve access to existing diagnostic information.
 
 Reasoning is secondary information.
 
-It must never dominate the execution transcript.
+It must never dominate the execution transcript. The collapsed header is the
+minimal disclosure row: the marker, the word "Thought", and the measured
+duration. It does not repeat the expansion key as prose; the shared Ctrl+O
+chord and a click both toggle the block, so the marker is the only affordance
+needed.
 
 Default:
 
 ```text
-▸ reasoning · 3.2s
+▸ Thought · 3.2s
 ```
 
 Expanded:
 
 ```text
-▾ reasoning · 3.2s
+▾ Thought · 3.2s
 
   Let me inspect the backend structure and package
   configuration before determining the architecture.
@@ -564,7 +573,7 @@ It must not visually compete with tool calls.
 Use a lighter hierarchy:
 
 ```text
-▸ reasoning · 3.2s
+▸ Thought · 3.2s
 ```
 
 instead of a full output block.
@@ -576,14 +585,14 @@ instead of a full output block.
 The ideal execution sequence should visually communicate:
 
 ```text
-▸ reasoning · 2.1s
+▸ Thought · 2.1s
 
 ◌ read README.md
 
 ✓ read README.md                         2ms
   └─ 151 lines
 
-▸ reasoning · 1.8s
+▸ Thought · 1.8s
 
 ◌ inspect · backend structure
 
@@ -657,6 +666,12 @@ Do not automatically turn every red tool result into a red global task state.
 
 The viewport must remain stable during execution.
 
+The response band is a fixed slot for the whole active turn. It does not
+appear or disappear when the one-row activity line hands off to a running tool
+entry or an open reasoning head: the band keeps its row (empty when an entry
+owns the activity) so the conversation budget, composer, and every row above it
+stay pinned. The same hand-off never changes the transcript's bounding box.
+
 Avoid unnecessary viewport growth caused by:
 
 - reasoning tokens
@@ -704,7 +719,7 @@ Example:
 ✗ read .env.example                        1ms
   └─ file not found
 
-▸ reasoning · 2.4s
+▸ Thought · 2.4s
 
 ◌ inspect · backend structure
 ```
@@ -1026,6 +1041,11 @@ The target should be:
 
 > **high perceived responsiveness with minimal rendering work.**
 
+Token deltas and terminal paints are separate rates. Runtime events are folded
+into one state transition, and the renderer paints at a fixed ceiling (30 Hz)
+so a burst of streamed fragments produces coherent frames rather than partial
+rows racing the terminal emulator.
+
 ---
 
 # 31. Terminal Compatibility
@@ -1094,7 +1114,7 @@ task  check this project and analyze what this project is about?
   ✓ glob /go-ecommerce/src/**/*.go                      58ms
     └─ no files matched · 4 ignored by gitignore
 
-  ▸ reasoning · 13s
+  ▸ Thought · 13s
 
   ◌ inspect · analyzing project structure
 
@@ -1221,13 +1241,13 @@ Only tool D is live.
 Default:
 
 ```text
-▸ reasoning · 3.2s
+▸ Thought · 3.2s
 ```
 
 Expanded:
 
 ```text
-▾ reasoning · 3.2s
+▾ Thought · 3.2s
   ...
 ```
 

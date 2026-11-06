@@ -562,7 +562,11 @@ approval, shutting down) are computed per render, never stored.
   discovery state filters the authoritative
   `Commands` registry inline — never a second catalog.
 - `internal/tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,
-  prompt history with draft preservation.
+  prompt history with draft preservation. Up/down move the caret and only cross
+  into history at the prompt's first/last display row; alt+up/down and
+  ctrl+p/ctrl+n browse history from any row. The composer is capped at six
+  display rows and follows the caret, so recalled or pasted multiline text
+  never expands into a full-screen editor.
 - `internal/tui/entries.go`: transcript entries rebuilt from replayed messages in
   canonical content order (text, reasoning, tool cards), with tool results
   paired by call id, orphans kept, and UI-only messages skipped. Stored

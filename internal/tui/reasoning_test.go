@@ -34,7 +34,7 @@ func TestReasoningBlockIsCollapsedAndMeasured(t *testing.T) {
 		t.Fatalf("reasoning ended at %v, want the runtime timestamp", ended)
 	}
 	rendered := Render(s)
-	if !strings.Contains(rendered, "▸ reasoning") || !strings.Contains(rendered, "4s") {
+	if !strings.Contains(rendered, "▸ Thought") || !strings.Contains(rendered, "4s") {
 		t.Fatalf("collapsed render = %q, want a measured collapsed header", rendered)
 	}
 	if strings.Contains(rendered, "inspect the cache") {
@@ -46,7 +46,7 @@ func TestReasoningBlockIsCollapsedAndMeasured(t *testing.T) {
 		t.Fatal("reasoning block was not expandable")
 	}
 	expanded := Render(s)
-	if !strings.Contains(expanded, "▾ reasoning") || !strings.Contains(expanded, "inspect the cache") {
+	if !strings.Contains(expanded, "▾ Thought") || !strings.Contains(expanded, "inspect the cache") {
 		t.Fatalf("expanded render = %q, want the trace body", expanded)
 	}
 }
@@ -104,7 +104,7 @@ func TestLiveAndHistoricalTranscriptsUseTheSameBlocks(t *testing.T) {
 	if !strings.Contains(Render(replay), "before") || !strings.Contains(Render(replay), "after") {
 		t.Fatalf("historical render lost text around the call:\n%s", Render(replay))
 	}
-	if !strings.Contains(Render(replay), "▸ reasoning") {
+	if !strings.Contains(Render(replay), "▸ Thought") {
 		t.Fatalf("historical render lost the reasoning block:\n%s", Render(replay))
 	}
 }

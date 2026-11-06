@@ -87,6 +87,79 @@ func TestUpMovesWithinMultiline(t *testing.T) {
 	}
 }
 
+// The explicit history chords are independent of the caret's row. Before they
+// were separated from the arrow handler, ctrl+p/ctrl+n moved the caret inside a
+// multiline draft and never reached the previous prompt, so browsing history
+// appeared broken exactly when the prompt was long.
+func TestExplicitHistoryChordsBypassMultilineCursor(t *testing.T) {
+	cases := []struct {
+		name  string
+		older tea.KeyMsg
+		newer tea.KeyMsg
+	}{
+		{"ctrl", tea.KeyMsg{Type: tea.KeyCtrlP}, tea.KeyMsg{Type: tea.KeyCtrlN}},
+		{"alt", tea.KeyMsg{Type: tea.KeyUp, Alt: true}, tea.KeyMsg{Type: tea.KeyDown, Alt: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewProgram(nil, "test", 0)
+			p.state.Apply(UserSubmitted{Text: "older prompt"})
+			draft := "first line\nsecond line\nthird line"
+			// Park in the middle row: arrow keys would move the caret here.
+			p.state.Apply(ComposerChanged{Text: draft, Cursor: len([]rune("first line\nsec"))})
+
+			keyPress(p, tc.older)
+			if p.state.Input != "older prompt" {
+				t.Fatalf("%s recalled %q, want the previous prompt", tc.older.String(), p.state.Input)
+			}
+			keyPress(p, tc.newer)
+			if p.state.Input != draft {
+				t.Fatalf("%s restored %q, want the stashed multiline draft", tc.newer.String(), p.state.Input)
+			}
+		})
+	}
+}
+
+// Arrows browse history only when they cannot move the caret: the top row for
+// up and the bottom row for down. A middle row must stay a cursor move so a
+// long prompt is never hijacked by history.
+func TestArrowKeysBrowseHistoryOnlyAtMultilineEdges(t *testing.T) {
+	setup := func(cursor int) *Program {
+		p := NewProgram(nil, "test", 0)
+		p.state.Apply(UserSubmitted{Text: "older prompt"})
+		p.state.Apply(ComposerChanged{Text: "top\nmiddle\nbottom", Cursor: cursor})
+		return p
+	}
+
+	top := setup(0)
+	keyPress(top, tea.KeyMsg{Type: tea.KeyUp})
+	if top.state.Input != "older prompt" {
+		t.Fatalf("up on the top row = %q, want the previous prompt", top.state.Input)
+	}
+
+	middle := setup(len([]rune("top\nmid")))
+	keyPress(middle, tea.KeyMsg{Type: tea.KeyUp})
+	if middle.state.Input != "top\nmiddle\nbottom" || middle.state.Cursor != len([]rune("top")) {
+		t.Fatalf("up on a middle row moved to %q at %d, want an in-prompt cursor move",
+			middle.state.Input, middle.state.Cursor)
+	}
+	middle = setup(len([]rune("top\nmid")))
+	keyPress(middle, tea.KeyMsg{Type: tea.KeyDown})
+	if middle.state.Input != "top\nmiddle\nbottom" || middle.state.Cursor != len([]rune("top\nmiddle\nbot")) {
+		t.Fatalf("down on a middle row moved to %q at %d, want an in-prompt cursor move",
+			middle.state.Input, middle.state.Cursor)
+	}
+
+	// Enter history from the top row, then step newer from the bottom row:
+	// the recalled prompt is one row, so down restores the stashed draft.
+	bottom := setup(0)
+	keyPress(bottom, tea.KeyMsg{Type: tea.KeyUp})
+	keyPress(bottom, tea.KeyMsg{Type: tea.KeyDown})
+	if bottom.state.Input != "top\nmiddle\nbottom" {
+		t.Fatalf("down on the bottom row = %q, want the stashed draft restored", bottom.state.Input)
+	}
+}
+
 // Once a prompt exists, up on an empty composer recalls history instead of
 // scrolling: that is the reason most people reach for the key. Overshooting
 // the oldest entry clamps, and down walks back to the stashed draft.

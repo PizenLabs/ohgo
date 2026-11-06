@@ -196,7 +196,11 @@ func (v *livePainter) frame(s State) liveFrame {
 		f.history = append(f.history, committed...)
 		f.block = live
 	}
-	if status := liveStatusLine(s, pal, layout); status != "" {
+	if status := liveStatusLine(s, pal, layout); status != "" || liveStatusReserved(s) {
+		// An empty reserved row is deliberate: the status band keeps its
+		// height while an entry, rather than the activity line, owns the
+		// phase. Dropping the row here would shrink the live region and pull
+		// the composer upward the moment the spinner handed off.
 		f.chrome = append(f.chrome, status)
 	}
 	f.chrome = append(f.chrome, liveComposerLines(s, pal, layout)...)
@@ -404,10 +408,19 @@ func liveRows(s State) int {
 func liveChrome(s State, layout Layout) int {
 	pal := PaletteFor(s.Theme)
 	n := len(liveComposerLines(s, pal, layout))
-	if liveStatusLine(s, pal, layout) != "" {
+	if liveStatusLine(s, pal, layout) != "" || liveStatusReserved(s) {
 		n++
 	}
 	return n
+}
+
+// liveStatusReserved reports whether the footer keeps its status row even when
+// no text is available. The row is a fixed spatial anchor for the active turn:
+// while a tool or reasoning entry presents the phase, the activity line is
+// intentionally absent, but the row must remain so the live region does not
+// change height during the hand-off.
+func liveStatusReserved(s State) bool {
+	return ProjectActivity(s).Thinking.Active && !activityDialogOwns(s)
 }
 
 // firstUnstable is the index of the first entry that can still change: the
@@ -817,10 +830,13 @@ func liveConnectKeyLines(s State, pal *Palette, layout Layout) []string {
 // must not print a second copy of it.
 func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	var parts []string
+	width := displayWidth(s, layout)
 	// The activity line already carries its own semantic zones; keep it out
 	// of the muted telemetry wrapper so the current activity stays the most
-	// prominent row in the footer.
-	activityLine := ActivityLineText(s, time.Now(), s.Status.Spinner, 0)
+	// prominent row in the footer. It is measured against the real width so a
+	// long tool detail cannot soft-wrap the footer into a second row and move
+	// every row below it.
+	activityLine := ActivityLineText(s, time.Now(), s.Status.Spinner, width)
 	activity := ProjectActivity(s)
 	if activityLine == "" && !activity.Thinking.Active {
 		// The phase word remains the fallback for the one non-idle state the
@@ -852,13 +868,12 @@ func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	if path := sessionPathBranch(s); path != "" {
 		parts = append(parts, path)
 	}
-	width := displayWidth(s, layout)
 	if activityLine != "" {
 		if len(parts) == 0 {
-			return activityLine
+			return TruncateToWidth(activityLine, width)
 		}
 		tail := pal.Muted.Render(TruncateToWidth(strings.Join(parts, " · "), maxInt(width-CellWidth(activityLine)-3, 0)))
-		return activityLine + " · " + tail
+		return TruncateToWidth(activityLine+" · "+tail, width)
 	}
 	if len(parts) == 0 {
 		return ""

@@ -88,6 +88,14 @@ type tickMsg time.Time
 // shares this one tick, so stream deltas cannot spin a glyph faster.
 const spinnerInterval = 90 * time.Millisecond
 
+// renderFPS is the viewport paint ceiling. Token deltas can arrive hundreds of
+// times a second, but the terminal only needs a coherent frame: the renderer
+// keeps the latest View and paints at this rate, so stream bursts are folded
+// into one repaint instead of racing the emulator with partial rows. 30 Hz is
+// fast enough to read as continuous text while leaving headroom for the
+// spinner's 90ms tick.
+const renderFPS = 30
+
 // Program drives the interactive session.
 //
 // It bridges two concurrency models: the agent loop calls back synchronously
@@ -1660,22 +1668,13 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 
-	case "up", "ctrl+p":
-		// On a fresh session there is nothing to recall, so ^p is the
-		// settings/discovery hub the shortcut bar advertises. The moment a
-		// prompt exists (or history does) the bar stops promising it and the
-		// key returns to history recall, so the hint can never lie.
-		if msg.String() == "ctrl+p" && !p.state.SessionActive && len(p.state.Submitted) == 0 {
-			p.openHelpCenter("")
-			return p, nil
-		}
+	case "up":
 		// The terminal cannot say which arrows it synthesised for the wheel,
 		// so the policy is state-based: an empty composer hands the arrows to
 		// the transcript — the state a reader is in — but only while there is
 		// nothing to recall. Once history exists the arrow recalls it, which
-		// is the reason most people reach for up in the first place. ctrl+p
-		// and ctrl+n reach history whether or not the wheel does.
-		if msg.String() == "up" && wheelScrolls(p.state) {
+		// is the reason most people reach for up in the first place.
+		if wheelScrolls(p.state) {
 			if len(p.state.Submitted) > 0 {
 				p.state.Apply(HistoryMoved{Delta: 1})
 				return p, nil
@@ -1692,8 +1691,8 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return p, nil
 
-	case "down", "ctrl+n":
-		if msg.String() == "down" && wheelScrolls(p.state) {
+	case "down":
+		if wheelScrolls(p.state) {
 			p.state.Apply(ScrollMoved{Delta: -mouseScrollLines})
 			return p, nil
 		}
@@ -1702,6 +1701,25 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			p.state.Apply(HistoryMoved{Delta: -1})
 		}
+		return p, nil
+
+	case "alt+up", "ctrl+p":
+		// Explicit history chords never depend on the cursor's row: a
+		// multiline draft keeps the arrows for editing, while these always
+		// browse. On a fresh session there is nothing to recall, so ^p stays
+		// the settings/discovery hub the shortcut bar advertises; the moment
+		// history exists it returns to history recall, so the hint never lies.
+		if msg.String() == "ctrl+p" && !p.state.SessionActive && len(p.state.Submitted) == 0 {
+			p.openHelpCenter("")
+			return p, nil
+		}
+		p.state.Apply(HistoryMoved{Delta: 1})
+		return p, nil
+
+	case "alt+down", "ctrl+n":
+		// The newer counterpart to alt+up / ^p: reachable from any row, so a
+		// multi-line draft never has to move the caret to the bottom first.
+		p.state.Apply(HistoryMoved{Delta: -1})
 		return p, nil
 
 	case "pgup":
@@ -3816,7 +3834,7 @@ func (p *Program) Run() error {
 	release := p.enterAlternateScroll()
 	defer release()
 
-	opts := []tea.ProgramOption{tea.WithAltScreen()}
+	opts := []tea.ProgramOption{tea.WithAltScreen(), tea.WithFPS(renderFPS)}
 	if p.mouseReporting {
 		opts = append(opts, tea.WithMouseCellMotion())
 	}
@@ -3852,7 +3870,7 @@ func (p *Program) RunLive() error {
 
 	painter := newLivePainter()
 	p.live = painter
-	_, err := tea.NewProgram(p).Run()
+	_, err := tea.NewProgram(p, tea.WithFPS(renderFPS)).Run()
 
 	// Bubble Tea has stopped and restored the terminal, so what follows is
 	// plain output: an answer whose turn was interrupted, or one still hidden
@@ -5070,11 +5088,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			// yet, so the block opens with what the call will do rather
 			// than a blank name.
 			ok := p.publishOK(ToolStarted{
-				ID:      progress.CallID,
-				Name:    progress.ToolName,
-				Summary: ToolSummaryForCall(progress.ToolName, progress.Args),
-				At:      time.Now(),
-				Seq:     seq,
+				ID:         progress.CallID,
+				Name:       progress.ToolName,
+				Summary:    ToolSummaryForCall(progress.ToolName, progress.Args),
+				Invocation: ToolInvocationForCall(progress.ToolName, progress.Args),
+				At:         time.Now(),
+				Seq:        seq,
 			})
 			recordTool(progress.CallID, ok, false)
 		default:
@@ -5435,11 +5454,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			}
 			if !state.started {
 				p.publish(ToolStarted{
-					ID:      outcome.CallID,
-					Name:    outcome.ToolName,
-					Summary: ToolSummaryForCall(outcome.ToolName, outcome.Args),
-					At:      time.Now(),
-					Seq:     seq,
+					ID:         outcome.CallID,
+					Name:       outcome.ToolName,
+					Summary:    ToolSummaryForCall(outcome.ToolName, outcome.Args),
+					Invocation: ToolInvocationForCall(outcome.ToolName, outcome.Args),
+					At:         time.Now(),
+					Seq:        seq,
 				})
 			}
 			if !state.finished || !state.started {

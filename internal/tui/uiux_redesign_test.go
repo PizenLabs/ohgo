@@ -158,10 +158,10 @@ func TestReasoningIsSubordinateAndSettles(t *testing.T) {
 	s.Apply(ReasoningDelta{Text: "inspect the cache", At: at})
 
 	live := ansi.Strip(Render(s))
-	if !strings.Contains(live, spinnerFrames[0]+" reasoning") {
+	if !strings.Contains(live, spinnerFrames[0]+" Thought") {
 		t.Fatalf("open reasoning lost its live spinner head:\n%s", live)
 	}
-	if strings.Contains(live, "◌ reasoning") {
+	if strings.Contains(live, "◌ Thought") {
 		t.Fatalf("reasoning borrowed the current-action glyph:\n%s", live)
 	}
 	if strings.Contains(live, "inspect the cache") {
@@ -170,7 +170,7 @@ func TestReasoningIsSubordinateAndSettles(t *testing.T) {
 
 	s.Apply(AssistantDelta{Text: "answer", At: at.Add(2 * time.Second)})
 	settled := ansi.Strip(Render(s))
-	if !strings.Contains(settled, "▸ reasoning") {
+	if !strings.Contains(settled, "▸ Thought") {
 		t.Fatalf("closed reasoning lost its collapsed marker:\n%s", settled)
 	}
 	if strings.Contains(settled, "inspect the cache") {
@@ -254,7 +254,7 @@ func TestTranscriptReadsAsStateTransitions(t *testing.T) {
 	ordered := []string{
 		"✓ ls /go-ecommerce",
 		"✓ read package.json",
-		"▸ reasoning",
+		"▸ Thought",
 		"◌ glob backend/**/*.go",
 	}
 	last := -1
@@ -314,20 +314,32 @@ func TestCompletedHistoryIsNotRepaintedByTicks(t *testing.T) {
 	}
 }
 
-// TestLongPathSummaryKeepsTail: the invocation summary is bounded before it
-// reaches the renderer, so its own cut must preserve the basename too. Fixing
-// only the final paint would still lose the target.
-func TestLongPathSummaryKeepsTail(t *testing.T) {
+// TestLongPathSummaryKeepsTarget: the semantic summary keeps the complete
+// target so expansion can reveal it; only the collapsed paint is bounded.
+func TestLongPathSummaryKeepsTarget(t *testing.T) {
 	path := "/Users/anvndev/Documents/Project/Golang/go-ecommerce/src/App.tsx"
 	got := ToolSummaryForCall("read", map[string]any{"path": path})
-	if CellWidth(got) > 80 {
-		t.Fatalf("summary = %q (%d cells), want a bounded target", got, CellWidth(got))
+	if got != "read "+path {
+		t.Fatalf("summary = %q, want the complete target", got)
 	}
 	if !strings.HasSuffix(got, "App.tsx") {
 		t.Fatalf("summary lost the basename: %q", got)
 	}
 	if !strings.HasPrefix(got, "read /Users") {
 		t.Fatalf("summary lost the operation and path head: %q", got)
+	}
+
+	s := New()
+	s.Apply(TerminalResized{Width: 44, Height: 24})
+	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: got, At: time.Now()})
+	collapsed := ansi.Strip(Render(s))
+	for i, line := range strings.Split(collapsed, "\n") {
+		if CellWidth(line) > 44 {
+			t.Fatalf("collapsed badge row %d overflows: %q", i, line)
+		}
+	}
+	if !strings.Contains(collapsed, "…") || !strings.Contains(collapsed, "App.tsx") {
+		t.Fatalf("collapsed badge lost its bounded target:\n%s", collapsed)
 	}
 }
 

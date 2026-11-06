@@ -380,6 +380,43 @@ func TestComposerScrollTracksArrowNavigation(t *testing.T) {
 	assertCursorOnRow(t, p.state, "r7")
 }
 
+// Recalling a long multiline prompt must not turn the composer into a
+// full-screen editor: the same row cap that bounds typed input bounds history,
+// and the visible window follows the caret to the end of the recalled text.
+func TestRecalledMultilinePromptStaysWithinComposerCap(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TerminalResized{Width: 80, Height: 24})
+	const lines = maxComposerRows + 6
+	parts := make([]string, lines)
+	for i := range parts {
+		parts[i] = fmt.Sprintf("row-%02d", i)
+	}
+	prompt := strings.Join(parts, "\n")
+	p.state.Submitted = []string{prompt}
+
+	keyPress(p, tea.KeyMsg{Type: tea.KeyUp})
+	if p.state.Input != prompt {
+		t.Fatalf("recall = %q, want the multiline prompt", p.state.Input)
+	}
+	if p.state.ComposerScroll != lines-maxComposerRows {
+		t.Errorf("ComposerScroll = %d, want %d at the recalled prompt's tail",
+			p.state.ComposerScroll, lines-maxComposerRows)
+	}
+
+	out := Render(p.state)
+	for i := 0; i < lines-maxComposerRows; i++ {
+		if strings.Contains(out, parts[i]) {
+			t.Errorf("render still shows scrolled-off %q; history recall expanded the composer", parts[i])
+		}
+	}
+	if !strings.Contains(out, parts[lines-1]) {
+		t.Errorf("render hides the recalled prompt's last row %q", parts[lines-1])
+	}
+	if got := strings.Count(out, "row-"); got > maxComposerRows {
+		t.Errorf("render shows %d prompt rows, want at most %d", got, maxComposerRows)
+	}
+}
+
 // assertCursorOnRow pins the cursor's visible row: exactly one block cursor is
 // painted, and it rides the expected input row.
 func assertCursorOnRow(t *testing.T, s State, row string) {
