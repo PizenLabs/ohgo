@@ -70,17 +70,26 @@ type ToolOutcome struct {
 	Authorization *security.Decision
 }
 
-// Refused reports whether the runtime refused the call before execution.
+// Refused reports whether the runtime or the tool refused the call on
+// authority or contract grounds.
 //
-// A refusal is a control decision, not a failed action: no tool ran and no
-// evidence was produced. Completion and sufficiency must not treat it as a
-// pending execution failure, or a model that adapts after a denied call would
-// be punished for the runtime's refusal.
+// A refusal is a control decision, not a failed action: no evidence was
+// produced. Completion and sufficiency must not treat it as a pending
+// execution failure, or a model that adapts after a denied call would be
+// punished for the runtime's refusal.
 func (o ToolOutcome) Refused() bool {
-	if o.Result.CandidateRejected || o.Result.FailureRejected {
+	if o.Result.Refused || o.Result.CandidateRejected || o.Result.FailureRejected {
 		return true
 	}
 	return o.Authorization != nil && o.Authorization.Outcome == security.OutcomeDeny
+}
+
+// ReadOnly reports whether the call ran behind a read-only workspace boundary.
+//
+// A successful process under that decision cannot have changed the repository,
+// so a mutation objective does not owe a later verification for it.
+func (o ToolOutcome) ReadOnly() bool {
+	return o.Authorization != nil && o.Authorization.ReadOnly
 }
 
 // Config configures a Loop.

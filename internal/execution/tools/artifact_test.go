@@ -14,12 +14,18 @@ func runArtifact(t *testing.T, tool *ArtifactTool, args map[string]any) agent.Re
 	return tool.Execute(agent.Context{Ctx: context.Background()}, args)
 }
 
+// fixedArtifactWorkspace adapts a constant workspace to the live source the
+// tool reads on every call.
+func fixedArtifactWorkspace(ws workspace.Workspace) func() workspace.Workspace {
+	return func() workspace.Workspace { return ws }
+}
+
 func TestArtifactToolRecordsAWorkspaceArtifact(t *testing.T) {
 	var recorded []workspace.Artifact
 	tool := NewArtifactTool(func(a workspace.Artifact) error {
 		recorded = append(recorded, a)
 		return nil
-	}, workspace.Fuzz)
+	}, fixedArtifactWorkspace(workspace.Fuzz))
 
 	result := runArtifact(t, tool, map[string]any{
 		"kind": "finding", "target": "internal/runtime.go", "status": "reproduced",
@@ -43,17 +49,33 @@ func TestArtifactToolRecordsAWorkspaceArtifact(t *testing.T) {
 func TestArtifactToolRefusesTheWrongKindForTheWorkspace(t *testing.T) {
 	// FUZZ may discover but not change: it cannot author a Change artifact,
 	// which is the same boundary as refusing to write a file (§27).
-	tool := NewArtifactTool(func(workspace.Artifact) error { return nil }, workspace.Fuzz)
+	tool := NewArtifactTool(func(workspace.Artifact) error { return nil }, fixedArtifactWorkspace(workspace.Fuzz))
 	result := runArtifact(t, tool, map[string]any{"kind": "change", "target": "a.go"})
 	if !result.IsError {
 		t.Fatal("FUZZ authored a change artifact")
 	}
-	if !strings.Contains(result.Text, "cannot produce") {
-		t.Errorf("refusal = %q, want an authority message", result.Text)
+	if !result.Refused {
+		t.Error("a workspace kind refusal was recorded as an execution failure")
+	}
+	if !strings.Contains(result.Text, "cannot produce") || !strings.Contains(result.Text, "finding") {
+		t.Errorf("refusal = %q, want an authority message naming the allowed kind", result.Text)
+	}
+
+	// The live session chose "plan" for an investigation. It is still the
+	// wrong producer for FUZZ, but the refusal must name the usable kind.
+	plan := runArtifact(t, tool, map[string]any{
+		"kind": "plan", "target": "order/checkout flow", "status": "investigated",
+		"expected": "understand the flow", "observed": "no backend implementation",
+	})
+	if !plan.IsError || !plan.Refused {
+		t.Fatal("FUZZ authored a plan artifact")
+	}
+	if !strings.Contains(plan.Text, "finding") {
+		t.Errorf("plan refusal = %q, want the allowed FUZZ kind", plan.Text)
 	}
 
 	// ASK may plan but not claim a verification it never ran.
-	ask := NewArtifactTool(func(workspace.Artifact) error { return nil }, workspace.Ask)
+	ask := NewArtifactTool(func(workspace.Artifact) error { return nil }, fixedArtifactWorkspace(workspace.Ask))
 	if result := runArtifact(t, ask, map[string]any{"kind": "verification", "target": "x"}); !result.IsError {
 		t.Error("ASK authored a verification artifact")
 	}
@@ -62,8 +84,41 @@ func TestArtifactToolRefusesTheWrongKindForTheWorkspace(t *testing.T) {
 	}
 }
 
+// TestArtifactToolFollowsTheLiveWorkspace is the regression for a session that
+// moves BUILD -> FUZZ without rebuilding its tool set. The tool must attribute
+// the finding to FUZZ and accept it; a captured origin would refuse the call
+// and leave an unrecoverable failure in the run.
+func TestArtifactToolFollowsTheLiveWorkspace(t *testing.T) {
+	role := workspace.Build
+	var recorded []workspace.Artifact
+	tool := NewArtifactTool(func(a workspace.Artifact) error {
+		recorded = append(recorded, a)
+		return nil
+	}, func() workspace.Workspace { return role })
+
+	role = workspace.Fuzz
+	result := runArtifact(t, tool, map[string]any{
+		"kind": "finding", "target": "backend/checkout", "status": "reproduced",
+		"reproduction": "submit the checkout form", "evidence": "no order request is sent",
+	})
+	if result.IsError {
+		t.Fatalf("a FUZZ finding was refused after the switch: %s", result.Text)
+	}
+	if len(recorded) != 1 || recorded[0].Origin != workspace.Fuzz {
+		t.Fatalf("recorded = %+v, want one finding attributed to FUZZ", recorded)
+	}
+
+	// The same tool must refuse a kind the newly active workspace cannot
+	// produce. A stale BUILD origin would have accepted this change.
+	role = workspace.Ask
+	result = runArtifact(t, tool, map[string]any{"kind": "change", "target": "a.go"})
+	if !result.IsError || !result.Refused {
+		t.Fatal("ASK authored a change artifact through the live source")
+	}
+}
+
 func TestArtifactToolRequiresEvidenceForAFinding(t *testing.T) {
-	tool := NewArtifactTool(func(workspace.Artifact) error { return nil }, workspace.Fuzz)
+	tool := NewArtifactTool(func(workspace.Artifact) error { return nil }, fixedArtifactWorkspace(workspace.Fuzz))
 	result := runArtifact(t, tool, map[string]any{"kind": "finding", "target": "x.go"})
 	if !result.IsError {
 		t.Fatal("a finding without reproduction or evidence was recorded")
@@ -71,12 +126,16 @@ func TestArtifactToolRequiresEvidenceForAFinding(t *testing.T) {
 }
 
 func TestArtifactToolRefusesUnknownKindAndMissingSink(t *testing.T) {
-	tool := NewArtifactTool(func(workspace.Artifact) error { return nil }, workspace.Build)
+	tool := NewArtifactTool(func(workspace.Artifact) error { return nil }, fixedArtifactWorkspace(workspace.Build))
 	if result := runArtifact(t, tool, map[string]any{"kind": "rumour", "target": "x"}); !result.IsError {
 		t.Error("an unknown artifact kind was accepted")
 	}
-	noSink := NewArtifactTool(nil, workspace.Build)
+	noSink := NewArtifactTool(nil, fixedArtifactWorkspace(workspace.Build))
 	if result := runArtifact(t, noSink, map[string]any{"kind": "change", "target": "x"}); !result.IsError {
 		t.Error("a nil sink silently dropped the artifact")
+	}
+	noOrigin := NewArtifactTool(func(workspace.Artifact) error { return nil }, nil)
+	if result := runArtifact(t, noOrigin, map[string]any{"kind": "change", "target": "x"}); !result.IsError {
+		t.Error("a nil workspace source silently produced an artifact")
 	}
 }

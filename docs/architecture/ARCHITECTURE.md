@@ -66,7 +66,8 @@ execution`:
   history.
 - Cross-workspace handoff is artifact-based: `workspace.Artifact` (plan,
   finding, change, verification) is validated and persisted per session; the
-  `artifact` tool enforces that a workspace only authors its own kind.
+  `artifact` tool reads the live workspace on every call and enforces that a
+  workspace only authors its own kind.
 - `workspace.DecideTransition` owns the transition policy: stay, automatic
   BUILD ↔ FUZZ cooperation, or a human confirmation when ASK is crossed.
   `harness.SwitchWorkspace` remains the single authority move. `task.Handoff`
@@ -225,9 +226,11 @@ path that reports a task outcome calls it with the contract built from the
 user's request before execution and the evidence the runtime observed.
 
 - **Evidence.** A mutation objective needs an observed target change and a
-  successful verification after it. A checkless execution objective needs a
-  process that reached a successful terminal state (`Executes` + `Finished`);
-  a started background spawn is not evidence. An informational objective needs
+  successful verification after it. An execution authorized read-only is not a
+  potential mutation, so an investigation probe cannot create a verification
+  debt. A checkless execution objective needs a process that reached a
+  successful terminal state (`Executes` + `Finished`); a started background
+  spawn is not evidence. An informational objective needs
   non-empty visible assistant text in the final turn. Empty or whitespace text
   is `NEEDS_REVIEW`. A request that explicitly required external knowledge also
   needs a successful external observation; a local answer does not satisfy it.
@@ -324,6 +327,8 @@ the model said. Two properties keep the loop honest and small:
   A definite workspace change invalidates non-fatal failures, because the same
   command observes a different state after the fix. A refusal is a control
   decision: nothing executes and completion does not count it as a failed call.
+  This includes a tool's own authority refusal, such as the artifact tool
+  rejecting a kind the live workspace cannot produce.
 - **Closure is one semantic state, not an empty tool slice.** A projection's
   `AnswerEligible` or `Terminal` verdict is the control plane's declaration that
   the action surface is closed. The loop owns the request shape, so it withdraws

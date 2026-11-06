@@ -259,11 +259,14 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 	// The artifact tool is added only when there is somewhere to record to.
 	// Its authority is the workspace's: a FUZZ session can file a Finding but
 	// not author a Change, which is what makes the handoff contract real
-	// rather than a convention (§23, §27).
+	// rather than a convention (§23, §27). The source reads the live gate on
+	// every call, so an automatic BUILD ↔ FUZZ switch applies to the tool set
+	// the loop already holds instead of leaving it attributed to the workspace
+	// active at construction.
 	if store != nil && sess != nil {
 		toolSet = append(toolSet, tools.NewArtifactTool(func(a workspace.Artifact) error {
 			return store.SaveArtifact(sess.ID, a)
-		}, opts.authority()))
+		}, opts.authority))
 	}
 
 	// The workspace contract is composed into the prompt on every request

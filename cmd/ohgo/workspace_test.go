@@ -90,14 +90,23 @@ func TestAdmitForEnforcesWorkspaceOnRealTools(t *testing.T) {
 	bash := tools.NewBashTool(t.TempDir())
 	mutating := ai.ToolCall{Name: "bash", Arguments: map[string]any{"command": "rm -rf internal"}}
 	reading := ai.ToolCall{Name: "bash", Arguments: map[string]any{"command": "go test ./..."}}
+	// A read-only inspection whose path contains the letters of an in-place
+	// flag must still be admitted. Treating the file name as a flag denied
+	// ordinary FUZZ investigation and blocked the run.
+	inspection := ai.ToolCall{Name: "bash", Arguments: map[string]any{
+		"command": "sed -n '1,120p' src/client/components/Checkout.tsx",
+	}}
 
 	if admitted, reason := admitFor(workspace.Fuzz)(mutating, bash); admitted {
 		t.Error("FUZZ admitted a shell mutation")
 	} else if !strings.Contains(reason, "mutation_not_permitted") {
 		t.Errorf("refusal reason = %q, want mutation_not_permitted", reason)
 	}
-	if admitted, _ := admitFor(workspace.Fuzz)(reading, bash); !admitted {
-		t.Error("FUZZ refused a read-only shell command")
+	if admitted, reason := admitFor(workspace.Fuzz)(reading, bash); !admitted {
+		t.Errorf("FUZZ refused a read-only shell command: %s", reason)
+	}
+	if admitted, reason := admitFor(workspace.Fuzz)(inspection, bash); !admitted {
+		t.Errorf("FUZZ refused a read-only inspection: %s", reason)
 	}
 	if admitted, _ := admitFor(workspace.Build)(mutating, bash); !admitted {
 		t.Error("BUILD refused a shell mutation")

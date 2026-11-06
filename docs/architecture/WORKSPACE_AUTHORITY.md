@@ -244,6 +244,11 @@ change is observed (or a prior change exists), the full mutation contract
 applies: targets, behavioural checks, and a successful verification after the
 change.
 
+An execution during the investigation phase runs behind a read-only
+authorization, so it is investigation evidence, not a potential mutation that
+owes a later verification. Only a definite change, or an execution under
+write-capable authority, creates that verification debt.
+
 Phase completion narrows the completion requirement; it does not erase an
 explicit request constraint. For a staged conditional objective, `without
 changing anything` and `without modifying source code` are scoped to the
@@ -339,6 +344,10 @@ agent.Loop.execute
 - `authorityGate` is the only mutable authority. Because the loop's admission
   hook and the subagent spawner both read the gate at call time, a switch
   applies to anything the turn delegates.
+- The `artifact` tool resolves its producer from the live gate on every call,
+  not from the workspace active when the tool set was built. A BUILD ↔ FUZZ
+  switch therefore changes which kind the existing tool can author; a captured
+  origin would attribute a FUZZ finding to BUILD and refuse it.
 - A refused route never reaches the model: `harness.RouteTurn` is consulted in
   `repl`, in `tui.Program.runTurn`, and in `runOnce` before `Loop.Run`.
 

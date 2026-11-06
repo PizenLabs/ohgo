@@ -350,6 +350,33 @@ func TestRefusedCallsAreNotOutstandingWork(t *testing.T) {
 	}
 }
 
+// A tool-level authority refusal is a control decision, not an execution
+// failure. A model that proposes the wrong artifact kind under FUZZ and then
+// answers from successful investigation must not be vetoed by that refusal.
+func TestToolLevelRefusalDoesNotBlockCompletion(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{
+			toolOutcome("artifact", Result{
+				Text:    "workspace fuzz cannot produce a plan artifact; allowed kind(s): finding",
+				IsError: true, Refused: true,
+			}),
+			{ToolName: "bash", Result: Result{Text: "read-only inspection", Executes: true, Finished: true},
+				Authorization: &security.Decision{Outcome: security.OutcomeAuto, ReadOnly: true}},
+		}},
+		answerTurn("The investigation is complete; no source was modified."),
+	}
+	root := t.TempDir()
+	got := EvaluateTaskCompletion(CompletionInput{
+		Turns:    turns,
+		Contract: conditionalMutationContract(),
+		Root:     root,
+		Snapshot: absentCheckoutSnapshot(root),
+	})
+	if !got.Complete() {
+		t.Fatalf("a tool-level refusal vetoed completion: %s", got.Reason)
+	}
+}
+
 // The deferred-plan rule must not turn an honest answer into a review. Only a
 // message made entirely of unperformed observation verbs is a plan; an
 // explanatory lead, a closing courtesy, or a substantive clause is an answer.

@@ -33,6 +33,17 @@ func TestCommandCapabilityClassifiesExecutionAsExec(t *testing.T) {
 		"go test ./... 2>&1 | tee /dev/null",
 		"FOO=bar go test ./...",
 		"sudo git status",
+		// File names and script text are not option words. A read-only sed or
+		// formatter must stay executable in FUZZ even when the path contains
+		// the letters of an in-place flag.
+		"sed -n '1,120p' src/client/components/Checkout.tsx",
+		"sed -n '1,80p' src/client/components/Cart.tsx",
+		"gofmt -l internal/widget",
+		"goimports -l internal/widget",
+		"perl -ne 'print if /i/' src/client/components/Checkout.tsx",
+		"perl -Mstrict -e 'print 1'",
+		"perl -w -e 'print 1'",
+		"sed -e 's/widget/thing/' src/client/Checkout.tsx",
 	}
 	for _, command := range commands {
 		if got := commandCapability(command); got != agent.TierExec {
@@ -60,8 +71,15 @@ func TestCommandCapabilityClassifiesMutationAsWrite(t *testing.T) {
 		"echo more >> notes.txt",
 		"cat template.txt > out.txt",
 		"sed -i 's/a/b/' file.go",
+		"sed -i.bak 's/a/b/' file.go",
+		"sed --in-place 's/a/b/' file.go",
+		"sed -ni 's/a/b/p' file.go",
+		"sed -e 's/a/b/' -i file.go",
 		"perl -i -pe 's/a/b/' file.go",
+		"perl -pi -e 's/a/b/' file.go",
+		"perl -e 's/a/b/' -i file.go",
 		"gofmt -w .",
+		"gofmt -l -w .",
 		"goimports -w .",
 		"git commit -m 'x'",
 		"git add .",
