@@ -109,7 +109,7 @@ func mutatingProgram(program string, args []string) bool {
 		// (/dev/null) is not a repository mutation.
 		return writesToFile(args)
 	case "sed", "perl", "gofmt", "goimports":
-		return hasInPlaceFlag(args)
+		return hasInPlaceFlag(program, args)
 	case "npm", "pnpm", "yarn", "pip", "pip3", "cargo", "go", "composer",
 		"bundle", "gem", "poetry", "uv":
 		return hasMutatingSubcommand(program, args)
@@ -136,12 +136,64 @@ func writesToFile(args []string) bool {
 
 // hasInPlaceFlag reports an in-place edit flag (-i, -w), which turns a
 // formatting/editing program into a writer.
-func hasInPlaceFlag(args []string) bool {
+//
+// Only option words are inspected. A file name or script argument routinely
+// contains 'i' or 'w' (src/client/Checkout.tsx), and scanning every word as if
+// it were a flag classified a read-only sed as a mutation. That false positive
+// made FUZZ refuse ordinary inspection.
+func hasInPlaceFlag(program string, args []string) bool {
 	for _, arg := range args {
-		trimmed := strings.TrimLeft(arg, "-")
-		for _, letter := range trimmed {
-			if letter == 'i' || letter == 'w' {
+		if arg == "--" {
+			return false
+		}
+		if strings.HasPrefix(arg, "--") {
+			// sed's --in-place[=SUFFIX] is the only long write flag among the
+			// programs classified here. Other long options are not writes.
+			if program == "sed" && (arg == "--in-place" || strings.HasPrefix(arg, "--in-place=")) {
 				return true
+			}
+			continue
+		}
+		if len(arg) < 2 || arg[0] != '-' {
+			continue
+		}
+		if shortOptionWrites(program, arg[1:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// shortOptionWrites scans one short option cluster for an in-place flag.
+//
+// Some options consume the rest of their word (-Mstrict), so scanning must stop
+// there; otherwise the argument's text is mistaken for more flags.
+func shortOptionWrites(program, cluster string) bool {
+scan:
+	for i := 0; i < len(cluster); i++ {
+		letter := cluster[i]
+		switch program {
+		case "gofmt", "goimports":
+			// -w writes; -l and -d only report.
+			if letter == 'w' {
+				return true
+			}
+		case "sed":
+			if letter == 'i' {
+				return true
+			}
+			if letter == 'e' || letter == 'f' || letter == 'l' {
+				// The rest of this word is an argument, not more flags.
+				break scan
+			}
+		case "perl":
+			if letter == 'i' {
+				return true
+			}
+			// -w is warnings, not a write. Options that take the rest of the
+			// word are scripts, modules, or include paths, not flag clusters.
+			if letter == 'e' || letter == 'E' || letter == 'M' || letter == 'm' || letter == 'I' {
+				break scan
 			}
 		}
 	}

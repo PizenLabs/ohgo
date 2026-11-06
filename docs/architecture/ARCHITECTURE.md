@@ -66,7 +66,8 @@ execution`:
   history.
 - Cross-workspace handoff is artifact-based: `workspace.Artifact` (plan,
   finding, change, verification) is validated and persisted per session; the
-  `artifact` tool enforces that a workspace only authors its own kind.
+  `artifact` tool reads the live workspace on every call and enforces that a
+  workspace only authors its own kind.
 - `workspace.DecideTransition` owns the transition policy: stay, automatic
   BUILD ↔ FUZZ cooperation, or a human confirmation when ASK is crossed.
   `harness.SwitchWorkspace` remains the single authority move. `task.Handoff`
@@ -98,6 +99,13 @@ and any subagent read at call time:
 - A staged request ("investigate first; if confirmed, implement") starts in
   investigation. Its conditional mutation is retained for the later branch but
   does not make the current turn a mutation objective.
+- A staged task also moves phase at the tool boundary. `workspace.ToolCallTransition`
+  reads a concrete call — a finding or change artifact, or a mutating tool — and
+  applies the same policy before execution. The loop asks after semantic
+  grounding, the host applies the target through the single switch owner and
+  records it on the same task, and the loop re-authorizes the call under the new
+  live gate. A plan artifact under FUZZ would cross ASK and is therefore not
+  automatic.
 
 The full matrix, state model, and invariants are in
 [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
@@ -225,9 +233,11 @@ path that reports a task outcome calls it with the contract built from the
 user's request before execution and the evidence the runtime observed.
 
 - **Evidence.** A mutation objective needs an observed target change and a
-  successful verification after it. A checkless execution objective needs a
-  process that reached a successful terminal state (`Executes` + `Finished`);
-  a started background spawn is not evidence. An informational objective needs
+  successful verification after it. An execution authorized read-only is not a
+  potential mutation, so an investigation probe cannot create a verification
+  debt. A checkless execution objective needs a process that reached a
+  successful terminal state (`Executes` + `Finished`); a started background
+  spawn is not evidence. An informational objective needs
   non-empty visible assistant text in the final turn. Empty or whitespace text
   is `NEEDS_REVIEW`. A request that explicitly required external knowledge also
   needs a successful external observation; a local answer does not satisfy it.
@@ -285,18 +295,35 @@ the model said. Two properties keep the loop honest and small:
   verdict vetoes completion, so a model that answers without observing the
   repository is `NEEDS_REVIEW`, not `COMPLETED`. A general knowledge question
   declares no such need.
+- **A coordinate and a concept are different claims.** A slash compound is not
+  a filesystem path by itself. A token with a file extension, a following path
+  noun ("directory", "file"), a direct path verb/preposition, or backticks is a
+  literal target and requires `target_state` (plus `target_content` when the
+  request asks for contents or inspection). A compound such as
+  `order/checkout flow` names a repository concept instead: it declares
+  `repository_overview`, not a literal target, because the answer lives in
+  whichever implementation files realize the flow. An explicit literal path is
+  still satisfied only by that coordinate; a parent listing does not prove an
+  inspected directory's contents.
 - **Breadth is semantic, not a phrase list.** A repository subject ("this
-  project", "the codebase", "the system") combined with an
+  project", "the codebase", "the system", including a modified form such as
+  "this Go e-commerce project") combined with an
   understanding/overview/architecture concept declares a `repository_survey`
   need: at least two content observations or one content observation plus
-  structure. A named coordinate or a specific artifact ("this project's
-  license", the test suite, one file) stays targeted even when the sentence
-  contains a broad verb. The classification is deterministic and derived from
-  the objective and the contract's targets, so unusual wording does not fall
+  structure. A named coordinate, a specific artifact ("this project's license",
+  the test suite, one file), or a named repository concept ("the checkout
+  flow") stays targeted even when the sentence contains a broad verb. The
+  classification is deterministic and derived from the objective and the
+  contract's targets and concept entities, so unusual wording does not fall
   back to the single-observation policy and narrow questions are not forced
   into a repository-wide survey. A repository that has source code also needs
   at least one implementation observation; two documentation artifacts describe
   what the project says about itself, not what its implementation does.
+- **A conceptual mutation branch is bounded by its check.** A mutation that
+  names no literal target but does name a repository concept and an explicit
+  check ("investigate the checkout flow; if confirmed, fix it and run the
+  tests") becomes a behavioural objective. It still requires an observed change
+  and a successful check; the concept is a scope, not a synthetic path.
 - **Failure is durable evidence, not a transient error string.** Every failed
   execution is recorded under `agent.CallSignature` with its target, failure
   class, and retryability. A class is fatal (`authentication_failure`,
@@ -307,6 +334,8 @@ the model said. Two properties keep the loop honest and small:
   A definite workspace change invalidates non-fatal failures, because the same
   command observes a different state after the fix. A refusal is a control
   decision: nothing executes and completion does not count it as a failed call.
+  This includes a tool's own authority refusal, such as the artifact tool
+  rejecting a kind the live workspace cannot produce.
 - **Closure is one semantic state, not an empty tool slice.** A projection's
   `AnswerEligible` or `Terminal` verdict is the control plane's declaration that
   the action surface is closed. The loop owns the request shape, so it withdraws

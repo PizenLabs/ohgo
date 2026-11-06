@@ -244,6 +244,11 @@ change is observed (or a prior change exists), the full mutation contract
 applies: targets, behavioural checks, and a successful verification after the
 change.
 
+An execution during the investigation phase runs behind a read-only
+authorization, so it is investigation evidence, not a potential mutation that
+owes a later verification. Only a definite change, or an execution under
+write-capable authority, creates that verification debt.
+
 Phase completion narrows the completion requirement; it does not erase an
 explicit request constraint. For a staged conditional objective, `without
 changing anything` and `without modifying source code` are scoped to the
@@ -305,11 +310,32 @@ The only ways authority changes are:
    (`/permissions`, `/mode`), the `--workspace` flag, or a resumed session's
    snapshot;
 2. an accepted human-boundary decision;
-3. an automatic BUILD ↔ FUZZ decision from `workspace.DecideTransition`.
+3. an automatic BUILD ↔ FUZZ decision from `workspace.DecideTransition`,
+   whether the request text or a grounded tool call produced it.
 
-The agent may propose intent through its request text, but it cannot move
-authority. The control plane owns the decision, and only
-`harness.SwitchWorkspace` performs it.
+The agent may propose intent through its request text or through a tool it
+calls, but it cannot move authority. The control plane owns the decision, and
+only `harness.SwitchWorkspace` performs it.
+
+### Tool-boundary handoff
+
+A staged task changes phase while it runs, and the model's own action is the
+signal: a finding artifact is investigation, a change artifact or a mutating
+tool call is mutation. `workspace.ToolCallTransition` reads that action and
+applies the ordinary `DecideTransition` policy before the call executes:
+
+- a finding artifact under BUILD → automatic FUZZ;
+- a change or verification artifact, or a mutating tool, under FUZZ →
+  automatic BUILD;
+- a plan artifact under FUZZ would cross ASK, so it is not automatic and the
+  artifact tool refuses it with the allowed kind.
+
+The loop consults the host hook after semantic grounding, so an action the
+user's request did not authorize cannot use a handoff to reach a stronger
+authority. The host applies the target through `harness.SwitchWorkspace`,
+records it on the same task, and the loop re-authorizes the same call under the
+new live gate. The trigger differs from a turn-boundary handoff; the decision,
+the owner, and the continuity record are the same.
 
 ---
 
@@ -339,6 +365,17 @@ agent.Loop.execute
 - `authorityGate` is the only mutable authority. Because the loop's admission
   hook and the subagent spawner both read the gate at call time, a switch
   applies to anything the turn delegates.
+- The `artifact` tool resolves its producer from the live gate on every call,
+  not from the workspace active when the tool set was built. A BUILD ↔ FUZZ
+  switch therefore changes which kind the existing tool can author; a captured
+  origin would attribute a FUZZ finding to BUILD and refuse it.
+- A `verification` artifact is a reference to a check the runtime observed, not
+  a claim the model may author. The host wires the tool to
+  `Loop.VerificationObserved`, which is true only after a successful check that
+  follows the last definite change. The tool refuses an unbacked verification
+  with the check to run, so a durable "verified" record cannot contradict the
+  completion evidence. Recording a `change` before the check is still allowed;
+  only the verification claim is gated.
 - A refused route never reaches the model: `harness.RouteTurn` is consulted in
   `repl`, in `tui.Program.runTurn`, and in `runOnce` before `Loop.Run`.
 
@@ -423,6 +460,31 @@ idle: FUZZ
 > The UI must never represent an automatic handoff as an implicit silent
 > authority change: the target, reason, and new workspace are published.
 
+A staged task that changes phase mid-turn follows the same shape, triggered by
+its tool call instead of a new request:
+
+```text
+BUILD, investigating
+  ↓  model: artifact(kind=finding)
+ToolCallTransition: INVESTIGATE / FUZZ
+decision: automatic FUZZ
+  ↓
+SwitchWorkspace -> FUZZ          (same session/task, recorded handoff)
+  ↓
+artifact executes under FUZZ
+  ↓
+model: write checkout.go
+ToolCallTransition: MUTATE / BUILD
+decision: automatic BUILD
+  ↓
+SwitchWorkspace -> BUILD
+  ↓
+write executes under BUILD
+```
+
+The model sees the same kind of target/reason notice, and the task timeline
+records both moves as APPLIED handoffs on one task identity.
+
 ---
 
 ## 10. Decisions and the decision surface
@@ -436,6 +498,15 @@ request text
   -> TUI apply / render             owner seam or confirmation dialog
   -> SwitchWorkspace                the one authority move
   -> RouteTurn -> Loop.Run          unchanged enforcement
+```
+
+```text
+tool call
+  -> semantic grounding            never widen an unrequested action
+  -> workspace.ToolCallTransition  capability the call itself needs
+  -> workspace.DecideTransition    automatic only on BUILD <-> FUZZ
+  -> SwitchWorkspace               the same owner, same task record
+  -> re-authorize the same call    under the new live gate
 ```
 
 `AnalyzeRequest` and `DecideTransition` are pure. `WorkspaceHooks.Predict` is
@@ -527,9 +598,12 @@ that a classifier returned a string.
 | Ephemeral proposal state | `tui.TestStaleProposalCannotSurviveALifecycleEvent`, `TestProposalNavigationClampsAtTheEnds` |
 | No fabricated confidence | `cmd/ohgo.TestTurnTransitionCarriesNoProbability`, `tui.TestTransitionPromptRendersTheDecision` |
 | Automatic BUILD <-> FUZZ cooperation | `tui.TestHandoffThroughTurnEntrypointPreservesTaskAndAuthority`, `TestBuildToFuzzTransitionPreservesImplementationContext`, `TestRepeatedHandoffsPreserveContextsAndWorkspace` |
+| Tool-boundary phase handoff | `workspace.TestToolCallTransitionRoutesCapabilityBoundary`, `agent.TestWorkspaceHandoffRunsBeforeAdmission`, `agent.TestWorkspaceHandoffCannotGroundAnUngroundedMutation`, `tui.TestToolBoundaryHandoffRoundTripKeepsOneTask` |
 | ASK boundary confirmation | `tui.TestBuildStrongQuestionConfirmsAskBoundary`, `TestAskMutationRequiresBuildConfirmation`, `cmd/ohgo.TestWideningFromAskIsOnlyAHandoff` |
 | Staged conditional workflow | `workspace.TestConditionalWorkflowRequiresAStagedInvestigation`, `tui.TestConditionalWorkflowStartsInvestigatingThenContinuesIntoBuild` |
 | Conditional completion is phase-aware | `agent.TestConditionalMutationCompletesInvestigationWithoutAChange`, `tui.TestBuildConditionalInvestigationStaysActiveWithoutMutation` |
+| A failed check resolves after correction | `agent.TestEvaluateCompletionResolvesAFailedVerificationAfterCorrection` |
+| A verification artifact needs an observed check | `agent.TestLoopTracksVerificationAfterTheLastDefiniteChange`, `tools.TestArtifactVerificationRequiresAnObservedCheck`, `cmd/ohgo.TestArtifactToolFollowsTheLiveWorkspace` |
 | Model specialization survives a switch | `cmd/ohgo.TestSwitchWorkspaceRebindsTheRoleModel` |
 
 Run the full suite:

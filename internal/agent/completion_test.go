@@ -138,6 +138,22 @@ func TestEvaluateCompletionRejectsFailedVerification(t *testing.T) {
 	}
 }
 
+// A failed check is an open obligation, not a permanent one. A corrective
+// change followed by a successful check resolves it: the earlier failure stays
+// in the timeline, but it no longer blocks completion.
+func TestEvaluateCompletionResolvesAFailedVerificationAfterCorrection(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("write", Result{Text: "wrote", Mutates: true})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{Text: "FAIL: duplicate key", IsError: true})}},
+		{Results: []ToolOutcome{toolOutcome("write", Result{Text: "corrected", Mutates: true})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{Text: "ok", Verifies: true})}},
+		cleanStop(),
+	}
+	if verdict := EvaluateCompletion(turns, true); !verdict.Complete() {
+		t.Fatalf("a resolved verification failure = %s (%s), want COMPLETED", verdict.State, verdict.Reason)
+	}
+}
+
 func TestEvaluateCompletionAcceptsMutationThenVerification(t *testing.T) {
 	turns := []Turn{
 		{Results: []ToolOutcome{toolOutcome("write", Result{Text: "wrote", Mutates: true})}},
@@ -347,6 +363,33 @@ func TestRefusedCallsAreNotOutstandingWork(t *testing.T) {
 	})
 	if strings.Contains(got.Reason, "outstanding") {
 		t.Fatalf("a refused call was counted as outstanding work: %s", got.Reason)
+	}
+}
+
+// A tool-level authority refusal is a control decision, not an execution
+// failure. A model that proposes the wrong artifact kind under FUZZ and then
+// answers from successful investigation must not be vetoed by that refusal.
+func TestToolLevelRefusalDoesNotBlockCompletion(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{
+			toolOutcome("artifact", Result{
+				Text:    "workspace fuzz cannot produce a plan artifact; allowed kind(s): finding",
+				IsError: true, Refused: true,
+			}),
+			{ToolName: "bash", Result: Result{Text: "read-only inspection", Executes: true, Finished: true},
+				Authorization: &security.Decision{Outcome: security.OutcomeAuto, ReadOnly: true}},
+		}},
+		answerTurn("The investigation is complete; no source was modified."),
+	}
+	root := t.TempDir()
+	got := EvaluateTaskCompletion(CompletionInput{
+		Turns:    turns,
+		Contract: conditionalMutationContract(),
+		Root:     root,
+		Snapshot: absentCheckoutSnapshot(root),
+	})
+	if !got.Complete() {
+		t.Fatalf("a tool-level refusal vetoed completion: %s", got.Reason)
 	}
 }
 

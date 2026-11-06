@@ -70,17 +70,26 @@ type ToolOutcome struct {
 	Authorization *security.Decision
 }
 
-// Refused reports whether the runtime refused the call before execution.
+// Refused reports whether the runtime or the tool refused the call on
+// authority or contract grounds.
 //
-// A refusal is a control decision, not a failed action: no tool ran and no
-// evidence was produced. Completion and sufficiency must not treat it as a
-// pending execution failure, or a model that adapts after a denied call would
-// be punished for the runtime's refusal.
+// A refusal is a control decision, not a failed action: no evidence was
+// produced. Completion and sufficiency must not treat it as a pending
+// execution failure, or a model that adapts after a denied call would be
+// punished for the runtime's refusal.
 func (o ToolOutcome) Refused() bool {
-	if o.Result.CandidateRejected || o.Result.FailureRejected {
+	if o.Result.Refused || o.Result.CandidateRejected || o.Result.FailureRejected {
 		return true
 	}
 	return o.Authorization != nil && o.Authorization.Outcome == security.OutcomeDeny
+}
+
+// ReadOnly reports whether the call ran behind a read-only workspace boundary.
+//
+// A successful process under that decision cannot have changed the repository,
+// so a mutation objective does not owe a later verification for it.
+func (o ToolOutcome) ReadOnly() bool {
+	return o.Authorization != nil && o.Authorization.ReadOnly
 }
 
 // Config configures a Loop.
@@ -126,6 +135,16 @@ type Config struct {
 	BeforeToolCall func(call BeforeToolCallContext) BeforeToolCallResult
 	// AfterToolCall can override fields of a completed result.
 	AfterToolCall func(call AfterToolCallContext) AfterToolCallResult
+	// WorkspaceHandoff is consulted before authorization for every tool call.
+	// The host may move the session to a workspace that holds the capability
+	// the call needs, and reports whether authority moved; the loop then
+	// authorizes the same call under the new authority. The host owns the
+	// policy and the live gate, so this is a request for a move, never a
+	// capability grant: a nil hook performs no handoff.
+	//
+	// It runs after semantic grounding, so a call the user's request did not
+	// ground cannot use a handoff to reach a stronger authority.
+	WorkspaceHandoff func(call ai.ToolCall, tool Tool, args map[string]any) (moved bool)
 	// OnTurn is called after each turn, for streaming progress to a UI.
 	OnTurn func(Turn)
 	// OnTextDelta receives visible model text while a stream is still open,
@@ -321,6 +340,48 @@ type Loop struct {
 	// previous request. It floors the local estimate so on-wire compression
 	// cannot hide real growth.
 	lastProviderTokens int
+	// evidenceMu guards the observed-change sequence below. Tool calls dispatch
+	// concurrently, so one mutating and one verifying call in the same batch
+	// must not race when they update the evidence order.
+	evidenceMu sync.Mutex
+	// evidenceSeq counts finished tool outcomes in the order they complete. The
+	// last definite change and the last successful check are compared as
+	// positions, so a verification artifact cannot reference a check that
+	// happened before the change it describes.
+	evidenceSeq     int
+	lastChangeSeq   int
+	lastVerifiedSeq int
+}
+
+// VerificationObserved reports whether a successful check has been observed
+// since the last definite repository change.
+//
+// It is the evidence predicate behind a verification artifact: the artifact is
+// a reference to a check the runtime saw, not a claim the model can author on
+// its own. A run with no observed change has nothing to verify until a check
+// runs, and a change after the last check reopens the obligation.
+func (l *Loop) VerificationObserved() bool {
+	if l == nil {
+		return false
+	}
+	l.evidenceMu.Lock()
+	defer l.evidenceMu.Unlock()
+	return l.lastVerifiedSeq > 0 && l.lastVerifiedSeq >= l.lastChangeSeq
+}
+
+// noteEvidence records one finished tool outcome for the artifact gate. It is
+// intentionally narrower than completion: it tracks definite changes only, so
+// a read-only probe cannot invalidate a check the runtime already observed.
+func (l *Loop) noteEvidence(result Result) {
+	l.evidenceMu.Lock()
+	defer l.evidenceMu.Unlock()
+	l.evidenceSeq++
+	if result.Mutates && !result.IsError {
+		l.lastChangeSeq = l.evidenceSeq
+	}
+	if result.Verifies && !result.IsError {
+		l.lastVerifiedSeq = l.evidenceSeq
+	}
 }
 
 // New returns a Loop. It returns ErrNoTools when the config has no tools,
@@ -439,6 +500,16 @@ func (l *Loop) SetBeforeToolCall(hook func(BeforeToolCallContext) BeforeToolCall
 // Run, never during one. Pass nil to remove it.
 func (l *Loop) SetAfterToolCall(hook func(AfterToolCallContext) AfterToolCallResult) {
 	l.cfg.AfterToolCall = hook
+}
+
+// SetWorkspaceHandoff installs the tool-boundary authority handoff.
+//
+// It must be called before Run, never during one. Pass nil to disable it. The
+// hook may move the host's live authority when the call needs a capability the
+// current workspace lacks; the loop only asks, and always re-evaluates the
+// call under the authority that is in force after the hook returns.
+func (l *Loop) SetWorkspaceHandoff(hook func(call ai.ToolCall, tool Tool, args map[string]any) (moved bool)) {
+	l.cfg.WorkspaceHandoff = hook
 }
 
 // SetProjectionHook installs the context projection seam after construction.
@@ -1098,7 +1169,9 @@ func (l *Loop) dispatch(
 		wg.Add(1)
 		go func(position int, call ai.ToolCall) {
 			defer wg.Done()
-			record(position, l.execute(ctx, byName, refusals, assistant, call, turn, turnIndex))
+			outcome := l.execute(ctx, byName, refusals, assistant, call, turn, turnIndex)
+			l.noteEvidence(outcome.Result)
+			record(position, outcome)
 		}(i, call)
 
 		if exclusive {
@@ -1353,6 +1426,16 @@ func (l *Loop) execute(
 				},
 			}
 		}
+	}
+
+	// A call that needs a capability the live workspace lacks asks the host
+	// for an execution-workspace handoff before the security boundary sees it.
+	// The control plane owns the decision and moves the one live gate; this
+	// loop re-reads that gate during authorization below. Running after
+	// grounding is what keeps a handoff from strengthening an action the
+	// user's request never authorized.
+	if l.cfg.WorkspaceHandoff != nil {
+		l.cfg.WorkspaceHandoff(call, tool, args)
 	}
 
 	// A cancellation that landed while arguments were being validated or a

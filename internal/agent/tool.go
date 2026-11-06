@@ -113,6 +113,12 @@ type Result struct {
 	// may succeed. It is meaningful only when FailureClass is set; the zero
 	// value means non-retryable, which is the conservative default.
 	FailureRetryable bool
+	// Refused marks a call the tool itself refused on authority or contract
+	// grounds. The invocation was well-formed, but the live workspace cannot
+	// perform it, so nothing was produced. It is an error for the model, which
+	// must choose another kind or action, but it is not an execution failure:
+	// completion must not treat it as an unrecovered failed call.
+	Refused bool
 	// CandidateRejected marks a call the runtime withheld because the task
 	// shape's action surface did not include the tool. It is an error for the
 	// model, which must choose another action, but it is not an execution

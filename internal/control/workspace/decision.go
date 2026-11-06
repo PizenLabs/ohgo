@@ -1,5 +1,7 @@
 package workspace
 
+import "strings"
+
 // Workspace transition policy.
 //
 // The policy answers one question: may this request run under the current
@@ -111,6 +113,85 @@ func AnalyzeRequest(text string) Requirement {
 			Reason:     "the request asks for understanding or read-only analysis",
 		}
 	}
+}
+
+// ToolCallTransition derives the workspace transition one concrete tool call
+// needs, and reports whether the control plane may apply it automatically.
+//
+// It is the tool-boundary counterpart to AnalyzeRequest: the call's own
+// meaning, not the model's narration, establishes that a staged task has
+// entered another phase. mutates is the caller's action-class reading of the
+// tool, used only when the call is not one of the tools whose meaning is
+// fixed by its arguments.
+//
+// Only a BUILD <-> FUZZ automatic decision is reported as usable here. A plan
+// artifact under FUZZ would cross ASK, which remains a human decision and is
+// left to the ordinary artifact refusal.
+func ToolCallTransition(active Workspace, name string, args map[string]any, mutates bool) (TransitionDecision, bool) {
+	requirement, ok := ToolCallRequirement(name, args)
+	if !ok {
+		if !mutates {
+			return TransitionDecision{}, false
+		}
+		requirement = Requirement{
+			Capability: CapabilityMutate,
+			Intent:     IntentExecute,
+			Strength:   StrengthStrong,
+			Reason:     "the call changes repository state, which belongs to BUILD",
+		}
+	}
+	decision := DecideTransition(active, requirement)
+	if !decision.Automatic() {
+		return decision, false
+	}
+	return decision, true
+}
+
+// ToolCallRequirement derives the workspace capability a concrete tool call
+// needs, or reports that the call does not establish a phase.
+//
+// AnalyzeRequest reads the user's words. A long staged task also moves between
+// phases while it runs, and the model's own actions are the only signal that
+// the phase changed: filing a finding is investigation, and changing source is
+// mutation. This function is the capability side of that signal, so the
+// control plane can apply DecideTransition before the call executes instead of
+// letting a workspace-incompatible call fail and calling it an error.
+//
+// It is deliberately narrow. The artifact tool is the one call whose meaning is
+// fixed by its own arguments: the kind names the phase. A repository mutation
+// is supplied by the caller from the tool's declared action class, so a tool
+// named "write" that is not actually mutating cannot trigger a handoff, and a
+// shell command that may or may not mutate is left to the security gate, which
+// already classifies it.
+func ToolCallRequirement(name string, args map[string]any) (Requirement, bool) {
+	switch name {
+	case "artifact":
+		kind, _ := args["kind"].(string)
+		switch ArtifactKind(strings.TrimSpace(kind)) {
+		case KindPlan:
+			return Requirement{
+				Capability: CapabilityRead,
+				Intent:     IntentRead,
+				Strength:   StrengthStrong,
+				Reason:     "the call records a plan, which belongs to ASK",
+			}, true
+		case KindFinding:
+			return Requirement{
+				Capability: CapabilityInvestigate,
+				Intent:     IntentInvestigate,
+				Strength:   StrengthStrong,
+				Reason:     "the call records a reproduction finding, which belongs to FUZZ",
+			}, true
+		case KindChange, KindVerification:
+			return Requirement{
+				Capability: CapabilityMutate,
+				Intent:     IntentExecute,
+				Strength:   StrengthStrong,
+				Reason:     "the call records a repository change, which belongs to BUILD",
+			}, true
+		}
+	}
+	return Requirement{}, false
 }
 
 // DecisionKind is the control plane's transition disposition.

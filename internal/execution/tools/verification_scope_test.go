@@ -35,6 +35,27 @@ func TestVerificationEvidenceRecordsCommandScope(t *testing.T) {
 	}
 }
 
+// A pipeline or a later command replaces the check's exit status, so a
+// successful overall run does not prove the check passed. This is the exact
+// shape a model falls into when it pipes output into `tail` and then runs a
+// cleanup command: the run may be healthy, but the runtime has no verification
+// evidence and must report review rather than completion.
+func TestVerificationRejectsACommandWhoseExitStatusIsMasked(t *testing.T) {
+	masked := []string{
+		"go test ./... 2>&1 | tail -n 5",
+		"go vet ./... && go test ./... 2>&1 | tail -n 5",
+		"go vet ./... && go test ./... | tail\npsql -c 'DELETE FROM orders' | head",
+	}
+	for _, command := range masked {
+		if VerificationFor(command) != nil {
+			t.Errorf("VerificationFor(%q) accepted a masked check", command)
+		}
+	}
+	if VerificationFor("go test ./...") == nil {
+		t.Fatal("an unmasked check was not accepted")
+	}
+}
+
 // A shell command may change directory before checking. Package arguments are
 // relative to the directory the check actually ran in; a check outside the
 // workspace is not evidence for it, and an inside directory must be rebased.

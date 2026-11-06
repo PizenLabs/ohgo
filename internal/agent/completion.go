@@ -209,9 +209,12 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 			if definite {
 				evidence.mutated = true
 				evidence.lastPotentialMutation = position
-			} else if mutationIntent && outcome.Result.Executes {
+			} else if mutationIntent && outcome.Result.Executes && !outcome.ReadOnly() {
 				// The runtime cannot prove this process did not change the
-				// repository. A mutation objective must verify after it.
+				// repository. A mutation objective must verify after it. A
+				// read-only authorization is the exception: the sandbox
+				// prevented a write, so an investigation execution (FUZZ
+				// probing the service) does not create a verification debt.
 				evidence.lastPotentialMutation = position
 			}
 			if outcome.Result.Executes && outcome.Result.Finished {

@@ -286,7 +286,7 @@ decision:
 | Edge | Why it exists | What breaking it would cost |
 |---|---|---|
 | `control/workspace` + `control/cognition` → `agent` | They are built on `agent.Turn`, `agent.ToolOutcome`, `agent.TargetSnapshot` | A type move becomes a persistence migration (`progress.json`) |
-| `execution/tools` → `control/workspace` | The artifact tool checks the producer's origin workspace | Artifact provenance |
+| `execution/tools` → `control/workspace` | The artifact tool checks the live producer workspace at call time | Artifact provenance |
 | `tui` → `control/{workspace,cognition}` , `agent`, `continuity/{session,recovery}`, `commit`, `prompt` | The TUI *is* an orchestrator today (it installs projection hooks and calls `BuildShape`) | Turn preparation would need the missing seam described in the migration doc |
 | `continuity/task` → `control/cognition` | The checkpoint embeds `EvidenceState` | Changing it changes `progress.json` |
 | `continuity/session` + `tui` both append messages | Persistence differs by UI mode | Unified persistence would change stored transcripts |

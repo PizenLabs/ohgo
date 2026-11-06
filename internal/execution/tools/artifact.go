@@ -15,20 +15,35 @@ type ArtifactSink func(artifact workspace.Artifact) error
 // It is the mechanism behind "ASK → Plan, FUZZ → Finding, BUILD → Change /
 // Verification" (§23, I12). It does not mutate the repository — it records
 // metadata — so it is admitted in every workspace; authority is enforced
-// through the artifact kind, which must match the workspace that produced it.
-// That is what stops FUZZ from authoring a Change, or ASK from asserting a
-// Verification it never ran.
+// through the artifact kind, which must match the workspace in force when the
+// call runs. That is what stops FUZZ from authoring a Change, or ASK from
+// asserting a Verification it never ran.
 type ArtifactTool struct {
 	Base
-	// origin is the workspace this tool instance serves.
-	origin workspace.Workspace
+	// origin reports the workspace in force when the call runs. It is a
+	// function, not a captured value: a session can move between BUILD and
+	// FUZZ without rebuilding its tool set, and the artifact must be
+	// attributed to the workspace that actually produced it.
+	origin func() workspace.Workspace
+	// verificationObserved reports whether the run observed a successful check
+	// after the last definite change. A verification artifact is a reference to
+	// that observation, so the tool refuses to record one the runtime cannot
+	// back. Nil disables the gate for hosts with no run evidence (tests, an
+	// embedding caller that only records metadata).
+	verificationObserved func() bool
 	// sink persists the artifact. A nil sink refuses the call rather than
 	// silently dropping the record.
 	sink ArtifactSink
 }
 
-// NewArtifactTool returns an artifact tool for a workspace and sink.
-func NewArtifactTool(sink ArtifactSink, origin workspace.Workspace) *ArtifactTool {
+// NewArtifactTool returns an artifact tool for a live workspace source and
+// sink.
+//
+// origin is read on every call, so a workspace switch applies to the tool the
+// loop already holds. Passing a fixed workspace would freeze authority at
+// construction and let a later switch produce an artifact the live workspace
+// never authorized.
+func NewArtifactTool(sink ArtifactSink, origin func() workspace.Workspace) *ArtifactTool {
 	tool := &ArtifactTool{origin: origin, sink: sink}
 	tool.Base = NewBase("artifact",
 		"Record a structured artifact for handoff between workspaces: a plan "+
@@ -75,6 +90,17 @@ func NewArtifactTool(sink ArtifactSink, origin workspace.Workspace) *ArtifactToo
 	return tool
 }
 
+// SetVerificationSource installs the runtime predicate that reports whether a
+// successful check has been observed since the last definite change.
+//
+// It is installed by the host after the loop exists, because the evidence is
+// the loop's and the tool is built first. A nil source disables the gate: the
+// tool still enforces the workspace-kind boundary, but it cannot vouch for a
+// check it was never told about.
+func (t *ArtifactTool) SetVerificationSource(source func() bool) {
+	t.verificationObserved = source
+}
+
 // Execute implements agent.Tool.
 func (t *ArtifactTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	if err := checkCancelled(ctx.Ctx); err != nil {
@@ -98,14 +124,39 @@ func (t *ArtifactTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 	if !artifactKind.Valid() {
 		return agent.ErrorResult("unknown artifact kind %q", kind)
 	}
-	if producer := producerOf(artifactKind); producer != t.origin {
-		return agent.ErrorResult("workspace %s cannot produce a %s artifact", t.origin, kind)
+	if t.origin == nil {
+		return agent.ErrorResult("artifact workspace is unavailable")
+	}
+	origin := t.origin()
+	if producer := producerOf(artifactKind); producer != origin {
+		// A kind mismatch is an authority refusal, not a failed execution:
+		// the call was well-formed and nothing was recorded. Marking it as a
+		// refusal keeps a model that adapts (records the allowed kind or
+		// answers) from being reported as an unrecovered tool failure.
+		result := agent.ErrorResult("workspace %s cannot produce a %s artifact; allowed kind(s): %s",
+			origin, kind, allowedArtifactKinds(origin))
+		result.Refused = true
+		return result
+	}
+	if artifactKind == workspace.KindVerification &&
+		t.verificationObserved != nil && !t.verificationObserved() {
+		// A verification artifact is a reference to a check the runtime saw,
+		// not a claim the model can author. Recording one without a successful
+		// observed check would leave a durable "verified" record that the
+		// completion evidence contradicts. The refusal names the recovery so
+		// the model can run the check and retry.
+		result := agent.ErrorResult(
+			"no successful check has been observed since the last change; run the check " +
+				"itself as the last command (for example `go test ./...`, with no pipe or " +
+				"trailing command such as `| tail`) and record this artifact only after it succeeds")
+		result.Refused = true
+		return result
 	}
 
 	artifact := workspace.Artifact{
 		ID:           workspace.NewArtifactID(artifactKind),
 		Kind:         artifactKind,
-		Origin:       t.origin,
+		Origin:       origin,
 		Target:       target,
 		Status:       status,
 		Expected:     expected,
@@ -123,6 +174,20 @@ func (t *ArtifactTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 		return agent.ErrorResult("record artifact: %v", err)
 	}
 	return agent.Result{Text: fmt.Sprintf("recorded %s %s (%s)", artifact.Kind, artifact.ID, target)}
+}
+
+// allowedArtifactKinds names the kinds the live workspace may author, so a
+// refusal tells the model what to choose instead of only what failed.
+func allowedArtifactKinds(origin workspace.Workspace) string {
+	switch origin {
+	case workspace.Ask:
+		return string(workspace.KindPlan)
+	case workspace.Fuzz:
+		return string(workspace.KindFinding)
+	case workspace.Build:
+		return string(workspace.KindChange) + ", " + string(workspace.KindVerification)
+	}
+	return "none"
 }
 
 // producerOf names the workspace that produces an artifact kind.

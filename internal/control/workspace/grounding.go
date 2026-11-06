@@ -276,6 +276,15 @@ func groundingEntities(text string, intent contract.IntentContract) []contract.E
 		}
 	}
 
+	// A concept fills the semantic gap only when the request names no explicit
+	// coordinate. "Read order/checkout.go and explain the checkout flow" is a
+	// path request; "understand how the order/checkout flow works" is a topic.
+	if len(intent.Targets) == 0 {
+		for _, value := range extractConceptTopics(text) {
+			add(value, contract.EntityTopic, false)
+		}
+	}
+
 	optional := conditionalRelevance(text)
 	for _, value := range listedEntities(text) {
 		add(value, contract.EntityProject, optional)
@@ -457,13 +466,20 @@ var entityStopWords = map[string]bool{
 }
 
 // groundingScope records the breadth the request establishes.
+//
+// A topic is repository context, not a named project scope. Promoting it to
+// ScopeNamed would let a flow answer look like a claim about an external named
+// entity set, which is a different contract.
 func groundingScope(text string, entities []contract.Entity) contract.GroundingScope {
 	scope := contract.GroundingScope{Kind: contract.ScopeUnknown}
-	if len(entities) > 0 {
-		scope.Kind = contract.ScopeNamed
-		for _, entity := range entities {
-			scope.Values = append(scope.Values, entity.Value)
+	for _, entity := range entities {
+		if entity.Kind == contract.EntityTopic {
+			continue
 		}
+		scope.Values = append(scope.Values, entity.Value)
+	}
+	if len(scope.Values) > 0 {
+		scope.Kind = contract.ScopeNamed
 	}
 	normalized := " " + normalizeRequest(text) + " "
 	for _, phrase := range []string{

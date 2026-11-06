@@ -90,6 +90,63 @@ func TestDecideTransitionMatrix(t *testing.T) {
 	}
 }
 
+// A staged task moves phase through the model's own actions, not only through
+// new user text. The capability a call needs is read from the call itself, so
+// the control plane can apply the ordinary automatic policy before the call
+// reaches the workspace that cannot perform it.
+func TestToolCallTransitionRoutesCapabilityBoundary(t *testing.T) {
+	finding := map[string]any{"kind": "finding", "target": "checkout", "reproduction": "submit", "evidence": "404"}
+	change := map[string]any{"kind": "change", "target": "checkout"}
+	plan := map[string]any{"kind": "plan", "target": "checkout"}
+	write := map[string]any{"path": "checkout.go", "content": "package checkout\n"}
+
+	cases := []struct {
+		name      string
+		active    Workspace
+		tool      string
+		args      map[string]any
+		mutates   bool
+		automatic bool
+		target    Workspace
+	}{
+		{"build finding", Build, "artifact", finding, false, true, Fuzz},
+		{"build change", Build, "artifact", change, false, false, ""},
+		{"fuzz finding", Fuzz, "artifact", finding, false, false, ""},
+		{"fuzz change", Fuzz, "artifact", change, false, true, Build},
+		{"fuzz write", Fuzz, "write", write, true, true, Build},
+		{"ask write", Ask, "write", write, true, false, ""},
+		{"fuzz plan", Fuzz, "artifact", plan, false, false, ""},
+		{"build write", Build, "write", write, true, false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, automatic := ToolCallTransition(tc.active, tc.tool, tc.args, tc.mutates)
+			if automatic != tc.automatic {
+				t.Fatalf("automatic = %v, want %v (decision=%+v)", automatic, tc.automatic, decision)
+			}
+			if automatic && decision.Target != tc.target {
+				t.Fatalf("target = %s, want %s", decision.Target, tc.target)
+			}
+			if automatic && (decision.Current == Ask || decision.Target == Ask) {
+				t.Fatalf("a tool handoff crossed ASK: %s -> %s", decision.Current, decision.Target)
+			}
+		})
+	}
+}
+
+// The exact failure that exposed the missing tool-boundary handoff: a BUILD
+// session files a finding, and the control plane moves to FUZZ rather than
+// letting the artifact tool refuse the call.
+func TestToolCallTransitionMovesBuildToFuzzForAFindingArtifact(t *testing.T) {
+	decision, ok := ToolCallTransition(Build, "artifact", map[string]any{
+		"kind": "finding", "target": "order/checkout",
+		"reproduction": "POST /api/v1/orders", "evidence": "404",
+	}, false)
+	if !ok || !decision.Automatic() || decision.Target != Fuzz {
+		t.Fatalf("finding under BUILD = %+v automatic=%v, want an automatic FUZZ handoff", decision, ok)
+	}
+}
+
 // Analysis and policy are pure: inspecting them never moves authority.
 func TestTransitionDecisionIsDataOnly(t *testing.T) {
 	for _, active := range All() {

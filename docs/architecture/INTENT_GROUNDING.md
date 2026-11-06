@@ -74,7 +74,8 @@ No package owns two of these responsibilities. `cognition` does not authorize,
 objective           the user's request, trimmed
 action              unknown | read | investigate | execute | mutate
 actions[]           every action in a compound request
-entities[]          named projects, paths, symbols, packages
+entities[]          named projects, paths, symbols, packages,
+                    repository concepts ("checkout flow")
 scope               unknown | named | repository, plus conditional relevance
 expectedOutcome     what truthful completion would look like
 constraints[]       explicit limits the user stated
@@ -100,6 +101,14 @@ are preserved but not forced into the answer.
 
 Repository coordinates (paths, symbols, packages) are not required in prose:
 mutation completion already proves them through target evidence.
+
+A repository **concept** (`checkout flow`, `order/checkout flow`) is a
+different entity kind. It is context for a repository-scoped question, not a
+filesystem coordinate and not a named project scope. It does not require a
+literal path, and it is not a required prose token; the evidence boundary is
+`repository_overview`, satisfied by observing the implementation. A concept is
+extracted only when the request names no explicit path, symbol, or package: a
+literal coordinate is more specific than the topic it happens to mention.
 
 ### 4.2 Action fidelity
 

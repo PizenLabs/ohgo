@@ -90,14 +90,23 @@ func TestAdmitForEnforcesWorkspaceOnRealTools(t *testing.T) {
 	bash := tools.NewBashTool(t.TempDir())
 	mutating := ai.ToolCall{Name: "bash", Arguments: map[string]any{"command": "rm -rf internal"}}
 	reading := ai.ToolCall{Name: "bash", Arguments: map[string]any{"command": "go test ./..."}}
+	// A read-only inspection whose path contains the letters of an in-place
+	// flag must still be admitted. Treating the file name as a flag denied
+	// ordinary FUZZ investigation and blocked the run.
+	inspection := ai.ToolCall{Name: "bash", Arguments: map[string]any{
+		"command": "sed -n '1,120p' src/client/components/Checkout.tsx",
+	}}
 
 	if admitted, reason := admitFor(workspace.Fuzz)(mutating, bash); admitted {
 		t.Error("FUZZ admitted a shell mutation")
 	} else if !strings.Contains(reason, "mutation_not_permitted") {
 		t.Errorf("refusal reason = %q, want mutation_not_permitted", reason)
 	}
-	if admitted, _ := admitFor(workspace.Fuzz)(reading, bash); !admitted {
-		t.Error("FUZZ refused a read-only shell command")
+	if admitted, reason := admitFor(workspace.Fuzz)(reading, bash); !admitted {
+		t.Errorf("FUZZ refused a read-only shell command: %s", reason)
+	}
+	if admitted, reason := admitFor(workspace.Fuzz)(inspection, bash); !admitted {
+		t.Errorf("FUZZ refused a read-only inspection: %s", reason)
 	}
 	if admitted, _ := admitFor(workspace.Build)(mutating, bash); !admitted {
 		t.Error("BUILD refused a shell mutation")
@@ -110,6 +119,43 @@ func TestAdmitForEnforcesWorkspaceOnRealTools(t *testing.T) {
 	}
 	if admitted, _ := admitFor(workspace.Build)(writeCall, write); !admitted {
 		t.Error("BUILD refused a write tool")
+	}
+}
+
+// The production tool-handoff adapter applies the same automatic policy the
+// turn boundary uses. A finding under BUILD moves to FUZZ; a write under FUZZ
+// moves to BUILD; a plan under FUZZ would cross ASK and stays put.
+func TestAutomaticToolHandoffFollowsTheCapabilityBoundary(t *testing.T) {
+	root := t.TempDir()
+	artifact := tools.NewArtifactTool(nil, func() workspace.Workspace { return workspace.Build })
+	write := tools.NewWriteTool(root)
+
+	finding := ai.ToolCall{Name: "artifact", Arguments: map[string]any{
+		"kind": "finding", "target": "order/checkout",
+		"reproduction": "POST /api/v1/orders", "evidence": "404",
+	}}
+	decision, ok := automaticToolHandoff(workspace.Build, finding, artifact, finding.Arguments)
+	if !ok || !decision.Automatic() || decision.Target != workspace.Fuzz {
+		t.Fatalf("finding under BUILD = %+v automatic=%v, want an automatic FUZZ move", decision, ok)
+	}
+
+	writeCall := ai.ToolCall{Name: "write", Arguments: map[string]any{"path": "x.go", "content": "package x"}}
+	decision, ok = automaticToolHandoff(workspace.Fuzz, writeCall, write, writeCall.Arguments)
+	if !ok || !decision.Automatic() || decision.Target != workspace.Build {
+		t.Fatalf("write under FUZZ = %+v automatic=%v, want an automatic BUILD move", decision, ok)
+	}
+
+	// Crossing ASK is a human decision, so the adapter must not report it as
+	// an automatic move the caller could apply.
+	plan := ai.ToolCall{Name: "artifact", Arguments: map[string]any{"kind": "plan", "target": "order/checkout"}}
+	if decision, ok := automaticToolHandoff(workspace.Fuzz, plan, artifact, plan.Arguments); ok {
+		t.Fatalf("plan under FUZZ was treated as an automatic move: %+v", decision)
+	}
+
+	// A request-independent read stays where it is.
+	read := ai.ToolCall{Name: "read", Arguments: map[string]any{"path": "x.go"}}
+	if decision, ok := automaticToolHandoff(workspace.Build, read, tools.NewReadTool(root), read.Arguments); ok {
+		t.Fatalf("a read opened a workspace move: %+v", decision)
 	}
 }
 

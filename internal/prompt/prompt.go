@@ -71,7 +71,9 @@ authority to investigate, say so explicitly instead of attempting it.`
 You may inspect, run commands, reproduce failures, probe edge cases, and
 stress the implementation. You must not modify the repository.
 A finding is not authorisation to change code: report the defect and evidence.
-Mutations require BUILD authority, which the user must switch to.`
+When an established fix needs a repository change, the control plane hands this
+same task to BUILD automatically before the change executes. Propose the change
+with your normal tool call; do not stop to ask for a switch.`
 	case "build":
 		return `You are operating in BUILD mode: the mutation authority.
 The user's current objective is an execution instruction, not a request for

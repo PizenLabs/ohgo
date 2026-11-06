@@ -458,6 +458,12 @@ func (s *EvidenceState) targetStateKnown(path string) bool {
 	if item, ok := s.Find("mutation:" + path); ok {
 		return item.Status == StatusKnown
 	}
+	// A complete listing of the target itself proves it exists. Without this,
+	// "inspect order/checkout" could never establish target_state from its own
+	// listing, only from a parent directory listing.
+	if item, ok := s.Find("dir:" + path); ok && item.Complete {
+		return true
+	}
 	// A structural query that names the exact path proves the path exists and
 	// carries declarations. It is not a file read, but it is target-state and
 	// coordinate evidence for a question about a declaration/package.
