@@ -482,7 +482,10 @@ func repositoryScope(objective string, intent contract.IntentContract) bool {
 			return true
 		}
 	}
-	if containsAnyPhrase(normalized, repositorySubjectPhrases) {
+	if hasConceptTopic(intent) {
+		return true
+	}
+	if hasRepositorySubject(normalized) {
 		return true
 	}
 	if containsAnyPhrase(normalized, wholeRepositoryPhrases) ||
@@ -502,6 +505,72 @@ func repositoryScope(objective string, intent contract.IntentContract) bool {
 	// A mutation with no named coordinate is necessarily about the repository:
 	// there is no other place the change could go.
 	return intent.Kind == contract.ObjectiveMutation && len(intent.Targets) == 0
+}
+
+// hasConceptTopic reports whether the contract names a repository concept.
+// The topic is neither a coordinate nor a project entity: it is the semantic
+// subject whose implementation lives somewhere in the repository.
+func hasConceptTopic(intent contract.IntentContract) bool {
+	return intent.Grounding.HasConcept()
+}
+
+// hasRepositorySubject reports whether a request points at this repository as
+// its subject.
+//
+// The word-aware form exists because natural modifiers sit between the
+// determiner and the noun ("this Go e-commerce project", "our legacy
+// codebase"). It stops at an auxiliary or verb so "this is a checkout project"
+// is not mistaken for a reference to the repository in front of the agent.
+func hasRepositorySubject(normalized string) bool {
+	if containsAnyPhrase(normalized, repositorySubjectPhrases) {
+		return true
+	}
+	words := strings.Fields(normalized)
+	for i, word := range words {
+		if !repositoryReferenceWords[word] {
+			continue
+		}
+		for j := i + 1; j <= i+8 && j < len(words); j++ {
+			if repositorySubjectBarrierWords[words[j]] {
+				break
+			}
+			if repositorySubjectNouns[words[j]] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// repositoryReferenceWords bind the subject to the speaker's context.
+var repositoryReferenceWords = map[string]bool{
+	"this": true, "these": true, "those": true, "our": true, "its": true,
+	"your": true, "their": true, "the": true,
+}
+
+// repositorySubjectNouns are the nouns that name the repository itself.
+var repositorySubjectNouns = map[string]bool{
+	"project": true, "repository": true, "repo": true, "codebase": true,
+	"workspace": true, "system": true, "application": true, "app": true,
+	"program": true, "product": true, "tool": true, "code": true,
+}
+
+// repositorySubjectBarrierWords end a subject noun phrase. A verb after the
+// determiner means the sentence is about something else ("this is a project").
+var repositorySubjectBarrierWords = map[string]bool{
+	"is": true, "are": true, "was": true, "were": true, "be": true,
+	"been": true, "being": true, "do": true, "does": true, "did": true,
+	"can": true, "could": true, "will": true, "would": true, "should": true,
+	"may": true, "might": true, "must": true, "has": true, "have": true,
+	"had": true, "and": true, "or": true, "but": true,
+	"for": true, "with": true, "from": true, "in": true, "on": true,
+	"at": true, "by": true, "to": true, "of": true, "about": true,
+	"into": true, "under": true, "over": true, "between": true,
+	"after": true, "before": true, "through": true, "during": true,
+	"without": true, "within": true, "than": true, "as": true, "like": true,
+	"some": true, "any": true, "all": true, "every": true, "each": true,
+	"no": true, "more": true, "most": true, "less": true, "least": true,
+	"best": true, "a": true, "an": true,
 }
 
 // repositoryPhrases are determiner-bound references to this repository or one of
@@ -706,6 +775,10 @@ func requestsContent(objective string) bool {
 		" read ", " reading ", " explain ", " explains ", " describe ",
 		" what does ", " what is ", " what's ", " summarize ", " summarise ",
 		" summary ", " contents ", " content ", " contains ", " declared ",
+		" inspect ", " inspects ", " inspecting ", " examine ", " examines ",
+		" examining ", " look at ", " open ", " opens ", " opening ",
+		" review ", " reviews ", " reviewing ", " analyze ", " analyse ",
+		" analyzes ", " analyses ", " analyzing ", " analysing ",
 	} {
 		if strings.Contains(normalized, phrase) {
 			return true
@@ -727,7 +800,7 @@ func requestsContent(objective string) bool {
 // same objective must not fall back to the single-observation policy.
 func broadRepositoryAnalysis(objective string, intent contract.IntentContract) bool {
 	normalized := " " + normalizeWords(objective) + " "
-	subject := containsAnyPhrase(normalized, repositorySubjectPhrases) ||
+	subject := hasRepositorySubject(normalized) ||
 		containsAnyPhrase(normalized, shortRepositorySubjectPhrases)
 	wholeRepository := containsAnyPhrase(normalized, wholeRepositoryPhrases)
 	wholeScope := wholeRepository || containsAnyPhrase(normalized, broadScopePhrases)
@@ -739,6 +812,12 @@ func broadRepositoryAnalysis(objective string, intent contract.IntentContract) b
 	// repository" request widens it again; "overall structure of the parser
 	// package" is still about one package.
 	if len(intent.Targets) > 0 && !wholeRepository {
+		return false
+	}
+	// A named concept is the object of the understanding. "Understand how the
+	// checkout flow works" is targeted even when the sentence also names this
+	// project; only an explicit whole-repository request widens it.
+	if hasConceptTopic(intent) && !wholeRepository {
 		return false
 	}
 	// A specific artifact is narrow even when the sentence says "explain" or

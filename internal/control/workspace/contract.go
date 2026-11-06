@@ -127,12 +127,25 @@ func BuildIntentContract(text string) IntentContract {
 	for _, value := range packages {
 		add(Target{Kind: TargetPackage, Value: value})
 	}
+	contract.Grounding = buildGrounding(objective, contract)
+
+	// A conditional change may be scoped by a named repository concept and an
+	// explicit check rather than by a literal path: "understand the checkout
+	// flow; if the issue is confirmed, fix it and run the tests". The concept
+	// is not a filesystem target, but it is a scope and the named check is the
+	// oracle, so the branch is not unbounded. This must be decided from the
+	// request's own verification, before the mutation default adds VerifyAny.
+	conceptOracle := len(contract.Targets) == 0 && len(contract.Verification) > 0 &&
+		contract.Grounding.HasConcept()
 
 	if contract.Kind == ObjectiveMutation {
 		// Phase 3 already requires a successful check after a change. Making it
 		// explicit here lets the behavioural evaluator attach the target scope.
 		if len(contract.Verification) == 0 {
 			contract.Verification = []VerificationRequirement{{Kind: VerifyAny}}
+		}
+		if conceptOracle {
+			contract.BehavioralObjective = true
 		}
 		// A behavioural objective with no target has no package to scope the
 		// check to. Requiring a repo-wide check is the only way to establish
@@ -152,7 +165,6 @@ func BuildIntentContract(text string) IntentContract {
 				"the request does not name a verifiable target or behavioural check")
 		}
 	}
-	contract.Grounding = buildGrounding(objective, contract)
 	return contract
 }
 
@@ -572,6 +584,12 @@ func looksLikeFile(value string) bool {
 }
 
 // extractPathTargets returns explicit file paths in the request.
+//
+// A slash alone is not proof of a coordinate. "order/checkout flow" names a
+// concept; "order/checkout.go", "the order/checkout directory", and
+// "fix it in order/checkout" name filesystem objects. The distinction is
+// load-bearing: a literal target demands target_state/target_content, while a
+// concept is answered from the implementing files.
 func extractPathTargets(text string, commandSpans [][2]int) []string {
 	var out []string
 	for _, match := range pathToken.FindAllStringIndex(text, -1) {
@@ -589,6 +607,9 @@ func extractPathTargets(text string, commandSpans [][2]int) []string {
 		if !strings.Contains(value, "/") && !looksLikeFile(value) {
 			continue
 		}
+		if !literalPathTarget(text, match[0], match[1], value) {
+			continue
+		}
 		value = strings.TrimPrefix(value, "./")
 		if value == "" || value == "." || value == "..." {
 			continue
@@ -596,6 +617,353 @@ func extractPathTargets(text string, commandSpans [][2]int) []string {
 		out = appendUnique(out, value)
 	}
 	return out
+}
+
+// pathObjectNouns name a filesystem object in a request.
+var pathObjectNouns = map[string]bool{
+	"file": true, "files": true, "directory": true, "directories": true,
+	"folder": true, "folders": true, "path": true, "paths": true,
+	"dir": true, "dirs": true,
+}
+
+// pathCueVerbs are verbs that directly introduce a filesystem coordinate.
+var pathCueVerbs = map[string]bool{
+	"read": true, "open": true, "inspect": true, "browse": true, "list": true,
+	"view": true, "cat": true, "show": true, "examine": true, "edit": true,
+	"write": true, "create": true, "delete": true, "remove": true,
+	"update": true, "modify": true, "change": true, "fix": true,
+	"patch": true, "refactor": true, "add": true, "move": true,
+	"rename": true, "copy": true, "run": true, "execute": true, "test": true,
+	"build": true, "format": true, "check": true, "review": true,
+	"explain": true, "describe": true, "understand": true,
+}
+
+// pathCuePrepositions locate a change or observation at a coordinate.
+var pathCuePrepositions = map[string]bool{
+	"in": true, "inside": true, "into": true, "within": true, "under": true,
+	"at": true, "from": true, "to": true, "on": true, "of": true, "for": true,
+}
+
+// pathDeterminers may sit between a cue and the coordinate ("read the
+// order/checkout"). The cue check looks through only one determiner.
+var pathDeterminers = map[string]bool{
+	"the": true, "a": true, "an": true, "this": true, "that": true,
+	"these": true, "those": true, "our": true, "its": true, "your": true,
+}
+
+// literalPathTarget reports whether a slash token is a filesystem coordinate
+// rather than a conceptual compound.
+func literalPathTarget(text string, start, end int, value string) bool {
+	if looksLikeFile(value) || strings.HasSuffix(value, "/") {
+		return true
+	}
+	if backtickedAt(text, start, end) {
+		return true
+	}
+	next := nextSentenceWord(text, end)
+	if pathObjectNouns[next] {
+		return true
+	}
+	// A concept noun is stronger than a preceding path verb: "fix the
+	// order/checkout flow" names the flow, while "fix order/checkout" names a
+	// location.
+	if repositoryConceptNouns[next] {
+		return false
+	}
+	cue := previousCueWord(text, start)
+	return pathCueVerbs[cue] || pathCuePrepositions[cue] || pathObjectNouns[cue]
+}
+
+// backtickedAt reports whether the token at [start,end) is backticked.
+func backtickedAt(text string, start, end int) bool {
+	return start > 0 && end < len(text) && text[start-1] == '`' && text[end] == '`'
+}
+
+// nextSentenceWord returns the word immediately after end, or "" when
+// punctuation intervenes. Only a direct modifier position is evidence.
+func nextSentenceWord(text string, end int) string {
+	i := end
+	for i < len(text) && isSpaceByte(text[i]) {
+		i++
+	}
+	if i >= len(text) {
+		return ""
+	}
+	start := i
+	for i < len(text) && isWordByte(text[i]) {
+		i++
+	}
+	if i == start {
+		return ""
+	}
+	return strings.ToLower(text[start:i])
+}
+
+// previousCueWord returns the word immediately before start. When that word is
+// a determiner, it looks one word further so "read the order/checkout" keeps
+// its cue.
+func previousCueWord(text string, start int) string {
+	i := start
+	for i > 0 && isSpaceByte(text[i-1]) {
+		i--
+	}
+	end := i
+	for i > 0 && isWordByte(text[i-1]) {
+		i--
+	}
+	word := strings.ToLower(strings.TrimSpace(text[i:end]))
+	if !pathDeterminers[word] {
+		return word
+	}
+	i = i - 1
+	for i > 0 && isSpaceByte(text[i]) {
+		i--
+	}
+	end = i
+	for i > 0 && isWordByte(text[i-1]) {
+		i--
+	}
+	return strings.ToLower(strings.TrimSpace(text[i:end]))
+}
+
+func isSpaceByte(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+func isWordByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9') || b == '_' || b == '-'
+}
+
+// repositoryConceptNouns name behaviors or components whose answer lives in
+// the implementation. They turn a slash compound into a topic, not a path.
+var repositoryConceptNouns = map[string]bool{
+	"flow": true, "flows": true, "pipeline": true, "pipelines": true,
+	"handler": true, "handlers": true, "service": true, "services": true,
+	"module": true, "modules": true, "subsystem": true, "subsystems": true,
+	"endpoint": true, "endpoints": true, "controller": true, "controllers": true,
+	"worker": true, "workers": true, "middleware": true, "router": true,
+	"routers": true, "parser": true, "parsers": true, "validator": true,
+	"validators": true, "lifecycle": true, "logic": true, "behavior": true,
+	"behaviour": true, "event": true, "events": true, "job": true,
+	"jobs": true, "process": true, "processes": true, "workflow": true,
+	"workflows": true, "mechanism": true,
+}
+
+// extractConceptTopics returns named repository concepts in the request.
+//
+// It is deliberately conservative. A bare slash compound is not enough: the
+// phrase must use a definite/demonstrative reference, an understanding/request
+// head, or a following concept noun. General-knowledge framing ("a checkout
+// flow", "how do checkout flows work") is not a repository topic.
+func extractConceptTopics(text string) []string {
+	tokens := conceptTokens(stripPossessives(text))
+	var out []string
+	add := func(value string) {
+		value = cleanEntity(value)
+		if value != "" {
+			out = appendUnique(out, value)
+		}
+	}
+	for i := 1; i < len(tokens); i++ {
+		noun := strings.ToLower(tokens[i])
+		if !repositoryConceptNouns[noun] {
+			continue
+		}
+		modifier := strings.ToLower(tokens[i-1])
+		before := ""
+		if i >= 2 {
+			before = strings.ToLower(tokens[i-2])
+		}
+		if conceptTopicPhrase(modifier, before) {
+			add(strings.Join(tokens[i-1:i+1], " "))
+		}
+	}
+	// A slash compound can stand on its own as a definite noun ("explain the
+	// order/checkout"). Skip it when a concept noun already consumed it.
+	for i, token := range tokens {
+		if !conceptSlashStandalone(token) {
+			continue
+		}
+		if i+1 < len(tokens) && repositoryConceptNouns[strings.ToLower(tokens[i+1])] {
+			continue
+		}
+		before := ""
+		if i > 0 {
+			before = strings.ToLower(tokens[i-1])
+		}
+		if conceptReferenceWords[before] || conceptRequestHeads[before] {
+			add(token)
+		}
+	}
+	return out
+}
+
+// conceptTopicPhrase reports whether modifier+noun is a named repository
+// concept rather than a generic noun phrase.
+func conceptTopicPhrase(modifier, before string) bool {
+	if modifier == "" || conceptModifierStopWords[modifier] ||
+		conceptStructuralWords[modifier] || conceptRepositoryNouns[modifier] {
+		return false
+	}
+	if strings.Contains(modifier, "/") {
+		return conceptSlashModifier(modifier) && !conceptIndefiniteOrAux[before]
+	}
+	if len(modifier) < 3 {
+		return false
+	}
+	if conceptReferenceWords[before] || conceptRequestHeads[before] ||
+		conceptRepositoryNouns[before] || conceptGenericQualifiers[before] ||
+		before == "" {
+		return true
+	}
+	return false
+}
+
+// conceptGenericQualifiers describe the concept without making it generic.
+// "the main checkout flow" still names this repository's flow.
+var conceptGenericQualifiers = map[string]bool{
+	"main": true, "primary": true, "core": true, "central": true,
+	"general": true, "overall": true, "full": true, "complete": true,
+	"whole": true, "basic": true, "simple": true, "typical": true,
+	"normal": true, "new": true, "current": true, "existing": true,
+	"legacy": true, "old": true,
+}
+
+// conceptTokens keeps the user's case and slash compounds intact, so an
+// acronym such as TCP/IP stays distinguishable from a repository concept.
+func conceptTokens(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool { return !isConceptByte(r) })
+}
+
+func isConceptByte(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') || r == '_' || r == '/'
+}
+
+// stripPossessives removes an English possessive so "this project's checkout
+// flow" exposes "project checkout flow" to the modifier window.
+func stripPossessives(text string) string {
+	text = strings.ReplaceAll(text, "'s", "")
+	return strings.ReplaceAll(text, "’s", "")
+}
+
+// conceptReferenceWords point at a contextually identified object.
+var conceptReferenceWords = map[string]bool{
+	"the": true, "this": true, "that": true, "these": true, "those": true,
+	"our": true, "its": true, "your": true, "their": true, "my": true,
+}
+
+// conceptRequestHeads introduce what the user wants to understand or inspect.
+var conceptRequestHeads = map[string]bool{
+	"how": true, "what": true, "why": true, "when": true, "where": true,
+	"which": true, "who": true, "whether": true, "explain": true,
+	"explains": true, "explaining": true, "understand": true,
+	"understanding": true, "describe": true, "describes": true,
+	"analyze": true, "analyse": true, "analyzes": true, "analyses": true,
+	"inspect": true, "inspection": true, "investigate": true,
+	"investigation": true, "review": true, "read": true, "show": true,
+	"list": true, "tell": true, "summarize": true, "summarise": true,
+	"summary": true, "outline": true, "walk": true, "check": true,
+	"explore": true, "examine": true,
+}
+
+// conceptIndefiniteOrAux rejects generic or question framing before a slash
+// compound: "a client/server flow" and "how do checkout flows work" are not
+// this repository's named concept.
+var conceptIndefiniteOrAux = func() map[string]bool {
+	words := []string{
+		"a", "an", "some", "any", "all", "every", "each", "no", "not",
+		"do", "does", "did", "is", "are", "was", "were", "be", "been",
+		"being", "can", "could", "will", "would", "should", "may", "might",
+		"must", "has", "have", "had",
+	}
+	out := make(map[string]bool, len(words))
+	for _, word := range words {
+		out[word] = true
+	}
+	return out
+}()
+
+// conceptModifierStopWords are grammar, generic qualifiers, and verbs that do
+// not name a repository concept.
+var conceptModifierStopWords = map[string]bool{
+	"the": true, "a": true, "an": true, "this": true, "that": true,
+	"these": true, "those": true, "our": true, "its": true, "your": true,
+	"their": true, "my": true, "main": true, "general": true, "overall": true,
+	"full": true, "whole": true, "entire": true, "complete": true,
+	"basic": true, "simple": true, "typical": true, "normal": true,
+	"new": true, "current": true, "existing": true, "same": true,
+	"different": true, "some": true, "any": true, "all": true, "every": true,
+	"each": true, "no": true, "not": true, "and": true, "or": true,
+	"but": true, "for": true, "with": true, "from": true, "into": true,
+	"onto": true, "over": true, "under": true, "about": true, "of": true,
+	"to": true, "in": true, "on": true, "at": true, "by": true, "then": true,
+	"also": true, "only": true, "just": true, "very": true, "more": true,
+	"most": true, "such": true, "than": true, "is": true, "are": true,
+	"was": true, "were": true, "be": true, "been": true, "being": true,
+	"do": true, "does": true, "did": true, "can": true, "could": true,
+	"will": true, "would": true, "should": true, "may": true, "might": true,
+	"must": true, "has": true, "have": true, "had": true,
+}
+
+// conceptStructuralWords describe the repository as a whole; they must not
+// narrow a broad survey into one concept.
+var conceptStructuralWords = map[string]bool{
+	"architecture": true, "architectural": true, "structure": true,
+	"structural": true, "design": true, "component": true, "components": true,
+	"stack": true, "technology": true, "technologies": true, "layout": true,
+	"organization": true, "organisation": true,
+}
+
+// conceptRepositoryNouns are the repository itself, not a modifier of one
+// concept. "project flow" is too close to a whole-project question to become a
+// narrow topic implicitly.
+var conceptRepositoryNouns = map[string]bool{
+	"project": true, "repository": true, "repo": true, "codebase": true,
+	"workspace": true, "system": true, "application": true, "app": true,
+	"program": true, "product": true, "tool": true, "code": true,
+}
+
+// nonConceptSlashTokens are common non-repository compounds.
+var nonConceptSlashTokens = map[string]bool{
+	"and/or": true, "w/o": true, "n/a": true, "km/h": true, "mi/h": true,
+	"m/s": true, "ft/s": true, "kb/s": true, "mb/s": true, "gb/s": true,
+}
+
+// conceptSlashModifier reports whether a slash token can be a concept modifier.
+func conceptSlashModifier(token string) bool {
+	if !strings.Contains(token, "/") || token == "/" ||
+		strings.Contains(token, "//") || strings.HasPrefix(token, "/") ||
+		strings.HasSuffix(token, "/") {
+		return false
+	}
+	lower := strings.ToLower(token)
+	if nonConceptSlashTokens[lower] || strings.Contains(lower, "http") ||
+		strings.Contains(lower, "www.") {
+		return false
+	}
+	return true
+}
+
+// conceptSlashStandalone reports whether a slash token is a definite concept on
+// its own. All-uppercase compounds (TCP/IP) and ratios are general knowledge
+// unless a concept noun follows them.
+func conceptSlashStandalone(token string) bool {
+	if !conceptSlashModifier(token) {
+		return false
+	}
+	letters, upper := 0, 0
+	for _, r := range token {
+		switch {
+		case r >= 'a' && r <= 'z':
+			letters++
+		case r >= 'A' && r <= 'Z':
+			letters++
+			upper++
+		}
+	}
+	return letters > 0 && upper != letters
 }
 
 // extractBackticked returns the contents of single-backtick spans.

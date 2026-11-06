@@ -285,18 +285,35 @@ the model said. Two properties keep the loop honest and small:
   verdict vetoes completion, so a model that answers without observing the
   repository is `NEEDS_REVIEW`, not `COMPLETED`. A general knowledge question
   declares no such need.
+- **A coordinate and a concept are different claims.** A slash compound is not
+  a filesystem path by itself. A token with a file extension, a following path
+  noun ("directory", "file"), a direct path verb/preposition, or backticks is a
+  literal target and requires `target_state` (plus `target_content` when the
+  request asks for contents or inspection). A compound such as
+  `order/checkout flow` names a repository concept instead: it declares
+  `repository_overview`, not a literal target, because the answer lives in
+  whichever implementation files realize the flow. An explicit literal path is
+  still satisfied only by that coordinate; a parent listing does not prove an
+  inspected directory's contents.
 - **Breadth is semantic, not a phrase list.** A repository subject ("this
-  project", "the codebase", "the system") combined with an
+  project", "the codebase", "the system", including a modified form such as
+  "this Go e-commerce project") combined with an
   understanding/overview/architecture concept declares a `repository_survey`
   need: at least two content observations or one content observation plus
-  structure. A named coordinate or a specific artifact ("this project's
-  license", the test suite, one file) stays targeted even when the sentence
-  contains a broad verb. The classification is deterministic and derived from
-  the objective and the contract's targets, so unusual wording does not fall
+  structure. A named coordinate, a specific artifact ("this project's license",
+  the test suite, one file), or a named repository concept ("the checkout
+  flow") stays targeted even when the sentence contains a broad verb. The
+  classification is deterministic and derived from the objective and the
+  contract's targets and concept entities, so unusual wording does not fall
   back to the single-observation policy and narrow questions are not forced
   into a repository-wide survey. A repository that has source code also needs
   at least one implementation observation; two documentation artifacts describe
   what the project says about itself, not what its implementation does.
+- **A conceptual mutation branch is bounded by its check.** A mutation that
+  names no literal target but does name a repository concept and an explicit
+  check ("investigate the checkout flow; if confirmed, fix it and run the
+  tests") becomes a behavioural objective. It still requires an observed change
+  and a successful check; the concept is a scope, not a synthetic path.
 - **Failure is durable evidence, not a transient error string.** Every failed
   execution is recorded under `agent.CallSignature` with its target, failure
   class, and retryability. A class is fatal (`authentication_failure`,

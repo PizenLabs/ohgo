@@ -42,6 +42,10 @@ const (
 	EntitySymbol EntityKind = "symbol"
 	// EntityPackage is a named Go package.
 	EntityPackage EntityKind = "package"
+	// EntityTopic is a named repository concept, such as "checkout flow" or
+	// "order/checkout flow". It is not a filesystem coordinate: the answer
+	// lives in whichever implementation files realize the concept.
+	EntityTopic EntityKind = "topic"
 )
 
 // Entity is one named thing the user's request contains.
@@ -174,6 +178,23 @@ func (g *IntentGrounding) HasMaterialAmbiguity() bool {
 	}
 	for _, ambiguity := range g.Ambiguities {
 		if ambiguity.Material {
+			return true
+		}
+	}
+	return false
+}
+
+// HasConcept reports whether the grounding names a repository concept.
+//
+// A concept is a semantic subject ("checkout flow"), not a filesystem
+// coordinate. It scopes a repository question without becoming a target.
+func (g *IntentGrounding) HasConcept() bool {
+	if g == nil {
+		return false
+	}
+	for _, entity := range g.Entities {
+		if entity.Kind == EntityTopic && !entity.Optional &&
+			strings.TrimSpace(entity.Value) != "" {
 			return true
 		}
 	}
