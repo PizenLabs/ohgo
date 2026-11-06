@@ -1668,22 +1668,13 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.state.Apply(ComposerChanged{Text: text, Cursor: cursor})
 		return p, nil
 
-	case "up", "ctrl+p":
-		// On a fresh session there is nothing to recall, so ^p is the
-		// settings/discovery hub the shortcut bar advertises. The moment a
-		// prompt exists (or history does) the bar stops promising it and the
-		// key returns to history recall, so the hint can never lie.
-		if msg.String() == "ctrl+p" && !p.state.SessionActive && len(p.state.Submitted) == 0 {
-			p.openHelpCenter("")
-			return p, nil
-		}
+	case "up":
 		// The terminal cannot say which arrows it synthesised for the wheel,
 		// so the policy is state-based: an empty composer hands the arrows to
 		// the transcript — the state a reader is in — but only while there is
 		// nothing to recall. Once history exists the arrow recalls it, which
-		// is the reason most people reach for up in the first place. ctrl+p
-		// and ctrl+n reach history whether or not the wheel does.
-		if msg.String() == "up" && wheelScrolls(p.state) {
+		// is the reason most people reach for up in the first place.
+		if wheelScrolls(p.state) {
 			if len(p.state.Submitted) > 0 {
 				p.state.Apply(HistoryMoved{Delta: 1})
 				return p, nil
@@ -1700,8 +1691,8 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return p, nil
 
-	case "down", "ctrl+n":
-		if msg.String() == "down" && wheelScrolls(p.state) {
+	case "down":
+		if wheelScrolls(p.state) {
 			p.state.Apply(ScrollMoved{Delta: -mouseScrollLines})
 			return p, nil
 		}
@@ -1710,6 +1701,25 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			p.state.Apply(HistoryMoved{Delta: -1})
 		}
+		return p, nil
+
+	case "alt+up", "ctrl+p":
+		// Explicit history chords never depend on the cursor's row: a
+		// multiline draft keeps the arrows for editing, while these always
+		// browse. On a fresh session there is nothing to recall, so ^p stays
+		// the settings/discovery hub the shortcut bar advertises; the moment
+		// history exists it returns to history recall, so the hint never lies.
+		if msg.String() == "ctrl+p" && !p.state.SessionActive && len(p.state.Submitted) == 0 {
+			p.openHelpCenter("")
+			return p, nil
+		}
+		p.state.Apply(HistoryMoved{Delta: 1})
+		return p, nil
+
+	case "alt+down", "ctrl+n":
+		// The newer counterpart to alt+up / ^p: reachable from any row, so a
+		// multi-line draft never has to move the caret to the bottom first.
+		p.state.Apply(HistoryMoved{Delta: -1})
 		return p, nil
 
 	case "pgup":
