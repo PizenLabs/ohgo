@@ -369,6 +369,13 @@ agent.Loop.execute
   not from the workspace active when the tool set was built. A BUILD ↔ FUZZ
   switch therefore changes which kind the existing tool can author; a captured
   origin would attribute a FUZZ finding to BUILD and refuse it.
+- A `verification` artifact is a reference to a check the runtime observed, not
+  a claim the model may author. The host wires the tool to
+  `Loop.VerificationObserved`, which is true only after a successful check that
+  follows the last definite change. The tool refuses an unbacked verification
+  with the check to run, so a durable "verified" record cannot contradict the
+  completion evidence. Recording a `change` before the check is still allowed;
+  only the verification claim is gated.
 - A refused route never reaches the model: `harness.RouteTurn` is consulted in
   `repl`, in `tui.Program.runTurn`, and in `runOnce` before `Loop.Run`.
 
@@ -595,6 +602,8 @@ that a classifier returned a string.
 | ASK boundary confirmation | `tui.TestBuildStrongQuestionConfirmsAskBoundary`, `TestAskMutationRequiresBuildConfirmation`, `cmd/ohgo.TestWideningFromAskIsOnlyAHandoff` |
 | Staged conditional workflow | `workspace.TestConditionalWorkflowRequiresAStagedInvestigation`, `tui.TestConditionalWorkflowStartsInvestigatingThenContinuesIntoBuild` |
 | Conditional completion is phase-aware | `agent.TestConditionalMutationCompletesInvestigationWithoutAChange`, `tui.TestBuildConditionalInvestigationStaysActiveWithoutMutation` |
+| A failed check resolves after correction | `agent.TestEvaluateCompletionResolvesAFailedVerificationAfterCorrection` |
+| A verification artifact needs an observed check | `agent.TestLoopTracksVerificationAfterTheLastDefiniteChange`, `tools.TestArtifactVerificationRequiresAnObservedCheck`, `cmd/ohgo.TestArtifactToolFollowsTheLiveWorkspace` |
 | Model specialization survives a switch | `cmd/ohgo.TestSwitchWorkspaceRebindsTheRoleModel` |
 
 Run the full suite:

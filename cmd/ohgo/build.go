@@ -263,10 +263,16 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 	// every call, so an automatic BUILD ↔ FUZZ switch applies to the tool set
 	// the loop already holds instead of leaving it attributed to the workspace
 	// active at construction.
+	var artifactTool *tools.ArtifactTool
 	if store != nil && sess != nil {
-		toolSet = append(toolSet, tools.NewArtifactTool(func(a workspace.Artifact) error {
+		// The evidence source is the loop's own observed checks, so it is
+		// wired after the loop exists (below). A nil source disables the gate,
+		// which is strictly weaker than the production predicate and never a
+		// false acceptance.
+		artifactTool = tools.NewArtifactTool(func(a workspace.Artifact) error {
 			return store.SaveArtifact(sess.ID, a)
-		}, opts.authority))
+		}, opts.authority)
+		toolSet = append(toolSet, artifactTool)
 	}
 
 	// The workspace contract is composed into the prompt on every request
@@ -325,6 +331,14 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 	})
 	if err != nil {
 		return nil, err
+	}
+	if artifactTool != nil {
+		// A verification artifact must reference a check the loop actually
+		// observed after the last definite change. Without this wiring the
+		// tool can only enforce the workspace-kind boundary, and a model that
+		// pipes its check into `tail` could leave a durable "verified" record
+		// that the completion evidence contradicts.
+		artifactTool.SetVerificationSource(loop.VerificationObserved)
 	}
 	return loop, nil
 }

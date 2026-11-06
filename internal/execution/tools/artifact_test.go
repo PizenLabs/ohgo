@@ -117,6 +117,45 @@ func TestArtifactToolFollowsTheLiveWorkspace(t *testing.T) {
 	}
 }
 
+// A verification artifact must reference a check the runtime observed. The
+// model can record a change before verifying it, but it cannot author a
+// "verified" record the completion evidence contradicts.
+func TestArtifactVerificationRequiresAnObservedCheck(t *testing.T) {
+	verified := false
+	var recorded []workspace.Artifact
+	tool := NewArtifactTool(func(a workspace.Artifact) error {
+		recorded = append(recorded, a)
+		return nil
+	}, fixedArtifactWorkspace(workspace.Build))
+	tool.SetVerificationSource(func() bool { return verified })
+
+	// Recording the change before the check is what lets the model describe
+	// the work first; it is not a verification claim.
+	if result := runArtifact(t, tool, map[string]any{"kind": "change", "target": "backend/checkout"}); result.IsError {
+		t.Fatalf("the change artifact was refused before verification: %s", result.Text)
+	}
+
+	result := runArtifact(t, tool, map[string]any{"kind": "verification", "target": "backend/checkout"})
+	if !result.IsError || !result.Refused {
+		t.Fatalf("an unbacked verification was recorded: %+v", result)
+	}
+	if !strings.Contains(result.Text, "go test") {
+		t.Errorf("refusal = %q, want an actionable check to run", result.Text)
+	}
+	if len(recorded) != 1 || recorded[0].Kind != workspace.KindChange {
+		t.Fatalf("recorded = %+v, want only the change artifact", recorded)
+	}
+
+	verified = true
+	result = runArtifact(t, tool, map[string]any{"kind": "verification", "target": "backend/checkout"})
+	if result.IsError {
+		t.Fatalf("an observed check was not accepted: %s", result.Text)
+	}
+	if len(recorded) != 2 || recorded[1].Kind != workspace.KindVerification {
+		t.Fatalf("recorded = %+v, want the verification after the observed check", recorded)
+	}
+}
+
 func TestArtifactToolRequiresEvidenceForAFinding(t *testing.T) {
 	tool := NewArtifactTool(func(workspace.Artifact) error { return nil }, fixedArtifactWorkspace(workspace.Fuzz))
 	result := runArtifact(t, tool, map[string]any{"kind": "finding", "target": "x.go"})

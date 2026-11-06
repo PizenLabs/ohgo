@@ -138,6 +138,22 @@ func TestEvaluateCompletionRejectsFailedVerification(t *testing.T) {
 	}
 }
 
+// A failed check is an open obligation, not a permanent one. A corrective
+// change followed by a successful check resolves it: the earlier failure stays
+// in the timeline, but it no longer blocks completion.
+func TestEvaluateCompletionResolvesAFailedVerificationAfterCorrection(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("write", Result{Text: "wrote", Mutates: true})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{Text: "FAIL: duplicate key", IsError: true})}},
+		{Results: []ToolOutcome{toolOutcome("write", Result{Text: "corrected", Mutates: true})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{Text: "ok", Verifies: true})}},
+		cleanStop(),
+	}
+	if verdict := EvaluateCompletion(turns, true); !verdict.Complete() {
+		t.Fatalf("a resolved verification failure = %s (%s), want COMPLETED", verdict.State, verdict.Reason)
+	}
+}
+
 func TestEvaluateCompletionAcceptsMutationThenVerification(t *testing.T) {
 	turns := []Turn{
 		{Results: []ToolOutcome{toolOutcome("write", Result{Text: "wrote", Mutates: true})}},

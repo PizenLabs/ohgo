@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -79,5 +80,19 @@ func TestArtifactToolFollowsTheLiveWorkspace(t *testing.T) {
 	}
 	if artifacts[0].Origin != workspace.Fuzz {
 		t.Errorf("artifact origin = %s, want the live workspace FUZZ", artifacts[0].Origin)
+	}
+
+	// The production loop also wires the verification-evidence gate: a
+	// verification artifact without an observed check is a claim the runtime
+	// cannot back, even in the right workspace.
+	gate.Set(workspace.Build)
+	unbacked := artifact.Execute(agent.Context{Ctx: context.Background()}, map[string]any{
+		"kind": "verification", "target": "backend/checkout",
+	})
+	if !unbacked.IsError || !unbacked.Refused {
+		t.Fatalf("an unbacked verification was recorded through the production loop: %+v", unbacked)
+	}
+	if !strings.Contains(unbacked.Text, "no successful check") {
+		t.Errorf("refusal = %q, want the missing-check evidence reason", unbacked.Text)
 	}
 }

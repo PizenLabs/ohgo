@@ -340,6 +340,48 @@ type Loop struct {
 	// previous request. It floors the local estimate so on-wire compression
 	// cannot hide real growth.
 	lastProviderTokens int
+	// evidenceMu guards the observed-change sequence below. Tool calls dispatch
+	// concurrently, so one mutating and one verifying call in the same batch
+	// must not race when they update the evidence order.
+	evidenceMu sync.Mutex
+	// evidenceSeq counts finished tool outcomes in the order they complete. The
+	// last definite change and the last successful check are compared as
+	// positions, so a verification artifact cannot reference a check that
+	// happened before the change it describes.
+	evidenceSeq     int
+	lastChangeSeq   int
+	lastVerifiedSeq int
+}
+
+// VerificationObserved reports whether a successful check has been observed
+// since the last definite repository change.
+//
+// It is the evidence predicate behind a verification artifact: the artifact is
+// a reference to a check the runtime saw, not a claim the model can author on
+// its own. A run with no observed change has nothing to verify until a check
+// runs, and a change after the last check reopens the obligation.
+func (l *Loop) VerificationObserved() bool {
+	if l == nil {
+		return false
+	}
+	l.evidenceMu.Lock()
+	defer l.evidenceMu.Unlock()
+	return l.lastVerifiedSeq > 0 && l.lastVerifiedSeq >= l.lastChangeSeq
+}
+
+// noteEvidence records one finished tool outcome for the artifact gate. It is
+// intentionally narrower than completion: it tracks definite changes only, so
+// a read-only probe cannot invalidate a check the runtime already observed.
+func (l *Loop) noteEvidence(result Result) {
+	l.evidenceMu.Lock()
+	defer l.evidenceMu.Unlock()
+	l.evidenceSeq++
+	if result.Mutates && !result.IsError {
+		l.lastChangeSeq = l.evidenceSeq
+	}
+	if result.Verifies && !result.IsError {
+		l.lastVerifiedSeq = l.evidenceSeq
+	}
 }
 
 // New returns a Loop. It returns ErrNoTools when the config has no tools,
@@ -1127,7 +1169,9 @@ func (l *Loop) dispatch(
 		wg.Add(1)
 		go func(position int, call ai.ToolCall) {
 			defer wg.Done()
-			record(position, l.execute(ctx, byName, refusals, assistant, call, turn, turnIndex))
+			outcome := l.execute(ctx, byName, refusals, assistant, call, turn, turnIndex)
+			l.noteEvidence(outcome.Result)
+			record(position, outcome)
 		}(i, call)
 
 		if exclusive {

@@ -25,6 +25,12 @@ type ArtifactTool struct {
 	// FUZZ without rebuilding its tool set, and the artifact must be
 	// attributed to the workspace that actually produced it.
 	origin func() workspace.Workspace
+	// verificationObserved reports whether the run observed a successful check
+	// after the last definite change. A verification artifact is a reference to
+	// that observation, so the tool refuses to record one the runtime cannot
+	// back. Nil disables the gate for hosts with no run evidence (tests, an
+	// embedding caller that only records metadata).
+	verificationObserved func() bool
 	// sink persists the artifact. A nil sink refuses the call rather than
 	// silently dropping the record.
 	sink ArtifactSink
@@ -84,6 +90,17 @@ func NewArtifactTool(sink ArtifactSink, origin func() workspace.Workspace) *Arti
 	return tool
 }
 
+// SetVerificationSource installs the runtime predicate that reports whether a
+// successful check has been observed since the last definite change.
+//
+// It is installed by the host after the loop exists, because the evidence is
+// the loop's and the tool is built first. A nil source disables the gate: the
+// tool still enforces the workspace-kind boundary, but it cannot vouch for a
+// check it was never told about.
+func (t *ArtifactTool) SetVerificationSource(source func() bool) {
+	t.verificationObserved = source
+}
+
 // Execute implements agent.Tool.
 func (t *ArtifactTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	if err := checkCancelled(ctx.Ctx); err != nil {
@@ -118,6 +135,20 @@ func (t *ArtifactTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 		// answers) from being reported as an unrecovered tool failure.
 		result := agent.ErrorResult("workspace %s cannot produce a %s artifact; allowed kind(s): %s",
 			origin, kind, allowedArtifactKinds(origin))
+		result.Refused = true
+		return result
+	}
+	if artifactKind == workspace.KindVerification &&
+		t.verificationObserved != nil && !t.verificationObserved() {
+		// A verification artifact is a reference to a check the runtime saw,
+		// not a claim the model can author. Recording one without a successful
+		// observed check would leave a durable "verified" record that the
+		// completion evidence contradicts. The refusal names the recovery so
+		// the model can run the check and retry.
+		result := agent.ErrorResult(
+			"no successful check has been observed since the last change; run the check " +
+				"itself as the last command (for example `go test ./...`, with no pipe or " +
+				"trailing command such as `| tail`) and record this artifact only after it succeeds")
 		result.Refused = true
 		return result
 	}
