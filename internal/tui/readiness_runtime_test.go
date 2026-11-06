@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -36,7 +37,18 @@ type readinessRuntime struct {
 // authority. The model is scripted; no provider or network is involved.
 func newReadinessRuntime(t *testing.T, root string, initial workspace.Workspace, toolSet []agent.Tool, messages []ai.AssistantMessage) *readinessRuntime {
 	t.Helper()
+	return newReadinessRuntimeWithTools(t, root, initial, func(*workspace.Workspace) []agent.Tool {
+		return toolSet
+	}, messages)
+}
+
+// newReadinessRuntimeWithTools is the same runtime, but the tool set is built
+// after the live role exists. A tool whose authority is read per call (the
+// artifact tool) needs that live role, not a copy captured at construction.
+func newReadinessRuntimeWithTools(t *testing.T, root string, initial workspace.Workspace, toolsFor func(*workspace.Workspace) []agent.Tool, messages []ai.AssistantMessage) *readinessRuntime {
+	t.Helper()
 	role := initial
+	roleRef := &role
 	controller := task.NewController(task.NewStore(root), nil)
 	controller.SetRoleSource(func() workspace.Workspace { return role })
 	if _, _, err := controller.Restore(); err != nil {
@@ -57,7 +69,7 @@ func newReadinessRuntime(t *testing.T, root string, initial workspace.Workspace,
 	loop, err := agent.New(agent.Config{
 		Model:    ai.Model{ID: "m", Provider: "p"},
 		Stream:   stream,
-		Tools:    toolSet,
+		Tools:    toolsFor(roleRef),
 		MaxTurns: 16,
 	})
 	if err != nil {
@@ -141,7 +153,7 @@ func newReadinessRuntime(t *testing.T, root string, initial workspace.Workspace,
 	})
 	program.SetTaskHooks(runtimeHooks(controller))
 	return &readinessRuntime{
-		t: t, root: root, role: &role, controller: controller,
+		t: t, root: root, role: roleRef, controller: controller,
 		program: program, loop: loop, messages: messages, index: &index,
 	}
 }
@@ -156,6 +168,34 @@ func (r *readinessRuntime) turnAs(text string, role workspace.Workspace) {
 	r.t.Helper()
 	r.program.runTurnWithChoice(text, role)
 	drainProgram(r.program)
+}
+
+// enableToolHandoff installs the production tool-boundary policy on the real
+// turn path: the workspace owner decides the automatic move, records it on the
+// same task, and the loop re-authorizes the call under the new live role.
+func (r *readinessRuntime) enableToolHandoff() {
+	r.t.Helper()
+	var mu sync.Mutex
+	handoff := func(call ai.ToolCall, tool agent.Tool, args map[string]any) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		decision, ok := workspace.ToolCallTransition(*r.role, call.Name, args,
+			agent.HasActionClass(tool, agent.ActionMutate))
+		if !ok {
+			return false
+		}
+		from := *r.role
+		*r.role = decision.Target
+		if r.controller != nil {
+			if err := r.controller.RecordAutomaticSwitch(from, decision.Target, decision.Reason, ""); err != nil {
+				return false
+			}
+		}
+		return true
+	}
+	hooks := r.program.workspace
+	hooks.Handoff = handoff
+	r.program.SetWorkspaceSwitcher(hooks)
 }
 
 func (r *readinessRuntime) currentTask() task.Task {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -139,6 +140,37 @@ func runOnce(cmd *cobra.Command, text string) error {
 	if err != nil {
 		return err
 	}
+	// The one-shot path uses the same tool-boundary policy as the interactive
+	// hosts: a staged task can move between BUILD and FUZZ when the model's own
+	// action requires the other capability. The target role's model is
+	// resolved here because there is no UI switch owner on this path.
+	var handoffMu sync.Mutex
+	loop.SetWorkspaceHandoff(func(call ai.ToolCall, tool agent.Tool, args map[string]any) bool {
+		handoffMu.Lock()
+		defer handoffMu.Unlock()
+		decision, ok := automaticToolHandoff(opts.authority(), call, tool, args)
+		if !ok {
+			return false
+		}
+		from := opts.authority()
+		opts.setAuthority(decision.Target)
+		if sess != nil {
+			sess.Workspace = decision.Target.String()
+		}
+		if model, modelErr := resolveWorkspaceModel(opts.settings, decision.Target,
+			flagValue(cmd, "model"), os.Getenv("OHGO_MODEL"),
+			dynamicResolver(context.Background(), registry)); modelErr == nil {
+			opts.model = model
+			opts.maxTokens = resolveMaxTokens(opts.settings, model)
+			loop.SetModel(model)
+			if sess != nil {
+				sess.Model = model.Ref()
+			}
+		}
+		_, _ = fmt.Fprintf(out, "workspace %s -> %s: %s\n",
+			from.Label(), decision.Target.Label(), decision.Reason)
+		return true
+	})
 	defer opts.closeMCP()
 	// A one-shot command is interruptible like an interactive turn. The
 	// cancellation path is not a new orchestration layer: it makes the exit
@@ -556,5 +588,26 @@ func runSession(cmd *cobra.Command, args []string) error {
 		opts.budget.Set(grant)
 		return grant
 	}
+	// The line-oriented REPL uses the same tool-boundary handoff as the
+	// full-screen path: a staged task moves between BUILD and FUZZ when the
+	// model's own action requires the other capability. Crossing ASK is not
+	// automatic, so the policy leaves it to the explicit /ask command.
+	var replHandoffMu sync.Mutex
+	plain.loop.SetWorkspaceHandoff(func(call ai.ToolCall, tool agent.Tool, args map[string]any) bool {
+		replHandoffMu.Lock()
+		defer replHandoffMu.Unlock()
+		decision, ok := automaticToolHandoff(plain.activeWorkspace(), call, tool, args)
+		if !ok {
+			return false
+		}
+		from := plain.activeWorkspace()
+		if _, err := plain.SwitchWorkspace(decision.Target.String()); err != nil {
+			_, _ = fmt.Fprintf(out, "workspace: %v\n", err)
+			return false
+		}
+		_, _ = fmt.Fprintf(out, "workspace %s -> %s: %s\n",
+			from.Label(), decision.Target.Label(), decision.Reason)
+		return true
+	})
 	return repl(plain, out, os.Stdin, history)
 }

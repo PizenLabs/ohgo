@@ -497,6 +497,12 @@ type WorkspaceHooks struct {
 	// can never move the runtime by being computed. Nil disables transition
 	// proposals entirely.
 	Predict func(text string) (TurnTransition, bool)
+	// Handoff is the owner's tool-boundary capability seam. Before a tool
+	// call executes, it may move the session to a workspace that holds the
+	// capability the call needs and report that authority moved. The program
+	// installs it on the loop unchanged: policy and the live gate stay with
+	// the owner, and the loop never grants a capability itself.
+	Handoff func(call ai.ToolCall, tool agent.Tool, args map[string]any) (moved bool)
 }
 
 // Proposal kinds carried by TurnTransition.
@@ -596,6 +602,12 @@ type TurnAuthority struct {
 // SetWorkspaceSwitcher installs the owner behind /ask, /fuzz, /build.
 func (p *Program) SetWorkspaceSwitcher(hooks WorkspaceHooks) {
 	p.workspace = hooks
+	if p.loop != nil {
+		// The loop holds the hook, not the policy: a capability request is
+		// answered by the owner, which may move the live gate. Re-evaluating
+		// the call afterwards is the loop's only responsibility.
+		p.loop.SetWorkspaceHandoff(hooks.Handoff)
+	}
 }
 
 // ShellHooks wire the "!" escape to the local shell and to the authority

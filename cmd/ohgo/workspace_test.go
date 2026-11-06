@@ -122,6 +122,43 @@ func TestAdmitForEnforcesWorkspaceOnRealTools(t *testing.T) {
 	}
 }
 
+// The production tool-handoff adapter applies the same automatic policy the
+// turn boundary uses. A finding under BUILD moves to FUZZ; a write under FUZZ
+// moves to BUILD; a plan under FUZZ would cross ASK and stays put.
+func TestAutomaticToolHandoffFollowsTheCapabilityBoundary(t *testing.T) {
+	root := t.TempDir()
+	artifact := tools.NewArtifactTool(nil, func() workspace.Workspace { return workspace.Build })
+	write := tools.NewWriteTool(root)
+
+	finding := ai.ToolCall{Name: "artifact", Arguments: map[string]any{
+		"kind": "finding", "target": "order/checkout",
+		"reproduction": "POST /api/v1/orders", "evidence": "404",
+	}}
+	decision, ok := automaticToolHandoff(workspace.Build, finding, artifact, finding.Arguments)
+	if !ok || !decision.Automatic() || decision.Target != workspace.Fuzz {
+		t.Fatalf("finding under BUILD = %+v automatic=%v, want an automatic FUZZ move", decision, ok)
+	}
+
+	writeCall := ai.ToolCall{Name: "write", Arguments: map[string]any{"path": "x.go", "content": "package x"}}
+	decision, ok = automaticToolHandoff(workspace.Fuzz, writeCall, write, writeCall.Arguments)
+	if !ok || !decision.Automatic() || decision.Target != workspace.Build {
+		t.Fatalf("write under FUZZ = %+v automatic=%v, want an automatic BUILD move", decision, ok)
+	}
+
+	// Crossing ASK is a human decision, so the adapter must not report it as
+	// an automatic move the caller could apply.
+	plan := ai.ToolCall{Name: "artifact", Arguments: map[string]any{"kind": "plan", "target": "order/checkout"}}
+	if decision, ok := automaticToolHandoff(workspace.Fuzz, plan, artifact, plan.Arguments); ok {
+		t.Fatalf("plan under FUZZ was treated as an automatic move: %+v", decision)
+	}
+
+	// A request-independent read stays where it is.
+	read := ai.ToolCall{Name: "read", Arguments: map[string]any{"path": "x.go"}}
+	if decision, ok := automaticToolHandoff(workspace.Build, read, tools.NewReadTool(root), read.Arguments); ok {
+		t.Fatalf("a read opened a workspace move: %+v", decision)
+	}
+}
+
 func TestApplySessionAuthorityRestoresWorkspaceAndModel(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))

@@ -99,6 +99,13 @@ and any subagent read at call time:
 - A staged request ("investigate first; if confirmed, implement") starts in
   investigation. Its conditional mutation is retained for the later branch but
   does not make the current turn a mutation objective.
+- A staged task also moves phase at the tool boundary. `workspace.ToolCallTransition`
+  reads a concrete call — a finding or change artifact, or a mutating tool — and
+  applies the same policy before execution. The loop asks after semantic
+  grounding, the host applies the target through the single switch owner and
+  records it on the same task, and the loop re-authorizes the call under the new
+  live gate. A plan artifact under FUZZ would cross ASK and is therefore not
+  automatic.
 
 The full matrix, state model, and invariants are in
 [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
