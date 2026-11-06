@@ -427,6 +427,10 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 			}
 			return runtimeResume(current), true
 		},
+		Sync: func() TaskProjection {
+			recorded, err := controller.Sync()
+			return runtimeProjection(recorded, err)
+		},
 		ListResumable: func() []TaskResume {
 			tasks, err := controller.ListResumable()
 			if err != nil {
@@ -553,6 +557,7 @@ func runtimeResume(current task.Task) TaskResume {
 	if current.Handoff != nil {
 		resume.HandoffStatus = string(current.Handoff.Status)
 		resume.HandoffTo = current.Handoff.To.String()
+		resume.HandoffBy = current.Handoff.ApprovedBy
 		resume.HandoffConsumed = current.Handoff.Consumed
 	}
 	if current.Contract != nil {

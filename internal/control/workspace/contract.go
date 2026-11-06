@@ -66,6 +66,10 @@ func BuildIntentContract(text string) IntentContract {
 
 	intent := Classify(objective)
 	mutation := RequestsMutation(objective)
+	// A staged conditional request keeps the change as its objective so the
+	// semantics, targets, and verification survive for the branch, but records
+	// that the change is deferred until the investigation finds a reason for it.
+	contract.ConditionalMutation = mutation && ConditionalWorkflow(objective)
 	switch {
 	case mutation:
 		contract.Kind = ObjectiveMutation
@@ -150,6 +154,44 @@ func BuildIntentContract(text string) IntentContract {
 	}
 	contract.Grounding = buildGrounding(objective, contract)
 	return contract
+}
+
+// PhaseContract returns the contract the active authority can actually satisfy
+// for this turn, and whether the persisted objective is deferred to a later
+// authority.
+//
+// A task's completion contract describes the whole objective, which may need
+// BUILD even though the current turn runs under ASK or FUZZ. Judging that turn
+// against the mutation requirement would report a failed repository change for
+// work the authority never permitted; the investigation or understanding phase
+// would be mislabelled as an evidence gap. The phase contract is informational:
+// it asks whether the turn produced a substantive answer, not whether it
+// changed the repository. The caller must keep the task active rather than
+// complete it, because the persisted objective is still outstanding.
+//
+// The original contract is returned unchanged when the active authority can
+// perform it, including a mutation under BUILD and an execution under FUZZ or
+// BUILD. An invalid authority cannot perform a mutation or execution objective,
+// so that contract is deferred rather than silently treated as BUILD.
+func PhaseContract(intent IntentContract, active Workspace) (IntentContract, bool) {
+	canPerform := false
+	switch intent.Kind {
+	case ObjectiveInformational:
+		return intent, false
+	case ObjectiveMutation:
+		canPerform = active == Build
+	case ObjectiveExecution:
+		canPerform = active == Fuzz || active == Build
+	default:
+		// An unset or unknown objective kind is not a phase. The completion
+		// evaluator must review the unsupported contract instead of treating it
+		// as an answer.
+		return intent, false
+	}
+	if canPerform {
+		return intent, false
+	}
+	return intent.InformationalPhase(), true
 }
 
 // hasVerificationScope reports whether a requirement names a package scope.

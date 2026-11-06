@@ -370,6 +370,9 @@ type TransitionPrompt struct {
 	Question string
 	// Reason is the one-line explanation under the heading.
 	Reason string
+	// Automatic is true only for a control-plane execution-workspace handoff.
+	// A prompt is only created for a human decision, so this is diagnostic.
+	Automatic bool
 	// Kind names the decision, e.g. "handoff".
 	Kind string
 	// Handoff carries the transition's carried-context and workspace facts for
@@ -1256,6 +1259,7 @@ func (s *State) Apply(event Event) {
 			Strength:       e.Strength,
 			Question:       e.Question,
 			Reason:         e.Reason,
+			Automatic:      e.Automatic,
 			Kind:           e.Kind,
 			Handoff:        e.Handoff,
 			Selection:      0,
@@ -3082,6 +3086,9 @@ type TransitionProposed struct {
 	Question string
 	// Reason is the one-line explanation under the heading.
 	Reason string
+	// Automatic marks a control-plane handoff. A human-decision prompt should
+	// not be automatic; the field keeps the projection complete.
+	Automatic bool
 	// Kind names the decision, e.g. "handoff".
 	Kind string
 	// Handoff carries the transition's carried-context and workspace facts.

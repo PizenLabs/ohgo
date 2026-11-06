@@ -163,14 +163,20 @@ func TestClassifyUsesTheWholeRequestForMutationIntent(t *testing.T) {
 	}
 }
 
-func TestAmbiguousReadVerbRequiresAWorkspaceChoice(t *testing.T) {
+func TestAmbiguousReadVerbStaysInACapableWorkspace(t *testing.T) {
 	prediction := ClassifyPrediction("check this project")
 	if prediction.Intent != IntentRead || prediction.Strength != StrengthModerate {
 		t.Fatalf("prediction = %+v, want a moderate READ signal", prediction)
 	}
+	// BUILD can inspect the project. A vague read verb is not strong enough to
+	// cross the ASK boundary, so the turn runs where the user already is.
 	route := RouteTurn(Build, "check this project")
-	if route.Allowed() || route.Required != Ask {
-		t.Errorf("route = %+v, want control-plane choice before ASK", route)
+	if !route.Allowed() || route.Required != "" {
+		t.Errorf("route = %+v, want the capable BUILD workspace", route)
+	}
+	decision := DecideTransition(Build, AnalyzeRequest("check this project"))
+	if decision.Proposed() {
+		t.Errorf("decision = %+v, want no workspace change for a moderate read", decision)
 	}
 }
 
@@ -264,16 +270,18 @@ func TestRouteTurnTransitionMatrix(t *testing.T) {
 		{"ASK+EXECUTE", Ask, "fix the bug", false, Build},
 		{"ASK+INVESTIGATE", Ask, "try to break this", false, Fuzz},
 
-		// BUILD must explicitly transition for informational or investigative
-		// work; a request never narrows its authority behind the UI.
-		{"BUILD+READ", Build, "why does this work?", false, Ask},
+		// BUILD and FUZZ may inspect and investigate; a transition policy may
+		// prefer a narrower workspace, but the capability guard does not deny
+		// work the authority already holds.
+		{"BUILD+READ", Build, "why does this work?", true, ""},
 		{"BUILD+EXECUTE", Build, "implement the fix", true, ""},
-		{"BUILD+INVESTIGATE", Build, "reproduce the failure", false, Fuzz},
+		{"BUILD+INVESTIGATE", Build, "reproduce the failure", true, ""},
 
 		// FUZZ remains the selected no-mutation investigation workspace.
-		{"FUZZ+READ", Fuzz, "explain this", false, Ask},
+		{"FUZZ+READ", Fuzz, "explain this", true, ""},
 		{"FUZZ+INVESTIGATE", Fuzz, "try to break this", true, ""},
 		{"FUZZ+EXECUTE", Fuzz, "fix the bug", false, Build},
+		{"FUZZ+RUN_TESTS", Fuzz, "run the tests", true, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,6 +318,108 @@ func TestRouteTurnDeniesAnUnresolvedWorkspace(t *testing.T) {
 	}
 	if route.Message() == "" {
 		t.Error("the refusal has no user-facing message")
+	}
+}
+
+// A task-owned continuation runs under the active authority. The raw router is
+// still honest about capability: a continuation that names a command under ASK
+// requires BUILD, even though the task layer may run it under ASK where the
+// tool gate then denies the call.
+func TestRouteTurnKeepsTaskContinuationInTheActiveWorkspace(t *testing.T) {
+	requests := []string{
+		"continue",
+		"resume the README task",
+		"verify the fix",
+		"retry",
+		"try again",
+	}
+	for _, active := range []Workspace{Ask, Fuzz, Build} {
+		for _, text := range requests {
+			route := RouteTurn(active, text)
+			if !route.Allowed() {
+				t.Errorf("RouteTurn(%s, %q) = %+v, want the continuation allowed", active, text, route)
+			}
+			if route.Active != active {
+				t.Errorf("RouteTurn(%s, %q).Active = %s, want %s", active, text, route.Active, active)
+			}
+			if route.Required != "" {
+				t.Errorf("RouteTurn(%s, %q).Required = %s, want none", active, text, route.Required)
+			}
+		}
+	}
+	// The capability guard does not pretend ASK can run a command merely
+	// because the prompt repeats an open task's verification.
+	if route := RouteTurn(Ask, "run the verification"); route.Allowed() || route.Required != Build {
+		t.Errorf("ASK verification route = %+v, want BUILD required", route)
+	}
+	if route := RouteTurn(Fuzz, "run the verification"); !route.Allowed() {
+		t.Errorf("FUZZ verification route = %+v, want allowed", route)
+	}
+	// An unresolved authority still denies; continuation is not a workspace.
+	if route := RouteTurn(Workspace(""), "continue"); route.Allowed() {
+		t.Fatal("an unresolved workspace admitted a continuation")
+	}
+}
+
+// Continuation vocabulary is explicit, never similarity-based. A new intent
+// about the same subject must still be classified normally.
+func TestContinuationIsExplicitNotSimilarity(t *testing.T) {
+	for _, text := range []string{
+		"continue", "resume", "continue the previous task",
+		"resume the README task", "continue where we left off",
+		"verify the fix", "retry",
+	} {
+		if !IsContinuation(text) {
+			t.Errorf("IsContinuation(%q) = false, want true", text)
+		}
+	}
+	for _, text := range []string{
+		"migrating a project to Next.js", "check the authentication flow",
+		"improve the project documentation", "add tests for the parser",
+		"update my resume", "compare this with the previous task",
+	} {
+		if IsContinuation(text) {
+			t.Errorf("IsContinuation(%q) = true, want false for a new intent", text)
+		}
+	}
+}
+
+// Natural verification wording continues the task that owns the work. It must
+// be distinguished from a new READ request about a different subject, not
+// merely because both contain "check" or "test".
+func TestVerificationContinuationIsAboutExistingWork(t *testing.T) {
+	for _, text := range []string{
+		"check whether the fix worked",
+		"check if it works",
+		"did the fix work?",
+		"is the fix working?",
+		"did it work?",
+		"are the tests passing?",
+		"does the build pass?",
+		"run the verification",
+		"verify the change",
+		"confirm the fix",
+	} {
+		if !IsVerificationContinuation(text) {
+			t.Errorf("IsVerificationContinuation(%q) = false, want true", text)
+		}
+	}
+	for _, text := range []string{
+		"check the authentication flow",
+		"check this project",
+		"check the parser",
+		"check whether the authentication flow works",
+		"are the tests flaky?",
+		"add tests for the parser",
+		"write tests for the parser",
+		"improve the project documentation",
+		"implement the fix and verify it",
+		"run the tests and fix the failures",
+		"verify the change and update the docs",
+	} {
+		if IsVerificationContinuation(text) {
+			t.Errorf("IsVerificationContinuation(%q) = true, want false for a new intent", text)
+		}
 	}
 }
 

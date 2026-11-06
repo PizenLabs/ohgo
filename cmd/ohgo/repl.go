@@ -15,6 +15,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/commit"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/state"
 	"github.com/PizenLabs/ohgo/internal/tui"
@@ -286,11 +287,31 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 			continue
 		}
 
-		// The control plane refuses a request that does not match the active
-		// workspace before the model is asked. It never changes workspace here;
-		// the user must switch explicitly (§3, §11).
+		// The control plane decides the turn's workspace before the model is
+		// asked. BUILD <-> FUZZ cooperation is automatic; crossing ASK is a
+		// human decision, and the line-oriented REPL has no decision surface,
+		// so leaving ASK remains an explicit /ask, /fuzz, or /build command.
 		authority := ""
 		if h.loop != nil {
+			decision := workspace.DecideTransition(h.activeWorkspace(), workspace.AnalyzeRequest(text))
+			switch {
+			case decision.Automatic():
+				from := h.activeWorkspace()
+				if _, err := h.SwitchWorkspace(decision.Target.String()); err != nil {
+					_, _ = fmt.Fprintf(out, "workspace: %v\n", err)
+					continue
+				}
+				_, _ = fmt.Fprintf(out, "workspace %s -> %s: %s\n",
+					from.Label(), decision.Target.Label(), decision.Reason)
+			case decision.NeedsConfirmation():
+				// The line-oriented REPL has no confirmation surface. Crossing
+				// ASK therefore remains an explicit command: telling the user
+				// which one is truthful, while silently running under the wrong
+				// authority would not be.
+				_, _ = fmt.Fprintf(out, "this request needs %s authority; switch with /%s and resend it\n",
+					decision.Target.Label(), decision.Target.String())
+				continue
+			}
 			route := h.RouteTurn(text)
 			if !route.Allowed() {
 				_ = refuseHeadless(out, route)

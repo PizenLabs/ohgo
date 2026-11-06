@@ -172,48 +172,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 			return held.SavePlaneKey(provider, key)
 		},
 	})
-	program.SetWorkspaceSwitcher(tui.WorkspaceHooks{
-		Current: func() string { return held.workspace },
-		Switch: func(name string) error {
-			from := held.activeWorkspace()
-			ws, err := held.SwitchWorkspace(name)
-			if err != nil {
-				return err
-			}
-			// A slash command is itself the human's transition decision.
-			// Recording it keeps the next turn attached to the same task and
-			// leaves a recovery record; a write failure is reported but does
-			// not undo the authority the user just chose.
-			if controller != nil {
-				if err := controller.RecordWorkspaceSwitch(from, ws, ""); err != nil {
-					program.PublishNotice("workspace switched; task continuity was not recorded: " + err.Error())
-				}
-			}
-			opts.setAuthority(ws)
-			style := ws.Style()
-			program.PublishWorkspace(tui.WorkspaceUpdated{
-				Workspace:       style.Label,
-				WorkspaceAccent: style.Accent,
-				HasWorkspace:    true,
-			})
-			program.PublishModel(held.model.Ref())
-			program.PublishEffort(func() string {
-				role := held.sessionRole()
-				if role == "" {
-					role = strings.ToLower(ws.String())
-				}
-				enabled, level := held.reasoningFor(held.roleEffortFor(role))
-				if !enabled {
-					return ""
-				}
-				return level
-			}())
-			program.PublishNotice("switched to " + style.Label)
-			return nil
-		},
-		PrepareTurn: func(text string) tui.TurnAuthority { return turnAuthority(held, text) },
-		Predict:     func(text string) (tui.TurnTransition, bool) { return turnTransition(held, text) },
-	})
+	installWorkspaceHooks(program, held, controller, &opts)
 	program.SetJobsLister(func() []tui.JobItem {
 		for _, tool := range loop.Tools() {
 			bash, ok := tool.(*tools.BashTool)

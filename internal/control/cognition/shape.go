@@ -340,6 +340,13 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		len(shape.Verification) > 0 || needsExecution(shape.Objective)
 	shape.External = externalRequirement(shape.Objective)
 	shape.Constraints = constraintVocabulary(shape.Objective)
+	if intent.ConditionalMutation {
+		// A staged request scopes its no-change wording to the investigation
+		// phase. That phase runs under ASK/FUZZ authority, whose gate already
+		// prevents mutation; keeping the limit global would veto the later
+		// BUILD branch the request explicitly allows.
+		shape.Constraints = withoutConstraint(shape.Constraints, "no_mutation", "no_creation")
+	}
 	if intent.Grounding != nil {
 		shape.NamedEntities = intent.Grounding.EntityValues()
 		shape.RequestedAction = string(intent.Grounding.Action)
@@ -652,10 +659,30 @@ func constraintVocabulary(objective string) []string {
 			}
 		}
 	}
-	add("no_mutation", "do not modify anything", "do not change anything", "read only", "without modifying")
+	add("no_mutation", "do not modify anything", "do not change anything",
+		"read only", "without modifying", "without changing")
 	add("unrelated_mutation_forbidden", "do not modify any other file", "do not change any other file", "no other file")
-	add("no_creation", "do not create it", "do not create the file", "do not create any file")
+	add("no_creation", "do not create it", "do not create the file", "do not create any file",
+		"do not create files", "do not create new files")
 	add("no_external", "do not use the web", "do not browse", "no external")
+	return out
+}
+
+// withoutConstraint removes named constraints, preserving order.
+func withoutConstraint(values []string, drop ...string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	removed := make(map[string]bool, len(drop))
+	for _, key := range drop {
+		removed[key] = true
+	}
+	out := values[:0]
+	for _, value := range values {
+		if !removed[value] {
+			out = append(out, value)
+		}
+	}
 	return out
 }
 

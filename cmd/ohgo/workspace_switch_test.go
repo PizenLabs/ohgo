@@ -110,6 +110,32 @@ func TestSwitchWorkspaceCyclesAuthority(t *testing.T) {
 	}
 }
 
+// A workspace transition must preserve model specialization: the target role's
+// effective model becomes the one the loop actually calls.
+func TestSwitchWorkspaceRebindsTheRoleModel(t *testing.T) {
+	h := testSwitchHarness(t)
+	h.settings.Roles = map[string]config.Profile{
+		string(config.RoleAsk):   {Model: "anthropic/claude-haiku-4-5"},
+		string(config.RoleFuzz):  {Model: "openai/gpt-5"},
+		string(config.RoleBuild): {Model: "anthropic/claude-sonnet-4-5"},
+	}
+	for _, tc := range []struct {
+		workspace string
+		want      string
+	}{
+		{"ask", "anthropic/claude-haiku-4-5"},
+		{"fuzz", "openai/gpt-5"},
+		{"build", "anthropic/claude-sonnet-4-5"},
+	} {
+		if _, err := h.SwitchWorkspace(tc.workspace); err != nil {
+			t.Fatalf("SwitchWorkspace(%s): %v", tc.workspace, err)
+		}
+		if got := h.model.Ref(); got != tc.want {
+			t.Errorf("workspace %s model = %q, want the role binding %q", tc.workspace, got, tc.want)
+		}
+	}
+}
+
 func TestSwitchWorkspaceRejectsUnknown(t *testing.T) {
 	h := testSwitchHarness(t)
 	if _, err := h.SwitchWorkspace("nope"); err == nil {

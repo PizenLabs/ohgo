@@ -482,6 +482,12 @@ type WorkspaceHooks struct {
 	Current func() string
 	// Switch moves the session to the named workspace.
 	Switch func(name string) error
+	// SwitchWithReason is the control-plane handoff seam. It moves the session
+	// through the same owner as Switch and records why the authority moved plus
+	// the measured workspace state, when the caller has one. Nil falls back to
+	// Switch; the transition still happens, with the generic explicit-switch
+	// record.
+	SwitchWithReason func(name, reason, workspaceState string) error
 	// PrepareTurn validates a turn's request against the active authority and
 	// reports a refusal before the model is called. It never changes authority.
 	PrepareTurn func(text string) TurnAuthority
@@ -515,7 +521,7 @@ const (
 //
 // It is a request, not a decision: the program stores it for presentation and
 // acts only after the user answers. The workspace fields project
-// workspace.TransitionProposal; Proposal projects workspace.Proposal. Both are
+// workspace.TransitionDecision; Proposal projects workspace.Proposal. Both are
 // projections, never second policies, and Strength stays a level rather than a
 // score (I12).
 type TurnTransition struct {
@@ -544,6 +550,10 @@ type TurnTransition struct {
 	Question string
 	// Reason is the one-line explanation under the heading.
 	Reason string
+	// Automatic means the control plane already selected this execution
+	// workspace handoff and the program may apply it without asking. The
+	// policy decides it; the program only calls the owner seam.
+	Automatic bool
 }
 
 // ProposalResolution is a human's decided proposal: trusted control-plane
@@ -4030,6 +4040,19 @@ func (p *Program) submit(text string) tea.Cmd {
 	if p.proposalFor(text) != nil {
 		return p.startTurn(text)
 	}
+	// A continuation of a finished task has nothing left to decide. It must not
+	// reach prediction, which would offer a workspace move for work the task
+	// has already proven.
+	if _, ok := p.terminalTaskContinuation(text); ok {
+		return p.startTurn(text)
+	}
+	// A continuation of the open task is already owned by the task state, not
+	// by a new request to classify. Asking the workspace predictor here would
+	// let the READ fallback turn "verify the fix" or "continue" into a forced
+	// role change before the task layer can attach the turn.
+	if p.continuesOpenTask(text) {
+		return p.startTurn(text)
+	}
 	// Ask the workspace owner what it would propose for this request before
 	// the turn begins. Predicting changes nothing: it only opens the decision
 	// surface, and the turn starts when that decision is resolved, so no
@@ -4038,6 +4061,9 @@ func (p *Program) submit(text string) tea.Cmd {
 	// behavior and starts the turn immediately.
 	if p.workspace.Predict != nil && p.state.Transition == nil && p.state.Pending == nil {
 		if proposed, ok := p.workspace.Predict(text); ok {
+			if proposed.Automatic {
+				return p.startAutomaticTurn(text, proposed)
+			}
 			if proposed.Kind == TransitionKindAmbiguous {
 				p.openAuthorityChoice(text, proposed.Reason)
 				return nil
@@ -4069,6 +4095,7 @@ func (p *Program) submit(text string) tea.Cmd {
 					Strength:       proposed.Strength,
 					Question:       proposed.Question,
 					Reason:         proposed.Reason,
+					Automatic:      proposed.Automatic,
 					Kind:           proposed.Kind,
 					Handoff:        proposed.Handoff,
 				})
@@ -4106,6 +4133,7 @@ func (p *Program) submit(text string) tea.Cmd {
 				Strength:       proposed.Strength,
 				Question:       proposed.Question,
 				Reason:         proposed.Reason,
+				Automatic:      proposed.Automatic,
 				Kind:           proposed.Kind,
 				Handoff:        proposed.Handoff,
 			})
@@ -4132,15 +4160,50 @@ func (p *Program) startTurnWithChoice(text string, choice workspace.Workspace) t
 	}
 }
 
-// resolveTransition consumes the pending proposal and starts the turn.
+// startAutomaticTurn applies a control-plane BUILD <-> FUZZ handoff and starts
+// the same request under the target workspace.
+//
+// The decision is not authority: the program only calls the workspace owner's
+// switch seam, exactly like an explicit command. Task continuity is recorded by
+// that owner, so the same task and evidence survive the handoff. If the switch
+// cannot be applied, the request is restored and never runs under the wrong
+// authority.
+func (p *Program) startAutomaticTurn(text string, proposed TurnTransition) tea.Cmd {
+	if p.workspace.SwitchWithReason == nil && p.workspace.Switch == nil {
+		p.state.Apply(Notice{Text: "workspace switching is unavailable"})
+		p.restoreAuthorityRequest(text)
+		return nil
+	}
+	if p.workspace.Current != nil && strings.EqualFold(strings.TrimSpace(p.workspace.Current()), proposed.Proposed) {
+		return p.startTurn(text)
+	}
+	var err error
+	if p.workspace.SwitchWithReason != nil {
+		err = p.workspace.SwitchWithReason(proposed.Proposed, proposed.Reason, p.handoffWorkspaceState())
+	} else {
+		err = p.workspace.Switch(proposed.Proposed)
+	}
+	if err != nil {
+		p.state.Apply(Notice{Text: "workspace: " + err.Error()})
+		p.restoreAuthorityRequest(text)
+		return nil
+	}
+	label := "workspace " + proposed.Current + " → " + proposed.Proposed
+	if reason := strings.TrimSpace(proposed.Reason); reason != "" {
+		label += ": " + reason
+	}
+	p.state.Apply(Notice{Text: label})
+	return p.startTurn(text)
+}
+
+// resolveTransition consumes the pending decision and starts the turn.
 //
 // Accepting routes the workspace move through the owner's Switch — the one
-// authoritative seam — and only then runs the turn. Rejecting cancels the
-// request; running it under a different workspace would make the visual and
-// runtime contract disagree (I2, I3, I7).
-//
-// The prompt is cleared before the switch so the chrome the switch publishes
-// cannot race a stale proposal back onto the screen.
+// authoritative seam — and only then runs the turn. Rejecting a widening
+// decision cancels the request because the current ASK authority cannot perform
+// it; rejecting a narrowing decision runs the request under the capable current
+// workspace. The prompt is cleared before the switch so the chrome the switch
+// publishes cannot race a stale decision back onto the screen.
 func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 	pending := p.state.Transition
 	if pending == nil {
@@ -4154,6 +4217,13 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 	}
 	p.state.Apply(TransitionResolved{})
 	if !accept {
+		// Declining a widening handoff must not run work the current ASK
+		// authority cannot perform. Declining a narrowing decision (BUILD or
+		// FUZZ -> ASK) simply keeps the capable current workspace; cancelling
+		// the request would make a harmless preference into a dead end.
+		if pending.Kind == TransitionKindWorkspace {
+			return p, p.startTurn(text)
+		}
 		p.state.Apply(Notice{Text: "request cancelled; choose its workspace explicitly, then resend"})
 		p.restoreAuthorityRequest(text)
 		return p, nil
@@ -4170,20 +4240,13 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	// The pending decision is data, not authority. Re-derive the policy answer
-	// for this exact request and require it to name the same target, so a
-	// stale, corrupted, or misproduced prompt cannot move authority somewhere
-	// the policy never allowed.
+	// for this exact request and require it to name the same target with the
+	// same human-boundary disposition, so a stale, corrupted, or misproduced
+	// prompt cannot move authority somewhere the policy never allowed.
 	if p.workspace.Current != nil {
 		if current, err := workspace.Parse(p.workspace.Current()); err == nil {
-			prediction := workspace.ClassifyPrediction(text)
-			allowed := false
-			if pending.Kind == TransitionKindHandoff {
-				if candidate, ok := workspace.ProposeHandoff(current, prediction); ok && candidate.Proposed == target {
-					allowed = true
-				}
-			} else if candidate, ok := workspace.ProposeTransition(current, prediction); ok && candidate.Proposed == target {
-				allowed = true
-			}
+			decision := workspace.DecideTransition(current, workspace.AnalyzeRequest(text))
+			allowed := decision.NeedsConfirmation() && decision.Target == target
 			if !allowed {
 				p.state.Apply(Notice{Text: "this transition is no longer authorized; resend the request"})
 				p.restoreAuthorityRequest(text)
@@ -4656,11 +4719,47 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	seq := p.turnSeq
 	p.mu.Unlock()
 
+	// A proven or otherwise finished task owns no further continuation. Refuse
+	// before routing so the finished task is neither archived nor replaced by
+	// a duplicate objective.
+	if current, ok := p.terminalTaskContinuation(text); ok {
+		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
+		p.publish(Notice{Text: terminalTaskNotice(current)})
+		p.publish(AssistantDone{Seq: seq})
+		return
+	}
+
+	// Resolve the live authority before routing. A task continuation is owned
+	// by the open task, so it must not be reclassified as a new READ request or
+	// sent through workspace prediction before that ownership is known.
+	activeAuthority := ""
+	if choice.Valid() {
+		activeAuthority = strings.ToLower(strings.TrimSpace(choice.String()))
+	} else if p.workspace.Current != nil {
+		activeAuthority = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
+	}
+
+	// The completion contract is extracted from the user's own text before any
+	// execution. It is the task's objective and the evidence boundary; the
+	// model cannot add to or reinterpret it.
+	intent := workspace.BuildIntentContract(text)
+
+	taskCurrent, _, taskOwned := p.taskContinuationFor(text, activeAuthority)
+
 	// The control plane validates the active authority before the model is asked.
 	// A request the selected workspace cannot answer is refused unless this exact
 	// turn carries the user's explicit choice from the authority selector.
 	turn := TurnAuthority{}
-	if choice.Valid() {
+	switch {
+	case taskOwned && activeAuthority != "":
+		// The task owns this turn. Continue under the authority already in
+		// force; the persisted contract, not the prompt's READ-looking wording,
+		// defines the work. The gate still admits every individual tool.
+		turn = TurnAuthority{
+			Active: strings.ToUpper(activeAuthority),
+			Intent: taskIntentLabel(taskCurrent),
+		}
+	case choice.Valid():
 		// The selector is the authority decision. Classification remains useful
 		// task context, but it cannot veto or replace the user's chosen workspace;
 		// tool admission still enforces that workspace's contract.
@@ -4668,7 +4767,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			Active: choice.Label(),
 			Intent: strings.ToUpper(string(workspace.Classify(text))),
 		}
-	} else if p.workspace.PrepareTurn != nil {
+	case p.workspace.PrepareTurn != nil:
 		turn = p.workspace.PrepareTurn(text)
 	}
 	if turn.Blocked {
@@ -4683,18 +4782,15 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	}
 	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
 
-	// The active authority is read before the task decision: a role change on
-	// the same objective is a continuation, not a new task. It is the
-	// control plane's current authority, never a prediction from the prompt.
-	activeAuthority := strings.ToLower(strings.TrimSpace(turn.Active))
+	// The active authority is read from the route for a normal turn, or from
+	// the live owner when the task already owned the continuation above. A role
+	// change on the same objective is continuity, never a prediction.
+	if activeAuthority == "" {
+		activeAuthority = strings.ToLower(strings.TrimSpace(turn.Active))
+	}
 	if activeAuthority == "" && p.workspace.Current != nil {
 		activeAuthority = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
 	}
-
-	// The completion contract is extracted from the user's own text before any
-	// execution. It is the task's objective and the evidence boundary; the
-	// model cannot add to or reinterpret it.
-	intent := workspace.BuildIntentContract(text)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p.turnTerminal.Store(turnTerminalOpen)
@@ -4768,25 +4864,9 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			}
 			p.recordTaskDecision("NEW_INTENT")
 		default:
-			continuing := continuationPrompt(text)
-			switch {
-			case continuing:
-				p.recordTaskDecision("EXPLICIT_RESUME")
-			case handoffContinuation(current, activeAuthority):
-				continuing = true
-				p.recordTaskDecision("HANDOFF_CONTINUATION")
-			case roleContinuation(current, intent, activeAuthority):
-				continuing = true
-				p.recordTaskDecision("ROLE_CONTINUATION")
-			case objectiveContinuation(current, intent):
-				// Repeating the open objective is another turn on the same
-				// work, not a second task. Without this, an ordinary
-				// follow-up silently fragments identity and detaches the
-				// context the next turn needs.
-				continuing = true
-				p.recordTaskDecision("OBJECTIVE_CONTINUATION")
-			}
+			decision, continuing := taskTurnDecision(current, text, activeAuthority, intent)
 			if continuing {
+				p.recordTaskDecision(decision)
 				if !current.HasContract {
 					abortTurn("an open task has no persisted completion contract; run /task cancel to abandon it, or start a new task with /task list to preserve it")
 					return
@@ -5143,7 +5223,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if p.task.ProjectionProvenance != nil {
 		provenance = p.task.ProjectionProvenance()
 	}
-	action, reason := turnTaskOutcomeWithReview(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance)
+	action, reason := turnTaskOutcomeForAuthority(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance, activeAuthority)
 	// The turn boundary is also the evidence boundary. The loop projects
 	// before each request, but a run that stopped on a deadline, a turn limit,
 	// or its final answer may have an unobserved last turn. Folding it here
@@ -5165,6 +5245,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if action == taskActionReview && p.turnTerminal.Load() == turnTerminalCancelled {
 		// Cancellation is an interruption, not a review verdict. Both are
 		// non-terminal, but the human's stop is the more truthful transition.
+		action, reason = taskActionPause, "interrupted"
+	}
+	if action == taskActionPhaseComplete && p.turnTerminal.Load() == turnTerminalCancelled {
+		// A phase that completed just before the cancellation still belongs to
+		// an interrupted task. Pause rather than leave it looking active.
 		action, reason = taskActionPause, "interrupted"
 	}
 	if action == taskActionComplete {
@@ -5219,6 +5304,13 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			}
 			p.PublishTask(projection)
 		}
+	case taskActionPhaseComplete:
+		// The turn completed the part of the objective the active authority
+		// can perform, but the persisted task still needs a higher authority.
+		// Checkpoint the phase evidence without changing the lifecycle: the
+		// task stays RUNNING with the same identity and contract, and no
+		// completion proof is recorded.
+		p.SyncTask()
 	case taskActionReview:
 		if p.task.NeedsReview != nil {
 			p.PublishTask(p.task.NeedsReview(reason))

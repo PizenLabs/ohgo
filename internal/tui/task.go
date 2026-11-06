@@ -99,6 +99,7 @@ type TaskResume struct {
 	// a phrase. They are continuity metadata, never authority.
 	HandoffStatus   string
 	HandoffTo       string
+	HandoffBy       string
 	HandoffConsumed bool
 	Contract        contract.IntentContract
 	HasContract     bool
@@ -858,76 +859,186 @@ func roleContinuation(current TaskResume, next contract.IntentContract, active s
 	return persisted != "" && persisted == requested
 }
 
-// handoffContinuation reports whether an approved handoff is the explicit
-// continuation decision for this turn.
+// handoffContinuation reports whether an approved or automatically applied
+// handoff owns this turn.
 //
-// The human approved moving this task to exactly the live role, so the next
-// prompt is the work that follows the handoff, not a new objective. After the
-// handoff is applied this is false again: later turns use the ordinary
-// continuation policy, so the approval does not make every future prompt
-// attach to the task.
-func handoffContinuation(current TaskResume, active string) bool {
+// A human approval is itself the continuation decision for the task. An
+// automatic control-plane handoff is narrower: it attaches the next prompt only
+// when the prompt continues the same objective or refers to the task's own
+// result ("fix it"). After the handoff is consumed, later turns use the
+// ordinary continuation policy.
+func handoffContinuation(current TaskResume, active, text string, next contract.IntentContract) bool {
 	// APPROVED is a proposal awaiting its turn boundary. APPLIED but not
-	// consumed is an explicit workspace command awaiting its next turn. Either
-	// one is the human's continuation decision for exactly this task.
+	// consumed is an already-applied workspace command awaiting its next turn.
 	pending := current.HandoffStatus == "APPROVED" ||
 		(current.HandoffStatus == "APPLIED" && !current.HandoffConsumed)
 	if !pending || current.HandoffTo == "" || active == "" {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(current.HandoffTo), strings.TrimSpace(active))
+	if !strings.EqualFold(strings.TrimSpace(current.HandoffTo), strings.TrimSpace(active)) {
+		return false
+	}
+	// A human switch is itself a continuation decision for this task. An
+	// automatic control-plane switch is not: it preserves the task only when
+	// this prompt continues the same objective or refers to its own result.
+	// Otherwise an unrelated new objective would inherit the old contract.
+	if strings.EqualFold(strings.TrimSpace(current.HandoffBy), "control-plane") {
+		return objectiveContinuation(current, next) || taskFollowUp(current, text)
+	}
+	return true
 }
 
 // continuationPrompt recognizes a deliberate continuation of the open task.
 //
-// It is an explicit-intent classifier, not semantic similarity: only language
+// The vocabulary lives in the workspace request-classification package because
+// the router must apply the same rule before it can propose a role change. It
+// is an explicit-intent classifier, not semantic similarity: only language
 // that names continuation resumes a resumable task. A new intent — even one
 // about the same repository or the same files — is never a continuation merely
 // because it is related. The hard safety rule is unchanged: completion still
 // uses the persisted contract, this only decides attachment.
 func continuationPrompt(text string) bool {
-	normalized := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(text))), " ")
-	switch normalized {
-	case "continue", "continue.", "go on", "keep going", "resume", "resume.",
-		"retry", "retry.", "try again", "finish", "finish it", "carry on",
-		"verify", "verify the fix", "verify the change", "run the check",
-		"run the verification", "run the tests", "run the test":
-		return true
-	}
-	// Explicit continuation phrases: "continue the previous task",
-	// "resume the README task", "continue where we left off". Any prompt that
-	// names continuation with these verbs is an explicit resume request.
-	if containsContinuationVerb(normalized) {
-		return true
-	}
-	return false
+	return workspace.IsContinuation(text)
 }
 
-// containsContinuationVerb reports whether the prompt explicitly names
-// continuation. It matches whole words so "migrating" or "continuous" do not
-// count, while "continue the previous task" and "resume the README" do.
-func containsContinuationVerb(normalized string) bool {
-	words := strings.Fields(normalized)
-	has := func(want string) bool {
-		for _, w := range words {
-			trimmed := strings.Trim(w, ".,!?;:")
-			if trimmed == want {
-				return true
-			}
-		}
+// verificationContinuation recognizes a natural request to check the open
+// task's own result ("check whether the fix worked"). It is not a new READ
+// objective: the task already owns the change and its verification contract.
+//
+// Only an execution or mutation task has a result to verify. An informational
+// task keeps the ordinary new-intent rule, so "check the parser" cannot attach
+// itself to an unrelated task merely because the wording resembles a check.
+func verificationContinuation(current TaskResume, text string) bool {
+	if !current.HasContract {
 		return false
 	}
-	if has("continue") || has("resume") || has("resumes") || has("resuming") {
-		return true
+	switch current.Contract.Kind {
+	case contract.ObjectiveMutation, contract.ObjectiveExecution:
+	default:
+		return false
 	}
-	for _, phrase := range []string{
-		"keep going", "go on", "carry on", "where we left off", "previous task",
-	} {
-		if strings.Contains(normalized, phrase) {
-			return true
+	return workspace.IsVerificationContinuation(text)
+}
+
+// taskFollowUp recognizes a short request whose object is the open task's own
+// result ("fix it", "implement the fix"). Only a task that can own a result
+// (mutation or execution) may claim one; an informational task does not become
+// a mutation task because the user said "fix it".
+func taskFollowUp(current TaskResume, text string) bool {
+	if !current.HasContract {
+		return false
+	}
+	switch current.Contract.Kind {
+	case contract.ObjectiveMutation, contract.ObjectiveExecution:
+	default:
+		return false
+	}
+	return workspace.IsTaskFollowUp(text)
+}
+
+// taskTurnDecision reports which continuation rule owns the prompt, if any.
+// The task layer makes one decision; routing, prediction, and attachment all
+// consume it instead of each classifying the text separately.
+func taskTurnDecision(current TaskResume, text, active string, next contract.IntentContract) (string, bool) {
+	switch {
+	case continuationPrompt(text):
+		return "EXPLICIT_RESUME", true
+	case handoffContinuation(current, active, text, next):
+		return "HANDOFF_CONTINUATION", true
+	case verificationContinuation(current, text):
+		return "VERIFICATION_CONTINUATION", true
+	case taskFollowUp(current, text):
+		return "TASK_FOLLOW_UP", true
+	case roleContinuation(current, next, active):
+		return "ROLE_CONTINUATION", true
+	case objectiveContinuation(current, next):
+		return "OBJECTIVE_CONTINUATION", true
+	default:
+		return "", false
+	}
+}
+
+// taskIntentLabel projects the persisted contract as the turn's semantic
+// intent. A continuation runs the task's work, not the new prompt's surface
+// verb, so "check whether the fix worked" is an EXECUTE turn inside BUILD.
+func taskIntentLabel(current TaskResume) string {
+	if current.HasContract {
+		switch current.Contract.Kind {
+		case contract.ObjectiveMutation, contract.ObjectiveExecution:
+			return "EXECUTE"
 		}
 	}
-	return false
+	return "READ"
+}
+
+// terminalTaskContinuation reports whether a continuation names a task that
+// has already finished. It is a refusal, not a new task: a proven objective
+// must terminate instead of being archived and re-run merely because the user
+// repeated continuation vocabulary.
+func (p *Program) terminalTaskContinuation(text string) (TaskResume, bool) {
+	if p.task.Current == nil {
+		return TaskResume{}, false
+	}
+	current, ok := p.task.Current()
+	if !ok || current.ID == "" || !taskStatusTerminal(current.Status) {
+		return TaskResume{}, false
+	}
+	if continuationPrompt(text) || verificationContinuation(current, text) || taskFollowUp(current, text) {
+		return current, true
+	}
+	return TaskResume{}, false
+}
+
+// terminalTaskNotice explains why a continuation of a finished task is refused
+// without inventing a new objective.
+func terminalTaskNotice(current TaskResume) string {
+	if strings.EqualFold(strings.TrimSpace(current.ObjectiveState), "PROVEN") {
+		return "task already proven; no further verification is needed"
+	}
+	status := strings.ToLower(strings.TrimSpace(current.Status))
+	if status == "" {
+		status = "finished"
+	}
+	return "task already " + status + "; start a new objective to continue"
+}
+
+// openTask returns the active, non-terminal task that may own the next turn.
+// A terminal task is archived by the turn boundary, not continued by it.
+func (p *Program) openTask() (TaskResume, bool) {
+	if p.task.Current == nil {
+		return TaskResume{}, false
+	}
+	current, ok := p.task.Current()
+	if !ok || current.ID == "" || taskStatusTerminal(current.Status) {
+		return TaskResume{}, false
+	}
+	return current, true
+}
+
+// taskContinuationFor resolves task ownership for one prompt under the given
+// authority. It is side-effect-free; the turn boundary records the decision
+// only after this has determined that the task owns the prompt.
+func (p *Program) taskContinuationFor(text, active string) (TaskResume, string, bool) {
+	current, ok := p.openTask()
+	if !ok {
+		return TaskResume{}, "", false
+	}
+	decision, owned := taskTurnDecision(current, text, active, workspace.BuildIntentContract(text))
+	return current, decision, owned
+}
+
+// continuesOpenTask reports whether the open task already owns the prompt in a
+// way that must bypass workspace prediction. A task follow-up ("fix it") is
+// different: the task will own the turn, but the control plane must still
+// decide whether the capability lives in BUILD. That decision is automatic
+// between BUILD and FUZZ and confirmed across ASK.
+func (p *Program) continuesOpenTask(text string) bool {
+	active := ""
+	if p.workspace.Current != nil {
+		active = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
+	}
+	_, decision, owned := p.taskContinuationFor(text, active)
+	return owned && decision != "TASK_FOLLOW_UP"
 }
 
 // latestTaskProjection returns the most recent durable task projection, or

@@ -203,11 +203,14 @@ func TestBuildExecutesExplicitMutation(t *testing.T) {
 	stream := &routeStream{call: writeCall()}
 	gate := newAuthorityGate(workspace.Build)
 	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, write), "BUILD")
-	if route := h.RouteTurn("why does this function use sync.Map?"); route.Allowed() {
-		t.Fatal("BUILD silently handled an informational request without an explicit ASK choice")
+	// BUILD holds the read capability. The transition policy prefers ASK for a
+	// strong human-facing question, but a direct route does not deny work the
+	// live authority can perform.
+	if route := h.RouteTurn("why does this function use sync.Map?"); !route.Allowed() {
+		t.Fatalf("BUILD denied its own read capability: %+v", route)
 	}
 	if got := gate.Workspace(); got != workspace.Build {
-		t.Fatalf("gate after refusing the read = %s, want BUILD", got)
+		t.Fatalf("gate after the read = %s, want BUILD", got)
 	}
 
 	var out strings.Builder
@@ -273,9 +276,10 @@ func TestFuzzFindingDoesNotAuthorizeMutation(t *testing.T) {
 	}
 }
 
-// TestFuzzRefusesExecutionWithoutTheModel is the conservative last row of the
-// matrix: FUZZ + EXECUTE requires an explicit BUILD switch.
-func TestFuzzRefusesExecutionWithoutTheModel(t *testing.T) {
+// TestFuzzMutationHandsOffToBuild is the cooperative row of the matrix:
+// FUZZ cannot mutate, so a repository-change request moves to BUILD
+// automatically, through the same switch owner.
+func TestFuzzMutationHandsOffToBuild(t *testing.T) {
 	t.Setenv("OHGO_HISTORY_FILE", "")
 	write := &spyTool{name: "write", tier: agent.TierWrite}
 	stream := &routeStream{call: writeCall()}
@@ -286,14 +290,15 @@ func TestFuzzRefusesExecutionWithoutTheModel(t *testing.T) {
 	if err := repl(h, &out, strings.NewReader("fix the bug\n/quit\n"), nil); err != nil {
 		t.Fatalf("repl: %v", err)
 	}
-	if got := stream.requests(); got != 0 {
-		t.Errorf("provider requests = %d, want 0", got)
+	if got := write.executions(); got != 1 {
+		t.Errorf("mutations = %d, want the automatic BUILD execution", got)
 	}
-	if got := write.executions(); got != 0 {
-		t.Errorf("mutations = %d, want 0", got)
+	if gate.Workspace() != workspace.Build || h.activeWorkspace() != workspace.Build {
+		t.Fatalf("gate/active = %s/%s, want BUILD after the automatic handoff",
+			gate.Workspace(), h.activeWorkspace())
 	}
-	if !strings.Contains(out.String(), "BUILD authority") {
-		t.Errorf("refusal did not name BUILD authority:\n%s", out.String())
+	if !strings.Contains(out.String(), "workspace FUZZ -> BUILD") {
+		t.Errorf("the automatic handoff was not reported:\n%s", out.String())
 	}
 }
 
@@ -381,39 +386,36 @@ func TestSwitchWorkspaceMovesTheLiveGate(t *testing.T) {
 	}
 }
 
-// TestRouteTurnKeepsBuildAuthority proves a request cannot narrow the live
-// authority before an explicit workspace transition.
+// TestRouteTurnKeepsBuildAuthority proves routing never narrows the live
+// authority. BUILD's read capability stays BUILD; only the transition policy
+// may propose moving to ASK, and only the owner may apply it.
 func TestRouteTurnKeepsBuildAuthority(t *testing.T) {
 	gate := newAuthorityGate(workspace.Build)
 	h := &harness{gate: gate, workspace: "BUILD"}
 	route := h.RouteTurn("why does this work?")
-	if route.Allowed() || route.Required != workspace.Ask {
-		t.Fatalf("route = %+v, want a refusal requiring ASK", route)
+	if !route.Allowed() || route.Active != workspace.Build {
+		t.Fatalf("route = %+v, want a capable BUILD turn", route)
 	}
 	if got := gate.Workspace(); got != workspace.Build {
 		t.Errorf("gate = %s, want unchanged BUILD authority", got)
 	}
-	// Both the stored workspace and live gate remain BUILD.
 	if h.activeWorkspace() != workspace.Build {
 		t.Errorf("active workspace = %s, want BUILD", h.activeWorkspace())
 	}
-	if got := gate.Workspace(); got != workspace.Build {
-		t.Errorf("gate = %s, want BUILD", got)
-	}
 }
 
-// TestRouteNeverNarrowedTheBuildGate proves a refused READ cannot leave the
-// security gate in ASK for the next BUILD execution.
+// TestRouteNeverNarrowedTheBuildGate proves reading under BUILD cannot leave
+// the security gate in ASK for the next BUILD execution.
 func TestRouteNeverNarrowedTheBuildGate(t *testing.T) {
 	gate := newAuthorityGate(workspace.Build)
 	h := &harness{gate: gate, workspace: "BUILD"}
 
 	read := h.RouteTurn("why does this work?")
-	if read.Allowed() || read.Required != workspace.Ask || read.Active != workspace.Build {
-		t.Fatalf("read route = %+v, want refusal without authority change", read)
+	if !read.Allowed() || read.Active != workspace.Build {
+		t.Fatalf("read route = %+v, want a capable BUILD turn", read)
 	}
 	if got := gate.Workspace(); got != workspace.Build {
-		t.Fatalf("gate after the read refusal = %s, want BUILD", got)
+		t.Fatalf("gate after the read = %s, want BUILD", got)
 	}
 
 	execute := h.RouteTurn("implement the fix")

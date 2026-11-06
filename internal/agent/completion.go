@@ -393,21 +393,32 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		return needsReview("a tool call failed and no later success or verification recovered it: %s",
 			pendingFailureNames(evidence.pendingFailures))
 	}
-	if intent.Kind == contract.ObjectiveMutation && !evidence.mutated && !input.PriorChange {
+	// A conditional mutation starts in the investigation phase. Until a change
+	// is actually observed (or a durable prior change exists), the turn is
+	// judged as the answer the request asked for first, not as a failed change.
+	// The original contract is restored for the mutation branch and still owns
+	// target, verification, and grounding rules once a change exists.
+	deferredPhase := intent.Kind == contract.ObjectiveMutation &&
+		intent.ConditionalMutation && !evidence.mutated && !input.PriorChange
+	effective := intent
+	if deferredPhase {
+		effective = intent.InformationalPhase()
+	}
+	if effective.Kind == contract.ObjectiveMutation && !evidence.mutated && !input.PriorChange {
 		return needsReview("the request asked for a repository change but no change was observed")
 	}
-	if intent.Kind == contract.ObjectiveExecution && len(intent.Verification) == 0 && !evidence.executed {
+	if effective.Kind == contract.ObjectiveExecution && len(effective.Verification) == 0 && !evidence.executed {
 		// A clean model stop is not execution evidence. A started background
 		// job is not finished execution evidence either: its outcome is only
 		// known when wait observes it.
 		return needsReview("the request asked for execution but no successful execution was observed")
 	}
-	if intent.Kind == contract.ObjectiveInformational && strings.TrimSpace(last.Assistant.Text()) == "" {
+	if effective.Kind == contract.ObjectiveInformational && strings.TrimSpace(last.Assistant.Text()) == "" {
 		// An empty answer is not an answer. The rule is deliberately only
 		// "visible text exists": judging relevance would require an LLM judge.
 		return needsReview("the request asked for an answer but the final assistant message was empty")
 	}
-	if intent.Kind == contract.ObjectiveInformational && answerIsDeferredPlan(last.Assistant.Text()) {
+	if effective.Kind == contract.ObjectiveInformational && answerIsDeferredPlan(last.Assistant.Text()) {
 		// A plan is not a result. The model says "let me check…" because it
 		// intends to keep acting; on a closed surface that action is refused,
 		// so accepting the sentence would report a completion the user never
@@ -418,7 +429,10 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	if evidence.lastVerification < evidence.lastPotentialMutation {
 		return needsReview("the repository change or execution was not followed by a successful verification")
 	}
-	if intent.Kind != contract.ObjectiveMutation && evidence.mutated {
+	if effective.Kind != contract.ObjectiveMutation && evidence.mutated {
+		// The phase contract must not hide a change the request did not ask
+		// for. A conditional contract still names the mutation, so this only
+		// fires for a genuinely informational/execution objective.
 		return needsReview("the request did not ask for a repository change but a change was observed")
 	}
 
@@ -428,19 +442,19 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	}
 
 	var structural StructuralEvidence
-	if intent.Kind == contract.ObjectiveMutation && len(intent.Targets) > 0 {
+	if effective.Kind == contract.ObjectiveMutation && len(effective.Targets) > 0 {
 		structural = CheckTargets(input.Snapshot, input.Resolver)
 	}
-	unexpected := UnexpectedMutations(root, input.Turns, intent, input.Snapshot)
+	unexpected := UnexpectedMutations(root, input.Turns, effective, input.Snapshot)
 	if len(unexpected) > 0 {
 		structural.Unexpected = uniqueSorted(append(structural.Unexpected, unexpected...))
 	}
-	behavioral := AssessBehavior(intent, input.Snapshot, evidence,
+	behavioral := AssessBehavior(effective, input.Snapshot, evidence,
 		goSourceDirectories(ObservedMutationPaths(root, input.Turns, input.Snapshot)))
-	assessment := AssessAlignment(intent, structural, behavioral)
+	assessment := AssessAlignment(effective, structural, behavioral)
 
 	var reasons []string
-	if intent.Kind == contract.ObjectiveMutation && len(intent.Targets) > 0 {
+	if effective.Kind == contract.ObjectiveMutation && len(effective.Targets) > 0 {
 		for _, issue := range structural.Issues {
 			reasons = append(reasons, "target evidence is incomplete: "+issue)
 		}
@@ -457,10 +471,10 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	if !behavioral.Satisfied {
 		reasons = append(reasons, behavioral.Detail)
 	}
-	if intent.Ambiguous {
+	if effective.Ambiguous {
 		detail := "the request does not name a verifiable target or behavioural check"
-		if len(intent.Issues) > 0 {
-			detail = intent.Issues[0]
+		if len(effective.Issues) > 0 {
+			detail = effective.Issues[0]
 		}
 		reasons = append(reasons, detail)
 	}
@@ -486,11 +500,11 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	// deterministic answer check can veto completion even when every
 	// structural target and verification passed: an unsupported global
 	// negative conclusion is not a completed objective.
-	grounding := AssessGrounding(intent, input.Turns, last.Assistant.Text())
+	grounding := AssessGrounding(effective, input.Turns, last.Assistant.Text())
 	if !grounding.Pass() {
 		return needsReview("intent grounding: %s", boundedReason(grounding.Reason()))
 	}
-	provenance := AssessAnswerProvenance(intent, last.Assistant.Text(), input.Provenance)
+	provenance := AssessAnswerProvenance(effective, last.Assistant.Text(), input.Provenance)
 	if !provenance.Pass() {
 		return needsReview("answer provenance: %s", boundedReason(provenance.Reason()))
 	}
