@@ -75,6 +75,9 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		programOpts = append(programOpts, tui.WithMouseReporting())
 	}
 	program := tui.NewProgram(loop, opts.model.Ref(), opts.model.ContextWindow, programOpts...)
+	scratch := installPromptScratch(program, opts.root)
+	stopScratchSignals := installScratchSignalCleanup(func() { _ = scratch.ReleaseAll() })
+	defer stopScratchSignals()
 	recoverer := openRecoveryService(opts.root)
 	defer func() { _ = recoverer.Close() }()
 	program.SetRecovery(recoverer)
@@ -210,6 +213,23 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		if err := config.Save(opts.settings); err != nil {
 			fmt.Fprintf(os.Stderr, "ohgo: could not save task rail preference: %v\n", err)
 		}
+	})
+	program.SetCleanupSettings(opts.settings.AutoPruneEnabled(), opts.settings.KeepRecentSessions())
+	program.SetCleanupChangedHandler(func(autoPrune bool, keepRecent int) {
+		opts.settings.SetCleanup(autoPrune, keepRecent)
+		if err := config.Save(opts.settings); err != nil {
+			fmt.Fprintf(os.Stderr, "ohgo: could not save cleanup preference: %v\n", err)
+		}
+	})
+	program.SetCleanupRunner(func(keepRecent int, activeSessionID int64) (int, error) {
+		if store == nil {
+			return 0, errors.New("session store is unavailable")
+		}
+		result, err := store.PruneSessionsExcept(keepRecent, activeSessionID)
+		if err != nil {
+			return 0, err
+		}
+		return result.DeletedCount(), nil
 	})
 	style := opts.authority().Style()
 	program.PublishWorkspace(tui.WorkspaceUpdated{
@@ -347,6 +367,7 @@ func attachWizardSession(cmd *cobra.Command, opts *options, registry *ai.Registr
 			HasSession: true,
 			Session:    sessionLabel(held.sess),
 		})
+		pruneOnStartup(store, opts.settings, sess.ID)
 		return nil
 	}
 
@@ -367,5 +388,6 @@ func attachWizardSession(cmd *cobra.Command, opts *options, registry *ai.Registr
 		HasSession: true,
 		Session:    sessionLabel(held.sess),
 	})
+	pruneOnStartup(store, opts.settings, sess.ID)
 	return nil
 }

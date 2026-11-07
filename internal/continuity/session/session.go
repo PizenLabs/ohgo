@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     workspace  TEXT NOT NULL DEFAULT 'build',
     project    TEXT NOT NULL DEFAULT '',
     title      TEXT NOT NULL DEFAULT '',
-    archived   INTEGER NOT NULL DEFAULT 0
+    archived   INTEGER NOT NULL DEFAULT 0,
+    protected  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -191,10 +193,30 @@ type Session struct {
 	// Project is the stable project identity the session belongs to. Empty
 	// when the session predates project identity.
 	Project string
-	// Title is a human-readable label, derived from the first turn.
+	// Title is a human-readable label derived deterministically from the first
+	// submitted prompt. It never requires a model call.
 	Title string
 	// Archived hides the session from the default roster without deleting it.
 	Archived bool
+	// Protected exempts the session from automatic pruning. Explicit deletion
+	// remains available: protection constrains retention policy, not human
+	// authority.
+	Protected bool
+}
+
+// TitleAssigned reports whether title is a real label rather than a default
+// filler. Blank, "(untitled)", and a title equal to the session's own model id
+// all mean the session has not been titled yet, so a local derivation may
+// replace them without erasing a human choice.
+func TitleAssigned(title, model string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" || strings.EqualFold(title, "(untitled)") {
+		return false
+	}
+	if model = strings.TrimSpace(model); model != "" && title == model {
+		return false
+	}
+	return true
 }
 
 // CreateOptions describes a new session.
@@ -273,7 +295,7 @@ func (s *Store) SetAuthority(id int64, workspace, model string) error {
 // Get returns one session by id.
 func (s *Store) Get(id int64) (Session, error) {
 	row := s.db.QueryRow(
-		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived FROM sessions WHERE id = ?`, id)
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected FROM sessions WHERE id = ?`, id)
 	return scanSession(row)
 }
 
@@ -283,7 +305,7 @@ func (s *Store) List(limit int) ([]Session, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(
-		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected
 		 FROM sessions WHERE archived = 0 ORDER BY updated_at DESC LIMIT ?`,
 		limit)
 	if err != nil {
@@ -308,7 +330,7 @@ func (s *Store) ListByProject(project string, limit int) ([]Session, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(
-		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected
 		 FROM sessions WHERE (project = ? OR project = '') AND archived = 0
 		 ORDER BY updated_at DESC LIMIT ?`,
 		project, limit)
@@ -451,6 +473,30 @@ func (s *Store) SetArchived(sessionID int64, archived bool) error {
 	return nil
 }
 
+// SetProtected marks a session as exempt from automatic pruning.
+//
+// Protection is a retention policy, not an access control: an explicit Delete
+// still removes the session because the human retains authority over their own
+// history.
+func (s *Store) SetProtected(sessionID int64, protected bool) error {
+	value := 0
+	if protected {
+		value = 1
+	}
+	result, err := s.db.Exec(`UPDATE sessions SET protected = ? WHERE id = ?`, value, sessionID)
+	if err != nil {
+		return fmt.Errorf("session: set protected: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("session: confirm protected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: session %d", ErrSessionNotFound, sessionID)
+	}
+	return nil
+}
+
 // Stat is a lightweight per-session summary for the Session Manager roster.
 //
 // It is deliberately partial: the stored transcript carries no usage record,
@@ -548,6 +594,115 @@ func (s *Store) Delete(sessionID int64) error {
 		return fmt.Errorf("%w: session %d", ErrSessionNotFound, sessionID)
 	}
 	return tx.Commit()
+}
+
+// DefaultKeepRecent is the retention count used when a caller supplies no
+// positive value. Ten recent conversations is enough to resume normal work
+// without treating every old session as permanent state.
+const DefaultKeepRecent = 10
+
+// PruneResult reports one retention pass.
+type PruneResult struct {
+	// Deleted lists the removed session ids, newest-first among the pruned.
+	Deleted []int64
+	// Kept is the number of unprotected sessions retained.
+	Kept int
+	// Protected is the number of tagged sessions that were never candidates.
+	Protected int
+}
+
+// DeletedCount is the number of sessions removed by the pass.
+func (r PruneResult) DeletedCount() int { return len(r.Deleted) }
+
+// PruneSessions deletes old unprotected sessions beyond keep.
+//
+// Protected sessions are excluded before ranking and are never deleted.
+// Archived sessions are still candidates: archiving hides a row from the
+// roster, it does not make the transcript permanent. keep <= 0 selects
+// DefaultKeepRecent.
+func (s *Store) PruneSessions(keep int) (PruneResult, error) {
+	return s.PruneSessionsExcept(keep, 0)
+}
+
+// PruneSessionsExcept is PruneSessions with one session exempted from the
+// retention count. It exists for startup pruning while a session is live: the
+// conversation the process is about to resume must never be deleted by the
+// housekeeping that runs just before it loads.
+func (s *Store) PruneSessionsExcept(keep int, excludeID int64) (PruneResult, error) {
+	if keep <= 0 {
+		keep = DefaultKeepRecent
+	}
+	rows, err := s.db.Query(
+		`SELECT id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected FROM sessions`)
+	if err != nil {
+		return PruneResult{}, fmt.Errorf("session: list for prune: %w", err)
+	}
+	all, err := scanSessions(rows)
+	_ = rows.Close()
+	if err != nil {
+		return PruneResult{}, err
+	}
+
+	type candidate struct {
+		id        int64
+		updatedAt time.Time
+	}
+	candidates := make([]candidate, 0, len(all))
+	result := PruneResult{}
+	for _, sess := range all {
+		if sess.Protected {
+			result.Protected++
+			continue
+		}
+		candidates = append(candidates, candidate{id: sess.ID, updatedAt: sess.UpdatedAt})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].updatedAt.Equal(candidates[j].updatedAt) {
+			return candidates[i].id > candidates[j].id
+		}
+		return candidates[i].updatedAt.After(candidates[j].updatedAt)
+	})
+
+	retained := 0
+	for _, candidate := range candidates {
+		if candidate.id == excludeID {
+			// The live session is exempt from the count as well as from
+			// deletion, so resuming an old conversation cannot also evict the
+			// configured number of recent sessions.
+			result.Kept++
+			continue
+		}
+		if retained < keep {
+			retained++
+			result.Kept++
+			continue
+		}
+		result.Deleted = append(result.Deleted, candidate.id)
+	}
+	if len(result.Deleted) == 0 {
+		return result, nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return PruneResult{}, fmt.Errorf("session: begin prune: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, id := range result.Deleted {
+		if _, err := tx.Exec(`DELETE FROM messages WHERE session_id = ?`, id); err != nil {
+			return PruneResult{}, fmt.Errorf("session: prune messages for %d: %w", id, err)
+		}
+		if _, err := tx.Exec(`DELETE FROM artifacts WHERE session_id = ?`, id); err != nil {
+			return PruneResult{}, fmt.Errorf("session: prune artifacts for %d: %w", id, err)
+		}
+		if _, err := tx.Exec(`DELETE FROM sessions WHERE id = ?`, id); err != nil {
+			return PruneResult{}, fmt.Errorf("session: prune session %d: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return PruneResult{}, fmt.Errorf("session: commit prune: %w", err)
+	}
+	return result, nil
 }
 
 // SaveArtifact records a structured handoff artifact for a session.
@@ -808,14 +963,16 @@ func scanSession(row rowScanner) (Session, error) {
 		createdAt string
 		updatedAt string
 		archived  int
+		protected int
 	)
-	if err := row.Scan(&sess.ID, &createdAt, &updatedAt, &sess.Cwd, &sess.Model, &sess.Workspace, &sess.Project, &sess.Title, &archived); err != nil {
+	if err := row.Scan(&sess.ID, &createdAt, &updatedAt, &sess.Cwd, &sess.Model, &sess.Workspace, &sess.Project, &sess.Title, &archived, &protected); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrSessionNotFound
 		}
 		return Session{}, fmt.Errorf("session: scan: %w", err)
 	}
 	sess.Archived = archived != 0
+	sess.Protected = protected != 0
 	created, err := time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
 		return Session{}, fmt.Errorf("session: parse created_at %q: %w", createdAt, err)
@@ -851,6 +1008,7 @@ func migrate(db *sql.DB) error {
 		{"workspace", `ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT '` + DefaultWorkspace + `'`},
 		{"project", `ALTER TABLE sessions ADD COLUMN project TEXT NOT NULL DEFAULT ''`},
 		{"archived", `ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`},
+		{"protected", `ALTER TABLE sessions ADD COLUMN protected INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, add := range additions {
 		if columns[add.name] {

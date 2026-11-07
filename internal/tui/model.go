@@ -642,6 +642,11 @@ type State struct {
 	// toggle suppresses it. The rail still stays hidden unless an open task has
 	// at least one open todo.
 	TaskRailDisabled bool
+	// AutoPruneEnabled and KeepRecentMax record the durable transcript
+	// cleanup preference. Pruning itself is owned by the host; these fields
+	// only make /settings render and edit the configured values.
+	AutoPruneEnabled bool
+	KeepRecentMax    int
 	// InfoModal is the open /info page, or nil. It is a read-only modal like
 	// the /status card: any key dismisses it. It never enters the transcript,
 	// history, or session.
@@ -751,7 +756,12 @@ type State struct {
 
 // New returns an empty state.
 func New() State {
-	return State{HistCursor: -1, Follow: true, Theme: ThemeDark}
+	return State{
+		HistCursor:    -1,
+		Follow:        true,
+		Theme:         ThemeDark,
+		KeepRecentMax: DefaultKeepRecentSessions,
+	}
 }
 
 // Apply folds one event into the state.
@@ -1306,7 +1316,10 @@ func (s *State) Apply(event Event) {
 		s.StatusModal = nil
 
 	case SettingsOpened:
-		s.SettingsModal = &SettingsState{}
+		s.SettingsModal = &SettingsState{
+			AutoPrune:  s.AutoPruneEnabled,
+			KeepRecent: normalizeKeepRecent(s.KeepRecentMax),
+		}
 
 	case SettingsMoved:
 		if s.SettingsModal != nil {
@@ -1316,8 +1329,21 @@ func (s *State) Apply(event Event) {
 	case SettingsClosed:
 		s.SettingsModal = nil
 
+	case SettingsNoticed:
+		if s.SettingsModal != nil {
+			s.SettingsModal.Notice = e.Text
+		}
+
 	case TaskRailToggled:
 		s.TaskRailDisabled = !e.Enabled
+
+	case CleanupSettingsChanged:
+		s.AutoPruneEnabled = e.AutoPrune
+		s.KeepRecentMax = normalizeKeepRecent(e.KeepRecent)
+		if s.SettingsModal != nil {
+			s.SettingsModal.AutoPrune = s.AutoPruneEnabled
+			s.SettingsModal.KeepRecent = s.KeepRecentMax
+		}
 
 	case UsageModalOpened:
 		// Same snapshot contract as the status card: the facts are frozen at
@@ -2011,13 +2037,11 @@ func (s *State) Apply(event Event) {
 
 	case SessionTitleUpdated:
 		// The title is already durable; this only refreshes a roster that is on
-		// screen so it stops showing the waiting placeholder. A closed manager
-		// re-reads the store when it next opens.
+		// screen. A closed manager re-reads the store when it next opens.
 		if s.SessionModal != nil {
 			for i := range s.SessionModal.Items {
 				if s.SessionModal.Items[i].ID == e.ID {
 					s.SessionModal.Items[i].Title = e.Title
-					s.SessionModal.Items[i].TitlePending = false
 				}
 			}
 		}
@@ -2701,6 +2725,11 @@ type UserSubmitted struct {
 	// model-phase activity line. Zero means unknown, and unknown shows no
 	// elapsed time rather than a fabricated one.
 	At time.Time
+	// HistoryRecorded marks that turn preparation already appended the full
+	// prompt to durable history before offloading it. Without this flag the
+	// same prompt would be recorded twice: once before scratch and once when
+	// the UI event is applied.
+	HistoryRecorded bool
 }
 
 func (UserSubmitted) eventKind() string { return "user_submitted" }
@@ -3190,6 +3219,21 @@ func (SettingsClosed) eventKind() string { return "settings_closed" }
 type TaskRailToggled struct{ Enabled bool }
 
 func (TaskRailToggled) eventKind() string { return "task_rail_toggled" }
+
+// CleanupSettingsChanged applies the durable session-retention preference.
+// The host owns persistence and the actual pruning pass.
+type CleanupSettingsChanged struct {
+	AutoPrune  bool
+	KeepRecent int
+}
+
+func (CleanupSettingsChanged) eventKind() string { return "cleanup_settings_changed" }
+
+// SettingsNoticed reports a manual-clean outcome inside the open settings
+// modal without adding a transcript entry.
+type SettingsNoticed struct{ Text string }
+
+func (SettingsNoticed) eventKind() string { return "settings_noticed" }
 
 // UsageModalOpened shows the /usage inspector with a snapshot of the ledger
 // and provider roster. The view is copied, so the card is a stable read of the
@@ -4516,9 +4560,9 @@ type IdentityUpdated struct {
 
 func (IdentityUpdated) eventKind() string { return "identity_updated" }
 
-// SessionTitleUpdated reports a completed automatic title. It carries only the
-// durable result, never the in-flight request: the placeholder is a view fact,
-// while the title is a stored label.
+// SessionTitleUpdated reports a locally derived title. It carries only the
+// durable result: the label is stored before the event is published, so no
+// in-flight state exists to represent.
 type SessionTitleUpdated struct {
 	// ID is the session the title belongs to.
 	ID int64

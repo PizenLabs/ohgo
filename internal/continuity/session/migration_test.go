@@ -58,6 +58,9 @@ func TestOpenMigratesLegacyDatabase(t *testing.T) {
 	if sess.Model != "anthropic/legacy" {
 		t.Errorf("model = %q, want the stored snapshot", sess.Model)
 	}
+	if sess.Protected {
+		t.Error("a row from before the protection column migrated as protected")
+	}
 
 	// The migrated database must accept new writes with the new columns.
 	if _, err := store.CreateWith(CreateOptions{Cwd: "/new", Model: "m", Workspace: "fuzz", Project: "proj-1"}); err != nil {

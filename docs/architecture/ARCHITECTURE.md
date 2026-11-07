@@ -530,9 +530,11 @@ model; a bare `/` is a path. `$sup <question>` opens the ephemeral support
 surface (a SUP-role interaction that is never persisted and never enters the
 main history); a bare `$sup` opens it with input focus and starts no
 provider call, and ESC closes it. The `$sup` trigger and the `Ctrl+S` chord
-are the support surface's only entries. Prompt history (`~/.ohgo/history`,
-last 1000, commands excluded, `OHGO_HISTORY_FILE` overrides, empty disables) is
-an audit trail, best-effort.
+are the support surface's only entries. Prompt history (`~/.ohgo/history` plus
+the project scope, bounded, commands excluded, `OHGO_HISTORY_FILE` overrides,
+empty disables) is the durable recall source. It is written and flushed before
+an oversized prompt is copied to `.ohgo/scratch`, so Up/Down and Ctrl+P/N keep
+returning the full text after scratch is removed.
 
 `ohgo init` is a pure-planned wizard (`planInit`) writing
 `~/.ohgo/settings.json`; it never overwrites without `--force`. `ohgo

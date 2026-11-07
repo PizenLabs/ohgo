@@ -66,6 +66,7 @@ var domainOf = map[string]string{
 
 	// Application services and presentation.
 	"internal/prompt":       "prompt",
+	"internal/promptopt":    "prompt",
 	"internal/commit":       "application",
 	"internal/startup":      "application",
 	"internal/update":       "application",
@@ -103,6 +104,7 @@ var dependencyFree = []string{
 	"internal/intelligence/ignore",
 	"internal/jsonschema",
 	"internal/memory",
+	"internal/promptopt",
 	"internal/security",
 	"internal/state",
 	"internal/tokens",

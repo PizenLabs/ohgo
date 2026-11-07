@@ -223,18 +223,6 @@ func nearestAgents(dir string) string {
 	}
 }
 
-// SessionTitleInstruction derives a short session label from the user's first
-// prompt. The title is navigation chrome, not a summary: it must be short
-// enough for a table cell and specific enough to tell two sessions apart.
-const SessionTitleInstruction = `Write a title for this coding session from the user's first message.
-
-Rules:
-- 3 to 6 words.
-- Describe the user's goal, not the conversation.
-- Use the user's own domain words when they name files, features, or errors.
-- No quotes, no trailing punctuation, no markdown, and no explanation.
-- Output only the title.`
-
 // SummarizeInstruction is fed to the model when compacting a conversation.
 //
 // It asks for a working handover rather than an abstract: the resumed session

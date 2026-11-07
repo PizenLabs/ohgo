@@ -131,6 +131,9 @@ type Settings struct {
 	// todos. Absence means enabled; the rail still stays hidden until such a
 	// task is open.
 	TaskRail *bool `json:"taskRail,omitempty"`
+	// Cleanup configures session retention. Absence keeps automatic pruning
+	// off and retains the default number of recent sessions for manual runs.
+	Cleanup *CleanupSettings `json:"cleanup,omitempty"`
 	// Mouse selects how the full-screen UI receives the wheel.
 	//
 	// "select" (the default) never requests mouse reporting, so the terminal
@@ -172,6 +175,46 @@ type UpdateSettings struct {
 	// OHGO_UPDATE_CHECK=off overrides it. The explicit `ohgo update` command
 	// is unaffected: a human asking for an update is the authority.
 	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// CleanupSettings configures transcript retention.
+//
+// Protection tags are enforced by the session store, not by this structure:
+// no retention value can delete a protected session.
+type CleanupSettings struct {
+	// AutoPrune enables a retention pass at interactive startup. Absence is
+	// off, so housekeeping never deletes history without an explicit choice.
+	AutoPrune *bool `json:"autoPrune,omitempty"`
+	// KeepRecent is the number of unprotected sessions retained besides any
+	// protected ones. Zero or negative resolves to DefaultKeepRecent.
+	KeepRecent *int `json:"keepRecent,omitempty"`
+}
+
+// DefaultKeepRecent is the fallback retention count. It mirrors the session
+// store's default so settings and direct `ohgo clean` agree.
+const DefaultKeepRecent = 10
+
+// AutoPruneEnabled reports whether startup may prune unprotected sessions.
+func (s Settings) AutoPruneEnabled() bool {
+	return s.Cleanup != nil && s.Cleanup.AutoPrune != nil && *s.Cleanup.AutoPrune
+}
+
+// KeepRecentSessions resolves the configured retention count.
+func (s Settings) KeepRecentSessions() int {
+	if s.Cleanup == nil || s.Cleanup.KeepRecent == nil || *s.Cleanup.KeepRecent <= 0 {
+		return DefaultKeepRecent
+	}
+	return *s.Cleanup.KeepRecent
+}
+
+// SetCleanup records the retention preferences. It allocates the enclosing
+// pointer so a caller can persist a first change from a zero Settings value.
+func (s *Settings) SetCleanup(autoPrune bool, keepRecent int) {
+	if s.Cleanup == nil {
+		s.Cleanup = &CleanupSettings{}
+	}
+	s.Cleanup.AutoPrune = &autoPrune
+	s.Cleanup.KeepRecent = &keepRecent
 }
 
 // SearchSettings is the external search configuration.
@@ -322,7 +365,16 @@ func Default() Settings {
 		Approvals:       map[string]string{},
 		Roles:           map[string]Profile{},
 		Compaction:      defaultCompaction(),
+		Cleanup:         defaultCleanup(),
 	}
+}
+
+// defaultCleanup keeps automatic pruning off while recording the default
+// retention count, so an explicit manual run has a stable configured value.
+func defaultCleanup() *CleanupSettings {
+	autoPrune := false
+	keepRecent := DefaultKeepRecent
+	return &CleanupSettings{AutoPrune: &autoPrune, KeepRecent: &keepRecent}
 }
 
 // defaultCompaction returns the built-in compaction settings.

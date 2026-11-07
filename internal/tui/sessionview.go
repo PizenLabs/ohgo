@@ -22,6 +22,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/promptopt"
 )
 
 // Session manager geometry. The dialog is responsive: it grows with the
@@ -353,13 +356,17 @@ func sessionTableHeader(cols sessionTableColumns, pal *Palette, interior int) st
 }
 
 // sessionStatusCell renders the STATUS column: a filled marker for the loaded
-// session, a hollow one otherwise. The glyph carries the state so a monochrome
-// terminal loses nothing.
+// session, a hollow one otherwise, plus a star for a protected session. Glyphs
+// carry both states so a monochrome terminal loses nothing.
 func sessionStatusCell(item SessionItem, pal *Palette) (string, lipgloss.Style) {
+	marker, style := "○", pal.Muted
 	if item.Active {
-		return "●", pal.ToolDone
+		marker, style = "●", pal.ToolDone
 	}
-	return "○", pal.Muted
+	if item.Protected {
+		marker += " ★"
+	}
+	return marker, style
 }
 
 // sessionDirtyCell renders the DIRTY column. A measured dirty tree is amber;
@@ -382,64 +389,35 @@ func sessionDirtyCell(item SessionItem, pal *Palette) (string, lipgloss.Style) {
 // A new or migrated session may carry fillers instead of an empty title: the
 // literal "(untitled)" marker, or the session's own model id (for example
 // "openrouter/stealth/crouton-alpha"). Both mean "no human or generated title
-// yet", so the automatic pass must treat them as unassigned rather than
-// skipping forever.
+// yet", so the local pass must treat them as unassigned rather than skipping
+// forever.
 func sessionTitleAssigned(title, model string) bool {
-	title = strings.TrimSpace(title)
-	if title == "" || strings.EqualFold(title, "(untitled)") {
-		return false
-	}
-	if model = strings.TrimSpace(model); model != "" && title == model {
-		return false
-	}
-	return true
+	return session.TitleAssigned(title, model)
 }
 
-// sessionTitlePlaceholder is shown while a background title request runs and
-// no local fallback can be derived. It only replaces an unassigned title: an
-// explicit user name is never masked.
-const sessionTitlePlaceholder = "(generating title…)"
-
-// Deterministic fallback bounds. A local title is a provisional label, not a
-// model-derived claim, so it must stay short enough for the roster column.
-const (
-	sessionTitleFallbackWords = 5
-	sessionTitleFallbackRunes = 40
-)
-
-// localSessionTitle derives a deterministic label from a prompt when the ASK
-// model has not answered yet or cannot answer. It keeps the first five words
-// and caps the result at 40 runes, so a slow title request can never strand
-// the Session Manager on an open-ended placeholder.
+// localSessionTitle derives a deterministic label from a prompt.
+//
+// promptopt.SanitizeTitle is the single source of truth for every session
+// title: the first-turn assignment, the legacy backfill, and the roster's
+// fallback all share one noise filter, one set of bounds, and one
+// word-boundary rule.
 func localSessionTitle(prompt string) string {
-	fields := strings.Fields(prompt)
-	if len(fields) == 0 {
-		return ""
-	}
-	if len(fields) > sessionTitleFallbackWords {
-		fields = fields[:sessionTitleFallbackWords]
-	}
-	title := strings.Join(fields, " ")
-	if runes := []rune(title); len(runes) > sessionTitleFallbackRunes {
-		title = strings.TrimSpace(string(runes[:sessionTitleFallbackRunes]))
-	}
-	return title
+	return promptopt.SanitizeTitle(prompt)
 }
 
-// sessionDisplayTitle resolves the roster label: a deterministic local label
-// while an automatic title request is pending, then the stored title, then the
+// sessionDisplayTitle resolves the roster label: the stored title, then a
+// deterministic local label derived from the recorded first prompt, then the
 // explicit untitled marker. The model is a separate fact and is never promoted
 // into the title column: a blank title means "untitled", not "show the model
 // path".
 func sessionDisplayTitle(item SessionItem) string {
-	if item.TitlePending && !sessionTitleAssigned(item.Title, item.Model) {
-		if fallback := localSessionTitle(item.InitialPrompt); fallback != "" {
-			return fallback
+	if sessionTitleAssigned(item.Title, item.Model) {
+		if title := sanitizeInline(item.Title); strings.TrimSpace(title) != "" {
+			return title
 		}
-		return sessionTitlePlaceholder
 	}
-	if title := sanitizeInline(item.Title); strings.TrimSpace(title) != "" {
-		return title
+	if fallback := localSessionTitle(item.InitialPrompt); fallback != "" {
+		return fallback
 	}
 	return "(untitled)"
 }
@@ -457,12 +435,6 @@ func renderSessionTableRow(cols sessionTableColumns, view SessionManagerState, i
 	}
 	status, statusStyle := sessionStatusCell(item, pal)
 	title := sessionDisplayTitle(item)
-	titleStyle := pal.Choice
-	if item.TitlePending && !sessionTitleAssigned(item.Title, item.Model) {
-		// A waiting label is chrome, not a result: keep it quieter than a
-		// stored title so it never reads as the session's final name.
-		titleStyle = pal.Muted
-	}
 	slot := fmt.Sprintf("#%d", item.ID)
 	last := statusValueOr(sanitizeInline(item.Updated), "—")
 	dirty, dirtyStyle := sessionDirtyCell(item, pal)
@@ -483,7 +455,7 @@ func renderSessionTableRow(cols sessionTableColumns, view SessionManagerState, i
 		b.WriteString(sessionCell(pal.Choice.Render(TruncateToWidth(slot, sessionColSlot)), sessionColSlot))
 	}
 	b.WriteString(strings.Repeat(" ", sessionColGap))
-	b.WriteString(sessionCell(titleStyle.Render(TruncateToWidth(title, cols.title)), cols.title))
+	b.WriteString(sessionCell(pal.Choice.Render(TruncateToWidth(title, cols.title)), cols.title))
 	if cols.dirty {
 		b.WriteString(strings.Repeat(" ", sessionColGap))
 		b.WriteString(sessionCell(dirtyStyle.Render(TruncateToWidth(dirty, sessionColDirty)), sessionColDirty))
@@ -530,6 +502,15 @@ func sessionTokenLine(item SessionItem) string {
 	return "~" + formatCount(item.Tokens) + " tokens"
 }
 
+// sessionProtectedLine renders the retention tag as a word, never as an
+// unexplained glyph.
+func sessionProtectedLine(item SessionItem) string {
+	if item.Protected {
+		return "yes"
+	}
+	return "no"
+}
+
 // sessionDetails builds the bottom details block for the highlighted session,
 // or the inline editor when a mode owns it.
 func sessionDetails(view SessionManagerState, pal *Palette, interior int) []string {
@@ -550,6 +531,7 @@ func sessionDetails(view SessionManagerState, pal *Palette, interior int) []stri
 	rows = append(rows, field("Title", sessionDisplayTitle(item))...)
 	rows = append(rows, field("Tokens", sessionTokenLine(item))...)
 	rows = append(rows, field("Model", statusValueOr(sanitizeInline(item.Model), "no model"))...)
+	rows = append(rows, field("Protected", sessionProtectedLine(item))...)
 	rows = append(rows, field("Prompt", statusValueOr(sanitizeInline(item.Prompt), "(no prompt recorded)"))...)
 	return rows
 }
@@ -616,6 +598,7 @@ func sessionFooterBar(view SessionManagerState, pal *Palette, interior int) stri
 		line += pal.Bold.Render("↵") + pal.Muted.Render(" resume  ·  ") +
 			pal.Bold.Render("n") + pal.Muted.Render(" new  ·  ") +
 			pal.Bold.Render("r") + pal.Muted.Render(" rename  ·  ") +
+			pal.Bold.Render("t") + pal.Muted.Render(" tag  ·  ") +
 			pal.Bold.Render("a") + pal.Muted.Render(" archive  ·  ") +
 			pal.Bold.Render("d") + pal.Muted.Render(" delete  ·  ") +
 			pal.Bold.Render("Esc/q") + pal.Muted.Render(" close")
@@ -701,6 +684,8 @@ func (p *Program) handleSessionManagerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.newSessionFromManager()
 	case "r":
 		p.state.Apply(SessionManagerRenameStarted{})
+	case "t":
+		return p.toggleSelectedSessionProtection()
 	case "a":
 		return p.archiveSelectedSession()
 	case "d":
@@ -836,6 +821,32 @@ func (p *Program) archiveSelectedSession() (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
+// toggleSelectedSessionProtection flips the retention tag on the highlighted
+// session and persists it immediately through the store seam. Protection is
+// deliberately reversible without a confirmation: it is a retention
+// preference, not a destructive action.
+func (p *Program) toggleSelectedSessionProtection() (tea.Model, tea.Cmd) {
+	item, ok := p.state.SessionModal.Selected()
+	if !ok {
+		return p, nil
+	}
+	if p.sessionActions.SetProtected == nil {
+		p.state.Apply(SessionManagerNoticed{Text: "tag is unavailable"})
+		return p, nil
+	}
+	protected := !item.Protected
+	if err := p.sessionActions.SetProtected(item.ID, protected); err != nil {
+		p.state.Apply(SessionManagerNoticed{Text: "tag: " + err.Error()})
+		return p, nil
+	}
+	notice := fmt.Sprintf("untagged session #%d", item.ID)
+	if protected {
+		notice = fmt.Sprintf("tagged session #%d as protected", item.ID)
+	}
+	p.reloadSessionManager(notice)
+	return p, nil
+}
+
 // confirmSessionAction runs the destructive action the confirmation named.
 func (p *Program) confirmSessionAction() (tea.Model, tea.Cmd) {
 	view := p.state.SessionModal
@@ -872,9 +883,7 @@ func (p *Program) reloadSessionManager(notice string) {
 }
 
 // markActiveSession stamps the loaded session on the roster so the STATUS
-// column distinguishes the active row from the highlighted one. It also marks
-// sessions whose automatic title request is still in flight, so the table can
-// show a waiting placeholder instead of the model fallback.
+// column distinguishes the active row from the highlighted one.
 func (p *Program) markActiveSession(items []SessionItem) []SessionItem {
 	p.mu.Lock()
 	active := int64(0)
@@ -883,7 +892,6 @@ func (p *Program) markActiveSession(items []SessionItem) []SessionItem {
 	}
 	for i := range items {
 		items[i].Active = items[i].ID == active
-		items[i].TitlePending = p.titling[items[i].ID]
 	}
 	p.mu.Unlock()
 	return items

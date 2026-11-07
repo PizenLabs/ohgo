@@ -5,6 +5,34 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- Hybrid master-prompt offloading: prompts with at least 50 lines or 4000 runes
+  are written to `<project>/.ohgo/scratch/prompt_<session>_<timestamp>.md` and
+  their bytes are injected directly into the model payload. A durable history
+  copy is written first, so Up/Down and Ctrl+P/N still recall the full prompt
+  after scratch is removed. Scratch is cleaned on session close/switch, on
+  SIGINT/SIGTERM/SIGHUP, and by a 24-hour startup sweep.
+- Session protection: `t` in the Session Manager toggles a durable `Protected`
+  tag, shown as a star in the status column and as `Protected · yes/no` in the
+  details pane. Tagged sessions are never removed by automatic pruning while
+  explicit deletion still works.
+- Retention controls: `/settings` gains a CLEANUP section with auto-prune,
+  keep-recent count, and a manual-clean action. The new `ohgo clean` command
+  performs the same protected-aware pruning from the shell.
+- Deterministic prompt optimization: `internal/promptopt` compresses oversized
+  scratch prompts and sanitizes local session titles without a model call or a
+  third-party dependency. Compression removes greetings, politeness, and
+  markdown decoration while preserving fenced code, inline code, paths, and
+  identifiers; local titles drop conversational noise, respect hard word/rune
+  bounds at word boundaries, and never end on a dangling article or preposition.
+- Local-first session titling: every session title is derived synchronously from
+  the submitted prompt by `promptopt.SanitizeTitle` before any provider request.
+  The background ASK-model titler, its timeout and backfill workers, and the
+  "generating title…" placeholder are removed. Legacy untitled sessions are
+  labeled locally when the Session Manager opens, so titles appear instantly
+  with zero token cost.
+
 ## [v0.0.8] - 2026-11-05
 
 ### Added

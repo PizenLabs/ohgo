@@ -50,7 +50,8 @@ const (
 // New-session row values. The value is what choosing the row means, not what
 // the row is called: the title can be reworded without changing behaviour.
 const (
-	// newSessionAutoValue lets the host derive a title after the first turn.
+	// newSessionAutoValue lets the host derive a local title from the first
+	// submitted prompt.
 	newSessionAutoValue = "auto"
 	// newSessionCustomValue uses the text typed into the filter line. An empty
 	// line falls back to auto rather than creating an unnamed custom session.
@@ -677,15 +678,11 @@ func optionsToItems(options []ModelOption) []PickerItem {
 type SessionItem struct {
 	// ID is the database identifier.
 	ID int64
-	// Title is the human label. Empty means untitled: the roster renders an
-	// explicit placeholder rather than substituting the model path, which is a
+	// Title is the deterministic local label derived from the first prompt.
+	// Empty means untitled: the roster renders an explicit marker or derives a
+	// temporary label from InitialPrompt, never the model path, which is a
 	// separate fact shown in the model column/details.
 	Title string
-	// TitlePending reports an in-flight automatic title. It is a placeholder
-	// fact, never a stored claim: the renderer shows a subdued waiting label
-	// until the real title replaces it, and an empty title with no pending
-	// request keeps the model fallback.
-	TitlePending bool
 	// Model is the model the session used.
 	Model string
 	// Updated is a short human timestamp.
@@ -704,16 +701,17 @@ type SessionItem struct {
 	// Tokens is the token count reconstructed from the stored transcript, or
 	// zero when the provider did not measure one.
 	Tokens int
-	// Messages is the stored message count. Backfill only titles sessions with
-	// at least a user prompt and some recorded outcome, never a session whose
-	// first turn has not produced anything yet.
+	// Messages is the stored message count.
 	Messages int
 	// Prompt is the latest user prompt, or empty when not loaded.
 	Prompt string
-	// InitialPrompt is the first stored user prompt. It is the input a
-	// backfill pass uses to title a legacy session, because the latest prompt
-	// may describe follow-up work rather than what the session is about.
+	// InitialPrompt is the first stored user prompt. It is the input the local
+	// backfill uses to title a legacy session, because the latest prompt may
+	// describe follow-up work rather than what the session is about.
 	InitialPrompt string
+	// Protected marks a session excluded from automatic retention pruning.
+	// Explicit deletion remains available.
+	Protected bool
 }
 
 // JobItem is one background job for the picker.

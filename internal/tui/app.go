@@ -186,6 +186,10 @@ type Program struct {
 	// read when the program starts and appended to for every turn that
 	// actually reaches the agent, never for a draft or a ghost suggestion.
 	promptHistory PromptHistory
+	// promptScratch owns ephemeral oversized-prompt files for this process.
+	// Nil keeps large prompts entirely in memory, which is the safe default
+	// for embedded hosts.
+	promptScratch PromptScratch
 
 	// transcriptIndex, viewport, and transcriptFrame are the retained
 	// full-screen projection: document geometry, scroll position, and the
@@ -284,15 +288,7 @@ type Program struct {
 	// is nil-safe: a missing hook reports the action unavailable rather than
 	// pretending it succeeded.
 	sessionActions SessionActions
-	// sessionTitle derives a concise label from the first turn. Nil disables
-	// automatic titling, which is also the safe default for embedded hosts
-	// that do not own a provider. It runs off the update goroutine.
-	sessionTitle SessionTitleGenerator
-	// titling records sessions whose title request is in flight so the Session
-	// Manager can show a waiting placeholder. Guarded by mu because the turn
-	// goroutine writes it while the update goroutine renders.
-	titling    map[int64]bool
-	listModels func() []string
+	listModels     func() []string
 	// listModelOptions is the enriched roster behind the /model picker:
 	// native ids plus preformatted context/price/capability detail built by
 	// the caller, which owns the catalog. Preferred over listModels when set.
@@ -325,6 +321,10 @@ type Program struct {
 	// onTaskRailChanged persists the task-rail preference. Nil means
 	// session-only, which is also the safe default for embedded hosts.
 	onTaskRailChanged func(enabled bool)
+	// onCleanupChanged persists the retention preferences; onCleanupRun
+	// executes the immediate manual pass. Both are host-owned seams.
+	onCleanupChanged func(autoPrune bool, keepRecent int)
+	onCleanupRun     func(keepRecent int, activeSessionID int64) (int, error)
 
 	// usage accumulates token totals for /usage. Nil means unavailable.
 	usage *agent.UsageLog
@@ -807,6 +807,22 @@ type PromptHistory interface {
 	Add(prompt string)
 }
 
+// PromptScratch is the ephemeral store for oversized prompts.
+//
+// Offload compresses the prompt, writes it, and returns the bytes read back
+// from the file, which the turn sends directly as its user payload. No tool
+// call is involved: the file is an archival/lifecycle artifact, not a second
+// retrieval step. The durable history copy remains the raw prompt.
+// ReleaseSession removes the files belonging to one closed conversation;
+// ReleaseAll is the process-shutdown path.
+type PromptScratch interface {
+	// ShouldOffload reports whether prompt crosses the hybrid thresholds.
+	ShouldOffload(prompt string) bool
+	Offload(sessionID int64, prompt string) (path, text string, offloaded bool, err error)
+	ReleaseSession(sessionID int64) error
+	ReleaseAll() error
+}
+
 // promptHistoryFlusher is implemented by stores that buffer appends. Shutdown
 // flushes them so a prompt submitted immediately before quit is not lost.
 type promptHistoryFlusher interface {
@@ -826,6 +842,12 @@ func WithPromptHistory(store PromptHistory) ProgramOption {
 		p.promptHistory = store
 		p.state.Submitted = append(p.state.Submitted, store.Entries()...)
 	}
+}
+
+// SetPromptScratch installs the ephemeral oversized-prompt store. Nil leaves
+// every prompt in memory and disables scratch lifecycle cleanup.
+func (p *Program) SetPromptScratch(scratch PromptScratch) {
+	p.promptScratch = scratch
 }
 
 // WithMouseReporting makes the program request mouse reporting from the
@@ -1192,7 +1214,7 @@ func (p *Program) apply(event Event) {
 	// A prompt joins durable history only when it actually becomes a turn.
 	// Drafts, ghost suggestions, queued lines that never run, and slash or
 	// shell commands are not prompts and must not pollute recall.
-	if submitted, ok := event.(UserSubmitted); ok && p.promptHistory != nil {
+	if submitted, ok := event.(UserSubmitted); ok && p.promptHistory != nil && !submitted.HistoryRecorded {
 		p.promptHistory.Add(submitted.Text)
 	}
 	// Validation results pair with the pending setup flow here, on the update
@@ -2294,7 +2316,7 @@ func (p *Program) openNewSessionPicker(args []string) {
 		Kind:  PickerNewSession,
 		Title: "New Session",
 		Items: []PickerItem{
-			{Title: "Auto (LLM Generated)", Detail: "title from the first prompt", Value: newSessionAutoValue},
+			{Title: "Auto (Local Title)", Detail: "derived locally from the first prompt", Value: newSessionAutoValue},
 			{Title: "Custom Name...", Detail: "type a name in the line below", Value: newSessionCustomValue},
 		},
 	})
@@ -2304,8 +2326,8 @@ func (p *Program) openNewSessionPicker(args []string) {
 //
 // The custom row takes the title typed into the picker line; the auto row and
 // an empty custom line both create an untitled session whose title is derived
-// after the first turn. The picker is closed here so a second Enter finds no
-// picker and cannot create a second session.
+// locally when the first prompt is submitted. The picker is closed here so a
+// second Enter finds no picker and cannot create a second session.
 func (p *Program) chooseNewSession(item PickerItem) (tea.Model, tea.Cmd) {
 	title := ""
 	if picker := p.state.Picker; picker != nil {
@@ -2329,8 +2351,8 @@ func (p *Program) createNewSessionWithTitle(name string) {
 }
 
 // createNewSession creates and adopts exactly one session. An empty title
-// starts the automatic-title path; a non-empty title is persisted immediately
-// so the first turn never overwrites an explicit name.
+// starts the local-title path; a non-empty title is persisted immediately so
+// the first prompt never overwrites an explicit name.
 func (p *Program) createNewSession(title string) {
 	if p.newSessionCreating {
 		return
@@ -2350,7 +2372,9 @@ func (p *Program) createNewSession(title string) {
 	p.detachTaskForNewSession()
 	p.adoptSession(sess, opened)
 	if title != "" && p.sessionActions.Rename != nil && sess != nil {
-		_ = p.sessionActions.Rename(sess.ID, title)
+		if err := p.sessionActions.Rename(sess.ID, title); err == nil {
+			sess.Title = title
+		}
 	}
 	p.recordTaskDecision("NEW_SESSION")
 }
@@ -3418,10 +3442,9 @@ func (p *Program) openSessionManager() {
 		p.state.Apply(Notice{Text: "no saved sessions yet"})
 		return
 	}
-	// Legacy sessions opened before automatic titling existed keep a blank
-	// title forever unless the roster itself asks for one. Start the bounded
-	// pass before stamping pending markers so the first render already shows
-	// the placeholder for every candidate.
+	// Legacy sessions opened before local titling existed keep a blank title
+	// forever unless the roster itself derives one. The pass is deterministic
+	// and synchronous, so the first render already shows the real label.
 	p.backfillSessionTitles(list)
 	list = p.markActiveSession(list)
 	view := SessionManagerState{
@@ -3497,6 +3520,7 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	}
 	p.pendingEscape = ""
 	p.mu.Lock()
+	previous := p.session
 	p.history = append([]agent.Message(nil), opened.History...)
 	// A resumed or new session is a fresh telemetry window: the prior
 	// session's token counts and clock never carry over.
@@ -3508,6 +3532,10 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	p.proposal = nil
 	p.session = sess
 	p.mu.Unlock()
+	// Scratch belongs to one conversation. Closing or switching away from the
+	// old session removes its files before the new one starts; the durable
+	// prompt remains in history.
+	p.releasePromptScratch(previous, sess)
 	// A commit proposal belongs to the old session's repository decision and
 	// must not be answerable into the new one. The sequence bump and the
 	// cancelled context make an in-flight answer harmless.
@@ -3602,6 +3630,9 @@ type SessionActions struct {
 	New func() (*session.Session, OpenedSession, error)
 	// Rename relabels a session. Nil disables the "r" key.
 	Rename func(id int64, title string) error
+	// SetProtected tags or untags a session for retention. Nil disables the
+	// "t" key.
+	SetProtected func(id int64, protected bool) error
 	// Archive hides a session from the default roster without deleting it.
 	// Nil disables the "a" key.
 	Archive func(id int64) error
@@ -3614,22 +3645,6 @@ type SessionActions struct {
 // exposing destructive actions.
 func (p *Program) SetSessionActions(actions SessionActions) {
 	p.sessionActions = actions
-}
-
-// SessionTitleGenerator derives a concise title from a session's first user
-// prompt. It runs off the update goroutine and must not touch Program state;
-// modelRef is the session's own model snapshot and is only the fallback when
-// no ASK role model is configured, so a later /model switch cannot silently
-// change which model titled an existing session.
-type SessionTitleGenerator func(ctx context.Context, modelRef, firstPrompt string) (string, error)
-
-// SetSessionTitleGenerator installs automatic session titling. A nil
-// generator leaves every new session untitled rather than inventing a label
-// locally: a title is a model-derived claim and belongs to the provider path.
-func (p *Program) SetSessionTitleGenerator(generate SessionTitleGenerator) {
-	p.mu.Lock()
-	p.sessionTitle = generate
-	p.mu.Unlock()
 }
 
 // SetModelLister installs the model list behind the /model picker.
@@ -3940,6 +3955,9 @@ func (p *Program) closeDone() {
 		if p.catalogCancel != nil {
 			p.catalogCancel()
 		}
+		if p.promptScratch != nil {
+			_ = p.promptScratch.ReleaseAll()
+		}
 		if closer, ok := p.promptHistory.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		} else if flusher, ok := p.promptHistory.(promptHistoryFlusher); ok {
@@ -4104,6 +4122,12 @@ func (p *Program) submit(text string) tea.Cmd {
 			return nil
 		}
 		return p.startSupportRun(strings.TrimSpace(question))
+	}
+	// The submitted prompt names the session before prediction, approval, or
+	// the provider can delay it. The derivation is local, so doing it on the
+	// update goroutine costs a lookup and a small write, never a network wait.
+	if sessionID := p.activeSessionID(); sessionID != 0 {
+		p.setLocalSessionTitle(sessionID, text)
 	}
 	// A standing human proposal decision answers the turn before prediction
 	// runs: re-proposing a resolved choice would interrogate the user about a
@@ -4778,6 +4802,55 @@ func (p *Program) cancelShellNow() {
 	}
 }
 
+// prepareTurnPrompt records a turn's full raw prompt in durable history, then
+// offloads a compressed copy to scratch when it crosses either hybrid
+// threshold. The returned text is the payload to send: the exact bytes read
+// back from the scratch file when one exists, otherwise the original prompt.
+//
+// historyRecorded tells UserSubmitted not to append the prompt a second time.
+// Offloading is best-effort: a scratch failure leaves the full prompt in the
+// request, because a disposable cache must never be able to lose work.
+func (p *Program) prepareTurnPrompt(text string) (string, bool) {
+	if p.promptHistory != nil {
+		p.promptHistory.Add(text)
+	}
+	if p.promptScratch == nil {
+		return text, p.promptHistory != nil
+	}
+	if p.promptScratch.ShouldOffload(text) {
+		// Offloading must never outrun durability. The in-memory history is
+		// updated by Add; this flush makes the full raw prompt reach disk
+		// before the disposable scratch file exists.
+		if flusher, ok := p.promptHistory.(promptHistoryFlusher); ok {
+			_ = flusher.Flush()
+		}
+	}
+	path, content, offloaded, err := p.promptScratch.Offload(p.activeSessionID(), text)
+	if err != nil {
+		p.publish(Notice{Text: "prompt scratch: " + err.Error()})
+		return text, p.promptHistory != nil
+	}
+	if !offloaded {
+		return text, p.promptHistory != nil
+	}
+	p.publish(Notice{Text: "large prompt saved to " + path})
+	return content, p.promptHistory != nil
+}
+
+// releasePromptScratch drops the old session's ephemeral files when the live
+// conversation changes. The new session's files, if any, are untouched.
+func (p *Program) releasePromptScratch(old, next *session.Session) {
+	if p.promptScratch == nil || old == nil {
+		return
+	}
+	if next != nil && old.ID == next.ID {
+		return
+	}
+	if err := p.promptScratch.ReleaseSession(old.ID); err != nil {
+		p.publish(Notice{Text: "prompt scratch: " + err.Error()})
+	}
+}
+
 // runTurn executes a single turn.
 //
 // It never touches the queue: shifting state off the update goroutine would
@@ -4792,11 +4865,25 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	seq := p.turnSeq
 	p.mu.Unlock()
 
+	// The submitted prompt names the session before anything else runs. The
+	// label is derived locally, so it lands in the roster immediately and no
+	// title request can compete with the turn or spend tokens.
+	if sessionID := p.activeSessionID(); sessionID != 0 {
+		p.setLocalSessionTitle(sessionID, text)
+	}
+
+	// Durable history is written before the disposable scratch copy, so a
+	// prompt survives a closed session, a crash sweeper, or a full disk in the
+	// project directory. The returned text comes from the scratch file when
+	// one was written; it is sent directly in the request, never fetched by a
+	// tool round-trip.
+	text, historyRecorded := p.prepareTurnPrompt(text)
+
 	// A proven or otherwise finished task owns no further continuation. Refuse
 	// before routing so the finished task is neither archived nor replaced by
 	// a duplicate objective.
 	if current, ok := p.terminalTaskContinuation(text); ok {
-		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
+		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
 		p.publish(Notice{Text: terminalTaskNotice(current)})
 		p.publish(AssistantDone{Seq: seq})
 		return
@@ -4844,7 +4931,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		turn = p.workspace.PrepareTurn(text)
 	}
 	if turn.Blocked {
-		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
+		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
 		reason := turn.Reason
 		if reason == "" {
 			reason = "request refused by workspace authority"
@@ -4853,7 +4940,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		p.publish(AssistantDone{Seq: seq})
 		return
 	}
-	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
+	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
 
 	// The active authority is read from the route for a normal turn, or from
 	// the live owner when the task already owned the continuation above. A role
@@ -4874,10 +4961,8 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// not let this turn's history or transcript leak into the new session.
 	turnStore := p.store
 	var turnSessID int64
-	var turnModel string
 	if p.session != nil {
 		turnSessID = p.session.ID
-		turnModel = p.session.Model
 	}
 	p.mu.Unlock()
 
@@ -5555,212 +5640,71 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		p.publish(Notice{Text: reviewPrefix + " " + reviewNotice})
 	}
 	p.publish(AssistantDone{Seq: seq, At: time.Now()})
-	// A session's first completed turn is the earliest point where a title can
-	// summarise what it is about. The request is detached from this turn so it
-	// cannot delay the queue, the transcript, or a later prompt.
-	if len(history) == 0 && loopErr == nil {
-		p.generateSessionTitle(turnSessID, turnModel, text)
-	}
 }
 
-// sessionTitleTimeout bounds the background title request. Titling is a
-// latency-sensitive job, so the ASK-model pass gets at most five seconds: a
-// provider that never answers must not leave a session marked as titling or
-// keep the Session Manager on a placeholder.
-const sessionTitleTimeout = 5 * time.Second
-
-// titleModel resolves the model identity a stored title must be compared
-// against. The stored snapshot is authoritative; the turn's captured ref is
-// only a fallback for a row that predates the model column being populated.
-func titleModel(stored, fallback string) string {
-	if strings.TrimSpace(stored) != "" {
-		return stored
-	}
-	return fallback
-}
-
-// generateSessionTitle schedules the first-turn title pass off the turn
-// goroutine. It never surfaces a failure: a missing title is a cosmetic gap,
-// while a failed turn or a blocked queue is not.
-func (p *Program) generateSessionTitle(sessionID int64, modelRef, firstPrompt string) {
-	p.mu.Lock()
-	enabled := p.sessionTitle != nil && p.store != nil
-	p.mu.Unlock()
-	if !enabled || sessionID == 0 || strings.TrimSpace(firstPrompt) == "" {
-		return
-	}
-	go p.generateSessionTitleNow(sessionID, modelRef, firstPrompt, false)
-}
-
-// generateSessionTitleNow performs one title request and persists the result
-// only if the session still has no title. A title the user set while the
-// request ran always wins. pending reports that the Session Manager already
-// shows this session as titling, so the marker is cleared even when the pass
-// exits early.
+// setLocalSessionTitle persists the deterministic label derived from prompt
+// when the session still has no assigned title. It runs synchronously: the
+// title is durable before the turn reaches the provider, so no token is spent
+// and no placeholder is ever needed.
 //
-// It runs off the update goroutine: the provider call and even the store
-// reads must never delay the queue, the next prompt, or modal rendering.
-func (p *Program) generateSessionTitleNow(sessionID int64, modelRef, firstPrompt string, pending bool) {
+// The store is the authority when one exists, because a manual rename may have
+// happened since the in-memory session snapshot. The returned value is the
+// newly stored title, or "" when nothing changed.
+func (p *Program) setLocalSessionTitle(sessionID int64, prompt string) string {
+	if sessionID == 0 {
+		return ""
+	}
+	title := localSessionTitle(prompt)
+	if title == "" {
+		return ""
+	}
+
 	p.mu.Lock()
-	generate := p.sessionTitle
 	store := p.store
 	p.mu.Unlock()
-	marked := pending
-	defer func() {
-		if marked {
-			p.markTitling(sessionID, false)
+
+	if store != nil {
+		current, err := store.Get(sessionID)
+		if err != nil || sessionTitleAssigned(current.Title, current.Model) {
+			return ""
 		}
-	}()
-	if generate == nil || store == nil || sessionID == 0 || strings.TrimSpace(firstPrompt) == "" {
-		return
-	}
-	if marked {
-		p.markTitling(sessionID, true)
-	}
-	current, err := store.Get(sessionID)
-	if err != nil || sessionTitleAssigned(current.Title, titleModel(current.Model, modelRef)) {
-		return
-	}
-	if !marked {
-		p.markTitling(sessionID, true)
-		marked = true
-	}
-	// Derive from the program's lifetime context, not context.Background: a
-	// title request still in flight when the UI closes must be cancelled with
-	// the program, and the timeout keeps a hung provider bounded either way.
-	ctx, cancel := context.WithTimeout(p.Context(), sessionTitleTimeout)
-	defer cancel()
-	title, err := generate(ctx, modelRef, firstPrompt)
-	if err != nil {
-		// A shutdown cancels the request with the program; there is no UI left
-		// to fall back for. A real failure or timeout gets the deterministic
-		// local label so the roster never waits past the deadline.
-		if !errors.Is(ctx.Err(), context.Canceled) {
-			p.persistLocalSessionTitle(store, sessionID, modelRef, firstPrompt)
+		if err := store.SetTitle(sessionID, title); err != nil {
+			return ""
 		}
-		return
+	} else {
+		p.mu.Lock()
+		live := p.session
+		assigned := live == nil || live.ID != sessionID ||
+			sessionTitleAssigned(live.Title, live.Model)
+		p.mu.Unlock()
+		if assigned {
+			return ""
+		}
 	}
-	title = strings.Join(strings.Fields(title), " ")
-	if title == "" {
-		p.persistLocalSessionTitle(store, sessionID, modelRef, firstPrompt)
-		return
-	}
-	// Re-read before writing: a manual rename during the request is an
-	// explicit decision and must not be overwritten by a stale answer.
-	latest, err := store.Get(sessionID)
-	if err != nil || sessionTitleAssigned(latest.Title, titleModel(latest.Model, modelRef)) {
-		return
-	}
-	if err := store.SetTitle(sessionID, title); err != nil {
-		return
-	}
-	p.publish(SessionTitleUpdated{ID: sessionID, Title: title})
-}
 
-// persistLocalSessionTitle stores a deterministic fallback label when the ASK
-// model request does not produce a title. The store is passed in because the
-// caller already captured it under mu. It re-reads the row so an explicit
-// rename during the request always wins, and publishes the same event a model
-// title uses so an open Session Manager repaints in the next frame.
-func (p *Program) persistLocalSessionTitle(store *session.Store, sessionID int64, modelRef, firstPrompt string) {
-	fallback := localSessionTitle(firstPrompt)
-	if fallback == "" || store == nil {
-		return
-	}
-	latest, err := store.Get(sessionID)
-	if err != nil || sessionTitleAssigned(latest.Title, titleModel(latest.Model, modelRef)) {
-		return
-	}
-	if err := store.SetTitle(sessionID, fallback); err != nil {
-		return
-	}
-	p.publish(SessionTitleUpdated{ID: sessionID, Title: fallback})
-}
-
-// sessionBackfillParallel bounds how many legacy titles are derived at once.
-// Opening the manager with dozens of pre-fix sessions must not fire dozens of
-// simultaneous provider calls.
-const sessionBackfillParallel = 2
-
-// sessionTitleJob is one legacy session waiting for a derived title.
-type sessionTitleJob struct {
-	id     int64
-	model  string
-	prompt string
-}
-
-// backfillSessionTitles derives titles for legacy sessions that already have
-// a stored first prompt but never received one.
-//
-// The pass is non-blocking: candidates are marked pending immediately so the
-// roster renders a placeholder, then a small worker pool consumes them. Each
-// result lands through the same SessionTitleUpdated event as a first-turn
-// title, so the open manager updates in place.
-func (p *Program) backfillSessionTitles(items []SessionItem) {
 	p.mu.Lock()
-	enabled := p.sessionTitle != nil && p.store != nil
+	if p.session != nil && p.session.ID == sessionID {
+		p.session.Title = title
+	}
 	p.mu.Unlock()
-	if !enabled {
-		return
-	}
-	var jobs []sessionTitleJob
-	for _, item := range items {
-		if sessionTitleAssigned(item.Title, item.Model) || item.Messages < 2 ||
-			strings.TrimSpace(item.InitialPrompt) == "" {
-			continue
-		}
-		if p.titlingPending(item.ID) {
-			continue
-		}
-		p.markTitling(item.ID, true)
-		jobs = append(jobs, sessionTitleJob{id: item.ID, model: item.Model, prompt: item.InitialPrompt})
-	}
-	if len(jobs) == 0 {
-		return
-	}
-	workers := sessionBackfillParallel
-	if len(jobs) < workers {
-		workers = len(jobs)
-	}
-	work := make(chan sessionTitleJob)
-	for i := 0; i < workers; i++ {
-		go func() {
-			for job := range work {
-				p.generateSessionTitleNow(job.id, job.model, job.prompt, true)
-			}
-		}()
-	}
-	go func() {
-		defer close(work)
-		for _, job := range jobs {
-			work <- job
-		}
-	}()
+	p.publish(SessionTitleUpdated{ID: sessionID, Title: title})
+	return title
 }
 
-// titlingPending reports whether a title request is already in flight for the
-// session. Reading the map through the same lock markTitling writes under is
-// what keeps an open Session Manager and a backfill worker from racing.
-func (p *Program) titlingPending(sessionID int64) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.titling[sessionID]
-}
-
-// markTitling records an in-flight automatic title for the Session Manager's
-// placeholder. It is guarded by mu because it runs on the turn goroutine while
-// the update goroutine renders.
-func (p *Program) markTitling(sessionID int64, pending bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if pending {
-		if p.titling == nil {
-			p.titling = map[int64]bool{}
+// backfillSessionTitles derives deterministic titles for legacy sessions that
+// already have a stored first prompt but never received one. It is a local,
+// synchronous pass: promptopt.SanitizeTitle costs no tokens, so opening the
+// Session Manager can label every row immediately instead of scheduling
+// provider work and rendering a waiting placeholder.
+func (p *Program) backfillSessionTitles(items []SessionItem) {
+	for i := range items {
+		if sessionTitleAssigned(items[i].Title, items[i].Model) {
+			continue
 		}
-		p.titling[sessionID] = true
-		return
+		if title := p.setLocalSessionTitle(items[i].ID, items[i].InitialPrompt); title != "" {
+			items[i].Title = title
+		}
 	}
-	delete(p.titling, sessionID)
 }
 
 // resetSessionTelemetryLocked zeroes the live session's progressive-disclosure
@@ -5908,6 +5852,7 @@ func (p *Program) SetCompletionContext(root string, resolver agent.StructuralRes
 // which applies HistoryReplaced on choosing.
 func (p *Program) AttachSession(store *session.Store, sess *session.Session, history []agent.Message) {
 	p.mu.Lock()
+	previous := p.session
 	p.store = store
 	p.session = sess
 	p.history = append([]agent.Message(nil), history...)
@@ -5915,6 +5860,7 @@ func (p *Program) AttachSession(store *session.Store, sess *session.Session, his
 	// decision: the choice belongs to the execution it released.
 	p.proposal = nil
 	p.mu.Unlock()
+	p.releasePromptScratch(previous, sess)
 	if p.state.Pending != nil {
 		p.state.Apply(ApprovalAnswered{})
 	}

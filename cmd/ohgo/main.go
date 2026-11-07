@@ -78,6 +78,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(modelsCmd())
 	root.AddCommand(runCmd())
 	root.AddCommand(sessionsCmd())
+	root.AddCommand(cleanCmd())
 	root.AddCommand(doctorCmd())
 	root.AddCommand(initCmd())
 	root.AddCommand(docsCmd())
