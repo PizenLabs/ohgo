@@ -1091,6 +1091,87 @@ func mcpPickerFooter(pal *Palette, picker *PickerState, layout Layout, interior 
 	return TruncateToWidth(line, interior)
 }
 
+// newSessionPickerWidth clamps the /new creator to the same compact reading
+// width as the MCP manager: two choices and one input line do not need a wide
+// frame, and ultrawide terminals keep context on both sides.
+func newSessionPickerWidth(terminal int) int {
+	return mcpPickerWidth(terminal)
+}
+
+// renderNewSessionPickerCard draws the /new creator as a centered modal card.
+//
+// It deliberately shares the MCP manager's frame — border-embedded title,
+// interior padding, footer rule, and structured key bar — so every small
+// decision surface reads as one system. The list holds exactly the two title
+// modes; the line below is the custom name, not a search query.
+func renderNewSessionPickerCard(picker *PickerState, pal *Palette, layout Layout, width, height int) string {
+	interior := width - 2
+	if interior < statusMinContent {
+		interior = statusMinContent
+	}
+
+	rows := []string{""}
+	filtered := picker.Filtered()
+	for i, item := range filtered {
+		marker := "  "
+		if i == picker.Cursor {
+			marker = pal.Selected.Render("> ")
+		}
+		title := sanitizeInline(item.Title)
+		line := marker + title
+		if detail := sanitizeInline(item.Detail); detail != "" && layout.ShowDetail {
+			if room := interior - statusFieldIndent - CellWidth(line) - 2; room >= 8 {
+				line += "  " + pal.Muted.Render(TruncateToWidth(detail, room))
+			}
+		}
+		rows = append(rows, strings.Repeat(" ", statusFieldIndent)+TruncateToWidth(line, interior-statusFieldIndent))
+	}
+	rows = append(rows, "")
+
+	// The input line is always present so the custom path is discoverable
+	// without a second helper row. Its cursor follows the same rune offset the
+	// picker uses for its filter text.
+	buffer := []rune(sanitizeInline(picker.Filter))
+	cur := picker.FilterCursor
+	if cur < 0 {
+		cur = 0
+	}
+	if cur > len(buffer) {
+		cur = len(buffer)
+	}
+	typed := string(buffer[:cur]) + pal.Cursor.Render(" ") + string(buffer[cur:])
+	name := strings.Repeat(" ", statusFieldIndent) +
+		pal.Muted.Render(padModalLabel("Name", detailFieldLabelWidth)) +
+		pal.Choice.Render(typed)
+	rows = append(rows, TruncateToWidth(name, interior))
+
+	// The title border, footer rule, footer bar, and bottom border claim four
+	// rows; everything else is body.
+	if height > 0 {
+		rows = fitStatusRows(rows, maxInt(height-4, 0))
+	}
+	footer := newSessionPickerFooter(pal, layout, interior)
+	return renderModalFrameWithFooter("NEW SESSION", rows, footer, pal, interior)
+}
+
+// newSessionPickerFooter names the keys the creator actually handles: the
+// standard navigation and submit contract, with Esc cancelling the creation.
+func newSessionPickerFooter(pal *Palette, layout Layout, interior int) string {
+	type binding struct{ key, label string }
+	bindings := []binding{{"Enter", "create"}, {"Esc", "cancel"}}
+	if layout.Mode != LayoutNarrow {
+		bindings = append([]binding{{"↑↓", "navigate"}}, bindings...)
+	}
+	line := strings.Repeat(" ", statusFieldIndent)
+	for i, binding := range bindings {
+		if i > 0 {
+			line += pal.Muted.Render(" · ")
+		}
+		line += pal.Bold.Render(binding.key) + pal.Muted.Render(" "+binding.label)
+	}
+	return TruncateToWidth(line, interior)
+}
+
 // renderPickerArea shows the selection overlay in place of the transcript.
 //
 // The transcript hides while picking: an overlay that shared the screen with
@@ -1107,6 +1188,12 @@ func renderPickerArea(sb *strings.Builder, state State, pal *Palette, layout Lay
 	if picker.Kind == PickerMCP {
 		renderCardAreaWidth(sb, state, layout, mcpPickerWidth, func(width, height int) string {
 			return renderMCPPickerCard(picker, pal, layout, width, height)
+		})
+		return
+	}
+	if picker.Kind == PickerNewSession {
+		renderCardAreaWidth(sb, state, layout, newSessionPickerWidth, func(width, height int) string {
+			return renderNewSessionPickerCard(picker, pal, layout, width, height)
 		})
 		return
 	}

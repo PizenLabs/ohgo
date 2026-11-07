@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
@@ -42,7 +43,17 @@ type harness struct {
 	usage    *agent.UsageLog
 	settings *config.Settings
 	root     string
-	model    ai.Model
+	// modelMu guards model and titleRoleModel against the background title
+	// pass. Every other reader is on the update goroutine; only titling needs a
+	// stable snapshot while /model or a role assignment may move the model.
+	modelMu sync.RWMutex
+	model   ai.Model
+	// titleRoleModel is the ASK role's effective model reference used for
+	// background session titling. It is cached under modelMu so the title pass
+	// never races a role assignment made from the control plane. Empty means
+	// no ASK role model is configured and titling should use the session
+	// snapshot instead.
+	titleRoleModel string
 	// projectID is the stable project identity the session belongs to, empty
 	// when unknown. It scopes the session browser to this project without
 	// changing physical storage, which stays one machine-global database.
@@ -81,10 +92,12 @@ type harness struct {
 // the caller guarantees those commands are unreachable; every method guards
 // its own dependencies and says so rather than panicking.
 func newHarness(registry *ai.Registry, loop *agent.Loop, store *session.Store, sess *session.Session, usage *agent.UsageLog, settings *config.Settings, root string, model ai.Model) *harness {
-	return &harness{
+	h := &harness{
 		registry: registry, loop: loop, store: store, sess: sess,
 		usage: usage, settings: settings, root: root, model: model,
 	}
+	h.refreshTitleRoleModel()
+	return h
 }
 
 // ProviderRows lists every catalog provider with its credential status. No
@@ -254,6 +267,7 @@ func (h *harness) AssignRole(update tui.RoleAssignment) (tui.RoleAssignment, []t
 		}
 	}
 	h.settings.AssignRole(string(role), canonical, effort)
+	h.refreshTitleRoleModel()
 	if err := config.Save(*h.settings); err != nil {
 		return tui.RoleAssignment{}, h.RoleAssignments(), fmt.Errorf("save configuration: %w", err)
 	}
@@ -322,10 +336,42 @@ func (h *harness) applyModel(model ai.Model) {
 	if h.loop != nil {
 		h.loop.SetModel(model)
 	}
+	h.modelMu.Lock()
 	h.model = model
+	h.modelMu.Unlock()
 	if h.usage != nil {
 		h.usage.SetCost(model.Cost)
 	}
+}
+
+// currentModel returns the active model under the same lock applyModel uses.
+// It exists for the background title pass, which may run while /model moves.
+func (h *harness) currentModel() ai.Model {
+	h.modelMu.RLock()
+	defer h.modelMu.RUnlock()
+	return h.model
+}
+
+// refreshTitleRoleModel re-reads the ASK role binding after a configuration
+// change. Titling follows a role assignment made while the UI is still open;
+// caching it here keeps the background title pass off the settings map, which
+// the control plane mutates on the update goroutine.
+func (h *harness) refreshTitleRoleModel() {
+	ref := ""
+	if h.settings != nil {
+		ref = askRoleModelRef(*h.settings)
+	}
+	h.modelMu.Lock()
+	h.titleRoleModel = ref
+	h.modelMu.Unlock()
+}
+
+// titleRoleModelRef returns the ASK role model used for titling, empty when no
+// role model is configured and the session snapshot should be used instead.
+func (h *harness) titleRoleModelRef() string {
+	h.modelMu.RLock()
+	defer h.modelMu.RUnlock()
+	return h.titleRoleModel
 }
 
 // providerDisplayName names a provider for humans from the catalog's own
@@ -478,6 +524,7 @@ func (h *harness) SetModel(ref string) (ai.Model, error) {
 		effort = ""
 	}
 	h.settings.AssignRole(role, canonical, effort)
+	h.refreshTitleRoleModel()
 	if err := config.Save(*h.settings); err != nil {
 		return model, fmt.Errorf("save configuration: %w", err)
 	}

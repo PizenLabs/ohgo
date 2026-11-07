@@ -736,6 +736,13 @@ func livePickerLines(s State, pal *Palette, layout Layout) []string {
 	if picker == nil {
 		return nil
 	}
+	// The /new creator is a modal card in both surfaces; the generic list
+	// renderer has neither a border nor a name line.
+	if picker.Kind == PickerNewSession {
+		return liveModalCardLinesWidth(s, pal, layout, newSessionPickerWidth, func(width, height int) string {
+			return renderNewSessionPickerCard(picker, pal, layout, width, height)
+		})
+	}
 	width := displayWidth(s, layout)
 	head := pal.Heading.Render(TruncateToWidth(pickerHeader(picker), width))
 	search := renderPickerSearch(picker, pal, width)
