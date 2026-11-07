@@ -144,6 +144,7 @@ func installSessionManager(program *tui.Program, store *session.Store, held *har
 					Messages:      stat.Messages,
 					Prompt:        stat.Prompt,
 					InitialPrompt: stat.InitialPrompt,
+					Protected:     sess.Protected,
 				})
 			}
 			return items, nil
@@ -207,9 +208,10 @@ func installSessionManager(program *tui.Program, store *session.Store, held *har
 				Notice: fmt.Sprintf("started new session %d", sess.ID),
 			}, nil
 		},
-		Rename:  func(id int64, title string) error { return store.SetTitle(id, title) },
-		Archive: func(id int64) error { return store.SetArchived(id, true) },
-		Delete:  func(id int64) error { return store.Delete(id) },
+		Rename:       func(id int64, title string) error { return store.SetTitle(id, title) },
+		SetProtected: func(id int64, protected bool) error { return store.SetProtected(id, protected) },
+		Archive:      func(id int64) error { return store.SetArchived(id, true) },
+		Delete:       func(id int64) error { return store.Delete(id) },
 	})
 }
 

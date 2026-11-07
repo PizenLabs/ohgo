@@ -353,13 +353,17 @@ func sessionTableHeader(cols sessionTableColumns, pal *Palette, interior int) st
 }
 
 // sessionStatusCell renders the STATUS column: a filled marker for the loaded
-// session, a hollow one otherwise. The glyph carries the state so a monochrome
-// terminal loses nothing.
+// session, a hollow one otherwise, plus a star for a protected session. Glyphs
+// carry both states so a monochrome terminal loses nothing.
 func sessionStatusCell(item SessionItem, pal *Palette) (string, lipgloss.Style) {
+	marker, style := "○", pal.Muted
 	if item.Active {
-		return "●", pal.ToolDone
+		marker, style = "●", pal.ToolDone
 	}
-	return "○", pal.Muted
+	if item.Protected {
+		marker += " ★"
+	}
+	return marker, style
 }
 
 // sessionDirtyCell renders the DIRTY column. A measured dirty tree is amber;
@@ -530,6 +534,15 @@ func sessionTokenLine(item SessionItem) string {
 	return "~" + formatCount(item.Tokens) + " tokens"
 }
 
+// sessionProtectedLine renders the retention tag as a word, never as an
+// unexplained glyph.
+func sessionProtectedLine(item SessionItem) string {
+	if item.Protected {
+		return "yes"
+	}
+	return "no"
+}
+
 // sessionDetails builds the bottom details block for the highlighted session,
 // or the inline editor when a mode owns it.
 func sessionDetails(view SessionManagerState, pal *Palette, interior int) []string {
@@ -550,6 +563,7 @@ func sessionDetails(view SessionManagerState, pal *Palette, interior int) []stri
 	rows = append(rows, field("Title", sessionDisplayTitle(item))...)
 	rows = append(rows, field("Tokens", sessionTokenLine(item))...)
 	rows = append(rows, field("Model", statusValueOr(sanitizeInline(item.Model), "no model"))...)
+	rows = append(rows, field("Protected", sessionProtectedLine(item))...)
 	rows = append(rows, field("Prompt", statusValueOr(sanitizeInline(item.Prompt), "(no prompt recorded)"))...)
 	return rows
 }
@@ -616,6 +630,7 @@ func sessionFooterBar(view SessionManagerState, pal *Palette, interior int) stri
 		line += pal.Bold.Render("↵") + pal.Muted.Render(" resume  ·  ") +
 			pal.Bold.Render("n") + pal.Muted.Render(" new  ·  ") +
 			pal.Bold.Render("r") + pal.Muted.Render(" rename  ·  ") +
+			pal.Bold.Render("t") + pal.Muted.Render(" tag  ·  ") +
 			pal.Bold.Render("a") + pal.Muted.Render(" archive  ·  ") +
 			pal.Bold.Render("d") + pal.Muted.Render(" delete  ·  ") +
 			pal.Bold.Render("Esc/q") + pal.Muted.Render(" close")
@@ -701,6 +716,8 @@ func (p *Program) handleSessionManagerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.newSessionFromManager()
 	case "r":
 		p.state.Apply(SessionManagerRenameStarted{})
+	case "t":
+		return p.toggleSelectedSessionProtection()
 	case "a":
 		return p.archiveSelectedSession()
 	case "d":
@@ -833,6 +850,32 @@ func (p *Program) archiveSelectedSession() (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	p.reloadSessionManager(fmt.Sprintf("archived session #%d", item.ID))
+	return p, nil
+}
+
+// toggleSelectedSessionProtection flips the retention tag on the highlighted
+// session and persists it immediately through the store seam. Protection is
+// deliberately reversible without a confirmation: it is a retention
+// preference, not a destructive action.
+func (p *Program) toggleSelectedSessionProtection() (tea.Model, tea.Cmd) {
+	item, ok := p.state.SessionModal.Selected()
+	if !ok {
+		return p, nil
+	}
+	if p.sessionActions.SetProtected == nil {
+		p.state.Apply(SessionManagerNoticed{Text: "tag is unavailable"})
+		return p, nil
+	}
+	protected := !item.Protected
+	if err := p.sessionActions.SetProtected(item.ID, protected); err != nil {
+		p.state.Apply(SessionManagerNoticed{Text: "tag: " + err.Error()})
+		return p, nil
+	}
+	notice := fmt.Sprintf("untagged session #%d", item.ID)
+	if protected {
+		notice = fmt.Sprintf("tagged session #%d as protected", item.ID)
+	}
+	p.reloadSessionManager(notice)
 	return p, nil
 }
 

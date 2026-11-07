@@ -265,6 +265,13 @@ func runSession(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+	// Prune after the session is resolved so the live conversation is exempt
+	// from both deletion and the retention count.
+	activeSessionID := int64(0)
+	if sess != nil {
+		activeSessionID = sess.ID
+	}
+	pruneOnStartup(store, opts.settings, activeSessionID)
 
 	// The gate is built here, before the loop, because the full-screen UI
 	// installs its approval callback after the program exists. The plain REPL
@@ -313,6 +320,9 @@ func runSession(cmd *cobra.Command, args []string) error {
 			programOpts = append(programOpts, tui.WithMouseReporting())
 		}
 		program := tui.NewProgram(loop, opts.model.Ref(), opts.model.ContextWindow, programOpts...)
+		scratch := installPromptScratch(program, opts.root)
+		stopScratchSignals := installScratchSignalCleanup(func() { _ = scratch.ReleaseAll() })
+		defer stopScratchSignals()
 		// /update is a presentation surface over the same authority the CLI
 		// command uses. Progress lands in header chrome while the operation
 		// runs off the update goroutine; nothing installs until the human
@@ -488,6 +498,23 @@ func runSession(cmd *cobra.Command, args []string) error {
 			if err := config.Save(opts.settings); err != nil {
 				fmt.Fprintf(os.Stderr, "ohgo: could not save task rail preference: %v\n", err)
 			}
+		})
+		program.SetCleanupSettings(opts.settings.AutoPruneEnabled(), opts.settings.KeepRecentSessions())
+		program.SetCleanupChangedHandler(func(autoPrune bool, keepRecent int) {
+			opts.settings.SetCleanup(autoPrune, keepRecent)
+			if err := config.Save(opts.settings); err != nil {
+				fmt.Fprintf(os.Stderr, "ohgo: could not save cleanup preference: %v\n", err)
+			}
+		})
+		program.SetCleanupRunner(func(keepRecent int, activeSessionID int64) (int, error) {
+			if store == nil {
+				return 0, errors.New("session store is unavailable")
+			}
+			result, err := store.PruneSessionsExcept(keepRecent, activeSessionID)
+			if err != nil {
+				return 0, err
+			}
+			return result.DeletedCount(), nil
 		})
 		style := opts.authority().Style()
 		program.PublishWorkspace(tui.WorkspaceUpdated{

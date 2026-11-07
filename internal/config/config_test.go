@@ -68,6 +68,46 @@ func TestTaskRailPreferenceRoundTrips(t *testing.T) {
 	}
 }
 
+// TestCleanupPreferenceDefaultsOffAndRoundTrips pins the safe default and the
+// persisted shape used by /settings and `ohgo clean`.
+func TestCleanupPreferenceDefaultsOffAndRoundTrips(t *testing.T) {
+	if (Settings{}).AutoPruneEnabled() {
+		t.Fatal("an omitted cleanup preference must not prune automatically")
+	}
+	if got := (Settings{}).KeepRecentSessions(); got != DefaultKeepRecent {
+		t.Fatalf("default keep = %d, want %d", got, DefaultKeepRecent)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	settings := Default()
+	settings.SetCleanup(true, 4)
+	if err := Save(settings); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.AutoPruneEnabled() {
+		t.Fatal("auto-prune did not survive the round trip")
+	}
+	if keep := got.KeepRecentSessions(); keep != 4 {
+		t.Fatalf("keep = %d, want 4", keep)
+	}
+}
+
+func TestCleanupKeepRecentRejectsNonPositive(t *testing.T) {
+	zero := 0
+	negative := -3
+	for _, value := range []*int{&zero, &negative} {
+		settings := Settings{Cleanup: &CleanupSettings{KeepRecent: value}}
+		if got := settings.KeepRecentSessions(); got != DefaultKeepRecent {
+			t.Errorf("keep = %d for %d, want the default", got, *value)
+		}
+	}
+}
+
 func TestApprovalForPrefersAutoApproveOverDeny(t *testing.T) {
 	// A user who lists a tool in AutoApprove has overridden an explicit deny;
 	// silently prompting again would make the override useless.

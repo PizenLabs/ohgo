@@ -32,7 +32,7 @@ Two rules frame everything below:
 | `credentials.json` | provider API keys, `0600`, atomic write | `creds` | machine; authoritative; never in git |
 | `sessions.db` (+ `-wal`, `-shm`) | SQLite session store: sessions, messages, artifacts | `session` | machine; authoritative; survives every project |
 | `cache/<provider>-models.json` | provider/model discovery rosters, `schema_version`-stamped | `catalog` | machine; **derived**, rebuildable |
-| `history` | plain-REPL prompt audit trail, last 1000 lines, commands excluded | `cmd/ohgo` | machine; ephemeral audit, best-effort |
+| `history` | prompt history (project and machine scopes), commands excluded; holds the full text of every submitted prompt, including offloaded ones | `history` | machine; durable recall, best-effort writes |
 | `update.json` | latest observed release, provenance, ETag, last error, TTL timestamps; `0600`, atomic | `update` | machine; **derived**, rebuildable, never authority |
 | `update-transition.json` | last explicit version transition: operation, from/to release, completion time, post-update notice acknowledgement; `0600`, atomic | `update` | machine; authoritative lifecycle record, never inferred from version inequality |
 | `update.lock` | exclusive OS advisory installation claim; released automatically on process exit | `update` | transient; removed by its owner |
@@ -51,6 +51,7 @@ function.
 | `progress.json` | authoritative durable task checkpoint (schema version 3, read-old/refuse-newer): identity, lifecycle, contract, snapshot, budget, evidence state, active role and handoff record (continuity metadata, never authority), the bounded timeline and completion proof, and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries, checkpoint write is the commit point |
 | `task.md` | human- and model-readable task projection | `task` | project; projection only; never authoritative over `progress.json` |
 | `tasks/<id>.json` | detached task archive, including its context | `task` | project; durable until resumed, cancelled, or deleted by the human |
+| `scratch/prompt_<session>_<timestamp>.md` | raw oversized master prompt (≥50 lines or ≥4000 runes), `0600` | `history` | ephemeral; removed on session close/switch, process exit, or startup sweep after 24h; durable copy lives in prompt history |
 
 The project root is the Git worktree root when the directory is inside a repo,
 otherwise the directory itself (`project.Root`). A nested directory and the
@@ -68,13 +69,16 @@ a project's worker, and the gate never writes it.
 ### Session scope — `sessions.db`
 
 ```text
-sessions   (id, created_at, updated_at, cwd, model, workspace, project, title, archived)
+sessions   (id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected)
 messages   (id, session_id → sessions, seq, role, payload, created_at)
 artifacts  (id, session_id → sessions, artifact_id, kind, origin, payload, created_at)
 ```
 
 One machine-global database holds every project's sessions. Project association
 is the `project` column — logical ownership — not a database per project.
+`protected` exempts a session from automatic retention pruning; explicit
+deletion still removes it because protection is a policy tag, not access
+control.
 
 ### Project instructions — human-authored
 
@@ -244,7 +248,8 @@ never let global state become an accidental authority for project-local state.**
 | code intelligence | `ast` | **none** (stateless) | derived from source | process | n/a |
 | code graph | — | `<project>/.ohgo/graph.db` (reserved) | derived; source wins | derived | delete + rebuild |
 | model cache | `catalog` | `~/.ohgo/cache/*.json` | derived | machine | delete + refetch |
-| prompt history | `cmd/ohgo` | `~/.ohgo/history` | derived | machine | delete |
+| prompt history | `history` | `~/.ohgo/history`, `<project>/.ohgo/history` | derived | machine + project | delete |
+| oversized prompt scratch | `history` | `<project>/.ohgo/scratch/` | disposable copy; history is authoritative | session | session close, exit, or 24h sweep |
 | runtime (loop, turn, stream, jobs) | runtime | none | authoritative while live | process | n/a |
 | TUI state | TUI/application | none | display only | process | n/a |
 
@@ -458,6 +463,7 @@ seam exists so the trust rule has exactly one owner when that day comes.
 | project directory deleted | survive | survive (machine-global) | gone with the tree | gone |
 | project renamed/moved | survive | survive (keyed by id) | **survives** (`.ohgo` moves with the tree; stale `root` tolerated) | survives |
 | cache deleted | survive | survive | survives | rebuilt on discovery |
+| scratch deleted | survive | survive | survives | prompt remains in history and is still recallable |
 | one session deleted | survive | that session gone | survives | survives |
 | `~/.ohgo` corrupted | possibly lost | possibly lost | survives | survives |
 
@@ -488,8 +494,11 @@ No destructive migration was performed and none is needed.
 - **Settings, credentials, `history`** — unchanged on disk; only path resolution
   moved behind `state` (prior slice).
 - **Sessions** — schema is applied idempotently on open; `migrate` adds
-  `workspace` and `project` additively without rewriting rows. `project = ''`
-  means "unidentified" and is included by `ListByProject`.
+  `workspace`, `project`, `archived`, and `protected` additively without
+  rewriting rows. `project = ''` means "unidentified" and is included by
+  `ListByProject`; an existing row migrates as unprotected.
+- **Prompt scratch** — no migration: the directory is a process-local cache,
+  created on first offload and safe to delete at any time.
 - **Cache** — a version-0 file is still read; a cache this build cannot read is
   ignored and refetched; deletion is always safe.
 - **`project.yml`** — gains `name` and `user.name`. An id/root-only file from an
@@ -527,6 +536,30 @@ Every step is explicit, idempotent, and non-destructive.
 Mutation checks: removing the `ErrUnconfirmed` branch fails
 `TestInferredRequiresConfirmation`; forcing a constant project id fails
 `TestDistinctProjectsHaveDistinctIDs`.
+
+### Prompt offload and retention tests (this slice)
+
+| Test | Contract it defends |
+| --- | --- |
+| `history.TestShouldOffloadUsesEitherHybridThreshold` | 50 lines **or** 4000 runes triggers offload; smaller prompts stay in memory |
+| `history.TestScratchOffloadWritesExactPromptAndInjectsReadBackBytes` | the scratch file is the payload source and contains the raw prompt |
+| `history.TestScratchReleaseSessionIsScoped` | session close removes only that session's eager scratch files |
+| `history.TestScratchSweepRemovesOnlyOldOrphans` | the boot sweep removes >24h orphans and never an active file |
+| `history.TestGlobalHistoryRecallSurvivesScratchPurge` | full prompt recall is served by global history, independent of scratch |
+| `tui.TestPrepareTurnPromptWritesHistoryBeforeScratch` | durable history is written before the disposable copy |
+| `tui.TestFullPromptRecallSurvivesScratchPurge` | Ctrl+P recalls the entire multi-line prompt after the files are gone |
+| `cmd/ohgo.TestScratchSignalCleanupRemovesActiveFiles` | SIGTERM removes active scratch and preserves signal termination |
+| `session.TestStoreProtectionSurvivesReopen` | the protection tag is durable across application restarts |
+| `session.TestPruneSessionsPreservesProtectedAndKeepsMostRecent` | protected rows are never candidates; old unprotected rows go first |
+| `session.TestPruneSessionsExceptKeepsTheLiveSession` | startup housekeeping cannot delete the session being resumed |
+| `cmd/ohgo.TestCleanCommandPrunesConfiguredRetention` | `ohgo clean --keep` performs the same protected-aware pass |
+| `tui.TestSessionManagerTagTogglesProtection` | `t` toggles and persists the tag through the UI seam |
+| `tui.TestSettingsCleanupSectionPrunesManually` | settings shows the cleanup rows and runs the manual pass with the edited count |
+
+Mutation checks: removing the line-count branch fails the 50-line case;
+removing the rune branch fails the 4000-rune case; including protected rows in
+the candidate set fails the retention test; deleting before writing history
+fails the order assertion.
 
 ### Identity ownership tests (this slice)
 
@@ -695,6 +728,12 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
     recorded as diagnostics rather than silently skipped. Authority is never
     inferred from recovery, and a task that cannot progress without a human
     decision is reported as such.
+28. Oversized prompt scratch is disposable. The full prompt is written to
+    durable history first; closing, switching, exit, or the 24-hour sweep may
+    delete every scratch file without changing what Up/Down or Ctrl+P/N recalls.
+29. Session protection is a retention tag, not an access control. Automatic
+    pruning must never consider a protected session; explicit human deletion
+    still may.
 
 ## Explicit Non-Goals
 

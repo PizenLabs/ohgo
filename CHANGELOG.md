@@ -5,6 +5,22 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- Hybrid master-prompt offloading: prompts with at least 50 lines or 4000 runes
+  are written to `<project>/.ohgo/scratch/prompt_<session>_<timestamp>.md` and
+  their bytes are injected directly into the model payload. A durable history
+  copy is written first, so Up/Down and Ctrl+P/N still recall the full prompt
+  after scratch is removed. Scratch is cleaned on session close/switch, on
+  SIGINT/SIGTERM/SIGHUP, and by a 24-hour startup sweep.
+- Session protection: `t` in the Session Manager toggles a durable `Protected`
+  tag, shown as a star in the status column and as `Protected · yes/no` in the
+  details pane. Tagged sessions are never removed by automatic pruning while
+  explicit deletion still works.
+- Retention controls: `/settings` gains a CLEANUP section with auto-prune,
+  keep-recent count, and a manual-clean action. The new `ohgo clean` command
+  performs the same protected-aware pruning from the shell.
+
 ## [v0.0.8] - 2026-11-05
 
 ### Added

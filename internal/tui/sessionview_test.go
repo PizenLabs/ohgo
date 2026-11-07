@@ -59,8 +59,8 @@ func TestRenderSessionManagerShowsTableAndDetails(t *testing.T) {
 		"#12", "#11", "#10",
 		"Refactor the session modal",
 		"Fix parser",
-		"~900 tokens", "ollama/qwen", "parser fails on empty input",
-		"resume", "new", "rename", "archive", "delete", "close",
+		"~900 tokens", "ollama/qwen", "parser fails on empty input", "Protected",
+		"resume", "new", "rename", "tag", "archive", "delete", "close",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dialog missing %q:\n%s", want, out)
@@ -336,6 +336,62 @@ func TestSessionManagerArchive(t *testing.T) {
 	}
 	if !strings.Contains(p.state.SessionModal.Notice, "archived") {
 		t.Errorf("notice = %q, want an archive confirmation", p.state.SessionModal.Notice)
+	}
+}
+
+// Tagging is an immediate, reversible retention change: t persists the new
+// value through the store seam and the reloaded roster reflects it.
+func TestSessionManagerTagTogglesProtection(t *testing.T) {
+	protected := false
+	var writes []bool
+	p := rosterProgram(t, func() ([]SessionItem, error) {
+		return []SessionItem{{ID: 5, Title: "keep me", Protected: protected}}, nil
+	}, SessionActions{SetProtected: func(id int64, value bool) error {
+		if id != 5 {
+			t.Errorf("tag target = %d, want 5", id)
+		}
+		protected = value
+		writes = append(writes, value)
+		return nil
+	}})
+	Command{Name: "sessions"}.runOn(p)
+
+	keyPress(p, runes("t"))
+	if !protected {
+		t.Fatal("t did not protect the highlighted session")
+	}
+	if len(writes) != 1 || !writes[0] {
+		t.Fatalf("writes = %v, want one protected value", writes)
+	}
+	if item, ok := p.state.SessionModal.Selected(); !ok || !item.Protected {
+		t.Fatalf("selected item = %+v, want Protected after the reload", item)
+	}
+	if !strings.Contains(p.state.SessionModal.Notice, "tagged") {
+		t.Errorf("notice = %q, want a tag confirmation", p.state.SessionModal.Notice)
+	}
+
+	keyPress(p, runes("t"))
+	if protected {
+		t.Fatal("a second t did not remove protection")
+	}
+	if len(writes) != 2 || writes[1] {
+		t.Fatalf("writes = %v, want a final unprotected value", writes)
+	}
+}
+
+// A protected session carries a distinct status marker and states the tag in
+// words in the details pane.
+func TestSessionManagerRendersProtectionMarker(t *testing.T) {
+	view := SessionManagerState{
+		Items:       []SessionItem{{ID: 5, Title: "important", Protected: true}},
+		Cursor:      0,
+		VisibleRows: 4,
+	}
+	out := sessionManagerCard(view, 90, 0)
+	for _, want := range []string{"★", "Protected", "yes", "tag"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("protected session render missing %q:\n%s", want, out)
+		}
 	}
 }
 

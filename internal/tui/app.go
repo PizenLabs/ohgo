@@ -186,6 +186,10 @@ type Program struct {
 	// read when the program starts and appended to for every turn that
 	// actually reaches the agent, never for a draft or a ghost suggestion.
 	promptHistory PromptHistory
+	// promptScratch owns ephemeral oversized-prompt files for this process.
+	// Nil keeps large prompts entirely in memory, which is the safe default
+	// for embedded hosts.
+	promptScratch PromptScratch
 
 	// transcriptIndex, viewport, and transcriptFrame are the retained
 	// full-screen projection: document geometry, scroll position, and the
@@ -325,6 +329,10 @@ type Program struct {
 	// onTaskRailChanged persists the task-rail preference. Nil means
 	// session-only, which is also the safe default for embedded hosts.
 	onTaskRailChanged func(enabled bool)
+	// onCleanupChanged persists the retention preferences; onCleanupRun
+	// executes the immediate manual pass. Both are host-owned seams.
+	onCleanupChanged func(autoPrune bool, keepRecent int)
+	onCleanupRun     func(keepRecent int, activeSessionID int64) (int, error)
 
 	// usage accumulates token totals for /usage. Nil means unavailable.
 	usage *agent.UsageLog
@@ -807,6 +815,21 @@ type PromptHistory interface {
 	Add(prompt string)
 }
 
+// PromptScratch is the ephemeral store for oversized prompts.
+//
+// Offload writes the raw prompt and returns the bytes read back from the file,
+// which the turn sends directly as its user payload. No tool call is involved:
+// the file is an archival/lifecycle artifact, not a second retrieval step.
+// ReleaseSession removes the files belonging to one closed conversation;
+// ReleaseAll is the process-shutdown path.
+type PromptScratch interface {
+	// ShouldOffload reports whether prompt crosses the hybrid thresholds.
+	ShouldOffload(prompt string) bool
+	Offload(sessionID int64, prompt string) (path, text string, offloaded bool, err error)
+	ReleaseSession(sessionID int64) error
+	ReleaseAll() error
+}
+
 // promptHistoryFlusher is implemented by stores that buffer appends. Shutdown
 // flushes them so a prompt submitted immediately before quit is not lost.
 type promptHistoryFlusher interface {
@@ -826,6 +849,12 @@ func WithPromptHistory(store PromptHistory) ProgramOption {
 		p.promptHistory = store
 		p.state.Submitted = append(p.state.Submitted, store.Entries()...)
 	}
+}
+
+// SetPromptScratch installs the ephemeral oversized-prompt store. Nil leaves
+// every prompt in memory and disables scratch lifecycle cleanup.
+func (p *Program) SetPromptScratch(scratch PromptScratch) {
+	p.promptScratch = scratch
 }
 
 // WithMouseReporting makes the program request mouse reporting from the
@@ -1192,7 +1221,7 @@ func (p *Program) apply(event Event) {
 	// A prompt joins durable history only when it actually becomes a turn.
 	// Drafts, ghost suggestions, queued lines that never run, and slash or
 	// shell commands are not prompts and must not pollute recall.
-	if submitted, ok := event.(UserSubmitted); ok && p.promptHistory != nil {
+	if submitted, ok := event.(UserSubmitted); ok && p.promptHistory != nil && !submitted.HistoryRecorded {
 		p.promptHistory.Add(submitted.Text)
 	}
 	// Validation results pair with the pending setup flow here, on the update
@@ -3497,6 +3526,7 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	}
 	p.pendingEscape = ""
 	p.mu.Lock()
+	previous := p.session
 	p.history = append([]agent.Message(nil), opened.History...)
 	// A resumed or new session is a fresh telemetry window: the prior
 	// session's token counts and clock never carry over.
@@ -3508,6 +3538,10 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	p.proposal = nil
 	p.session = sess
 	p.mu.Unlock()
+	// Scratch belongs to one conversation. Closing or switching away from the
+	// old session removes its files before the new one starts; the durable
+	// prompt remains in history.
+	p.releasePromptScratch(previous, sess)
 	// A commit proposal belongs to the old session's repository decision and
 	// must not be answerable into the new one. The sequence bump and the
 	// cancelled context make an in-flight answer harmless.
@@ -3602,6 +3636,9 @@ type SessionActions struct {
 	New func() (*session.Session, OpenedSession, error)
 	// Rename relabels a session. Nil disables the "r" key.
 	Rename func(id int64, title string) error
+	// SetProtected tags or untags a session for retention. Nil disables the
+	// "t" key.
+	SetProtected func(id int64, protected bool) error
 	// Archive hides a session from the default roster without deleting it.
 	// Nil disables the "a" key.
 	Archive func(id int64) error
@@ -3939,6 +3976,9 @@ func (p *Program) closeDone() {
 	p.doneOnce.Do(func() {
 		if p.catalogCancel != nil {
 			p.catalogCancel()
+		}
+		if p.promptScratch != nil {
+			_ = p.promptScratch.ReleaseAll()
 		}
 		if closer, ok := p.promptHistory.(interface{ Close() error }); ok {
 			_ = closer.Close()
@@ -4778,6 +4818,55 @@ func (p *Program) cancelShellNow() {
 	}
 }
 
+// prepareTurnPrompt records a turn's full prompt in durable history, then
+// offloads it to scratch when it crosses either hybrid threshold. The returned
+// text is the payload to send: the exact bytes read back from the scratch file
+// when one exists, otherwise the original prompt.
+//
+// historyRecorded tells UserSubmitted not to append the prompt a second time.
+// Offloading is best-effort: a scratch failure leaves the full prompt in the
+// request, because a disposable cache must never be able to lose work.
+func (p *Program) prepareTurnPrompt(text string) (string, bool) {
+	if p.promptHistory != nil {
+		p.promptHistory.Add(text)
+	}
+	if p.promptScratch == nil {
+		return text, p.promptHistory != nil
+	}
+	if p.promptScratch.ShouldOffload(text) {
+		// Offloading must never outrun durability. The in-memory history is
+		// updated by Add; this flush makes the full raw prompt reach disk
+		// before the disposable scratch file exists.
+		if flusher, ok := p.promptHistory.(promptHistoryFlusher); ok {
+			_ = flusher.Flush()
+		}
+	}
+	path, content, offloaded, err := p.promptScratch.Offload(p.activeSessionID(), text)
+	if err != nil {
+		p.publish(Notice{Text: "prompt scratch: " + err.Error()})
+		return text, p.promptHistory != nil
+	}
+	if !offloaded {
+		return text, p.promptHistory != nil
+	}
+	p.publish(Notice{Text: "large prompt saved to " + path})
+	return content, p.promptHistory != nil
+}
+
+// releasePromptScratch drops the old session's ephemeral files when the live
+// conversation changes. The new session's files, if any, are untouched.
+func (p *Program) releasePromptScratch(old, next *session.Session) {
+	if p.promptScratch == nil || old == nil {
+		return
+	}
+	if next != nil && old.ID == next.ID {
+		return
+	}
+	if err := p.promptScratch.ReleaseSession(old.ID); err != nil {
+		p.publish(Notice{Text: "prompt scratch: " + err.Error()})
+	}
+}
+
 // runTurn executes a single turn.
 //
 // It never touches the queue: shifting state off the update goroutine would
@@ -4792,11 +4881,18 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	seq := p.turnSeq
 	p.mu.Unlock()
 
+	// Durable history is written before the disposable scratch copy, so a
+	// prompt survives a closed session, a crash sweeper, or a full disk in the
+	// project directory. The returned text comes from the scratch file when
+	// one was written; it is sent directly in the request, never fetched by a
+	// tool round-trip.
+	text, historyRecorded := p.prepareTurnPrompt(text)
+
 	// A proven or otherwise finished task owns no further continuation. Refuse
 	// before routing so the finished task is neither archived nor replaced by
 	// a duplicate objective.
 	if current, ok := p.terminalTaskContinuation(text); ok {
-		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
+		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
 		p.publish(Notice{Text: terminalTaskNotice(current)})
 		p.publish(AssistantDone{Seq: seq})
 		return
@@ -4844,7 +4940,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		turn = p.workspace.PrepareTurn(text)
 	}
 	if turn.Blocked {
-		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
+		p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
 		reason := turn.Reason
 		if reason == "" {
 			reason = "request refused by workspace authority"
@@ -4853,7 +4949,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		p.publish(AssistantDone{Seq: seq})
 		return
 	}
-	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now()})
+	p.publish(UserSubmitted{Text: text, Seq: seq, At: time.Now(), HistoryRecorded: historyRecorded})
 
 	// The active authority is read from the route for a normal turn, or from
 	// the live owner when the task already owned the continuation above. A role
@@ -5908,6 +6004,7 @@ func (p *Program) SetCompletionContext(root string, resolver agent.StructuralRes
 // which applies HistoryReplaced on choosing.
 func (p *Program) AttachSession(store *session.Store, sess *session.Session, history []agent.Message) {
 	p.mu.Lock()
+	previous := p.session
 	p.store = store
 	p.session = sess
 	p.history = append([]agent.Message(nil), history...)
@@ -5915,6 +6012,7 @@ func (p *Program) AttachSession(store *session.Store, sess *session.Session, his
 	// decision: the choice belongs to the execution it released.
 	p.proposal = nil
 	p.mu.Unlock()
+	p.releasePromptScratch(previous, sess)
 	if p.state.Pending != nil {
 		p.state.Apply(ApprovalAnswered{})
 	}

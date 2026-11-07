@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -115,6 +116,87 @@ func TestTaskRailPreferenceAppliesWithoutWritingBack(t *testing.T) {
 	p.state.Apply(SettingsClosed{})
 	if !ComputeWorkspaceLayout(p.state).Sidebar {
 		t.Fatal("the rail did not return after re-enabling the preference")
+	}
+}
+
+// The cleanup section exposes the durable retention controls and proves the
+// manual pass is executed with the value currently on screen.
+func TestSettingsCleanupSectionPrunesManually(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.AttachSession(nil, &session.Session{ID: 77}, nil)
+	p.SetCleanupSettings(false, DefaultKeepRecentSessions)
+	var savedAuto []bool
+	var savedKeep []int
+	p.SetCleanupChangedHandler(func(auto bool, keep int) {
+		savedAuto = append(savedAuto, auto)
+		savedKeep = append(savedKeep, keep)
+	})
+	var ranWith int
+	var ranActive int64
+	p.SetCleanupRunner(func(keep int, active int64) (int, error) {
+		ranWith = keep
+		ranActive = active
+		return 3, nil
+	})
+	p.state.Apply(SettingsOpened{})
+
+	out := ansi.Strip(RenderSettingsModal(*p.state.SettingsModal, true, DarkPalette(), 74, 24))
+	for _, want := range []string{"CLEANUP", "Auto-Prune Sessions", "[off]", "Keep Recent Max", "[10]", "Run Manual Clean", "[press Enter]"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("settings cleanup section missing %q:\n%s", want, out)
+		}
+	}
+
+	// Auto-prune is the second row and toggles through Enter/Space.
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	keyPress(p, tea.KeyMsg{Type: tea.KeySpace})
+	if !p.state.AutoPruneEnabled {
+		t.Fatal("space did not enable auto-prune")
+	}
+	if len(savedAuto) != 1 || !savedAuto[0] {
+		t.Fatalf("saved auto-prune = %v, want one enabled value", savedAuto)
+	}
+
+	// Keep Recent Max is the third row; right/left adjust the numeric value.
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyRight})
+	if p.state.KeepRecentMax != DefaultKeepRecentSessions+1 {
+		t.Fatalf("keep recent = %d, want %d", p.state.KeepRecentMax, DefaultKeepRecentSessions+1)
+	}
+	if len(savedKeep) == 0 || savedKeep[len(savedKeep)-1] != DefaultKeepRecentSessions+1 {
+		t.Fatalf("saved keep = %v, want the adjusted value persisted", savedKeep)
+	}
+
+	// Run Manual Clean is the fourth row and uses the adjusted value.
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if ranWith != DefaultKeepRecentSessions+1 {
+		t.Fatalf("manual clean ran with keep=%d, want %d", ranWith, DefaultKeepRecentSessions+1)
+	}
+	if ranActive != 77 {
+		t.Fatalf("manual clean active session = %d, want the live session 77", ranActive)
+	}
+	if !strings.Contains(p.state.SettingsModal.Notice, "pruned 3") {
+		t.Fatalf("notice = %q, want the measured prune count", p.state.SettingsModal.Notice)
+	}
+}
+
+// A malformed numeric value from a host never turns into "keep zero": the
+// retained set always has at least one recent session.
+func TestSettingsKeepRecentHasSafeFloor(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.SetCleanupSettings(false, 0)
+	if p.state.KeepRecentMax != DefaultKeepRecentSessions {
+		t.Fatalf("keep recent = %d, want the default", p.state.KeepRecentMax)
+	}
+	p.state.Apply(SettingsOpened{})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
+	for i := 0; i < 20; i++ {
+		keyPress(p, tea.KeyMsg{Type: tea.KeyLeft})
+	}
+	if p.state.KeepRecentMax != 1 {
+		t.Fatalf("keep recent = %d, want the floor of 1", p.state.KeepRecentMax)
 	}
 }
 

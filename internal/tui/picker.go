@@ -714,6 +714,9 @@ type SessionItem struct {
 	// backfill pass uses to title a legacy session, because the latest prompt
 	// may describe follow-up work rather than what the session is about.
 	InitialPrompt string
+	// Protected marks a session excluded from automatic retention pruning.
+	// Explicit deletion remains available.
+	Protected bool
 }
 
 // JobItem is one background job for the picker.

@@ -9,9 +9,12 @@ package tui
 // /model, /permissions) is not repeated here.
 
 import (
+	"fmt"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -23,13 +26,35 @@ const (
 	// change execution authority.
 	settingsSectionInterface = "INTERFACE"
 
-	// settingsTaskRailLabel and its descriptions are the one preference this
-	// surface currently exposes. The descriptions name the trigger and the
+	// settingsSectionCleanup groups transcript retention preferences.
+	settingsSectionCleanup = "CLEANUP"
+
+	// settingsTaskRailLabel and its descriptions name the trigger and the
 	// fallback so the toggle never needs a second explanatory row.
 	settingsTaskRailLabel = "Task rail"
 	settingsTaskRailOn    = "Shown only while an execution request has open todos. Questions and finished work keep the full-width transcript."
 	settingsTaskRailOff   = "Hidden for every request. Todos remain in the transcript and /task."
+
+	// Cleanup rows and their values. Labels are words, never bare glyphs.
+	settingsAutoPruneLabel   = "Auto-Prune Sessions"
+	settingsKeepRecentLabel  = "Keep Recent Max"
+	settingsManualCleanLabel = "Run Manual Clean"
+	settingsManualCleanValue = "press Enter"
+	settingsCleanupNote      = "Protected sessions are never pruned. Explicit delete still works."
 )
+
+// Settings row indexes, in render order.
+const (
+	settingsRowTaskRail = iota
+	settingsRowAutoPrune
+	settingsRowKeepRecent
+	settingsRowManualClean
+	settingsRowCount
+)
+
+// DefaultKeepRecentSessions is the store-owned default when a host supplies no
+// positive value.
+const DefaultKeepRecentSessions = session.DefaultKeepRecent
 
 // SettingsState is the open /settings surface.
 //
@@ -39,10 +64,14 @@ const (
 type SettingsState struct {
 	// Cursor is the highlighted preference row.
 	Cursor int
+	// AutoPrune and KeepRecent mirror the durable cleanup values while the
+	// surface is open. They are a snapshot of host-owned settings, refreshed
+	// through state events when a row changes.
+	AutoPrune  bool
+	KeepRecent int
+	// Notice reports the last manual-clean outcome or a persistence failure.
+	Notice string
 }
-
-// settingsRowCount is the number of selectable preference rows.
-const settingsRowCount = 1
 
 // Move shifts the highlight, wrapping at both ends so the row list stays a
 // cycle even when it grows.
@@ -87,39 +116,67 @@ func RenderSettingsModal(view SettingsState, taskRailEnabled bool, pal *Palette,
 	return renderModalFrameWithFooter(settingsModalTitle, content, settingsFooterBar(pal, interior), pal, interior)
 }
 
-// settingsContent builds the dialog body: one interface section with the
-// current value and the consequence of the opposite state.
+// settingsContent builds the dialog body: an interface section with the
+// current task-rail value, then the cleanup section with retention and an
+// explicit manual action.
 func settingsContent(view SettingsState, taskRailEnabled bool, pal *Palette, interior int) []string {
 	rows := []string{statusSectionHeader(settingsSectionInterface, interior)}
 	rows = append(rows, "")
-	rows = append(rows, settingsToggleRow(view.Cursor == 0, settingsTaskRailLabel, taskRailEnabled, pal, interior))
+	rows = append(rows, settingsToggleRow(view.Cursor == settingsRowTaskRail, settingsTaskRailLabel, taskRailEnabled, pal, interior))
 	description := settingsTaskRailOn
 	if !taskRailEnabled {
 		description = settingsTaskRailOff
 	}
-	descWidth := interior - statusFieldIndent*2
-	if descWidth < 8 {
-		descWidth = 8
-	}
-	for _, line := range WrapToWidth(description, descWidth) {
-		rows = append(rows, strings.Repeat(" ", statusFieldIndent)+pal.Muted.Render(line))
+	rows = append(rows, settingsDescription(description, pal, interior)...)
+
+	rows = append(rows, "")
+	rows = append(rows, statusSectionHeader(settingsSectionCleanup, interior))
+	rows = append(rows, "")
+	rows = append(rows, settingsToggleRow(view.Cursor == settingsRowAutoPrune, settingsAutoPruneLabel, view.AutoPrune, pal, interior))
+	rows = append(rows, settingsValueRow(view.Cursor == settingsRowKeepRecent, settingsKeepRecentLabel,
+		fmt.Sprintf("%d", normalizeKeepRecent(view.KeepRecent)), pal.ToolDone, pal, interior))
+	rows = append(rows, settingsValueRow(view.Cursor == settingsRowManualClean, settingsManualCleanLabel,
+		settingsManualCleanValue, pal.Choice, pal, interior))
+	rows = append(rows, settingsDescription(settingsCleanupNote, pal, interior)...)
+	if view.Notice != "" {
+		rows = append(rows, strings.Repeat(" ", statusFieldIndent)+
+			pal.ToolRun.Render(TruncateToWidth(sanitizeInline(view.Notice), maxInt(interior-statusFieldIndent, 1))))
 	}
 	return rows
 }
 
-// settingsToggleRow renders one preference: the selection marker, its label,
-// and a text value on the right. On/off is a word, never colour alone, so a
-// monochrome terminal still reads the state.
-func settingsToggleRow(selected bool, label string, enabled bool, pal *Palette, interior int) string {
-	marker := "  "
-	if selected {
-		marker = "› "
+// settingsDescription renders a muted explanatory paragraph at the dialog's
+// standard interior indent.
+func settingsDescription(text string, pal *Palette, interior int) []string {
+	descWidth := interior - statusFieldIndent*2
+	if descWidth < 8 {
+		descWidth = 8
 	}
+	out := make([]string, 0, 2)
+	for _, line := range WrapToWidth(text, descWidth) {
+		out = append(out, strings.Repeat(" ", statusFieldIndent)+pal.Muted.Render(line))
+	}
+	return out
+}
+
+// settingsToggleRow renders one boolean preference: the selection marker, its
+// label, and a text value on the right. On/off is a word, never colour alone,
+// so a monochrome terminal still reads the state.
+func settingsToggleRow(selected bool, label string, enabled bool, pal *Palette, interior int) string {
 	value := "off"
 	valueStyle := pal.Muted
 	if enabled {
 		value = "on"
 		valueStyle = pal.ToolDone
+	}
+	return settingsValueRow(selected, label, value, valueStyle, pal, interior)
+}
+
+// settingsValueRow renders one preference row with an arbitrary text value.
+func settingsValueRow(selected bool, label, value string, valueStyle lipgloss.Style, pal *Palette, interior int) string {
+	marker := "  "
+	if selected {
+		marker = "› "
 	}
 	badge := "[" + value + "]"
 	labelText := TruncateToWidth(label, maxInt(interior-CellWidth(marker)-CellWidth(badge)-2, 1))
@@ -135,13 +192,24 @@ func settingsToggleRow(selected bool, label string, enabled bool, pal *Palette, 
 		strings.Repeat(" ", gap) + valueStyle.Render(badge)
 }
 
-// settingsFooterBar names exactly the keys the surface accepts: arrow keys
-// only move the highlight, enter/space flips it, and esc closes without a
-// second confirmation.
+// normalizeKeepRecent bounds a host-supplied retention count to a usable
+// positive value. Zero and negatives are "unset", not "delete everything".
+func normalizeKeepRecent(value int) int {
+	if value <= 0 {
+		return DefaultKeepRecentSessions
+	}
+	return value
+}
+
+// settingsFooterBar names exactly the keys the surface accepts: arrows move,
+// enter/space toggles the highlighted row or runs the manual clean, and the
+// left/right pair adjusts the numeric retention value.
 func settingsFooterBar(pal *Palette, interior int) string {
 	sep := pal.Muted.Render("  ·  ")
 	line := strings.Repeat(" ", statusFieldIndent) +
-		pal.Bold.Render("enter / space") + pal.Muted.Render(" toggle") + sep +
+		pal.Bold.Render("↑↓") + pal.Muted.Render(" move") + sep +
+		pal.Bold.Render("enter / space") + pal.Muted.Render(" toggle / run") + sep +
+		pal.Bold.Render("←→") + pal.Muted.Render(" adjust") + sep +
 		pal.Bold.Render("Esc / q") + pal.Muted.Render(" close")
 	return TruncateToWidth(line, interior)
 }
@@ -181,12 +249,32 @@ func (p *Program) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.state.Apply(SettingsMoved{Delta: -1})
 	case "down", "j":
 		p.state.Apply(SettingsMoved{Delta: 1})
+	case "left", "h", "-":
+		p.adjustKeepRecent(-1)
+	case "right", "l", "+", "=":
+		p.adjustKeepRecent(1)
 	case "enter", " ":
-		p.toggleTaskRail()
+		p.activateSettingsRow()
 	case "esc", "ctrl+c", "q":
 		p.closeSettings()
 	}
 	return p, nil
+}
+
+// activateSettingsRow performs the action the highlighted row names.
+func (p *Program) activateSettingsRow() {
+	view := p.state.SettingsModal
+	if view == nil {
+		return
+	}
+	switch view.Cursor {
+	case settingsRowTaskRail:
+		p.toggleTaskRail()
+	case settingsRowAutoPrune:
+		p.setCleanupSettings(!p.state.AutoPruneEnabled, p.state.KeepRecentMax)
+	case settingsRowManualClean:
+		p.runManualClean()
+	}
 }
 
 // toggleTaskRail flips the preference and persists it through the host seam.
@@ -197,6 +285,71 @@ func (p *Program) toggleTaskRail() {
 	if p.onTaskRailChanged != nil {
 		p.onTaskRailChanged(enabled)
 	}
+}
+
+// adjustKeepRecent changes the retention count by one, clamped so a manual
+// clean can never be configured to retain nothing.
+func (p *Program) adjustKeepRecent(delta int) {
+	if p.state.SettingsModal == nil || p.state.SettingsModal.Cursor != settingsRowKeepRecent {
+		return
+	}
+	keep := normalizeKeepRecent(p.state.KeepRecentMax)
+	keep += delta
+	if keep < 1 {
+		keep = 1
+	}
+	if keep == p.state.KeepRecentMax {
+		return
+	}
+	p.setCleanupSettings(p.state.AutoPruneEnabled, keep)
+}
+
+// setCleanupSettings applies and persists the cleanup preferences through the
+// host seams. A missing persistence handler keeps the change session-only.
+func (p *Program) setCleanupSettings(autoPrune bool, keepRecent int) {
+	keepRecent = normalizeKeepRecent(keepRecent)
+	p.state.Apply(CleanupSettingsChanged{AutoPrune: autoPrune, KeepRecent: keepRecent})
+	if p.onCleanupChanged != nil {
+		p.onCleanupChanged(autoPrune, keepRecent)
+	}
+}
+
+// runManualClean asks the host to prune immediately with the configured
+// retention count and reports the measured outcome in the modal.
+func (p *Program) runManualClean() {
+	if p.onCleanupRun == nil {
+		p.state.Apply(SettingsNoticed{Text: "cleanup is unavailable"})
+		return
+	}
+	keep := normalizeKeepRecent(p.state.KeepRecentMax)
+	// The live conversation is exempt from the count as well as deletion:
+	// manually pruning from /settings must never remove the session the user
+	// is working in.
+	deleted, err := p.onCleanupRun(keep, p.activeSessionID())
+	if err != nil {
+		p.state.Apply(SettingsNoticed{Text: "clean: " + err.Error()})
+		return
+	}
+	p.state.Apply(SettingsNoticed{Text: fmt.Sprintf("pruned %d session(s); kept the %d most recent", deleted, keep)})
+}
+
+// SetCleanupSettings applies saved retention values at startup. It does not
+// save them back: loading a preference is not a write.
+func (p *Program) SetCleanupSettings(autoPrune bool, keepRecent int) {
+	p.state.Apply(CleanupSettingsChanged{AutoPrune: autoPrune, KeepRecent: normalizeKeepRecent(keepRecent)})
+}
+
+// SetCleanupChangedHandler installs persistence behind the cleanup controls.
+// Nil keeps changes session-only for tests and embedded hosts.
+func (p *Program) SetCleanupChangedHandler(onChange func(autoPrune bool, keepRecent int)) {
+	p.onCleanupChanged = onChange
+}
+
+// SetCleanupRunner installs the immediate pruning pass behind "Run Manual
+// Clean". The returned count is the number of deleted sessions. activeSessionID
+// is passed so the host can exempt the live conversation.
+func (p *Program) SetCleanupRunner(run func(keepRecent int, activeSessionID int64) (int, error)) {
+	p.onCleanupRun = run
 }
 
 // SetTaskRailEnabled applies the saved preference at startup. It does not call

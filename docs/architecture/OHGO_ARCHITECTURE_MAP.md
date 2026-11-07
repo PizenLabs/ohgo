@@ -83,7 +83,7 @@ create a boundary that does not exist.
 | **vocabulary** | `jsonschema`, `tokens`, `diff`, `edit` | Argument schemas; token estimation; text diff; fuzzy edit | Any consumer's policy |
 | **vcs** | `vcs` | Git primitives | Whether a commit is allowed |
 | **prompt** | `prompt` | System prompt text, `AGENTS.md` discovery, mention context | Deciding what to do with it |
-| **application** | `commit`, `startup`, `update`, `history`, `gryhook` | The `/commit` workflow; the initialization gate; the updater; REPL history; GRY lifecycle hooks | Execution authority |
+| **application** | `commit`, `startup`, `update`, `history`, `gryhook` | The `/commit` workflow; the initialization gate; the updater; durable prompt history and ephemeral oversized-prompt scratch; GRY lifecycle hooks | Execution authority |
 | **presentation** | `tui`, `tui/diff` | State machine, renderer, command registry, live mode, diff inspector | Task lifecycle, completion, authority |
 | **governance** | `architecture` | The machine-checked manifest and boundaries | Production behaviour (it has no non-test code) |
 

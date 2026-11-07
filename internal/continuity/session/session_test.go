@@ -310,6 +310,143 @@ func TestStoreSetTitle(t *testing.T) {
 	}
 }
 
+// TestStoreProtectionSurvivesReopen proves the tag is durable, not UI state.
+func TestStoreProtectionSurvivesReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Create("/tmp", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetProtected(sess.ID, true); err != nil {
+		t.Fatalf("SetProtected: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	got, err := reopened.Get(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Protected {
+		t.Fatal("protected tag did not survive reopening the store")
+	}
+	if err := reopened.SetProtected(sess.ID, false); err != nil {
+		t.Fatalf("clear protection: %v", err)
+	}
+	cleared, _ := reopened.Get(sess.ID)
+	if cleared.Protected {
+		t.Fatal("clearing protection did not persist")
+	}
+}
+
+// TestPruneSessionsPreservesProtectedAndKeepsMostRecent is the retention
+// contract: protected rows never enter the candidate set, and only the newest
+// unprotected rows survive.
+func TestPruneSessionsPreservesProtectedAndKeepsMostRecent(t *testing.T) {
+	store := openStore(t)
+	base := time.Now().UTC().Add(-time.Hour)
+	ids := make([]int64, 0, 5)
+	for i := 0; i < 5; i++ {
+		sess, err := store.Create("/tmp", "m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, sess.ID)
+		stored, _ := FromAgentMessage(agent.UserMessage{Text: "message"})
+		if err := store.Append(sess.ID, stored); err != nil {
+			t.Fatal(err)
+		}
+		updated := base.Add(time.Duration(i) * time.Minute)
+		if _, err := store.db.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`,
+			updated.Format(time.RFC3339Nano), sess.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Protect the oldest session: it must outrank every newer candidate.
+	if err := store.SetProtected(ids[0], true); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.PruneSessions(2)
+	if err != nil {
+		t.Fatalf("PruneSessions: %v", err)
+	}
+	if result.DeletedCount() != 2 {
+		t.Fatalf("deleted = %d, want 2", result.DeletedCount())
+	}
+	if result.Protected != 1 {
+		t.Fatalf("protected = %d, want 1", result.Protected)
+	}
+	for _, id := range []int64{ids[0], ids[3], ids[4]} {
+		if _, err := store.Get(id); err != nil {
+			t.Errorf("session %d was removed but should be retained: %v", id, err)
+		}
+	}
+	for _, id := range []int64{ids[1], ids[2]} {
+		if _, err := store.Get(id); err == nil {
+			t.Errorf("old unprotected session %d survived pruning", id)
+		}
+		messages, err := store.Messages(id, 0)
+		if err != nil {
+			t.Fatalf("Messages(%d): %v", id, err)
+		}
+		if len(messages) != 0 {
+			t.Errorf("pruned session %d left %d messages behind", id, len(messages))
+		}
+	}
+}
+
+// TestPruneSessionsExceptKeepsTheLiveSession guards the startup path: resuming
+// an old session must not let housekeeping delete the conversation about to
+// load.
+func TestPruneSessionsExceptKeepsTheLiveSession(t *testing.T) {
+	store := openStore(t)
+	base := time.Now().UTC().Add(-time.Hour)
+	var ids []int64
+	for i := 0; i < 4; i++ {
+		sess, err := store.Create("/tmp", "m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, sess.ID)
+		updated := base.Add(time.Duration(i) * time.Minute)
+		if _, err := store.db.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`,
+			updated.Format(time.RFC3339Nano), sess.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	live := ids[0] // oldest, the session a resume targets
+	result, err := store.PruneSessionsExcept(1, live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The live session is retained in addition to the configured one.
+	if result.Kept != 2 {
+		t.Fatalf("kept = %d, want the live session plus one recent", result.Kept)
+	}
+	if _, err := store.Get(live); err != nil {
+		t.Fatalf("live session was pruned: %v", err)
+	}
+	if _, err := store.Get(ids[3]); err != nil {
+		t.Fatalf("newest session was pruned: %v", err)
+	}
+	for _, id := range []int64{ids[1], ids[2]} {
+		if _, err := store.Get(id); err == nil {
+			t.Errorf("session %d survived beyond the retention count", id)
+		}
+	}
+}
+
 func TestStoreReopensPersistently(t *testing.T) {
 	// The point of a store is that data survives the process, so a reopen must
 	// see everything the first handle wrote.
