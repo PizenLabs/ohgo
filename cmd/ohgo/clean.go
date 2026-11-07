@@ -41,7 +41,13 @@ Protected sessions are never pruned. The default keep count comes from
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			// A close failure cannot undo the prune, but it can hide a failed
+			// checkpoint or flush, so report it instead of discarding it.
+			defer func() {
+				if err := store.Close(); err != nil {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ohgo: clean: close session store: %v\n", err)
+				}
+			}()
 
 			result, err := store.PruneSessions(keep)
 			if err != nil {

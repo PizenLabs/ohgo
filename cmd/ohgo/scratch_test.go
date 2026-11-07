@@ -28,6 +28,61 @@ func TestHandleScratchSignalCleansBeforeReraising(t *testing.T) {
 	}
 }
 
+// TestScratchSignalCleanupStopJoinsHandler is the normal-shutdown contract:
+// stop must not return while a signal handler is still running cleanup, or
+// deferred teardown can race the release of scratch files.
+func TestScratchSignalCleanupStopJoinsHandler(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	reexited := make(chan struct{})
+	var forwarded os.Signal
+	stop := startScratchSignalCleanup(func() {
+		close(entered)
+		<-release
+	}, func(sig os.Signal) {
+		forwarded = sig
+		close(reexited)
+	})
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("send SIGTERM: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("signal handler did not start cleanup")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("stop returned before the signal handler finished cleanup")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-reexited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("signal handler did not re-raise after cleanup")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop did not join the exited signal handler")
+	}
+	if forwarded != syscall.SIGTERM {
+		t.Fatalf("re-raised %v, want SIGTERM", forwarded)
+	}
+
+	// Program.Run may reach a second deferred cleanup; stop must remain safe.
+	stop()
+}
+
 // TestScratchSignalCleanupRemovesActiveFiles is the forced-exit contract. The
 // helper process creates a real scratch file and then waits for SIGTERM; the
 // parent proves the file is gone and the signal still terminates the process.

@@ -30,9 +30,17 @@ func installPromptScratch(program *tui.Program, root string) *history.Scratch {
 //
 // The handler restores and re-raises the signal after cleanup, so it preserves
 // the process's ordinary exit status instead of turning a forced termination
-// into a silent success. The returned stop function unregisters the handler
-// when Program.Run returns normally.
+// into a silent success.
 func installScratchSignalCleanup(cleanup func()) (stop func()) {
+	return startScratchSignalCleanup(cleanup, reRaiseProcessSignal)
+}
+
+// startScratchSignalCleanup installs the handler and returns an idempotent stop
+// function. stop unregisters the signal, then joins the handler goroutine:
+// Program.Run's deferred teardown must not race a cleanup callback that is
+// still touching scratch files. reexit is a seam for tests; production passes
+// reRaiseProcessSignal.
+func startScratchSignalCleanup(cleanup func(), reexit func(os.Signal)) (stop func()) {
 	if cleanup == nil {
 		return func() {}
 	}
@@ -41,10 +49,13 @@ func installScratchSignalCleanup(cleanup func()) (stop func()) {
 	signal.Notify(received, signals...)
 	done := make(chan struct{})
 	var once sync.Once
+	var handler sync.WaitGroup
+	handler.Add(1)
 	go func() {
+		defer handler.Done()
 		select {
 		case sig := <-received:
-			handleScratchSignal(cleanup, sig, reRaiseProcessSignal)
+			handleScratchSignal(cleanup, sig, reexit)
 		case <-done:
 		}
 	}()
@@ -53,6 +64,7 @@ func installScratchSignalCleanup(cleanup func()) (stop func()) {
 			signal.Stop(received)
 			close(done)
 		})
+		handler.Wait()
 	}
 }
 
@@ -70,6 +82,9 @@ func handleScratchSignal(cleanup func(), sig os.Signal, reexit func(os.Signal)) 
 
 // reRaiseProcessSignal restores the default action and delivers the same
 // signal to this process.
+//
+// Reset happens before delivery: the restored default action terminates the
+// process, so this handler cannot observe its own signal and run cleanup twice.
 func reRaiseProcessSignal(sig os.Signal) {
 	if system, ok := sig.(syscall.Signal); ok {
 		signal.Reset(system)
