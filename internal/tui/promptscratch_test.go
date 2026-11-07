@@ -120,7 +120,7 @@ func TestSessionSwitchAndShutdownReleaseScratch(t *testing.T) {
 func TestFullPromptRecallSurvivesScratchPurge(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
-	prompt := "master prompt\n" + strings.Repeat("full detail line\n", history.ScratchLineThreshold-1) + "final line"
+	prompt := "Hello,\n\nPlease make sure to review this.\n\nmaster prompt\n" + strings.Repeat("full detail line\n", history.ScratchLineThreshold-1) + "final line"
 
 	first := history.Load(root)
 	p := NewProgram(nil, "test", 0, WithPromptHistory(first))
@@ -131,8 +131,14 @@ func TestFullPromptRecallSurvivesScratchPurge(t *testing.T) {
 	if !recorded {
 		t.Fatal("the prompt was not recorded in durable history")
 	}
-	if injected != prompt {
-		t.Fatal("the injected prompt was truncated")
+	if injected == prompt {
+		t.Fatal("the injected scratch payload was not compressed")
+	}
+	if strings.Contains(injected, "Please make sure to") {
+		t.Fatalf("the injected payload still contains filler:\n%s", injected)
+	}
+	if !strings.Contains(injected, "master prompt") || !strings.Contains(injected, "final line") {
+		t.Fatalf("the injected payload lost technical content:\n%s", injected)
 	}
 	files, err := filepath.Glob(filepath.Join(scratch.Dir(), "prompt_0_*.md"))
 	if err != nil {

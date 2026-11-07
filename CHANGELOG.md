@@ -20,6 +20,14 @@ immutable.
 - Retention controls: `/settings` gains a CLEANUP section with auto-prune,
   keep-recent count, and a manual-clean action. The new `ohgo clean` command
   performs the same protected-aware pruning from the shell.
+- Deterministic prompt optimization: `internal/promptopt` compresses oversized
+  scratch prompts and sanitizes local session titles without a model call or a
+  third-party dependency. Compression removes greetings, politeness, and
+  markdown decoration while preserving fenced code, inline code, paths, and
+  identifiers; local titles drop conversational noise, respect hard word/rune
+  bounds at word boundaries, and never end on a dangling article or preposition.
+  The ASK titler now requests 2–4 words, caps output at 25 tokens, and falls back
+  to the sanitized local title when the provider fails or times out.
 
 ## [v0.0.8] - 2026-11-05
 

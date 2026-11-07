@@ -48,7 +48,7 @@
    ┌────────────────────┴─────────────────────┐
    │  foundation    contract · budget · security · state · config · project
    │                ast · ignore · knowledge · search · jsonschema · tokens
-   │                diff · edit · vcs · prompt · external knowledge
+   │                diff · edit · vcs · prompt · promptopt · external knowledge
    └──────────────────────────────────────────┘
 ```
 
@@ -82,7 +82,7 @@ create a boundary that does not exist.
 | **configuration** | `config`, `state`, `project` | Machine settings; the single `~/.ohgo` path owner; project identity | Runtime authority (that is `workspace` + the gate) |
 | **vocabulary** | `jsonschema`, `tokens`, `diff`, `edit` | Argument schemas; token estimation; text diff; fuzzy edit | Any consumer's policy |
 | **vcs** | `vcs` | Git primitives | Whether a commit is allowed |
-| **prompt** | `prompt` | System prompt text, `AGENTS.md` discovery, mention context | Deciding what to do with it |
+| **prompt** | `prompt`, `promptopt` | System prompt text, `AGENTS.md` discovery, mention context; deterministic prompt compression and title sanitization | Deciding what to do with it, model calls |
 | **application** | `commit`, `startup`, `update`, `history`, `gryhook` | The `/commit` workflow; the initialization gate; the updater; durable prompt history and ephemeral oversized-prompt scratch; GRY lifecycle hooks | Execution authority |
 | **presentation** | `tui`, `tui/diff` | State machine, renderer, command registry, live mode, diff inspector | Task lifecycle, completion, authority |
 | **governance** | `architecture` | The machine-checked manifest and boundaries | Production behaviour (it has no non-test code) |
@@ -98,6 +98,7 @@ edges that are architecturally forbidden (the ones enforced today are marked).
 |---|---|---|---|
 | `internal/agent` | the engine | `control/{contract,budget}`, `security`, `provider/ai`, `tokens`, `jsonschema` — **exactly these** | `control/workspace`, `control/cognition`, `execution/*`, `continuity/*`, `tui`, `commit`, `prompt`, `catalog`, `ast` **\[ENFORCED]** |
 | `internal/security` | authorization kernel | stdlib only **\[ENFORCED]** | every module package |
+| `internal/promptopt` | deterministic prompt/title text transforms | stdlib only **\[ENFORCED]** | every module package |
 | `internal/control/workspace` | authority + routing | `agent`, `control/contract` | `execution/*`, `continuity/*`, `tui` **\[ENFORCED]** |
 | `internal/control/cognition` | shape + evidence | `agent`, `control/{contract,budget}`, `provider/ai`, `external/knowledge` | `execution/*`, `continuity/*`, `tui` **\[ENFORCED]** |
 | `internal/control/contract` | completion vocabulary | stdlib only **\[ENFORCED]** | every module package |
@@ -254,6 +255,7 @@ reasoning, and `internal/architecture/rules_test.go` is the executable form.
 | **New TUI projection** | `internal/tui` (state machine + renderer), fed by hooks/events | Make the projection authoritative; read `continuity/task` directly |
 | **New recovery mechanism** | `internal/continuity/recovery` + `cmd/ohgo/recovery.go` wiring | Expose it as a model-reachable tool |
 | **New prompt text** | `internal/prompt` (or the tool's own constructor) | Inline a prompt string at a call site |
+| **New deterministic prompt/title transform** | `internal/promptopt` | Perform I/O, call a model, or duplicate the transform at a call site |
 | **New shared helper used by two packages** | the lower of the two owners, or the package that owns the concept | Create `common/`, `shared/`, `util/`, `helpers/`, `runtime/`, `core/` |
 
 ### 7.1 The placement test

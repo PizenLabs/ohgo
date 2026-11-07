@@ -9,13 +9,14 @@ import (
 	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/prompt"
+	"github.com/PizenLabs/ohgo/internal/promptopt"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // sessionTitleMaxWords bounds a derived title to the table-cell contract. The
-// prompt asks for 3–6 words; the bound is enforced here too so a verbose model
-// answer cannot stretch the roster column.
+// prompt asks for 2–4 words; the bound leaves a little headroom so a slightly
+// verbose answer is truncated rather than rejected.
 const sessionTitleMaxWords = 6
 
 // sessionTitleMaxRunes bounds a single pathological token.
@@ -40,21 +41,30 @@ const sessionTitleMaxRunes = 80
 // through a different model. The request charges the root budget when one is
 // supplied, exactly like compaction: background titling is still a model call
 // and must not become an unmetered side channel.
+//
+// A failed, timed-out, or empty model answer returns the deterministic
+// promptopt label when one can be derived, so titling never depends on provider
+// availability. Shutdown cancellation stays an error because the UI that would
+// persist the label is already closing.
 func newSessionTitleGenerator(stream ai.StreamFn, resolve func(context.Context, string) (ai.Model, error), roleModel func() string, holders ...*budget.Holder) tui.SessionTitleGenerator {
 	return func(ctx context.Context, modelRef, firstPrompt string) (string, error) {
-		if stream == nil {
-			return "", errors.New("session title: provider transport is unavailable")
-		}
-		if resolve == nil {
-			return "", errors.New("session title: model resolver is unavailable")
-		}
 		firstPrompt = strings.TrimSpace(firstPrompt)
 		if firstPrompt == "" {
 			return "", errors.New("session title: first prompt is empty")
 		}
+		// The local label is the primary fallback: it costs nothing, uses the
+		// same word-boundary rules as the pending roster, and is preferable to
+		// leaving the session untitled when the ASK model is slow or absent.
+		fallback := promptopt.SanitizeTitle(firstPrompt)
+		if stream == nil {
+			return titleFallback(fallback, errors.New("session title: provider transport is unavailable"))
+		}
+		if resolve == nil {
+			return titleFallback(fallback, errors.New("session title: model resolver is unavailable"))
+		}
 		if len(holders) > 0 && holders[0] != nil {
 			if err := holders[0].Get().Admit(budget.DimensionModelCalls); err != nil {
-				return "", err
+				return titleFallback(fallback, err)
 			}
 		}
 		ref := strings.TrimSpace(modelRef)
@@ -65,7 +75,7 @@ func newSessionTitleGenerator(stream ai.StreamFn, resolve func(context.Context, 
 		}
 		model, err := resolve(ctx, ref)
 		if err != nil {
-			return "", fmt.Errorf("session title: resolve %q: %w", ref, err)
+			return titleFallback(fallback, fmt.Errorf("session title: resolve %q: %w", ref, err))
 		}
 		response, err := stream(ctx, ai.Request{
 			Model: model,
@@ -75,21 +85,45 @@ func newSessionTitleGenerator(stream ai.StreamFn, resolve func(context.Context, 
 			Messages: []ai.Message{ai.UserMessage{Content: []ai.ContentBlock{
 				ai.TextContent{Text: firstPrompt},
 			}}},
-			MaxTokens: 64,
+			// The prompt asks for 2-4 words; a small output budget keeps a
+			// provider from reporting a length truncation for a one-line label.
+			MaxTokens: 25,
 		})
 		if err != nil {
-			return "", fmt.Errorf("session title: %w", err)
+			return titleStreamFailure(ctx, fallback, fmt.Errorf("session title: %w", err))
 		}
 		msg, err := response.Result()
 		if err != nil {
-			return "", fmt.Errorf("session title: %w", err)
+			return titleStreamFailure(ctx, fallback, fmt.Errorf("session title: %w", err))
 		}
 		title := normalizeSessionTitle(msg.Text())
 		if title == "" {
+			if fallback != "" {
+				return fallback, nil
+			}
 			return "", errors.New("session title: model returned no usable title")
 		}
 		return title, nil
 	}
+}
+
+// titleFallback prefers the deterministic local label over a failed model call.
+// Only a prompt with no usable words is allowed to surface the provider error.
+func titleFallback(fallback string, cause error) (string, error) {
+	if fallback != "" {
+		return fallback, nil
+	}
+	return "", cause
+}
+
+// titleStreamFailure keeps shutdown cancellation an error: the UI is closing,
+// so persisting a fallback label would outlive the surface that requested it.
+// A deadline or transport failure still gets the local label.
+func titleStreamFailure(ctx context.Context, fallback string, cause error) (string, error) {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return "", cause
+	}
+	return titleFallback(fallback, cause)
 }
 
 // askRoleModelRef returns the model bound to the ASK role, or "" when no role
@@ -110,8 +144,9 @@ func askRoleModelRef(settings config.Settings) string {
 // normalizeSessionTitle converts a model answer into one bounded label.
 //
 // It keeps the first line, strips a label prefix, surrounding quotes, and
-// trailing punctuation, then collapses whitespace and caps the word count.
-// Navigation chrome must never carry a markdown block or a multi-line answer.
+// trailing punctuation, then collapses whitespace. The shared truncator cuts
+// only between words and drops a trailing article or preposition, so navigation
+// chrome never carries a markdown block, a half word, or a dangling "the".
 func normalizeSessionTitle(raw string) string {
 	line := strings.TrimSpace(raw)
 	if i := strings.IndexByte(line, '\n'); i >= 0 {
@@ -134,17 +169,6 @@ func normalizeSessionTitle(raw string) string {
 	line = strings.TrimRight(line, ".,:;!?—-–")
 	line = strings.TrimSpace(line)
 	line = strings.Trim(line, "\"'`“”‘’")
-	fields := strings.Fields(line)
-	if len(fields) == 0 {
-		return ""
-	}
-	if len(fields) > sessionTitleMaxWords {
-		fields = fields[:sessionTitleMaxWords]
-	}
-	title := strings.Join(fields, " ")
-	runes := []rune(title)
-	if len(runes) > sessionTitleMaxRunes {
-		title = strings.TrimSpace(string(runes[:sessionTitleMaxRunes]))
-	}
-	return title
+	line = strings.TrimSpace(line)
+	return promptopt.TruncateTitle(line, sessionTitleMaxWords, sessionTitleMaxRunes)
 }

@@ -22,6 +22,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/PizenLabs/ohgo/internal/promptopt"
 )
 
 // Session manager geometry. The dialog is responsive: it grows with the
@@ -404,30 +406,15 @@ func sessionTitleAssigned(title, model string) bool {
 // explicit user name is never masked.
 const sessionTitlePlaceholder = "(generating title…)"
 
-// Deterministic fallback bounds. A local title is a provisional label, not a
-// model-derived claim, so it must stay short enough for the roster column.
-const (
-	sessionTitleFallbackWords = 5
-	sessionTitleFallbackRunes = 40
-)
-
 // localSessionTitle derives a deterministic label from a prompt when the ASK
-// model has not answered yet or cannot answer. It keeps the first five words
-// and caps the result at 40 runes, so a slow title request can never strand
-// the Session Manager on an open-ended placeholder.
+// model has not answered yet or cannot answer.
+//
+// It delegates to promptopt so the pending roster and the persisted fallback
+// share one noise filter, one set of bounds, and one word-boundary rule. A
+// title can therefore never differ just because it was rendered before the
+// background request finished.
 func localSessionTitle(prompt string) string {
-	fields := strings.Fields(prompt)
-	if len(fields) == 0 {
-		return ""
-	}
-	if len(fields) > sessionTitleFallbackWords {
-		fields = fields[:sessionTitleFallbackWords]
-	}
-	title := strings.Join(fields, " ")
-	if runes := []rune(title); len(runes) > sessionTitleFallbackRunes {
-		title = strings.TrimSpace(string(runes[:sessionTitleFallbackRunes]))
-	}
-	return title
+	return promptopt.SanitizeTitle(prompt)
 }
 
 // sessionDisplayTitle resolves the roster label: a deterministic local label

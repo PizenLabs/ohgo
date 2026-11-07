@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -39,8 +40,8 @@ func TestSessionTitleGeneratorSendsTheTitleRequest(t *testing.T) {
 	if got.Model.ID == "" || got.Model.Provider != "anthropic" {
 		t.Fatalf("model = %+v, want the resolved session model", got.Model)
 	}
-	if got.MaxTokens != 64 {
-		t.Errorf("MaxTokens = %d, want the bounded title budget", got.MaxTokens)
+	if got.MaxTokens != 25 {
+		t.Errorf("MaxTokens = %d, want the 25-token title budget", got.MaxTokens)
 	}
 	if len(got.System) != 1 || got.System[0].Text != prompt.SessionTitleInstruction {
 		t.Errorf("System = %+v, want the title instruction", got.System)
@@ -150,6 +151,54 @@ func TestSessionTitleGeneratorRefusesEmptyPrompt(t *testing.T) {
 	}
 }
 
+// A provider failure or timeout must still produce the deterministic local
+// label rather than leaving the session untitled. The ASK model is a shortcut,
+// not a prerequisite for a usable title.
+func TestSessionTitleGeneratorFallsBackToSanitizedPrompt(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "transport failure", err: errors.New("provider down")},
+		{name: "timeout", err: context.DeadlineExceeded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			generate := newSessionTitleGenerator(func(context.Context, ai.Request) (*ai.Stream, error) {
+				return nil, tc.err
+			}, func(_ context.Context, ref string) (ai.Model, error) {
+				return catalog.Resolve(ref)
+			}, nil)
+			title, err := generate(context.Background(), "anthropic/claude-sonnet-4-5", "Use ls to inspect the project root")
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			if title != "ls project root" {
+				t.Fatalf("title = %q, want the sanitized local fallback", title)
+			}
+		})
+	}
+}
+
+// Shutdown cancellation is not a provider failure: the UI is closing, so no
+// fallback title may be persisted behind the program's back.
+func TestSessionTitleGeneratorKeepsShutdownCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	generate := newSessionTitleGenerator(func(ctx context.Context, _ ai.Request) (*ai.Stream, error) {
+		return nil, ctx.Err()
+	}, func(_ context.Context, ref string) (ai.Model, error) {
+		return catalog.Resolve(ref)
+	}, nil)
+	title, err := generate(ctx, "anthropic/claude-sonnet-4-5", "Use ls to inspect the project root")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if title != "" {
+		t.Fatalf("title = %q, want no fallback on shutdown", title)
+	}
+}
+
 // The model answer is reduced to one bounded navigation label.
 func TestNormalizeSessionTitle(t *testing.T) {
 	cases := []struct {
@@ -164,6 +213,9 @@ func TestNormalizeSessionTitle(t *testing.T) {
 		{"caps at six words", "one two three four five six seven eight", "one two three four five six"},
 		{"strips markdown heading", "### Fix the parser", "Fix the parser"},
 		{"trailing quote after punctuation", `Fix the parser."`, "Fix the parser"},
+		{"drops dangling preposition", "Fix the parser in", "Fix the parser"},
+		{"only stop words", "the to in", ""},
+		{"rune cut keeps whole words", strings.Repeat("a", 78) + " beta", strings.Repeat("a", 78)},
 		{"only punctuation", " ... ", ""},
 		{"empty", "   ", ""},
 		{"long single token", strings.Repeat("a", sessionTitleMaxRunes+20), strings.Repeat("a", sessionTitleMaxRunes)},

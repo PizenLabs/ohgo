@@ -51,7 +51,7 @@ function.
 | `progress.json` | authoritative durable task checkpoint (schema version 3, read-old/refuse-newer): identity, lifecycle, contract, snapshot, budget, evidence state, active role and handoff record (continuity metadata, never authority), the bounded timeline and completion proof, and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries, checkpoint write is the commit point |
 | `task.md` | human- and model-readable task projection | `task` | project; projection only; never authoritative over `progress.json` |
 | `tasks/<id>.json` | detached task archive, including its context | `task` | project; durable until resumed, cancelled, or deleted by the human |
-| `scratch/prompt_<session>_<timestamp>.md` | raw oversized master prompt (≥50 lines or ≥4000 runes), `0600` | `history` | ephemeral; removed on session close/switch, process exit, or startup sweep after 24h; durable copy lives in prompt history |
+| `scratch/prompt_<session>_<timestamp>.md` | compressed oversized master prompt (≥50 lines or ≥4000 runes; conversational filler removed, code and identifiers preserved), `0600` | `history` | ephemeral; removed on session close/switch, process exit, or startup sweep after 24h; durable raw copy lives in prompt history |
 
 The project root is the Git worktree root when the directory is inside a repo,
 otherwise the directory itself (`project.Root`). A nested directory and the
@@ -249,7 +249,7 @@ never let global state become an accidental authority for project-local state.**
 | code graph | — | `<project>/.ohgo/graph.db` (reserved) | derived; source wins | derived | delete + rebuild |
 | model cache | `catalog` | `~/.ohgo/cache/*.json` | derived | machine | delete + refetch |
 | prompt history | `history` | `~/.ohgo/history`, `<project>/.ohgo/history` | derived | machine + project | delete |
-| oversized prompt scratch | `history` | `<project>/.ohgo/scratch/` | disposable copy; history is authoritative | session | session close, exit, or 24h sweep |
+| oversized prompt scratch | `history` | `<project>/.ohgo/scratch/` | disposable compressed copy; history is authoritative | session | session close, exit, or 24h sweep |
 | runtime (loop, turn, stream, jobs) | runtime | none | authoritative while live | process | n/a |
 | TUI state | TUI/application | none | display only | process | n/a |
 
@@ -542,10 +542,13 @@ Mutation checks: removing the `ErrUnconfirmed` branch fails
 | Test | Contract it defends |
 | --- | --- |
 | `history.TestShouldOffloadUsesEitherHybridThreshold` | 50 lines **or** 4000 runes triggers offload; smaller prompts stay in memory |
-| `history.TestScratchOffloadWritesExactPromptAndInjectsReadBackBytes` | the scratch file is the payload source and contains the raw prompt |
+| `history.TestScratchOffloadCompressesFluffAndPreservesCode` | the scratch file is the payload source, contains the compressed prompt, and preserves fenced code byte-for-byte |
+| `history.TestScratchOffloadNeverWritesAnEmptyPayload` | an all-filler prompt falls back to the original bytes instead of an empty scratch file |
 | `history.TestScratchReleaseSessionIsScoped` | session close removes only that session's eager scratch files |
 | `history.TestScratchSweepRemovesOnlyOldOrphans` | the boot sweep removes >24h orphans and never an active file |
 | `history.TestGlobalHistoryRecallSurvivesScratchPurge` | full prompt recall is served by global history, independent of scratch |
+| `promptopt.TestSanitizeTitleStripsNoiseAndBoundsAtWordBoundaries` | local titles drop conversational noise and never split a word or end on a dangling article |
+| `promptopt.TestCompressPromptPreservesCodeAndTechnicalText` | scratch compression removes filler while preserving code, inline spans, paths, and globs |
 | `tui.TestPrepareTurnPromptWritesHistoryBeforeScratch` | durable history is written before the disposable copy |
 | `tui.TestFullPromptRecallSurvivesScratchPurge` | Ctrl+P recalls the entire multi-line prompt after the files are gone |
 | `cmd/ohgo.TestScratchSignalCleanupRemovesActiveFiles` | SIGTERM removes active scratch and preserves signal termination |

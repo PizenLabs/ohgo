@@ -6,9 +6,12 @@ package history
 // .ohgo/scratch directory before the turn starts, and the bytes read back from
 // that file become the model's user message. The copy is not a tool handoff:
 // the payload already contains the full text, so the model never spends a
-// round-trip opening it. Scratch is deliberately disposable. The durable copy
-// is the prompt history entry, written before this file exists, which is what
-// recall reads after a session closes or a crash sweeper removes the file.
+// round-trip opening it. The copy is compressed deterministically — greetings,
+// politeness, and markdown decoration are removed while code and identifiers
+// stay byte-for-byte — because the scratch file is context, not a durable
+// record. Scratch is deliberately disposable. The durable copy is the raw
+// prompt history entry, written before this file exists, which is what recall
+// reads after a session closes or a crash sweeper removes the file.
 
 import (
 	"errors"
@@ -20,6 +23,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/project"
+	"github.com/PizenLabs/ohgo/internal/promptopt"
 )
 
 const (
@@ -91,16 +95,23 @@ func (s *Scratch) ShouldOffload(prompt string) bool {
 	return ShouldOffload(prompt)
 }
 
-// Offload writes prompt to the session's scratch area and returns the bytes
-// read back from that file.
+// Offload compresses prompt, writes it to the session's scratch area, and
+// returns the bytes read back from that file.
 //
 // offloaded is false for a prompt below both thresholds. On a write or read
 // failure the original prompt remains the caller's payload: losing a large
 // prompt because a disposable cache directory is unwritable would be the worse
 // failure. The file is removed when it cannot be verified by reading it back.
+//
+// Compression never writes an empty payload: a prompt made entirely of filler
+// still carries the user's own bytes into the model message.
 func (s *Scratch) Offload(sessionID int64, prompt string) (path, text string, offloaded bool, err error) {
 	if s == nil || !ShouldOffload(prompt) {
 		return "", "", false, nil
+	}
+	payload := promptopt.CompressPrompt(prompt)
+	if strings.TrimSpace(payload) == "" {
+		payload = prompt
 	}
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return "", "", false, fmt.Errorf("history: create scratch directory %s: %w", s.dir, err)
@@ -120,7 +131,7 @@ func (s *Scratch) Offload(sessionID int64, prompt string) (path, text string, of
 		if openErr != nil {
 			return "", "", false, fmt.Errorf("history: create scratch %s: %w", path, openErr)
 		}
-		_, writeErr := file.WriteString(prompt)
+		_, writeErr := file.WriteString(payload)
 		closeErr := file.Close()
 		if writeErr != nil || closeErr != nil {
 			_ = os.Remove(path)

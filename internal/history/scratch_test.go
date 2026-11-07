@@ -33,15 +33,18 @@ func TestShouldOffloadUsesEitherHybridThreshold(t *testing.T) {
 	}
 }
 
-// TestScratchOffloadWritesExactPromptAndInjectsReadBackBytes proves the file
-// is the payload source, not an external retrieval step.
-func TestScratchOffloadWritesExactPromptAndInjectsReadBackBytes(t *testing.T) {
+// TestScratchOffloadCompressesFluffAndPreservesCode proves the scratch file is
+// the compressed payload source: filler disappears, code is byte-preserved, and
+// the injected bytes are exactly what the file contains.
+func TestScratchOffloadCompressesFluffAndPreservesCode(t *testing.T) {
 	root := t.TempDir()
 	scratch := NewScratch(root)
 	now := time.Unix(1_700_000_000, 123)
 	scratch.now = func() time.Time { return now }
 
-	prompt := "# Master prompt\n\n" + strings.Repeat("detail line\n", ScratchLineThreshold)
+	code := "```go\nfunc main() {\n\tfmt.Println(\"please  keep  this\")\n}\n```"
+	prompt := "Hello,\n\nPlease make sure to review the parser. Thank you in advance!\n\n" +
+		code + "\n\n" + strings.Repeat("detail line\n", ScratchLineThreshold)
 	path, text, offloaded, err := scratch.Offload(7, prompt)
 	if err != nil {
 		t.Fatalf("Offload: %v", err)
@@ -49,8 +52,18 @@ func TestScratchOffloadWritesExactPromptAndInjectsReadBackBytes(t *testing.T) {
 	if !offloaded {
 		t.Fatal("a large prompt was not offloaded")
 	}
-	if text != prompt {
-		t.Fatalf("injected text differs from the prompt:\ngot %q\nwant %q", text, prompt)
+	if text == prompt {
+		t.Fatal("the scratch payload was not compressed")
+	}
+	for _, gone := range []string{"Hello,", "Please make sure to", "Thank you in advance"} {
+		if strings.Contains(text, gone) {
+			t.Fatalf("scratch payload still contains %q:\n%s", gone, text)
+		}
+	}
+	for _, kept := range []string{code, "review the parser.", "detail line"} {
+		if !strings.Contains(text, kept) {
+			t.Fatalf("scratch payload lost %q:\n%s", kept, text)
+		}
 	}
 	wantPath := filepath.Join(root, ".ohgo", "scratch", "prompt_7_1700000000000000123.md")
 	if path != wantPath {
@@ -60,11 +73,29 @@ func TestScratchOffloadWritesExactPromptAndInjectsReadBackBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if string(onDisk) != prompt {
-		t.Fatal("the scratch file does not contain the raw prompt")
+	if string(onDisk) != text {
+		t.Fatal("the injected bytes differ from the scratch file")
 	}
 	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("scratch mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// TestScratchOffloadNeverWritesAnEmptyPayload is the compression fallback: a
+// prompt made entirely of filler still reaches the model as the user's bytes,
+// because an empty scratch file would silently erase the turn.
+func TestScratchOffloadNeverWritesAnEmptyPayload(t *testing.T) {
+	scratch := NewScratch(t.TempDir())
+	prompt := strings.Repeat("Please make sure to thank you in advance. ", 120)
+	if !ShouldOffload(prompt) {
+		t.Fatal("fixture is below the offload threshold")
+	}
+	_, text, offloaded, err := scratch.Offload(1, prompt)
+	if err != nil {
+		t.Fatalf("Offload: %v", err)
+	}
+	if !offloaded || text != prompt {
+		t.Fatalf("offloaded=%v text=%q, want the original prompt back", offloaded, text)
 	}
 }
 
@@ -179,7 +210,7 @@ func TestGlobalHistoryRecallSurvivesScratchPurge(t *testing.T) {
 	// History trims trailing newlines by design; keep the payload's content
 	// intact so the recall comparison is about the whole prompt, not one
 	// normalization the store already owns.
-	prompt := "master prompt\n" + strings.Repeat("full line\n", ScratchLineThreshold-1) + "final line"
+	prompt := "Hello,\n\nPlease make sure to review this.\n\nmaster prompt\n" + strings.Repeat("full line\n", ScratchLineThreshold-1) + "final line"
 
 	store := Open(localPath, globalPath, 100)
 	store.Add(prompt)
@@ -192,8 +223,14 @@ func TestGlobalHistoryRecallSurvivesScratchPurge(t *testing.T) {
 	if err != nil || !offloaded {
 		t.Fatalf("Offload: offloaded=%v err=%v", offloaded, err)
 	}
-	if injected != prompt {
-		t.Fatal("the injected prompt was truncated")
+	if injected == prompt {
+		t.Fatal("the injected scratch payload was not compressed")
+	}
+	if strings.Contains(injected, "Please make sure to") {
+		t.Fatalf("the injected payload still contains filler:\n%s", injected)
+	}
+	if !strings.Contains(injected, "master prompt") || !strings.Contains(injected, "final line") {
+		t.Fatalf("the injected payload lost technical content:\n%s", injected)
 	}
 	if err := scratch.ReleaseAll(); err != nil {
 		t.Fatalf("ReleaseAll: %v", err)

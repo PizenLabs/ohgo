@@ -817,9 +817,10 @@ type PromptHistory interface {
 
 // PromptScratch is the ephemeral store for oversized prompts.
 //
-// Offload writes the raw prompt and returns the bytes read back from the file,
-// which the turn sends directly as its user payload. No tool call is involved:
-// the file is an archival/lifecycle artifact, not a second retrieval step.
+// Offload compresses the prompt, writes it, and returns the bytes read back
+// from the file, which the turn sends directly as its user payload. No tool
+// call is involved: the file is an archival/lifecycle artifact, not a second
+// retrieval step. The durable history copy remains the raw prompt.
 // ReleaseSession removes the files belonging to one closed conversation;
 // ReleaseAll is the process-shutdown path.
 type PromptScratch interface {
@@ -4818,10 +4819,10 @@ func (p *Program) cancelShellNow() {
 	}
 }
 
-// prepareTurnPrompt records a turn's full prompt in durable history, then
-// offloads it to scratch when it crosses either hybrid threshold. The returned
-// text is the payload to send: the exact bytes read back from the scratch file
-// when one exists, otherwise the original prompt.
+// prepareTurnPrompt records a turn's full raw prompt in durable history, then
+// offloads a compressed copy to scratch when it crosses either hybrid
+// threshold. The returned text is the payload to send: the exact bytes read
+// back from the scratch file when one exists, otherwise the original prompt.
 //
 // historyRecorded tells UserSubmitted not to append the prompt a second time.
 // Offloading is best-effort: a scratch failure leaves the full prompt in the

@@ -181,8 +181,9 @@ func TestSessionManagerShowsGeneratingTitlePlaceholder(t *testing.T) {
 }
 
 // While a model title request is in flight the roster shows a deterministic
-// local truncation, not an open-ended waiting label: a slower ASK model must
-// not make the manager look stuck.
+// local sanitization, not an open-ended waiting label: a slower ASK model must
+// not make the manager look stuck, and conversational noise must not consume
+// the title column.
 func TestSessionManagerShowsLocalFallbackWhileTitling(t *testing.T) {
 	view := SessionManagerState{
 		Items: []SessionItem{{
@@ -197,24 +198,31 @@ func TestSessionManagerShowsLocalFallbackWhileTitling(t *testing.T) {
 	if strings.Contains(card, sessionTitlePlaceholder) {
 		t.Fatalf("card still shows the waiting placeholder:\n%s", card)
 	}
-	if !strings.Contains(card, "check this project and analyze") {
-		t.Fatalf("card does not show the local fallback title:\n%s", card)
+	if !strings.Contains(card, "check project analyze") {
+		t.Fatalf("card does not show the sanitized local fallback title:\n%s", card)
+	}
+	if strings.Contains(card, "this project") {
+		t.Fatalf("card still shows conversational noise:\n%s", card)
 	}
 }
 
-// The local fallback is bounded and deterministic: the first five words, then
-// forty runes, with whitespace collapsed.
+// The local fallback is bounded and deterministic: conversational noise is
+// stripped, words are never split, and a dangling article cannot survive.
 func TestLocalSessionTitleBounds(t *testing.T) {
 	cases := []struct {
 		name   string
 		prompt string
 		want   string
 	}{
-		{name: "short prompt", prompt: "fix the parser", want: "fix the parser"},
+		{name: "short prompt", prompt: "fix the parser", want: "fix parser"},
 		{name: "five words", prompt: "one two three four five", want: "one two three four five"},
 		{name: "six words", prompt: "one two three four five six", want: "one two three four five"},
-		{name: "whitespace", prompt: "  fix \n the\tparser  ", want: "fix the parser"},
+		{name: "whitespace", prompt: "  fix \n the\tparser  ", want: "fix parser"},
 		{name: "long token", prompt: strings.Repeat("a", 60), want: strings.Repeat("a", 40)},
+		{name: "request framing", prompt: "Use ls to inspect the project root", want: "ls project root"},
+		{name: "trailing article", prompt: "Use ls to inspect the", want: "ls"},
+		{name: "path preserved", prompt: "Use internal/promptopt/titler.go in the patch", want: "internal/promptopt/titler.go patch"},
+		{name: "noise only", prompt: "please explain the", want: ""},
 		{name: "empty", prompt: "   ", want: ""},
 	}
 	for _, tc := range cases {
