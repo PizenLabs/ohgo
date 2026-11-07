@@ -189,6 +189,7 @@ func installSessionManager(program *tui.Program, store *session.Store, held *har
 			}
 			return ai.Model{}, err
 		},
+		held.titleRoleModelRef,
 		opts.budget,
 	))
 	program.SetSessionActions(tui.SessionActions{

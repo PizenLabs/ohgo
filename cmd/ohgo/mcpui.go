@@ -487,6 +487,7 @@ func replMCP(h *harness, args []string) string {
 		if h != nil && h.settings != nil {
 			if reloaded, err := config.Load(h.root); err == nil {
 				*h.settings = reloaded
+				h.refreshTitleRoleModel()
 			}
 		}
 		return tui.RenderMCPApplyResults(results)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/prompt"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
@@ -29,12 +30,17 @@ const sessionTitleMaxRunes = 80
 // running session can actually use — including live-discovered ids such as
 // "openrouter/stealth/crouton-alpha" that the static catalog never saw — or
 // titling silently disappears for exactly the models chosen from the live
-// picker. The model is resolved from the session's own snapshot rather than
-// the live configuration, so a /model switch cannot retitle an existing
-// session through a different model. The request charges the root budget when
-// one is supplied, exactly like compaction: background titling is still a
-// model call and must not become an unmetered side channel.
-func newSessionTitleGenerator(stream ai.StreamFn, resolve func(context.Context, string) (ai.Model, error), holders ...*budget.Holder) tui.SessionTitleGenerator {
+// picker.
+//
+// Titling is a cheap, latency-sensitive job, so it prefers the ASK role's
+// model over the session's execution model: a title request is not execution
+// work and must not consume the BUILD/FUZZ budget. When no ASK role model is
+// configured, modelRef (the session's own snapshot) remains the fallback so a
+// later /model switch still cannot silently retitle an existing session
+// through a different model. The request charges the root budget when one is
+// supplied, exactly like compaction: background titling is still a model call
+// and must not become an unmetered side channel.
+func newSessionTitleGenerator(stream ai.StreamFn, resolve func(context.Context, string) (ai.Model, error), roleModel func() string, holders ...*budget.Holder) tui.SessionTitleGenerator {
 	return func(ctx context.Context, modelRef, firstPrompt string) (string, error) {
 		if stream == nil {
 			return "", errors.New("session title: provider transport is unavailable")
@@ -51,9 +57,15 @@ func newSessionTitleGenerator(stream ai.StreamFn, resolve func(context.Context, 
 				return "", err
 			}
 		}
-		model, err := resolve(ctx, modelRef)
+		ref := strings.TrimSpace(modelRef)
+		if roleModel != nil {
+			if ask := strings.TrimSpace(roleModel()); ask != "" {
+				ref = ask
+			}
+		}
+		model, err := resolve(ctx, ref)
 		if err != nil {
-			return "", fmt.Errorf("session title: resolve %q: %w", modelRef, err)
+			return "", fmt.Errorf("session title: resolve %q: %w", ref, err)
 		}
 		response, err := stream(ctx, ai.Request{
 			Model: model,
@@ -78,6 +90,21 @@ func newSessionTitleGenerator(stream ai.StreamFn, resolve func(context.Context, 
 		}
 		return title, nil
 	}
+}
+
+// askRoleModelRef returns the model bound to the ASK role, or "" when no role
+// model is configured. It is the one reader titling uses: the control plane's
+// role assignment and the background title pass must agree on which model a
+// title request spends, and the ASK role is the cheap reasoning model.
+//
+// The legacy Models map is included because RoleModel treats it as the same
+// assignment layer; a file that predates Roles keeps working.
+func askRoleModelRef(settings config.Settings) string {
+	ref, _, source := settings.RoleModel(string(config.RoleAsk))
+	if source == "builtin" {
+		return ""
+	}
+	return strings.TrimSpace(ref)
 }
 
 // normalizeSessionTitle converts a model answer into one bounded label.

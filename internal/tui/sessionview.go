@@ -395,17 +395,47 @@ func sessionTitleAssigned(title, model string) bool {
 	return true
 }
 
-// sessionTitlePlaceholder is shown while a background title request runs. It
-// only replaces an unassigned title: an explicit user name is never masked.
+// sessionTitlePlaceholder is shown while a background title request runs and
+// no local fallback can be derived. It only replaces an unassigned title: an
+// explicit user name is never masked.
 const sessionTitlePlaceholder = "(generating title…)"
 
-// sessionDisplayTitle resolves the roster label: a waiting placeholder while
-// an automatic title request runs over an unassigned title, then the stored
-// title, then the explicit untitled marker. The model is a separate fact and
-// is never promoted into the title column: a blank title means "untitled", not
-// "show the model path".
+// Deterministic fallback bounds. A local title is a provisional label, not a
+// model-derived claim, so it must stay short enough for the roster column.
+const (
+	sessionTitleFallbackWords = 5
+	sessionTitleFallbackRunes = 40
+)
+
+// localSessionTitle derives a deterministic label from a prompt when the ASK
+// model has not answered yet or cannot answer. It keeps the first five words
+// and caps the result at 40 runes, so a slow title request can never strand
+// the Session Manager on an open-ended placeholder.
+func localSessionTitle(prompt string) string {
+	fields := strings.Fields(prompt)
+	if len(fields) == 0 {
+		return ""
+	}
+	if len(fields) > sessionTitleFallbackWords {
+		fields = fields[:sessionTitleFallbackWords]
+	}
+	title := strings.Join(fields, " ")
+	if runes := []rune(title); len(runes) > sessionTitleFallbackRunes {
+		title = strings.TrimSpace(string(runes[:sessionTitleFallbackRunes]))
+	}
+	return title
+}
+
+// sessionDisplayTitle resolves the roster label: a deterministic local label
+// while an automatic title request is pending, then the stored title, then the
+// explicit untitled marker. The model is a separate fact and is never promoted
+// into the title column: a blank title means "untitled", not "show the model
+// path".
 func sessionDisplayTitle(item SessionItem) string {
 	if item.TitlePending && !sessionTitleAssigned(item.Title, item.Model) {
+		if fallback := localSessionTitle(item.InitialPrompt); fallback != "" {
+			return fallback
+		}
 		return sessionTitlePlaceholder
 	}
 	if title := sanitizeInline(item.Title); strings.TrimSpace(title) != "" {

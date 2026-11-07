@@ -3618,8 +3618,9 @@ func (p *Program) SetSessionActions(actions SessionActions) {
 
 // SessionTitleGenerator derives a concise title from a session's first user
 // prompt. It runs off the update goroutine and must not touch Program state;
-// modelRef is the session's own model snapshot, so a later /model switch
-// cannot silently change which model titled an existing session.
+// modelRef is the session's own model snapshot and is only the fallback when
+// no ASK role model is configured, so a later /model switch cannot silently
+// change which model titled an existing session.
 type SessionTitleGenerator func(ctx context.Context, modelRef, firstPrompt string) (string, error)
 
 // SetSessionTitleGenerator installs automatic session titling. A nil
@@ -5562,9 +5563,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	}
 }
 
-// sessionTitleTimeout bounds the background title request. A provider that
-// never answers must not leave a session permanently marked as titling.
-const sessionTitleTimeout = 20 * time.Second
+// sessionTitleTimeout bounds the background title request. Titling is a
+// latency-sensitive job, so the ASK-model pass gets at most five seconds: a
+// provider that never answers must not leave a session marked as titling or
+// keep the Session Manager on a placeholder.
+const sessionTitleTimeout = 5 * time.Second
 
 // titleModel resolves the model identity a stored title must be compared
 // against. The stored snapshot is authoritative; the turn's captured ref is
@@ -5622,14 +5625,24 @@ func (p *Program) generateSessionTitleNow(sessionID int64, modelRef, firstPrompt
 		p.markTitling(sessionID, true)
 		marked = true
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionTitleTimeout)
+	// Derive from the program's lifetime context, not context.Background: a
+	// title request still in flight when the UI closes must be cancelled with
+	// the program, and the timeout keeps a hung provider bounded either way.
+	ctx, cancel := context.WithTimeout(p.Context(), sessionTitleTimeout)
 	defer cancel()
 	title, err := generate(ctx, modelRef, firstPrompt)
 	if err != nil {
+		// A shutdown cancels the request with the program; there is no UI left
+		// to fall back for. A real failure or timeout gets the deterministic
+		// local label so the roster never waits past the deadline.
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			p.persistLocalSessionTitle(store, sessionID, modelRef, firstPrompt)
+		}
 		return
 	}
 	title = strings.Join(strings.Fields(title), " ")
 	if title == "" {
+		p.persistLocalSessionTitle(store, sessionID, modelRef, firstPrompt)
 		return
 	}
 	// Re-read before writing: a manual rename during the request is an
@@ -5642,6 +5655,26 @@ func (p *Program) generateSessionTitleNow(sessionID int64, modelRef, firstPrompt
 		return
 	}
 	p.publish(SessionTitleUpdated{ID: sessionID, Title: title})
+}
+
+// persistLocalSessionTitle stores a deterministic fallback label when the ASK
+// model request does not produce a title. The store is passed in because the
+// caller already captured it under mu. It re-reads the row so an explicit
+// rename during the request always wins, and publishes the same event a model
+// title uses so an open Session Manager repaints in the next frame.
+func (p *Program) persistLocalSessionTitle(store *session.Store, sessionID int64, modelRef, firstPrompt string) {
+	fallback := localSessionTitle(firstPrompt)
+	if fallback == "" || store == nil {
+		return
+	}
+	latest, err := store.Get(sessionID)
+	if err != nil || sessionTitleAssigned(latest.Title, titleModel(latest.Model, modelRef)) {
+		return
+	}
+	if err := store.SetTitle(sessionID, fallback); err != nil {
+		return
+	}
+	p.publish(SessionTitleUpdated{ID: sessionID, Title: fallback})
 }
 
 // sessionBackfillParallel bounds how many legacy titles are derived at once.
@@ -5676,10 +5709,7 @@ func (p *Program) backfillSessionTitles(items []SessionItem) {
 			strings.TrimSpace(item.InitialPrompt) == "" {
 			continue
 		}
-		p.mu.Lock()
-		pending := p.titling[item.ID]
-		p.mu.Unlock()
-		if pending {
+		if p.titlingPending(item.ID) {
 			continue
 		}
 		p.markTitling(item.ID, true)
@@ -5706,6 +5736,15 @@ func (p *Program) backfillSessionTitles(items []SessionItem) {
 			work <- job
 		}
 	}()
+}
+
+// titlingPending reports whether a title request is already in flight for the
+// session. Reading the map through the same lock markTitling writes under is
+// what keeps an open Session Manager and a backfill worker from racing.
+func (p *Program) titlingPending(sessionID int64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.titling[sessionID]
 }
 
 // markTitling records an in-flight automatic title for the Session Manager's

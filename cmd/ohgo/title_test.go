@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/prompt"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/provider/catalog"
@@ -24,7 +25,7 @@ func TestSessionTitleGeneratorSendsTheTitleRequest(t *testing.T) {
 	}
 	generate := newSessionTitleGenerator(stream, func(_ context.Context, ref string) (ai.Model, error) {
 		return catalog.Resolve(ref)
-	})
+	}, nil)
 	title, err := generate(context.Background(), "anthropic/claude-sonnet-4-5", "fix the parser")
 	if err != nil {
 		t.Fatalf("generate: %v", err)
@@ -74,7 +75,7 @@ func TestSessionTitleGeneratorResolvesLiveDiscoveredModel(t *testing.T) {
 			Content: []ai.ContentBlock{ai.TextContent{Text: "Analyze the Go project"}},
 		}), nil
 	}
-	generate := newSessionTitleGenerator(stream, resolver)
+	generate := newSessionTitleGenerator(stream, resolver, nil)
 	title, err := generate(context.Background(), ref, "check this project and analyze what this project is about?")
 	if err != nil {
 		t.Fatalf("generate: %v", err)
@@ -90,6 +91,48 @@ func TestSessionTitleGeneratorResolvesLiveDiscoveredModel(t *testing.T) {
 	}
 }
 
+// Titling is cheap background work, so it must use the ASK role's model even
+// when the session ran on a heavier execution role. The session snapshot is
+// only the fallback when the role is unset; otherwise a BUILD session would
+// spend its expensive model on every title.
+func TestSessionTitleGeneratorUsesTheAskRoleModel(t *testing.T) {
+	settings := config.Default()
+	settings.AssignRole(string(config.RoleAsk), "openai/gpt-5-mini", "")
+
+	resolved := ai.Model{ID: "gpt-5-mini", Provider: "openai"}
+	var asked string
+	resolver := func(_ context.Context, ref string) (ai.Model, error) {
+		asked = ref
+		return resolved, nil
+	}
+	var got ai.Request
+	stream := func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+		got = req
+		return ai.NewCompletedStream(ai.AssistantMessage{
+			Content: []ai.ContentBlock{ai.TextContent{Text: "Fix the session title"}},
+		}), nil
+	}
+	generate := newSessionTitleGenerator(stream, resolver, func() string {
+		return askRoleModelRef(settings)
+	})
+
+	// The session itself ran on a heavy execution model; the ASK assignment
+	// must win over this snapshot.
+	title, err := generate(context.Background(), "anthropic/claude-opus-4-5", "fix the session title")
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if asked != "openai/gpt-5-mini" {
+		t.Fatalf("resolved %q, want the ASK role model", asked)
+	}
+	if got.Model.ID != resolved.ID || got.Model.Provider != resolved.Provider {
+		t.Fatalf("request model = %+v, want the ASK role model", got.Model)
+	}
+	if title != "Fix the session title" {
+		t.Fatalf("title = %q, want the generated summary", title)
+	}
+}
+
 // An empty first prompt is refused before spending a provider call.
 func TestSessionTitleGeneratorRefusesEmptyPrompt(t *testing.T) {
 	called := 0
@@ -98,7 +141,7 @@ func TestSessionTitleGeneratorRefusesEmptyPrompt(t *testing.T) {
 		return ai.NewCompletedStream(ai.AssistantMessage{}), nil
 	}, func(_ context.Context, ref string) (ai.Model, error) {
 		return catalog.Resolve(ref)
-	})
+	}, nil)
 	if _, err := generate(context.Background(), "anthropic/claude-sonnet-4-5", "   "); err == nil {
 		t.Fatal("an empty prompt produced a title request")
 	}

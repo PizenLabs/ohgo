@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -179,6 +180,52 @@ func TestSessionManagerShowsGeneratingTitlePlaceholder(t *testing.T) {
 	}
 }
 
+// While a model title request is in flight the roster shows a deterministic
+// local truncation, not an open-ended waiting label: a slower ASK model must
+// not make the manager look stuck.
+func TestSessionManagerShowsLocalFallbackWhileTitling(t *testing.T) {
+	view := SessionManagerState{
+		Items: []SessionItem{{
+			ID:            7,
+			Model:         "p/m",
+			TitlePending:  true,
+			InitialPrompt: "check this project and analyze what this project is about",
+		}},
+		VisibleRows: 5,
+	}
+	card := sessionManagerCard(view, 90, 0)
+	if strings.Contains(card, sessionTitlePlaceholder) {
+		t.Fatalf("card still shows the waiting placeholder:\n%s", card)
+	}
+	if !strings.Contains(card, "check this project and analyze") {
+		t.Fatalf("card does not show the local fallback title:\n%s", card)
+	}
+}
+
+// The local fallback is bounded and deterministic: the first five words, then
+// forty runes, with whitespace collapsed.
+func TestLocalSessionTitleBounds(t *testing.T) {
+	cases := []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{name: "short prompt", prompt: "fix the parser", want: "fix the parser"},
+		{name: "five words", prompt: "one two three four five", want: "one two three four five"},
+		{name: "six words", prompt: "one two three four five six", want: "one two three four five"},
+		{name: "whitespace", prompt: "  fix \n the\tparser  ", want: "fix the parser"},
+		{name: "long token", prompt: strings.Repeat("a", 60), want: strings.Repeat("a", 40)},
+		{name: "empty", prompt: "   ", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := localSessionTitle(tc.prompt); got != tc.want {
+				t.Fatalf("localSessionTitle(%q) = %q, want %q", tc.prompt, got, tc.want)
+			}
+		})
+	}
+}
+
 // Empty, marker, and default-model-path titles are all unassigned; a real
 // label is not. This is the classification the background pass relies on.
 func TestSessionTitleAssignedClassification(t *testing.T) {
@@ -320,6 +367,111 @@ func TestSessionManagerBackfillsLegacyTitlesWithoutBlocking(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("title never landed in the Session Manager: %+v", p.state.SessionModal.Items[0])
 		}
+	}
+}
+
+// A title request must not outlive the program. Shutdown cancels the in-flight
+// provider call and clears the pending marker, so a closed UI never leaves a
+// titling goroutine waiting on a dead session.
+func TestSessionTitleRequestIsCancelledOnShutdown(t *testing.T) {
+	store, err := session.Open(t.TempDir() + "/sessions.db")
+	if err != nil {
+		t.Fatalf("session.Open: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	sess, err := store.CreateWith(session.CreateOptions{Cwd: t.TempDir(), Model: "p/m"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	started := make(chan struct{}, 1)
+	cancelled := make(chan error, 1)
+	p := NewProgram(nil, "test", 0)
+	p.store = store
+	p.SetSessionTitleGenerator(func(ctx context.Context, _, _ string) (string, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		cancelled <- ctx.Err()
+		return "", ctx.Err()
+	})
+
+	// The first-turn path is the real caller; it must pass a context derived
+	// from the program, not an independent background context.
+	p.generateSessionTitle(sess.ID, sess.Model, "analyze this project")
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("title request never started")
+	}
+	p.closeDone()
+
+	select {
+	case err := <-cancelled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("title request ended with %v, want context.Canceled from shutdown", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("title request outlived program shutdown")
+	}
+
+	deadline := time.After(2 * time.Second)
+	for p.titlingPending(sess.ID) {
+		select {
+		case <-deadline:
+			t.Fatal("pending marker survived a cancelled title request")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	stored, err := store.Get(sess.ID)
+	if err != nil || stored.Title != "" {
+		t.Fatalf("stored title = %q (err %v), want no title after cancellation", stored.Title, err)
+	}
+}
+
+// A failed ASK-model title request must still leave a usable label: the local
+// truncation is persisted and published, so the manager never keeps a pending
+// placeholder after the bounded timeout.
+func TestSessionTitleFallsBackToLocalPromptOnFailure(t *testing.T) {
+	store, err := session.Open(t.TempDir() + "/sessions.db")
+	if err != nil {
+		t.Fatalf("session.Open: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	sess, err := store.CreateWith(session.CreateOptions{Cwd: t.TempDir(), Model: "p/m"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	p := NewProgram(nil, "test", 0)
+	p.store = store
+	p.SetSessionTitleGenerator(func(context.Context, string, string) (string, error) {
+		return "", errors.New("provider down")
+	})
+	const prompt = "fix the parser in the session view"
+	p.generateSessionTitleNow(sess.ID, sess.Model, prompt, false)
+
+	stored, err := store.Get(sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	want := localSessionTitle(prompt)
+	if stored.Title != want {
+		t.Fatalf("stored title = %q, want the local fallback %q", stored.Title, want)
+	}
+	select {
+	case event := <-p.events:
+		updated, ok := event.(SessionTitleUpdated)
+		if !ok || updated.ID != sess.ID || updated.Title != want {
+			t.Fatalf("event = %#v, want the fallback SessionTitleUpdated", event)
+		}
+	default:
+		t.Fatal("no SessionTitleUpdated event was published for the fallback")
+	}
+	if p.titlingPending(sess.ID) {
+		t.Fatal("pending marker survived the fallback title")
 	}
 }
 
