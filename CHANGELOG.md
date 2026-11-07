@@ -5,6 +5,8 @@ immutable.
 
 ## [Unreleased]
 
+## [v0.0.9] - 2026-11-08
+
 ### Added
 
 - Hybrid master-prompt offloading: prompts with at least 50 lines or 4000 runes
