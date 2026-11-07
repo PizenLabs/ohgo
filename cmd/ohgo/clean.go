@@ -25,7 +25,7 @@ func cleanCmd() *cobra.Command {
 Protected sessions are never pruned. The default keep count comes from
 ~/.ohgo/settings.json (10 when unset); --keep overrides it for one run.`,
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 			if keep <= 0 {
 				settings, err := config.Load("")
 				if err != nil && !errors.Is(err, config.ErrNotFound) {
@@ -41,11 +41,12 @@ Protected sessions are never pruned. The default keep count comes from
 			if err != nil {
 				return err
 			}
-			// A close failure cannot undo the prune, but it can hide a failed
-			// checkpoint or flush, so report it instead of discarding it.
+			// The prune is transactional, but a close failure can still mean a
+			// failed checkpoint or flush. Report it as part of the command
+			// result rather than letting a damaged store look like success.
 			defer func() {
-				if err := store.Close(); err != nil {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ohgo: clean: close session store: %v\n", err)
+				if closeErr := store.Close(); closeErr != nil {
+					runErr = errors.Join(runErr, fmt.Errorf("clean: close session store: %w", closeErr))
 				}
 			}()
 

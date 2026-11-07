@@ -30,7 +30,8 @@ func installPromptScratch(program *tui.Program, root string) *history.Scratch {
 //
 // The handler restores and re-raises the signal after cleanup, so it preserves
 // the process's ordinary exit status instead of turning a forced termination
-// into a silent success.
+// into a silent success. Callers must defer the returned stop immediately: it
+// is the only path that releases the handler goroutine on a normal shutdown.
 func installScratchSignalCleanup(cleanup func()) (stop func()) {
 	return startScratchSignalCleanup(cleanup, reRaiseProcessSignal)
 }
@@ -86,10 +87,15 @@ func handleScratchSignal(cleanup func(), sig os.Signal, reexit func(os.Signal)) 
 // Reset happens before delivery: the restored default action terminates the
 // process, so this handler cannot observe its own signal and run cleanup twice.
 func reRaiseProcessSignal(sig os.Signal) {
-	if system, ok := sig.(syscall.Signal); ok {
-		signal.Reset(system)
-		_ = syscall.Kill(os.Getpid(), system)
-		return
+	system, ok := sig.(syscall.Signal)
+	if !ok {
+		os.Exit(1)
 	}
-	os.Exit(1)
+	signal.Reset(system)
+	if err := syscall.Kill(os.Getpid(), system); err != nil {
+		// The process can no longer safely continue: the handler is gone and
+		// the original termination status cannot be reproduced. Fall back to a
+		// deterministic failure rather than returning to normal execution.
+		os.Exit(1)
+	}
 }
