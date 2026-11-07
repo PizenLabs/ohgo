@@ -84,6 +84,9 @@ func runOnce(cmd *cobra.Command, text string) error {
 			return err
 		}
 	}
+	// A one-shot prompt names its session before execution. The label is
+	// derived locally, so it never adds a provider request to the run.
+	applyLocalSessionTitle(store, sess, text)
 
 	// The one-shot path uses the same capability policy as an interactive
 	// turn. BUILD <-> FUZZ moves automatically; crossing ASK is a human

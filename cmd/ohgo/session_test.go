@@ -127,6 +127,46 @@ func TestPersistTurnWritesTheTranscript(t *testing.T) {
 	}
 }
 
+// A newly opened session receives its deterministic title from the submitted
+// prompt before any provider work. The title is durable and readable through a
+// fresh store handle, so the Session Manager never waits for a model.
+func TestOpenSessionStoresTheDeterministicLocalTitle(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	opts := options{
+		root:     t.TempDir(),
+		model:    catalog.MustResolve("anthropic/claude-sonnet-4-5"),
+		settings: config.Default(),
+	}
+	store, sess, closeFn, err := openSession(opts, 0)
+	if err != nil {
+		t.Fatalf("openSession: %v", err)
+	}
+	defer closeFn()
+	if store == nil || sess == nil {
+		t.Fatal("openSession did not create a session")
+	}
+
+	const prompt = "Use ls to inspect the project root and backend/"
+	got := applyLocalSessionTitle(store, sess, prompt)
+	if got != "ls project root backend" {
+		t.Fatalf("applied title = %q, want %q", got, "ls project root backend")
+	}
+
+	reopened, err := session.Open(store.Path())
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	stored, err := reopened.Get(sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Title != "ls project root backend" {
+		t.Fatalf("stored title = %q, want the deterministic local label", stored.Title)
+	}
+}
+
 func TestCompactionFromSettingsHonoursOverrides(t *testing.T) {
 	disabled := false
 	keep := 3

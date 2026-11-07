@@ -2,13 +2,13 @@ package tui
 
 import (
 	"context"
-	"errors"
+	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -39,7 +39,7 @@ func TestNewSessionCreatorPresentsBothTitleModes(t *testing.T) {
 		t.Fatalf("chosen = %+v, want custom after typing a name", item)
 	}
 	card := stripANSI(renderNewSessionPickerCard(picker, DarkPalette(), Layout{}, 64, 0))
-	for _, want := range []string{"NEW SESSION", "Auto (LLM Generated)", "Custom Name...", "Fix the parser", "Enter create", "Esc cancel"} {
+	for _, want := range []string{"NEW SESSION", "Auto (Local Title)", "Custom Name...", "Fix the parser", "Enter create", "Esc cancel"} {
 		if !strings.Contains(card, want) {
 			t.Errorf("creator card missing %q:\n%s", want, card)
 		}
@@ -48,7 +48,7 @@ func TestNewSessionCreatorPresentsBothTitleModes(t *testing.T) {
 
 // Typing a name and submitting creates one session with that exact title.
 func TestNewSessionCreatorCustomNameCreatesTitledSession(t *testing.T) {
-	store, err := session.Open(t.TempDir() + "/sessions.db")
+	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {
 		t.Fatalf("session.Open: %v", err)
 	}
@@ -87,15 +87,18 @@ func TestNewSessionCreatorCustomNameCreatesTitledSession(t *testing.T) {
 	if p.session == nil {
 		t.Fatal("the new session was not adopted")
 	}
+	if p.session.Title != "Fix the parser" {
+		t.Fatalf("in-memory title = %q, want the typed name", p.session.Title)
+	}
 	if sess, err := store.Get(p.session.ID); err != nil || sess.Title != "Fix the parser" {
 		t.Fatalf("stored title = %q (err %v), want the typed name", sess.Title, err)
 	}
 }
 
 // Submitting without a name is the auto path: one session is created and no
-// explicit title is written before the first turn.
+// title is written until the first prompt supplies one.
 func TestNewSessionCreatorAutoCreatesUntitledSession(t *testing.T) {
-	store, err := session.Open(t.TempDir() + "/sessions.db")
+	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {
 		t.Fatalf("session.Open: %v", err)
 	}
@@ -158,55 +161,34 @@ func TestNewSessionCreatorEscapeCancelsTypedName(t *testing.T) {
 	}
 }
 
-// The Session Manager names an in-flight title instead of falling back to the
-// model string, and a completed event replaces the placeholder in place.
-func TestSessionManagerShowsGeneratingTitlePlaceholder(t *testing.T) {
-	// A default-filler title (the model path) is still unassigned, so the
-	// placeholder must replace it rather than displaying the model twice.
+// The Session Manager renders a deterministic local label immediately. There
+// is no model request and therefore no waiting placeholder to represent.
+func TestSessionManagerShowsDeterministicLocalTitleImmediately(t *testing.T) {
 	view := SessionManagerState{
-		Items:       []SessionItem{{ID: 7, Title: "p/m", TitlePending: true, Model: "p/m"}},
+		Items: []SessionItem{{
+			ID:            7,
+			Model:         "p/m",
+			InitialPrompt: "Use ls to inspect the project root and backend/",
+		}},
 		VisibleRows: 5,
 	}
 	card := sessionManagerCard(view, 90, 0)
-	if !strings.Contains(card, "(generating title…)") {
-		t.Fatalf("card does not show the in-flight title placeholder:\n%s", card)
+	if !strings.Contains(card, "ls project root backend") {
+		t.Fatalf("card does not show the deterministic local title:\n%s", card)
+	}
+	if strings.Contains(card, "generating title") {
+		t.Fatalf("card still shows a waiting title placeholder:\n%s", card)
 	}
 
 	state := New()
 	state.Apply(SessionManagerOpened{View: view})
 	state.Apply(SessionTitleUpdated{ID: 7, Title: "Fix the parser"})
-	if got := state.SessionModal.Items[0]; got.Title != "Fix the parser" || got.TitlePending {
-		t.Fatalf("item = %+v, want the persisted title and no pending marker", got)
+	if got := state.SessionModal.Items[0]; got.Title != "Fix the parser" {
+		t.Fatalf("item = %+v, want the persisted title", got)
 	}
 }
 
-// While a model title request is in flight the roster shows a deterministic
-// local sanitization, not an open-ended waiting label: a slower ASK model must
-// not make the manager look stuck, and conversational noise must not consume
-// the title column.
-func TestSessionManagerShowsLocalFallbackWhileTitling(t *testing.T) {
-	view := SessionManagerState{
-		Items: []SessionItem{{
-			ID:            7,
-			Model:         "p/m",
-			TitlePending:  true,
-			InitialPrompt: "check this project and analyze what this project is about",
-		}},
-		VisibleRows: 5,
-	}
-	card := sessionManagerCard(view, 90, 0)
-	if strings.Contains(card, sessionTitlePlaceholder) {
-		t.Fatalf("card still shows the waiting placeholder:\n%s", card)
-	}
-	if !strings.Contains(card, "check project analyze") {
-		t.Fatalf("card does not show the sanitized local fallback title:\n%s", card)
-	}
-	if strings.Contains(card, "this project") {
-		t.Fatalf("card still shows conversational noise:\n%s", card)
-	}
-}
-
-// The local fallback is bounded and deterministic: conversational noise is
+// The local title is bounded and deterministic: conversational noise is
 // stripped, words are never split, and a dangling article cannot survive.
 func TestLocalSessionTitleBounds(t *testing.T) {
 	cases := []struct {
@@ -235,7 +217,7 @@ func TestLocalSessionTitleBounds(t *testing.T) {
 }
 
 // Empty, marker, and default-model-path titles are all unassigned; a real
-// label is not. This is the classification the background pass relies on.
+// label is not.
 func TestSessionTitleAssignedClassification(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -262,23 +244,28 @@ func TestSessionTitleAssignedClassification(t *testing.T) {
 	}
 }
 
-// A blank title renders the explicit untitled marker, never the model path.
+// A blank title renders the explicit untitled marker or a local label from the
+// recorded prompt, never the model path.
 func TestSessionDisplayTitleNeverPromotesTheModelPath(t *testing.T) {
 	item := SessionItem{Title: "", Model: "openrouter/stealth/crouton-alpha"}
 	if got := sessionDisplayTitle(item); got != "(untitled)" {
 		t.Fatalf("display title = %q, want (untitled)", got)
 	}
-	item.TitlePending = true
-	if got := sessionDisplayTitle(item); got != sessionTitlePlaceholder {
-		t.Fatalf("pending display title = %q, want %q", got, sessionTitlePlaceholder)
+	item.InitialPrompt = "Use ls to inspect the project root and backend/"
+	if got := sessionDisplayTitle(item); got != "ls project root backend" {
+		t.Fatalf("display title = %q, want the local label", got)
+	}
+	item.Title = item.Model
+	if got := sessionDisplayTitle(item); got != "ls project root backend" {
+		t.Fatalf("model-path title = %q, want the local label instead", got)
 	}
 }
 
-// Opening the Session Manager must start a bounded backfill for legacy
-// untitled sessions without waiting for any provider call. The roster renders
-// the pending placeholder immediately and updates in place as titles land.
-func TestSessionManagerBackfillsLegacyTitlesWithoutBlocking(t *testing.T) {
-	store, err := session.Open(t.TempDir() + "/sessions.db")
+// Opening the Session Manager labels legacy sessions synchronously from their
+// stored first prompt. No provider is configured, so a hidden model request
+// would fail or hang instead of yielding the deterministic title.
+func TestSessionManagerBackfillsLegacyTitlesLocally(t *testing.T) {
+	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {
 		t.Fatalf("session.Open: %v", err)
 	}
@@ -290,19 +277,11 @@ func TestSessionManagerBackfillsLegacyTitlesWithoutBlocking(t *testing.T) {
 	if err := store.Append(legacy.ID, session.StoredMessage{Role: "user", Text: "check this project and analyze what this project is about?"}); err != nil {
 		t.Fatalf("Append user: %v", err)
 	}
-	if err := store.Append(legacy.ID, session.StoredMessage{Role: "assistant", Text: "this is a Go e-commerce project"}); err != nil {
-		t.Fatalf("Append assistant: %v", err)
-	}
 	stats, err := store.Stats([]int64{legacy.ID})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
-	if stats[legacy.ID].InitialPrompt == "" {
-		t.Fatal("fixture has no stored initial prompt")
-	}
 
-	release := make(chan struct{})
-	started := make(chan struct{}, 1)
 	p := NewProgram(nil, "test", 0)
 	p.store = store
 	p.SetSessionBrowser(func() ([]SessionItem, error) {
@@ -318,132 +297,27 @@ func TestSessionManagerBackfillsLegacyTitlesWithoutBlocking(t *testing.T) {
 	}, func(id int64) (*session.Session, OpenedSession, error) {
 		return &legacy, OpenedSession{}, nil
 	})
-	p.SetSessionTitleGenerator(func(ctx context.Context, modelRef, firstPrompt string) (string, error) {
-		if modelRef != legacy.Model {
-			t.Errorf("modelRef = %q, want %q", modelRef, legacy.Model)
-		}
-		if firstPrompt != "check this project and analyze what this project is about?" {
-			t.Errorf("firstPrompt = %q, want the stored initial prompt", firstPrompt)
-		}
-		select {
-		case started <- struct{}{}:
-		default:
-		}
-		select {
-		case <-release:
-			return "Analyze the Go project", nil
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-	})
 
-	opened := make(chan struct{})
-	go func() {
-		defer close(opened)
-		p.openSessionManager()
-	}()
-	select {
-	case <-opened:
-	case <-time.After(2 * time.Second):
-		t.Fatal("opening the Session Manager blocked on title generation")
-	}
+	p.openSessionManager()
 	if p.state.SessionModal == nil {
 		t.Fatal("the Session Manager did not open")
 	}
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("legacy title backfill never started")
+	if item := p.state.SessionModal.Items[0]; item.Title != "check project analyze" {
+		t.Fatalf("roster title = %q, want the local derivative", item.Title)
 	}
-	if item := p.state.SessionModal.Items[0]; !item.TitlePending {
-		t.Fatalf("item = %+v, want a pending title placeholder before the request completes", item)
+	stored, err := store.Get(legacy.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
 	}
-
-	close(release)
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case event := <-p.events:
-			p.apply(event)
-			if item := p.state.SessionModal.Items[0]; item.Title == "Analyze the Go project" && !item.TitlePending {
-				stored, err := store.Get(legacy.ID)
-				if err != nil || stored.Title != "Analyze the Go project" {
-					t.Fatalf("stored title = %q (err %v), want the backfilled title", stored.Title, err)
-				}
-				return
-			}
-		case <-deadline:
-			t.Fatalf("title never landed in the Session Manager: %+v", p.state.SessionModal.Items[0])
-		}
+	if stored.Title != "check project analyze" {
+		t.Fatalf("stored title = %q, want the local derivative", stored.Title)
 	}
 }
 
-// A title request must not outlive the program. Shutdown cancels the in-flight
-// provider call and clears the pending marker, so a closed UI never leaves a
-// titling goroutine waiting on a dead session.
-func TestSessionTitleRequestIsCancelledOnShutdown(t *testing.T) {
-	store, err := session.Open(t.TempDir() + "/sessions.db")
-	if err != nil {
-		t.Fatalf("session.Open: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-	sess, err := store.CreateWith(session.CreateOptions{Cwd: t.TempDir(), Model: "p/m"})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	started := make(chan struct{}, 1)
-	cancelled := make(chan error, 1)
-	p := NewProgram(nil, "test", 0)
-	p.store = store
-	p.SetSessionTitleGenerator(func(ctx context.Context, _, _ string) (string, error) {
-		select {
-		case started <- struct{}{}:
-		default:
-		}
-		<-ctx.Done()
-		cancelled <- ctx.Err()
-		return "", ctx.Err()
-	})
-
-	// The first-turn path is the real caller; it must pass a context derived
-	// from the program, not an independent background context.
-	p.generateSessionTitle(sess.ID, sess.Model, "analyze this project")
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("title request never started")
-	}
-	p.closeDone()
-
-	select {
-	case err := <-cancelled:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("title request ended with %v, want context.Canceled from shutdown", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("title request outlived program shutdown")
-	}
-
-	deadline := time.After(2 * time.Second)
-	for p.titlingPending(sess.ID) {
-		select {
-		case <-deadline:
-			t.Fatal("pending marker survived a cancelled title request")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	stored, err := store.Get(sess.ID)
-	if err != nil || stored.Title != "" {
-		t.Fatalf("stored title = %q (err %v), want no title after cancellation", stored.Title, err)
-	}
-}
-
-// A failed ASK-model title request must still leave a usable label: the local
-// truncation is persisted and published, so the manager never keeps a pending
-// placeholder after the bounded timeout.
-func TestSessionTitleFallsBackToLocalPromptOnFailure(t *testing.T) {
-	store, err := session.Open(t.TempDir() + "/sessions.db")
+// Submission itself stores the deterministic label, before the returned turn
+// command runs. A consumer that reads the store immediately sees the title.
+func TestSubmitStoresTheLocalTitleSynchronously(t *testing.T) {
+	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {
 		t.Fatalf("session.Open: %v", err)
 	}
@@ -455,51 +329,38 @@ func TestSessionTitleFallsBackToLocalPromptOnFailure(t *testing.T) {
 
 	p := NewProgram(nil, "test", 0)
 	p.store = store
-	p.SetSessionTitleGenerator(func(context.Context, string, string) (string, error) {
-		return "", errors.New("provider down")
-	})
-	const prompt = "fix the parser in the session view"
-	p.generateSessionTitleNow(sess.ID, sess.Model, prompt, false)
+	p.session = &sess
+	_ = p.submit("Use ls to inspect the project root and backend/")
 
 	stored, err := store.Get(sess.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	want := localSessionTitle(prompt)
-	if stored.Title != want {
-		t.Fatalf("stored title = %q, want the local fallback %q", stored.Title, want)
+	if stored.Title != "ls project root backend" {
+		t.Fatalf("stored title = %q, want the deterministic local label", stored.Title)
 	}
-	select {
-	case event := <-p.events:
-		updated, ok := event.(SessionTitleUpdated)
-		if !ok || updated.ID != sess.ID || updated.Title != want {
-			t.Fatalf("event = %#v, want the fallback SessionTitleUpdated", event)
-		}
-	default:
-		t.Fatal("no SessionTitleUpdated event was published for the fallback")
-	}
-	if p.titlingPending(sess.ID) {
-		t.Fatal("pending marker survived the fallback title")
+	if p.session.Title != "ls project root backend" {
+		t.Fatalf("in-memory title = %q, want the deterministic local label", p.session.Title)
 	}
 }
 
-// The first completed turn derives a title, while a session with an explicit
-// title never spends a background model call on one.
-func TestFirstTurnGeneratesOnlyUntitledSessionTitles(t *testing.T) {
+// The first submitted prompt assigns the title synchronously, before the
+// provider call, and the turn spends exactly one request: the title itself is
+// local. An explicit title is never replaced.
+func TestFirstPromptAssignsLocalTitleWithoutAProviderCall(t *testing.T) {
 	cases := []struct {
 		name      string
 		preset    string
-		wantCalls int32
 		wantTitle string
 	}{
-		{name: "empty", wantCalls: 1, wantTitle: "Fix the parser"},
-		{name: "untitled marker", preset: "(untitled)", wantCalls: 1, wantTitle: "Fix the parser"},
-		{name: "default model path", preset: "p/m", wantCalls: 1, wantTitle: "Fix the parser"},
-		{name: "custom", preset: "My explicit title", wantCalls: 0, wantTitle: "My explicit title"},
+		{name: "empty", wantTitle: "fix parser"},
+		{name: "untitled marker", preset: "(untitled)", wantTitle: "fix parser"},
+		{name: "default model path", preset: "p/m", wantTitle: "fix parser"},
+		{name: "custom", preset: "My explicit title", wantTitle: "My explicit title"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store, err := session.Open(t.TempDir() + "/sessions.db")
+			store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
 			if err != nil {
 				t.Fatalf("session.Open: %v", err)
 			}
@@ -512,59 +373,49 @@ func TestFirstTurnGeneratesOnlyUntitledSessionTitles(t *testing.T) {
 				if err := store.SetTitle(sess.ID, tc.preset); err != nil {
 					t.Fatalf("SetTitle: %v", err)
 				}
+				sess.Title = tc.preset
 			}
 
-			var calls atomic.Int32
-			generated := make(chan struct{}, 1)
-			p := NewProgram(scriptedLoop(t, "answer"), "test", 0)
+			var calls int
+			var titleAtProviderCall string
+			stream := func(context.Context, ai.Request) (*ai.Stream, error) {
+				calls++
+				current, err := store.Get(sess.ID)
+				if err != nil {
+					t.Errorf("Get before provider call: %v", err)
+				} else {
+					titleAtProviderCall = current.Title
+				}
+				return ai.NewCompletedStream(ai.AssistantMessage{
+					Content: []ai.ContentBlock{ai.TextContent{Text: "answer"}},
+				}), nil
+			}
+			loop, err := agent.New(agent.Config{
+				Model:  ai.Model{ID: "m", Provider: "p"},
+				Stream: stream,
+				Tools:  []agent.Tool{&idleTool{}},
+			})
+			if err != nil {
+				t.Fatalf("agent.New: %v", err)
+			}
+
+			p := NewProgram(loop, "test", 0)
 			p.store = store
 			p.session = &sess
-			p.SetSessionTitleGenerator(func(ctx context.Context, modelRef, firstPrompt string) (string, error) {
-				calls.Add(1)
-				if modelRef != "p/m" {
-					t.Errorf("modelRef = %q, want the session snapshot", modelRef)
-				}
-				if firstPrompt != "fix the parser" {
-					t.Errorf("firstPrompt = %q, want the submitted prompt", firstPrompt)
-				}
-				select {
-				case generated <- struct{}{}:
-				default:
-				}
-				return "  Fix the parser  ", nil
-			})
-
 			p.runTurn("fix the parser")
-			if tc.wantCalls > 0 {
-				select {
-				case <-generated:
-				case <-time.After(5 * time.Second):
-					t.Fatal("the first turn never requested a title")
-				}
+
+			if calls != 1 {
+				t.Fatalf("provider calls = %d, want exactly the execution turn", calls)
 			}
-			deadline := time.Now().Add(5 * time.Second)
-			for {
-				stored, err := store.Get(sess.ID)
-				if err == nil && stored.Title == tc.wantTitle {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("stored title = %q (err %v), want %q", stored.Title, err, tc.wantTitle)
-				}
-				time.Sleep(10 * time.Millisecond)
+			if titleAtProviderCall != tc.wantTitle {
+				t.Fatalf("title at provider call = %q, want %q", titleAtProviderCall, tc.wantTitle)
 			}
-			if tc.wantCalls == 0 {
-				// The background check must settle without spending a model
-				// call. The wait is a negative contract: an explicit title is
-				// final, not a suggestion the titler may replace.
-				select {
-				case <-generated:
-					t.Fatal("a session with an explicit title still requested a generated title")
-				case <-time.After(200 * time.Millisecond):
-				}
+			stored, err := store.Get(sess.ID)
+			if err != nil {
+				t.Fatalf("Get after turn: %v", err)
 			}
-			if got := calls.Load(); got != tc.wantCalls {
-				t.Fatalf("title calls = %d, want %d", got, tc.wantCalls)
+			if stored.Title != tc.wantTitle {
+				t.Fatalf("stored title = %q, want %q", stored.Title, tc.wantTitle)
 			}
 		})
 	}

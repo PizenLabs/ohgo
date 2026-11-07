@@ -2037,13 +2037,11 @@ func (s *State) Apply(event Event) {
 
 	case SessionTitleUpdated:
 		// The title is already durable; this only refreshes a roster that is on
-		// screen so it stops showing the waiting placeholder. A closed manager
-		// re-reads the store when it next opens.
+		// screen. A closed manager re-reads the store when it next opens.
 		if s.SessionModal != nil {
 			for i := range s.SessionModal.Items {
 				if s.SessionModal.Items[i].ID == e.ID {
 					s.SessionModal.Items[i].Title = e.Title
-					s.SessionModal.Items[i].TitlePending = false
 				}
 			}
 		}
@@ -4562,9 +4560,9 @@ type IdentityUpdated struct {
 
 func (IdentityUpdated) eventKind() string { return "identity_updated" }
 
-// SessionTitleUpdated reports a completed automatic title. It carries only the
-// durable result, never the in-flight request: the placeholder is a view fact,
-// while the title is a stored label.
+// SessionTitleUpdated reports a locally derived title. It carries only the
+// durable result: the label is stored before the event is published, so no
+// in-flight state exists to represent.
 type SessionTitleUpdated struct {
 	// ID is the session the title belongs to.
 	ID int64

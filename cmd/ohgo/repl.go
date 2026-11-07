@@ -325,6 +325,10 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		// turn: the conversation in memory is what matters.
 		recordReplHistory(text)
 
+		// The first submitted prompt names the session immediately, locally,
+		// before any provider request can compete with the turn.
+		applyLocalSessionTitle(h.store, h.sess, text)
+
 		// The user's own turn is persisted alongside the assistant's, or a
 		// replay would start with the answer to a question it never saw.
 		if h.store != nil && h.sess != nil {

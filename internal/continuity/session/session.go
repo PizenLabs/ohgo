@@ -193,7 +193,8 @@ type Session struct {
 	// Project is the stable project identity the session belongs to. Empty
 	// when the session predates project identity.
 	Project string
-	// Title is a human-readable label, derived from the first turn.
+	// Title is a human-readable label derived deterministically from the first
+	// submitted prompt. It never requires a model call.
 	Title string
 	// Archived hides the session from the default roster without deleting it.
 	Archived bool
@@ -201,6 +202,21 @@ type Session struct {
 	// remains available: protection constrains retention policy, not human
 	// authority.
 	Protected bool
+}
+
+// TitleAssigned reports whether title is a real label rather than a default
+// filler. Blank, "(untitled)", and a title equal to the session's own model id
+// all mean the session has not been titled yet, so a local derivation may
+// replace them without erasing a human choice.
+func TitleAssigned(title, model string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" || strings.EqualFold(title, "(untitled)") {
+		return false
+	}
+	if model = strings.TrimSpace(model); model != "" && title == model {
+		return false
+	}
+	return true
 }
 
 // CreateOptions describes a new session.

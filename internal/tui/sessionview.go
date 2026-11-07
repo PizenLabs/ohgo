@@ -23,6 +23,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/promptopt"
 )
 
@@ -388,49 +389,35 @@ func sessionDirtyCell(item SessionItem, pal *Palette) (string, lipgloss.Style) {
 // A new or migrated session may carry fillers instead of an empty title: the
 // literal "(untitled)" marker, or the session's own model id (for example
 // "openrouter/stealth/crouton-alpha"). Both mean "no human or generated title
-// yet", so the automatic pass must treat them as unassigned rather than
-// skipping forever.
+// yet", so the local pass must treat them as unassigned rather than skipping
+// forever.
 func sessionTitleAssigned(title, model string) bool {
-	title = strings.TrimSpace(title)
-	if title == "" || strings.EqualFold(title, "(untitled)") {
-		return false
-	}
-	if model = strings.TrimSpace(model); model != "" && title == model {
-		return false
-	}
-	return true
+	return session.TitleAssigned(title, model)
 }
 
-// sessionTitlePlaceholder is shown while a background title request runs and
-// no local fallback can be derived. It only replaces an unassigned title: an
-// explicit user name is never masked.
-const sessionTitlePlaceholder = "(generating title…)"
-
-// localSessionTitle derives a deterministic label from a prompt when the ASK
-// model has not answered yet or cannot answer.
+// localSessionTitle derives a deterministic label from a prompt.
 //
-// It delegates to promptopt so the pending roster and the persisted fallback
-// share one noise filter, one set of bounds, and one word-boundary rule. A
-// title can therefore never differ just because it was rendered before the
-// background request finished.
+// promptopt.SanitizeTitle is the single source of truth for every session
+// title: the first-turn assignment, the legacy backfill, and the roster's
+// fallback all share one noise filter, one set of bounds, and one
+// word-boundary rule.
 func localSessionTitle(prompt string) string {
 	return promptopt.SanitizeTitle(prompt)
 }
 
-// sessionDisplayTitle resolves the roster label: a deterministic local label
-// while an automatic title request is pending, then the stored title, then the
+// sessionDisplayTitle resolves the roster label: the stored title, then a
+// deterministic local label derived from the recorded first prompt, then the
 // explicit untitled marker. The model is a separate fact and is never promoted
 // into the title column: a blank title means "untitled", not "show the model
 // path".
 func sessionDisplayTitle(item SessionItem) string {
-	if item.TitlePending && !sessionTitleAssigned(item.Title, item.Model) {
-		if fallback := localSessionTitle(item.InitialPrompt); fallback != "" {
-			return fallback
+	if sessionTitleAssigned(item.Title, item.Model) {
+		if title := sanitizeInline(item.Title); strings.TrimSpace(title) != "" {
+			return title
 		}
-		return sessionTitlePlaceholder
 	}
-	if title := sanitizeInline(item.Title); strings.TrimSpace(title) != "" {
-		return title
+	if fallback := localSessionTitle(item.InitialPrompt); fallback != "" {
+		return fallback
 	}
 	return "(untitled)"
 }
@@ -448,12 +435,6 @@ func renderSessionTableRow(cols sessionTableColumns, view SessionManagerState, i
 	}
 	status, statusStyle := sessionStatusCell(item, pal)
 	title := sessionDisplayTitle(item)
-	titleStyle := pal.Choice
-	if item.TitlePending && !sessionTitleAssigned(item.Title, item.Model) {
-		// A waiting label is chrome, not a result: keep it quieter than a
-		// stored title so it never reads as the session's final name.
-		titleStyle = pal.Muted
-	}
 	slot := fmt.Sprintf("#%d", item.ID)
 	last := statusValueOr(sanitizeInline(item.Updated), "—")
 	dirty, dirtyStyle := sessionDirtyCell(item, pal)
@@ -474,7 +455,7 @@ func renderSessionTableRow(cols sessionTableColumns, view SessionManagerState, i
 		b.WriteString(sessionCell(pal.Choice.Render(TruncateToWidth(slot, sessionColSlot)), sessionColSlot))
 	}
 	b.WriteString(strings.Repeat(" ", sessionColGap))
-	b.WriteString(sessionCell(titleStyle.Render(TruncateToWidth(title, cols.title)), cols.title))
+	b.WriteString(sessionCell(pal.Choice.Render(TruncateToWidth(title, cols.title)), cols.title))
 	if cols.dirty {
 		b.WriteString(strings.Repeat(" ", sessionColGap))
 		b.WriteString(sessionCell(dirtyStyle.Render(TruncateToWidth(dirty, sessionColDirty)), sessionColDirty))
@@ -902,9 +883,7 @@ func (p *Program) reloadSessionManager(notice string) {
 }
 
 // markActiveSession stamps the loaded session on the roster so the STATUS
-// column distinguishes the active row from the highlighted one. It also marks
-// sessions whose automatic title request is still in flight, so the table can
-// show a waiting placeholder instead of the model fallback.
+// column distinguishes the active row from the highlighted one.
 func (p *Program) markActiveSession(items []SessionItem) []SessionItem {
 	p.mu.Lock()
 	active := int64(0)
@@ -913,7 +892,6 @@ func (p *Program) markActiveSession(items []SessionItem) []SessionItem {
 	}
 	for i := range items {
 		items[i].Active = items[i].ID == active
-		items[i].TitlePending = p.titling[items[i].ID]
 	}
 	p.mu.Unlock()
 	return items

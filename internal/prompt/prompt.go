@@ -223,16 +223,6 @@ func nearestAgents(dir string) string {
 	}
 }
 
-// SessionTitleInstruction derives a short session label from the user's first
-// prompt. The title is navigation chrome, not a summary: it must be short
-// enough for a table cell and specific enough to tell two sessions apart.
-//
-// The wording is deliberately mechanical. A model that follows it returns a
-// label directly instead of an explanation, and the small output budget is
-// enough for four words without giving a provider a reason to report a length
-// truncation.
-const SessionTitleInstruction = `Task: Summarize prompt intent into 2-4 key words. Rules: No articles, no punctuation, raw text only. Max 15 tokens.`
-
 // SummarizeInstruction is fed to the model when compacting a conversation.
 //
 // It asks for a working handover rather than an abstract: the resumed session

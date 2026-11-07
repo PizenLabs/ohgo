@@ -78,7 +78,10 @@ One machine-global database holds every project's sessions. Project association
 is the `project` column — logical ownership — not a database per project.
 `protected` exempts a session from automatic retention pruning; explicit
 deletion still removes it because protection is a policy tag, not access
-control.
+control. A session's `title` is derived synchronously from the first submitted
+prompt by `promptopt.SanitizeTitle`: it is local, deterministic, and never a
+provider request. Legacy rows without a title are labeled locally when the
+Session Manager opens.
 
 ### Project instructions — human-authored
 

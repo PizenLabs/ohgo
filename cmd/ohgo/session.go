@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -169,30 +168,6 @@ func installSessionManager(program *tui.Program, store *session.Store, held *har
 			}, nil
 		},
 	)
-	// Use the same resolver as startup: a model picked from a live roster
-	// (OpenRouter, Ollama, an OpenCode gateway) is not in the static catalog,
-	// and static-only resolution would silently disable titling for it.
-	program.SetSessionTitleGenerator(newSessionTitleGenerator(
-		held.registry.StreamFn(),
-		func(ctx context.Context, ref string) (ai.Model, error) {
-			model, err := dynamicResolver(ctx, held.registry)(ref)
-			if err == nil {
-				return model, nil
-			}
-			// The running session already resolved this exact reference. Using
-			// its snapshot keeps titling alive when live discovery is offline,
-			// cached away, or rate-limited — without substituting a different
-			// model than the one that produced the turn.
-			if held != nil {
-				if active := held.currentModel(); active.Ref() == ref {
-					return active, nil
-				}
-			}
-			return ai.Model{}, err
-		},
-		held.titleRoleModelRef,
-		opts.budget,
-	))
 	program.SetSessionActions(tui.SessionActions{
 		New: func() (*session.Session, tui.OpenedSession, error) {
 			sess, err := store.CreateWith(session.CreateOptions{

@@ -26,8 +26,12 @@ immutable.
   markdown decoration while preserving fenced code, inline code, paths, and
   identifiers; local titles drop conversational noise, respect hard word/rune
   bounds at word boundaries, and never end on a dangling article or preposition.
-  The ASK titler now requests 2–4 words, caps output at 25 tokens, and falls back
-  to the sanitized local title when the provider fails or times out.
+- Local-first session titling: every session title is derived synchronously from
+  the submitted prompt by `promptopt.SanitizeTitle` before any provider request.
+  The background ASK-model titler, its timeout and backfill workers, and the
+  "generating title…" placeholder are removed. Legacy untitled sessions are
+  labeled locally when the Session Manager opens, so titles appear instantly
+  with zero token cost.
 
 ## [v0.0.8] - 2026-11-05
 
