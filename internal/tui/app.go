@@ -284,7 +284,15 @@ type Program struct {
 	// is nil-safe: a missing hook reports the action unavailable rather than
 	// pretending it succeeded.
 	sessionActions SessionActions
-	listModels     func() []string
+	// sessionTitle derives a concise label from the first turn. Nil disables
+	// automatic titling, which is also the safe default for embedded hosts
+	// that do not own a provider. It runs off the update goroutine.
+	sessionTitle SessionTitleGenerator
+	// titling records sessions whose title request is in flight so the Session
+	// Manager can show a waiting placeholder. Guarded by mu because the turn
+	// goroutine writes it while the update goroutine renders.
+	titling    map[int64]bool
+	listModels func() []string
 	// listModelOptions is the enriched roster behind the /model picker:
 	// native ids plus preformatted context/price/capability detail built by
 	// the caller, which owns the catalog. Preferred over listModels when set.
@@ -2071,9 +2079,10 @@ func (p *Program) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	picker := p.state.Picker
 	switch msg.String() {
 	case "esc":
-		// The MCP manager has no search box: Esc always closes it and
-		// discards staged changes immediately.
-		if picker != nil && picker.Kind == PickerMCP {
+		// The MCP manager has no search box and the /new creator's line is a
+		// title rather than a query: Esc always closes both, discarding staged
+		// changes or a typed name immediately.
+		if picker != nil && (picker.Kind == PickerMCP || picker.Kind == PickerNewSession) {
 			p.closePicker()
 			return p, nil
 		}
@@ -2138,9 +2147,10 @@ func (p *Program) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.state.Apply(PickerFilterDelete{})
 		return p, nil
 	case "ctrl+r":
-		// The MCP manager has no catalog to refresh; Ctrl+R stays inert so
-		// opening or browsing it never starts unrelated I/O.
-		if picker != nil && picker.Kind == PickerMCP {
+		// The MCP manager and the /new creator have no catalog to refresh;
+		// Ctrl+R stays inert so opening or browsing them never starts
+		// unrelated I/O.
+		if picker != nil && (picker.Kind == PickerMCP || picker.Kind == PickerNewSession) {
 			return p, nil
 		}
 		if cmd := p.refreshModelCatalog(); cmd != nil {
@@ -2197,6 +2207,15 @@ func (p *Program) choosePicker() (tea.Model, tea.Cmd) {
 	if kind == PickerMCP {
 		return p.applyMCPPicker(picker, item, ok)
 	}
+	// The /new creator reads its typed title from the still-open picker, then
+	// closes it itself. Closing here first would discard the name.
+	if kind == PickerNewSession {
+		if !ok {
+			p.closePicker()
+			return p, nil
+		}
+		return p.chooseNewSession(item)
+	}
 	p.state.Apply(PickerClosed{})
 	p.pickerRestore = ""
 	p.pickerRestoreSet = false
@@ -2213,8 +2232,6 @@ func (p *Program) choosePicker() (tea.Model, tea.Cmd) {
 	case PickerJobs:
 		p.state.Apply(Notice{Text: p.jobDetail(item.Value)})
 		return p, nil
-	case PickerNewSession:
-		return p.chooseNewSession(item)
 	case PickerTasks:
 		return p.chooseTask(item)
 	case "connect-models":
@@ -2261,12 +2278,13 @@ func (p *Program) applyMCPPicker(picker *PickerState, item PickerItem, ok bool) 
 	}
 }
 
-// openNewSessionPicker opens the explicit /new selector.
+// openNewSessionPicker opens the explicit /new creator.
 //
-// It uses the same generic picker as every other selector — no second picker
-// implementation. Esc cancels without touching session or task state; Enter on
-// the start row creates exactly one new session. A name argument creates
-// directly with that title instead of opening the picker.
+// It reuses the generic picker state — no second list implementation — but the
+// card renders as a modal and its line is a custom title rather than a search
+// query. Esc cancels without touching session or task state; Enter creates
+// exactly one session. A name argument creates directly with that title
+// instead of opening the creator.
 func (p *Program) openNewSessionPicker(args []string) {
 	if name := strings.TrimSpace(strings.Join(args, " ")); name != "" {
 		p.createNewSessionWithTitle(name)
@@ -2276,40 +2294,44 @@ func (p *Program) openNewSessionPicker(args []string) {
 		Kind:  PickerNewSession,
 		Title: "New Session",
 		Items: []PickerItem{
-			{Title: "Start new session", Detail: "fresh conversation", Value: "new"},
-			{Title: "Cancel", Detail: "stay in this session", Value: "cancel"},
+			{Title: "Auto (LLM Generated)", Detail: "title from the first prompt", Value: newSessionAutoValue},
+			{Title: "Custom Name...", Detail: "type a name in the line below", Value: newSessionCustomValue},
 		},
 	})
 }
 
-// chooseNewSession acts on the /new picker selection.
+// chooseNewSession acts on the /new creator selection.
+//
+// The custom row takes the title typed into the picker line; the auto row and
+// an empty custom line both create an untitled session whose title is derived
+// after the first turn. The picker is closed here so a second Enter finds no
+// picker and cannot create a second session.
 func (p *Program) chooseNewSession(item PickerItem) (tea.Model, tea.Cmd) {
-	if item.Value == "cancel" {
+	title := ""
+	if picker := p.state.Picker; picker != nil {
+		title = picker.NewSessionCustomTitle()
+	}
+	p.state.Apply(PickerClosed{})
+	p.pickerRestore = ""
+	p.pickerRestoreSet = false
+	switch item.Value {
+	case newSessionAutoValue, newSessionCustomValue, "new":
+	default:
 		return p, nil
 	}
-	if p.newSessionCreating {
-		return p, nil
-	}
-	p.newSessionCreating = true
-	defer func() { p.newSessionCreating = false }()
-	if p.sessionActions.New == nil {
-		p.state.Apply(Notice{Text: "new session is unavailable"})
-		return p, nil
-	}
-	p.cancelTurnForNewSession()
-	sess, opened, err := p.sessionActions.New()
-	if err != nil {
-		p.state.Apply(Notice{Text: "new session: " + err.Error()})
-		return p, nil
-	}
-	p.detachTaskForNewSession()
-	p.adoptSession(sess, opened)
-	p.recordTaskDecision("NEW_SESSION")
+	p.createNewSession(title)
 	return p, nil
 }
 
 // createNewSessionWithTitle creates a session directly for "/new <name>".
 func (p *Program) createNewSessionWithTitle(name string) {
+	p.createNewSession(strings.Join(strings.Fields(name), " "))
+}
+
+// createNewSession creates and adopts exactly one session. An empty title
+// starts the automatic-title path; a non-empty title is persisted immediately
+// so the first turn never overwrites an explicit name.
+func (p *Program) createNewSession(title string) {
 	if p.newSessionCreating {
 		return
 	}
@@ -2327,8 +2349,8 @@ func (p *Program) createNewSessionWithTitle(name string) {
 	}
 	p.detachTaskForNewSession()
 	p.adoptSession(sess, opened)
-	if p.sessionActions.Rename != nil && sess != nil {
-		_ = p.sessionActions.Rename(sess.ID, name)
+	if title != "" && p.sessionActions.Rename != nil && sess != nil {
+		_ = p.sessionActions.Rename(sess.ID, title)
 	}
 	p.recordTaskDecision("NEW_SESSION")
 }
@@ -3396,6 +3418,11 @@ func (p *Program) openSessionManager() {
 		p.state.Apply(Notice{Text: "no saved sessions yet"})
 		return
 	}
+	// Legacy sessions opened before automatic titling existed keep a blank
+	// title forever unless the roster itself asks for one. Start the bounded
+	// pass before stamping pending markers so the first render already shows
+	// the placeholder for every candidate.
+	p.backfillSessionTitles(list)
 	list = p.markActiveSession(list)
 	view := SessionManagerState{
 		Items:    list,
@@ -3587,6 +3614,21 @@ type SessionActions struct {
 // exposing destructive actions.
 func (p *Program) SetSessionActions(actions SessionActions) {
 	p.sessionActions = actions
+}
+
+// SessionTitleGenerator derives a concise title from a session's first user
+// prompt. It runs off the update goroutine and must not touch Program state;
+// modelRef is the session's own model snapshot, so a later /model switch
+// cannot silently change which model titled an existing session.
+type SessionTitleGenerator func(ctx context.Context, modelRef, firstPrompt string) (string, error)
+
+// SetSessionTitleGenerator installs automatic session titling. A nil
+// generator leaves every new session untitled rather than inventing a label
+// locally: a title is a model-derived claim and belongs to the provider path.
+func (p *Program) SetSessionTitleGenerator(generate SessionTitleGenerator) {
+	p.mu.Lock()
+	p.sessionTitle = generate
+	p.mu.Unlock()
 }
 
 // SetModelLister installs the model list behind the /model picker.
@@ -4831,8 +4873,10 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// not let this turn's history or transcript leak into the new session.
 	turnStore := p.store
 	var turnSessID int64
+	var turnModel string
 	if p.session != nil {
 		turnSessID = p.session.ID
+		turnModel = p.session.Model
 	}
 	p.mu.Unlock()
 
@@ -5510,6 +5554,174 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		p.publish(Notice{Text: reviewPrefix + " " + reviewNotice})
 	}
 	p.publish(AssistantDone{Seq: seq, At: time.Now()})
+	// A session's first completed turn is the earliest point where a title can
+	// summarise what it is about. The request is detached from this turn so it
+	// cannot delay the queue, the transcript, or a later prompt.
+	if len(history) == 0 && loopErr == nil {
+		p.generateSessionTitle(turnSessID, turnModel, text)
+	}
+}
+
+// sessionTitleTimeout bounds the background title request. A provider that
+// never answers must not leave a session permanently marked as titling.
+const sessionTitleTimeout = 20 * time.Second
+
+// titleModel resolves the model identity a stored title must be compared
+// against. The stored snapshot is authoritative; the turn's captured ref is
+// only a fallback for a row that predates the model column being populated.
+func titleModel(stored, fallback string) string {
+	if strings.TrimSpace(stored) != "" {
+		return stored
+	}
+	return fallback
+}
+
+// generateSessionTitle schedules the first-turn title pass off the turn
+// goroutine. It never surfaces a failure: a missing title is a cosmetic gap,
+// while a failed turn or a blocked queue is not.
+func (p *Program) generateSessionTitle(sessionID int64, modelRef, firstPrompt string) {
+	p.mu.Lock()
+	enabled := p.sessionTitle != nil && p.store != nil
+	p.mu.Unlock()
+	if !enabled || sessionID == 0 || strings.TrimSpace(firstPrompt) == "" {
+		return
+	}
+	go p.generateSessionTitleNow(sessionID, modelRef, firstPrompt, false)
+}
+
+// generateSessionTitleNow performs one title request and persists the result
+// only if the session still has no title. A title the user set while the
+// request ran always wins. pending reports that the Session Manager already
+// shows this session as titling, so the marker is cleared even when the pass
+// exits early.
+//
+// It runs off the update goroutine: the provider call and even the store
+// reads must never delay the queue, the next prompt, or modal rendering.
+func (p *Program) generateSessionTitleNow(sessionID int64, modelRef, firstPrompt string, pending bool) {
+	p.mu.Lock()
+	generate := p.sessionTitle
+	store := p.store
+	p.mu.Unlock()
+	marked := pending
+	defer func() {
+		if marked {
+			p.markTitling(sessionID, false)
+		}
+	}()
+	if generate == nil || store == nil || sessionID == 0 || strings.TrimSpace(firstPrompt) == "" {
+		return
+	}
+	if marked {
+		p.markTitling(sessionID, true)
+	}
+	current, err := store.Get(sessionID)
+	if err != nil || sessionTitleAssigned(current.Title, titleModel(current.Model, modelRef)) {
+		return
+	}
+	if !marked {
+		p.markTitling(sessionID, true)
+		marked = true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sessionTitleTimeout)
+	defer cancel()
+	title, err := generate(ctx, modelRef, firstPrompt)
+	if err != nil {
+		return
+	}
+	title = strings.Join(strings.Fields(title), " ")
+	if title == "" {
+		return
+	}
+	// Re-read before writing: a manual rename during the request is an
+	// explicit decision and must not be overwritten by a stale answer.
+	latest, err := store.Get(sessionID)
+	if err != nil || sessionTitleAssigned(latest.Title, titleModel(latest.Model, modelRef)) {
+		return
+	}
+	if err := store.SetTitle(sessionID, title); err != nil {
+		return
+	}
+	p.publish(SessionTitleUpdated{ID: sessionID, Title: title})
+}
+
+// sessionBackfillParallel bounds how many legacy titles are derived at once.
+// Opening the manager with dozens of pre-fix sessions must not fire dozens of
+// simultaneous provider calls.
+const sessionBackfillParallel = 2
+
+// sessionTitleJob is one legacy session waiting for a derived title.
+type sessionTitleJob struct {
+	id     int64
+	model  string
+	prompt string
+}
+
+// backfillSessionTitles derives titles for legacy sessions that already have
+// a stored first prompt but never received one.
+//
+// The pass is non-blocking: candidates are marked pending immediately so the
+// roster renders a placeholder, then a small worker pool consumes them. Each
+// result lands through the same SessionTitleUpdated event as a first-turn
+// title, so the open manager updates in place.
+func (p *Program) backfillSessionTitles(items []SessionItem) {
+	p.mu.Lock()
+	enabled := p.sessionTitle != nil && p.store != nil
+	p.mu.Unlock()
+	if !enabled {
+		return
+	}
+	var jobs []sessionTitleJob
+	for _, item := range items {
+		if sessionTitleAssigned(item.Title, item.Model) || item.Messages < 2 ||
+			strings.TrimSpace(item.InitialPrompt) == "" {
+			continue
+		}
+		p.mu.Lock()
+		pending := p.titling[item.ID]
+		p.mu.Unlock()
+		if pending {
+			continue
+		}
+		p.markTitling(item.ID, true)
+		jobs = append(jobs, sessionTitleJob{id: item.ID, model: item.Model, prompt: item.InitialPrompt})
+	}
+	if len(jobs) == 0 {
+		return
+	}
+	workers := sessionBackfillParallel
+	if len(jobs) < workers {
+		workers = len(jobs)
+	}
+	work := make(chan sessionTitleJob)
+	for i := 0; i < workers; i++ {
+		go func() {
+			for job := range work {
+				p.generateSessionTitleNow(job.id, job.model, job.prompt, true)
+			}
+		}()
+	}
+	go func() {
+		defer close(work)
+		for _, job := range jobs {
+			work <- job
+		}
+	}()
+}
+
+// markTitling records an in-flight automatic title for the Session Manager's
+// placeholder. It is guarded by mu because it runs on the turn goroutine while
+// the update goroutine renders.
+func (p *Program) markTitling(sessionID int64, pending bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if pending {
+		if p.titling == nil {
+			p.titling = map[int64]bool{}
+		}
+		p.titling[sessionID] = true
+		return
+	}
+	delete(p.titling, sessionID)
 }
 
 // resetSessionTelemetryLocked zeroes the live session's progressive-disclosure

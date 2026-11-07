@@ -462,6 +462,10 @@ type Stat struct {
 	Tokens int
 	// Prompt is the latest user prompt, or empty when none was recorded.
 	Prompt string
+	// InitialPrompt is the first user prompt, or empty when none was
+	// recorded. Backfill uses it so a later follow-up cannot define the
+	// session's title.
+	InitialPrompt string
 }
 
 // Stats returns per-session summaries for the given ids in one pass. Sessions
@@ -502,6 +506,9 @@ func (s *Store) Stats(ids []int64) (map[int64]Stat, error) {
 		stat.Messages++
 		stat.Tokens += tokens.Count(msg.Text, tokens.ModeEstimate)
 		if msg.Role == "user" && strings.TrimSpace(msg.Text) != "" {
+			if stat.InitialPrompt == "" {
+				stat.InitialPrompt = msg.Text
+			}
 			stat.Prompt = msg.Text
 		}
 		out[id] = stat

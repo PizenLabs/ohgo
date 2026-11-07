@@ -377,6 +377,43 @@ func sessionDirtyCell(item SessionItem, pal *Palette) (string, lipgloss.Style) {
 	}
 }
 
+// sessionTitleAssigned reports whether a stored title is a real label.
+//
+// A new or migrated session may carry fillers instead of an empty title: the
+// literal "(untitled)" marker, or the session's own model id (for example
+// "openrouter/stealth/crouton-alpha"). Both mean "no human or generated title
+// yet", so the automatic pass must treat them as unassigned rather than
+// skipping forever.
+func sessionTitleAssigned(title, model string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" || strings.EqualFold(title, "(untitled)") {
+		return false
+	}
+	if model = strings.TrimSpace(model); model != "" && title == model {
+		return false
+	}
+	return true
+}
+
+// sessionTitlePlaceholder is shown while a background title request runs. It
+// only replaces an unassigned title: an explicit user name is never masked.
+const sessionTitlePlaceholder = "(generating title…)"
+
+// sessionDisplayTitle resolves the roster label: a waiting placeholder while
+// an automatic title request runs over an unassigned title, then the stored
+// title, then the explicit untitled marker. The model is a separate fact and
+// is never promoted into the title column: a blank title means "untitled", not
+// "show the model path".
+func sessionDisplayTitle(item SessionItem) string {
+	if item.TitlePending && !sessionTitleAssigned(item.Title, item.Model) {
+		return sessionTitlePlaceholder
+	}
+	if title := sanitizeInline(item.Title); strings.TrimSpace(title) != "" {
+		return title
+	}
+	return "(untitled)"
+}
+
 // renderSessionTableRow renders one roster row. The highlighted row carries a
 // green cursor and a faint background so the selection is unmistakable; the
 // loaded session carries the filled STATUS marker independently.
@@ -389,7 +426,13 @@ func renderSessionTableRow(cols sessionTableColumns, view SessionManagerState, i
 		markerStyle = pal.Selected
 	}
 	status, statusStyle := sessionStatusCell(item, pal)
-	title := statusValueOr(sanitizeInline(item.Title), statusValueOr(sanitizeInline(item.Model), "(untitled)"))
+	title := sessionDisplayTitle(item)
+	titleStyle := pal.Choice
+	if item.TitlePending && !sessionTitleAssigned(item.Title, item.Model) {
+		// A waiting label is chrome, not a result: keep it quieter than a
+		// stored title so it never reads as the session's final name.
+		titleStyle = pal.Muted
+	}
 	slot := fmt.Sprintf("#%d", item.ID)
 	last := statusValueOr(sanitizeInline(item.Updated), "—")
 	dirty, dirtyStyle := sessionDirtyCell(item, pal)
@@ -397,7 +440,7 @@ func renderSessionTableRow(cols sessionTableColumns, view SessionManagerState, i
 	if selected {
 		// The whole row shares one background, so the cells are built plain
 		// and the line is styled once.
-		plain := sessionRowPlain(cols, marker, status, slot, item.Title, item.Model, dirty, last)
+		plain := sessionRowPlain(cols, marker, status, slot, title, dirty, last)
 		return pal.UserBG.Render(padRight(plain, interior))
 	}
 
@@ -410,7 +453,7 @@ func renderSessionTableRow(cols sessionTableColumns, view SessionManagerState, i
 		b.WriteString(sessionCell(pal.Choice.Render(TruncateToWidth(slot, sessionColSlot)), sessionColSlot))
 	}
 	b.WriteString(strings.Repeat(" ", sessionColGap))
-	b.WriteString(sessionCell(pal.Choice.Render(TruncateToWidth(title, cols.title)), cols.title))
+	b.WriteString(sessionCell(titleStyle.Render(TruncateToWidth(title, cols.title)), cols.title))
 	if cols.dirty {
 		b.WriteString(strings.Repeat(" ", sessionColGap))
 		b.WriteString(sessionCell(dirtyStyle.Render(TruncateToWidth(dirty, sessionColDirty)), sessionColDirty))
@@ -425,8 +468,7 @@ func renderSessionTableRow(cols sessionTableColumns, view SessionManagerState, i
 // sessionRowPlain builds the unstyled row text at exact column widths. It is
 // the backing text for the selected row, whose background cannot survive
 // nested style resets.
-func sessionRowPlain(cols sessionTableColumns, marker, status, slot, titleRaw, model, dirty, last string) string {
-	title := statusValueOr(sanitizeInline(titleRaw), statusValueOr(sanitizeInline(model), "(untitled)"))
+func sessionRowPlain(cols sessionTableColumns, marker, status, slot, title, dirty, last string) string {
 	var b strings.Builder
 	b.WriteString(sessionCell(marker, sessionColCursor))
 	b.WriteString(strings.Repeat(" ", sessionColGap))
@@ -475,7 +517,7 @@ func sessionDetails(view SessionManagerState, pal *Palette, interior int) []stri
 	field := func(label, value string) []string {
 		return modalField(label, value, pal, interior, 0, detailFieldLabelWidth)
 	}
-	rows = append(rows, field("Title", statusValueOr(sanitizeInline(item.Title), "(untitled)"))...)
+	rows = append(rows, field("Title", sessionDisplayTitle(item))...)
 	rows = append(rows, field("Tokens", sessionTokenLine(item))...)
 	rows = append(rows, field("Model", statusValueOr(sanitizeInline(item.Model), "no model"))...)
 	rows = append(rows, field("Prompt", statusValueOr(sanitizeInline(item.Prompt), "(no prompt recorded)"))...)
@@ -707,8 +749,7 @@ func (p *Program) selectedSessionDeleteLabel() string {
 	if !ok {
 		return ""
 	}
-	title := statusValueOr(sanitizeInline(item.Title), statusValueOr(sanitizeInline(item.Model), "untitled"))
-	return fmt.Sprintf("delete session #%d (%s) and its transcript?", item.ID, title)
+	return fmt.Sprintf("delete session #%d (%s) and its transcript?", item.ID, sessionDisplayTitle(item))
 }
 
 // commitSessionRename persists the edited title and re-lists the roster.
@@ -732,19 +773,17 @@ func (p *Program) commitSessionRename() (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
-// newSessionFromManager creates and switches to a fresh session.
+// newSessionFromManager hands creation to the same /new creator the command
+// opens. The manager closes first because one surface owns the keyboard; the
+// creator's Esc then cancels back to the conversation, never into stale
+// manager actions.
 func (p *Program) newSessionFromManager() (tea.Model, tea.Cmd) {
 	if p.sessionActions.New == nil {
 		p.state.Apply(SessionManagerNoticed{Text: "new session is unavailable"})
 		return p, nil
 	}
-	sess, opened, err := p.sessionActions.New()
-	if err != nil {
-		p.state.Apply(SessionManagerNoticed{Text: "new session: " + err.Error()})
-		return p, nil
-	}
 	p.state.Apply(SessionManagerClosed{})
-	p.adoptSession(sess, opened)
+	p.openNewSessionPicker(nil)
 	return p, nil
 }
 
@@ -803,14 +842,19 @@ func (p *Program) reloadSessionManager(notice string) {
 }
 
 // markActiveSession stamps the loaded session on the roster so the STATUS
-// column distinguishes the active row from the highlighted one.
+// column distinguishes the active row from the highlighted one. It also marks
+// sessions whose automatic title request is still in flight, so the table can
+// show a waiting placeholder instead of the model fallback.
 func (p *Program) markActiveSession(items []SessionItem) []SessionItem {
+	p.mu.Lock()
 	active := int64(0)
 	if p.session != nil {
 		active = p.session.ID
 	}
 	for i := range items {
 		items[i].Active = items[i].ID == active
+		items[i].TitlePending = p.titling[items[i].ID]
 	}
+	p.mu.Unlock()
 	return items
 }

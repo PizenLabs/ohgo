@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
@@ -42,7 +43,11 @@ type harness struct {
 	usage    *agent.UsageLog
 	settings *config.Settings
 	root     string
-	model    ai.Model
+	// modelMu guards model against the background title pass. Every other
+	// reader is on the update goroutine; only titling needs a stable snapshot
+	// while /model may switch the active model.
+	modelMu sync.RWMutex
+	model   ai.Model
 	// projectID is the stable project identity the session belongs to, empty
 	// when unknown. It scopes the session browser to this project without
 	// changing physical storage, which stays one machine-global database.
@@ -322,10 +327,20 @@ func (h *harness) applyModel(model ai.Model) {
 	if h.loop != nil {
 		h.loop.SetModel(model)
 	}
+	h.modelMu.Lock()
 	h.model = model
+	h.modelMu.Unlock()
 	if h.usage != nil {
 		h.usage.SetCost(model.Cost)
 	}
+}
+
+// currentModel returns the active model under the same lock applyModel uses.
+// It exists for the background title pass, which may run while /model moves.
+func (h *harness) currentModel() ai.Model {
+	h.modelMu.RLock()
+	defer h.modelMu.RUnlock()
+	return h.model
 }
 
 // providerDisplayName names a provider for humans from the catalog's own

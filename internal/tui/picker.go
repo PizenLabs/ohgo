@@ -12,7 +12,8 @@ import (
 // two handlers consume the same message.
 //
 //  1. esc: clear a non-empty query first, close only when already empty.
-//     ctrl+c always closes.
+//     ctrl+c always closes. The /new creator is the exception: its line is a
+//     title, not a search query, so Esc always cancels without creating.
 //  2. enter: select the highlighted item.
 //  3. up/down, ctrl+p/ctrl+n: move one. pgup/pgdn: move one viewport.
 //     home/end: first/last result.
@@ -34,9 +35,9 @@ const (
 	PickerModels = "models"
 	// PickerJobs inspects background jobs.
 	PickerJobs = "jobs"
-	// PickerNewSession creates a fresh session. Choosing the start row
-	// creates exactly one session; choosing cancel or dismissing (Esc)
-	// creates none.
+	// PickerNewSession creates a fresh session. Its two rows choose between an
+	// automatic LLM title and a name typed into the filter line. Submitting
+	// without a typed name is the auto path; dismissing (Esc) creates none.
 	PickerNewSession = "new-session"
 	// PickerTasks resumes a resumable durable task. Choosing attaches the
 	// selected task to the current session.
@@ -44,6 +45,16 @@ const (
 	// PickerMCP manages MCP server enablement. Space stages a change and
 	// Enter applies it; no network work happens while navigating.
 	PickerMCP = "mcp"
+)
+
+// New-session row values. The value is what choosing the row means, not what
+// the row is called: the title can be reworded without changing behaviour.
+const (
+	// newSessionAutoValue lets the host derive a title after the first turn.
+	newSessionAutoValue = "auto"
+	// newSessionCustomValue uses the text typed into the filter line. An empty
+	// line falls back to auto rather than creating an unnamed custom session.
+	newSessionCustomValue = "custom"
 )
 
 // PickerItem is one choice in a selection overlay.
@@ -174,6 +185,11 @@ func queryTokens(filter string) []string {
 func (p *PickerState) Filtered() []PickerItem {
 	if p == nil {
 		return nil
+	}
+	// The /new creator has no search corpus: its line is the custom title, so
+	// typing must never hide the two choices it is choosing between.
+	if p.Kind == PickerNewSession {
+		return p.Items
 	}
 	var out []PickerItem
 	for _, item := range p.Items {
@@ -411,6 +427,28 @@ func (p *PickerState) SetItems(items []PickerItem) {
 func (p *PickerState) SetFilter(text string) {
 	p.Filter = text
 	p.FilterCursor = len([]rune(text))
+	p.afterFilterChange()
+}
+
+// afterFilterChange re-clamps and reveals the list after a query edit.
+//
+// The /new creator treats a non-empty line as a custom title, so the highlight
+// follows that intent: typing selects the custom row, clearing returns to the
+// auto row. Navigation still overrides it afterwards, which is what lets a
+// user type a draft and deliberately choose auto instead.
+func (p *PickerState) afterFilterChange() {
+	if p.Kind == PickerNewSession {
+		if strings.TrimSpace(p.Filter) == "" {
+			p.Cursor = 0
+		} else {
+			for i, item := range p.Items {
+				if item.Value == newSessionCustomValue {
+					p.Cursor = i
+					break
+				}
+			}
+		}
+	}
 	p.clamp()
 	p.EnsureVisible()
 }
@@ -434,8 +472,7 @@ func (p *PickerState) InsertFilterText(s string) {
 	out = append(out, runes[cur:]...)
 	p.Filter = string(out)
 	p.FilterCursor = cur + len([]rune(s))
-	p.clamp()
-	p.EnsureVisible()
+	p.afterFilterChange()
 }
 
 // DeleteFilterBefore removes the rune ahead of the query cursor's left.
@@ -453,8 +490,7 @@ func (p *PickerState) DeleteFilterBefore() {
 	}
 	p.Filter = string(append(runes[:cur-1], runes[cur:]...))
 	p.FilterCursor = cur - 1
-	p.clamp()
-	p.EnsureVisible()
+	p.afterFilterChange()
 }
 
 // DeleteFilterAt removes the rune under the query cursor.
@@ -472,8 +508,7 @@ func (p *PickerState) DeleteFilterAt() {
 	}
 	p.Filter = string(append(runes[:cur], runes[cur+1:]...))
 	p.FilterCursor = cur
-	p.clamp()
-	p.EnsureVisible()
+	p.afterFilterChange()
 }
 
 // MoveFilterCursor shifts the query cursor, clamped to the text.
@@ -494,6 +529,20 @@ func (p *PickerState) ClearFilter() {
 	p.FilterCursor = 0
 	p.Cursor = 0
 	p.EnsureVisible()
+}
+
+// NewSessionCustomTitle returns the typed custom title when the custom row is
+// selected, or "" when the auto row owns the choice. Whitespace is collapsed
+// so a pasted multi-line title still becomes one readable label.
+func (p *PickerState) NewSessionCustomTitle() string {
+	if p == nil || p.Kind != PickerNewSession {
+		return ""
+	}
+	item, ok := p.Chosen()
+	if !ok || item.Value != newSessionCustomValue {
+		return ""
+	}
+	return strings.Join(strings.Fields(p.Filter), " ")
 }
 
 // clampCursor bounds the highlight to the result set.
@@ -628,8 +677,15 @@ func optionsToItems(options []ModelOption) []PickerItem {
 type SessionItem struct {
 	// ID is the database identifier.
 	ID int64
-	// Title is the human label, falling back to the model and date.
+	// Title is the human label. Empty means untitled: the roster renders an
+	// explicit placeholder rather than substituting the model path, which is a
+	// separate fact shown in the model column/details.
 	Title string
+	// TitlePending reports an in-flight automatic title. It is a placeholder
+	// fact, never a stored claim: the renderer shows a subdued waiting label
+	// until the real title replaces it, and an empty title with no pending
+	// request keeps the model fallback.
+	TitlePending bool
 	// Model is the model the session used.
 	Model string
 	// Updated is a short human timestamp.
@@ -648,8 +704,16 @@ type SessionItem struct {
 	// Tokens is the token count reconstructed from the stored transcript, or
 	// zero when the provider did not measure one.
 	Tokens int
+	// Messages is the stored message count. Backfill only titles sessions with
+	// at least a user prompt and some recorded outcome, never a session whose
+	// first turn has not produced anything yet.
+	Messages int
 	// Prompt is the latest user prompt, or empty when not loaded.
 	Prompt string
+	// InitialPrompt is the first stored user prompt. It is the input a
+	// backfill pass uses to title a legacy session, because the latest prompt
+	// may describe follow-up work rather than what the session is about.
+	InitialPrompt string
 }
 
 // JobItem is one background job for the picker.

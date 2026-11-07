@@ -469,11 +469,12 @@ func TestStoreStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
-	if got := stats[first.ID]; got.Messages != 3 || got.Prompt != "second prompt" || got.Tokens <= 0 {
-		t.Errorf("first stats = %+v, want 3 messages, the last prompt, and tokens", got)
+	if got := stats[first.ID]; got.Messages != 3 || got.Prompt != "second prompt" ||
+		got.InitialPrompt != "first prompt" || got.Tokens <= 0 {
+		t.Errorf("first stats = %+v, want 3 messages, the first and last prompts, and tokens", got)
 	}
-	if got := stats[second.ID]; got.Messages != 1 || got.Prompt != "only" {
-		t.Errorf("second stats = %+v, want 1 message and its prompt", got)
+	if got := stats[second.ID]; got.Messages != 1 || got.Prompt != "only" || got.InitialPrompt != "only" {
+		t.Errorf("second stats = %+v, want 1 message and its only prompt", got)
 	}
 	if _, ok := stats[999]; ok {
 		t.Error("an unrequested session appeared in the stats")

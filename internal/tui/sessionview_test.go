@@ -339,7 +339,8 @@ func TestSessionManagerArchive(t *testing.T) {
 	}
 }
 
-// New switches the program to a fresh session and closes the manager.
+// New hands creation to the /new creator, then Enter on Auto creates the
+// session. The manager closes first because one surface owns the keyboard.
 func TestSessionManagerNew(t *testing.T) {
 	p := rosterProgram(t, func() ([]SessionItem, error) {
 		return []SessionItem{{ID: 1, Title: "one"}}, nil
@@ -352,8 +353,15 @@ func TestSessionManagerNew(t *testing.T) {
 
 	keyPress(p, runes("n"))
 	if p.state.SessionModal != nil {
-		t.Error("manager stayed open after creating a session")
+		t.Error("manager stayed open after opening the creator")
 	}
+	if p.state.Picker == nil || p.state.Picker.Kind != PickerNewSession {
+		t.Fatalf("picker = %+v, want the /new creator", p.state.Picker)
+	}
+	if p.session != nil {
+		t.Fatal("opening the creator created a session before Enter")
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
 	if p.session == nil || p.session.ID != 42 {
 		t.Errorf("session = %+v, want the new session 42", p.session)
 	}
