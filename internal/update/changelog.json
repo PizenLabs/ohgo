@@ -283,6 +283,41 @@
           "description": "session startup and sequence allocation are hardened for concurrent writers."
         }
       ]
+    },
+    "v0.0.9": {
+      "title": "What's new in v0.0.9",
+      "changes": [
+        {
+          "id": "hybrid-master-prompt-offloading",
+          "type": "added",
+          "title": "Hybrid master-prompt offloading",
+          "description": "prompts with at least 50 lines or 4000 runes are written to `\u003cproject\u003e/.ohgo/scratch/prompt_\u003csession\u003e_\u003ctimestamp\u003e.md` and their bytes are injected directly into the model payload. A durable history copy is written first, so Up/Down and Ctrl+P/N still recall the full prompt after scratch is removed. Scratch is cleaned on session close/switch, on SIGINT/SIGTERM/SIGHUP, and by a 24-hour startup sweep."
+        },
+        {
+          "id": "session-protection",
+          "type": "added",
+          "title": "Session protection",
+          "description": "`t` in the Session Manager toggles a durable `Protected` tag, shown as a star in the status column and as `Protected · yes/no` in the details pane. Tagged sessions are never removed by automatic pruning while explicit deletion still works."
+        },
+        {
+          "id": "retention-controls",
+          "type": "added",
+          "title": "Retention controls",
+          "description": "`/settings` gains a CLEANUP section with auto-prune, keep-recent count, and a manual-clean action. The new `ohgo clean` command performs the same protected-aware pruning from the shell."
+        },
+        {
+          "id": "deterministic-prompt-optimization",
+          "type": "added",
+          "title": "Deterministic prompt optimization",
+          "description": "`internal/promptopt` compresses oversized scratch prompts and sanitizes local session titles without a model call or a third-party dependency. Compression removes greetings, politeness, and markdown decoration while preserving fenced code, inline code, paths, and identifiers; local titles drop conversational noise, respect hard word/rune bounds at word boundaries, and never end on a dangling article or preposition."
+        },
+        {
+          "id": "local-first-session-titling",
+          "type": "added",
+          "title": "Local-first session titling",
+          "description": "every session title is derived synchronously from the submitted prompt by `promptopt.SanitizeTitle` before any provider request. The background ASK-model titler, its timeout and backfill workers, and the \"generating title…\" placeholder are removed. Legacy untitled sessions are labeled locally when the Session Manager opens, so titles appear instantly with zero token cost."
+        }
+      ]
     }
   }
 }
