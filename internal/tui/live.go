@@ -941,7 +941,13 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 	if queued := composerStateLine(s, pal, layout); queued != "" {
 		out = append(out, queued)
 	}
-	return append(out, pal.Muted.Render(liveHintsFor(s, layout)))
+	hintStyle := pal.Muted
+	if interruptConfirmVisible(s) {
+		// The output-first surface keeps the same hazard role: a warning that
+		// looks like ordinary metadata would lose the second-press instruction.
+		hintStyle = ExtrasFor(s.Theme).Warning
+	}
+	return append(out, hintStyle.Render(liveHintsFor(s, layout)))
 }
 
 // liveHintsFor is the composer's hint row. It names only bindings that work
@@ -955,6 +961,10 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 func liveHintsFor(s State, layout Layout) string {
 	var choices []string
 	switch {
+	case interruptConfirmVisible(s):
+		// The double-tap warning owns the row while it waits, exactly as in
+		// the framed composer: the second Esc is the only useful key now.
+		choices = []string{interruptConfirmText}
 	case len(paletteEntriesFor(s)) > 0 && s.ConnectKey == nil:
 		choices = []string{"↑↓ navigate · enter/tab accept · esc dismiss", "↑↓ enter esc"}
 	case s.Status.Busy:

@@ -970,7 +970,16 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.pendingEsc = false
 		return p.handleKeyCore(tea.KeyMsg{Type: tea.KeyEscape})
 
+	case interruptConfirmExpiredMsg:
+		// The second Esc never arrived. Clear the warning silently: no
+		// notice belongs in the transcript for a window that simply timed out.
+		p.state.expireInterruptConfirm(m.gen)
+		return p, nil
+
 	case turnFinishedMsg:
+		// The turn the confirmation guarded is over. Disarm before draining so
+		// a queued prompt cannot inherit a stale double-tap warning.
+		p.state.resetInterruptConfirm()
 		return p.drainQueue()
 
 	case cursor.BlinkMsg:
@@ -1580,12 +1589,22 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "esc":
 		// Escape backs out of a running turn the way ctrl+c does, but never
-		// quits: a stray keypress must not end the session. (An open
-		// support overlay routes to its own handler before reaching here.)
+		// quits: a stray keypress must not end the session. Because Esc is a
+		// reflex key, one press only arms a short confirmation window; the
+		// second press inside it performs the same interruption Ctrl+C and
+		// /cancel do immediately. (An open support overlay routes to its own
+		// handler before reaching here.)
 		if p.state.Status.Busy {
-			p.cancelTurnNow("cancelled")
-			return p, nil
+			if p.state.InterruptConfirm {
+				p.state.resetInterruptConfirm()
+				p.cancelTurnNow("cancelled")
+				return p, nil
+			}
+			return p, p.armInterruptConfirm()
 		}
+		// A confirmation whose turn ended is stale; a new press is a fresh
+		// first press rather than an inherited interrupt.
+		p.state.resetInterruptConfirm()
 		return p, nil
 
 	case "enter":
@@ -2644,6 +2663,11 @@ func (p *Program) cancelSupportNow(note string) {
 // with the transition itself, not when the loop unwinds, so the footer can
 // never report working after the turn has terminated.
 func (p *Program) cancelTurnNow(note string) {
+	// Any real interrupt consumes an armed Esc confirmation. Ctrl+C and
+	// /cancel stay single-step, and a later Esc must start a fresh first press
+	// rather than inheriting this turn's window.
+	p.state.resetInterruptConfirm()
+
 	// A commit proposal has its own lifetime. /commit is an independent
 	// interactive command, so cancelling an unrelated turn must not abort it;
 	// user cancellation, session changes, and quitting cancel it explicitly.

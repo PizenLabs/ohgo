@@ -569,6 +569,17 @@ type State struct {
 	// generation; a stale expiry whose generation trails the current one is
 	// ignored, so the latest copy always owns the visible lifetime.
 	CopyGen uint64
+	// InterruptConfirm marks the first Esc of a double-tap interrupt. It is
+	// ephemeral UI state: it never cancels anything itself. While it is set
+	// and a turn is running, the hint row asks for a second Esc; the second
+	// Esc interrupts, and an expiry message clears it after
+	// interruptConfirmTTL.
+	InterruptConfirm bool
+	// InterruptGen identifies the current double-tap generation. Every armed
+	// confirmation increments it and schedules an expiry carrying that
+	// generation; a stale expiry whose generation trails the current one is
+	// ignored, so an old timer can never clear a newer confirmation.
+	InterruptGen uint64
 	// Width and Height are the terminal size in cells. Zero means unknown,
 	// in which case the view renders everything without slicing.
 	Width  int

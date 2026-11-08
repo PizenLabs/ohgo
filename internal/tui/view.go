@@ -327,7 +327,14 @@ func renderCanvasBody(sb *strings.Builder, state State, pal *Palette, layout Lay
 		// fast task starts, hands off, and finishes.
 		sb.WriteString(renderComposer(state, pal, layout))
 		if layout.ShowHints {
-			sb.WriteString("\n" + pal.Muted.Render(composerHintBar(state, columnWidth(state, layout))))
+			hintStyle := pal.Muted
+			if interruptConfirmVisible(state) {
+				// The double-tap warning is a hazard prompt, not metadata: it
+				// takes the warning role so it cannot be mistaken for the
+				// ordinary busy hint row.
+				hintStyle = ExtrasFor(state.Theme).Warning
+			}
+			sb.WriteString("\n" + hintStyle.Render(composerHintBar(state, columnWidth(state, layout))))
 		} else {
 			sb.WriteString("\n" + renderStatus(state, pal, layout))
 		}
@@ -399,6 +406,11 @@ func composerHintsFor(state State) string {
 	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
 		return ""
 	}
+	if interruptConfirmVisible(state) {
+		// The armed warning replaces the ordinary busy hints: the one key the
+		// user needs this instant is the second Esc, not the queue chord.
+		return interruptConfirmText
+	}
 	if paletteOwnsKeys(state) && state.ConnectKey == nil {
 		return "↑↓ navigate · enter/tab accept · esc dismiss"
 	}
@@ -456,6 +468,14 @@ func busyActivityHead(state State) string {
 func composerHintBar(state State, width int) string {
 	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
 		return ""
+	}
+	if interruptConfirmVisible(state) {
+		// Same stable-band contract as composerHintsFor: the warning owns the
+		// whole row and truncates rather than yielding its key to telemetry.
+		if width > 0 {
+			return TruncateToWidth(interruptConfirmText, width)
+		}
+		return interruptConfirmText
 	}
 	if paletteOwnsKeys(state) && state.ConnectKey == nil {
 		const hint = "↑↓ navigate · enter/tab accept · esc dismiss"
@@ -2809,6 +2829,15 @@ func renderQuitConfirmArea(sb *strings.Builder, state State, _ *Palette, layout 
 // as measured. Nothing wraps: the terminal owns wrapping, and a footer that
 // wraps reads as two footers.
 func renderStatus(state State, pal *Palette, layout Layout) string {
+	if interruptConfirmVisible(state) {
+		// When the hint band is unavailable this row is the bottom surface, so
+		// the double-tap warning takes it rather than being silently dropped.
+		text := interruptConfirmText
+		if state.Width > 0 {
+			text = TruncateToWidth(text, columnWidth(state, layout))
+		}
+		return ExtrasFor(state.Theme).Warning.Render(text)
+	}
 	status := state.Status
 	parts := []string{}
 	// Cwd and usage text arrive from the environment and measured

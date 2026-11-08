@@ -645,6 +645,12 @@ approval, shutting down) are computed per render, never stored.
   queued; commands (`/status`, `/usage`, `/theme`, `/cancel`, …) run
   immediately. `/cancel` reaches the foreground operation in the same
   precedence as Ctrl+C, so a background turn never locks the prompt.
+- Guarded Escape: during a running turn the first `Esc` arms a two-second
+  confirmation and only the second `Esc` inside that window interrupts, using
+  the same cancellation path as Ctrl+C and `/cancel`. The warning owns the
+  hint/status row in the warning role, and expiry clears it silently. Ctrl+C
+  and `/cancel` remain immediate single-step pathways because they are
+  deliberate control chords rather than a reflex.
 - `internal/tui/viewport.go`: explicit FOLLOWING/DETACHED state. Detached mode anchors on
   `(BlockID, row)`, so appended output, expansion above the window, and resize
   preserve the reading position. The marker consumes a row and `MaxOffset` is
