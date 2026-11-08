@@ -107,9 +107,8 @@ func TestRenderThinkingTickKeepsWidth(t *testing.T) {
 }
 
 // TestFormatThinkingLineIsCompact: the row is a tight inline block with the
-// metadata parenthesised directly above the composer divider, never padded to
-// fill the terminal. A wide terminal shows the same cohesive row as a narrow
-// one.
+// metadata parenthesised in the bottom status band, never padded to fill the
+// terminal. A wide terminal shows the same cohesive row as a narrow one.
 func TestFormatThinkingLineIsCompact(t *testing.T) {
 	start := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	now := start.Add(5 * time.Second)

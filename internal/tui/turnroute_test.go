@@ -87,7 +87,7 @@ func TestRunTurnRefusesBlockedIntentBeforeTheModel(t *testing.T) {
 	for _, event := range events {
 		state.Apply(event)
 	}
-	if got := composerPrefix(state); got != "ask > " {
+	if got := composerPrefix(state); got != "ask › " {
 		t.Errorf("refusal prefix = %q, want the unchanged ASK workspace", got)
 	}
 }
@@ -137,7 +137,7 @@ func TestRenderShowsTheSelectedWorkspaceDuringSupportingReads(t *testing.T) {
 	if strings.Contains(out, "build · ask/read") {
 		t.Fatalf("frame created an ASK handler inside BUILD:\n%s", out)
 	}
-	if !strings.Contains(out, "build > ") {
+	if !strings.Contains(out, "build › ") {
 		t.Errorf("frame lost the selected BUILD authority:\n%s", out)
 	}
 }

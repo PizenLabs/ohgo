@@ -73,7 +73,7 @@ func TestDiffOverlayOwnsTheScreenAndEscCloses(t *testing.T) {
 		t.Errorf("footer does not advertise the close key:\n%s", out)
 	}
 	// The composer is hidden while the modal is up: no authority prefix row.
-	if strings.Contains(out, "build > ") || strings.Contains(out, "ask > ") {
+	if strings.Contains(out, "build › ") || strings.Contains(out, "ask › ") {
 		t.Errorf("composer rendered behind the diff modal:\n%s", out)
 	}
 	if lines := len(strings.Split(out, "\n")); lines != 30 {

@@ -436,8 +436,9 @@ type Status struct {
 	// it. It is authority identity, not decoration: it tells the user which
 	// boundary the session is running under.
 	Workspace string
-	// WorkspaceAccent is the semantic 256-color index for the workspace, from
-	// workspace.Style(). Empty falls back to a neutral accent.
+	// WorkspaceAccent is the dark-screen semantic color for the workspace,
+	// from workspace.Style(). The view prefers the theme-specific form when
+	// the label is known; empty falls back to a neutral accent.
 	WorkspaceAccent string
 	// User is the project worker display name from the project-local metadata.
 	// Empty hides it: the view never invents a name.
@@ -1654,6 +1655,10 @@ func (s *State) Apply(event Event) {
 		s.Picker.Loading = e.Loading
 		s.Picker.Origin = e.Origin
 		s.Picker.Refreshing = e.Stale
+		if e.Cursor > 0 {
+			s.Picker.Cursor = e.Cursor
+			s.Picker.clampCursor(len(s.Picker.Filtered()))
+		}
 		s.Picker.SetVisibleRows(pickerRowsFor(*s))
 
 	case PickerFilterChanged:
@@ -3816,6 +3821,7 @@ var Commands = []CommandSpec{
 	{Name: "help", Usage: "help", Description: "open the command & help center", Category: CommandGroupControl},
 	{Name: "commands", Usage: "commands", Description: "open the command & help center", Category: CommandGroupControl},
 	{Name: "clear", Usage: "clear", Description: "clear the transcript and start a fresh context", Category: CommandGroupControl},
+	{Name: "cancel", Usage: "cancel", Description: "stop the running turn", Category: CommandGroupControl},
 	{Name: "model", Usage: "model [provider/id]", Description: "browse or switch the model", Category: CommandGroupControl},
 	{Name: "models", Usage: "models", Description: "browse every known model", Hidden: true, Category: CommandGroupControl},
 	{Name: "permissions", Usage: "permissions", Description: "choose the execution authority", Category: CommandGroupControl},
@@ -3825,7 +3831,7 @@ var Commands = []CommandSpec{
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
 	{Name: "task", Usage: "task [status|list|show|resume|cancel|accept]", Description: "manage durable tasks: inspect, list, resume, or abandon", Category: CommandGroupControl},
 	{Name: "audit", Usage: "audit", Description: "explain the last context projection and action surface", Category: CommandGroupControl},
-	{Name: "theme", Usage: "theme [dark|light]", Description: "show or switch the palette", Category: CommandGroupControl},
+	{Name: "theme", Usage: "theme [dark|light]", Description: "choose the palette", Category: CommandGroupControl},
 	{Name: "settings", Usage: "settings", Description: "configure interface preferences", Category: CommandGroupControl},
 	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
 	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
@@ -4126,10 +4132,15 @@ func (ThemeChanged) eventKind() string { return "theme_changed" }
 
 // PickerOpened shows a selection overlay.
 type PickerOpened struct {
-	// Kind selects what choosing means: "sessions", "models" or "jobs".
+	// Kind selects what choosing means, e.g. "sessions", "models", "jobs",
+	// or "themes".
 	Kind string
 	// Title heads the overlay.
 	Title string
+	// Cursor parks the initial highlight on an item index. It is clamped to
+	// the visible roster, so a stale or out-of-range value cannot point past
+	// the list.
+	Cursor int
 	// Items are the choices.
 	Items []PickerItem
 	// Loading reports the first catalog snapshot has not arrived yet.
@@ -4533,8 +4544,9 @@ type WorkspaceUpdated struct {
 	// Workspace is the execution authority label, e.g. "BUILD".
 	Workspace string
 	// WorkspaceAccent is the semantic accent for the authority. The producer
-	// reads it from workspace.Style(), so the TUI never hardcodes a
-	// workspace colour (§9).
+	// reads it from workspace.Style(), so the TUI never hardcodes a workspace
+	// colour (§9). The view resolves the light-screen form from the label and
+	// the active theme; this value remains the dark-screen fallback.
 	WorkspaceAccent string
 	// HasCwd, HasSession, HasUsage, HasWorkspace mark which fields apply: an
 	// empty string can be a deliberate clear, not just an omission.

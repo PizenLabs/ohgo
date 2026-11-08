@@ -207,7 +207,7 @@ func TestLiveComposerRendersChips(t *testing.T) {
 
 // Vertical movement folds at the width the active renderer used. Live mode now
 // renders the same authority prefix as the full-screen composer, so movement
-// must subtract it instead of assuming the two-cell "> " prompt.
+// must subtract it instead of assuming the two-cell "› " prompt.
 func TestLiveMovementUsesTheLiveComposerWidth(t *testing.T) {
 	p, _ := newLiveProgram()
 	p.state.Apply(TerminalResized{Width: 12, Height: 24})

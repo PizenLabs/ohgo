@@ -37,3 +37,44 @@ func TestDarkCodeSurfaceIsForestTinted(t *testing.T) {
 		t.Errorf("code background %q is too bright (luminance %.1f), want a subtle surface", darkCodeBg, luminance)
 	}
 }
+
+// The light code surface is a soft mint tint, never an opaque black block or
+// an inverted span: an inline identifier must stay readable on a bright
+// terminal.
+func TestLightCodeSurfaceIsMintTinted(t *testing.T) {
+	pal := LightPalette()
+	if got := pal.Code.GetBackground(); got != lipgloss.Color(lightCodeBg) {
+		t.Fatalf("light code background = %v, want %s", got, lightCodeBg)
+	}
+	if got := pal.Code.GetForeground(); got != lipgloss.Color(lightCodeFg) {
+		t.Fatalf("light code foreground = %v, want %s", got, lightCodeFg)
+	}
+	if got := pal.Code.GetBackground(); got == lipgloss.Color("#000000") {
+		t.Fatal("light code background is opaque black")
+	}
+}
+
+// Every surfaced code token shares a background from the palette, and no
+// theme may fall back to opaque black or reverse video: either artifact
+// becomes a black block on a light terminal.
+func TestCodeTokensNeverUseBlackOrInverse(t *testing.T) {
+	for _, theme := range []string{ThemeDark, ThemeLight} {
+		pal := PaletteFor(theme)
+		tokens := map[string]lipgloss.Style{
+			"code":     pal.Code,
+			"keyword":  pal.CodeKeyword,
+			"string":   pal.CodeString,
+			"comment":  pal.CodeComment,
+			"number":   pal.CodeNumber,
+			"diff add": pal.DiffAdd,
+		}
+		for name, token := range tokens {
+			if bg := token.GetBackground(); bg == lipgloss.Color("#000000") || bg == lipgloss.Color("0") {
+				t.Errorf("%s %s background = %v, want a semantic surface", theme, name, bg)
+			}
+			if token.GetReverse() {
+				t.Errorf("%s %s uses reverse video, which breaks on a bright terminal", theme, name)
+			}
+		}
+	}
+}

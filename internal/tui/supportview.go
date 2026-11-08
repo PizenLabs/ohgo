@@ -501,7 +501,8 @@ func supportInputText(panel *SupportPanel, pal *Palette, budget int) string {
 	if budget < 1 {
 		budget = 1
 	}
-	promptW := CellWidth("> ")
+	prompt := composerPointer + " "
+	promptW := CellWidth(prompt)
 	inner := budget - promptW
 	if inner < 1 {
 		inner = 1
@@ -534,7 +535,7 @@ func supportInputText(panel *SupportPanel, pal *Palette, budget int) string {
 		colIdx = len(runes)
 	}
 	withCursor := string(runes[:colIdx]) + pal.Cursor.Render("▌") + string(runes[colIdx:])
-	return TruncateToWidth(pal.Prompt.Render("> ")+withCursor, budget)
+	return TruncateToWidth(pal.Prompt.Render(prompt)+withCursor, budget)
 }
 
 // supportCursorRow maps a rune cursor in sanitized composer text onto its

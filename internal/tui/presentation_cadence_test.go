@@ -82,8 +82,8 @@ func TestRunningToolOwnsActivityAndPromptOwnsRole(t *testing.T) {
 		t.Fatalf("activity line = %q, want no second representation of the running call", line)
 	}
 	out := ansi.Strip(Render(s))
-	if strings.Count(out, "ask > ") != 1 {
-		t.Fatalf("prompt role appeared %d times, want exactly one:\n%s", strings.Count(out, "ask > "), out)
+	if strings.Count(out, "ask › ") != 1 {
+		t.Fatalf("prompt role appeared %d times, want exactly one:\n%s", strings.Count(out, "ask › "), out)
 	}
 	if strings.Contains(out, "◌ execute") || strings.Contains(out, "✳ Running") {
 		t.Fatalf("running call also rendered an activity line:\n%s", out)

@@ -42,7 +42,7 @@ func (o *countingOwner) asked() []string {
 // production one: it moves the owner and publishes the new identity, so a test
 // observes the same chrome a real transition produces.
 func (o *countingOwner) install(p *Program, predict func(string) (TurnTransition, bool)) {
-	accents := map[string]string{"ASK": "37", "BUILD": "33", "FUZZ": "200"}
+	accents := map[string]string{"ASK": ModeAccentAsk, "BUILD": ModeAccentBuild, "FUZZ": ModeAccentFuzz}
 	p.SetWorkspaceSwitcher(WorkspaceHooks{
 		Current: o.ws,
 		Switch: func(name string) error {
@@ -250,8 +250,8 @@ func TestAcceptedProposalSwitchesThroughTheOwner(t *testing.T) {
 	if p.state.Status.Workspace != "ASK" {
 		t.Errorf("displayed workspace = %q, want the normal ASK identity", p.state.Status.Workspace)
 	}
-	if p.state.Status.WorkspaceAccent != "37" {
-		t.Errorf("accent = %q, want the ASK semantic accent", p.state.Status.WorkspaceAccent)
+	if p.state.Status.WorkspaceAccent != ModeAccentAsk {
+		t.Errorf("accent = %q, want the ASK semantic accent %q", p.state.Status.WorkspaceAccent, ModeAccentAsk)
 	}
 	if cmd == nil {
 		t.Fatal("an accepted proposal did not run the turn")

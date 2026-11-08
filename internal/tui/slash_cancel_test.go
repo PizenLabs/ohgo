@@ -10,7 +10,7 @@ import (
 // Advertised commands must parse: every non-hidden registry entry is accepted
 // by LookupCommand, so the menu can never show what the parser rejects.
 func TestAdvertisedCommandsParse(t *testing.T) {
-	for _, name := range []string{"ask", "fuzz", "build", "model"} {
+	for _, name := range []string{"ask", "fuzz", "build", "cancel", "model"} {
 		cmd, ok := ParseCommand("/" + name)
 		if !ok {
 			t.Fatalf("/%s did not parse", name)
@@ -205,6 +205,72 @@ func TestStaleTurnEventsIgnored(t *testing.T) {
 	s.Apply(AssistantDone{Seq: 2})
 	if s.Status.Busy {
 		t.Error("current AssistantDone did not close the turn")
+	}
+}
+
+// /cancel is the composer-friendly abort: it reaches the same terminal
+// cancellation ctrl+c uses, so a running turn never locks the prompt.
+func TestCancelCommandStopsBusyTurn(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(UserSubmitted{Text: "work"})
+	Command{Name: "cancel"}.runOn(p)
+	if !p.state.Cancelled || p.state.Status.Busy {
+		t.Fatalf("Cancelled=%v Busy=%v, want terminal idle", p.state.Cancelled, p.state.Status.Busy)
+	}
+	if p.state.Quit {
+		t.Fatal("/cancel quit the session")
+	}
+}
+
+// /cancel is honest when there is nothing to stop: it reports the state
+// instead of fabricating a cancellation line.
+func TestCancelCommandReportsIdleSession(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	Command{Name: "cancel"}.runOn(p)
+	if p.state.Cancelled {
+		t.Fatal("/cancel marked an idle session cancelled")
+	}
+	if len(p.state.Entries) != 1 || p.state.Entries[0].Kind != EntryNotice ||
+		!strings.Contains(p.state.Entries[0].Notice, "no running turn") {
+		t.Fatalf("entries = %+v, want the idle notice", p.state.Entries)
+	}
+}
+
+// The composer stays interactive while a turn runs: typing edits the draft
+// instead of being swallowed, and Enter queues the prompt rather than starting a
+// second turn. Slash commands take the immediate path (see
+// TestSlashCommandRunsWhileBusy).
+func TestComposerAcceptsTypingWhileTurnRuns(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(UserSubmitted{Text: "work"})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("next")})
+	if p.state.Input != "next" {
+		t.Fatalf("busy composer input = %q, want the typed draft", p.state.Input)
+	}
+	if !p.state.Status.Busy {
+		t.Fatal("typing ended the running turn")
+	}
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(p.state.Queued) != 1 || p.state.Queued[0] != "next" {
+		t.Fatalf("queued = %v, want the typed prompt behind the running turn", p.state.Queued)
+	}
+}
+
+// A slash command executes immediately during a turn instead of queueing as a
+// prompt, so the composer remains a control surface under load.
+func TestSlashCommandRunsWhileBusy(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(UserSubmitted{Text: "work"})
+	p.state.Apply(ComposerChanged{Text: "/status", Cursor: len("/status")})
+	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
+	if p.state.StatusModal == nil {
+		t.Fatal("/status did not open during the running turn")
+	}
+	if len(p.state.Queued) != 0 {
+		t.Fatalf("queued = %v, want no prompt queue entry for a command", p.state.Queued)
+	}
+	if !p.state.Status.Busy {
+		t.Fatal("a command ended the running turn")
 	}
 }
 

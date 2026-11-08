@@ -175,17 +175,12 @@ func permissionSelection(index int) (AuthorityOption, bool) {
 	return AuthorityOptions[index], true
 }
 
-// authorityAccent is the mode's semantic identity colour: ASK teal, BUILD
-// steel blue, FUZZ magenta. An invalid mode degrades to the dim slate rather
+// authorityAccent is the mode's fixed semantic identity colour: ASK teal,
+// BUILD blue, FUZZ magenta. An invalid mode degrades to the dim slate rather
 // than borrowing an authority's colour.
 func authorityAccent(mode AuthorityMode) string {
-	switch mode {
-	case ModeAsk:
-		return ColorPrimary
-	case ModeBuild:
-		return ColorAccent
-	case ModeFuzz:
-		return ColorFuzz
+	if accent := ModeAccent(string(mode)); accent != "" {
+		return accent
 	}
 	return ColorDim
 }

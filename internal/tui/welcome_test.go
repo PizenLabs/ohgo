@@ -329,7 +329,7 @@ func TestThemesRenderCoherently(t *testing.T) {
 	}
 	dark := Render(build(ThemeDark))
 	light := Render(build(ThemeLight))
-	if !strings.Contains(dark, "> ") || !strings.Contains(light, "> ") {
+	if !strings.Contains(dark, "› ") || !strings.Contains(light, "› ") {
 		t.Error("a theme lost the composer affordance")
 	}
 	if strings.Count(dark, "\n") != strings.Count(light, "\n") {

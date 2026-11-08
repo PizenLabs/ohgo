@@ -157,16 +157,16 @@ func TestVerticalMovementCrossesWrappedAndNewlineRows(t *testing.T) {
 }
 
 // The composer affordance names the live authority in lowercase: typing lands
-// after "ask > ", "build > ", or "fuzz > ", never after a bare "> " once an
-// authority owns the session. An unset authority keeps the generic prompt.
+// after "ask › ", "build › ", or "fuzz › ", never after a bare "› " once an
+// authority owns the session. An unset authority keeps the generic pointer.
 func TestComposerPrefixFollowsAuthority(t *testing.T) {
 	cases := map[string]string{
-		"ASK":   "ask > ",
-		"BUILD": "build > ",
-		"FUZZ":  "fuzz > ",
-		"ask":   "ask > ",
-		"":      "> ",
-		"other": "> ",
+		"ASK":   "ask › ",
+		"BUILD": "build › ",
+		"FUZZ":  "fuzz › ",
+		"ask":   "ask › ",
+		"":      "› ",
+		"other": "› ",
 	}
 	for workspace, want := range cases {
 		s := New()
@@ -182,8 +182,28 @@ func TestComposerPrefixFollowsAuthority(t *testing.T) {
 	s.Apply(WorkspaceUpdated{Workspace: "BUILD", HasWorkspace: true})
 	s.Apply(TerminalResized{Width: 80, Height: 24})
 	s.Apply(ComposerChanged{Text: "hi", Cursor: 2})
-	if out := Render(s); !strings.Contains(out, "build > hi") {
+	if out := Render(s); !strings.Contains(out, "build › hi") {
 		t.Errorf("render lacks the live mode prefix:\n%s", out)
+	}
+}
+
+// The rendered prefix keeps hue identity on the mode word alone: the pointer
+// and spacing stay muted, so the prompt is not a solid colored run.
+func TestComposerPrefixColorsOnlyTheModeWord(t *testing.T) {
+	pal := PaletteFor(ThemeDark)
+	s := New()
+	s.Theme = ThemeDark
+	s.Status.Workspace = "BUILD"
+
+	styled := composerPrefixText(s, pal)
+	if got := ansi.Strip(styled); got != "build › " {
+		t.Fatalf("prefix = %q, want the refined pointer", got)
+	}
+	if !strings.Contains(styled, composerPrefixStyle(s, pal).Render("build")) {
+		t.Errorf("prefix = %q, want only the mode word in its accent", styled)
+	}
+	if !strings.Contains(styled, pal.Muted.Render(" › ")) {
+		t.Errorf("prefix = %q, want the pointer and spacing muted", styled)
 	}
 }
 
@@ -197,19 +217,89 @@ func TestComposerPrefixStylesDifferPerMode(t *testing.T) {
 		return colorName(composerPrefixStyle(s, pal).GetForeground())
 	}
 	ask, build, fuzz := mk("ASK"), mk("BUILD"), mk("FUZZ")
-	if ask != "#5FB3A1" {
-		t.Errorf("ASK prefix = %q, want the teal primary", ask)
+	if ask != ModeAccentAsk {
+		t.Errorf("ASK prefix = %q, want the fixed teal %q", ask, ModeAccentAsk)
 	}
-	if build != "#7AA8C9" {
-		t.Errorf("BUILD prefix = %q, want the blue accent", build)
+	if build != ModeAccentBuild {
+		t.Errorf("BUILD prefix = %q, want the fixed blue %q", build, ModeAccentBuild)
+	}
+	if fuzz != ModeAccentFuzz {
+		t.Errorf("FUZZ prefix = %q, want the fixed magenta %q", fuzz, ModeAccentFuzz)
 	}
 	if fuzz == ask || fuzz == build {
 		t.Errorf("FUZZ prefix = %q, want its own magenta, not ASK %q or BUILD %q", fuzz, ask, build)
 	}
 }
 
+// The semantic accents are deliberately muted, not neon: each authority has a
+// soft dark-screen hue and a deepened light-screen hue.
+func TestModeAccentsUseMutedThemePairs(t *testing.T) {
+	cases := map[string][2]string{
+		"ASK":   {"#2dd4bf", "#0f766e"},
+		"BUILD": {"#60a5fa", "#1d4ed8"},
+		"FUZZ":  {"#e879f9", "#a21caf"},
+	}
+	for workspace, pair := range cases {
+		if got := ModeAccentFor(ThemeDark, workspace); got != pair[0] {
+			t.Errorf("%s dark accent = %q, want %q", workspace, got, pair[0])
+		}
+		if got := ModeAccentFor(ThemeLight, workspace); got != pair[1] {
+			t.Errorf("%s light accent = %q, want %q", workspace, got, pair[1])
+		}
+	}
+}
+
+// The live mode colour keeps one hue per authority but takes its depth from
+// the palette: prefix and caret must agree on both themes, and the light form
+// must actually differ. The surrounding frame stays on the neutral border.
+func TestComposerModeAccentsAdaptPerTheme(t *testing.T) {
+	for _, workspace := range []string{"ASK", "BUILD", "FUZZ"} {
+		seen := map[string]string{}
+		for _, theme := range []string{ThemeDark, ThemeLight} {
+			want := ModeAccentFor(theme, workspace)
+			if want == "" {
+				t.Fatalf("%s has no semantic accent", workspace)
+			}
+			seen[theme] = want
+			pal := PaletteFor(theme)
+			s := New()
+			s.Theme = theme
+			s.Status.Workspace = workspace
+
+			if got := colorName(composerPrefixStyle(s, pal).GetForeground()); got != want {
+				t.Errorf("%s %s prefix = %q, want the mode accent %q", theme, workspace, got, want)
+			}
+			if got := colorName(composerCursorStyle(s, pal).GetForeground()); got != want {
+				t.Errorf("%s %s caret = %q, want the mode accent %q", theme, workspace, got, want)
+			}
+			if got, wantFrame := colorName(composerRuleStyle(s, pal).GetForeground()), colorName(pal.Separator.GetForeground()); got != wantFrame {
+				t.Errorf("%s %s frame = %q, want the neutral border %q", theme, workspace, got, wantFrame)
+			}
+		}
+		if seen[ThemeDark] == seen[ThemeLight] {
+			t.Errorf("%s keeps %q in both themes, want a darkened light-screen form", workspace, seen[ThemeDark])
+		}
+	}
+}
+
+// Without an authority the composer keeps the theme's neutral prompt, so a
+// missing mode never looks like a real one.
+func TestComposerModeAccentFallsBackWithoutAuthority(t *testing.T) {
+	for _, theme := range []string{ThemeDark, ThemeLight} {
+		pal := PaletteFor(theme)
+		s := New()
+		s.Theme = theme
+		if got, want := colorName(composerPrefixStyle(s, pal).GetForeground()), colorName(pal.Prompt.GetForeground()); got != want {
+			t.Errorf("%s: no-authority prefix = %q, want the theme prompt %q", theme, got, want)
+		}
+		if got, want := colorName(composerCursorStyle(s, pal).GetForeground()), colorName(pal.Cursor.GetForeground()); got != want {
+			t.Errorf("%s: no-authority caret = %q, want the theme cursor %q", theme, got, want)
+		}
+	}
+}
+
 // A wider mode prefix leaves fewer cells for text: the wrap budget subtracts
-// the live prefix width, so "build > " folds earlier than "> " without
+// the live prefix width, so "build › " folds earlier than "› " without
 // overflowing, and the cursor marker survives the fold.
 func TestComposerWrapAccountsForPrefixWidth(t *testing.T) {
 	layout := Layout{ContentWidth: 20}
@@ -226,7 +316,7 @@ func TestComposerWrapAccountsForPrefixWidth(t *testing.T) {
 	long := strings.Repeat("a", 60)
 	s.Apply(ComposerChanged{Text: long, Cursor: len([]rune(long))})
 	out := Render(s)
-	if !strings.Contains(out, "build > ") || !strings.Contains(out, "▌") {
+	if !strings.Contains(out, "build › ") || !strings.Contains(out, "▌") {
 		t.Fatalf("BUILD composer lost prefix or cursor:\n%s", out)
 	}
 	for i, line := range strings.Split(out, "\n") {
@@ -236,34 +326,26 @@ func TestComposerWrapAccountsForPrefixWidth(t *testing.T) {
 	}
 }
 
-// The two lines framing the prompt share the workspace prefix colour so the
-// boundary reads as one: switching from ASK to BUILD to FUZZ must recolour
-// the frame, and a modal approval must quiet it back to the dim separator so
-// attention goes to the dialog.
-func TestComposerRuleFollowsWorkspacePrefix(t *testing.T) {
+// The composer frame is a neutral boundary on every authority and theme: the
+// mode hue belongs only to the prefix word, never to the box. Switching ASK →
+// BUILD → FUZZ must leave the rule untouched while the prefix accents stay
+// distinct.
+func TestComposerRuleStaysNeutralAcrossModes(t *testing.T) {
 	for _, theme := range []string{ThemeDark, ThemeLight} {
 		pal := PaletteFor(theme)
-		seen := map[string]string{}
+		wantRule := colorName(pal.Separator.GetForeground())
+		seenPrefix := map[string]string{}
 		for _, workspace := range []string{"ASK", "BUILD", "FUZZ"} {
 			s := New()
 			s.Theme = theme
 			s.Status.Workspace = workspace
-			ruleFg := colorName(composerRuleStyle(s, pal).GetForeground())
-			prefixFg := colorName(composerPrefixStyle(s, pal).GetForeground())
-			if ruleFg != prefixFg {
-				t.Errorf("%s %s: rule foreground = %q, want the prefix %q: the frame split from its prompt text", theme, workspace, ruleFg, prefixFg)
+			if got := colorName(composerRuleStyle(s, pal).GetForeground()); got != wantRule {
+				t.Errorf("%s %s: rule = %q, want the neutral border %q", theme, workspace, got, wantRule)
 			}
-			seen[workspace] = ruleFg
+			seenPrefix[workspace] = colorName(composerPrefixStyle(s, pal).GetForeground())
 		}
-		if seen["ASK"] == seen["BUILD"] || seen["ASK"] == seen["FUZZ"] || seen["BUILD"] == seen["FUZZ"] {
-			t.Errorf("%s: rule colours %v share a foreground: switching workspaces left the frame unchanged", theme, seen)
-		}
-		modal := New()
-		modal.Theme = theme
-		modal.Status.Workspace = "BUILD"
-		modal.Pending = &PendingApproval{ToolName: "bash", Summary: "run it", Choices: []string{"Yes", "No"}}
-		if got, want := colorName(composerRuleStyle(modal, pal).GetForeground()), colorName(pal.Separator.GetForeground()); got != want {
-			t.Errorf("%s: modal rule = %q, want the dim separator %q: approval lost focus to the composer frame", theme, got, want)
+		if seenPrefix["ASK"] == seenPrefix["BUILD"] || seenPrefix["ASK"] == seenPrefix["FUZZ"] || seenPrefix["BUILD"] == seenPrefix["FUZZ"] {
+			t.Errorf("%s: prefix colours %v share a foreground: mode identity was lost", theme, seenPrefix)
 		}
 	}
 }

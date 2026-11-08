@@ -110,8 +110,9 @@ and any subagent read at call time:
 The full matrix, state model, and invariants are in
 [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
 
-Semantic identity (`workspace.Style`) is teal/magenta/blue for ASK/FUZZ/BUILD,
-fixed across themes; it never participates in an authority decision.
+Semantic identity (`workspace.Style`) is teal/magenta/blue for ASK/FUZZ/BUILD.
+The hue is fixed across themes while its depth adapts for contrast on dark and
+light terminals; it never participates in an authority decision.
 
 ### Intent grounding
 
@@ -222,8 +223,12 @@ tool syntax appears in production presentation code.
 Reasoning is a distinct canonical channel, not prose the renderer mines for a
 marker. `EventThinkingDelta` reaches the runtime through its own hook
 (`ai.DrainStreamHooks`), becomes its own presentation block, and is collapsed
-by default. The completed `AssistantMessage` keeps the same thinking block, so
-a resumed transcript renders it without re-parsing provider output.
+by default into a one-line badge (`+ Thought · 1.1s`). The badge's `+`/`-`
+marker is the disclosure affordance: the shared presentation-only Ctrl+O chord
+or a click expands it to `- Thought · 6.5s` and an indented, desaturated body,
+bounded so one long trace cannot displace the answer. The completed
+`AssistantMessage` keeps the same thinking block, so a resumed transcript
+renders it without re-parsing provider output.
 
 ## Completion, task state, and exit status
 
@@ -558,8 +563,8 @@ approval, shutting down) are computed per render, never stored.
 
 - `internal/tui/model.go`: the state machine — composer, viewport (scroll + sticky
   follow), queue, overlays, sessions (Session Manager) and providers (Connect
-  Provider Manager and its API-key modal) plus the models/jobs pickers and the
-  two-tab Command & Help Center (Commands / Shortcuts), theme, workspace,
+  Provider Manager and its API-key modal) plus the models/jobs/theme pickers and
+  the two-tab Command & Help Center (Commands / Shortcuts), workspace,
   probe/doctor/usage wiring. Slash
   discovery state filters the authoritative
   `Commands` registry inline — never a second catalog.
@@ -627,12 +632,19 @@ approval, shutting down) are computed per render, never stored.
   Only the last call in the run keeps the separator row; earlier calls stay
   click-expandable but no longer read as independent cards. `ProjectActivity`
   is the single owner decision: a running tool or an open reasoning trace
-  presents the activity through its own entry, otherwise the one-row activity
-  line carries the current phase and argument-derived action detail. The
-  active runtime phase is therefore absent from the header, and the workspace
-  authority (`ASK`, `BUILD`, `FUZZ`) appears only at the prompt boundary. A
-  tool finalizes into that same block, so no live copy survives next to its
-  stable representation.
+  presents the activity through its own entry. The full-screen canvas reserves
+  no separate activity band, so starting, handing off, and finishing a turn
+  cannot move the composer; the stable hint/status row carries telemetry and
+  the current keys. Output-first mode may show the one-row activity line in its
+  footer only when no entry owns the phase. The active runtime phase is absent
+  from the header, and the workspace authority (`ASK`, `BUILD`, `FUZZ`) appears
+  only at the prompt boundary. A tool finalizes into that same block, so no live
+  copy survives next to its stable representation.
+- Non-blocking composer: typing, editing, history recall, and slash dispatch
+  stay live while a turn streams. A normal prompt entered during execution is
+  queued; commands (`/status`, `/usage`, `/theme`, `/cancel`, …) run
+  immediately. `/cancel` reaches the foreground operation in the same
+  precedence as Ctrl+C, so a background turn never locks the prompt.
 - `internal/tui/viewport.go`: explicit FOLLOWING/DETACHED state. Detached mode anchors on
   `(BlockID, row)`, so appended output, expansion above the window, and resize
   preserve the reading position. The marker consumes a row and `MaxOffset` is
@@ -677,10 +689,12 @@ approval, shutting down) are computed per render, never stored.
   tiny screens rather than overflowing. The interactive transcript is a
   projection of `TranscriptLayout` and `Viewport`; ordinary scroll, drag, and
   streaming frames slice cached rows instead of re-rendering the document.
-  The composer is two restrained rules around the input with an inline
-  slash-suggestion list and a queued-prompts line (busy and approval live
-  in the header, status, and modal — never restated under the input). The
-  upper rule is a border block header naming the live session
+  The composer is two neutral border rules around the input with an inline
+  slash-suggestion list and a queued-prompts line. Only the lowercase mode word
+  before the `›` pointer carries authority hue; the frame stays on the adaptive
+  border token. Activity, token telemetry, and the hint bar sit below the
+  composer, never on the transcript edge above the prompt. The upper rule is a
+  border block header naming the live session
   (`──────────── [Fix failing parser] ───`), with a discrete `★` when
   the session is retention-protected; the title is `promptopt`-sanitized and
   width-bounded so it can never break the frame. `?` on an empty composer opens the

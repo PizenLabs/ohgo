@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -17,26 +18,27 @@ const (
 // Semantic colour tokens. Every style in the package resolves through one of
 // these, so a theme change lands here and nowhere else.
 //
-// The indexes are 256-colour, deliberately not truecolor hex: they resolve on
-// every terminal that reports colour and degrade predictably on the rest. The
-// code surface is the sole exception (see darkCodeBg): its tint must sit close
-// to the deep-forest transcript, which no 256-colour index can express.
-// Colour signals state or voice; it never decorates ordinary metadata, and
-// every state that uses colour also carries a text marker (✓ ✗ ● ○ ■ ◐).
+// Most tokens are 256-colour indexes: they resolve on every terminal that
+// reports colour and degrade predictably on the rest. Body text, borders, and
+// the code surface use truecolor pairs so light and dark resolve to the exact
+// same semantic values rather than approximating them with indexes. Colour
+// signals state or voice; it never decorates ordinary metadata, and every state
+// that uses colour also carries a text marker (✓ ✗ ● ○ ■ ◐).
 const (
-	// Dark theme: muted surfaces, a single restrained mint accent.
-	darkText    = "252" // body text
-	darkMuted   = "244" // metadata, separators, hints
-	darkAccent  = "121" // mint: focus, the user's voice, selection
-	darkTool    = "73"  // soft teal: tool identity, distinct from the accent
+	// Dark theme: muted surfaces with one restrained accent. Body text and
+	// borders are truecolor here so both themes share one adaptive pair
+	// rather than approximating the same neutrals with 256-colour indexes.
+	darkText    = "#d6dedb" // body text
+	darkMuted   = "244"     // metadata, hints
+	darkAccent  = "121"     // mint: focus, the user's voice, selection
+	darkTool    = "73"      // soft teal: tool identity, distinct from the accent
 	darkSuccess = "42"
 	darkWarning = "214"
 	darkDanger  = "196"
-	darkCodeFg  = "228"
-	// The code surface is the one truecolor body token: no 256-colour index
-	// sits close enough to the deep-forest transcript (#0b1210) to read as
-	// part of it. This faint emerald stays a surface, never a box.
-	darkCodeBg = "#121d19"
+	darkCodeFg  = "#a7f3d0"
+	// The code surface is a soft forest tint, not a black block: inline spans
+	// and fenced blocks must read on a bright terminal too.
+	darkCodeBg = "#1b2a24"
 	// Deep-forest header scale: bright emerald H1, sage H2, muted sage H3.
 	darkH1 = "85"
 	darkH2 = "114"
@@ -48,15 +50,18 @@ const (
 	darkUserBg = "237"
 
 	// Light theme: dark foregrounds on a bright screen, same semantics.
-	lightText    = "235"
+	lightText    = "#1f2335"
 	lightMuted   = "242"
 	lightAccent  = "28"
 	lightTool    = "30"
 	lightSuccess = "28"
 	lightWarning = "166"
 	lightDanger  = "160"
-	lightCodeFg  = "235"
-	lightCodeBg  = "254"
+	lightCodeFg  = "#064e3b"
+	// The light code surface is a soft mint tint with deep emerald text.
+	// It replaces any opaque black block or reverse-video span, which break
+	// on a bright terminal.
+	lightCodeBg = "#e2ece8"
 	// Same forest scale for bright terminals: deep emerald H1, dark sage
 	// H2, muted grey H3.
 	lightH1      = "28"
@@ -66,6 +71,11 @@ const (
 	// Faint user background for bright terminals: slightly darker than
 	// the screen, distinct from the code surface.
 	lightUserBg = "253"
+
+	// Borders and dividers adapt as one pair, so a rule stays a rule rather
+	// than competing with body text on either background.
+	darkBorder  = "#2d3748"
+	lightBorder = "#cbd5e1"
 )
 
 // fg is the single place a token becomes a style foreground.
@@ -77,11 +87,11 @@ func fg(token string) lipgloss.Style {
 // (Catppuccin / Forest Minimal inspired) for the header, footer, and composer
 // chrome.
 //
-// These are truecolor hex, unlike the 256-colour body tokens above: the
-// chrome targets modern terminals where the brand, model, and status segments
-// must read as distinct hues, while the transcript body keeps 256-colour
-// indexes for broad degrade. Every state that uses colour also carries a text
-// marker (● ○ ◐), so nothing depends on hue alone.
+// These are truecolor hex: the chrome targets modern terminals where the
+// brand, model, and status segments must read as distinct hues, and the
+// semantic mode accents must survive both themes unchanged. Every state that
+// uses colour also carries a text marker (● ○ ◐), so nothing depends on hue
+// alone.
 const (
 	// ColorPrimary is subtle mint teal: the app name, the active cursor,
 	// and focused borders.
@@ -94,11 +104,12 @@ const (
 	ColorAccent = "#7AA8C9"
 	// ColorFuzz is FUZZ's magenta workspace identity: semantic authority
 	// accent, not theme chrome, so it reads the same under every palette.
-	ColorFuzz = "#C678DD"
-	// ColorDim is slate gray: dot separators, dividers, and borders.
-	ColorDim = "#4C566A"
-	// ColorText is warm off-white: primary body text.
-	ColorText = "#C9C5BE"
+	ColorFuzz = workspace.AccentFuzz
+	// ColorDim is the dark-theme rule colour: dot separators, dividers, and
+	// borders. It is intentionally below body text in contrast.
+	ColorDim = darkBorder
+	// ColorText is the dark-theme primary body text.
+	ColorText = darkText
 	// ColorMuted is muted gray: labels such as model, workspace, and git.
 	ColorMuted = "#6C7A89"
 	// ColorMutedAmber is warm muted amber, the approval frame accent for a
@@ -122,16 +133,71 @@ const (
 	chromeLightModel   = "#4E7A4C"
 	chromeLightStatus  = "#8A6D2B"
 	chromeLightAccent  = "#3E6E8E"
-	chromeLightDim     = "#8A93A3"
+	chromeLightDim     = lightBorder
 	// chromeLightRecap is the same dim sage role darkened for a bright
 	// screen: still quieter than body text, still readable.
 	chromeLightRecap = "#4F6E61"
 )
 
+// Semantic mode accents are the workspace's identity colors, re-exported here
+// so presentation code has one name to reach for. The dark and light forms are
+// the same hue at different depths: the prompt stays soft on a dark terminal
+// and readable on a bright one, without turning the mode into a different
+// color.
+const (
+	// ModeAccentAsk is ASK's muted teal on a dark screen.
+	ModeAccentAsk = workspace.AccentAsk
+	// ModeAccentAskLight is ASK's deep teal on a bright screen.
+	ModeAccentAskLight = workspace.AccentAskLight
+	// ModeAccentBuild is BUILD's muted steel blue on a dark screen.
+	ModeAccentBuild = workspace.AccentBuild
+	// ModeAccentBuildLight is BUILD's deep blue on a bright screen.
+	ModeAccentBuildLight = workspace.AccentBuildLight
+	// ModeAccentFuzz is FUZZ's muted mauve on a dark screen.
+	ModeAccentFuzz = workspace.AccentFuzz
+	// ModeAccentFuzzLight is FUZZ's deep purple on a bright screen.
+	ModeAccentFuzzLight = workspace.AccentFuzzLight
+)
+
+// ModeAccentFor resolves an authority label to its semantic accent for a
+// theme. An unknown or empty label returns "", so callers fall back to neutral
+// chrome instead of inventing an authority color.
+func ModeAccentFor(theme, label string) string {
+	parsed, err := workspace.Parse(label)
+	if err != nil {
+		return ""
+	}
+	style := parsed.Style()
+	if NormalizeTheme(theme) == ThemeLight && style.LightAccent != "" {
+		return style.LightAccent
+	}
+	return style.Accent
+}
+
+// ModeAccent resolves an authority label to its dark-screen accent. It is the
+// compatibility form for surfaces that do not carry a theme.
+func ModeAccent(label string) string {
+	return ModeAccentFor(ThemeDark, label)
+}
+
+// modeStyle renders an authority label in its semantic accent for a theme.
+// The fallback is used only for an unknown label: a malformed mode must not
+// borrow a real authority's identity.
+func modeStyle(theme, label string, fallback lipgloss.Style) lipgloss.Style {
+	if accent := ModeAccentFor(theme, label); accent != "" {
+		return fg(accent).Bold(true)
+	}
+	return fallback
+}
+
 // Chrome carries the header/footer/composer styles resolved from the tokens
 // above: one named style per segment so render code never reaches for a raw
 // colour.
 type Chrome struct {
+	// Theme is the normalized palette these styles were resolved for. Mode
+	// accents use it so a caller holding only Chrome still resolves the right
+	// light/dark form.
+	Theme string
 	// Brand renders the app name.
 	Brand lipgloss.Style
 	// Version renders the release label beside the brand, e.g. "v1.0.0".
@@ -157,6 +223,7 @@ type Chrome struct {
 func ChromeFor(theme string) *Chrome {
 	if NormalizeTheme(theme) == ThemeLight {
 		return &Chrome{
+			Theme:     ThemeLight,
 			Brand:     fg(chromeLightPrimary).Bold(true),
 			Version:   fg(lightMuted),
 			Model:     fg(chromeLightModel),
@@ -169,6 +236,7 @@ func ChromeFor(theme string) *Chrome {
 		}
 	}
 	return &Chrome{
+		Theme:     ThemeDark,
 		Brand:     fg(ColorPrimary).Bold(true),
 		Version:   fg(ColorMuted),
 		Model:     fg(ColorModel),
@@ -201,7 +269,7 @@ type ExtraStyles struct {
 func ExtrasFor(theme string) *ExtraStyles {
 	if NormalizeTheme(theme) == ThemeLight {
 		return &ExtraStyles{
-			Separator: fg(lightMuted),
+			Separator: fg(chromeLightDim),
 			Header:    fg(lightText).Bold(true),
 			Focus:     fg(lightAccent).Bold(true),
 			Success:   fg(lightSuccess),
@@ -212,7 +280,7 @@ func ExtrasFor(theme string) *ExtraStyles {
 		}
 	}
 	return &ExtraStyles{
-		Separator: fg(darkMuted),
+		Separator: fg(ColorDim),
 		Header:    fg(darkText).Bold(true),
 		Focus:     fg(ColorPrimary).Bold(true),
 		Success:   fg(darkSuccess),

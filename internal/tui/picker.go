@@ -45,6 +45,17 @@ const (
 	// PickerMCP manages MCP server enablement. Space stages a change and
 	// Enter applies it; no network work happens while navigating.
 	PickerMCP = "mcp"
+	// PickerThemes chooses the UI palette. It is a short, fixed list with no
+	// search corpus: typing is inert, Enter applies immediately, and Esc
+	// leaves the current palette untouched.
+	PickerThemes = "themes"
+)
+
+// Theme picker row values. Choosing one applies that palette and persists it
+// through the host's theme handler.
+const (
+	themeDarkValue  = ThemeDark
+	themeLightValue = ThemeLight
 )
 
 // New-session row values. The value is what choosing the row means, not what
@@ -188,8 +199,9 @@ func (p *PickerState) Filtered() []PickerItem {
 		return nil
 	}
 	// The /new creator has no search corpus: its line is the custom title, so
-	// typing must never hide the two choices it is choosing between.
-	if p.Kind == PickerNewSession {
+	// typing must never hide the two choices it is choosing between. The theme
+	// picker is likewise a fixed two-row choice with no query.
+	if p.Kind == PickerNewSession || p.Kind == PickerThemes {
 		return p.Items
 	}
 	var out []PickerItem

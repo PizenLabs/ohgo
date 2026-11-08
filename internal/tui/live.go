@@ -196,11 +196,7 @@ func (v *livePainter) frame(s State) liveFrame {
 		f.history = append(f.history, committed...)
 		f.block = live
 	}
-	if status := liveStatusLine(s, pal, layout); status != "" || liveStatusReserved(s) {
-		// An empty reserved row is deliberate: the status band keeps its
-		// height while an entry, rather than the activity line, owns the
-		// phase. Dropping the row here would shrink the live region and pull
-		// the composer upward the moment the spinner handed off.
+	if status := liveStatusLine(s, pal, layout); status != "" {
 		f.chrome = append(f.chrome, status)
 	}
 	f.chrome = append(f.chrome, liveComposerLines(s, pal, layout)...)
@@ -408,19 +404,10 @@ func liveRows(s State) int {
 func liveChrome(s State, layout Layout) int {
 	pal := PaletteFor(s.Theme)
 	n := len(liveComposerLines(s, pal, layout))
-	if liveStatusLine(s, pal, layout) != "" || liveStatusReserved(s) {
+	if liveStatusLine(s, pal, layout) != "" {
 		n++
 	}
 	return n
-}
-
-// liveStatusReserved reports whether the footer keeps its status row even when
-// no text is available. The row is a fixed spatial anchor for the active turn:
-// while a tool or reasoning entry presents the phase, the activity line is
-// intentionally absent, but the row must remain so the live region does not
-// change height during the hand-off.
-func liveStatusReserved(s State) bool {
-	return ProjectActivity(s).Thinking.Active && !activityDialogOwns(s)
 }
 
 // firstUnstable is the index of the first entry that can still change: the
@@ -830,22 +817,17 @@ func liveConnectKeyLines(s State, pal *Palette, layout Layout) []string {
 	})
 }
 
-// liveStatusLine is the one-line runtime footer. It names the phase in words
-// so nothing depends on colour, and stays quiet at idle rather than repeating
-// what the composer already shows. It asks ProjectActivity for the line text:
-// when a running tool or an open reasoning entry owns the activity, the footer
-// must not print a second copy of it.
+// liveStatusLine is the one-line runtime footer. It is the stable place for
+// measured telemetry (identity, tokens, context, path) and, only while no
+// transcript entry owns the phase, the activity line itself. A running tool or
+// an open reasoning entry already presents the phase, so the footer never
+// repeats it: one fact, one surface. The footer never reserves an extra row
+// for a hand-off, so the composer below it does not move.
 func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	var parts []string
 	width := displayWidth(s, layout)
-	// The activity line already carries its own semantic zones; keep it out
-	// of the muted telemetry wrapper so the current activity stays the most
-	// prominent row in the footer. It is measured against the real width so a
-	// long tool detail cannot soft-wrap the footer into a second row and move
-	// every row below it.
 	activityLine := ActivityLineText(s, time.Now(), s.Status.Spinner, width)
-	activity := ProjectActivity(s)
-	if activityLine == "" && !activity.Thinking.Active {
+	if activityLine == "" {
 		// The phase word remains the fallback for the one non-idle state the
 		// activity projection deliberately does not claim: shutting down.
 		if runtime := DeriveRuntime(s); runtime != RuntimeIdle {
@@ -890,7 +872,7 @@ func liveStatusLine(s State, pal *Palette, layout Layout) string {
 
 // liveComposerWidth is the text budget after the live prompt prefix. The
 // prefix is the same authority boundary the full-screen composer uses
-// ("build > "), so the role has one representation in both modes.
+// ("build › "), so the role has one representation in both modes.
 func liveComposerWidth(s State, layout Layout) int {
 	w := layout.ContentWidth
 	if w <= 0 {
@@ -949,13 +931,12 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 			text = appendGhost(text, ghost, width, pal.Ghost)
 		}
 		prefix := composerContPrefix(s)
-		prefixStyle := composerPrefixStyle(s, pal)
 		if i == 0 {
 			// The prompt boundary is the one authoritative role
 			// representation. The activity projection never carries the role.
-			prefix = composerPrefix(s)
+			prefix = composerPrefixText(s, pal)
 		}
-		out = append(out, prefixStyle.Render(prefix)+text)
+		out = append(out, prefix+text)
 	}
 	if queued := composerStateLine(s, pal, layout); queued != "" {
 		out = append(out, queued)
