@@ -94,6 +94,13 @@ func (t *LsTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 
 	entries, err := os.ReadDir(target)
 	if err != nil {
+		// A listing of a path that does not exist is the answer to the probe.
+		// Without this, an exploratory ls of a guessed directory looked like
+		// an unrecovered execution failure and vetoed an otherwise complete
+		// answer.
+		if os.IsNotExist(err) {
+			return absenceResult("read directory: %v", err)
+		}
 		return agent.ErrorResult("read directory: %v", err)
 	}
 
