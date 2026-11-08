@@ -130,9 +130,11 @@ func TestAdmitRefusesExecInAskWithItsOwnReason(t *testing.T) {
 }
 
 func TestStyleIsSemanticAndStable(t *testing.T) {
-	// ASK teal, BUILD blue, FUZZ magenta: three distinct accents that do not
-	// depend on a theme (§9).
+	// ASK teal, BUILD blue, FUZZ magenta: three distinct accents in both the
+	// dark and light forms. The hue stays the identity; only its depth adapts
+	// to the screen.
 	accents := map[string]Workspace{}
+	lightAccents := map[string]Workspace{}
 	for _, w := range All() {
 		style := w.Style()
 		if style.Label != w.Label() {
@@ -141,10 +143,20 @@ func TestStyleIsSemanticAndStable(t *testing.T) {
 		if style.Accent == "" {
 			t.Errorf("%s has no accent", w)
 		}
+		if style.LightAccent == "" {
+			t.Errorf("%s has no light-screen accent", w)
+		}
+		if style.LightAccent == style.Accent {
+			t.Errorf("%s uses %q for both themes, want a deepened light form", w, style.Accent)
+		}
 		if other, seen := accents[style.Accent]; seen {
 			t.Errorf("%s and %s share accent %q; identity must be distinct", w, other, style.Accent)
 		}
+		if other, seen := lightAccents[style.LightAccent]; seen {
+			t.Errorf("%s and %s share light accent %q; identity must be distinct", w, other, style.LightAccent)
+		}
 		accents[style.Accent] = w
+		lightAccents[style.LightAccent] = w
 	}
 	// The invalid workspace gets the neutral accent, never one of the three.
 	var zero Workspace

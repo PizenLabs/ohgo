@@ -170,7 +170,7 @@ func TestReasoningIsSubordinateAndSettles(t *testing.T) {
 
 	s.Apply(AssistantDelta{Text: "answer", At: at.Add(2 * time.Second)})
 	settled := ansi.Strip(Render(s))
-	if !strings.Contains(settled, "▸ Thought") {
+	if !strings.Contains(settled, "+ Thought") {
 		t.Fatalf("closed reasoning lost its collapsed marker:\n%s", settled)
 	}
 	if strings.Contains(settled, "inspect the cache") {
@@ -254,7 +254,7 @@ func TestTranscriptReadsAsStateTransitions(t *testing.T) {
 	ordered := []string{
 		"✓ ls /go-ecommerce",
 		"✓ read package.json",
-		"▸ Thought",
+		"+ Thought",
 		"◌ glob backend/**/*.go",
 	}
 	last := -1

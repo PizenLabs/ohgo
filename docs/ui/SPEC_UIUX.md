@@ -534,13 +534,13 @@ needed.
 Default:
 
 ```text
-▸ Thought · 3.2s
++ Thought · 3.2s
 ```
 
 Expanded:
 
 ```text
-▾ Thought · 3.2s
+- Thought · 3.2s
 
   Let me inspect the backend structure and package
   configuration before determining the architecture.
@@ -573,7 +573,7 @@ It must not visually compete with tool calls.
 Use a lighter hierarchy:
 
 ```text
-▸ Thought · 3.2s
++ Thought · 3.2s
 ```
 
 instead of a full output block.
@@ -585,14 +585,14 @@ instead of a full output block.
 The ideal execution sequence should visually communicate:
 
 ```text
-▸ Thought · 2.1s
++ Thought · 2.1s
 
 ◌ read README.md
 
 ✓ read README.md                         2ms
   └─ 151 lines
 
-▸ Thought · 1.8s
++ Thought · 1.8s
 
 ◌ inspect · backend structure
 
@@ -719,7 +719,7 @@ Example:
 ✗ read .env.example                        1ms
   └─ file not found
 
-▸ Thought · 2.4s
++ Thought · 2.4s
 
 ◌ inspect · backend structure
 ```
@@ -1114,14 +1114,14 @@ task  check this project and analyze what this project is about?
   ✓ glob /go-ecommerce/src/**/*.go                      58ms
     └─ no files matched · 4 ignored by gitignore
 
-  ▸ Thought · 13s
+  + Thought · 13s
 
   ◌ inspect · analyzing project structure
 
 
 ──────────────────────────────────────────────────────────────────────────────
 
-build >
+build ›
 ```
 
 This is a conceptual target, not a pixel-perfect specification.
@@ -1241,13 +1241,13 @@ Only tool D is live.
 Default:
 
 ```text
-▸ Thought · 3.2s
++ Thought · 3.2s
 ```
 
 Expanded:
 
 ```text
-▾ Thought · 3.2s
+- Thought · 3.2s
   ...
 ```
 

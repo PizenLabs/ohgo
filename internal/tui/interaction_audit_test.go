@@ -410,7 +410,7 @@ func TestScrollOvershootKeepsComposerPinned(t *testing.T) {
 	if marker <= 0 || marker >= 10000 {
 		t.Errorf("marker counts %d lines above, want the truthful remainder, not the raw offset", marker)
 	}
-	if !strings.Contains(Render(s), "> ") {
+	if !strings.Contains(Render(s), "› ") {
 		t.Error("composer prompt missing from the pinned frame")
 	}
 }

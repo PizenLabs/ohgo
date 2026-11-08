@@ -294,8 +294,9 @@ func trimZeroFraction(s string) string {
 }
 
 // formatDurationText renders a non-negative duration compactly: seconds under
-// a minute, then minutes and seconds, then hours and minutes. It is the single
-// duration formatter shared by the activity line's timer and the session bar.
+// a minute, then minutes and seconds, then hours and minutes. It is the coarse
+// formatter for activity timers and the session bar; transcript badges use
+// formatDurationPrecise, which adds milliseconds and tenths.
 func formatDurationText(d time.Duration) string {
 	if d < 0 {
 		d = 0
@@ -309,4 +310,25 @@ func formatDurationText(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dh %dm", secs/3600, (secs%3600)/60)
 	}
+}
+
+// formatDurationPrecise renders a measured span for transcript badges. Fast
+// work stays in milliseconds, ordinary work keeps one decimal so "1.1s" and
+// "6.5s" are visible, and long work collapses to the compact vocabulary. It is
+// the one formatter for thought and tool durations: two implementations of the
+// same badge would drift.
+func formatDurationPrecise(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Round(time.Millisecond).Milliseconds())
+	}
+	if d < 10*time.Second {
+		if d%time.Second == 0 {
+			return fmt.Sprintf("%ds", int(d/time.Second))
+		}
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return formatDurationText(d)
 }

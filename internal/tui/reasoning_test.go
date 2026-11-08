@@ -34,7 +34,7 @@ func TestReasoningBlockIsCollapsedAndMeasured(t *testing.T) {
 		t.Fatalf("reasoning ended at %v, want the runtime timestamp", ended)
 	}
 	rendered := Render(s)
-	if !strings.Contains(rendered, "▸ Thought") || !strings.Contains(rendered, "4s") {
+	if !strings.Contains(rendered, "+ Thought · 4.8s") {
 		t.Fatalf("collapsed render = %q, want a measured collapsed header", rendered)
 	}
 	if strings.Contains(rendered, "inspect the cache") {
@@ -46,8 +46,28 @@ func TestReasoningBlockIsCollapsedAndMeasured(t *testing.T) {
 		t.Fatal("reasoning block was not expandable")
 	}
 	expanded := Render(s)
-	if !strings.Contains(expanded, "▾ Thought") || !strings.Contains(expanded, "inspect the cache") {
+	if !strings.Contains(expanded, "- Thought") || !strings.Contains(expanded, "inspect the cache") {
 		t.Fatalf("expanded render = %q, want the trace body", expanded)
+	}
+	if !strings.Contains(expanded, "  inspect the cache") {
+		t.Fatalf("expanded body is not indented under its badge:\n%s", expanded)
+	}
+}
+
+// Expanded thinking is desaturated, not assistant prose: the body uses the
+// palette's muted role so internal reasoning cannot read as a second answer.
+func TestExpandedReasoningBodyUsesMutedRole(t *testing.T) {
+	pal := forcedPalette()
+	reasoning := &ReasoningEntry{Text: "inspect the cache", Closed: true, Expanded: true}
+	var b strings.Builder
+	renderReasoning(&b, reasoning, pal, Layout{ContentWidth: 80, Mode: LayoutWide}, 0)
+
+	out := b.String()
+	if !strings.Contains(out, "  "+pal.Muted.Render("inspect the cache")) {
+		t.Fatalf("expanded body is not the indented muted role: %q", out)
+	}
+	if !strings.Contains(out, "- Thought") {
+		t.Fatalf("expanded header lost its open marker: %q", out)
 	}
 }
 
@@ -104,7 +124,7 @@ func TestLiveAndHistoricalTranscriptsUseTheSameBlocks(t *testing.T) {
 	if !strings.Contains(Render(replay), "before") || !strings.Contains(Render(replay), "after") {
 		t.Fatalf("historical render lost text around the call:\n%s", Render(replay))
 	}
-	if !strings.Contains(Render(replay), "▸ Thought") {
+	if !strings.Contains(Render(replay), "+ Thought") {
 		t.Fatalf("historical render lost the reasoning block:\n%s", Render(replay))
 	}
 }

@@ -2,18 +2,22 @@ package workspace
 
 // Style is the semantic identity of a workspace: a stable accent and label.
 //
-// These are semantic identity, not user-theme colors (§9). They must stay the
-// same under any terminal palette, so a user can learn that magenta means FUZZ
-// without relearning it when they switch from Dracula to Solarized. The accent
-// is a 256-color index, chosen to resolve on every color-capable terminal and
-// degrade predictably elsewhere.
+// These are semantic identity, not arbitrary user-theme colors (§9). A user
+// must be able to learn that teal means ASK, blue means BUILD, and magenta
+// means FUZZ without relearning it when they switch palettes. Each authority
+// therefore has a dark-screen and a light-screen form of the same hue: the
+// light forms are deepened so they read on a bright terminal, the dark forms
+// are softened so a long session is not neon. Every surface also carries the
+// uppercase label, so no meaning depends on hue alone.
 //
 // The color system never participates in authority decisions: Style is
 // presentation only. Authority is decided by Permits/Admit, which know nothing
 // about color.
 type Style struct {
-	// Accent is the 256-color index used for the workspace's chrome.
+	// Accent is the dark-screen semantic color used for the workspace's chrome.
 	Accent string
+	// LightAccent is the same authority's deepened color for bright terminals.
+	LightAccent string
 	// Label is the uppercase display name.
 	Label string
 }
@@ -26,19 +30,34 @@ type Style struct {
 func (w Workspace) Style() Style {
 	switch w {
 	case Ask:
-		return Style{Accent: accentAsk, Label: w.Label()}
+		return Style{Accent: AccentAsk, LightAccent: AccentAskLight, Label: w.Label()}
 	case Fuzz:
-		return Style{Accent: accentFuzz, Label: w.Label()}
+		return Style{Accent: AccentFuzz, LightAccent: AccentFuzzLight, Label: w.Label()}
 	case Build:
-		return Style{Accent: accentBuild, Label: w.Label()}
+		return Style{Accent: AccentBuild, LightAccent: AccentBuildLight, Label: w.Label()}
 	}
-	return Style{Accent: accentUnknown, Label: "?"}
+	return Style{Accent: accentUnknown, LightAccent: accentUnknown, Label: "?"}
 }
 
 // Fixed semantic accents. Named so a change lands here and nowhere else.
+//
+// The dark forms are muted so the prompt stays quiet during a long session;
+// the light forms deepen the same hue so it survives a bright screen. The
+// neutral is deliberately outside all three hue families so an unresolved
+// workspace is visibly not an authority.
 const (
-	accentAsk     = "37"  // teal
-	accentBuild   = "33"  // blue
-	accentFuzz    = "200" // magenta
-	accentUnknown = "244" // muted grey, deliberately not one of the three
+	// AccentAsk is ASK's muted teal identity on a dark screen.
+	AccentAsk = "#2dd4bf"
+	// AccentAskLight is ASK's deep teal identity on a bright screen.
+	AccentAskLight = "#0f766e"
+	// AccentBuild is BUILD's muted steel-blue identity on a dark screen.
+	AccentBuild = "#60a5fa"
+	// AccentBuildLight is BUILD's deep blue identity on a bright screen.
+	AccentBuildLight = "#1d4ed8"
+	// AccentFuzz is FUZZ's muted mauve identity on a dark screen.
+	AccentFuzz = "#e879f9"
+	// AccentFuzzLight is FUZZ's deep purple identity on a bright screen.
+	AccentFuzzLight = "#a21caf"
+
+	accentUnknown = "244"
 )

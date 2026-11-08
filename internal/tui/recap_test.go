@@ -170,7 +170,7 @@ func TestRecapSitsDirectlyAboveComposer(t *testing.T) {
 	lines := strings.Split(ansi.Strip(Render(state)), "\n")
 	composer := -1
 	for i, line := range lines {
-		if strings.Contains(line, "ask >") {
+		if strings.Contains(line, "ask ›") {
 			composer = i
 			break
 		}

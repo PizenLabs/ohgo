@@ -970,7 +970,16 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.pendingEsc = false
 		return p.handleKeyCore(tea.KeyMsg{Type: tea.KeyEscape})
 
+	case interruptConfirmExpiredMsg:
+		// The second Esc never arrived. Clear the warning silently: no
+		// notice belongs in the transcript for a window that simply timed out.
+		p.state.expireInterruptConfirm(m.gen)
+		return p, nil
+
 	case turnFinishedMsg:
+		// The turn the confirmation guarded is over. Disarm before draining so
+		// a queued prompt cannot inherit a stale double-tap warning.
+		p.state.resetInterruptConfirm()
 		return p.drainQueue()
 
 	case cursor.BlinkMsg:
@@ -1056,7 +1065,7 @@ func wheelScrolls(s State) bool {
 }
 
 // composerMoveWidth is the wrap width the active composer renderer folds to.
-// Both modes subtract the same authority prefix ("ask > " is wider than "> "),
+// Both modes subtract the same authority prefix ("ask › " is wider than "› "),
 // so cursor movement uses the width the visible rows used and up/down never hop
 // rows that are not there.
 func (p *Program) composerMoveWidth() int {
@@ -1580,12 +1589,22 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "esc":
 		// Escape backs out of a running turn the way ctrl+c does, but never
-		// quits: a stray keypress must not end the session. (An open
-		// support overlay routes to its own handler before reaching here.)
+		// quits: a stray keypress must not end the session. Because Esc is a
+		// reflex key, one press only arms a short confirmation window; the
+		// second press inside it performs the same interruption Ctrl+C and
+		// /cancel do immediately. (An open support overlay routes to its own
+		// handler before reaching here.)
 		if p.state.Status.Busy {
-			p.cancelTurnNow("cancelled")
-			return p, nil
+			if p.state.InterruptConfirm {
+				p.state.resetInterruptConfirm()
+				p.cancelTurnNow("cancelled")
+				return p, nil
+			}
+			return p, p.armInterruptConfirm()
 		}
+		// A confirmation whose turn ended is stale; a new press is a fresh
+		// first press rather than an inherited interrupt.
+		p.state.resetInterruptConfirm()
 		return p, nil
 
 	case "enter":
@@ -1969,6 +1988,23 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		p.mu.Unlock()
 		return nil
 
+	case "cancel":
+		// /cancel is the keyboard-equivalent abort that works while a turn
+		// runs, so the composer can stay interactive during execution. It
+		// reaches whichever foreground operation is live, in the same
+		// precedence ctrl+c uses.
+		switch {
+		case p.state.SupportBusy():
+			p.cancelSupportNow("cancelled")
+		case p.state.runningShell() != nil:
+			p.cancelShellNow()
+		case p.state.Status.Busy:
+			p.cancelTurnNow("cancelled")
+		default:
+			p.state.Apply(Notice{Text: "no running turn to cancel"})
+		}
+		return nil
+
 	case "model":
 		// No nested modals: /model stays unavailable until the support
 		// panel closes, so one overlay never stacks on another.
@@ -2099,6 +2135,22 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 // Nothing else reaches the composer while the overlay is open.
 func (p *Program) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	picker := p.state.Picker
+	// The theme chooser is a fixed two-row card, not a searchable catalog:
+	// only navigation, selection, and dismissal are meaningful. Inert keys
+	// never accumulate an invisible filter that Esc would clear first.
+	if picker != nil && picker.Kind == PickerThemes {
+		switch msg.String() {
+		case "up", "k", "shift+tab":
+			p.state.Apply(PickerMoved{Delta: -1})
+		case "down", "j", "tab":
+			p.state.Apply(PickerMoved{Delta: 1})
+		case "enter":
+			return p.choosePicker()
+		case "esc", "ctrl+c", "q":
+			p.closePicker()
+		}
+		return p, nil
+	}
 	switch msg.String() {
 	case "esc":
 		// The MCP manager has no search box and the /new creator's line is a
@@ -2253,6 +2305,9 @@ func (p *Program) choosePicker() (tea.Model, tea.Cmd) {
 		return p, nil
 	case PickerJobs:
 		p.state.Apply(Notice{Text: p.jobDetail(item.Value)})
+		return p, nil
+	case PickerThemes:
+		p.applyTheme(item.Value)
 		return p, nil
 	case PickerTasks:
 		return p.chooseTask(item)
@@ -2608,6 +2663,11 @@ func (p *Program) cancelSupportNow(note string) {
 // with the transition itself, not when the loop unwinds, so the footer can
 // never report working after the turn has terminated.
 func (p *Program) cancelTurnNow(note string) {
+	// Any real interrupt consumes an armed Esc confirmation. Ctrl+C and
+	// /cancel stay single-step, and a later Esc must start a fresh first press
+	// rather than inheriting this turn's window.
+	p.state.resetInterruptConfirm()
+
 	// A commit proposal has its own lifetime. /commit is an independent
 	// interactive command, so cancelling an unrelated turn must not abort it;
 	// user cancellation, session changes, and quitting cancel it explicitly.
@@ -3601,25 +3661,67 @@ func (p *Program) openJobsView() {
 	p.state.Apply(PickerOpened{Kind: PickerJobs, Title: "background jobs", Items: items})
 }
 
-// applyThemeCommand switches the palette, with no args reporting the current
-// one. The change persists through the handler when one is installed, so a
-// restart keeps what the user picked.
+// applyThemeCommand handles /theme. With an explicit name it switches
+// immediately for scripted and muscle-memory use; bare /theme opens the
+// interactive picker so the two palettes can be compared without knowing the
+// spelling. The change persists through the handler when one is installed, so
+// a restart keeps what the user picked.
 func (p *Program) applyThemeCommand(args []string) {
 	if len(args) == 0 {
-		p.state.Apply(Notice{Text: "theme: " + NormalizeTheme(p.state.Theme)})
+		p.openThemePicker()
 		return
 	}
-	switch strings.ToLower(strings.TrimSpace(args[0])) {
-	case ThemeDark, ThemeLight:
-		// Valid: fall through.
-	default:
+	if _, ok := directThemeName(args[0]); !ok {
 		p.state.Apply(Notice{Text: fmt.Sprintf("theme: unknown %q — using dark (choose dark or light)", args[0])})
 	}
-	name := NormalizeTheme(args[0])
+	p.applyTheme(NormalizeTheme(args[0]))
+}
+
+// directThemeName reports whether an explicit /theme argument names a palette.
+func directThemeName(arg string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case ThemeDark:
+		return ThemeDark, true
+	case ThemeLight:
+		return ThemeLight, true
+	}
+	return "", false
+}
+
+// applyTheme switches the live palette and persists the choice. Every path
+// that changes theme goes through here, so the direct command and the picker
+// cannot drift.
+func (p *Program) applyTheme(name string) {
+	name = NormalizeTheme(name)
 	p.state.Apply(ThemeChanged{Name: name})
 	if p.onThemeChanged != nil {
 		p.onThemeChanged(name)
 	}
+}
+
+// openThemePicker opens the interactive palette chooser. The current theme is
+// pre-highlighted, so Enter without moving reaffirms the active look rather
+// than silently flipping the screen.
+func (p *Program) openThemePicker() {
+	current := NormalizeTheme(p.state.Theme)
+	items := []PickerItem{
+		{Title: "Dark Theme", Detail: "Deep Forest · muted adaptive dark", Value: themeDarkValue},
+		{Title: "Light Theme", Detail: "Clean Studio · soft adaptive light", Value: themeLightValue},
+	}
+	cursor := 0
+	for i := range items {
+		if items[i].Value == current {
+			items[i].Active = true
+			items[i].Detail += " · current"
+			cursor = i
+		}
+	}
+	p.state.Apply(PickerOpened{
+		Kind:   PickerThemes,
+		Title:  "Theme",
+		Cursor: cursor,
+		Items:  items,
+	})
 }
 
 // SetSessionBrowser installs the session lister and opener behind /sessions.

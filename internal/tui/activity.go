@@ -8,9 +8,15 @@ import "time"
 // presentations: an entry that is already in the transcript (a running tool or
 // an open reasoning trace), or the one-row activity line for phases with no
 // entry of their own. This file is the single decision point for which of the
-// two owns the activity. Every renderer asks ProjectActivity; none of them
-// re-derives the choice from strings or from its own copy of the runtime
-// state.
+// two owns the activity. Surfaces ask ProjectActivity; none of them re-derives
+// the choice from strings or from its own copy of the runtime state.
+//
+// The full-screen canvas intentionally has no separate activity band. Its
+// composer sits below the transcript, so a band that appeared or disappeared
+// with the phase would move the composer between frames. Activity there is
+// always an entry: a tool block or a collapsed Thought row. The output-first
+// footer may show the line as a fallback because it is a stable status row
+// rather than a reserved transcript band.
 //
 // The prompt boundary owns the workspace role. The activity projection never
 // carries it, so "BUILD" cannot appear once as a prompt and again as a status

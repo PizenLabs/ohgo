@@ -114,7 +114,7 @@ func TestRunningToolUsesItsEntryNotTheActivityLine(t *testing.T) {
 	if got := strings.Count(out, "inspecting backend/internal"); got != 1 {
 		t.Fatalf("running action appeared %d times, want exactly one:\n%s", got, out)
 	}
-	if got := strings.Count(out, "build > "); got != 1 {
+	if got := strings.Count(out, "build › "); got != 1 {
 		t.Fatalf("prompt role appeared %d times, want exactly one:\n%s", got, out)
 	}
 }
@@ -455,10 +455,10 @@ func TestBuildInvestigationRegression(t *testing.T) {
 	s.Apply(ToolStarted{ID: "c6", Name: "ls", Summary: "inspecting backend/internal", At: at.Add(10 * time.Second), Seq: 1})
 
 	out := ansi.Strip(Render(s))
-	if got := strings.Count(out, "build > "); got != 1 {
+	if got := strings.Count(out, "build › "); got != 1 {
 		t.Fatalf("BUILD role appeared %d times, want one:\n%s", got, out)
 	}
-	if got := strings.Count(out, "▸ Thought"); got != 1 {
+	if got := strings.Count(out, "+ Thought"); got != 1 {
 		t.Fatalf("reasoning appeared %d times, want one:\n%s", got, out)
 	}
 	for _, call := range completed {
@@ -491,7 +491,7 @@ func TestLiveModeRoleAndActivitySurfaces(t *testing.T) {
 	pal := PaletteFor(s.Theme)
 	layout := ComputeLayout(s)
 	composer := ansi.Strip(strings.Join(liveComposerLines(s, pal, layout), "\n"))
-	if got := strings.Count(composer, "build > "); got != 1 {
+	if got := strings.Count(composer, "build › "); got != 1 {
 		t.Fatalf("live prompt role appeared %d times, want one:\n%s", got, composer)
 	}
 	status := ansi.Strip(liveStatusLine(s, pal, layout))
@@ -535,10 +535,10 @@ func TestRoleSwitchLeavesOneActivitySurface(t *testing.T) {
 
 	s.Apply(WorkspaceUpdated{Workspace: "ASK", HasWorkspace: true})
 	out := ansi.Strip(Render(s))
-	if got := strings.Count(out, "ask > "); got != 1 {
+	if got := strings.Count(out, "ask › "); got != 1 {
 		t.Fatalf("new role prompt appeared %d times, want one:\n%s", got, out)
 	}
-	if strings.Contains(out, "build > ") {
+	if strings.Contains(out, "build › ") {
 		t.Fatalf("stale role prompt survived the switch:\n%s", out)
 	}
 	if got := strings.Count(out, "inspecting backend/internal"); got != 1 {

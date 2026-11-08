@@ -156,7 +156,7 @@ func TestSupportCompactFooter(t *testing.T) {
 	}
 	found := false
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, ">") && strings.Contains(line, "openrouter/cohere") && strings.Contains(line, "done") {
+		if strings.Contains(line, "›") && strings.Contains(line, "openrouter/cohere") && strings.Contains(line, "done") {
 			found = true
 		}
 	}

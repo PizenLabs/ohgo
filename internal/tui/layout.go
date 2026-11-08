@@ -71,10 +71,6 @@ type Layout struct {
 	// MainWidth is the conversation column's cell budget, excluding the
 	// divider. It is the terminal width when Sidebar is false.
 	MainWidth int
-	// ThinkingLines is the rows the projected activity line claims (0 or 1).
-	// Render emits exactly this many rows, so the transcript budget and the
-	// painted frame agree and the chrome never floats.
-	ThinkingLines int
 	// PaletteLines is the inline-palette suggestion rows the composer will
 	// render. It equals what composerHeight reserves: the renderer truncates
 	// to it, so reserved and rendered rows always agree even on viewports
@@ -119,15 +115,14 @@ func LayoutForMode(width, height int) LayoutMode {
 func ComputeLayout(s State) Layout {
 	if s.Width <= 0 || s.Height <= 0 {
 		return Layout{
-			Mode:          LayoutWide,
-			Width:         s.Width,
-			Height:        s.Height,
-			ContentWidth:  0, // zero means "do not wrap"
-			MainWidth:     s.Width,
-			ShowDetail:    true,
-			ShowHints:     true,
-			PaletteLines:  -1, // uncapped: render everything
-			ThinkingLines: thinkingRows(s),
+			Mode:         LayoutWide,
+			Width:        s.Width,
+			Height:       s.Height,
+			ContentWidth: 0, // zero means "do not wrap"
+			MainWidth:    s.Width,
+			ShowDetail:   true,
+			ShowHints:    true,
+			PaletteLines: -1, // uncapped: render everything
 		}
 	}
 	mode := LayoutForMode(s.Width, s.Height)
@@ -248,8 +243,7 @@ func computeLayoutWith(s State, content int, taskLines int) Layout {
 		composer = 0
 		sugg = 0
 	}
-	thinking := thinkingRows(s)
-	chrome := header + taskLines + status + hints + composer + thinking
+	chrome := header + taskLines + status + hints + composer
 	conv := s.Height - chrome
 	if conv < 1 {
 		conv = 1
@@ -265,7 +259,6 @@ func computeLayoutWith(s State, content int, taskLines int) Layout {
 		MainWidth:          s.Width,
 		ComposerLines:      composer,
 		StatusLines:        status,
-		ThinkingLines:      thinking,
 		ShowDetail:         mode == LayoutWide || mode == LayoutMedium,
 		ShowHints:          hints > 0,
 		PaletteLines:       sugg,
@@ -303,37 +296,6 @@ func overlayHidesComposer(s State) bool {
 		s.Permissions != nil || s.Diff != nil
 }
 
-// thinkingMinHeight is the shortest viewport that still paints the activity
-// line. Below it the frame is at the tiny-viewport floor where regions already
-// concede rows, and the header still names the phase, so nothing is
-// misreported. Unknown sizes (zero) are unbudgeted and always paint it.
-const thinkingMinHeight = 10
-
-// thinkingRows is the rows the response band claims.
-//
-// The band is a fixed slot, not a function of which surface happens to present
-// the activity. If it appeared only while the one-row activity line owned the
-// phase, a running tool entry taking over (or handing back) would change the
-// conversation budget mid-turn: every row above the composer would shift by one
-// and a streamed answer would visibly tear. Keeping the slot reserved for the
-// whole active turn means the spinner can hand off to a tool badge, a reasoning
-// head, or the answer without moving the bounding box.
-//
-// An overlay owns the screen instead, so the lone exception is a dialog or
-// modal: reserving a row it never paints would short its own body.
-func thinkingRows(s State) int {
-	if s.Height > 0 && s.Height < thinkingMinHeight {
-		return 0
-	}
-	if activityDialogOwns(s) {
-		return 0
-	}
-	if ProjectActivity(s).Thinking.Active {
-		return 1
-	}
-	return 0
-}
-
 // composerHeight sizes the composer in rows: the two framing rules plus
 // hard-wrapped input lines, inline palette suggestions, and the interaction
 // state line. Bounded so a pasted novel cannot evict the conversation. It
@@ -349,8 +311,8 @@ func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (l
 	if text != "" {
 		// Same sanitized text the renderer folds: pasted escapes must not
 		// change the reserved row count behind the view's back. The wrap
-		// budget subtracts the live mode prefix ("ask > " is wider than
-		// "> "), matching composerTextWidthFor so reserved and rendered rows
+		// budget subtracts the live mode prefix ("ask › " is wider than
+		// "› "), matching composerTextWidthFor so reserved and rendered rows
 		// agree.
 		clean, _ := sanitizeWithCursor(text, 0)
 		wrapWidth := contentWidth - CellWidth(composerPrefix(s))

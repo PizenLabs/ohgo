@@ -411,10 +411,11 @@ Shortcuts that are shown always work: `enter` send (queues while busy),
 `alt+enter`/`ctrl+j` insert a break, `↑` recalls history on a single line,
 `pgup`/`pgdn` scroll, `home` jumps to the transcript top while the composer is
 idle, `space` (with an idle composer) or `end` returns to the live edge, `esc`
-cancels a turn (never quits), `ctrl+c` cancels when busy, clears a non-empty
-draft, or points at the exit chords when idle, `ctrl+d` on an empty composer
-quits. Approval dialogs default to the conservative choice; closing, cancelling,
-or resizing never approves.
+during a running turn arms a two-second confirmation and a second `esc`
+interrupts it (one press never cancels, and the window expires silently),
+`ctrl+c` cancels when busy, clears a non-empty draft, or points at the exit
+chords when idle, `ctrl+d` on an empty composer quits. Approval dialogs default
+to the conservative choice; closing, cancelling, or resizing never approves.
 
 On an empty conversation the workspace shows a short welcome — identity, one
 invitation to describe a task, and at most three examples — as chrome, never as

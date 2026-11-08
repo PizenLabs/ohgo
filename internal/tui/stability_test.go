@@ -8,56 +8,64 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// The response band is a property of the active turn, not of whichever surface
-// happens to present it. A running tool, a reasoning trace, and the one-row
-// activity line all hand off without changing the conversation budget, so no
-// row above the composer can shift on the hand-off.
-func TestActivityBandHoldsConversationHeightAcrossSurfaces(t *testing.T) {
+// The composer is a fixed anchor. The activity surface hand-off (line → tool
+// entry → line → reasoning entry → line → idle) must never change the row the
+// prompt occupies. This is the layout half of "fast tasks complete silently":
+// no chrome grows or shrinks for a phase, so nothing flashes or snaps while the
+// output is still printing.
+func TestComposerRowStaysFixedAcrossActivityTransitions(t *testing.T) {
 	at := time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)
 	s := New()
 	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Apply(WorkspaceUpdated{Workspace: "BUILD", HasWorkspace: true})
 	s.Apply(UserSubmitted{Text: "inspect", At: at, Seq: 1})
 
-	assertBand := func(label string, want ActivitySurface) {
+	composerRow := func(label string) int {
 		t.Helper()
-		layout := ComputeWorkspaceLayout(s)
-		if layout.ThinkingLines != 1 {
-			t.Fatalf("%s: ThinkingLines = %d, want the fixed one-row band", label, layout.ThinkingLines)
+		lines := strings.Split(ansi.Strip(Render(s)), "\n")
+		if len(lines) != 30 {
+			t.Fatalf("%s: frame is %d rows, want exactly 30", label, len(lines))
 		}
-		if got := len(strings.Split(Render(s), "\n")); got != 30 {
-			t.Fatalf("%s: frame is %d rows, want exactly 30", label, got)
+		for i, line := range lines {
+			if strings.Contains(line, "build › ") {
+				return i
+			}
 		}
+		t.Fatalf("%s: composer row missing:\n%s", label, strings.Join(lines, "\n"))
+		return -1
+	}
+	wantComposer := composerRow("activity line")
+	check := func(label string, want ActivitySurface) {
+		t.Helper()
 		if got := ProjectActivity(s).Surface; got != want {
 			t.Fatalf("%s: activity surface = %v, want %v", label, got, want)
 		}
+		if got := composerRow(label); got != wantComposer {
+			t.Fatalf("%s: composer row = %d, want the fixed row %d", label, got, wantComposer)
+		}
 	}
 
-	assertBand("activity line", ActivityLine)
-	wantHeight := ComputeWorkspaceLayout(s).ConversationHeight
+	check("activity line", ActivityLine)
 
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: at, Seq: 1})
-	if got := ComputeWorkspaceLayout(s).ConversationHeight; got != wantHeight {
-		t.Fatalf("running tool changed conversation height %d -> %d", wantHeight, got)
-	}
-	assertBand("running tool entry", ActivityEntry)
+	check("running tool entry", ActivityEntry)
 
 	s.Apply(ToolFinished{ID: "c1", Text: "package a\n", Summary: "1 line", At: at.Add(time.Millisecond), Seq: 1})
-	if got := ComputeWorkspaceLayout(s).ConversationHeight; got != wantHeight {
-		t.Fatalf("finished tool changed conversation height %d -> %d", wantHeight, got)
-	}
-	assertBand("back to activity line", ActivityLine)
+	check("back to activity line", ActivityLine)
 
 	s.Apply(ReasoningDelta{Text: "plan the read", At: at.Add(2 * time.Millisecond), Seq: 1})
-	if got := ComputeWorkspaceLayout(s).ConversationHeight; got != wantHeight {
-		t.Fatalf("reasoning changed conversation height %d -> %d", wantHeight, got)
-	}
-	assertBand("open reasoning entry", ActivityEntry)
+	check("open reasoning entry", ActivityEntry)
 
 	s.Apply(AssistantDelta{Text: "the answer", At: at.Add(3 * time.Millisecond), Seq: 1})
-	if got := ComputeWorkspaceLayout(s).ConversationHeight; got != wantHeight {
-		t.Fatalf("streamed answer changed conversation height %d -> %d", wantHeight, got)
-	}
-	assertBand("streaming activity line", ActivityLine)
+	check("streaming activity line", ActivityLine)
+
+	// Expanding a Thought block reflows the transcript, never the composer:
+	// the badge is the only thing that grows.
+	s.Apply(ReasoningToggled{ID: s.Entries[2].ID})
+	check("expanded reasoning", ActivityLine)
+
+	s.Apply(AssistantDone{At: at.Add(4 * time.Millisecond), Seq: 1})
+	check("settled turn", ActivityNone)
 }
 
 // A reasoning trace is collapsed to one minimal, non-duplicated header. The
@@ -72,7 +80,7 @@ func TestThoughtHeaderIsMinimalAndExpandable(t *testing.T) {
 	s.Apply(AssistantDelta{Text: "done", At: start.Add(4 * time.Second), Seq: 1})
 
 	out := ansi.Strip(Render(s))
-	if !strings.Contains(out, "▸ Thought · 4s") {
+	if !strings.Contains(out, "+ Thought · 4s") {
 		t.Fatalf("collapsed header = %q, want the minimal measured Thought row:\n%s", out, out)
 	}
 	if strings.Contains(out, "reasoning") {
@@ -87,7 +95,7 @@ func TestThoughtHeaderIsMinimalAndExpandable(t *testing.T) {
 
 	s.Apply(ReasoningToggled{ID: s.Entries[1].ID})
 	expanded := ansi.Strip(Render(s))
-	if !strings.Contains(expanded, "▾ Thought") || !strings.Contains(expanded, "inspect the cache") {
+	if !strings.Contains(expanded, "- Thought") || !strings.Contains(expanded, "inspect the cache") {
 		t.Fatalf("expanded header lost the marker or body:\n%s", expanded)
 	}
 }
@@ -154,27 +162,39 @@ func TestExpandedDiffShowsFullPath(t *testing.T) {
 	}
 }
 
-// The live footer keeps its row while an entry owns the phase, so handing the
-// spinner to a tool entry cannot shrink the region and pull the composer up.
-func TestLiveStatusBandStaysReservedDuringEntryHandoff(t *testing.T) {
+// The live footer never repeats a phase its transcript entry already presents,
+// but its telemetry row stays painted. The chrome count matches the rows the
+// footer actually emits, so handing the spinner to a tool entry cannot grow the
+// region behind the composer's back.
+func TestLiveStatusLineDoesNotDuplicateEntryActivity(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Status.Model = "p/m"
 	s.Apply(UserSubmitted{Text: "go", At: time.Now(), Seq: 1})
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: time.Now(), Seq: 1})
 
 	if ProjectActivity(s).Surface != ActivityEntry {
 		t.Fatal("fixture did not put the running call on the entry surface")
 	}
-	if !liveStatusReserved(s) {
-		t.Fatal("entry-owned activity dropped the live status row")
-	}
 	layout := ComputeLayout(s)
 	pal := PaletteFor(s.Theme)
-	if status := liveStatusLine(s, pal, layout); status != "" {
+	status := ansi.Strip(liveStatusLine(s, pal, layout))
+	if strings.Contains(status, "read a.go") {
 		t.Fatalf("entry-owned activity rendered a second status copy: %q", status)
+	}
+	if !strings.Contains(status, "p/m") {
+		t.Fatalf("live footer lost its telemetry: %q", status)
 	}
 	want := len(liveComposerLines(s, pal, layout)) + 1
 	if got := liveChrome(s, layout); got != want {
-		t.Fatalf("live chrome = %d rows, want the reserved status row plus %d composer rows", got, want-1)
+		t.Fatalf("live chrome = %d rows, want telemetry plus %d composer rows", got, want-1)
+	}
+
+	// Once no entry owns the phase, the footer is the one place the phase can
+	// appear. It still occupies the same telemetry row.
+	s.Apply(ToolFinished{ID: "c1", Text: "package a\n", Summary: "1 line", At: time.Now(), Seq: 1})
+	status = ansi.Strip(liveStatusLine(s, pal, ComputeLayout(s)))
+	if !strings.Contains(status, "reason") {
+		t.Fatalf("activity line did not reach the live footer: %q", status)
 	}
 }

@@ -225,6 +225,22 @@ func RenderThinkingFrame(state ThinkingState, now time.Time, tick int, width int
 	return renderThinking(state, now, tick, false, width)
 }
 
+// thinkingHeadText renders the glyph, phase, and runtime detail without the
+// metadata tail or styling. Compact chrome wraps the whole hint row in one
+// muted role, so a pre-styled head would reset that role mid-row. The glyph and
+// words still name the state without colour, and tokens or esc are never
+// printed twice.
+func thinkingHeadText(state ThinkingState, tick int) string {
+	if !state.Active {
+		return ""
+	}
+	head := thinkingGlyphAt(state.Phase, tick) + " " + state.Label
+	if state.Detail != "" {
+		head += " " + oneLine(state.Detail)
+	}
+	return head
+}
+
 func renderThinking(state ThinkingState, now time.Time, tick int, shimmer bool, width int) []string {
 	return renderThinkingZoned(state, now, tick, shimmer, width, liveThinkingZones)
 }
@@ -300,11 +316,13 @@ func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer b
 	if state.Detail != "" {
 		content += " " + z.active(oneLine(state.Detail))
 	}
-	// Metadata is one parenthesised block directly above the composer
-	// divider: (↓tokens · elapsed · esc). Tokens carry the ↓ prefix so the
-	// count reads without colour; elapsed derives from the real start;
-	// esc appears only when the runtime proved interruptibility. Unknown
-	// stays absent rather than fabricated.
+	// Metadata is one parenthesised block on the activity line:
+	// (↓tokens · elapsed · esc). Tokens carry the ↓ prefix so the count reads
+	// without colour; elapsed derives from the real start; esc appears only
+	// when the runtime proved interruptibility. Unknown stays absent rather
+	// than fabricated. The full-screen canvas does not reserve a line for
+	// this: activity there is a transcript entry, and the stable hint row
+	// carries telemetry.
 	var metaParts []string
 	if state.OutputTokens > 0 {
 		metaParts = append(metaParts, z.meta(formatOutputTokens(state.OutputTokens)))

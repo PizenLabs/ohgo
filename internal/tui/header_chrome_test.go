@@ -26,7 +26,7 @@ func TestChromeTokensResolveToPalette(t *testing.T) {
 		"model": "#8FB08D",
 		"check": "#C9A86A",
 		"modes": "#7AA8C9",
-		"dim":   "#4C566A",
+		"dim":   darkBorder,
 		"rel":   "#6C7A89",
 	}
 	for name, w := range want {
@@ -36,6 +36,27 @@ func TestChromeTokensResolveToPalette(t *testing.T) {
 	}
 	if colorName(chrome.Active.GetForeground()) == colorName(chrome.Idle.GetForeground()) {
 		t.Error("active and idle phases share a style: state reads by colour alone")
+	}
+}
+
+// Body text and rules adapt as explicit pairs: dark text on a bright screen,
+// light text on a dark one, with a border that stays below body contrast.
+func TestAdaptiveBaseNeutrals(t *testing.T) {
+	dark, light := DarkPalette(), LightPalette()
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"dark text", colorName(dark.Assistant.GetForeground()), "#d6dedb"},
+		{"light text", colorName(light.Assistant.GetForeground()), "#1f2335"},
+		{"dark border", colorName(dark.Separator.GetForeground()), "#2d3748"},
+		{"light border", colorName(light.Separator.GetForeground()), "#cbd5e1"},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
 	}
 }
 
@@ -56,8 +77,8 @@ func TestPromptAndRulesShareTheChrome(t *testing.T) {
 	if got := colorName(pal.Status.GetForeground()); got != "#6C7A89" {
 		t.Errorf("status = %q, want the muted %q", got, "#6C7A89")
 	}
-	if got := colorName(pal.Separator.GetForeground()); got != "#4C566A" {
-		t.Errorf("separator = %q, want the dim %q", got, "#4C566A")
+	if got := colorName(pal.Separator.GetForeground()); got != darkBorder {
+		t.Errorf("separator = %q, want the dim border %q", got, darkBorder)
 	}
 }
 
