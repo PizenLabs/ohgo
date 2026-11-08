@@ -507,6 +507,20 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 		HasCurrentChange: controller.HasCurrentChange,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
+		ProjectionReview: func() string {
+			report, ok := controller.LastProjection()
+			if !ok {
+				return ""
+			}
+			return report.EvidenceReview()
+		},
+		ProjectionProvenance: func() agent.EvidenceProvenance {
+			report, ok := controller.LastProjection()
+			if !ok {
+				return agent.EvidenceProvenance{}
+			}
+			return report.Provenance
+		},
 		Timeline: func(limit int) []TimelineView {
 			current, ok := controller.Current()
 			if !ok {

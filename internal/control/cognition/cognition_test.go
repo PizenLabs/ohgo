@@ -188,6 +188,18 @@ func TestRepositoryOverviewRequiresContentEvidence(t *testing.T) {
 	if state.Satisfied("repository_overview", ExecutionState{}) {
 		t.Fatal("a directory listing alone satisfied a repository overview")
 	}
+	// A missing file is target-state evidence, not content. Reading a path that
+	// does not exist must not make an unobserved repository question answerable.
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-missing", ToolName: "read", Args: map[string]any{"path": "missing.html"},
+		Result: agent.Result{
+			Text: `stat "missing.html": no such file or directory`, IsError: true,
+			ObservedAbsence: true, Details: map[string]any{"path": "missing.html"},
+		},
+	})
+	if state.Satisfied("repository_overview", ExecutionState{}) {
+		t.Fatal("a missing-file observation satisfied a repository overview")
+	}
 	state.ObserveOutcome(agent.ToolOutcome{
 		CallID: "read-1", ToolName: "read", Args: map[string]any{"path": "index.html"},
 		Result: agent.Result{Text: "1\t<!doctype html>", Details: map[string]any{"path": "index.html", "totalLines": 1, "offset": 1, "limit": 2000}},
@@ -467,6 +479,35 @@ func TestCandidatesHideMutationWhenShapeForbidsIt(t *testing.T) {
 	}
 }
 
+// A read-only authority cannot execute. Offering a shell in an informational
+// phase makes the model propose a call the gate must deny, which then looks
+// like a failed investigation. The action surface must describe the authority.
+func TestCandidatesWithholdExecutionWhenAuthorityCannotExecute(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Run the tests.",
+	}, ShapeParams{Authority: "ask"})
+	if shape.Authority.ExecutionAllowed {
+		t.Fatal("an ASK shape must not permit execution")
+	}
+	if !shape.NeedsExecution {
+		t.Fatal("the objective still names execution; the test must exercise the authority gate")
+	}
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "bash", tier: agent.TierExec, classes: []agent.ActionClass{agent.ActionExecute, agent.ActionMutate}},
+	}
+	suff := EvaluateSufficiency(shape, NewEvidenceState(), ExecutionState{}, false)
+	set := Candidates(shape, NewEvidenceState(), ExecutionState{}, tools, RepositoryFacts{}, suff)
+	var names []string
+	for _, tool := range set.Tools {
+		names = append(names, tool.Name())
+	}
+	if strings.Join(names, ",") != "read" {
+		t.Fatalf("candidates = %v, want only read under ASK", names)
+	}
+}
+
 // A human-configured MCP capability stays in the action space for an ordinary
 // code question. It is still external and still passes the security boundary;
 // only the task-shape narrowing exempts it.
@@ -578,6 +619,34 @@ func TestCandidatesExcludeExistingOnlyToolsForCreateTarget(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "read,write" {
 		t.Fatalf("candidates = %v, want read,write", names)
+	}
+}
+
+// A mutation scoped to a concrete path already has the coordinate it needs.
+// Asking for a separate symbol lookup adds a tool call without changing the
+// edit boundary; completion still re-resolves the symbol after the change.
+func TestPathScopedMutationDoesNotRequireRedundantCoordinateLookup(t *testing.T) {
+	intent := contract.IntentContract{
+		Kind:      contract.ObjectiveMutation,
+		Objective: "Fix GrepTool in tools/grep.go and run go test ./tools",
+		Targets: []contract.Target{
+			{Kind: contract.TargetPath, Value: "tools/grep.go"},
+			{Kind: contract.TargetSymbol, Value: "GrepTool"},
+		},
+	}
+	scoped := BuildShape(intent, ShapeParams{Authority: "build"})
+	if hasNeed(scoped, "target_coordinates:GrepTool") {
+		t.Fatalf("a path-scoped mutation still demanded a coordinate lookup: %+v", scoped.RequiredKnowledge)
+	}
+	if !hasNeed(scoped, "target_state:tools/grep.go") {
+		t.Fatalf("the edit boundary was lost: %+v", scoped.RequiredKnowledge)
+	}
+
+	targetless := intent
+	targetless.Targets = []contract.Target{{Kind: contract.TargetSymbol, Value: "GrepTool"}}
+	lookup := BuildShape(targetless, ShapeParams{Authority: "build"})
+	if !hasNeed(lookup, "target_coordinates:GrepTool") {
+		t.Fatalf("a targetless mutation lost the coordinate lookup: %+v", lookup.RequiredKnowledge)
 	}
 }
 
@@ -839,6 +908,32 @@ func TestProjectorReportsEvidenceAndElidesOldResults(t *testing.T) {
 	}
 	if len(result.System) != 1 || !strings.Contains(result.System[0].Text, "Runtime state") {
 		t.Fatalf("system block = %#v", result.System)
+	}
+}
+
+// The workspace probe is already measured. Surface it in the runtime state so
+// the model does not spend a tool call rediscovering language or manifests.
+func TestRenderStateCarriesWorkspaceProbe(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "explain this project",
+	}, ShapeParams{
+		Authority: "ask",
+		Facts: RepositoryFacts{
+			Go: true, Make: true, RootFiles: 7, Markers: []string{"Makefile", "go.mod"},
+		},
+	})
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-1", ToolName: "read", Args: map[string]any{"path": "README.md"},
+		Result: agent.Result{Text: "project", Details: map[string]any{"path": "README.md", "totalLines": 1, "offset": 1, "limit": 2000}},
+	})
+	rendered := RenderState(shape, state, SummarizeExecution(nil),
+		Sufficiency{State: Sufficient, Stage: StageAnswer}, CandidateSet{}, 0, 0)
+	for _, want := range []string{"Workspace probe", "7 root entries", "go.mod", "Go"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("state block missing workspace fact %q:\n%s", want, rendered)
+		}
 	}
 }
 

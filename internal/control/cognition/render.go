@@ -47,6 +47,9 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	if shape.Objective != "" {
 		fmt.Fprintf(&head, "Objective: %s\n", bound(shape.Objective, 320))
 	}
+	if probe := workspaceProbeSummary(shape.RepositoryFacts); probe != "" {
+		fmt.Fprintf(&head, "Workspace probe: %s\n", probe)
+	}
 	fmt.Fprintf(&head, "Task shape: %s\n", shape.Summary())
 	if len(shape.Constraints) > 0 {
 		fmt.Fprintf(&head, "Constraints: %s\n", strings.Join(shape.Constraints, ", "))
@@ -259,6 +262,39 @@ func sourceSuffix(source Source) string {
 		return ""
 	}
 	return " (source: " + strings.Join(parts, " ") + ")"
+}
+
+// workspaceProbeSummary renders the already-measured workspace facts so the
+// model does not spend a capability rediscovering its language or manifests.
+// The probe is a hint, never evidence: completion still requires an observation.
+func workspaceProbeSummary(facts RepositoryFacts) string {
+	var parts []string
+	if facts.RootFiles > 0 {
+		parts = append(parts, fmt.Sprintf("%d root entries", facts.RootFiles))
+	}
+	if len(facts.Markers) > 0 {
+		parts = append(parts, "markers "+strings.Join(facts.Markers, ", "))
+	}
+	var languages []string
+	if facts.Go {
+		languages = append(languages, "Go")
+	}
+	if facts.JavaScript {
+		languages = append(languages, "JavaScript")
+	}
+	if facts.Python {
+		languages = append(languages, "Python")
+	}
+	if facts.Rust {
+		languages = append(languages, "Rust")
+	}
+	if len(languages) > 0 {
+		parts = append(parts, "detected "+strings.Join(languages, ", "))
+	}
+	if facts.Make {
+		parts = append(parts, "Make available")
+	}
+	return bound(strings.Join(parts, "; "), 320)
 }
 
 // verificationSummary renders the contract's verification requirements.

@@ -412,6 +412,13 @@ func (s *Store) Load() (Snapshot, error) {
 			t.Snapshot = &cloned
 		}
 		t.ReviewReason = progress.ReviewReason
+		if t.Status == StatusCompleted {
+			// A review reason is current state only while the review is open.
+			// Older checkpoints may carry one after a completion; do not
+			// resurrect resolved uncertainty in the human or model projection.
+			t.ReviewReason = ""
+			progress.ReviewReason = ""
+		}
 		if progress.CheckpointAt.After(t.UpdatedAt) {
 			t.UpdatedAt = progress.CheckpointAt
 		}

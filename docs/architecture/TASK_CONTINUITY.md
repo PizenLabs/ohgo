@@ -500,6 +500,15 @@ context plus a `handoff from <source>` progress note. The source role's context
 is never rewritten, so returning to it restores its plan, scope, strategy, and
 progress.
 
+A structured FUZZ finding is projected into the shared context at the turn
+boundary: the artifact remains in the session store, and the task records an
+**active hypothesis** with the bounded target, status, observed result,
+reproduction, and evidence summary. BUILD therefore consumes the finding as a
+claim to verify, never as a fact; confirmation still requires current supporting
+evidence. The artifact reference is also recorded in the producing role's
+context. The artifact tool itself only buffers the record — the task has one
+writer at the turn boundary.
+
 ### 8.4 Authority and workspace
 
 - A handoff is a request, never a grant. No fact, reference, or record enables a
@@ -713,16 +722,25 @@ answer that is empty, only announces further work, or fails grounding still
 enters review.
 
 Phase completion narrows the completion requirement; an explicit constraint
-that survives the phase still applies. For a staged conditional objective,
-wording such as "without modifying source code" applies to the investigation
-phase, which runs under ASK or FUZZ authority. It is not carried as a global
-`no_mutation` veto on the later BUILD branch. An unconditional "do not modify
-anything" remains global. A task-continuity instruction such as "do not create a
-new task" is not a repository `no_creation` constraint.
+that survives the phase still applies. The projection shape is also built from
+the phase contract, and a staged conditional mutation defers its literal
+target-state requirement to the change branch. For a staged conditional
+objective, wording such as "without modifying source code" applies to the
+investigation phase, which runs under ASK or FUZZ authority. It is not carried
+as a global `no_mutation` veto on the later BUILD branch. An unconditional "do
+not modify anything" remains global. A task-continuity instruction such as "do
+not create a new task" is not a repository `no_creation` constraint.
 
 The proof stores the verdict, the `Answered`/`Executed`/`Observed` flags, the
 bounded check summaries, the evidence ids, and the timestamp. It never stores
 the assistant's answer or a tool payload.
+
+Completion also resolves the current review boundary: the durable
+`ReviewReason` is cleared, and an older completed checkpoint is normalized on
+load. The historical reason remains in the bounded timeline and in the review
+event, so it can still be audited without being projected as current
+uncertainty. While a task is `RUNNING`, `PAUSED`, or terminal, the reason is not
+rendered as a live warning; only `NEEDS_REVIEW` owns that projection.
 
 A later invalidation, supersession, or eviction of the proof's evidence does not
 rewrite the lifecycle record; it downgrades the projection to

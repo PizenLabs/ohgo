@@ -40,6 +40,9 @@ func TestVerificationContinuationRunsUnderBuildAndProves(t *testing.T) {
 
 	r.turn("verify the fix")
 	completed := r.currentTask()
+	if report, ok := r.controller.LastProjection(); ok {
+		t.Logf("last projection shape=%s suff=%s stage=%s evidence=%s", report.Shape, report.Sufficiency, report.Stage, report.Evidence)
+	}
 	if completed.ID != interrupted.ID {
 		t.Fatalf("the verification continuation replaced the task: %q -> %q", interrupted.ID, completed.ID)
 	}
@@ -49,6 +52,9 @@ func TestVerificationContinuationRunsUnderBuildAndProves(t *testing.T) {
 	}
 	if completed.Completion == nil || len(completed.Completion.Verified) == 0 {
 		t.Fatalf("completion proof = %+v, want the post-change verification", completed.Completion)
+	}
+	if completed.ReviewReason != "" {
+		t.Fatalf("completed task retained its resolved review reason %q", completed.ReviewReason)
 	}
 }
 

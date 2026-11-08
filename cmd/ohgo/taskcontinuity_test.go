@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,6 +105,52 @@ func TestInstallTaskContinuityWritesAndRecoversArtifacts(t *testing.T) {
 	}
 	if !found || taskState.Status != task.StatusPaused {
 		t.Fatalf("recovered = %+v (found=%v), want PAUSED", taskState, found)
+	}
+}
+
+// The turn-boundary drain is the production path that makes a FUZZ finding
+// consumable by the next BUILD turn. The artifact tool must not write task
+// state from its own goroutine; it buffers and the boundary projects once.
+func TestArtifactBufferProjectsFindingIntoTurnTaskContext(t *testing.T) {
+	controller := task.NewController(task.NewStore(t.TempDir()), nil)
+	artifact := tools.NewArtifactTool(func(workspace.Artifact) error { return nil },
+		func() workspace.Workspace { return workspace.Fuzz })
+	buffer := attachArtifactSink([]agent.Tool{artifact}, controller)
+	if _, err := controller.Begin(contract.IntentContract{
+		Objective: "investigate the checkout flow",
+		Kind:      contract.ObjectiveInformational,
+	}, nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	result := artifact.Execute(agent.Context{Ctx: context.Background()}, map[string]any{
+		"kind": "finding", "target": "order/checkout", "status": "reproduced",
+		"reproduction": "go test ./order/...", "evidence": "FAIL TestCheckout",
+	})
+	if result.IsError {
+		t.Fatalf("artifact recording failed: %s", result.Text)
+	}
+	if err := buffer.drain(); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	current, ok := controller.Current()
+	if !ok {
+		t.Fatal("the task disappeared")
+	}
+	if len(current.Context.Hypotheses) != 1 {
+		t.Fatalf("hypotheses = %d, want the projected finding", len(current.Context.Hypotheses))
+	}
+	briefing := strings.Join(controller.Context(), "\n")
+	for _, want := range []string{"order/checkout", "go test ./order/..."} {
+		if !strings.Contains(briefing, want) {
+			t.Fatalf("BUILD briefing missing %q:\n%s", want, briefing)
+		}
+	}
+	if err := buffer.drain(); err != nil {
+		t.Fatalf("second drain: %v", err)
+	}
+	current, _ = controller.Current()
+	if len(current.Context.Hypotheses) != 1 {
+		t.Fatalf("a second drain duplicated the finding: %d hypotheses", len(current.Context.Hypotheses))
 	}
 }
 

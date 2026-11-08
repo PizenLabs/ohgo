@@ -223,8 +223,14 @@ branch is reached; the marker says the current phase is not yet that change.
 
 A task contract can require a change while the current turn runs under ASK or
 FUZZ. The turn cannot perform the change, but it can still produce the
-understanding or investigation the task needs first. Completion therefore
-judges the phase the active authority can actually perform:
+understanding or investigation the task needs first. The projection shape is
+built from the phase contract as well, so the model is never asked for evidence
+the active authority cannot acquire; an execute-class tool is withheld when the
+authority forbids execution. A staged conditional mutation defers its literal
+target-state requirement to the change branch, because the investigation phase
+must not be reported as a failed read of a target it has not been authorized to
+change. Completion therefore judges the phase the active authority can actually
+perform:
 
 - a mutation objective under ASK or FUZZ, or an execution objective under ASK,
   is evaluated as an informational phase;

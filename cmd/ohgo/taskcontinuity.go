@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/continuity/task"
@@ -32,6 +33,11 @@ import (
 func installTaskContinuity(program *tui.Program, root string, toolSet []agent.Tool, role func() workspace.Workspace, holders ...*budget.Holder) *task.Controller {
 	controller := task.NewController(task.NewStore(root), todoSource(toolSet))
 	controller.SetRoleSource(role)
+	// The artifact tool runs on the loop goroutine and the task layer has one
+	// writer at a turn boundary. Buffer its records during the run and project
+	// them through the ordinary task boundary instead of mutating task state
+	// from inside a tool call.
+	artifacts := attachArtifactSink(toolSet, controller)
 	var holder *budget.Holder
 	if len(holders) > 0 {
 		holder = holders[0]
@@ -163,6 +169,7 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		},
 		Context:          controller.Context,
 		ObserveTurns:     controller.ObserveTurns,
+		RecordArtifacts:  artifacts.drain,
 		HasCurrentChange: controller.HasCurrentChange,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
@@ -294,6 +301,56 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		}
 	}
 	return controller
+}
+
+// artifactBuffer captures artifacts recorded by the artifact tool during a
+// run. The tool executes on the loop goroutine; the task layer is written at
+// the turn boundary, so the sink only appends here and drain performs the
+// durable projection once.
+type artifactBuffer struct {
+	mu         sync.Mutex
+	controller *task.Controller
+	pending    []workspace.Artifact
+}
+
+func (b *artifactBuffer) record(artifact workspace.Artifact) error {
+	b.mu.Lock()
+	b.pending = append(b.pending, artifact)
+	b.mu.Unlock()
+	return nil
+}
+
+// drain projects every buffered artifact into the task, preserving the first
+// failure without dropping the rest of the batch.
+func (b *artifactBuffer) drain() error {
+	b.mu.Lock()
+	batch := b.pending
+	b.pending = nil
+	b.mu.Unlock()
+	if b.controller == nil {
+		return nil
+	}
+	var first error
+	for _, artifact := range batch {
+		if err := b.controller.RecordArtifact(artifact); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// attachArtifactSink installs the task projection on the existing artifact
+// tool. The session sink stays authoritative; this is an additive observer.
+func attachArtifactSink(toolSet []agent.Tool, controller *task.Controller) *artifactBuffer {
+	buffer := &artifactBuffer{controller: controller}
+	for _, tool := range toolSet {
+		artifact, ok := tool.(*tools.ArtifactTool)
+		if !ok {
+			continue
+		}
+		artifact.AddSink(buffer.record)
+	}
+	return buffer
 }
 
 // reconcileHandoff resolves an approved transition against the restored

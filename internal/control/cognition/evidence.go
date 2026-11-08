@@ -376,13 +376,23 @@ func (s *EvidenceState) hasAnyExact() bool {
 // establish coordinates for a structural answer.
 func (s *EvidenceState) hasRepositoryOverview() bool {
 	for _, item := range s.Items {
-		if item.Status == StatusConflicting {
+		switch item.Status {
+		case StatusConflicting, StatusUnknown, StatusRequired:
 			continue
 		}
-		if strings.HasPrefix(item.ID, "file:") ||
-			strings.HasPrefix(item.ID, "search:grep:") ||
-			strings.HasPrefix(item.ID, "symbols:") {
-			return true
+		switch {
+		case strings.HasPrefix(item.ID, "file:"):
+			// A missing-file observation is target state, not content. It has
+			// no retained value, so it cannot answer what the repository does.
+			if item.Retention == RetentionExact && strings.TrimSpace(item.Value) != "" {
+				return true
+			}
+		case strings.HasPrefix(item.ID, "search:grep:"), strings.HasPrefix(item.ID, "symbols:"):
+			// A search that returned no payload or a structural query with no
+			// coordinates observed nothing content-bearing.
+			if strings.TrimSpace(item.Value) != "" {
+				return true
+			}
 		}
 	}
 	return false

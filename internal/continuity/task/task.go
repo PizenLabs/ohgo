@@ -449,7 +449,17 @@ func (t *Task) NeedsReview(at time.Time) error { return t.transition(StatusNeeds
 // Complete marks the task finished. It is the only path to COMPLETED, and the
 // caller is responsible for having actual completion evidence: an interruption
 // must never reach this method.
-func (t *Task) Complete(at time.Time) error { return t.transition(StatusCompleted, at) }
+//
+// A completed task has no current review boundary. The historical reason is
+// already recorded in the timeline, so keeping it on the task would make every
+// later projection report resolved uncertainty as current.
+func (t *Task) Complete(at time.Time) error {
+	if err := t.transition(StatusCompleted, at); err != nil {
+		return err
+	}
+	t.ReviewReason = ""
+	return nil
+}
 
 // Fail marks the task failed with an unrecoverable execution error.
 func (t *Task) Fail(at time.Time) error { return t.transition(StatusFailed, at) }

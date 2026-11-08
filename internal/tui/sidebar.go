@@ -109,7 +109,9 @@ func renderWorkspaceSidebar(state State, pal *Palette, layout Layout) string {
 		}
 		add(taskGlyph(item.State)+" "+sanitizeInline(item.Label), style)
 	}
-	if len(task.Items) == 0 && task.ReviewReason == "" {
+	currentReview := task.ReviewReason != "" &&
+		strings.EqualFold(strings.TrimSpace(task.Status), "NEEDS_REVIEW")
+	if len(task.Items) == 0 && !currentReview {
 		add("no todos", pal.Muted)
 	}
 
@@ -284,7 +286,8 @@ func sidebarInsights(task *TaskProjection) []string {
 		return nil
 	}
 	var out []string
-	if review := strings.TrimSpace(task.ReviewReason); review != "" {
+	if review := strings.TrimSpace(task.ReviewReason); review != "" &&
+		strings.EqualFold(strings.TrimSpace(task.Status), "NEEDS_REVIEW") {
 		out = append(out, "review: "+sanitizeInline(review))
 	}
 	if recovery := strings.TrimSpace(task.Recovery); recovery != "" {
