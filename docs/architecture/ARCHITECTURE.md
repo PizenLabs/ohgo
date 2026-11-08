@@ -679,7 +679,11 @@ approval, shutting down) are computed per render, never stored.
   streaming frames slice cached rows instead of re-rendering the document.
   The composer is two restrained rules around the input with an inline
   slash-suggestion list and a queued-prompts line (busy and approval live
-  in the header, status, and modal — never restated under the input). `?` on an empty composer opens the
+  in the header, status, and modal — never restated under the input). The
+  upper rule is a border block header naming the live session
+  (`──────────── [Fix failing parser] ───`), with a discrete `★` when
+  the session is retention-protected; the title is `promptopt`-sanitized and
+  width-bounded so it can never break the frame. `?` on an empty composer opens the
   Command & Help Center from the registry; while composing it stays literal. Overlays take
   over (transcript + composer hidden) so streaming output never fights a
   moving cursor.

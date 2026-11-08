@@ -1662,7 +1662,7 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 	if status := composerStateLine(state, pal, layout); status != "" {
 		sb.WriteString("\n" + status)
 	}
-	sb.WriteString("\n" + rule)
+	sb.WriteString("\n" + composerBottomRule(state, pal, layout))
 	return sb.String()
 }
 
@@ -1701,12 +1701,29 @@ func composerRuleStyle(state State, pal *Palette) lipgloss.Style {
 	return composerPrefixStyle(state, pal).Bold(true)
 }
 
-// composerRule draws one horizontal rule framing the composer in the live
-// workspace accent, so the two lines around the prompt read as the same
-// boundary as the "ask > "/"build > "/"fuzz > " prefix. Any overlay,
+// composerRule draws the upper rule framing the composer in the live
+// workspace accent, with the current session embedded as a border block
+// header. The label names the sanitized title alone (the footer owns the
+// slot), and a protected session carries the discrete ★ marker. Any overlay,
 // approval, or secret entry quiets it to the dim slate so attention goes to
 // the modal state.
 func composerRule(state State, pal *Palette, layout Layout) string {
+	width := composerRuleWidth(state, layout)
+	return composerRuleStyle(state, pal).Render(composerBorderTitle(state, width))
+}
+
+// composerBottomRule draws the closing rule framing the composer. It stays
+// plain: the header fact lives on the upper border, and repeating it below the
+// input would duplicate the session identity inside one small region.
+func composerBottomRule(state State, pal *Palette, layout Layout) string {
+	width := composerRuleWidth(state, layout)
+	return composerRuleStyle(state, pal).Render(strings.Repeat("─", width))
+}
+
+// composerRuleWidth is the cell budget both framing rules share. It follows
+// the conversation column when the sidebar owns the right edge, so neither
+// rule ever crosses the divider.
+func composerRuleWidth(state State, layout Layout) int {
 	width := separatorWidth(state, layout)
 	if layout.Sidebar {
 		width = layout.MainWidth - 1
@@ -1714,8 +1731,7 @@ func composerRule(state State, pal *Palette, layout Layout) string {
 	if width < 1 {
 		width = 1
 	}
-	line := strings.Repeat("─", width)
-	return composerRuleStyle(state, pal).Render(line)
+	return width
 }
 
 // renderPaletteSuggestions draws the inline palette for the trigger word at

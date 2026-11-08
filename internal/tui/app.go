@@ -2374,6 +2374,7 @@ func (p *Program) createNewSession(title string) {
 	if title != "" && p.sessionActions.Rename != nil && sess != nil {
 		if err := p.sessionActions.Rename(sess.ID, title); err == nil {
 			sess.Title = title
+			p.state.Apply(SessionTitleUpdated{ID: sess.ID, Title: title})
 		}
 	}
 	p.recordTaskDecision("NEW_SESSION")
@@ -3552,6 +3553,12 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	}
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
 	if sess != nil {
+		// The adopted session owns the composer border immediately: its slot
+		// and stored label are local facts, so no later read has to arrive
+		// before the first frame names the conversation.
+		p.state.Apply(WorkspaceUpdated{HasSession: true, Session: fmt.Sprintf("#%d", sess.ID)})
+		p.state.Apply(SessionTitleUpdated{ID: sess.ID, Title: sess.Title})
+		p.state.Apply(SessionProtectionUpdated{ID: sess.ID, Protected: sess.Protected})
 		p.reportRecoveryInspection(sess.ID)
 	}
 	// A proposal still on screen belongs to the old session; close it so it
@@ -5861,6 +5868,14 @@ func (p *Program) AttachSession(store *session.Store, sess *session.Session, his
 	p.proposal = nil
 	p.mu.Unlock()
 	p.releasePromptScratch(previous, sess)
+	if sess != nil {
+		// AttachSession is the CLI startup path; it owns the first frame, so
+		// the border slot and label must be bound here rather than waiting for
+		// a later chrome update.
+		p.state.Apply(WorkspaceUpdated{HasSession: true, Session: fmt.Sprintf("#%d", sess.ID)})
+		p.state.Apply(SessionTitleUpdated{ID: sess.ID, Title: sess.Title})
+		p.state.Apply(SessionProtectionUpdated{ID: sess.ID, Protected: sess.Protected})
+	}
 	if p.state.Pending != nil {
 		p.state.Apply(ApprovalAnswered{})
 	}

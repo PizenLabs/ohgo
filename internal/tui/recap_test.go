@@ -183,7 +183,7 @@ func TestRecapSitsDirectlyAboveComposer(t *testing.T) {
 	nearest := ""
 	for i := composer - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
-		if line == "" || strings.Trim(line, "─") == "" {
+		if line == "" || strings.Trim(line, "─") == "" || isComposerBorderHeader(line) {
 			continue
 		}
 		nearest = line

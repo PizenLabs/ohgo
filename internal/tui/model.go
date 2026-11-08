@@ -420,6 +420,14 @@ type Status struct {
 	Cwd string
 	// Session names the session, e.g. "#12". Empty hides it.
 	Session string
+	// SessionTitle is the live session's navigation label. The composer border
+	// renders it through promptopt.SanitizeTitle, so a manual rename is bounded
+	// without rewriting the stored label here. Empty means the session has no
+	// title yet; the border renders the "New Session" placeholder instead.
+	SessionTitle string
+	// SessionProtected marks the live session as retention-protected. The
+	// composer border appends the discrete ★ marker after the label.
+	SessionProtected bool
 	// UsageText is preformatted token/cost detail, e.g. "12.4k tok · $0.02".
 	// Empty hides it. The producer labels estimates; the view never invents
 	// numbers, and unknown values stay absent rather than rendering as zero.
@@ -762,6 +770,17 @@ func New() State {
 		Theme:         ThemeDark,
 		KeepRecentMax: DefaultKeepRecentSessions,
 	}
+}
+
+// sessionSlotID parses the "#N" slot label into the session id. It returns
+// zero when no live slot is set, which also means no session-scoped event may
+// claim the composer border.
+func sessionSlotID(slot string) int64 {
+	var id int64
+	if _, err := fmt.Sscanf(strings.TrimSpace(slot), "#%d", &id); err != nil {
+		return 0
+	}
+	return id
 }
 
 // Apply folds one event into the state.
@@ -2036,14 +2055,25 @@ func (s *State) Apply(event Event) {
 		}
 
 	case SessionTitleUpdated:
-		// The title is already durable; this only refreshes a roster that is on
-		// screen. A closed manager re-reads the store when it next opens.
+		// The title is already durable. The live session's composer border
+		// binds it immediately; a roster that is on screen is refreshed too.
+		// A closed manager re-reads the store when it next opens.
+		if sessionSlotID(s.Status.Session) == e.ID {
+			s.Status.SessionTitle = e.Title
+		}
 		if s.SessionModal != nil {
 			for i := range s.SessionModal.Items {
 				if s.SessionModal.Items[i].ID == e.ID {
 					s.SessionModal.Items[i].Title = e.Title
 				}
 			}
+		}
+
+	case SessionProtectionUpdated:
+		// Protection is a session-scoped fact. Only the live session owns the
+		// border marker; a roster row refreshes through its own listing.
+		if sessionSlotID(s.Status.Session) == e.ID {
+			s.Status.SessionProtected = e.Protected
 		}
 
 	case IdentityUpdated:
@@ -4571,6 +4601,18 @@ type SessionTitleUpdated struct {
 }
 
 func (SessionTitleUpdated) eventKind() string { return "session_title_updated" }
+
+// SessionProtectionUpdated reports that a session's retention tag changed. It
+// carries the persisted result, so the live composer border can show or clear
+// the marker without re-reading the store.
+type SessionProtectionUpdated struct {
+	// ID is the session whose tag changed.
+	ID int64
+	// Protected is the persisted retention tag.
+	Protected bool
+}
+
+func (SessionProtectionUpdated) eventKind() string { return "session_protection_updated" }
 
 // SupportStatus is where a support turn is in its lifecycle.
 type SupportStatus string
