@@ -784,6 +784,7 @@ func (p *Program) commitSessionRename() (tea.Model, tea.Cmd) {
 		p.state.Apply(SessionManagerNoticed{Text: "rename: " + err.Error()})
 		return p, nil
 	}
+	p.state.Apply(SessionTitleUpdated{ID: item.ID, Title: title})
 	p.reloadSessionManager(fmt.Sprintf("renamed session #%d", item.ID))
 	return p, nil
 }
@@ -843,6 +844,7 @@ func (p *Program) toggleSelectedSessionProtection() (tea.Model, tea.Cmd) {
 	if protected {
 		notice = fmt.Sprintf("tagged session #%d as protected", item.ID)
 	}
+	p.state.Apply(SessionProtectionUpdated{ID: item.ID, Protected: protected})
 	p.reloadSessionManager(notice)
 	return p, nil
 }

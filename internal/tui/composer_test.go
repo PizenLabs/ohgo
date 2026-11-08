@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // The composer helpers are pure (text, cursor) functions: every case below
@@ -264,6 +265,98 @@ func TestComposerRuleFollowsWorkspacePrefix(t *testing.T) {
 		if got, want := colorName(composerRuleStyle(modal, pal).GetForeground()), colorName(pal.Separator.GetForeground()); got != want {
 			t.Errorf("%s: modal rule = %q, want the dim separator %q: approval lost focus to the composer frame", theme, got, want)
 		}
+	}
+}
+
+// The upper composer rule names the live session by title alone: the slot is
+// already in the footer, and the protection marker stays optional. A new
+// session with no title must still read cleanly rather than emitting an empty
+// bracket.
+func TestComposerBorderHeaderNamesLiveSession(t *testing.T) {
+	fresh := New()
+	fresh.Apply(TerminalResized{Width: 80, Height: 24})
+	if out := ansi.Strip(Render(fresh)); !strings.Contains(out, "[New Session] ───") {
+		t.Fatalf("fresh composer border lacks the placeholder:\n%s", out)
+	}
+
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(WorkspaceUpdated{HasSession: true, Session: "#12"})
+	s.Apply(SessionTitleUpdated{ID: 12, Title: "Fix the failing parser"})
+	out := ansi.Strip(Render(s))
+	if !strings.Contains(out, "[Fix failing parser] ───") {
+		t.Fatalf("composer border lacks the sanitized title:\n%s", out)
+	}
+	if strings.Contains(out, "#12:") {
+		t.Fatalf("composer border duplicated the slot id:\n%s", out)
+	}
+
+	s.Apply(SessionProtectionUpdated{ID: 12, Protected: true})
+	if out := ansi.Strip(Render(s)); !strings.Contains(out, "[Fix failing parser] ★ ───") {
+		t.Fatalf("composer border lacks the protected marker:\n%s", out)
+	}
+}
+
+// A session-scoped event must only claim the border for the live slot: a
+// backfilled title for another roster row must not rename the conversation
+// the user is looking at.
+func TestComposerBorderIgnoresOtherSessionEvents(t *testing.T) {
+	s := New()
+	s.Apply(WorkspaceUpdated{HasSession: true, Session: "#7"})
+	s.Apply(SessionTitleUpdated{ID: 8, Title: "wrong session"})
+	s.Apply(SessionProtectionUpdated{ID: 8, Protected: true})
+	if s.Status.SessionTitle != "" || s.Status.SessionProtected {
+		t.Fatalf("foreign event mutated live meta: title=%q protected=%v", s.Status.SessionTitle, s.Status.SessionProtected)
+	}
+	s.Apply(SessionTitleUpdated{ID: 7, Title: "right session"})
+	s.Apply(SessionProtectionUpdated{ID: 7, Protected: true})
+	if s.Status.SessionTitle != "right session" || !s.Status.SessionProtected {
+		t.Fatalf("live event missed the border: title=%q protected=%v", s.Status.SessionTitle, s.Status.SessionProtected)
+	}
+}
+
+// The border title is bounded to the available cells on every width: it may
+// shrink and ellipsize, but it must never overflow or push the closing rule
+// off-screen.
+func TestComposerBorderHeaderWidthSafety(t *testing.T) {
+	state := State{Status: Status{
+		Session:      "#12",
+		SessionTitle: "alpha beta gamma delta epsilon zeta",
+	}}
+	for _, width := range []int{20, 30, 40, 60, 79, 120} {
+		got := composerBorderTitle(state, width)
+		if got == "" || CellWidth(got) != width {
+			t.Errorf("width %d: %q is %d cells, want exactly %d", width, got, CellWidth(got), width)
+		}
+		if !strings.HasPrefix(got, "─") || !strings.HasSuffix(got, "───") {
+			t.Errorf("width %d: %q lost the framing boundary", width, got)
+		}
+		// Right alignment: the label block sits against the trailing cap,
+		// never at the left edge.
+		if open := strings.Index(got, " ["); open < 1 || strings.Trim(got[:open], "─") != "" {
+			t.Errorf("width %d: %q is not right-aligned", width, got)
+		}
+	}
+}
+
+// Long titles are cut between words with one ellipsis, never mid-word and
+// never with a dangling space before the bracket.
+func TestComposerBorderHeaderTruncatesAtWordBoundary(t *testing.T) {
+	state := State{Status: Status{
+		Session:      "#12",
+		SessionTitle: "alpha beta gamma delta epsilon zeta",
+	}}
+	got := composerBorderTitle(state, 30)
+	if !strings.Contains(got, "alpha beta gamma…") {
+		t.Errorf("border = %q, want a word-bounded ellipsis", got)
+	}
+	if strings.Contains(got, "delta…") || strings.Contains(got, "… ]") {
+		t.Errorf("border = %q, want no partial word or dangling space", got)
+	}
+	// A title that already fits keeps every word and gains no ellipsis.
+	short := State{Status: Status{Session: "#1", SessionTitle: "short title"}}
+	if got := composerBorderTitle(short, 80); strings.Contains(got, "…") {
+		t.Errorf("fitting title = %q, want no ellipsis", got)
 	}
 }
 

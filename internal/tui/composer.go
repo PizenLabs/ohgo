@@ -5,6 +5,7 @@ import (
 	"unicode"
 
 	"github.com/PizenLabs/ohgo/internal/history"
+	"github.com/PizenLabs/ohgo/internal/promptopt"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -16,6 +17,94 @@ import (
 // scrolls to the tail. It matches the layout's own cap so the region reserved
 // and the region rendered agree.
 const maxComposerRows = 6
+
+// composerBorderCap is the short trailing rule on the far right of the upper
+// composer border. It anchors the right-aligned session label without turning
+// the header back into a full-width rule.
+const composerBorderCap = 3
+
+// composerBorderTitle builds the upper rule of the composer frame with the
+// live session embedded as a right-aligned block header:
+//
+//	──────────────────────────── [Fix failing parser] ───
+//
+// The label is width-bounded before it is assembled, so the rule can never
+// overflow or soft-wrap on a narrow viewport. When the viewport is too narrow
+// to hold even a minimal label the plain rule wins: a broken box is worse than
+// a missing title.
+func composerBorderTitle(state State, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	plain := strings.Repeat("─", width)
+	// At least one left dash, two framing spaces, and the trailing cap must
+	// remain around the label.
+	if width < composerBorderCap+5 {
+		return plain
+	}
+	label := composerSessionLabel(state, width-composerBorderCap-3)
+	if label == "" {
+		return plain
+	}
+	left := width - CellWidth(label) - composerBorderCap - 2
+	if left < 1 {
+		return plain
+	}
+	return strings.Repeat("─", left) + " " + label + " " + strings.Repeat("─", composerBorderCap)
+}
+
+// composerSessionLabel renders the bracketed session title, bounded to
+// maxCells. The session slot is deliberately absent: the footer already owns
+// that identity, and the border is a title block, not a second status line.
+// The protected marker is dropped only when nothing else fits.
+func composerSessionLabel(state State, maxCells int) string {
+	if maxCells < 3 {
+		return ""
+	}
+	title := promptopt.SanitizeTitle(sanitizeInline(strings.TrimSpace(state.Status.SessionTitle)))
+	marker := ""
+	if state.Status.SessionProtected {
+		marker = " ★"
+	}
+	if title == "" {
+		title = "New Session"
+	}
+
+	budget := maxCells - 2 - CellWidth(marker)
+	if budget < 1 && marker != "" {
+		marker = ""
+		budget = maxCells - 2
+	}
+	if budget < 1 {
+		return ""
+	}
+	return "[" + fitBorderTitle(title, budget) + "]" + marker
+}
+
+// fitBorderTitle bounds a title to budget cells without splitting a word and
+// marks a cut with one ellipsis. promptopt.TruncateTitle supplies the word
+// boundary; TruncateToWidth enforces the cell budget for wide runes.
+func fitBorderTitle(title string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	if CellWidth(title) <= budget {
+		return title
+	}
+	if budget == 1 {
+		return "…"
+	}
+	// Reserve the ellipsis cell before applying the word bound.
+	bounded := promptopt.TruncateTitle(title, 0, budget-1)
+	bounded = TruncateToWidth(bounded, budget-1)
+	if bounded == "" {
+		return "…"
+	}
+	if strings.HasSuffix(bounded, "…") {
+		return bounded
+	}
+	return bounded + "…"
+}
 
 // inlineSuggestion returns the history prompt that completes the current
 // input, or "" when there is nothing to complete.

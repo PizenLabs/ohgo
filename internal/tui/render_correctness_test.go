@@ -995,9 +995,11 @@ func TestLiveProgramFramesHoldBottomChrome(t *testing.T) {
 	check("approval", 20, 60, 59, 1)
 }
 
-// fullRules counts lines that are nothing but a full-width rule: the header
-// separator and the dual composer borders. Transcript rules ("─ ─ ─") and
-// table borders carry other characters and never match.
+// fullRules counts full-width frame rules: the header separator and the dual
+// composer borders. The upper composer border carries the embedded session
+// label, so it is a rule with one bracketed header block rather than a line of
+// dashes alone. Transcript rules ("─ ─ ─") and table borders carry other
+// characters and never match.
 func fullRules(out string, width int) int {
 	n := 0
 	for _, line := range strings.Split(out, "\n") {
@@ -1005,11 +1007,30 @@ func fullRules(out string, width int) int {
 		if CellWidth(plain) != width || plain == "" {
 			continue
 		}
-		if strings.Trim(plain, "─") == "" {
+		if strings.Trim(plain, "─") == "" || isComposerBorderHeader(plain) {
 			n++
 		}
 	}
 	return n
+}
+
+// isComposerBorderHeader reports whether line is the upper composer rule with
+// its bracketed session label embedded right-aligned before the trailing cap.
+func isComposerBorderHeader(line string) bool {
+	if !strings.HasSuffix(line, "───") {
+		return false
+	}
+	open := strings.Index(line, " [")
+	if open < 1 || strings.Trim(line[:open], "─") != "" {
+		return false
+	}
+	rest := line[open+2:]
+	close := strings.LastIndex(rest, "]")
+	if close <= 0 {
+		return false
+	}
+	tail := rest[close+1:]
+	return tail == " ───" || tail == " ★ ───"
 }
 
 // Scrolling must not unpin the chrome: a scrolled-up frame still fills the
@@ -1047,7 +1068,7 @@ func TestScrolledFrameKeepsFooterPinned(t *testing.T) {
 	}
 	// Bottom block is composer rule, composer, composer rule, hint bar — in
 	// that order, with the session footer pinned last.
-	if last := stripForTest(t, lines[20]); strings.Trim(last, "─") != "" || CellWidth(last) != 79 {
+	if last := stripForTest(t, lines[20]); CellWidth(last) != 79 || (strings.Trim(last, "─") != "" && !isComposerBorderHeader(last)) {
 		t.Errorf("line 20 = %q, want the composer's top rule above the prompt", last)
 	}
 	if last := stripForTest(t, lines[23]); !strings.Contains(last, "#9") {
