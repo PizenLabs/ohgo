@@ -5,6 +5,8 @@ immutable.
 
 ## [Unreleased]
 
+## [v0.1.0] - 2026-11-09
+
 ### Added
 
 - Adaptive execution experience: `internal/experience` extracts deterministic
@@ -17,12 +19,12 @@ immutable.
 
 ### Fixed
 
-- Transcript markdown keeps an indented fence under a list item as a code
-  block, joins wrapped bullet continuations before wrapping, and budgets an
-  ordered marker by its real width. A long continuation previously bypassed
-  the wrap pass, reached the terminal as one oversized row, and was truncated
-  at the right edge; nested examples also printed their fence delimiters
-  literally instead of rendering as code.
+- Transcript markdown fences and wrapping: an indented fence under a list item
+  stays a code block, wrapped bullet continuations are joined before wrapping,
+  and an ordered marker is budgeted by its real width. A long continuation
+  previously bypassed the wrap pass, reached the terminal as one oversized
+  row, and was truncated at the right edge; nested examples also printed their
+  fence delimiters literally instead of rendering as code.
 
 ## [v0.0.9] - 2026-11-08
 

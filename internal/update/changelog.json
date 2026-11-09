@@ -318,6 +318,23 @@
           "description": "every session title is derived synchronously from the submitted prompt by `promptopt.SanitizeTitle` before any provider request. The background ASK-model titler, its timeout and backfill workers, and the \"generating title…\" placeholder are removed. Legacy untitled sessions are labeled locally when the Session Manager opens, so titles appear instantly with zero token cost."
         }
       ]
+    },
+    "v0.1.0": {
+      "title": "What's new in v0.1.0",
+      "changes": [
+        {
+          "id": "adaptive-execution-experience",
+          "type": "added",
+          "title": "Adaptive execution experience",
+          "description": "`internal/experience` extracts deterministic incidents from completed turns, derives bounded lessons and candidate path preferences, and applies only promoted experience. The projector may reorder already-offered tools and append bounded advisory hints; authority, evidence, completion, budgets, and task state are unchanged. `/experience` inspects or retires records, and `\u003cproject\u003e/.ohgo/experience.json` is a versioned, bounded, cold-start-safe store."
+        },
+        {
+          "id": "transcript-markdown-fences-and-wrapping",
+          "type": "fixed",
+          "title": "Transcript markdown fences and wrapping",
+          "description": "an indented fence under a list item stays a code block, wrapped bullet continuations are joined before wrapping, and an ordered marker is budgeted by its real width. A long continuation previously bypassed the wrap pass, reached the terminal as one oversized row, and was truncated at the right edge; nested examples also printed their fence delimiters literally instead of rendering as code."
+        }
+      ]
     }
   }
 }
