@@ -257,6 +257,11 @@ type TaskHooks struct {
 	// evidence state. It is called at the turn boundary so an interrupted or
 	// final run is observed even if no later projection request ran.
 	ObserveTurns func([]agent.Turn)
+	// RecordArtifacts drains structured artifacts produced during the turn
+	// into the durable task. It runs at the same turn boundary, before the
+	// completion transition, so a finding can become a BUILD-visible
+	// hypothesis on the next turn. Nil disables the projection.
+	RecordArtifacts func() error
 	// HasCurrentChange reports whether the active task already carries a
 	// current observed change. The turn evaluator uses it to let a resumed
 	// verification-only turn reach the durable completion boundary instead of
@@ -571,7 +576,7 @@ func taskStatusText(task TaskResume, includeID bool) string {
 	}
 	sb.WriteString(": ")
 	sb.WriteString(task.Objective)
-	if task.ReviewReason != "" {
+	if task.ReviewReason != "" && strings.EqualFold(task.Status, "NEEDS_REVIEW") {
 		sb.WriteString("\nneeds review: ")
 		sb.WriteString(task.ReviewReason)
 	}

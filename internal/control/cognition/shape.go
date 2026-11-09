@@ -39,6 +39,11 @@ type TaskShape struct {
 	Kind contract.ObjectiveKind `json:"kind"`
 	// Intent is the routed intent (read, execute, investigate), when known.
 	Intent string `json:"intent,omitempty"`
+	// Phase reports that this shape describes the informational phase of an
+	// objective that needs a stronger authority later. A deferred phase may
+	// still need the execution tools its authority permits; it is not the same
+	// as an ordinary question that only needs an answer.
+	Phase bool `json:"phase,omitempty"`
 	// Authority is what the active turn may do. It describes authority; it
 	// never grants it.
 	Authority Authority `json:"authority"`
@@ -279,6 +284,9 @@ type ShapeParams struct {
 	Authority string
 	// Intent is the routed intent, e.g. "read", "execute", "investigate".
 	Intent string
+	// Phase marks the informational phase of a deferred higher-authority
+	// objective. The host sets it from workspace.PhaseContract.
+	Phase bool
 	// Facts is the bounded workspace probe.
 	Facts RepositoryFacts
 	// Snapshot is the pre-run target evidence, when the caller captured it.
@@ -306,6 +314,7 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		Objective:       strings.TrimSpace(intent.Objective),
 		Kind:            intent.Kind,
 		Intent:          strings.ToLower(strings.TrimSpace(params.Intent)),
+		Phase:           params.Phase,
 		RepositoryFacts: params.Facts,
 		Authority: Authority{
 			Workspace:        authority,
@@ -979,14 +988,32 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 	if shape.External.Required {
 		add("external_observation", "the request explicitly requires knowledge from an external capability")
 	}
+	// A conditional mutation starts with an investigation. Its literal targets
+	// describe the later change branch, not evidence the investigation phase
+	// must acquire first; requiring them here would report a future change as a
+	// missing observation while the authority is still only investigating.
+	phaseTargetsDeferred := shape.Phase && intent.ConditionalMutation
 	stateReason := "the named repository path must be known"
 	if shape.Kind == contract.ObjectiveMutation {
 		stateReason = "the target's pre-change state must be known before it is changed"
 	}
-	for _, path := range shape.Mutation.Paths {
-		add("target_state:"+path, stateReason)
+	if !phaseTargetsDeferred {
+		for _, path := range shape.Mutation.Paths {
+			add("target_state:"+path, stateReason)
+		}
 	}
+	// A mutation, or the investigation phase of one, that already names a
+	// concrete path does not need a separate coordinate lookup for every symbol
+	// in the same request: the path is the edit/inspection boundary and
+	// completion re-resolves the symbol after the change. A targetless mutation
+	// or an ordinary informational question still needs the lookup, because it
+	// has no other way to locate the subject.
+	pathScopedTarget := (shape.Kind == contract.ObjectiveMutation || shape.Phase) &&
+		len(shape.Mutation.Paths) > 0
 	for _, target := range intent.Targets {
+		if pathScopedTarget {
+			continue
+		}
 		switch target.Kind {
 		case contract.TargetSymbol, contract.TargetPackage:
 			add("target_coordinates:"+target.Value, "the requested declaration or package must be located")
@@ -1006,16 +1033,20 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 			add("verification", "the request asks for a successful check")
 		}
 	case contract.ObjectiveInformational:
-		for _, path := range shape.Mutation.Paths {
-			add("target_state:"+path, "the answer names a concrete repository path")
-			if requestsContent(shape.Objective) {
-				add("target_content:"+path, "the answer needs the path's contents, not merely its presence")
+		if !phaseTargetsDeferred {
+			for _, path := range shape.Mutation.Paths {
+				add("target_state:"+path, "the answer names a concrete repository path")
+				if requestsContent(shape.Objective) {
+					add("target_content:"+path, "the answer needs the path's contents, not merely its presence")
+				}
 			}
 		}
-		for _, target := range intent.Targets {
-			switch target.Kind {
-			case contract.TargetSymbol, contract.TargetPackage:
-				add("target_coordinates:"+target.Value, "the answer names a declaration or package")
+		if !pathScopedTarget {
+			for _, target := range intent.Targets {
+				switch target.Kind {
+				case contract.TargetSymbol, contract.TargetPackage:
+					add("target_coordinates:"+target.Value, "the answer names a declaration or package")
+				}
 			}
 		}
 		if shape.RepositoryScope {

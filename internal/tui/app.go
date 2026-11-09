@@ -5217,9 +5217,21 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// grant is installed so an exhausted prior turn cannot poison this one.
 	authorityLabel := activeAuthority
 	facts := cognition.ProbeFacts(p.completionRoot)
-	shape := cognition.BuildShape(intent, cognition.ShapeParams{
+	// The projector describes what this turn can actually observe. When the
+	// persisted objective needs a higher authority, judging the turn against
+	// requirements the authority can never satisfy would turn a legitimate
+	// investigation/answer phase into a false evidence gap. The persisted
+	// contract is unchanged; only the projection is narrowed.
+	shapeIntent, phaseDeferred := intent, false
+	if parsed, err := workspace.Parse(authorityLabel); err == nil {
+		if phase, deferred := workspace.PhaseContract(intent, parsed); deferred {
+			shapeIntent, phaseDeferred = phase, true
+		}
+	}
+	shape := cognition.BuildShape(shapeIntent, cognition.ShapeParams{
 		Authority: authorityLabel,
 		Intent:    turn.Intent,
+		Phase:     phaseDeferred,
 		Facts:     facts,
 		Snapshot:  targetSnapshot,
 		Budget:    cognition.BudgetShapeFrom(p.loop.Budget().Snapshot()),
@@ -5500,6 +5512,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// keeps the checkpoint truthful without a second observation store.
 	if p.task.ObserveTurns != nil {
 		p.task.ObserveTurns(turns)
+	}
+	// Artifacts are captured on the tool goroutine during the run. Project
+	// them at this boundary, where task state has one writer, so a FUZZ finding
+	// is durable before the next BUILD turn can consume it.
+	if p.task.RecordArtifacts != nil {
+		if err := p.task.RecordArtifacts(); err != nil {
+			p.publish(Notice{Text: "task artifact: " + err.Error()})
+		}
 	}
 	if p.beforeTaskTransition != nil {
 		p.beforeTaskTransition()

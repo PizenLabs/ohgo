@@ -43,11 +43,16 @@ func TestToolBoundaryHandoffRoundTripKeepsOneTask(t *testing.T) {
 		"reproduction": "go test ./...",
 		"evidence":     "checkout returned no order",
 	}
+	// The first implementation is intentionally wrong so its check fails.
+	// That keeps the task in verification and lets the script exercise a second
+	// finding -> change -> check round without pretending the first check
+	// succeeded.
 	writeCheckout := map[string]any{
 		"path":    "checkout.go",
-		"content": "package checkout\n\nfunc Checkout() string { return \"ok\" }\n",
+		"content": "package checkout\n\nfunc Checkout() string { return \"bad\" }\n",
 	}
 	messages := []ai.AssistantMessage{
+		readinessToolCall("read-0", "read", map[string]any{"path": "go.mod"}),
 		readinessToolCall("finding-1", "artifact", finding),
 		readinessToolCall("write-1", "write", writeCheckout),
 		readinessToolCall("change-1", "artifact", map[string]any{

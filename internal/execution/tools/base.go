@@ -161,6 +161,19 @@ func boolArg(args map[string]any, key string, fallback bool) (bool, error) {
 	return value, nil
 }
 
+// absenceResult reports a probe that established the named path does not
+// exist. It stays an error for the model — absence is not content — but it
+// marks the result as an observation so completion, sufficiency, and the
+// failure ledger do not treat a deliberate probe of a missing path as an
+// unrecovered execution failure.
+func absenceResult(format string, args ...any) agent.Result {
+	return agent.Result{
+		Text:            fmt.Sprintf(format, args...),
+		IsError:         true,
+		ObservedAbsence: true,
+	}
+}
+
 // resolvePath turns a model-supplied path into an absolute path inside root.
 //
 // A relative path is interpreted against root. Symlinks are resolved because a

@@ -83,7 +83,7 @@ func TestFuzzInvestigationPhaseContinuesIntoBuildSameTask(t *testing.T) {
 	r.turn(prompt)
 	investigated := r.currentTask()
 	if investigated.ObjectiveState() != task.ObjectiveActive {
-		t.Fatalf("investigation phase = %s, want ACTIVE", investigated.ObjectiveState())
+		t.Fatalf("investigation phase = %s (%s), want ACTIVE", investigated.ObjectiveState(), investigated.ReviewReason)
 	}
 	if !r.program.switchWorkspace("build") {
 		t.Fatal("switching to BUILD was refused")
@@ -102,6 +102,36 @@ func TestFuzzInvestigationPhaseContinuesIntoBuildSameTask(t *testing.T) {
 	}
 	if proven.Completion == nil || len(proven.Completion.Verified) == 0 {
 		t.Fatalf("completion proof = %+v, want the post-change verification", proven.Completion)
+	}
+}
+
+// An execution objective under ASK is deferred. The turn can still answer what
+// it observed, but it cannot run the process; judging the phase against
+// execution evidence would report a failed execution the authority never
+// permitted.
+func TestExecutionObjectiveUnderAskCompletesPhaseNotReview(t *testing.T) {
+	root := t.TempDir()
+	writeReadinessModule(t, root)
+	r := newReadinessRuntime(t, root, workspace.Ask,
+		[]agent.Tool{tools.NewReadTool(root), tools.NewBashTool(root)},
+		[]ai.AssistantMessage{
+			readinessToolCall("read-1", "read", map[string]any{"path": "go.mod"}),
+			readinessAnswer("The module is example.com/readiness; running its tests needs BUILD authority."),
+		})
+
+	r.turnAs("Run the tests.", workspace.Ask)
+	current := r.currentTask()
+	if current.Status != task.StatusRunning {
+		t.Fatalf("phase status = %s (%s), want RUNNING", current.Status, current.ReviewReason)
+	}
+	if current.ObjectiveState() != task.ObjectiveActive {
+		t.Fatalf("objective state = %s, want ACTIVE", current.ObjectiveState())
+	}
+	if current.Completion != nil {
+		t.Fatalf("the deferred execution phase recorded a proof: %+v", current.Completion)
+	}
+	if strings.Contains(current.ReviewReason, "execution") {
+		t.Fatalf("the unperformed execution was reported as a failed phase: %q", current.ReviewReason)
 	}
 }
 

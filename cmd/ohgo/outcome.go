@@ -200,8 +200,18 @@ func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out i
 		}
 	}
 	facts := cognition.ProbeFacts(root)
-	shape := cognition.BuildShape(intent, cognition.ShapeParams{
+	// The stateless path uses the same phase projection as the TUI: an
+	// objective the active authority cannot perform is judged by the
+	// informational phase it can produce, not by impossible evidence.
+	shapeIntent, phaseDeferred := intent, false
+	if parsed, err := workspace.Parse(authority); err == nil {
+		if phase, deferred := workspace.PhaseContract(intent, parsed); deferred {
+			shapeIntent, phaseDeferred = phase, true
+		}
+	}
+	shape := cognition.BuildShape(shapeIntent, cognition.ShapeParams{
 		Authority: authority,
+		Phase:     phaseDeferred,
 		Facts:     facts,
 		Snapshot:  snapshot,
 		Budget:    cognition.BudgetShapeFrom(loop.Budget().Snapshot()),

@@ -36,10 +36,11 @@ func informationalProjection(t *testing.T, shape TaskShape, turns []agent.Turn) 
 	})
 }
 
-// A turn that observes the repository without adding a fact has no evidence
-// gain left. The runtime must stop offering tools rather than let a model spend
-// a turn on exploration that cannot change the answer.
-func TestProjectorStopsWhenATurnAddsNoEvidence(t *testing.T) {
+// A repeated observation with required evidence still missing is a stalled
+// path, not a finished investigation. The runtime must keep the surface open
+// and escalate with the exact gap; closing it would force an answer that the
+// completion boundary has to reject.
+func TestProjectorEscalatesWhenATurnAddsNoEvidenceButRequirementsRemain(t *testing.T) {
 	shape := BuildShape(contract.IntentContract{
 		Kind:      contract.ObjectiveInformational,
 		Objective: "check this project and analyze what this project is about?",
@@ -54,21 +55,51 @@ func TestProjectorStopsWhenATurnAddsNoEvidence(t *testing.T) {
 	// The identical observation again, with a new call identity.
 	duplicate := readTurn("c2", ".github/workflows/telemetry.yml", "1\ton: schedule")
 	projected = informationalProjection(t, shape, []agent.Turn{first, duplicate})
-	if projected.Tools == nil {
-		t.Fatal("the stop returned a nil tool set, which the loop reads as \"unchanged\"")
+	if len(projected.Tools) == 0 {
+		t.Fatalf("a stalled turn closed the surface while evidence was missing: %+v", projected.Report.Excluded)
 	}
-	if len(projected.Tools) != 0 {
-		t.Fatalf("a turn with no evidence gain still offered %d tool(s)", len(projected.Tools))
+	if projected.Report.AnswerEligible {
+		t.Fatal("a stalled, insufficient turn was declared answer-eligible")
 	}
-	if len(projected.Report.Excluded) == 0 {
-		t.Fatalf("the stop was not audited: excluded=%+v", projected.Report.Excluded)
+	if projected.Report.Sufficiency != string(Insufficient) {
+		t.Fatalf("sufficiency = %s, want INSUFFICIENT", projected.Report.Sufficiency)
 	}
 	state := ""
 	for _, block := range projected.System {
 		state += block.Text
 	}
-	if !strings.Contains(state, "no new evidence") {
-		t.Fatalf("the runtime state does not explain the stop:\n%s", state)
+	for _, want := range []string{"no new evidence", "repository_survey", "Next evidence"} {
+		if !strings.Contains(state, want) {
+			t.Fatalf("the runtime state does not explain the escalation with %q:\n%s", want, state)
+		}
+	}
+}
+
+// Once the required evidence exists, the same informational objective closes:
+// the next request is the answer, not another observation. This is the stop
+// that must stay cheap for an ordinary repository question.
+func TestProjectorStopsOnceRequiredEvidenceIsKnown(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "check this project and analyze what this project is about?",
+	}, ShapeParams{Authority: "ask"})
+
+	turns := []agent.Turn{
+		{Results: []agent.ToolOutcome{readTurn("c1", "README.md", "1\t# Project").Results[0]}},
+		{Results: []agent.ToolOutcome{readTurn("c2", "main.go", "1\tpackage main").Results[0]}},
+	}
+	projected := informationalProjection(t, shape, turns)
+	if projected.Report.Sufficiency != string(Sufficient) {
+		t.Fatalf("sufficiency = %s, want SUFFICIENT", projected.Report.Sufficiency)
+	}
+	if len(projected.Tools) != 0 {
+		t.Fatalf("a sufficient answer still offered %d tool(s)", len(projected.Tools))
+	}
+	if !projected.Report.AnswerEligible {
+		t.Fatal("a sufficient repository answer was not answer-eligible")
+	}
+	if len(projected.Report.Excluded) == 0 {
+		t.Fatal("the evidence-complete stop was not audited")
 	}
 }
 
@@ -116,6 +147,28 @@ func TestProjectorKeepsToolsWhenTheObservationAddsAFact(t *testing.T) {
 	projected := informationalProjection(t, shape, []agent.Turn{first, second})
 	if len(projected.Tools) == 0 {
 		t.Fatal("a second window of the same file was treated as a repeat")
+	}
+}
+
+// A declared literal target has required evidence even when the request is not
+// a repository-wide question. Once that evidence is known, the target answer is
+// as complete as a repository overview: keeping tools open would be waste.
+func TestProjectorClosesADeclaredTargetAnswer(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Read note.txt",
+		Targets: []contract.Target{{
+			Kind: contract.TargetPath, Value: "note.txt",
+		}},
+	}, ShapeParams{Authority: "ask"})
+
+	first := readTurn("c1", "note.txt", "1\tcontents")
+	projected := informationalProjection(t, shape, []agent.Turn{first})
+	if projected.Report.Sufficiency != string(Sufficient) {
+		t.Fatalf("sufficiency = %s, want SUFFICIENT", projected.Report.Sufficiency)
+	}
+	if len(projected.Tools) != 0 {
+		t.Fatalf("a known literal target still offered %d tool(s)", len(projected.Tools))
 	}
 }
 

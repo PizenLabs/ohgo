@@ -51,3 +51,27 @@ func TestRenderStateCarriesGrounding(t *testing.T) {
 		}
 	}
 }
+
+// The model sees the claim boundary before it writes the answer, so it does
+// not learn the difference between configuration and observed behavior only
+// from a completion review.
+func TestRenderStateCarriesClaimBoundary(t *testing.T) {
+	intent := contract.IntentContract{
+		Objective: "check this project",
+		Kind:      contract.ObjectiveInformational,
+	}
+	shape := BuildShape(intent, ShapeParams{Authority: "ask", Intent: "read"})
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		ToolName: "read",
+		Args:     map[string]any{"path": "README.md"},
+		Result:   agent.Result{Text: "project"},
+	})
+	rendered := RenderState(shape, state, SummarizeExecution(nil), Sufficiency{State: Sufficient, Stage: StageAnswer},
+		CandidateSet{}, 0, 0)
+	for _, want := range []string{"Claim boundary", "configuration declares topology", "unobserved metrics"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("state block missing %q:\n%s", want, rendered)
+		}
+	}
+}

@@ -24,6 +24,24 @@ type CandidateSet struct {
 	Notices []string
 }
 
+// informationalEvidenceBoundary reports whether an informational objective has
+// all the evidence its projection can use. A deferred phase that still needs
+// execution its authority permits is not at the answer boundary: its next step
+// may be a probe or a command, not prose. The same predicate drives both the
+// candidate surface and AnswerEligible so the two cannot disagree.
+func informationalEvidenceBoundary(shape TaskShape, suff Sufficiency) bool {
+	if shape.Kind != contract.ObjectiveInformational {
+		return false
+	}
+	if suff.Stage != StageAnswer && suff.Stage != StageComplete {
+		return false
+	}
+	if shape.Phase && shape.NeedsExecution && shape.Authority.ExecutionAllowed {
+		return false
+	}
+	return shape.RepositoryScope || len(shape.RequiredKnowledge) > 0
+}
+
 // Candidates narrows a tool surface to what the task shape can use.
 //
 // The policy is deliberately conservative. It removes a tool only when its
@@ -127,8 +145,7 @@ func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.To
 	// the answer. Continuing to offer read/search tools there let a model observe
 	// a whole repository after the runtime already had enough to answer, and
 	// burn the turn budget without ever producing one.
-	if suff.Stage == StageComplete ||
-		(shape.Kind == contract.ObjectiveInformational && shape.RepositoryScope && suff.Stage == StageAnswer) {
+	if suff.Stage == StageComplete || informationalEvidenceBoundary(shape, suff) {
 		return "the objective's evidence is complete; answer without further tools", true
 	}
 	if suff.Stage == StageBlocked && suff.Kind == BlockCapabilityFailure {
@@ -192,15 +209,20 @@ func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.To
 			return "the requested target is absent; this tool requires an existing file", true
 		}
 	}
-	if agent.HasActionClass(tool, agent.ActionExecute) && !shape.NeedsExecution {
+	if agent.HasActionClass(tool, agent.ActionExecute) &&
+		(!shape.NeedsExecution || !shape.Authority.ExecutionAllowed) {
 		// A configured MCP mutation capability is dual-use: the same tool runs
 		// an execute-class remote operation or a mutation/interaction. It must
 		// stay available for a mutation objective even though that objective
 		// does not require local process execution. A non-configured dual-use
 		// tool (a shell) keeps the original execution-only rule.
 		configuredMutation := agent.HasActionClass(tool, agent.ActionConfigured) &&
-			agent.HasActionClass(tool, agent.ActionMutate) && shape.Mutation.Allowed
+			agent.HasActionClass(tool, agent.ActionMutate) &&
+			shape.Mutation.Allowed && shape.Authority.ExecutionAllowed
 		if !configuredMutation {
+			if !shape.Authority.ExecutionAllowed {
+				return "the active authority cannot execute a process", true
+			}
 			return "the task does not require execution", true
 		}
 	}
@@ -289,30 +311,6 @@ func operationsIntersect(requested, provided []contract.ChangeOp) bool {
 		}
 	}
 	return false
-}
-
-// withholdExploration removes every remaining tool once the run has stopped
-// gaining evidence, and records why.
-//
-// The refusal is the runtime's answer to "does the next action have a chance of
-// resolving an unresolved part of the request?". When the last observed turn
-// added no fact, another probe cannot change the conclusion, so the next request
-// is for the answer. The decision is per turn and derived from evidence, so it
-// is not a tool-call budget.
-func withholdExploration(set CandidateSet) CandidateSet {
-	const reason = "the last observation added no new evidence; answer from the evidence already established"
-	if len(set.Tools) == 0 {
-		return set
-	}
-	for _, tool := range set.Tools {
-		set.Excluded = append(set.Excluded, agent.CandidateExclusion{Tool: tool.Name(), Reason: reason})
-	}
-	// An empty, non-nil slice is the "no tools" request. A nil slice means
-	// "leave the tool set unchanged" to the loop, which would silently keep the
-	// surface open.
-	set.Tools = []agent.Tool{}
-	set.Notices = append(set.Notices, reason+" (all remaining tools)")
-	return set
 }
 
 // CandidateSummary renders the offered set for a state block.

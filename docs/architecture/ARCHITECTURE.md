@@ -131,8 +131,10 @@ The same contract is consumed at three seams:
   so the model sees what it must preserve.
 - `agent.EvaluateTaskCompletion` calls `AssessGrounding` after structural
   evidence and before `COMPLETED`. Dropped entities, an invented action
-  narrative, narrowed scope, unresolved references, and unsupported negative
-  conclusions downgrade the result to `NEEDS_REVIEW`.
+  narrative, narrowed scope, unresolved references, unsupported negative
+  conclusions, and an unsupported claim scope (configuration promoted to
+  behavior, an unmeasured metric, independent deployment, or path-scoped
+  speculation) downgrade the result to `NEEDS_REVIEW`.
 
 Task persistence carries the grounding inside the existing `IntentContract`, so
 a resumed task keeps the same semantic boundary. `$sup` is deliberately not
@@ -249,8 +251,13 @@ user's request before execution and the evidence the runtime observed.
   A broad repository account keeps documentation claims distinguishable from
   observed implementation facts: a term that appears only in README/docs, never
   in a source or structural observation, must be attributed ("the README
-  describes ...") or the verdict is `NEEDS_REVIEW`. The evaluator does not judge
-  answer relevance beyond these deterministic provenance boundaries.
+  describes ...") or the verdict is `NEEDS_REVIEW`. It also keeps evidence
+  classes distinguishable: a manifest declares a dependency, Compose declares
+  topology, and only a source or execution observation establishes behavior.
+  A concrete line count needs the read's measurement, an independent-deployment
+  conclusion needs a deployment artifact, and a path-scoped inference needs an
+  observation of that path. The evaluator does not judge answer relevance beyond
+  these deterministic provenance and claim-scope boundaries.
 - **TUI task path.** `task.Begin` persists the contract, the pre-run target
   snapshot, and later the review reason. `NEEDS_REVIEW` is non-terminal. A
   continuation reuses the persisted contract and snapshot; a materially
@@ -263,9 +270,15 @@ user's request before execution and the evidence the runtime observed.
   InformationalPhase` narrow that turn to an informational phase; a substantive
   answer leaves the task `RUNNING` (`ACTIVE`) with the same identity and no
   proof. It is not `NEEDS_REVIEW` for a change the authority never permitted or
-  the branch has not reached. The next turn under the required authority
-  continues the same task. See [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md)
-  and [`TASK_CONTINUITY.md`](TASK_CONTINUITY.md).
+  the branch has not reached. The projector builds its task shape from that
+  phase contract too, so it does not ask the model for evidence the authority
+  can never acquire; a phase that still permits execution keeps its execution
+  surface until its own evidence boundary. A staged conditional mutation
+  defers its literal target-state requirement to the change branch: the
+  investigation is not a failed read of a future target. The next turn under
+  the required authority continues the same task. See
+  [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md) and
+  [`TASK_CONTINUITY.md`](TASK_CONTINUITY.md).
 - **Task context.** The same checkpoint carries structured, role-independent
   context: evidence-backed facts, hypotheses and dispositions, task-linked
   evidence, outstanding questions, and isolated ASK/FUZZ/BUILD execution
@@ -300,6 +313,12 @@ the model said. Two properties keep the loop honest and small:
   verdict vetoes completion, so a model that answers without observing the
   repository is `NEEDS_REVIEW`, not `COMPLETED`. A general knowledge question
   declares no such need.
+- **Known workspace facts are surfaced before they are re-queried.** The cheap,
+  model-free root probe already knows the project's markers, detected
+  languages, and root entry count; the runtime state block carries that bounded
+  line so the model does not spend a tool call rediscovering its own
+  environment. The probe is orientation, never evidence: completion still
+  requires an observation.
 - **A coordinate and a concept are different claims.** A slash compound is not
   a filesystem path by itself. A token with a file extension, a following path
   noun ("directory", "file"), a direct path verb/preposition, or backticks is a
@@ -324,6 +343,11 @@ the model said. Two properties keep the loop honest and small:
   into a repository-wide survey. A repository that has source code also needs
   at least one implementation observation; two documentation artifacts describe
   what the project says about itself, not what its implementation does.
+- **A path-scoped mutation already has its coordinate.** When a mutation names
+  a concrete path, the path is the edit boundary; completion re-resolves every
+  named symbol after the change, so the run does not also demand a separate
+  `symbols` lookup before editing. A targetless mutation keeps the coordinate
+  requirement.
 - **A conceptual mutation branch is bounded by its check.** A mutation that
   names no literal target but does name a repository concept and an explicit
   check ("investigate the checkout flow; if confirmed, fix it and run the
@@ -368,15 +392,22 @@ the model said. Two properties keep the loop honest and small:
   projection is terminally blocked and names that gap. Once the external
   capability produces a successful observation, normal sufficiency and the
   answer boundary apply.
-- **The stop is evidence-driven, not a call budget.** After the run's first
-  observation turn, a completed turn that observed the repository but added no
-  new fact has no evidence gain left: for an informational objective the next
-  request is for the answer, so the projector withholds every remaining tool and
-  records why. A turn that learned something — including a different window of
-  the same file — keeps the full surface. Errors, refusals, and generic tool
-  output are control signals, so a model that is correcting itself is never
-  mistaken for one that is repeating itself. Change objectives are exempt: their
-  next action is the change, not another observation.
+- **The stop is evidence-driven, not a call budget.** The action surface closes
+  when sufficiency reaches `answer` or `complete`, or when a required
+  capability is blocked; those are the states in which another call cannot
+  change the conclusion. A completed turn that observed the repository but
+  added no new fact does not close the surface while the shape still declares
+  missing evidence: the projector keeps the capabilities the current authority
+  permits and appends a bounded escalation reason plus the existing `Next
+  evidence` guidance, so the next request changes the coordinate or capability
+  instead of repeating it. A turn that learned something — including a
+  different window of the same file — keeps the full surface. Errors, refusals,
+  and generic tool output are control signals, so a model that is correcting
+  itself is never mistaken for one that is repeating itself. A deferred phase
+  that still needs execution its authority permits is not at the answer
+  boundary either; its next step may be a probe or a command. Change objectives
+  are exempt from the informational boundary: their next action is the change,
+  not another observation.
 
 Budgets remain safety bounds, never the reason a run concludes. A weaker model
 may therefore spend more turns reaching the same evidence; the stop follows the

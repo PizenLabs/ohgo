@@ -34,6 +34,10 @@ type ArtifactTool struct {
 	// sink persists the artifact. A nil sink refuses the call rather than
 	// silently dropping the record.
 	sink ArtifactSink
+	// observers receive the same recorded artifact after the primary sink.
+	// They are additive so a host can project the artifact into task continuity
+	// without replacing session persistence.
+	observers []ArtifactSink
 }
 
 // NewArtifactTool returns an artifact tool for a live workspace source and
@@ -99,6 +103,18 @@ func NewArtifactTool(sink ArtifactSink, origin func() workspace.Workspace) *Arti
 // check it was never told about.
 func (t *ArtifactTool) SetVerificationSource(source func() bool) {
 	t.verificationObserved = source
+}
+
+// AddSink appends an observer for a successful artifact record. It is
+// additive, so a host can keep the existing session sink and also project the
+// artifact into task continuity. A nil observer is ignored. Observers run after
+// the primary sink; an observer failure is reported to the model because a
+// durable projection that silently dropped the record would make the next
+// handoff lie.
+func (t *ArtifactTool) AddSink(observer ArtifactSink) {
+	if observer != nil {
+		t.observers = append(t.observers, observer)
+	}
 }
 
 // Execute implements agent.Tool.
@@ -172,6 +188,11 @@ func (t *ArtifactTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 	}
 	if err := t.sink(artifact); err != nil {
 		return agent.ErrorResult("record artifact: %v", err)
+	}
+	for _, observer := range t.observers {
+		if err := observer(artifact); err != nil {
+			return agent.ErrorResult("project artifact into task continuity: %v", err)
+		}
 	}
 	return agent.Result{Text: fmt.Sprintf("recorded %s %s (%s)", artifact.Kind, artifact.ID, target)}
 }

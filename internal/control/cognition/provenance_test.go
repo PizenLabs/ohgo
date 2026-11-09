@@ -105,6 +105,42 @@ func TestProvenanceSummarySubtractsObservedImplementationTerms(t *testing.T) {
 	}
 }
 
+// A documentation-only warning is current state. Once the implementation
+// corroborates the same term, the warning must clear and the same answer must
+// pass provenance; keeping it would punish the run for evidence it later
+// acquired.
+func TestAnswerProvenanceClearsAfterImplementationCorroboration(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "The platform uses Redis for storage."),
+	)
+	answer := "The project uses Redis for storage."
+	before := state.Provenance(shape)
+	if assessment := agent.AssessAnswerProvenance(contract.IntentContract{
+		Objective: shape.Objective,
+		Kind:      contract.ObjectiveInformational,
+	}, answer, before); assessment.Pass() {
+		t.Fatalf("a documentation-only claim passed before implementation evidence: %+v", before)
+	}
+
+	observeReads(state, shape,
+		readEvidenceForTest("read-2", "main.go", "package main\n// redis client setup"),
+	)
+	after := state.Provenance(shape)
+	for _, term := range after.DocumentationTerms {
+		if term == "redis" {
+			t.Fatalf("a corroborated term remained documentation-only: %+v", after.DocumentationTerms)
+		}
+	}
+	if assessment := agent.AssessAnswerProvenance(contract.IntentContract{
+		Objective: shape.Objective,
+		Kind:      contract.ObjectiveInformational,
+	}, answer, after); !assessment.Pass() {
+		t.Fatalf("a corroborated answer was still rejected: %s", assessment.Reason())
+	}
+}
+
 // The project's own title is identity, and generic nouns are not claims; the
 // documentation vocabulary keeps only specific proper names and metrics.
 func TestDocumentationTitleAndGenericNounsAreNotClaims(t *testing.T) {

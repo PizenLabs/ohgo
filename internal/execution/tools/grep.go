@@ -185,6 +185,9 @@ func (t *GrepTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 			}
 			info, err := os.Stat(resolved)
 			if err != nil {
+				if os.IsNotExist(err) {
+					return absenceResult("stat %q: %v", path, err)
+				}
 				return agent.ErrorResult("stat %q: %v", path, err)
 			}
 			scope = resolved

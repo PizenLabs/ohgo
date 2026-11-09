@@ -204,6 +204,9 @@ func (t *SymbolsTool) Execute(ctx agent.Context, args map[string]any) agent.Resu
 		}
 		info, err := os.Stat(resolved)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return absenceResult("stat %q: %v", pathArg, err)
+			}
 			return agent.ErrorResult("stat %q: %v", pathArg, err)
 		}
 		rel, err := filepath.Rel(t.Root, resolved)

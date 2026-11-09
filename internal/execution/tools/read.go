@@ -77,14 +77,7 @@ func (t *ReadTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Absence is a fact the model asked for. It remains an error in
-			// the tool result so the model does not treat it as content, but
-			// completion records it as an observation rather than a failure.
-			return agent.Result{
-				Text:            fmt.Sprintf("stat %q: %v", raw, err),
-				IsError:         true,
-				ObservedAbsence: true,
-			}
+			return absenceResult("stat %q: %v", raw, err)
 		}
 		return agent.ErrorResult("stat %q: %v", raw, err)
 	}
@@ -136,11 +129,7 @@ func (t *ReadTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return agent.Result{
-				Text:            fmt.Sprintf("read %q: %v", raw, err),
-				IsError:         true,
-				ObservedAbsence: true,
-			}
+			return absenceResult("read %q: %v", raw, err)
 		}
 		return agent.ErrorResult("read %q: %v", raw, err)
 	}

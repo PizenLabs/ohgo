@@ -139,7 +139,12 @@ func ContextFor(t Task, role workspace.Workspace, lastAction string) []string {
 	}
 	b.addBlock("Phase", t.Phase)
 	b.addBlock("Current step", t.ActiveStep)
-	b.addBlock("Review reason", t.ReviewReason)
+	// The reason is current state only while the review is open. After a
+	// resume it remains durable history (and appears in the timeline), but
+	// presenting it as current would make resolved uncertainty look live.
+	if t.Status == StatusNeedsReview {
+		b.addBlock("Review reason", t.ReviewReason)
+	}
 	b.addBlock("Constraints", strings.Join(t.Constraints, "; "))
 	b.addBlock("Todo", renderTodoContext(t))
 	if active, ok := t.ActiveTodo(); ok {

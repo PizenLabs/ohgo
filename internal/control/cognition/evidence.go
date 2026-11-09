@@ -376,13 +376,23 @@ func (s *EvidenceState) hasAnyExact() bool {
 // establish coordinates for a structural answer.
 func (s *EvidenceState) hasRepositoryOverview() bool {
 	for _, item := range s.Items {
-		if item.Status == StatusConflicting {
+		switch item.Status {
+		case StatusConflicting, StatusUnknown, StatusRequired:
 			continue
 		}
-		if strings.HasPrefix(item.ID, "file:") ||
-			strings.HasPrefix(item.ID, "search:grep:") ||
-			strings.HasPrefix(item.ID, "symbols:") {
-			return true
+		switch {
+		case strings.HasPrefix(item.ID, "file:"):
+			// A missing-file observation is target state, not content. It has
+			// no retained value, so it cannot answer what the repository does.
+			if item.Retention == RetentionExact && strings.TrimSpace(item.Value) != "" {
+				return true
+			}
+		case strings.HasPrefix(item.ID, "search:grep:"), strings.HasPrefix(item.ID, "symbols:"):
+			// A search that returned no payload or a structural query with no
+			// coordinates observed nothing content-bearing.
+			if strings.TrimSpace(item.Value) != "" {
+				return true
+			}
 		}
 	}
 	return false
@@ -1221,60 +1231,24 @@ func isMissingFileError(text string) bool {
 		strings.Contains(lower, "cannot find")
 }
 
-// repositoryManifestLanguages maps a manifest base name to the implementation
-// language it identifies. An empty language marks a manifest for a language the
-// runtime does not model (Java, Ruby, PHP, Elixir): it is still manifest
-// evidence, but it contributes no language identity to provenance.
-var repositoryManifestLanguages = map[string]string{
-	"go.mod": "go", "go.sum": "go", "go.work": "go",
-	"package.json": "javascript", "package-lock.json": "javascript",
-	"yarn.lock": "javascript", "pnpm-lock.yaml": "javascript",
-	"cargo.toml": "rust", "cargo.lock": "rust",
-	"pyproject.toml": "python", "requirements.txt": "python",
-	"poetry.lock": "python", "pipfile": "python", "pipfile.lock": "python",
-	"pom.xml": "", "build.gradle": "", "build.gradle.kts": "",
-	"settings.gradle": "", "settings.gradle.kts": "",
-	"gemfile": "", "gemfile.lock": "",
-	"composer.json": "", "composer.lock": "",
-	"mix.exs": "", "mix.lock": "",
-}
-
 // classifyPathProvenance decides what a path observation can support.
 //
-// The classification is path-based and deterministic. Documentation is what
-// the project says about itself; a manifest states dependencies; vendored and
-// generated files are not the project's own implementation. Everything else
-// that a source tool read is treated as an implementation observation.
+// The path classification is owned by agent.ClassifyPath, so answer claim
+// scope and evidence provenance cannot drift apart. Documentation is what the
+// project says about itself; a manifest states dependencies; vendored and
+// generated files are not the project's own implementation. Configuration and
+// source observations remain implementation observations for provenance.
 func classifyPathProvenance(path string) Provenance {
-	normalized := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
-	if normalized == "" {
+	switch agent.ClassifyPath(path) {
+	case agent.PathDocumentation:
+		return ProvenanceDocumentation
+	case agent.PathManifest:
+		return ProvenanceManifest
+	case agent.PathGenerated:
+		return ProvenanceGenerated
+	default:
 		return ProvenanceObservation
 	}
-	base := filepath.Base(normalized)
-	for _, prefix := range []string{"vendor/", "node_modules/", "third_party/", "third-party/", "dist/", "build/", "gen/", "generated/"} {
-		if strings.HasPrefix(normalized, prefix) || strings.Contains(normalized, "/"+prefix) {
-			return ProvenanceGenerated
-		}
-	}
-	if strings.Contains(base, ".pb.") || strings.Contains(base, "_generated.") ||
-		strings.Contains(base, ".gen.") || strings.HasSuffix(base, ".min.js") ||
-		strings.HasSuffix(base, ".min.css") {
-		return ProvenanceGenerated
-	}
-	if _, ok := repositoryManifestLanguages[base]; ok {
-		return ProvenanceManifest
-	}
-	if strings.HasPrefix(normalized, "docs/") || strings.HasPrefix(normalized, "doc/") ||
-		strings.HasPrefix(normalized, "documentation/") ||
-		strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog") ||
-		strings.HasPrefix(base, "contributing") || strings.HasPrefix(base, "license") ||
-		strings.HasPrefix(base, "licence") || strings.HasPrefix(base, "notice") ||
-		strings.HasSuffix(base, ".md") || strings.HasSuffix(base, ".markdown") ||
-		strings.HasSuffix(base, ".rst") || strings.HasSuffix(base, ".adoc") ||
-		strings.HasSuffix(base, ".org") || strings.HasSuffix(base, ".txt") {
-		return ProvenanceDocumentation
-	}
-	return ProvenanceObservation
 }
 
 // isImplementationObservation reports whether an evidence item proves what the

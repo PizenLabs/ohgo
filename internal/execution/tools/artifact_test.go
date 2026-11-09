@@ -46,6 +46,35 @@ func TestArtifactToolRecordsAWorkspaceArtifact(t *testing.T) {
 	}
 }
 
+// The session sink and the task-continuity observer are additive: a host must
+// not have to replace durable artifact storage to project a finding.
+func TestArtifactToolNotifiesAdditiveSinks(t *testing.T) {
+	var primary, observed []workspace.Artifact
+	tool := NewArtifactTool(func(a workspace.Artifact) error {
+		primary = append(primary, a)
+		return nil
+	}, fixedArtifactWorkspace(workspace.Fuzz))
+	tool.AddSink(func(a workspace.Artifact) error {
+		observed = append(observed, a)
+		return nil
+	})
+	tool.AddSink(nil)
+
+	result := runArtifact(t, tool, map[string]any{
+		"kind": "finding", "target": "order/checkout", "status": "reproduced",
+		"reproduction": "go test ./order/...", "evidence": "FAIL",
+	})
+	if result.IsError {
+		t.Fatalf("recording a finding failed: %s", result.Text)
+	}
+	if len(primary) != 1 || len(observed) != 1 {
+		t.Fatalf("primary=%d observed=%d, want one record in each sink", len(primary), len(observed))
+	}
+	if observed[0].ID != primary[0].ID {
+		t.Fatalf("observer saw %q, primary saw %q", observed[0].ID, primary[0].ID)
+	}
+}
+
 func TestArtifactToolRefusesTheWrongKindForTheWorkspace(t *testing.T) {
 	// FUZZ may discover but not change: it cannot author a Change artifact,
 	// which is the same boundary as refusing to write a file (§27).

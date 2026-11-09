@@ -162,6 +162,21 @@ func TestSymbolsToolListsFileSymbols(t *testing.T) {
 	}
 }
 
+// A structural lookup scoped to a path that does not exist is an absence
+// observation, not an unrecovered failure: the model learned the scope is
+// empty, which is still usable evidence.
+func TestSymbolsMissingPathIsAnAbsenceObservation(t *testing.T) {
+	root := symbolsFixture(t, map[string]string{"tools/grep.go": symbolsTestRepo})
+
+	result := NewSymbolsTool(root).Execute(testContext(), map[string]any{"path": "missing"})
+	if !result.IsError {
+		t.Fatal("expected a missing path to remain an error for the model")
+	}
+	if !result.ObservedAbsence {
+		t.Error("a missing path is an absence observation, not an unrecovered failure")
+	}
+}
+
 func TestSymbolsToolListsPackageSymbols(t *testing.T) {
 	root := symbolsFixture(t, map[string]string{
 		"tools/a.go": "package tools\n\nfunc Alpha() {}\n",

@@ -47,6 +47,18 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	if shape.Objective != "" {
 		fmt.Fprintf(&head, "Objective: %s\n", bound(shape.Objective, 320))
 	}
+	if probe := workspaceProbeSummary(shape.RepositoryFacts); probe != "" {
+		fmt.Fprintf(&head, "Workspace probe: %s\n", probe)
+	}
+	// The answer-side claim audit and this line are the same contract: a
+	// manifest or topology declaration is not an implementation observation.
+	// Stating it in the state block keeps the model from paying for the
+	// distinction only after a completion review. A mutation answer is judged
+	// by target and verification evidence instead, so it does not spend the
+	// block on this distinction.
+	if shape.Kind == contract.ObjectiveInformational {
+		head.WriteString("Claim boundary: configuration declares topology, not behavior; unobserved metrics and path content stay unverified.\n")
+	}
 	fmt.Fprintf(&head, "Task shape: %s\n", shape.Summary())
 	if len(shape.Constraints) > 0 {
 		fmt.Fprintf(&head, "Constraints: %s\n", strings.Join(shape.Constraints, ", "))
@@ -259,6 +271,39 @@ func sourceSuffix(source Source) string {
 		return ""
 	}
 	return " (source: " + strings.Join(parts, " ") + ")"
+}
+
+// workspaceProbeSummary renders the already-measured workspace facts so the
+// model does not spend a capability rediscovering its language or manifests.
+// The probe is a hint, never evidence: completion still requires an observation.
+func workspaceProbeSummary(facts RepositoryFacts) string {
+	var parts []string
+	if facts.RootFiles > 0 {
+		parts = append(parts, fmt.Sprintf("%d root entries", facts.RootFiles))
+	}
+	if len(facts.Markers) > 0 {
+		parts = append(parts, "markers "+strings.Join(facts.Markers, ", "))
+	}
+	var languages []string
+	if facts.Go {
+		languages = append(languages, "Go")
+	}
+	if facts.JavaScript {
+		languages = append(languages, "JavaScript")
+	}
+	if facts.Python {
+		languages = append(languages, "Python")
+	}
+	if facts.Rust {
+		languages = append(languages, "Rust")
+	}
+	if len(languages) > 0 {
+		parts = append(parts, "detected "+strings.Join(languages, ", "))
+	}
+	if facts.Make {
+		parts = append(parts, "Make available")
+	}
+	return bound(strings.Join(parts, "; "), 320)
 }
 
 // verificationSummary renders the contract's verification requirements.

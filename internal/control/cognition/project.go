@@ -86,11 +86,6 @@ type Projector struct {
 	Facts RepositoryFacts
 	// Options bounds the projection.
 	Options ProjectorOptions
-	// stopped records that the run reached the evidence-aware stop. Once a
-	// completed turn observed the repository without adding a fact, the next
-	// request is for the answer; re-offering tools would let a model spend
-	// turns on exploration that cannot change the conclusion.
-	stopped bool
 }
 
 // NewProjector returns a projector for one turn.
@@ -139,20 +134,23 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	}
 	failures := p.Evidence.FailureState()
 	candidates := Candidates(shape, p.Evidence, execution, req.Tools, p.Facts, suff)
-
-	// Evidence-aware stop: an informational objective is an answer, and an
-	// observation turn that added no fact has nothing left to contribute to it.
-	// The first turn of a run is not judged: a model may be re-establishing
-	// context from persisted evidence, and that is not a wasted turn. After
-	// that, the decision uses the last turn's evidence gain, never a call count,
-	// so a model that is still learning is never cut off. A change objective is
-	// exempt because its next action is the change itself, not another probe.
-	if !p.stopped && shape.Kind == contract.ObjectiveInformational &&
-		len(req.Turns) > 1 && observed > 0 && novel == 0 {
-		p.stopped = true
-	}
-	if p.stopped {
-		candidates = withholdExploration(candidates)
+	// A repeated observation with required evidence still missing is not a
+	// reason to close the action surface: the contract is not satisfied, and
+	// forcing an answer would only produce a completion veto. The first turn of
+	// a run is not judged because a model may be re-establishing context from
+	// persisted evidence. After that, a no-gain turn escalates with the exact
+	// missing requirement instead of blindly re-offering the same coordinates.
+	// Closure remains stage-driven (answer/complete/blocked), never novelty.
+	if shape.Kind == contract.ObjectiveInformational && len(req.Turns) > 1 &&
+		observed > 0 && novel == 0 && len(suff.Missing) > 0 &&
+		(suff.State == Insufficient || suff.State == Conflicting) {
+		suff.Reasons = append(suff.Reasons,
+			"the last observation added no new evidence; repeating the same coordinate cannot close the remaining gap")
+		if len(suff.Next) == 0 {
+			for _, missing := range suff.Missing {
+				suff.Next = append(suff.Next, nextEvidence(missing))
+			}
+		}
 	}
 
 	messages, report := projectMessages(req.Messages, p.Evidence, options)
@@ -172,9 +170,8 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// answer is final and the call is continuation, not evidence gathering.
 	// A blocked capability has the same answer boundary: the runtime cannot
 	// acquire more evidence, so the next visible text is the candidate report.
-	report.AnswerEligible = shape.Kind == contract.ObjectiveInformational &&
-		((shape.RepositoryScope && (suff.Stage == StageAnswer || suff.Stage == StageComplete)) ||
-			suff.Kind == BlockCapabilityFailure)
+	report.AnswerEligible = informationalEvidenceBoundary(shape, suff) ||
+		(shape.Kind == contract.ObjectiveInformational && suff.Kind == BlockCapabilityFailure)
 	report.Terminal = suff.Kind == BlockCapabilityFailure
 	if report.Terminal {
 		report.StopReason = "the task is blocked: " + strings.Join(suff.Reasons, "; ")

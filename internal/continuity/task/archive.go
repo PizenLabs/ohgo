@@ -278,6 +278,12 @@ func sanitizeArchived(file *archivedFile) archiveRepairs {
 		file.Progress.ActiveRole = ""
 		repairs.add("the archived checkpoint role was invalid and was dropped", "active role")
 	}
+	if file.Task.Status == StatusCompleted {
+		// Completion resolves the review boundary. Preserve the historical
+		// reason in the timeline, not as a current archived-task warning.
+		file.Task.ReviewReason = ""
+		file.Progress.ReviewReason = ""
+	}
 	context, changes := file.Task.Context.Sanitize(file.Task.ID)
 	file.Task.Context = context
 	if changes > 0 {

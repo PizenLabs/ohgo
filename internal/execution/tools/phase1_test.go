@@ -177,6 +177,22 @@ func TestGrepRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+// A search scoped to a path that does not exist is an absence observation, not
+// an unrecovered failure: the model learned the guessed scope is empty.
+func TestGrepMissingScopeIsAnAbsenceObservation(t *testing.T) {
+	root := t.TempDir()
+	result := NewGrepTool(root).Execute(testContext(), map[string]any{
+		"pattern": "needle",
+		"path":    "missing",
+	})
+	if !result.IsError {
+		t.Fatal("expected a missing scope to remain an error for the model")
+	}
+	if !result.ObservedAbsence {
+		t.Error("a missing scope is an absence observation, not an unrecovered failure")
+	}
+}
+
 func TestGrepReportsNoMatches(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{"a.go": "content\n"})
@@ -283,6 +299,31 @@ func TestLsRejectsFilesAndOutsidePaths(t *testing.T) {
 	}
 	if result := tool.Execute(testContext(), map[string]any{"path": "../../etc"}); !result.IsError {
 		t.Error("expected a path outside the root to fail")
+	}
+}
+
+// A missing directory is the answer to the probe, not a failed call. Without
+// this, completion reported NEEDS_REVIEW for a run that had already answered,
+// because an exploratory "ls" of a path that does not exist stayed an
+// unrecovered execution failure.
+func TestLsMissingDirectoryIsAnAbsenceObservation(t *testing.T) {
+	root := t.TempDir()
+	result := NewLsTool(root).Execute(testContext(), map[string]any{"path": "src/pages"})
+	if !result.IsError {
+		t.Fatal("expected a missing directory to remain an error for the model")
+	}
+	if !result.ObservedAbsence {
+		t.Error("a missing directory is an absence observation, not an unrecovered failure")
+	}
+
+	// A path that exists but is not a directory is a model error, not absence.
+	writeTree(t, root, map[string]string{"a.txt": "x"})
+	file := NewLsTool(root).Execute(testContext(), map[string]any{"path": "a.txt"})
+	if !file.IsError {
+		t.Fatal("expected a file path to be rejected")
+	}
+	if file.ObservedAbsence {
+		t.Error("a non-directory path was reported as absence")
 	}
 }
 

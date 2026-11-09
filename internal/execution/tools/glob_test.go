@@ -200,6 +200,23 @@ func TestGlobReportsNoMatches(t *testing.T) {
 	}
 }
 
+// A glob scoped to a path that does not exist is an absence observation, not
+// an unrecovered failure: the model asked a bounded question and learned the
+// path is not there, which is still usable evidence.
+func TestGlobMissingScanPathIsAnAbsenceObservation(t *testing.T) {
+	root := t.TempDir()
+	result := NewGlobTool(root).Execute(testContext(), map[string]any{
+		"pattern": "*.go",
+		"path":    "missing",
+	})
+	if !result.IsError {
+		t.Fatal("expected a missing scan path to remain an error for the model")
+	}
+	if !result.ObservedAbsence {
+		t.Error("a missing scan path is an absence observation, not an unrecovered failure")
+	}
+}
+
 func TestGlobHonoursCancellation(t *testing.T) {
 	root := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
