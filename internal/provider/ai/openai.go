@@ -398,6 +398,12 @@ func (a *openAIAccumulator) apply(event sseEvent) error {
 				Role      string               `json:"role"`
 				Content   string               `json:"content"`
 				ToolCalls []openAIWireToolCall `json:"tool_calls"`
+				// ReasoningContent is the thinking channel emitted by
+				// OpenAI-compatible providers (DeepSeek, vLLM, and similar).
+				// It is not answer text and must stay a separate block.
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				// Reasoning is the same channel under OpenRouter's name.
+				Reasoning json.RawMessage `json:"reasoning"`
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
@@ -434,6 +440,17 @@ func (a *openAIAccumulator) apply(event sseEvent) error {
 	}
 
 	for _, choice := range chunk.Choices {
+		// Reasoning is handled before visible text in the same chunk: the
+		// model thinks before it answers, and the canonical message must keep
+		// that order rather than reordering the trace after the answer.
+		reasoning := reasoningText(choice.Delta.ReasoningContent)
+		if reasoning == "" {
+			reasoning = reasoningText(choice.Delta.Reasoning)
+		}
+		if reasoning != "" {
+			a.appendThinking(reasoning)
+			a.pending = append(a.pending, EventThinkingDelta{Delta: reasoning})
+		}
 		if choice.Delta.Content != "" {
 			a.appendText(choice.Delta.Content)
 			a.pending = append(a.pending, EventTextDelta{Delta: choice.Delta.Content})
@@ -483,6 +500,38 @@ func (a *openAIAccumulator) appendText(text string) {
 	// OpenAI sends role/content as separate chunks, so the first content chunk
 	// must create the block.
 	a.msg.Content = append(a.msg.Content, TextContent{Text: text})
+}
+
+// reasoningText extracts a string reasoning delta.
+//
+// The field is a provider extension, so a gateway that uses a different shape
+// must not fail the whole answer stream: only a string is consumed and any
+// other shape is ignored like an unknown field.
+func reasoningText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return ""
+	}
+	return text
+}
+
+// appendThinking extends the trailing thinking block.
+//
+// Like appendText, it merges only with the immediately preceding block, so a
+// reasoning delta that arrives after a tool call or visible text starts a new
+// trace at the provider's logical position instead of moving backwards.
+func (a *openAIAccumulator) appendThinking(text string) {
+	if n := len(a.msg.Content); n > 0 {
+		if t, ok := a.msg.Content[n-1].(ThinkingContent); ok {
+			t.Thinking += text
+			a.msg.Content[n-1] = t
+			return
+		}
+	}
+	a.msg.Content = append(a.msg.Content, ThinkingContent{Thinking: text})
 }
 
 func (a *openAIAccumulator) applyToolCallDelta(wire openAIWireToolCall) error {

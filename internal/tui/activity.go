@@ -6,21 +6,21 @@ import "time"
 //
 // The runtime has exactly one current activity, but it has two legitimate
 // presentations: an entry that is already in the transcript (a running tool or
-// an open reasoning trace), or the one-row activity line for phases with no
-// entry of their own. This file is the single decision point for which of the
-// two owns the activity. Surfaces ask ProjectActivity; none of them re-derives
-// the choice from strings or from its own copy of the runtime state.
+// an open reasoning trace), or the fixed telemetry bar above the composer for
+// phases with no concrete entry of their own. ProjectActivity answers which
+// concrete action surface owns the detail; the bar always owns the semantic
+// phase and measured metrics (telemetry_bar.go). Surfaces ask the projections;
+// none of them re-derives the choice from strings or from its own copy of the
+// runtime state.
 //
-// The full-screen canvas intentionally has no separate activity band. Its
-// composer sits below the transcript, so a band that appeared or disappeared
-// with the phase would move the composer between frames. Activity there is
-// always an entry: a tool block or a collapsed Thought row. The output-first
-// footer may show the line as a fallback because it is a stable status row
-// rather than a reserved transcript band.
+// The bar's slot is reserved even while idle. Its content appears and clears
+// with the turn, but its row never does, so a phase hand-off cannot move the
+// composer or the transcript. Concrete action detail stays in its entry: a
+// running tool keeps its summary, and an open Thought trace keeps its prose.
 //
-// The prompt boundary owns the workspace role. The activity projection never
-// carries it, so "BUILD" cannot appear once as a prompt and again as a status
-// line for the same turn.
+// The prompt boundary owns the workspace role. Neither projection carries it,
+// so "BUILD" cannot appear once as a prompt and again as a telemetry line for
+// the same turn.
 
 // ActivitySurface names the one surface that presents the current activity.
 type ActivitySurface int
@@ -29,7 +29,8 @@ const (
 	// ActivityNone means no surface presents the activity. The runtime is idle,
 	// an overlay owns the screen, or a dialog already represents the activity.
 	ActivityNone ActivitySurface = iota
-	// ActivityLine means the one-row activity line owns the activity.
+	// ActivityLine means no transcript entry owns the concrete action, so the
+	// telemetry bar's semantic phase is the only live presentation.
 	ActivityLine
 	// ActivityEntry means an existing transcript/live entry owns the activity.
 	ActivityEntry
@@ -152,9 +153,10 @@ func HeaderPhase(s State) (RuntimeState, bool) {
 	}
 }
 
-// ActivityLineText renders the activity line when, and only when, the line owns
-// the activity. Callers that own a status row use it instead of re-projecting
-// the runtime themselves.
+// ActivityLineText renders the generic one-row activity projection when no
+// entry owns the concrete action. The workspace bar uses projectLiveTelemetry
+// for its semantic phrase; this helper remains the single semantic line
+// projection for callers that own a status row and need the detailed phase.
 func ActivityLineText(s State, now time.Time, tick int, width int) string {
 	activity := ProjectActivity(s)
 	if activity.Surface != ActivityLine {

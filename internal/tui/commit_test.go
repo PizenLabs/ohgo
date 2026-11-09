@@ -350,13 +350,8 @@ func TestCommitShowsImmediateProgressAndKeepsTheLoopResponsive(t *testing.T) {
 		t.Fatalf("phase = %q active=%v immediately after /commit, want proposing", p.state.CommitPhase(), p.state.CommitActive())
 	}
 	out := stripANSI(Render(p.state))
-	if !strings.Contains(out, "prepare commit") {
-		t.Errorf("render = %q, want the commit activity line before the model answers", out)
-	}
-	for _, frame := range spinnerFrames {
-		if strings.Contains(out, frame) {
-			t.Errorf("render = %q, want the activity line free of spinner glyphs", out)
-		}
+	if !strings.Contains(out, spinnerGlyph(p.state.Status.Spinner)+" preparing commit…") {
+		t.Errorf("render = %q, want the live commit telemetry bar before the model answers", out)
 	}
 
 	// The provider is still blocked; the update loop must still process ticks.
@@ -365,8 +360,8 @@ func TestCommitShowsImmediateProgressAndKeepsTheLoopResponsive(t *testing.T) {
 	if p.state.Status.Spinner == before {
 		t.Error("the activity tick did not advance while the provider was pending")
 	}
-	if out := stripANSI(Render(p.state)); !strings.Contains(out, "prepare commit") {
-		t.Errorf("render = %q, want the stable activity label", out)
+	if out := stripANSI(Render(p.state)); !strings.Contains(out, "preparing commit…") {
+		t.Errorf("render = %q, want the stable telemetry label", out)
 	}
 
 	// Release the command and deliver its result through the normal Update

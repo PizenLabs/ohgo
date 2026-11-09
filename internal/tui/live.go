@@ -863,21 +863,18 @@ func liveConnectKeyLines(s State, pal *Palette, layout Layout) []string {
 }
 
 // liveStatusLine is the one-line runtime footer. It is the stable place for
-// measured telemetry (identity, tokens, context, path) and, only while no
-// transcript entry owns the phase, the activity line itself. A running tool or
-// an open reasoning entry already presents the phase, so the footer never
-// repeats it: one fact, one surface. The footer never reserves an extra row
-// for a hand-off, so the composer below it does not move.
+// the measured turn timer and session telemetry (identity, tokens, context,
+// path). The live phase belongs to the intent bar immediately above the
+// composer, so this row never repeats it: one fact, one surface. The footer
+// never reserves an extra row for a hand-off, and the intent bar's slot is
+// live-only, so an idle frame spends no row on it.
 func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	var parts []string
 	width := displayWidth(s, layout)
-	activityLine := ActivityLineText(s, time.Now(), s.Status.Spinner, width)
-	if activityLine == "" {
-		// The phase word remains the fallback for the one non-idle state the
-		// activity projection deliberately does not claim: shutting down.
-		if runtime := DeriveRuntime(s); runtime != RuntimeIdle {
-			parts = append(parts, RuntimeMarker(runtime)+" "+string(runtime))
-		}
+	// Shutting down is the one non-idle state no active telemetry row claims:
+	// the turn is already leaving, so the footer keeps the phase word.
+	if runtime := DeriveRuntime(s); runtime == RuntimeShuttingDown {
+		parts = append(parts, RuntimeMarker(runtime)+" "+string(runtime))
 	}
 	if s.Status.Model != "" {
 		parts = append(parts, s.Status.Model)
@@ -902,17 +899,11 @@ func liveStatusLine(s State, pal *Palette, layout Layout) string {
 	if path := sessionPathBranch(s); path != "" {
 		parts = append(parts, path)
 	}
-	if activityLine != "" {
-		if len(parts) == 0 {
-			return TruncateToWidth(activityLine, width)
-		}
-		tail := pal.Muted.Render(TruncateToWidth(strings.Join(parts, " · "), maxInt(width-CellWidth(activityLine)-3, 0)))
-		return TruncateToWidth(activityLine+" · "+tail, width)
-	}
-	if len(parts) == 0 {
+	line := withTurnElapsed(s, strings.Join(parts, " · "))
+	if line == "" {
 		return ""
 	}
-	return pal.Muted.Render(TruncateToWidth(strings.Join(parts, " · "), width))
+	return pal.Muted.Render(TruncateToWidth(line, width))
 }
 
 // liveComposerWidth is the text budget after the live prompt prefix. The
@@ -956,6 +947,11 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 	width := liveComposerWidth(s, layout)
 
 	var out []string
+	// The telemetry row appears only while a turn runs. Idle frames add no
+	// row, so the transcript flows straight into the prompt.
+	if bar := renderLiveTelemetryBar(s, pal, layout); bar != "" {
+		out = append(out, bar)
+	}
 	// The palette sits strictly above the input line it completes. It is
 	// expanded into one element per row so liveChrome's row count matches
 	// what the painter erases and rewrites.

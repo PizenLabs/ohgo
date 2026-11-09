@@ -47,10 +47,12 @@ type Layout struct {
 	ContentWidth int
 	// ConversationHeight is the rows reserved for the transcript.
 	ConversationHeight int
-	// HeaderLines, TaskLines, ComposerLines, StatusLines size the chrome.
-	HeaderLines   int
-	ComposerLines int
-	StatusLines   int
+	// HeaderLines, TaskLines, TelemetryLines, ComposerLines, StatusLines size
+	// the chrome.
+	HeaderLines    int
+	TelemetryLines int
+	ComposerLines  int
+	StatusLines    int
 	// TaskLines is the sticky active-task row below the title bar on tiers
 	// that do not render the sidebar. It is zero whenever no open task has an
 	// open todo: wide terminals keep the tracker in the sidebar instead, so
@@ -232,18 +234,28 @@ func computeLayoutWith(s State, content int, taskLines int) Layout {
 		// and keeps reserved == rendered.
 		status = 1
 	}
-	composer, sugg := composerHeight(s, content, mode, hints)
+	// The live telemetry bar owns a row immediately above the composer only
+	// while a turn is actually in flight. An idle frame releases the row
+	// entirely: reserving it would leave a blank gap between the transcript
+	// and the prompt, and the global footer already carries session telemetry.
+	hidden := overlayHidesComposer(s)
+	telemetry := 0
+	if !hidden && liveTelemetryVisible(s) {
+		telemetry = 1
+	}
+	composer, sugg := composerHeight(s, content, mode, hints, telemetry)
 	// An open overlay hides the composer (and its hints row belongs to the
 	// transcript chrome, not the overlay): reserving rows for regions that
 	// never render would short the viewport and unpin the footer.
 	// The overlay area fills the released rows instead. The quit popup is a
 	// centered modal like the plane and support surfaces, so it hides the
 	// composer the same way.
-	if overlayHidesComposer(s) {
+	if hidden {
 		composer = 0
 		sugg = 0
+		telemetry = 0
 	}
-	chrome := header + taskLines + status + hints + composer
+	chrome := header + taskLines + status + hints + telemetry + composer
 	conv := s.Height - chrome
 	if conv < 1 {
 		conv = 1
@@ -256,6 +268,7 @@ func computeLayoutWith(s State, content int, taskLines int) Layout {
 		ConversationHeight: conv,
 		HeaderLines:        header,
 		TaskLines:          taskLines,
+		TelemetryLines:     telemetry,
 		MainWidth:          s.Width,
 		ComposerLines:      composer,
 		StatusLines:        status,
@@ -304,7 +317,7 @@ func overlayHidesComposer(s State) bool {
 // leaves the transcript at least one row: suggestions yield first — rules,
 // input, and state never shrink for them. The renderer truncates to the
 // same count via Layout.PaletteLines.
-func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (lines, sugg int) {
+func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows, telemetryRows int) (lines, sugg int) {
 	lines = 2 // the two framing rules
 	inputRows := 1
 	text := s.Input
@@ -336,7 +349,10 @@ func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (l
 	}
 	sugg = paletteRows(s)
 	if s.Height > 0 {
-		maxSugg := s.Height - 2 - 1 - hintRows - 2 - inputRows - stateRows - 1
+		// The live telemetry row above the composer claims a cell only while
+		// a turn runs before suggestions may; suggestions yield first so the
+		// transcript and the composer keep their rows on a short screen.
+		maxSugg := s.Height - 2 - 1 - hintRows - 2 - inputRows - stateRows - telemetryRows - 1
 		if maxSugg < 0 {
 			maxSugg = 0
 		}

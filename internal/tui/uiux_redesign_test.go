@@ -279,8 +279,8 @@ func TestTranscriptReadsAsStateTransitions(t *testing.T) {
 		}
 		last = index
 	}
-	if got := strings.Count(out, running); got != 1 {
-		t.Fatalf("transcript has %d live markers, want exactly one:\n%s", got, out)
+	if got := strings.Count(out, running+" glob backend/**/*.go"); got != 1 {
+		t.Fatalf("transcript has %d live tool markers, want exactly one:\n%s", got, out)
 	}
 	if strings.Contains(out, "running") {
 		t.Fatalf("transcript used generic running vocabulary:\n%s", out)

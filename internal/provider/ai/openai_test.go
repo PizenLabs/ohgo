@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -106,6 +107,92 @@ data: [DONE]
 	}
 	if msg.Usage.CacheRead != 8 {
 		t.Errorf("cache read = %d, want 8", msg.Usage.CacheRead)
+	}
+}
+
+// TestOpenAIStreamCapturesReasoningContent proves OpenAI-compatible thinking
+// deltas stay on the reasoning channel instead of leaking into the answer.
+// Both field names in use across providers are accepted.
+func TestOpenAIStreamCapturesReasoningContent(t *testing.T) {
+	for _, field := range []string{"reasoning_content", "reasoning"} {
+		t.Run(field, func(t *testing.T) {
+			body := fmt.Sprintf(`data: {"choices":[{"index":0,"delta":{"role":"assistant","%[1]s":"plan "}}]}
+
+data: {"choices":[{"index":0,"delta":{"%[1]s":"the work"}}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"answer"}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`, field)
+			server, _ := sseServer(t, body, 0)
+			provider := &OpenAIProvider{APIKey: "sk-test", BaseURL: server.URL}
+
+			stream, err := provider.Stream(context.Background(), Request{
+				Model:     testOpenAIModel(),
+				Messages:  []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "hi"}}}},
+				MaxTokens: 1024,
+			})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			// Consume the normalized stream: this is the production path where
+			// protocol repair must not drop the separate reasoning channel.
+			normalized := NormalizeStream(context.Background(), stream, NormalizeOptions{})
+
+			var thinking, text strings.Builder
+			msg, err := DrainStreamHooks(context.Background(), normalized, DrainHooks{
+				OnText:     func(delta string) { text.WriteString(delta) },
+				OnThinking: func(delta string) { thinking.WriteString(delta) },
+			})
+			if err != nil {
+				t.Fatalf("DrainStreamHooks: %v", err)
+			}
+			if thinking.String() != "plan the work" {
+				t.Errorf("reasoning channel = %q, want %q", thinking.String(), "plan the work")
+			}
+			if text.String() != "answer" {
+				t.Errorf("text channel = %q, want %q", text.String(), "answer")
+			}
+			if msg.Text() != "answer" || msg.ThinkingText() != "plan the work" {
+				t.Errorf("assembled message = text %q thinking %q", msg.Text(), msg.ThinkingText())
+			}
+			if len(msg.Content) < 2 {
+				t.Fatalf("content blocks = %#v, want reasoning before text", msg.Content)
+			}
+			if _, ok := msg.Content[0].(ThinkingContent); !ok {
+				t.Errorf("block 0 = %#v, want the reasoning block", msg.Content[0])
+			}
+		})
+	}
+}
+
+func TestOpenAIStreamIgnoresNonStringReasoningExtension(t *testing.T) {
+	body := `data: {"choices":[{"index":0,"delta":{"reasoning":{"type":"summary"},"content":"answer"}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	server, _ := sseServer(t, body, 0)
+	provider := &OpenAIProvider{APIKey: "sk-test", BaseURL: server.URL}
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:     testOpenAIModel(),
+		Messages:  []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "hi"}}}},
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	msg, err := stream.Result()
+	if err != nil {
+		t.Fatalf("an unknown reasoning shape failed the stream: %v", err)
+	}
+	if msg.Text() != "answer" || msg.ThinkingText() != "" {
+		t.Errorf("message = text %q thinking %q, want the answer only", msg.Text(), msg.ThinkingText())
 	}
 }
 

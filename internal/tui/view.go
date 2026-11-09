@@ -23,6 +23,11 @@ type Palette struct {
 	ToolRun   lipgloss.Style
 	Notice    lipgloss.Style
 	Status    lipgloss.Style
+	// Thought renders a reasoning block's disclosure header. Amber marks the
+	// internal thinking channel as inspectable telemetry: it is distinct from
+	// the answer without borrowing the tool identity colour, which belongs to
+	// actions the runtime actually executed.
+	Thought   lipgloss.Style
 	Prompt    lipgloss.Style
 	Choice    lipgloss.Style
 	Selected  lipgloss.Style
@@ -118,6 +123,7 @@ func DarkPalette() *Palette {
 		ToolRun:      fg(darkWarning),
 		Notice:       fg(darkMuted).Italic(true),
 		Status:       fg(ColorMuted),
+		Thought:      fg(ColorStatus),
 		Prompt:       fg(ColorPrimary),
 		Choice:       fg(darkText),
 		Selected:     fg(darkAccent).Bold(true),
@@ -170,6 +176,7 @@ func LightPalette() *Palette {
 		ToolRun:      fg(lightWarning),
 		Notice:       fg(lightMuted).Italic(true),
 		Status:       fg(lightMuted),
+		Thought:      fg(chromeLightStatus),
 		Prompt:       fg(lightAccent),
 		Choice:       fg(lightText),
 		Selected:     fg(lightAccent).Bold(true),
@@ -319,12 +326,14 @@ func renderCanvasBody(sb *strings.Builder, state State, pal *Palette, layout Lay
 	}
 
 	if !overlayHidesComposer(state) {
-		// Main canvas. The composer is the last input surface and its height
-		// never depends on what the turn is doing: activity is represented by
-		// its transcript entry (a running tool block or a collapsed Thought
-		// row), and the stable hint/status row carries telemetry and keys.
-		// Reserving no phase band is what keeps the composer pinned while a
-		// fast task starts, hands off, and finishes.
+		// Main canvas. The composer is the last input surface. The telemetry
+		// row above it exists only while a turn runs: when the turn settles
+		// the row disappears, so the transcript sits directly above the
+		// composer rather than paying for a blank or duplicate summary line.
+		if bar := renderLiveTelemetryBar(state, pal, layout); bar != "" {
+			sb.WriteString(bar)
+			sb.WriteString("\n")
+		}
 		sb.WriteString(renderComposer(state, pal, layout))
 		if layout.ShowHints {
 			hintStyle := pal.Muted
@@ -398,10 +407,11 @@ func composeWorkspaceFrame(sb *strings.Builder, body, sidebar string, layout Lay
 // the full shortcut right ("? help · ^p settings"); the first executed prompt
 // swaps the left for measured telemetry (↑in · ↓out (ctx%) · cost · path:branch)
 // and narrows the right to "? help" so ^p never promises settings when it
-// recalls history. The busy and slash-navigation rows stay authoritative while
-// they apply — they name keys the user needs this instant, so telemetry never
-// displaces them. This joined form is for tests and narrow fallbacks; the
-// frame renders the padded split via composerHintBar.
+// recalls history. The measured turn timer leads that line once a prompt has
+// run. The busy and slash-navigation rows stay authoritative while they apply —
+// they name keys the user needs this instant, so telemetry never displaces
+// them. This joined form is for tests and narrow fallbacks; the frame renders
+// the padded split via composerHintBar.
 func composerHintsFor(state State) string {
 	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
 		return ""
@@ -415,30 +425,20 @@ func composerHintsFor(state State) string {
 		return "↑↓ navigate · enter/tab accept · esc dismiss"
 	}
 	if state.Status.Busy {
-		// The busy row is the stable activity band: when no transcript entry
-		// owns the phase, its glyph and label lead the row; measured telemetry
-		// and the queue/cancel keys follow. Nothing here changes the row count,
-		// so a hand-off can never move the composer. When an entry already
-		// presents the phase (running tool, open Thought row), the head is
-		// empty and the row carries telemetry and keys only.
+		// The busy row owns the turn timer, measured session telemetry, and
+		// the queue/cancel keys. The live phase lives in the telemetry bar
+		// above the composer, so repeating it here would put one fact on two
+		// surfaces. Nothing here changes the row count, so a hand-off can
+		// never move the composer.
 		var parts []string
-		if head := busyActivityHead(state); head != "" {
-			parts = append(parts, head)
-		}
 		if telemetry := busyTelemetry(state); telemetry != "" {
 			parts = append(parts, telemetry)
 		}
 		parts = append(parts, ComposerHints(true))
-		return strings.Join(parts, " · ")
+		return withTurnElapsed(state, strings.Join(parts, " · "))
 	}
 	left, right := idleHintZones(state)
-	if head := busyActivityHead(state); head != "" {
-		if left == "" {
-			left = head
-		} else {
-			left = head + " · " + left
-		}
-	}
+	left = withTurnElapsed(state, left)
 	if left == "" {
 		return right
 	}
@@ -446,17 +446,6 @@ func composerHintsFor(state State) string {
 		return left
 	}
 	return left + " · " + right
-}
-
-// busyActivityHead is the phase segment for the stable busy row. It is empty
-// when a transcript entry already owns the activity, which is what keeps a
-// running tool or an open Thought row from appearing twice.
-func busyActivityHead(state State) string {
-	activity := ProjectActivity(state)
-	if activity.Surface != ActivityLine {
-		return ""
-	}
-	return thinkingHeadText(activity.Thinking, state.Status.Spinner)
 }
 
 // composerHintBar renders the same hint row as composerHintsFor but split
@@ -485,31 +474,24 @@ func composerHintBar(state State, width int) string {
 		return hint
 	}
 	if state.Status.Busy {
-		// Same stable-band contract as composerHintsFor, split into zones so
-		// the phase leads at the left edge and the measured telemetry plus
-		// queue/cancel keys pin right. The session marker still yields while
-		// busy (busyTelemetry), and truncation keeps the metric-first head.
-		head := busyActivityHead(state)
+		// Same stable-band contract as composerHintsFor: the telemetry bar
+		// above the composer owns the live phase, while this row keeps the
+		// turn timer and measured session telemetry at the left and
+		// queue/cancel keys at the right. The session marker still yields
+		// while busy (busyTelemetry), and truncation keeps the metric-first
+		// head.
 		right := ComposerHints(true)
 		if telemetry := busyTelemetry(state); telemetry != "" {
 			right = telemetry + " · " + right
 		}
+		right = withTurnElapsed(state, right)
 		if width <= 0 {
-			if head == "" {
-				return right
-			}
-			return head + " · " + right
+			return right
 		}
-		return sessionBarRow(head, right, width)
+		return sessionBarRow("", right, width)
 	}
 	left, right := idleHintZones(state)
-	if head := busyActivityHead(state); head != "" {
-		if left == "" {
-			left = head
-		} else {
-			left = head + " · " + left
-		}
-	}
+	left = withTurnElapsed(state, left)
 	return sessionBarRow(left, right, width)
 }
 
@@ -2176,8 +2158,8 @@ func renderReasoningAt(sb *strings.Builder, reasoning *ReasoningEntry, pal *Pale
 		(elapsed > 0 || reasoning.Closed || !reasoning.EndedAt.IsZero()) {
 		head += " · " + formatDurationPrecise(elapsed)
 	}
-	sb.WriteString(pal.Status.Render(head) + "\n")
-	if !reasoning.Expanded || strings.TrimSpace(reasoning.Text) == "" {
+	sb.WriteString(pal.Thought.Render(head) + "\n")
+	if !reasoning.Expanded {
 		sb.WriteString("\n")
 		return
 	}
@@ -2188,17 +2170,29 @@ func renderReasoningAt(sb *strings.Builder, reasoning *ReasoningEntry, pal *Pale
 	lines := wrapReasoningBody(reasoning.Text, width)
 	limit := maxReasoningLines(layout)
 	shown := 0
+	// The guide is two cells wide, exactly the body indent budget, so the
+	// expanded trace reads as a child of the header without changing the
+	// wrapped width. It is a dim rule role, not prose styling.
+	guide := pal.Separator.Render("│ ")
+	if !reasoningBodyHasText(lines) {
+		// The disclosure state is real even when the provider sent no prose:
+		// duration-only or whitespace-only traces must stay inspectable rather
+		// than silently collapsing to a row that cannot be opened.
+		sb.WriteString(guide + pal.Muted.Render("(no detailed reasoning text provided)") + "\n")
+		sb.WriteString("\n")
+		return
+	}
 	for _, line := range lines {
 		if shown >= limit {
 			break
 		}
 		// Thinking prose is deliberately desaturated: it is available on
 		// request, never a second answer competing with the transcript.
-		sb.WriteString("  " + pal.Muted.Render(line) + "\n")
+		sb.WriteString(guide + pal.Muted.Render(line) + "\n")
 		shown++
 	}
 	if len(lines) > shown {
-		sb.WriteString(pal.Truncated.Render("  … [truncated]") + "\n")
+		sb.WriteString(guide + pal.Truncated.Render("… [truncated]") + "\n")
 	}
 	sb.WriteString("\n")
 }
@@ -2216,6 +2210,20 @@ func wrapReasoningBody(text string, width int) []string {
 		return []string{""}
 	}
 	return out
+}
+
+// reasoningBodyHasText reports whether a sanitized trace has visible prose.
+//
+// Whitespace-only thinking is a real provider outcome, not a malformed block:
+// the disclosure state still exists, so the renderer must show a deliberate
+// placeholder rather than an empty body.
+func reasoningBodyHasText(lines []string) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // maxReasoningLines bounds the expanded trace so one long reasoning run cannot
@@ -3100,6 +3108,11 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 	}
 	status := state.Status
 	parts := []string{}
+	// The turn timer leads the context detail on every bottom status surface,
+	// including approval rows where the hint bar is unavailable.
+	if timer := turnElapsedLabel(state); timer != "" {
+		parts = append(parts, timer)
+	}
 	// Cwd and usage text arrive from the environment and measured
 	// accounting: untrusted for layout purposes, sanitized inline so the
 	// footer stays exactly one row (it is truncated, never wrapped).

@@ -173,8 +173,8 @@ func TestToolFinalizationReplacesLiveRepresentationExactlyOnce(t *testing.T) {
 	if !strings.Contains(done, "✔ read a.go") {
 		t.Fatalf("completed tool lost its terminal marker:\n%s", done)
 	}
-	if !strings.Contains(done, "⠋ reason") {
-		t.Fatalf("busy turn lost the reasoning spinner:\n%s", done)
+	if !strings.Contains(done, "preparing workspace…") {
+		t.Fatalf("busy turn lost its live telemetry bar:\n%s", done)
 	}
 	if got := strings.Count(done, "read a.go"); got != 1 {
 		t.Fatalf("completed action appeared %d times, want one:\n%s", got, done)
@@ -268,8 +268,8 @@ func TestFailedToolFinalizesExactlyOnce(t *testing.T) {
 	if strings.Contains(out, "◌ read missing.go") || strings.Contains(out, "⠋ read missing.go") || strings.Contains(out, "running") {
 		t.Fatalf("failed tool kept a live representation:\n%s", out)
 	}
-	if !strings.Contains(out, "⠋ reason") {
-		t.Fatalf("busy turn lost the reasoning spinner:\n%s", out)
+	if !strings.Contains(out, "preparing workspace…") {
+		t.Fatalf("busy turn lost its live telemetry bar:\n%s", out)
 	}
 	if got := strings.Count(out, "✗ read missing.go"); got != 1 {
 		t.Fatalf("failure badge appeared %d times, want one:\n%s", got, out)
@@ -298,8 +298,8 @@ func TestLivePainterKeepsOneLiveRowAndSealsItOnce(t *testing.T) {
 		t.Fatalf("running action appeared %d times across history+live, want one", got)
 	}
 	liveGlyph := toolStatusGlyph(ToolRunning, s.Status.Spinner)
-	if got := countStripped(painter.live, liveGlyph); got != 1 {
-		t.Fatalf("live region has %d running markers, want one: %q", got, painter.live)
+	if got := countStripped(painter.live, liveGlyph+" inspecting"); got != 1 {
+		t.Fatalf("live region has %d running tool markers, want one: %q", got, painter.live)
 	}
 
 	finishedAt := time.Now()

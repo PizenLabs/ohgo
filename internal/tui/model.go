@@ -880,6 +880,11 @@ type State struct {
 	// derives from it, never from render time, so the UI cannot invent a
 	// duration the runtime did not measure.
 	TurnStartedAt time.Time
+	// TurnElapsed is the displayed duration of the turn in the bottom status
+	// line. Frame ticks advance it while the turn runs; the terminal turn
+	// event locks the measured final span so idle observation keeps the exact
+	// execution time. A new prompt resets it to zero.
+	TurnElapsed time.Duration
 	// Cancelled records the current turn reached its terminal cancellation
 	// state. It makes repeated cancels idempotent and lets late progress
 	// events be dropped instead of resurrecting Running.
@@ -997,6 +1002,13 @@ func (s *State) Apply(event Event) {
 		}
 		s.frame++
 		s.frameAt = at
+		// The bottom status line counts up from the turn's measured start.
+		// Ticks are the only live clock: a render never substitutes wall time.
+		if s.Status.Busy && !s.TurnStartedAt.IsZero() {
+			if elapsed := at.Sub(s.TurnStartedAt); elapsed >= 0 {
+				s.TurnElapsed = elapsed
+			}
+		}
 		s.advancePresentation(at)
 
 	case UserSubmitted:
@@ -1007,6 +1019,8 @@ func (s *State) Apply(event Event) {
 		s.TurnSeq = seq
 		s.Cancelled = false
 		s.TurnStartedAt = e.At
+		// A new prompt starts a fresh measured turn in the bottom status line.
+		s.TurnElapsed = 0
 		// A resolved decision never outlives the turn it was made for: a new
 		// turn supersedes any proposal still held (I: stale state cannot
 		// survive into another turn).
@@ -1077,6 +1091,8 @@ func (s *State) Apply(event Event) {
 			s.markAnimated(open)
 		}
 		s.Status.Busy = false
+		// Freeze the measured span so idle observation keeps the exact time.
+		s.lockTurnElapsed(e.At)
 		// A trailing tool batch becomes a compact telemetry footer only once
 		// the turn has settled; until then another call may still join it.
 		s.bumpTailToolRun()
@@ -1096,6 +1112,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.Cancelled = true
 		s.Status.Busy = false
+		s.lockTurnElapsed(e.At)
 		s.Queued = nil
 		s.closeReasoning(e.At)
 		// Cancellation is a deliberate abort: no dwell floor may leave a
@@ -2580,6 +2597,17 @@ func (s *State) resetSessionMetrics() {
 	s.SessionIn = 0
 	s.SessionOut = 0
 	s.SessionElapsed = 0
+	s.TurnElapsed = 0
+}
+
+// lockTurnElapsed freezes the bottom status timer at the measured terminal
+// instant. An unmeasured start or end leaves the last live tick in place rather
+// than replacing it with a fabricated duration.
+func (s *State) lockTurnElapsed(at time.Time) {
+	if s.TurnStartedAt.IsZero() || at.IsZero() || at.Before(s.TurnStartedAt) {
+		return
+	}
+	s.TurnElapsed = at.Sub(s.TurnStartedAt)
 }
 
 // currentOutputTokens estimates tokens for the trailing open assistant

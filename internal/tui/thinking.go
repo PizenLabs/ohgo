@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 )
@@ -15,10 +14,10 @@ import (
 // elapsing is derived from the activity's real start time, which the runtime
 // stamped.
 //
-// ProjectThinking is the semantic projection. ProjectActivity (activity.go) is
-// the presentation owner: it decides whether this line or an existing entry
-// renders the activity. The workspace role is never part of this projection;
-// the prompt boundary owns it.
+// ProjectThinking is the semantic projection. telemetry_bar.go is the
+// production phase owner for the workspace canvas, and ProjectActivity
+// (activity.go) decides which concrete entry owns action detail. The workspace
+// role is never part of this projection; the prompt boundary owns it.
 
 // ThinkingPhase is the authoritative execution category the activity line
 // projects.
@@ -225,22 +224,6 @@ func RenderThinkingFrame(state ThinkingState, now time.Time, tick int, width int
 	return renderThinking(state, now, tick, false, width)
 }
 
-// thinkingHeadText renders the glyph, phase, and runtime detail without the
-// metadata tail or styling. Compact chrome wraps the whole hint row in one
-// muted role, so a pre-styled head would reset that role mid-row. The glyph and
-// words still name the state without colour, and tokens or esc are never
-// printed twice.
-func thinkingHeadText(state ThinkingState, tick int) string {
-	if !state.Active {
-		return ""
-	}
-	head := thinkingGlyphAt(state.Phase, tick) + " " + state.Label
-	if state.Detail != "" {
-		head += " " + oneLine(state.Detail)
-	}
-	return head
-}
-
 func renderThinking(state ThinkingState, now time.Time, tick int, shimmer bool, width int) []string {
 	return renderThinkingZoned(state, now, tick, shimmer, width, liveThinkingZones)
 }
@@ -394,12 +377,13 @@ func formatThinkingLine(glyph, content, tail string, width int, z thinkingZones)
 
 // formatOutputTokens renders the live token segment with its ↓ prefix.
 // Non-positive counts yield "", so unknown stays absent rather than rendering
-// as zero.
+// as zero. The count uses the shared compact formatter, so a four-digit volume
+// reads "↓1.1k tokens" on the one-row telemetry bar.
 func formatOutputTokens(n int) string {
 	if n <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("↓%d tokens", n)
+	return "↓" + formatTokens(n) + " tokens"
 }
 
 // thinkingGlyph is the static fallback marker for phases that do not animate

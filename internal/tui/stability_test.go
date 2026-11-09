@@ -191,11 +191,16 @@ func TestLiveStatusLineDoesNotDuplicateEntryActivity(t *testing.T) {
 		t.Fatalf("live chrome = %d rows, want telemetry plus %d composer rows", got, want-1)
 	}
 
-	// Once no entry owns the phase, the footer is the one place the phase can
-	// appear. It still occupies the same telemetry row.
+	// Once no entry owns the concrete action, the fixed telemetry bar above
+	// the composer names the phase. The status row stays telemetry-only, so
+	// the phase cannot appear twice.
 	s.Apply(ToolFinished{ID: "c1", Text: "package a\n", Summary: "1 line", At: time.Now(), Seq: 1})
+	out := ansi.Strip(Render(s))
+	if !strings.Contains(out, "preparing workspace…") {
+		t.Fatalf("telemetry bar did not name the phase:\n%s", out)
+	}
 	status = ansi.Strip(liveStatusLine(s, pal, ComputeLayout(s)))
-	if !strings.Contains(status, "reason") {
-		t.Fatalf("activity line did not reach the live footer: %q", status)
+	if strings.Contains(status, "preparing workspace…") {
+		t.Fatalf("status footer repeated the bar phase: %q", status)
 	}
 }

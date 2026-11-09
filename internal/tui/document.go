@@ -131,7 +131,10 @@ func entryExpandable(entry Entry) bool {
 		}
 		return toolExpandable(entry.Tool) || entry.Tool.Status == ToolRunning
 	case EntryReasoning:
-		return entry.Reasoning != nil && strings.TrimSpace(entry.Reasoning.Text) != ""
+		// A reasoning block always owns a disclosure body, even when the
+		// provider emitted only framing whitespace. Its expanded projection
+		// shows a placeholder instead of silently refusing the toggle.
+		return entry.Reasoning != nil
 	default:
 		return false
 	}

@@ -244,11 +244,12 @@ func stripRecapPaths(text string, paths []string) string {
 }
 
 // answerSubject returns the first substantive, non-announcement sentence of an
-// answer, extended with the next sentence when the first is short. The bound is
-// larger than a badge because this is the recap paragraph, but still small
-// enough to stay within two transcript rows on a normal terminal.
+// answer, extended with the next sentence when the first is short.
+//
+// It never cuts a sentence short: the recap is displayed as wrapped prose, so
+// a long finding is allowed to take the rows it needs. Ending a recap in an
+// ellipsis would read as unfinished work rather than completion.
 func answerSubject(text string) string {
-	const maxSubject = 180
 	inFence := false
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -296,11 +297,7 @@ func answerSubject(text string) string {
 		if len(picked) == 0 {
 			continue
 		}
-		subject := strings.Join(picked, " ")
-		if len([]rune(subject)) > maxSubject {
-			subject = truncateClause(subject, maxSubject) + "…"
-		}
-		return subject
+		return strings.Join(picked, " ")
 	}
 	return ""
 }
@@ -557,13 +554,14 @@ func recapLine(text string) string {
 	return recapPrefix + " " + text
 }
 
-// recapLines folds a footer to its allowed visual rows.
+// recapLines folds a footer to its display rows.
 //
-// A recap is one logical line, but a narrow terminal needs two rows to keep
-// the sentence readable instead of cutting it at the column edge. The bound is
-// hard: overflow is ellipsized on the second row, so the footer can never push
-// the prompt by more than two rows. Continuation rows are indented under the
-// narrative rather than the marker, so they read as the same sentence.
+// The marker owns the first row and every continuation is indented under the
+// narrative rather than the marker, so a long recap reads as one paragraph.
+// There is no row cap and no ellipsis: the transcript scrolls, and a recap cut
+// at a column boundary would read as unfinished rather than completed. At a
+// width too narrow to seat the marker beside the narrative, the whole line
+// wraps rather than losing content.
 func recapLines(text string, width int) []string {
 	line := recapLine(text)
 	if line == "" {
@@ -579,16 +577,9 @@ func recapLines(text string, width int) []string {
 	prefixWidth := CellWidth(recapPrefix) + 1
 	bodyWidth := width - prefixWidth
 	if bodyWidth < 8 {
-		// Too narrow to hold a readable narrative: one honest truncated row
-		// beats a two-row sliver.
-		return []string{TruncateToWidth(line, width)}
+		return WrapToWidth(line, width)
 	}
 	rows := WrapToWidth(body, bodyWidth)
-	if len(rows) > 2 {
-		overflow := strings.Join(rows[2:], " ")
-		rows = rows[:2]
-		rows[1] = TruncateToWidth(rows[1]+" "+overflow, bodyWidth)
-	}
 	out := make([]string, 0, len(rows))
 	indent := strings.Repeat(" ", prefixWidth)
 	for i, row := range rows {

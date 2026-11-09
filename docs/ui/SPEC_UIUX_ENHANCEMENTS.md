@@ -106,6 +106,11 @@ transcript renderer does not introduce a second diff engine.
   progress, and metric updates cannot advance the glyph faster. Reduced-motion,
   `NO_COLOR`, and non-TrueColor terminals keep the throttled spinner but skip
   the optional shimmer.
+- The live telemetry bar's intent word shares the same tick for a restrained
+  shimmer wave; its middle spacer stays pure whitespace. The wave carries no
+  semantic state: the intent word, the measured duration, and the output volume
+  are the information, and the motion only proves the turn is still being
+  processed.
 
 ## 4. Performance and verification
 

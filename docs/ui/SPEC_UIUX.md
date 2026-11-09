@@ -547,10 +547,15 @@ Expanded:
 
 ```text
 - Thought · 3.2s
-
-  Let me inspect the backend structure and package
-  configuration before determining the architecture.
+│ Let me inspect the backend structure and package
+│ configuration before determining the architecture.
 ```
+
+The header renders in the status amber; the body is muted prose behind a dim
+`│` indent guide, so the trace reads as an annotating child of the disclosure
+row rather than a second answer. An empty or whitespace-only trace still owns
+its disclosure state: expanding it renders
+`│ (no detailed reasoning text provided)` rather than refusing the toggle.
 
 Reasoning must be:
 
@@ -672,11 +677,48 @@ Do not automatically turn every red tool result into a red global task state.
 
 The viewport must remain stable during execution.
 
-The response band is a fixed slot for the whole active turn. It does not
-appear or disappear when the one-row activity line hands off to a running tool
-entry or an open reasoning head: the band keeps its row (empty when an entry
-owns the activity) so the conversation budget, composer, and every row above it
-stay pinned. The same hand-off never changes the transcript's bounding box.
+The live telemetry bar is a single row immediately above the composer, and it
+exists exclusively while a turn is running. An idle frame reserves no row and
+paints nothing: the transcript flows directly into the composer instead of
+paying for a blank line or a duplicate summary of the status bar. When a turn
+finishes (`AssistantDone` or `TurnCancelled`), the row disappears immediately.
+
+During a turn, the bar carries intent only:
+
+```text
+⠋ formatting response...
+```
+
+- The shared Braille spinner, exactly one space, then the semantic intent
+  (`preparing workspace…`, `reasoning internals…`, `executing tools…`,
+  `formatting response…`). The intent text carries the shimmer wave; the
+  spinner carries liveness.
+- No duration, token, context, session, or path metric appears here. Those
+  facts have exactly one home: the bottom status line.
+
+The bottom status line leads with the measured turn timer:
+
+```text
+⏱ 4.5s  ↑9.7k · ↓219 (0%) · #85 · …/Golang/go-template:master
+```
+
+- The timer starts at `0s` when a prompt is submitted, advances from frame
+  ticks while the turn runs, and freezes at the terminal measured span on
+  `AssistantDone` or `TurnCancelled`. The locked value stays visible during
+  idle observation.
+- Submitting the next prompt resets it to `0s` for the new turn.
+- Formatting uses the shared measured vocabulary: `420ms`, `4.5s`, `1m 12s`.
+
+Concrete actions stay in their transcript entries: a running tool's summary
+and a Thought trace's prose are never repeated in the bar, and the bar's phase
+is never repeated in the hint or status row. Session telemetry, cost, timer,
+and `path:branch` remain in the bottom status row alone.
+
+The completion recap below a finished answer is prose, not a badge. It wraps
+onto as many rows as the narrative needs, with continuation rows indented under
+the narrative rather than the marker. Recaps never generate an ellipsis: a
+sentence cut at the column edge would read as unfinished work, so the
+transcript scrolls instead.
 
 Avoid unnecessary viewport growth caused by:
 
@@ -1263,7 +1305,7 @@ Expanded:
 
 ```text
 - Thought · 3.2s
-  ...
+│ ...
 ```
 
 Reasoning must not continuously inflate the viewport.
