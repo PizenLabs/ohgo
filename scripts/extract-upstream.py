@@ -35,11 +35,13 @@ PROVIDERS = {
     },
     "opencode-zen": {
         "name": "OpenCode Zen",
-        "baseUrl": "https://opencode.ai/zen/v1",
+        "baseUrl": "https://opencode.ai/inference/openai/v1",
+        "sessionHeader": "x-opencode-session",
     },
     "opencode-go": {
         "name": "OpenCode Go",
-        "baseUrl": "https://opencode.ai/zen/go/v1",
+        "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+        "sessionHeader": "x-opencode-session",
     },
     "ollama": {
         "name": "Ollama (local)",
@@ -129,6 +131,14 @@ def main():
             record, reason = convert(provider, raw_id, row)
             if record is None:
                 dropped[raw_id] = reason
+                continue
+            # Free-tier Zen models are only callable from inside OpenCode;
+            # other harnesses receive 403/429 even with a valid key.
+            if provider == "opencode-zen" and all(
+                record["cost"][key] == 0
+                for key in ("input", "output", "cacheRead", "cacheWrite")
+            ):
+                dropped[raw_id] = "free-tier Zen model (OpenCode client only)"
                 continue
             kept[nid] = record
         # Sorted ids keep the diff reviewable; the rest of the file is left

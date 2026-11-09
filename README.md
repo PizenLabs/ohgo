@@ -350,14 +350,17 @@ silently following a changed configuration.
 | OpenAI | `OPENAI_API_KEY` | Chat Completions | 47 bundled (Responses-only lines excluded) |
 | Groq, Together, Fireworks, DeepSeek, Cerebras, Mistral | per-provider key | Chat Completions | bundled |
 | OpenRouter | `OPENROUTER_API_KEY` | Chat Completions | 7 seeds + live discovery |
-| OpenCode Zen / OpenCode Go | `OPENCODE_API_KEY` (shared) | Chat Completions, Messages | 71 / 34 seeds + live discovery |
+| OpenCode Zen / OpenCode Go | `OPENCODE_API_KEY` (shared) | Chat Completions, Messages | 33 / 24 bundled + live discovery |
 | Ollama (local) | none | native chat | live discovery only |
 | Ollama Cloud | `OLLAMA_API_KEY` | native chat | 52 seeds + live discovery |
 
-The bundled catalog contains **379 model facts across 13 providers**. Model
+The bundled catalog contains **331 model facts across 13 providers**. Model
 facts are data: `catalog.Resolve(provider/id)` is the only source, and no code
 branches on a model id string. An unknown model name is an error everywhere —
 a silent fallback would send your conversation to a provider you never chose.
+The OpenCode Zen roster omits free-tier models: Console only serves those to
+the OpenCode client, so they fail from another harness even with a valid API
+key. Go's free models remain because Go serves them externally.
 
 Not yet supported: xAI and Azure/OpenAI Responses-only models (no Responses
 transport), Google Gemini (no `google-generative-ai` transport), AWS Bedrock

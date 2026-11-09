@@ -50,9 +50,12 @@ var ErrUnknownModel = errors.New("catalog: unknown model")
 // Provider is one upstream endpoint family.
 type Provider struct {
 	// Name is the human-readable provider name.
-	Name string
+	Name string `json:"name"`
 	// BaseURL is the default endpoint, used when a model has no override.
-	BaseURL string
+	BaseURL string `json:"baseUrl"`
+	// SessionHeader names the header that carries a stable conversation ID for
+	// providers that require or reward one. Empty when the provider has none.
+	SessionHeader string `json:"sessionHeader,omitempty"`
 }
 
 // ProviderBaseURL returns a provider's default endpoint, if known.
@@ -320,6 +323,7 @@ func (r record) toModel(provider Provider) (ai.Model, error) {
 		ReasoningDisable:   disable,
 		ReasoningMandatory: mandatory,
 		InputModalities:    append([]string(nil), r.Input...),
+		SessionHeader:      provider.SessionHeader,
 	}, nil
 }
 

@@ -288,3 +288,145 @@ func TestDynamicProviderSetCoversDiscovery(t *testing.T) {
 		t.Error("a static provider claims discovery")
 	}
 }
+
+// TestGatewayDiscoveryReadsCurrentConsoleModels is the regression for the
+// live OpenCode model shape: windows live under limit, prices under
+// cost.text, modalities under modalities, and protocol under api. The previous
+// parser only knew OpenRouter's fields, so every live row fell back to stale
+// bundled facts or vanished.
+func TestGatewayDiscoveryReadsCurrentConsoleModels(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"data":[
+			{"id":"deepseek-v4.1-flash","name":"DeepSeek V4.1 Flash",
+			 "limit":{"context":1000000,"output":384000},
+			 "modalities":{"input":["text","image/jpeg"]},
+			 "capabilities":{"reasoning":{"supported":true,"effort":["low","high","max"]}},
+			 "cost":{"text":{"input":{"price":0.3,"cache":{"read":0.006}},"output":{"price":1.2}}},
+			 "api":{"chat-completions":{"base_url":"https://opencode.ai/inference/openai/v1"}}},
+			{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5",
+			 "limit":{"context":1000000,"output":64000},
+			 "modalities":{"input":["text","image/png","application/pdf"]},
+			 "capabilities":{"reasoning":{"supported":true}},
+			 "cost":{"text":{"input":{"price":3,"cache":{"read":0.3,"write":3.75}},"output":{"price":15}}},
+			 "api":{"messages":{"base_url":"https://opencode.ai/inference/anthropic/v1"}}},
+			{"id":"big-pickle","name":"Big Pickle",
+			 "limit":{"context":200000,"output":32000},
+			 "modalities":{"input":["text"]},
+			 "capabilities":{"reasoning":{"supported":true}},
+			 "cost":{"text":{"input":{"price":0},"output":{"price":0}}},
+			 "api":{"chat-completions":{"base_url":"https://opencode.ai/inference/openai/v1"}}},
+			{"id":"responses-only","name":"Responses Only",
+			 "limit":{"context":128000,"output":128000},
+			 "modalities":{"input":["text"]},
+			 "cost":{"text":{"input":{"price":1},"output":{"price":1}}},
+			 "api":{"responses":{"base_url":"https://opencode.ai/inference/openai/v1"}}}
+		]}`)
+	}))
+	defer server.Close()
+
+	models, err := DiscoverModels(context.Background(), server.Client(), "opencode-zen", server.URL, "k")
+	if err != nil {
+		t.Fatalf("DiscoverModels: %v", err)
+	}
+	byID := map[string]ai.Model{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	if _, ok := byID["responses-only"]; ok {
+		t.Error("a Responses-only model was mis-routed instead of excluded")
+	}
+	if _, ok := byID["big-pickle"]; ok {
+		t.Error("a free-tier Zen model was offered even though only the OpenCode client can call it")
+	}
+	deepseek, ok := byID["deepseek-v4.1-flash"]
+	if !ok {
+		t.Fatal("the paid chat model is missing")
+	}
+	if deepseek.API != ai.APIOpenAIChatCompletions {
+		t.Errorf("api = %q, want chat completions", deepseek.API)
+	}
+	if deepseek.ContextWindow != 1000000 || deepseek.MaxOutputTokens != 384000 {
+		t.Errorf("window = %d/%d, want 1000000/384000", deepseek.ContextWindow, deepseek.MaxOutputTokens)
+	}
+	if deepseek.Cost.Input != 0.3 || deepseek.Cost.Output != 1.2 || deepseek.Cost.CacheRead != 0.006 {
+		t.Errorf("cost = %+v, want Console's per-million prices", deepseek.Cost)
+	}
+	if !deepseek.SupportsImages() {
+		t.Error("image/jpeg input was lost in modality normalization")
+	}
+	if deepseek.SessionHeader != "x-opencode-session" {
+		t.Errorf("session header = %q, want the gateway's routing header", deepseek.SessionHeader)
+	}
+	claude, ok := byID["claude-sonnet-4-5"]
+	if !ok {
+		t.Fatal("the paid Messages model is missing")
+	}
+	if claude.API != ai.APIAnthropicMessages {
+		t.Errorf("api = %q, want native Messages", claude.API)
+	}
+	if claude.BaseURL != "https://opencode.ai/inference/anthropic" {
+		t.Errorf("base URL = %q, want the transport root without a duplicated /v1", claude.BaseURL)
+	}
+}
+
+// TestBundledOpenCodeZenOmitsClientRestrictedModels guards the shipped
+// fallback, which is what a first run sees before discovery: free Zen rows are
+// unreachable outside OpenCode, and retired ids would produce a 400 instead of
+// a model choice.
+func TestBundledOpenCodeZenOmitsClientRestrictedModels(t *testing.T) {
+	models := mustList(t, "opencode-zen")
+	if len(models) == 0 {
+		t.Fatal("the bundled Zen roster is empty")
+	}
+	for _, model := range models {
+		if model.Cost.Input == 0 && model.Cost.Output == 0 && model.Cost.CacheRead == 0 && model.Cost.CacheWrite == 0 {
+			t.Errorf("%s is a free-tier Zen model, which only the OpenCode client can call", model.ID)
+		}
+		if model.ID == "deepseek-v4-flash" || model.ID == "big-pickle" {
+			t.Errorf("%s is retired or client-restricted and must not be offered", model.ID)
+		}
+	}
+}
+
+// TestBundledOpenCodeGoKeepsItsFreeModels is the counter-case: Go serves free
+// models to outside harnesses, so filtering by price alone would remove a
+// working choice.
+func TestBundledOpenCodeGoKeepsItsFreeModels(t *testing.T) {
+	models := mustList(t, "opencode-go")
+	for _, model := range models {
+		if model.ID == "beam-free" || model.ID == "longcat-2.5-free" {
+			return
+		}
+	}
+	t.Error("Go free models disappeared from the bundled roster")
+}
+
+// TestBundledOpenCodeGatewaysUseTheConsoleEndpoints pins the advertised
+// endpoints and session header. The old /zen paths still redirect for some
+// models, which is exactly why a silent drift would only fail at inference
+// time.
+func TestBundledOpenCodeGatewaysUseTheConsoleEndpoints(t *testing.T) {
+	cases := []struct {
+		provider string
+		baseURL  string
+	}{
+		{"opencode-zen", "https://opencode.ai/inference/openai/v1"},
+		{"opencode-go", "https://opencode.ai/inference/go/openai/v1"},
+	}
+	for _, tc := range cases {
+		baseURL, ok := ProviderBaseURL(tc.provider)
+		if !ok || baseURL != tc.baseURL {
+			t.Errorf("%s base URL = %q, %v; want %q", tc.provider, baseURL, ok, tc.baseURL)
+		}
+		models := mustList(t, tc.provider)
+		for _, model := range models {
+			if model.SessionHeader != "x-opencode-session" {
+				t.Errorf("%s/%s session header = %q, want x-opencode-session",
+					tc.provider, model.ID, model.SessionHeader)
+				break
+			}
+		}
+	}
+}

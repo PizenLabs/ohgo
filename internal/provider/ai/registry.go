@@ -36,6 +36,12 @@ type Registry struct {
 	baseURLs map[string]string
 	// providers caches constructed providers keyed by "provider|baseURL".
 	providers map[string]Provider
+	// sessionIDs assigns one stable fallback session identity per provider, so
+	// a gateway that requires the header still works when the host has no
+	// session store.
+	sessionIDs map[string]string
+	// sessionSeq makes fallback identities unique within one process.
+	sessionSeq uint64
 	// httpClient is shared so connections are pooled across providers.
 	httpClient *http.Client
 	// credFile overrides the credential-file path. Empty means the default
@@ -56,6 +62,7 @@ func NewRegistry() *Registry {
 		apiKeys:    map[string]string{},
 		baseURLs:   map[string]string{},
 		providers:  map[string]Provider{},
+		sessionIDs: map[string]string{},
 		httpClient: &http.Client{Timeout: DefaultHTTPTimeout},
 	}
 }
@@ -99,6 +106,23 @@ func (r *Registry) APIKey(provider string) string {
 	return r.apiKeys[provider]
 }
 
+// sessionID returns the registry's stable fallback identity for a provider.
+//
+// It is stable for the lifetime of this registry, which is what a routing or
+// cache header needs; the agent loop supplies the real per-session ID whenever
+// it has one.
+func (r *Registry) sessionID(provider string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id := r.sessionIDs[provider]; id != "" {
+		return id
+	}
+	r.sessionSeq++
+	id := fmt.Sprintf("ses_ohgo_%s_%d", provider, r.sessionSeq)
+	r.sessionIDs[provider] = id
+	return id
+}
+
 // SetCredentialsFile overrides where the file store is read from. Tests use
 // it to isolate from the real home directory; production leaves it empty for
 // the default.
@@ -127,16 +151,20 @@ func (r *Registry) ResolveAPIKey(provider string) (string, error) {
 // source, e.g. "environment (OPENROUTER_API_KEY)". Diagnostics and the
 // connect flow need the source; the transport only needs the key.
 func (r *Registry) ResolveAPIKeySource(provider string) (key, source string, err error) {
-	if key := r.APIKey(provider); key != "" {
-		return key, "explicit", nil
+	for _, name := range creds.CredentialProviders(provider) {
+		if key := r.APIKey(name); key != "" {
+			return key, "explicit", nil
+		}
 	}
 	vars, known := creds.ProviderEnvVars(provider)
 	if !known {
 		return "", "", fmt.Errorf("%w: %q", errUnknownProvider, provider)
 	}
 	if store := r.credentialStore(); store != nil {
-		if value, ok := store.Get(provider); ok {
-			return value, "credential file", nil
+		for _, name := range creds.CredentialProviders(provider) {
+			if value, ok := store.Get(name); ok {
+				return value, "credential file", nil
+			}
 		}
 	}
 	for _, name := range vars {
@@ -233,6 +261,7 @@ func (r *Registry) ProviderFor(model Model) (Provider, error) {
 		anthropic := NewAnthropicProvider(key)
 		anthropic.Client = r.httpClient
 		anthropic.BaseURL = baseURL
+		anthropic.SessionID = r.sessionID(model.Provider)
 		// A bearer-token environment variable means the deployment is a gateway
 		// that rejects x-api-key.
 		if model.Provider == "anthropic" && os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" && os.Getenv("ANTHROPIC_API_KEY") == "" {
@@ -248,6 +277,7 @@ func (r *Registry) ProviderFor(model Model) (Provider, error) {
 		openai := NewOpenAIProvider(key)
 		openai.Client = r.httpClient
 		openai.BaseURL = baseURL
+		openai.SessionID = r.sessionID(model.Provider)
 		// OpenRouter asks senders to identify for analytics and routing
 		// priority. These are application constants, never user data.
 		if model.Provider == "openrouter" {

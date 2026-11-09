@@ -81,9 +81,22 @@ type harness struct {
 // the caller guarantees those commands are unreachable; every method guards
 // its own dependencies and says so rather than panicking.
 func newHarness(registry *ai.Registry, loop *agent.Loop, store *session.Store, sess *session.Session, usage *agent.UsageLog, settings *config.Settings, root string, model ai.Model) *harness {
-	return &harness{
+	h := &harness{
 		registry: registry, loop: loop, store: store, sess: sess,
 		usage: usage, settings: settings, root: root, model: model,
+	}
+	h.bindSession(sess)
+	return h
+}
+
+// bindSession moves the active session identity into the runtime together
+// with the harness pointer. Providers that route by conversation (OpenCode Go,
+// for example) need the new identity before the next request, not at the next
+// process start.
+func (h *harness) bindSession(sess *session.Session) {
+	h.sess = sess
+	if h.loop != nil {
+		h.loop.SetSessionID(sessionProviderID(sess))
 	}
 }
 
@@ -573,7 +586,9 @@ func (h *harness) Disconnect(provider string) (string, error) {
 	}
 	switch source {
 	case "explicit":
-		h.registry.SetAPIKey(provider, "")
+		for _, name := range creds.CredentialProviders(provider) {
+			h.registry.SetAPIKey(name, "")
+		}
 		return fmt.Sprintf("removed the in-session credential for %s", provider), nil
 	case "credential file":
 		path, pathErr := creds.DefaultPath()
@@ -584,8 +599,10 @@ func (h *harness) Disconnect(provider string) (string, error) {
 		if openErr != nil {
 			return "", openErr
 		}
-		if err := store.Delete(provider); err != nil {
-			return "", err
+		for _, name := range creds.CredentialProviders(provider) {
+			if err := store.Delete(name); err != nil {
+				return "", err
+			}
 		}
 		return fmt.Sprintf("removed the saved credential for %s", provider), nil
 	default:
@@ -611,7 +628,7 @@ func (h *harness) ResumeSession(id int64) (history []agent.Message, notice strin
 	if err != nil {
 		return nil, "", fmt.Errorf("load session %d: %w", id, err)
 	}
-	h.sess = &sess
+	h.bindSession(&sess)
 	return history, fmt.Sprintf("resumed session %d (%d messages)", id, len(history)), nil
 }
 

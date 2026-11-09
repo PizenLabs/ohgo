@@ -362,7 +362,7 @@ func attachWizardSession(cmd *cobra.Command, opts *options, registry *ai.Registr
 		// the restored workspace.
 		held.applyAuthority(opts.authority())
 		sessCopy := sess
-		held.sess = &sessCopy
+		held.bindSession(&sessCopy)
 		program.AttachSession(store, held.sess, history)
 		program.PublishWorkspace(tui.WorkspaceUpdated{
 			HasSession: true,
@@ -383,7 +383,7 @@ func attachWizardSession(cmd *cobra.Command, opts *options, registry *ai.Registr
 		return nil
 	}
 	sessCopy := sess
-	held.sess = &sessCopy
+	held.bindSession(&sessCopy)
 	program.AttachSession(store, held.sess, nil)
 	program.PublishWorkspace(tui.WorkspaceUpdated{
 		HasSession: true,

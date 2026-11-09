@@ -73,6 +73,14 @@ type Model struct {
 	ReasoningMandatory bool
 	// InputModalities lists the content kinds the model accepts, e.g. "text", "image".
 	InputModalities []string
+	// SessionHeader names the request header that carries a stable session ID
+	// for providers that use one for routing or prompt caching. Empty means the
+	// provider has no such header.
+	//
+	// This is catalog data, not a provider-name branch: gateways that require
+	// the header name it in their metadata, and every transport applies it the
+	// same way.
+	SessionHeader string
 }
 
 // Ref returns the canonical provider/model-id reference for the model.

@@ -199,7 +199,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 					_ = h.store.SetTitle(sess.ID, title)
 				}
 				history = nil
-				h.sess = &sess
+				h.bindSession(&sess)
 				lastEditDiff = ""
 				_, _ = fmt.Fprintf(out, "started new session %d\n", sess.ID)
 				continue

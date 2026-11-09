@@ -312,6 +312,17 @@ type Request struct {
 	Metadata map[string]string
 }
 
+// sessionIdentity picks the conversation identity a provider should send: the
+// request's session when the host supplied one, else the provider's stable
+// fallback. The fallback exists because some gateways reject a request that
+// carries no session header even when the host has no session store.
+func sessionIdentity(request, fallback string) string {
+	if request != "" {
+		return request
+	}
+	return fallback
+}
+
 // Provider streams completions for one wire protocol.
 //
 // Implementations must be safe for concurrent use across distinct requests.

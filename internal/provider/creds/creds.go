@@ -66,6 +66,26 @@ var providerEnvVars = map[string][]string{
 	"opencode-go":  {"OPENCODE_API_KEY"},
 }
 
+// credentialAliases names providers whose stored credentials are
+// interchangeable. OpenCode Zen and Go are two endpoints of one Console
+// account; a key pasted into either provider is valid for both, so resolving
+// one must not report a key saved under the other as missing.
+var credentialAliases = map[string][]string{
+	"opencode-zen": {"opencode-go"},
+	"opencode-go":  {"opencode-zen"},
+}
+
+// CredentialProviders returns provider itself followed by any alias whose
+// stored or explicit credential also applies. Environment and shell discovery
+// already share one variable; this covers the keyed layers that do not.
+func CredentialProviders(provider string) []string {
+	aliases := credentialAliases[provider]
+	out := make([]string, 0, 1+len(aliases))
+	out = append(out, provider)
+	out = append(out, aliases...)
+	return out
+}
+
 // ProviderNames lists every provider with recognized credential names,
 // sorted. "ollama" (local, keyless) is included with an empty list so
 // callers can distinguish "needs no key" from "unknown provider".
@@ -405,12 +425,16 @@ type Resolver struct {
 // Resolve returns the credential and a human-readable source label, e.g.
 // "environment (OPENROUTER_API_KEY)" or "shell file (~/.zshrc)".
 func (r *Resolver) Resolve(provider string) (key, source string, err error) {
-	if value := strings.TrimSpace(r.Explicit[provider]); value != "" {
-		return value, "explicit", nil
+	for _, name := range CredentialProviders(provider) {
+		if value := strings.TrimSpace(r.Explicit[name]); value != "" {
+			return value, "explicit", nil
+		}
 	}
 	if r.File != nil {
-		if value, ok := r.File.Get(provider); ok {
-			return value, "credential file", nil
+		for _, name := range CredentialProviders(provider) {
+			if value, ok := r.File.Get(name); ok {
+				return value, "credential file", nil
+			}
 		}
 	}
 	vars, known := ProviderEnvVars(provider)

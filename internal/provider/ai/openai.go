@@ -28,6 +28,10 @@ type OpenAIProvider struct {
 	// attribution (HTTP-Referer, X-Title): application constants, never
 	// user-specific values.
 	ExtraHeaders map[string]string
+	// SessionID is the fallback session identity for a request that does not
+	// carry one. Gateways that require a session header still work when the
+	// session store is unavailable; a per-session Request.SessionID wins.
+	SessionID string
 }
 
 // NewOpenAIProvider returns a provider for the given credential.
@@ -171,6 +175,11 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (*Stream, erro
 	for key, value := range p.ExtraHeaders {
 		if value != "" {
 			headers[key] = value
+		}
+	}
+	if header := req.Model.SessionHeader; header != "" {
+		if session := sessionIdentity(req.SessionID, p.SessionID); session != "" {
+			headers[header] = session
 		}
 	}
 
