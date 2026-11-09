@@ -794,8 +794,11 @@ approval, shutting down) are computed per render, never stored.
   The composer is two neutral border rules around the input with an inline
   slash-suggestion list and a queued-prompts line. Only the lowercase mode word
   before the `›` pointer carries authority hue; the frame stays on the adaptive
-  border token. The fixed telemetry bar sits immediately above the composer;
-  measured session telemetry and keys stay in the hint/status row below it. The
+  border token. The telemetry bar sits immediately above the composer only
+  while a turn runs and carries the live intent only; an idle frame reserves
+  no row, so the transcript meets the composer directly. The measured turn
+  timer, session telemetry, and keys stay in the hint/status row below the
+  composer. The
   upper rule is a
   border block header naming the live session
   (`──────────── [Fix failing parser] ───`), with a discrete `★` when

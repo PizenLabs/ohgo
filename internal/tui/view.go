@@ -326,15 +326,14 @@ func renderCanvasBody(sb *strings.Builder, state State, pal *Palette, layout Lay
 	}
 
 	if !overlayHidesComposer(state) {
-		// Main canvas. The composer is the last input surface and its height
-		// never depends on what the turn is doing: the fixed telemetry row
-		// above it owns the live phase and measured metrics, while its
-		// transcript entry (a running tool block or a collapsed Thought row)
-		// owns the concrete action. The row is reserved even when idle, so the
-		// composer stays pinned while a fast task starts, hands off, and
-		// finishes.
-		sb.WriteString(renderLiveTelemetryBar(state, pal, layout))
-		sb.WriteString("\n")
+		// Main canvas. The composer is the last input surface. The telemetry
+		// row above it exists only while a turn runs: when the turn settles
+		// the row disappears, so the transcript sits directly above the
+		// composer rather than paying for a blank or duplicate summary line.
+		if bar := renderLiveTelemetryBar(state, pal, layout); bar != "" {
+			sb.WriteString(bar)
+			sb.WriteString("\n")
+		}
 		sb.WriteString(renderComposer(state, pal, layout))
 		if layout.ShowHints {
 			hintStyle := pal.Muted
@@ -408,10 +407,11 @@ func composeWorkspaceFrame(sb *strings.Builder, body, sidebar string, layout Lay
 // the full shortcut right ("? help · ^p settings"); the first executed prompt
 // swaps the left for measured telemetry (↑in · ↓out (ctx%) · cost · path:branch)
 // and narrows the right to "? help" so ^p never promises settings when it
-// recalls history. The busy and slash-navigation rows stay authoritative while
-// they apply — they name keys the user needs this instant, so telemetry never
-// displaces them. This joined form is for tests and narrow fallbacks; the
-// frame renders the padded split via composerHintBar.
+// recalls history. The measured turn timer leads that line once a prompt has
+// run. The busy and slash-navigation rows stay authoritative while they apply —
+// they name keys the user needs this instant, so telemetry never displaces
+// them. This joined form is for tests and narrow fallbacks; the frame renders
+// the padded split via composerHintBar.
 func composerHintsFor(state State) string {
 	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
 		return ""
@@ -425,19 +425,20 @@ func composerHintsFor(state State) string {
 		return "↑↓ navigate · enter/tab accept · esc dismiss"
 	}
 	if state.Status.Busy {
-		// The busy row owns measured session telemetry and the queue/cancel
-		// keys. The live phase and turn metrics live in the fixed telemetry
-		// bar above the composer, so repeating them here would put one fact on
-		// two surfaces. Nothing here changes the row count, so a hand-off can
+		// The busy row owns the turn timer, measured session telemetry, and
+		// the queue/cancel keys. The live phase lives in the telemetry bar
+		// above the composer, so repeating it here would put one fact on two
+		// surfaces. Nothing here changes the row count, so a hand-off can
 		// never move the composer.
 		var parts []string
 		if telemetry := busyTelemetry(state); telemetry != "" {
 			parts = append(parts, telemetry)
 		}
 		parts = append(parts, ComposerHints(true))
-		return strings.Join(parts, " · ")
+		return withTurnElapsed(state, strings.Join(parts, " · "))
 	}
 	left, right := idleHintZones(state)
+	left = withTurnElapsed(state, left)
 	if left == "" {
 		return right
 	}
@@ -474,20 +475,23 @@ func composerHintBar(state State, width int) string {
 	}
 	if state.Status.Busy {
 		// Same stable-band contract as composerHintsFor: the telemetry bar
-		// above the composer owns the phase and turn metrics, while this row
-		// keeps measured session telemetry at the left and queue/cancel keys at
-		// the right. The session marker still yields while busy
-		// (busyTelemetry), and truncation keeps the metric-first head.
+		// above the composer owns the live phase, while this row keeps the
+		// turn timer and measured session telemetry at the left and
+		// queue/cancel keys at the right. The session marker still yields
+		// while busy (busyTelemetry), and truncation keeps the metric-first
+		// head.
 		right := ComposerHints(true)
 		if telemetry := busyTelemetry(state); telemetry != "" {
 			right = telemetry + " · " + right
 		}
+		right = withTurnElapsed(state, right)
 		if width <= 0 {
 			return right
 		}
 		return sessionBarRow("", right, width)
 	}
 	left, right := idleHintZones(state)
+	left = withTurnElapsed(state, left)
 	return sessionBarRow(left, right, width)
 }
 
@@ -3104,6 +3108,11 @@ func renderStatus(state State, pal *Palette, layout Layout) string {
 	}
 	status := state.Status
 	parts := []string{}
+	// The turn timer leads the context detail on every bottom status surface,
+	// including approval rows where the hint bar is unavailable.
+	if timer := turnElapsedLabel(state); timer != "" {
+		parts = append(parts, timer)
+	}
 	// Cwd and usage text arrive from the environment and measured
 	// accounting: untrusted for layout purposes, sanitized inline so the
 	// footer stays exactly one row (it is truncated, never wrapped).

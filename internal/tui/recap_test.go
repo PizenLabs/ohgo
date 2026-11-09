@@ -110,24 +110,41 @@ func TestRecapLineCarriesMarkerOnce(t *testing.T) {
 	}
 }
 
-// A narrow terminal may fold the narrative onto a second row, but never more:
-// the footer must not push the prompt down or lose its marker.
-func TestRecapWrapsToAtMostTwoRows(t *testing.T) {
+// A long recap wraps onto as many rows as it needs, indented under the
+// narrative, and never ends in an ellipsis: completion must not look unfinished.
+func TestRecapWrapsLongNarrativeWithoutEllipsis(t *testing.T) {
 	long := strings.Repeat("The change moved the scheduler behind the layout seam. ", 6)
 	rows := recapLines(long, 80)
-	if len(rows) != 2 {
-		t.Fatalf("recap rows = %d, want 2:\n%s", len(rows), strings.Join(rows, "\n"))
+	if len(rows) <= 2 {
+		t.Fatalf("recap rows = %d, want a natural multiline wrap:\n%s", len(rows), strings.Join(rows, "\n"))
 	}
 	if !strings.HasPrefix(rows[0], recapPrefix+" ") {
 		t.Fatalf("first row = %q, want the marker", rows[0])
 	}
-	if !strings.HasSuffix(rows[1], "…") {
-		t.Fatalf("second row = %q, want a bounded ellipsis", rows[1])
-	}
-	for _, row := range rows {
+	indent := strings.Repeat(" ", CellWidth(recapPrefix)+1)
+	for i, row := range rows {
 		if got := CellWidth(row); got > 80 {
 			t.Fatalf("row is %d cells wide:\n%s", got, row)
 		}
+		if strings.Contains(row, "…") {
+			t.Fatalf("row %d is ellipsized: %q", i, row)
+		}
+		if i > 0 && !strings.HasPrefix(row, indent) {
+			t.Fatalf("continuation row %d is not indented under the narrative: %q", i, row)
+		}
+	}
+	// Wrapping reflows whitespace but must not drop any word.
+	var wrapped []string
+	for i, row := range rows {
+		if i == 0 {
+			wrapped = append(wrapped, strings.TrimPrefix(row, recapPrefix+" "))
+			continue
+		}
+		wrapped = append(wrapped, strings.TrimSpace(row))
+	}
+	if got, want := strings.Join(strings.Fields(strings.Join(wrapped, " ")), " "),
+		strings.Join(strings.Fields(strings.TrimPrefix(recapLine(long), recapPrefix+" ")), " "); got != want {
+		t.Fatalf("wrapped narrative lost content:\ngot  %q\nwant %q", got, want)
 	}
 	if got := recapLines("Updated the parser.", 80); len(got) != 1 {
 		t.Fatalf("short recap rows = %d, want 1", len(got))
@@ -244,16 +261,20 @@ func TestRecapWithoutAnAnswerIsHonest(t *testing.T) {
 	}
 }
 
-// A bounded subject must read as a pointer, not as a complete sentence that
-// happens to stop in the middle.
-func TestRecapMarksATruncatedSubject(t *testing.T) {
+// A long finding is carried whole. The recap is prose, not a badge: display
+// wrapping owns its width, so generating an ellipsis would discard the answer's
+// own conclusion.
+func TestRecapKeepsLongFindingWhole(t *testing.T) {
 	long := strings.Repeat("word ", 40)
 	got := recapNarrative("explain", []agent.Turn{recapTurn(long)})
-	if !strings.Contains(got, "…") {
-		t.Fatalf("recap = %q, want a truncation marker", got)
+	if strings.Contains(got, "…") {
+		t.Fatalf("recap = %q, want no generated ellipsis", got)
 	}
-	if strings.HasSuffix(got, "….") {
-		t.Fatalf("recap = %q, want one terminal marker", got)
+	if n := strings.Count(got, "word"); n != 40 {
+		t.Fatalf("recap kept %d of 40 words: %q", n, got)
+	}
+	if !strings.HasSuffix(got, ".") {
+		t.Fatalf("recap = %q, want one terminal period", got)
 	}
 }
 

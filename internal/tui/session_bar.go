@@ -53,6 +53,42 @@ func livePercent(state State) int {
 	return tokens.Percent(liveContextUsed(state), state.Status.ContextWindow)
 }
 
+// turnElapsedLabel renders the measured turn duration that leads the bottom
+// status line. It appears once the session has run a prompt and keeps the
+// locked final value after settlement, so idle observation still shows the
+// exact execution time. A fresh session keeps the row clean.
+func turnElapsedLabel(state State) string {
+	if !state.SessionActive && state.TurnElapsed <= 0 {
+		return ""
+	}
+	return "⏱ " + formatTurnElapsed(state.TurnElapsed)
+}
+
+// formatTurnElapsed renders the bottom timer: a fresh turn reads "0s" rather
+// than "0ms", then delegates to the shared precise formatter for measured
+// spans (420ms, 4.5s, 1m 12s).
+func formatTurnElapsed(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	return formatDurationPrecise(d)
+}
+
+// withTurnElapsed prefixes the timer to a bottom status line without inventing
+// a separator when the line is otherwise empty. The two-space gap matches the
+// status line's metric grouping rather than the " · " used between metrics.
+func withTurnElapsed(state State, text string) string {
+	timer := turnElapsedLabel(state)
+	if timer == "" {
+		return text
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return timer
+	}
+	return timer + "  " + text
+}
+
 // busyTelemetry renders the live token/count zone for the busy footer: the
 // incrementally updating metrics (↑/↓ with live % and measured cost) plus
 // the path:branch worktree orientation with its compact dirty state, but

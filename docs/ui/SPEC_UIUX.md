@@ -677,29 +677,48 @@ Do not automatically turn every red tool result into a red global task state.
 
 The viewport must remain stable during execution.
 
-The live telemetry bar is a fixed one-row slot immediately above the composer.
-The slot is reserved for the life of the view and is blank while idle, so a
-turn starting, changing phase, or finishing never moves the composer or the
-transcript. Its content is three contiguous groups:
+The live telemetry bar is a single row immediately above the composer, and it
+exists exclusively while a turn is running. An idle frame reserves no row and
+paints nothing: the transcript flows directly into the composer instead of
+paying for a blank line or a duplicate summary of the status bar. When a turn
+finishes (`AssistantDone` or `TurnCancelled`), the row disappears immediately.
+
+During a turn, the bar carries intent only:
 
 ```text
-⠋ formatting response...                                                   3.9s · ↓1.1k tokens
+⠋ formatting response...
 ```
 
-- Left: the shared Braille spinner, exactly one space, then the semantic
-  intent (`preparing workspace…`, `reasoning internals…`, `executing tools…`,
+- The shared Braille spinner, exactly one space, then the semantic intent
+  (`preparing workspace…`, `reasoning internals…`, `executing tools…`,
   `formatting response…`). The intent text carries the shimmer wave; the
   spinner carries liveness.
-- Middle: pure whitespace. No dots, dashes, or other fill characters.
-- Right: total elapsed turn duration, a separator dot, and the compact output
-  volume with a downward arrow (`3.9s · ↓1.1k tokens`). The group is pinned to
-  the frame edge; its width is measured from plain text before shimmer escapes
-  are applied, so animation can never push it.
+- No duration, token, context, session, or path metric appears here. Those
+  facts have exactly one home: the bottom status line.
+
+The bottom status line leads with the measured turn timer:
+
+```text
+⏱ 4.5s  ↑9.7k · ↓219 (0%) · #85 · …/Golang/go-template:master
+```
+
+- The timer starts at `0s` when a prompt is submitted, advances from frame
+  ticks while the turn runs, and freezes at the terminal measured span on
+  `AssistantDone` or `TurnCancelled`. The locked value stays visible during
+  idle observation.
+- Submitting the next prompt resets it to `0s` for the new turn.
+- Formatting uses the shared measured vocabulary: `420ms`, `4.5s`, `1m 12s`.
 
 Concrete actions stay in their transcript entries: a running tool's summary
 and a Thought trace's prose are never repeated in the bar, and the bar's phase
-is never repeated in the hint or status row. The bar's content clears
-immediately when the turn stops producing work.
+is never repeated in the hint or status row. Session telemetry, cost, timer,
+and `path:branch` remain in the bottom status row alone.
+
+The completion recap below a finished answer is prose, not a badge. It wraps
+onto as many rows as the narrative needs, with continuation rows indented under
+the narrative rather than the marker. Recaps never generate an ellipsis: a
+sentence cut at the column edge would read as unfinished work, so the
+transcript scrolls instead.
 
 Avoid unnecessary viewport growth caused by:
 

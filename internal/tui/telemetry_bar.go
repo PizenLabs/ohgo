@@ -1,42 +1,43 @@
 package tui
 
-import (
-	"strings"
-	"time"
-)
-
 // Live telemetry bar.
 //
 // The bar is a projection, never a second state machine: it reads the same
 // runtime state as the transcript and the header, and every value it prints is
-// either measured or derived from a measured value. It owns exactly one row,
-// reserved immediately above the composer for the life of the view, so a turn
-// starting, changing phase, or finishing can never move the composer or the
-// transcript. Idle frames render the slot empty rather than removing it.
+// either measured or derived from a measured value. It owns one row immediately
+// above the composer, and only while a turn is actually in flight: when no
+// background work runs, the row disappears entirely so the transcript sits
+// directly above the composer.
+//
+// The bar is intent-only. Duration, token counts, context, session, and path
+// belong to the bottom status line; repeating them here would duplicate the
+// same facts on two rows.
 //
 // The existing ProjectThinking seam decides whether a turn is active and which
 // phase it is in. This file only turns that phase into the bar's user-facing
-// intent phrase and its right-aligned metrics; it does not re-derive runtime
-// state from strings or start a second timer.
+// intent phrase and animated marker; it does not re-derive runtime state from
+// strings or start a second timer.
 
 // liveTelemetry is the presentation contract for the bar.
 //
-// Active is false whenever the runtime has nothing in flight; the row is still
-// reserved by the layout, but renders blank. StartedAt is the measured origin
-// of the displayed duration, and is zero when the runtime never stamped one.
+// Active is false whenever the runtime has nothing in flight; the row is then
+// released entirely. Animated reports that the phase is actively producing
+// work, so the spinner and the intent label may animate. Parked states
+// (waiting for approval) keep a still marker: motion would claim progress the
+// runtime does not have.
 type liveTelemetry struct {
-	Active    bool
-	Phase     ThinkingPhase
-	Label     string
-	StartedAt time.Time
-	// OutputTokens is the live streamed-output estimate carried by the
-	// activity projection. Zero means the volume is unknown and stays absent.
-	OutputTokens int
-	// Animated reports that the phase is actively producing work, so the
-	// spinner and the intent label may animate. Parked states (waiting for
-	// approval) keep a still marker: motion would claim progress the runtime
-	// does not have.
+	Active   bool
+	Label    string
 	Animated bool
+}
+
+// liveTelemetryVisible reports whether the bar owns a row right now.
+//
+// Layout and rendering both consume this predicate so the reserved row count
+// and the painted rows can never disagree: an idle frame renders nothing and
+// reserves nothing, and an active frame does both.
+func liveTelemetryVisible(s State) bool {
+	return projectLiveTelemetry(s).Active
 }
 
 // projectLiveTelemetry maps the runtime to the bar's semantic phrase and
@@ -51,12 +52,9 @@ func projectLiveTelemetry(s State) liveTelemetry {
 		return liveTelemetry{}
 	}
 	return liveTelemetry{
-		Active:       true,
-		Phase:        thinking.Phase,
-		Label:        label,
-		StartedAt:    telemetryStart(thinking),
-		OutputTokens: thinking.OutputTokens,
-		Animated:     thinking.Phase != ThinkingWaiting,
+		Active:   true,
+		Label:    label,
+		Animated: thinking.Phase != ThinkingWaiting,
 	}
 }
 
@@ -108,30 +106,16 @@ func telemetryReasoningSettled(s State) bool {
 	return last.Kind == EntryReasoning && last.Reasoning != nil && last.Reasoning.Closed
 }
 
-// telemetryStart selects the measured origin of the bar's elapsed clock.
-//
-// A turn-anchored phase (reasoning, tools, response, approval) shows the whole
-// turn's age, so the bar does not reset at every hand-off. The commit workflow
-// runs while the agent turn is idle, so it uses its own start; using the
-// previous turn's stamp there would print a false duration.
-func telemetryStart(thinking ThinkingState) time.Time {
-	if thinking.Phase == ThinkingCommit || thinking.TurnStartedAt.IsZero() {
-		return thinking.StartedAt
-	}
-	return thinking.TurnStartedAt
-}
-
 // renderLiveTelemetryBar renders the bar at the state's latest presentation
-// tick. It deliberately does not fall back to wall time: a one-shot Render
-// without a frame clock must stay deterministic and omit the elapsed value
-// rather than fabricate a duration from the moment the test happened to run.
+// tick. Duration and token metrics are deliberately absent: they live in the
+// bottom status line, and a render never fabricates a duration from wall time.
 func renderLiveTelemetryBar(s State, pal *Palette, layout Layout) string {
-	return renderLiveTelemetryBarAt(s, pal, layout, s.frameAt, s.Status.Spinner)
+	return renderLiveTelemetryBarAt(s, pal, layout, s.Status.Spinner)
 }
 
-// renderLiveTelemetryBarAt is the deterministic seam: now and tick are supplied
-// so tests can pin both the elapsed value and the shimmer frame.
-func renderLiveTelemetryBarAt(s State, pal *Palette, layout Layout, now time.Time, tick int) string {
+// renderLiveTelemetryBarAt is the deterministic seam: tick is supplied so tests
+// can pin the shimmer frame.
+func renderLiveTelemetryBarAt(s State, pal *Palette, layout Layout, tick int) string {
 	bar := projectLiveTelemetry(s)
 	if !bar.Active {
 		return ""
@@ -140,95 +124,34 @@ func renderLiveTelemetryBarAt(s State, pal *Palette, layout Layout, now time.Tim
 	if width <= 0 {
 		return ""
 	}
-	metrics := telemetryMetrics(bar, now)
-	return composeTelemetryRow(bar.Label, metrics, width, pal, bar.Animated, tick)
+	return composeTelemetryIntent(bar.Label, width, pal, bar.Animated, tick)
 }
 
-// telemetryMetrics renders the right-pinned performance zone: total turn
-// elapsed time and, once text is streaming, the compact output volume with its
-// downward arrow. Unknown values stay absent rather than rendering as invented
-// zeroes. The separator is part of the right group so the middle remains pure
-// whitespace.
-func telemetryMetrics(bar liveTelemetry, now time.Time) string {
-	var parts []string
-	if !now.IsZero() && !bar.StartedAt.IsZero() {
-		elapsed := now.Sub(bar.StartedAt)
-		if elapsed < 0 {
-			elapsed = 0
-		}
-		parts = append(parts, formatDurationPrecise(elapsed))
-	}
-	if tokens := formatOutputTokens(bar.OutputTokens); tokens != "" {
-		parts = append(parts, tokens)
-	}
-	return strings.Join(parts, " · ")
-}
-
-// composeTelemetryRow lays out the left group, a pure-whitespace spacer, and
-// the right-pinned metrics in exactly width cells.
-//
-// Width math runs on plain text before any styling: the spinner is one cell,
-// the intent label keeps its stripped width even while ShimmerText adds colour
-// escapes, and the metrics are measured before they are painted. That is what
-// keeps the right block rigidly pinned across shimmer frames.
-//
-// The metrics survive truncation. On a narrow terminal the intent label yields
-// first; if even the spinner cannot fit beside the metrics, the left group is
-// dropped rather than letting the right block wrap or detach from the edge.
-func composeTelemetryRow(label, metrics string, width int, pal *Palette, animated bool, tick int) string {
+// composeTelemetryIntent paints the only content the live bar owns: the marker
+// and the semantic intent. The label is measured and truncated before styling
+// so ShimmerText escapes cannot overflow the row.
+func composeTelemetryIntent(label string, width int, pal *Palette, animated bool, tick int) string {
 	if width <= 0 {
 		return ""
 	}
 	label = sanitizeInline(label)
-	metrics = sanitizeInline(metrics)
-
-	// The metrics are the fixed anchor: never let the left group push them
-	// off the edge. Truncating here is a last resort for a terminal narrower
-	// than the metrics themselves.
-	metrics = TruncateToWidth(metrics, width)
-	metricsW := CellWidth(metrics)
-	remaining := width - metricsW
-	if remaining <= 0 {
-		return pal.Muted.Render(metrics)
-	}
-
-	// Left group budget: marker, one separating space, then as much of the
-	// intent label as fits while leaving at least one pure-whitespace spacer
-	// cell before the metrics whenever space permits.
-	labelBudget := remaining - 3
+	labelBudget := width - 2 // spinner plus its separating space
 	if labelBudget < 0 {
 		labelBudget = 0
 	}
 	label = TruncateToWidth(label, labelBudget)
-	labelW := CellWidth(label)
 
 	glyph := spinnerGlyph(tick)
 	if !animated {
 		glyph = thinkingGlyph(ThinkingWaiting)
 	}
 	styledGlyph := pal.Prompt.Render(glyph)
-	styledMetrics := ""
-	if metrics != "" {
-		styledMetrics = pal.Muted.Render(metrics)
-	}
-
 	if label == "" {
-		// No sentence fits, but the spinner still names liveness when it can.
-		if remaining >= 1 {
-			gap := remaining - 1
-			return styledGlyph + strings.Repeat(" ", gap) + styledMetrics
-		}
-		return styledMetrics
+		return styledGlyph
 	}
-
 	styledLabel := pal.Status.Render(label)
 	if animated && shimmerSupported() {
 		styledLabel = ShimmerText(label, tick)
 	}
-	leftW := 1 + 1 + labelW // glyph + separator + label
-	gap := width - leftW - metricsW
-	if gap < 0 {
-		gap = 0
-	}
-	return styledGlyph + " " + styledLabel + strings.Repeat(" ", gap) + styledMetrics
+	return styledGlyph + " " + styledLabel
 }
