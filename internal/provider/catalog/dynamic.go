@@ -123,11 +123,17 @@ func recordFromOpenRouterEntry(id, provider string, entry map[string]any) record
 }
 
 // discoverGateway fetches an OpenCode gateway roster (zen or go). Entries may
-// be rich (like OpenRouter's) or minimal OpenAI ids; minimal ids merge with
-// bundled facts by id, because discovery confirms existence while the bundle
-// carries the numbers. A minimal id with no bundled row is skipped: without
-// a context window it cannot feed compaction, and fabricating one would be
-// the silent-wrong-answer class.
+// be the current Console shape (limit/cost/api maps, used by the public
+// models endpoint), rich OpenRouter-shaped entries, or minimal OpenAI ids.
+// Minimal ids merge with bundled facts by id, because discovery confirms
+// existence while the bundle carries the numbers. A minimal id with no bundled
+// row is skipped: without a context window it cannot feed compaction, and
+// fabricating one would be the silent-wrong-answer class.
+//
+// Free-tier Zen models are dropped. Console serves them only to the OpenCode
+// client; other harnesses get HTTP 403/429 even with a valid API key, so
+// offering them would produce a runtime failure the picker could have
+// prevented. Go's free models are included: Go serves them to outside clients.
 func discoverGateway(ctx context.Context, client *http.Client, provider, baseURL, apiKey string, bundled map[string]record) ([]record, error) {
 	entries, err := getModelEntries(ctx, client, baseURL+"/models", apiKey)
 	if err != nil {
@@ -140,18 +146,153 @@ func discoverGateway(ctx context.Context, client *http.Client, provider, baseURL
 		if id == "" {
 			continue
 		}
+		if rec, ok := recordFromGatewayEntry(id, provider, entry); ok {
+			if gatewayRosterExcludes(provider, rec) {
+				continue
+			}
+			out = append(out, rec)
+			continue
+		}
 		rich := recordFromOpenRouterEntry(id, provider, entry)
 		if rich.Context > 0 && rich.MaxTokens > 0 {
 			rich.Provider = provider
+			if gatewayRosterExcludes(provider, rich) {
+				continue
+			}
 			out = append(out, rich)
 			continue
 		}
 		if ref, ok := bundled[id]; ok {
+			if gatewayRosterExcludes(provider, ref) {
+				continue
+			}
 			out = append(out, ref)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// gatewayRosterExcludes reports a row this harness cannot call. Only Zen has
+// a free tier restricted to the OpenCode client; Go free models are available
+// to other harnesses.
+func gatewayRosterExcludes(provider string, rec record) bool {
+	return provider == "opencode-zen" && rec.Priced && freeRecord(rec)
+}
+
+// recordFromGatewayEntry maps the current OpenCode Console model shape.
+//
+// It prefers Chat Completions for a model that names both protocols because
+// that is the transport this build has for OpenAI-family models; an
+// Anthropic-only row keeps its native Messages route. Responses-only and
+// Gemini-only rows are refused rather than mis-routed.
+func recordFromGatewayEntry(id, provider string, entry map[string]any) (record, bool) {
+	apis := mapOf(entry["api"])
+	apiName, route, baseURL := "", "", ""
+	if chat := mapOf(apis["chat-completions"]); len(chat) > 0 {
+		apiName, route = "openai-completions", "openai-chat-completions"
+		baseURL = strings.TrimSpace(strOf(chat["base_url"]))
+	} else if messages := mapOf(apis["messages"]); len(messages) > 0 {
+		apiName = "anthropic-messages"
+		// AnthropicProvider appends /v1/messages, so the catalog base stops at
+		// the version root rather than repeating it.
+		baseURL = strings.TrimSuffix(strings.TrimRight(strOf(messages["base_url"]), "/"), "/v1")
+	} else {
+		return record{}, false
+	}
+
+	limit := mapOf(entry["limit"])
+	contextWindow := intPos(num(limit["context"]))
+	maxTokens := intPos(num(limit["output"]))
+	if maxTokens == 0 {
+		maxTokens = contextWindow
+	}
+	modalities := gatewayModalities(mapOf(entry["modalities"])["input"])
+	if contextWindow <= 0 || maxTokens <= 0 || maxTokens > contextWindow || len(modalities) == 0 {
+		return record{}, false
+	}
+
+	name := strings.TrimSpace(strOf(entry["name"]))
+	if name == "" {
+		name = id
+	}
+	rec := record{
+		ID: id, Name: name, API: apiName, Provider: provider,
+		Route: route, BaseURL: baseURL,
+		Context: contextWindow, MaxTokens: maxTokens,
+		Input: modalities,
+	}
+
+	costText, priced := mapOf(entry["cost"])["text"].(map[string]any)
+	rec.Priced = priced
+	if priced {
+		cost := mapOf(costText)
+		input := mapOf(cost["input"])
+		output := mapOf(cost["output"])
+		cache := mapOf(input["cache"])
+		rec.Cost = costJSON{
+			Input:      num(input["price"]),
+			Output:     num(output["price"]),
+			CacheRead:  num(cache["read"]),
+			CacheWrite: num(cache["write"]),
+		}
+	}
+
+	capabilities := mapOf(entry["capabilities"])
+	reasoning := mapOf(capabilities["reasoning"])
+	supported, _ := reasoning["supported"].(bool)
+	rec.Reasoning = supported
+	if supported {
+		rec.Thinking = gatewayThinking(apiName, stringsOf(reasoning["effort"]))
+	}
+	return rec, true
+}
+
+// gatewayThinking turns the published effort ladder into the catalog shape.
+//
+// "none" is an explicit disable value, not an effort to offer alongside the
+// ladder. A reasoning model that publishes no ladder still accepts the common
+// budget names through the gateway, so it gets the same broad ladder bundled
+// rows use rather than a fabricated per-model claim.
+func gatewayThinking(apiName string, efforts []string) *Thinking {
+	if apiName == "anthropic-messages" {
+		return &Thinking{Mode: "budget", Efforts: []string{"minimal", "low", "medium", "high", "xhigh"}}
+	}
+	var ladder []string
+	disable := ""
+	for _, effort := range efforts {
+		if effort == "none" {
+			disable = "none"
+			continue
+		}
+		if effort != "" {
+			ladder = append(ladder, effort)
+		}
+	}
+	if len(ladder) == 0 {
+		ladder = []string{"minimal", "low", "medium", "high", "xhigh"}
+	}
+	return &Thinking{Mode: "effort", Efforts: ladder, Disable: disable}
+}
+
+// gatewayModalities normalizes Console's media types to the block kinds this
+// transport can send. Video, audio, and documents are not sendable yet, so
+// naming them would promise input the request cannot carry.
+func gatewayModalities(value any) []string {
+	var out []string
+	images := false
+	for _, modality := range stringsOf(value) {
+		switch {
+		case modality == "text":
+			out = append(out, "text")
+		case strings.HasPrefix(modality, "image"):
+			images = true
+		}
+	}
+	if images {
+		out = append(out, "image")
+	}
+	return out
 }
 
 // discoverOllama lists local or cloud models via /api/tags, enriching each
@@ -518,6 +659,9 @@ func SnapshotAll() (entries []SnapshotEntry, stale bool) {
 	// Bundled first: the explicit fallback everything else overrides.
 	for provider, models := range doc.Models {
 		for id, rec := range models {
+			if gatewayRosterExcludes(provider, rec) {
+				continue
+			}
 			k := key{provider, id}
 			merged[k] = SnapshotEntry{Origin: "bundled", PriceKnown: rec.Priced, Free: rec.Priced && freeRecord(rec)}
 		}
@@ -540,6 +684,9 @@ func SnapshotAll() (entries []SnapshotEntry, stale bool) {
 		records := make(map[string]record, len(cached))
 		for _, rec := range cached {
 			rec.Provider = provider
+			if gatewayRosterExcludes(provider, rec) {
+				continue
+			}
 			records[rec.ID] = rec
 			merged[key{provider, rec.ID}] = SnapshotEntry{
 				Origin:     origin,
@@ -674,6 +821,9 @@ func toModels(provider string, records []record) ([]ai.Model, error) {
 		rec.Provider = provider
 		if rec.BaseURL == "" {
 			rec.BaseURL = meta.BaseURL
+		}
+		if gatewayRosterExcludes(provider, rec) {
+			continue
 		}
 		model, err := rec.toModel(meta)
 		if err != nil {

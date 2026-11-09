@@ -11,25 +11,26 @@ Upstream: `packages/catalog/src/models.json`
 real facts: id, provider, API, route, base URL, context window, max output,
 reasoning flag, input modalities, per-million-token prices, thinking ladder.
 
-Current content: **379 models across 13 providers** (see `ohgo models`).
+Current content: **331 models across 13 providers** (see `ohgo models`).
 
 Regen: `python3 scripts/extract-upstream.py [upstream-models.json]
 [catalog.json]`. It converts only rows this build can speak
 (openai-completions → chat route, anthropic-messages native, ollama-chat
 native, openrouter native ids with the `~` stripped), drops
 Responses-only and google-generative-ai rows with counts (never mis-routed),
-limits OpenRouter seeds to native ids already shipped elsewhere, and leaves
-existing entries byte-identical (no `sort_keys`: only the new provider maps
-are added).
+limits OpenRouter seeds to native ids already shipped elsewhere, drops
+free-tier OpenCode Zen rows (Console serves those only to the OpenCode
+client), and leaves existing entries byte-identical (no `sort_keys`: only
+the new provider maps are added).
 
 ## Dynamic discovery
 
 Bundled rows answer offline and fast; ids the bundle never saw resolve over
-the network (`catalog.DiscoverModels`): OpenRouter and the OpenCode gateways
-via OpenAI-compatible `/models` (the official `GET {baseURL}/models`
-documented response: `id`, `name`, `context_length`,
-`top_provider.max_completion_tokens`, per-token `pricing`, `architecture`
-modalities, `supported_parameters`, reasoning ladders), Ollama via
+the network (`catalog.DiscoverModels`): OpenRouter via the rich `GET
+{baseURL}/models` shape (`context_length`, `top_provider`,
+`pricing`, `architecture`, `supported_parameters`, reasoning ladders), the
+OpenCode gateways via the Console shape (`limit`, `cost.text`, `modalities`,
+`api` maps; Responses-only and Gemini-only rows excluded), and Ollama via
 `/api/tags` plus `/api/show` caps. Rosters cache to
 `~/.ohgo/cache/<provider>-models.json` for 24h, with a stale fallback when
 the network is down. Public metadata browses unauthenticated (no key is
@@ -39,8 +40,14 @@ skipped, tool-less OpenRouter rows are skipped (the harness always offers
 tools), and minimal gateway ids merge with bundled facts or not at all.
 Pricing presence is recorded (`priced`): a zero price with metadata is
 verified free, a missing pricing object is unknown — never rendered as
-free. Local Ollama ships no bundled rows at all: its models exist only on
-the user's machine, so discovery is the only honest source.
+free. Free-tier Zen rows are dropped in both the bundle and discovery:
+Console serves them only to the OpenCode client, so another harness would
+receive 403/429 even with a valid key. Go free models stay, because Go
+serves them to outside clients. Both gateways name
+`x-opencode-session` in provider metadata; transports forward the loop's
+per-session identity through it, with a stable provider fallback when no
+session store exists. Local Ollama ships no bundled rows at all: its models
+exist only on the user's machine, so discovery is the only honest source.
 
 ## Picker snapshot and refresh
 

@@ -270,3 +270,20 @@ func TestScrubSkipsBlanks(t *testing.T) {
 		t.Errorf("scrubbed = %q, want blanks ignored, not matched everywhere", got)
 	}
 }
+
+// TestCredentialProvidersAliasOpenCodeGateways pins the one-account,
+// two-endpoint rule at the resolving layer: a key stored for either gateway is
+// the credential for both.
+func TestCredentialProvidersAliasOpenCodeGateways(t *testing.T) {
+	zen := CredentialProviders("opencode-zen")
+	goProviders := CredentialProviders("opencode-go")
+	if len(zen) != 2 || zen[1] != "opencode-go" {
+		t.Errorf("zen aliases = %v, want the Go gateway", zen)
+	}
+	if len(goProviders) != 2 || goProviders[1] != "opencode-zen" {
+		t.Errorf("go aliases = %v, want the Zen gateway", goProviders)
+	}
+	if got := CredentialProviders("groq"); len(got) != 1 || got[0] != "groq" {
+		t.Errorf("groq aliases = %v, want no cross-provider credential sharing", got)
+	}
+}

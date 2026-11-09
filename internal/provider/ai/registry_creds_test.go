@@ -70,3 +70,30 @@ func TestRegistryKeepsTheMissingKeyMessage(t *testing.T) {
 		t.Errorf("err = %q, want it to name the variable", got)
 	}
 }
+
+// TestOpenCodeKeySavedForOneGatewayResolvesForTheOther is the credential
+// contract for one Console account with two endpoints. A user who connected
+// Zen must not be told the key is missing after switching to Go, because the
+// same key authenticates both.
+func TestOpenCodeKeySavedForOneGatewayResolvesForTheOther(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	store, err := creds.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("opencode-zen", "oc_sk_shared"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENCODE_API_KEY", "")
+	t.Setenv("HOME", dir)
+
+	registry := NewRegistry()
+	registry.SetCredentialsFile(path)
+	for _, provider := range []string{"opencode-zen", "opencode-go"} {
+		key, source, err := registry.ResolveAPIKeySource(provider)
+		if err != nil || key != "oc_sk_shared" || source != "credential file" {
+			t.Errorf("%s resolved (%q, %q, %v), want the shared key from the file", provider, key, source, err)
+		}
+	}
+}

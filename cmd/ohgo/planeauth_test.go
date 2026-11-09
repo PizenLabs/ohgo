@@ -59,3 +59,31 @@ func TestSavePlaneKeyRefusesBadInput(t *testing.T) {
 		t.Errorf("refused input still wrote the store: %s", data)
 	}
 }
+
+// TestDisconnectRemovesTheSharedOpenCodeCredential covers the alias contract
+// on the write side: one Console key serves both gateways, so disconnecting
+// either must remove the credential rather than report success while the
+// other endpoint keeps using it.
+func TestDisconnectRemovesTheSharedOpenCodeCredential(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	clearProviderKeys(t)
+	h := testHarness(t)
+	t.Setenv("HOME", home)
+
+	if err := h.SavePlaneKey("opencode-zen", "oc_sk_shared"); err != nil {
+		t.Fatalf("SavePlaneKey: %v", err)
+	}
+	if _, err := h.Disconnect("opencode-go"); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	store, err := creds.Open(filepath.Join(home, ".ohgo", "credentials.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, provider := range []string{"opencode-zen", "opencode-go"} {
+		if _, ok := store.Get(provider); ok {
+			t.Errorf("%s credential survived a disconnect", provider)
+		}
+	}
+}

@@ -26,6 +26,10 @@ type AnthropicProvider struct {
 	// AuthToken overrides APIKey and is sent as Authorization: Bearer instead,
 	// for gateway deployments that require a bearer token.
 	AuthToken string
+	// SessionID is the fallback session identity for a request that carries
+	// none. Gateways such as OpenCode require a session header even when the
+	// host has no session store.
+	SessionID string
 	// BaseURL overrides AnthropicBaseURL when non-empty.
 	BaseURL string
 	// Version overrides AnthropicVersion when non-empty.
@@ -171,6 +175,11 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (*Stream, e
 		headers["Authorization"] = "Bearer " + p.AuthToken
 	} else {
 		headers["x-api-key"] = p.APIKey
+	}
+	if header := req.Model.SessionHeader; header != "" {
+		if session := sessionIdentity(req.SessionID, p.SessionID); session != "" {
+			headers[header] = session
+		}
 	}
 
 	resp, err := doJSON(ctx, p.Client, base+"/v1/messages", body, headers)

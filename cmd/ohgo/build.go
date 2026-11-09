@@ -316,6 +316,7 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		MaxTurns:        opts.maxTurns,
 		Reasoning:       opts.reasoning,
 		ReasoningEffort: opts.effort,
+		SessionID:       sessionProviderID(sess),
 		OnTurn:          onTurn,
 		// The security boundary replaces the legacy admit/approve pair. The
 		// gate performs the authority check, the policy decision, and (for an
@@ -341,6 +342,16 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		artifactTool.SetVerificationSource(loop.VerificationObserved)
 	}
 	return loop, nil
+}
+
+// sessionProviderID names one session to a provider that uses a stable
+// conversation identity for routing and prompt-cache affinity. It is empty
+// when no session exists; providers then fall back to their own stable ID.
+func sessionProviderID(sess *session.Session) string {
+	if sess == nil || sess.ID == 0 {
+		return ""
+	}
+	return fmt.Sprintf("ses_ohgo_%d", sess.ID)
 }
 
 // compactionFromSettings translates configured values into loop settings.

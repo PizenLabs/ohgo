@@ -1055,6 +1055,15 @@ func (l *Loop) SetReasoning(enabled bool, effort string) {
 	l.cfg.ReasoningEffort = effort
 }
 
+// SetSessionID changes the conversation identity forwarded to providers.
+//
+// It is called when the host adopts, resumes, or replaces a session. The
+// provider uses it for routing and prompt-cache affinity; changing it between
+// turns is safe, but changing it during a turn would split one conversation.
+func (l *Loop) SetSessionID(id string) {
+	l.cfg.SessionID = id
+}
+
 // convert turns agent messages into provider messages.
 func (l *Loop) convert(messages []Message) ([]ai.Message, error) {
 	if l.cfg.TransformContext != nil {

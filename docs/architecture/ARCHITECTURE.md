@@ -573,11 +573,13 @@ The accumulator strategies differ on purpose — unifying the first two drops
 the first fragment of every call. One Chat Completions transport serves
 groq, together, fireworks, deepseek, cerebras, mistral, plus OpenRouter
 (with attribution headers) and the OpenCode gateways (zen/go); the
-per-provider work is a base URL and a credential name. `ai.ProbeProvider`
-checks reachability + authentication without spending a completion and backs
-`/connect` validation, `/usage`, `/status`, and the TUI probe view.
-`xai` and Responses-only model lines are excluded on purpose (no Responses
-transport in this build), recorded in `TestExcludedProvidersAreDocumented`.
+per-provider work is a base URL, a credential name, and (for the gateways)
+the `x-opencode-session` header named in catalog metadata and filled from
+the loop's session identity. `ai.ProbeProvider` checks reachability +
+authentication without spending a completion and backs `/connect` validation,
+`/usage`, `/status`, and the TUI probe view. `xai` and Responses-only model
+lines are excluded on purpose (no Responses transport in this build),
+recorded in `TestExcludedProvidersAreDocumented`.
 
 ## CLI and harness (`cmd/ohgo`)
 

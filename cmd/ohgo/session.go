@@ -161,6 +161,7 @@ func installSessionManager(program *tui.Program, store *session.Store, held *har
 			if err != nil {
 				return nil, tui.OpenedSession{}, fmt.Errorf("load session %d: %w", id, err)
 			}
+			held.bindSession(&sess)
 			return &sess, tui.OpenedSession{
 				History: history,
 				Entries: tui.EntriesFromMessages(history),
@@ -179,6 +180,7 @@ func installSessionManager(program *tui.Program, store *session.Store, held *har
 			if err != nil {
 				return nil, tui.OpenedSession{}, err
 			}
+			held.bindSession(&sess)
 			return &sess, tui.OpenedSession{
 				Notice: fmt.Sprintf("started new session %d", sess.ID),
 			}, nil

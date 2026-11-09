@@ -371,7 +371,7 @@ func resolveModelRef(settingsModel func() (provider, id string, ok bool), flagMo
 	if provider, id, ok := settingsModel(); ok {
 		resolved, err := resolve(ai.Ref(provider, id))
 		if err != nil {
-			return ai.Model{}, fmt.Errorf("settings model: %w", err)
+			return ai.Model{}, fmt.Errorf("settings model: %w\nrun `ohgo models` to list them", err)
 		}
 		model = resolved
 	}
