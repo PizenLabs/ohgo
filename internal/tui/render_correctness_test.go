@@ -150,6 +150,7 @@ func forcedPalette() *Palette {
 		ToolRun:     fg("214"),
 		Notice:      fg("244").Italic(true),
 		Status:      fg("244"),
+		Thought:     fg("214"),
 		Prompt:      fg("121"),
 		Choice:      fg("252"),
 		Selected:    fg("121").Bold(true),
@@ -169,6 +170,7 @@ func forcedPalette() *Palette {
 		Quote:       fg("244").Italic(true),
 		Bullet:      fg("121"),
 		Muted:       fg("240"),
+		Separator:   fg("240"),
 	}
 }
 

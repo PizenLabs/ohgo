@@ -547,10 +547,13 @@ Expanded:
 
 ```text
 - Thought · 3.2s
-
-  Let me inspect the backend structure and package
-  configuration before determining the architecture.
+│ Let me inspect the backend structure and package
+│ configuration before determining the architecture.
 ```
+
+The header renders in the status amber; the body is muted prose behind a dim
+`│` indent guide, so the trace reads as an annotating child of the disclosure
+row rather than a second answer.
 
 Reasoning must be:
 
@@ -1263,7 +1266,7 @@ Expanded:
 
 ```text
 - Thought · 3.2s
-  ...
+│ ...
 ```
 
 Reasoning must not continuously inflate the viewport.

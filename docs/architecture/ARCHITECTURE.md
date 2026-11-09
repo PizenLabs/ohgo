@@ -227,7 +227,7 @@ marker. `EventThinkingDelta` reaches the runtime through its own hook
 (`ai.DrainStreamHooks`), becomes its own presentation block, and is collapsed
 by default into a one-line badge (`+ Thought · 1.1s`). The badge's `+`/`-`
 marker is the disclosure affordance: the shared presentation-only Ctrl+O chord
-or a click expands it to `- Thought · 6.5s` and an indented, desaturated body,
+or a click expands it to `- Thought · 6.5s` and a `│`-guided, desaturated body,
 bounded so one long trace cannot displace the answer. The completed
 `AssistantMessage` keeps the same thinking block, so a resumed transcript
 renders it without re-parsing provider output.

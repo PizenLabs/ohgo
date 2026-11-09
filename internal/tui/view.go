@@ -23,6 +23,11 @@ type Palette struct {
 	ToolRun   lipgloss.Style
 	Notice    lipgloss.Style
 	Status    lipgloss.Style
+	// Thought renders a reasoning block's disclosure header. Amber marks the
+	// internal thinking channel as inspectable telemetry: it is distinct from
+	// the answer without borrowing the tool identity colour, which belongs to
+	// actions the runtime actually executed.
+	Thought   lipgloss.Style
 	Prompt    lipgloss.Style
 	Choice    lipgloss.Style
 	Selected  lipgloss.Style
@@ -118,6 +123,7 @@ func DarkPalette() *Palette {
 		ToolRun:      fg(darkWarning),
 		Notice:       fg(darkMuted).Italic(true),
 		Status:       fg(ColorMuted),
+		Thought:      fg(ColorStatus),
 		Prompt:       fg(ColorPrimary),
 		Choice:       fg(darkText),
 		Selected:     fg(darkAccent).Bold(true),
@@ -170,6 +176,7 @@ func LightPalette() *Palette {
 		ToolRun:      fg(lightWarning),
 		Notice:       fg(lightMuted).Italic(true),
 		Status:       fg(lightMuted),
+		Thought:      fg(chromeLightStatus),
 		Prompt:       fg(lightAccent),
 		Choice:       fg(lightText),
 		Selected:     fg(lightAccent).Bold(true),
@@ -2176,7 +2183,7 @@ func renderReasoningAt(sb *strings.Builder, reasoning *ReasoningEntry, pal *Pale
 		(elapsed > 0 || reasoning.Closed || !reasoning.EndedAt.IsZero()) {
 		head += " · " + formatDurationPrecise(elapsed)
 	}
-	sb.WriteString(pal.Status.Render(head) + "\n")
+	sb.WriteString(pal.Thought.Render(head) + "\n")
 	if !reasoning.Expanded || strings.TrimSpace(reasoning.Text) == "" {
 		sb.WriteString("\n")
 		return
@@ -2188,17 +2195,21 @@ func renderReasoningAt(sb *strings.Builder, reasoning *ReasoningEntry, pal *Pale
 	lines := wrapReasoningBody(reasoning.Text, width)
 	limit := maxReasoningLines(layout)
 	shown := 0
+	// The guide is two cells wide, exactly the body indent budget, so the
+	// expanded trace reads as a child of the header without changing the
+	// wrapped width. It is a dim rule role, not prose styling.
+	guide := pal.Separator.Render("│ ")
 	for _, line := range lines {
 		if shown >= limit {
 			break
 		}
 		// Thinking prose is deliberately desaturated: it is available on
 		// request, never a second answer competing with the transcript.
-		sb.WriteString("  " + pal.Muted.Render(line) + "\n")
+		sb.WriteString(guide + pal.Muted.Render(line) + "\n")
 		shown++
 	}
 	if len(lines) > shown {
-		sb.WriteString(pal.Truncated.Render("  … [truncated]") + "\n")
+		sb.WriteString(guide + pal.Truncated.Render("… [truncated]") + "\n")
 	}
 	sb.WriteString("\n")
 }

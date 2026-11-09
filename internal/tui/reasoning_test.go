@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +50,7 @@ func TestReasoningBlockIsCollapsedAndMeasured(t *testing.T) {
 	if !strings.Contains(expanded, "- Thought") || !strings.Contains(expanded, "inspect the cache") {
 		t.Fatalf("expanded render = %q, want the trace body", expanded)
 	}
-	if !strings.Contains(expanded, "  inspect the cache") {
+	if !strings.Contains(expanded, "│ inspect the cache") {
 		t.Fatalf("expanded body is not indented under its badge:\n%s", expanded)
 	}
 }
@@ -63,11 +64,33 @@ func TestExpandedReasoningBodyUsesMutedRole(t *testing.T) {
 	renderReasoning(&b, reasoning, pal, Layout{ContentWidth: 80, Mode: LayoutWide}, 0)
 
 	out := b.String()
-	if !strings.Contains(out, "  "+pal.Muted.Render("inspect the cache")) {
-		t.Fatalf("expanded body is not the indented muted role: %q", out)
+	if !strings.Contains(out, pal.Separator.Render("│ ")+pal.Muted.Render("inspect the cache")) {
+		t.Fatalf("expanded body is not the indented muted role behind the guide: %q", out)
 	}
-	if !strings.Contains(out, "- Thought") {
-		t.Fatalf("expanded header lost its open marker: %q", out)
+	if !strings.Contains(out, pal.Thought.Render("- Thought")) {
+		t.Fatalf("expanded header lost its open marker or amber role: %q", out)
+	}
+}
+
+// A completed thought collapses to one amber telemetry row with a precise
+// duration: sub-second traces read as milliseconds rather than a rounded zero.
+func TestCollapsedThoughtHeaderUsesAmberAndPreciseDuration(t *testing.T) {
+	pal := forcedPalette()
+	start := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
+	var b strings.Builder
+	renderReasoning(&b, &ReasoningEntry{
+		Text:      "prepare a concise reply",
+		Closed:    true,
+		StartedAt: start,
+		EndedAt:   start.Add(563 * time.Millisecond),
+	}, pal, Layout{ContentWidth: 80, Mode: LayoutWide}, 0)
+
+	out := b.String()
+	if !strings.Contains(out, pal.Thought.Render("+ Thought · 563ms")) {
+		t.Fatalf("collapsed header = %q, want the amber measured badge", out)
+	}
+	if strings.Contains(out, "prepare a concise reply") {
+		t.Fatalf("collapsed thought leaked its body: %q", out)
 	}
 }
 
@@ -83,6 +106,42 @@ func TestCtrlOTogglesLatestReasoningBlock(t *testing.T) {
 	}
 	if len(p.state.Entries) != 2 || !p.state.Entries[1].Reasoning.Expanded {
 		t.Fatalf("entries = %+v, want the reasoning block expanded", p.state.Entries)
+	}
+}
+
+// Expanding a thought must reflow the retained viewport in the same key frame.
+// Otherwise the next paint would use stale row geometry and the live edge would
+// visibly jump.
+func TestReasoningExpansionReflowsViewportInSameFrame(t *testing.T) {
+	at := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(TerminalResized{Width: 90, Height: 20})
+	s.Apply(UserSubmitted{Text: "go", At: at, Seq: 1})
+	s.Apply(ReasoningDelta{Text: strings.Repeat("inspect the cache carefully ", 8), At: at, Seq: 1})
+	s.Apply(AssistantDelta{Text: "done", At: at.Add(1200 * time.Millisecond), Seq: 1})
+	for i := 0; i < 20; i++ {
+		s.Apply(Notice{Text: fmt.Sprintf("notice-%02d", i)})
+	}
+
+	p := NewProgram(nil, "test", 0)
+	p.state = s
+	p.Update(tea.WindowSizeMsg{Width: 90, Height: 20})
+	p.syncTranscript()
+	before := p.transcriptFrame.vp
+	if !before.Following {
+		t.Fatalf("fixture did not start at the live edge: %+v", before)
+	}
+
+	p.handleKey(tea.KeyMsg{Type: tea.KeyCtrlO})
+	after := p.transcriptFrame.vp
+	if after.TotalRows <= before.TotalRows {
+		t.Fatalf("thought expansion did not grow the document: %d -> %d", before.TotalRows, after.TotalRows)
+	}
+	if after.Offset != after.TotalRows-after.Height {
+		t.Fatalf("viewport offset = %d, want the same-frame live edge %d", after.Offset, after.TotalRows-after.Height)
+	}
+	if after.Offset <= before.Offset {
+		t.Fatalf("viewport did not follow the reflowed content: offset %d -> %d", before.Offset, after.Offset)
 	}
 }
 
