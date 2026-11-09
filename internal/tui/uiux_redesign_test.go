@@ -8,40 +8,48 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// TestFastToolCompletesWithoutSpinnerDelay: a call that finishes in
-// milliseconds renders only its stable outcome. No frame is spent pretending
-// the operation took longer than it did.
-func TestFastToolCompletesWithoutSpinnerDelay(t *testing.T) {
-	start := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+// TestFastToolHoldsIntentFrameThenSettles: a call that finishes in
+// milliseconds may not snap from nothing to a checkmark. It holds its executing
+// frame for the perception floor, then settles with the measured duration.
+func TestFastToolHoldsIntentFrameThenSettles(t *testing.T) {
+	start := time.Now()
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 24})
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: start})
 	s.Apply(ToolFinished{ID: "c1", Text: "package a\n", Summary: "1 line", At: start.Add(2 * time.Millisecond)})
+	s.Apply(FrameTick{At: start})
 
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	active := ansi.Strip(Render(s))
+	if !strings.Contains(active, running+" read a.go") || strings.Contains(active, "✔ read a.go") {
+		t.Fatalf("fast tool lost its intent frame:\n%s", active)
+	}
+
+	s.Apply(FrameTick{At: start.Add(toolMinDwell - time.Millisecond)})
+	if held := ansi.Strip(Render(s)); !strings.Contains(held, running+" read a.go") {
+		t.Fatalf("fast tool settled before the dwell floor:\n%s", held)
+	}
+
+	s.Apply(FrameTick{At: start.Add(toolMinDwell)})
 	out := ansi.Strip(Render(s))
-	if !strings.Contains(out, "✓ read a.go") {
+	if !strings.Contains(out, "✔ read a.go") {
 		t.Fatalf("fast tool lost its stable success row:\n%s", out)
 	}
 	if !strings.Contains(out, "2ms") {
 		t.Fatalf("fast tool lost its measured duration:\n%s", out)
 	}
-	for _, frame := range spinnerFrames {
-		if strings.Contains(out, frame) {
-			t.Fatalf("fast tool rendered spinner frame %q:\n%s", frame, out)
-		}
-	}
 
-	// A tick must not disturb settled history.
-	s.Status.Spinner = 7
+	// A later tick must not disturb settled history.
+	s.Apply(FrameTick{At: start.Add(time.Second)})
 	if again := ansi.Strip(Render(s)); again != out {
 		t.Fatalf("completed history changed across a tick:\nbefore:\n%s\nafter:\n%s", out, again)
 	}
 }
 
-// TestRunningToolShowsStaticGlyphAndMeasuredElapsed: a long call remains
-// readable without a per-tool spinner, and its duration is the right-aligned
+// TestRunningToolShowsSpinnerInFixedSlot: a long call animates the shared
+// spinner in one invariant status cell, and its duration is the right-aligned
 // measured one.
-func TestRunningToolShowsStaticGlyphAndMeasuredElapsed(t *testing.T) {
+func TestRunningToolShowsSpinnerInFixedSlot(t *testing.T) {
 	start := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 24})
@@ -51,15 +59,17 @@ func TestRunningToolShowsStaticGlyphAndMeasuredElapsed(t *testing.T) {
 	s.Entries[0].Tool.EndedAt = start.Add(3200 * time.Millisecond)
 
 	out := ansi.Strip(Render(s))
-	if !strings.Contains(out, "◌ bash go test ./...") {
-		t.Fatalf("running tool lost its static glyph or invocation:\n%s", out)
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if !strings.Contains(out, running+" bash go test ./...") {
+		t.Fatalf("running tool lost its spinner or invocation:\n%s", out)
 	}
 	if !strings.Contains(out, "3.2s") {
 		t.Fatalf("running tool lost its measured elapsed time:\n%s", out)
 	}
-	for _, frame := range spinnerFrames {
-		if strings.Contains(out, frame) {
-			t.Fatalf("running tool rendered spinner frame %q:\n%s", frame, out)
+	for tick := 0; tick < len(spinnerFrames); tick++ {
+		prefix := toolStatusGlyph(ToolRunning, tick) + " bash go test ./..."
+		if got, want := CellWidth(prefix), statusSlotCells+1+CellWidth("bash go test ./..."); got != want {
+			t.Fatalf("tick %d status prefix = %d cells, want %d", tick, got, want)
 		}
 	}
 }
@@ -107,6 +117,7 @@ func TestToolFailureStaysToolLevel(t *testing.T) {
 		Summary: CompactResultSummary("stat \"/repo/.env.example\": no such file or directory\n", true),
 		At:      at.Add(time.Millisecond),
 	})
+	s.Apply(FrameTick{At: at.Add(time.Millisecond + toolMinDwell)})
 
 	if got := DeriveRuntime(s); got != RuntimeIdle {
 		t.Fatalf("tool failure changed the runtime to %q, want idle", got)
@@ -121,7 +132,7 @@ func TestToolFailureStaysToolLevel(t *testing.T) {
 }
 
 // TestOnlyCurrentRunningToolIsLive: concurrent calls all remain truthful, but
-// only one carries the live clock; the others settle to their static glyph.
+// only one carries the live clock; the others stay in their muted status slot.
 func TestOnlyCurrentRunningToolIsLive(t *testing.T) {
 	start := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
 	s := New()
@@ -251,11 +262,11 @@ func TestTranscriptReadsAsStateTransitions(t *testing.T) {
 	s.Apply(ToolStarted{ID: "c3", Name: "glob", Summary: "glob backend/**/*.go", At: at.Add(13 * time.Second), Seq: 1})
 
 	out := ansi.Strip(Render(s))
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
 	ordered := []string{
-		"✓ ls /go-ecommerce",
-		"✓ read package.json",
+		"+ 2 tools · ",
 		"+ Thought",
-		"◌ glob backend/**/*.go",
+		running + " glob backend/**/*.go",
 	}
 	last := -1
 	for _, marker := range ordered {
@@ -268,7 +279,7 @@ func TestTranscriptReadsAsStateTransitions(t *testing.T) {
 		}
 		last = index
 	}
-	if got := strings.Count(out, "◌"); got != 1 {
+	if got := strings.Count(out, running); got != 1 {
 		t.Fatalf("transcript has %d live markers, want exactly one:\n%s", got, out)
 	}
 	if strings.Contains(out, "running") {
@@ -280,7 +291,7 @@ func TestTranscriptReadsAsStateTransitions(t *testing.T) {
 // active block only. Settled rows keep their cached projection, which is what
 // makes history stable and rendering cheap during a long run.
 func TestCompletedHistoryIsNotRepaintedByTicks(t *testing.T) {
-	at := time.Now()
+	at := time.Now().Add(-time.Second)
 	s := New()
 	s.Apply(TerminalResized{Width: 100, Height: 30})
 	for i := 0; i < 12; i++ {
@@ -299,15 +310,15 @@ func TestCompletedHistoryIsNotRepaintedByTicks(t *testing.T) {
 		t.Fatalf("settled history repainted %d blocks on a tick, want 0", layout.LastRendered)
 	}
 
-	// Adding one running call re-renders exactly that new block on a tick.
+	// Adding one running call reopens the batch as individual rows, so every
+	// member's cached zero-row group projection is replaced instead of leaving
+	// invisible history behind.
 	s.Apply(ToolStarted{ID: "live", Name: "bash", Summary: "go test ./...", At: time.Now()})
 	layout.Refresh(&s, ComputeLayout(s))
-	// The append closes the previous tool group, so the prior row's hint is
-	// recomputed alongside the new block: two projections, never a full reflow.
-	if layout.LastRendered != 2 {
-		t.Fatalf("new live call rendered %d blocks, want the new block plus its group neighbour", layout.LastRendered)
+	if layout.LastRendered != 13 {
+		t.Fatalf("new live call rendered %d blocks, want the reopened batch plus the live call", layout.LastRendered)
 	}
-	s.Status.Spinner = 10
+	s.Apply(FrameTick{At: time.Now()})
 	layout.Refresh(&s, ComputeLayout(s))
 	if layout.LastRendered != 1 {
 		t.Fatalf("tick rendered %d blocks, want only the live call", layout.LastRendered)

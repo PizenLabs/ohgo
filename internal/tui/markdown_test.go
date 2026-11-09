@@ -68,6 +68,79 @@ func TestMarkdownHeadersBulletsQuotes(t *testing.T) {
 	}
 }
 
+// A fenced code block indented under a bullet is still a code block. Consuming
+// its delimiter as item prose printed the backticks and lost the code styling
+// and wrapping; the model uses this shape for every inline example.
+func TestMarkdownFenceInsideListItemStaysCode(t *testing.T) {
+	pal := forcedPalette()
+	in := "- **Go Code**:\n" +
+		"  ```go\n" +
+		"  package main\n" +
+		"  ```\n" +
+		"- **After**: the list continues\n"
+	out := RenderMarkdownWrapped(in, pal, 40)
+	plain := stripForTest(t, out)
+	if strings.Contains(plain, "```") {
+		t.Errorf("fence delimiters leaked into the transcript: %q", plain)
+	}
+	if !strings.Contains(plain, "package main") {
+		t.Errorf("fence body was lost: %q", plain)
+	}
+	if !strings.Contains(out, pal.CodeKeyword.Render("package")) {
+		t.Errorf("fence body lost its code styling: %q", plain)
+	}
+	if !strings.Contains(plain, "• After") {
+		t.Errorf("the list did not continue after the fence: %q", plain)
+	}
+}
+
+// A wrapped source bullet is a continuation of its item, not a new
+// paragraph. Joining it after the item was already wrapped bypasses the width
+// budget: the terminal then truncates the oversized row and the tail of the
+// model's answer disappears. The continuation must join the body first so it
+// wraps and keeps its inline styling.
+func TestMarkdownListContinuationJoinsBeforeWrapping(t *testing.T) {
+	pal := forcedPalette()
+	const width = 46
+	in := "5. Example: a comparison\n" +
+		"  • Java Application: `public class HelloWorld` with a long body that must wrap before the terminal edge\n" +
+		"  • Go Application: `package main` with another long body that must wrap before the terminal edge\n"
+	out := RenderMarkdownWrapped(in, pal, width)
+
+	for i, line := range strings.Split(out, "\n") {
+		if got := CellWidth(line); got > width {
+			t.Errorf("row %d = %d cells, want <= %d: %q", i, got, width, stripForTest(t, line))
+		}
+	}
+	plain := stripForTest(t, out)
+	for _, want := range []string{"Java Application", "HelloWorld", "terminal edge", "Go Application", "package main"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("continuation content %q was truncated: %q", want, plain)
+		}
+	}
+	if !strings.Contains(out, pal.Code.Render("package")) || !strings.Contains(out, pal.Code.Render("main")) {
+		t.Errorf("continuation lost its inline code styling: %q", plain)
+	}
+}
+
+// An ordered marker is not always one cell: a short placeholder ("X ") let
+// the rebuilt first row grow past the budget when the real marker was "10."
+// or wider, and the terminal cut its last cell.
+func TestMarkdownOrderedMarkerFitsTheFirstRow(t *testing.T) {
+	const width = 30
+	in := "10. first item with a long body that must wrap and keep wrapping\n" +
+		"    continuation text that must also fit the width\n"
+	out := RenderMarkdownWrapped(in, DarkPalette(), width)
+	for i, line := range strings.Split(out, "\n") {
+		if got := CellWidth(line); got > width {
+			t.Errorf("row %d = %d cells, want <= %d: %q", i, got, width, stripForTest(t, line))
+		}
+	}
+	if plain := stripForTest(t, out); !strings.Contains(plain, "continuation") || !strings.Contains(plain, "width") {
+		t.Errorf("ordered item lost its continuation: %q", plain)
+	}
+}
+
 func TestMarkdownTableRendersGrid(t *testing.T) {
 	// Tables render as a solid-border grid, not raw pipes: the top rule,
 	// the header row, the header separator, the body row, and the bottom

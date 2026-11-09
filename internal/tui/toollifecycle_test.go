@@ -250,13 +250,14 @@ func TestAssistantProseCreatesNoToolBlock(t *testing.T) {
 // Compact grammar: running shows the spinner state, success a check with
 // its summary, failure a cross that stays a failure.
 func TestToolBlockRenderStates(t *testing.T) {
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	running := New()
 	running.Apply(TerminalResized{Width: 80, Height: 24})
 	running.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: now})
 	out := stripForTest(t, Render(running))
-	if !strings.Contains(out, "◌ bash") || strings.Contains(out, "⠋") {
-		t.Errorf("running block = %q, want the tool name and its static running glyph", out)
+	runningGlyph := toolStatusGlyph(ToolRunning, running.Status.Spinner)
+	if !strings.Contains(out, runningGlyph+" bash") {
+		t.Errorf("running block = %q, want the tool name and its animated status slot", out)
 	}
 	if !strings.Contains(out, "go test") {
 		t.Errorf("running block = %q, want the call's summary", out)
@@ -279,7 +280,7 @@ func TestToolBlockRenderStates(t *testing.T) {
 	bad.Apply(ToolStarted{ID: "c1", Name: "bash", At: now})
 	bad.Apply(ToolFinished{ID: "c1", Text: "exit code 1", Summary: "error: exit code 1", IsError: true, At: now})
 	failed := stripForTest(t, Render(bad))
-	if strings.Contains(failed, "✓ bash") {
+	if strings.Contains(failed, "✔ bash") {
 		t.Errorf("failure rendered as a success:\n%s", failed)
 	}
 	if !strings.Contains(failed, "error") {
@@ -314,7 +315,8 @@ func TestToolBlocksThroughLivePath(t *testing.T) {
 	p, painter := newLiveProgram()
 	var history []string
 	history = append(history, liveEvent(p, UserSubmitted{Text: "check auth"})...)
-	running := liveEvent(p, ToolStarted{ID: "c1", Name: "read", Summary: "read internal/auth/auth.go", At: time.Now()})
+	startedAt := time.Now().Add(-time.Second)
+	running := liveEvent(p, ToolStarted{ID: "c1", Name: "read", Summary: "read internal/auth/auth.go", At: startedAt})
 	_ = running
 	// A running tool is unstable: it must be offered in the live region,
 	// never silently sealed as if it were done.

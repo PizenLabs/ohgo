@@ -16,6 +16,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -38,6 +39,11 @@ type LayoutRow struct {
 	DocRow     int
 	Styled     string
 	Width      int
+	// ToolID names the telemetry tree node this row belongs to, when the row
+	// is part of an expanded batch. It is empty for a footer header or an
+	// ordinary block. Pointer inspection uses it to toggle one node body
+	// without reselecting the whole run.
+	ToolID string
 }
 
 // Plain returns the row's text with styling and right padding removed.
@@ -100,6 +106,10 @@ type blockLayout struct {
 	leadingGap bool
 	lines      []string
 	widths     []int
+	// toolRows maps one rendered line to a tree node id. It is captured by
+	// the same render pass that produced lines, so row-to-node geometry can
+	// never drift from what the user sees.
+	toolRows []string
 }
 
 func keyFor(state State, layout Layout) layoutKey {
@@ -125,10 +135,12 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 	defer state.clearDirty()
 	key := keyFor(*state, layout)
 	entries := state.Entries
-	tick := state.Status.Spinner
+	spinner := state.Status.Spinner
+	frame := int(state.frame)
+	now := state.presentationAt()
 	current := latestRunningToolIndex(*state)
-	tickChanged := l.tickValid && l.tick != tick
-	l.tick = tick
+	tickChanged := l.tickValid && l.tick != frame
+	l.tick = frame
 	l.tickValid = true
 	l.LastRendered = 0
 	l.Reflowed = false
@@ -145,7 +157,7 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 		l.byID = make(map[BlockID]int, len(entries))
 		for i := range entries {
 			id := blockIDAt(entries, i)
-			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, tick, current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i))
+			l.blocks[i] = l.renderBlock(state, entries[i], i, id, pal, layout, spinner, frame, current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i), now)
 			l.byID[id] = i
 			l.LastRendered++
 		}
@@ -179,14 +191,16 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 		}
 	}
 	if tickChanged {
-		// Only the one live clock and an open reasoning head depend on the
-		// tick. Appending just those indices keeps settled history cached.
+		// Only blocks with a timed visual phase depend on the frame: the one
+		// live clock, an open reasoning head, a fading entrance, or a dwell
+		// floor. Settled history stays cached.
 		if current >= 0 && current < len(entries) {
 			dirty = append(dirty, current)
 		}
 		if open := state.openReasoning(); open >= 0 {
 			dirty = append(dirty, open)
 		}
+		dirty = append(dirty, state.animated...)
 	}
 	if grown == 0 && len(dirty) == 0 {
 		return
@@ -210,12 +224,12 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 			// hint list already names them.
 			continue
 		}
-		if l.blocks[i].id == blockIDAt(entries, i) && !blockStale(l.blocks[i], entries[i], entryTick(entries[i], tick, current == i), current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i)) {
+		if l.blocks[i].id == blockIDAt(entries, i) && !blockStale(l.blocks[i], entries[i], entryTick(entries[i], frame, current == i, now), current == i, entryExpandedFor(state, entries[i], now), entryGroupEnd(entries, i), entryLeadingGap(entries, i)) {
 			continue
 		}
 		oldID := l.blocks[i].id
 		id := blockIDAt(entries, i)
-		l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, tick, current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i))
+		l.blocks[i] = l.renderBlock(state, entries[i], i, id, pal, layout, spinner, frame, current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i), now)
 		if l.byID != nil && oldID != id {
 			delete(l.byID, oldID)
 			l.byID[id] = i
@@ -232,14 +246,14 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 		if newStart > 0 {
 			prev := newStart - 1
 			if l.blocks[prev].groupEnd != entryGroupEnd(entries, prev) {
-				l.blocks[prev] = l.renderBlock(entries[prev], prev, blockIDAt(entries, prev), pal, layout, tick, current == prev, entryGroupEnd(entries, prev), entryLeadingGap(entries, prev))
+				l.blocks[prev] = l.renderBlock(state, entries[prev], prev, blockIDAt(entries, prev), pal, layout, spinner, frame, current == prev, entryGroupEnd(entries, prev), entryLeadingGap(entries, prev), now)
 				l.LastRendered++
 				changed = append(changed, prev)
 			}
 		}
 		for i := newStart; i < len(entries); i++ {
 			id := blockIDAt(entries, i)
-			l.blocks[i] = l.renderBlock(entries[i], i, id, pal, layout, tick, current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i))
+			l.blocks[i] = l.renderBlock(state, entries[i], i, id, pal, layout, spinner, frame, current == i, entryGroupEnd(entries, i), entryLeadingGap(entries, i), now)
 			if l.byID == nil {
 				l.byID = make(map[BlockID]int, len(entries))
 				for j := 0; j < i; j++ {
@@ -276,30 +290,48 @@ func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
 	}
 }
 
-func blockStale(cached blockLayout, entry Entry, tick int, current bool, groupEnd, leadingGap bool) bool {
+func blockStale(cached blockLayout, entry Entry, tick int, current bool, expanded bool, groupEnd, leadingGap bool) bool {
 	adjacency := cached.groupEnd != groupEnd || cached.leadingGap != leadingGap
 	if entry.rev == 0 {
 		return cached.rev != fixtureRevision(entry) || cached.tick != tick || cached.current != current ||
-			cached.kind != entry.Kind || cached.expanded != entryExpanded(entry) || adjacency
+			cached.kind != entry.Kind || cached.expanded != expanded || adjacency
 	}
 	return cached.rev != entry.rev || cached.tick != tick || cached.current != current ||
-		cached.kind != entry.Kind || cached.expanded != entryExpanded(entry) || adjacency
+		cached.kind != entry.Kind || cached.expanded != expanded || adjacency
+}
+
+// entryExpandedFor is the presentation state a block actually renders. A
+// settled tool batch owns one run-level flag; an unsettled run keeps each
+// member's own flag because it still renders individual rows.
+func entryExpandedFor(state *State, entry Entry, now time.Time) bool {
+	if entry.Kind == EntryTool && entry.Tool != nil {
+		if entry.Tool.run != nil && toolRunGroupActive(*state, entry.Tool.run, now) {
+			return entry.Tool.run.expanded()
+		}
+		return entry.Tool.Expanded
+	}
+	return entryExpanded(entry)
 }
 
 // entryTick isolates the one presentation input that changes a running block
 // without changing its entry: the live elapsed time. Only the current activity
 // owns that clock, so concurrent calls keep stable rows and only one of them is
 // visually live.
-func entryTick(entry Entry, tick int, current bool) int {
+func entryTick(entry Entry, frame int, current bool, now time.Time) int {
 	if current {
-		return tick
+		return frame
 	}
 	// An open reasoning head carries an elapsed time, so it also needs the
-	// tick while the runtime is still producing the trace. It is not the
+	// frame while the runtime is still producing the trace. It is not the
 	// prominent activity (the reasoning glyph is deliberately subordinate),
 	// but its measured duration must keep advancing.
-	if entry.Kind == EntryReasoning && entry.Reasoning != nil && !entry.Reasoning.Closed {
-		return tick
+	if entry.Kind == EntryReasoning && entry.Reasoning != nil && entry.Reasoning.reasoningPresentationOpen(now) {
+		return frame
+	}
+	// Entrance fades and dwell floors are timed projections too: without the
+	// frame their cached bytes would freeze at the first phase.
+	if entryPresentationLive(entry, now) {
+		return frame
 	}
 	return 0
 }
@@ -359,27 +391,50 @@ func fixtureRevision(entry Entry) uint64 {
 	return h.Sum64()
 }
 
-func (l *TranscriptLayout) renderBlock(entry Entry, index int, id BlockID, pal *Palette, layout Layout, tick int, current bool, groupEnd, leadingGap bool) blockLayout {
+func (l *TranscriptLayout) renderBlock(state *State, entry Entry, index int, id BlockID, pal *Palette, layout Layout, spinner, frame int, current bool, groupEnd, leadingGap bool, now time.Time) blockLayout {
 	b := blockLayout{
 		id:         id,
 		index:      index,
 		rev:        entry.rev,
-		tick:       entryTick(entry, tick, current),
+		tick:       entryTick(entry, frame, current, now),
 		current:    current,
 		kind:       entry.Kind,
-		expanded:   entryExpanded(entry),
+		expanded:   entryExpandedFor(state, entry, now),
 		groupEnd:   groupEnd,
 		leadingGap: leadingGap,
 	}
 	if entry.rev == 0 {
 		b.rev = fixtureRevision(entry)
 	}
+	currentToolID := ""
+	if idx := l.activity; idx >= 0 && idx < len(state.Entries) && state.Entries[idx].Tool != nil {
+		currentToolID = state.Entries[idx].Tool.ID
+	}
 	var sb strings.Builder
-	renderEntryGrouped(&sb, entry, pal, layout, current, groupEnd, leadingGap, tick)
+	var toolRows []toolRunRow
+	renderEntryGrouped(&sb, entry, pal, layout, entryRenderContext{
+		current:         current,
+		toolGroupEnd:    groupEnd,
+		leadingGap:      leadingGap,
+		toolGroupActive: entry.Kind == EntryTool && entry.Tool != nil && toolRunGroupActive(*state, entry.Tool.run, now),
+		tick:            spinner,
+		now:             now,
+		theme:           state.Theme,
+		toolRows:        &toolRows,
+		currentToolID:   currentToolID,
+	})
 	b.lines = entryLines(sb.String())
 	b.widths = make([]int, len(b.lines))
 	for i, line := range b.lines {
 		b.widths[i] = CellWidth(line)
+	}
+	if len(toolRows) > 0 {
+		b.toolRows = make([]string, len(b.lines))
+		for _, row := range toolRows {
+			if row.line >= 0 && row.line < len(b.toolRows) {
+				b.toolRows[row.line] = row.id
+			}
+		}
 	}
 	return b
 }
@@ -451,14 +506,18 @@ func (l *TranscriptLayout) Rows(offset, height int) []LayoutRow {
 		}
 		lines := l.blocks[block].lines
 		for local < len(lines) && docRow < end {
-			out = append(out, LayoutRow{
+			row := LayoutRow{
 				BlockID:    l.blocks[block].id,
 				BlockIndex: block,
 				Row:        local,
 				DocRow:     docRow,
 				Styled:     lines[local],
 				Width:      l.blocks[block].widths[local],
-			})
+			}
+			if local < len(l.blocks[block].toolRows) {
+				row.ToolID = l.blocks[block].toolRows[local]
+			}
+			out = append(out, row)
 			local++
 			docRow++
 		}
@@ -584,14 +643,18 @@ func (l *TranscriptLayout) BlockRow(index, row int) (LayoutRow, bool) {
 	if row < 0 || row >= l.effectiveHeight(index) {
 		return LayoutRow{}, false
 	}
-	return LayoutRow{
+	result := LayoutRow{
 		BlockID:    l.blocks[index].id,
 		BlockIndex: index,
 		Row:        row,
 		DocRow:     l.rows.prefix(index) + row,
 		Styled:     lines[row],
 		Width:      l.blocks[index].widths[row],
-	}, true
+	}
+	if row < len(l.blocks[index].toolRows) {
+		result.ToolID = l.blocks[index].toolRows[row]
+	}
+	return result, true
 }
 
 // BlockForRow resolves a document row to its block and local row.

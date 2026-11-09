@@ -137,7 +137,13 @@ Only the current active operation may have live visual behavior.
 
 At any point in time, the UI should have at most one visually prominent **current activity**.
 
-The user should never see multiple competing spinners or animated "working" indicators.
+The user should never see multiple competing spinners or animated "working"
+indicators.
+
+> Superseded for concurrent tool rows by `SPEC_UIUX_ENHANCEMENTS.md` §5: every
+> running row may show the one shared spinner clock in its fixed status slot,
+> but only the current activity is unmuted and carries the live clock. The
+> rows are truthful, not competing prominent activities.
 
 Prefer:
 
@@ -780,6 +786,11 @@ The glyph must communicate state independently:
 
 # 22. Timing Rules
 
+> Superseded for tool/reasoning lifecycle presentation by
+> `SPEC_UIUX_ENHANCEMENTS.md` §5: minimum dwell, entrance easing, the fixed
+> status slot, completion colour tweening, and hierarchical batch telemetry.
+> Runtime execution itself is still never delayed.
+
 Transient states must not disappear before the user can reasonably understand them.
 
 However, do not artificially delay execution merely to show animation.
@@ -1136,7 +1147,9 @@ Do not implement any of the following:
 
 - full IDE-style UI
 - permanent progress dashboard
-- animated spinner per tool
+- animated spinner per tool (superseded: `SPEC_UIUX_ENHANCEMENTS.md` §5 uses
+  one shared spinner clock in an invariant status slot, with concurrent calls
+  muted; it is not a second timer per tool)
 - animated ellipsis
 - fake loading delays
 - large "Thinking" blocks
@@ -1167,10 +1180,12 @@ A tool completing in a few milliseconds.
 Expected:
 
 ```text
-✓ operation                              1ms
+✔ operation                              1ms
 ```
 
-No artificial spinner delay.
+The terminal glyph is immediate in semantic state. The perception-floor
+dwell in `SPEC_UIUX_ENHANCEMENTS.md` §5 may hold the executing frame for up to
+150ms without delaying runtime execution.
 
 ---
 

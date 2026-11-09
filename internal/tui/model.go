@@ -59,6 +59,14 @@ type Entry struct {
 	rev uint64
 	// Kind tells which payload is set.
 	Kind EntryKind
+	// AppearedAt is when this block first entered the document, used only for
+	// the short fade-in projection. Zero means "do not fade": resumed history
+	// did not just appear, and must never replay an entrance animation.
+	AppearedAt time.Time
+	// FinalLineAt is when the trailing answer line settled. The line receives
+	// the same short entrance fade after AssistantDone, so the end of a
+	// streamed answer does not pop to full brightness. Zero means no fade.
+	FinalLineAt time.Time
 
 	// UserText is set when Kind is EntryUser.
 	UserText string
@@ -142,6 +150,11 @@ type ReasoningEntry struct {
 	// Expanded is presentation-only. Reasoning is collapsed by default so a
 	// long trace stays available without displacing the answer.
 	Expanded bool
+	// DwellUntil is the earliest instant at which the closed trace may stop
+	// presenting its live frame. It is a visual floor only: the runtime
+	// already finished at EndedAt, and the duration display keeps that
+	// measured value.
+	DwellUntil time.Time
 }
 
 // Duration returns how long the trace took, or zero when it is unknown.
@@ -205,20 +218,157 @@ type ToolEntry struct {
 	Truncated bool
 	// Expanded is presentation-only: whether the transcript shows the
 	// bounded body below the compact summary. It never affects execution,
-	// approval, or the stored outcome.
+	// approval, or the stored outcome. In a batch it is the node-body layer;
+	// the tree's macro disclosure lives on the shared run.
 	Expanded bool
+	// DwellUntil is the earliest instant at which a terminal status may
+	// replace the executing frame. A fast call keeps its intent frame for
+	// this visual floor; the measured duration and outcome are already
+	// recorded and are never delayed or altered.
+	DwellUntil time.Time
+	// run groups this call with adjacent calls for compact telemetry. It is
+	// presentation metadata, not execution state: every member keeps its own
+	// lifecycle, result, and identity.
+	run *toolRun
+}
+
+// toolRun is one adjacent batch of tool calls. The collapsed projection is a
+// single telemetry footer; expanding it reveals the per-call tree. Members are
+// stable pointers because Entry slices move when the transcript grows.
+type toolRun struct {
+	members []*ToolEntry
+	// isOpen is the tree's macro disclosure state. A member body is a
+	// separate presentation flag, so opening the tree never forces every
+	// node's detail into the transcript.
+	isOpen bool
+	// phaseStart and phaseEnd are the execution-authority labels observed
+	// when the run opened and when its last member finished. Empty means the
+	// producer did not report a workspace; the header then omits the segment.
+	phaseStart string
+	phaseEnd   string
+	// start and end are transcript indices of the first and last member.
+	start int
+	end   int
 }
 
 // Duration returns how long the call took, or zero if it has not started.
 func (t *ToolEntry) Duration() time.Duration {
-	if t.StartedAt.IsZero() {
+	return t.durationAt(time.Now())
+}
+
+// durationAt measures a call against the presentation clock. A running call
+// uses now so geometry and the rendered elapsed value come from one instant;
+// a terminal call keeps its measured end and never grows with render time.
+func (t *ToolEntry) durationAt(now time.Time) time.Duration {
+	if t == nil || t.StartedAt.IsZero() {
 		return 0
 	}
 	end := t.EndedAt
 	if end.IsZero() {
-		end = time.Now()
+		end = now
+	}
+	if end.Before(t.StartedAt) {
+		return 0
 	}
 	return end.Sub(t.StartedAt)
+}
+
+// presentationStatus is the status the transcript may show at now.
+//
+// The semantic status is already terminal when a call finishes; this method
+// only enforces the minimum active-frame dwell for a call that ended faster
+// than a person can perceive. Cancellation opts out: a cancelled turn must
+// converge immediately rather than leave a spinner behind.
+func (t *ToolEntry) presentationStatus(now time.Time) ToolStatus {
+	if t == nil {
+		return ToolPending
+	}
+	if t.Status == ToolRunning || t.Status == ToolPending || t.Status == ToolCancelled {
+		return t.Status
+	}
+	if t.DwellUntil.IsZero() || !now.Before(t.DwellUntil) {
+		return t.Status
+	}
+	return ToolRunning
+}
+
+// dwelling reports whether the terminal status is still behind the visual
+// floor.
+func (t *ToolEntry) dwelling(now time.Time) bool {
+	return t != nil && t.presentationStatus(now) == ToolRunning &&
+		t.Status != ToolRunning && t.Status != ToolPending
+}
+
+// reasoningPresentationOpen reports whether the collapsed trace must still
+// animate at now. A closed trace keeps its spinner for the dwell floor, then
+// becomes a static history row.
+func (r *ReasoningEntry) reasoningPresentationOpen(now time.Time) bool {
+	if r == nil {
+		return false
+	}
+	if !r.Closed {
+		return true
+	}
+	return !r.DwellUntil.IsZero() && now.Before(r.DwellUntil)
+}
+
+// anchor returns the first member of a run.
+func (r *toolRun) anchor() *ToolEntry {
+	if r == nil || len(r.members) == 0 {
+		return nil
+	}
+	return r.members[0]
+}
+
+// expanded reports the run's presentation state.
+func (r *toolRun) expanded() bool {
+	return r != nil && r.isOpen
+}
+
+// settledAt reports whether every member has reached its terminal visual
+// frame. A run with any live member stays rendered as individual rows.
+func (r *toolRun) settledAt(now time.Time) bool {
+	if r == nil || len(r.members) == 0 {
+		return false
+	}
+	for _, member := range r.members {
+		if member.presentationStatus(now) == ToolRunning || member.presentationStatus(now) == ToolPending {
+			return false
+		}
+	}
+	return true
+}
+
+// duration is the measured wall span of the batch. Concurrent members share
+// time, so the span is the honest "in Xms" the footer reports; the sum would
+// overstate elapsed time.
+func (r *toolRun) duration() (time.Duration, bool) {
+	if r == nil || len(r.members) == 0 {
+		return 0, false
+	}
+	var first, last time.Time
+	for _, member := range r.members {
+		if member.StartedAt.IsZero() {
+			continue
+		}
+		if first.IsZero() || member.StartedAt.Before(first) {
+			first = member.StartedAt
+		}
+		end := member.EndedAt
+		if end.IsZero() {
+			// A member without a measured end contributes its start. The
+			// settled footer measures the real end; a live tree must not make
+			// its header width churn on every presentation tick.
+			end = member.StartedAt
+		}
+		if last.IsZero() || end.After(last) {
+			last = end
+		}
+	}
+	if first.IsZero() || last.Before(first) {
+		return 0, false
+	}
+	return last.Sub(first), true
 }
 
 // ShellStatus is where a "!" escape command is in its lifecycle.
@@ -756,6 +906,17 @@ type State struct {
 	// tokens for transcript blocks. They never leave the UI state.
 	nextBlockID  int
 	nextEntryRev uint64
+	// frame advances on every presentation tick. It is the repaint clock for
+	// fades and dwell floors, independent of the slower spinner cadence.
+	frame uint64
+	// frameAt is the timestamp of the latest presentation tick. Renderers
+	// read it instead of wall time so a tick produces one coherent frame;
+	// zero falls back to time.Now for one-shot renders.
+	frameAt time.Time
+	// animated names blocks whose projection changes with the frame: a new
+	// block fading in, or a fast tool/reasoning block holding its dwell
+	// frame. It stays small and is pruned when each effect settles.
+	animated []int
 	// dirty and dirtyReset are the layout cache's invalidation hints. They
 	// record which blocks Apply changed, so a refresh does not have to scan
 	// the whole document to find a single streamed block.
@@ -826,6 +987,18 @@ func (s *State) Apply(event Event) {
 		s.runtimeTracked = true
 	}
 	switch e := event.(type) {
+	case FrameTick:
+		at := e.At
+		if at.IsZero() {
+			at = time.Now()
+		}
+		if !s.frameAt.IsZero() && at.Before(s.frameAt) {
+			at = s.frameAt
+		}
+		s.frame++
+		s.frameAt = at
+		s.advancePresentation(at)
+
 	case UserSubmitted:
 		seq := e.Seq
 		if seq == 0 {
@@ -838,7 +1011,7 @@ func (s *State) Apply(event Event) {
 		// turn supersedes any proposal still held (I: stale state cannot
 		// survive into another turn).
 		s.Transition = nil
-		s.pushEntry(Entry{Kind: EntryUser, UserText: e.Text})
+		s.pushEntry(Entry{Kind: EntryUser, UserText: e.Text, AppearedAt: e.At})
 		s.Input = ""
 		s.Cursor = 0
 		s.Pastes = nil
@@ -878,7 +1051,7 @@ func (s *State) Apply(event Event) {
 		// thinking to answering, so the collapsed block must stop claiming to
 		// be live.
 		s.closeReasoning(e.At)
-		s.appendAssistant(e.Text)
+		s.appendAssistant(e.Text, e.At)
 		s.OutputTokens = s.currentOutputTokens()
 		s.growScroll(strings.Count(e.Text, "\n"))
 
@@ -895,8 +1068,18 @@ func (s *State) Apply(event Event) {
 		s.closeReasoning(e.At)
 		if open := s.openAssistant(); open >= 0 {
 			s.closedAssistant = true
+			at := e.At
+			if at.IsZero() {
+				at = time.Now()
+			}
+			s.Entries[open].FinalLineAt = at
+			s.bumpEntry(open)
+			s.markAnimated(open)
 		}
 		s.Status.Busy = false
+		// A trailing tool batch becomes a compact telemetry footer only once
+		// the turn has settled; until then another call may still join it.
+		s.bumpTailToolRun()
 		// The stream is settled now, so a task that completed during the turn
 		// can close with its footer at the true tail of the output.
 		s.appendTaskRecap()
@@ -915,22 +1098,41 @@ func (s *State) Apply(event Event) {
 		s.Status.Busy = false
 		s.Queued = nil
 		s.closeReasoning(e.At)
+		// Cancellation is a deliberate abort: no dwell floor may leave a
+		// spinner behind after the turn has converged to cancelled.
+		for i := range s.Entries {
+			entry := &s.Entries[i]
+			if entry.Kind == EntryReasoning && entry.Reasoning != nil && entry.Reasoning.Closed {
+				entry.Reasoning.DwellUntil = time.Time{}
+				s.bumpEntry(i)
+			}
+		}
 		if open := s.openAssistant(); open >= 0 {
 			s.closedAssistant = true
 		}
 		for i := range s.Entries {
 			entry := &s.Entries[i]
-			if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.Status == ToolRunning {
+			if entry.Kind != EntryTool || entry.Tool == nil {
+				continue
+			}
+			if entry.Tool.Status == ToolRunning {
 				entry.Tool.Status = ToolCancelled
 				entry.Tool.Streaming = false
 				entry.Tool.Summary = "cancelled"
 				entry.Tool.Text = "cancelled"
+				entry.Tool.DwellUntil = time.Time{}
 				s.bumpEntry(i)
 				if s.runningTools > 0 {
 					s.runningTools--
 				}
+				continue
+			}
+			if !entry.Tool.DwellUntil.IsZero() {
+				entry.Tool.DwellUntil = time.Time{}
+				s.bumpEntry(i)
 			}
 		}
+		s.bumpTailToolRun()
 		text := e.Text
 		if text == "" {
 			text = "cancelled"
@@ -958,18 +1160,38 @@ func (s *State) Apply(event Event) {
 		if invocation == "" {
 			invocation = e.Summary
 		}
-		s.Entries = append(s.Entries, Entry{
-			Kind: EntryTool,
-			Tool: &ToolEntry{
-				ID:         e.ID,
-				Name:       e.Name,
-				Status:     ToolRunning,
-				Invocation: invocation,
-				Summary:    e.Summary,
-				StartedAt:  e.At,
-			},
-		})
+		tool := &ToolEntry{
+			ID:         e.ID,
+			Name:       e.Name,
+			Status:     ToolRunning,
+			Invocation: invocation,
+			Summary:    e.Summary,
+			StartedAt:  e.At,
+		}
+		// Adjacent calls are one compact action batch. The group is purely a
+		// projection: each member keeps its own lifecycle and result.
+		if previous := s.tailToolEntry(); previous != nil {
+			if previous.run == nil {
+				previous.run = &toolRun{
+					members:    []*ToolEntry{previous},
+					start:      len(s.Entries) - 1,
+					phaseStart: s.Status.Workspace,
+				}
+			}
+			tool.run = previous.run
+			tool.run.members = append(tool.run.members, tool)
+		} else {
+			tool.run = &toolRun{
+				members:    []*ToolEntry{tool},
+				start:      len(s.Entries),
+				phaseStart: s.Status.Workspace,
+			}
+		}
+		s.Entries = append(s.Entries, Entry{Kind: EntryTool, Tool: tool, AppearedAt: e.At})
 		s.assignIdentity(len(s.Entries) - 1)
+		tool.run.end = len(s.Entries) - 1
+		s.markAnimated(len(s.Entries) - 1)
+		s.markAnimated(tool.run.start)
 		s.runningTools++
 		s.growScroll(1)
 
@@ -1005,6 +1227,10 @@ func (s *State) Apply(event Event) {
 			s.runningTools--
 		}
 		tool.EndedAt = e.At
+		// A call that finished inside the human perception floor keeps its
+		// executing frame for the remainder of the floor. Its status, result,
+		// and duration are already terminal; only the pixels wait.
+		tool.DwellUntil = dwellUntil(tool.StartedAt, e.At)
 		// The outcome replaces the running summary, but the invocation
 		// stays: the badge keeps saying what ran while the summary line
 		// says what it produced.
@@ -1020,15 +1246,60 @@ func (s *State) Apply(event Event) {
 		} else {
 			tool.Status = ToolDone
 		}
+		if tool.run != nil {
+			// Record the authority the batch actually ended under. A
+			// workspace transition between calls is data, not an authority
+			// change made by the renderer.
+			if tool.run.phaseStart == "" {
+				tool.run.phaseStart = s.Status.Workspace
+			}
+			tool.run.phaseEnd = s.Status.Workspace
+		}
 		s.bumpEntry(idx)
+		s.bumpToolRun(tool.run)
+		s.markAnimated(idx)
+		if tool.run != nil {
+			s.markAnimated(tool.run.start)
+		}
 		s.growScroll(countLines(e.Text) + 1)
 
 	case ToolToggled:
 		// Expansion is presentation-only: flipping it never re-runs the
-		// tool, mutates its result, or touches approval state.
+		// tool, mutates its result, or touches approval state. For a batch,
+		// the last member is the Ctrl+O target and owns the group's flag; all
+		// members are dirtied because the anchor renders every tree row.
 		if idx := s.toolIndex(e.ID); idx >= 0 {
-			s.Entries[idx].Tool.Expanded = !s.Entries[idx].Tool.Expanded
+			tool := s.Entries[idx].Tool
+			if tool.run != nil && len(tool.run.members) > 1 &&
+				toolRunGroupEligible(*s, tool.run) {
+				tool.run.isOpen = !tool.run.isOpen
+				// A tree opens with every node compact. Node bodies are a
+				// second disclosure layer, never an automatic consequence of
+				// rendering the tree.
+				for _, member := range tool.run.members {
+					member.Expanded = false
+				}
+				s.bumpToolRun(tool.run)
+				return
+			}
+			tool.Expanded = !tool.Expanded
 			s.bumpEntry(idx)
+		}
+
+	case ToolNodeToggled:
+		// The tree's macro disclosure and a node's body are independent. A
+		// node toggle is accepted only while its run is open, so a collapsed
+		// batch can never hide an expanded body behind the footer.
+		if idx := s.toolIndex(e.ID); idx >= 0 {
+			tool := s.Entries[idx].Tool
+			if tool.run == nil || !tool.run.expanded() {
+				return
+			}
+			if !toolExpandable(tool) && tool.Status != ToolRunning {
+				return
+			}
+			tool.Expanded = !tool.Expanded
+			s.bumpToolRun(tool.run)
 		}
 
 	case ReasoningToggled:
@@ -1045,7 +1316,7 @@ func (s *State) Apply(event Event) {
 			Status:    ShellRunning,
 			Seq:       e.Seq,
 			StartedAt: e.At,
-		}})
+		}, AppearedAt: e.At})
 		s.assignIdentity(len(s.Entries) - 1)
 		s.growScroll(1)
 
@@ -2233,6 +2504,11 @@ func (s *State) Apply(event Event) {
 			}
 		}
 		s.Entries = kept
+		// Removing support blocks shifts every later index and may make two
+		// tool rows adjacent. Rebuild the presentation groups and drop stale
+		// timed-phase positions.
+		linkToolRuns(s.Entries)
+		s.animated = nil
 		s.SupportPanel = nil
 		s.Support = false
 
@@ -2266,6 +2542,7 @@ func (s *State) Apply(event Event) {
 		s.Entries = nil
 		s.dirtyReset = true
 		s.dirty = s.dirty[:0]
+		s.animated = nil
 		s.runningTools = 0
 		s.assistantText = false
 		s.Pending = nil
@@ -2343,11 +2620,21 @@ func (s *State) assignIdentity(index int) {
 	if index < 0 || index >= len(s.Entries) {
 		return
 	}
+	// An adjacent batch changes its anchor's projection when a member is
+	// appended: a single tool row becomes a telemetry footer. The new block's
+	// own dirty hint cannot cover that earlier anchor.
+	s.touchToolRunBefore(index)
+	if s.Entries[index].AppearedAt.IsZero() {
+		// Production events carry their own timestamps; fixtures and system
+		// notices can rely on the frame that created them.
+		s.Entries[index].AppearedAt = time.Now()
+	}
 	s.nextBlockID++
 	s.nextEntryRev++
 	s.Entries[index].ID = BlockID(fmt.Sprintf("block-%d", s.nextBlockID))
 	s.Entries[index].rev = s.nextEntryRev
 	s.dirty = append(s.dirty, index)
+	s.markAnimated(index)
 }
 
 // bumpEntry marks one block's projection stale after an in-place update.
@@ -2358,6 +2645,191 @@ func (s *State) bumpEntry(index int) {
 	s.nextEntryRev++
 	s.Entries[index].rev = s.nextEntryRev
 	s.dirty = append(s.dirty, index)
+}
+
+// presentationAt is the clock a renderer must use for fade and dwell phases.
+//
+// A presentation tick fixes one instant per frame; without one (a one-shot
+// Render or a direct fixture) wall time is the only truthful fallback.
+func (s *State) presentationAt() time.Time {
+	if !s.frameAt.IsZero() {
+		return s.frameAt
+	}
+	return time.Now()
+}
+
+// markAnimated records a block whose projection changes with the frame.
+func (s *State) markAnimated(index int) {
+	if index < 0 || index >= len(s.Entries) {
+		return
+	}
+	// A fixture can create a block with an already-old timestamp; it has no
+	// live phase to animate and must not be dirtied on the first tick.
+	if !entryPresentationLive(s.Entries[index], s.presentationAt()) {
+		return
+	}
+	for _, existing := range s.animated {
+		if existing == index {
+			return
+		}
+	}
+	s.animated = append(s.animated, index)
+}
+
+// advancePresentation prunes settled animation participants at at and dirties
+// their final frame. Without the final bump a dwell or fade that expires
+// between ticks would keep its last transient projection cached forever.
+func (s *State) advancePresentation(at time.Time) {
+	if len(s.animated) == 0 {
+		return
+	}
+	keep := s.animated[:0]
+	for _, index := range s.animated {
+		if index < 0 || index >= len(s.Entries) {
+			continue
+		}
+		entry := s.Entries[index]
+		if entryPresentationLive(entry, at) {
+			keep = append(keep, index)
+			continue
+		}
+		// Leave the settled projection dirty for this frame. A batch member
+		// expiring also re-renders its whole run: the anchor may now be
+		// eligible to replace every individual row with the footer.
+		s.bumpEntry(index)
+		if entry.Kind == EntryTool && entry.Tool != nil && entry.Tool.run != nil &&
+			len(entry.Tool.run.members) > 1 {
+			s.bumpToolRun(entry.Tool.run)
+		}
+	}
+	s.animated = keep
+}
+
+// entryPresentationLive reports whether an entry still has a timed visual
+// phase (fade or dwell) at now.
+func entryPresentationLive(entry Entry, now time.Time) bool {
+	if entryFading(entry, now) {
+		return true
+	}
+	switch entry.Kind {
+	case EntryAssistant:
+		return !entry.FinalLineAt.IsZero() && now.Sub(entry.FinalLineAt) < fadeDuration
+	case EntryTool:
+		if entry.Tool == nil {
+			return false
+		}
+		if entry.Tool.dwelling(now) {
+			return true
+		}
+		if _, tweening := entry.Tool.statusSettleAge(now); tweening {
+			return true
+		}
+		if entry.Tool.run != nil {
+			for _, member := range entry.Tool.run.members {
+				if member.dwelling(now) {
+					return true
+				}
+				if _, tweening := member.statusSettleAge(now); tweening {
+					return true
+				}
+			}
+		}
+	case EntryReasoning:
+		return entry.Reasoning != nil && entry.Reasoning.reasoningPresentationOpen(now) &&
+			entry.Reasoning.Closed && !entry.Reasoning.DwellUntil.IsZero()
+	}
+	return false
+}
+
+// touchToolRunBefore dirties the run that ends immediately before index.
+func (s *State) touchToolRunBefore(index int) {
+	if index <= 0 || index > len(s.Entries) {
+		return
+	}
+	previous := &s.Entries[index-1]
+	if previous.Kind != EntryTool || previous.Tool == nil || previous.Tool.run == nil {
+		return
+	}
+	s.bumpToolRun(previous.Tool.run)
+}
+
+// bumpToolRun dirties every member of a run. The anchor renders the group, but
+// the last member's flag owns expansion, so both ends must re-render together.
+func (s *State) bumpToolRun(run *toolRun) {
+	if run == nil {
+		return
+	}
+	end := run.end
+	if end >= len(s.Entries) {
+		end = len(s.Entries) - 1
+	}
+	for i := run.start; i <= end; i++ {
+		if i < 0 || i >= len(s.Entries) {
+			continue
+		}
+		if s.Entries[i].Kind == EntryTool && s.Entries[i].Tool != nil && s.Entries[i].Tool.run == run {
+			s.bumpEntry(i)
+		}
+	}
+}
+
+// bumpTailToolRun dirties the final run when the turn settles, which is when a
+// trailing batch becomes eligible for its collapsed footer.
+func (s *State) bumpTailToolRun() {
+	if entry := s.tailToolEntry(); entry != nil && entry.run != nil {
+		s.bumpToolRun(entry.run)
+	}
+}
+
+// tailToolEntry returns the trailing tool entry, or nil when the last block is
+// something else (a run only grows by adjacency).
+func (s *State) tailToolEntry() *ToolEntry {
+	if len(s.Entries) == 0 {
+		return nil
+	}
+	last := &s.Entries[len(s.Entries)-1]
+	if last.Kind != EntryTool || last.Tool == nil {
+		return nil
+	}
+	return last.Tool
+}
+
+// dwellUntil returns the visual floor for a call that ended at finished.
+//
+// Unknown timestamps opt out: the UI must not invent a dwell instant the
+// runtime did not measure. A call that already ran longer than the floor has
+// nothing to hold.
+func dwellUntil(started, finished time.Time) time.Time {
+	if started.IsZero() || finished.IsZero() {
+		return time.Time{}
+	}
+	floor := started.Add(toolMinDwell)
+	if finished.Before(floor) {
+		return floor
+	}
+	return time.Time{}
+}
+
+// linkToolRuns rebuilds adjacency groups after a transcript is installed from
+// stored messages. Stored calls keep their own identities and results; only
+// the presentation grouping is recomputed.
+func linkToolRuns(entries []Entry) {
+	var run *toolRun
+	for i := range entries {
+		entry := &entries[i]
+		if entry.Kind != EntryTool || entry.Tool == nil {
+			run = nil
+			continue
+		}
+		if run == nil {
+			run = &toolRun{start: i}
+			entry.Tool.run = run
+		} else {
+			entry.Tool.run = run
+		}
+		run.members = append(run.members, entry.Tool)
+		run.end = i
+	}
 }
 
 // clearDirty consumes the layout invalidation hints. The UI goroutine calls it
@@ -2377,11 +2849,17 @@ func (s *State) replaceEntries(entries []Entry) {
 	s.dirtyReset = true
 	s.runningTools = 0
 	s.assistantText = false
+	s.animated = nil
+	linkToolRuns(s.Entries)
 	for i := range s.Entries {
 		s.nextBlockID++
 		s.nextEntryRev++
 		s.Entries[i].ID = BlockID(fmt.Sprintf("block-%d", s.nextBlockID))
 		s.Entries[i].rev = s.nextEntryRev
+		// Resumed history is already present. It must not replay an entrance
+		// fade or a visual dwell floor it never actually had.
+		s.Entries[i].AppearedAt = time.Time{}
+		s.Entries[i].FinalLineAt = time.Time{}
 		if s.Entries[i].Kind == EntryTool && s.Entries[i].Tool != nil && s.Entries[i].Tool.Status == ToolRunning {
 			s.runningTools++
 		}
@@ -2583,7 +3061,7 @@ func (s *State) appendReasoning(text string, at time.Time) {
 		s.bumpEntry(index)
 		return
 	}
-	entry := Entry{Kind: EntryReasoning, Reasoning: &ReasoningEntry{Text: text, StartedAt: at}}
+	entry := Entry{Kind: EntryReasoning, Reasoning: &ReasoningEntry{Text: text, StartedAt: at}, AppearedAt: at}
 	s.Entries = append(s.Entries, entry)
 	s.assignIdentity(len(s.Entries) - 1)
 }
@@ -2605,8 +3083,10 @@ func (s *State) closeReasoning(at time.Time) {
 			at = reasoning.StartedAt
 		}
 		reasoning.EndedAt = at
+		reasoning.DwellUntil = dwellUntil(reasoning.StartedAt, at)
 	}
 	s.bumpEntry(index)
+	s.markAnimated(index)
 }
 
 // openReasoning returns the trailing reasoning entry that can still grow, or
@@ -2632,7 +3112,7 @@ func (s *State) openReasoning() int {
 // transcript would gain an empty gap and the expand hint would jump to two
 // calls instead of one. This matches the replay path, which never materialises
 // a whitespace-only assistant block.
-func (s *State) appendAssistant(text string) {
+func (s *State) appendAssistant(text string, at time.Time) {
 	if text == "" {
 		return
 	}
@@ -2645,7 +3125,7 @@ func (s *State) appendAssistant(text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	s.Entries = append(s.Entries, Entry{Kind: EntryAssistant, AssistantText: text})
+	s.Entries = append(s.Entries, Entry{Kind: EntryAssistant, AssistantText: text, AppearedAt: at})
 	s.assistantText = true
 	s.assignIdentity(len(s.Entries) - 1)
 	s.closedAssistant = false
@@ -2761,6 +3241,19 @@ func (s *State) AssistantText() string {
 
 // Event is one state transition.
 type Event interface{ eventKind() string }
+
+// FrameTick advances the presentation clock without changing runtime state.
+//
+// It exists so fade phases and minimum dwell floors have a frame source that
+// is independent of stream, tool, and spinner events. At is the instant the
+// frame represents; zero means "now". A tick never delays execution: it only
+// decides which visual phase the already-known state may show.
+type FrameTick struct {
+	// At is the instant this frame represents. Zero means the current time.
+	At time.Time
+}
+
+func (FrameTick) eventKind() string { return "frame_tick" }
 
 // UserSubmitted is a line the user entered.
 type UserSubmitted struct {
@@ -2900,6 +3393,16 @@ type ToolToggled struct {
 }
 
 func (ToolToggled) eventKind() string { return "tool_toggled" }
+
+// ToolNodeToggled flips one node body inside an already-expanded batch tree.
+// The run's macro disclosure and a node's detail are independent presentation
+// flags; a node toggle never mutates execution state or the run's open state.
+type ToolNodeToggled struct {
+	// ID is the provider's tool call id whose detail row is toggled.
+	ID string
+}
+
+func (ToolNodeToggled) eventKind() string { return "tool_node_toggled" }
 
 // ReasoningToggled flips one reasoning block between collapsed and expanded.
 // It carries the transcript block identity, not a provider call id, because

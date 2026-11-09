@@ -306,13 +306,11 @@ func TestRunningToolUsesTheLiveActivityGlyph(t *testing.T) {
 	s.Apply(ToolPreview{ID: "c1", Summary: "read a.go"})
 
 	out := Render(s)
-	if !strings.Contains(out, "◌") {
-		t.Errorf("render = %q, want the static running glyph on the running tool", out)
+	if !strings.Contains(out, spinnerFrames[3]) {
+		t.Errorf("render = %q, want the shared spinner frame on the running tool", out)
 	}
-	for _, frame := range spinnerFrames {
-		if strings.Contains(out, frame) {
-			t.Errorf("render = %q, want no spinner frame %q", out, frame)
-		}
+	if strings.Contains(out, "◌ read") {
+		t.Errorf("render = %q, want the running tool in its animated status slot", out)
 	}
 }
 

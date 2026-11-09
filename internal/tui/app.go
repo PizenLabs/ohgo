@@ -83,10 +83,15 @@ type turnFinishedMsg struct{}
 // tickMsg advances the spinner and the thinking shimmer.
 type tickMsg time.Time
 
-// spinnerInterval bounds animation frame rate. 90ms keeps the Braille spinner
-// and the shimmer wave smooth without burning a core; every animated surface
-// shares this one tick, so stream deltas cannot spin a glyph faster.
+// spinnerInterval bounds the Braille spinner and the shimmer wave. 90ms keeps
+// both readable without burning a core; stream deltas cannot spin a glyph
+// faster than this.
 const spinnerInterval = 90 * time.Millisecond
+
+// frameInterval is the presentation clock. It is faster than the spinner so a
+// three-phase fade and a 150ms dwell can actually be painted on distinct
+// frames, while the spinner is advanced only once per spinnerInterval.
+const frameInterval = 30 * time.Millisecond
 
 // renderFPS is the viewport paint ceiling. Token deltas can arrive hundreds of
 // times a second, but the terminal only needs a coherent frame: the renderer
@@ -176,6 +181,10 @@ type Program struct {
 	// They are never rendered.
 	eventsApplied int
 	viewsRendered int
+	// lastSpinnerAt is the last instant the shared spinner advanced. The
+	// presentation clock ticks every frameInterval; the spinner keeps its
+	// slower 90ms cadence.
+	lastSpinnerAt time.Time
 
 	// live is the output-first presenter, set by RunLive and nil otherwise.
 	// When it is set, View returns only the live region and transcript blocks
@@ -953,10 +962,21 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, p.waitForApproval()
 
 	case tickMsg:
-		// The commit activity shares the one tick. Advancing it keeps the
-		// elapsed clocks and the label sweep moving without a second timer.
+		at := time.Time(m)
+		if at.IsZero() {
+			at = time.Now()
+		}
+		// The frame clock drives fade phases and dwell floors. It runs faster
+		// than the spinner so a block can step through three visible phases.
+		p.state.Apply(FrameTick{At: at})
+		// The commit activity shares the one spinner cadence. Advancing it
+		// keeps the elapsed clocks and the label sweep moving without a
+		// second timer.
 		if p.state.Status.Busy || p.state.SupportBusy() || p.state.CommitActive() {
-			p.state.Status.Spinner = AdvanceSpinner(p.state.Status.Spinner, len(spinnerFrames))
+			if p.lastSpinnerAt.IsZero() || at.Sub(p.lastSpinnerAt) >= spinnerInterval {
+				p.state.Status.Spinner = AdvanceSpinner(p.state.Status.Spinner, len(spinnerFrames))
+				p.lastSpinnerAt = at
+			}
 		}
 		return p, tick()
 
@@ -1558,6 +1578,12 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if !p.state.ToggleBlock(id) {
 			return p, nil
+		}
+		if p.live == nil {
+			// Re-resolve geometry in this same update: the viewport anchors
+			// on block identity, so expanding or collapsing a tree must move
+			// YOffset before the next paint rather than after a visible pop.
+			p.syncTranscript()
 		}
 		if p.live != nil && expanding {
 			// Output-first owns sealed lines: a still-live block
@@ -4118,7 +4144,7 @@ func (p *Program) waitForApproval() tea.Cmd {
 }
 
 func tick() tea.Cmd {
-	return tea.Tick(spinnerInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Tick(frameInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 // handleProposalKey answers a request-derived proposal. The interaction is

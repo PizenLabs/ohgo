@@ -1,10 +1,11 @@
-# Ohgo UI/UX Enhancements: Task Rail, Diff Surface, Spinners
+# Ohgo UI/UX Enhancements: Task Rail, Diff Surface, Telemetry
 
 This document is the canonical contract for the UI enhancements layered on the
-execution transcript. It supersedes SPEC_UIUX.md §7.1 (spinner animation) and
-the sidebar prohibition in §19 for the specific surfaces described here. The
-rest of SPEC_UIUX.md still governs the transcript: one live activity, stable
-history, collapsed reasoning, bounded output, and no artificial delays.
+execution transcript. It supersedes SPEC_UIUX.md §7.1 (spinner animation), the
+sidebar prohibition in §19, and §22–§23 (fast-operation and minimum-duration
+rules) for the specific surfaces described here. The rest of SPEC_UIUX.md still
+governs the transcript: one live activity, stable history, collapsed reasoning,
+and bounded output.
 
 ## 1. Contextual task rail and sticky fallback
 
@@ -112,11 +113,71 @@ transcript renderer does not introduce a second diff engine.
   four insight rows are rendered; the remainder is counted.
 - The latest task is cached in `State`; a normal frame does not scan transcript
   history.
-- Transcript block projections remain cached by revision, width, and tick. A
-  tick re-renders only the live block, the open reasoning head, and the activity
-  line.
+- Transcript block projections remain cached by revision, width, and frame. A
+  presentation tick re-renders only blocks with a timed phase: the live clock,
+  the open reasoning head, an entrance fade, or a dwell floor.
 - Tests cover rail lifecycle gating (hidden when idle, question-only, todo-less,
   or terminal), the `/settings` preference and its persistence seam,
   split/sticky geometry, task de-duplication, footer-fact exclusion, truthful
   MCP integration projection, tinted permission previews, expanded diff
   metrics/highlighting, and the throttled spinner contract.
+
+## 5. Smooth telemetry and progressive easing
+
+This section is the exception to SPEC_UIUX.md §22–§23. The runtime never waits
+for the UI: measured durations, outcomes, approval decisions, and cancellation
+are recorded immediately. Only the already-known visual frame may be held or
+eased.
+
+- **Composer isolation.** `ComposerModel` input state and `TranscriptModel`
+  telemetry share no locks, no scroll offset, and no row budget. Typing,
+  editing, history recall, submission, and slash dispatch stay live while tools
+  stream. A prompt entered during execution is queued; `/status`, `/usage`,
+  `/theme`, `/cancel`, and the other commands run immediately. The composer is
+  fixed geometry: activity mutations may change transcript rows, never the
+  prompt's vertical position.
+- **Minimum dwell.** A tool or reasoning block that reaches its terminal state
+  inside the perception floor keeps its executing frame until 150ms from its
+  real start. The semantic status, outcome, and duration are already final; a
+  cancelled turn opts out and settles immediately. The floor is rendered from
+  `DwellUntil`, never by sleeping a runtime goroutine.
+- **Entrance easing.** A newly spawned block, and the trailing line of an
+  answer when `AssistantDone` settles it, steps through three RGB phases over
+  120ms: deep neutral vapour (0–30ms), a muted sage/teal solidifying phase
+  (30–90ms), then the full palette target (reached at 100ms and stable through
+  the 120ms window). The terminal has no alpha, so the short window flattens the
+  affected rows to one interpolated foreground plus the ANSI dim flag; at 100ms
+  the normal semantic palette returns. `NO_COLOR`, dumb terminals, reduced
+  motion, and colorless profiles skip the effect. Text, wrapping, identities,
+  and measured durations never change.
+- **Fixed status slot and completion tween.** Every tool row reserves one
+  glyph cell plus one separator from the instant it opens. The shared Braille
+  spinner animates inside that cell and becomes `✔`, `✗`, or `⊘` in place, so
+  the invocation never shifts horizontally. Once the dwell floor releases the
+  row, the terminal frame keeps its semantic glyph immediately but interpolates
+  the status colour from the running amber through a 120ms completion window
+  into the success/error role;
+  the first 30ms also keeps the dim intensity. `NO_COLOR`, dumb terminals,
+  reduced motion, and colorless profiles take the settled palette directly.
+- **Hierarchical batch telemetry.** Adjacent completed calls collapse into one
+  persistent row:
+  `+ [Phase: BUILD → FUZZ] · 8 tools · 31s (ctrl+o to expand)`. The phase
+  segment is the measured execution-authority span observed when the batch
+  opened and when its last member finished; an unreported workspace omits it
+  rather than inventing one, and an unchanged phase is named once. The footer
+  carries the batch's measured wall span, not a fabricated sum. Ctrl+O expands
+  an indented tree in place: `├─` for every node but the last, `└─` for the
+  last, each with its own status glyph, invocation, measured duration, and
+  compact outcome. Collapsing restores the single row. Clicking an expanded
+  node toggles that call's bounded body independently; the macro tree and the
+  node body are separate disclosure flags. A batch with a running member, or a
+  trailing batch in a turn that may still grow, keeps the individual rows
+  visible. Reasoning remains its own accordion block; tool batches never hide
+  the provider's thinking channel inside a footer.
+- **Stable viewport.** Collapsing or expanding a tree re-resolves
+  `Viewport.Offset` in the same update. The reading anchor is `(BlockID, row)`,
+  so expansion above the window moves the offset exactly enough to keep the
+  anchored content under the top row instead of popping the viewport.
+- **Telemetry integrity.** Completed tool and thought headers always render the
+  runtime's measured duration (`0ms` included); an unknown start still renders
+  no timer rather than fabricating one.

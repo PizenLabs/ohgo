@@ -146,12 +146,16 @@ func TestToolFinalizationReplacesLiveRepresentationExactlyOnce(t *testing.T) {
 	id := s.Entries[1].ID
 
 	running := ansi.Strip(Render(s))
-	if !strings.Contains(running, "◌ read a.go") || strings.Contains(running, "⠋") {
+	runningGlyph := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if !strings.Contains(running, runningGlyph+" read a.go") {
 		t.Fatalf("running render lost its live representation:\n%s", running)
 	}
 
 	finishedAt := time.Now()
 	s.Apply(ToolFinished{ID: "c1", Text: "package a\n", Summary: "1 line", At: finishedAt, Seq: 1})
+	// The fast call keeps its intent frame for the perception floor; advance
+	// the presentation clock before asserting the settled projection.
+	s.Apply(FrameTick{At: finishedAt.Add(toolMinDwell)})
 	if len(s.Entries) != 2 {
 		t.Fatalf("entries = %d after completion, want the same two blocks", len(s.Entries))
 	}
@@ -166,13 +170,16 @@ func TestToolFinalizationReplacesLiveRepresentationExactlyOnce(t *testing.T) {
 	if strings.Contains(done, "◌ read a.go") || strings.Contains(done, "⠋ read a.go") || strings.Contains(done, "running") {
 		t.Fatalf("completed tool kept the live representation:\n%s", done)
 	}
+	if !strings.Contains(done, "✔ read a.go") {
+		t.Fatalf("completed tool lost its terminal marker:\n%s", done)
+	}
 	if !strings.Contains(done, "⠋ reason") {
 		t.Fatalf("busy turn lost the reasoning spinner:\n%s", done)
 	}
 	if got := strings.Count(done, "read a.go"); got != 1 {
 		t.Fatalf("completed action appeared %d times, want one:\n%s", got, done)
 	}
-	if got := strings.Count(done, "✓ read a.go"); got != 1 {
+	if got := strings.Count(done, "✔ read a.go"); got != 1 {
 		t.Fatalf("stable completion appeared %d times, want one:\n%s", got, done)
 	}
 }
@@ -251,7 +258,9 @@ func TestFailedToolFinalizesExactlyOnce(t *testing.T) {
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read missing.go", At: time.Now(), Seq: 1})
 	id := s.Entries[1].ID
 
-	s.Apply(ToolFinished{ID: "c1", Text: "no such file", Summary: "no such file", IsError: true, At: time.Now(), Seq: 1})
+	finishedAt := time.Now()
+	s.Apply(ToolFinished{ID: "c1", Text: "no such file", Summary: "no such file", IsError: true, At: finishedAt, Seq: 1})
+	s.Apply(FrameTick{At: finishedAt.Add(toolMinDwell)})
 	if s.Entries[1].ID != id || s.Entries[1].Tool.Status != ToolError {
 		t.Fatalf("tool = %+v, want the same block failed", s.Entries[1])
 	}
@@ -288,11 +297,14 @@ func TestLivePainterKeepsOneLiveRowAndSealsItOnce(t *testing.T) {
 	if got := countStripped(history, "inspecting backend/internal") + countStripped(painter.live, "inspecting backend/internal"); got != 1 {
 		t.Fatalf("running action appeared %d times across history+live, want one", got)
 	}
-	if got := countStripped(painter.live, "◌"); got != 1 {
+	liveGlyph := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if got := countStripped(painter.live, liveGlyph); got != 1 {
 		t.Fatalf("live region has %d running markers, want one: %q", got, painter.live)
 	}
 
-	s.Apply(ToolFinished{ID: "c1", Text: "19 lines\n", Summary: "19 lines", At: time.Now(), Seq: 1})
+	finishedAt := time.Now()
+	s.Apply(ToolFinished{ID: "c1", Text: "19 lines\n", Summary: "19 lines", At: finishedAt, Seq: 1})
+	s.Apply(FrameTick{At: finishedAt.Add(toolMinDwell)})
 	history = append(history, painter.render(s)...)
 	if got := countStripped(history, "inspecting backend/internal"); got != 1 {
 		t.Fatalf("sealed history contains the action %d times, want one: %q", got, history)
@@ -300,7 +312,7 @@ func TestLivePainterKeepsOneLiveRowAndSealsItOnce(t *testing.T) {
 	if countStripped(painter.live, "inspecting backend/internal") != 0 {
 		t.Fatalf("finished action stayed in the live region: %q", painter.live)
 	}
-	if countStripped(painter.live, "◌ inspecting") != 0 {
+	if countStripped(painter.live, liveGlyph+" inspecting") != 0 {
 		t.Fatalf("live region still claims the finished call is running: %q", painter.live)
 	}
 	if again := painter.render(s); len(again) != 0 {
@@ -466,13 +478,14 @@ func TestBuildInvestigationRegression(t *testing.T) {
 			t.Fatalf("completed %q appeared %d times, want one:\n%s", call.summary, got, out)
 		}
 	}
-	if got := strings.Count(out, "◌ inspecting backend/internal"); got != 1 {
+	liveGlyph := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if got := strings.Count(out, liveGlyph+" inspecting backend/internal"); got != 1 {
 		t.Fatalf("live action appeared %d times, want one:\n%s", got, out)
 	}
-	if got := strings.Count(out, "⠋"); got != 0 {
-		t.Fatalf("live view kept a spinner frame %d times, want none:\n%s", got, out)
+	if strings.Contains(out, "◌") {
+		t.Fatalf("live view kept the retired static running glyph:\n%s", out)
 	}
-	for _, forbidden := range []string{"✳ BUILD", "✳ Running", "✳ · Running", "⠋"} {
+	for _, forbidden := range []string{"✳ BUILD", "✳ Running", "✳ · Running"} {
 		if strings.Contains(out, forbidden) {
 			t.Fatalf("duplicate activity representation %q:\n%s", forbidden, out)
 		}

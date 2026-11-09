@@ -148,6 +148,7 @@ func TestExpandedDiffShowsFullPath(t *testing.T) {
 		Summary:   "1 file changed",
 		At:        now,
 	})
+	s.Apply(FrameTick{At: now.Add(toolMinDwell)})
 	s.Apply(ToolToggled{ID: "c1"})
 
 	out := ansi.Strip(Render(s))

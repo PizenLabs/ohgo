@@ -1152,6 +1152,7 @@ func TestRenderedFrameFitsTerminalExactly(t *testing.T) {
 		"wide glyphs":      strings.Repeat("这是一个很长的中文句子。", 20) + "\n",
 		"unbroken run":     "See " + strings.Repeat("https://example.com/a/long/path", 8) + " end.\n",
 		"nested list":      "0. a\n   1. b\n      2. c\n         3. d\n",
+		"fence under list": "- **Go Code**:\n  ```go\n  package main\n  ```\n",
 		"tabs in prose":    "col1\tcol2\tcol3\nvalue\tvalue\tvalue\n",
 		"deeply indented":  strings.Repeat("    ", 6) + "indented prose that has to wrap somewhere\n",
 		"empty and blank":  "\n\n\nafter blanks\n",

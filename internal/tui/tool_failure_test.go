@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
@@ -55,6 +56,7 @@ func TestDeniedToolCallStillAppearsInLiveTranscript(t *testing.T) {
 	p := NewProgram(loop, "test", 0)
 	p.runTurn("run it")
 	drainProgram(p)
+	p.state.Apply(FrameTick{At: time.Now().Add(toolMinDwell)})
 
 	var denied *Entry
 	for i := range p.state.Entries {

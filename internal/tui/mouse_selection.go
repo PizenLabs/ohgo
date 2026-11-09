@@ -194,15 +194,35 @@ func (p *Program) positionAt(x, y int, clamp bool) (Position, bool) {
 	if width := CellWidth(row.Plain()); col > width {
 		col = width
 	}
-	return Position{BlockID: row.BlockID, Row: row.Row, Column: col}, true
+	return Position{BlockID: row.BlockID, Row: row.Row, Column: col, ToolID: row.ToolID}, true
 }
 
-// toggleBlockAt flips a presentation block. It reports whether the click
-// landed on something expandable.
+// toggleBlockAt flips a presentation block. A click on a row inside an open
+// telemetry tree toggles that node's body; a click on the footer header (or
+// any collapsed batch row) keeps the existing macro toggle.
 func (p *Program) toggleBlockAt(pos Position) bool {
 	index := p.state.BlockIndex(pos.BlockID)
 	if index < 0 || !entryExpandable(p.state.Entries[index]) {
 		return false
+	}
+	if pos.ToolID != "" {
+		wasExpanded := false
+		if tool := p.state.tool(pos.ToolID); tool != nil {
+			wasExpanded = tool.Expanded
+		}
+		if p.state.ToggleToolNode(pos.ToolID) {
+			if wasExpanded {
+				p.trace(traceCollapse)
+			} else {
+				p.trace(traceExpand)
+			}
+			p.syncTranscript()
+			return true
+		}
+		// The row is a node, not the tree header. A node without a hidden
+		// body consumes the click rather than collapsing the whole tree the
+		// user was inspecting.
+		return true
 	}
 	expanded := entryExpanded(p.state.Entries[index])
 	if !p.state.ToggleBlock(pos.BlockID) {

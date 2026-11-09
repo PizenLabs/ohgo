@@ -355,6 +355,15 @@ func TestToolHeavyWorkloadKeepsEveryCompletedEvent(t *testing.T) {
 	p.syncTranscript()
 	assertLayoutMatchesDocument(t, p.state, p.transcriptIndex)
 
+	// The completed batch is one telemetry footer by default. Expand it to
+	// keep every per-call event reachable in the same projection.
+	if rows := p.transcriptIndex.AllRows(); !rowsContainText(rows, "16 tools") {
+		t.Fatalf("completed batch did not collapse into a telemetry footer")
+	}
+	p.state.Apply(ToolToggled{ID: "tool-15"})
+	p.syncTranscript()
+	assertLayoutMatchesDocument(t, p.state, p.transcriptIndex)
+
 	rows := p.transcriptIndex.AllRows()
 	for _, want := range []string{"change author from johny smith", "ls", "read author.go", "grep jong adam", "8 lines", "grep johny smith", "No matches found.", "edit author_test.go", "Updated the author"} {
 		if !rowsContainText(rows, want) {

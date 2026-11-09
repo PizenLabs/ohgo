@@ -213,8 +213,10 @@ func TestIncrementalRefreshRendersOnlyDirtyBlocks(t *testing.T) {
 	}
 	s.Apply(ToolToggled{ID: id})
 	l.Refresh(&s, ComputeLayout(s))
-	if l.LastRendered != 1 {
-		t.Fatalf("expanding rendered %d blocks, want 1", l.LastRendered)
+	if l.LastRendered != 2 {
+		// A settled batch renders its anchor (the tree) and the toggled last
+		// member (the disclosure flag); siblings keep cached zero rows.
+		t.Fatalf("expanding rendered %d blocks, want the group anchor and target", l.LastRendered)
 	}
 }
 

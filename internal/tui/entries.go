@@ -72,6 +72,7 @@ func EntriesFromMessages(messages []agent.Message) []Entry {
 			// UI-only: never persisted, never replayed.
 		}
 	}
+	linkToolRuns(entries)
 	return entries
 }
 

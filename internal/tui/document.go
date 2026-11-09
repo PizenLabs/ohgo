@@ -120,9 +120,16 @@ func (d Document) At(index int) (Block, bool) {
 func entryExpandable(entry Entry) bool {
 	switch entry.Kind {
 	case EntryTool:
-		// A running tool is expandable even before output arrives: the block
-		// must be able to open in place while it is still producing text.
-		return entry.Tool != nil && (toolExpandable(entry.Tool) || entry.Tool.Status == ToolRunning)
+		// A multi-call batch always has a tree to reveal, even when no member
+		// has a body. A running tool is expandable before output arrives so
+		// the block can open in place while it is still producing text.
+		if entry.Tool == nil {
+			return false
+		}
+		if entry.Tool.run != nil && len(entry.Tool.run.members) > 1 {
+			return true
+		}
+		return toolExpandable(entry.Tool) || entry.Tool.Status == ToolRunning
 	case EntryReasoning:
 		return entry.Reasoning != nil && strings.TrimSpace(entry.Reasoning.Text) != ""
 	default:
@@ -167,7 +174,13 @@ func blockIndex(entries []Entry, id BlockID) int {
 func entryExpanded(entry Entry) bool {
 	switch entry.Kind {
 	case EntryTool:
-		return entry.Tool != nil && entry.Tool.Expanded
+		if entry.Tool == nil {
+			return false
+		}
+		if entry.Tool.run != nil && len(entry.Tool.run.members) > 1 {
+			return entry.Tool.run.expanded()
+		}
+		return entry.Tool.Expanded
 	case EntryReasoning:
 		return entry.Reasoning != nil && entry.Reasoning.Expanded
 	default:
@@ -202,6 +215,27 @@ func (s *State) ToggleBlock(id BlockID) bool {
 	default:
 		return false
 	}
+	return true
+}
+
+// ToggleToolNode flips one member body inside an expanded telemetry tree.
+//
+// It is the granular counterpart to ToggleBlock: the run stays open, and only
+// the selected call's bounded detail appears or disappears. A collapsed run
+// refuses the toggle because its nodes are not present in the projection.
+func (s *State) ToggleToolNode(id string) bool {
+	index := s.toolIndex(id)
+	if index < 0 {
+		return false
+	}
+	tool := s.Entries[index].Tool
+	if tool == nil || tool.run == nil || !tool.run.expanded() {
+		return false
+	}
+	if !toolExpandable(tool) && tool.Status != ToolRunning {
+		return false
+	}
+	s.Apply(ToolNodeToggled{ID: id})
 	return true
 }
 
