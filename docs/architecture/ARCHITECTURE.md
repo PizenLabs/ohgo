@@ -131,8 +131,10 @@ The same contract is consumed at three seams:
   so the model sees what it must preserve.
 - `agent.EvaluateTaskCompletion` calls `AssessGrounding` after structural
   evidence and before `COMPLETED`. Dropped entities, an invented action
-  narrative, narrowed scope, unresolved references, and unsupported negative
-  conclusions downgrade the result to `NEEDS_REVIEW`.
+  narrative, narrowed scope, unresolved references, unsupported negative
+  conclusions, and an unsupported claim scope (configuration promoted to
+  behavior, an unmeasured metric, independent deployment, or path-scoped
+  speculation) downgrade the result to `NEEDS_REVIEW`.
 
 Task persistence carries the grounding inside the existing `IntentContract`, so
 a resumed task keeps the same semantic boundary. `$sup` is deliberately not
@@ -249,8 +251,13 @@ user's request before execution and the evidence the runtime observed.
   A broad repository account keeps documentation claims distinguishable from
   observed implementation facts: a term that appears only in README/docs, never
   in a source or structural observation, must be attributed ("the README
-  describes ...") or the verdict is `NEEDS_REVIEW`. The evaluator does not judge
-  answer relevance beyond these deterministic provenance boundaries.
+  describes ...") or the verdict is `NEEDS_REVIEW`. It also keeps evidence
+  classes distinguishable: a manifest declares a dependency, Compose declares
+  topology, and only a source or execution observation establishes behavior.
+  A concrete line count needs the read's measurement, an independent-deployment
+  conclusion needs a deployment artifact, and a path-scoped inference needs an
+  observation of that path. The evaluator does not judge answer relevance beyond
+  these deterministic provenance and claim-scope boundaries.
 - **TUI task path.** `task.Begin` persists the contract, the pre-run target
   snapshot, and later the review reason. `NEEDS_REVIEW` is non-terminal. A
   continuation reuses the persisted contract and snapshot; a materially

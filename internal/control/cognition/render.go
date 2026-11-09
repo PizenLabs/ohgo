@@ -50,6 +50,15 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	if probe := workspaceProbeSummary(shape.RepositoryFacts); probe != "" {
 		fmt.Fprintf(&head, "Workspace probe: %s\n", probe)
 	}
+	// The answer-side claim audit and this line are the same contract: a
+	// manifest or topology declaration is not an implementation observation.
+	// Stating it in the state block keeps the model from paying for the
+	// distinction only after a completion review. A mutation answer is judged
+	// by target and verification evidence instead, so it does not spend the
+	// block on this distinction.
+	if shape.Kind == contract.ObjectiveInformational {
+		head.WriteString("Claim boundary: configuration declares topology, not behavior; unobserved metrics and path content stay unverified.\n")
+	}
 	fmt.Fprintf(&head, "Task shape: %s\n", shape.Summary())
 	if len(shape.Constraints) > 0 {
 		fmt.Fprintf(&head, "Constraints: %s\n", strings.Join(shape.Constraints, ", "))

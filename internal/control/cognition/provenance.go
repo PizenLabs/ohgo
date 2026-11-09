@@ -1,7 +1,6 @@
 package cognition
 
 import (
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -91,7 +90,7 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 		addLanguageIdentity(observed, "rust")
 	}
 	for _, path := range manifests {
-		if language := repositoryManifestLanguages[manifestBase(path)]; language != "" {
+		if language := agent.ManifestLanguage(path); language != "" {
 			addLanguageIdentity(observed, language)
 		}
 	}
@@ -117,11 +116,6 @@ func addLanguageIdentity(observed map[string]bool, language string) {
 	case "rust":
 		observed["rust"] = true
 	}
-}
-
-// manifestBase returns the lower-case base name of a manifest path.
-func manifestBase(path string) string {
-	return strings.ToLower(filepath.Base(filepath.ToSlash(strings.TrimSpace(path))))
 }
 
 // documentationOnlyTerms returns bounded specific terms that appear in

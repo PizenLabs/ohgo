@@ -49,7 +49,8 @@ tools + evidence + verification
    ▼
 agent.EvaluateTaskCompletion ────────────────► AssessGrounding
                                                  entity / action / scope /
-                                                 ambiguity / negative-claim review
+                                                 ambiguity / negative-claim /
+                                                 claim-scope review
 ```
 
 Ownership is deliberately split:
@@ -182,11 +183,24 @@ glob that pruned `.gitignore` paths, a timed-out scan, or a truncated result
 cannot prove absence. The glob tool names an exclusion so the answer can widen
 the scan with `"gitignore": false` instead of concluding the pruned subtree does
 not exist. A concept claim (“no documentation”, “no tests”)
-cannot be proven by a file scan and stays `NEEDS_REVIEW`. An answer that only
-reports “I could not find …” is an unverified negative result, not completion.
-The failure form includes passive voice (“could not be read”), and a qualifier
-does not turn a category into a file coordinate: “no Go source files” is still a
-category absence, not a concrete file claim.
+cannot be proven by a file scan and stays `NEEDS_REVIEW`. The one narrow
+exception is Go's mandatory `_test.go` suffix: a complete recursive scan of
+every `.go` file that contains no `_test.go` file proves the narrowed claim “no
+Go test files”. A bare “no tests” claim, and frontend test absence where naming
+is convention-based, remain concept absences. An answer that only reports “I
+could not find …” is an unverified negative result, not completion. The failure
+form includes passive voice (“could not be read”), and a qualifier does not turn
+a category into a file coordinate: “no Go source files” is still a category
+absence, not a concrete file claim.
+
+A report scoped to what the probes surfaced is not a repository-wide absence
+claim. “No test files were surfaced in the probes — worth verifying” describes
+this run's observations and names the limitation; it completes. The same
+sentence with a global scope (“no test files exist in the repository”) is still
+an absence conclusion and needs coverage. “Not evaluated”, “not checked”, “no
+evidence”, and “worth verifying” are explicit lower-assertion forms. A claim
+that a check did not run (“no tests were run”) is a fact about the run, not a
+repository property.
 
 A **local configuration** claim is different again from an **external state**
 claim. A workflow file proves what is configured: the schedule, the trigger, the
@@ -199,7 +213,43 @@ a command that talked to a remote (`gh`, `git push`, `git ls-remote`, `curl`,
 unverified ("I cannot establish whether it ran") is an epistemic report, not a
 claim, and completes.
 
-### 4.6 Completion integrity
+### 4.6 Claim scope
+
+The evidence class a claim relies on is part of its meaning:
+
+```text
+go.mod / package.json     dependency / language declaration
+docker-compose.yml        declared topology
+README / docs             what the project says about itself
+source read               what the implementation does
+successful execution      what actually ran
+directory listing         names and sizes, not content or line counts
+```
+
+A runtime-behavior claim (“cart validates against product”, “order publishes
+events”, “delivery fulfills”) needs a source observation containing the
+behavior; a dependency or topology declaration is not enough. Documentation
+attribution (“the README describes …”) and an explicit limitation (“not
+verified”) are lower-assertion forms and pass. A configuration mechanism can
+support its own claim: a Compose mount into `docker-entrypoint-initdb.d` proves
+that PostgreSQL init scripts are supplied, even without a source read.
+
+A concrete line count needs the file's read `totalLines` (or a line-count
+command). A directory listing's byte size is not a line count; a gross
+contradiction between the answer and the observed total is reviewed. An
+independent-deployment conclusion needs a Dockerfile, Kubernetes, Helm, or
+deploy manifest observation; separate Compose service declarations are
+topology, not a deployment boundary. A path-scoped inference (“`supabase/`
+likely contains schema/edge functions”) needs the inferred category in an
+observation of that path; a general inference with no path is left to the
+evidence and provenance layers.
+
+The claim audit applies to informational answers only. A mutation answer is
+judged by target, mutation, and verification evidence, not by its prose. The
+informational runtime state block carries the same boundary as a bounded line,
+so the model sees it before writing the answer.
+
+### 4.7 Completion integrity
 
 `AssessGrounding` runs at the end of `agent.EvaluateTaskCompletion`, after
 structural target/verification checks and before `COMPLETED`. It can only
@@ -256,11 +306,17 @@ request path.
 
 - Extraction is finite and regex-backed. It preserves explicit lists and
   coordinates; it does not understand every noun phrase.
-- A concept absence is never proven automatically. This is intentional:
-  documentation or tests may exist in a form a file scan cannot name.
-- The answer check is English-pattern based. A paraphrased global conclusion
-  outside the patterns is not detected; the structural completion rules still
-  apply.
+- A concept absence is not proven by a generic file scan. This is intentional:
+  documentation or tests may exist in a form the scan cannot name. The only
+  exception is Go's mandatory `_test.go` suffix, checked against a complete Go
+  file scan.
+- The answer check is English-pattern based. A paraphrased global conclusion,
+  an unusual behavior verb, or an inference without an explicit marker outside
+  the patterns is not detected; the structural completion rules still apply.
+- Claim scope depends on the observations in the tool turns. Content supplied
+  only in the user's `@` file context is not a tool observation, so a behavior
+  claim about it may be reviewed; the conservative direction is a review, not a
+  silent acceptance.
 - The external-state check matches event vocabulary near a remote or CI subject.
   A descriptive sentence it cannot classify as configuration ("the release is
   published by CI") may be reviewed, and a remote observation proves only that

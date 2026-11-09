@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -225,9 +226,19 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 		for _, claim := range claims {
 			if !coverage.supports(claim) {
 				add("unsupported_negative_conclusion",
-					"the answer concludes "+claim.Subject+" is absent without evidence covering the claim")
+					fmt.Sprintf("the answer treats %q as absent without evidence covering the claim", claim.Subject))
 				break
 			}
+		}
+	}
+	// Claim scope: declared configuration and dependency manifests establish
+	// intent and topology, not runtime behavior. A concrete line count,
+	// deployment conclusion, or path-scoped inference needs the observation
+	// that supports that stronger claim. A mutation answer is judged by target
+	// and verification evidence instead of this answer-level audit.
+	if intent.Kind == contract.ObjectiveInformational {
+		for _, issue := range claimScopeIssues(answer, turns) {
+			add(issue.Code, issue.Detail)
 		}
 	}
 	if insufficientSearchPattern.MatchString(answerLower) &&
@@ -307,6 +318,12 @@ func negativeClaims(answer string) []negativeClaim {
 	addMatches := func(pattern *regexp.Regexp, repositoryWide bool) {
 		for _, match := range pattern.FindAllStringSubmatchIndex(answer, -1) {
 			if len(match) < 4 || match[2] < 0 || match[3] < 0 {
+				continue
+			}
+			// "No test files were surfaced in the probes" is a report about
+			// this run's observations, not a repository-wide absence. The
+			// same sentence with a global scope remains an absence claim.
+			if boundedNegativeReport(uncertaintyWindow(answer, match[0], match[1])) {
 				continue
 			}
 			value := answer[match[2]:match[3]]
@@ -436,14 +453,22 @@ func cleanClaimSubject(value string) string {
 
 // groundingCoverage records the observations that can prove absence.
 type groundingCoverage struct {
-	// globPatterns are successful, complete recursive glob patterns.
-	globPatterns []string
+	// globScans are successful, complete recursive globs. The result text is
+	// retained so a language-qualified test-file claim can be checked against
+	// the names the scan actually returned.
+	globScans []globScan
 	// rootListing is a complete listing of the repository root.
 	rootListing bool
 	// external reports a successful observation of a remote surface: a
 	// knowledge call, or a command that talked to a remote (a remote check, a
 	// push, an API call).
 	external bool
+}
+
+// globScan is one complete recursive scan.
+type globScan struct {
+	pattern string
+	text    string
 }
 
 // supports reports whether the coverage can establish absence of claim.
@@ -460,13 +485,70 @@ func (c groundingCoverage) supports(claim negativeClaim) bool {
 	if !claim.Global && c.rootListing && isRootFileName(claim.Subject) {
 		return true
 	}
-	for _, pattern := range c.globPatterns {
-		pattern = strings.ToLower(pattern)
+	if c.supportsGoTestFiles(claim.Subject) {
+		return true
+	}
+	for _, scan := range c.globScans {
+		pattern := strings.ToLower(scan.pattern)
 		if pattern == "**" || pattern == "**/*" || pattern == "*" {
 			return isFileClaim(claim.Subject)
 		}
 		if strings.Contains(pattern, "**") && strings.Contains(pattern, claim.Subject) {
 			return isFileClaim(claim.Subject)
+		}
+	}
+	return false
+}
+
+// supportsGoTestFiles reports a Go test-file absence proven by a complete
+// recursive scan of every Go file. Go mandates the `_test.go` suffix, so a
+// complete scan without one is proof for that narrowed claim. A bare "no
+// tests" claim remains a concept absence, and frontend test naming is
+// convention-based rather than guaranteed.
+func (c groundingCoverage) supportsGoTestFiles(subject string) bool {
+	if !strings.Contains(subject, "test") || !mentionsGoLanguage(subject) {
+		return false
+	}
+	for _, scan := range c.globScans {
+		if !strings.Contains(scan.pattern, "**") ||
+			!patternCoversExtension(scan.pattern, "go") {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(scan.text), "_test.go") {
+			return true
+		}
+	}
+	return false
+}
+
+// mentionsGoLanguage reports a standalone Go language token. It avoids reading
+// "go" out of an unrelated name such as "django" or "google".
+func mentionsGoLanguage(subject string) bool {
+	for _, token := range strings.FieldsFunc(subject, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		if token == "go" || token == "golang" {
+			return true
+		}
+	}
+	return false
+}
+
+// patternCoversExtension reports whether the glob names the extension. The
+// suffix check keeps *.go from being read from *.golden; a brace group such as
+// **/*.{go,tmpl} covers go, and a generic **/* covers everything.
+func patternCoversExtension(pattern, extension string) bool {
+	pattern = strings.ToLower(pattern)
+	if pattern == "**" || pattern == "**/*" {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*."+extension) ||
+		strings.HasSuffix(pattern, "."+extension) {
+		return true
+	}
+	for _, group := range []string{"{" + extension + ",", "," + extension + "}", "{" + extension + "}"} {
+		if strings.Contains(pattern, group) {
+			return true
 		}
 	}
 	return false
@@ -532,7 +614,10 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 				path := proposalArgString(outcome.Args, "path")
 				if complete && (path == "" || path == "." || path == "./") &&
 					strings.Contains(pattern, "**") {
-					coverage.globPatterns = append(coverage.globPatterns, pattern)
+					coverage.globScans = append(coverage.globScans, globScan{
+						pattern: pattern,
+						text:    outcome.Result.Text,
+					})
 				}
 			}
 		}
