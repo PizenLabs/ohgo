@@ -550,7 +550,7 @@ func (p *httpProvider) braveRequest(ctx context.Context, query string, limit int
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "ohgo/0.1")
+	req.Header.Set("User-Agent", "ohgo/0.1 (+https://ohgo.pizenlabs.dev/)")
 	if apiKey != "" {
 		req.Header.Set("X-Subscription-Token", apiKey)
 	}
@@ -574,7 +574,7 @@ func (p *httpProvider) tavilyRequest(ctx context.Context, query string, limit in
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "ohgo/0.1")
+	req.Header.Set("User-Agent", "ohgo/0.1 (+https://ohgo.pizenlabs.dev/)")
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
