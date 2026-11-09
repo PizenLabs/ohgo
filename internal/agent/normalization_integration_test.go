@@ -17,8 +17,7 @@ import (
 
 // normalizationTool is the execution capability the regression test offers.
 // Its schema is deliberately realistic: path is a string, so a serialized
-// <parameter> value must stay a string rather than being guessed into a
-// number.
+// argument value must stay a string rather than being guessed into a number.
 type normalizationTool struct {
 	mu    sync.Mutex
 	calls []map[string]any
@@ -58,12 +57,17 @@ func TestPseudoToolCallsEnterTheCanonicalExecutionPath(t *testing.T) {
     <parameter name="path">backend/internal</parameter>
   </invoke>
 </dotsfunctioncall>`
+	longcat := `<longcat_tool_call>ls
+<longcat_arg_key>path</longcat_arg_key>
+<longcat_arg_value>backend/pkg</longcat_arg_value>
+</longcat_tool_call>`
 
 	first := sseTextChunk("I'll inspect. ") +
 		sseToolCallChunk(0, "call_native", "ls", `{"path":"backend"}`) +
 		sseTextChunk(pseudo1) +
 		sseTextChunk("\nRecap: backend binaries live under backend/cmd.\n") +
 		sseTextChunk(pseudo2) +
+		sseTextChunk("\n"+longcat) +
 		sseFinishChunk("stop") +
 		"data: [DONE]\n\n"
 	second := sseTextChunk("Done.") + sseFinishChunk("stop") + "data: [DONE]\n\n"
@@ -112,12 +116,12 @@ func TestPseudoToolCallsEnterTheCanonicalExecutionPath(t *testing.T) {
 		t.Fatalf("turns = %d, want 2", len(turns))
 	}
 
-	// The native call and both pseudo calls are the same kind of outcome.
+	// The native call and all serialized calls are the same kind of outcome.
 	firstTurn := turns[0]
-	if got := len(firstTurn.Results); got != 3 {
-		t.Fatalf("results = %d, want native + two pseudo calls", got)
+	if got := len(firstTurn.Results); got != 4 {
+		t.Fatalf("results = %d, want native + three serialized calls", got)
 	}
-	wantPaths := []string{"backend", "backend/cmd", "backend/internal"}
+	wantPaths := []string{"backend", "backend/cmd", "backend/internal", "backend/pkg"}
 	for i, want := range wantPaths {
 		outcome := firstTurn.Results[i]
 		if outcome.ToolName != "ls" {
@@ -138,17 +142,17 @@ func TestPseudoToolCallsEnterTheCanonicalExecutionPath(t *testing.T) {
 	if firstTurn.Results[0].CallID != "call_native" {
 		t.Errorf("native call id = %q, want call_native", firstTurn.Results[0].CallID)
 	}
-	for i := 1; i < 3; i++ {
+	for i := 1; i < 4; i++ {
 		if !strings.HasPrefix(firstTurn.Results[i].CallID, "pseudo_") {
 			t.Errorf("pseudo call %d id = %q, want a pseudo id", i, firstTurn.Results[i].CallID)
 		}
 	}
 
-	if evaluated, _ := authorizer.counts(); evaluated != 3 {
-		t.Errorf("authorizer evaluated %d calls, want all 3 to cross the boundary", evaluated)
+	if evaluated, _ := authorizer.counts(); evaluated != 4 {
+		t.Errorf("authorizer evaluated %d calls, want all 4 to cross the boundary", evaluated)
 	}
-	if got := len(tool.invoked()); got != 3 {
-		t.Errorf("tool executed %d times, want 3", got)
+	if got := len(tool.invoked()); got != 4 {
+		t.Errorf("tool executed %d times, want 4", got)
 	}
 	if firstTurn.Assistant.StopReason != ai.StopToolUse {
 		t.Errorf("stop reason = %q, want %q after pseudo-call recognition",
@@ -159,6 +163,7 @@ func TestPseudoToolCallsEnterTheCanonicalExecutionPath(t *testing.T) {
 	for _, text := range []string{liveText.String(), firstTurn.Assistant.Text(), turns[1].Assistant.Text()} {
 		for _, marker := range []string{
 			"<dotsfunctioncall>", "</dotsfunctioncall>", "<invoke", "<parameter",
+			"<longcat_tool_call>", "</longcat_tool_call>", "<longcat_arg_key>", "<longcat_arg_value>",
 		} {
 			if strings.Contains(text, marker) {
 				t.Errorf("visible text leaked %q: %q", marker, text)

@@ -204,6 +204,12 @@ Recognition is an incremental, bounded state machine:
   (`<dotsfunctioncall>`, `<dots_function_call>`, and their mixed closing
   markers) as one protocol family. A new spelling is a descriptor there, never
   a TUI or execution change.
+- LongCat's `<longcat_tool_call>` envelope is registered in both documented
+  payload shapes: a JSON function object and LongCat 2.5's bare tool name
+  followed by `<longcat_arg_key>`/`<longcat_arg_value>` pairs. The template does
+  not XML-escape string values, so the key/value form is parsed as a bounded
+  token grammar rather than XML. A malformed or incomplete LongCat envelope
+  follows the same diagnostic-and-residue rule as every other protocol.
 - Recognition is family-based, not spelling-list based. An opening tag that
   names the dots/call family but is not a registered descriptor is consumed
   through its family closing tag, replaced by one bounded diagnostic, and

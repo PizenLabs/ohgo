@@ -640,6 +640,15 @@ func defaultPseudoProtocols() []pseudoProtocol {
 			close: []byte("</tool_call>"),
 			parse: parseToolCallEnvelope,
 		},
+		{
+			// LongCat-Flash-Chat wraps a JSON function object; LongCat 2.5
+			// emits a bare tool name followed by key/value elements. Both
+			// spellings use this envelope.
+			name:  "longcat_tool_call",
+			open:  []byte("<longcat_tool_call>"),
+			close: []byte("</longcat_tool_call>"),
+			parse: parseLongCatEnvelope,
+		},
 	}
 }
 
@@ -1531,6 +1540,91 @@ func parseToolCallEnvelope(body string, coercer *argumentCoercer) ([]ToolCall, e
 		return parseJSONToolCallEnvelope(trimmed)
 	}
 	return parseXMLInvokeEnvelope(body, coercer)
+}
+
+// LongCat's serialized-call grammar.
+//
+// LongCat-Flash-Chat documents a JSON function object inside the envelope.
+// LongCat 2.5 instead writes the tool name followed by a repeating
+// key/value pair:
+//
+//	<longcat_tool_call>glob
+//	<longcat_arg_key>pattern</longcat_arg_key>
+//	<longcat_arg_value>**/*.go</longcat_arg_value>
+//	</longcat_tool_call>
+//
+// The template does not XML-escape keys or string values, so this parser
+// treats the envelope as a token grammar rather than XML. A well-formed
+// envelope with no argument pairs is a real no-argument call.
+func parseLongCatEnvelope(body string, coercer *argumentCoercer) ([]ToolCall, error) {
+	trimmed := strings.TrimSpace(body)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return parseJSONToolCallEnvelope(trimmed)
+	}
+
+	const (
+		keyOpen    = "<longcat_arg_key>"
+		keyClose   = "</longcat_arg_key>"
+		valueOpen  = "<longcat_arg_value>"
+		valueClose = "</longcat_arg_value>"
+	)
+
+	rest := body
+	name := ""
+	if at := strings.Index(body, keyOpen); at >= 0 {
+		name = strings.TrimSpace(body[:at])
+		rest = body[at:]
+	} else {
+		name = strings.TrimSpace(body)
+		rest = ""
+	}
+	if name == "" {
+		return nil, errors.New("tool call has no name")
+	}
+	// A bare tool name is required. Rejecting whitespace and delimiters keeps
+	// arbitrary prose from being fabricated into a call when the model emits
+	// a malformed envelope.
+	if strings.ContainsAny(name, " \t\r\n<>{}") {
+		return nil, fmt.Errorf("tool name %q is not a bare identifier", name)
+	}
+
+	args := make(map[string]any)
+	for {
+		rest = strings.TrimLeft(rest, " \t\r\n")
+		if rest == "" {
+			break
+		}
+		if !strings.HasPrefix(rest, keyOpen) {
+			return nil, fmt.Errorf("expected %s", keyOpen)
+		}
+		rest = rest[len(keyOpen):]
+		end := strings.Index(rest, keyClose)
+		if end < 0 {
+			return nil, errors.New("argument key is unterminated")
+		}
+		key := strings.TrimSpace(rest[:end])
+		rest = rest[end+len(keyClose):]
+		if key == "" {
+			return nil, errors.New("argument key is empty")
+		}
+
+		rest = strings.TrimLeft(rest, " \t\r\n")
+		if !strings.HasPrefix(rest, valueOpen) {
+			return nil, fmt.Errorf("argument %q has no value", key)
+		}
+		rest = rest[len(valueOpen):]
+		end = strings.Index(rest, valueClose)
+		if end < 0 {
+			return nil, fmt.Errorf("argument %q has an unterminated value", key)
+		}
+		value := strings.TrimSpace(rest[:end])
+		rest = rest[end+len(valueClose):]
+		if _, exists := args[key]; exists {
+			return nil, fmt.Errorf("argument %q appears more than once", key)
+		}
+		args[key] = coercer.coerce(name, key, value)
+	}
+	return []ToolCall{{Name: name, Arguments: args}}, nil
 }
 
 // parseJSONToolCallEnvelope decodes the common serialized function-call JSON.

@@ -58,6 +58,37 @@ func TestReplayKeepsUnpairedCallsVisible(t *testing.T) {
 	}
 }
 
+func TestReplayRepairsLegacyLongCatProtocolText(t *testing.T) {
+	envelope := "<longcat_tool_call>glob\n" +
+		"<longcat_arg_key>pattern</longcat_arg_key>\n" +
+		"<longcat_arg_value>**/*.go</longcat_arg_value>\n" +
+		"</longcat_tool_call>\n" +
+		"<longcat_tool_call>read\n" +
+		"<longcat_arg_key>path</longcat_arg_key>\n" +
+		"<longcat_arg_value>go.mod</longcat_arg_value>\n" +
+		"</longcat_tool_call>"
+	history := []agent.Message{agent.AssistantMessage{Message: ai.AssistantMessage{
+		Content:    []ai.ContentBlock{ai.TextContent{Text: envelope}},
+		StopReason: ai.StopEndTurn,
+	}}}
+
+	entries := EntriesFromMessages(history)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want two repaired tool cards", len(entries))
+	}
+	if entries[0].Tool == nil || entries[0].Tool.Name != "glob" {
+		t.Errorf("entry 0 = %+v, want the glob call", entries[0])
+	}
+	if entries[1].Tool == nil || entries[1].Tool.Name != "read" {
+		t.Errorf("entry 1 = %+v, want the read call", entries[1])
+	}
+	for _, entry := range entries {
+		if entry.Kind == EntryAssistant && entry.AssistantText != "" {
+			t.Errorf("protocol bytes survived replay as assistant prose: %q", entry.AssistantText)
+		}
+	}
+}
+
 func TestReplayKeepsOrphanResultsVisible(t *testing.T) {
 	history := []agent.Message{
 		agent.ToolResultMessage{ToolCallID: "ghost", ToolName: "grep", Content: []ai.ContentBlock{ai.TextContent{Text: "hit"}}},
