@@ -35,6 +35,14 @@ const (
 	// fadeDuration is the complete entrance window. Settled history never
 	// carries a fade.
 	fadeDuration = 120 * time.Millisecond
+	// statusSettleDuration is the completion tween. A terminal frame keeps its
+	// semantic glyph immediately but morphs its status colour from the running
+	// amber into the final success/error role over this window.
+	statusSettleDuration = 120 * time.Millisecond
+	// statusSlotCells is the ghost box reserved for a status glyph. Every
+	// state paints one cell in this slot, so a spinner can become a check
+	// without shifting the invocation to the left or right.
+	statusSlotCells = 1
 )
 
 // Fade palette: a deep neutral first, a muted sage/teal midpoint, then the
@@ -43,6 +51,19 @@ const (
 const (
 	fadeVaporHex = "#333333"
 	fadeSolidHex = "#5FB3A1"
+)
+
+// The completion tween starts and ends on the same palette roles the settled
+// row uses. The hex forms are the standard xterm RGB values for those 256-col
+// indexes; keeping them here means the tween cannot land on a different hue
+// from the frame that replaces it.
+const (
+	statusRunDarkHex    = "#D7AF5F" // xterm 214, dark ToolRun
+	statusRunLightHex   = "#D75F00" // xterm 166, light ToolRun
+	statusDoneDarkHex   = "#00D700" // xterm 42, dark ToolDone
+	statusDoneLightHex  = "#008700" // xterm 28, light ToolDone
+	statusErrorDarkHex  = "#FF0000" // xterm 196, dark ToolError
+	statusErrorLightHex = "#AF0000" // xterm 160, light ToolError
 )
 
 // fadePhase is one discrete step in the entrance sequence. Tests and
@@ -265,4 +286,126 @@ func toolRunGroupActive(s State, run *toolRun, now time.Time) bool {
 		return true
 	}
 	return run.settledAt(now)
+}
+
+// toolStatusGlyph is the one-cell status marker for a tool row. The running
+// frame is the shared Braille spinner; every terminal state uses a distinct
+// text glyph, so the column never widens or narrows as the call settles.
+func toolStatusGlyph(status ToolStatus, tick int) string {
+	switch status {
+	case ToolRunning:
+		return spinnerGlyph(tick)
+	case ToolDone:
+		return "✔"
+	case ToolError:
+		return "✗"
+	case ToolCancelled:
+		return "⊘"
+	default:
+		return "·"
+	}
+}
+
+// statusSlot renders a glyph in the invariant status box followed by the
+// separator space. A caller budgets with this exact string: the glyph may
+// animate, but the number of cells consumed is fixed.
+func statusSlot(glyph string) string {
+	if width := CellWidth(glyph); width < statusSlotCells {
+		glyph += strings.Repeat(" ", statusSlotCells-width)
+	}
+	return glyph + " "
+}
+
+// settleAt is the instant the terminal frame may replace the executing frame.
+//
+// A fast call waits for the dwell floor; a call that already ran longer than
+// the floor settles at its measured end. Timestamps the runtime never measured
+// stay unknown, so the renderer never invents a tween start.
+func (t *ToolEntry) settleAt() (time.Time, bool) {
+	if t == nil || (t.Status != ToolDone && t.Status != ToolError) {
+		return time.Time{}, false
+	}
+	settle := t.EndedAt
+	if settle.IsZero() {
+		settle = t.DwellUntil
+	}
+	if !t.DwellUntil.IsZero() && t.DwellUntil.After(settle) {
+		settle = t.DwellUntil
+	}
+	if settle.IsZero() {
+		return time.Time{}, false
+	}
+	return settle, true
+}
+
+// statusSettleAge reports how long ago the terminal frame became presentable.
+// It returns false while the dwell floor still owns the row and after the
+// completion tween has finished, so settled history stays cacheable.
+func (t *ToolEntry) statusSettleAge(now time.Time) (time.Duration, bool) {
+	if t == nil || t.presentationStatus(now) != t.Status {
+		return 0, false
+	}
+	settle, ok := t.settleAt()
+	if !ok {
+		return 0, false
+	}
+	age := now.Sub(settle)
+	if age < 0 || age >= statusSettleDuration {
+		return 0, false
+	}
+	return age, true
+}
+
+// statusTweenColor interpolates the running amber into the terminal role.
+// The terminal has no alpha, so a short colour ramp is the honest way to
+// morph a status in place without changing the glyph's cell width. The
+// endpoints match the palette roles, so the tween hands off without a final
+// hue jump.
+func statusTweenColor(status ToolStatus, age time.Duration, theme string) (string, bool) {
+	light := NormalizeTheme(theme) == ThemeLight
+	var start, target string
+	switch status {
+	case ToolDone:
+		if light {
+			start, target = statusRunLightHex, statusDoneLightHex
+		} else {
+			start, target = statusRunDarkHex, statusDoneDarkHex
+		}
+	case ToolError:
+		if light {
+			start, target = statusRunLightHex, statusErrorLightHex
+		} else {
+			start, target = statusRunDarkHex, statusErrorDarkHex
+		}
+	default:
+		return "", false
+	}
+	if age < 0 {
+		age = 0
+	}
+	if age >= statusSettleDuration {
+		return target, false
+	}
+	t := float64(age) / float64(statusSettleDuration)
+	return blendHex(start, target, t), true
+}
+
+// phaseLabel is the batch's measured authority span. Empty means the producer
+// did not report a workspace; the formatter then omits the segment rather than
+// inventing a phase. A single phase is named once instead of drawing a
+// meaningless arrow to itself.
+func (r *toolRun) phaseLabel() string {
+	if r == nil {
+		return ""
+	}
+	start := strings.TrimSpace(r.phaseStart)
+	end := strings.TrimSpace(r.phaseEnd)
+	switch {
+	case start == "":
+		return end
+	case end == "" || end == start:
+		return start
+	default:
+		return start + " → " + end
+	}
 }

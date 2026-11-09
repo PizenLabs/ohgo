@@ -163,7 +163,7 @@ func TestLiveExpandUnderARealPTY(t *testing.T) {
 
 	// Both calls seal as one compact telemetry footer: counts and timing
 	// stay, raw bodies do not.
-	waitFor("+ Executed 2 tools", 20*time.Second)
+	waitFor("+ 2 tools · ", 20*time.Second)
 	waitFor("both tools ran and the answer follows.", 20*time.Second)
 	if got := plain(); strings.Contains(got, "second failure line two") || strings.Contains(got, "first tool line two") {
 		t.Fatalf("collapsed footer leaked a raw body:\n%s", tail(got))

@@ -39,6 +39,11 @@ type LayoutRow struct {
 	DocRow     int
 	Styled     string
 	Width      int
+	// ToolID names the telemetry tree node this row belongs to, when the row
+	// is part of an expanded batch. It is empty for a footer header or an
+	// ordinary block. Pointer inspection uses it to toggle one node body
+	// without reselecting the whole run.
+	ToolID string
 }
 
 // Plain returns the row's text with styling and right padding removed.
@@ -101,6 +106,10 @@ type blockLayout struct {
 	leadingGap bool
 	lines      []string
 	widths     []int
+	// toolRows maps one rendered line to a tree node id. It is captured by
+	// the same render pass that produced lines, so row-to-node geometry can
+	// never drift from what the user sees.
+	toolRows []string
 }
 
 func keyFor(state State, layout Layout) layoutKey {
@@ -397,7 +406,12 @@ func (l *TranscriptLayout) renderBlock(state *State, entry Entry, index int, id 
 	if entry.rev == 0 {
 		b.rev = fixtureRevision(entry)
 	}
+	currentToolID := ""
+	if idx := l.activity; idx >= 0 && idx < len(state.Entries) && state.Entries[idx].Tool != nil {
+		currentToolID = state.Entries[idx].Tool.ID
+	}
 	var sb strings.Builder
+	var toolRows []toolRunRow
 	renderEntryGrouped(&sb, entry, pal, layout, entryRenderContext{
 		current:         current,
 		toolGroupEnd:    groupEnd,
@@ -406,11 +420,21 @@ func (l *TranscriptLayout) renderBlock(state *State, entry Entry, index int, id 
 		tick:            spinner,
 		now:             now,
 		theme:           state.Theme,
+		toolRows:        &toolRows,
+		currentToolID:   currentToolID,
 	})
 	b.lines = entryLines(sb.String())
 	b.widths = make([]int, len(b.lines))
 	for i, line := range b.lines {
 		b.widths[i] = CellWidth(line)
+	}
+	if len(toolRows) > 0 {
+		b.toolRows = make([]string, len(b.lines))
+		for _, row := range toolRows {
+			if row.line >= 0 && row.line < len(b.toolRows) {
+				b.toolRows[row.line] = row.id
+			}
+		}
 	}
 	return b
 }
@@ -482,14 +506,18 @@ func (l *TranscriptLayout) Rows(offset, height int) []LayoutRow {
 		}
 		lines := l.blocks[block].lines
 		for local < len(lines) && docRow < end {
-			out = append(out, LayoutRow{
+			row := LayoutRow{
 				BlockID:    l.blocks[block].id,
 				BlockIndex: block,
 				Row:        local,
 				DocRow:     docRow,
 				Styled:     lines[local],
 				Width:      l.blocks[block].widths[local],
-			})
+			}
+			if local < len(l.blocks[block].toolRows) {
+				row.ToolID = l.blocks[block].toolRows[local]
+			}
+			out = append(out, row)
 			local++
 			docRow++
 		}
@@ -615,14 +643,18 @@ func (l *TranscriptLayout) BlockRow(index, row int) (LayoutRow, bool) {
 	if row < 0 || row >= l.effectiveHeight(index) {
 		return LayoutRow{}, false
 	}
-	return LayoutRow{
+	result := LayoutRow{
 		BlockID:    l.blocks[index].id,
 		BlockIndex: index,
 		Row:        row,
 		DocRow:     l.rows.prefix(index) + row,
 		Styled:     lines[row],
 		Width:      l.blocks[index].widths[row],
-	}, true
+	}
+	if row < len(l.blocks[index].toolRows) {
+		result.ToolID = l.blocks[index].toolRows[row]
+	}
+	return result, true
 }
 
 // BlockForRow resolves a document row to its block and local row.

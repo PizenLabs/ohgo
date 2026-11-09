@@ -357,7 +357,7 @@ func TestToolHeavyWorkloadKeepsEveryCompletedEvent(t *testing.T) {
 
 	// The completed batch is one telemetry footer by default. Expand it to
 	// keep every per-call event reachable in the same projection.
-	if rows := p.transcriptIndex.AllRows(); !rowsContainText(rows, "Executed 16 tools") {
+	if rows := p.transcriptIndex.AllRows(); !rowsContainText(rows, "16 tools") {
 		t.Fatalf("completed batch did not collapse into a telemetry footer")
 	}
 	p.state.Apply(ToolToggled{ID: "tool-15"})

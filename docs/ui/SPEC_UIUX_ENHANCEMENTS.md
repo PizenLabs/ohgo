@@ -150,13 +150,30 @@ eased.
   the normal semantic palette returns. `NO_COLOR`, dumb terminals, reduced
   motion, and colorless profiles skip the effect. Text, wrapping, identities,
   and measured durations never change.
-- **Batch telemetry footer.** Adjacent completed calls collapse into one
-  persistent row: `+ Executed 8 tools in 420ms (ctrl+o to expand)`. The footer
+- **Fixed status slot and completion tween.** Every tool row reserves one
+  glyph cell plus one separator from the instant it opens. The shared Braille
+  spinner animates inside that cell and becomes `✔`, `✗`, or `⊘` in place, so
+  the invocation never shifts horizontally. Once the dwell floor releases the
+  row, the terminal frame keeps its semantic glyph immediately but interpolates
+  the status colour from the running amber through a 120ms completion window
+  into the success/error role;
+  the first 30ms also keeps the dim intensity. `NO_COLOR`, dumb terminals,
+  reduced motion, and colorless profiles take the settled palette directly.
+- **Hierarchical batch telemetry.** Adjacent completed calls collapse into one
+  persistent row:
+  `+ [Phase: BUILD → FUZZ] · 8 tools · 31s (ctrl+o to expand)`. The phase
+  segment is the measured execution-authority span observed when the batch
+  opened and when its last member finished; an unreported workspace omits it
+  rather than inventing one, and an unchanged phase is named once. The footer
   carries the batch's measured wall span, not a fabricated sum. Ctrl+O expands
-  the tree in place with each call's invocation and measured duration, plus its
-  compact outcome; collapsing restores the single row. A batch with a running
-  member, or a trailing batch in a turn that may still grow, keeps the
-  individual rows visible.
+  an indented tree in place: `├─` for every node but the last, `└─` for the
+  last, each with its own status glyph, invocation, measured duration, and
+  compact outcome. Collapsing restores the single row. Clicking an expanded
+  node toggles that call's bounded body independently; the macro tree and the
+  node body are separate disclosure flags. A batch with a running member, or a
+  trailing batch in a turn that may still grow, keeps the individual rows
+  visible. Reasoning remains its own accordion block; tool batches never hide
+  the provider's thinking channel inside a footer.
 - **Stable viewport.** Collapsing or expanding a tree re-resolves
   `Viewport.Offset` in the same update. The reading anchor is `(BlockID, row)`,
   so expansion above the window moves the offset exactly enough to keep the

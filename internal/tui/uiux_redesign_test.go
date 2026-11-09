@@ -19,19 +19,20 @@ func TestFastToolHoldsIntentFrameThenSettles(t *testing.T) {
 	s.Apply(ToolFinished{ID: "c1", Text: "package a\n", Summary: "1 line", At: start.Add(2 * time.Millisecond)})
 	s.Apply(FrameTick{At: start})
 
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
 	active := ansi.Strip(Render(s))
-	if !strings.Contains(active, "◌ read a.go") || strings.Contains(active, "✓ read a.go") {
+	if !strings.Contains(active, running+" read a.go") || strings.Contains(active, "✔ read a.go") {
 		t.Fatalf("fast tool lost its intent frame:\n%s", active)
 	}
 
 	s.Apply(FrameTick{At: start.Add(toolMinDwell - time.Millisecond)})
-	if held := ansi.Strip(Render(s)); !strings.Contains(held, "◌ read a.go") {
+	if held := ansi.Strip(Render(s)); !strings.Contains(held, running+" read a.go") {
 		t.Fatalf("fast tool settled before the dwell floor:\n%s", held)
 	}
 
 	s.Apply(FrameTick{At: start.Add(toolMinDwell)})
 	out := ansi.Strip(Render(s))
-	if !strings.Contains(out, "✓ read a.go") {
+	if !strings.Contains(out, "✔ read a.go") {
 		t.Fatalf("fast tool lost its stable success row:\n%s", out)
 	}
 	if !strings.Contains(out, "2ms") {
@@ -45,10 +46,10 @@ func TestFastToolHoldsIntentFrameThenSettles(t *testing.T) {
 	}
 }
 
-// TestRunningToolShowsStaticGlyphAndMeasuredElapsed: a long call remains
-// readable without a per-tool spinner, and its duration is the right-aligned
+// TestRunningToolShowsSpinnerInFixedSlot: a long call animates the shared
+// spinner in one invariant status cell, and its duration is the right-aligned
 // measured one.
-func TestRunningToolShowsStaticGlyphAndMeasuredElapsed(t *testing.T) {
+func TestRunningToolShowsSpinnerInFixedSlot(t *testing.T) {
 	start := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 24})
@@ -58,15 +59,17 @@ func TestRunningToolShowsStaticGlyphAndMeasuredElapsed(t *testing.T) {
 	s.Entries[0].Tool.EndedAt = start.Add(3200 * time.Millisecond)
 
 	out := ansi.Strip(Render(s))
-	if !strings.Contains(out, "◌ bash go test ./...") {
-		t.Fatalf("running tool lost its static glyph or invocation:\n%s", out)
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if !strings.Contains(out, running+" bash go test ./...") {
+		t.Fatalf("running tool lost its spinner or invocation:\n%s", out)
 	}
 	if !strings.Contains(out, "3.2s") {
 		t.Fatalf("running tool lost its measured elapsed time:\n%s", out)
 	}
-	for _, frame := range spinnerFrames {
-		if strings.Contains(out, frame) {
-			t.Fatalf("running tool rendered spinner frame %q:\n%s", frame, out)
+	for tick := 0; tick < len(spinnerFrames); tick++ {
+		prefix := toolStatusGlyph(ToolRunning, tick) + " bash go test ./..."
+		if got, want := CellWidth(prefix), statusSlotCells+1+CellWidth("bash go test ./..."); got != want {
+			t.Fatalf("tick %d status prefix = %d cells, want %d", tick, got, want)
 		}
 	}
 }
@@ -129,7 +132,7 @@ func TestToolFailureStaysToolLevel(t *testing.T) {
 }
 
 // TestOnlyCurrentRunningToolIsLive: concurrent calls all remain truthful, but
-// only one carries the live clock; the others settle to their static glyph.
+// only one carries the live clock; the others stay in their muted status slot.
 func TestOnlyCurrentRunningToolIsLive(t *testing.T) {
 	start := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
 	s := New()
@@ -259,10 +262,11 @@ func TestTranscriptReadsAsStateTransitions(t *testing.T) {
 	s.Apply(ToolStarted{ID: "c3", Name: "glob", Summary: "glob backend/**/*.go", At: at.Add(13 * time.Second), Seq: 1})
 
 	out := ansi.Strip(Render(s))
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
 	ordered := []string{
-		"+ Executed 2 tools",
+		"+ 2 tools · ",
 		"+ Thought",
-		"◌ glob backend/**/*.go",
+		running + " glob backend/**/*.go",
 	}
 	last := -1
 	for _, marker := range ordered {
@@ -275,7 +279,7 @@ func TestTranscriptReadsAsStateTransitions(t *testing.T) {
 		}
 		last = index
 	}
-	if got := strings.Count(out, "◌"); got != 1 {
+	if got := strings.Count(out, running); got != 1 {
 		t.Fatalf("transcript has %d live markers, want exactly one:\n%s", got, out)
 	}
 	if strings.Contains(out, "running") {

@@ -23,7 +23,7 @@ const (
 // the code surface use truecolor pairs so light and dark resolve to the exact
 // same semantic values rather than approximating them with indexes. Colour
 // signals state or voice; it never decorates ordinary metadata, and every state
-// that uses colour also carries a text marker (✓ ✗ ● ○ ■ ◐).
+// that uses colour also carries a text marker (✔ ✗ ● ○ ■ ◐ ⠋).
 const (
 	// Dark theme: muted surfaces with one restrained accent. Body text and
 	// borders are truecolor here so both themes share one adaptive pair

@@ -146,7 +146,8 @@ func TestToolFinalizationReplacesLiveRepresentationExactlyOnce(t *testing.T) {
 	id := s.Entries[1].ID
 
 	running := ansi.Strip(Render(s))
-	if !strings.Contains(running, "◌ read a.go") || strings.Contains(running, "⠋") {
+	runningGlyph := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if !strings.Contains(running, runningGlyph+" read a.go") {
 		t.Fatalf("running render lost its live representation:\n%s", running)
 	}
 
@@ -169,13 +170,16 @@ func TestToolFinalizationReplacesLiveRepresentationExactlyOnce(t *testing.T) {
 	if strings.Contains(done, "◌ read a.go") || strings.Contains(done, "⠋ read a.go") || strings.Contains(done, "running") {
 		t.Fatalf("completed tool kept the live representation:\n%s", done)
 	}
+	if !strings.Contains(done, "✔ read a.go") {
+		t.Fatalf("completed tool lost its terminal marker:\n%s", done)
+	}
 	if !strings.Contains(done, "⠋ reason") {
 		t.Fatalf("busy turn lost the reasoning spinner:\n%s", done)
 	}
 	if got := strings.Count(done, "read a.go"); got != 1 {
 		t.Fatalf("completed action appeared %d times, want one:\n%s", got, done)
 	}
-	if got := strings.Count(done, "✓ read a.go"); got != 1 {
+	if got := strings.Count(done, "✔ read a.go"); got != 1 {
 		t.Fatalf("stable completion appeared %d times, want one:\n%s", got, done)
 	}
 }
@@ -293,7 +297,8 @@ func TestLivePainterKeepsOneLiveRowAndSealsItOnce(t *testing.T) {
 	if got := countStripped(history, "inspecting backend/internal") + countStripped(painter.live, "inspecting backend/internal"); got != 1 {
 		t.Fatalf("running action appeared %d times across history+live, want one", got)
 	}
-	if got := countStripped(painter.live, "◌"); got != 1 {
+	liveGlyph := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if got := countStripped(painter.live, liveGlyph); got != 1 {
 		t.Fatalf("live region has %d running markers, want one: %q", got, painter.live)
 	}
 
@@ -307,7 +312,7 @@ func TestLivePainterKeepsOneLiveRowAndSealsItOnce(t *testing.T) {
 	if countStripped(painter.live, "inspecting backend/internal") != 0 {
 		t.Fatalf("finished action stayed in the live region: %q", painter.live)
 	}
-	if countStripped(painter.live, "◌ inspecting") != 0 {
+	if countStripped(painter.live, liveGlyph+" inspecting") != 0 {
 		t.Fatalf("live region still claims the finished call is running: %q", painter.live)
 	}
 	if again := painter.render(s); len(again) != 0 {
@@ -473,13 +478,14 @@ func TestBuildInvestigationRegression(t *testing.T) {
 			t.Fatalf("completed %q appeared %d times, want one:\n%s", call.summary, got, out)
 		}
 	}
-	if got := strings.Count(out, "◌ inspecting backend/internal"); got != 1 {
+	liveGlyph := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if got := strings.Count(out, liveGlyph+" inspecting backend/internal"); got != 1 {
 		t.Fatalf("live action appeared %d times, want one:\n%s", got, out)
 	}
-	if got := strings.Count(out, "⠋"); got != 0 {
-		t.Fatalf("live view kept a spinner frame %d times, want none:\n%s", got, out)
+	if strings.Contains(out, "◌") {
+		t.Fatalf("live view kept the retired static running glyph:\n%s", out)
 	}
-	for _, forbidden := range []string{"✳ BUILD", "✳ Running", "✳ · Running", "⠋"} {
+	for _, forbidden := range []string{"✳ BUILD", "✳ Running", "✳ · Running"} {
 		if strings.Contains(out, forbidden) {
 			t.Fatalf("duplicate activity representation %q:\n%s", forbidden, out)
 		}

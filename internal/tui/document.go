@@ -218,6 +218,27 @@ func (s *State) ToggleBlock(id BlockID) bool {
 	return true
 }
 
+// ToggleToolNode flips one member body inside an expanded telemetry tree.
+//
+// It is the granular counterpart to ToggleBlock: the run stays open, and only
+// the selected call's bounded detail appears or disappears. A collapsed run
+// refuses the toggle because its nodes are not present in the projection.
+func (s *State) ToggleToolNode(id string) bool {
+	index := s.toolIndex(id)
+	if index < 0 {
+		return false
+	}
+	tool := s.Entries[index].Tool
+	if tool == nil || tool.run == nil || !tool.run.expanded() {
+		return false
+	}
+	if !toolExpandable(tool) && tool.Status != ToolRunning {
+		return false
+	}
+	s.Apply(ToolNodeToggled{ID: id})
+	return true
+}
+
 // BlockCopyText returns the canonical logical text of one block.
 //
 // It is derived from structured content, never from the rendered projection:

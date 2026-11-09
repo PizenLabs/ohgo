@@ -36,10 +36,10 @@ func TestConsecutiveToolsRenderAsOneCompactStream(t *testing.T) {
 	s.Apply(FrameTick{At: time.Now().Add(toolMinDwell)})
 
 	collapsed := ansi.Strip(Render(s))
-	if !strings.Contains(collapsed, "+ Executed 3 tools") {
+	if !strings.Contains(collapsed, "+ 3 tools · ") {
 		t.Fatalf("consecutive tools did not collapse into a telemetry footer:\n%s", collapsed)
 	}
-	if strings.Contains(collapsed, "└ ls backend") {
+	if strings.Contains(collapsed, "ls backend") {
 		t.Fatalf("collapsed footer leaked the per-call tree:\n%s", collapsed)
 	}
 	if !strings.Contains(collapsed, "\n\nThe project is a Go service.") {
@@ -48,7 +48,7 @@ func TestConsecutiveToolsRenderAsOneCompactStream(t *testing.T) {
 
 	s.Apply(ToolToggled{ID: "cc"})
 	expanded := ansi.Strip(Render(s))
-	for _, want := range []string{"- Executed 3 tools", "└ ls backend", "└ ls .", "└ read backend/go.mod"} {
+	for _, want := range []string{"- 3 tools · ", "├─ ✔ ls backend", "├─ ✔ ls .", "└─ ✔ read backend/go.mod"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded tree lost %q:\n%s", want, expanded)
 		}
@@ -184,7 +184,8 @@ func TestRunningActionStaysDistinct(t *testing.T) {
 	if !strings.Contains(out, "go test ./...") {
 		t.Fatalf("running action disappeared from the stream:\n%s", out)
 	}
-	if !strings.Contains(out, "◌ go test ./...") {
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if !strings.Contains(out, running+" go test ./...") {
 		t.Fatalf("running action lost its lifecycle marker:\n%s", out)
 	}
 }

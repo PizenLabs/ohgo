@@ -255,8 +255,9 @@ func TestToolBlockRenderStates(t *testing.T) {
 	running.Apply(TerminalResized{Width: 80, Height: 24})
 	running.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: now})
 	out := stripForTest(t, Render(running))
-	if !strings.Contains(out, "◌ bash") || strings.Contains(out, "⠋") {
-		t.Errorf("running block = %q, want the tool name and its static running glyph", out)
+	runningGlyph := toolStatusGlyph(ToolRunning, running.Status.Spinner)
+	if !strings.Contains(out, runningGlyph+" bash") {
+		t.Errorf("running block = %q, want the tool name and its animated status slot", out)
 	}
 	if !strings.Contains(out, "go test") {
 		t.Errorf("running block = %q, want the call's summary", out)
@@ -279,7 +280,7 @@ func TestToolBlockRenderStates(t *testing.T) {
 	bad.Apply(ToolStarted{ID: "c1", Name: "bash", At: now})
 	bad.Apply(ToolFinished{ID: "c1", Text: "exit code 1", Summary: "error: exit code 1", IsError: true, At: now})
 	failed := stripForTest(t, Render(bad))
-	if strings.Contains(failed, "✓ bash") {
+	if strings.Contains(failed, "✔ bash") {
 		t.Errorf("failure rendered as a success:\n%s", failed)
 	}
 	if !strings.Contains(failed, "error") {

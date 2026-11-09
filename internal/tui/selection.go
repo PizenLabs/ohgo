@@ -22,6 +22,10 @@ type Position struct {
 	BlockID BlockID
 	Row     int
 	Column  int
+	// ToolID is a hit-test hint for an expanded telemetry tree node. It is
+	// not part of the logical selection identity: copying still projects the
+	// whole block from its semantic content.
+	ToolID string
 }
 
 // Selection is a logical range with two endpoints. The endpoints may be given

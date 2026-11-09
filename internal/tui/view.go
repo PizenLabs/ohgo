@@ -1980,6 +1980,13 @@ type entryRenderContext struct {
 	tick            int
 	now             time.Time
 	theme           string
+	// toolRows records which rendered line belongs to a tree node. The
+	// layout copies it into LayoutRow so pointer inspection can target one
+	// member without duplicating the renderer's branch-counting rules.
+	toolRows *[]toolRunRow
+	// currentToolID is the one running call that owns the live activity.
+	// Concurrent rows stay truthful but muted so they do not compete.
+	currentToolID string
 }
 
 // renderEntryGrouped writes one transcript entry, wrapped to the content width.
@@ -2057,13 +2064,13 @@ func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout L
 				// One footer represents the batch; its members are not
 				// repeated as independent rows. Only the anchor paints.
 				if entry.Tool.run.anchor() == entry.Tool {
-					renderToolRun(sb, entry.Tool.run, pal, layout, ctx.now)
+					renderToolRun(sb, entry.Tool.run, pal, layout, ctx.tick, ctx.currentToolID, ctx.theme, ctx.now, ctx.toolRows)
 				}
 				return
 			}
 			// A tool never owns a trailing separator: the block after the run
 			// owns the gap, so appending another tool cannot move this one.
-			renderToolAt(sb, entry.Tool, pal, layout, ctx.current, false, ctx.toolGroupEnd, ctx.now)
+			renderToolAt(sb, entry.Tool, pal, layout, ctx.current, false, ctx.toolGroupEnd, ctx.tick, ctx.theme, ctx.now)
 		}
 
 	case EntryShell:
@@ -2147,8 +2154,8 @@ const (
 // The +/- markers are collapse markers, not liveness markers. A collapsed trace
 // that is still growing uses the shared spinner so the row visibly moves; an
 // expanded trace keeps the "-" marker and updates its measured duration in
-// place. Reasoning is secondary information and never takes the ◌ glyph
-// reserved for the runtime's current tool action.
+// place. Reasoning is secondary information and never takes the status slot
+// reserved for a tool action.
 func renderReasoning(sb *strings.Builder, reasoning *ReasoningEntry, pal *Palette, layout Layout, tick int) {
 	renderReasoningAt(sb, reasoning, pal, layout, tick, time.Now())
 }
@@ -2220,13 +2227,30 @@ func maxReasoningLines(layout Layout) int {
 	return 24
 }
 
-// renderToolRun renders one completed adjacent batch as a telemetry footer.
+// toolRunRow records which visual row belongs to a tree node. The transcript
+// layout carries it so a click can target a member body without inventing a
+// second geometry model.
+type toolRunRow struct {
+	line int
+	id   string
+}
+
+// toolCountLabel keeps the footer grammatical without a second formatter.
+func toolCountLabel(n int) string {
+	if n == 1 {
+		return "1 tool"
+	}
+	return fmt.Sprintf("%d tools", n)
+}
+
+// renderToolRun renders one completed adjacent batch as a compact telemetry
+// tree.
 //
-// Collapsed is the default: a single persistent row carries the batch count
-// and its measured wall span, so eight fast calls occupy one line instead of
-// sixteen. Expansion keeps every call reachable as a desaturated tree with the
-// same measured duration the individual badge would have shown.
-func renderToolRun(sb *strings.Builder, run *toolRun, pal *Palette, layout Layout, now time.Time) {
+// Collapsed is the default: one row carries the phase span, tool count, and
+// measured wall span. Expansion keeps every call reachable as an indented
+// branch with its own status glyph, invocation, measured duration, and compact
+// outcome. A node body is a third layer, opened independently.
+func renderToolRun(sb *strings.Builder, run *toolRun, pal *Palette, layout Layout, tick int, currentID, theme string, now time.Time, rows *[]toolRunRow) {
 	if run == nil || len(run.members) == 0 {
 		return
 	}
@@ -2236,10 +2260,15 @@ func renderToolRun(sb *strings.Builder, run *toolRun, pal *Palette, layout Layou
 	if expanded {
 		marker = blockExpandedMarker
 	}
-	head := fmt.Sprintf("%s Executed %d tools", marker, len(run.members))
-	if span, ok := run.duration(); ok {
-		head += " in " + formatDurationPrecise(span)
+	parts := make([]string, 0, 3)
+	if phase := sanitizeInline(run.phaseLabel()); phase != "" {
+		parts = append(parts, "[Phase: "+phase+"]")
 	}
+	parts = append(parts, toolCountLabel(len(run.members)))
+	if span, ok := run.duration(); ok {
+		parts = append(parts, formatDurationPrecise(span))
+	}
+	head := marker + " " + strings.Join(parts, " · ")
 	if expanded {
 		head += " (ctrl+o to collapse)"
 	} else {
@@ -2252,19 +2281,94 @@ func renderToolRun(sb *strings.Builder, run *toolRun, pal *Palette, layout Layou
 	if !expanded {
 		return
 	}
-	for _, member := range run.members {
+
+	lineIndex := strings.Count(sb.String(), "\n")
+	for i, member := range run.members {
+		branch := "├─"
+		if i == len(run.members)-1 {
+			branch = "└─"
+		}
+		status := member.presentationStatus(now)
+		glyph := toolStatusGlyph(status, tick)
+		style := toolStatusStyle(member, status, pal, theme, now)
+		if status == ToolRunning && member.ID != currentID && !member.dwelling(now) {
+			style = pal.Muted
+		}
+		slot := statusSlot(glyph)
+		prefix := "  " + branch + " " + slot
 		invocation := sanitizeInline(toolInvocation(member))
-		line := "  └ " + invocation
-		if elapsed := member.elapsed(); elapsed != "" {
-			line += " (" + elapsed + ")"
+		elapsed := ""
+		if status != ToolPending {
+			elapsed = member.elapsedAt(now)
 		}
-		if outcome := collapsedOutcome(member); outcome != "" {
-			line += " · " + outcome
+		outcome := ""
+		switch status {
+		case ToolRunning:
+			if member.Streaming {
+				outcome = "receiving…"
+			}
+		case ToolPending:
+		default:
+			outcome = collapsedOutcome(member)
 		}
-		if width > 0 {
+
+		fixed := CellWidth(prefix)
+		suffix := ""
+		if elapsed != "" {
+			suffix += " (" + elapsed + ")"
+		}
+		if outcome != "" {
+			suffix += " · " + outcome
+		}
+		budget := width - fixed - CellWidth(suffix)
+		if budget < 6 && outcome != "" {
+			// The invocation is the identity; drop the optional outcome
+			// before cutting the call name beyond recognition.
+			outcome = ""
+			suffix = ""
+			if elapsed != "" {
+				suffix += " (" + elapsed + ")"
+			}
+			budget = width - fixed - CellWidth(suffix)
+		}
+		if budget < 1 {
+			budget = 1
+		}
+		invocation = TruncateMiddleToWidth(invocation, budget)
+		line := pal.Muted.Render("  "+branch+" ") + style.Render(slot+invocation)
+		if suffix != "" {
+			outcomeStyle := pal.Muted
+			if status == ToolError {
+				outcomeStyle = pal.ToolError
+			}
+			line += outcomeStyle.Render(suffix)
+		}
+		if width > 0 && CellWidth(line) > width {
 			line = TruncateToWidth(line, width)
 		}
-		sb.WriteString(pal.Muted.Render(line) + "\n")
+		sb.WriteString(line + "\n")
+		if rows != nil {
+			*rows = append(*rows, toolRunRow{line: lineIndex, id: member.ID})
+		}
+		lineIndex++
+
+		if !member.Expanded || !toolExpandable(member) {
+			continue
+		}
+		bodyIndent := "     "
+		if i < len(run.members)-1 {
+			bodyIndent = "  │  "
+		}
+		var body strings.Builder
+		renderToolBody(&body, member, pal, layout, bodyIndent)
+		bodyLines := entryLines(body.String())
+		for _, bodyLine := range bodyLines {
+			sb.WriteString(bodyLine + "\n")
+			if rows != nil {
+				*rows = append(*rows, toolRunRow{line: lineIndex, id: member.ID})
+			}
+			lineIndex++
+		}
 	}
 }
 
@@ -2276,36 +2380,56 @@ func renderToolRun(sb *strings.Builder, run *toolRun, pal *Palette, layout Layou
 // agent run stays scannable without losing the deeper content.
 //
 // Current is true only for the one running call that owns the activity. A
-// non-current running call is still running, so it keeps the truthful ◌ glyph,
+// non-current running call is still running in the same animated status slot,
 // but it is muted and carries no live clock: concurrent calls never compete
-// for attention. Completed calls are static; nothing here animates.
+// for attention. A completed call keeps its semantic glyph and only tweens the
+// status colour for the short completion window.
 //
-// States are text plus color: ◌ running, ✓ success, ✗ failure, ⊘ cancelled,
+// States are text plus color: ⠋ running, ✔ success, ✗ failure, ⊘ cancelled,
 // · pending, so nothing depends on hue alone. Output is bounded and wrapped;
 // large results collapse to the limit with a truncation marker rather than
 // flooding the conversation.
 func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, current bool, separate, showHint bool) {
-	renderToolAt(sb, tool, pal, layout, current, separate, showHint, time.Now())
+	renderToolAt(sb, tool, pal, layout, current, separate, showHint, 0, "", time.Now())
 }
 
-func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, current bool, separate, showHint bool, now time.Time) {
-	width := dialogWidth(layout)
-	status := tool.presentationStatus(now)
-	glyph := "·"
-	style := pal.Muted
+// toolStatusStyle resolves the status role at one instant. During the short
+// completion window the role is an RGB interpolation rather than the settled
+// palette style, so a terminal frame never snaps from amber to green in a
+// single tick.
+func toolStatusStyle(tool *ToolEntry, status ToolStatus, pal *Palette, theme string, now time.Time) lipgloss.Style {
+	if age, ok := tool.statusSettleAge(now); ok && fadeSupported() {
+		if hex, tweening := statusTweenColor(status, age, theme); tweening {
+			style := lipgloss.NewStyle().Foreground(lipgloss.Color(hex))
+			if age < fadeVaporEnd {
+				style = style.Faint(true)
+			}
+			return style
+		}
+	}
 	switch status {
 	case ToolRunning:
-		glyph = "◌"
-		if current || tool.dwelling(now) {
-			style = pal.ToolRun
-		}
+		return pal.ToolRun
 	case ToolDone:
-		glyph, style = "✓", pal.ToolDone
+		return pal.ToolDone
 	case ToolError:
-		glyph, style = "✗", pal.ToolError
-	case ToolCancelled:
-		glyph, style = "⊘", pal.Muted
+		return pal.ToolError
+	default:
+		return pal.Muted
 	}
+}
+
+func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, current bool, separate, showHint bool, tick int, theme string, now time.Time) {
+	width := dialogWidth(layout)
+	status := tool.presentationStatus(now)
+	glyph := toolStatusGlyph(status, tick)
+	style := toolStatusStyle(tool, status, pal, theme, now)
+	if status == ToolRunning && !current && !tool.dwelling(now) {
+		// A concurrent running call is still live, but it does not compete
+		// with the one activity that owns the clock.
+		style = pal.Muted
+	}
+	slot := statusSlot(glyph)
 
 	// Duration is right-aligned so a stream of calls reads down one axis. A
 	// running call exposes its clock only after it has lasted long enough to
@@ -2313,17 +2437,17 @@ func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Lay
 	// always shows its measured duration.
 	rightText := ""
 	if status != ToolPending && (status != ToolRunning || current) {
-		if status != ToolRunning || tool.Duration() >= 100*time.Millisecond {
-			rightText = tool.elapsed()
+		if status != ToolRunning || tool.durationAt(now) >= 100*time.Millisecond {
+			rightText = tool.elapsedAt(now)
 		}
 	}
-	leftBudget := width - CellWidth(glyph+" ") - 2
+	leftBudget := width - CellWidth(slot) - 2
 	if rightText != "" {
 		leftBudget -= CellWidth(rightText)
 	}
 	if leftBudget < 6 && rightText != "" {
 		rightText = ""
-		leftBudget = width - CellWidth(glyph+" ") - 2
+		leftBudget = width - CellWidth(slot) - 2
 	}
 	if leftBudget < 1 {
 		leftBudget = 1
@@ -2333,10 +2457,10 @@ func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Lay
 		// Expansion is the user asking to see the whole target. Never
 		// middle-cut it then: wrap the complete invocation across rows so a
 		// long path stays fully readable instead of collapsing to "…".
-		writeExpandedInvocation(sb, glyph, invocationText, rightText, style, pal, width)
+		writeExpandedInvocation(sb, slot, invocationText, rightText, style, pal, width)
 	} else {
 		invocation := TruncateMiddleToWidth(invocationText, leftBudget)
-		left := style.Render(glyph + " " + invocation)
+		left := style.Render(slot + invocation)
 		if rightText != "" {
 			right := pal.Status.Render(rightText)
 			if gap := width - CellWidth(left) - CellWidth(right); gap >= 2 {
@@ -2421,26 +2545,52 @@ func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Lay
 		}
 		return
 	}
-	if renderExpandedCodeDiff(sb, tool, pal, layout) {
-		sb.WriteString("\n")
+	renderToolBody(sb, tool, pal, layout, "    ")
+	sb.WriteString("\n")
+}
+
+// renderToolBody writes the bounded detail below an expanded tool. indent is
+// the caller's row prefix: a standalone block uses four spaces, while a tree
+// node uses its branch continuation so the body stays visibly nested.
+func renderToolBody(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, indent string) {
+	if tool == nil {
 		return
+	}
+	if strings.TrimSpace(tool.Diff) != "" {
+		var diff strings.Builder
+		if renderExpandedCodeDiff(&diff, tool, pal, layout) {
+			width := dialogWidth(layout)
+			for _, line := range entryLines(diff.String()) {
+				if indent != "    " {
+					// The diff renderer owns its base four-space gutter;
+					// replace it so a nested body does not drift right of
+					// its text siblings.
+					line = indent + strings.TrimPrefix(line, "    ")
+					if width > 0 && CellWidth(line) > width {
+						line = TruncateToWidth(line, width)
+					}
+				}
+				sb.WriteString(line + "\n")
+			}
+			return
+		}
 	}
 	body, truncated := TruncateForDisplay(tool.Text, toolOutputLimit)
 	// Tool results carry progress bars, colors, and carriage returns from
 	// the child process: keep the colors, neutralize the cursor control,
 	// then wrap what the terminal will actually lay out.
 	body = sanitizeBlock(body)
-	bodyWidth := textWidth(layout) - 4
+	bodyWidth := textWidth(layout) - CellWidth(indent)
 	if bodyWidth < 1 {
 		bodyWidth = 1
 	}
 	shown := 0
 	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
-		for _, wl := range WrapToWidth(line, bodyWidth) {
+		for _, wrapped := range WrapToWidth(line, bodyWidth) {
 			if shown >= maxToolLines(layout) {
 				break
 			}
-			sb.WriteString("    " + wl + "\n")
+			sb.WriteString(indent + wrapped + "\n")
 			shown++
 		}
 		if shown >= maxToolLines(layout) {
@@ -2448,19 +2598,17 @@ func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Lay
 		}
 	}
 	if truncated || shown >= maxToolLines(layout) {
-		sb.WriteString(pal.Truncated.Render("    … [truncated]") + "\n")
+		sb.WriteString(pal.Truncated.Render(indent+"… [truncated]") + "\n")
 	}
-	sb.WriteString("\n")
 }
 
 // writeExpandedInvocation writes an expanded badge whose full target does not
 // fit on one row. Continuations align under the first text cell and no row is
 // truncated, so every path segment survives; the duration is kept only when
 // the first row has room for it.
-func writeExpandedInvocation(sb *strings.Builder, glyph, invocation, rightText string, style lipgloss.Style, pal *Palette, width int) {
+func writeExpandedInvocation(sb *strings.Builder, slot, invocation, rightText string, style lipgloss.Style, pal *Palette, width int) {
 	const maxLines = 64
-	prefix := glyph + " "
-	prefixWidth := CellWidth(prefix)
+	prefixWidth := CellWidth(slot)
 	budget := width - prefixWidth
 	if budget < 1 {
 		budget = 1
@@ -2480,7 +2628,7 @@ func writeExpandedInvocation(sb *strings.Builder, glyph, invocation, rightText s
 		}
 		var line string
 		if i == 0 {
-			line = style.Render(prefix + chunk)
+			line = style.Render(slot + chunk)
 			if right != "" {
 				if gap := width - CellWidth(line) - CellWidth(right); gap >= 2 {
 					line += strings.Repeat(" ", gap) + right
@@ -2554,13 +2702,14 @@ func maxToolLines(layout Layout) int {
 	return 24
 }
 
-// elapsed renders a duration compactly, omitting it entirely when the call has
-// not started so a pending line is not padded with a zero.
-func (t *ToolEntry) elapsed() string {
-	if t.StartedAt.IsZero() {
+// elapsedAt renders a measured duration compactly, omitting it entirely when
+// the call has not started so a pending line is not padded with a zero. The
+// presentation clock supplies now, so one frame cannot measure two instants.
+func (t *ToolEntry) elapsedAt(now time.Time) string {
+	if t == nil || t.StartedAt.IsZero() {
 		return ""
 	}
-	return formatDurationPrecise(t.Duration())
+	return formatDurationPrecise(t.durationAt(now))
 }
 
 // renderShell writes one "!" escape block: the echoed command, its streamed

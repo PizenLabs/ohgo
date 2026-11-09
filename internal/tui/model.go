@@ -218,8 +218,8 @@ type ToolEntry struct {
 	Truncated bool
 	// Expanded is presentation-only: whether the transcript shows the
 	// bounded body below the compact summary. It never affects execution,
-	// approval, or the stored outcome. A batch's disclosure state lives on
-	// the shared run, not on one member.
+	// approval, or the stored outcome. In a batch it is the node-body layer;
+	// the tree's macro disclosure lives on the shared run.
 	Expanded bool
 	// DwellUntil is the earliest instant at which a terminal status may
 	// replace the executing frame. A fast call keeps its intent frame for
@@ -237,8 +237,15 @@ type ToolEntry struct {
 // stable pointers because Entry slices move when the transcript grows.
 type toolRun struct {
 	members []*ToolEntry
-	// isOpen is the run's presentation-only disclosure state.
+	// isOpen is the tree's macro disclosure state. A member body is a
+	// separate presentation flag, so opening the tree never forces every
+	// node's detail into the transcript.
 	isOpen bool
+	// phaseStart and phaseEnd are the execution-authority labels observed
+	// when the run opened and when its last member finished. Empty means the
+	// producer did not report a workspace; the header then omits the segment.
+	phaseStart string
+	phaseEnd   string
 	// start and end are transcript indices of the first and last member.
 	start int
 	end   int
@@ -246,12 +253,22 @@ type toolRun struct {
 
 // Duration returns how long the call took, or zero if it has not started.
 func (t *ToolEntry) Duration() time.Duration {
-	if t.StartedAt.IsZero() {
+	return t.durationAt(time.Now())
+}
+
+// durationAt measures a call against the presentation clock. A running call
+// uses now so geometry and the rendered elapsed value come from one instant;
+// a terminal call keeps its measured end and never grows with render time.
+func (t *ToolEntry) durationAt(now time.Time) time.Duration {
+	if t == nil || t.StartedAt.IsZero() {
 		return 0
 	}
 	end := t.EndedAt
 	if end.IsZero() {
-		end = time.Now()
+		end = now
+	}
+	if end.Before(t.StartedAt) {
+		return 0
 	}
 	return end.Sub(t.StartedAt)
 }
@@ -339,6 +356,9 @@ func (r *toolRun) duration() (time.Duration, bool) {
 		}
 		end := member.EndedAt
 		if end.IsZero() {
+			// A member without a measured end contributes its start. The
+			// settled footer measures the real end; a live tree must not make
+			// its header width churn on every presentation tick.
 			end = member.StartedAt
 		}
 		if last.IsZero() || end.After(last) {
@@ -1152,12 +1172,20 @@ func (s *State) Apply(event Event) {
 		// projection: each member keeps its own lifecycle and result.
 		if previous := s.tailToolEntry(); previous != nil {
 			if previous.run == nil {
-				previous.run = &toolRun{members: []*ToolEntry{previous}, start: len(s.Entries) - 1}
+				previous.run = &toolRun{
+					members:    []*ToolEntry{previous},
+					start:      len(s.Entries) - 1,
+					phaseStart: s.Status.Workspace,
+				}
 			}
 			tool.run = previous.run
 			tool.run.members = append(tool.run.members, tool)
 		} else {
-			tool.run = &toolRun{members: []*ToolEntry{tool}, start: len(s.Entries)}
+			tool.run = &toolRun{
+				members:    []*ToolEntry{tool},
+				start:      len(s.Entries),
+				phaseStart: s.Status.Workspace,
+			}
 		}
 		s.Entries = append(s.Entries, Entry{Kind: EntryTool, Tool: tool, AppearedAt: e.At})
 		s.assignIdentity(len(s.Entries) - 1)
@@ -1218,6 +1246,15 @@ func (s *State) Apply(event Event) {
 		} else {
 			tool.Status = ToolDone
 		}
+		if tool.run != nil {
+			// Record the authority the batch actually ended under. A
+			// workspace transition between calls is data, not an authority
+			// change made by the renderer.
+			if tool.run.phaseStart == "" {
+				tool.run.phaseStart = s.Status.Workspace
+			}
+			tool.run.phaseEnd = s.Status.Workspace
+		}
 		s.bumpEntry(idx)
 		s.bumpToolRun(tool.run)
 		s.markAnimated(idx)
@@ -1236,15 +1273,33 @@ func (s *State) Apply(event Event) {
 			if tool.run != nil && len(tool.run.members) > 1 &&
 				toolRunGroupEligible(*s, tool.run) {
 				tool.run.isOpen = !tool.run.isOpen
-				// Keep the clicked member's flag in step with the run so the
-				// existing Ctrl+O/Block API still reports the block it acted
-				// on; the other members keep their own presentation flags.
-				tool.Expanded = tool.run.isOpen
+				// A tree opens with every node compact. Node bodies are a
+				// second disclosure layer, never an automatic consequence of
+				// rendering the tree.
+				for _, member := range tool.run.members {
+					member.Expanded = false
+				}
 				s.bumpToolRun(tool.run)
 				return
 			}
 			tool.Expanded = !tool.Expanded
 			s.bumpEntry(idx)
+		}
+
+	case ToolNodeToggled:
+		// The tree's macro disclosure and a node's body are independent. A
+		// node toggle is accepted only while its run is open, so a collapsed
+		// batch can never hide an expanded body behind the footer.
+		if idx := s.toolIndex(e.ID); idx >= 0 {
+			tool := s.Entries[idx].Tool
+			if tool.run == nil || !tool.run.expanded() {
+				return
+			}
+			if !toolExpandable(tool) && tool.Status != ToolRunning {
+				return
+			}
+			tool.Expanded = !tool.Expanded
+			s.bumpToolRun(tool.run)
 		}
 
 	case ReasoningToggled:
@@ -2666,9 +2721,15 @@ func entryPresentationLive(entry Entry, now time.Time) bool {
 		if entry.Tool.dwelling(now) {
 			return true
 		}
+		if _, tweening := entry.Tool.statusSettleAge(now); tweening {
+			return true
+		}
 		if entry.Tool.run != nil {
 			for _, member := range entry.Tool.run.members {
 				if member.dwelling(now) {
+					return true
+				}
+				if _, tweening := member.statusSettleAge(now); tweening {
 					return true
 				}
 			}
@@ -3332,6 +3393,16 @@ type ToolToggled struct {
 }
 
 func (ToolToggled) eventKind() string { return "tool_toggled" }
+
+// ToolNodeToggled flips one node body inside an already-expanded batch tree.
+// The run's macro disclosure and a node's detail are independent presentation
+// flags; a node toggle never mutates execution state or the run's open state.
+type ToolNodeToggled struct {
+	// ID is the provider's tool call id whose detail row is toggled.
+	ID string
+}
+
+func (ToolNodeToggled) eventKind() string { return "tool_node_toggled" }
 
 // ReasoningToggled flips one reasoning block between collapsed and expanded.
 // It carries the transcript block identity, not a provider call id, because

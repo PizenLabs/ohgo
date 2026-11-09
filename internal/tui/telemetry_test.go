@@ -26,18 +26,19 @@ func TestFastToolHoldsTheExecutingFrameForTheDwellFloor(t *testing.T) {
 	if got := s.tool("c1").Status; got != ToolDone {
 		t.Fatalf("semantic status = %q, want done immediately", got)
 	}
-	if got := ansi.Strip(Render(s)); !strings.Contains(got, "◌ read a.go") || strings.Contains(got, "✓ read a.go") {
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if got := ansi.Strip(Render(s)); !strings.Contains(got, running+" read a.go") || strings.Contains(got, "✔ read a.go") {
 		t.Fatalf("fast call did not hold its intent frame:\n%s", got)
 	}
 
 	s.Apply(FrameTick{At: start.Add(toolMinDwell - time.Millisecond)})
-	if got := ansi.Strip(Render(s)); !strings.Contains(got, "◌ read a.go") {
+	if got := ansi.Strip(Render(s)); !strings.Contains(got, running+" read a.go") {
 		t.Fatalf("fast call settled below the dwell floor:\n%s", got)
 	}
 
 	s.Apply(FrameTick{At: start.Add(toolMinDwell)})
 	done := ansi.Strip(Render(s))
-	if !strings.Contains(done, "✓ read a.go") {
+	if !strings.Contains(done, "✔ read a.go") {
 		t.Fatalf("fast call never settled:\n%s", done)
 	}
 	if !strings.Contains(done, "2ms") {
@@ -56,13 +57,14 @@ func TestRetainedLayoutSettlesTheDwellFrame(t *testing.T) {
 	s.Apply(FrameTick{At: start})
 	layout := &TranscriptLayout{}
 	layout.Refresh(&s, ComputeLayout(s))
-	if got := rowsPlain(layout.AllRows()); !strings.Contains(got, "◌ read a.go") {
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if got := rowsPlain(layout.AllRows()); !strings.Contains(got, running+" read a.go") {
 		t.Fatalf("retained layout lost the active frame:\n%s", got)
 	}
 	s.Apply(FrameTick{At: start.Add(toolMinDwell)})
 	layout.Refresh(&s, ComputeLayout(s))
 	settled := rowsPlain(layout.AllRows())
-	if !strings.Contains(settled, "✓ read a.go") || strings.Contains(settled, "◌ read a.go") {
+	if !strings.Contains(settled, "✔ read a.go") || strings.Contains(settled, running+" read a.go") {
 		t.Fatalf("retained layout kept the expired dwell frame:\n%s", settled)
 	}
 }
@@ -92,7 +94,7 @@ func TestToolBatchCollapsesIntoTelemetryFooter(t *testing.T) {
 	s.Apply(AssistantDone{At: at.Add(time.Second)})
 
 	collapsed := ansi.Strip(Render(s))
-	if !strings.Contains(collapsed, "+ Executed 8 tools in ") || !strings.Contains(collapsed, "ctrl+o to expand") {
+	if !strings.Contains(collapsed, "+ 8 tools · ") || !strings.Contains(collapsed, "ctrl+o to expand") {
 		t.Fatalf("batch did not collapse into a telemetry footer:\n%s", collapsed)
 	}
 	for i := 0; i < 8; i++ {
@@ -103,12 +105,17 @@ func TestToolBatchCollapsesIntoTelemetryFooter(t *testing.T) {
 
 	s.Apply(ToolToggled{ID: "c07"})
 	expanded := ansi.Strip(Render(s))
-	if !strings.Contains(expanded, "- Executed 8 tools in ") {
+	if !strings.Contains(expanded, "- 8 tools · ") {
 		t.Fatalf("expanded batch lost its telemetry header:\n%s", expanded)
 	}
 	for i := 0; i < 8; i++ {
-		if !strings.Contains(expanded, fmt.Sprintf("└ read file-c%02d (1ms)", i)) {
-			t.Fatalf("expanded tree lost call %d's invocation/duration:\n%s", i, expanded)
+		branch := "├─"
+		if i == 7 {
+			branch = "└─"
+		}
+		want := fmt.Sprintf("%s ✔ read file-c%02d (1ms) · 2 lines", branch, i)
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded tree lost call %d's branch/invocation/duration/outcome:\nwant %q\n%s", i, want, expanded)
 		}
 	}
 }
@@ -165,13 +172,14 @@ func TestLiveToolBatchStaysExpandedUntilSettled(t *testing.T) {
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a", At: at})
 	s.Apply(ToolFinished{ID: "c1", Text: "x", Summary: "1 line", At: at.Add(time.Millisecond)})
 	s.Apply(ToolStarted{ID: "c2", Name: "read", Summary: "read b", At: at})
-	if got := ansi.Strip(Render(s)); !strings.Contains(got, "read a") || !strings.Contains(got, "◌ read b") {
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if got := ansi.Strip(Render(s)); !strings.Contains(got, "read a") || !strings.Contains(got, running+" read b") {
 		t.Fatalf("a live batch member disappeared behind a summary:\n%s", got)
 	}
 	s.Apply(ToolFinished{ID: "c2", Text: "y", Summary: "1 line", At: at.Add(2 * time.Millisecond)})
 	s.Apply(AssistantDelta{Text: "done", At: at.Add(time.Second)})
 	s.Apply(AssistantDone{At: at.Add(time.Second)})
-	if got := ansi.Strip(Render(s)); !strings.Contains(got, "+ Executed 2 tools") {
+	if got := ansi.Strip(Render(s)); !strings.Contains(got, "+ 2 tools · ") {
 		t.Fatalf("settled batch did not collapse:\n%s", got)
 	}
 }
@@ -302,6 +310,232 @@ func TestComposerRowIsInvariantDuringToolTelemetry(t *testing.T) {
 	step(ToolStarted{ID: "c2", Name: "read", Summary: "read b", At: at, Seq: 1})
 	step(ToolFinished{ID: "c2", Text: "y", Summary: "1 line", At: at.Add(2 * time.Millisecond), Seq: 1})
 	step(AssistantDelta{Text: "done", At: at.Add(time.Second)}, AssistantDone{At: at.Add(time.Second)})
+}
+
+// The macro footer names the measured authority span when the producer
+// reports one, then the tool count and wall span. A single phase is named
+// once; a transition keeps both endpoints in execution order.
+func TestToolBatchHeaderCarriesPhaseCountAndSpan(t *testing.T) {
+	at := time.Now().Add(-time.Minute)
+	s := New()
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Apply(WorkspaceUpdated{Workspace: "BUILD", HasWorkspace: true})
+	s.Apply(UserSubmitted{Text: "inspect then build", At: at, Seq: 1})
+	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: at, Seq: 1})
+	s.Apply(ToolFinished{ID: "c1", Text: "a\n", Summary: "1 line", At: at.Add(time.Millisecond), Seq: 1})
+	s.Apply(WorkspaceUpdated{Workspace: "FUZZ", HasWorkspace: true})
+	s.Apply(ToolStarted{ID: "c2", Name: "bash", Summary: "bash go test ./...", At: at.Add(time.Second), Seq: 1})
+	s.Apply(ToolFinished{ID: "c2", Text: "ok\n", Summary: "1 line", At: at.Add(31 * time.Second), Seq: 1})
+	s.Apply(AssistantDelta{Text: "done", At: at.Add(31 * time.Second), Seq: 1})
+	s.Apply(AssistantDone{At: at.Add(31 * time.Second), Seq: 1})
+
+	out := ansi.Strip(Render(s))
+	want := "+ [Phase: BUILD → FUZZ] · 2 tools · 31s (ctrl+o to expand)"
+	if !strings.Contains(out, want) {
+		t.Fatalf("footer = %q missing %q", out, want)
+	}
+}
+
+// The expanded projection is a real branch tree, not a flat list: every node
+// but the last uses ├─, the last closes with └─, and each row carries its own
+// status, invocation, measured duration, and compact outcome.
+func TestExpandedTelemetryTreeUsesBranchHierarchy(t *testing.T) {
+	at := time.Now().Add(-time.Second)
+	s := New()
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Apply(UserSubmitted{Text: "read three", At: at, Seq: 1})
+	for i, name := range []string{"a.go", "b.go", "c.go"} {
+		id := fmt.Sprintf("c%d", i)
+		s.Apply(ToolStarted{ID: id, Name: "read", Summary: "read " + name, At: at, Seq: 1})
+		s.Apply(ToolFinished{ID: id, Text: "one\ntwo\n", Summary: "2 lines", At: at.Add(time.Millisecond), Seq: 1})
+	}
+	s.Apply(AssistantDelta{Text: "done", At: at.Add(time.Second), Seq: 1})
+	s.Apply(AssistantDone{At: at.Add(time.Second), Seq: 1})
+	s.Apply(ToolToggled{ID: "c2"})
+
+	out := ansi.Strip(Render(s))
+	for _, want := range []string{
+		"- 3 tools · ",
+		"├─ ✔ read a.go (1ms) · 2 lines",
+		"├─ ✔ read b.go (1ms) · 2 lines",
+		"└─ ✔ read c.go (1ms) · 2 lines",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expanded tree missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// The status column is a ghost box: every animation frame and terminal marker
+// occupies exactly one glyph cell plus one separator, so the invocation text
+// never changes horizontal position.
+func TestStatusSlotWidthIsInvariant(t *testing.T) {
+	want := statusSlotCells + 1
+	statuses := []ToolStatus{ToolPending, ToolRunning, ToolDone, ToolError, ToolCancelled}
+	for _, status := range statuses {
+		for tick := 0; tick < len(spinnerFrames)+1; tick++ {
+			got := statusSlot(toolStatusGlyph(status, tick))
+			if width := CellWidth(got); width != want {
+				t.Fatalf("status %q tick %d slot %q = %d cells, want %d", status, tick, got, width, want)
+			}
+		}
+	}
+}
+
+// A terminal frame morphs its status colour instead of snapping from the
+// running amber to the settled palette in one tick. The glyph itself is a
+// check from the first terminal instant, in the same fixed slot.
+func TestCompletedToolTweensStatusColor(t *testing.T) {
+	prev := termenv.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+	if !fadeSupported() {
+		t.Skip("colour tweening is disabled in this terminal environment")
+	}
+
+	start := time.Now().Add(-2 * time.Second)
+	settle := start.Add(time.Second)
+	s := New()
+	s.Apply(TerminalResized{Width: 90, Height: 24})
+	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: start})
+	s.Apply(ToolFinished{ID: "c1", Text: "ok\n", Summary: "1 line", At: settle})
+	s.Apply(FrameTick{At: settle})
+
+	begin := Render(s)
+	if !strings.Contains(begin, "\x1b[2;") {
+		t.Fatalf("completion did not start at the dim boundary frame:\n%q", begin)
+	}
+	if got := ansi.Strip(begin); !strings.Contains(got, "✔ read a.go") {
+		t.Fatalf("terminal glyph did not occupy the running slot:\n%s", got)
+	}
+
+	s.Apply(FrameTick{At: settle.Add(60 * time.Millisecond)})
+	mid := Render(s)
+	if mid == begin {
+		t.Fatal("completion tween did not move between frames")
+	}
+	if strings.Contains(mid, "\x1b[2;") {
+		t.Fatalf("mid-tween kept the dim boundary:\n%q", mid)
+	}
+
+	s.Apply(FrameTick{At: settle.Add(statusSettleDuration)})
+	settled := Render(s)
+	if settled == begin || settled == mid {
+		t.Fatalf("settled row kept a transient tween frame:\n%q", settled)
+	}
+	if got := ansi.Strip(settled); !strings.Contains(got, "✔ read a.go") {
+		t.Fatalf("settled row lost its terminal glyph:\n%s", got)
+	}
+
+	startColor, ok := statusTweenColor(ToolDone, 0, "")
+	if !ok || startColor != statusRunDarkHex {
+		t.Fatalf("tween start = %q/%v, want the running amber %q", startColor, ok, statusRunDarkHex)
+	}
+	midColor, ok := statusTweenColor(ToolDone, 60*time.Millisecond, "")
+	if !ok || midColor == startColor {
+		t.Fatalf("mid tween = %q/%v, want a distinct blend", midColor, ok)
+	}
+	if endColor, ok := statusTweenColor(ToolDone, statusSettleDuration, ""); ok || endColor != statusDoneDarkHex {
+		t.Fatalf("tween end = %q/%v, want the settled role %q", endColor, ok, statusDoneDarkHex)
+	}
+	if lightStart, ok := statusTweenColor(ToolDone, 0, ThemeLight); !ok || lightStart != statusRunLightHex {
+		t.Fatalf("light tween start = %q/%v, want %q", lightStart, ok, statusRunLightHex)
+	}
+}
+
+// A tree node's body is independent of the macro disclosure: opening the
+// batch shows every row, and toggling one node reveals only that call's
+// bounded detail without collapsing the tree.
+func TestToolNodeExpandsIndependentlyOfTree(t *testing.T) {
+	at := time.Now().Add(-time.Second)
+	s := New()
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Apply(UserSubmitted{Text: "read two", At: at, Seq: 1})
+	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: at, Seq: 1})
+	s.Apply(ToolFinished{ID: "c1", Text: "alpha one\nalpha two\n", Summary: "2 lines", At: at.Add(time.Millisecond), Seq: 1})
+	s.Apply(ToolStarted{ID: "c2", Name: "read", Summary: "read b.go", At: at, Seq: 1})
+	s.Apply(ToolFinished{ID: "c2", Text: "beta one\nbeta two\n", Summary: "2 lines", At: at.Add(2 * time.Millisecond), Seq: 1})
+	s.Apply(AssistantDelta{Text: "done", At: at.Add(time.Second), Seq: 1})
+	s.Apply(AssistantDone{At: at.Add(time.Second), Seq: 1})
+	s.Apply(ToolToggled{ID: "c2"})
+
+	if got := ansi.Strip(Render(s)); strings.Contains(got, "alpha one") || strings.Contains(got, "beta one") {
+		t.Fatalf("opening the tree leaked a node body:\n%s", got)
+	}
+	if !s.ToggleToolNode("c1") {
+		t.Fatal("node toggle was refused while the tree was open")
+	}
+	opened := ansi.Strip(Render(s))
+	if !strings.Contains(opened, "alpha one") || strings.Contains(opened, "beta one") {
+		t.Fatalf("node expansion was not local to c1:\n%s", opened)
+	}
+	if !strings.Contains(opened, "- 2 tools") {
+		t.Fatalf("node expansion collapsed the macro tree:\n%s", opened)
+	}
+	if !s.ToggleToolNode("c1") {
+		t.Fatal("second node toggle was refused")
+	}
+	if got := ansi.Strip(Render(s)); strings.Contains(got, "alpha one") || !strings.Contains(got, "- 2 tools") {
+		t.Fatalf("node collapse did not restore the compact tree:\n%s", got)
+	}
+}
+
+// Pointer inspection uses the same row geometry the renderer produced: a
+// click on an expanded node row toggles that node, not the macro tree.
+func TestClickOnExpandedTreeNodeTogglesOnlyThatNode(t *testing.T) {
+	at := time.Now().Add(-time.Second)
+	p := NewProgram(nil, "test", 0)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	p.state.Apply(UserSubmitted{Text: "read two", At: at, Seq: 1})
+	for _, call := range []struct{ id, name string }{{"c1", "a.go"}, {"c2", "b.go"}} {
+		p.state.Apply(ToolStarted{ID: call.id, Name: "read", Summary: "read " + call.name, At: at, Seq: 1})
+		p.state.Apply(ToolFinished{ID: call.id, Text: call.name + " one\n" + call.name + " two\n", Summary: "2 lines", At: at.Add(time.Millisecond), Seq: 1})
+	}
+	p.state.Apply(AssistantDelta{Text: "done", At: at.Add(time.Second), Seq: 1})
+	p.state.Apply(AssistantDone{At: at.Add(time.Second), Seq: 1})
+	p.state.Apply(ToolToggled{ID: "c2"})
+	p.syncTranscript()
+
+	var target LayoutRow
+	for _, row := range p.transcriptIndex.AllRows() {
+		if row.ToolID == "c1" {
+			target = row
+			break
+		}
+	}
+	if target.ToolID == "" {
+		t.Fatal("expanded tree rows lost their node identity")
+	}
+	if !p.toggleBlockAt(Position{BlockID: target.BlockID, Row: target.Row, Column: 4, ToolID: target.ToolID}) {
+		t.Fatal("click on an expanded node was refused")
+	}
+	if !p.state.tool("c1").Expanded {
+		t.Fatal("click did not open the selected node body")
+	}
+	if p.state.tool("c2").Expanded {
+		t.Fatal("click opened a sibling node body")
+	}
+	if !p.state.toolsExpandedForTest() {
+		t.Fatal("node click collapsed the macro tree")
+	}
+}
+
+// Viewport bounds are defensive, not aspirational: even an oversized scroll
+// intent resolves to a legal row window with the marker still visible.
+func TestViewportOffsetAlwaysClampedToDocumentBounds(t *testing.T) {
+	s := newViewportState(40, 80, 10)
+	s.Apply(ScrollMoved{Delta: 100000})
+	frame := viewportFor(s)
+	if frame.vp.Offset < 0 || frame.vp.Offset > frame.vp.MaxOffset {
+		t.Fatalf("offset %d outside [0,%d]", frame.vp.Offset, frame.vp.MaxOffset)
+	}
+	want := frame.vp.TotalRows - frame.vp.Height
+	if frame.vp.MaxOffset != want {
+		t.Fatalf("max offset = %d, want %d", frame.vp.MaxOffset, want)
+	}
+	if !frame.vp.Marker {
+		t.Fatal("clamped detached viewport lost its marker")
+	}
 }
 
 // toolsExpandedForTest reports whether the latest run owns an open tree.

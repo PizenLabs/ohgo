@@ -418,7 +418,7 @@ func liveChrome(s State, layout Layout) int {
 
 // firstUnstable is the index of the first entry that can still change: the
 // in-flight assistant answer (per the state's own openAssistant), or a tool
-// still executing.
+// still executing (including its dwell floor).
 func firstUnstable(s State) int {
 	first := len(s.Entries)
 	now := s.presentationAt()
@@ -496,15 +496,19 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		}
 		var b strings.Builder
 		now := s.presentationAt()
+		currentID := ""
+		if current := latestRunningToolIndex(s); current >= 0 && current < len(s.Entries) && s.Entries[current].Tool != nil {
+			currentID = s.Entries[current].Tool.ID
+		}
 		if e.Tool.run != nil && len(e.Tool.run.members) > 1 && toolRunGroupActive(s, e.Tool.run, now) {
 			if e.Tool.run.anchor() == e.Tool {
-				renderToolRun(&b, e.Tool.run, pal, layout, now)
+				renderToolRun(&b, e.Tool.run, pal, layout, s.Status.Spinner, currentID, s.Theme, now, nil)
 			}
 			return splitLines(b.String())
 		}
 		// Live mode groups by leading gaps (see liveEntryLines), so a tool
 		// never writes its own trailing separator.
-		renderToolAt(&b, e.Tool, pal, layout, latestRunningToolIndex(s) == index, false, entryGroupEnd(s.Entries, index), now)
+		renderToolAt(&b, e.Tool, pal, layout, latestRunningToolIndex(s) == index, false, entryGroupEnd(s.Entries, index), s.Status.Spinner, s.Theme, now)
 		return splitLines(b.String())
 
 	case EntryShell:
@@ -580,7 +584,11 @@ func expandedBlockLines(s State, id BlockID) []string {
 			return nil
 		}
 		if entry.Tool.run != nil && len(entry.Tool.run.members) > 1 {
-			renderToolRun(&b, entry.Tool.run, pal, layout, s.presentationAt())
+			currentID := ""
+			if current := latestRunningToolIndex(s); current >= 0 && current < len(s.Entries) && s.Entries[current].Tool != nil {
+				currentID = s.Entries[current].Tool.ID
+			}
+			renderToolRun(&b, entry.Tool.run, pal, layout, s.Status.Spinner, currentID, s.Theme, s.presentationAt(), nil)
 			return splitLines(b.String())
 		}
 		cpy := *entry.Tool
@@ -588,7 +596,7 @@ func expandedBlockLines(s State, id BlockID) []string {
 		// Explicit expansion is a request for the semantic outcome, not the
 		// remaining dwell frame: show the terminal body immediately.
 		cpy.DwellUntil = time.Time{}
-		renderToolAt(&b, &cpy, pal, layout, false, true, true, s.presentationAt())
+		renderToolAt(&b, &cpy, pal, layout, false, true, true, s.Status.Spinner, s.Theme, s.presentationAt())
 	case EntryReasoning:
 		if entry.Reasoning == nil {
 			return nil

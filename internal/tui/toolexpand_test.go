@@ -209,8 +209,9 @@ func TestRunningToolShowsInvocation(t *testing.T) {
 	s.Apply(TerminalResized{Width: 80, Height: 24})
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: time.Now()})
 	out := stripForTest(t, Render(s))
-	if !strings.Contains(out, "◌ bash go test ./...") || strings.Contains(out, "⠋") {
-		t.Errorf("running block = %q, want the invocation and its static running glyph", out)
+	running := toolStatusGlyph(ToolRunning, s.Status.Spinner)
+	if !strings.Contains(out, running+" bash go test ./...") {
+		t.Errorf("running block = %q, want the invocation in the animated status slot", out)
 	}
 }
 
