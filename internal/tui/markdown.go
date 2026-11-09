@@ -113,9 +113,18 @@ func (r *blockRenderer) render(text string) string {
 			i++
 		case isListItem(line):
 			var items []string
-			for i < len(lines) && (isListItem(lines[i]) || isListContinuation(lines[i])) {
-				items = append(items, lines[i])
-				i++
+		collect:
+			for i < len(lines) {
+				switch {
+				case isListItem(lines[i]):
+					items = append(items, lines[i])
+					i++
+				case isListContinuation(lines[i]) && !listEndsAt(lines[i], lines, i):
+					items = append(items, lines[i])
+					i++
+				default:
+					break collect
+				}
 			}
 			out = append(out, r.renderList(items)...)
 		default:
@@ -553,55 +562,99 @@ func isListContinuation(line string) bool {
 	return strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
 }
 
+// listEndsAt reports whether an indented line begins a new block rather than
+// continuing the current list item.
+//
+// A fence, heading, rule, quote, or table stays its own block even when it is
+// indented under a bullet. Treating it as item prose printed the fence
+// delimiters and swallowed the code body; the model uses this shape whenever
+// it puts a code example under a list item.
+func listEndsAt(line string, lines []string, i int) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "```") ||
+		isHeading(trimmed) || isHR(trimmed) ||
+		isQuote(line) || isTableHeader(line, lines, i)
+}
+
 func (r *blockRenderer) renderList(items []string) []string {
-	var out []string
+	// Continuation lines belong to the previous item's body. Joining before
+	// wrapping is what lets the whole item hang-align as one block: appending
+	// to an already-rendered line would bypass both wrapping and inline
+	// styling, so a long continuation reached the terminal as one oversized
+	// row and lost its code spans.
+	type listItem struct {
+		indent  string
+		marker  string
+		body    string
+		ordered bool
+	}
+	var parsed []listItem
+	var orphan []string
 	for _, item := range items {
 		indent, marker, body, ordered, ok := listMarker(item)
 		if !ok {
-			// Continuation of the previous bullet: fold into its
-			// hanging indent when there is one.
-			if len(out) > 0 {
-				out[len(out)-1] += " " + strings.TrimSpace(item)
+			if len(parsed) > 0 {
+				parsed[len(parsed)-1].body = joinListContinuation(parsed[len(parsed)-1].body, item)
 			} else {
-				out = append(out, r.renderParagraph([]string{item})...)
+				orphan = append(orphan, item)
 			}
 			continue
 		}
+		parsed = append(parsed, listItem{indent: indent, marker: marker, body: body, ordered: ordered})
+	}
+
+	var out []string
+	if len(orphan) > 0 {
+		out = append(out, r.renderParagraph(orphan)...)
+	}
+	for _, item := range parsed {
+		markerText := "•"
+		if item.ordered {
+			markerText = item.marker
+		}
 		var bullet string
-		if ordered {
-			bullet = r.pal.Bullet.Render(marker)
+		if item.ordered {
+			bullet = r.pal.Bullet.Render(item.marker)
 		} else {
 			bullet = r.pal.Bullet.Render("•")
 		}
-		prefix := indent + "  " // placeholder replaced below
-		_ = prefix
-		first := indent + "• "
-		chunks := r.inline(body)
+		chunks := r.inline(item.body)
 		if w := r.wrapWidth(); w > 0 {
-			cont := indent + "  "
-			if ordered {
-				cont = indent + strings.Repeat(" ", CellWidth(marker)+1)
+			cont := item.indent + "  "
+			if item.ordered {
+				cont = item.indent + strings.Repeat(" ", CellWidth(item.marker)+1)
 			}
-			// First line carries the bullet; continuations hang-align.
-			wrapped := wrapChunks(chunks, w, indent+"X ", cont, nil)
+			// The first-line prefix must be exactly as wide as the bullet
+			// that replaces it. An ordered marker is not always one cell
+			// ("10."), and a short placeholder would let the rebuilt first
+			// row grow past the wrap budget by the difference.
+			first := item.indent + markerText + " "
+			wrapped := wrapChunks(chunks, w, first, cont, nil)
 			for i, wl := range wrapped {
 				if i == 0 {
-					// Replace the placeholder indent with bullet + space.
-					inner := strings.TrimPrefix(wl, indent+"X ")
-					wrapped[i] = indent + bullet + " " + inner
-				} else {
-					wrapped[i] = wl
+					inner := strings.TrimPrefix(wl, first)
+					wrapped[i] = item.indent + bullet + " " + inner
 				}
 			}
-			_ = first
 			out = append(out, wrapped...)
 			continue
 		}
-		styled := applyChunksPlain(chunks)
-		_ = first
-		out = append(out, indent+bullet+" "+styled)
+		out = append(out, item.indent+bullet+" "+applyChunksPlain(chunks))
 	}
 	return out
+}
+
+// joinListContinuation folds one wrapped source line back into its item body.
+func joinListContinuation(body, continuation string) string {
+	continuation = strings.TrimSpace(continuation)
+	switch {
+	case continuation == "":
+		return body
+	case body == "":
+		return continuation
+	default:
+		return body + " " + continuation
+	}
 }
 
 // ---- paragraphs ----

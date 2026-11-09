@@ -99,6 +99,34 @@ func TestViewportLargeDocumentMaxScroll(t *testing.T) {
 	}
 }
 
+// The first View after a stream delta must already carry the new tail. The
+// retained projection is an optimisation, never a frame of latency: a dirty
+// hint consumed before the rows are painted would leave the previous frame's
+// content on screen until some unrelated event arrived.
+func TestRetainedViewportShowsEachDeltaInTheNextFrame(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	p.state.Apply(UserSubmitted{Text: "go"})
+
+	for i := 0; i < 80; i++ {
+		p.state.Apply(AssistantDelta{Text: fmt.Sprintf("streamed row %03d with enough words to wrap a little\n\n", i)})
+	}
+	p.state.Apply(AssistantDelta{Text: "TAIL-ONE\n\n"})
+	first := ansi.Strip(p.View())
+	if !strings.Contains(first, "TAIL-ONE") {
+		t.Fatalf("first frame after the delta lost the new tail:\n%s", first)
+	}
+
+	p.state.Apply(AssistantDelta{Text: "TAIL-TWO"})
+	second := ansi.Strip(p.View())
+	if !strings.Contains(second, "TAIL-TWO") {
+		t.Fatalf("second frame lost the newest delta:\n%s", second)
+	}
+	if strings.Count(second, "TAIL-ONE") != 1 || strings.Count(second, "TAIL-TWO") != 1 {
+		t.Fatalf("frame repeated a streamed block instead of moving the window:\n%s", second)
+	}
+}
+
 // Scrolling up detaches; scrolling back to the live edge reattaches.
 func TestViewportDetachAndReattach(t *testing.T) {
 	s := newViewportState(60, 80, 24)
