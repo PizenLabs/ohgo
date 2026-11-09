@@ -717,15 +717,24 @@ approval, shutting down) are computed per render, never stored.
   or runtime scheduling. Reasoning remains its own accordion block; a tool
   batch never hides the provider's thinking channel behind a footer.
   `ProjectActivity` remains
-  the single owner decision: a running tool or open reasoning trace presents
-  activity through its own entry. The full-screen canvas reserves no separate
-  activity band, so starting, handing off, and finishing a turn cannot move the
-  composer; the stable hint/status row carries telemetry and keys. Output-first
-  mode may show the one-row activity line in its footer only when no entry owns
-  the phase. The active runtime phase is absent from the header, and the
-  workspace authority (`ASK`, `BUILD`, `FUZZ`) appears only at the prompt
-  boundary. A tool finalizes into that same block, so no live copy survives
-  next to its stable representation.
+  the single owner decision for concrete activity: a running tool or open
+  reasoning trace presents its action and prose through its own entry.
+  `internal/tui/telemetry_bar.go` owns the one live phase and turn-metrics
+  surface: a fixed row immediately above the composer, reserved even while
+  idle, so starting, handing off, and finishing a turn cannot move the
+  composer. The
+  bar's left group is the shared spinner, one space, and the shimmering
+  runtime intent (`preparing workspace…`, `reasoning internals…`, `executing
+  tools…`, `formatting response…`); the middle is pure whitespace; the right
+  group pins measured elapsed time and the compact downward output volume
+  (`3.9s · ↓1.1k tokens`) to the frame edge. Width math runs on plain text
+  before shimmer escapes are applied, so the right block cannot jitter.
+  Concrete tool summaries and reasoning prose never appear there, and the
+  phase is not repeated in the hint or status row. Output-first mode paints the
+  same bar immediately above its composer. The active runtime phase is
+  absent from the header, and the workspace authority (`ASK`, `BUILD`, `FUZZ`)
+  appears only at the prompt boundary. A tool finalizes into that same block,
+  so no live copy survives next to its stable representation.
 - Non-blocking composer: typing, editing, history recall, and slash dispatch
   stay live while a turn streams. A normal prompt entered during execution is
   queued; commands (`/status`, `/usage`, `/theme`, `/cancel`, …) run
@@ -763,9 +772,10 @@ approval, shutting down) are computed per render, never stored.
   (ANSI-stripped, CJK/emoji-aware, hard-breaks unbroken runs, combining
   marks stay attached).
 - `internal/tui/layout.go`: responsive tiers (wide ≥100, medium 70–99, narrow <70,
-  mini <40×8), content width, conversation height, bounded composer (two
-  framing rules + input rows + slash suggestion rows + state line, all
-  counted so reserved and rendered rows agree). Suggestion rows carry a
+  mini <40×8), content width, conversation height, a fixed one-row telemetry
+  slot above the composer, and the bounded composer (two framing rules + input
+  rows + slash suggestion rows + state line, all counted so reserved and
+  rendered rows agree). Suggestion rows carry a
   viewport budget (`Layout.SlashLines`): on short screens they yield first
   so the transcript keeps a row. An open picker releases the composer rows
   it hides, and the picker area fills them instead.
@@ -784,8 +794,9 @@ approval, shutting down) are computed per render, never stored.
   The composer is two neutral border rules around the input with an inline
   slash-suggestion list and a queued-prompts line. Only the lowercase mode word
   before the `›` pointer carries authority hue; the frame stays on the adaptive
-  border token. Activity, token telemetry, and the hint bar sit below the
-  composer, never on the transcript edge above the prompt. The upper rule is a
+  border token. The fixed telemetry bar sits immediately above the composer;
+  measured session telemetry and keys stay in the hint/status row below it. The
+  upper rule is a
   border block header naming the live session
   (`──────────── [Fix failing parser] ───`), with a discrete `★` when
   the session is retention-protected; the title is `promptopt`-sanitized and

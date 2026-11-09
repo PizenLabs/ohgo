@@ -448,22 +448,37 @@ func TestSelectionClosureScrollDuringSelection(t *testing.T) {
 	p.state = s
 	p.Update(tea.WindowSizeMsg{Width: 50, Height: 20})
 	p.syncTranscript()
-	_, marker, top, ok := p.visibleRows()
+	rows, marker, top, ok := p.visibleRows()
 	if !ok {
 		t.Fatal("no visible rows")
 	}
+	// Anchor on a painted row with content: the transcript budget is part of
+	// the layout contract, so a test must not assume row 0 is non-blank.
 	y := top + marker
+	for i, row := range rows {
+		if CellWidth(row.Plain()) > 0 {
+			y = top + marker + i
+			break
+		}
+	}
 	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 0, Y: y})
 	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 5, Y: y + 1})
 	// Wheel scroll while the button is held.
 	p.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress, X: 0, Y: 0})
 	p.syncTranscript()
-	_, marker2, top2, ok := p.visibleRows()
+	rows, marker2, top2, ok := p.visibleRows()
 	if !ok {
 		t.Fatal("no visible rows after scroll")
 	}
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 5, Y: top2 + marker2 + 1})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 5, Y: top2 + marker2 + 1})
+	y2 := top2 + marker2
+	for i := len(rows) - 1; i >= 0; i-- {
+		if CellWidth(rows[i].Plain()) > 5 {
+			y2 = top2 + marker2 + i
+			break
+		}
+	}
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 5, Y: y2})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 5, Y: y2})
 	if calls != 1 {
 		t.Fatalf("clipboard calls = %d, want 1", calls)
 	}

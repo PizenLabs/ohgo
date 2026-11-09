@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
@@ -142,6 +143,118 @@ func TestReasoningExpansionReflowsViewportInSameFrame(t *testing.T) {
 	}
 	if after.Offset <= before.Offset {
 		t.Fatalf("viewport did not follow the reflowed content: offset %d -> %d", before.Offset, after.Offset)
+	}
+}
+
+// A thought with no prose still has a real disclosure body. An empty trace must
+// not become an inert row that Ctrl+O and row selection silently ignore.
+func TestEmptyReasoningBlockTogglesAndRendersPlaceholder(t *testing.T) {
+	at := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(TerminalResized{Width: 90, Height: 24})
+	s.Apply(UserSubmitted{Text: "go", At: at, Seq: 1})
+	s.Apply(ReasoningDelta{Text: " \n\t", At: at, Seq: 1})
+	s.Apply(AssistantDelta{Text: "answer", At: at.Add(time.Second), Seq: 1})
+
+	if len(s.Entries) < 2 || s.Entries[1].Kind != EntryReasoning || s.Entries[1].Reasoning == nil {
+		t.Fatalf("entries = %+v, want a reasoning block", s.Entries)
+	}
+	id := s.Entries[1].ID
+	if !entryExpandable(s.Entries[1]) {
+		t.Fatal("empty reasoning block is not expandable")
+	}
+
+	p := NewProgram(nil, "test", 0)
+	p.state = s
+	p.Update(tea.WindowSizeMsg{Width: 90, Height: 24})
+	p.syncTranscript()
+	p.handleKey(tea.KeyMsg{Type: tea.KeyCtrlO})
+	if !p.state.Entries[1].Reasoning.Expanded {
+		t.Fatal("ctrl+o did not expand the empty reasoning block")
+	}
+
+	out := ansi.Strip(Render(p.state))
+	if !strings.Contains(out, "- Thought") {
+		t.Fatalf("expanded empty thought lost its open marker:\n%s", out)
+	}
+	if !strings.Contains(out, "│ (no detailed reasoning text provided)") {
+		t.Fatalf("expanded empty thought rendered no placeholder:\n%s", out)
+	}
+
+	// Row selection uses the same disclosure path and must collapse it again.
+	// Resolve a real painted row rather than constructing a synthetic position:
+	// this also proves the row-to-block map names the thought, not a sibling.
+	rows, markerRows, top, ok := p.visibleRows()
+	if !ok {
+		t.Fatal("transcript rows are not visible")
+	}
+	clickY := -1
+	for i, row := range rows {
+		if row.BlockID == id && strings.Contains(row.Plain(), "Thought") {
+			clickY = top + markerRows + i
+			break
+		}
+	}
+	if clickY < 0 {
+		t.Fatalf("no painted row maps to reasoning block %q", id)
+	}
+	pos, ok := p.positionAt(1, clickY, false)
+	if !ok || pos.BlockID != id {
+		t.Fatalf("row hit = (%v,%v), want block %q", pos, ok, id)
+	}
+	if !p.toggleBlockAt(pos) {
+		t.Fatal("row selection refused the empty reasoning block")
+	}
+	if p.state.Entries[1].Reasoning.Expanded {
+		t.Fatal("row selection did not collapse the empty reasoning block")
+	}
+}
+
+// Thoughts separated by tool batches keep distinct identities and independent
+// disclosure state; toggling one must not flip a sibling.
+func TestReasoningBlocksAroundToolBatchesToggleIndependently(t *testing.T) {
+	at := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(UserSubmitted{Text: "go", At: at, Seq: 1})
+	s.Apply(ReasoningDelta{Text: "first", At: at, Seq: 1})
+	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a", At: at, Seq: 1})
+	s.Apply(ToolFinished{ID: "c1", Text: "one", Summary: "1 line", At: at.Add(time.Millisecond), Seq: 1})
+	s.Apply(ReasoningDelta{Text: " \n ", At: at.Add(2 * time.Millisecond), Seq: 1})
+	s.Apply(ToolStarted{ID: "c2", Name: "read", Summary: "read b", At: at.Add(3 * time.Millisecond), Seq: 1})
+	s.Apply(ToolFinished{ID: "c2", Text: "two", Summary: "1 line", At: at.Add(4 * time.Millisecond), Seq: 1})
+	s.Apply(ReasoningDelta{Text: "third", At: at.Add(5 * time.Millisecond), Seq: 1})
+	s.Apply(AssistantDelta{Text: "answer", At: at.Add(6 * time.Millisecond), Seq: 1})
+
+	var reasoning []int
+	seen := map[BlockID]bool{}
+	for i := range s.Entries {
+		id := s.Entries[i].ID
+		if id == "" || seen[id] {
+			t.Fatalf("duplicate or empty block ID %q at index %d", id, i)
+		}
+		seen[id] = true
+		if s.Entries[i].Kind == EntryReasoning {
+			reasoning = append(reasoning, i)
+		}
+	}
+	if len(reasoning) != 3 {
+		t.Fatalf("reasoning blocks = %d, want 3", len(reasoning))
+	}
+
+	for _, target := range reasoning {
+		id := s.Entries[target].ID
+		if !s.ToggleBlock(id) {
+			t.Fatalf("reasoning block %d refused to toggle", target)
+		}
+		for _, other := range reasoning {
+			want := other == target
+			if got := s.Entries[other].Reasoning.Expanded; got != want {
+				t.Fatalf("toggling reasoning %d changed reasoning %d to expanded=%v", target, other, got)
+			}
+		}
+		if !s.ToggleBlock(id) || s.Entries[target].Reasoning.Expanded {
+			t.Fatalf("reasoning block %d did not collapse", target)
+		}
 	}
 }
 

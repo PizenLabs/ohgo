@@ -480,8 +480,8 @@ func TestComposerHasTwoRulesAndTruthfulState(t *testing.T) {
 	if strings.Contains(strings.Split(busy, "\n")[0], "working") {
 		t.Errorf("busy header repeated the active phase:\n%s", busy)
 	}
-	if !strings.Contains(busy, "reason") {
-		t.Errorf("busy activity surface lost the runtime phase:\n%s", busy)
+	if !strings.Contains(busy, "preparing workspace…") {
+		t.Errorf("busy telemetry bar lost the runtime phase:\n%s", busy)
 	}
 	if strings.Contains(busy, "queued") {
 		t.Errorf("busy composer invents queued prompts:\n%s", busy)

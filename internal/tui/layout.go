@@ -47,10 +47,12 @@ type Layout struct {
 	ContentWidth int
 	// ConversationHeight is the rows reserved for the transcript.
 	ConversationHeight int
-	// HeaderLines, TaskLines, ComposerLines, StatusLines size the chrome.
-	HeaderLines   int
-	ComposerLines int
-	StatusLines   int
+	// HeaderLines, TaskLines, TelemetryLines, ComposerLines, StatusLines size
+	// the chrome.
+	HeaderLines    int
+	TelemetryLines int
+	ComposerLines  int
+	StatusLines    int
 	// TaskLines is the sticky active-task row below the title bar on tiers
 	// that do not render the sidebar. It is zero whenever no open task has an
 	// open todo: wide terminals keep the tracker in the sidebar instead, so
@@ -233,6 +235,11 @@ func computeLayoutWith(s State, content int, taskLines int) Layout {
 		status = 1
 	}
 	composer, sugg := composerHeight(s, content, mode, hints)
+	// The live telemetry bar owns a fixed row immediately above the composer.
+	// It is reserved even while idle: the bar's content appears and clears
+	// synchronously with the runtime, but its slot never does, so a turn
+	// starting or finishing cannot move the composer or the transcript.
+	telemetry := 1
 	// An open overlay hides the composer (and its hints row belongs to the
 	// transcript chrome, not the overlay): reserving rows for regions that
 	// never render would short the viewport and unpin the footer.
@@ -242,8 +249,9 @@ func computeLayoutWith(s State, content int, taskLines int) Layout {
 	if overlayHidesComposer(s) {
 		composer = 0
 		sugg = 0
+		telemetry = 0
 	}
-	chrome := header + taskLines + status + hints + composer
+	chrome := header + taskLines + status + hints + telemetry + composer
 	conv := s.Height - chrome
 	if conv < 1 {
 		conv = 1
@@ -256,6 +264,7 @@ func computeLayoutWith(s State, content int, taskLines int) Layout {
 		ConversationHeight: conv,
 		HeaderLines:        header,
 		TaskLines:          taskLines,
+		TelemetryLines:     telemetry,
 		MainWidth:          s.Width,
 		ComposerLines:      composer,
 		StatusLines:        status,
@@ -336,7 +345,10 @@ func composerHeight(s State, contentWidth int, mode LayoutMode, hintRows int) (l
 	}
 	sugg = paletteRows(s)
 	if s.Height > 0 {
-		maxSugg := s.Height - 2 - 1 - hintRows - 2 - inputRows - stateRows - 1
+		// The fixed telemetry row above the composer claims one cell before
+		// suggestions may; suggestions yield first so the transcript and the
+		// composer keep their rows on a short screen.
+		maxSugg := s.Height - 2 - 1 - hintRows - 2 - inputRows - stateRows - 1 - 1
 		if maxSugg < 0 {
 			maxSugg = 0
 		}

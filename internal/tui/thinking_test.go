@@ -248,8 +248,8 @@ func TestRenderThinkingRespectsWidth(t *testing.T) {
 }
 
 // TestViewShowsAndClearsThinkingLine is the integration contract: the
-// full-screen view paints the projected activity line while a turn runs and
-// removes it the moment the turn completes.
+// full-screen view paints the projected phase in the fixed telemetry bar while
+// a turn runs and clears its content the moment the turn completes.
 func TestViewShowsAndClearsThinkingLine(t *testing.T) {
 	s := New()
 	s.Status.Model = "m"
@@ -257,11 +257,11 @@ func TestViewShowsAndClearsThinkingLine(t *testing.T) {
 	s.Apply(UserSubmitted{Text: "go"})
 
 	out := Render(s)
-	if !strings.Contains(out, "reason") {
-		t.Fatalf("busy view lost the activity line:\n%s", out)
+	if !strings.Contains(out, "preparing workspace…") {
+		t.Fatalf("busy view lost its telemetry bar:\n%s", out)
 	}
 	s.Apply(AssistantDone{})
-	if out := Render(s); strings.Contains(out, "◌ reason") {
-		t.Fatalf("completed view kept a stale activity line:\n%s", out)
+	if out := Render(s); strings.Contains(out, "preparing workspace…") {
+		t.Fatalf("completed view kept a stale telemetry label:\n%s", out)
 	}
 }

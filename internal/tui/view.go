@@ -327,11 +327,14 @@ func renderCanvasBody(sb *strings.Builder, state State, pal *Palette, layout Lay
 
 	if !overlayHidesComposer(state) {
 		// Main canvas. The composer is the last input surface and its height
-		// never depends on what the turn is doing: activity is represented by
-		// its transcript entry (a running tool block or a collapsed Thought
-		// row), and the stable hint/status row carries telemetry and keys.
-		// Reserving no phase band is what keeps the composer pinned while a
-		// fast task starts, hands off, and finishes.
+		// never depends on what the turn is doing: the fixed telemetry row
+		// above it owns the live phase and measured metrics, while its
+		// transcript entry (a running tool block or a collapsed Thought row)
+		// owns the concrete action. The row is reserved even when idle, so the
+		// composer stays pinned while a fast task starts, hands off, and
+		// finishes.
+		sb.WriteString(renderLiveTelemetryBar(state, pal, layout))
+		sb.WriteString("\n")
 		sb.WriteString(renderComposer(state, pal, layout))
 		if layout.ShowHints {
 			hintStyle := pal.Muted
@@ -422,16 +425,12 @@ func composerHintsFor(state State) string {
 		return "↑↓ navigate · enter/tab accept · esc dismiss"
 	}
 	if state.Status.Busy {
-		// The busy row is the stable activity band: when no transcript entry
-		// owns the phase, its glyph and label lead the row; measured telemetry
-		// and the queue/cancel keys follow. Nothing here changes the row count,
-		// so a hand-off can never move the composer. When an entry already
-		// presents the phase (running tool, open Thought row), the head is
-		// empty and the row carries telemetry and keys only.
+		// The busy row owns measured session telemetry and the queue/cancel
+		// keys. The live phase and turn metrics live in the fixed telemetry
+		// bar above the composer, so repeating them here would put one fact on
+		// two surfaces. Nothing here changes the row count, so a hand-off can
+		// never move the composer.
 		var parts []string
-		if head := busyActivityHead(state); head != "" {
-			parts = append(parts, head)
-		}
 		if telemetry := busyTelemetry(state); telemetry != "" {
 			parts = append(parts, telemetry)
 		}
@@ -439,13 +438,6 @@ func composerHintsFor(state State) string {
 		return strings.Join(parts, " · ")
 	}
 	left, right := idleHintZones(state)
-	if head := busyActivityHead(state); head != "" {
-		if left == "" {
-			left = head
-		} else {
-			left = head + " · " + left
-		}
-	}
 	if left == "" {
 		return right
 	}
@@ -453,17 +445,6 @@ func composerHintsFor(state State) string {
 		return left
 	}
 	return left + " · " + right
-}
-
-// busyActivityHead is the phase segment for the stable busy row. It is empty
-// when a transcript entry already owns the activity, which is what keeps a
-// running tool or an open Thought row from appearing twice.
-func busyActivityHead(state State) string {
-	activity := ProjectActivity(state)
-	if activity.Surface != ActivityLine {
-		return ""
-	}
-	return thinkingHeadText(activity.Thinking, state.Status.Spinner)
 }
 
 // composerHintBar renders the same hint row as composerHintsFor but split
@@ -492,31 +473,21 @@ func composerHintBar(state State, width int) string {
 		return hint
 	}
 	if state.Status.Busy {
-		// Same stable-band contract as composerHintsFor, split into zones so
-		// the phase leads at the left edge and the measured telemetry plus
-		// queue/cancel keys pin right. The session marker still yields while
-		// busy (busyTelemetry), and truncation keeps the metric-first head.
-		head := busyActivityHead(state)
+		// Same stable-band contract as composerHintsFor: the telemetry bar
+		// above the composer owns the phase and turn metrics, while this row
+		// keeps measured session telemetry at the left and queue/cancel keys at
+		// the right. The session marker still yields while busy
+		// (busyTelemetry), and truncation keeps the metric-first head.
 		right := ComposerHints(true)
 		if telemetry := busyTelemetry(state); telemetry != "" {
 			right = telemetry + " · " + right
 		}
 		if width <= 0 {
-			if head == "" {
-				return right
-			}
-			return head + " · " + right
+			return right
 		}
-		return sessionBarRow(head, right, width)
+		return sessionBarRow("", right, width)
 	}
 	left, right := idleHintZones(state)
-	if head := busyActivityHead(state); head != "" {
-		if left == "" {
-			left = head
-		} else {
-			left = head + " · " + left
-		}
-	}
 	return sessionBarRow(left, right, width)
 }
 
@@ -2184,7 +2155,7 @@ func renderReasoningAt(sb *strings.Builder, reasoning *ReasoningEntry, pal *Pale
 		head += " · " + formatDurationPrecise(elapsed)
 	}
 	sb.WriteString(pal.Thought.Render(head) + "\n")
-	if !reasoning.Expanded || strings.TrimSpace(reasoning.Text) == "" {
+	if !reasoning.Expanded {
 		sb.WriteString("\n")
 		return
 	}
@@ -2199,6 +2170,14 @@ func renderReasoningAt(sb *strings.Builder, reasoning *ReasoningEntry, pal *Pale
 	// expanded trace reads as a child of the header without changing the
 	// wrapped width. It is a dim rule role, not prose styling.
 	guide := pal.Separator.Render("│ ")
+	if !reasoningBodyHasText(lines) {
+		// The disclosure state is real even when the provider sent no prose:
+		// duration-only or whitespace-only traces must stay inspectable rather
+		// than silently collapsing to a row that cannot be opened.
+		sb.WriteString(guide + pal.Muted.Render("(no detailed reasoning text provided)") + "\n")
+		sb.WriteString("\n")
+		return
+	}
 	for _, line := range lines {
 		if shown >= limit {
 			break
@@ -2227,6 +2206,20 @@ func wrapReasoningBody(text string, width int) []string {
 		return []string{""}
 	}
 	return out
+}
+
+// reasoningBodyHasText reports whether a sanitized trace has visible prose.
+//
+// Whitespace-only thinking is a real provider outcome, not a malformed block:
+// the disclosure state still exists, so the renderer must show a deliberate
+// placeholder rather than an empty body.
+func reasoningBodyHasText(lines []string) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // maxReasoningLines bounds the expanded trace so one long reasoning run cannot

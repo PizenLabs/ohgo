@@ -553,7 +553,9 @@ Expanded:
 
 The header renders in the status amber; the body is muted prose behind a dim
 `│` indent guide, so the trace reads as an annotating child of the disclosure
-row rather than a second answer.
+row rather than a second answer. An empty or whitespace-only trace still owns
+its disclosure state: expanding it renders
+`│ (no detailed reasoning text provided)` rather than refusing the toggle.
 
 Reasoning must be:
 
@@ -675,11 +677,29 @@ Do not automatically turn every red tool result into a red global task state.
 
 The viewport must remain stable during execution.
 
-The response band is a fixed slot for the whole active turn. It does not
-appear or disappear when the one-row activity line hands off to a running tool
-entry or an open reasoning head: the band keeps its row (empty when an entry
-owns the activity) so the conversation budget, composer, and every row above it
-stay pinned. The same hand-off never changes the transcript's bounding box.
+The live telemetry bar is a fixed one-row slot immediately above the composer.
+The slot is reserved for the life of the view and is blank while idle, so a
+turn starting, changing phase, or finishing never moves the composer or the
+transcript. Its content is three contiguous groups:
+
+```text
+⠋ formatting response...                                                   3.9s · ↓1.1k tokens
+```
+
+- Left: the shared Braille spinner, exactly one space, then the semantic
+  intent (`preparing workspace…`, `reasoning internals…`, `executing tools…`,
+  `formatting response…`). The intent text carries the shimmer wave; the
+  spinner carries liveness.
+- Middle: pure whitespace. No dots, dashes, or other fill characters.
+- Right: total elapsed turn duration, a separator dot, and the compact output
+  volume with a downward arrow (`3.9s · ↓1.1k tokens`). The group is pinned to
+  the frame edge; its width is measured from plain text before shimmer escapes
+  are applied, so animation can never push it.
+
+Concrete actions stay in their transcript entries: a running tool's summary
+and a Thought trace's prose are never repeated in the bar, and the bar's phase
+is never repeated in the hint or status row. The bar's content clears
+immediately when the turn stops producing work.
 
 Avoid unnecessary viewport growth caused by:
 
