@@ -173,6 +173,7 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		HasCurrentChange: controller.HasCurrentChange,
 		Evidence:         controller.Evidence,
 		RecordProjection: controller.RecordProjection,
+		LastProjection:   controller.LastProjection,
 		ProjectionReview: func() string {
 			report, ok := controller.LastProjection()
 			if !ok {

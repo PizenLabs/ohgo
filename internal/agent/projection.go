@@ -101,6 +101,12 @@ type ProjectionReport struct {
 	Elisions []ProjectionElision `json:"elisions,omitempty"`
 	// RetentionPolicy describes the bounds that decided what stayed exact.
 	RetentionPolicy string `json:"retention_policy,omitempty"`
+	// ExperienceApplied names the promoted experience records that influenced
+	// this projection, for audit. It is never authority.
+	ExperienceApplied []string `json:"experience_applied,omitempty"`
+	// ExperienceHints are the bounded advisory lines appended to the runtime
+	// state block. They are guidance, never a capability or completion claim.
+	ExperienceHints []string `json:"experience_hints,omitempty"`
 }
 
 // ProjectionElision is one tool-result replacement in a projection.

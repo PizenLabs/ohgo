@@ -131,6 +131,7 @@ Concretely, the following are forbidden:
 | `internal/control/**` | `execution/**`, `continuity/**`, `commit`, `startup`, `update`, `history`, `gryhook`, `tui` |
 | `internal/execution/**` | `continuity/**`, `tui`, `commit`, `startup`, `update`, `history` |
 | `internal/continuity/**` | `tui`, `commit`, `startup`, `update`, `history` |
+| `internal/experience/**` | `execution/**`, `continuity/**`, `commit`, `startup`, `update`, `history`, `gryhook`, `tui` |
 | `internal/intelligence/**` | `agent`, `control/**`, `execution/**`, `continuity/**`, `provider/**`, `tui` |
 
 A new edge that points *up* is an architecture change. It needs the map and the
@@ -234,6 +235,7 @@ generic package converts a design question into permanent ambiguity.
 | Transcript | `session` | mirrors it, never re-stores it |
 | Repository symbols | one `ast.Index` | queries it |
 | Model reference format | `ai.Model.Ref()` | never formats its own |
+| Execution experience | `experience.Store` | advisory `Advise` only; never authority, evidence, completion, or task state |
 
 A second writer of a persisted fact is a defect even when both writers agree
 today. The second pass fixed two of these; do not introduce a third.
@@ -255,7 +257,8 @@ projection semantics · compatibility requirement
 
 Serialized today: `progress.json` (contract, target snapshot, evidence state,
 budget state, status, structured task context), `task.md` (projection only,
-never authoritative), `sessions.db`, `recovery.db`, `settings.json`,
+never authoritative), `experience.json` (bounded verified execution experience,
+versioned, advisory only), `sessions.db`, `recovery.db`, `settings.json`,
 `credentials.json`, `project.yml`, `cache/*.json`, `update*.json`.
 
 Rules:
@@ -384,6 +387,8 @@ has no production code.
 [ ] Does any new code create a second source of truth, index, authority path,
     completion decision, or persisted representation?
 [ ] Is a persisted shape changed? If yes: version + migration note.
+[ ] Does the new behaviour need an owner, or does it duplicate experience,
+    evidence, completion, or authority?
 [ ] Does a capability still cross authorization?
 [ ] Is presentation still a projection?
 [ ] Does the architecture test still pass — and did any rule change on purpose?

@@ -477,6 +477,11 @@ type Program struct {
 	// only: the loop remains the execution owner and the task layer grants no
 	// authority (see TaskHooks).
 	task TaskHooks
+	// experience is the optional execution-experience layer. It is advisory
+	// only: the advisor may reorder offered tools and add bounded hints, and
+	// the turn boundary may record a structured observation. It never owns
+	// authority, evidence, completion, or the task lifecycle.
+	experience ExperienceHooks
 	// lastTaskDecision records why the last turn attached, detached, or
 	// started a task: NEW_SESSION, EXPLICIT_RESUME, NEW_INTENT, TASK_DETACH,
 	// TASK_COMPLETE, or NO_TASK. It is diagnostics for /audit and tests, never
@@ -2061,6 +2066,10 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	case "task":
 		p.taskCommand(command.Args)
+		return nil
+
+	case "experience":
+		p.experienceCommand(command.Args)
 		return nil
 
 	case "audit":
@@ -5087,6 +5096,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		activeAuthority = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
 	}
 
+	turnStarted := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	p.turnTerminal.Store(turnTerminalOpen)
 	p.mu.Lock()
@@ -5141,6 +5151,14 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// proof, and timeline remain recoverable.
 	var targetSnapshot *agent.TargetSnapshot
 	priorChange := false
+	priorStatus, priorReview, priorRole := "", "", ""
+	if taskOwned && p.task.Current != nil {
+		if current, ok := p.task.Current(); ok {
+			priorStatus = current.Status
+			priorReview = current.ReviewReason
+			priorRole = current.Role
+		}
+	}
 	if p.task.Current != nil {
 		current, ok := p.task.Current()
 		switch {
@@ -5214,8 +5232,10 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// A turn is a task boundary: record (or resume) the durable task before
 	// any provider call, so an interruption during this turn has something to
 	// checkpoint. Bookkeeping only — it neither gates nor authorizes the turn.
+	taskID := ""
 	if p.task.Begin != nil {
 		projection := p.task.Begin(intent, targetSnapshot)
+		taskID = projection.ID
 		p.PublishTask(projection)
 		if projection.Err != "" {
 			abortTurn("task state was not recorded: " + projection.Err)
@@ -5262,8 +5282,15 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		Snapshot:  targetSnapshot,
 		Budget:    cognition.BudgetShapeFrom(p.loop.Budget().Snapshot()),
 	})
+	var priorEvidence *cognition.EvidenceState
+	if taskOwned && p.task.Evidence != nil {
+		if evidence := p.task.Evidence(); evidence != nil {
+			priorEvidence = evidence.Clone()
+		}
+	}
 	if p.task.Evidence != nil {
 		projector := cognition.NewProjector(shape, p.task.Evidence(), facts)
+		projector.Advisor = p.experience.Advisor
 		p.loop.SetProjectionHook(projector.Project)
 		p.loop.SetProjectionReportHook(p.task.RecordProjection)
 	} else {
@@ -5573,6 +5600,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			action, reason = taskActionPause, "interrupted"
 		}
 	}
+	observedOutcome := experienceOutcome(action)
 	switch action {
 	case taskActionComplete:
 		answered := false
@@ -5592,6 +5620,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		// rolls back on a failed persist; this guard is repeated here so a
 		// host hook with different semantics cannot leak a false PROVEN.
 		if projection.ID != "" && projection.Err != "" {
+			observedOutcome = "needs_review"
 			switch {
 			case hasOpenTaskItems(projection) || p.task.NeedsReview == nil:
 				// Work remains or no review seam is installed: the task stays
@@ -5642,6 +5671,41 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		if p.task.Fail != nil {
 			p.PublishTask(p.task.Fail(reason))
 		}
+	}
+
+	// The terminal transition has landed. Record the structured run outcome for
+	// the optional experience layer. It is advisory only and cannot change the
+	// transition that just committed, the task's proof, or the workspace.
+	if p.experience.Observe != nil {
+		report := agent.ProjectionReport{}
+		if p.task.LastProjection != nil {
+			if last, ok := p.task.LastProjection(); ok {
+				report = last
+			}
+		}
+		var evidence *cognition.EvidenceState
+		if p.task.Evidence != nil {
+			evidence = p.task.Evidence()
+		}
+		p.experience.Observe(ExperienceObservation{
+			TaskID:            taskID,
+			SessionID:         fmt.Sprintf("%d", turnSessID),
+			Workspace:         activeAuthority,
+			PriorWorkspace:    priorRole,
+			Intent:            intent,
+			Shape:             shape,
+			Turns:             turns,
+			Projection:        report,
+			Evidence:          evidence,
+			PriorEvidence:     priorEvidence,
+			Outcome:           observedOutcome,
+			Reason:            reason,
+			PriorStatus:       priorStatus,
+			PriorReviewReason: priorReview,
+			StartedAt:         turnStarted,
+			FinishedAt:        time.Now(),
+			Scope:             "project",
+		})
 	}
 
 	// The turn has made its terminal transition. Keeping the handle installed

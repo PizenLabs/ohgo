@@ -5,6 +5,16 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- Adaptive execution experience: `internal/experience` extracts deterministic
+  incidents from completed turns, derives bounded lessons and candidate path
+  preferences, and applies only promoted experience. The projector may reorder
+  already-offered tools and append bounded advisory hints; authority, evidence,
+  completion, budgets, and task state are unchanged. `/experience` inspects or
+  retires records, and `<project>/.ohgo/experience.json` is a versioned,
+  bounded, cold-start-safe store.
+
 ### Fixed
 
 - Transcript markdown keeps an indented fence under a list item as a code

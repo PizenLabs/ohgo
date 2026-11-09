@@ -342,6 +342,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		controller := installTaskContinuity(program, opts.root, loop.Tools(), func() workspace.Workspace {
 			return opts.authority()
 		}, opts.budget)
+		installExperience(program, opts.root, opts.projectID)
 		program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
 		// A grant is bound to the task it was approved for, when the task layer
 		// knows one. The task remains authoritative for continuity; the gate

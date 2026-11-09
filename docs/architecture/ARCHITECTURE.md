@@ -413,6 +413,41 @@ Budgets remain safety bounds, never the reason a run concludes. A weaker model
 may therefore spend more turns reaching the same evidence; the stop follows the
 evidence, not the model.
 
+## Execution experience (AES)
+
+The runtime may learn **execution strategy** from completed turns. It may never
+learn authority, evidence requirements, or completion. The learning layer is
+`internal/experience`; its full contract is
+[`ADAPTIVE_EXPERIENCE.md`](ADAPTIVE_EXPERIENCE.md).
+
+The turn boundary supplies a structured observation: completed `agent.Turn`s,
+the completion contract, the last `agent.ProjectionReport`, the durable
+`cognition.EvidenceState`, the workspace label, the prior task status/review and
+the evaluator's outcome. No transcript is replayed. A deterministic extractor
+recognizes repeated probes, recoverable and material failures, successful
+low-cost and expensive paths, evidence gaps, stale review boundaries, handoff
+redundancy, authority refusals, and context growth.
+
+An incident becomes a lesson and a candidate, not a policy. A candidate becomes
+`Validated` after repeated matching success (or an explicit regression check)
+and only then `Promoted`; contradiction can reject it or retire an active
+record. Records are scoped to task, project, runtime, or global. The project
+store is `<project>/.ohgo/experience.json`; it is versioned, bounded,
+temp-then-rename atomic, and safe to delete. Project experience becomes global
+only through an explicit `PromoteToGlobal` after three independent observations,
+zero contradictions, and a passed regression check.
+
+Application is a narrow advisory seam. `cognition.Projector.Advisor` may move
+tool names already in the offered surface earlier and append at most three
+bounded hints to the runtime state block. It cannot add or remove a tool, grant
+a capability, bypass the security gate, change evidence/sufficiency, or mark a
+task complete. The model still chooses the action; the control plane still
+decides; the safety boundary is unchanged. `/experience` is a read-only
+inspection surface except for explicit human `retire`/`reject` commands.
+
+Cold start is a no-op: an empty store and a nil advisor preserve the previous
+behaviour exactly.
+
 ## Subagents
 
 Delegation is the one capability that creates another agent, so isolation
@@ -560,7 +595,8 @@ discovery), `/compact`, `/sessions`/`/resume`, `/jobs`, `/usage`,
 credential roster, an API-key modal collects the credential — pasted or
 detected — then a wizard: validated model list → saved key + settings),
 `/disconnect`
-(file/explicit keys only; env/shell keys say where to unset). Presentation
+(file/explicit keys only; env/shell keys say where to unset), `/experience`
+(inspect or retire verified execution experience). Presentation
 differs; decisions do not. Commands parse before anything reaches the
 model; a bare `/` is a path. `$sup <question>` opens the ephemeral support
 surface (a SUP-role interaction that is never persisted and never enters the

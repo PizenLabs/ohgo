@@ -86,6 +86,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	controller := installTaskContinuity(program, opts.root, loop.Tools(), func() workspace.Workspace {
 		return opts.authority()
 	}, opts.budget)
+	installExperience(program, opts.root, opts.projectID)
 	program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
 	opts.security.SetTaskSource(func() string {
 		if current, ok := controller.Current(); ok {

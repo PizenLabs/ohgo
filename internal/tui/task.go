@@ -274,6 +274,9 @@ type TaskHooks struct {
 	Evidence func() *cognition.EvidenceState
 	// RecordProjection stores the last projection audit for /audit.
 	RecordProjection func(agent.ProjectionReport)
+	// LastProjection returns the last projection report, if one exists. It is
+	// read-only diagnostic state used by the execution-experience observer.
+	LastProjection func() (agent.ProjectionReport, bool)
 	// ProjectionReview returns the last projection's evidence review, or ""
 	// when the runtime had enough evidence. It is a completion veto, never an
 	// authorization.

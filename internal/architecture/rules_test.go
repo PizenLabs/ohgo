@@ -64,6 +64,11 @@ var domainOf = map[string]string{
 	"internal/continuity/recovery": "continuity",
 	"internal/memory":              "continuity",
 
+	// Verified execution experience: advisory path selection over structured
+	// runtime outcomes. It owns no authority, evidence, completion, or task
+	// lifecycle.
+	"internal/experience": "experience",
+
 	// Application services and presentation.
 	"internal/prompt":       "prompt",
 	"internal/promptopt":    "prompt",
@@ -88,6 +93,19 @@ var agentAllowedImports = []string{
 	"internal/provider/ai",
 	"internal/security",
 	"internal/tokens",
+}
+
+// experienceAllowedImports is the closed allow-list for the execution-
+// experience layer. It consumes the kernel's structured outcomes and the
+// control plane's evidence vocabulary; it must not reach into execution,
+// continuity, application, or presentation.
+var experienceAllowedImports = []string{
+	"internal/agent",
+	"internal/control/budget",
+	"internal/control/cognition",
+	"internal/control/contract",
+	"internal/jsonschema",
+	"internal/provider/ai",
 }
 
 // dependencyFree lists packages that must import no other module package. Each
@@ -170,6 +188,18 @@ func TestDependencyFreePackagesImportNothingFromTheModule(t *testing.T) {
 	for _, dir := range dependencyFree {
 		for _, imp := range pkgs[dir] {
 			t.Errorf("%s imports %s, but it is declared dependency-free: a leaf that depends on another module package is not a leaf, so the declaration is now wrong (OHGO_ARCHITECTURE_RULES.md §4)", dir, imp)
+		}
+	}
+}
+
+func TestExperienceLayerImportsOnlyItsAllowList(t *testing.T) {
+	allowed := make(map[string]bool, len(experienceAllowedImports))
+	for _, path := range experienceAllowedImports {
+		allowed[path] = true
+	}
+	for _, imp := range loadPackages(t)["internal/experience"] {
+		if !allowed[imp] {
+			t.Errorf("internal/experience imports %s, which is outside its allow-list: experience consumes structured outcomes and evidence vocabulary, never capabilities, continuity, or presentation (OHGO_ARCHITECTURE_RULES.md §3)", imp)
 		}
 	}
 }
