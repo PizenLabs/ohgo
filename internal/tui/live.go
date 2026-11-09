@@ -232,6 +232,12 @@ func (v *livePainter) streamTail(s State, index int, e Entry, pal *Palette, layo
 	}
 	v.streamIndex, v.streamRunes = -1, 0
 	lines := liveMarkdownLines(string(rest), pal, layout)
+	now := s.presentationAt()
+	if !entryFading(e, now) {
+		if age, ok := assistantFinalLineAge(e, now); ok && age < fadeFinalAt && len(lines) > 0 {
+			lines = splitLines(fadeRenderedTail(strings.Join(lines, "\n"), age, s.Theme))
+		}
+	}
 	if gap && len(lines) > 0 {
 		lines = append([]string{""}, lines...)
 	}
@@ -415,6 +421,7 @@ func liveChrome(s State, layout Layout) int {
 // still executing.
 func firstUnstable(s State) int {
 	first := len(s.Entries)
+	now := s.presentationAt()
 	if open := s.openAssistant(); open >= 0 {
 		first = open
 	}
@@ -425,7 +432,12 @@ func firstUnstable(s State) int {
 		if i >= first {
 			break
 		}
-		if e.Kind == EntryTool && e.Tool != nil && e.Tool.Status == ToolRunning {
+		if e.Kind == EntryTool && e.Tool != nil &&
+			(e.Tool.Status == ToolRunning || e.Tool.dwelling(now)) {
+			first = i
+		}
+		if e.Kind == EntryReasoning && e.Reasoning != nil &&
+			e.Reasoning.Closed && e.Reasoning.reasoningPresentationOpen(now) {
 			first = i
 		}
 		if e.Kind == EntryShell && e.Shell != nil && e.Shell.Status == ShellRunning {
@@ -445,6 +457,9 @@ func firstUnstable(s State) int {
 // therefore stays compact even when each one was sealed on a different frame.
 func liveEntryLines(s State, index int, e Entry, pal *Palette, layout Layout) []string {
 	lines := liveEntryLinesRaw(s, index, e, pal, layout)
+	if age := s.presentationAt().Sub(e.AppearedAt); len(lines) > 0 && entryFading(e, s.presentationAt()) && age < fadeFinalAt {
+		lines = splitLines(fadeRenderedBlock(strings.Join(lines, "\n"), age, s.Theme))
+	}
 	if len(lines) > 0 && index > 0 && index <= len(s.Entries) &&
 		s.Entries[index-1].Kind == EntryTool && e.Kind != EntryTool {
 		lines = append([]string{""}, lines...)
@@ -458,14 +473,21 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		return liveUserLines(e.UserText, pal, layout)
 
 	case EntryAssistant:
-		return liveMarkdownLines(e.AssistantText, pal, layout)
+		lines := liveMarkdownLines(e.AssistantText, pal, layout)
+		now := s.presentationAt()
+		if !entryFading(e, now) {
+			if age, ok := assistantFinalLineAge(e, now); ok && age < fadeFinalAt && len(lines) > 0 {
+				lines = splitLines(fadeRenderedTail(strings.Join(lines, "\n"), age, s.Theme))
+			}
+		}
+		return lines
 
 	case EntryReasoning:
 		if e.Reasoning == nil {
 			return nil
 		}
 		var b strings.Builder
-		renderReasoning(&b, e.Reasoning, pal, layout, s.Status.Spinner)
+		renderReasoningAt(&b, e.Reasoning, pal, layout, s.Status.Spinner, s.presentationAt())
 		return splitLines(b.String())
 
 	case EntryTool:
@@ -473,9 +495,16 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 			return nil
 		}
 		var b strings.Builder
+		now := s.presentationAt()
+		if e.Tool.run != nil && len(e.Tool.run.members) > 1 && toolRunGroupActive(s, e.Tool.run, now) {
+			if e.Tool.run.anchor() == e.Tool {
+				renderToolRun(&b, e.Tool.run, pal, layout, now)
+			}
+			return splitLines(b.String())
+		}
 		// Live mode groups by leading gaps (see liveEntryLines), so a tool
 		// never writes its own trailing separator.
-		renderTool(&b, e.Tool, pal, layout, latestRunningToolIndex(s) == index, false, entryGroupEnd(s.Entries, index))
+		renderToolAt(&b, e.Tool, pal, layout, latestRunningToolIndex(s) == index, false, entryGroupEnd(s.Entries, index), now)
 		return splitLines(b.String())
 
 	case EntryShell:
@@ -550,16 +579,24 @@ func expandedBlockLines(s State, id BlockID) []string {
 		if entry.Tool == nil {
 			return nil
 		}
+		if entry.Tool.run != nil && len(entry.Tool.run.members) > 1 {
+			renderToolRun(&b, entry.Tool.run, pal, layout, s.presentationAt())
+			return splitLines(b.String())
+		}
 		cpy := *entry.Tool
 		cpy.Expanded = true
-		renderTool(&b, &cpy, pal, layout, false, true, true)
+		// Explicit expansion is a request for the semantic outcome, not the
+		// remaining dwell frame: show the terminal body immediately.
+		cpy.DwellUntil = time.Time{}
+		renderToolAt(&b, &cpy, pal, layout, false, true, true, s.presentationAt())
 	case EntryReasoning:
 		if entry.Reasoning == nil {
 			return nil
 		}
 		cpy := *entry.Reasoning
 		cpy.Expanded = true
-		renderReasoning(&b, &cpy, pal, layout, s.Status.Spinner)
+		cpy.DwellUntil = time.Time{}
+		renderReasoningAt(&b, &cpy, pal, layout, s.Status.Spinner, s.presentationAt())
 	default:
 		return nil
 	}

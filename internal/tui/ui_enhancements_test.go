@@ -247,6 +247,7 @@ func TestExpandedToolRendersCodeDiff(t *testing.T) {
 	now := time.Now()
 	s.Apply(ToolStarted{ID: "c1", Name: "edit", Summary: "edit internal/parser.go", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "", Summary: "", Diff: diff, Path: "internal/parser.go", Operation: "MODIFY", At: now})
+	s.Apply(FrameTick{At: now.Add(toolMinDwell)})
 	s.Apply(ToolToggled{ID: "c1"})
 
 	out := Render(s)
@@ -323,15 +324,17 @@ func TestSpinnerFramesAreThrottledAndReasoningAnimated(t *testing.T) {
 		t.Fatalf("frames = %q / %q, want the first two spinner frames", first, second)
 	}
 
+	at := time.Now()
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 24})
-	s.Apply(UserSubmitted{Text: "go", At: time.Now()})
-	s.Apply(ReasoningDelta{Text: "inspect the parser", At: time.Now()})
+	s.Apply(UserSubmitted{Text: "go", At: at})
+	s.Apply(ReasoningDelta{Text: "inspect the parser", At: at})
 	live := ansi.Strip(Render(s))
 	if !strings.Contains(live, spinnerFrames[0]+" Thought") {
 		t.Fatalf("open reasoning lost its spinner head:\n%s", live)
 	}
-	s.Apply(AssistantDelta{Text: "answer"})
+	s.Apply(AssistantDelta{Text: "answer", At: at})
+	s.Apply(FrameTick{At: at.Add(toolMinDwell)})
 	settled := ansi.Strip(Render(s))
 	for _, line := range strings.Split(settled, "\n") {
 		if strings.Contains(line, "Thought") && strings.ContainsAny(line, "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") {

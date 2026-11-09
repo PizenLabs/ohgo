@@ -120,9 +120,16 @@ func (d Document) At(index int) (Block, bool) {
 func entryExpandable(entry Entry) bool {
 	switch entry.Kind {
 	case EntryTool:
-		// A running tool is expandable even before output arrives: the block
-		// must be able to open in place while it is still producing text.
-		return entry.Tool != nil && (toolExpandable(entry.Tool) || entry.Tool.Status == ToolRunning)
+		// A multi-call batch always has a tree to reveal, even when no member
+		// has a body. A running tool is expandable before output arrives so
+		// the block can open in place while it is still producing text.
+		if entry.Tool == nil {
+			return false
+		}
+		if entry.Tool.run != nil && len(entry.Tool.run.members) > 1 {
+			return true
+		}
+		return toolExpandable(entry.Tool) || entry.Tool.Status == ToolRunning
 	case EntryReasoning:
 		return entry.Reasoning != nil && strings.TrimSpace(entry.Reasoning.Text) != ""
 	default:
@@ -167,7 +174,13 @@ func blockIndex(entries []Entry, id BlockID) int {
 func entryExpanded(entry Entry) bool {
 	switch entry.Kind {
 	case EntryTool:
-		return entry.Tool != nil && entry.Tool.Expanded
+		if entry.Tool == nil {
+			return false
+		}
+		if entry.Tool.run != nil && len(entry.Tool.run.members) > 1 {
+			return entry.Tool.run.expanded()
+		}
+		return entry.Tool.Expanded
 	case EntryReasoning:
 		return entry.Reasoning != nil && entry.Reasoning.Expanded
 	default:

@@ -659,18 +659,23 @@ approval, shutting down) are computed per render, never stored.
   runtime event rate and presentation frame rate are independent. The bound only
   prevents one producer from monopolising a frame; no event is dropped and the
   next event resumes the same path.
-- Activity grouping: adjacent tool blocks render as one compact action stream.
-  Only the last call in the run keeps the separator row; earlier calls stay
-  click-expandable but no longer read as independent cards. `ProjectActivity`
-  is the single owner decision: a running tool or an open reasoning trace
-  presents the activity through its own entry. The full-screen canvas reserves
-  no separate activity band, so starting, handing off, and finishing a turn
-  cannot move the composer; the stable hint/status row carries telemetry and
-  the current keys. Output-first mode may show the one-row activity line in its
-  footer only when no entry owns the phase. The active runtime phase is absent
-  from the header, and the workspace authority (`ASK`, `BUILD`, `FUZZ`) appears
-  only at the prompt boundary. A tool finalizes into that same block, so no live
-  copy survives next to its stable representation.
+- Activity grouping: adjacent completed tool calls collapse into one telemetry
+  footer (`+ Executed N tools in Xms`, Ctrl+O to expand). The expanded tree
+  keeps each call's measured duration and compact outcome. A running member, or
+  a trailing batch in a turn that may still grow, keeps individual rows. The
+  footer and each live block use presentation-only dwell/fade floors: a fast
+  call holds its executing frame for 150ms, and a newly spawned block eases
+  through a 120ms three-phase RGB entrance. Neither phase changes semantic
+  status, timing, ordering, or runtime scheduling. `ProjectActivity` remains
+  the single owner decision: a running tool or open reasoning trace presents
+  activity through its own entry. The full-screen canvas reserves no separate
+  activity band, so starting, handing off, and finishing a turn cannot move the
+  composer; the stable hint/status row carries telemetry and keys. Output-first
+  mode may show the one-row activity line in its footer only when no entry owns
+  the phase. The active runtime phase is absent from the header, and the
+  workspace authority (`ASK`, `BUILD`, `FUZZ`) appears only at the prompt
+  boundary. A tool finalizes into that same block, so no live copy survives
+  next to its stable representation.
 - Non-blocking composer: typing, editing, history recall, and slash dispatch
   stay live while a turn streams. A normal prompt entered during execution is
   queued; commands (`/status`, `/usage`, `/theme`, `/cancel`, …) run

@@ -161,20 +161,23 @@ func TestLiveExpandUnderARealPTY(t *testing.T) {
 	waitFor("? help", 20*time.Second)
 	write("run both demo tools\r")
 
-	// Both blocks seal collapsed: compact outcomes, no raw bodies.
-	waitFor("3 lines", 20*time.Second)
-	waitFor("error: second failure line one", 20*time.Second)
+	// Both calls seal as one compact telemetry footer: counts and timing
+	// stay, raw bodies do not.
+	waitFor("+ Executed 2 tools", 20*time.Second)
 	waitFor("both tools ran and the answer follows.", 20*time.Second)
-	if got := plain(); strings.Contains(got, "second failure line two") {
-		t.Fatalf("collapsed transcript leaked the raw body:\n%s", tail(got))
+	if got := plain(); strings.Contains(got, "second failure line two") || strings.Contains(got, "first tool line two") {
+		t.Fatalf("collapsed footer leaked a raw body:\n%s", tail(got))
 	}
 
-	// Ctrl+O expands the latest block only: the failure detail arrives,
-	// the sibling's body never does.
+	// Ctrl+O expands the batch tree in place: every call and its compact
+	// outcome become reachable, while bounded bodies stay behind expansion.
 	write("\x0f") // ctrl+o
-	waitFor("second failure line two", 10*time.Second)
-	if got := plain(); strings.Contains(got, "first tool line two") {
-		t.Fatalf("expanding the latest block leaked its sibling:\n%s", tail(got))
+	waitFor("error: second failure line one", 10*time.Second)
+	if got := plain(); !strings.Contains(got, "3 lines") {
+		t.Fatalf("expanded tree lost the sibling outcome:\n%s", tail(got))
+	}
+	if got := plain(); strings.Contains(got, "second failure line two") || strings.Contains(got, "first tool line two") {
+		t.Fatalf("expanded tree leaked an unbounded raw body:\n%s", tail(got))
 	}
 
 	// Collapse again, then quit an idle session.

@@ -17,7 +17,7 @@ import (
 // saying what ran while the summary line says what it produced.
 func TestToolFinishPreservesInvocation(t *testing.T) {
 	s := New()
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read internal/agent/loop.go", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "a\nb\nc\n", Summary: "3 lines", At: now})
 	tool := s.tool("c1")
@@ -38,7 +38,7 @@ func TestToolFinishPreservesInvocation(t *testing.T) {
 // A failed finish updates the same block and stays visibly a failure.
 func TestToolFailedUpdatesSameBlock(t *testing.T) {
 	s := New()
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "FAIL TestFoo\n", Summary: "error: FAIL TestFoo", IsError: true, At: now})
 	tool := s.tool("c1")
@@ -65,7 +65,7 @@ func TestToolToggleUnknownIDIsNoOp(t *testing.T) {
 // Expansion flips presentation only: status, text, and summary are untouched.
 func TestToolTogglePreservesExecutionState(t *testing.T) {
 	s := New()
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "ok\n", Summary: "", IsError: false, At: now})
 	before := *s.tool("c1")
@@ -90,7 +90,7 @@ func TestLatestToolIDTargetsMostRecent(t *testing.T) {
 	if got := s.LatestToolID(); got != "" {
 		t.Errorf("latest = %q, want empty with no tools", got)
 	}
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "read", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "x", At: now})
 	s.Apply(AssistantDelta{Text: "answer"})
@@ -103,7 +103,7 @@ func TestLatestToolIDTargetsMostRecent(t *testing.T) {
 // Ctrl+O toggles exactly the latest block and leaves its sibling collapsed.
 func TestCtrlOTogglesOnlyLatestBlock(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	p.state.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: now})
 	p.state.Apply(ToolFinished{ID: "c1", Text: "aaa\nbbb\n", Summary: "2 lines", At: now})
 	p.state.Apply(ToolStarted{ID: "c2", Name: "read", Summary: "read b.go", At: now})
@@ -135,7 +135,7 @@ func TestCtrlOWithoutToolsIsNoOp(t *testing.T) {
 // An open approval owns the keyboard: Ctrl+O must not disturb it.
 func TestCtrlODuringApprovalIsNoOp(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	p.state.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash rm -rf /", At: now})
 	p.state.Apply(ToolFinished{ID: "c1", Text: "x\ny\n", At: now})
 	p.state.Apply(ApprovalAsked{ToolName: "bash", Reason: "runs", Summary: "bash x", Choices: approvalChoices})
@@ -153,7 +153,7 @@ func TestCtrlODuringApprovalIsNoOp(t *testing.T) {
 func TestCollapsedHidesBodyExpandedRestores(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 24})
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "FAIL TestFoo\nexpected 1\ngot 2\n", Summary: "error: FAIL TestFoo", IsError: true, At: now})
 
@@ -190,7 +190,7 @@ func TestCollapsedHidesBodyExpandedRestores(t *testing.T) {
 func TestExpandedSuccessShowsDetail(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 24})
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read loop.go", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "package agent\nfunc Run() {}\n", Summary: "2 lines", At: now})
 	s.Apply(ToolToggled{ID: "c1"})
@@ -234,7 +234,7 @@ func TestLongInvocationIsBounded(t *testing.T) {
 func TestExpandedLongResultIsBounded(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 40})
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: now})
 	var sb strings.Builder
 	for i := 0; i < 200; i++ {
@@ -257,7 +257,7 @@ func TestExpandedLongResultIsBounded(t *testing.T) {
 func TestEmptyResultRendersCleanly(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 24})
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash true", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "", Summary: "", At: now})
 	out := ansi.Strip(Render(s))
@@ -273,7 +273,7 @@ func TestEmptyResultRendersCleanly(t *testing.T) {
 func TestToolBlocksAreUnicodeSafe(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 40, Height: 24})
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read 日本語/日本語ファイル.go", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "日本語の内容 🎉\n第二行 🚀\n", Summary: "2 lines", At: now})
 	s.Apply(ToolToggled{ID: "c1"})
@@ -297,7 +297,7 @@ func TestToolBlocksAreUnicodeSafe(t *testing.T) {
 // prose that follows it, with no duplicate entries.
 func TestToolThenAnswerStaysOrdered(t *testing.T) {
 	s := New()
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "contents here\n", Summary: "", At: now})
 	s.Apply(AssistantDelta{Text: "the file holds the config"})
@@ -322,7 +322,7 @@ func TestTogglePreservesScrollState(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		s.Apply(Notice{Text: "older"})
 	}
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "x\ny\n", At: now})
 	s.Apply(ScrollMoved{Delta: 4})
@@ -338,7 +338,7 @@ func TestTogglePreservesScrollState(t *testing.T) {
 func TestLiveAndFullscreenShareToolProjection(t *testing.T) {
 	p, painter := newLiveProgram()
 	p.state.Apply(TerminalResized{Width: 80, Height: 30})
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	var history []string
 	history = append(history, liveEvent(p, ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: now})...)
 	history = append(history, liveEvent(p, ToolFinished{ID: "c1", Text: "one\ntwo\n", Summary: "2 lines", At: now})...)
@@ -361,7 +361,7 @@ func TestLiveAndFullscreenShareToolProjection(t *testing.T) {
 func TestLiveExpandSealedBlockPrintsDetailOnce(t *testing.T) {
 	p, _ := newLiveProgram()
 	p.state.Apply(TerminalResized{Width: 80, Height: 30})
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	for _, e := range []Event{
 		ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: now},
 		ToolFinished{ID: "c1", Text: "FAIL TestFoo\nexpected 1\n", Summary: "error: FAIL TestFoo", IsError: true, At: now},
@@ -406,7 +406,7 @@ func TestLiveExpandSealedBlockPrintsDetailOnce(t *testing.T) {
 func TestLiveExpandRunningToolStaysLive(t *testing.T) {
 	p, painter := newLiveProgram()
 	p.state.Apply(TerminalResized{Width: 80, Height: 30})
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	liveEvent(p, ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: now})
 	p.handleKey(tea.KeyMsg{Type: tea.KeyCtrlO})
 	if !p.state.tool("c1").Expanded {

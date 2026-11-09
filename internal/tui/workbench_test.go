@@ -163,6 +163,7 @@ func TestToolOutputBoundedAndWrapped(t *testing.T) {
 	now := time.Now()
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: strings.Repeat("x", 20000), At: now})
+	s.Apply(FrameTick{At: now.Add(toolMinDwell)})
 	// Collapsed stays compact: a 20k result must not flood the transcript.
 	collapsed := Render(s)
 	if strings.Contains(collapsed, strings.Repeat("x", 1000)) {

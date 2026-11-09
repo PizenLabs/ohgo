@@ -463,12 +463,14 @@ func TestRegexToolErrorRendersAsErrorCard(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 80, Height: 24})
 	s.Apply(ToolStarted{ID: "call_1", Name: "grep", At: time.Now()})
+	finishedAt := time.Now()
 	s.Apply(ToolFinished{
 		ID:      "call_1",
 		Text:    "invalid regular expression \"[unclosed\": error parsing regexp: missing closing ]: `[`",
 		IsError: true,
-		At:      time.Now(),
+		At:      finishedAt,
 	})
+	s.Apply(FrameTick{At: finishedAt.Add(toolMinDwell)})
 
 	out := ansi.Strip(Render(s))
 	if !strings.Contains(out, "✗ grep") {

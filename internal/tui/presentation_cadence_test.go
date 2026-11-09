@@ -25,21 +25,36 @@ func completedToolStream(summaries ...string) State {
 	return s
 }
 
-// Consecutive completed calls are one compact stream: no blank row between
-// them, but the run keeps its separator before whatever follows.
+// Consecutive completed calls collapse into one telemetry footer. Expanding
+// the batch keeps every call reachable as a compact tree, and the answer after
+// the batch keeps its separator.
 func TestConsecutiveToolsRenderAsOneCompactStream(t *testing.T) {
 	s := completedToolStream("ls backend", "ls .", "read backend/go.mod")
 	s.Apply(AssistantDelta{Text: "The project is a Go service."})
+	// The batch becomes eligible for its footer only after every member has
+	// cleared the minimum dwell floor.
+	s.Apply(FrameTick{At: time.Now().Add(toolMinDwell)})
 
-	out := ansi.Strip(Render(s))
-	if strings.Contains(out, "└─ 1 line\n\n✓") {
-		t.Fatalf("consecutive tools kept a blank card boundary:\n%s", out)
+	collapsed := ansi.Strip(Render(s))
+	if !strings.Contains(collapsed, "+ Executed 3 tools") {
+		t.Fatalf("consecutive tools did not collapse into a telemetry footer:\n%s", collapsed)
 	}
-	if !strings.Contains(out, "└─ 1 line\n✓ ls .") {
-		t.Fatalf("tool stream is not compact:\n%s", out)
+	if strings.Contains(collapsed, "└ ls backend") {
+		t.Fatalf("collapsed footer leaked the per-call tree:\n%s", collapsed)
 	}
-	if !strings.Contains(out, "└─ 1 line\n\nThe project is a Go service.") {
-		t.Fatalf("the end of the action run lost its separator:\n%s", out)
+	if !strings.Contains(collapsed, "\n\nThe project is a Go service.") {
+		t.Fatalf("the end of the action run lost its separator:\n%s", collapsed)
+	}
+
+	s.Apply(ToolToggled{ID: "cc"})
+	expanded := ansi.Strip(Render(s))
+	for _, want := range []string{"- Executed 3 tools", "└ ls backend", "└ ls .", "└ read backend/go.mod"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded tree lost %q:\n%s", want, expanded)
+		}
+	}
+	if !strings.Contains(expanded, "\n\nThe project is a Go service.") {
+		t.Fatalf("the end of the action run lost its separator after expansion:\n%s", expanded)
 	}
 }
 

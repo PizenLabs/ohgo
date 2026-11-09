@@ -852,8 +852,19 @@ func showWelcome(state State) bool {
 func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 	var body strings.Builder
 	current := latestRunningToolIndex(state)
+	now := state.presentationAt()
 	for i, entry := range state.Entries {
-		renderEntryGrouped(&body, entry, pal, layout, current == i, entryGroupEnd(state.Entries, i), entryLeadingGap(state.Entries, i), state.Status.Spinner)
+		groupActive := entry.Kind == EntryTool && entry.Tool != nil &&
+			toolRunGroupActive(state, entry.Tool.run, now)
+		renderEntryGrouped(&body, entry, pal, layout, entryRenderContext{
+			current:         current == i,
+			toolGroupEnd:    entryGroupEnd(state.Entries, i),
+			leadingGap:      entryLeadingGap(state.Entries, i),
+			toolGroupActive: groupActive,
+			tick:            state.Status.Spinner,
+			now:             now,
+			theme:           state.Theme,
+		})
 	}
 	return body.String()
 }
@@ -1957,13 +1968,26 @@ func composerStateLine(state State, pal *Palette, layout Layout) string {
 	return pal.Queued.Render(label + " · " + first)
 }
 
+// entryRenderContext carries the presentation state that is not part of the
+// entry payload: geometry grouping, the one live activity, and the frame clock.
+// Keeping it in one value means the retained layout and the reference
+// projection cannot disagree about which phase to paint.
+type entryRenderContext struct {
+	current         bool
+	toolGroupEnd    bool
+	leadingGap      bool
+	toolGroupActive bool
+	tick            int
+	now             time.Time
+	theme           string
+}
+
 // renderEntryGrouped writes one transcript entry, wrapped to the content width.
 // current is true when this block is the one live activity the runtime owns.
 // Only that block may show a live projection; every other row is stable.
 //
 // toolGroupEnd is true when this block closes the adjacent run of tool calls.
-// Only that last block carries the expand hint, so a sequence of completed
-// calls reads as one stream instead of one card per call.
+// A completed batch owns one telemetry footer instead of one row per call.
 //
 // leadingGap is true when this block follows a tool run. The gap belongs to
 // the block after the run, never to the last tool: appending another tool must
@@ -1972,9 +1996,25 @@ func composerStateLine(state State, pal *Palette, layout Layout) string {
 //
 // The question renders as a faint background block across the content width,
 // with no label prefix: the surface alone separates it from the answer.
-func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, current bool, toolGroupEnd, leadingGap bool, tick int) {
+func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, ctx entryRenderContext) {
+	if entryFading(entry, ctx.now) {
+		age := ctx.now.Sub(entry.AppearedAt)
+		if age < fadeFinalAt {
+			var inner strings.Builder
+			renderEntryContent(&inner, entry, pal, layout, ctx)
+			sb.WriteString(fadeRenderedBlock(inner.String(), age, ctx.theme))
+			return
+		}
+		// The final phase is the full semantic palette. It is still inside
+		// the entrance window only so the block keeps ticking until it is
+		// indistinguishable from settled history.
+	}
+	renderEntryContent(sb, entry, pal, layout, ctx)
+}
+
+func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, ctx entryRenderContext) {
 	writeGap := func() {
-		if leadingGap {
+		if ctx.leadingGap {
 			sb.WriteString("\n")
 		}
 	}
@@ -1995,6 +2035,11 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 		// and styles after, so one width calculation governs and ANSI
 		// never inflates the budget. Never re-wrap styled output here.
 		rendered := RenderMarkdownWrapped(entry.AssistantText, pal, textWidth(layout))
+		if !entryFading(entry, ctx.now) {
+			if age, ok := assistantFinalLineAge(entry, ctx.now); ok && age < fadeFinalAt {
+				rendered = fadeRenderedTail(rendered, age, ctx.theme)
+			}
+		}
 		for _, wl := range strings.Split(rendered, "\n") {
 			sb.WriteString(wl + "\n")
 		}
@@ -2003,14 +2048,22 @@ func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout L
 	case EntryReasoning:
 		if entry.Reasoning != nil {
 			writeGap()
-			renderReasoning(sb, entry.Reasoning, pal, layout, tick)
+			renderReasoningAt(sb, entry.Reasoning, pal, layout, ctx.tick, ctx.now)
 		}
 
 	case EntryTool:
 		if entry.Tool != nil {
+			if entry.Tool.run != nil && len(entry.Tool.run.members) > 1 && ctx.toolGroupActive {
+				// One footer represents the batch; its members are not
+				// repeated as independent rows. Only the anchor paints.
+				if entry.Tool.run.anchor() == entry.Tool {
+					renderToolRun(sb, entry.Tool.run, pal, layout, ctx.now)
+				}
+				return
+			}
 			// A tool never owns a trailing separator: the block after the run
 			// owns the gap, so appending another tool cannot move this one.
-			renderTool(sb, entry.Tool, pal, layout, current, false, toolGroupEnd)
+			renderToolAt(sb, entry.Tool, pal, layout, ctx.current, false, ctx.toolGroupEnd, ctx.now)
 		}
 
 	case EntryShell:
@@ -2097,6 +2150,10 @@ const (
 // place. Reasoning is secondary information and never takes the ◌ glyph
 // reserved for the runtime's current tool action.
 func renderReasoning(sb *strings.Builder, reasoning *ReasoningEntry, pal *Palette, layout Layout, tick int) {
+	renderReasoningAt(sb, reasoning, pal, layout, tick, time.Now())
+}
+
+func renderReasoningAt(sb *strings.Builder, reasoning *ReasoningEntry, pal *Palette, layout Layout, tick int, now time.Time) {
 	if reasoning == nil {
 		return
 	}
@@ -2105,10 +2162,11 @@ func renderReasoning(sb *strings.Builder, reasoning *ReasoningEntry, pal *Palett
 		marker = blockExpandedMarker
 	}
 	head := marker + " Thought"
-	if !reasoning.Expanded && !reasoning.Closed && strings.TrimSpace(reasoning.Text) != "" {
+	if !reasoning.Expanded && reasoning.reasoningPresentationOpen(now) && strings.TrimSpace(reasoning.Text) != "" {
 		head = spinnerGlyph(tick) + " Thought"
 	}
-	if elapsed := reasoning.Duration(time.Now()); elapsed > 0 {
+	if elapsed := reasoning.Duration(now); !reasoning.StartedAt.IsZero() &&
+		(elapsed > 0 || reasoning.Closed || !reasoning.EndedAt.IsZero()) {
 		head += " · " + formatDurationPrecise(elapsed)
 	}
 	sb.WriteString(pal.Status.Render(head) + "\n")
@@ -2162,6 +2220,54 @@ func maxReasoningLines(layout Layout) int {
 	return 24
 }
 
+// renderToolRun renders one completed adjacent batch as a telemetry footer.
+//
+// Collapsed is the default: a single persistent row carries the batch count
+// and its measured wall span, so eight fast calls occupy one line instead of
+// sixteen. Expansion keeps every call reachable as a desaturated tree with the
+// same measured duration the individual badge would have shown.
+func renderToolRun(sb *strings.Builder, run *toolRun, pal *Palette, layout Layout, now time.Time) {
+	if run == nil || len(run.members) == 0 {
+		return
+	}
+	width := dialogWidth(layout)
+	expanded := run.expanded()
+	marker := blockCollapsedMarker
+	if expanded {
+		marker = blockExpandedMarker
+	}
+	head := fmt.Sprintf("%s Executed %d tools", marker, len(run.members))
+	if span, ok := run.duration(); ok {
+		head += " in " + formatDurationPrecise(span)
+	}
+	if expanded {
+		head += " (ctrl+o to collapse)"
+	} else {
+		head += " (ctrl+o to expand)"
+	}
+	if width > 0 {
+		head = TruncateToWidth(head, width)
+	}
+	sb.WriteString(pal.Status.Render(head) + "\n")
+	if !expanded {
+		return
+	}
+	for _, member := range run.members {
+		invocation := sanitizeInline(toolInvocation(member))
+		line := "  └ " + invocation
+		if elapsed := member.elapsed(); elapsed != "" {
+			line += " (" + elapsed + ")"
+		}
+		if outcome := collapsedOutcome(member); outcome != "" {
+			line += " · " + outcome
+		}
+		if width > 0 {
+			line = TruncateToWidth(line, width)
+		}
+		sb.WriteString(pal.Muted.Render(line) + "\n")
+	}
+}
+
 // renderTool writes a tool call and, once finished, its outcome.
 //
 // The default projection is collapsed and compact: one row naming the
@@ -2179,13 +2285,18 @@ func maxReasoningLines(layout Layout) int {
 // large results collapse to the limit with a truncation marker rather than
 // flooding the conversation.
 func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, current bool, separate, showHint bool) {
+	renderToolAt(sb, tool, pal, layout, current, separate, showHint, time.Now())
+}
+
+func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layout, current bool, separate, showHint bool, now time.Time) {
 	width := dialogWidth(layout)
+	status := tool.presentationStatus(now)
 	glyph := "·"
 	style := pal.Muted
-	switch tool.Status {
+	switch status {
 	case ToolRunning:
 		glyph = "◌"
-		if current {
+		if current || tool.dwelling(now) {
 			style = pal.ToolRun
 		}
 	case ToolDone:
@@ -2201,8 +2312,8 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	// be meaningful, and only while it owns the activity; a completed call
 	// always shows its measured duration.
 	rightText := ""
-	if tool.Status != ToolPending && (tool.Status != ToolRunning || current) {
-		if tool.Status != ToolRunning || tool.Duration() >= 100*time.Millisecond {
+	if status != ToolPending && (status != ToolRunning || current) {
+		if status != ToolRunning || tool.Duration() >= 100*time.Millisecond {
 			rightText = tool.elapsed()
 		}
 	}
@@ -2240,7 +2351,7 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 
 	// A running call that has produced partial output states that explicitly.
 	// The final outcome replaces this row rather than leaving both visible.
-	if tool.Status == ToolRunning && tool.Streaming {
+	if status == ToolRunning && tool.Streaming {
 		progress := sanitizeInline(tool.Summary)
 		switch {
 		case progress == "" || progress == sanitizeInline(tool.Invocation):
@@ -2263,7 +2374,7 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	// the executor provided one, else a bounded first-line fallback so a
 	// single-line result stays visible even with its body collapsed.
 	// The hint width is reserved up front so the whole row stays bounded.
-	if tool.Status != ToolRunning && tool.Status != ToolPending {
+	if status != ToolRunning && status != ToolPending {
 		outcome := collapsedOutcome(tool)
 		hint := ""
 		// Ctrl+O targets the latest expandable block, so the affordance
@@ -2278,7 +2389,7 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 				budget = 1
 			}
 			outcomeStyle := pal.Status
-			if tool.Status == ToolError {
+			if status == ToolError {
 				outcomeStyle = pal.ToolError
 			}
 			line := "  " + outcomeStyle.Render("└─ "+TruncateToWidth(outcome, budget))
@@ -2300,12 +2411,12 @@ func renderTool(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Layou
 	// Collapsed is the default: the body below only renders expanded.
 	// Expansion is presentation-only — the same semantic Text, bounded by
 	// the same truncation, wrapping, and sanitization as before.
-	if !tool.Expanded || (tool.Text == "" && strings.TrimSpace(tool.Diff) == "") {
+	if status == ToolRunning || !tool.Expanded || (tool.Text == "" && strings.TrimSpace(tool.Diff) == "") {
 		// separate is only for a one-off projection (an expanded block printed
 		// into scrollback) that needs a trailing gap after it. Inline
 		// transcripts pass false and let the following block own the gap, so a
 		// stream of calls never reflows an earlier block.
-		if separate && (tool.Status == ToolDone || tool.Status == ToolError || tool.Status == ToolCancelled) {
+		if separate && (status == ToolDone || status == ToolError || status == ToolCancelled) {
 			sb.WriteString("\n")
 		}
 		return

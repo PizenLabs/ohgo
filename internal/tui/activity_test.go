@@ -152,6 +152,9 @@ func TestToolFinalizationReplacesLiveRepresentationExactlyOnce(t *testing.T) {
 
 	finishedAt := time.Now()
 	s.Apply(ToolFinished{ID: "c1", Text: "package a\n", Summary: "1 line", At: finishedAt, Seq: 1})
+	// The fast call keeps its intent frame for the perception floor; advance
+	// the presentation clock before asserting the settled projection.
+	s.Apply(FrameTick{At: finishedAt.Add(toolMinDwell)})
 	if len(s.Entries) != 2 {
 		t.Fatalf("entries = %d after completion, want the same two blocks", len(s.Entries))
 	}
@@ -251,7 +254,9 @@ func TestFailedToolFinalizesExactlyOnce(t *testing.T) {
 	s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read missing.go", At: time.Now(), Seq: 1})
 	id := s.Entries[1].ID
 
-	s.Apply(ToolFinished{ID: "c1", Text: "no such file", Summary: "no such file", IsError: true, At: time.Now(), Seq: 1})
+	finishedAt := time.Now()
+	s.Apply(ToolFinished{ID: "c1", Text: "no such file", Summary: "no such file", IsError: true, At: finishedAt, Seq: 1})
+	s.Apply(FrameTick{At: finishedAt.Add(toolMinDwell)})
 	if s.Entries[1].ID != id || s.Entries[1].Tool.Status != ToolError {
 		t.Fatalf("tool = %+v, want the same block failed", s.Entries[1])
 	}
@@ -292,7 +297,9 @@ func TestLivePainterKeepsOneLiveRowAndSealsItOnce(t *testing.T) {
 		t.Fatalf("live region has %d running markers, want one: %q", got, painter.live)
 	}
 
-	s.Apply(ToolFinished{ID: "c1", Text: "19 lines\n", Summary: "19 lines", At: time.Now(), Seq: 1})
+	finishedAt := time.Now()
+	s.Apply(ToolFinished{ID: "c1", Text: "19 lines\n", Summary: "19 lines", At: finishedAt, Seq: 1})
+	s.Apply(FrameTick{At: finishedAt.Add(toolMinDwell)})
 	history = append(history, painter.render(s)...)
 	if got := countStripped(history, "inspecting backend/internal"); got != 1 {
 		t.Fatalf("sealed history contains the action %d times, want one: %q", got, history)

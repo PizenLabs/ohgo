@@ -107,6 +107,7 @@ func TestToolOutputWithControlsRendersSafely(t *testing.T) {
 	now := time.Now()
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", At: now})
 	s.Apply(ToolFinished{ID: "c1", Text: "building\x1b[2K\r50%\r\x1b[1Adone\nok", At: now})
+	s.Apply(FrameTick{At: now.Add(toolMinDwell)})
 	// Collapsed is the default: the first line stays visible, the rest
 	// waits for expansion, and cursor control reaches the terminal in
 	// neither projection.

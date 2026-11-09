@@ -250,7 +250,7 @@ func TestAssistantProseCreatesNoToolBlock(t *testing.T) {
 // Compact grammar: running shows the spinner state, success a check with
 // its summary, failure a cross that stays a failure.
 func TestToolBlockRenderStates(t *testing.T) {
-	now := time.Now()
+	now := time.Now().Add(-time.Second)
 	running := New()
 	running.Apply(TerminalResized{Width: 80, Height: 24})
 	running.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "bash go test ./...", At: now})
@@ -314,7 +314,8 @@ func TestToolBlocksThroughLivePath(t *testing.T) {
 	p, painter := newLiveProgram()
 	var history []string
 	history = append(history, liveEvent(p, UserSubmitted{Text: "check auth"})...)
-	running := liveEvent(p, ToolStarted{ID: "c1", Name: "read", Summary: "read internal/auth/auth.go", At: time.Now()})
+	startedAt := time.Now().Add(-time.Second)
+	running := liveEvent(p, ToolStarted{ID: "c1", Name: "read", Summary: "read internal/auth/auth.go", At: startedAt})
 	_ = running
 	// A running tool is unstable: it must be offered in the live region,
 	// never silently sealed as if it were done.

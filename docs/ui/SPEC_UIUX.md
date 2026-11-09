@@ -780,6 +780,10 @@ The glyph must communicate state independently:
 
 # 22. Timing Rules
 
+> Superseded for tool/reasoning lifecycle presentation by
+> `SPEC_UIUX_ENHANCEMENTS.md` §5 (minimum dwell and entrance easing). Runtime
+> execution itself is still never delayed.
+
 Transient states must not disappear before the user can reasonably understand them.
 
 However, do not artificially delay execution merely to show animation.
