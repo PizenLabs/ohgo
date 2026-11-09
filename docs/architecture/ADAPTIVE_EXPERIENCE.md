@@ -186,3 +186,6 @@ No transcript reconstruction is required.
   execute Go tests during a turn; the repository test suite is the executor.
 - Recurrence validation is not a probability. `Observations` and
   `Contradictions` are counts, never a calibrated confidence score.
+- Empirical validation, including the measured limits of the current extractor
+  and advisor, is recorded in
+  [`docs/reports/adaptive-experience-benchmark.md`](../reports/adaptive-experience-benchmark.md).
