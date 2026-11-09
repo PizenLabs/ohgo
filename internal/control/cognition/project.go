@@ -86,6 +86,10 @@ type Projector struct {
 	Facts RepositoryFacts
 	// Options bounds the projection.
 	Options ProjectorOptions
+	// Advisor is optional promoted execution experience. It may reorder the
+	// already-constructed tool surface and append bounded advisory hints. It
+	// never widens the surface, grants authority, or changes evidence.
+	Advisor ExperienceAdvisor
 }
 
 // NewProjector returns a projector for one turn.
@@ -134,6 +138,12 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	}
 	failures := p.Evidence.FailureState()
 	candidates := Candidates(shape, p.Evidence, execution, req.Tools, p.Facts, suff)
+	advice := adviceFor(p.Advisor, shape, p.Evidence, execution, suff, candidates.Tools, req.Turns)
+	if len(advice.PreferredTools) > 0 {
+		// The advisor cannot add a tool: orderCandidateTools only reorders the
+		// filtered surface Candidates already decided.
+		candidates.Tools = orderCandidateTools(candidates.Tools, advice.PreferredTools)
+	}
 	// A repeated observation with required evidence still missing is not a
 	// reason to close the action surface: the contract is not satisfied, and
 	// forcing an answer would only produce a completion veto. The first turn of
@@ -156,6 +166,9 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	messages, report := projectMessages(req.Messages, p.Evidence, options)
 	state := RenderState(shape, p.Evidence, execution, suff, candidates,
 		options.StateBlockBytes, options.StateBlockItems)
+	if len(advice.Hints) > 0 {
+		state = appendExperienceHints(state, advice.Hints, options.StateBlockBytes)
+	}
 
 	report.Turn = req.Turn
 	report.Messages = len(messages)
@@ -163,6 +176,8 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	report.StateBlockBytes = len(state)
 	report.ToolNames = toolNames(candidates.Tools)
 	report.Excluded = candidates.Excluded
+	report.ExperienceApplied = append([]string(nil), advice.Matched...)
+	report.ExperienceHints = append([]string(nil), advice.Hints...)
 	report.Sufficiency = string(suff.State)
 	report.Stage = string(suff.Stage)
 	// An informational task whose required evidence is known is done
@@ -197,6 +212,31 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		result.System = []ai.SystemPromptBlock{{Text: state}}
 	}
 	return result
+}
+
+// appendExperienceHints adds bounded advisory guidance to the runtime state
+// block. The guidance is explicitly not authority and is stripped first when
+// the block budget is tight.
+func appendExperienceHints(state string, hints []string, maxBytes int) string {
+	var block strings.Builder
+	block.WriteString("Experience guidance (advisory, not authority):\n")
+	for _, hint := range hints {
+		hint = strings.TrimSpace(hint)
+		if hint == "" {
+			continue
+		}
+		block.WriteString("- ")
+		block.WriteString(bound(hint, 240))
+		block.WriteString("\n")
+	}
+	if block.Len() == len("Experience guidance (advisory, not authority):\n") {
+		return state
+	}
+	if strings.TrimSpace(state) == "" {
+		state = "# Runtime state (authoritative, not a user request)\n\n"
+	}
+	state += "\n" + block.String()
+	return bound(state, maxBytes)
 }
 
 // executionToolCalls counts the tool outcomes already observed in a run.

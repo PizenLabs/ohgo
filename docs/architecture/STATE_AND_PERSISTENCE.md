@@ -33,6 +33,7 @@ Two rules frame everything below:
 | `sessions.db` (+ `-wal`, `-shm`) | SQLite session store: sessions, messages, artifacts | `session` | machine; authoritative; survives every project |
 | `cache/<provider>-models.json` | provider/model discovery rosters, `schema_version`-stamped | `catalog` | machine; **derived**, rebuildable |
 | `history` | prompt history (project and machine scopes), commands excluded; holds the full text of every submitted prompt, including offloaded ones | `history` | machine; durable recall, best-effort writes |
+| `experience/global.json` | cross-project execution experience, versioned and bounded; written only by an explicit validated `PromoteToGlobal` | `experience` | machine; advisory; never authority or evidence |
 | `update.json` | latest observed release, provenance, ETag, last error, TTL timestamps; `0600`, atomic | `update` | machine; **derived**, rebuildable, never authority |
 | `update-transition.json` | last explicit version transition: operation, from/to release, completion time, post-update notice acknowledgement; `0600`, atomic | `update` | machine; authoritative lifecycle record, never inferred from version inequality |
 | `update.lock` | exclusive OS advisory installation claim; released automatically on process exit | `update` | transient; removed by its owner |
@@ -51,6 +52,7 @@ function.
 | `progress.json` | authoritative durable task checkpoint (schema version 3, read-old/refuse-newer): identity, lifecycle, contract, snapshot, budget, evidence state, active role and handoff record (continuity metadata, never authority), the bounded timeline and completion proof, and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries, checkpoint write is the commit point |
 | `task.md` | human- and model-readable task projection | `task` | project; projection only; never authoritative over `progress.json` |
 | `tasks/<id>.json` | detached task archive, including its context | `task` | project; durable until resumed, cancelled, or deleted by the human |
+| `experience.json` | bounded, versioned execution experience: incidents, lessons, candidates, validation, promotion, contradiction, retirement | `experience` | project; advisory; deleting it is a safe cold start |
 | `scratch/prompt_<session>_<timestamp>.md` | compressed oversized master prompt (≥50 lines or ≥4000 runes; conversational filler removed, code and identifiers preserved), `0600` | `history` | ephemeral; removed on session close/switch, process exit, or startup sweep after 24h; durable raw copy lives in prompt history |
 
 The project root is the Git worktree root when the directory is inside a repo,
@@ -242,6 +244,8 @@ never let global state become an accidental authority for project-local state.**
 | role execution context (ASK/FUZZ/BUILD) | `task` | `<project>/.ohgo/progress.json` (`context.roles`) | authoritative for continuity; never authority | task | resume or archive |
 | role handoff (source/target, disposition, carried references) | `task` | `<project>/.ohgo/progress.json` (`handoff`) | authoritative for recovery; never authority | task | resume or archive |
 | detached task | `task` | `<project>/.ohgo/tasks/<id>.json` | authoritative until closed | task | `/task resume` |
+| verified execution experience | `experience` | `<project>/.ohgo/experience.json` | advisory only; never authority, evidence, or completion | project | delete = cold start |
+| global execution experience | `experience` | `~/.ohgo/experience/global.json` | advisory only; explicit validated promotion only | machine | delete = cold start |
 | project identity (`id`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-mint |
 | project name (`name`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-establish via gate |
 | project worker identity (`user.name`) | `project` | `<project>/.ohgo/project.yml` | authoritative | project | re-establish via gate |
@@ -462,6 +466,8 @@ seam exists so the trust rule has exactly one owner when that day comes.
 | `rm -rf <project>/.ohgo` | survive | survive | re-minted (new id); worker re-established project-locally | re-created |
 | delete `graph.db` (future) | survive | survive | survives | project still opens; graph rebuilds |
 | delete or corrupt `progress.json` | survive | survive | survives | task may recover identity/objective from `task.md`, but structured context is reported unavailable |
+| delete or corrupt `experience.json` | survive | survive | survives | starts with no learned experience; no task, evidence, authority, or completion state is affected |
+| delete or corrupt `experience/global.json` | survive | survive | survives | global advice disappears; project experience remains local |
 | delete `memory.db` (future) | survive | survive | survives | re-created empty; **durable knowledge is lost** — explicit action only |
 | project directory deleted | survive | survive (machine-global) | gone with the tree | gone |
 | project renamed/moved | survive | survive (keyed by id) | **survives** (`.ohgo` moves with the tree; stale `root` tolerated) | survives |
@@ -740,6 +746,10 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
 29. Session protection is a retention tag, not an access control. Automatic
     pruning must never consider a protected session; explicit human deletion
     still may.
+30. Execution experience is advisory. It may reorder already-offered tools and
+    add bounded hints, but it can never grant authority, bypass evidence, change
+    completion, alter a budget, or write task state. A project record becomes
+    global only through an explicit validated promotion.
 
 ## Explicit Non-Goals
 
@@ -748,3 +758,7 @@ search, autonomous memory learning, agent memory agents, vector stores, a generi
 repository abstraction, multiple storage backends, or any new global directory.
 It did not redesign execution, providers, model selection, approval semantics,
 the TUI, the `ast` searcher, or the SQLite layer.
+
+The execution-experience layer is not project memory and not a second task
+store. It records only verified path-selection lessons; it cannot create a
+project fact, support a claim, or complete an objective.

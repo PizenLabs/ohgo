@@ -4344,6 +4344,7 @@ var Commands = []CommandSpec{
 	{Name: "resume", Usage: "resume", Description: "browse and resume saved sessions", Hidden: true, Category: CommandGroupControl},
 	{Name: "jobs", Usage: "jobs", Description: "inspect background jobs", Category: CommandGroupControl},
 	{Name: "task", Usage: "task [status|list|show|resume|cancel|accept]", Description: "manage durable tasks: inspect, list, resume, or abandon", Category: CommandGroupControl},
+	{Name: "experience", Usage: "experience [list|show <id>|retire <id>|reject <id>]", Description: "inspect or retire learned execution experience", Category: CommandGroupControl},
 	{Name: "audit", Usage: "audit", Description: "explain the last context projection and action surface", Category: CommandGroupControl},
 	{Name: "theme", Usage: "theme [dark|light]", Description: "choose the palette", Category: CommandGroupControl},
 	{Name: "settings", Usage: "settings", Description: "configure interface preferences", Category: CommandGroupControl},

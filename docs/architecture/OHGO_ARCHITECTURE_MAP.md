@@ -30,6 +30,7 @@
                         │
    ┌────────────────────┴─────────────────────┐
    │  continuity   session · task · recovery · memory      durable state
+   │  experience   incidents · lessons · promotion         advisory learning
    └────────────────────┬─────────────────────┘
                         │
    ┌────────────────────┴─────────────────────┐
@@ -66,7 +67,7 @@ seam, authorization kernel) or a consumer of it.
 ## 2. Semantic domains
 
 A domain is a group of packages that share a *decision*, not a directory-name
-theme. Fourteen domains survive that test. Most have one package; that is a
+theme. Fifteen domains survive that test. Most have one package; that is a
 result, not a gap — inventing a shared folder for `vcs` and `prompt` would
 create a boundary that does not exist.
 
@@ -78,6 +79,7 @@ create a boundary that does not exist.
 | **intelligence** | `intelligence/ast`, `intelligence/ignore` | One in-process Go index (symbols, package graph, refs); repository scoping | Anything about the agent, models, or UI |
 | **provider** | `provider/ai`, `provider/catalog`, `provider/creds` | Wire protocols and streams; canonical stream normalization (native and serialized tool calls); model facts and discovery; credential resolution | Policy, routing, cost decisions, execution authority |
 | **continuity** | `continuity/session`, `continuity/task`, `continuity/recovery`, `memory` | The durable transcript; the durable task checkpoint; the edit history; the project-memory trust boundary | What should be recorded (that is control-plane) |
+| **experience** | `experience` | Verified execution experience: deterministic incidents, lessons, candidate strategies, validation, promotion, scoped store, and advisory path advice | Authority, evidence, completion, task lifecycle, transcript, tool execution |
 | **external** | `external/knowledge`, `external/search` | The external-evidence envelope; the web-search client | Repository knowledge |
 | **configuration** | `config`, `state`, `project` | Machine settings; the single `~/.ohgo` path owner; project identity | Runtime authority (that is `workspace` + the gate) |
 | **vocabulary** | `jsonschema`, `tokens`, `diff`, `edit` | Argument schemas; token estimation; text diff; fuzzy edit | Any consumer's policy |
@@ -112,6 +114,7 @@ edges that are architecturally forbidden (the ones enforced today are marked).
 | `internal/continuity/session` | transcript | `agent`, `provider/ai`, `state`, `tokens`, `control/workspace` | `tui`, `commit`, `startup`, `update`, `history` **\[ENFORCED]** |
 | `internal/continuity/task` | durable task | `agent`, `control/{budget,cognition,contract,workspace}`, `project` | `tui` **\[ENFORCED]**; also `execution/*` by direction |
 | `internal/continuity/recovery` | edit history | `agent`, `intelligence/ignore`, `state`, `vcs` | `tui`, `commit`, … **\[ENFORCED]** |
+| `internal/experience` | verified execution experience | `agent`, `control/{budget,cognition,contract}`, `jsonschema`, `provider/ai` — **exactly these** | `execution/*`, `continuity/*`, `tui`, application services **\[ENFORCED]** |
 | `internal/configuration` (`config`, `state`, `project`) | settings, paths, identity | `state`, `vcs` | `agent`, `execution/*`, `tui` |
 | `internal/tui` | presentation | the whole tree **except** concrete capabilities and the task controller | `execution/tools`, `execution/mcp`, `continuity/task` **\[ENFORCED]** |
 | `internal/{commit,startup,update,history,gryhook}` | application services | everything below them | being imported by anything below them **\[ENFORCED]** |
@@ -206,6 +209,7 @@ Read this before adding a field to anything.
 | Budget ledger | `budget.Budget` | run holder | TUI usage | `progress.json` (`budget.State`) |
 | Transcript | `session` | the store | TUI entries, REPL history | `sessions.db` |
 | Edit history | `recovery` | the store | `/undo` output | `recovery.db` |
+| Verified execution experience | `experience` | the engine | `/experience`, advisory projection hints | `<project>/.ohgo/experience.json`; optional `~/.ohgo/experience/global.json` after explicit promotion |
 | Repository symbols | `ast.Index` | `tools.StructuralSource` | tool results | never (derived; rebuilt) |
 | Model facts | `catalog` | the catalog | pickers, cost | `cache/*.json` (derived) |
 | Settings | `config` | the file | options | `settings.json` |
@@ -234,6 +238,9 @@ reasoning, and `internal/architecture/rules_test.go` is the executable form.
 8. The TUI does not import `execution/tools`, `execution/mcp`, or
    `continuity/task`. **\[ENFORCED]**
 9. Nothing imports `cmd/ohgo`. **\[ENFORCED]**
+10. `internal/experience` imports only its structured-outcome/evidence
+    allow-list; it cannot reach execution, continuity, application, or
+    presentation. **\[ENFORCED]**
 
 ---
 
@@ -253,6 +260,7 @@ reasoning, and `internal/architecture/rules_test.go` is the executable form.
 | **New security policy** | kernel rule in `internal/security`; derivation from trusted inputs in `cmd/ohgo/security.go` | Derive capability/scope from model-supplied fields; let settings widen authority |
 | **New CLI command** | `cmd/ohgo/<command>.go`; if interactive, also `internal/tui` command registry | Put domain logic in the command that has a package owner |
 | **New TUI projection** | `internal/tui` (state machine + renderer), fed by hooks/events | Make the projection authoritative; read `continuity/task` directly |
+| **New execution-learning rule** | `internal/experience` (deterministic extractor + regression) and an advisory seam in `cognition` | Change authority, evidence, completion, or the task lifecycle |
 | **New recovery mechanism** | `internal/continuity/recovery` + `cmd/ohgo/recovery.go` wiring | Expose it as a model-reachable tool |
 | **New prompt text** | `internal/prompt` (or the tool's own constructor) | Inline a prompt string at a call site |
 | **New deterministic prompt/title transform** | `internal/promptopt` | Perform I/O, call a model, or duplicate the transform at a call site |
@@ -306,6 +314,10 @@ decision:
   `ai.StreamFn`.
 * **No second repository index**, no second authority path, no second completion
   decision, no second formatter for a persisted reference.
+* **No experience-as-authority.** `internal/experience` stores learned path
+  preferences; `cognition.ExperienceAdvisor` may only reorder offered tools and
+  append bounded hints. It cannot add capabilities, change evidence, or decide
+  completion.
 * **No presentation-owned domain semantics.** The TUI's vocabularies are
   projections of decisions made elsewhere.
 
@@ -323,4 +335,6 @@ decision:
    source of truth.
 7. `TASK_CONTINUITY.md` — task identity, shared context, evidence, and role
    context ownership.
-8. `internal/architecture/rules_test.go` — the boundaries, executable.
+8. `ADAPTIVE_EXPERIENCE.md` — the advisory learning layer and its hard
+   boundaries.
+9. `internal/architecture/rules_test.go` — the boundaries, executable.
