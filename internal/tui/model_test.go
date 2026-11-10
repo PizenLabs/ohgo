@@ -116,7 +116,10 @@ func TestApplyIgnoresEventsForUnknownTools(t *testing.T) {
 }
 
 func TestToolEntryDuration(t *testing.T) {
-	start := time.Now()
+	// Backdate the start by a millisecond: the contract is "a live call shows
+	// elapsed time", and the same-instant clock reading is not the failure
+	// mode under test.
+	start := time.Now().Add(-time.Millisecond)
 	tool := &ToolEntry{StartedAt: start}
 	// An unfinished call must show elapsed time, not zero, so a long command
 	// looks alive.

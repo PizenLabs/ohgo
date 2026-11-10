@@ -24,24 +24,13 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 )
 
-// Wizard palette tokens. These are onboarding-chrome accents, kept local to
-// the dialog so the global 256-colour theme in style.go is untouched.
-const (
-	// wizardTeal is the primary border and focus accent.
-	wizardTeal = "#5FB3A1"
-	// wizardAmber marks warnings and validation errors.
-	wizardAmber = "#C9A86A"
-	// wizardGreen is success and active-text.
-	wizardGreen = "#8FB08D"
-	// wizardBlue and wizardGrey are secondary labels and hints.
-	wizardBlue = "#7AA8C9"
-	wizardGrey = "#C9C5BE"
-	// wizardBG is the dialog surface.
-	wizardBG = "#0E1113"
-)
-
+// Wizard colours resolve from the canonical design tokens so onboarding
+// matches the workspace appearance.
+//
 // WizardStep is one onboarding question. The numeric order is the prompt
 // order; Done is terminal.
 type WizardStep int
@@ -126,6 +115,7 @@ type InitWizardModel struct {
 	errMsg       string
 	done         bool
 	canceled     bool
+	theme        string
 }
 
 // NewInitWizard returns a wizard starting at the first step the project still
@@ -155,6 +145,7 @@ func NewInitWizard(askGit, askIgnore bool, workerDef, projectDef string) *InitWi
 		project:    project,
 		workerDef:  strings.TrimSpace(workerDef),
 		projectDef: strings.TrimSpace(projectDef),
+		theme:      ThemeDark,
 	}
 	switch {
 	case askGit:
@@ -483,10 +474,20 @@ func (w *InitWizardModel) stepPosition() (index, total int) {
 	return len(steps), len(steps)
 }
 
+// SetTheme binds onboarding to the effective appearance. It is called by the
+// program when the wizard is attached, so the setup surface matches the
+// workspace it opens into.
+func (w *InitWizardModel) SetTheme(theme string) {
+	if w != nil {
+		w.theme = NormalizeTheme(theme)
+	}
+}
+
 // View renders the centered dialog card. Width is the terminal width; the
 // caller (Program.View) owns the header, the vertical centering, and the
 // footer, so the card never covers the chrome.
 func (w *InitWizardModel) View(width int) string {
+	t := design.For(w.theme)
 	cardW := 60
 	if width > 0 {
 		cardW = width - 4
@@ -499,10 +500,10 @@ func (w *InitWizardModel) View(width int) string {
 	}
 	index, total := w.stepPosition()
 	title := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardTeal)).Bold(true).
+		Foreground(lipgloss.Color(t.TextTitle)).Bold(true).
 		Render("Project setup")
 	steps := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGreen)).
+		Foreground(lipgloss.Color(t.Model)).
 		Render(stepLabel(w.step, index, total))
 
 	var body string
@@ -526,14 +527,14 @@ func (w *InitWizardModel) View(width int) string {
 	inner := lipgloss.JoinVertical(lipgloss.Left, title, steps, "", body)
 	if w.errMsg != "" {
 		errLine := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(wizardAmber)).
+			Foreground(lipgloss.Color(t.Warning)).
 			Render(sanitizeInline(w.errMsg))
 		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", errLine)
 	}
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(wizardTeal)).
-		Background(lipgloss.Color(wizardBG)).
+		BorderForeground(lipgloss.Color(t.Brand)).
+		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
@@ -555,21 +556,22 @@ func stepLabel(step WizardStep, index, total int) string {
 
 // gitBody renders the repository question with badge toggle buttons.
 func (w *InitWizardModel) gitBody() string {
+	t := design.For(w.theme)
 	alert := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardAmber)).
+		Foreground(lipgloss.Color(t.Warning)).
 		Render("This project is not a Git repository.")
 	question := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextPrimary)).
 		Render("Initialize Git on main?")
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
-		gitButton("Yes", w.gitCursor == wizardGitYes),
+		gitButtonForTheme("Yes", w.gitCursor == wizardGitYes, w.theme),
 		"   ",
-		gitButton("No", w.gitCursor == wizardGitNo),
+		gitButtonForTheme("No", w.gitCursor == wizardGitNo, w.theme),
 		"   ",
-		gitButton("Quit", w.gitCursor == wizardGitQuit),
+		gitButtonForTheme("Quit", w.gitCursor == wizardGitQuit, w.theme),
 	)
 	hints := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextMuted)).
 		Render("←→ move · enter confirm · y/n/q shortcut")
 	return lipgloss.JoinVertical(lipgloss.Left, alert, question, "", buttons, "", hints)
 }
@@ -577,32 +579,34 @@ func (w *InitWizardModel) gitBody() string {
 // ignoreBody renders the runtime-state question with the same badge toggles as
 // the Git step, so onboarding keeps one interaction model.
 func (w *InitWizardModel) ignoreBody() string {
+	t := design.For(w.theme)
 	lead := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextPrimary)).
 		Render("ohgo stores local runtime state in .ohgo/.")
 	question := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextPrimary)).
 		Render("Keep this state out of Git?")
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
-		gitButton("Add .ohgo/ to .gitignore", w.ignoreCursor == wizardIgnoreYes),
+		gitButtonForTheme("Add .ohgo/ to .gitignore", w.ignoreCursor == wizardIgnoreYes, w.theme),
 		"   ",
-		gitButton("Leave unchanged", w.ignoreCursor == wizardIgnoreNo),
+		gitButtonForTheme("Leave unchanged", w.ignoreCursor == wizardIgnoreNo, w.theme),
 	)
 	hints := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextMuted)).
 		Render("←→ move · enter confirm · y/n shortcut · esc back")
 	return lipgloss.JoinVertical(lipgloss.Left, lead, question, "", buttons, "", hints)
 }
 
 // textBody renders one labeled input with its focus ring.
 func (w *InitWizardModel) textBody(question, label string, input textinput.Model, cardW int, hints string) string {
+	t := design.For(w.theme)
 	q := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextPrimary)).
 		Render(question)
-	input.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(wizardBlue))
-	input.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(wizardGrey))
-	input.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(wizardBlue))
-	input.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(wizardTeal))
+	input.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Active))
+	input.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextPrimary))
+	input.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextMuted))
+	input.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Brand))
 	viewWidth := cardW - 12 - len([]rune(label))
 	if viewWidth < 10 {
 		viewWidth = 10
@@ -612,33 +616,31 @@ func (w *InitWizardModel) textBody(question, label string, input textinput.Model
 	}
 	input.Width = viewWidth
 	row := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardBlue)).
+		Foreground(lipgloss.Color(t.Active)).
 		Render(label+" › ") + input.View()
 	frame := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(wizardTeal)).
+		BorderForeground(lipgloss.Color(t.Brand)).
 		Padding(0, 1).
 		Render(row)
 	hintLine := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextMuted)).
 		Render(hints)
 	return lipgloss.JoinVertical(lipgloss.Left, q, "", frame, "", hintLine)
 }
 
-// gitButton renders one toggle badge: a solid teal badge when active, a
-// quiet grey label otherwise, so the choice never depends on hue alone —
-// the brackets and the highlight both mark it.
-func gitButton(label string, active bool) string {
+func gitButtonForTheme(label string, active bool, theme string) string {
+	t := design.For(theme)
 	text := "[ " + label + " ]"
 	if active {
 		return lipgloss.NewStyle().
-			Foreground(lipgloss.Color(wizardBG)).
-			Background(lipgloss.Color(wizardTeal)).
+			Foreground(lipgloss.Color(t.TextInverse)).
+			Background(lipgloss.Color(t.Brand)).
 			Bold(true).
 			Render(text)
 	}
 	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextSecondary)).
 		Render(text)
 }
 
@@ -646,6 +648,9 @@ func gitButton(label string, active bool) string {
 // keyboard until it completes or is cancelled; header and footer keep
 // rendering from state throughout.
 func (p *Program) SetInitWizard(w *InitWizardModel, hooks InitWizardHooks) {
+	if w != nil {
+		w.SetTheme(p.state.Theme)
+	}
 	p.wizard = w
 	p.wizardHooks = hooks
 }

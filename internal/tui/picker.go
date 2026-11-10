@@ -51,13 +51,6 @@ const (
 	PickerThemes = "themes"
 )
 
-// Theme picker row values. Choosing one applies that palette and persists it
-// through the host's theme handler.
-const (
-	themeDarkValue  = ThemeDark
-	themeLightValue = ThemeLight
-)
-
 // New-session row values. The value is what choosing the row means, not what
 // the row is called: the title can be reworded without changing behaviour.
 const (
@@ -199,8 +192,8 @@ func (p *PickerState) Filtered() []PickerItem {
 		return nil
 	}
 	// The /new creator has no search corpus: its line is the custom title, so
-	// typing must never hide the two choices it is choosing between. The theme
-	// picker is likewise a fixed two-row choice with no query.
+	// typing must never hide the choices it is choosing between. The theme
+	// picker is likewise a fixed three-row choice with no query.
 	if p.Kind == PickerNewSession || p.Kind == PickerThemes {
 		return p.Items
 	}

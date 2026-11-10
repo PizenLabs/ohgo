@@ -235,8 +235,8 @@ func TestLongAnswerKeepsRecapAtTheBottom(t *testing.T) {
 	if answerAt < 0 || recapAt < answerAt {
 		t.Fatalf("the footer is not below the answer (answer=%d, recap=%d):\n%s", answerAt, recapAt, frame)
 	}
-	if got := colorName(DarkPalette().Recap.GetForeground()); got != "#5C7E70" {
-		t.Errorf("recap foreground = %q, want the dim token #5C7E70", got)
+	if got := colorName(DarkPalette().Recap.GetForeground()); got != DarkTokens().Recap {
+		t.Errorf("recap foreground = %q, want the dim token DarkTokens().Recap", got)
 	}
 }
 

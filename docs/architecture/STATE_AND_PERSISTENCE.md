@@ -28,7 +28,7 @@ Two rules frame everything below:
 
 | Path | Meaning | Owner | Lifecycle |
 | --- | --- | --- | --- |
-| `settings.json` | machine-global user settings: global user defaults (`identity.name`), model/role bindings, approvals, theme, compaction | `config` | machine; authoritative |
+| `settings.json` | machine-global user settings: global user defaults (`identity.name`), model/role bindings, approvals, theme preference (`auto`/`dark`/`light`), compaction | `config` | machine; authoritative |
 | `credentials.json` | provider API keys, `0600`, atomic write | `creds` | machine; authoritative; never in git |
 | `sessions.db` (+ `-wal`, `-shm`) | SQLite session store: sessions, messages, artifacts | `session` | machine; authoritative; survives every project |
 | `cache/<provider>-models.json` | provider/model discovery rosters, `schema_version`-stamped | `catalog` | machine; **derived**, rebuildable |

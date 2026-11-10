@@ -151,7 +151,7 @@ func composeTelemetryIntent(label string, width int, pal *Palette, animated bool
 	}
 	styledLabel := pal.Status.Render(label)
 	if animated && shimmerSupported() {
-		styledLabel = ShimmerText(label, tick)
+		styledLabel = ShimmerTextForTheme(label, tick, themeOf(pal))
 	}
 	return styledGlyph + " " + styledLabel
 }

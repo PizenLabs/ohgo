@@ -152,6 +152,9 @@ func TestLoadReturnsErrNotFoundForMissingFile(t *testing.T) {
 	if settings.MaxTokens <= 0 {
 		t.Error("default max tokens were not populated")
 	}
+	if settings.ThemePreference() != ThemeAuto {
+		t.Errorf("default theme = %q, want auto", settings.ThemePreference())
+	}
 }
 
 func TestLoadRejectsMalformedJSON(t *testing.T) {

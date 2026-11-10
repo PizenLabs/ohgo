@@ -10,6 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 )
 
 // A fast call may not snap from nothing to a checkmark. The executing frame is
@@ -198,7 +200,7 @@ func TestFadeStepsThroughThreeRGBPhases(t *testing.T) {
 	s.Apply(FrameTick{At: at})
 
 	vapor := Render(s)
-	if !strings.Contains(vapor, "38;2;51;51;51") || !strings.Contains(vapor, "\x1b[2m") {
+	if !strings.Contains(vapor, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) || !strings.Contains(vapor, "\x1b[2m") {
 		t.Fatalf("vapour phase lost its dark neutral/dim frame:\n%q", vapor)
 	}
 	if got := ansi.Strip(vapor); !strings.Contains(got, "fade target") {
@@ -210,13 +212,13 @@ func TestFadeStepsThroughThreeRGBPhases(t *testing.T) {
 	if solid == vapor {
 		t.Fatal("solidifying phase did not change the frame")
 	}
-	if strings.Contains(solid, "38;2;51;51;51") {
+	if strings.Contains(solid, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) {
 		t.Fatalf("solidifying phase kept the vapour colour:\n%q", solid)
 	}
 
 	s.Apply(FrameTick{At: at.Add(fadeDuration)})
 	settled := Render(s)
-	if strings.Contains(settled, "\x1b[2m") || strings.Contains(settled, "38;2;51;51;51") {
+	if strings.Contains(settled, "\x1b[2m") || strings.Contains(settled, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) {
 		t.Fatalf("settled block kept an entrance frame:\n%q", settled)
 	}
 	if got := ansi.Strip(settled); !strings.Contains(got, "fade target") {
@@ -247,7 +249,7 @@ func TestAssistantFinalLineFadesOnSettle(t *testing.T) {
 	s.Apply(FrameTick{At: doneAt})
 
 	entering := Render(s)
-	if !strings.Contains(entering, "38;2;51;51;51") || !strings.Contains(entering, "\x1b[2m") {
+	if !strings.Contains(entering, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) || !strings.Contains(entering, "\x1b[2m") {
 		t.Fatalf("settled answer line skipped its entrance fade:\n%q", entering)
 	}
 	if got := ansi.Strip(entering); !strings.Contains(got, "streamed answer") {
@@ -255,7 +257,7 @@ func TestAssistantFinalLineFadesOnSettle(t *testing.T) {
 	}
 
 	s.Apply(FrameTick{At: doneAt.Add(fadeFinalAt)})
-	if settled := Render(s); strings.Contains(settled, "38;2;51;51;51") {
+	if settled := Render(s); strings.Contains(settled, "38;2;"+rgbSeq(DarkTokens().SurfaceSelection)) {
 		t.Fatalf("final-line fade survived the target instant:\n%q", settled)
 	}
 }
@@ -428,18 +430,30 @@ func TestCompletedToolTweensStatusColor(t *testing.T) {
 	}
 
 	startColor, ok := statusTweenColor(ToolDone, 0, "")
-	if !ok || startColor != statusRunDarkHex {
-		t.Fatalf("tween start = %q/%v, want the running amber %q", startColor, ok, statusRunDarkHex)
+	if !ok || startColor != DarkTokens().Running {
+		t.Fatalf("tween start = %q/%v, want the running role %q", startColor, ok, DarkTokens().Running)
 	}
 	midColor, ok := statusTweenColor(ToolDone, 60*time.Millisecond, "")
 	if !ok || midColor == startColor {
 		t.Fatalf("mid tween = %q/%v, want a distinct blend", midColor, ok)
 	}
-	if endColor, ok := statusTweenColor(ToolDone, statusSettleDuration, ""); ok || endColor != statusDoneDarkHex {
-		t.Fatalf("tween end = %q/%v, want the settled role %q", endColor, ok, statusDoneDarkHex)
+	if endColor, ok := statusTweenColor(ToolDone, statusSettleDuration, ""); ok || endColor != DarkTokens().Success {
+		t.Fatalf("tween end = %q/%v, want the success role %q", endColor, ok, DarkTokens().Success)
 	}
-	if lightStart, ok := statusTweenColor(ToolDone, 0, ThemeLight); !ok || lightStart != statusRunLightHex {
-		t.Fatalf("light tween start = %q/%v, want %q", lightStart, ok, statusRunLightHex)
+	if lightStart, ok := statusTweenColor(ToolDone, 0, ThemeLight); !ok || lightStart != LightTokens().Running {
+		t.Fatalf("light tween start = %q/%v, want %q", lightStart, ok, LightTokens().Running)
+	}
+}
+
+// A light terminal must not flash a dark entrance frame before its dark text
+// settles. The fade origin is the appearance's own surface token.
+func TestEntranceFadeStartsOnThemeSurface(t *testing.T) {
+	for _, theme := range []string{ThemeDark, ThemeLight} {
+		origin := design.For(theme).SurfaceSelection
+		got := fadeColorAt(0, design.For(theme).TextPrimary, origin)
+		if got != origin {
+			t.Errorf("%s fade origin = %q, want %q", theme, got, origin)
+		}
 	}
 }
 

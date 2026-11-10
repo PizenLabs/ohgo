@@ -779,7 +779,7 @@ func renderPlaneProvidersPane(plane *ModelPlaneState, pal *Palette, state State,
 	if plane.Focus == PlaneFocusProviders {
 		heading = "▶ PROVIDERS"
 	}
-	lines := []string{pal.Heading.Render(TruncateToWidth(heading, width))}
+	lines := []string{pal.Title.Render(TruncateToWidth(heading, width))}
 
 	rows := plane.VisibleRows
 	if rows <= 0 {
@@ -897,7 +897,7 @@ func renderPlaneModelsPaneBudget(plane *ModelPlaneState, pal *Palette, state Sta
 	if plane.Focus == PlaneFocusModels {
 		heading = "▶ " + heading
 	}
-	lines := []string{pal.Heading.Render(TruncateToWidth(heading, width))}
+	lines := []string{pal.Title.Render(TruncateToWidth(heading, width))}
 
 	rows := plane.VisibleRows
 	visible := plane.VisibleModels()
@@ -1374,7 +1374,7 @@ func renderPlaneRolesPane(plane *ModelPlaneState, pal *Palette, width int) []str
 	if plane.Focus == PlaneFocusRoles {
 		heading = "▶ ROLES"
 	}
-	lines := []string{pal.Heading.Render(TruncateToWidth(heading, width))}
+	lines := []string{pal.Title.Render(TruncateToWidth(heading, width))}
 	for i, role := range plane.Roles {
 		marker := "  "
 		if i == plane.RoleCursor {
@@ -1413,7 +1413,7 @@ func renderPlaneAssignmentPane(plane *ModelPlaneState, pal *Palette, width int) 
 	if !ok {
 		return []string{pal.Muted.Render(TruncateToWidth("  no roles configured", width))}
 	}
-	lines := []string{pal.Heading.Render(TruncateToWidth("ASSIGNMENT", width))}
+	lines := []string{pal.Title.Render(TruncateToWidth("ASSIGNMENT", width))}
 	add := func(label, value string) {
 		if value == "" {
 			value = pal.Muted.Render("unset")
@@ -1448,7 +1448,7 @@ func renderPlaneVariantPane(plane *ModelPlaneState, pal *Palette, width, content
 		return []string{pal.Muted.Render(TruncateToWidth("  no variants", width))}
 	}
 	heading := "▶ VARIANT · " + sanitizeInline(variant.Base)
-	lines := []string{pal.Heading.Render(TruncateToWidth(heading, width))}
+	lines := []string{pal.Title.Render(TruncateToWidth(heading, width))}
 	for i, option := range variant.Options {
 		lines = append(lines, renderVariantOptionRow(i, variant.Cursor, option, pal, width))
 	}
@@ -1476,7 +1476,7 @@ func renderPlaneAuthPane(plane *ModelPlaneState, pal *Palette, width, contentH i
 	if title == "Configure API Key for " {
 		title = "Configure API Key for " + sanitizeInline(auth.Provider)
 	}
-	lines := []string{pal.Heading.Render(TruncateToWidth(title, width))}
+	lines := []string{pal.Title.Render(TruncateToWidth(title, width))}
 	masked := strings.Repeat("•", len([]rune(auth.Input)))
 	runes := []rune(masked)
 	cur := auth.Cursor

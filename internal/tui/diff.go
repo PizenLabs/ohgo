@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -12,38 +13,8 @@ import (
 // re-narrating it. This file renders that panel — a header naming the file, an
 // optional ⎿ summary, and the changed rows in a framed container.
 //
-// The palette is truecolor hex, like the chrome tokens in style.go, because
-// the panel carries its own dark identity rather than the transcript's
-// 256-colour body tokens. Every role is a named token resolved once per
-// render, so the render loop never reaches for a raw colour.
-
-// Inline diff design tokens.
-const (
-	// diffMint is the header glyph and the added-row mark.
-	diffMint = "#4EA96F"
-	// diffRemove is the deleted-row mark.
-	diffRemove = "#E06C75"
-	// diffPath is the edited file path.
-	diffPath = "#7DCFFF"
-	// diffLabel is the bold "Update" label.
-	diffLabel = "#E6E6E6"
-	// diffPanelBG is the hunk container background.
-	diffPanelBG = "#101010"
-	// diffPanelEdge is the hunk container border.
-	diffPanelEdge = "#202022"
-	// diffAddBG is the added-row tint.
-	diffAddBG = "#16281E"
-	// diffDelBG is the deleted-row tint.
-	diffDelBG = "#2A191D"
-	// diffAddFg is the added-row text: bright against the tint.
-	diffAddFg = "#D7E8DC"
-	// diffDelFg is the deleted-row text: muted against the tint.
-	diffDelFg = "#C7A6AB"
-	// diffCtxFg is the context-row text: dimmed so changes read first.
-	diffCtxFg = "#6B6B6B"
-	// diffGutterFg is the line-number gutter.
-	diffGutterFg = "#5A5A5A"
-)
+// Every role resolves from the canonical design tokens, so the panel cannot
+// drift from the transcript or from the diff inspector.
 
 // DiffLineKind names the role of one row in an inline file-edit diff.
 type DiffLineKind string
@@ -106,10 +77,12 @@ type diffStyles struct {
 	ctx   diffRowStyles
 }
 
-// newDiffStyles builds the panel styles. A nil renderer uses the default one,
-// so a caller renders through the ambient colour profile; tests pass an
-// explicit forced-profile renderer to pin the design tokens.
-func newDiffStyles(r *lipgloss.Renderer) diffStyles {
+// newDiffStyles builds the panel styles from one appearance's tokens. A nil
+// renderer uses the default one, so a caller renders through the ambient
+// colour profile; tests pass an explicit forced-profile renderer to pin the
+// design tokens.
+func newDiffStyles(r *lipgloss.Renderer, theme string) diffStyles {
+	t := design.For(theme)
 	mk := func() lipgloss.Style {
 		if r == nil {
 			return lipgloss.NewStyle()
@@ -125,21 +98,21 @@ func newDiffStyles(r *lipgloss.Renderer) diffStyles {
 		return diffRowStyles{
 			mark:   mark,
 			text:   mk().Foreground(lipgloss.Color(textFg)).Background(b),
-			gutter: mk().Foreground(lipgloss.Color(diffGutterFg)).Background(b),
+			gutter: mk().Foreground(lipgloss.Color(t.DiffGutter)).Background(b),
 			space:  mk().Background(b),
 		}
 	}
 	return diffStyles{
-		glyph: mk().Foreground(lipgloss.Color(diffMint)).Bold(true),
-		label: mk().Foreground(lipgloss.Color(diffLabel)).Bold(true),
-		path:  mk().Foreground(lipgloss.Color(diffPath)),
-		dim:   mk().Foreground(lipgloss.Color(ColorMuted)),
-		edge:  mk().Foreground(lipgloss.Color(diffPanelEdge)).Background(lipgloss.Color(diffPanelBG)),
-		// Context rows resolve to the panel background: "transparent" against
-		// the container, so only changed rows carry a tint.
-		add: row(diffAddBG, diffMint, diffAddFg, true),
-		del: row(diffDelBG, diffRemove, diffDelFg, true),
-		ctx: row(diffPanelBG, diffGutterFg, diffCtxFg, false),
+		glyph: mk().Foreground(lipgloss.Color(t.Success)).Bold(true),
+		label: mk().Foreground(lipgloss.Color(t.TextPrimary)).Bold(true),
+		path:  mk().Foreground(lipgloss.Color(t.DiffHeader)),
+		dim:   mk().Foreground(lipgloss.Color(t.TextMuted)),
+		edge:  mk().Foreground(lipgloss.Color(t.BorderDefault)).Background(lipgloss.Color(t.SurfacePrimary)),
+		// Context rows share the panel surface; only changed rows carry a
+		// tint, so the eye lands on the edit rather than on the frame.
+		add: row(t.DiffAddBackground, t.Success, t.DiffAddForeground, true),
+		del: row(t.DiffDeleteBackground, t.Error, t.DiffDeleteForeground, true),
+		ctx: row(t.SurfacePrimary, t.DiffGutter, t.DiffContext, false),
 	}
 }
 
@@ -153,7 +126,12 @@ func newDiffStyles(r *lipgloss.Renderer) diffStyles {
 // sized for. An overlong row truncates rather than wraps — a wrapped row would
 // break the line-number gutter alignment and the box edges with it.
 func RenderDiffHunk(h DiffHunk, width int) string {
-	return renderDiffHunk(newDiffStyles(nil), h, width)
+	return RenderDiffHunkForTheme(h, width, ThemeDark)
+}
+
+// RenderDiffHunkForTheme renders the inline diff in one effective appearance.
+func RenderDiffHunkForTheme(h DiffHunk, width int, theme string) string {
+	return renderDiffHunk(newDiffStyles(nil, theme), h, width)
 }
 
 // renderDiffHunk is the renderer seam: styles are injected so a test can pin

@@ -118,7 +118,7 @@ func TestMarkdownListContinuationJoinsBeforeWrapping(t *testing.T) {
 			t.Errorf("continuation content %q was truncated: %q", want, plain)
 		}
 	}
-	if !strings.Contains(out, pal.Code.Render("package")) || !strings.Contains(out, pal.Code.Render("main")) {
+	if !strings.Contains(out, pal.InlineCode.Render("package")) || !strings.Contains(out, pal.InlineCode.Render("main")) {
 		t.Errorf("continuation lost its inline code styling: %q", plain)
 	}
 }

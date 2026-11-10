@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -102,22 +103,21 @@ type approvalRow struct {
 }
 
 // approvalBorderColor is the frame accent, keyed to the call's blast radius:
-// warm amber for a read or inspect call, burnt rose for one that mutates.
-func approvalBorderColor(pending *PendingApproval) string {
+// muted amber for a read or inspect call, soft red for one that mutates. The
+// frame borrows the operational warning/error roles, never an authority hue.
+func approvalBorderColor(pending *PendingApproval, theme string) string {
+	t := design.For(theme)
 	if pending.Mutating {
-		return ColorRose
+		return t.Error
 	}
-	return ColorMutedAmber
+	return t.Warning
 }
 
 // approvalActiveBG is the subtle surface tint behind the highlighted answer.
-// It reuses the code surface per theme rather than inventing a colour, so the
-// band reads as a focus tint and not a second signal.
+// It reuses the theme's selection surface rather than inventing a colour, so
+// the band reads as focus and not a second signal.
 func approvalActiveBG(theme string) lipgloss.Color {
-	if NormalizeTheme(theme) == ThemeLight {
-		return lipgloss.Color(lightCodeBg)
-	}
-	return lipgloss.Color(darkCodeBg)
+	return lipgloss.Color(design.For(theme).SurfaceSelection)
 }
 
 // approvalInterior is the cells between the two frame columns.
@@ -456,7 +456,7 @@ func renderApproval(sb *strings.Builder, pending *PendingApproval, theme string,
 		return
 	}
 	interior := approvalInterior(layout)
-	border := approvalBorderColor(pending)
+	border := approvalBorderColor(pending, theme)
 	sb.WriteString(approvalTitleBorder(pending.title(), interior, border))
 	sb.WriteString("\n")
 	for _, row := range approvalBoxRows(pending, layout) {
@@ -525,15 +525,16 @@ func renderApprovalRow(row approvalRow, pending *PendingApproval, border string,
 // answer carries the frame accent, bold text, and a subtle tint; every other
 // answer is indented in the muted body colour.
 func approvalRowStyle(row approvalRow, pending *PendingApproval, border string, theme string) (string, lipgloss.Style) {
+	t := design.For(theme)
 	switch row.kind {
 	case approvalRowPrompt:
-		return approvalIndent + row.text, fg(ColorMuted)
+		return approvalIndent + row.text, fg(t.TextMuted)
 	case approvalRowCommand:
-		return approvalIndent + row.text, fg(ColorText).Bold(true)
+		return approvalIndent + row.text, fg(t.TextPrimary).Bold(true)
 	case approvalRowMeta:
-		return approvalIndent + row.text, fg(ColorMuted).Italic(true)
+		return approvalIndent + row.text, fg(t.TextMuted).Italic(true)
 	case approvalRowReason:
-		return approvalIndent + row.text, fg(ColorMuted)
+		return approvalIndent + row.text, fg(t.TextMuted)
 	case approvalRowPreview:
 		if strings.HasPrefix(row.text, "Preview ·") {
 			return approvalIndent + row.text, fg(border).Bold(true)
@@ -561,27 +562,27 @@ func approvalRowStyle(row approvalRow, pending *PendingApproval, border string, 
 		case codeDiffContext:
 			return approvalIndent + "  " + row.text, pal.DiffContext
 		}
-		return approvalIndent + row.text, fg(ColorText)
+		return approvalIndent + row.text, fg(t.TextPrimary)
 	case approvalRowQuestion:
-		return approvalIndent + row.text, fg(ColorText)
+		return approvalIndent + row.text, fg(t.TextPrimary)
 	case approvalRowCommitSubject:
-		return approvalIndent + row.text, fg(ColorText).Bold(true)
+		return approvalIndent + row.text, fg(t.TextPrimary).Bold(true)
 	case approvalRowCommitBody:
-		return approvalIndent + row.text, fg(ColorMuted)
+		return approvalIndent + row.text, fg(t.TextMuted)
 	case approvalRowCommitLabel:
-		return approvalIndent + row.text, fg(ColorMuted).Bold(true)
+		return approvalIndent + row.text, fg(t.TextMuted).Bold(true)
 	case approvalRowCommitFile:
-		return approvalIndent + row.text, fg(ColorText)
+		return approvalIndent + row.text, fg(t.TextPrimary)
 	case approvalRowCommitNote:
-		return approvalIndent + row.text, fg(ColorDim)
+		return approvalIndent + row.text, fg(t.BorderStrong)
 	case approvalRowFooter:
-		return approvalIndent + row.text, fg(ColorDim)
+		return approvalIndent + row.text, fg(t.BorderStrong)
 	case approvalRowChoice:
 		if row.index == pending.Cursor {
 			return "❯ " + approvalChoiceLabel(row, pending),
 				fg(border).Bold(true).Background(approvalActiveBG(theme))
 		}
-		return approvalIndent + approvalChoiceLabel(row, pending), fg(ColorMuted)
+		return approvalIndent + approvalChoiceLabel(row, pending), fg(t.TextMuted)
 	default:
 		return "", lipgloss.NewStyle()
 	}

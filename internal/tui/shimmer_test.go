@@ -34,9 +34,16 @@ func TestShimmerTextMovesHighlight(t *testing.T) {
 	if ansi.Strip(first) != label || ansi.Strip(second) != label {
 		t.Fatalf("stripped frames lost the label: %q %q", ansi.Strip(first), ansi.Strip(second))
 	}
-	// The bright center must appear: #E5E9F0 is 229,233,240.
-	if !strings.Contains(first, "229;233;240") {
+	// The bright centre must appear and must come from the active palette.
+	if !strings.Contains(first, rgbSeq(DarkTokens().TextPrimary)) {
 		t.Fatalf("tick 0 missing the bright highlight: %q", first)
+	}
+	light := ShimmerTextForTheme(label, 0, ThemeLight)
+	if !strings.Contains(light, rgbSeq(LightTokens().TextPrimary)) {
+		t.Fatalf("light tick 0 missing the bright highlight: %q", light)
+	}
+	if strings.Contains(light, rgbSeq(LightTokens().BorderSubtle)) {
+		t.Fatalf("light shimmer borrowed a border role: %q", light)
 	}
 }
 

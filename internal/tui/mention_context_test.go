@@ -22,7 +22,7 @@ import (
 func mentionTestStyle() lipgloss.Style {
 	renderer := lipgloss.NewRenderer(io.Discard)
 	renderer.SetColorProfile(termenv.ANSI256)
-	return renderer.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
+	return renderer.NewStyle().Foreground(lipgloss.Color(DarkTokens().Brand)).Bold(true)
 }
 
 // TestHighlightMentionsStylesOnlyReferenceTokens proves the composer highlight

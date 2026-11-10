@@ -5,34 +5,38 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 	"github.com/muesli/termenv"
-)
-
-// Shimmer palette: the base is the muted chrome gray so the sweep reads as
-// light moving across dim text, not as a second spinner competing with it.
-const (
-	shimmerBaseHex   = "#6C7A89"
-	shimmerMintHex   = "#8FB08D"
-	shimmerBrightHex = "#E5E9F0"
 )
 
 // shimmerPauseTicks parks the highlight off-label between sweeps so the wave
 // reads as a pass rather than a constant glow.
 const shimmerPauseTicks = 4
 
-// ShimmerText renders label with a moving 3-cell highlight window.
-//
-// It is pure: the same label and tick always produce the same bytes, with no
-// clock, I/O, or global state. The stripped width always equals the input
-// width, so the activity line never shifts layout as the wave moves. The
-// highlight center is tick modulo len(label)+pause; ticks in the pause
-// window render all-muted, giving the sweep a rest between passes.
+// ShimmerText renders label with a moving 3-cell highlight window using the
+// dark appearance. It is the historical entry point for frozen callers; live
+// surfaces call ShimmerTextForTheme so the wave stays on the current palette.
 func ShimmerText(label string, tick int) string {
+	return ShimmerTextForTheme(label, tick, ThemeDark)
+}
+
+// ShimmerTextForTheme resolves the sweep from the effective tokens. On the
+// light appearance the highlight moves from muted slate toward body text
+// rather than toward a near-white that would disappear on a bright screen.
+//
+// It is pure: the same label, tick, and theme always produce the same bytes,
+// with no clock, I/O, or global state. The stripped width always equals the
+// input width, so the activity line never shifts layout as the wave moves.
+func ShimmerTextForTheme(label string, tick int, theme string) string {
 	runes := []rune(label)
 	n := len(runes)
 	if n == 0 {
 		return ""
 	}
+	tok := design.For(theme)
+	baseHex := tok.TextMuted
+	midHex := tok.Brand
+	brightHex := tok.TextPrimary
 	cycle := n + shimmerPauseTicks
 	t := tick % cycle
 	if t < 0 {
@@ -45,12 +49,12 @@ func ShimmerText(label string, tick int) string {
 	var sb strings.Builder
 	sb.Grow(len(label) + n*16)
 	for i, r := range runes {
-		hex := shimmerBaseHex
+		hex := baseHex
 		switch i {
 		case center:
-			hex = shimmerBrightHex
+			hex = brightHex
 		case center - 1, center + 1:
-			hex = shimmerMintHex
+			hex = midHex
 		}
 		sb.WriteString(truecolorFg(hex, string(r)))
 	}

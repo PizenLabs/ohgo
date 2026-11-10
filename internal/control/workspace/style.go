@@ -41,23 +41,24 @@ func (w Workspace) Style() Style {
 
 // Fixed semantic accents. Named so a change lands here and nowhere else.
 //
-// The dark forms are muted so the prompt stays quiet during a long session;
-// the light forms deepen the same hue so it survives a bright screen. The
-// neutral is deliberately outside all three hue families so an unresolved
-// workspace is visibly not an authority.
+// These are OHGO's signature identity colours, not theme chrome. The exact
+// hexes are part of the product contract: ASK is teal, BUILD is blue, FUZZ is
+// magenta/coral. The light forms are the same hue deepened for a bright
+// terminal; they are not a different colour family. A change here is an
+// identity change, not a palette tweak.
 const (
-	// AccentAsk is ASK's muted teal identity on a dark screen.
-	AccentAsk = "#2dd4bf"
+	// AccentAsk is ASK's teal identity on a dark screen.
+	AccentAsk = "#5FB3A1"
 	// AccentAskLight is ASK's deep teal identity on a bright screen.
-	AccentAskLight = "#0f766e"
-	// AccentBuild is BUILD's muted steel-blue identity on a dark screen.
-	AccentBuild = "#60a5fa"
+	AccentAskLight = "#1F6F61"
+	// AccentBuild is BUILD's blue identity on a dark screen.
+	AccentBuild = "#61AFEF"
 	// AccentBuildLight is BUILD's deep blue identity on a bright screen.
-	AccentBuildLight = "#1d4ed8"
-	// AccentFuzz is FUZZ's muted mauve identity on a dark screen.
-	AccentFuzz = "#e879f9"
-	// AccentFuzzLight is FUZZ's deep purple identity on a bright screen.
-	AccentFuzzLight = "#a21caf"
+	AccentBuildLight = "#2B6CB0"
+	// AccentFuzz is FUZZ's magenta/coral identity on a dark screen.
+	AccentFuzz = "#E06C75"
+	// AccentFuzzLight is FUZZ's deep magenta identity on a bright screen.
+	AccentFuzzLight = "#C53030"
 
 	accentUnknown = "244"
 )

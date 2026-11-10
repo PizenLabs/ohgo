@@ -148,7 +148,7 @@ eased.
   `DwellUntil`, never by sleeping a runtime goroutine.
 - **Entrance easing.** A newly spawned block, and the trailing line of an
   answer when `AssistantDone` settles it, steps through three RGB phases over
-  120ms: deep neutral vapour (0–30ms), a muted sage/teal solidifying phase
+  120ms: deep neutral vapour (0–30ms), a muted slate solidifying phase
   (30–90ms), then the full palette target (reached at 100ms and stable through
   the 120ms window). The terminal has no alpha, so the short window flattens the
   affected rows to one interpolated foreground plus the ANSI dim flag; at 100ms

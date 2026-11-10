@@ -75,12 +75,12 @@ func TestApprovalBoxDrawsBorderedLegendAndChoices(t *testing.T) {
 // call, rose for one that mutates. The literal hex is the contract.
 func TestApprovalBorderAccentFollowsBlastRadius(t *testing.T) {
 	read := approvalState(80, 24, false)
-	if got := approvalBorderColor(read.Pending); got != "#C9A86A" {
-		t.Errorf("read approval accent = %q, want the muted amber #C9A86A", got)
+	if got := approvalBorderColor(read.Pending, ThemeDark); got != DarkTokens().Warning {
+		t.Errorf("read approval accent = %q, want the warning role", got)
 	}
 	write := approvalState(80, 24, true)
-	if got := approvalBorderColor(write.Pending); got != "#CD694A" {
-		t.Errorf("mutating approval accent = %q, want the rose #CD694A", got)
+	if got := approvalBorderColor(write.Pending, ThemeDark); got != DarkTokens().Error {
+		t.Errorf("mutating approval accent = %q, want the error role", got)
 	}
 }
 
@@ -230,13 +230,13 @@ func TestApprovalDiffPreviewStylesAdditionsAndDeletions(t *testing.T) {
 		},
 	})
 	out := Render(s)
-	if !strings.Contains(out, "166;227;161") {
+	if !strings.Contains(out, rgbSeq(DarkTokens().DiffAddForeground)) {
 		t.Errorf("approval preview lacks green ANSI styling for + lines:\n%s", ansi.Strip(out))
 	}
-	if !strings.Contains(out, "243;139;168") {
+	if !strings.Contains(out, rgbSeq(DarkTokens().DiffDeleteForeground)) {
 		t.Errorf("approval preview lacks red ANSI styling for - lines:\n%s", ansi.Strip(out))
 	}
-	if !strings.Contains(out, "137;220;235") {
+	if !strings.Contains(out, rgbSeq(DarkTokens().DiffHeader)) {
 		t.Errorf("approval preview lacks cyan ANSI styling for @@ lines:\n%s", ansi.Strip(out))
 	}
 }

@@ -306,7 +306,7 @@ func TestHelpCategoryAccentsDiffer(t *testing.T) {
 		{ShortcutGroupWorkspace, CommandGroupControl},
 	}
 	for _, pair := range pairs {
-		if helpCategoryAccent(pair[0]) == helpCategoryAccent(pair[1]) {
+		if helpCategoryAccent(pair[0], ThemeDark) == helpCategoryAccent(pair[1], ThemeDark) {
 			t.Errorf("categories %q and %q share a badge accent", pair[0], pair[1])
 		}
 	}

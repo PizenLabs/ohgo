@@ -145,22 +145,28 @@ func TestScrolledUpMarkerAdvertisesSpaceJump(t *testing.T) {
 	}
 }
 
-// Header hierarchy is a colour contract: each level must resolve to its own
-// forest step in both themes so depth reads without parsing markers.
-
-func TestHeadingLevelsUseDistinctThemeColors(t *testing.T) {
+// Header hierarchy is a document-structure contract, not a colour ladder:
+// every heading level resolves to the Heading accent and bold weight, never to
+// the body role and never to the chrome Title role. Depth comes from document
+// spacing, not from a second palette.
+func TestHeadingLevelsUseStructureAccent(t *testing.T) {
 	for _, theme := range []string{ThemeDark, ThemeLight} {
 		pal := PaletteFor(theme)
-		got := map[string]string{
-			"H1": colorName(pal.Heading.GetForeground()),
-			"H2": colorName(pal.Heading2.GetForeground()),
-			"H3": colorName(pal.Heading3.GetForeground()),
+		heading := colorName(pal.Heading.GetForeground())
+		body := colorName(pal.Assistant.GetForeground())
+		title := colorName(pal.Title.GetForeground())
+		if heading == body || heading == title {
+			t.Errorf("theme %s: heading shares a role (heading %q, body %q, title %q)", theme, heading, body, title)
 		}
-		for a, ca := range got {
-			for b, cb := range got {
-				if a < b && ca == cb {
-					t.Errorf("theme %s: %s and %s share foreground %q", theme, a, b, ca)
-				}
+		if !pal.Heading.GetBold() {
+			t.Errorf("theme %s: heading role is not bold", theme)
+		}
+		for _, tc := range []struct{ src, text string }{
+			{"# H1", "H1"}, {"## H2", "H2"}, {"### H3", "H3"},
+		} {
+			rendered := RenderMarkdownWrapped(tc.src, pal, 40)
+			if !strings.Contains(rendered, pal.Heading.Render(tc.text)) {
+				t.Errorf("theme %s: %q did not use the structure accent", theme, tc.src)
 			}
 		}
 	}

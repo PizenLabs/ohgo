@@ -37,7 +37,7 @@ against a failed first run.`,
 		},
 	}
 	cmd.Flags().String("model", "", "model as provider/id, e.g. groq/llama-3.1-8b-instant")
-	cmd.Flags().String("theme", "", "palette: dark or light")
+	cmd.Flags().String("theme", "", "appearance: auto, dark, or light")
 	cmd.Flags().Bool("force", false, "overwrite an existing settings file")
 	return cmd
 }
@@ -54,7 +54,7 @@ type initOptions struct {
 type initPlan struct {
 	// model is the resolved default model reference.
 	model string
-	// theme is the normalized palette.
+	// theme is the normalized appearance preference.
 	theme string
 	// providers lists providers with credentials present, sorted.
 	providers []string
@@ -64,7 +64,7 @@ type initPlan struct {
 
 // planInit decides the setup without writing anything.
 func planInit(modelFlag, themeFlag string) (initPlan, error) {
-	plan := initPlan{theme: "dark"}
+	plan := initPlan{theme: config.DefaultThemePreference}
 	if strings.TrimSpace(themeFlag) != "" {
 		plan.theme = normalizeThemeFlag(themeFlag)
 	}
@@ -87,13 +87,11 @@ func planInit(modelFlag, themeFlag string) (initPlan, error) {
 	return plan, nil
 }
 
-// normalizeThemeFlag maps a flag to a palette name. Anything but light is
-// dark: a typo degrades to the default rather than failing the setup.
+// normalizeThemeFlag maps a flag to an appearance preference. Anything but a
+// known choice becomes auto: a typo follows the system rather than pinning an
+// unrelated palette or failing setup.
 func normalizeThemeFlag(value string) string {
-	if strings.EqualFold(strings.TrimSpace(value), "light") {
-		return "light"
-	}
-	return "dark"
+	return config.NormalizeThemePreference(value)
 }
 
 // providersWithCredentials lists catalog providers whose credential resolves,

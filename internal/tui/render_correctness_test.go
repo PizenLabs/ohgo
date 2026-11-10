@@ -103,13 +103,15 @@ func TestMarkdownOrderedContinuationHangs(t *testing.T) {
 func TestMarkdownBlockStylesStayDistinct(t *testing.T) {
 	// Hierarchy is a styling contract, and test terminals are colorless
 	// (lipgloss degrades everything to plain text by design). Verify the
-	// wiring with a forced-profile palette that cannot hide a collapse:
-	// each level and block must resolve through a different style.
+	// wiring with a forced-profile palette that cannot hide a collapse.
 	fp := forcedPalette()
 	if f1, f2, f3 := RenderMarkdownWrapped("# Title", fp, 40),
 		RenderMarkdownWrapped("## Title", fp, 40),
-		RenderMarkdownWrapped("### Title", fp, 40); f1 == f2 || f2 == f3 || f1 == f3 {
-		t.Error("heading levels share one style: hierarchy is unreadable")
+		RenderMarkdownWrapped("### Title", fp, 40); f1 != f2 || f2 != f3 {
+		t.Error("heading levels must share the structure accent")
+	}
+	if head := RenderMarkdownWrapped("# Title", fp, 40); !strings.Contains(head, fp.Heading.Render("Title")) {
+		t.Error("heading did not resolve through the structure accent")
 	}
 	blocks := map[string]string{
 		"quote": RenderMarkdownWrapped("> quoted", fp, 40),
@@ -148,9 +150,15 @@ func forcedPalette() *Palette {
 		ToolDone:    fg("42"),
 		ToolError:   fg("196"),
 		ToolRun:     fg("214"),
+		Warning:     fg("215"),
 		Notice:      fg("244").Italic(true),
 		Status:      fg("244"),
-		Thought:     fg("214"),
+		Title:       fg("255").Bold(true),
+		Heading:     fg("141").Bold(true),
+		Secondary:   fg("250"),
+		Faint:       fg("238"),
+		Thought:     fg("214").Bold(true),
+		ThoughtBody: fg("214").Italic(true),
 		Prompt:      fg("121"),
 		Choice:      fg("252"),
 		Selected:    fg("121").Bold(true),
@@ -158,17 +166,16 @@ func forcedPalette() *Palette {
 		Cursor:      fg("121").Reverse(true),
 		Queued:      fg("244").Italic(true),
 		Code:        fg("228").Background(lipgloss.Color("236")),
-		Heading:     fg("121").Bold(true),
-		Heading2:    fg("114").Bold(true),
-		Heading3:    fg("144").Bold(true),
 		CodeKeyword: fg("85").Background(lipgloss.Color("236")).Bold(true),
 		CodeString:  fg("214").Background(lipgloss.Color("236")),
 		CodeComment: fg("240").Background(lipgloss.Color("236")).Italic(true),
 		CodeNumber:  fg("73").Background(lipgloss.Color("236")),
 		Bold:        renderer.NewStyle().Bold(true),
-		Italic:      renderer.NewStyle().Italic(true),
+		Strong:      fg("222").Bold(true),
+		InlineCode:  fg("255").Background(lipgloss.Color("237")),
+		Italic:      fg("252").Italic(true),
 		Quote:       fg("244").Italic(true),
-		Bullet:      fg("121"),
+		Bullet:      fg("104"),
 		Muted:       fg("240"),
 		Separator:   fg("240"),
 	}

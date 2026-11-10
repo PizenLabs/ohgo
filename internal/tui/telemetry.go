@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
@@ -43,27 +44,6 @@ const (
 	// state paints one cell in this slot, so a spinner can become a check
 	// without shifting the invocation to the left or right.
 	statusSlotCells = 1
-)
-
-// Fade palette: a deep neutral first, a muted sage/teal midpoint, then the
-// theme's body colour. The midpoint is the same sage family as the chrome
-// accent so the entrance reads as Ohgo, not as a generic terminal effect.
-const (
-	fadeVaporHex = "#333333"
-	fadeSolidHex = "#5FB3A1"
-)
-
-// The completion tween starts and ends on the same palette roles the settled
-// row uses. The hex forms are the standard xterm RGB values for those 256-col
-// indexes; keeping them here means the tween cannot land on a different hue
-// from the frame that replaces it.
-const (
-	statusRunDarkHex    = "#D7AF5F" // xterm 214, dark ToolRun
-	statusRunLightHex   = "#D75F00" // xterm 166, light ToolRun
-	statusDoneDarkHex   = "#00D700" // xterm 42, dark ToolDone
-	statusDoneLightHex  = "#008700" // xterm 28, light ToolDone
-	statusErrorDarkHex  = "#FF0000" // xterm 196, dark ToolError
-	statusErrorLightHex = "#AF0000" // xterm 160, light ToolError
 )
 
 // fadePhase is one discrete step in the entrance sequence. Tests and
@@ -125,15 +105,16 @@ func fadeSupported() bool {
 
 // fadeTarget is the full-palette body colour a block settles to.
 func fadeTarget(theme string) string {
-	if NormalizeTheme(theme) == ThemeLight {
-		return lightText
-	}
-	return darkText
+	return design.For(theme).TextPrimary
 }
 
 // fadeColorAt interpolates the entrance colour for one age. It is a pure
 // function: the same age and target always produce the same RGB triple.
-func fadeColorAt(age time.Duration, target string) string {
+// fadeColorAt interpolates the entrance colour for one age. origin is the
+// appearance's dim surface, so a light terminal never flashes a dark block
+// before settling to dark text. It is pure: the same inputs always produce the
+// same RGB triple.
+func fadeColorAt(age time.Duration, target, origin string) string {
 	switch {
 	case age < 0:
 		age = 0
@@ -141,15 +122,16 @@ func fadeColorAt(age time.Duration, target string) string {
 		return target
 	}
 	if age < fadeVaporEnd {
-		return fadeVaporHex
+		return origin
 	}
+	solid := blendHex(origin, target, 0.5)
 	if age < fadeSolidifyEnd {
 		t := float64(age-fadeVaporEnd) / float64(fadeSolidifyEnd-fadeVaporEnd)
-		return blendHex(fadeVaporHex, fadeSolidHex, t)
+		return blendHex(origin, solid, t)
 	}
 	if age < fadeFinalAt {
 		t := float64(age-fadeSolidifyEnd) / float64(fadeFinalAt-fadeSolidifyEnd)
-		return blendHex(fadeSolidHex, target, t)
+		return blendHex(solid, target, t)
 	}
 	return target
 }
@@ -196,7 +178,7 @@ func fadeRenderedBlock(rendered string, age time.Duration, theme string) string 
 	if age < 0 {
 		age = 0
 	}
-	color := fadeColorAt(age, fadeTarget(theme))
+	color := fadeColorAt(age, fadeTarget(theme), design.For(theme).SurfaceSelection)
 	r, g, b := parseHexColor(color)
 	prefix := truecolorPrefix(r, g, b)
 	switch fadePhaseAt(age) {
@@ -356,27 +338,19 @@ func (t *ToolEntry) statusSettleAge(now time.Time) (time.Duration, bool) {
 	return age, true
 }
 
-// statusTweenColor interpolates the running amber into the terminal role.
+// statusTweenColor interpolates the running role into the terminal role.
 // The terminal has no alpha, so a short colour ramp is the honest way to
 // morph a status in place without changing the glyph's cell width. The
 // endpoints match the palette roles, so the tween hands off without a final
 // hue jump.
 func statusTweenColor(status ToolStatus, age time.Duration, theme string) (string, bool) {
-	light := NormalizeTheme(theme) == ThemeLight
-	var start, target string
+	t := design.For(theme)
+	var target string
 	switch status {
 	case ToolDone:
-		if light {
-			start, target = statusRunLightHex, statusDoneLightHex
-		} else {
-			start, target = statusRunDarkHex, statusDoneDarkHex
-		}
+		target = t.Success
 	case ToolError:
-		if light {
-			start, target = statusRunLightHex, statusErrorLightHex
-		} else {
-			start, target = statusRunDarkHex, statusErrorDarkHex
-		}
+		target = t.Error
 	default:
 		return "", false
 	}
@@ -386,8 +360,8 @@ func statusTweenColor(status ToolStatus, age time.Duration, theme string) (strin
 	if age >= statusSettleDuration {
 		return target, false
 	}
-	t := float64(age) / float64(statusSettleDuration)
-	return blendHex(start, target, t), true
+	progress := float64(age) / float64(statusSettleDuration)
+	return blendHex(t.Running, target, progress), true
 }
 
 // phaseLabel is the batch's measured authority span. Empty means the producer

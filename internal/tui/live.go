@@ -758,7 +758,7 @@ func livePickerLines(s State, pal *Palette, layout Layout) []string {
 		})
 	}
 	width := displayWidth(s, layout)
-	head := pal.Heading.Render(TruncateToWidth(pickerHeader(picker), width))
+	head := pal.Title.Render(TruncateToWidth(pickerHeader(picker), width))
 	search := renderPickerSearch(picker, pal, width)
 	foot := pal.Muted.Render(TruncateToWidth(pickerFooter(picker, layout), width))
 

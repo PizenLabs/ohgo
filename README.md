@@ -273,7 +273,7 @@ ohgo version
 /jobs                                  inspect background jobs
 /task [status|list|show|resume|cancel|accept]
 /audit                                 explain the last context projection
-/theme [dark|light]                    show or switch the palette
+/theme [auto|dark|light]                choose the appearance
 /settings                              configure interface preferences
 /connect /disconnect [provider]        provider credentials
 /status /usage /info                    workspace, cost, docs
@@ -460,7 +460,7 @@ is verification evidence.
 {
   "model": "groq/llama-3.1-8b-instant",
   "maxTokens": 32000,
-  "theme": "dark",
+  "theme": "auto",
   "taskRail": true,
   "approvals": { "bash": "deny", "write": "allow" }
 }
@@ -468,7 +468,8 @@ is verification evidence.
 
 `"allow"` never asks, `"deny"` never runs; anything else (or absent) prompts
 each time. `ohgo init` writes `model` and `theme`; `/theme` updates `theme` in
-place. `taskRail` controls the contextual task rail: it defaults to enabled,
+place. `theme` is a preference: `auto` (the default) follows the host
+appearance, while `dark` and `light` force one and are never rewritten. `taskRail` controls the contextual task rail: it defaults to enabled,
 appears only while an execution task has open todos, and `/settings` toggles it
 in place.
 

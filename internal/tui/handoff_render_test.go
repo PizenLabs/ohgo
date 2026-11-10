@@ -11,8 +11,8 @@ func TestHandoffCardDescribesWhatWillBeCarried(t *testing.T) {
 	prompt := &TransitionPrompt{
 		Current:        "FUZZ",
 		Proposed:       "BUILD",
-		CurrentAccent:  ColorRose,
-		ProposedAccent: ColorRose,
+		CurrentAccent:  DarkTokens().Error,
+		ProposedAccent: DarkTokens().Error,
 		Question:       "Hand off to BUILD?",
 		Reason:         "This request changes the project.",
 		Kind:           TransitionKindHandoff,

@@ -56,6 +56,9 @@ func renderStickyTaskRow(state State, pal *Palette, layout Layout) string {
 	if width := columnWidth(state, layout); width > 0 {
 		line = TruncateToWidth(line, width)
 	}
+	if strings.EqualFold(strings.TrimSpace(task.Status), "NEEDS_REVIEW") {
+		return pal.Warning.Render(line)
+	}
 	return pal.Notice.Render(line)
 }
 
@@ -90,7 +93,11 @@ func renderWorkspaceSidebar(state State, pal *Palette, layout Layout) string {
 	if objective := strings.TrimSpace(sanitizeInline(task.Objective)); objective != "" {
 		add(objective, pal.Status)
 	}
-	add(sidebarTaskSummary(task), pal.Status)
+	summaryStyle := pal.Status
+	if strings.EqualFold(strings.TrimSpace(task.Status), "NEEDS_REVIEW") {
+		summaryStyle = pal.Warning
+	}
+	add(sidebarTaskSummary(task), summaryStyle)
 	itemBudget := sidebarTaskItemBudget(height, len(task.Items))
 	for i, item := range task.Items {
 		if i >= itemBudget {

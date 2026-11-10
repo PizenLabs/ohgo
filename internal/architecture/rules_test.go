@@ -78,6 +78,7 @@ var domainOf = map[string]string{
 	"internal/history":      "application",
 	"internal/gryhook":      "application",
 	"internal/tui":          "presentation",
+	"internal/tui/design":   "presentation",
 	"internal/tui/diff":     "presentation",
 	"internal/architecture": "governance",
 }
@@ -126,6 +127,7 @@ var dependencyFree = []string{
 	"internal/security",
 	"internal/state",
 	"internal/tokens",
+	"internal/tui/design",
 	"internal/vcs",
 }
 

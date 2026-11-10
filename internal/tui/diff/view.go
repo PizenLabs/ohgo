@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -70,41 +71,28 @@ type colorSet struct {
 	badgeA, badgeM, badgeD, addText, delText, addSign, delSign string
 }
 
-// darkColors is the default inspector palette: muted surfaces, a mint accent,
-// and enough background difference for an added/deleted row to read without
-// the text losing contrast.
-var darkColors = colorSet{
-	title: "#E6E6E6", meta: "#6B6B6B", path: "#7DCFFF",
-	statAdd: "#4EA96F", statDel: "#E06C75",
-	barAdd: "#4EA96F", barDel: "#E06C75", barEmpty: "#303033",
-	divider: "#303033", gutter: "#5A5A5A", header: "#7DCFFF",
-	dim: "#6B6B6B", marker: "#4EA96F", filter: "#7DCFFF",
-	addBg: "#12261A", delBg: "#2A1719", addHLBg: "#1F5C37", delHLBg: "#6B2B30",
-	ctxText: "#8A8A8A",
-	badgeA:  "#4EA96F", badgeM: "#E5C07B", badgeD: "#E06C75",
-	addText: "#D7E8DC", delText: "#C7A6AB", addSign: "#4EA96F", delSign: "#E06C75",
-}
-
-// lightColors keeps the same roles on a bright screen: dark foregrounds and
-// barely-there row tints instead of the dark theme's saturated backgrounds.
-var lightColors = colorSet{
-	title: "#1F2933", meta: "#6B7280", path: "#0B7285",
-	statAdd: "#1B7F4B", statDel: "#C0392B",
-	barAdd: "#1B7F4B", barDel: "#C0392B", barEmpty: "#D0D5DA",
-	divider: "#D0D5DA", gutter: "#9AA0A6", header: "#0B7285",
-	dim: "#6B7280", marker: "#1B7F4B", filter: "#0B7285",
-	addBg: "#E7F4EC", delBg: "#FCE9E7", addHLBg: "#B7E2C8", delHLBg: "#F3C4BD",
-	ctxText: "#4B5563",
-	badgeA:  "#1B7F4B", badgeM: "#A16207", badgeD: "#C0392B",
-	addText: "#14532D", delText: "#7F1D1D", addSign: "#1B7F4B", delSign: "#C0392B",
-}
-
-// colorSetFor resolves the hex palette for a theme.
+// colorSetFor resolves the shared design tokens into the inspector's named
+// roles. The inspector never carries an independent palette: a change to the
+// product foundation lands here too.
 func colorSetFor(light bool) colorSet {
+	name := "dark"
 	if light {
-		return lightColors
+		name = "light"
 	}
-	return darkColors
+	t := design.For(name)
+	return colorSet{
+		title: t.TextTitle, meta: t.TextMuted, path: t.DiffHeader,
+		statAdd: t.Success, statDel: t.Error,
+		barAdd: t.Success, barDel: t.Error, barEmpty: t.BorderDefault,
+		divider: t.BorderDefault, gutter: t.DiffGutter, header: t.DiffHeader,
+		dim: t.TextMuted, marker: t.Success, filter: t.DiffHeader,
+		addBg: t.DiffAddBackground, delBg: t.DiffDeleteBackground,
+		addHLBg: t.DiffAddBackground, delHLBg: t.DiffDeleteBackground,
+		ctxText: t.DiffContext,
+		badgeA:  t.Success, badgeM: t.Warning, badgeD: t.Error,
+		addText: t.DiffAddForeground, delText: t.DiffDeleteForeground,
+		addSign: t.Success, delSign: t.Error,
+	}
 }
 
 // newStyles resolves a styles bundle for the palette.
@@ -386,7 +374,7 @@ func (m *Model) treeRow(s styles, row Row, selected bool, width int) string {
 }
 
 // badgeStyle resolves the status colour: green added, amber modified, red
-// deleted, and mint for a directory's expand glyph.
+// deleted, and green for a directory's expand glyph.
 func (m *Model) badgeStyle(s styles, node *FileNode) lipgloss.Style {
 	if node.IsDir {
 		return s.marker

@@ -35,6 +35,16 @@ var capabilityModes = []struct{ name, desc string }{
 	{"FUZZ", "$sup · fast assistance"},
 }
 
+// identitySubtitle is the product line under the title. It is a constant so
+// the layout and the styling layer agree on the exact content; a drifted copy
+// would silently lose its Medium Focus role.
+const identitySubtitle = "agent runtime for real codebases"
+
+// identityFrameLegend is the quickstart card's category label. It is shared
+// with the styling layer so the legend can take the document-structure accent
+// while the border stays a separator.
+const identityFrameLegend = "Quickstart"
+
 // triggerShortcuts are the affordances the empty screen teaches. They are a
 // pure function of the product, never of state: the same three triggers on
 // every fresh session, so the surface never advertises a shortcut that does
@@ -85,7 +95,7 @@ func renderIdentityBoxed(f IdentityFacts, width int) string {
 	content := identityContentLines(f)
 	// The frame labels the surface, not the release: the top bar already
 	// brands the version, so the box legend stays the same on every build.
-	title := "─ Quickstart ─"
+	title := "─ " + identityFrameLegend + " ─"
 	var sb strings.Builder
 	sb.WriteString(fitOne("┌"+title+strings.Repeat("─", max(0, inner-CellWidth(title)))+"┐", width) + "\n")
 	sb.WriteString(fitOne("│"+strings.Repeat(" ", inner)+"│", width) + "\n")
@@ -113,7 +123,7 @@ func identityContentLines(f IdentityFacts) []string {
 	} else {
 		lines = append(lines, title)
 	}
-	lines = append(lines, "agent runtime for real codebases")
+	lines = append(lines, identitySubtitle)
 	lines = append(lines, "")
 	for _, m := range capabilityModes {
 		lines = append(lines, padCells(m.name, 9)+m.desc)

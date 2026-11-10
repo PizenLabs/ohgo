@@ -8,46 +8,46 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// The fenced-code surface must blend into the deep-forest transcript instead
-// of reading as a separate gray box. Guard the design property — dark and
-// green-dominant — rather than only the literal, so a retune inside the
-// palette stays legal while a return to a neutral gray surface does not.
-func TestDarkCodeSurfaceIsForestTinted(t *testing.T) {
-	if got := DarkPalette().Code.GetBackground(); got != lipgloss.Color(darkCodeBg) {
-		t.Fatalf("code background = %v, want the palette surface %s", got, darkCodeBg)
+// The fenced-code surface must blend into the midnight transcript instead of
+// reading as a separate gray box. Guard the design property — cool-tinted and
+// subtle — rather than only the literal, so a retune inside the palette stays
+// legal while a return to a neutral or green-gray surface does not.
+func TestDarkCodeSurfaceIsCoolTinted(t *testing.T) {
+	if got := DarkPalette().Code.GetBackground(); got != lipgloss.Color(DarkTokens().CodeBackground) {
+		t.Fatalf("code background = %v, want the palette surface %s", got, DarkTokens().CodeBackground)
 	}
 
-	hex := strings.TrimPrefix(darkCodeBg, "#")
+	hex := strings.TrimPrefix(DarkTokens().CodeBackground, "#")
 	if len(hex) != 6 {
-		t.Fatalf("code background %q is not a six-digit hex colour", darkCodeBg)
+		t.Fatalf("code background %q is not a six-digit hex colour", DarkTokens().CodeBackground)
 	}
 	channel := func(s string) int {
 		v, err := strconv.ParseUint(s, 16, 8)
 		if err != nil {
-			t.Fatalf("code background %q is not hex: %v", darkCodeBg, err)
+			t.Fatalf("code background %q is not hex: %v", DarkTokens().CodeBackground, err)
 		}
 		return int(v)
 	}
 	r, g, b := channel(hex[0:2]), channel(hex[2:4]), channel(hex[4:6])
-	if g <= r || g <= b {
-		t.Errorf("code background %q is not emerald-tinted: r=%d g=%d b=%d", darkCodeBg, r, g, b)
+	if b <= r || b <= g {
+		t.Errorf("code background %q is not cool-tinted: r=%d g=%d b=%d", DarkTokens().CodeBackground, r, g, b)
 	}
 	luminance := 0.2126*float64(r) + 0.7152*float64(g) + 0.0722*float64(b)
 	if luminance > 40 {
-		t.Errorf("code background %q is too bright (luminance %.1f), want a subtle surface", darkCodeBg, luminance)
+		t.Errorf("code background %q is too bright (luminance %.1f), want a subtle surface", DarkTokens().CodeBackground, luminance)
 	}
 }
 
-// The light code surface is a soft mint tint, never an opaque black block or
-// an inverted span: an inline identifier must stay readable on a bright
+// The light code surface is a soft porcelain tint, never an opaque black block
+// or an inverted span: an inline identifier must stay readable on a bright
 // terminal.
-func TestLightCodeSurfaceIsMintTinted(t *testing.T) {
+func TestLightCodeSurfaceIsPorcelainTinted(t *testing.T) {
 	pal := LightPalette()
-	if got := pal.Code.GetBackground(); got != lipgloss.Color(lightCodeBg) {
-		t.Fatalf("light code background = %v, want %s", got, lightCodeBg)
+	if got := pal.Code.GetBackground(); got != lipgloss.Color(LightTokens().CodeBackground) {
+		t.Fatalf("light code background = %v, want %s", got, LightTokens().CodeBackground)
 	}
-	if got := pal.Code.GetForeground(); got != lipgloss.Color(lightCodeFg) {
-		t.Fatalf("light code foreground = %v, want %s", got, lightCodeFg)
+	if got := pal.Code.GetForeground(); got != lipgloss.Color(LightTokens().CodeForeground) {
+		t.Fatalf("light code foreground = %v, want %s", got, LightTokens().CodeForeground)
 	}
 	if got := pal.Code.GetBackground(); got == lipgloss.Color("#000000") {
 		t.Fatal("light code background is opaque black")
