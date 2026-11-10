@@ -44,7 +44,7 @@ adapts for contrast.
 | --- | --- | --- | --- |
 | ASK | Teal | `#5FB3A1` | `#1F6F61` |
 | BUILD | Blue | `#61AFEF` | `#2B6CB0` |
-| FUZZ | Magenta/coral | `#E06C75` | `#C53030` |
+| FUZZ | Soft violet | `#C678DD` | `#8C4398` |
 
 These three hex pairs are the identity contract. They are not theme chrome and
 must not be re-tuned as palette decoration.
@@ -59,7 +59,7 @@ must not be re-tuned as palette decoration.
 | Running | Active, progressing | `#8FB4D9` | `#3C6E96` |
 | Info | Informational emphasis | `#8FB4D9` | `#3C6E96` |
 
-A successful FUZZ command keeps FUZZ magenta for the authority and carries the
+A successful FUZZ command keeps FUZZ violet for the authority and carries the
 success glyph/colour for the outcome. A failed ASK turn stays teal.
 
 **Document accents** are semantic, not decorative. They answer a different
@@ -67,10 +67,10 @@ question than status: what kind of text is this?
 
 | Role | Job | Dark | Light |
 | --- | --- | --- | --- |
-| `Heading` | Markdown headings, table headers, quickstart legend | `#CFC7FA` | `#443B86` |
+| `Heading` | Markdown headings, table headers, quickstart legend | `#B79BFF` | `#513C9E` |
 | `Emphasis` | Bold lead-ins and key inline claims | `#E8CE9B` | `#7A5719` |
 | `ListMarker` | List glyphs; a quieter relative of `Heading` | `#8F8FC9` | `#6B62A8` |
-| `InlineCode` | Inline paths, filenames, and config values | `#D8E4F5` on `#1B2431` | `#23405C` on `#E7EDF4` |
+| `InlineCode` | Inline paths, filenames, and config values | `#9ED8FF` on `#162333` | `#0B5C8A` on `#E2EEF6` |
 | `ThoughtHeader` | Reasoning disclosure | `#DFB878` | `#8A6420` |
 | `ThoughtBody` | Reasoning prose | `#C2A468` | `#6E5520` |
 
@@ -114,10 +114,10 @@ Measured contrast against each canvas:
 | Secondary | 7.96:1 | 7.24:1 |
 | Muted | 5.48:1 | 5.01:1 |
 | Faint | 2.59:1 | 2.40:1 |
-| Heading | 11.88:1 | 8.83:1 |
+| Heading | 8.23:1 | 7.86:1 |
 | Emphasis | 12.36:1 | 6.10:1 |
 | List marker | 6.25:1 | 4.97:1 |
-| Inline code pill | 12.16:1 | 9.09:1 |
+| Inline code pill | 10.38:1 | 6.11:1 |
 
 In the light appearance a deep violet heading carries less luminance contrast
 than body ink but more hue contrast; bold weight plus document spacing is what
@@ -185,12 +185,16 @@ calibration guard, not a claim of full terminal-theme conformance.
   outranks the explanation on the same line without becoming a second heading.
 - Paragraph, list, and table body text is `TextPrimary` at regular weight.
   Inline code (`src/`, `go.mod`, `docker-compose.yml`) takes the inline-code
-  pill: a cool tinted surface with pale blue text, distinct from both the
-  sentence and a fenced block. Bullet glyphs use `ListMarker`; item text stays
+  pill: a cool tinted surface with a chromatic sky-blue accent text, distinct
+  from both the sentence and a fenced block. The foreground is deliberately
+  not body-coloured; the colour is what makes the reference artifact pop, with
+  the tint acting as its surface. Bullet glyphs use `ListMarker`; item text stays
   body copy.
 - The quickstart card's legend ("Quickstart") uses `Heading`; the rule around
   it stays `BorderDefault`, so the category label has gravity without a bright
-  frame. The greeting above it remains `TextTitle`.
+  frame. The greeting above it remains `TextTitle`. Sections are separated by a
+  blank row, mode rows carry a faint `▸` anchor, and a low-focus `BorderDefault`
+  rule separates the taught affordances from the mode definitions.
 - A completed tool row colours the status glyph, not the command. Command text
   is `TextPrimary`; measured durations and `ctrl+o` hints use `TextFaint`. A
   failed command colours its glyph and branch marker, while the reason remains

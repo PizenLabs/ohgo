@@ -45,14 +45,27 @@ const identitySubtitle = "agent runtime for real codebases"
 // while the border stays a separator.
 const identityFrameLegend = "Quickstart"
 
-// triggerShortcuts are the affordances the empty screen teaches. They are a
-// pure function of the product, never of state: the same three triggers on
-// every fresh session, so the surface never advertises a shortcut that does
-// not exist.
-var triggerShortcuts = []string{
-	"/model  choose model    /help  commands",
-	"@files  attach files    $sup   quick answers (Ctrl+S)",
+// triggerShortcuts are the affordances the empty screen teaches, in two
+// aligned columns. They are a pure function of the product, never of state:
+// the same triggers on every fresh session, so the surface never advertises a
+// shortcut that does not exist.
+var triggerShortcuts = [][]string{
+	{"/model", "choose model", "/help", "commands"},
+	{"@files", "attach files", "$sup", "quick answers (Ctrl+S)"},
 }
+
+// Quickstart composition constants. The indent is the inset inside the frame,
+// the glyph anchors the mode column, and the trigger widths align the two
+// shortcut columns without hardcoding a second layout in the view layer.
+const (
+	identityIndent            = "  "
+	identityModeGlyph         = "▸"
+	identityModeLabelWidth    = 7
+	identityTriggerTokenWidth = 9
+	identityTriggerHintWidth  = 22
+	identityFallbackRuleWidth = 44
+	identityMinRuleWidth      = 8
+)
 
 // RenderIdentitySurface renders the runtime identity surface for facts at
 // width. It is pure: semantic sections first, then a density policy per
@@ -61,9 +74,10 @@ var triggerShortcuts = []string{
 // Tiers mirror LayoutForMode: wide (>=100) and medium (70-99) box the same
 // clean vertical stack — identity, capability modes grouped together, then
 // the trigger shortcuts — narrow (<70) drops the border and keeps content
-// over decoration. Non-positive widths render the stack unboxed. There are
-// no inner divider rules: the outer frame is the only box drawing, so the
-// modes read as one group rather than two split panes.
+// over decoration. Non-positive widths render the stack unboxed. Sections are
+// separated by breathing rows, and a single low-focus rule marks the shortcut
+// group; there is no column split, so the modes still read as one authority
+// family rather than two split panes.
 func RenderIdentitySurface(f IdentityFacts, width int) string {
 	if width <= 0 {
 		return renderIdentityStack(f, 0)
@@ -81,7 +95,7 @@ func RenderIdentitySurface(f IdentityFacts, width int) string {
 // renderIdentityStack is the borderless semantic stack shared by narrow
 // terminals and unbounded renders.
 func renderIdentityStack(f IdentityFacts, width int) string {
-	lines := identityContentLines(f)
+	lines := identityContentLines(f, width)
 	return fitLines(lines, width)
 }
 
@@ -92,7 +106,7 @@ func renderIdentityBoxed(f IdentityFacts, width int) string {
 		// Too small for a box: content beats decoration.
 		return renderIdentityStack(f, width)
 	}
-	content := identityContentLines(f)
+	content := identityContentLines(f, inner-2)
 	// The frame labels the surface, not the release: the top bar already
 	// brands the version, so the box legend stays the same on every build.
 	title := "─ " + identityFrameLegend + " ─"
@@ -108,29 +122,65 @@ func renderIdentityBoxed(f IdentityFacts, width int) string {
 }
 
 // identityContentLines builds the semantic sections: identity header,
-// capability modes grouped together, then the trigger shortcuts. One vertical
-// stack at every width: modes are never split across columns, the top bar's
-// runtime metadata is never repeated here, and there are no inner divider
-// rules — the outer frame carries the only box drawing.
-func identityContentLines(f IdentityFacts) []string {
+// capability modes grouped together, then the trigger shortcuts. Every section
+// is inset and separated by a blank row, so the card reads as framed groups
+// rather than a dense list. A single low-focus rule introduces the shortcuts;
+// it separates sections without splitting the mode column.
+func identityContentLines(f IdentityFacts, contentWidth int) []string {
 	var lines []string
-	title := "OHGO"
-	if f.Greeting != "" {
-		// Greeting carries the name; title stays product identity.
-		lines = append(lines, title+"   "+f.Greeting)
-	} else if f.User != "" {
-		lines = append(lines, title+"   "+f.User)
-	} else {
-		lines = append(lines, title)
-	}
-	lines = append(lines, identitySubtitle)
+	lines = append(lines, identityIndent+identityGreetingLine(f))
+	lines = append(lines, identityIndent+identitySubtitle)
 	lines = append(lines, "")
 	for _, m := range capabilityModes {
-		lines = append(lines, padCells(m.name, 9)+m.desc)
+		lines = append(lines, identityIndent+identityModeGlyph+" "+padCells(m.name, identityModeLabelWidth)+m.desc)
 	}
 	lines = append(lines, "")
-	lines = append(lines, triggerShortcuts...)
+	lines = append(lines, identityIndent+identityDividerRule(contentWidth))
+	lines = append(lines, "")
+	for _, row := range triggerShortcuts {
+		lines = append(lines, identityIndent+identityShortcutLine(row))
+	}
 	return lines
+}
+
+// identityGreetingLine joins product identity and the personal address with a
+// low-focus separator. An unknown identity falls back to the product name
+// alone rather than inventing a name or an empty address.
+func identityGreetingLine(f IdentityFacts) string {
+	address := f.Greeting
+	if address == "" {
+		address = f.User
+	}
+	if address == "" {
+		return "OHGO"
+	}
+	return "OHGO  ·  " + address
+}
+
+// identityDividerRule sizes the section rule to the available content field.
+// The two-cell inset on both sides keeps the stroke inside the frame's
+// padding; an unbounded render keeps a readable fixed length.
+func identityDividerRule(contentWidth int) string {
+	width := identityFallbackRuleWidth
+	if contentWidth > 0 {
+		width = contentWidth - 2*CellWidth(identityIndent)
+	}
+	if width < identityMinRuleWidth {
+		width = identityMinRuleWidth
+	}
+	return strings.Repeat("─", width)
+}
+
+// identityShortcutLine lays out one row of token/hint pairs on the shared
+// column grid. Tokens are taught affordances; hints are their low-focus
+// explanations, so the grid, not punctuation, carries the grouping.
+func identityShortcutLine(cells []string) string {
+	var sb strings.Builder
+	for i := 0; i+1 < len(cells); i += 2 {
+		sb.WriteString(padCells(cells[i], identityTriggerTokenWidth))
+		sb.WriteString(padCells(cells[i+1], identityTriggerHintWidth))
+	}
+	return strings.TrimRight(sb.String(), " ")
 }
 
 func fitLines(lines []string, width int) string {

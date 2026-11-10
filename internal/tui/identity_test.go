@@ -69,7 +69,7 @@ func TestIdentitySurfaceNarrowDropsChromeNotContent(t *testing.T) {
 // worse than a missing one because the two can disagree.
 func TestIdentitySurfaceLeavesRuntimeMetadataToTheHeader(t *testing.T) {
 	out := RenderIdentitySurface(identityTestFacts(), 120)
-	for _, duplicated := range []string{"model      ", "git        ", "workspace  ", "status     ", "no workspace", "git unavailable", "no model"} {
+	for _, duplicated := range []string{"git        ", "workspace  ", "status     ", "no workspace", "git unavailable", "no model"} {
 		if strings.Contains(out, duplicated) {
 			t.Errorf("surface duplicated top-bar metadata %q:\n%s", duplicated, out)
 		}
@@ -102,9 +102,9 @@ func TestIdentitySurfaceWideShowsEachModeOnce(t *testing.T) {
 	}
 }
 
-// The welcome box carries no inner split rules: modes stay grouped in one
-// stack, and the outer frame is the only box drawing. An inner ─┬─ divider
-// or a third │ inside a row would mean the content split in two again.
+// The welcome box has no column split: the section rule is horizontal only,
+// modes stay grouped in one stack, and no row grows a third │. An inner ─┬─
+// divider would mean the content split in two again.
 func TestIdentitySurfaceWideHasNoInnerSplit(t *testing.T) {
 	out := RenderIdentitySurface(identityTestFacts(), 120)
 	if strings.Contains(out, "┬") {

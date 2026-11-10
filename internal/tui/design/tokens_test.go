@@ -61,6 +61,48 @@ func TestFocusTiersStayOrdered(t *testing.T) {
 	}
 }
 
+// Inline code must read as reference data, not as body text with a tinted
+// background. Its foreground therefore has to be a chromatic accent (not a
+// near-neutral lift) and must not collapse onto body or title text. This is
+// the regression that made paths look muted in a report.
+func TestInlineCodeTextIsAnAccent(t *testing.T) {
+	for name, tok := range map[string]Tokens{"dark": Dark(), "light": Light()} {
+		t.Run(name, func(t *testing.T) {
+			if tok.InlineCodeForeground == tok.TextPrimary || tok.InlineCodeForeground == tok.TextTitle {
+				t.Fatalf("inline code shares body/title text: %q", tok.InlineCodeForeground)
+			}
+			r, g, b, ok := rgbChannels(tok.InlineCodeForeground)
+			if !ok {
+				t.Fatalf("inline code foreground %q is not hex", tok.InlineCodeForeground)
+			}
+			chroma := max(r, g, b) - min(r, g, b)
+			if chroma < 80 {
+				t.Errorf("inline code foreground %q chroma = %d, want a visible accent (>= 80)",
+					tok.InlineCodeForeground, chroma)
+			}
+		})
+	}
+}
+
+// rgbChannels parses a #rrggbb value into its 8-bit channels.
+func rgbChannels(hex string) (r, g, b int, ok bool) {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		return 0, 0, 0, false
+	}
+	part := func(s string) (int, bool) {
+		v, err := strconv.ParseUint(s, 16, 8)
+		if err != nil {
+			return 0, false
+		}
+		return int(v), true
+	}
+	r, okR := part(hex[0:2])
+	g, okG := part(hex[2:4])
+	b, okB := part(hex[4:6])
+	return r, g, b, okR && okG && okB
+}
+
 // Report accents must stay distinct in both appearances. A heading, a bold
 // lead-in, a list marker, body copy, and reasoning are different jobs; if two
 // collapse onto one hue the document loses its navigable rhythm.
@@ -87,6 +129,52 @@ func TestReportAccentsStayDistinct(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The structure accent is the strongest signal in a report, so it must read
+// as purple rather than a near-white lift of body text. Chroma rejects the
+// pale tint that washed the headings out; the hue band keeps the accent in
+// the violet family instead of drifting into an unrelated colour.
+func TestHeadingReadsAsPurpleStructure(t *testing.T) {
+	for name, tok := range map[string]Tokens{"dark": Dark(), "light": Light()} {
+		t.Run(name, func(t *testing.T) {
+			r, g, b, ok := rgbChannels(tok.Heading)
+			if !ok {
+				t.Fatalf("heading %q is not a six-digit hex colour", tok.Heading)
+			}
+			if chroma := max(r, g, b) - min(r, g, b); chroma < 70 {
+				t.Errorf("heading %q chroma = %d, want a saturated purple (>= 70)", tok.Heading, chroma)
+			}
+			if hue := rgbHue(r, g, b); hue < 245 || hue > 290 {
+				t.Errorf("heading %q hue = %.0f°, want the purple band [245, 290]", tok.Heading, hue)
+			}
+		})
+	}
+}
+
+// rgbHue returns the HSL hue of an already-decoded colour in degrees.
+func rgbHue(r, g, b int) float64 {
+	rf, gf, bf := float64(r)/255, float64(g)/255, float64(b)/255
+	hi := math.Max(rf, math.Max(gf, bf))
+	lo := math.Min(rf, math.Min(gf, bf))
+	delta := hi - lo
+	if delta == 0 {
+		return 0
+	}
+	var hue float64
+	switch hi {
+	case rf:
+		hue = math.Mod((gf-bf)/delta, 6)
+	case gf:
+		hue = (bf-rf)/delta + 2
+	default:
+		hue = (rf-gf)/delta + 4
+	}
+	hue *= 60
+	if hue < 0 {
+		hue += 360
+	}
+	return hue
 }
 
 // The measured surface pairs back the appearance calibration. Normal text

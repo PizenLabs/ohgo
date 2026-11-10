@@ -72,3 +72,70 @@ func TestModeAccentsRemainLegibleAndDistinct(t *testing.T) {
 		}
 	}
 }
+
+// FUZZ is an authority badge, not an alarm. Its pair must stay in the violet
+// family and remain desaturated enough for a long session: the coral it used
+// to carry read as an error state, and a neon purple glares on both canvases.
+func TestFuzzAccentReadsAsSoftViolet(t *testing.T) {
+	for _, tc := range []struct{ name, accent string }{
+		{"dark", ModeAccentFuzz},
+		{"light", ModeAccentFuzzLight},
+	} {
+		r, g, b, ok := accentChannels(tc.accent)
+		if !ok {
+			t.Fatalf("%s FUZZ accent %q is not a six-digit hex colour", tc.name, tc.accent)
+		}
+		hue := accentHue(r, g, b)
+		if hue < 250 || hue > 315 {
+			t.Errorf("%s FUZZ hue = %.0f°, want the violet band [250, 315]", tc.name, hue)
+		}
+		chroma := max(r, g, b) - min(r, g, b)
+		if chroma > 120 {
+			t.Errorf("%s FUZZ chroma = %d, want a desaturated badge (<= 120)", tc.name, chroma)
+		}
+	}
+}
+
+// accentChannels parses a #rrggbb value into 8-bit red, green, and blue.
+func accentChannels(hex string) (r, g, b int, ok bool) {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		return 0, 0, 0, false
+	}
+	part := func(s string) (int, bool) {
+		v, err := strconv.ParseUint(s, 16, 8)
+		if err != nil {
+			return 0, false
+		}
+		return int(v), true
+	}
+	r, okR := part(hex[0:2])
+	g, okG := part(hex[2:4])
+	b, okB := part(hex[4:6])
+	return r, g, b, okR && okG && okB
+}
+
+// accentHue returns the HSL hue in degrees. The caller has already decoded the
+// channels, so only the hue formula belongs here.
+func accentHue(r, g, b int) float64 {
+	rf, gf, bf := float64(r)/255, float64(g)/255, float64(b)/255
+	hi, lo := math.Max(rf, math.Max(gf, bf)), math.Min(rf, math.Min(gf, bf))
+	delta := hi - lo
+	if delta == 0 {
+		return 0
+	}
+	var hue float64
+	switch hi {
+	case rf:
+		hue = math.Mod((gf-bf)/delta, 6)
+	case gf:
+		hue = (bf-rf)/delta + 2
+	default:
+		hue = (rf-gf)/delta + 4
+	}
+	hue *= 60
+	if hue < 0 {
+		hue += 360
+	}
+	return hue
+}

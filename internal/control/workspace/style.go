@@ -3,7 +3,7 @@ package workspace
 // Style is the semantic identity of a workspace: a stable accent and label.
 //
 // These are semantic identity, not arbitrary user-theme colors (§9). A user
-// must be able to learn that teal means ASK, blue means BUILD, and magenta
+// must be able to learn that teal means ASK, blue means BUILD, and violet
 // means FUZZ without relearning it when they switch palettes. Each authority
 // therefore has a dark-screen and a light-screen form of the same hue: the
 // light forms are deepened so they read on a bright terminal, the dark forms
@@ -24,7 +24,7 @@ type Style struct {
 
 // Style returns the fixed semantic style for a workspace.
 //
-// ASK → teal, BUILD → blue, FUZZ → magenta (§9). An invalid workspace returns
+// ASK → teal, BUILD → blue, FUZZ → violet (§9). An invalid workspace returns
 // a muted neutral so a rendering bug is visible rather than disguised as one of
 // the three authorities.
 func (w Workspace) Style() Style {
@@ -43,9 +43,11 @@ func (w Workspace) Style() Style {
 //
 // These are OHGO's signature identity colours, not theme chrome. The exact
 // hexes are part of the product contract: ASK is teal, BUILD is blue, FUZZ is
-// magenta/coral. The light forms are the same hue deepened for a bright
-// terminal; they are not a different colour family. A change here is an
-// identity change, not a palette tweak.
+// a soft violet. The light forms are the same hue deepened for a bright
+// terminal; they are not a different colour family. The FUZZ pair stays
+// desaturated on purpose: lavender reads as an authority badge, while a
+// high-chroma magenta or neon purple glares during a long session. A change
+// here is an identity change, not a palette tweak.
 const (
 	// AccentAsk is ASK's teal identity on a dark screen.
 	AccentAsk = "#5FB3A1"
@@ -55,10 +57,10 @@ const (
 	AccentBuild = "#61AFEF"
 	// AccentBuildLight is BUILD's deep blue identity on a bright screen.
 	AccentBuildLight = "#2B6CB0"
-	// AccentFuzz is FUZZ's magenta/coral identity on a dark screen.
-	AccentFuzz = "#E06C75"
-	// AccentFuzzLight is FUZZ's deep magenta identity on a bright screen.
-	AccentFuzzLight = "#C53030"
+	// AccentFuzz is FUZZ's soft lavender-violet identity on a dark screen.
+	AccentFuzz = "#C678DD"
+	// AccentFuzzLight is FUZZ's deep violet identity on a bright screen.
+	AccentFuzzLight = "#8C4398"
 
 	accentUnknown = "244"
 )

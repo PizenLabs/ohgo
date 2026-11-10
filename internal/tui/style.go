@@ -62,9 +62,9 @@ const (
 	ModeAccentBuild = workspace.AccentBuild
 	// ModeAccentBuildLight is BUILD's deep blue identity on a bright screen.
 	ModeAccentBuildLight = workspace.AccentBuildLight
-	// ModeAccentFuzz is FUZZ's magenta/coral identity on a dark screen.
+	// ModeAccentFuzz is FUZZ's soft violet identity on a dark screen.
 	ModeAccentFuzz = workspace.AccentFuzz
-	// ModeAccentFuzzLight is FUZZ's deep magenta identity on a bright screen.
+	// ModeAccentFuzzLight is FUZZ's deep violet identity on a bright screen.
 	ModeAccentFuzzLight = workspace.AccentFuzzLight
 )
 
@@ -274,7 +274,7 @@ const badgeNeutral = "244"
 // WorkspaceBadge renders the execution-authority label with its semantic
 // accent.
 //
-// The accent is a workspace-owned identity colour (ASK teal, FUZZ magenta,
+// The accent is a workspace-owned identity colour (ASK teal, FUZZ violet,
 // BUILD blue), not a theme token: it must read the same under every palette
 // (§9). It is passed in by the producer, which reads it from
 // workspace.Style(), so this package never hardcodes a workspace colour. An

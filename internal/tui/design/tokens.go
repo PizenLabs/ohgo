@@ -10,7 +10,7 @@
 // here: ASK, FUZZ, and BUILD are owned by control/workspace because they are
 // product identity, not theme chrome. Chrome roles and authority roles must
 // remain independent, which is why success never borrows BUILD blue and
-// warning never becomes FUZZ magenta.
+// warning never becomes FUZZ violet.
 package design
 
 // Tokens is one complete appearance. Values are ANSI-independent colour
@@ -90,7 +90,7 @@ type Tokens struct {
 	ThoughtBody   string
 
 	// Operational status. These are independent of authority identity: a
-	// successful FUZZ call keeps FUZZ magenta and gains a success glyph.
+	// successful FUZZ call keeps FUZZ violet and gains a success glyph.
 	Success string
 	Warning string
 	Error   string
@@ -103,7 +103,9 @@ type Tokens struct {
 	CodeKeyword    string
 	// Inline code is a pill inside prose, not a fence: it needs its own pair
 	// so a path or filename reads as reference data without inheriting the
-	// block's full-width surface.
+	// block's full-width surface. The foreground is a chromatic reference
+	// accent rather than a near-body text colour; the hue, not just the tint,
+	// is what makes the artifact pop.
 	InlineCodeForeground string
 	InlineCodeBackground string
 	Quote                string
@@ -162,7 +164,7 @@ func Dark() Tokens {
 		Idle:      "#7E8BA0",
 		Info:      "#8FB4D9",
 
-		Heading:    "#CFC7FA",
+		Heading:    "#B79BFF",
 		Emphasis:   "#E8CE9B",
 		ListMarker: "#8F8FC9",
 
@@ -178,8 +180,8 @@ func Dark() Tokens {
 		CodeBackground:       "#141A24",
 		CodeString:           "#DCC08C",
 		CodeKeyword:          "#C5B8F2",
-		InlineCodeForeground: "#D8E4F5",
-		InlineCodeBackground: "#1B2431",
+		InlineCodeForeground: "#9ED8FF",
+		InlineCodeBackground: "#162333",
 		Quote:                "#9AA5B8",
 
 		DiffAddForeground:    "#A9DBBB",
@@ -233,7 +235,7 @@ func Light() Tokens {
 		Idle:      "#626B7A",
 		Info:      "#3C6E96",
 
-		Heading:    "#443B86",
+		Heading:    "#513C9E",
 		Emphasis:   "#7A5719",
 		ListMarker: "#6B62A8",
 
@@ -249,8 +251,8 @@ func Light() Tokens {
 		CodeBackground:       "#EDEFF2",
 		CodeString:           "#7A5A1E",
 		CodeKeyword:          "#4B3E8C",
-		InlineCodeForeground: "#23405C",
-		InlineCodeBackground: "#E7EDF4",
+		InlineCodeForeground: "#0B5C8A",
+		InlineCodeBackground: "#E2EEF6",
 		Quote:                "#4A5361",
 
 		DiffAddForeground:    "#1D5A39",

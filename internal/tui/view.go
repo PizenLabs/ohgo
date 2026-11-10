@@ -958,6 +958,9 @@ func styleIdentityLine(line string, pal *Palette, chrome *Chrome) string {
 		if styled, ok := styleBoxedModes(line, pal, chrome); ok {
 			return styled
 		}
+		if boxedDivider(line) {
+			return styleBoxedCells(line, pal, func(cell string) string { return pal.Separator.Render(cell) })
+		}
 		if greetingBrandIndex(line) >= 0 {
 			return styleGreetingTitle(line, pal)
 		}
@@ -1040,7 +1043,38 @@ func styleTitleText(cell string, pal *Palette) string {
 	if idx < 0 {
 		return pal.Title.Render(cell)
 	}
-	return pal.Faint.Render(cell[:idx]) + pal.Title.Render(brand) + pal.Title.Render(cell[idx+len(brand):])
+	tail := cell[idx+len(brand):]
+	if dot := strings.Index(tail, "·"); dot >= 0 {
+		// The separator between brand and address is punctuation, not part
+		// of either phrase: keep it low-focus so the greeting still reads as
+		// one title rather than two competing labels.
+		return pal.Faint.Render(cell[:idx]) +
+			pal.Title.Render(brand) +
+			pal.Faint.Render(tail[:dot]) +
+			pal.Faint.Render("·") +
+			pal.Title.Render(tail[dot+len("·"):])
+	}
+	return pal.Faint.Render(cell[:idx]) + pal.Title.Render(brand) + pal.Title.Render(tail)
+}
+
+// boxedDivider reports a frame row whose interior is only the section rule.
+// Separating it from prose rows lets the rule keep the low-focus separator
+// role instead of borrowing the muted body fallback.
+func boxedDivider(line string) bool {
+	segs := strings.Split(line, "│")
+	if len(segs) != 3 {
+		return false
+	}
+	interior := strings.TrimSpace(segs[1])
+	if interior == "" {
+		return false
+	}
+	for _, r := range interior {
+		if r != '─' {
+			return false
+		}
+	}
+	return true
 }
 
 // styleBoxedCells styles the interior of a boxed line while leaving its
@@ -1068,9 +1102,12 @@ var modeLabels = map[string]bool{"ASK": true, "BUILD": true, "FUZZ": true}
 
 // leadingMode reports the authority label heading a cell, if any. The label
 // must be the whole first token: a description that merely starts with those
-// letters never matches.
+// letters never matches. The quickstart's alignment glyph is skipped first so
+// the anchor can sit before the label without hiding it.
 func leadingMode(cell string) (string, bool) {
 	rest := strings.TrimLeft(cell, " ")
+	rest = strings.TrimPrefix(rest, identityModeGlyph)
+	rest = strings.TrimLeft(rest, " ")
 	for mode := range modeLabels {
 		if rest == mode || strings.HasPrefix(rest, mode+" ") {
 			return mode, true
@@ -1109,26 +1146,37 @@ func styleBoxedModes(line string, pal *Palette, chrome *Chrome) (string, bool) {
 }
 
 // styleModeCell accents a leading authority label, renders the description in
-// the Medium Focus support role, and fades the padding. Cells without a label
-// render as secondary text.
+// the Medium Focus support role, and fades the indent, glyph, and padding.
+// Cells without a label render as secondary text.
 func styleModeCell(cell string, pal *Palette, chrome *Chrome) string {
 	mode, ok := leadingMode(cell)
 	if !ok {
 		return pal.Secondary.Render(cell)
 	}
-	lead := cell[:len(cell)-len(strings.TrimLeft(cell, " "))]
-	rest := strings.TrimLeft(cell, " ")[len(mode):]
-	return pal.Faint.Render(lead) + modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) + pal.Secondary.Render(rest)
+	idx := strings.Index(cell, mode)
+	if idx < 0 {
+		return pal.Secondary.Render(cell)
+	}
+	return pal.Faint.Render(cell[:idx]) +
+		modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) +
+		pal.Secondary.Render(cell[idx+len(mode):])
 }
 
-// styleModeBadges accents a leading authority label on a borderless line.
+// styleModeBadges accents a leading authority label on a borderless line. The
+// alignment glyph stays faint so it anchors the row without competing with the
+// authority accent.
 func styleModeBadges(line string, pal *Palette, chrome *Chrome) string {
 	mode, ok := leadingMode(line)
 	if !ok {
 		return line
 	}
-	rest := strings.TrimLeft(line, " ")[len(mode):]
-	return modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) + pal.Secondary.Render(rest)
+	idx := strings.Index(line, mode)
+	if idx < 0 {
+		return line
+	}
+	return pal.Faint.Render(line[:idx]) +
+		modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) +
+		pal.Secondary.Render(line[idx+len(mode):])
 }
 
 // triggerTokens are the affordances the quickstart row teaches. They are data,
@@ -1865,7 +1913,7 @@ func composerPrefixText(state State, pal *Palette) string {
 }
 
 // composerPrefixStyle resolves the affordance colour per authority: ASK teal,
-// BUILD blue, FUZZ magenta. The hue is semantic identity; only its depth
+// BUILD blue, FUZZ violet. The hue is semantic identity; only its depth
 // follows the theme, so the prompt stays soft on a dark screen and readable on
 // a bright one without ever blurring which authority owns the next word.
 // Unknown authorities degrade to the prompt style rather than borrowing an

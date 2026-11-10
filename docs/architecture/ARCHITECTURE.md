@@ -112,7 +112,7 @@ and any subagent read at call time:
 The full matrix, state model, and invariants are in
 [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
 
-Semantic identity (`workspace.Style`) is teal/magenta/blue for ASK/FUZZ/BUILD.
+Semantic identity (`workspace.Style`) is teal/violet/blue for ASK/FUZZ/BUILD.
 The hue is fixed across themes while its depth adapts for contrast on dark and
 light terminals; it never participates in an authority decision.
 
