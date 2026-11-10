@@ -447,9 +447,9 @@ func firstUnstable(s State) int {
 	return first
 }
 
-// liveEntryLines renders one sealed entry as permanent scrollback.
-// The question uses the same faint background block as the fullscreen
-// view, with no label prefix, so both modes distinguish it identically.
+// liveEntryLines renders one sealed entry as permanent scrollback. The
+// question uses the same name-and-glyph attribution as the fullscreen view, so
+// both modes distinguish it identically without a painted background.
 //
 // Live mode cannot rewrite a line once the terminal owns it, so grouping is
 // expressed without adjacency lookahead: a tool never emits its own separator,
@@ -470,7 +470,7 @@ func liveEntryLines(s State, index int, e Entry, pal *Palette, layout Layout) []
 func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout) []string {
 	switch e.Kind {
 	case EntryUser:
-		return liveUserLines(e.UserText, pal, layout)
+		return userPromptLines(e.UserText, s.Status.User, pal, layout)
 
 	case EntryAssistant:
 		lines := liveMarkdownLines(e.AssistantText, pal, layout)
@@ -542,24 +542,6 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		return lines
 	}
 	return nil
-}
-
-// liveUserLines renders the question as a faint background block, padded
-// to the content width like the fullscreen view so the surface reads solid.
-func liveUserLines(text string, pal *Palette, layout Layout) []string {
-	width := textWidth(layout)
-	lines := wrapPlain(text, layout)
-	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		padded := l
-		if width > 0 {
-			if gap := width - CellWidth(l); gap > 0 {
-				padded += strings.Repeat(" ", gap)
-			}
-		}
-		out = append(out, pal.UserBG.Render(padded))
-	}
-	return out
 }
 
 // expandedBlockLines renders one sealed expandable block's expanded projection

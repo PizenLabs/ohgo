@@ -85,6 +85,9 @@ type layoutKey struct {
 	contentWidth int
 	mode         LayoutMode
 	theme        string
+	// user is part of the geometry key because prompt attribution changes the
+	// first row's prefix width and therefore every prompt wrap.
+	user string
 }
 
 type blockLayout struct {
@@ -118,14 +121,16 @@ func keyFor(state State, layout Layout) layoutKey {
 		contentWidth: layout.ContentWidth,
 		mode:         layout.Mode,
 		theme:        state.Theme,
+		user:         state.Status.User,
 	}
 }
 
 // Refresh brings the index up to date with the document.
 //
-// Width, theme, and tier changes reflow every block because every projection
-// may change. A height-only resize does not: block rows depend on width and
-// tier, and the viewport height is applied when slicing. Otherwise only blocks
+// Width, theme, tier, and prompt-attribution changes reflow every block
+// because every projection may change. A height-only resize does not: block
+// rows depend on width and tier, and the viewport height is applied when
+// slicing. Otherwise only blocks
 // whose revision (or running spinner) moved are re-rendered; untouched history
 // keeps its cached rows.
 func (l *TranscriptLayout) Refresh(state *State, layout Layout) {
@@ -420,6 +425,7 @@ func (l *TranscriptLayout) renderBlock(state *State, entry Entry, index int, id 
 		tick:            spinner,
 		now:             now,
 		theme:           state.Theme,
+		user:            state.Status.User,
 		toolRows:        &toolRows,
 		currentToolID:   currentToolID,
 	})

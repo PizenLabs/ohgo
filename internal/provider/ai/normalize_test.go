@@ -16,6 +16,28 @@ func pseudoEnvelope(name, path string) string {
 	return fmt.Sprintf("<dotsfunctioncall>\n  <invoke name=%q>\n    <parameter name=\"path\">%s</parameter>\n  </invoke>\n</dotsfunctioncall>", name, path)
 }
 
+// longcatEnvelope renders the key/value grammar LongCat 2.5 emits. args are
+// alternating key and value strings.
+func longcatEnvelope(name string, args ...string) string {
+	if len(args)%2 != 0 {
+		panic("longcatEnvelope: args must be key/value pairs")
+	}
+	var b strings.Builder
+	b.WriteString("<longcat_tool_call>")
+	b.WriteString(name)
+	b.WriteString("\n")
+	for i := 0; i < len(args); i += 2 {
+		b.WriteString("<longcat_arg_key>")
+		b.WriteString(args[i])
+		b.WriteString("</longcat_arg_key>\n")
+		b.WriteString("<longcat_arg_value>")
+		b.WriteString(args[i+1])
+		b.WriteString("</longcat_arg_value>\n")
+	}
+	b.WriteString("</longcat_tool_call>")
+	return b.String()
+}
+
 // rawTextStream builds the wire-shaped stream a text-only provider emits.
 func rawTextStream(deltas ...string) *Stream {
 	var text strings.Builder
@@ -104,6 +126,7 @@ func assertNoProtocolSyntax(t *testing.T, text string) {
 	for _, marker := range []string{
 		"<dotsfunctioncall", "</dotsfunctioncall", "<dots_function_call", "</dots_function_call",
 		"<dots_functioncall", "<dotsfunction_call", "<invoke", "<parameter", "<tool_call", "</tool_call",
+		"<longcat_tool_call", "</longcat_tool_call", "<longcat_arg_key", "<longcat_arg_value",
 	} {
 		if strings.Contains(text, marker) {
 			t.Errorf("visible text leaked protocol syntax %q: %q", marker, text)
@@ -385,6 +408,182 @@ func TestNormalizeMessageRejectsMalformedGenericToolCall(t *testing.T) {
 		if !got.ProtocolResidue {
 			t.Errorf("input %q was not marked as protocol residue", input)
 		}
+	}
+}
+
+// LongCat 2.5 emits one envelope per call, often several consecutively in one
+// text run. Every envelope must become a canonical call; none may reach the
+// transcript as prose.
+func TestNormalizeMessageRecognizesLongCatToolCalls(t *testing.T) {
+	input := strings.Join([]string{
+		longcatEnvelope("glob", "pattern", "**/*.go"),
+		longcatEnvelope("glob", "pattern", "cmd/**/*"),
+		longcatEnvelope("glob", "pattern", "internal/**/*"),
+		longcatEnvelope("glob", "pattern", "**/.env*"),
+		longcatEnvelope("glob", "pattern", "docs/**/*"),
+	}, "\n")
+
+	got := NormalizeMessage(AssistantMessage{
+		Content:    []ContentBlock{TextContent{Text: input}},
+		StopReason: StopEndTurn,
+	}, NormalizeOptions{})
+
+	calls := got.ToolCalls()
+	patterns := []string{"**/*.go", "cmd/**/*", "internal/**/*", "**/.env*", "docs/**/*"}
+	if len(calls) != len(patterns) {
+		t.Fatalf("calls = %d, want %d", len(calls), len(patterns))
+	}
+	ids := make(map[string]bool, len(calls))
+	for i, call := range calls {
+		if call.Name != "glob" {
+			t.Errorf("call %d name = %q, want glob", i, call.Name)
+		}
+		if call.Arguments["pattern"] != patterns[i] {
+			t.Errorf("call %d pattern = %#v, want %q", i, call.Arguments["pattern"], patterns[i])
+		}
+		if call.ID == "" || ids[call.ID] {
+			t.Errorf("call %d id = %q, want unique and non-empty", i, call.ID)
+		}
+		ids[call.ID] = true
+	}
+	if strings.TrimSpace(got.Text()) != "" {
+		t.Errorf("text = %q, want only the separators between consumed envelopes", got.Text())
+	}
+	if got.ProtocolResidue {
+		t.Error("recognized LongCat calls were reported as protocol residue")
+	}
+	if got.StopReason != StopToolUse {
+		t.Errorf("stop reason = %q, want %q", got.StopReason, StopToolUse)
+	}
+}
+
+func TestNormalizeLongCatCoercesArgumentsUsingToolSchema(t *testing.T) {
+	tools := []ToolSpec{{
+		Name: "glob",
+		Parameters: []byte(`{
+			"type":"object",
+			"properties":{
+				"pattern":{"type":"string"},
+				"limit":{"type":"integer"},
+				"gitignore":{"type":"boolean"}
+			}
+		}`),
+	}}
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: longcatEnvelope(
+			"glob", "limit", "50", "pattern", "**/*", "gitignore", "false",
+		)}},
+	}, NormalizeOptions{Tools: tools})
+
+	calls := got.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	args := calls[0].Arguments
+	if args["pattern"] != "**/*" {
+		t.Errorf("pattern = %#v, want the string `**/*`", args["pattern"])
+	}
+	if args["limit"] != float64(50) {
+		t.Errorf("limit = %#v, want float64(50)", args["limit"])
+	}
+	if args["gitignore"] != false {
+		t.Errorf("gitignore = %#v, want false", args["gitignore"])
+	}
+}
+
+// The key/value envelope must survive any provider chunk boundary, including
+// one byte per chunk.
+func TestNormalizeStreamLongCatCallSurvivesArbitraryFragmentation(t *testing.T) {
+	envelope := longcatEnvelope("read", "path", "a.go", "line", "12")
+	check := func(name string, run normalizationRun) {
+		t.Helper()
+		if len(run.calls) != 1 {
+			t.Fatalf("%s: calls = %+v, want one read call", name, run.calls)
+		}
+		if run.calls[0].Name != "read" || run.calls[0].Arguments["path"] != "a.go" {
+			t.Fatalf("%s: call = %+v, want read/a.go", name, run.calls[0])
+		}
+		if run.text != "" || run.msg.Text() != "" {
+			t.Fatalf("%s: protocol leaked into text: live=%q final=%q", name, run.text, run.msg.Text())
+		}
+		if run.msg.ProtocolResidue {
+			t.Fatalf("%s: recognized envelope flagged as residue", name)
+		}
+	}
+
+	for split := 1; split < len(envelope); split++ {
+		check(fmt.Sprintf("split %d", split), runNormalize(t, []string{envelope[:split], envelope[split:]}, NormalizeOptions{}))
+	}
+
+	deltas := make([]string, 0, len(envelope))
+	for i := 0; i < len(envelope); i++ {
+		deltas = append(deltas, envelope[i:i+1])
+	}
+	check("one byte per chunk", runNormalize(t, deltas, NormalizeOptions{}))
+}
+
+// LongCat-Flash-Chat documents a JSON function object in the same envelope.
+// Supporting it costs one branch and keeps the older spelling canonical.
+func TestNormalizeMessageRecognizesLongCatJSONEnvelope(t *testing.T) {
+	envelope := `<longcat_tool_call>{"name":"glob","arguments":{"pattern":"*.go"}}</longcat_tool_call>`
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: envelope}},
+	}, NormalizeOptions{})
+
+	calls := got.ToolCalls()
+	if len(calls) != 1 || calls[0].Name != "glob" {
+		t.Fatalf("calls = %+v, want one glob call", calls)
+	}
+	if calls[0].Arguments["pattern"] != "*.go" {
+		t.Errorf("pattern = %#v, want *.go", calls[0].Arguments["pattern"])
+	}
+	if got.Text() != "" {
+		t.Errorf("text = %q, want the envelope consumed", got.Text())
+	}
+}
+
+func TestNormalizeMessageRejectsMalformedLongCatEnvelope(t *testing.T) {
+	cases := map[string]string{
+		"empty envelope":     "<longcat_tool_call></longcat_tool_call>",
+		"no name":            "<longcat_tool_call><longcat_arg_key>pattern</longcat_arg_key><longcat_arg_value>x</longcat_arg_value></longcat_tool_call>",
+		"prose name":         "<longcat_tool_call>just text</longcat_tool_call>",
+		"missing value":      "<longcat_tool_call>glob<longcat_arg_key>pattern</longcat_arg_key></longcat_tool_call>",
+		"unterminated value": "<longcat_tool_call>glob<longcat_arg_key>pattern</longcat_arg_key><longcat_arg_value>x</longcat_tool_call>",
+		"duplicate key":      "<longcat_tool_call>glob<longcat_arg_key>pattern</longcat_arg_key><longcat_arg_value>a</longcat_arg_value><longcat_arg_key>pattern</longcat_arg_key><longcat_arg_value>b</longcat_arg_value></longcat_tool_call>",
+	}
+	for name, envelope := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := NormalizeMessage(AssistantMessage{
+				Content: []ContentBlock{TextContent{Text: "before " + envelope + " after"}},
+			}, NormalizeOptions{})
+
+			if calls := got.ToolCalls(); len(calls) != 0 {
+				t.Fatalf("fabricated calls = %+v, want none", calls)
+			}
+			assertNoProtocolSyntax(t, got.Text())
+			if !strings.Contains(got.Text(), "could not be normalized") {
+				t.Errorf("text = %q, want a truthful normalization failure", got.Text())
+			}
+			if !got.ProtocolResidue {
+				t.Errorf("%s was not marked as protocol residue", name)
+			}
+		})
+	}
+}
+
+func TestNormalizeMessageFlagsIncompleteLongCatEnvelopeAsResidue(t *testing.T) {
+	envelope := longcatEnvelope("glob", "pattern", "*.go")
+	envelope = strings.TrimSuffix(envelope, "</longcat_tool_call>")
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: envelope}},
+	}, NormalizeOptions{})
+
+	if !got.ProtocolResidue {
+		t.Fatal("an incomplete LongCat call was not marked as residue")
+	}
+	assertNoProtocolSyntax(t, got.Text())
+	if len(got.ToolCalls()) != 0 {
+		t.Fatalf("fabricated calls = %+v", got.ToolCalls())
 	}
 }
 
@@ -1095,6 +1294,8 @@ func TestNormalizeQuotedProtocolExamplesRemainContent(t *testing.T) {
 		"escaped marker": `Write \<dotsfunctioncall> literally to mention it.`,
 		"several inline": "- `<dots_function_call>`\n- `<dotsfunctioncall>`\n- `</dots_protocol_call>`",
 		"plain xml":      "The tool uses <invoke name=\"ls\"> and <parameter name=\"path\">.",
+		"longcat inline": "Use `<longcat_tool_call>` and `<longcat_arg_key>` to show the wire shape.",
+		"longcat fence":  "Example:\n```text\n" + longcatEnvelope("glob", "pattern", "*.go") + "\n```\nThat is the wire shape.",
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {

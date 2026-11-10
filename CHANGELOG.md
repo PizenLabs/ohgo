@@ -5,6 +5,13 @@ immutable.
 
 ## [Unreleased]
 
+### Fixed
+
+- LongCat serialized tool calls: `<longcat_tool_call>` envelopes in assistant
+  text are now normalized at the provider boundary in both the JSON and
+  key/value spellings. Previously the raw protocol reached the transcript as
+  prose and the proposed calls were never authorized or executed.
+
 ## [v0.1.0] - 2026-11-09
 
 ### Added

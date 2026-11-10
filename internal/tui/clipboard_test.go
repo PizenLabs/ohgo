@@ -228,12 +228,12 @@ func TestMouseDragSelectsAndCopies(t *testing.T) {
 		t.Fatal("no rows to select")
 	}
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 0, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 5, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn(), Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 5, Y: y})
 	if p.state.Selection == nil {
 		t.Fatal("drag produced no selection")
 	}
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 5, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 5, Y: y})
 	if out.Len() == 0 {
 		t.Fatal("release wrote no clipboard bytes")
 	}
