@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -36,6 +37,7 @@ func TestSecurityRequestClassifiesRealTools(t *testing.T) {
 	root := t.TempDir()
 	gate, _ := gateFor(t, workspace.Build, nil)
 	_ = gate
+	outside := filepath.Join(t.TempDir(), "server.log")
 
 	cases := []struct {
 		name    string
@@ -49,6 +51,7 @@ func TestSecurityRequestClassifiesRealTools(t *testing.T) {
 		{"read", tools.NewReadTool(root), secReadCall("a.go"), security.CapabilityRead, security.RiskLow, false, security.ScopeInside},
 		{"write", tools.NewWriteTool(root), secWriteCall("a.go"), security.CapabilityWrite, security.RiskMedium, true, security.ScopeInside},
 		{"bash ordinary", tools.NewBashTool(root), secBashCall("go test ./..."), security.CapabilityExec, security.RiskMedium, false, security.ScopeInside},
+		{"bash outside redirect", tools.NewBashTool(root), secBashCall("echo x > " + outside), security.CapabilityExec, security.RiskMedium, false, security.ScopeInside},
 		{"bash mutating", tools.NewBashTool(root), secBashCall("rm -rf internal"), security.CapabilityExec, security.RiskHigh, true, security.ScopeInside},
 	}
 	for _, tc := range cases {

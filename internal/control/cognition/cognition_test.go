@@ -767,6 +767,71 @@ func TestEvidenceTrimBoundsItemsAndBytes(t *testing.T) {
 	}
 }
 
+// A long investigation can produce more diagnostic command output than the
+// evidence state can retain. Trimming must not evict the file reads and
+// directory listing that satisfy the repository needs while keeping dozens of
+// transient command logs. The observed failure did exactly that: after 88 shell
+// probes the state still had 42 diagnostic items but no content observation, so
+// sufficiency reported the investigation as incomplete and the answer boundary
+// never opened.
+func TestEvidenceTrimKeepsContentThatSatisfiesRepositoryNeeds(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "investigate the bottleneck and evaluate in this project",
+	}, ShapeParams{Authority: "fuzz"})
+	if !shape.RepositoryScope || !shape.BroadRepositoryAnalysis {
+		t.Fatalf("test shape = repository %t, broad %t; want both",
+			shape.RepositoryScope, shape.BroadRepositoryAnalysis)
+	}
+
+	state := NewEvidenceState()
+	state.ensureRequirements(shape)
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "."},
+		Result: agent.Result{
+			Text:    "index.html\nstyles.css\nscript.js",
+			Details: map[string]any{"path": ".", "entries": 3},
+		},
+	})
+	for _, path := range []string{"index.html", "styles.css", "script.js"} {
+		state.ObserveOutcome(agent.ToolOutcome{
+			CallID: "read-" + path, ToolName: "read", Args: map[string]any{"path": path},
+			Result: agent.Result{
+				Text: path + " content",
+				Details: map[string]any{
+					"path": path, "totalLines": 1, "offset": 1, "limit": 2000,
+				},
+			},
+		})
+	}
+	for i := 0; i < 120; i++ {
+		command := "python3 -c 'audit " + itoa(i) + "'"
+		state.ObserveOutcome(agent.ToolOutcome{
+			CallID: "bash-" + itoa(i), ToolName: "bash", Args: map[string]any{"command": command},
+			Result: agent.Result{
+				Text:     strings.Repeat("diagnostic ", 800),
+				Details:  map[string]any{"command": command, "exitCode": 0},
+				Executes: true, Finished: true,
+			},
+		})
+	}
+
+	if !state.Satisfied("repository_overview", ExecutionState{}) {
+		t.Fatal("repository_overview was lost when diagnostic output filled the evidence bound")
+	}
+	if !state.Satisfied("repository_survey", ExecutionState{}) {
+		t.Fatal("repository_survey was lost when diagnostic output filled the evidence bound")
+	}
+	suff := EvaluateSufficiency(shape, state, ExecutionState{}, false)
+	if suff.State != Sufficient || suff.Stage != StageAnswer {
+		t.Fatalf("sufficiency = %s/%s, want SUFFICIENT/answer after a long diagnostic run",
+			suff.State, suff.Stage)
+	}
+	if got := state.Bytes(); got > MaxEvidenceBytes {
+		t.Fatalf("evidence bytes = %d, over cap %d", got, MaxEvidenceBytes)
+	}
+}
+
 func TestEvidenceObservationIsIdempotentPerCall(t *testing.T) {
 	state := NewEvidenceState()
 	turn := agent.Turn{Results: []agent.ToolOutcome{{

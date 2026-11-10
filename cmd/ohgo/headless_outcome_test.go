@@ -127,10 +127,24 @@ func TestHeadlessRejectsEmptyInformationalAnswer(t *testing.T) {
 		"empty":      {},
 		"whitespace": {Content: []ai.ContentBlock{ai.TextContent{Text: " \n\t "}}},
 	} {
-		outcome, text := runOnceHeadless(t, t.TempDir(), scriptedCompletionStream(message), "explain this")
+		// The first empty answer-only request gets one bounded retry. Serving
+		// the same empty shape twice proves the retry does not turn silence
+		// into completion.
+		outcome, text := runOnceHeadless(t, t.TempDir(), scriptedCompletionStream(message, message), "explain this")
 		if outcome.State != runNeedsReview {
 			t.Fatalf("%s outcome = %s, want NEEDS_REVIEW: %s", name, outcome.State, text)
 		}
+	}
+}
+
+// A model that returns no visible text at the answer boundary gets one more
+// request. The second response is the answer the user sees, so the one-shot
+// result must be COMPLETED rather than an empty NEEDS_REVIEW.
+func TestHeadlessAnswersAfterAnEmptyAnswerOnlyRequest(t *testing.T) {
+	outcome, text := runOnceHeadless(t, t.TempDir(),
+		scriptedCompletionStream(ai.AssistantMessage{}, stopMessage()), "explain this")
+	if outcome.State != runCompleted {
+		t.Fatalf("outcome = %s, want COMPLETED: %s", outcome.State, text)
 	}
 }
 

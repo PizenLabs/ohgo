@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -143,5 +144,58 @@ func TestBashToolCapabilityUsesTheCommand(t *testing.T) {
 	}
 	if got := tool.Capability(map[string]any{"command": 42}); got != agent.TierWrite {
 		t.Errorf("non-string command capability = %s, want write", got)
+	}
+}
+
+// A redirect outside the workspace is execution, not a repository change. A
+// FUZZ investigation must be able to start a local server that logs to a
+// temporary file; refusing that as a mutation stranded the run before it could
+// answer.
+func TestBashToolCapabilityKeepsOutsideRedirectsExecutable(t *testing.T) {
+	root := t.TempDir()
+	tool := NewBashTool(root)
+	temp := t.TempDir()
+	outside := filepath.Join(temp, "server.log")
+
+	commands := []string{
+		"python3 -m http.server 8000 > " + outside + " 2>&1 & sleep 1; curl -sI http://localhost:8000 | head",
+		"echo started > " + filepath.Join(temp, "started.txt"),
+		"echo failure 2>" + filepath.Join(temp, "error.log"),
+		"printf started | tee " + outside,
+		"nohup go test ./... > " + outside + " 2>&1 &",
+	}
+	for _, command := range commands {
+		if got := tool.Capability(map[string]any{"command": command}); got != agent.TierExec {
+			t.Errorf("Capability(%q) = %s, want exec: the target is outside the workspace", command, got)
+		}
+	}
+
+	inside := []string{
+		"echo changed > server.log",
+		"echo changed > " + filepath.Join(root, "nested", "server.log"),
+		"echo failure 2>error.log",
+		"printf changed | tee server.log",
+	}
+	for _, command := range inside {
+		if got := tool.Capability(map[string]any{"command": command}); got != agent.TierWrite {
+			t.Errorf("Capability(%q) = %s, want write: the target is inside the workspace", command, got)
+		}
+	}
+}
+
+// The exported escape classifier follows the same root-aware rule, so a human
+// escape and an agent shell call cannot disagree about an outside redirect.
+func TestCommandMutatesInRootDistinguishesInsideAndOutsideTargets(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "log.txt")
+
+	if CommandMutatesInRoot("echo x > "+outside, root) {
+		t.Fatalf("CommandMutatesInRoot classified an outside redirect as a workspace mutation")
+	}
+	if !CommandMutatesInRoot("echo x > inside.txt", root) {
+		t.Fatalf("CommandMutatesInRoot accepted a relative write")
+	}
+	if !CommandMutates("echo x > " + outside) {
+		t.Fatalf("the root-less classifier stopped being conservative")
 	}
 }

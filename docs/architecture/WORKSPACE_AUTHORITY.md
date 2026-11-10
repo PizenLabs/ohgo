@@ -215,6 +215,17 @@ resolves ownership before workspace prediction or routing. This grants nothing:
 the gate still admits each tool, so a continuation under ASK cannot execute
 merely because verification was named.
 
+Ownership and routing are different facts. An exact repeat of the task's
+objective, or a role change on that objective, is still a continuation of the
+same task identity, but the prompt states a capability requirement. It therefore
+goes through `workspace.DecideTransition` like a new request: a resumed BUILD
+task whose objective is a strong investigation hands off to FUZZ automatically,
+and a FUZZ mutation objective hands off to BUILD. Only continuation wording that
+carries no capability signal — `continue`, a verification of the task's own
+result, or an already-decided handoff — bypasses prediction. A task follow-up
+(`fix it`) is predicted for the same reason. This keeps a resumed session from
+silently staying in BUILD merely because the task was already open.
+
 Natural verification wording (`check whether the fix worked`, `did it work?`,
 `are the tests passing?`) follows the same rule when an execution or mutation
 task owns the result. The predicate needs both a check cue and a reference to
@@ -602,6 +613,7 @@ that a classifier returned a string.
 | UI consults the router | `tui.TestRunTurnRefusesBlockedIntentBeforeTheModel`, `tui.TestRunTurnProjectsDelegatedRouteTruthfully` |
 | UI never moves the workspace | `tui.TestDelegatedTurnNeverSwitchesWorkspace`, `tui.TestRenderShowsTurnSemanticsWithoutMovingTheWorkspace` |
 | Turn state is ephemeral | `tui.TestTurnSemanticsAreClearedOnCompletion`, `cmd/ohgo.TestDelegatedTurnDoesNotLeakIntoTheNextRoute` |
+| A resumed task's repeated objective is routed | `tui.TestRepeatedInvestigationObjectiveRoutesOpenBuildTaskToFuzz` |
 | Task continuation keeps the active authority | `workspace.TestRouteTurnKeepsTaskContinuationInTheActiveWorkspace`, `workspace.TestVerificationContinuationIsAboutExistingWork`, `cmd/ohgo.TestTurnTransitionDoesNotAskWorkspaceForTaskContinuation`, `tui.TestVerificationContinuationRunsUnderBuildAndProves`, `tui.TestVerificationQuestionContinuationKeepsTaskIdentityAndProves`, `tui.TestOpenFuzzTaskContinueStaysInFuzz`, `tui.TestLifecycleUnderstandInvestigateImplementThenVerify` |
 | Lower authority completes a phase, not the task | `workspace.TestPhaseContractDefersObjectivesTheAuthorityCannotPerform`, `tui.TestFuzzInvestigationPhaseOfMutationTaskStaysActive`, `tui.TestFuzzInvestigationPhaseContinuesIntoBuildSameTask`, `tui.TestFuzzInvestigationPhaseRejectsADeferredPlan`, `tui.TestLifecycleUnderstandInvestigateImplementThenVerify` |
 | Continuation grants no authority | `tui.TestVerificationContinuationUnderAskCannotExecute` |

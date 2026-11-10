@@ -113,6 +113,12 @@ type Config struct {
 	// referenced, for example — without rebuilding the loop. Set it with
 	// SetSystemContext before Run.
 	SystemContext []ai.SystemPromptBlock
+	// AnswerRequest is the user-role message appended when an answer-only
+	// request returns no visible text. It makes the closed action surface
+	// explicit in the conversation rather than leaving the model to infer it
+	// from a system block after a tool result. It is a runtime view, never
+	// persisted, and empty disables it while keeping the one retry.
+	AnswerRequest string
 	// Tools are offered to the model.
 	Tools []Tool
 	// MaxTokens caps each completion.
@@ -633,6 +639,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// the model's answer instead of a hard block; completion still decides
 	// whether that answer is sufficient.
 	forceAnswer := false
+	// answerRetried records that an answer-only request already came back
+	// without visible text. The action surface is closed, so there is nothing
+	// else the model can do; one further request is the bounded recovery. It
+	// covers both a forced answer after refusals and a natural evidence
+	// boundary where the first answer request produced only reasoning.
+	answerRetried := false
 	stopReason := ""
 	turns = nil
 	for {
@@ -830,6 +842,41 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					reason = "the runtime closed the task because no further action can make progress"
 				}
 				return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
+			}
+			// A model can stop without any visible text immediately after a
+			// refusal-only turn. The refusal is feedback it has not answered
+			// yet, and silence is not an answer. Close the surface once and ask
+			// for the answer from the evidence already observed, exactly as the
+			// repeated-refusal path does. The empty assistant message is
+			// dropped from the provider context because an empty turn is not
+			// useful to the model and some providers reject it.
+			if strings.TrimSpace(assistant.Text()) == "" && !closed && !forceAnswer &&
+				unproductiveTurns > 0 && len(turns) < l.cfg.MaxTurns {
+				live = live[:len(live)-1]
+				forceAnswer = true
+				continue
+			}
+			// The surface was already answer-only and the model returned only
+			// reasoning. That is the same lifecycle failure one request later:
+			// the runtime asked for the answer, nothing executed, and the run
+			// still has no visible text to hand the user. Drop the empty turn
+			// and ask once more from the same closed surface. Without this, a
+			// model that reaches the forced-answer request and stays silent
+			// bypasses response generation entirely and the task ends with an
+			// empty final message. The bound is one retry, not a loop.
+			if strings.TrimSpace(assistant.Text()) == "" && (closed || forceAnswer) &&
+				!answerRetried && len(turns) < l.cfg.MaxTurns {
+				live = live[:len(live)-1]
+				if strings.TrimSpace(l.cfg.AnswerRequest) != "" {
+					live = append(live, UserMessage{Text: l.cfg.AnswerRequest})
+				}
+				// Keep the retry answer-only even if a projector would
+				// otherwise re-offer the probe surface. The model already had
+				// an answer boundary and produced no answer; reopening tools
+				// would turn the lifecycle failure into another action loop.
+				forceAnswer = true
+				answerRetried = true
+				continue
 			}
 			return turns, nil
 		}

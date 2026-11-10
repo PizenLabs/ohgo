@@ -50,6 +50,14 @@ Answer the user's question directly and concisely.
 Do not inspect the repository. Do not perform tasks or execute actions.
 Prefer the shortest answer that fully answers the question.`
 
+// AnswerRequest is the user-role message the loop appends when an answer-only
+// request returned no visible text. The action surface is already closed, so
+// the only useful next output is the answer; saying that in the conversation
+// is what breaks a model out of a tool-call loop that has no tool left to call.
+// It is runtime-authored, never persisted as a user turn, and never shown in
+// the transcript.
+const AnswerRequest = `Runtime: no tool is available for this response. Provide the final answer to the user's request now, using the observations already gathered where they apply. Do not propose or describe another tool call. State any remaining evidence gap explicitly.`
+
 // WorkspaceContract returns the semantic contract for a workspace, or "" for
 // an unknown name.
 //

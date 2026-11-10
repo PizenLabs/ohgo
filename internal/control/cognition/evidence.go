@@ -86,8 +86,10 @@ const (
 	// MaxEvidenceSummaryBytes bounds the model-facing one-line summary.
 	MaxEvidenceSummaryBytes = 400
 	// MaxEvidenceItems bounds the in-memory and persisted state. Trimming
-	// removes low-value transient evidence first; required, conflicting, and
-	// diagnostic items are retained longest.
+	// removes low-value transient evidence first; conflicting, content-bearing,
+	// and external observations are retained longest because they satisfy the
+	// request's declared needs. Diagnostic command logs are retained only while
+	// the bound allows.
 	MaxEvidenceItems = 256
 	// MaxEvidenceBytes bounds the retained payload total, so a checkpoint
 	// cannot grow into a second transcript. Values are bounded per item and
@@ -1109,19 +1111,31 @@ func (s *EvidenceState) Bytes() int {
 // trim bounds the state by item count and payload bytes, dropping low-value
 // evidence first.
 func (s *EvidenceState) trim() {
+	// Content-bearing observations are retained longest because they are what
+	// the request's declared needs are satisfied by. A long run of command
+	// diagnostics must not evict the file reads and listings that made the
+	// repository knowable. Within one priority the oldest observation goes
+	// first, so the newest content survives when the byte bound is tight.
 	priority := func(item EvidenceItem) int {
 		if item.Status == StatusConflicting {
 			return 0
 		}
-		switch item.Retention {
-		case RetentionDiagnostic, RetentionExternal:
+		switch {
+		case item.Retention == RetentionExternal:
 			return 1
-		case RetentionExact:
+		case strings.HasPrefix(item.ID, "file:"), strings.HasPrefix(item.ID, "mutation:"):
+			return 1
+		case strings.HasPrefix(item.ID, "dir:"), strings.HasPrefix(item.ID, "search:"),
+			strings.HasPrefix(item.ID, "symbols:"), strings.HasPrefix(item.ID, "symbol:"):
 			return 2
-		case RetentionDerived, RetentionStructural:
+		case item.Retention == RetentionDerived, item.Retention == RetentionStructural:
+			return 2
+		case item.Retention == RetentionDiagnostic:
 			return 3
-		default:
+		case item.Retention == RetentionExact:
 			return 4
+		default:
+			return 5
 		}
 	}
 	// Low-value evidence sorts first so the eviction loop can drop it from the

@@ -52,10 +52,12 @@ execution`:
   may display the workspace; it cannot grant capability.
 - A tool may refine its capability per invocation through
   `agent.CapabilityReporter`; `bash` uses this to classify a shell command as a
-  mutation (a real redirect, a mutating program, a mutating git subcommand) so
-  FUZZ cannot use the shell as a back door. The classifier is a strong default,
-  not a sandbox: an interpreter one-liner that writes a file is a documented
-  residual.
+  mutation (a redirect into the repository, a mutating program, a mutating git
+  subcommand) so FUZZ cannot use the shell as a back door. A redirect to an
+  absolute path outside the workspace is execution, not a source change: a local
+  server may log to a temporary file without becoming a mutation. The classifier
+  is a strong default, not a sandbox: an interpreter one-liner that writes a file
+  is a documented residual.
 - The session records its workspace, project identity, and effective model.
   A resumed session restores its own snapshot rather than silently following a
   changed configuration.
@@ -318,7 +320,11 @@ the model said. Two properties keep the loop honest and small:
   listing is structure, not an answer. The final projection's sufficiency
   verdict vetoes completion, so a model that answers without observing the
   repository is `NEEDS_REVIEW`, not `COMPLETED`. A general knowledge question
-  declares no such need.
+  declares no such need. The evidence state's byte bound evicts transient
+  diagnostic command logs before content-bearing file reads and listings,
+  because those observations are what the declared needs are satisfied by; a
+  long investigation must not erase its own answer evidence while retaining
+  dozens of shell transcripts.
 - **Known workspace facts are surfaced before they are re-queried.** The cheap,
   model-free root probe already knows the project's markers, detected
   languages, and root entry count; the runtime state block carries that bounded
@@ -393,11 +399,14 @@ the model said. Two properties keep the loop honest and small:
   text, the runtime distinguishes the refusal source: if the refused calls named
   capabilities the projection actually offered, the surface is still open and
   the runtime closes it for one answer-only request instead of blocking. If the
-  surface was already closed, or the model kept calling tools the projection had
-  withheld, the run reports `agent.ErrTaskBlocked`. A turn with any non-refused
-  outcome is work and resets the count. The presentation layer publishes the
-  terminal verdict after the turn's outcomes and text, so the transcript ends at
-  the decision instead of appearing to execute work after it.
+  model stops with no text at all immediately after that refusal-only turn, the
+  empty stop is not an answer either: the loop drops the empty assistant message
+  and makes the same single answer-only request. If the surface was already
+  closed, or the model kept calling tools the projection had withheld, the run
+  reports `agent.ErrTaskBlocked`. A turn with any non-refused outcome is work and
+  resets the count. The presentation layer publishes the terminal verdict after
+  the turn's outcomes and text, so the transcript ends at the decision instead of
+  appearing to execute work after it.
 - **Required external knowledge is real evidence.** An explicit external
   requirement declares an `external_observation` need, so local files cannot
   make the task answer-eligible. While it is the only missing requirement, the

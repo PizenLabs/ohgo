@@ -138,9 +138,30 @@ allows one recovery request. The refusal itself is not a completion event: the
 model must see the reason before its accompanying narration can be judged as an
 answer. If the recovery also proposes only refused actions and emits no answer,
 the loop closes the still-open action surface and makes one answer-only request
-instead of blocking. Nothing can execute, so the evidence already gathered is
-the only basis for the answer; completion still decides whether it is
-sufficient.
+instead of blocking. The same recovery applies when the model stops with no text
+at all immediately after a refusal-only turn: an empty stop is not an answer, so
+the loop drops the empty assistant message and asks once for the answer from the
+evidence. Nothing can execute, so the evidence already gathered is the only basis
+for the answer; completion still decides whether it is sufficient.
+
+A second empty stop can happen on the answer-only request itself: the surface
+is already closed and the model returns only reasoning. The runtime has asked
+for the answer, nothing executed, and the run still has no visible text to hand
+the user; ending there would swallow the result after a complete investigation.
+The loop drops the empty assistant turn and makes one further answer-only
+request. The host may append a runtime-authored user-role request that states
+the surface is closed;
+it is a request view, never a persisted user turn or a grant of authority. The
+retry never reopens tools and never becomes a second action surface, so it
+cannot grant authority or turn silence into a completion claim.
+
+For a shell redirect, "mutates" is bounded by the workspace root. A redirect to
+an absolute path outside the workspace writes elsewhere, not into the
+repository: starting a local server that logs to a temporary file is execution,
+and FUZZ may perform it. A relative target, an unresolved expansion, or an
+absolute target inside the workspace remains a mutation. The root-aware
+classifier is used by admission and by the human shell escape; the root-less form
+stays conservative where no workspace is known.
 
 A clause that asks about an operation grounds `read`, not the operation. The
 extractor works on the same clause model as the router: mutation, execution, and

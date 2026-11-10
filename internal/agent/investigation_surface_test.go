@@ -174,10 +174,11 @@ func TestInvestigationAnswerWithoutRequestVerbOrFileClaimCompletes(t *testing.T)
 // refusedProbeRun is one scripted investigation whose last proposals may be
 // refused. toolCounts records the offered surface of every provider request.
 type refusedProbeRun struct {
-	turns      []agent.Turn
-	toolCounts []int
-	intent     contract.IntentContract
-	err        error
+	turns        []agent.Turn
+	toolCounts   []int
+	answerNudged bool
+	intent       contract.IntentContract
+	err          error
 }
 
 func runRefusedProbeScript(t *testing.T, script []ai.AssistantMessage) refusedProbeRun {
@@ -189,27 +190,38 @@ func runRefusedProbeScript(t *testing.T, script []ai.AssistantMessage) refusedPr
 	projector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
 
 	var toolCounts []int
+	answerNudged := false
 	loop, err := agent.New(agent.Config{
 		Model: ai.Model{ID: "m", Provider: "p"},
 		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
 			toolCounts = append(toolCounts, len(req.Tools))
+			if len(req.Messages) > 0 {
+				if user, ok := req.Messages[len(req.Messages)-1].(ai.UserMessage); ok &&
+					user.Text() == "runtime answer request" {
+					answerNudged = true
+				}
+			}
 			index := len(toolCounts) - 1
 			if index >= len(script) {
 				t.Fatalf("provider request %d exceeded the script", index+1)
 			}
 			return ai.NewCompletedStream(script[index]), nil
 		},
-		Tools:     []agent.Tool{capabilityShell{}},
-		Project:   projector.Project,
-		Grounding: intent.Grounding,
-		Authorize: allowRead{},
-		MaxTurns:  8,
+		Tools:         []agent.Tool{capabilityShell{}},
+		Project:       projector.Project,
+		Grounding:     intent.Grounding,
+		Authorize:     allowRead{},
+		MaxTurns:      8,
+		AnswerRequest: "runtime answer request",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	turns, runErr := loop.Run(context.Background(), []agent.Message{agent.UserMessage{Text: prompt}})
-	return refusedProbeRun{turns: turns, toolCounts: toolCounts, intent: intent, err: runErr}
+	return refusedProbeRun{
+		turns: turns, toolCounts: toolCounts, answerNudged: answerNudged,
+		intent: intent, err: runErr,
+	}
 }
 
 // Two consecutive turns of refused probes must not end the run with a hard
@@ -246,6 +258,84 @@ func TestInvestigationAnswersAfterRepeatedRefusedProbes(t *testing.T) {
 	}
 	if refused != 2 {
 		t.Fatalf("refused outcomes = %d, want both scratch writes refused", refused)
+	}
+	if verdict := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: result.turns, Contract: result.intent,
+	}); !verdict.Complete() {
+		t.Fatalf("investigation completion = %s (%s), want COMPLETED", verdict.State, verdict.Reason)
+	}
+}
+
+// A model can answer the refusal with silence instead of another proposal. The
+// run must not treat that empty stop as the final answer: it has seen the
+// refusal and has not produced the answer the request asked for. The loop
+// closes the surface once and asks for the answer from the evidence already
+// gathered.
+func TestInvestigationAnswersAfterRefusedProbeThenEmptyStop(t *testing.T) {
+	answer := "Bottleneck: the page loads four external font files before it " +
+		"renders. Not verified: browser paint timings were not observed. " +
+		"Workspace unchanged; no files were modified."
+	result := runRefusedProbeScript(t, []ai.AssistantMessage{
+		investigationCall("1", "git log --oneline -10"),
+		investigationCall("2", "cd /tmp && curl -s https://fonts.googleapis.com/css2?family=Inter > inter.css"),
+		{StopReason: ai.StopEndTurn},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: answer}}, StopReason: ai.StopEndTurn},
+	})
+	if result.err != nil {
+		t.Fatalf("Run error = %v, want an answer after the empty stop", result.err)
+	}
+	if len(result.toolCounts) != 4 {
+		t.Fatalf("model requests = %d, want observation, refusal, empty stop, forced answer (4)", len(result.toolCounts))
+	}
+	if got := result.toolCounts[3]; got != 0 {
+		t.Fatalf("forced-answer request offered %d tools, want 0", got)
+	}
+	last := result.turns[len(result.turns)-1]
+	if last.Assistant.Text() != answer {
+		t.Fatalf("final answer = %q, want the forced answer", last.Assistant.Text())
+	}
+	if verdict := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: result.turns, Contract: result.intent,
+	}); !verdict.Complete() {
+		t.Fatalf("investigation completion = %s (%s), want COMPLETED", verdict.State, verdict.Reason)
+	}
+}
+
+// The forced answer request itself can return no visible text. The surface was
+// already closed, so the model has no action left; the lifecycle failure is the
+// same one request later. The observed session ended here and recorded an empty
+// final assistant message even though the investigation had gathered enough
+// evidence to answer. One further answer-only request must convert that silence
+// into the user-visible result.
+func TestInvestigationAnswersAfterAnswerOnlyEmptyStop(t *testing.T) {
+	answer := "Bottleneck: the page blocks rendering on four external font files. " +
+		"Measured 170.8 KB of woff2 on a second origin. Not verified: browser " +
+		"paint timings were not observed. Workspace unchanged; no files were modified."
+	result := runRefusedProbeScript(t, []ai.AssistantMessage{
+		investigationCall("1", "git log --oneline -10"),
+		investigationCall("2", "cd /tmp && curl -s https://fonts.googleapis.com/css2?family=Inter > inter.css"),
+		investigationCall("3", "cd /tmp && curl -s https://fonts.googleapis.com/css2?family=Space+Grotesk > grotesk.css"),
+		{StopReason: ai.StopEndTurn},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: answer}}, StopReason: ai.StopEndTurn},
+	})
+	if result.err != nil {
+		t.Fatalf("Run error = %v, want an answer after the empty answer-only stop", result.err)
+	}
+	if len(result.toolCounts) != 5 {
+		t.Fatalf("model requests = %d, want observation, two refusals, empty answer, answered retry (5)", len(result.toolCounts))
+	}
+	if got := result.toolCounts[3]; got != 0 {
+		t.Fatalf("forced-answer request offered %d tools, want 0", got)
+	}
+	if got := result.toolCounts[4]; got != 0 {
+		t.Fatalf("answer retry offered %d tools, want 0", got)
+	}
+	if !result.answerNudged {
+		t.Fatal("the answer retry did not append the runtime answer request")
+	}
+	last := result.turns[len(result.turns)-1]
+	if last.Assistant.Text() != answer {
+		t.Fatalf("final answer = %q, want the retried answer", last.Assistant.Text())
 	}
 	if verdict := agent.EvaluateTaskCompletion(agent.CompletionInput{
 		Turns: result.turns, Contract: result.intent,

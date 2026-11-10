@@ -1036,17 +1036,30 @@ func (p *Program) taskContinuationFor(text, active string) (TaskResume, string, 
 }
 
 // continuesOpenTask reports whether the open task already owns the prompt in a
-// way that must bypass workspace prediction. A task follow-up ("fix it") is
-// different: the task will own the turn, but the control plane must still
-// decide whether the capability lives in BUILD. That decision is automatic
-// between BUILD and FUZZ and confirmed across ASK.
+// way that must bypass workspace prediction.
+//
+// Only continuations whose wording carries no capability signal bypass
+// prediction: an explicit "continue", a verification of the task's own result,
+// or a handoff the human already decided. An exact repeat of the objective
+// still states what the turn needs, so the control plane must be allowed to
+// route it: a BUILD task resubmitted with an investigation objective has to
+// reach FUZZ instead of silently staying in BUILD merely because the task is
+// open. A task follow-up ("fix it") is predicted for the same reason.
 func (p *Program) continuesOpenTask(text string) bool {
 	active := ""
 	if p.workspace.Current != nil {
 		active = strings.ToLower(strings.TrimSpace(p.workspace.Current()))
 	}
 	_, decision, owned := p.taskContinuationFor(text, active)
-	return owned && decision != "TASK_FOLLOW_UP"
+	if !owned {
+		return false
+	}
+	switch decision {
+	case "EXPLICIT_RESUME", "HANDOFF_CONTINUATION", "VERIFICATION_CONTINUATION":
+		return true
+	default:
+		return false
+	}
 }
 
 // latestTaskProjection returns the most recent durable task projection, or

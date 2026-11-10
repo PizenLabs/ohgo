@@ -7,6 +7,25 @@ immutable.
 
 ### Fixed
 
+- Resumed investigation tasks: repeating a task's own objective no longer
+  bypasses workspace prediction. A BUILD task handed back with a strong
+  investigation request now moves to FUZZ instead of staying in BUILD until a
+  new session is started.
+- FUZZ scratch execution: a shell redirect to an absolute path outside the
+  workspace is execution, not a repository mutation. Starting a local server
+  that logs to a temporary file is no longer refused by semantic admission.
+- Refused-proposal recovery: a model that stops with no visible text immediately
+  after a refusal-only turn now gets one answer-only request from the evidence
+  already gathered, rather than ending the task with an empty final message.
+- Answer-only silence: when the already-closed answer surface returns only
+  reasoning, the loop makes one bounded answer-only retry, with a
+  runtime-authored request that no tool is available, instead of ending the run
+  with an empty final assistant message after a completed investigation.
+- Investigation evidence retention: trimming the durable evidence state now
+  evicts transient command diagnostics before content-bearing file reads and
+  directory listings. A long FUZZ run no longer loses the observations that
+  satisfy `repository_overview` and `repository_survey`, which previously kept
+  the answer boundary closed and the investigation reported as insufficient.
 - LongCat serialized tool calls: `<longcat_tool_call>` envelopes in assistant
   text are now normalized at the provider boundary in both the JSON and
   key/value spellings. Previously the raw protocol reached the transcript as
