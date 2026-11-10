@@ -1,6 +1,7 @@
 package cognition
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -314,6 +315,102 @@ func TestExecutionObjectiveStillRequiresExecutionEvidence(t *testing.T) {
 		Contract: intent,
 	}); review.Complete() {
 		t.Fatal("a static read completed an execution objective")
+	}
+}
+
+// A FUZZ investigation may execute to acquire evidence, but a successful
+// command is observation, not the deliverable. Treating the objective as an
+// execution contract made the command move the shape to complete and withdrew
+// every tool while the model was still investigating.
+func TestInvestigationExecutionDoesNotCloseTheSurface(t *testing.T) {
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "bash", tier: agent.TierExec, classes: []agent.ActionClass{agent.ActionExecute, agent.ActionMutate}},
+	}
+	cases := []struct {
+		name   string
+		prompt string
+		facts  RepositoryFacts
+		turns  []agent.Turn
+	}{
+		{
+			name:   "unrelated successful command",
+			prompt: "investigate the bottleneck and evaluate",
+			turns: []agent.Turn{{Results: []agent.ToolOutcome{{
+				CallID: "log-1", ToolName: "bash", Args: map[string]any{"command": "git log --oneline -10"},
+				Result: agent.Result{Text: "abc123 commit", Executes: true, Finished: true},
+			}}}},
+		},
+		{
+			name:   "repository overview is not the probe",
+			prompt: "Investigate why this test is failing.",
+			facts:  RepositoryFacts{Go: true},
+			turns:  []agent.Turn{{Results: []agent.ToolOutcome{readEvidence("read-calc", "calc.go")}}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			intent, shape := regressionShapeAs(tc.prompt, tc.facts, "fuzz")
+			if intent.Kind != contract.ObjectiveInformational {
+				t.Fatalf("contract kind = %s, want informational", intent.Kind)
+			}
+			if !shape.Investigation {
+				t.Fatalf("shape did not record the investigation: %+v", shape.Intent)
+			}
+			if !shape.NeedsExecution || !shape.Authority.ExecutionAllowed {
+				t.Fatalf("the investigation lost its executable surface: needsExecution=%v authority=%s",
+					shape.NeedsExecution, shape.Authority.Workspace)
+			}
+			projector := NewProjector(shape, NewEvidenceState(), tc.facts)
+			projected := projector.Project(agent.ProjectionRequest{
+				Messages: []agent.Message{agent.UserMessage{Text: shape.Objective}},
+				Turns:    tc.turns,
+				Tools:    tools,
+			})
+			if projected.Report.AnswerEligible || projected.Report.Terminal {
+				t.Fatalf("the investigation was closed before the probe: answerEligible=%v terminal=%v",
+					projected.Report.AnswerEligible, projected.Report.Terminal)
+			}
+			if names := toolNames(projected.Tools); strings.Join(names, ",") != "read,bash" {
+				t.Fatalf("offered tools = %v, want the investigation surface to remain open", names)
+			}
+		})
+	}
+}
+
+// The loop sets ForceAnswer after repeated refusal-only turns. It must close a
+// surface the investigation shape would otherwise keep open, and the state
+// block must say that only an answer can make progress.
+func TestForceAnswerClosesAnOpenInvestigationSurface(t *testing.T) {
+	intent, shape := regressionShapeAs("investigate the bottleneck and evaluate", RepositoryFacts{}, "fuzz")
+	if intent.Kind != contract.ObjectiveInformational || !shape.Investigation {
+		t.Fatalf("shape = %s investigation=%v, want an investigation", intent.Kind, shape.Investigation)
+	}
+	projector := NewProjector(shape, NewEvidenceState(), RepositoryFacts{})
+	projected := projector.Project(agent.ProjectionRequest{
+		Messages: []agent.Message{agent.UserMessage{Text: shape.Objective}},
+		Turns: []agent.Turn{{Results: []agent.ToolOutcome{{
+			CallID: "log-1", ToolName: "bash", Args: map[string]any{"command": "git log --oneline -10"},
+			Result: agent.Result{Text: "abc123 commit", Executes: true, Finished: true},
+		}}}},
+		Tools: []agent.Tool{
+			testTool{name: "read", tier: agent.TierRead},
+			testTool{name: "bash", tier: agent.TierExec},
+		},
+		ForceAnswer: true,
+	})
+	if len(projected.Tools) != 0 {
+		t.Fatalf("offered tools = %v, want the forced-answer surface closed", toolNames(projected.Tools))
+	}
+	if !projected.Report.AnswerEligible {
+		t.Fatal("the forced-answer projection did not mark the answer boundary")
+	}
+	var state strings.Builder
+	for _, block := range projected.System {
+		state.WriteString(block.Text)
+	}
+	if !strings.Contains(state.String(), "no tool is available") {
+		t.Fatalf("state block does not tell the model to answer:\n%s", state.String())
 	}
 }
 

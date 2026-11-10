@@ -422,9 +422,15 @@ func TestEmptyAndWhitespaceAnswersAreNotCompletion(t *testing.T) {
 			result := runInformational(t, []ai.AssistantMessage{
 				{Content: overviewCall("turn-1"), StopReason: ai.StopToolUse},
 				{Content: []ai.ContentBlock{ai.TextContent{Text: answer}}},
+				// The first empty answer-only request gets one bounded retry;
+				// this second empty response is still not an answer.
+				{Content: []ai.ContentBlock{ai.TextContent{Text: answer}}},
 			})
 			if result.err != nil {
 				t.Fatalf("Run: %v", result.err)
+			}
+			if result.requests != 3 {
+				t.Fatalf("model requests = %d, want the observation and one answer retry", result.requests)
 			}
 			got := agent.EvaluateTaskCompletion(agent.CompletionInput{
 				Turns: result.turns, Contract: result.intent,

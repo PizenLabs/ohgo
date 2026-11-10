@@ -107,14 +107,18 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	}
 	fmt.Fprintf(&suffLine, "Available actions: %s\n", candidates.CandidateSummary(420))
 	if len(candidates.Tools) == 0 &&
-		(suff.Stage == StageAnswer || suff.Stage == StageComplete || suff.Kind == BlockCapabilityFailure) {
+		(candidates.AnswerOnly || suff.Stage == StageAnswer ||
+			suff.Stage == StageComplete || suff.Kind == BlockCapabilityFailure) {
 		// This is runtime state, not a provider prompt: the evidence lifecycle
 		// is at the answer/report boundary, so the only correct next output is
 		// prose. Stating it removes an ambiguity some models resolve by naming
 		// a tool anyway.
-		if suff.Kind == BlockCapabilityFailure {
+		switch {
+		case candidates.AnswerOnly:
+			suffLine.WriteString("Next action: answer from the evidence above; the runtime refused the last proposed actions and no tool is available. Report the refusal and any remaining gap.\n")
+		case suff.Kind == BlockCapabilityFailure:
 			suffLine.WriteString("Next action: report the block and the evidence gap. No tool is available.\n")
-		} else {
+		default:
 			suffLine.WriteString("Next action: answer from the evidence above. No tool is available.\n")
 		}
 	}

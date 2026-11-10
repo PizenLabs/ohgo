@@ -52,10 +52,12 @@ execution`:
   may display the workspace; it cannot grant capability.
 - A tool may refine its capability per invocation through
   `agent.CapabilityReporter`; `bash` uses this to classify a shell command as a
-  mutation (a real redirect, a mutating program, a mutating git subcommand) so
-  FUZZ cannot use the shell as a back door. The classifier is a strong default,
-  not a sandbox: an interpreter one-liner that writes a file is a documented
-  residual.
+  mutation (a redirect into the repository, a mutating program, a mutating git
+  subcommand) so FUZZ cannot use the shell as a back door. A redirect to an
+  absolute path outside the workspace is execution, not a source change: a local
+  server may log to a temporary file without becoming a mutation. The classifier
+  is a strong default, not a sandbox: an interpreter one-liner that writes a file
+  is a documented residual.
 - The session records its workspace, project identity, and effective model.
   A resumed session restores its own snapshot rather than silently following a
   changed configuration.
@@ -100,12 +102,12 @@ and any subagent read at call time:
   investigation. Its conditional mutation is retained for the later branch but
   does not make the current turn a mutation objective.
 - A staged task also moves phase at the tool boundary. `workspace.ToolCallTransition`
-  reads a concrete call — a finding or change artifact, or a mutating tool — and
-  applies the same policy before execution. The loop asks after semantic
-  grounding, the host applies the target through the single switch owner and
-  records it on the same task, and the loop re-authorizes the call under the new
-  live gate. A plan artifact under FUZZ would cross ASK and is therefore not
-  automatic.
+  reads a concrete call — a finding or change artifact, or a call that mutates
+  this invocation — and applies the same policy before execution. The loop asks
+  after semantic grounding, the host applies the target through the single
+  switch owner and records it on the same task, and the loop re-authorizes the
+  call under the new live gate. A plan artifact under FUZZ would cross ASK and is
+  therefore not automatic.
 
 The full matrix, state model, and invariants are in
 [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
@@ -318,7 +320,11 @@ the model said. Two properties keep the loop honest and small:
   listing is structure, not an answer. The final projection's sufficiency
   verdict vetoes completion, so a model that answers without observing the
   repository is `NEEDS_REVIEW`, not `COMPLETED`. A general knowledge question
-  declares no such need.
+  declares no such need. The evidence state's byte bound evicts transient
+  diagnostic command logs before content-bearing file reads and listings,
+  because those observations are what the declared needs are satisfied by; a
+  long investigation must not erase its own answer evidence while retaining
+  dozens of shell transcripts.
 - **Known workspace facts are surfaced before they are re-queried.** The cheap,
   model-free root probe already knows the project's markers, detected
   languages, and root entry count; the runtime state block carries that bounded
@@ -377,19 +383,30 @@ the model said. Two properties keep the loop honest and small:
   every tool itself; a projector cannot leave a callable tool on a surface it
   has already closed. A blocked capability (`BlockCapabilityFailure`) is
   terminal: the first stale proposal without an answer reports
-  `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`.
+  `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`. The loop can also
+  force the boundary itself: after a refused-proposal recovery it asks the
+  projection to close the surface (`ForceAnswer`), even for a shape such as an
+  investigation that would otherwise keep probing.
 - **An unproductive turn is counted from outcomes, never from the offered
   slice.** A refusal is a control decision, not work. If every call in a turn was
-  refused and the model produced no answer, the turn could not change the
-  runtime's state; this is true even when the projection still offered other
-  tools. One recovery request is allowed. A second consecutive unproductive turn
-  reports `agent.ErrTaskBlocked` before another model request, so a model that
-  keeps proposing a withdrawn capability cannot walk the turn grant. A turn with
-  any non-refused outcome is work and resets the count. A refused proposal
-  accompanied by visible text is the candidate answer, and the run stops there:
-  the refusal leaves no outstanding work. The presentation layer publishes the
-  terminal verdict after the turn's outcomes and text, so the transcript ends at
-  the decision instead of appearing to execute work after it.
+  refused, the turn could not change the runtime's state; this is true even when
+  the projection still offered other tools. One recovery request is allowed so
+  the model can see the structured refusal and choose another action; narration
+  emitted alongside a rejected call is not a final answer. The exception is an
+  `AnswerRequired` refusal: the runtime offered no tool at all, so the text is
+  the candidate answer and the run stops. A second consecutive refusal-only turn
+  with visible text ends the run and offers that text to completion. Without
+  text, the runtime distinguishes the refusal source: if the refused calls named
+  capabilities the projection actually offered, the surface is still open and
+  the runtime closes it for one answer-only request instead of blocking. If the
+  model stops with no text at all immediately after that refusal-only turn, the
+  empty stop is not an answer either: the loop drops the empty assistant message
+  and makes the same single answer-only request. If the surface was already
+  closed, or the model kept calling tools the projection had withheld, the run
+  reports `agent.ErrTaskBlocked`. A turn with any non-refused outcome is work and
+  resets the count. The presentation layer publishes the terminal verdict after
+  the turn's outcomes and text, so the transcript ends at the decision instead of
+  appearing to execute work after it.
 - **Required external knowledge is real evidence.** An explicit external
   requirement declares an `external_observation` need, so local files cannot
   make the task answer-eligible. While it is the only missing requirement, the

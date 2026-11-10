@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/control/contract"
@@ -153,6 +154,26 @@ func TestGroundingDoesNotInventEntitiesFromDescriptions(t *testing.T) {
 		intent := BuildIntentContract(request)
 		if got := intent.Grounding.EntityValues(); len(got) != 0 {
 			t.Fatalf("%q invented entities %v", request, got)
+		}
+	}
+}
+
+// A request verb after a coordinator is a second clause, not a project name.
+// Treating it as an entity makes the answer preserve a verb: the observed
+// failure required the word "evaluate" because "investigate the bottleneck and
+// evaluate" was read as a list of two named projects.
+func TestGroundingDoesNotTreatRequestVerbsAsEntities(t *testing.T) {
+	verbs := map[string]bool{"evaluate": true, "verify": true, "assess": true}
+	for _, request := range []string{
+		"investigate the bottleneck and evaluate",
+		"inspect the parser and verify the tests",
+		"review the API and assess the risk",
+	} {
+		intent := BuildIntentContract(request)
+		for _, entity := range intent.Grounding.RequiredEntities() {
+			if verbs[strings.ToLower(entity.Value)] {
+				t.Fatalf("%q required the request verb %q as a named entity", request, entity.Value)
+			}
 		}
 	}
 }

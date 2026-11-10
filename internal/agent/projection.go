@@ -21,6 +21,12 @@ type ProjectionRequest struct {
 	Tools []Tool
 	// System is the base system prompt for this request.
 	System []ai.SystemPromptBlock
+	// ForceAnswer asks for the answer boundary even when the task shape would
+	// otherwise keep probing. The loop sets it after repeated refusal-only
+	// turns: every proposed action was withheld, so no proposal can make
+	// progress and the only remaining output is prose. The projector should
+	// close the tool surface and say so; it must not widen authority.
+	ForceAnswer bool
 }
 
 // ProjectionResult is the view of the next request a projector returns.

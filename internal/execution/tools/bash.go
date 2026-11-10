@@ -125,7 +125,7 @@ func (t *BashTool) Capability(args map[string]any) agent.Tier {
 	if err != nil || strings.TrimSpace(command) == "" {
 		return agent.TierWrite
 	}
-	return commandCapability(command)
+	return commandCapabilityInRoot(command, t.Root)
 }
 
 // Execute implements agent.Tool.

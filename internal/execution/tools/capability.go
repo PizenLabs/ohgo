@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -27,6 +29,21 @@ func commandCapability(command string) agent.Tier {
 	return agent.TierExec
 }
 
+// commandCapabilityInRoot classifies a shell invocation against the workspace
+// it will run in.
+//
+// A redirect to an absolute path outside the workspace writes somewhere else,
+// not into the repository. FUZZ may execute such a command: starting a local
+// server that logs to a temporary file is an observation, not a source change.
+// The root-less classifier remains conservative because it cannot prove where a
+// target lands.
+func commandCapabilityInRoot(command, root string) agent.Tier {
+	if commandWritesInRoot(command, root) {
+		return agent.TierWrite
+	}
+	return agent.TierExec
+}
+
 // CommandMutates reports whether a shell command provably changes the
 // workspace.
 //
@@ -36,6 +53,17 @@ func commandCapability(command string) agent.Tier {
 // runtime actually enforces.
 func CommandMutates(command string) bool {
 	return commandWrites(command)
+}
+
+// CommandMutatesInRoot reports whether a shell command provably changes the
+// workspace rooted at root.
+//
+// It is the root-aware form of CommandMutates: a redirect to an absolute path
+// outside root is not a repository change. Callers that know the workspace use
+// this form so an execution workspace does not refuse an ordinary temporary
+// probe.
+func CommandMutatesInRoot(command, root string) bool {
+	return commandWritesInRoot(command, root)
 }
 
 // CommandDestructive reports whether a shell command is destructive or
@@ -81,7 +109,13 @@ func destructiveProgram(program string, args []string) bool {
 // commandWrites reports whether a shell command provably mutates the
 // filesystem or the repository.
 func commandWrites(command string) bool {
-	if hasOutputRedirect(command) {
+	return commandWritesInRoot(command, "")
+}
+
+// commandWritesInRoot reports whether a shell command provably mutates the
+// repository rooted at root, or any filesystem when root is empty.
+func commandWritesInRoot(command, root string) bool {
+	if hasOutputRedirectInRoot(command, root) {
 		return true
 	}
 	for _, segment := range shellSegments(command) {
@@ -90,15 +124,17 @@ func commandWrites(command string) bool {
 		if program == "" {
 			continue
 		}
-		if mutatingProgram(path.Base(program), args) {
+		if mutatingProgramInRoot(path.Base(program), args, root) {
 			return true
 		}
 	}
 	return false
 }
 
-// mutatingProgram reports whether a program mutates when run with args.
-func mutatingProgram(program string, args []string) bool {
+// mutatingProgramInRoot reports whether a program mutates when run with args.
+// The root bounds the programs whose only effect is writing the file they name;
+// other programs still mutate regardless of their arguments.
+func mutatingProgramInRoot(program string, args []string, root string) bool {
 	switch program {
 	case "rm", "rmdir", "mv", "cp", "install", "touch", "truncate", "dd",
 		"mkdir", "chmod", "chown", "chgrp", "ln", "shred", "rsync",
@@ -106,8 +142,9 @@ func mutatingProgram(program string, args []string) bool {
 		return true
 	case "tee":
 		// tee writes to its targets, but a target that is a character device
-		// (/dev/null) is not a repository mutation.
-		return writesToFile(args)
+		// (/dev/null) is not a repository mutation. An absolute target outside
+		// the workspace is execution, for the same reason a redirect is.
+		return writesToFileInRoot(args, root)
 	case "sed", "perl", "gofmt", "goimports":
 		return hasInPlaceFlag(program, args)
 	case "npm", "pnpm", "yarn", "pip", "pip3", "cargo", "go", "composer",
@@ -119,14 +156,17 @@ func mutatingProgram(program string, args []string) bool {
 	return false
 }
 
-// writesToFile reports whether any non-flag argument names a real file, as
-// opposed to a character device.
-func writesToFile(args []string) bool {
+// writesToFileInRoot reports whether any non-flag argument names a real file,
+// as opposed to a character device or a path outside root.
+func writesToFileInRoot(args []string, root string) bool {
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
 		if isCharDevice(arg) {
+			continue
+		}
+		if redirectWritesOutsideRoot(arg, root) {
 			continue
 		}
 		return true
@@ -321,11 +361,14 @@ func nonFlagArgsAfter(args []string, sub string) []string {
 	return out
 }
 
-// hasOutputRedirect reports whether the command redirects a stream into a real
-// file. Redirects to a character device (/dev/null, /dev/stdout, …) and
+// hasOutputRedirectInRoot reports whether the command redirects a stream into a
+// real file. Redirects to a character device (/dev/null, /dev/stdout, …) and
 // file-descriptor duplications (`>&2`, `2>&1`) do not mutate the repository
 // and are ignored.
-func hasOutputRedirect(command string) bool {
+//
+// With a root, an absolute target outside that root is also ignored: it writes
+// outside the repository, which is execution rather than a source change.
+func hasOutputRedirectInRoot(command, root string) bool {
 	quoted := false
 	var quote rune
 	runes := []rune(command)
@@ -363,9 +406,69 @@ func hasOutputRedirect(command string) bool {
 			i = j
 			continue
 		}
+		if redirectWritesOutsideRoot(target, root) {
+			i = j
+			continue
+		}
 		return true
 	}
 	return false
+}
+
+// redirectWritesOutsideRoot reports whether the redirect target is an absolute
+// path that resolves outside root. A relative target, a shell expansion, or an
+// unresolved path is not proof of an outside write, so the caller treats it as
+// a workspace write.
+func redirectWritesOutsideRoot(target, root string) bool {
+	root = strings.TrimSpace(root)
+	target = strings.TrimSpace(target)
+	if root == "" || target == "" {
+		return false
+	}
+	if target == "~" || strings.HasPrefix(target, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+		target = filepath.Join(home, strings.TrimPrefix(target, "~"))
+	}
+	if !filepath.IsAbs(target) {
+		return false
+	}
+	root = resolveCommandPath(root)
+	target = resolveCommandPath(target)
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolveCommandPath resolves a path to the spelling the OS compares, including
+// symlinks on the nearest existing ancestor. A target file usually does not
+// exist yet, so the unresolved suffix is reattached after the ancestor is
+// resolved.
+func resolveCommandPath(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		absolute = filepath.Clean(path)
+	}
+	dir := absolute
+	var suffix []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return filepath.Clean(absolute)
+		}
+		suffix = append(suffix, filepath.Base(dir))
+		dir = parent
+	}
 }
 
 // readWord reads one shell word starting at index j.

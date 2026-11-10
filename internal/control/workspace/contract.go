@@ -73,7 +73,13 @@ func BuildIntentContract(text string) IntentContract {
 	switch {
 	case mutation:
 		contract.Kind = ObjectiveMutation
-	case intent == IntentRead:
+	case intent == IntentRead, intent == IntentInvestigate:
+		// Investigation is an informational deliverable even though it runs
+		// under FUZZ and may execute to acquire evidence. Mapping it to an
+		// execution objective made any successful process (the first `ls`, for
+		// example) satisfy the contract, which withdrew the tool surface while
+		// the model was still gathering evidence. The answer is what the user
+		// asked for; the commands are how it is established.
 		contract.Kind = ObjectiveInformational
 	default:
 		contract.Kind = ObjectiveExecution

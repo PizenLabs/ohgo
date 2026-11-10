@@ -32,6 +32,13 @@ var (
 		`(?i)\b([a-z0-9][a-z0-9_./-]{1,60})\s+(?:is|are)\s+(?:not\s+present|absent)\b`)
 	negativeMissingPattern = regexp.MustCompile(
 		`(?i)\b([a-z0-9][a-z0-9_./-]{1,60})\s+(?:is|was|are|were)\s+(?:missing|not\s+found)\b`)
+	// changeReportPattern follows a negated quantity with a change predicate.
+	// "No files were modified" reports what the run did to the workspace, not
+	// what the repository contains. No file scan can establish it, and it is
+	// not the existence claim the negative-conclusion check exists to police.
+	changeReportPattern = regexp.MustCompile(
+		`(?i)^\s*(?:(?:was|were|is|are|has\s+been|have\s+been|had\s+been|got)\s+)?` +
+			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited)\b`)
 	globalScopePattern = regexp.MustCompile(
 		`(?i)\b(?:repository|repo|project|codebase|workspace)\b`)
 	insufficientSearchPattern = regexp.MustCompile(
@@ -324,6 +331,13 @@ func negativeClaims(answer string) []negativeClaim {
 			// this run's observations, not a repository-wide absence. The
 			// same sentence with a global scope remains an absence claim.
 			if boundedNegativeReport(uncertaintyWindow(answer, match[0], match[1])) {
+				continue
+			}
+			// A statement about what this run changed is not an existence
+			// claim. "No files were modified" is a no-op report: a file scan
+			// can never cover it, and review here would punish an honest
+			// account of an untouched workspace.
+			if changeReportPattern.MatchString(answer[match[1]:]) {
 				continue
 			}
 			value := answer[match[2]:match[3]]

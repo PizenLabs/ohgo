@@ -199,6 +199,86 @@ func TestLoopRefusesInventedMutationAtSemanticAdmission(t *testing.T) {
 	}
 }
 
+// A semantic refusal is feedback, not completion. The model narrated an
+// investigation while proposing an ungrounded write; ending the run there
+// prevents it from receiving the reason and choosing a grounded observation.
+// The recovery request must carry the structured refusal, and the model must be
+// able to continue with an allowed action.
+func TestLoopContinuesAfterGroundingRejection(t *testing.T) {
+	writeExecuted, readExecuted := false, false
+	write := &groundingTool{name: "write", tier: TierWrite, executed: &writeExecuted}
+	read := &groundingTool{name: "read", tier: TierRead, executed: &readExecuted}
+
+	const answer = "The additional projects are k8s and opencode."
+	script := []ai.AssistantMessage{
+		{
+			Content: []ai.ContentBlock{
+				ai.TextContent{Text: "I'll inspect the README and measure the bottleneck."},
+				ai.ToolCall{ID: "write-1", Name: "write", Arguments: map[string]any{"path": "README.md"}},
+			},
+			StopReason: ai.StopToolUse,
+		},
+		{
+			Content: []ai.ContentBlock{
+				ai.ToolCall{ID: "read-1", Name: "read", Arguments: map[string]any{"path": "README.md"}},
+			},
+			StopReason: ai.StopToolUse,
+		},
+		{Content: []ai.ContentBlock{ai.TextContent{Text: answer}}},
+	}
+
+	requests := 0
+	var recoveryRequest []ai.Message
+	loop, err := New(Config{
+		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+			requests++
+			if requests == 2 {
+				recoveryRequest = req.Messages
+			}
+			if requests > len(script) {
+				t.Fatalf("provider request %d exceeded the script", requests)
+			}
+			return ai.NewCompletedStream(script[requests-1]), nil
+		},
+		Tools:     []Tool{write, read},
+		MaxTurns:  5,
+		Grounding: actionlessGrounding(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, err := loop.Run(context.Background(), []Message{UserMessage{Text: "Additional projects are k8s and opencode."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if requests != 3 {
+		t.Fatalf("model requests = %d, want refusal, grounded retry, answer (3)", requests)
+	}
+	if writeExecuted {
+		t.Fatal("the ungrounded write executed")
+	}
+	if !readExecuted {
+		t.Fatal("the model was not able to continue with a grounded observation")
+	}
+	if len(turns) != 3 || turns[len(turns)-1].Assistant.Text() != answer {
+		t.Fatalf("turns = %+v, want the recovery answer", turns)
+	}
+	refusal := turns[0].Results[0].Result
+	if !refusal.CandidateRejected || !strings.Contains(refusal.Text, "not grounded") {
+		t.Fatalf("first outcome = %+v, want a grounded refusal", refusal)
+	}
+	sawRefusal := false
+	for _, message := range recoveryRequest {
+		if result, ok := message.(ai.ToolResultMessage); ok && strings.Contains(result.Text(), "not grounded") {
+			sawRefusal = true
+		}
+	}
+	if !sawRefusal {
+		t.Fatal("the recovery request did not carry the grounding refusal to the model")
+	}
+}
+
 // A grounded observation still executes through the same loop.
 func TestLoopAllowsObservationUnderAmbiguity(t *testing.T) {
 	executed := false
@@ -262,6 +342,55 @@ func TestEvaluateTaskCompletionRejectsUnsupportedNegativeConclusion(t *testing.T
 	}
 	if !strings.Contains(verdict.Reason, "intent grounding") {
 		t.Fatalf("reason = %q, want a grounding boundary", verdict.Reason)
+	}
+}
+
+// A report that the run left the workspace untouched is not a repository
+// absence claim. The observed answer ended with "no files were modified" and
+// was reviewed as if it had claimed the repository contains no files; no file
+// scan can ever cover that phrasing, so the review could never be satisfied.
+// A genuine existence claim keeps the boundary.
+func TestAssessGroundingSeparatesChangeReportsFromAbsenceClaims(t *testing.T) {
+	grounding := &contract.IntentGrounding{
+		Objective: "investigate the bottleneck and evaluate",
+		Action:    contract.GroundingInvestigate,
+		Actions:   []contract.GroundingAction{contract.GroundingInvestigate},
+		Scope:     contract.GroundingScope{Kind: contract.ScopeRepository},
+	}
+	cases := []struct {
+		name   string
+		answer string
+		review bool
+	}{
+		{
+			name:   "no-op change report",
+			answer: "Workspace unchanged — git status is clean; no files were modified.",
+		},
+		{
+			name:   "file existence claim",
+			answer: "README.md does not exist in this repository.",
+			review: true,
+		},
+		{
+			name:   "test category absence",
+			answer: "No test files exist in this repository.",
+			review: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assessment := AssessGrounding(informationalContract(grounding), nil, tc.answer)
+			unsupported := false
+			for _, issue := range assessment.Issues {
+				if issue.Code == "unsupported_negative_conclusion" {
+					unsupported = true
+				}
+			}
+			if unsupported != tc.review {
+				t.Fatalf("unsupported_negative_conclusion = %v, want %v (reasons: %v)",
+					unsupported, tc.review, assessment.Reasons)
+			}
+		})
 	}
 }
 

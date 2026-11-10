@@ -176,11 +176,10 @@ func (r *readinessRuntime) turnAs(text string, role workspace.Workspace) {
 func (r *readinessRuntime) enableToolHandoff() {
 	r.t.Helper()
 	var mu sync.Mutex
-	handoff := func(call ai.ToolCall, tool agent.Tool, args map[string]any) bool {
+	handoff := func(_ ai.ToolCall, tool agent.Tool, args map[string]any) bool {
 		mu.Lock()
 		defer mu.Unlock()
-		decision, ok := workspace.ToolCallTransition(*r.role, call.Name, args,
-			agent.HasActionClass(tool, agent.ActionMutate))
+		decision, ok := workspace.ToolCallTransition(*r.role, tool, args)
 		if !ok {
 			return false
 		}

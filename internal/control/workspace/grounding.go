@@ -331,7 +331,7 @@ func coordinatedClause(value string) bool {
 		if len(words) == 0 {
 			continue
 		}
-		if entityVerbHeads[strings.ToLower(strings.Trim(words[0], ".,;:!?\"'"))] {
+		if entityVerbHead(words[0]) {
 			return true
 		}
 	}
@@ -340,23 +340,41 @@ func coordinatedClause(value string) bool {
 		if len(words) == 0 {
 			continue
 		}
-		if entityVerbHeads[strings.ToLower(strings.Trim(words[0], ".,;:!?\"'"))] {
+		if entityVerbHead(words[0]) {
 			return true
 		}
 	}
 	return false
 }
 
-// entityVerbHeads are the clause-leading verbs that make a coordinated phrase
-// two objectives rather than a list of named things.
-var entityVerbHeads = map[string]bool{
-	"update": true, "fix": true, "write": true, "create": true,
-	"delete": true, "remove": true, "investigate": true, "find": true,
-	"check": true, "read": true, "run": true, "build": true,
-	"add": true, "change": true, "modify": true, "refactor": true,
-	"implement": true, "clean": true, "explain": true, "describe": true,
-	"review": true, "inspect": true, "verify": true, "test": true,
-	"tell": true, "whether": true,
+// entityVerbHead reports whether word heads a request clause rather than naming
+// a thing. A coordinated phrase whose second part starts with a clause head is
+// two objectives, not a list ("investigate the bottleneck and evaluate" does
+// not name a project called "evaluate").
+//
+// The vocabulary is the router's own head sets plus analysis verbs the router
+// does not classify. Keeping it derived prevents the drift that let "evaluate"
+// become a required project entity while "fix" did not.
+func entityVerbHead(word string) bool {
+	word = strings.ToLower(strings.Trim(word, ".,;:!?\"'"))
+	if word == "" {
+		return false
+	}
+	return readHeads[word] || investigateHeads[word] || executeHeads[word] ||
+		mutationHeads[word] || extractorHeads[word]
+}
+
+// extractorHeads are clause-leading words the entity extractor must reject as
+// names but that no router head set contains: evaluation verbs ("evaluate",
+// "assess") and the list-request verbs the router leaves unclassified ("use",
+// "look", "work"). They begin a second objective, never a named thing.
+var extractorHeads = map[string]bool{
+	"evaluate": true, "assess": true, "measure": true, "profile": true,
+	"audit": true, "determine": true, "identify": true, "quantify": true,
+	"estimate": true, "calculate": true, "recommend": true, "suggest": true,
+	"optimize": true, "optimise": true, "improve": true, "validate": true,
+	"verify": true, "examine": true, "explore": true, "scan": true,
+	"trace": true, "monitor": true, "look": true, "work": true, "use": true,
 }
 
 // listSeparatorPattern splits a list on its coordinator without depending on
@@ -424,7 +442,7 @@ func validEntityName(value string) bool {
 		return false
 	}
 	head := strings.ToLower(strings.Trim(words[0], ".,;:!?\"'"))
-	if entityVerbHeads[head] {
+	if entityVerbHead(head) {
 		return false
 	}
 	lower := strings.ToLower(value)

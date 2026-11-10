@@ -163,6 +163,18 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		}
 	}
 
+	// The loop refused the last proposals and the model still did not answer.
+	// No action can be accepted, so keeping the probe surface open only invites
+	// another refusal. Close it and make the answer the only remaining output;
+	// the answer is still a completion candidate, not an automatic success.
+	if req.ForceAnswer {
+		// A nil slice would ask the loop to keep its full tool set. Use an
+		// empty non-nil slice so the projection actually closes the surface.
+		candidates.Tools = []agent.Tool{}
+		candidates.AnswerOnly = true
+		suff.Next = nil
+	}
+
 	messages, report := projectMessages(req.Messages, p.Evidence, options)
 	state := RenderState(shape, p.Evidence, execution, suff, candidates,
 		options.StateBlockBytes, options.StateBlockItems)
@@ -185,7 +197,7 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// answer is final and the call is continuation, not evidence gathering.
 	// A blocked capability has the same answer boundary: the runtime cannot
 	// acquire more evidence, so the next visible text is the candidate report.
-	report.AnswerEligible = informationalEvidenceBoundary(shape, suff) ||
+	report.AnswerEligible = req.ForceAnswer || informationalEvidenceBoundary(shape, suff) ||
 		(shape.Kind == contract.ObjectiveInformational && suff.Kind == BlockCapabilityFailure)
 	report.Terminal = suff.Kind == BlockCapabilityFailure
 	if report.Terminal {

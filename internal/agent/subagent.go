@@ -233,6 +233,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		System:          spec.System,
 		Tools:           tools,
 		MaxTokens:       maxTokens,
+		AnswerRequest:   parent.AnswerRequest,
 		Reasoning:       spec.Reasoning || parent.Reasoning,
 		ReasoningEffort: firstNonEmpty(spec.ReasoningEffort, parent.ReasoningEffort),
 		ToolChoice:      parent.ToolChoice,

@@ -188,6 +188,30 @@ func TestBuildIntentContractKeepsInformationalRequestsInformational(t *testing.T
 	}
 }
 
+// An investigation is an informational deliverable. Making it an execution
+// objective let the first successful command (a directory listing or `git log`)
+// satisfy the contract, which then withdrew every tool while the model was
+// still gathering evidence.
+func TestBuildIntentContractKeepsInvestigationInformational(t *testing.T) {
+	for _, text := range []string{
+		"investigate the bottleneck and evaluate",
+		"Investigate the checkout flow.",
+		"Reproduce the checkout failure.",
+		"Benchmark the hot path.",
+	} {
+		if intent := Classify(text); intent != IntentInvestigate {
+			t.Errorf("Classify(%q) = %s, want %s; the test must exercise an investigation", text, intent, IntentInvestigate)
+		}
+		contract := BuildIntentContract(text)
+		if contract.Kind != ObjectiveInformational {
+			t.Errorf("BuildIntentContract(%q).Kind = %s, want informational", text, contract.Kind)
+		}
+		if len(contract.Verification) != 0 {
+			t.Errorf("BuildIntentContract(%q).Verification = %+v, want none", text, contract.Verification)
+		}
+	}
+}
+
 // The Phase 3 compound and vocabulary guarantees must survive the extraction:
 // a later mutation clause is still the objective, and the request is still not
 // given an invented target.

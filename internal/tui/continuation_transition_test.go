@@ -58,6 +58,51 @@ func TestVerificationContinuationRunsUnderBuildAndProves(t *testing.T) {
 	}
 }
 
+// A resumed session can hold an open investigation task while the live
+// workspace is BUILD. Repeating the task's own objective states an
+// investigation requirement, so the control plane must be allowed to hand it to
+// FUZZ. Treating the exact repeat as a continuation that bypasses prediction
+// left the task in BUILD until the user started a new session.
+func TestRepeatedInvestigationObjectiveRoutesOpenBuildTaskToFuzz(t *testing.T) {
+	root := t.TempDir()
+	writeReadinessModule(t, root)
+	objective := "investigate the bottleneck and evaluate in this project"
+	r := newReadinessRuntime(t, root, workspace.Build,
+		[]agent.Tool{tools.NewReadTool(root), tools.NewBashTool(root)},
+		[]ai.AssistantMessage{
+			readinessToolCall("read-1", "read", map[string]any{"path": "go.mod"}),
+			readinessAnswer(""),
+			readinessAnswer("The bottleneck is the repeated file scan in the hot path."),
+		})
+
+	r.turn(objective)
+	open := r.currentTask()
+	if open.ID == "" || open.Status.IsTerminal() {
+		t.Fatalf("setup did not leave an open task: status=%s objective=%s", open.Status, open.ObjectiveState())
+	}
+	if *r.role != workspace.Build {
+		t.Fatalf("setup role = %s, want BUILD", *r.role)
+	}
+
+	cmd := r.program.submit(objective)
+	if cmd == nil {
+		t.Fatal("submitting the repeated objective produced no turn")
+	}
+	cmd()
+	drainProgram(r.program)
+
+	if *r.role != workspace.Fuzz {
+		t.Fatalf("repeated investigation role = %s, want FUZZ", *r.role)
+	}
+	current := r.currentTask()
+	if current.ID != open.ID {
+		t.Fatalf("the automatic handoff replaced the task: %q -> %q", open.ID, current.ID)
+	}
+	if current.ActiveRole != workspace.Fuzz {
+		t.Fatalf("task role = %s, want FUZZ", current.ActiveRole)
+	}
+}
+
 // The full lifecycle keeps one identity across an understanding phase, an
 // investigation phase, an interrupted implementation, and a natural
 // verification continuation. Only the explicit switches move authority; each

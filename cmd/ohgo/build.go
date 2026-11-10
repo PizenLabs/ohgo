@@ -310,6 +310,7 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		Stream:          registry.StreamFn(),
 		SystemFn:        systemPrompt,
 		Tools:           toolSet,
+		AnswerRequest:   prompt.AnswerRequest,
 		MaxTokens:       opts.maxTokens,
 		Budget:          opts.budget.Get(),
 		Deadline:        opts.deadline,

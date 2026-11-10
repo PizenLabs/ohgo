@@ -44,6 +44,12 @@ type TaskShape struct {
 	// still need the execution tools its authority permits; it is not the same
 	// as an ordinary question that only needs an answer.
 	Phase bool `json:"phase,omitempty"`
+	// Investigation reports that the request asks to probe, reproduce, or
+	// diagnose rather than merely to read. The completion is still an answer,
+	// but an investigation remains open while its execution surface is
+	// available: observing one repository fact is not the same as finishing
+	// the probe the user asked for.
+	Investigation bool `json:"investigation,omitempty"`
 	// Authority is what the active turn may do. It describes authority; it
 	// never grants it.
 	Authority Authority `json:"authority"`
@@ -334,6 +340,8 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 			shape.Intent = "read"
 		}
 	}
+	shape.Investigation = shape.Intent == "investigate" ||
+		(intent.Grounding != nil && intent.Grounding.HasAction(contract.GroundingInvestigate))
 
 	shape.RepositoryScope = repositoryScope(shape.Objective, intent)
 	shape.BroadRepositoryAnalysis = shape.RepositoryScope && broadRepositoryAnalysis(shape.Objective, intent)

@@ -5033,9 +5033,10 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		return
 	}
 
-	// Resolve the live authority before routing. A task continuation is owned
-	// by the open task, so it must not be reclassified as a new READ request or
-	// sent through workspace prediction before that ownership is known.
+	// Resolve the live authority before routing. An explicit continuation is
+	// owned by the open task and reaches this turn after the task layer
+	// resolved it; a repeated objective was routed at submission so a BUILD
+	// investigation could hand off to FUZZ before this boundary.
 	activeAuthority := ""
 	if choice.Valid() {
 		activeAuthority = strings.ToLower(strings.TrimSpace(choice.String()))

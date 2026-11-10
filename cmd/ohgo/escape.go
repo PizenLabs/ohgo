@@ -27,7 +27,9 @@ func attachShellEscape(program *tui.Program, root string, gate *securityGate) {
 			}
 			return exec.ShellRunner{Dir: root, ReadOnly: readOnly}.Run(ctx, command, onChunk)
 		},
-		Mutates: tools.CommandMutates,
+		Mutates: func(command string) bool {
+			return tools.CommandMutatesInRoot(command, root)
+		},
 	}
 	if gate != nil {
 		hooks.Authorize = func(command string) (bool, bool, string) {

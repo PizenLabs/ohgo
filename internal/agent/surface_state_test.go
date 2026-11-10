@@ -268,20 +268,24 @@ func TestTerminalSurfaceEmptyResponseKeepsTheBlockedReason(t *testing.T) {
 	}
 }
 
-// A refused proposal with visible text is a final answer opportunity, not a
-// reason to ask the model again. The refusal is a control decision and leaves
-// no outstanding work.
-func TestRefusedProposalWithTextEndsTheRun(t *testing.T) {
-	answer := "I cannot inspect .ohgo in this task stage; here is the analysis from the evidence."
+// A refused proposal with visible text is not a completion event. The runtime
+// withheld the action and asked the model to choose another; the text that
+// accompanied it has not been seen with the refusal yet. The model gets one
+// recovery request, and its answer is what ends the run.
+func TestRefusedProposalWithTextGetsOneRecoveryRequest(t *testing.T) {
+	const answer = "I cannot inspect .ohgo in this task stage; here is the analysis from the evidence."
 	result := runSurface(t,
 		[]agent.Tool{evidenceListTool{}, evidenceReadTool{}},
-		[]ai.AssistantMessage{{
-			Content: []ai.ContentBlock{
-				ai.TextContent{Text: answer},
-				ai.ToolCall{ID: "stale", Name: "ls", Arguments: map[string]any{"path": ".ohgo"}},
+		[]ai.AssistantMessage{
+			{
+				Content: []ai.ContentBlock{
+					ai.TextContent{Text: "Let me inspect .ohgo before answering."},
+					ai.ToolCall{ID: "stale", Name: "ls", Arguments: map[string]any{"path": ".ohgo"}},
+				},
+				StopReason: ai.StopToolUse,
 			},
-			StopReason: ai.StopToolUse,
-		}},
+			{Content: []ai.ContentBlock{ai.TextContent{Text: answer}}},
+		},
 		func(agent.ProjectionRequest) agent.ProjectionResult {
 			return agent.ProjectionResult{
 				Tools:  []agent.Tool{evidenceReadTool{}},
@@ -292,15 +296,19 @@ func TestRefusedProposalWithTextEndsTheRun(t *testing.T) {
 	if result.err != nil {
 		t.Fatalf("Run: %v", result.err)
 	}
-	if result.requests != 1 {
-		t.Fatalf("model requests = %d, want exactly one", result.requests)
+	if result.requests != 2 {
+		t.Fatalf("model requests = %d, want the refusal plus one recovery answer (2)", result.requests)
+	}
+	if len(result.turns) != 2 {
+		t.Fatalf("turns = %d, want the refusal and the answer", len(result.turns))
+	}
+	first := result.turns[0]
+	if len(first.Results) != 1 || !first.Results[0].Refused() {
+		t.Fatalf("outcomes = %+v, want one refusal", first.Results)
 	}
 	last := result.turns[len(result.turns)-1]
 	if last.Assistant.Text() != answer {
-		t.Fatalf("answer = %q, want the model's text", last.Assistant.Text())
-	}
-	if len(last.Results) != 1 || !last.Results[0].Refused() {
-		t.Fatalf("outcomes = %+v, want one refusal", last.Results)
+		t.Fatalf("answer = %q, want the model's recovery answer", last.Assistant.Text())
 	}
 }
 

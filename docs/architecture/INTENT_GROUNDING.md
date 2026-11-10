@@ -100,6 +100,13 @@ runtime state block. An informational answer must mention each required
 (project-kind, non-conditional) entity. Conditional entities (`if relevant`)
 are preserved but not forced into the answer.
 
+An entity is a named thing, never the request's verb. In “investigate the
+bottleneck and evaluate”, `evaluate` heads the second clause, so it is not a
+required entity; requiring it would make the answer preserve a verb instead of
+a subject. The extractor uses the router's clause-head vocabulary, so a
+coordinated phrase whose second part starts with a request verb is two clauses,
+not a list of names.
+
 Repository coordinates (paths, symbols, packages) are not required in prose:
 mutation completion already proves them through target evidence.
 
@@ -125,6 +132,36 @@ request action = unknown
     + call executes       → REVIEW (allowed, completion stays guarded)
     + external access     → REVIEW
 ```
+
+A rejection is returned to the model as a structured tool error, and the loop
+allows one recovery request. The refusal itself is not a completion event: the
+model must see the reason before its accompanying narration can be judged as an
+answer. If the recovery also proposes only refused actions and emits no answer,
+the loop closes the still-open action surface and makes one answer-only request
+instead of blocking. The same recovery applies when the model stops with no text
+at all immediately after a refusal-only turn: an empty stop is not an answer, so
+the loop drops the empty assistant message and asks once for the answer from the
+evidence. Nothing can execute, so the evidence already gathered is the only basis
+for the answer; completion still decides whether it is sufficient.
+
+A second empty stop can happen on the answer-only request itself: the surface
+is already closed and the model returns only reasoning. The runtime has asked
+for the answer, nothing executed, and the run still has no visible text to hand
+the user; ending there would swallow the result after a complete investigation.
+The loop drops the empty assistant turn and makes one further answer-only
+request. The host may append a runtime-authored user-role request that states
+the surface is closed;
+it is a request view, never a persisted user turn or a grant of authority. The
+retry never reopens tools and never becomes a second action surface, so it
+cannot grant authority or turn silence into a completion claim.
+
+For a shell redirect, "mutates" is bounded by the workspace root. A redirect to
+an absolute path outside the workspace writes elsewhere, not into the
+repository: starting a local server that logs to a temporary file is execution,
+and FUZZ may perform it. A relative target, an unresolved expansion, or an
+absolute target inside the workspace remains a mutation. The root-aware
+classifier is used by admission and by the human shell escape; the root-less form
+stays conservative where no workspace is known.
 
 A clause that asks about an operation grounds `read`, not the operation. The
 extractor works on the same clause model as the router: mutation, execution, and
@@ -200,7 +237,9 @@ sentence with a global scope (“no test files exist in the repository”) is st
 an absence conclusion and needs coverage. “Not evaluated”, “not checked”, “no
 evidence”, and “worth verifying” are explicit lower-assertion forms. A claim
 that a check did not run (“no tests were run”) is a fact about the run, not a
-repository property.
+repository property. The same holds for a change report: “no files were
+modified” describes what the run did to the workspace. It is not an absence
+claim about repository contents, and no file scan could ever cover it.
 
 A **local configuration** claim is different again from an **external state**
 claim. A workflow file proves what is configured: the schedule, the trigger, the

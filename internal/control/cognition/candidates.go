@@ -22,13 +22,17 @@ type CandidateSet struct {
 	Excluded []agent.CandidateExclusion
 	// Notices are bounded summaries for the audit and the runtime state block.
 	Notices []string
+	// AnswerOnly reports that the runtime closed the action surface because no
+	// accepted proposal can make progress. The next output must be prose.
+	AnswerOnly bool
 }
 
 // informationalEvidenceBoundary reports whether an informational objective has
-// all the evidence its projection can use. A deferred phase that still needs
-// execution its authority permits is not at the answer boundary: its next step
-// may be a probe or a command, not prose. The same predicate drives both the
-// candidate surface and AnswerEligible so the two cannot disagree.
+// all the evidence its projection can use. A deferred phase or an investigation
+// that still needs execution its authority permits is not at the answer
+// boundary: its next step may be a probe or a command, not prose. The same
+// predicate drives both the candidate surface and AnswerEligible so the two
+// cannot disagree.
 func informationalEvidenceBoundary(shape TaskShape, suff Sufficiency) bool {
 	if shape.Kind != contract.ObjectiveInformational {
 		return false
@@ -36,7 +40,8 @@ func informationalEvidenceBoundary(shape TaskShape, suff Sufficiency) bool {
 	if suff.Stage != StageAnswer && suff.Stage != StageComplete {
 		return false
 	}
-	if shape.Phase && shape.NeedsExecution && shape.Authority.ExecutionAllowed {
+	if (shape.Phase || shape.Investigation) &&
+		shape.NeedsExecution && shape.Authority.ExecutionAllowed {
 		return false
 	}
 	return shape.RepositoryScope || len(shape.RequiredKnowledge) > 0

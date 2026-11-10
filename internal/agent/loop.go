@@ -113,6 +113,12 @@ type Config struct {
 	// referenced, for example — without rebuilding the loop. Set it with
 	// SetSystemContext before Run.
 	SystemContext []ai.SystemPromptBlock
+	// AnswerRequest is the user-role message appended when an answer-only
+	// request returns no visible text. It makes the closed action surface
+	// explicit in the conversation rather than leaving the model to infer it
+	// from a system block after a tool result. It is a runtime view, never
+	// persisted, and empty disables it while keeping the one retry.
+	AnswerRequest string
 	// Tools are offered to the model.
 	Tools []Tool
 	// MaxTokens caps each completion.
@@ -628,6 +634,17 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	tools := l.cfg.Tools
 
 	unproductiveTurns := 0
+	// forceAnswer closes the action surface for one request after the model
+	// has twice responded only with refused proposals. The run then ends with
+	// the model's answer instead of a hard block; completion still decides
+	// whether that answer is sufficient.
+	forceAnswer := false
+	// answerRetried records that an answer-only request already came back
+	// without visible text. The action surface is closed, so there is nothing
+	// else the model can do; one further request is the bounded recovery. It
+	// covers both a forced answer after refusals and a natural evidence
+	// boundary where the first answer request produced only reasoning.
+	answerRetried := false
 	stopReason := ""
 	turns = nil
 	for {
@@ -674,11 +691,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		refusals := map[string]string(nil)
 		if l.cfg.Project != nil {
 			projected := l.cfg.Project(ProjectionRequest{
-				Messages: copyMessages(live),
-				Turns:    append([]Turn(nil), turns...),
-				Turn:     len(turns),
-				Tools:    tools,
-				System:   requestSystem,
+				Messages:    copyMessages(live),
+				Turns:       append([]Turn(nil), turns...),
+				Turn:        len(turns),
+				Tools:       tools,
+				System:      requestSystem,
+				ForceAnswer: forceAnswer,
 			})
 			emptyProjection := false
 			if projected.Messages != nil {
@@ -725,6 +743,15 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				activeTools = []Tool{}
 			}
 			closed = answerEligible || terminal || len(activeTools) == 0
+			// ForceAnswer is loop policy, not a projector hint. Withdraw the
+			// surface even when the projector does not: the model already
+			// spent two turns on proposals the runtime refused, so another
+			// call can only be refused again. This runs before the audit
+			// fields are filled so the report matches the request.
+			if forceAnswer {
+				activeTools = []Tool{}
+				closed = true
+			}
 			if removed > 0 {
 				report.Reason = joinReason(report.Reason,
 					fmt.Sprintf("projection proposed %d tool(s) outside the loop's tool set; ignored", removed))
@@ -741,6 +768,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			if l.cfg.OnProjection != nil {
 				l.cfg.OnProjection(report)
 			}
+		} else if forceAnswer {
+			activeTools = []Tool{}
+			closed = true
 		}
 
 		converted, err := l.convert(requestMessages)
@@ -812,6 +842,41 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					reason = "the runtime closed the task because no further action can make progress"
 				}
 				return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
+			}
+			// A model can stop without any visible text immediately after a
+			// refusal-only turn. The refusal is feedback it has not answered
+			// yet, and silence is not an answer. Close the surface once and ask
+			// for the answer from the evidence already observed, exactly as the
+			// repeated-refusal path does. The empty assistant message is
+			// dropped from the provider context because an empty turn is not
+			// useful to the model and some providers reject it.
+			if strings.TrimSpace(assistant.Text()) == "" && !closed && !forceAnswer &&
+				unproductiveTurns > 0 && len(turns) < l.cfg.MaxTurns {
+				live = live[:len(live)-1]
+				forceAnswer = true
+				continue
+			}
+			// The surface was already answer-only and the model returned only
+			// reasoning. That is the same lifecycle failure one request later:
+			// the runtime asked for the answer, nothing executed, and the run
+			// still has no visible text to hand the user. Drop the empty turn
+			// and ask once more from the same closed surface. Without this, a
+			// model that reaches the forced-answer request and stays silent
+			// bypasses response generation entirely and the task ends with an
+			// empty final message. The bound is one retry, not a loop.
+			if strings.TrimSpace(assistant.Text()) == "" && (closed || forceAnswer) &&
+				!answerRetried && len(turns) < l.cfg.MaxTurns {
+				live = live[:len(live)-1]
+				if strings.TrimSpace(l.cfg.AnswerRequest) != "" {
+					live = append(live, UserMessage{Text: l.cfg.AnswerRequest})
+				}
+				// Keep the retry answer-only even if a projector would
+				// otherwise re-offer the probe surface. The model already had
+				// an answer boundary and produced no answer; reopening tools
+				// would turn the lifecycle failure into another action loop.
+				forceAnswer = true
+				answerRetried = true
+				continue
 			}
 			return turns, nil
 		}
@@ -892,23 +957,55 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// of refusals cannot change the runtime's state, so it is unproductive
 		// regardless of how many other tools the projection still offered.
 		executed := 0
+		offeredRefusals := 0
 		for _, outcome := range outcomes {
 			if !outcome.Refused() {
 				executed++
+				continue
+			}
+			// A refused call to a tool this projection offered was withheld
+			// by policy (grounding, authority, approval) at execution time.
+			// A call to a tool the projection already withheld is the model
+			// ignoring the offered surface; forcing an answer there would
+			// reward the same mistake.
+			if _, offered := activeByName[outcome.ToolName]; offered {
+				offeredRefusals++
 			}
 		}
 		if executed > 0 {
 			unproductiveTurns = 0
 			continue
 		}
-		// Nothing ran. If the model produced visible text, that text is the
-		// candidate answer; there is no outstanding work and no reason to ask
-		// again. Completion decides whether it is proven.
-		if strings.TrimSpace(assistant.Text()) != "" {
+		// Nothing ran. A generic refusal is control feedback the model has not
+		// seen yet: CandidateRejected means the runtime withheld the action and
+		// asked the model to choose another. The narration that accompanied the
+		// refused call is therefore not a final answer; treating it as one ends
+		// the turn before the model can recover from its own rejected proposal.
+		//
+		// AnswerRequired is the exception. The runtime offered no tool at all,
+		// so there is no other action to choose and the text is the candidate
+		// answer. Every other refusal gets one bounded recovery request.
+		if answerRequired(outcomes) && strings.TrimSpace(assistant.Text()) != "" {
 			return turns, nil
 		}
 		unproductiveTurns++
 		if unproductiveTurns < maxUnproductiveTurns {
+			continue
+		}
+		// The model received the refusal and still produced nothing actionable.
+		// If it also produced text, that text is the best answer available;
+		// completion decides whether it is sufficient.
+		if strings.TrimSpace(assistant.Text()) != "" {
+			return turns, nil
+		}
+		// Nothing can execute, so a further tool turn cannot make progress.
+		// Close the action surface and ask for the answer instead of ending
+		// the run with a hard block; the answer remains a completion candidate.
+		// This applies only when an offered capability was refused: a model
+		// that keeps calling a withheld tool has already ignored the surface,
+		// and a model with no offered tools already had its answer-only turn.
+		if !forceAnswer && !closed && offeredRefusals > 0 {
+			forceAnswer = true
 			continue
 		}
 		reason := strings.TrimSpace(stopReason)
@@ -921,6 +1018,23 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		}
 		return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
 	}
+}
+
+// answerRequired reports whether every outcome is a withheld call made after the
+// runtime closed the action surface. In that case there is no other tool to
+// choose, so the assistant text accompanying the refusal is the candidate
+// answer. A single generic CandidateRejected outcome means the model still has
+// an action to revise, so the run must continue instead.
+func answerRequired(outcomes []ToolOutcome) bool {
+	if len(outcomes) == 0 {
+		return false
+	}
+	for _, outcome := range outcomes {
+		if !outcome.Result.AnswerRequired {
+			return false
+		}
+	}
+	return true
 }
 
 // SetBudget installs the root grant for the next Run.

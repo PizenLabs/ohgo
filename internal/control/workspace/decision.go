@@ -1,6 +1,10 @@
 package workspace
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
+)
 
 // Workspace transition policy.
 //
@@ -120,17 +124,18 @@ func AnalyzeRequest(text string) Requirement {
 //
 // It is the tool-boundary counterpart to AnalyzeRequest: the call's own
 // meaning, not the model's narration, establishes that a staged task has
-// entered another phase. mutates is the caller's action-class reading of the
-// tool, used only when the call is not one of the tools whose meaning is
-// fixed by its arguments.
+// entered another phase. The capability is read from the invocation through
+// OperationForTool, so a tool that can mutate — a shell, for example — only
+// escalates when this command actually changes the repository. Using the
+// tool's declared action classes here would move every shell call to BUILD.
 //
 // Only a BUILD <-> FUZZ automatic decision is reported as usable here. A plan
 // artifact under FUZZ would cross ASK, which remains a human decision and is
 // left to the ordinary artifact refusal.
-func ToolCallTransition(active Workspace, name string, args map[string]any, mutates bool) (TransitionDecision, bool) {
-	requirement, ok := ToolCallRequirement(name, args)
+func ToolCallTransition(active Workspace, tool agent.Tool, args map[string]any) (TransitionDecision, bool) {
+	requirement, ok := ToolCallRequirement(tool.Name(), args)
 	if !ok {
-		if !mutates {
+		if !OperationForTool(tool, args).Mutates() {
 			return TransitionDecision{}, false
 		}
 		requirement = Requirement{

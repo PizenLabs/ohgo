@@ -302,7 +302,7 @@ func (a escapeAuthority) Permits(cap security.Capability) bool {
 // human may execute in ASK.
 func (g *securityGate) EvaluateCommand(command string) security.Decision {
 	scope := security.NormalizeScope(g.root, ".")
-	mutates := tools.CommandMutates(command)
+	mutates := tools.CommandMutatesInRoot(command, g.root)
 	req := security.Request{
 		Capability: security.CapabilityExec,
 		Scope:      scope,
