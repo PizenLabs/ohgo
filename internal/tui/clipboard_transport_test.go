@@ -133,9 +133,9 @@ func TestClipboardTransportFlushesImmediately(t *testing.T) {
 		t.Fatal("no visible rows")
 	}
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	// No View call between release and this assertion: the writer must
 	// already hold the framed bytes. A queued-until-next-frame design fails here.
 	if out.Len() == 0 {
@@ -164,9 +164,9 @@ func TestClipboardTransportNeverRidesTheFrame(t *testing.T) {
 		t.Fatal("no visible rows")
 	}
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	for i := 0; i < 3; i++ {
 		if view := p.View(); strings.Contains(view, "\x1b]52;c;") {
 			t.Fatalf("frame %d carries OSC 52; transport must bypass the renderer", i)
@@ -199,9 +199,9 @@ func TestClipboardTransportNegativeMatrix(t *testing.T) {
 		t.Fatal("no visible rows")
 	}
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	if p.state.CopyNotice == "Copied" {
 		t.Fatal("writer failure reported success")
 	}

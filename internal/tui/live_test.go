@@ -367,7 +367,10 @@ func TestLiveAppendsEachScrollbackLineOnce(t *testing.T) {
 		}
 	}
 	if strings.Contains(joined, "> question") {
-		t.Errorf("scrollback keeps the old \"> \" question prefix, want the background block with no prefix")
+		t.Errorf("scrollback keeps the old \"> \" question prefix")
+	}
+	if !strings.Contains(ansi.Strip(joined), "user › question 0") {
+		t.Errorf("scrollback prompt lacks its attribution prefix: %q", ansi.Strip(joined))
 	}
 }
 

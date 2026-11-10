@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Palette holds every named style the view uses.
@@ -14,7 +15,10 @@ import (
 // so a theme change lands in one place. The two constructors below are the
 // only literals.
 type Palette struct {
-	User      lipgloss.Style
+	User lipgloss.Style
+	// UserBG is the one-row surface behind a selected list entry. It is not
+	// painted behind a transcript prompt: prompt attribution is the name and
+	// glyph, and the terminal background stays untouched.
 	UserBG    lipgloss.Style
 	Assistant lipgloss.Style
 	ToolName  lipgloss.Style
@@ -105,8 +109,8 @@ type Palette struct {
 // the user's voice and focus, primary text for the assistant. Headers step
 // down a deep-forest scale — bright emerald H1, sage H2, muted sage H3 —
 // and code tokens reuse the same scale so prose and code read as one theme.
-// The question keeps a faint background block instead of a label prefix so
-// it reads apart from the answer.
+// The question is attributed by a mint name and dim glyph on the terminal's
+// own background, never by a painted strip that competes with the answer.
 //
 // The chrome roles resolve through the semantic tokens in style.go: the
 // prompt cursor and focus accent share ColorPrimary with the header brand,
@@ -164,7 +168,7 @@ func DarkPalette() *Palette {
 
 // LightPalette reads on bright terminals: dark foregrounds, no heavy
 // backgrounds that would clash with a light screen, the same semantics.
-// The question keeps its faint background block here as well.
+// The question uses the same name-and-glyph attribution as the dark theme.
 func LightPalette() *Palette {
 	return &Palette{
 		User:         fg(lightAccent).Bold(true),
@@ -846,6 +850,7 @@ func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 			tick:            state.Status.Spinner,
 			now:             now,
 			theme:           state.Theme,
+			user:            state.Status.User,
 		})
 	}
 	return body.String()
@@ -1962,6 +1967,10 @@ type entryRenderContext struct {
 	tick            int
 	now             time.Time
 	theme           string
+	// user attributes a prompt to the project-local worker. It is read from
+	// runtime state, never from the entry, so a resumed transcript keeps the
+	// worker name the current project resolved.
+	user string
 	// toolRows records which rendered line belongs to a tree node. The
 	// layout copies it into LayoutRow so pointer inspection can target one
 	// member without duplicating the renderer's branch-counting rules.
@@ -1983,8 +1992,9 @@ type entryRenderContext struct {
 // not rewrite the previous block's height. This is the same ownership rule the
 // output-first live painter uses, so both surfaces converge.
 //
-// The question renders as a faint background block across the content width,
-// with no label prefix: the surface alone separates it from the answer.
+// The question renders as a worker name and dim glyph followed by plain body
+// text. No row is padded or painted, so the terminal background runs through
+// the transcript and the reading flow stays uninterrupted.
 func renderEntryGrouped(sb *strings.Builder, entry Entry, pal *Palette, layout Layout, ctx entryRenderContext) {
 	if entryFading(entry, ctx.now) {
 		age := ctx.now.Sub(entry.AppearedAt)
@@ -2010,7 +2020,7 @@ func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout L
 	switch entry.Kind {
 	case EntryUser:
 		writeGap()
-		renderUserBlock(sb, entry.UserText, pal, layout)
+		renderUserBlock(sb, entry.UserText, ctx.user, pal, layout)
 		sb.WriteString("\n")
 
 	case EntryAssistant:
@@ -3245,22 +3255,90 @@ func separatorWidth(state State, layout Layout) int {
 	return 40
 }
 
-// renderUserBlock writes the question as a faint background layer across
-// the content width. Each wrapped line is padded to the full budget before
-// styling so the background reads as one solid block rather than patchy
-// per-word highlights. The stored text stays untouched; only this render
-// carries the background.
-func renderUserBlock(sb *strings.Builder, text string, pal *Palette, layout Layout) {
-	width := textWidth(layout)
-	for _, wl := range wrapPlain(text, layout) {
-		padded := wl
-		if width > 0 {
-			if gap := width - CellWidth(wl); gap > 0 {
-				padded += strings.Repeat(" ", gap)
-			}
-		}
-		sb.WriteString(pal.UserBG.Render(padded) + "\n")
+// Prompt attribution. A prompt is a line of transcript, not a selection
+// strip: the project-local worker name and a dim glyph introduce the words on
+// the terminal's own background. Continuation rows hang under the content so
+// wrapped prompts keep one visual column.
+const (
+	// promptUserFallback keeps an unset project worker attributable without
+	// inventing a name. It is a label, never an identity.
+	promptUserFallback = "user"
+	// promptUserMaxCells bounds the name so a hostile or pathological
+	// identity cannot consume the reading width.
+	promptUserMaxCells = 24
+	// promptGlyph separates attribution from the prompt body.
+	promptGlyph = "›"
+)
+
+// renderUserBlock writes one prompt with its worker attribution. Each row is
+// styled at the measured width; no row is padded, so the transcript keeps the
+// terminal background and only the glyph, name, and words carry colour.
+func renderUserBlock(sb *strings.Builder, text, user string, pal *Palette, layout Layout) {
+	for _, line := range userPromptLines(text, user, pal, layout) {
+		sb.WriteString(line + "\n")
 	}
+}
+
+// userPromptLines is the single prompt projection shared by the fullscreen
+// view and live scrollback. Keeping it shared is what stops the two surfaces
+// from drifting into different attribution or wrap geometry.
+func userPromptLines(text, user string, pal *Palette, layout Layout) []string {
+	width := textWidth(layout)
+	name := promptDisplayName(user, width)
+	prefixStyled := pal.User.Render(name) + pal.Muted.Render(" "+promptGlyph+" ")
+	prefixWidth := CellWidth(name + " " + promptGlyph + " ")
+
+	// A viewport too narrow for the name keeps the glyph, then drops even that
+	// if one content cell is impossible. Degrading is better than overflowing
+	// a row the layout counted.
+	if width > 0 && prefixWidth >= width {
+		prefixStyled = pal.Muted.Render(promptGlyph + " ")
+		prefixWidth = CellWidth(promptGlyph + " ")
+	}
+	bodyWidth := width
+	if width > 0 {
+		bodyWidth = width - prefixWidth
+		if bodyWidth < 1 {
+			prefixStyled, prefixWidth, bodyWidth = "", 0, width
+		}
+	}
+
+	lines := wrapPlainWidth(text, bodyWidth)
+	out := make([]string, 0, len(lines))
+	for i, line := range lines {
+		styled := pal.Assistant.Render(line)
+		switch {
+		case i == 0 && prefixWidth > 0:
+			out = append(out, prefixStyled+styled)
+		case prefixWidth > 0:
+			out = append(out, strings.Repeat(" ", prefixWidth)+styled)
+		default:
+			out = append(out, styled)
+		}
+	}
+	return out
+}
+
+// promptDisplayName resolves the attribution name. The project-local worker is
+// the authoritative source; an empty value falls back to the neutral label.
+func promptDisplayName(user string, width int) string {
+	// The name is metadata, not authored prose: strip any embedded styling so
+	// a crafted identity cannot override the semantic accent.
+	name := strings.TrimSpace(ansi.Strip(sanitizeInline(user)))
+	if name == "" {
+		name = promptUserFallback
+	}
+	limit := promptUserMaxCells
+	if width > 0 {
+		// Reserve the glyph separators plus at least one content cell.
+		if room := width - CellWidth(" "+promptGlyph+" ") - 1; room < limit {
+			limit = room
+		}
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	return TruncateToWidth(name, limit)
 }
 
 // wrapPlain wraps unstyled transcript prose to the content width. Input is
@@ -3270,8 +3348,13 @@ func renderUserBlock(sb *strings.Builder, text string, pal *Palette, layout Layo
 // the caller splitting on newlines; ANSI is stripped for measurement so
 // styles never inflate the budget.
 func wrapPlain(text string, layout Layout) []string {
+	return wrapPlainWidth(text, textWidth(layout))
+}
+
+// wrapPlainWidth is wrapPlain at an explicit budget, so a prompt can wrap
+// inside the width its attribution prefix leaves behind.
+func wrapPlainWidth(text string, width int) []string {
 	text = sanitizeBlock(text)
-	width := textWidth(layout)
 	if width <= 0 {
 		return strings.Split(text, "\n")
 	}

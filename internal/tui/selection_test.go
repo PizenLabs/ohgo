@@ -8,6 +8,13 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// fixturePromptColumn is the first cell of a user prompt's body: the fallback
+// attribution ("user › ") occupies every cell before it. Selection tests name
+// cells inside the body unless they are deliberately selecting attribution.
+func fixturePromptColumn() int {
+	return CellWidth(promptUserFallback + " " + promptGlyph + " ")
+}
+
 // selectionFixture has one user block, one styled notice and one assistant
 // answer, so selection can cross block boundaries.
 func selectionFixture() State {
@@ -35,8 +42,8 @@ func TestSelectionCopySingleLine(t *testing.T) {
 	l := layoutFor(s)
 	id := blockIDAt(s.Entries, 0)
 	text, ok := CopySelection(l, &Selection{
-		Start: Position{BlockID: id, Row: 0, Column: 0},
-		End:   Position{BlockID: id, Row: 0, Column: 5},
+		Start: Position{BlockID: id, Row: 0, Column: fixturePromptColumn()},
+		End:   Position{BlockID: id, Row: 0, Column: fixturePromptColumn() + 5},
 	})
 	if !ok || text != "hello" {
 		t.Fatalf("copy = %q, %v; want hello", text, ok)
@@ -59,8 +66,9 @@ func TestSelectionCopyTrailingPaddingIsNotContent(t *testing.T) {
 	if !ok {
 		t.Fatal("selection over padding copied nothing")
 	}
-	if text != "hello world" {
-		t.Fatalf("copy = %q, want the logical text without paint padding", text)
+	want := promptUserFallback + " " + promptGlyph + " hello world"
+	if text != want {
+		t.Fatalf("copy = %q, want the prompt with attribution minus paint padding", text)
 	}
 }
 
@@ -71,7 +79,7 @@ func TestSelectionCopyCrossBlockAndReversedDrag(t *testing.T) {
 	second := blockIDAt(s.Entries, 1)
 
 	forward := &Selection{
-		Start: Position{BlockID: first, Row: 0, Column: 6},
+		Start: Position{BlockID: first, Row: 0, Column: fixturePromptColumn() + 6},
 		End:   Position{BlockID: second, Row: 0, Column: 6},
 	}
 	want, ok := CopySelection(l, forward)

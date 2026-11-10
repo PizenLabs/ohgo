@@ -63,9 +63,9 @@ func TestCopyNoticeAutoCopyShowsCopied(t *testing.T) {
 	})
 	marker, top := noticeDragTop(p)
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	if calls != 1 {
 		t.Fatalf("clipboard calls = %d, want exactly 1", calls)
 	}
@@ -99,9 +99,9 @@ func TestCopyNoticePartialWorld(t *testing.T) {
 	})
 	marker, top := noticeDragTop(p)
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	if copied != "world" {
 		t.Fatalf("copied = %q, want world", copied)
 	}
@@ -125,9 +125,9 @@ func TestCopyNoticeReversedDrag(t *testing.T) {
 	})
 	marker, top := noticeDragTop(p)
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 6, Y: y})
 	if copied != "world" {
 		t.Fatalf("reversed copied = %q, want world", copied)
 	}
@@ -162,9 +162,9 @@ func TestCopyNoticeWrappedSelection(t *testing.T) {
 	if !ok || len(rows) < 2 {
 		t.Fatal("fixture did not wrap")
 	}
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 2, Y: top + marker})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 3, Y: top + marker + 1})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 3, Y: top + marker + 1})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 2, Y: top + marker})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 3, Y: top + marker + 1})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 3, Y: top + marker + 1})
 	if copied == "" {
 		t.Fatal("wrapped drag copied nothing")
 	}
@@ -242,9 +242,9 @@ func TestCopyNoticeDisabledClipboardNoFalseSuccess(t *testing.T) {
 	p.clipboard = nil
 	marker, top := noticeDragTop(p)
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	if p.state.Selection == nil {
 		t.Fatal("disabled clipboard cleared the selection")
 	}
@@ -285,9 +285,9 @@ func TestCopyNoticeEmissionFailureNoFalseSuccess(t *testing.T) {
 	p, out := noticeDragProgram(t, func(string) string { return "" })
 	marker, top := noticeDragTop(p)
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	if p.state.CopyNotice == "Copied" {
 		t.Fatal("failed emission reported success")
 	}
@@ -305,9 +305,9 @@ func TestCopyNoticeExpiryClears(t *testing.T) {
 	p, _ := noticeDragProgram(t, OSC52Sequence)
 	marker, top := noticeDragTop(p)
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	if p.state.CopyNotice != "Copied" {
 		t.Fatalf("status = %q, want Copied", p.state.CopyNotice)
 	}
@@ -369,9 +369,9 @@ func TestCopyNoticeResizeKeepsPosition(t *testing.T) {
 	p, _ := noticeDragProgram(t, OSC52Sequence)
 	marker, top := noticeDragTop(p)
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	if p.state.CopyNotice != "Copied" {
 		t.Fatal("no confirmation to resize with")
 	}
@@ -412,9 +412,9 @@ func TestCopyNoticeNoTranscriptMutation(t *testing.T) {
 	}
 	marker, top := noticeDragTop(p)
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	if len(p.state.Entries) != entriesBefore {
 		t.Fatalf("copy changed block count %d -> %d", entriesBefore, len(p.state.Entries))
 	}
@@ -458,9 +458,9 @@ func TestCopyNoticeRuntimeIsolation(t *testing.T) {
 	busyBefore := p.state.Status.Busy
 	marker, top := noticeDragTop(p)
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	if p.state.Status.Workspace != workspaceBefore {
 		t.Fatalf("copy moved workspace %q", p.state.Status.Workspace)
 	}
@@ -488,9 +488,9 @@ func TestCopyNoticeHeaderComposesWithChrome(t *testing.T) {
 	p.syncTranscript()
 	marker, top := noticeDragTop(p)
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	header := noticeHeaderPlain(p.state)
 	if got := CellWidth(header); got > 100 {
 		t.Fatalf("header is %d cells, want one row: %q", got, header)

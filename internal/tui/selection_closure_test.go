@@ -60,8 +60,8 @@ func TestSelectionClosureSameRowPartial(t *testing.T) {
 		start, end int
 		want       string
 	}{
-		{"world", 6, 11, "world"},
-		{"ell", 1, 4, "ell"},
+		{"world", fixturePromptColumn() + 6, fixturePromptColumn() + 11, "world"},
+		{"ell", fixturePromptColumn() + 1, fixturePromptColumn() + 4, "ell"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sel := &Selection{
@@ -86,7 +86,7 @@ func TestSelectionClosureReversedDrag(t *testing.T) {
 	first := blockIDAt(s.Entries, 0)
 	second := blockIDAt(s.Entries, 1)
 	forward := &Selection{
-		Start: Position{BlockID: first, Row: 0, Column: 6},
+		Start: Position{BlockID: first, Row: 0, Column: fixturePromptColumn() + 6},
 		End:   Position{BlockID: second, Row: 0, Column: 6},
 	}
 	reversed := &Selection{Start: forward.End, End: forward.Start}
@@ -214,9 +214,11 @@ func TestSelectionClosureWrappedRows(t *testing.T) {
 	}
 	r0, _ := l.BlockRow(0, 0)
 	r1, _ := l.BlockRow(0, 1)
+	start := fixturePromptColumn() + 2
+	end := fixturePromptColumn() + 3
 	sel := &Selection{
-		Start: Position{BlockID: id, Row: 0, Column: 2},
-		End:   Position{BlockID: id, Row: 1, Column: 3},
+		Start: Position{BlockID: id, Row: 0, Column: start},
+		End:   Position{BlockID: id, Row: 1, Column: end},
 	}
 	text, ok := CopySelection(l, sel)
 	if !ok {
@@ -229,7 +231,7 @@ func TestSelectionClosureWrappedRows(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("wrapped copy lost its line break: %q", text)
 	}
-	if lines[0] != CellSlice(r0.Plain(), 2, CellWidth(r0.Plain())) || lines[1] != CellSlice(r1.Plain(), 0, 3) {
+	if lines[0] != CellSlice(r0.Plain(), start, CellWidth(r0.Plain())) || lines[1] != strings.TrimRight(CellSlice(r1.Plain(), 0, end), " ") {
 		t.Fatalf("wrapped copy = %q", text)
 	}
 	if got := closureSpan(t, ApplySelectionHighlight(l, sel, r0)); got != lines[0] {
@@ -320,11 +322,12 @@ func TestSelectionClosurePadding(t *testing.T) {
 		Start: Position{BlockID: id, Row: 0, Column: 0},
 		End:   Position{BlockID: id, Row: 0, Column: row.Width + 40},
 	}
+	want := promptUserFallback + " " + promptGlyph + " hello world"
 	text, ok := CopySelection(l, sel)
-	if !ok || text != "hello world" {
-		t.Fatalf("copy = %q (%v), want logical text without padding", text, ok)
+	if !ok || text != want {
+		t.Fatalf("copy = %q (%v), want prompt content without padding", text, ok)
 	}
-	if span := closureSpan(t, ApplySelectionHighlight(l, sel, row)); span != "hello world" {
+	if span := closureSpan(t, ApplySelectionHighlight(l, sel, row)); span != want {
 		t.Fatalf("highlight span = %q, want content without padding", span)
 	}
 }
@@ -349,9 +352,9 @@ func TestSelectionClosureMouseUpCopiesOnce(t *testing.T) {
 		t.Fatal("no visible rows")
 	}
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 6, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 11, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn() + 6, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 11, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 11, Y: y})
 	if calls != 1 {
 		t.Fatalf("clipboard calls = %d, want exactly 1", calls)
 	}
@@ -387,9 +390,9 @@ func TestSelectionClosureMouseUpButtonNone(t *testing.T) {
 		t.Fatal("no visible rows")
 	}
 	y := top + marker
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 0, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 5, Y: y})
-	p.Update(tea.MouseMsg{Button: tea.MouseButtonNone, Action: tea.MouseActionRelease, X: 5, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: fixturePromptColumn(), Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: fixturePromptColumn() + 5, Y: y})
+	p.Update(tea.MouseMsg{Button: tea.MouseButtonNone, Action: tea.MouseActionRelease, X: fixturePromptColumn() + 5, Y: y})
 	if calls != 1 {
 		t.Fatalf("ButtonNone release clipboard calls = %d, want 1", calls)
 	}
@@ -508,8 +511,8 @@ func TestSelectionClosureDetachedStreaming(t *testing.T) {
 	anchor := p.transcriptFrame.vp.Anchor
 	id := blockIDAt(p.state.Entries, 0)
 	p.state.Selection = &Selection{
-		Start: Position{BlockID: id, Row: 0, Column: 0},
-		End:   Position{BlockID: id, Row: 0, Column: 5},
+		Start: Position{BlockID: id, Row: 0, Column: fixturePromptColumn()},
+		End:   Position{BlockID: id, Row: 0, Column: fixturePromptColumn() + 5},
 	}
 	before, ok := CopySelection(p.transcriptFrame.index, p.state.Selection)
 	if !ok || before != "hello" {
@@ -537,8 +540,8 @@ func TestSelectionClosureResize(t *testing.T) {
 	p.syncTranscript()
 	id := blockIDAt(p.state.Entries, 0)
 	p.state.Selection = &Selection{
-		Start: Position{BlockID: id, Row: 0, Column: 0},
-		End:   Position{BlockID: id, Row: 0, Column: 5},
+		Start: Position{BlockID: id, Row: 0, Column: fixturePromptColumn()},
+		End:   Position{BlockID: id, Row: 0, Column: fixturePromptColumn() + 5},
 	}
 	for _, width := range []int{30, 80, 45} {
 		p.Update(tea.WindowSizeMsg{Width: width, Height: 30})

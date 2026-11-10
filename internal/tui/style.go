@@ -45,8 +45,8 @@ const (
 	darkH3 = "144"
 	// Warm amber strings read against the dark code background.
 	darkCodeStr = "214"
-	// Faint user background: a subtle surface behind the question so it
-	// reads as a block distinct from the answer, without a label prefix.
+	// Selection surface: the subtle row tint shared by list pickers. The
+	// transcript prompt never uses it; attribution carries that role.
 	darkUserBg = "237"
 
 	// Light theme: dark foregrounds on a bright screen, same semantics.
@@ -68,8 +68,8 @@ const (
 	lightH2      = "65"
 	lightH3      = "242"
 	lightCodeStr = "166"
-	// Faint user background for bright terminals: slightly darker than
-	// the screen, distinct from the code surface.
+	// Selection surface for bright terminals: slightly darker than the
+	// screen, distinct from the code surface.
 	lightUserBg = "253"
 
 	// Borders and dividers adapt as one pair, so a rule stays a rule rather
