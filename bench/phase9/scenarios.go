@@ -423,9 +423,13 @@ func runScenario(ctx context.Context, sc scenario, projection string) (metrics r
 	var evidence *cognition.EvidenceState
 	if projection == "state" {
 		facts := cognition.ProbeFacts(root)
-		authority := "build"
-		if contract.Kind == workspace.ObjectiveInformational {
-			authority = "ask"
+		// The shape must describe the authority the request routes to, not the
+		// completion kind: an investigation is informational but runs under
+		// FUZZ, where execution is allowed. Deriving ASK from the kind would
+		// withhold the probe the scenario is testing.
+		authority := metrics.RoutedAuthority
+		if authority == "" {
+			authority = "build"
 		}
 		shape := cognition.BuildShape(contract, cognition.ShapeParams{
 			Authority: authority,

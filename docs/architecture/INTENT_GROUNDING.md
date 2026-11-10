@@ -126,6 +126,11 @@ request action = unknown
     + external access     → REVIEW
 ```
 
+A rejection is returned to the model as a structured tool error, and the loop
+allows one recovery request. The refusal itself is not a completion event: the
+model must see the reason before its accompanying narration can be judged as an
+answer.
+
 A clause that asks about an operation grounds `read`, not the operation. The
 extractor works on the same clause model as the router: mutation, execution, and
 investigation vocabulary inside a question ("does this update GitHub?") is

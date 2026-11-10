@@ -148,10 +148,10 @@ func runOnce(cmd *cobra.Command, text string) error {
 	// action requires the other capability. The target role's model is
 	// resolved here because there is no UI switch owner on this path.
 	var handoffMu sync.Mutex
-	loop.SetWorkspaceHandoff(func(call ai.ToolCall, tool agent.Tool, args map[string]any) bool {
+	loop.SetWorkspaceHandoff(func(_ ai.ToolCall, tool agent.Tool, args map[string]any) bool {
 		handoffMu.Lock()
 		defer handoffMu.Unlock()
-		decision, ok := automaticToolHandoff(opts.authority(), call, tool, args)
+		decision, ok := automaticToolHandoff(opts.authority(), tool, args)
 		if !ok {
 			return false
 		}
@@ -624,10 +624,10 @@ func runSession(cmd *cobra.Command, args []string) error {
 	// model's own action requires the other capability. Crossing ASK is not
 	// automatic, so the policy leaves it to the explicit /ask command.
 	var replHandoffMu sync.Mutex
-	plain.loop.SetWorkspaceHandoff(func(call ai.ToolCall, tool agent.Tool, args map[string]any) bool {
+	plain.loop.SetWorkspaceHandoff(func(_ ai.ToolCall, tool agent.Tool, args map[string]any) bool {
 		replHandoffMu.Lock()
 		defer replHandoffMu.Unlock()
-		decision, ok := automaticToolHandoff(plain.activeWorkspace(), call, tool, args)
+		decision, ok := automaticToolHandoff(plain.activeWorkspace(), tool, args)
 		if !ok {
 			return false
 		}

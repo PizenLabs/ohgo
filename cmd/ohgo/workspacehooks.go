@@ -81,10 +81,10 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 		// automatic policy through the same switch owner, so the move is
 		// recorded on the same task and the loop re-authorizes the call under
 		// the new authority.
-		Handoff: func(call ai.ToolCall, tool agent.Tool, args map[string]any) bool {
+		Handoff: func(_ ai.ToolCall, tool agent.Tool, args map[string]any) bool {
 			handoffMu.Lock()
 			defer handoffMu.Unlock()
-			next, ok := automaticToolHandoff(held.activeWorkspace(), call, tool, args)
+			next, ok := automaticToolHandoff(held.activeWorkspace(), tool, args)
 			if !ok {
 				return false
 			}
@@ -106,11 +106,11 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 // automaticToolHandoff decides whether one concrete tool call needs an
 // automatic BUILD <-> FUZZ move, and returns the decision when it does.
 //
-// The artifact kind is the model's own phase declaration; a mutating tool is
-// the capability declaration. Both are reads of the call, never of the model's
-// narration, and both go through the same policy as a request. ASK is never
-// crossed automatically: a plan under FUZZ or a write under ASK stays where it
-// is and the security boundary refuses it.
-func automaticToolHandoff(active workspace.Workspace, call ai.ToolCall, tool agent.Tool, args map[string]any) (workspace.TransitionDecision, bool) {
-	return workspace.ToolCallTransition(active, call.Name, args, agent.HasActionClass(tool, agent.ActionMutate))
+// The artifact kind is the model's own phase declaration; any other tool is
+// classified by the invocation's per-call operation. Both are reads of the
+// call, never of the model's narration, and both go through the same policy as
+// a request. ASK is never crossed automatically: a plan under FUZZ or a write
+// under ASK stays where it is and the security boundary refuses it.
+func automaticToolHandoff(active workspace.Workspace, tool agent.Tool, args map[string]any) (workspace.TransitionDecision, bool) {
+	return workspace.ToolCallTransition(active, tool, args)
 }

@@ -69,6 +69,17 @@ question can carry execution intent and an imperative can be informational.
 | `EXECUTE`     | implement, fix, modify, refactor, create, delete, apply, run, change… | BUILD |
 | `INVESTIGATE` | reproduce, investigate, diagnose, troubleshoot, stress, probe, try to break, find edge cases, benchmark, test failure modes… | FUZZ |
 
+Intent and completion are different axes. A standalone `INVESTIGATE` request
+routes to FUZZ because the work may execute probes, but its completion contract
+is informational: the deliverable is a grounded answer, and a successful
+command is evidence rather than task completion. Classifying the same request
+as an execution objective would let the first successful process satisfy the
+contract and withdraw the tool surface while the model is still investigating.
+The projector keeps an investigation's executable surface open after a
+repository overview for the same reason: one observed fact is not the probe the
+user asked for. A staged conditional mutation remains `ObjectiveMutation` under
+this rule; only its current phase is informational.
+
 Classification is deterministic and small (`workspace.Classify`): no model, no
 embeddings, no intent model. It strips politeness wrappers, splits the request
 into its clauses, reads each clause's head, and matches a fixed phrase set.
@@ -326,15 +337,20 @@ only `harness.SwitchWorkspace` performs it.
 ### Tool-boundary handoff
 
 A staged task changes phase while it runs, and the model's own action is the
-signal: a finding artifact is investigation, a change artifact or a mutating
-tool call is mutation. `workspace.ToolCallTransition` reads that action and
-applies the ordinary `DecideTransition` policy before the call executes:
+signal: a finding artifact is investigation, a change artifact or a call that
+actually mutates is mutation. `workspace.ToolCallTransition` classifies the
+invocation through `OperationForTool` and applies the ordinary
+`DecideTransition` policy before the call executes:
 
 - a finding artifact under BUILD → automatic FUZZ;
-- a change or verification artifact, or a mutating tool, under FUZZ →
-  automatic BUILD;
+- a change or verification artifact, or a call that mutates this invocation
+  under FUZZ → automatic BUILD;
 - a plan artifact under FUZZ would cross ASK, so it is not automatic and the
   artifact tool refuses it with the allowed kind.
+
+A tool's declared action class is a capability, not a property of the current
+call. A shell can mutate, but `ls` does not; the per-invocation classification
+is what keeps an inspection in FUZZ instead of escalating it to BUILD.
 
 The loop consults the host hook after semantic grounding, so an action the
 user's request did not authorize cannot use a handoff to reach a stronger
@@ -604,7 +620,7 @@ that a classifier returned a string.
 | Ephemeral proposal state | `tui.TestStaleProposalCannotSurviveALifecycleEvent`, `TestProposalNavigationClampsAtTheEnds` |
 | No fabricated confidence | `cmd/ohgo.TestTurnTransitionCarriesNoProbability`, `tui.TestTransitionPromptRendersTheDecision` |
 | Automatic BUILD <-> FUZZ cooperation | `tui.TestHandoffThroughTurnEntrypointPreservesTaskAndAuthority`, `TestBuildToFuzzTransitionPreservesImplementationContext`, `TestRepeatedHandoffsPreserveContextsAndWorkspace` |
-| Tool-boundary phase handoff | `workspace.TestToolCallTransitionRoutesCapabilityBoundary`, `agent.TestWorkspaceHandoffRunsBeforeAdmission`, `agent.TestWorkspaceHandoffCannotGroundAnUngroundedMutation`, `tui.TestToolBoundaryHandoffRoundTripKeepsOneTask` |
+| Tool-boundary phase handoff | `workspace.TestToolCallTransitionRoutesCapabilityBoundary`, `workspace.TestToolCallTransitionKeepsReadOnlyShellInFuzz`, `agent.TestWorkspaceHandoffRunsBeforeAdmission`, `agent.TestWorkspaceHandoffCannotGroundAnUngroundedMutation`, `tui.TestToolBoundaryHandoffRoundTripKeepsOneTask` |
 | ASK boundary confirmation | `tui.TestBuildStrongQuestionConfirmsAskBoundary`, `TestAskMutationRequiresBuildConfirmation`, `cmd/ohgo.TestWideningFromAskIsOnlyAHandoff` |
 | Staged conditional workflow | `workspace.TestConditionalWorkflowRequiresAStagedInvestigation`, `tui.TestConditionalWorkflowStartsInvestigatingThenContinuesIntoBuild` |
 | Conditional completion is phase-aware | `agent.TestConditionalMutationCompletesInvestigationWithoutAChange`, `tui.TestBuildConditionalInvestigationStaysActiveWithoutMutation` |

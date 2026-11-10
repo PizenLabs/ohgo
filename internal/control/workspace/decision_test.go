@@ -1,6 +1,10 @@
 package workspace
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/PizenLabs/ohgo/internal/agent"
+)
 
 const stagedWorkflowPrompt = `Check this Go e-commerce project and understand how the main order/checkout flow works.
 
@@ -90,6 +94,17 @@ func TestDecideTransitionMatrix(t *testing.T) {
 	}
 }
 
+// classifiedTool declares a broad action surface but reports the capability of
+// the specific invocation, the way the real bash tool does.
+type classifiedTool struct {
+	fakeTool
+	classes []agent.ActionClass
+	cap     agent.Tier
+}
+
+func (t classifiedTool) ActionClasses() []agent.ActionClass   { return t.classes }
+func (t classifiedTool) Capability(map[string]any) agent.Tier { return t.cap }
+
 // A staged task moves phase through the model's own actions, not only through
 // new user text. The capability a call needs is read from the call itself, so
 // the control plane can apply the ordinary automatic policy before the call
@@ -100,27 +115,44 @@ func TestToolCallTransitionRoutesCapabilityBoundary(t *testing.T) {
 	plan := map[string]any{"kind": "plan", "target": "checkout"}
 	write := map[string]any{"path": "checkout.go", "content": "package checkout\n"}
 
+	artifact := fakeTool{name: "artifact", tier: agent.TierRead}
+	writeTool := fakeTool{name: "write", tier: agent.TierWrite}
+	readShell := classifiedTool{
+		fakeTool: fakeTool{name: "bash", tier: agent.TierExec},
+		classes:  []agent.ActionClass{agent.ActionExecute, agent.ActionMutate},
+		cap:      agent.TierExec,
+	}
+	writeShell := classifiedTool{
+		fakeTool: fakeTool{name: "bash", tier: agent.TierExec},
+		classes:  []agent.ActionClass{agent.ActionExecute, agent.ActionMutate},
+		cap:      agent.TierWrite,
+	}
+
 	cases := []struct {
 		name      string
 		active    Workspace
-		tool      string
+		tool      agent.Tool
 		args      map[string]any
-		mutates   bool
 		automatic bool
 		target    Workspace
 	}{
-		{"build finding", Build, "artifact", finding, false, true, Fuzz},
-		{"build change", Build, "artifact", change, false, false, ""},
-		{"fuzz finding", Fuzz, "artifact", finding, false, false, ""},
-		{"fuzz change", Fuzz, "artifact", change, false, true, Build},
-		{"fuzz write", Fuzz, "write", write, true, true, Build},
-		{"ask write", Ask, "write", write, true, false, ""},
-		{"fuzz plan", Fuzz, "artifact", plan, false, false, ""},
-		{"build write", Build, "write", write, true, false, ""},
+		{"build finding", Build, artifact, finding, true, Fuzz},
+		{"build change", Build, artifact, change, false, ""},
+		{"fuzz finding", Fuzz, artifact, finding, false, ""},
+		{"fuzz change", Fuzz, artifact, change, true, Build},
+		{"fuzz write", Fuzz, writeTool, write, true, Build},
+		{"ask write", Ask, writeTool, write, false, ""},
+		{"fuzz plan", Fuzz, artifact, plan, false, ""},
+		{"build write", Build, writeTool, write, false, ""},
+		// A shell declares mutation as a possible class. The invocation, not
+		// the declaration, decides whether this call needs BUILD.
+		{"fuzz read-only shell", Fuzz, readShell, map[string]any{"command": "ls -la"}, false, ""},
+		{"fuzz mutating shell", Fuzz, writeShell, map[string]any{"command": "touch x"}, true, Build},
+		{"build read-only shell", Build, readShell, map[string]any{"command": "go test ./..."}, false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			decision, automatic := ToolCallTransition(tc.active, tc.tool, tc.args, tc.mutates)
+			decision, automatic := ToolCallTransition(tc.active, tc.tool, tc.args)
 			if automatic != tc.automatic {
 				t.Fatalf("automatic = %v, want %v (decision=%+v)", automatic, tc.automatic, decision)
 			}
@@ -138,12 +170,29 @@ func TestToolCallTransitionRoutesCapabilityBoundary(t *testing.T) {
 // session files a finding, and the control plane moves to FUZZ rather than
 // letting the artifact tool refuse the call.
 func TestToolCallTransitionMovesBuildToFuzzForAFindingArtifact(t *testing.T) {
-	decision, ok := ToolCallTransition(Build, "artifact", map[string]any{
+	artifact := fakeTool{name: "artifact", tier: agent.TierRead}
+	decision, ok := ToolCallTransition(Build, artifact, map[string]any{
 		"kind": "finding", "target": "order/checkout",
 		"reproduction": "POST /api/v1/orders", "evidence": "404",
-	}, false)
+	})
 	if !ok || !decision.Automatic() || decision.Target != Fuzz {
 		t.Fatalf("finding under BUILD = %+v automatic=%v, want an automatic FUZZ handoff", decision, ok)
+	}
+}
+
+// A shell that declares ActionMutate is not mutating just because the tool can
+// mutate. Treating the declared class as the invocation moved every read-only
+// inspection from FUZZ to BUILD and reported a repository change the request
+// never asked for.
+func TestToolCallTransitionKeepsReadOnlyShellInFuzz(t *testing.T) {
+	shell := classifiedTool{
+		fakeTool: fakeTool{name: "bash", tier: agent.TierExec},
+		classes:  []agent.ActionClass{agent.ActionExecute, agent.ActionMutate},
+		cap:      agent.TierExec,
+	}
+	decision, automatic := ToolCallTransition(Fuzz, shell, map[string]any{"command": "ls /Applications"})
+	if automatic {
+		t.Fatalf("read-only shell under FUZZ moved to %s: %+v", decision.Target, decision)
 	}
 }
 

@@ -901,15 +901,28 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			unproductiveTurns = 0
 			continue
 		}
-		// Nothing ran. If the model produced visible text, that text is the
-		// candidate answer; there is no outstanding work and no reason to ask
-		// again. Completion decides whether it is proven.
-		if strings.TrimSpace(assistant.Text()) != "" {
+		// Nothing ran. A generic refusal is control feedback the model has not
+		// seen yet: CandidateRejected means the runtime withheld the action and
+		// asked the model to choose another. The narration that accompanied the
+		// refused call is therefore not a final answer; treating it as one ends
+		// the turn before the model can recover from its own rejected proposal.
+		//
+		// AnswerRequired is the exception. The runtime offered no tool at all,
+		// so there is no other action to choose and the text is the candidate
+		// answer. Every other refusal gets one bounded recovery request.
+		if answerRequired(outcomes) && strings.TrimSpace(assistant.Text()) != "" {
 			return turns, nil
 		}
 		unproductiveTurns++
 		if unproductiveTurns < maxUnproductiveTurns {
 			continue
+		}
+		// The model received the refusal and still produced nothing actionable.
+		// If it also produced text, that text is the best answer available;
+		// completion decides whether it is sufficient. Without text the task is
+		// blocked, not completed.
+		if strings.TrimSpace(assistant.Text()) != "" {
+			return turns, nil
 		}
 		reason := strings.TrimSpace(stopReason)
 		if reason == "" {
@@ -921,6 +934,23 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		}
 		return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
 	}
+}
+
+// answerRequired reports whether every outcome is a withheld call made after the
+// runtime closed the action surface. In that case there is no other tool to
+// choose, so the assistant text accompanying the refusal is the candidate
+// answer. A single generic CandidateRejected outcome means the model still has
+// an action to revise, so the run must continue instead.
+func answerRequired(outcomes []ToolOutcome) bool {
+	if len(outcomes) == 0 {
+		return false
+	}
+	for _, outcome := range outcomes {
+		if !outcome.Result.AnswerRequired {
+			return false
+		}
+	}
+	return true
 }
 
 // SetBudget installs the root grant for the next Run.

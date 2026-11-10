@@ -1,6 +1,7 @@
 package cognition
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -314,6 +315,66 @@ func TestExecutionObjectiveStillRequiresExecutionEvidence(t *testing.T) {
 		Contract: intent,
 	}); review.Complete() {
 		t.Fatal("a static read completed an execution objective")
+	}
+}
+
+// A FUZZ investigation may execute to acquire evidence, but a successful
+// command is observation, not the deliverable. Treating the objective as an
+// execution contract made the command move the shape to complete and withdrew
+// every tool while the model was still investigating.
+func TestInvestigationExecutionDoesNotCloseTheSurface(t *testing.T) {
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "bash", tier: agent.TierExec, classes: []agent.ActionClass{agent.ActionExecute, agent.ActionMutate}},
+	}
+	cases := []struct {
+		name   string
+		prompt string
+		facts  RepositoryFacts
+		turns  []agent.Turn
+	}{
+		{
+			name:   "unrelated successful command",
+			prompt: "investigate the bottleneck and evaluate",
+			turns: []agent.Turn{{Results: []agent.ToolOutcome{{
+				CallID: "log-1", ToolName: "bash", Args: map[string]any{"command": "git log --oneline -10"},
+				Result: agent.Result{Text: "abc123 commit", Executes: true, Finished: true},
+			}}}},
+		},
+		{
+			name:   "repository overview is not the probe",
+			prompt: "Investigate why this test is failing.",
+			facts:  RepositoryFacts{Go: true},
+			turns:  []agent.Turn{{Results: []agent.ToolOutcome{readEvidence("read-calc", "calc.go")}}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			intent, shape := regressionShapeAs(tc.prompt, tc.facts, "fuzz")
+			if intent.Kind != contract.ObjectiveInformational {
+				t.Fatalf("contract kind = %s, want informational", intent.Kind)
+			}
+			if !shape.Investigation {
+				t.Fatalf("shape did not record the investigation: %+v", shape.Intent)
+			}
+			if !shape.NeedsExecution || !shape.Authority.ExecutionAllowed {
+				t.Fatalf("the investigation lost its executable surface: needsExecution=%v authority=%s",
+					shape.NeedsExecution, shape.Authority.Workspace)
+			}
+			projector := NewProjector(shape, NewEvidenceState(), tc.facts)
+			projected := projector.Project(agent.ProjectionRequest{
+				Messages: []agent.Message{agent.UserMessage{Text: shape.Objective}},
+				Turns:    tc.turns,
+				Tools:    tools,
+			})
+			if projected.Report.AnswerEligible || projected.Report.Terminal {
+				t.Fatalf("the investigation was closed before the probe: answerEligible=%v terminal=%v",
+					projected.Report.AnswerEligible, projected.Report.Terminal)
+			}
+			if names := toolNames(projected.Tools); strings.Join(names, ",") != "read,bash" {
+				t.Fatalf("offered tools = %v, want the investigation surface to remain open", names)
+			}
+		})
 	}
 }
 

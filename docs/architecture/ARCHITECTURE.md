@@ -100,12 +100,12 @@ and any subagent read at call time:
   investigation. Its conditional mutation is retained for the later branch but
   does not make the current turn a mutation objective.
 - A staged task also moves phase at the tool boundary. `workspace.ToolCallTransition`
-  reads a concrete call — a finding or change artifact, or a mutating tool — and
-  applies the same policy before execution. The loop asks after semantic
-  grounding, the host applies the target through the single switch owner and
-  records it on the same task, and the loop re-authorizes the call under the new
-  live gate. A plan artifact under FUZZ would cross ASK and is therefore not
-  automatic.
+  reads a concrete call — a finding or change artifact, or a call that mutates
+  this invocation — and applies the same policy before execution. The loop asks
+  after semantic grounding, the host applies the target through the single
+  switch owner and records it on the same task, and the loop re-authorizes the
+  call under the new live gate. A plan artifact under FUZZ would cross ASK and is
+  therefore not automatic.
 
 The full matrix, state model, and invariants are in
 [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
@@ -380,16 +380,17 @@ the model said. Two properties keep the loop honest and small:
   `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`.
 - **An unproductive turn is counted from outcomes, never from the offered
   slice.** A refusal is a control decision, not work. If every call in a turn was
-  refused and the model produced no answer, the turn could not change the
-  runtime's state; this is true even when the projection still offered other
-  tools. One recovery request is allowed. A second consecutive unproductive turn
-  reports `agent.ErrTaskBlocked` before another model request, so a model that
-  keeps proposing a withdrawn capability cannot walk the turn grant. A turn with
-  any non-refused outcome is work and resets the count. A refused proposal
-  accompanied by visible text is the candidate answer, and the run stops there:
-  the refusal leaves no outstanding work. The presentation layer publishes the
-  terminal verdict after the turn's outcomes and text, so the transcript ends at
-  the decision instead of appearing to execute work after it.
+  refused, the turn could not change the runtime's state; this is true even when
+  the projection still offered other tools. One recovery request is allowed so
+  the model can see the structured refusal and choose another action; narration
+  emitted alongside a rejected call is not a final answer. The exception is an
+  `AnswerRequired` refusal: the runtime offered no tool at all, so the text is
+  the candidate answer and the run stops. A second consecutive refusal-only turn
+  ends the run: visible text is the best available answer for completion, and no
+  text reports `agent.ErrTaskBlocked` before another model request. A turn with
+  any non-refused outcome is work and resets the count. The presentation layer
+  publishes the terminal verdict after the turn's outcomes and text, so the
+  transcript ends at the decision instead of appearing to execute work after it.
 - **Required external knowledge is real evidence.** An explicit external
   requirement declares an `external_observation` need, so local files cannot
   make the task answer-eligible. While it is the only missing requirement, the
