@@ -100,6 +100,13 @@ runtime state block. An informational answer must mention each required
 (project-kind, non-conditional) entity. Conditional entities (`if relevant`)
 are preserved but not forced into the answer.
 
+An entity is a named thing, never the request's verb. In “investigate the
+bottleneck and evaluate”, `evaluate` heads the second clause, so it is not a
+required entity; requiring it would make the answer preserve a verb instead of
+a subject. The extractor uses the router's clause-head vocabulary, so a
+coordinated phrase whose second part starts with a request verb is two clauses,
+not a list of names.
+
 Repository coordinates (paths, symbols, packages) are not required in prose:
 mutation completion already proves them through target evidence.
 
@@ -205,7 +212,9 @@ sentence with a global scope (“no test files exist in the repository”) is st
 an absence conclusion and needs coverage. “Not evaluated”, “not checked”, “no
 evidence”, and “worth verifying” are explicit lower-assertion forms. A claim
 that a check did not run (“no tests were run”) is a fact about the run, not a
-repository property.
+repository property. The same holds for a change report: “no files were
+modified” describes what the run did to the workspace. It is not an absence
+claim about repository contents, and no file scan could ever cover it.
 
 A **local configuration** claim is different again from an **external state**
 claim. A workflow file proves what is configured: the schedule, the trigger, the

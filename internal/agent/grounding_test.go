@@ -345,6 +345,55 @@ func TestEvaluateTaskCompletionRejectsUnsupportedNegativeConclusion(t *testing.T
 	}
 }
 
+// A report that the run left the workspace untouched is not a repository
+// absence claim. The observed answer ended with "no files were modified" and
+// was reviewed as if it had claimed the repository contains no files; no file
+// scan can ever cover that phrasing, so the review could never be satisfied.
+// A genuine existence claim keeps the boundary.
+func TestAssessGroundingSeparatesChangeReportsFromAbsenceClaims(t *testing.T) {
+	grounding := &contract.IntentGrounding{
+		Objective: "investigate the bottleneck and evaluate",
+		Action:    contract.GroundingInvestigate,
+		Actions:   []contract.GroundingAction{contract.GroundingInvestigate},
+		Scope:     contract.GroundingScope{Kind: contract.ScopeRepository},
+	}
+	cases := []struct {
+		name   string
+		answer string
+		review bool
+	}{
+		{
+			name:   "no-op change report",
+			answer: "Workspace unchanged — git status is clean; no files were modified.",
+		},
+		{
+			name:   "file existence claim",
+			answer: "README.md does not exist in this repository.",
+			review: true,
+		},
+		{
+			name:   "test category absence",
+			answer: "No test files exist in this repository.",
+			review: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assessment := AssessGrounding(informationalContract(grounding), nil, tc.answer)
+			unsupported := false
+			for _, issue := range assessment.Issues {
+				if issue.Code == "unsupported_negative_conclusion" {
+					unsupported = true
+				}
+			}
+			if unsupported != tc.review {
+				t.Fatalf("unsupported_negative_conclusion = %v, want %v (reasons: %v)",
+					unsupported, tc.review, assessment.Reasons)
+			}
+		})
+	}
+}
+
 // Entity loss is reviewed even when the answer is otherwise non-empty.
 func TestEvaluateTaskCompletionRejectsMissingNamedEntity(t *testing.T) {
 	intent := informationalContract(actionlessGrounding())
