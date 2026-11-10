@@ -377,7 +377,10 @@ the model said. Two properties keep the loop honest and small:
   every tool itself; a projector cannot leave a callable tool on a surface it
   has already closed. A blocked capability (`BlockCapabilityFailure`) is
   terminal: the first stale proposal without an answer reports
-  `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`.
+  `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`. The loop can also
+  force the boundary itself: after a refused-proposal recovery it asks the
+  projection to close the surface (`ForceAnswer`), even for a shape such as an
+  investigation that would otherwise keep probing.
 - **An unproductive turn is counted from outcomes, never from the offered
   slice.** A refusal is a control decision, not work. If every call in a turn was
   refused, the turn could not change the runtime's state; this is true even when
@@ -386,11 +389,15 @@ the model said. Two properties keep the loop honest and small:
   emitted alongside a rejected call is not a final answer. The exception is an
   `AnswerRequired` refusal: the runtime offered no tool at all, so the text is
   the candidate answer and the run stops. A second consecutive refusal-only turn
-  ends the run: visible text is the best available answer for completion, and no
-  text reports `agent.ErrTaskBlocked` before another model request. A turn with
-  any non-refused outcome is work and resets the count. The presentation layer
-  publishes the terminal verdict after the turn's outcomes and text, so the
-  transcript ends at the decision instead of appearing to execute work after it.
+  with visible text ends the run and offers that text to completion. Without
+  text, the runtime distinguishes the refusal source: if the refused calls named
+  capabilities the projection actually offered, the surface is still open and
+  the runtime closes it for one answer-only request instead of blocking. If the
+  surface was already closed, or the model kept calling tools the projection had
+  withheld, the run reports `agent.ErrTaskBlocked`. A turn with any non-refused
+  outcome is work and resets the count. The presentation layer publishes the
+  terminal verdict after the turn's outcomes and text, so the transcript ends at
+  the decision instead of appearing to execute work after it.
 - **Required external knowledge is real evidence.** An explicit external
   requirement declares an `external_observation` need, so local files cannot
   make the task answer-eligible. While it is the only missing requirement, the

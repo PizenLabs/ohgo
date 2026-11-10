@@ -136,7 +136,11 @@ request action = unknown
 A rejection is returned to the model as a structured tool error, and the loop
 allows one recovery request. The refusal itself is not a completion event: the
 model must see the reason before its accompanying narration can be judged as an
-answer.
+answer. If the recovery also proposes only refused actions and emits no answer,
+the loop closes the still-open action surface and makes one answer-only request
+instead of blocking. Nothing can execute, so the evidence already gathered is
+the only basis for the answer; completion still decides whether it is
+sufficient.
 
 A clause that asks about an operation grounds `read`, not the operation. The
 extractor works on the same clause model as the router: mutation, execution, and

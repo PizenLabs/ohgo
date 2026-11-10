@@ -22,6 +22,9 @@ type CandidateSet struct {
 	Excluded []agent.CandidateExclusion
 	// Notices are bounded summaries for the audit and the runtime state block.
 	Notices []string
+	// AnswerOnly reports that the runtime closed the action surface because no
+	// accepted proposal can make progress. The next output must be prose.
+	AnswerOnly bool
 }
 
 // informationalEvidenceBoundary reports whether an informational objective has

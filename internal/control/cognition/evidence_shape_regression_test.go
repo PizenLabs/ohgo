@@ -378,6 +378,42 @@ func TestInvestigationExecutionDoesNotCloseTheSurface(t *testing.T) {
 	}
 }
 
+// The loop sets ForceAnswer after repeated refusal-only turns. It must close a
+// surface the investigation shape would otherwise keep open, and the state
+// block must say that only an answer can make progress.
+func TestForceAnswerClosesAnOpenInvestigationSurface(t *testing.T) {
+	intent, shape := regressionShapeAs("investigate the bottleneck and evaluate", RepositoryFacts{}, "fuzz")
+	if intent.Kind != contract.ObjectiveInformational || !shape.Investigation {
+		t.Fatalf("shape = %s investigation=%v, want an investigation", intent.Kind, shape.Investigation)
+	}
+	projector := NewProjector(shape, NewEvidenceState(), RepositoryFacts{})
+	projected := projector.Project(agent.ProjectionRequest{
+		Messages: []agent.Message{agent.UserMessage{Text: shape.Objective}},
+		Turns: []agent.Turn{{Results: []agent.ToolOutcome{{
+			CallID: "log-1", ToolName: "bash", Args: map[string]any{"command": "git log --oneline -10"},
+			Result: agent.Result{Text: "abc123 commit", Executes: true, Finished: true},
+		}}}},
+		Tools: []agent.Tool{
+			testTool{name: "read", tier: agent.TierRead},
+			testTool{name: "bash", tier: agent.TierExec},
+		},
+		ForceAnswer: true,
+	})
+	if len(projected.Tools) != 0 {
+		t.Fatalf("offered tools = %v, want the forced-answer surface closed", toolNames(projected.Tools))
+	}
+	if !projected.Report.AnswerEligible {
+		t.Fatal("the forced-answer projection did not mark the answer boundary")
+	}
+	var state strings.Builder
+	for _, block := range projected.System {
+		state.WriteString(block.Text)
+	}
+	if !strings.Contains(state.String(), "no tool is available") {
+		t.Fatalf("state block does not tell the model to answer:\n%s", state.String())
+	}
+}
+
 // A mutation objective still needs an observed change and a successful check.
 func TestMutationObjectiveStillRequiresChangeAndVerification(t *testing.T) {
 	intent, shape := regressionShapeAs("Fix the failing tests.", RepositoryFacts{Go: true}, "build")

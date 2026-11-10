@@ -628,6 +628,11 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	tools := l.cfg.Tools
 
 	unproductiveTurns := 0
+	// forceAnswer closes the action surface for one request after the model
+	// has twice responded only with refused proposals. The run then ends with
+	// the model's answer instead of a hard block; completion still decides
+	// whether that answer is sufficient.
+	forceAnswer := false
 	stopReason := ""
 	turns = nil
 	for {
@@ -674,11 +679,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		refusals := map[string]string(nil)
 		if l.cfg.Project != nil {
 			projected := l.cfg.Project(ProjectionRequest{
-				Messages: copyMessages(live),
-				Turns:    append([]Turn(nil), turns...),
-				Turn:     len(turns),
-				Tools:    tools,
-				System:   requestSystem,
+				Messages:    copyMessages(live),
+				Turns:       append([]Turn(nil), turns...),
+				Turn:        len(turns),
+				Tools:       tools,
+				System:      requestSystem,
+				ForceAnswer: forceAnswer,
 			})
 			emptyProjection := false
 			if projected.Messages != nil {
@@ -725,6 +731,15 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				activeTools = []Tool{}
 			}
 			closed = answerEligible || terminal || len(activeTools) == 0
+			// ForceAnswer is loop policy, not a projector hint. Withdraw the
+			// surface even when the projector does not: the model already
+			// spent two turns on proposals the runtime refused, so another
+			// call can only be refused again. This runs before the audit
+			// fields are filled so the report matches the request.
+			if forceAnswer {
+				activeTools = []Tool{}
+				closed = true
+			}
 			if removed > 0 {
 				report.Reason = joinReason(report.Reason,
 					fmt.Sprintf("projection proposed %d tool(s) outside the loop's tool set; ignored", removed))
@@ -741,6 +756,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			if l.cfg.OnProjection != nil {
 				l.cfg.OnProjection(report)
 			}
+		} else if forceAnswer {
+			activeTools = []Tool{}
+			closed = true
 		}
 
 		converted, err := l.convert(requestMessages)
@@ -892,9 +910,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// of refusals cannot change the runtime's state, so it is unproductive
 		// regardless of how many other tools the projection still offered.
 		executed := 0
+		offeredRefusals := 0
 		for _, outcome := range outcomes {
 			if !outcome.Refused() {
 				executed++
+				continue
+			}
+			// A refused call to a tool this projection offered was withheld
+			// by policy (grounding, authority, approval) at execution time.
+			// A call to a tool the projection already withheld is the model
+			// ignoring the offered surface; forcing an answer there would
+			// reward the same mistake.
+			if _, offered := activeByName[outcome.ToolName]; offered {
+				offeredRefusals++
 			}
 		}
 		if executed > 0 {
@@ -919,10 +947,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		}
 		// The model received the refusal and still produced nothing actionable.
 		// If it also produced text, that text is the best answer available;
-		// completion decides whether it is sufficient. Without text the task is
-		// blocked, not completed.
+		// completion decides whether it is sufficient.
 		if strings.TrimSpace(assistant.Text()) != "" {
 			return turns, nil
+		}
+		// Nothing can execute, so a further tool turn cannot make progress.
+		// Close the action surface and ask for the answer instead of ending
+		// the run with a hard block; the answer remains a completion candidate.
+		// This applies only when an offered capability was refused: a model
+		// that keeps calling a withheld tool has already ignored the surface,
+		// and a model with no offered tools already had its answer-only turn.
+		if !forceAnswer && !closed && offeredRefusals > 0 {
+			forceAnswer = true
+			continue
 		}
 		reason := strings.TrimSpace(stopReason)
 		if reason == "" {

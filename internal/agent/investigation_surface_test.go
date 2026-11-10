@@ -2,6 +2,8 @@ package agent_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -50,6 +52,19 @@ func investigationCall(id, command string) ai.AssistantMessage {
 		}},
 		StopReason: ai.StopToolUse,
 	}
+}
+
+// capabilityShell reports the tier of the concrete command, like the real
+// BashTool: a redirect is a write even when the command only reads. This is
+// what makes grounding refuse a scratch probe while allowing `git log`.
+type capabilityShell struct{ investigationShell }
+
+func (capabilityShell) Capability(args map[string]any) agent.Tier {
+	command, _ := args["command"].(string)
+	if strings.Contains(command, ">") {
+		return agent.TierWrite
+	}
+	return agent.TierExec
 }
 
 // A FUZZ investigation must be able to run more than the first command. The
@@ -153,5 +168,109 @@ func TestInvestigationAnswerWithoutRequestVerbOrFileClaimCompletes(t *testing.T)
 	verdict := agent.EvaluateTaskCompletion(agent.CompletionInput{Turns: turns, Contract: intent})
 	if !verdict.Complete() {
 		t.Fatalf("investigation completion = %s (%s), want COMPLETED", verdict.State, verdict.Reason)
+	}
+}
+
+// refusedProbeRun is one scripted investigation whose last proposals may be
+// refused. toolCounts records the offered surface of every provider request.
+type refusedProbeRun struct {
+	turns      []agent.Turn
+	toolCounts []int
+	intent     contract.IntentContract
+	err        error
+}
+
+func runRefusedProbeScript(t *testing.T, script []ai.AssistantMessage) refusedProbeRun {
+	t.Helper()
+	const prompt = "investigate the bottleneck and evaluate in this project"
+	intent := workspace.BuildIntentContract(prompt)
+	facts := cognition.ProbeFacts(t.TempDir())
+	shape := cognition.BuildShape(intent, cognition.ShapeParams{Authority: "fuzz", Facts: facts})
+	projector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
+
+	var toolCounts []int
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p"},
+		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+			toolCounts = append(toolCounts, len(req.Tools))
+			index := len(toolCounts) - 1
+			if index >= len(script) {
+				t.Fatalf("provider request %d exceeded the script", index+1)
+			}
+			return ai.NewCompletedStream(script[index]), nil
+		},
+		Tools:     []agent.Tool{capabilityShell{}},
+		Project:   projector.Project,
+		Grounding: intent.Grounding,
+		Authorize: allowRead{},
+		MaxTurns:  8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns, runErr := loop.Run(context.Background(), []agent.Message{agent.UserMessage{Text: prompt}})
+	return refusedProbeRun{turns: turns, toolCounts: toolCounts, intent: intent, err: runErr}
+}
+
+// Two consecutive turns of refused probes must not end the run with a hard
+// block. Nothing the model proposes can execute, so the runtime closes the
+// action surface and asks for the answer from the evidence it already has.
+// The observed failure blocked with "the runtime refused every proposed action
+// and the model did not answer" after exactly this sequence.
+func TestInvestigationAnswersAfterRepeatedRefusedProbes(t *testing.T) {
+	answer := "Bottleneck: external Google Fonts, not the code. " +
+		"Measured 170.8 KB of woff2 files on a second origin. Not verified: " +
+		"paint timings were not observed. Workspace unchanged; no files were modified."
+	result := runRefusedProbeScript(t, []ai.AssistantMessage{
+		investigationCall("1", "git log --oneline -10"),
+		investigationCall("2", "cd /tmp && curl -s https://fonts.googleapis.com/css2?family=Inter > inter.css"),
+		investigationCall("3", "cd /tmp && curl -s https://fonts.googleapis.com/css2?family=Space+Grotesk > grotesk.css"),
+		{Content: []ai.ContentBlock{ai.TextContent{Text: answer}}, StopReason: ai.StopEndTurn},
+	})
+	if result.err != nil {
+		t.Fatalf("Run error = %v, want the refused probes to end in an answer", result.err)
+	}
+	if len(result.toolCounts) != 4 {
+		t.Fatalf("model requests = %d, want observation, two refusals, forced answer (4)", len(result.toolCounts))
+	}
+	if got := result.toolCounts[3]; got != 0 {
+		t.Fatalf("forced-answer request offered %d tools, want 0", got)
+	}
+	refused := 0
+	for _, turn := range result.turns {
+		for _, outcome := range turn.Results {
+			if outcome.Refused() {
+				refused++
+			}
+		}
+	}
+	if refused != 2 {
+		t.Fatalf("refused outcomes = %d, want both scratch writes refused", refused)
+	}
+	if verdict := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: result.turns, Contract: result.intent,
+	}); !verdict.Complete() {
+		t.Fatalf("investigation completion = %s (%s), want COMPLETED", verdict.State, verdict.Reason)
+	}
+}
+
+// The forced answer is one bounded request, not an unbounded recovery loop. A
+// model that ignores the closed surface emits one more refused call and the
+// run stops with a surfaced error.
+func TestRepeatedRefusedProbesStopAfterOneAnswerOnlyRequest(t *testing.T) {
+	result := runRefusedProbeScript(t, []ai.AssistantMessage{
+		investigationCall("1", "git log --oneline -10"),
+		investigationCall("2", "cd /tmp && curl -s https://fonts.googleapis.com/css2?family=Inter > a.css"),
+		investigationCall("3", "cd /tmp && curl -s https://fonts.googleapis.com/css2?family=Inter:ital > b.css"),
+		investigationCall("4", "cd /tmp && curl -s https://fonts.googleapis.com/css2?family=Inter:wght > c.css"),
+	})
+	if !errors.Is(result.err, agent.ErrTaskBlocked) {
+		t.Fatalf("Run error = %v, want ErrTaskBlocked", result.err)
+	}
+	if len(result.toolCounts) != 4 {
+		t.Fatalf("model requests = %d, want observation, two refusals, one answer-only request (4)", len(result.toolCounts))
+	}
+	if got := result.toolCounts[3]; got != 0 {
+		t.Fatalf("answer-only request offered %d tools, want 0", got)
 	}
 }
