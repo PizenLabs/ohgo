@@ -221,6 +221,82 @@ func TestProjectorDoesNotStopOnARefusedTurn(t *testing.T) {
 	}
 }
 
+// A resumed run has no live turns, but its evidence still carries the change
+// the previous run applied. Reconstructing the execution state from evidence
+// is what keeps the task in verification instead of treating it as unstarted.
+func TestExecutionFromEvidenceKeepsPriorChangePendingVerification(t *testing.T) {
+	shape := BuildShape(readContract("Write README.md."), ShapeParams{Authority: "build"})
+	evidence := NewEvidenceState()
+	evidence.ObserveOutcome(writeEvidence("write-1", "README.md"))
+
+	execution := ExecutionFromEvidence(evidence)
+	if !execution.Mutated || execution.VerifiedAfterMutation {
+		t.Fatalf("durable execution = %+v, want a change without verification", execution)
+	}
+	if suff := EvaluateSufficiency(shape, evidence, execution, false); suff.Stage != StageVerify {
+		t.Fatalf("stage = %s, want verify", suff.Stage)
+	}
+
+	evidence.ObserveOutcome(verifyEvidence("check-1"))
+	execution = ExecutionFromEvidence(evidence)
+	if !execution.VerifiedAfterMutation {
+		t.Fatalf("durable execution = %+v, want the check after the change", execution)
+	}
+	if suff := EvaluateSufficiency(shape, evidence, execution, false); suff.Stage != StageComplete {
+		t.Fatalf("stage = %s, want complete", suff.Stage)
+	}
+}
+
+// Four consecutive observations that do not advance a change waiting for its
+// check are a semantic stop, not a reason to spend the rest of the turn grant.
+// The run stops before the resource cap and reports the missing verification.
+func TestProjectorStopsAfterConsecutiveNoProgressInVerification(t *testing.T) {
+	shape := BuildShape(readContract("Write README.md."), ShapeParams{Authority: "build"})
+	evidence := NewEvidenceState()
+	evidence.ObserveOutcome(writeEvidence("write-1", "README.md"))
+	projector := NewProjector(shape, evidence, RepositoryFacts{Go: true})
+	tools := []agent.Tool{testTool{name: "read", tier: agent.TierRead}}
+
+	request := func(turns []agent.Turn) agent.ProjectionResult {
+		return projector.Project(agent.ProjectionRequest{
+			Messages: []agent.Message{agent.UserMessage{Text: shape.Objective}},
+			Turns:    turns,
+			Tools:    tools,
+			System:   []ai.SystemPromptBlock{{Text: "base"}},
+		})
+	}
+
+	var turns []agent.Turn
+	first := request(turns)
+	if first.Report.Stage != string(StageVerify) {
+		t.Fatalf("first projection stage = %s, want verify", first.Report.Stage)
+	}
+	if first.Report.Terminal || len(first.Tools) == 0 {
+		t.Fatalf("the first projection stopped before it could verify: terminal=%t tools=%d",
+			first.Report.Terminal, len(first.Tools))
+	}
+
+	var projected agent.ProjectionResult
+	for turn := 0; turn < MaxConsecutiveNoProgress; turn++ {
+		turns = append(turns, readTurn("read-"+itoa(turn), "README.md", "1\t# Project"))
+		projected = request(turns)
+	}
+	if !projected.Report.Terminal {
+		t.Fatalf("the run did not stop after %d no-progress turns: %+v",
+			MaxConsecutiveNoProgress, projected.Report)
+	}
+	if len(projected.Tools) != 0 {
+		t.Fatalf("the stalled projection still offered %d tool(s)", len(projected.Tools))
+	}
+	if !strings.Contains(projected.Report.StopReason, "no meaningful task progress") {
+		t.Fatalf("stop reason = %q, want the semantic no-progress reason", projected.Report.StopReason)
+	}
+	if projected.Report.Progress != "stalled" || projected.Report.NoProgressTurns < MaxConsecutiveNoProgress {
+		t.Fatalf("progress audit = %s/%d, want stalled/%d",
+			projected.Report.Progress, projected.Report.NoProgressTurns, MaxConsecutiveNoProgress)
+	}
+}
+
 // A change objective's next action is the change, not another observation. A
 // repeated read must not remove the tools that can perform it.
 func TestProjectorDoesNotStopAChangeObjective(t *testing.T) {

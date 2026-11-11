@@ -182,6 +182,35 @@ func TestControllerCompletionRequiresAllWorkDone(t *testing.T) {
 	}
 }
 
+// A finished todo list is a plan state, not objective evidence. Even when every
+// item is done, a mutation objective without an observed change and a later
+// check must stay unproven.
+func TestCompletedTodosDoNotProveAMutationObjective(t *testing.T) {
+	todos := []Todo{
+		{Label: "analyze the page", Status: TodoDone, Evidence: "observed"},
+		{Label: "apply the redesign", Status: TodoDone, Evidence: "observed"},
+	}
+	controller := NewController(NewStore(t.TempDir()), func() []Todo { return todos })
+	intent := contract.IntentContract{
+		Objective: "redesign it",
+		Kind:      contract.ObjectiveMutation,
+	}
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	current, err := controller.CompleteWithEvidence(CompletionEvidence{
+		Complete: true,
+		Answered: true,
+	})
+	if !errors.Is(err, ErrUnprovenCompletion) {
+		t.Fatalf("completion error = %v, want ErrUnprovenCompletion", err)
+	}
+	if current.Proven() || current.Status.IsTerminal() {
+		t.Fatalf("completed todos proved the objective: status=%s objective=%s",
+			current.Status, current.ObjectiveState())
+	}
+}
+
 // A turn that ends without completion evidence is reviewable, not complete.
 // The state is non-terminal so the next turn can resume the same task and
 // supply the missing verification.
@@ -286,6 +315,107 @@ func TestControllerCheckpointRecordsLastAction(t *testing.T) {
 	}
 }
 
+// A continuation after a mutation must carry the checkpoint the next turn
+// needs: the change is already applied, verification is still owed, and the
+// directive says to resume there instead of re-planning from the objective.
+// Once the check is recorded, the same resume must not keep claiming that
+// verification is pending.
+func TestControllerResumeDirectiveCarriesPendingVerification(t *testing.T) {
+	controller := NewController(NewStore(t.TempDir()), nil)
+	intent := workspace.BuildIntentContract("Fix README.md and run go test ./...")
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	controller.ObserveTurns([]agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "write-1", ToolName: "write", Args: map[string]any{"path": "README.md"},
+		Result: agent.Result{Text: "wrote", Mutates: true, Details: map[string]any{
+			"path": "README.md", "bytes": 10, "diff": "changed",
+		}},
+	}}}})
+	if _, err := controller.NeedsReview("the repository change was not followed by a successful verification"); err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("resume Begin: %v", err)
+	}
+	briefing := strings.Join(controller.Context(), "\n")
+	for _, want := range []string{
+		"Resume directive:",
+		"Last observed change: changed README.md",
+		"Verification: pending",
+		"Resume from post-change verification",
+		"Outstanding evidence boundary:",
+	} {
+		if !strings.Contains(briefing, want) {
+			t.Errorf("resume briefing is missing %q:\n%s", want, briefing)
+		}
+	}
+
+	controller.ObserveTurns([]agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "check-1", ToolName: "bash", Args: map[string]any{"command": "go test ./..."},
+		Result: agent.Result{
+			Text: "ok", Executes: true, Finished: true, Verifies: true,
+			Verification: &agent.VerificationEvidence{
+				Check:  contract.CheckTest,
+				Scopes: []agent.VerificationScope{{All: true}},
+			},
+		},
+	}}}})
+	if _, err := controller.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	briefing = strings.Join(controller.Context(), "\n")
+	if strings.Contains(briefing, "Verification: pending") {
+		t.Fatalf("a recorded check still reported pending verification:\n%s", briefing)
+	}
+	if !strings.Contains(briefing, "Verification: already recorded") {
+		t.Fatalf("the resume directive did not report the recorded check:\n%s", briefing)
+	}
+}
+
+// Cancellation is the other interruption path. A paused task with an applied
+// change must still carry the verification checkpoint into the next turn; the
+// pause reason is not the last meaningful action.
+func TestControllerResumeDirectiveAfterInterruptedChange(t *testing.T) {
+	controller := NewController(NewStore(t.TempDir()), nil)
+	intent := workspace.BuildIntentContract("Fix README.md and run go test ./...")
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	controller.ObserveTurns([]agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "write-1", ToolName: "write", Args: map[string]any{"path": "README.md"},
+		Result: agent.Result{Text: "wrote", Mutates: true, Details: map[string]any{
+			"path": "README.md", "bytes": 10, "diff": "changed",
+		}},
+	}}}})
+	paused, err := controller.Pause("interrupted")
+	if err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	// /task resume attaches the task directly, before any new objective. The
+	// explicit resume must reach the same context and be consumed by exactly
+	// the next Begin.
+	if _, err := controller.ResumeTask(paused.ID); err != nil {
+		t.Fatalf("ResumeTask: %v", err)
+	}
+	if briefing := strings.Join(controller.Context(), "\n"); !strings.Contains(briefing, "Verification: pending") {
+		t.Fatalf("/task resume lost the pending verification:\n%s", briefing)
+	}
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("resume Begin: %v", err)
+	}
+	briefing := strings.Join(controller.Context(), "\n")
+	for _, want := range []string{
+		"Last observed change: changed README.md",
+		"Verification: pending",
+		"Resume from post-change verification",
+	} {
+		if !strings.Contains(briefing, want) {
+			t.Errorf("interrupted resume is missing %q:\n%s", want, briefing)
+		}
+	}
+}
+
 // Re-syncing the todo owner must keep ids stable by label, or the checkpoint's
 // todo references churn on every boundary.
 func TestControllerSyncKeepsTodoIDsByLabel(t *testing.T) {
@@ -300,6 +430,102 @@ func TestControllerSyncKeepsTodoIDsByLabel(t *testing.T) {
 	}
 	if got := controller.task.Todos[0].ID; got != first {
 		t.Fatalf("todo id churned across sync: %q -> %q", first, got)
+	}
+}
+
+// A new objective starts a new plan. The session todo list is not task state,
+// so without a boundary reset the previous task's finished items would appear
+// as the new task's progress and be imported into its checkpoint.
+func TestNewTaskDoesNotInheritThePreviousTodoPlan(t *testing.T) {
+	todos := []Todo{}
+	resets := 0
+	controller := NewController(NewStore(t.TempDir()), func() []Todo { return todos })
+	controller.SetTodoResetter(func() {
+		resets++
+		todos = nil
+	})
+	first, err := controller.Begin(testIntent("design the page"), nil)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	todos = []Todo{
+		{Label: "analyze the page", Status: TodoDone},
+		{Label: "design the layout", Status: TodoDone},
+	}
+	synced, err := controller.Sync()
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(synced.Todos) != 2 {
+		t.Fatalf("setup todos = %+v, want the two completed design items", synced.Todos)
+	}
+	if _, _, err := controller.Detach(); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	next, err := controller.Begin(contract.IntentContract{
+		Objective: "redesign it",
+		Kind:      contract.ObjectiveMutation,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Begin new objective: %v", err)
+	}
+	if next.ID == first.ID {
+		t.Fatal("the new objective reused the detached task")
+	}
+	if len(next.Todos) != 0 {
+		t.Fatalf("new task inherited the previous plan: %+v", next.Todos)
+	}
+	if resets != 1 {
+		t.Fatalf("plan resets = %d, want one at the replacement boundary", resets)
+	}
+}
+
+// Resuming a different task must also clear the session plan that belonged to
+// the task being left behind; the resumed task keeps its own checkpoint
+// snapshot.
+func TestResumeTaskClearsThePreviousSessionPlan(t *testing.T) {
+	todos := []Todo{}
+	resets := 0
+	controller := NewController(NewStore(t.TempDir()), func() []Todo { return todos })
+	controller.SetTodoResetter(func() {
+		resets++
+		todos = nil
+	})
+	design, err := controller.Begin(testIntent("design the page"), nil)
+	if err != nil {
+		t.Fatalf("Begin design: %v", err)
+	}
+	todos = []Todo{{Label: "design the layout", Status: TodoDone}}
+	if _, err := controller.Sync(); err != nil {
+		t.Fatalf("Sync design: %v", err)
+	}
+	if _, _, err := controller.Detach(); err != nil {
+		t.Fatalf("Detach design: %v", err)
+	}
+	if _, err := controller.Begin(contract.IntentContract{
+		Objective: "redesign it",
+		Kind:      contract.ObjectiveMutation,
+	}, nil); err != nil {
+		t.Fatalf("Begin redesign: %v", err)
+	}
+	todos = []Todo{{Label: "apply the redesign", Status: TodoActive}}
+	if _, err := controller.Sync(); err != nil {
+		t.Fatalf("Sync redesign: %v", err)
+	}
+
+	resumed, err := controller.ResumeTask(design.ID)
+	if err != nil {
+		t.Fatalf("ResumeTask: %v", err)
+	}
+	if resumed.ID != design.ID {
+		t.Fatalf("resumed task = %q, want %q", resumed.ID, design.ID)
+	}
+	if len(todos) != 0 {
+		t.Fatalf("resume kept the previous task's session plan: %+v", todos)
+	}
+	if resets != 2 {
+		t.Fatalf("plan resets = %d, want the new-task and resume boundaries", resets)
 	}
 }
 

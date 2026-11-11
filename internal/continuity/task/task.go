@@ -151,6 +151,12 @@ type Task struct {
 	Findings []string `json:"findings,omitempty"`
 	// NextAction is what should happen next, for orientation after a resume.
 	NextAction string `json:"nextAction,omitempty"`
+	// ResumeDirective is a derived, runtime-only orientation directive assembled from
+	// the durable evidence at a turn boundary. It is never persisted and never
+	// authority: it tells the model where the interrupted execution stopped,
+	// so a continuation resumes that work instead of re-planning from the
+	// objective. The evidence state remains the owner of the facts it names.
+	ResumeDirective string `json:"-"`
 	// Status is the lifecycle position.
 	Status Status `json:"status"`
 	// Context is the structured, role-independent task knowledge plus each

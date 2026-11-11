@@ -747,6 +747,9 @@ func constraintVocabulary(objective string) []string {
 	}
 	add("no_mutation", "do not modify anything", "do not change anything",
 		"read only", "without modifying", "without changing")
+	if contract.NoMutationRequested(objective) {
+		out = append(out, "no_mutation")
+	}
 	add("unrelated_mutation_forbidden", "do not modify any other file", "do not change any other file", "no other file")
 	add("no_creation", "do not create it", "do not create the file", "do not create any file",
 		"do not create files", "do not create new files")

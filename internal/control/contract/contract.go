@@ -1,9 +1,11 @@
 // Package contract defines the bounded completion contract a user request
-// implies.
+// implies, together with the small explicit vocabulary that names its limits.
 //
-// The package is data only. It never parses, executes, authorizes, or decides
-// completion; workspace builds the contract from user text, and agent consumes
-// it as evidence about what would make a completion claim truthful.
+// The package is data and vocabulary only. It never executes, authorizes, or
+// decides completion; workspace builds the contract from user text, and agent
+// consumes it as evidence about what would make a completion claim truthful.
+// A constraint recognizer preserves the user's own words; it never decides
+// whether an action is permitted.
 package contract
 
 // ObjectiveKind is the completion contract a request implies.

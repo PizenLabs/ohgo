@@ -30,11 +30,28 @@ type Source func() []Todo
 type Controller struct {
 	store  *Store
 	source Source
-	now    func() time.Time
+	// resetSource clears the session-scoped planning state the source reads.
+	// The task package does not own that state; it invokes the owner exactly at
+	// a new-task boundary so an unrelated objective cannot inherit the previous
+	// task's todo list. Nil means the host has no plan owner to reset.
+	resetSource func()
+	// planStale records that a task was detached and the session plan now
+	// belongs to that archived task. The next new task clears it before the
+	// plan can be read or snapshotted; a first task, a resume, or a restored
+	// checkpoint leaves it false so a legitimate current plan is preserved.
+	planStale bool
+	now       func() time.Time
 
 	task       Task
 	lastAction string
 	restored   bool
+	// resuming reports that the current turn attached to a task that was
+	// paused, pending, waiting for review, or explicitly resumed. It is
+	// runtime-only orientation for the context projection; it never changes
+	// status or authority. resumePending is consumed by the next Begin, so an
+	// explicit /task resume reaches exactly one turn.
+	resuming      bool
+	resumePending bool
 	// recovery is the classification of the last load. It is derived and
 	// never persisted: it tells the user what the recovery actually restored.
 	recovery RecoveryReport
@@ -88,6 +105,17 @@ func NewController(store *Store, source Source) *Controller {
 // authority and a nil source keeps the pre-Phase-1 BUILD default.
 func (c *Controller) SetRoleSource(source func() workspace.Workspace) {
 	c.roleSource = source
+}
+
+// SetTodoResetter installs the callback that clears the runtime's
+// session-scoped todo list when a new task starts.
+//
+// The todo tool remains the single owner of todo mutation. The controller only
+// invokes the boundary reset: a session list can outlive a turn, but it must
+// not become the next objective's plan or be imported into its checkpoint. A
+// resumed task keeps its durable snapshot and is not reset.
+func (c *Controller) SetTodoResetter(reset func()) {
+	c.resetSource = reset
 }
 
 // CurrentRole returns the role currently used for context assembly.
@@ -312,8 +340,14 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 		}
 	}
 
+	resumeRequested := c.resumePending
+	c.resumePending = false
+	c.resuming = false
 	switch {
 	case c.task.ID != "" && !c.task.Status.IsTerminal():
+		c.planStale = false
+		c.resuming = resumeRequested ||
+			c.task.Status == StatusPaused || c.task.Status == StatusPending || c.task.Status == StatusNeedsReview
 		if c.task.Contract == nil {
 			return Task{}, fmt.Errorf("%w: %q has no persisted completion contract; cancel or replace it explicitly",
 				ErrObjectiveConflict, c.task.Objective)
@@ -334,6 +368,14 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 		}
 		c.task.UpdatedAt = now
 	default:
+		// A new objective starts a new plan, but only when the plan belongs to
+		// a predecessor. A first task, a resume, or a restored checkpoint keeps
+		// the plan it already owns; a detached or replaced task leaves its plan
+		// behind, and it must not become this task's progress.
+		if c.resetSource != nil && (hadTask || c.planStale) {
+			c.resetSource()
+		}
+		c.planStale = false
 		created, err := New(objective)
 		if err != nil {
 			return Task{}, err
@@ -372,7 +414,15 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 		}
 	}
 	c.syncTodos()
-	c.lastAction = "started: " + describeObjective(c.task.Objective)
+	// A resume must not overwrite the last meaningful action with a generic
+	// "started" line: the interruption reason or the last observed progress is
+	// the checkpoint the continuation is orienting from. A genuinely new task
+	// or a role-change turn starts a new action.
+	if c.resuming {
+		c.lastAction = firstNonEmpty(c.lastAction, "resumed: "+describeObjective(c.task.Objective))
+	} else {
+		c.lastAction = "started: " + describeObjective(c.task.Objective)
+	}
 	// The timeline records meaningful attachment boundaries, not every turn of
 	// a running task. A new identity, or work continuing from an interruption,
 	// is worth explaining later; an ordinary continuation is already covered by
@@ -591,7 +641,102 @@ func (c *Controller) Context() []string {
 	if c.task.ID == "" {
 		return nil
 	}
-	return ContextFor(c.task, c.currentRole(), c.lastAction)
+	task := c.task.Clone()
+	task.ResumeDirective = c.resumeDirective()
+	return ContextFor(task, c.currentRole(), c.lastAction)
+}
+
+// resumeDirective assembles the bounded orientation a continuation needs: what
+// the interrupted execution had already done, whether it owes a verification,
+// and the explicit instruction not to re-plan from the objective.
+//
+// It is derived from durable evidence, never from model prose. A change with no
+// following check is the strongest case: the task already knows where it
+// stopped, so the next turn must verify that change instead of rediscovering
+// the repository. When no such change exists, a paused or reviewable task still
+// gets the bounded "continue from the checkpoint" orientation.
+func (c *Controller) resumeDirective() string {
+	if c.task.ID == "" || c.task.Status.IsTerminal() {
+		return ""
+	}
+	resuming := c.resuming || c.resumePending ||
+		c.task.Status == StatusPaused || c.task.Status == StatusNeedsReview
+	summary, pending, hasChange := c.pendingVerification()
+	review := strings.TrimSpace(c.task.ReviewReason)
+	if !resuming && !hasChange && review == "" {
+		return ""
+	}
+	var parts []string
+	parts = append(parts, "Continue this task from the recorded checkpoint. Do not re-plan from the objective, and do not repeat completed discovery unless current evidence is insufficient.")
+	if hasChange {
+		parts = append(parts, "Last observed change: "+summary+".")
+		if pending {
+			parts = append(parts, "Verification: pending. Resume from post-change verification: run the check the contract requires before changing anything else, and do not repeat the change.")
+		} else {
+			parts = append(parts, "Verification: already recorded after the last change.")
+		}
+	}
+	if review != "" && pending {
+		// The durable review remains actionable only while the change it
+		// refers to is still unverified. A resolved or change-free review is
+		// history, not current orientation.
+		parts = append(parts, "Outstanding evidence boundary: "+review)
+	}
+	return boundText(strings.Join(parts, " "), contextFieldCap)
+}
+
+// pendingVerification reports the newest durable change and whether a usable
+// check followed it.
+//
+// The task-linked evidence is authoritative when it has been projected. The
+// cognition state is the fallback for a checkpoint that stopped before that
+// projection ran; it is the same observation store, read directly rather than
+// duplicated.
+func (c *Controller) pendingVerification() (summary string, pending, found bool) {
+	if change, ok := c.latestChangeRecord(); ok {
+		verified := len(c.verificationsAfterChange(change)) > 0
+		summary = strings.TrimSpace(change.Summary)
+		if summary == "" {
+			summary = "a repository change"
+		}
+		return summary, !verified, true
+	}
+	// The task-linked projection is the validity authority. When it exists but
+	// names no current change, a raw cognition item may be invalidated or
+	// superseded; resurrecting it as a resume obligation would be false. The
+	// raw state is only a fallback for a checkpoint that stopped before any
+	// projection ran.
+	if c.evidence == nil || len(c.task.Context.Evidence) > 0 {
+		return "", false, false
+	}
+	best := cognition.EvidenceItem{}
+	bestSeq := -1
+	for _, item := range c.evidence.Items {
+		if item.Status != cognition.StatusKnown || !strings.HasPrefix(item.ID, "mutation:") {
+			continue
+		}
+		if item.Seq > bestSeq {
+			best, bestSeq = item, item.Seq
+		}
+	}
+	if bestSeq < 0 {
+		return "", false, false
+	}
+	verified := false
+	for _, item := range c.evidence.Items {
+		if item.Seq < bestSeq || item.Status != cognition.StatusKnown {
+			continue
+		}
+		if item.Source.Check != "" || strings.HasPrefix(item.ID, "verification:") {
+			verified = true
+			break
+		}
+	}
+	summary = strings.TrimSpace(best.Summary)
+	if summary == "" {
+		summary = "a repository change"
+	}
+	return summary, !verified, true
 }
 
 // ensureLoaded loads the checkpoint once.
@@ -856,6 +1001,7 @@ func (c *Controller) Detach() (Task, bool, error) {
 		}
 		c.task = Task{}
 		c.roleKnown = false
+		c.planStale = true
 		c.evidence = cognition.NewEvidenceState()
 		c.auditMu.Lock()
 		c.audit = ""
@@ -905,6 +1051,7 @@ func (c *Controller) Detach() (Task, bool, error) {
 	archived := c.task.Clone()
 	c.task = Task{}
 	c.roleKnown = false
+	c.planStale = true
 	c.evidence = cognition.NewEvidenceState()
 	c.auditMu.Lock()
 	c.audit = ""
@@ -1004,7 +1151,14 @@ func (c *Controller) ResumeTask(id string) (Task, error) {
 		}
 	}
 	wasLive := c.task.ID == target.ID
+	if !wasLive && c.resetSource != nil {
+		// The session plan belongs to the task being left behind. Clear it so
+		// the resumed task cannot read the previous task's items as its own;
+		// the resumed task keeps its durable snapshot in the checkpoint.
+		c.resetSource()
+	}
 	c.task = target
+	c.planStale = false
 	// Attribute the resumed task's projection to the role it last ran under,
 	// not to whatever role the previously active task used.
 	if last := target.LastRole(); last.Valid() {
@@ -1037,6 +1191,7 @@ func (c *Controller) ResumeTask(id string) (Task, error) {
 		c.lastAction = progress.LastAction
 	}
 	now := c.now().UTC()
+	c.resumePending = true
 	switch c.task.Status {
 	case StatusPaused, StatusPending, StatusNeedsReview:
 		if err := c.task.Start(now); err != nil {

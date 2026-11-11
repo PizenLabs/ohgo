@@ -285,7 +285,9 @@ func changeVerb(verb string, kind TargetKind) (ChangeOp, bool) {
 	case "delete", "remove", "drop", "unlink":
 		return ChangeDelete, true
 	case "update", "modify", "change", "edit", "fix", "refactor", "rewrite",
-		"replace", "rename", "format", "tidy", "clean", "organize", "organise":
+		"replace", "rename", "format", "tidy", "clean", "organize", "organise",
+		"redesign", "rework", "revamp", "restyle", "redo", "overhaul",
+		"modernize", "modernise", "redraw", "reimplement", "rearchitect":
 		return ChangeModify, true
 	case "add", "introduce", "write", "generate", "implement", "ensure":
 		if kind == TargetSymbol {

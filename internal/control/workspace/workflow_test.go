@@ -86,6 +86,7 @@ func TestIsTaskFollowUpIsAboutTheOpenResult(t *testing.T) {
 	yes := []string{
 		"fix it", "implement the fix", "implement the fix and verify it",
 		"reproduce it", "verify the fix", "apply the fix",
+		"redesign it", "rework it", "revamp it", "restyle it",
 	}
 	for _, text := range yes {
 		if !IsTaskFollowUp(text) {
@@ -110,4 +111,17 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A contracted whole-change prohibition is the user's own constraint. The
+// completion contract must preserve it even when the sentence opens with a
+// discourse word and the read request follows a full stop.
+func TestBuildIntentContractRecognizesAContractedNoMutationLimit(t *testing.T) {
+	readOnly := BuildIntentContract("Actually don't change anything. Explain the current architecture.")
+	if readOnly.Kind != ObjectiveInformational {
+		t.Fatalf("kind = %s, want informational", readOnly.Kind)
+	}
+	if readOnly.Grounding == nil || !containsString(readOnly.Grounding.Constraints, "no_mutation") {
+		t.Fatal("a contracted no-mutation limit was dropped from the contract")
+	}
 }

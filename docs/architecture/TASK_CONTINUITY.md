@@ -34,6 +34,7 @@ workspace, completes a task, or promotes model output into verified fact.
 | Task progression timeline | `task.Task.Timeline` | `progress.json` (`timeline`) | `task.ContextFor`, `/task timeline` |
 | Completion proof | `task.Task.Completion` | `progress.json` (`completion`) | `task.ObjectiveState`, `/task status` |
 | Recovery classification | `task.Store.Load` | never (derived) | task block, `/task status` |
+| Continuation checkpoint | durable evidence + task contract | never (derived) | context resume directive |
 | Transition policy | `workspace.DecideTransition` | never (derived) | TUI decision card |
 | Detached tasks | `task.Store` archive | `.ohgo/tasks/<id>.json` | `/task list`, `/task history`, `/task show`, `/task resume` |
 | Completion verdict | `agent.Evaluate*Completion` | `task.Status` + proof | TUI verdict |
@@ -60,6 +61,19 @@ task. A terminal task is archived through
 the same detach path before the new objective starts, so its objective,
 evidence, proof, and timeline remain inspectable through `/task history` rather
 than being overwritten by the replacement checkpoint.
+
+An implementation delta belongs to the objective already in progress. When the
+open contract is a mutation objective under BUILD and the next prompt carries no
+capability signal of its own ("use green and black", "make it green", "make the
+buttons bigger"), the task layer attaches the turn to the same contract and
+projection shape. The delta cannot relax the verification requirement, and it
+never grants BUILD to a task that is reading or investigating. An explicit
+mutation prompt is a new mutation objective: it keeps BUILD and the write
+surface, but does not inherit the open contract. A read question, an
+investigation request, or an explicit whole-repository no-mutation limit also
+remains a new objective and is routed by the ordinary authority policy. This
+keeps a change and the check that follows it in one trajectory instead of
+rebuilding an informational contract from the refinement's surface wording.
 
 **One writer:** `task.Store` writes the live checkpoint and the archive. The
 controller derives the checkpoint's context copy from the in-memory task, so a
@@ -199,6 +213,14 @@ todo labels as its plan. A todo is a model proposal, so it is plan context, neve
 a fact. Semantic reasoning, strategy, and hypotheses still require a host write;
 they are not inferred from model prose.
 
+A new task starts with an empty session plan. The todo tool is a session-scoped
+owner, so the controller asks it to clear at the new-task boundary before the
+new checkpoint can snapshot it; the previous task keeps its own todo snapshot in
+its archive. Resuming a different task clears the plan that belonged to the
+task being left behind; the resumed task keeps its own checkpoint snapshot. This
+keeps a finished plan from being read as, or imported into, the next objective's
+progress.
+
 **A role context is not authority.** A BUILD plan or mutation scope in the
 record does not permit a write; a FUZZ strategy does not grant execution; an ASK
 fact does not grant a read. The workspace gate and the security gate remain the
@@ -214,16 +236,18 @@ authoritative task state, role, and last action. It assembles, in priority
 order:
 
 1. objective and lifecycle status;
-2. a continuity warning when context is missing, repaired, or unavailable;
-3. the active authority label;
-4. the current handoff (roles, disposition, carried counts) when one exists;
-5. constraints, todos, current step, next action, and last action;
-6. active verified facts (with evidence references and disputes);
-7. hypotheses and dispositions;
-8. open questions;
-9. the active role's execution context;
-10. current evidence references;
-11. legacy unclassified notes, explicitly labelled as unverified.
+2. a resume directive derived from durable evidence when the turn continues a
+   paused, reviewable, or already-changed task;
+3. a continuity warning when context is missing, repaired, or unavailable;
+4. the active authority label;
+5. the current handoff (roles, disposition, carried counts) when one exists;
+6. constraints, todos, current step, next action, and last action;
+7. active verified facts (with evidence references and disputes);
+8. hypotheses and dispositions;
+9. open questions;
+10. the active role's execution context;
+11. current evidence references;
+12. legacy unclassified notes, explicitly labelled as unverified.
 
 Bounds are fixed: 6000 characters and 1500 estimated tokens, reusing
 `internal/tokens`. Selection is by relevance under the budget, not by a fixed
@@ -234,6 +258,15 @@ invalid and superseded records cannot displace the records that still apply.
 The active role's section has a reserved share, so a full shared-knowledge
 briefing cannot push it out. A section that exceeds the budget reports the
 number of omitted items instead of pretending to be complete.
+
+The resume directive is derived at the turn boundary, not persisted as a second
+copy. It names the newest durable change and whether a usable check followed
+it. When the change is still unverified, the directive tells the continuation
+to resume at post-change verification and not to repeat the change or completed
+discovery. A review reason is included only while the change it describes is
+still unverified; a resolved review is history, not current orientation. The
+same directive is why a continuation cannot silently become a fresh planning
+cycle merely because the model starts a new run.
 
 Role context never includes another role's plan, scope, strategy, or notes.
 
@@ -701,7 +734,9 @@ Specific rules:
   contract; a read-only resume or an unrelated check still cannot complete;
 - the proof's `Verified` list contains only checks that followed the last
   change, not every current check;
-- open todo work refuses completion and leaves the task active;
+- open todo work refuses completion and leaves the task active; a fully
+  completed todo list is not evidence for a mutation or execution objective,
+  because the todo tool records a model plan and not an observed result;
 - a non-complete evaluation is refused;
 - a task must be `RUNNING`: `PAUSED` and `NEEDS_REVIEW` resume through `Begin`
   first, so the boundary that reconciles the live workspace is not skipped.

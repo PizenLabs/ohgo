@@ -47,6 +47,54 @@ func TestTodoSnapshotProjectsStatusAndClaim(t *testing.T) {
 	}
 }
 
+// The session todo tool and the task controller share one boundary: a new
+// objective clears the in-process plan and does not import it, while the
+// detached task keeps its own archived snapshot.
+func TestNewTaskBoundaryResetsTheSessionTodoTool(t *testing.T) {
+	tool := tools.NewTodoTool()
+	ctx := agent.Context{Ctx: context.Background()}
+	if result := tool.Execute(ctx, map[string]any{
+		"op": "init", "phase": "design", "tasks": []any{"analyze", "layout"},
+	}); result.IsError {
+		t.Fatalf("init: %s", result.Text)
+	}
+	controller := task.NewController(task.NewStore(t.TempDir()), todoSource([]agent.Tool{tool}))
+	controller.SetTodoResetter(todoResetter([]agent.Tool{tool}))
+	first, err := controller.Begin(contract.IntentContract{
+		Objective: "design the page",
+		Kind:      contract.ObjectiveInformational,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Begin design: %v", err)
+	}
+	synced, err := controller.Sync()
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(synced.Todos) != 2 {
+		t.Fatalf("design task todos = %+v, want the two plan items", synced.Todos)
+	}
+	if _, _, err := controller.Detach(); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+	next, err := controller.Begin(contract.IntentContract{
+		Objective: "redesign it",
+		Kind:      contract.ObjectiveMutation,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Begin redesign: %v", err)
+	}
+	if next.ID == first.ID {
+		t.Fatal("the redesign reused the detached design task")
+	}
+	if len(next.Todos) != 0 {
+		t.Fatalf("redesign task imported the design plan: %+v", next.Todos)
+	}
+	if list := tool.Snapshot(); len(list.Phases) != 0 {
+		t.Fatalf("session plan survived the new-task boundary: %+v", list)
+	}
+}
+
 // The projection converts the domain vocabulary into the TUI's, dropping
 // nothing the renderer needs.
 func TestTaskProjectionConvertsDomain(t *testing.T) {

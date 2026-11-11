@@ -266,6 +266,19 @@ func NewTodoTool() *TodoTool {
 // concurrent calls must not interleave.
 func (t *TodoTool) Exclusive(map[string]any) bool { return true }
 
+// Reset clears the session plan.
+//
+// The todo tool is session-scoped, so its list survives a turn. It must not
+// survive an unrelated objective: without a reset the next task would read the
+// previous task's completed items as its own progress and could import them
+// into its durable checkpoint. The detached task keeps its own snapshot; this
+// only clears the in-process planning list at a new-task boundary.
+func (t *TodoTool) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.list = TodoList{}
+}
+
 // Snapshot returns a deep copy of the current list.
 //
 // It is the read seam for a projection (the task continuity layer records a

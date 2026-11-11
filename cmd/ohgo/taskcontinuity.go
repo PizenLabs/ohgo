@@ -32,6 +32,9 @@ import (
 // the objective and lifecycle are recorded even when no todo list exists.
 func installTaskContinuity(program *tui.Program, root string, toolSet []agent.Tool, role func() workspace.Workspace, holders ...*budget.Holder) *task.Controller {
 	controller := task.NewController(task.NewStore(root), todoSource(toolSet))
+	if reset := todoResetter(toolSet); reset != nil {
+		controller.SetTodoResetter(reset)
+	}
 	controller.SetRoleSource(role)
 	// The artifact tool runs on the loop goroutine and the task layer has one
 	// writer at a turn boundary. Buffer its records during the run and project
@@ -541,14 +544,34 @@ func structuralResolver(toolSet []agent.Tool) agent.StructuralResolver {
 // a durable snapshot rather than introducing a second writer. No todo tool
 // means no snapshot, which the controller handles.
 func todoSource(toolSet []agent.Tool) task.Source {
+	todo := todoOwner(toolSet)
+	if todo == nil {
+		return nil
+	}
+	return func() []task.Todo { return todoSnapshot(todo) }
+}
+
+// todoOwner finds the session's single todo tool.
+func todoOwner(toolSet []agent.Tool) *tools.TodoTool {
 	for _, tool := range toolSet {
-		todo, ok := tool.(*tools.TodoTool)
-		if !ok {
-			continue
+		if todo, ok := tool.(*tools.TodoTool); ok {
+			return todo
 		}
-		return func() []task.Todo { return todoSnapshot(todo) }
 	}
 	return nil
+}
+
+// todoResetter returns the new-task boundary reset for the session plan.
+//
+// The controller invokes it only when it creates a new task. A resumed task
+// keeps its durable todo snapshot, and the previous task already archived its
+// own list before the reset runs.
+func todoResetter(toolSet []agent.Tool) func() {
+	todo := todoOwner(toolSet)
+	if todo == nil {
+		return nil
+	}
+	return todo.Reset
 }
 
 // todoSnapshot projects the tool list into the task's todo vocabulary.

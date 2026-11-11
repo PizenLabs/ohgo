@@ -114,6 +114,63 @@ func TestClassifyCoversMutationVocabulary(t *testing.T) {
 	}
 }
 
+// A rework request is a repository change, not an ambiguous read. The verb
+// family names the requested effect on an existing object; treating it as the
+// READ fallback let "redesign it" answer a design follow-up with another plan
+// and prove an informational contract the user never asked for.
+func TestClassifyTreatsReworkAsRepositoryChange(t *testing.T) {
+	for _, text := range []string{
+		"redesign it",
+		"Redesign the portfolio site.",
+		"I want to redesign the site.",
+		"we should revamp it",
+		"let's restyle the header",
+		"rework the layout",
+		"revamp the landing page",
+		"restyle the header",
+		"overhaul the settings screen",
+		"modernize the navigation",
+		"reimplement the parser",
+	} {
+		if got := Classify(text); got != IntentExecute {
+			t.Errorf("Classify(%q) = %s, want %s", text, got, IntentExecute)
+		}
+		if !RequestsMutation(text) {
+			t.Errorf("RequestsMutation(%q) = false, want a repository change", text)
+		}
+		if c := BuildIntentContract(text); c.Kind != ObjectiveMutation {
+			t.Errorf("BuildIntentContract(%q).Kind = %s, want mutation", text, c.Kind)
+		} else if c.Grounding == nil || c.Grounding.Action != contract.GroundingMutate {
+			t.Errorf("BuildIntentContract(%q) grounding = %+v, want a grounded mutation", text, c.Grounding)
+		}
+		requirement := AnalyzeRequest(text)
+		if requirement.Capability != CapabilityMutate || requirement.Strength != StrengthStrong {
+			t.Errorf("AnalyzeRequest(%q) = %+v, want a strong mutation requirement", text, requirement)
+		}
+		route := RouteTurn(Ask, text)
+		if route.Allowed() || route.Required != Build {
+			t.Errorf("ASK route for %q = %+v, want BUILD required", text, route)
+		}
+	}
+}
+
+// A question about a rework stays informational; only the imperative requests
+// the change.
+func TestClassifyKeepsReworkQuestionsInformational(t *testing.T) {
+	for _, text := range []string{
+		"Should the site be redesigned?",
+		"How would you redesign this page?",
+		"Why was the layout reworked?",
+	} {
+		if got := Classify(text); got != IntentRead {
+			t.Errorf("Classify(%q) = %s, want READ", text, got)
+		}
+		if RequestsMutation(text) {
+			t.Errorf("RequestsMutation(%q) = true, want no change request", text)
+		}
+	}
+}
+
 // A mutation clause after a read opener is still the objective, including when
 // the clause's mutation signal is a phrase rather than a leading verb.
 func TestClassifyPreservesCompoundMutationVocabulary(t *testing.T) {
@@ -563,5 +620,27 @@ func TestIntentSelectsMinimumSufficientAuthority(t *testing.T) {
 		if got := Classify(tc.text).Handler(); got != tc.want {
 			t.Errorf("Classify(%q).Handler() = %s, want %s", tc.text, got, tc.want)
 		}
+	}
+}
+
+// A whole-change prohibition with a read request is informational even when a
+// discourse opener keeps the read verb out of the head position. The request
+// must reach the ASK boundary instead of remaining an ambiguous BUILD turn.
+func TestWholeChangeProhibitionWithReadRequestNarrowsToAsk(t *testing.T) {
+	text := "Actually don't change anything. Explain the current architecture."
+	prediction := ClassifyPrediction(text)
+	if prediction.Intent != IntentRead || prediction.Strength != StrengthStrong {
+		t.Fatalf("prediction = %+v, want a strong READ signal", prediction)
+	}
+	decision := DecideTransition(Build, AnalyzeRequest(text))
+	if !decision.NeedsConfirmation() || decision.Target != Ask {
+		t.Fatalf("decision = %+v, want the ASK confirmation boundary", decision)
+	}
+	contract := BuildIntentContract(text)
+	if contract.Kind != ObjectiveInformational {
+		t.Fatalf("contract kind = %s, want informational", contract.Kind)
+	}
+	if contract.Grounding == nil || !containsString(contract.Grounding.Constraints, "no_mutation") {
+		t.Fatal("the no-mutation limit was dropped")
 	}
 }

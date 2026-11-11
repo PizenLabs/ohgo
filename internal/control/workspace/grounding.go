@@ -555,6 +555,9 @@ func groundingConstraints(text string) []string {
 	}
 	add("no_mutation", "do not modify", "do not change", "read only",
 		"without modifying", "without changing")
+	if contract.NoMutationRequested(text) {
+		out = appendUnique(out, "no_mutation")
+	}
 	// "Do not create a new task" is a continuity instruction, not a repository
 	// limit. Only object-shaped creation limits become constraints.
 	add("no_creation", "do not create it", "do not create the file",

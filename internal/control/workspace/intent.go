@@ -1,6 +1,10 @@
 package workspace
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+)
 
 // Intent is the semantic capability a user request asks for.
 //
@@ -136,7 +140,10 @@ func ClassifyPrediction(text string) Prediction {
 	// mutation clause ("check this project and write README.md"). Clause
 	// heads are therefore considered for the mutation/investigation intents,
 	// while a read signal is taken only from the leading clause so an
-	// informational opener is not fabricated from a later noun phrase.
+	// informational opener is not fabricated from a later noun phrase. The one
+	// exception is a leading whole-change prohibition: it is a constraint, not
+	// an objective, so a later explicit read verb is the requested effect (see
+	// the NoMutationRequested branch below).
 	read := evidenceNone
 	if len(clauses) > 0 {
 		head := clauseHead(clauses[0].text)
@@ -154,6 +161,17 @@ func ClassifyPrediction(text string) Prediction {
 			// A first-person question frame ("I want to ask if ...") carries
 			// no verb the classifier recognises, but it is still a question.
 			read = evidencePhrase
+		}
+	}
+	// A whole-change prohibition is a constraint, not the objective. When it
+	// opens the request, a later read verb is the requested effect even if a
+	// discourse word or a sentence boundary keeps it out of the head position
+	// ("Actually don't change anything. Explain the architecture."). Without
+	// this, the READ fallback left a request that explicitly forbids mutation
+	// as an ambiguous BUILD turn instead of offering the ASK boundary.
+	if read == evidenceNone && contract.NoMutationRequested(request) {
+		if laterReadRequest(request) {
+			read = evidenceHead
 		}
 	}
 	investigateHead := false
@@ -451,7 +469,13 @@ func isTaskFollowUpCore(normalized string) bool {
 		"apply the fix", "make the change", "make the fix", "correct it",
 		"patch it", "reproduce it", "reproduce that", "investigate it",
 		"verify it", "verify the fix", "verify the change", "check it",
-		"check the fix", "test it", "address it":
+		"check the fix", "test it", "address it",
+		// A rework follow-up refers to the open task's own object. It is a
+		// continuation of a task that owns a result, never a licence to
+		// reinterpret an informational task as a mutation one.
+		"redesign it", "redesign this", "redesign that",
+		"rework it", "revamp it", "restyle it", "redo it",
+		"overhaul it", "modernize it", "modernise it":
 		return true
 	}
 	return false
@@ -670,6 +694,34 @@ var ambiguousReadHeads = map[string]bool{
 	"check": true, "inspect": true, "review": true,
 }
 
+// readRequestWords are explicit read verbs and question words that can name
+// the objective after a leading whole-change prohibition. The set is narrower
+// than readHeads: auxiliaries and generic nouns ("is", "can", "build") would
+// make an ordinary statement look like a request for understanding.
+var readRequestWords = map[string]bool{
+	"what": true, "what's": true, "whats": true,
+	"why": true, "how": true, "where": true, "when": true, "which": true,
+	"who": true, "whose": true,
+	"explain": true, "describe": true, "summarize": true, "summarise": true,
+	"compare": true, "outline": true, "tell": true, "walk": true,
+	"define": true, "clarify": true, "show": true, "list": true,
+	"review": true, "analyze": true, "analyse": true, "inspect": true,
+	"examine": true, "discuss": true, "elaborate": true, "explore": true,
+	"read": true, "check": true,
+}
+
+// laterReadRequest reports whether the request contains a read-request word
+// anywhere after its leading constraint.
+func laterReadRequest(request string) bool {
+	for _, token := range strings.Fields(request) {
+		token = strings.Trim(token, ".,!?;:'\"")
+		if headMatches(readRequestWords, token) {
+			return true
+		}
+	}
+	return false
+}
+
 // investigateHeads are leading verbs that ask to probe or reproduce rather
 // than to understand or to change. They map to FUZZ semantics.
 var investigateHeads = map[string]bool{
@@ -701,6 +753,14 @@ var executeHeads = map[string]bool{
 	"seed": true, "compile": true, "bundle": true, "connect": true,
 	"disconnect": true, "set": true, "tidy": true, "ensure": true,
 	"organize": true, "organise": true,
+	// Rework verbs ask to make an existing object over. They carry a change,
+	// not a request to describe one: "redesign it" after a design turn is the
+	// implementation follow-up, and classifying it as the READ fallback let
+	// the runtime answer with another plan and prove an informational contract
+	// the user never asked for.
+	"redesign": true, "rework": true, "revamp": true, "restyle": true,
+	"redo": true, "overhaul": true, "modernize": true, "modernise": true,
+	"redraw": true, "reimplement": true, "rearchitect": true,
 }
 
 // investigatePhrases are multi-word investigative signals that may appear
@@ -739,6 +799,20 @@ var executePhrases = []string{
 	"commit the", "revert the", "replace the", "replace it", "patch the",
 	"bump the", "compile the", "build the", "install the", "migrate the",
 	"make sure", "tidy up", "clean up",
+	// Re work framing ("I want to redesign the page", "we should revamp it")
+	// puts a non-verb token at the head. The phrase keeps the change visible
+	// without promoting a question, which the clause model already filters.
+	"redesign the", "redesign this", "redesign that", "redesign it",
+	"rework the", "rework this", "rework it",
+	"revamp the", "revamp this", "revamp it",
+	"restyle the", "restyle this", "restyle it",
+	"redo the", "redo this", "redo it",
+	"overhaul the", "overhaul this", "overhaul it",
+	"modernize the", "modernize this", "modernize it",
+	"modernise the", "modernise this", "modernise it",
+	"redraw the", "redraw this", "redraw it",
+	"reimplement the", "reimplement this", "reimplement it",
+	"rearchitect the", "rearchitect this", "rearchitect it",
 }
 
 // mutationHeads are the leading verbs that ask for a repository change rather
@@ -760,6 +834,10 @@ var mutationHeads = map[string]bool{
 	"vendor": true, "pin": true, "port": true, "convert": true,
 	"seed": true, "set": true, "organize": true, "organise": true,
 	"ensure": true,
+	// The rework family changes the existing object rather than describing it.
+	"redesign": true, "rework": true, "revamp": true, "restyle": true,
+	"redo": true, "overhaul": true, "modernize": true, "modernise": true,
+	"redraw": true, "reimplement": true, "rearchitect": true,
 }
 
 // mutationPhrases are the multi-word forms that carry a change request even
@@ -777,6 +855,19 @@ var mutationPhrases = []string{
 	"make the change", "make the fix", "make it work",
 	"commit the", "revert the", "replace the", "replace it", "patch the",
 	"bump the", "install the", "migrate the",
+	// A rework phrase after a non-verb head ("I want to…", "we should…")
+	// still requests the change; the clause model keeps questions out.
+	"redesign the", "redesign this", "redesign that", "redesign it",
+	"rework the", "rework this", "rework it",
+	"revamp the", "revamp this", "revamp it",
+	"restyle the", "restyle this", "restyle it",
+	"redo the", "redo this", "redo it",
+	"overhaul the", "overhaul this", "overhaul it",
+	"modernize the", "modernize this", "modernize it",
+	"modernise the", "modernise this", "modernise it",
+	"redraw the", "redraw this", "redraw it",
+	"reimplement the", "reimplement this", "reimplement it",
+	"rearchitect the", "rearchitect this", "rearchitect it",
 }
 
 // RequestsMutation reports whether a request clearly contains a clause that

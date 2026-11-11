@@ -160,6 +160,12 @@ func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.To
 		// failure; the next request is for an answer or a review report.
 		return "a required capability failed; answer from the evidence already established", true
 	}
+	if suff.Stage == StageBlocked && suff.Kind == BlockProgressStalled {
+		// The last several turns did not change the task boundary. Another
+		// observation would repeat the same non-progress, so the next output
+		// is a report for review rather than another tool call.
+		return "no meaningful progress; report the remaining gap instead of repeating the observation", true
+	}
 	if suff.Stage == StageBlocked && agent.HasActionClass(tool, agent.ActionMutate) &&
 		(!agent.HasActionClass(tool, agent.ActionExecute) || agent.HasActionClass(tool, agent.ActionConfigured)) {
 		// Do not allow more mutation after a scope violation, but keep the

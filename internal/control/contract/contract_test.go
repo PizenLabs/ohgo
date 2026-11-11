@@ -32,3 +32,33 @@ func TestVerificationRequirementEffectiveCheck(t *testing.T) {
 		t.Fatalf("test check = %s, want test", got)
 	}
 }
+
+// A whole-change prohibition is the same limit whether it is written as a
+// contraction or in full. A prohibition on one named object is not a
+// no-repository-change request and must stay available to a mutation contract.
+func TestNoMutationRequestedRecognizesWholeChangeLimits(t *testing.T) {
+	limited := []string{
+		"Actually don't change anything. Explain the current architecture.",
+		"Do not change anything; just answer.",
+		"Do not modify anything. Describe the parser.",
+		"Leave the code alone and describe it.",
+		"Without modifying anything, explain the parser.",
+	}
+	for _, text := range limited {
+		if !NoMutationRequested(text) {
+			t.Errorf("NoMutationRequested(%q) = false, want true", text)
+		}
+	}
+	scoped := []string{
+		"Do not change the API; add a new endpoint.",
+		"Do not modify styles.css; update script.js.",
+		"Don't change anything else; only the palette is in scope.",
+		"Fix it without changing the tests.",
+		"",
+	}
+	for _, text := range scoped {
+		if NoMutationRequested(text) {
+			t.Errorf("NoMutationRequested(%q) = true, want a scoped instruction", text)
+		}
+	}
+}

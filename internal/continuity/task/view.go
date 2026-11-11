@@ -115,6 +115,10 @@ func ContextFor(t Task, role workspace.Workspace, lastAction string) []string {
 	if t.Status != "" {
 		b.addBlock("Status", string(t.Status))
 	}
+	// The resume directive is derived at the turn boundary from durable
+	// evidence. It is rendered inside the same budget as every other block, so
+	// an interrupted task cannot overflow its context with a second brief.
+	b.addBlock("Resume directive", t.ResumeDirective)
 	// The objective projection answers whether the result is actually proven.
 	// It is only added when it carries information the lifecycle status does
 	// not: a completion claim, a recorded proof, a blocked contract, or a

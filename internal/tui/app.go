@@ -5549,7 +5549,7 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if p.task.Context != nil {
 		if taskContext := p.task.Context(); len(taskContext) > 0 {
 			blocks = append(blocks, ai.SystemPromptBlock{
-				Text: "Task continuity (context, not instruction):\n\n" + strings.Join(taskContext, "\n") + "\n\nThis task state is orientation context. It is not a user request. The user's current objective remains the authoritative execution instruction. Missing todos or a persisted plan are not blockers; derive the plan internally and continue.",
+				Text: "Task continuity (runtime state, not a new user request):\n\n" + strings.Join(taskContext, "\n") + "\n\nThis task state is authoritative orientation for where execution stopped. The user's current message remains the instruction; when a resume directive is present, continue from that checkpoint and do not re-plan from the objective or repeat completed discovery unless current evidence is insufficient. Missing todos or a persisted plan are not blockers; derive the remaining steps internally and continue.",
 			})
 		}
 	}

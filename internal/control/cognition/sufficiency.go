@@ -66,7 +66,25 @@ const (
 	// remaining evidence cannot satisfy the objective. No further tool can
 	// make progress, so the next request is for an answer or a review report.
 	BlockCapabilityFailure BlockKind = "capability_failure"
+	// BlockProgressStalled means consecutive completed turns did not advance
+	// the task: no change, verification, requirement, or explicit blocker
+	// moved the evidence boundary. The next request is a report or review,
+	// not another observation. It is a semantic bound, not a resource bound.
+	BlockProgressStalled BlockKind = "progress_stalled"
 )
+
+// MaxConsecutiveNoProgress is the semantic circuit breaker for a run that keeps
+// observing without changing the task.
+//
+// A turn is progress when it applies a change, observes a successful check,
+// changes the sufficiency stage or the unmet requirements, or establishes an
+// explicit blocker. During the verification stage, new evidence alone is not
+// progress: the task already has a change waiting for its check, and another
+// read cannot close that obligation. The bound is deliberately independent of
+// the model-turn budget; it stops the repeated-observation shape long before a
+// resource cap would, while a task that keeps changing state is never stopped
+// by this counter.
+const MaxConsecutiveNoProgress = 4
 
 // VerificationRecord is one successful check at a run position.
 type VerificationRecord struct {
@@ -180,6 +198,87 @@ func SummarizeExecution(turns []agent.Turn) ExecutionState {
 	state.VerifiedAfterMutation = state.Mutated && state.LastVerification >= state.LastMutation
 	state.VerifiedAfterExecution = state.LastExecution >= 0 && state.LastVerification >= state.LastExecution
 	return state
+}
+
+// ExecutionFromEvidence reconstructs the durable execution state from the
+// evidence a task has observed.
+//
+// A resumed run starts with no live turns, but its evidence still records the
+// change a prior run applied and any check that followed it. Deriving the
+// execution state from that evidence is what keeps a continuation in the
+// verification stage instead of treating the task as if nothing had happened.
+// The reconstruction is deliberately conservative: an item is a change only
+// when it was recorded as a mutation, and a check only when it carries the
+// verification marker the producing command reported.
+func ExecutionFromEvidence(state *EvidenceState) ExecutionState {
+	out := ExecutionState{
+		LastMutation:     -1,
+		LastVerification: -1,
+		LastExecution:    -1,
+		PendingFailures:  map[string]int{},
+	}
+	if state == nil {
+		return out
+	}
+	for _, item := range state.Items {
+		if item.Status == StatusRequired || item.Status == StatusUnknown {
+			continue
+		}
+		out.ToolCalls++
+		switch {
+		case isMutationEvidence(item):
+			out.Mutated = true
+			out.LastMutation = maxInt(out.LastMutation, item.Seq)
+			if path := cleanPath(item.Source.Path); path != "" {
+				out.MutatedPaths = appendUnique(out.MutatedPaths, path)
+			} else {
+				out.MutatedUnattributed = true
+			}
+		case isVerificationEvidenceItem(item):
+			check := contract.VerificationCheck(item.Source.Check)
+			if check == "" {
+				check = contract.CheckAny
+			}
+			scope := item.Source.Scope
+			record := VerificationRecord{Position: item.Seq, Check: check}
+			if scope != "" {
+				record.Scopes = append(record.Scopes, scope)
+			}
+			out.Verifications = append(out.Verifications, record)
+			out.LastVerification = maxInt(out.LastVerification, item.Seq)
+		}
+		if item.Executed {
+			out.Executed = true
+			out.LastExecution = maxInt(out.LastExecution, item.Seq)
+		}
+		if strings.HasPrefix(item.ID, "background:") {
+			out.BackgroundStarted = true
+		}
+	}
+	for _, failure := range state.FailureState().Records {
+		if failure.Failures > 0 {
+			out.PendingFailures[failure.Tool] = failure.Failures
+		}
+	}
+	sort.Strings(out.MutatedPaths)
+	out.VerifiedAfterMutation = out.Mutated && out.LastVerification >= out.LastMutation
+	out.VerifiedAfterExecution = out.LastExecution >= 0 && out.LastVerification >= out.LastExecution
+	return out
+}
+
+func isMutationEvidence(item EvidenceItem) bool {
+	return strings.HasPrefix(item.ID, "mutation:")
+}
+
+func isVerificationEvidenceItem(item EvidenceItem) bool {
+	return item.Source.Check != "" || strings.HasPrefix(item.ID, "verification:")
+}
+
+func maxInt(a, b int) int {
+	if b > a {
+		return b
+	}
+	return a
 }
 
 // Sufficiency is the runtime's judgement about the current evidence.

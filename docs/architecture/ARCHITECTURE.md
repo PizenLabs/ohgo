@@ -271,7 +271,12 @@ user's request before execution and the evidence the runtime observed.
   continuation reuses the persisted contract and snapshot; a materially
   different prompt is refused until the human runs `/task cancel` or
   `/task accept`. Both close the task as `CANCELLED`; neither claims the old
-  objective completed, and the next prompt starts a new identity.
+  objective completed, and the next prompt starts a new identity. An
+  implementation refinement of the open mutation contract is a continuation,
+  not a new informational task: it keeps the task, its evidence, and the write
+  surface when the live authority is BUILD. A read or investigation request, an
+  explicit no-mutation limit, or an explicit mutation prompt remains a new
+  objective; see [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
 - **Phase completion.** A turn can run under ASK or FUZZ while the persisted
   contract needs BUILD, or under BUILD before a conditional mutation branch is
   entered. `workspace.PhaseContract` and `contract.IntentContract.
@@ -415,26 +420,47 @@ the model said. Two properties keep the loop honest and small:
   projection is terminally blocked and names that gap. Once the external
   capability produces a successful observation, normal sufficiency and the
   answer boundary apply.
+- **Durable execution state crosses a resume.** A run starts with no completed
+  turns, but the task may already carry a change and a check from a prior run.
+  `ExecutionFromEvidence` reconstructs the execution state from the durable
+  evidence, so a resumed mutation whose change has no following check is in
+  `verify`, not `act`. The projection therefore tells the continuation to run
+  the check the contract requires instead of rediscovering the repository.
+- **Verification is a stage, not a hint.** While a mutation has a change with
+  no following check, the state block names the missing verification and its
+  next evidence. A successful check advances the stage; a corrective change is
+  also progress. New observations alone cannot close that obligation.
+- **Consecutive turns without a task transition are a semantic stop.** Outside
+  verification, a turn that adds new evidence, changes the stage or unmet
+  requirements, applies a change, observes a successful check, or establishes
+  an explicit blocker is progress. During verification, only a change or a
+  check is progress; another read is not. After
+  `cognition.MaxConsecutiveNoProgress` consecutive turns without one of those
+  transitions, the projection becomes `BlockProgressStalled`, withdraws the
+  action surface, and asks for a report. That is a control-plane verdict
+  (`NEEDS_REVIEW`), not a resource stop and not the model-turn budget. A task
+  that keeps changing state is never stopped by this counter.
 - **The stop is evidence-driven, not a call budget.** The action surface closes
-  when sufficiency reaches `answer` or `complete`, or when a required
-  capability is blocked; those are the states in which another call cannot
-  change the conclusion. A completed turn that observed the repository but
-  added no new fact does not close the surface while the shape still declares
-  missing evidence: the projector keeps the capabilities the current authority
-  permits and appends a bounded escalation reason plus the existing `Next
-  evidence` guidance, so the next request changes the coordinate or capability
-  instead of repeating it. A turn that learned something — including a
-  different window of the same file — keeps the full surface. Errors, refusals,
-  and generic tool output are control signals, so a model that is correcting
-  itself is never mistaken for one that is repeating itself. A deferred phase
-  that still needs execution its authority permits is not at the answer
-  boundary either; its next step may be a probe or a command. Change objectives
-  are exempt from the informational boundary: their next action is the change,
-  not another observation.
+  when sufficiency reaches `answer` or `complete`, when a required capability is
+  blocked, or when consecutive turns no longer advance the task. A completed
+  turn that observed the repository but added no new fact does not close the
+  surface while the shape still declares missing evidence: the projector keeps
+  the capabilities the current authority permits and appends a bounded
+  escalation reason plus the existing `Next evidence` guidance, so the next
+  request changes the coordinate or capability instead of repeating it. A turn
+  that learned something — including a different window of the same file —
+  keeps the full surface. Errors, refusals, and generic tool output are control
+  signals, so a model that is correcting itself is never mistaken for one that
+  is repeating itself. A deferred phase that still needs execution its
+  authority permits is not at the answer boundary either; its next step may be
+  a probe or a command. A change objective's next action is the change, but
+  once the change is applied its next action is the check.
 
 Budgets remain safety bounds, never the reason a run concludes. A weaker model
 may therefore spend more turns reaching the same evidence; the stop follows the
-evidence, not the model.
+evidence, not the model. The semantic no-progress bound exists so a model that
+only repeats an already-known observation reaches review in a few turns instead
+of spending the whole grant.
 
 ## Execution experience (AES)
 

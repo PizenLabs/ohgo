@@ -346,6 +346,36 @@ func TestLaterToolSuccessSupersedesAllEarlierFailures(t *testing.T) {
 	}
 }
 
+// A change artifact is a model-authored reference, not an observed mutation.
+// It must never satisfy a mutation objective: the artifact tool records
+// metadata, so a run that only files one has not changed the repository.
+func TestChangeArtifactIsNotAnObservedMutation(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{
+			toolOutcome("artifact", Result{Text: "recorded change change-1234"}),
+		}},
+		answerTurn("All four design steps are complete."),
+	}
+	got := EvaluateTaskCompletion(CompletionInput{
+		Turns: turns,
+		Contract: contract.IntentContract{
+			Objective: "redesign the portfolio site",
+			Kind:      contract.ObjectiveMutation,
+			Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "index.html"}},
+			Verification: []contract.VerificationRequirement{{
+				Kind: contract.VerifyAny,
+			}},
+		},
+		Root: t.TempDir(),
+	})
+	if got.Complete() {
+		t.Fatal("a recorded change artifact completed a mutation objective")
+	}
+	if !strings.Contains(got.Reason, "no change was observed") {
+		t.Fatalf("reason = %q, want the missing observed change", got.Reason)
+	}
+}
+
 func TestRefusedCallsAreNotOutstandingWork(t *testing.T) {
 	turns := []Turn{
 		{Results: []ToolOutcome{

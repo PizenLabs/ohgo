@@ -90,6 +90,89 @@ type Projector struct {
 	// already-constructed tool surface and append bounded advisory hints. It
 	// never widens the surface, grants authority, or changes evidence.
 	Advisor ExperienceAdvisor
+
+	// progress tracks consecutive completed turns that did not advance the
+	// task. It is runtime-only state for one run; a new run starts fresh.
+	progress progressTracker
+}
+
+// progressTracker is the semantic no-progress circuit breaker.
+//
+// The first projection seeds the comparison without counting a stall, because
+// a resumed run is expected to re-establish its immediate context. A later
+// turn is progress only when the runtime can name what changed; repeated
+// observation of the same boundary is not.
+type progressTracker struct {
+	seeded   bool
+	lastTurn int
+	stage    Stage
+	missing  string
+	kind     BlockKind
+	stalled  int
+}
+
+// trackProgress records whether the completed turns since the last projection
+// changed the task boundary.
+//
+// During verification, novelty is deliberately not progress: the task already
+// has a change waiting for its check, and another read cannot close that
+// obligation. A successful check or a corrective change is progress. Outside
+// verification, new evidence and a changed stage/requirement/blocker are
+// progress, so ordinary exploration is not cut short.
+func (p *Projector) trackProgress(turns []agent.Turn, suff Sufficiency, novel int) {
+	tracker := &p.progress
+	if !tracker.seeded {
+		tracker.seeded = true
+		tracker.lastTurn = len(turns)
+		tracker.stage = suff.Stage
+		tracker.missing = strings.Join(suff.Missing, "\x00")
+		tracker.kind = suff.Kind
+		return
+	}
+	if len(turns) <= tracker.lastTurn {
+		return
+	}
+	completed := turns[tracker.lastTurn:]
+	advanced := false
+	for _, turn := range completed {
+		for _, outcome := range turn.Results {
+			if outcome.Refused() || outcome.Result.IsError {
+				continue
+			}
+			if outcome.Result.Mutates || outcome.Result.Verifies {
+				advanced = true
+			}
+		}
+	}
+	if suff.Stage != tracker.stage || strings.Join(suff.Missing, "\x00") != tracker.missing ||
+		suff.Kind != tracker.kind ||
+		(suff.Stage != StageVerify && novel > 0) {
+		advanced = true
+	}
+	if advanced {
+		tracker.stalled = 0
+	} else {
+		tracker.stalled++
+	}
+	tracker.lastTurn = len(turns)
+	tracker.stage = suff.Stage
+	tracker.missing = strings.Join(suff.Missing, "\x00")
+	tracker.kind = suff.Kind
+}
+
+// stall applies the semantic stop to a sufficiency verdict that has not
+// advanced for the configured number of turns.
+func (p *Projector) stall(suff *Sufficiency) bool {
+	if suff == nil || p.progress.stalled < MaxConsecutiveNoProgress {
+		return false
+	}
+	suff.State = Blocked
+	suff.Stage = StageBlocked
+	suff.Kind = BlockProgressStalled
+	suff.Reasons = append(suff.Reasons,
+		fmt.Sprintf("no meaningful task progress for %d consecutive turns: no change, verification, required evidence, or blocker advanced the task", p.progress.stalled))
+	suff.Next = []string{"report the remaining evidence gap and require review; do not repeat the same observation"}
+	return true
 }
 
 // NewProjector returns a projector for one turn.
@@ -117,7 +200,10 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	shape.Budget.ToolCallsUsed += executionToolCalls(req.Turns)
 
 	observed, novel := p.Evidence.ObserveTurns(shape, req.Turns)
-	execution := SummarizeExecution(req.Turns)
+	// The durable evidence, not the current run alone, is the execution state.
+	// A resumed task that already applied a change must stay in verification
+	// even though this run starts with no mutation of its own.
+	execution := ExecutionFromEvidence(p.Evidence)
 	// Sufficiency is an evidence verdict, not a resource verdict. Budget
 	// exhaustion withholds tools (Candidates checks it directly), but a
 	// proven change followed by a successful check must not be downgraded just
@@ -136,6 +222,13 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		}, suff.Reasons...)
 		suff.Missing = []string{"external_observation"}
 	}
+	// A run that keeps observing without changing the task is stopped on its
+	// own semantic bound, not left to the model-turn budget. The check is
+	// independent of the capability-failure boundary above: that one says a
+	// required capability cannot run, this one says the last several actions
+	// did not advance the task.
+	p.trackProgress(req.Turns, suff, novel)
+	p.stall(&suff)
 	failures := p.Evidence.FailureState()
 	candidates := Candidates(shape, p.Evidence, execution, req.Tools, p.Facts, suff)
 	advice := adviceFor(p.Advisor, shape, p.Evidence, execution, suff, candidates.Tools, req.Turns)
@@ -192,6 +285,11 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	report.ExperienceHints = append([]string(nil), advice.Hints...)
 	report.Sufficiency = string(suff.State)
 	report.Stage = string(suff.Stage)
+	report.Progress = "advancing"
+	if p.progress.stalled > 0 {
+		report.Progress = "stalled"
+	}
+	report.NoProgressTurns = p.progress.stalled
 	// An informational task whose required evidence is known is done
 	// observing. If the model answers in the same turn as a tool call, the
 	// answer is final and the call is continuation, not evidence gathering.
@@ -199,8 +297,11 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// acquire more evidence, so the next visible text is the candidate report.
 	report.AnswerEligible = req.ForceAnswer || informationalEvidenceBoundary(shape, suff) ||
 		(shape.Kind == contract.ObjectiveInformational && suff.Kind == BlockCapabilityFailure)
-	report.Terminal = suff.Kind == BlockCapabilityFailure
-	if report.Terminal {
+	report.Terminal = suff.Kind == BlockCapabilityFailure || suff.Kind == BlockProgressStalled
+	switch {
+	case suff.Kind == BlockProgressStalled:
+		report.StopReason = "no meaningful task progress: " + strings.Join(suff.Reasons, "; ")
+	case report.Terminal:
 		report.StopReason = "the task is blocked: " + strings.Join(suff.Reasons, "; ")
 	}
 	report.Provenance = p.Evidence.Provenance(shape)
