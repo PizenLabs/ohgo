@@ -9,6 +9,26 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// The prompt hint is placeholder chrome, not input: it fills the caret's place
+// on an empty composer and disappears on the first keystroke without leaking
+// into the buffer.
+func TestComposerHintYieldsToTypedText(t *testing.T) {
+	s := New()
+	s.Tip = firstHint(hintContextWelcome)
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	if out := ansi.Strip(Render(s)); !strings.Contains(out, s.Tip) {
+		t.Fatalf("fresh composer lacks the rotating hint:\n%s", out)
+	}
+
+	s.Apply(ComposerChanged{Text: "explain this", Cursor: len([]rune("explain this"))})
+	if out := ansi.Strip(Render(s)); strings.Contains(out, s.Tip) {
+		t.Fatalf("composer hint survived typing:\n%s", out)
+	}
+	if s.Input != "explain this" {
+		t.Fatalf("render changed the input buffer to %q", s.Input)
+	}
+}
+
 // The composer helpers are pure (text, cursor) functions: every case below
 // pins a transformation the fingers rely on, not an implementation path.
 

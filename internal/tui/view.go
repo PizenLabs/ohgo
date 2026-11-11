@@ -928,8 +928,9 @@ func renderWelcome(state State, pal *Palette, layout Layout) string {
 	if state.Height > 0 {
 		// A short transcript area shows the bottom of an overlong card, which
 		// would hide the panel's own title. The compact composition keeps the
-		// full grid (modes, commands, tip) visible by dropping only decorative
-		// blank rows; use it whenever it fits and the full form does not.
+		// full grid (greeting, subtitle, modes) visible by dropping only
+		// decorative blank rows; use it whenever it fits and the full form
+		// does not.
 		if budget := transcriptBudget(state, layout); budget > 0 && len(splitLines(surface)) > budget {
 			if compact := renderIdentitySurface(facts, width, true); len(splitLines(compact)) <= budget {
 				surface = compact
@@ -962,7 +963,7 @@ func styleIdentityLine(line string, pal *Palette, chrome *Chrome) string {
 		return line
 	}
 	if strings.HasPrefix(trimmed, "┌") {
-		return styleBoxLegend(line, pal)
+		return pal.Separator.Render(line)
 	}
 	if strings.HasPrefix(trimmed, "└") {
 		return pal.Separator.Render(line)
@@ -1018,58 +1019,7 @@ func styleIdentityCell(cell string, pal *Palette, chrome *Chrome) string {
 			modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) +
 			pal.Secondary.Render(cell[idx+len(mode):])
 	}
-	if lineHasCommandSlot(cell) {
-		return styleCommandCell(cell, pal)
-	}
-	if identityCommandContinuation(cell) {
-		return pal.Faint.Render(cell)
-	}
 	return pal.Secondary.Render(cell)
-}
-
-// lineHasCommandSlot reports a cell that carries a taught command or the Tip
-// label. A folded continuation line has neither, and is styled separately.
-func lineHasCommandSlot(cell string) bool {
-	return lineHasTrigger(cell) || tipLabelIndex(cell) >= 0
-}
-
-// identityCommandContinuation reports a row folded out of a command or tip
-// cell. Such a row has no token of its own, only the hanging indent the
-// command grid uses, so it must stay in the low-focus hint role.
-func identityCommandContinuation(cell string) bool {
-	indent := len(cell) - len(strings.TrimLeft(cell, " "))
-	return indent >= identityPadX+identityTriggerTokenWidth
-}
-
-// styleCommandCell styles a command-grid cell: taught tokens take the High
-// Focus title role, the Tip label takes the warm reasoning accent, and all
-// supporting copy stays in the low-focus hint role. The tip body stays quiet
-// even when it names an affordance, so the annotation never outranks a command.
-func styleCommandCell(cell string, pal *Palette) string {
-	if tip := tipLabelIndex(cell); tip >= 0 {
-		end := tip + len(identityTipLabel)
-		return styleTriggerText(cell[:tip], pal) +
-			pal.Thought.Render(identityTipLabel) +
-			pal.Faint.Render(cell[end:])
-	}
-	return styleTriggerText(cell, pal)
-}
-
-// tipLabelIndex locates the Tip label as a standalone word. Matching the whole
-// token avoids treating a "Tip" inside prose or a path as the slot label.
-func tipLabelIndex(cell string) int {
-	for i := 0; i+len(identityTipLabel) <= len(cell); i++ {
-		if cell[i:i+len(identityTipLabel)] != identityTipLabel {
-			continue
-		}
-		before := i == 0 || cell[i-1] == ' '
-		after := i + len(identityTipLabel)
-		afterOK := after == len(cell) || cell[after] == ' '
-		if before && afterOK {
-			return i
-		}
-	}
-	return -1
 }
 
 // identityRuleCell reports a cell that is only a horizontal stroke. The
@@ -1085,19 +1035,6 @@ func identityRuleCell(cell string) bool {
 		}
 	}
 	return true
-}
-
-// styleBoxLegend renders the quickstart panel's top rule: the category legend
-// is structural, while the rule around it stays a separator. The legend must
-// outrank the rows it introduces without turning the whole frame bright.
-func styleBoxLegend(line string, pal *Palette) string {
-	idx := strings.Index(line, identityFrameLegend)
-	if idx < 0 {
-		return pal.Separator.Render(line)
-	}
-	return pal.Separator.Render(line[:idx]) +
-		pal.Heading.Render(identityFrameLegend) +
-		pal.Separator.Render(line[idx+len(identityFrameLegend):])
 }
 
 // greetingBrandIndex locates the identity title brand when it leads the row:
@@ -1156,56 +1093,6 @@ func leadingMode(cell string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// triggerTokens are the affordances the quickstart row teaches. They are data,
-// not styling accidents: the renderer bolds exactly these and fades the hints
-// between them.
-var triggerTokens = []string{"/model", "/help", "@files"}
-
-// lineHasTrigger reports whether a quickstart line carries a taught affordance.
-func lineHasTrigger(line string) bool {
-	for _, token := range triggerTokens {
-		if strings.Contains(line, token) {
-			return true
-		}
-	}
-	return false
-}
-
-// styleTriggerText renders taught affordances in the High Focus title role and
-// everything between them in the Low Focus hint role. It never changes the
-// visible text, only its emphasis, so the quickstart keeps its cell geometry.
-func styleTriggerText(line string, pal *Palette) string {
-	var sb strings.Builder
-	rest := line
-	for rest != "" {
-		index, token := nextTrigger(rest)
-		if index < 0 {
-			sb.WriteString(pal.Faint.Render(rest))
-			break
-		}
-		if index > 0 {
-			sb.WriteString(pal.Faint.Render(rest[:index]))
-		}
-		sb.WriteString(pal.Title.Render(token))
-		rest = rest[index+len(token):]
-	}
-	return sb.String()
-}
-
-// nextTrigger finds the earliest taught affordance in s. Earliest wins so a
-// line with several triggers is styled left to right in one pass.
-func nextTrigger(s string) (int, string) {
-	best := -1
-	token := ""
-	for _, candidate := range triggerTokens {
-		if index := strings.Index(s, candidate); index >= 0 && (best < 0 || index < best) {
-			best = index
-			token = candidate
-		}
-	}
-	return best, token
 }
 
 // splitLines splits rendered output into lines without a trailing empty.
@@ -1999,8 +1886,13 @@ func renderComposer(state State, pal *Palette, layout Layout) string {
 		text, rowCursor = highlightMentions(pal.Mention, text, rowCursor)
 		text, rowCursor = renderPasteChips(state.Pastes, pal.Chip, text, rowCursor)
 		if isCursorRow {
-			text = insertAt(text, rowCursor, composerCursorStyle(state, pal).Render("▌"))
-			text = appendGhost(text, ghost, width, pal.Ghost)
+			cursor := composerCursorStyle(state, pal).Render("▌")
+			if hint := state.composerHint(); hint != "" {
+				text = cursor + composerHintText(hint, width, pal.Faint)
+			} else {
+				text = insertAt(text, rowCursor, cursor)
+				text = appendGhost(text, ghost, width, pal.Ghost)
+			}
 		}
 		prefix := composerContPrefix(state)
 		if i == 0 {

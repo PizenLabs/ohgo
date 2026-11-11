@@ -66,20 +66,45 @@ func TestMarkdownBulletUsesAccentAndBodyText(t *testing.T) {
 	}
 }
 
-// The quickstart card's legend is its category header: the word takes the
-// structure accent while the surrounding rule stays a separator.
-func TestQuickstartLegendUsesStructureAccent(t *testing.T) {
+// The quickstart legend is part of the frame, not a heading: it stays lowercase
+// and shares the border's low-focus role so it never competes with the copy.
+func TestQuickstartLegendStaysInTheFrameRole(t *testing.T) {
 	pal := forcedPalette()
 	chrome := ChromeFor(ThemeDark)
-	line := "┌─ Quickstart " + strings.Repeat("─", 8) + "┐"
+	line := identityTopBorder(40)
 	styled := styleIdentityLine(line, pal, chrome)
-	if !strings.Contains(styled, pal.Heading.Render(identityFrameLegend)) {
-		t.Fatalf("legend did not use the structure accent: %q", styled)
+	if strings.Contains(styled, pal.Heading.Render(identityFrameLegend)) {
+		t.Fatalf("legend used the structure accent: %q", styled)
 	}
-	if !strings.Contains(styled, pal.Separator.Render("┌─ ")) {
-		t.Fatalf("legend rule did not stay in the separator role: %q", styled)
+	if !strings.Contains(styled, pal.Separator.Render(line)) {
+		t.Fatalf("top rule did not stay in the separator role: %q", styled)
 	}
 	if got := ansi.Strip(styled); got != line {
 		t.Fatalf("stripped legend = %q, want the cells unchanged", got)
+	}
+	if identityFrameLegend != strings.ToLower(identityFrameLegend) {
+		t.Fatalf("legend %q is not lowercase", identityFrameLegend)
+	}
+}
+
+// The legend shares the content's left edge, so the frame reads as one straight
+// column instead of the label sitting in its own indentation.
+func TestQuickstartLegendAlignsWithContent(t *testing.T) {
+	out := RenderIdentitySurface(identityTestFacts(), 120)
+	lines := strings.Split(out, "\n")
+	brandRow := ""
+	for _, line := range lines {
+		if strings.Contains(line, identityBrandText) {
+			brandRow = line
+			break
+		}
+	}
+	if brandRow == "" {
+		t.Fatalf("surface lacks the brand row:\n%s", out)
+	}
+	legend := cellIndex(lines[0], identityFrameLegend)
+	brand := cellIndex(brandRow, identityBrandText)
+	if legend < 0 || brand < 0 || legend != brand {
+		t.Fatalf("legend column %d, brand column %d, want one left edge:\n%s", legend, brand, out)
 	}
 }

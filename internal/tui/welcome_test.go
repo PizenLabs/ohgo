@@ -11,9 +11,9 @@ import (
 // conversation, never pollutes persisted history, and never returns over a
 // resumed or in-progress transcript.
 //
-// The surface is a runtime identity surface: product identity, greeting,
-// capability modes, real affordances, and a curated tip drawn from bindings
-// the runtime implements — never marketing or invented state.
+// The surface is a runtime identity surface: product identity, greeting, and
+// capability modes — never marketing or invented state. The composer owns the
+// rotating binding hint.
 
 const welcomeInvite = "agent runtime for real codebases"
 
@@ -26,7 +26,7 @@ func TestWelcomeShowsOnEmptyTranscriptWithoutPersisting(t *testing.T) {
 	if !strings.Contains(out, welcomeInvite) {
 		t.Fatalf("empty render lacks the identity surface: %q", out)
 	}
-	for _, want := range []string{"OHGO", "Quickstart", "ASK", "BUILD", "FUZZ", "/model", "/help", "@files", "$sup", "groq/m"} {
+	for _, want := range []string{"OHGO", "quickstart", "ASK", "BUILD", "FUZZ", "$sup", "groq/m"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("identity surface lacks %q: %q", want, out)
 		}
@@ -151,7 +151,7 @@ func TestWelcomePanelScalesAcrossWidths(t *testing.T) {
 	narrowOut := Render(narrow)
 	// Both tiers keep the semantic content: identity, modes, affordances.
 	for _, out := range []string{wideOut, narrowOut} {
-		for _, want := range []string{"OHGO", "ASK", "BUILD", "FUZZ", "/help"} {
+		for _, want := range []string{"OHGO", "ASK", "BUILD", "FUZZ"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("tier lost essential content %q: %q", want, out)
 			}
@@ -363,7 +363,7 @@ func TestWelcomeCardFitsAcceptanceViewports(t *testing.T) {
 				t.Errorf("%dx%d line %d = %d cells, want <= %d:\n%s", size[0], size[1], i, CellWidth(line), size[0], line)
 			}
 		}
-		for _, want := range []string{"Quickstart", "OHGO", "ASK", "BUILD", "FUZZ", "/model", "$sup"} {
+		for _, want := range []string{"quickstart", "OHGO", "ASK", "BUILD", "FUZZ", "$sup"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%dx%d lost %q:\n%s", size[0], size[1], want, out)
 			}
