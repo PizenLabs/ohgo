@@ -24,7 +24,66 @@ const (
 	sidebarMaxIntegrations    = 4
 	sidebarMaxInsightRows     = 4
 	stickyTaskMaxObjectiveLen = 72
+
+	// stickyTaskMaxRows bounds the pinned task area on tiers without the rail.
+	// The block includes its trailing spacer, so at most eight projection rows
+	// may compete with the conversation.
+	stickyTaskMaxRows = 9
+	// stickyTaskMinTranscriptRows is the floor the pinned area must leave the
+	// conversation. A task never turns the transcript into a status-only pane.
+	stickyTaskMinTranscriptRows = 3
 )
+
+// pinnedTaskArea is the medium/narrow task surface: the projection block,
+// bounded to the layout's claimed rows, plus the blank spacer that separates
+// it from the scrolling transcript.
+//
+// It is chrome, not a transcript block: the caller paints it between the title
+// separator and the conversation, so the viewport can only move the rows below
+// it. When the budget is a single row it falls back to the compact header, which
+// keeps the task anchored even on a viewport too short for the block.
+func pinnedTaskArea(state State, pal *Palette, layout Layout, maxRows int) []string {
+	task := activeTaskProjection(&state)
+	if task == nil || maxRows <= 0 {
+		return nil
+	}
+	if maxRows == 1 {
+		if line := renderStickyTaskRow(state, pal, layout); line != "" {
+			return []string{line}
+		}
+		return nil
+	}
+	lines := taskLines(task, pal, layout)
+	// The final claimed row is the spacer. Reserve one content row for the
+	// overflow marker when the projection is longer than the screen allows.
+	content := maxRows - 1
+	if len(lines) > content {
+		overflow := len(lines) - (content - 1)
+		lines = lines[:content-1]
+		marker := "  … +" + formatTaskCount(overflow) + " more"
+		if focus := taskFocusLabel(task); focus != "" {
+			marker += " · ◼ " + sanitizeInline(focus)
+		}
+		if width := textWidth(layout); width > 0 {
+			marker = TruncateToWidth(marker, width)
+		}
+		lines = append(lines, pal.Status.Render(marker))
+	}
+	return append(lines, "")
+}
+
+// pinnedTaskAreaLimit is the row budget the pinned task area may claim while
+// leaving the conversation enough rows to stay a conversation.
+func pinnedTaskAreaLimit(layout Layout) int {
+	limit := layout.ConversationHeight - stickyTaskMinTranscriptRows
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > stickyTaskMaxRows {
+		limit = stickyTaskMaxRows
+	}
+	return limit
+}
 
 // renderStickyTaskRow is the narrow-terminal fallback: exactly one row under
 // the title bar, carrying only the facts needed to keep the current task

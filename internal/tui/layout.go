@@ -53,11 +53,11 @@ type Layout struct {
 	TelemetryLines int
 	ComposerLines  int
 	StatusLines    int
-	// TaskLines is the sticky active-task row below the title bar on tiers
-	// that do not render the sidebar. It is zero whenever no open task has an
-	// open todo: wide terminals keep the tracker in the sidebar instead, so
-	// exactly one task surface is ever visible and idle or question-only
-	// sessions render none.
+	// TaskLines is the pinned task area below the title bar on tiers that do
+	// not render the sidebar. It is zero whenever no open task has a todo
+	// plan: wide terminals keep the tracker in the sidebar instead, so exactly
+	// one task surface is ever visible and idle or question-only sessions
+	// render none. The claim includes the area's trailing spacer.
 	TaskLines int
 	// TaskTracker reports that the sticky/sidebar task surface owns the
 	// projection, so the in-transcript task block must not repeat it.
@@ -157,12 +157,13 @@ const (
 // ComputeWorkspaceLayout derives the full-screen canvas.
 //
 // The task rail is transient chrome, not the default canvas. It exists only
-// while an open task has at least one open todo: wide terminals narrow the
+// while an open task carries a todo plan: wide terminals narrow the
 // conversation and give it a fixed proportional rail, while narrower tiers
-// reserve one sticky task row immediately below the title bar. An idle session,
-// a question with no todos, and every terminal task keep the full-width
-// transcript, so a completed projection settles into history. The task row and
-// the sidebar are mutually exclusive: one fact has one home.
+// reserve a pinned task area (bounded so the conversation stays readable)
+// immediately below the title bar. An idle session, a question with no todos,
+// and every terminal task keep the full-width transcript, so a finished
+// projection settles into history. The pinned area and the sidebar are
+// mutually exclusive: one fact has one home.
 func ComputeWorkspaceLayout(s State) Layout {
 	base := ComputeLayout(s)
 	if s.Width <= 0 || s.Height <= 0 || base.Mode == LayoutMini {
@@ -195,9 +196,17 @@ func ComputeWorkspaceLayout(s State) Layout {
 		}
 	}
 	layout := ComputeLayout(s)
-	layout.TaskLines = 1
+	// The pinned area is the same projection block the transcript renders,
+	// bounded so a long todo list cannot evict the conversation. Its trailing
+	// spacer is part of the claim, which keeps the boundary between chrome and
+	// scrolling history stable.
+	area := pinnedTaskArea(s, PaletteFor(s.Theme), layout, pinnedTaskAreaLimit(layout))
+	if len(area) == 0 {
+		return base
+	}
+	layout.TaskLines = len(area)
 	layout.TaskTracker = true
-	layout.ConversationHeight--
+	layout.ConversationHeight -= layout.TaskLines
 	if layout.ConversationHeight < 1 {
 		layout.ConversationHeight = 1
 	}

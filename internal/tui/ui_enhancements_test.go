@@ -37,8 +37,8 @@ func TestWorkspaceLayoutSplitsWideAndFallsBackToStickyTask(t *testing.T) {
 	narrow.Apply(TerminalResized{Width: 80, Height: 30})
 	narrow.Apply(TaskProjected{Projection: task})
 	narrowLayout := ComputeWorkspaceLayout(narrow)
-	if narrowLayout.Sidebar || narrowLayout.TaskLines != 1 || !narrowLayout.TaskTracker {
-		t.Fatalf("medium layout = sidebar:%v taskRows:%d tracker:%v, want the sticky header",
+	if narrowLayout.Sidebar || narrowLayout.TaskLines < 2 || !narrowLayout.TaskTracker {
+		t.Fatalf("medium layout = sidebar:%v taskRows:%d tracker:%v, want the pinned task area",
 			narrowLayout.Sidebar, narrowLayout.TaskLines, narrowLayout.TaskTracker)
 	}
 }
@@ -122,19 +122,31 @@ func TestWorkspaceRailRequiresTodoPlan(t *testing.T) {
 		t.Fatalf("the task projection vanished from the transcript:\n%s", out)
 	}
 
-	// A stale finished plan is not work to track either: the rail waits for an
-	// open todo, not merely a todo list.
+	// A plan keeps the rail while the task is open, even after its last todo is
+	// done: the final answer still belongs to the task, and releasing the rail
+	// there would move the projection back into scrolling history mid-turn.
 	s.Apply(TaskProjected{Projection: TaskProjection{
 		ID: "t1", Status: "RUNNING", Objective: "explain the module",
 		Items: []TaskItem{{State: taskStateDone, Label: "read go.mod"}},
 	}})
-	if layout := ComputeWorkspaceLayout(s); layout.Sidebar || layout.TaskTracker {
-		t.Fatalf("layout = sidebar:%v tracker:%v, want no rail for a finished plan", layout.Sidebar, layout.TaskTracker)
+	if layout := ComputeWorkspaceLayout(s); !layout.Sidebar || !layout.TaskTracker {
+		t.Fatalf("layout = sidebar:%v tracker:%v, want the rail while the finished plan is still open",
+			layout.Sidebar, layout.TaskTracker)
 	}
 
-	// Once the request creates open todos, the rail has something to track.
+	// The terminal transition releases it: the completed projection belongs to
+	// history, not to the next turn.
 	s.Apply(TaskProjected{Projection: TaskProjection{
-		ID: "t1", Status: "RUNNING", Objective: "explain the module",
+		ID: "t1", Status: "COMPLETED", Objective: "explain the module",
+		Items: []TaskItem{{State: taskStateDone, Label: "read go.mod"}},
+	}})
+	if layout := ComputeWorkspaceLayout(s); layout.Sidebar || layout.TaskTracker {
+		t.Fatalf("layout = sidebar:%v tracker:%v, want no rail for a completed task", layout.Sidebar, layout.TaskTracker)
+	}
+
+	// A new open plan brings it back.
+	s.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t2", Status: "RUNNING", Objective: "explain the module",
 		Items: []TaskItem{{State: taskStateActive, Label: "read go.mod"}},
 	}})
 	if layout := ComputeWorkspaceLayout(s); !layout.Sidebar {
@@ -223,6 +235,108 @@ func TestStickyTaskRowStaysBelowTitleBar(t *testing.T) {
 	}
 	if got := strings.Count(strings.Join(lines, "\n"), "keep the task pinned"); got != 1 {
 		t.Fatalf("sticky objective appeared %d times, want one:\n%s", got, strings.Join(lines, "\n"))
+	}
+}
+
+// The medium/narrow task area is chrome: a long transcript scroll moves only
+// the rows below it, and the final todo row keeps the projection pinned until
+// the task actually reaches its terminal state.
+func TestPinnedTaskAreaSurvivesScroll(t *testing.T) {
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 24})
+	s.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "keep the task pinned",
+		Items: []TaskItem{
+			{State: taskStateDone, Label: "map the flow"},
+			{State: taskStateActive, Label: "prove the defect"},
+			{State: taskStatePending, Label: "land the fix"},
+		},
+	}})
+	for i := 0; i < 20; i++ {
+		s.Apply(UserSubmitted{Text: "question " + strings.Repeat("x", 20)})
+		s.Apply(AssistantDelta{Text: "answer body " + strings.Repeat("y", 100)})
+		s.Apply(AssistantDone{})
+	}
+	s.Apply(ScrollMoved{Delta: 40})
+
+	layout := ComputeWorkspaceLayout(s)
+	if layout.TaskLines < 4 || !layout.TaskTracker {
+		t.Fatalf("layout = taskRows:%d tracker:%v, want the pinned projection block", layout.TaskLines, layout.TaskTracker)
+	}
+	rows := strings.Split(ansi.Strip(Render(s)), "\n")
+	if len(rows) < layout.HeaderLines+layout.TaskLines {
+		t.Fatalf("frame = %d rows, want the header and pinned area", len(rows))
+	}
+	pinned := strings.Join(rows[layout.HeaderLines:layout.HeaderLines+layout.TaskLines], "\n")
+	for _, want := range []string{"keep the task pinned", "map the flow", "prove the defect", "land the fix"} {
+		if !strings.Contains(pinned, want) {
+			t.Errorf("pinned area lost %q:\n%s", want, pinned)
+		}
+	}
+	if tail := rows[layout.HeaderLines+layout.TaskLines-1]; strings.TrimSpace(tail) != "" {
+		t.Errorf("pinned area tail = %q, want its blank spacer", tail)
+	}
+	if got := strings.Count(strings.Join(rows, "\n"), "keep the task pinned"); got != 1 {
+		t.Errorf("pinned objective appeared %d times, want one:\n%s", got, strings.Join(rows, "\n"))
+	}
+	if !strings.Contains(strings.Join(rows[layout.HeaderLines+layout.TaskLines:], "\n"), "lines above") {
+		t.Errorf("transcript below the pinned area lost its scroll marker:\n%s", strings.Join(rows, "\n"))
+	}
+
+	// The final todo can be done while the turn is still open; the rail keeps
+	// the projection pinned until completion.
+	s.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "keep the task pinned",
+		Items: []TaskItem{
+			{State: taskStateDone, Label: "map the flow"},
+			{State: taskStateDone, Label: "prove the defect"},
+			{State: taskStateDone, Label: "land the fix"},
+		},
+	}})
+	if layout := ComputeWorkspaceLayout(s); layout.TaskLines == 0 {
+		t.Fatal("a running task released the pinned area when its last todo completed")
+	}
+	s.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "COMPLETED", Objective: "keep the task pinned",
+		Items: []TaskItem{
+			{State: taskStateDone, Label: "map the flow"},
+			{State: taskStateDone, Label: "prove the defect"},
+			{State: taskStateDone, Label: "land the fix"},
+		},
+	}})
+	if layout := ComputeWorkspaceLayout(s); layout.TaskLines != 0 || layout.TaskTracker {
+		t.Fatalf("completed task kept the pinned area: rows=%d tracker=%v", layout.TaskLines, layout.TaskTracker)
+	}
+}
+
+// A plan longer than the area's budget stays bounded and still names the
+// active todo, so the pinned area never turns into a second transcript.
+func TestPinnedTaskAreaBoundsLongPlan(t *testing.T) {
+	items := make([]TaskItem, 0, 30)
+	for i := 0; i < 29; i++ {
+		items = append(items, TaskItem{State: taskStateDone, Label: "done item"})
+	}
+	items = append(items, TaskItem{State: taskStateActive, Label: "the active step"})
+	s := New()
+	s.Apply(TerminalResized{Width: 80, Height: 16})
+	s.Apply(TaskProjected{Projection: TaskProjection{
+		ID: "t1", Status: "RUNNING", Objective: "bound the plan", Items: items,
+	}})
+
+	layout := ComputeWorkspaceLayout(s)
+	if layout.TaskLines > stickyTaskMaxRows {
+		t.Fatalf("pinned rows = %d, want at most %d", layout.TaskLines, stickyTaskMaxRows)
+	}
+	if layout.ConversationHeight < stickyTaskMinTranscriptRows {
+		t.Fatalf("conversation rows = %d, want at least %d", layout.ConversationHeight, stickyTaskMinTranscriptRows)
+	}
+	rows := strings.Split(ansi.Strip(Render(s)), "\n")
+	pinned := strings.Join(rows[layout.HeaderLines:layout.HeaderLines+layout.TaskLines], "\n")
+	if !strings.Contains(pinned, "+") || !strings.Contains(pinned, "more") {
+		t.Errorf("bounded area has no overflow marker:\n%s", pinned)
+	}
+	if !strings.Contains(pinned, "the active step") {
+		t.Errorf("bounded area lost the active todo:\n%s", pinned)
 	}
 }
 

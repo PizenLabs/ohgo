@@ -62,8 +62,8 @@ func TestNeedsReviewTaskUsesWarningRole(t *testing.T) {
 	}
 }
 
-// The sticky narrow-terminal tracker is a separate surface from the transcript
-// task block; it must carry the same warning role for a review stop.
+// The pinned narrow-terminal area carries the same warning role for a review
+// stop as the transcript task block it projects.
 func TestNeedsReviewStickyTaskUsesWarningRole(t *testing.T) {
 	forceTrueColor(t)
 	s := New()
@@ -76,7 +76,7 @@ func TestNeedsReviewStickyTaskUsesWarningRole(t *testing.T) {
 	out := Render(s)
 
 	warning := rgbSeq(DarkTokens().Warning)
-	if !strings.Contains(out, "\x1b[38;2;"+warning+"mtask · prove the parser") {
-		t.Fatalf("sticky review row did not use the warning role:\n%q", out)
+	if !strings.Contains(out, "\x1b[38;2;"+warning+"mtask  prove the parser") {
+		t.Fatalf("pinned review row did not use the warning role:\n%q", out)
 	}
 }

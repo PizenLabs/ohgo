@@ -1148,20 +1148,22 @@ func latestTaskProjection(s *State) *TaskProjection {
 	return nil
 }
 
-// activeTaskProjection returns the latest task only while it still owns work.
+// activeTaskProjection returns the latest task while it still owns a plan.
 //
 // The task rail is transient chrome, not a transcript for every request. It
 // appears only when three facts hold: the preference is enabled, the task is
-// still open, and the task has at least one open todo. An ordinary question, a
-// task with no todos or only finished todos, and a terminal task all keep the
-// ordinary full-width transcript; the completed projection then settles back
-// into history rather than staying pinned beside every later turn.
+// still open, and the task has a todo plan. The rail closes on the terminal
+// transition (COMPLETED, FAILED, CANCELLED), not when the last todo is marked
+// done: the final answer still belongs to the task and must keep it anchored
+// while the transcript scrolls. An ordinary question with no plan keeps the
+// full-width transcript; a terminal projection settles back into history
+// rather than staying pinned beside every later turn.
 func activeTaskProjection(s *State) *TaskProjection {
 	if s == nil || s.TaskRailDisabled {
 		return nil
 	}
 	task := latestTaskProjection(s)
-	if task == nil || taskStatusTerminal(task.Status) || !hasOpenTaskItems(*task) {
+	if task == nil || taskStatusTerminal(task.Status) || len(task.Items) == 0 {
 		return nil
 	}
 	return task

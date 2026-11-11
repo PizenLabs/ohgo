@@ -319,7 +319,17 @@ func renderState(state State, frame *transcriptFrame) string {
 		return sb.String()
 	}
 	if layout.TaskLines > 0 {
-		sb.WriteString(renderStickyTaskRow(state, pal, layout) + "\n")
+		// The pinned task area owns exactly the rows the layout claimed: the
+		// projection block, its spacer, and blank padding if the projection
+		// shrank between the layout pass and this render. The transcript below
+		// it is the only scrolling surface.
+		area := pinnedTaskArea(state, pal, layout, layout.TaskLines)
+		for _, line := range area {
+			sb.WriteString(line + "\n")
+		}
+		for i := len(area); i < layout.TaskLines; i++ {
+			sb.WriteString("\n")
+		}
 	}
 	sb.WriteString(body.String())
 	return sb.String()

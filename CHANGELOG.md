@@ -7,6 +7,12 @@ immutable.
 
 ### Fixed
 
+- Split-pane task visibility: on narrow and medium terminals the task area is
+  now pinned below the title bar for the whole open task instead of collapsing
+  to a single row and releasing when the last todo is marked done. It renders
+  the bounded projection block and a spacer, so scrolling moves only the
+  transcript below it. The rail now closes on the terminal task transition,
+  matching the wide sidebar, rather than on the last completed todo.
 - Interrupted BUILD continuation: a resumed task now derives its execution
   stage from durable evidence, so a change applied before the interruption
   stays in post-change verification. The task briefing carries a resume
