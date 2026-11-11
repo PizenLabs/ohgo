@@ -11,7 +11,9 @@ import (
 //
 // It is intentionally a *quickstart*, not a status board: the top bar owns
 // the runtime facts (model, workspace, cwd, git, readiness), so the surface
-// carries only the greeting, the authority modes, and the trigger shortcuts.
+// carries only the greeting and the authority modes. The composer owns the
+// rotating binding hint, and the decorative mark was removed to keep the
+// surface minimal.
 
 func identityTestFacts() IdentityFacts {
 	return IdentityFacts{
@@ -24,7 +26,7 @@ func TestIdentitySurfaceKeepsSemanticsAcrossWidths(t *testing.T) {
 	facts := identityTestFacts()
 	for _, width := range []int{120, 85, 50, 30} {
 		out := RenderIdentitySurface(facts, width)
-		for _, want := range []string{"OHGO", "Good evening,", "Jack.", "ASK", "BUILD", "FUZZ", "/model", "/help", "@files", "$sup"} {
+		for _, want := range []string{"OHGO", "Good evening,", "Jack.", "ASK", "BUILD", "FUZZ", "$sup"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("width %d: surface lacks %q:\n%s", width, want, out)
 			}
@@ -49,6 +51,11 @@ func TestIdentitySurfaceUsesBoxDrawingWithoutEmoji(t *testing.T) {
 	}
 	if strings.ContainsAny(out, "💡🚀✨🤖") {
 		t.Errorf("surface uses emoji: %q", out)
+	}
+	for _, r := range out {
+		if r >= 0x2800 && r <= 0x28FF {
+			t.Fatalf("surface kept a decorative braille mark: %q", r)
+		}
 	}
 }
 
@@ -109,7 +116,7 @@ func TestIdentitySurfaceSpansTheFullWidth(t *testing.T) {
 	const width = 120
 	out := RenderIdentitySurface(identityTestFacts(), width)
 	lines := strings.Split(out, "\n")
-	for _, want := range []string{"┌", "└", "Quickstart", "OHGO"} {
+	for _, want := range []string{"┌", "└", "quickstart", "OHGO"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("panel lacks %q:\n%s", want, out)
 		}
@@ -125,9 +132,9 @@ func TestIdentitySurfaceSpansTheFullWidth(t *testing.T) {
 	if strings.ContainsAny(out, "▄▀█") {
 		t.Errorf("panel kept a block-glyph wordmark:\n%s", out)
 	}
-	for _, line := range lines {
-		if strings.Contains(line, "ASK") && strings.Contains(line, "/model") {
-			t.Fatalf("mode and command share one row: %q", line)
+	for _, duplicate := range []string{"/model", "/help", "@files"} {
+		if strings.Contains(out, duplicate) {
+			t.Errorf("welcome duplicated the composer shortcut %q:\n%s", duplicate, out)
 		}
 	}
 }

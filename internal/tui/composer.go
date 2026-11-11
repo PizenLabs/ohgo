@@ -6,6 +6,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/history"
 	"github.com/PizenLabs/ohgo/internal/promptopt"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -132,6 +133,33 @@ func (s State) suggestionTail() string {
 		return ""
 	}
 	return sanitizeInline(strings.TrimPrefix(full, s.Input))
+}
+
+// composerHint returns the rotating tip painted at the input origin, ahead of
+// the caret, while the composer is empty. It is chrome, not input: it never
+// enters the buffer, the layout, or the submission, and the first keystroke
+// hides it.
+//
+// An open palette or recalled history already owns the interaction, so the
+// hint steps aside there rather than competing with that choice.
+func (s State) composerHint() string {
+	if s.Input != "" || s.HistCursor >= 0 {
+		return ""
+	}
+	if len(paletteEntriesFor(s)) > 0 {
+		return ""
+	}
+	return sanitizeInline(s.Tip)
+}
+
+// composerHintText styles and truncates the placeholder hint so it can trail
+// the caret on the same row. The leading space keeps the hint visually
+// separate from the block cursor; the reserve keeps the caret on screen.
+func composerHintText(hint string, width int, style lipgloss.Style) string {
+	if hint == "" || width < 3 {
+		return ""
+	}
+	return style.Render(TruncateToWidth(" "+hint, width-1))
 }
 
 // composerRows hard-wraps one logical line to width cells, preserving every

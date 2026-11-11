@@ -478,7 +478,14 @@ func TestComposerHasTwoRulesAndTruthfulState(t *testing.T) {
 	if strings.Count(idle, strings.Repeat("─", 8)) < 2 {
 		t.Errorf("idle composer lacks the two framing rules:\n%s", idle)
 	}
-	if strings.Contains(idle, "working") || strings.Contains(idle, "queued") {
+	// The footer is the composer's own status line. The welcome tip may
+	// legitimately mention a "working tree", so the assertion must not scan
+	// unrelated chrome for that word.
+	footer := idle
+	if at := strings.LastIndex(idle, "\n"); at >= 0 {
+		footer = idle[at+1:]
+	}
+	if strings.Contains(footer, "working") || strings.Contains(footer, "queued") {
 		t.Errorf("idle composer claims work that is not happening:\n%s", idle)
 	}
 	// Busy is truthful in the activity surface, not restated in the header.

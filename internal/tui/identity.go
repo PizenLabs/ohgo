@@ -1,34 +1,26 @@
 package tui
 
-import (
-	"math/rand/v2"
-	"strings"
-)
+import "strings"
 
 // IdentityFacts is the truthful runtime state the quickstart surface shows.
 //
 // It is deliberately narrow. The top bar owns the runtime facts — model,
 // workspace, working directory, git state, and readiness — so this surface
-// carries only what is ephemeral and unowned: who is being greeted, by name,
-// and the rotating tip. Empty means unknown and renders as product identity
-// rather than invented state.
+// carries only what is ephemeral and unowned: who is being greeted, by name.
+// Empty means unknown and renders as product identity rather than invented
+// state.
 type IdentityFacts struct {
 	// User is the project worker display name, "" when unset.
 	User string
 	// Greeting is the time-of-day greeting, e.g. "Good evening, Jack."
 	Greeting string
-	// Tip is the micro-annotation shown in the quickstart's bottom grid. It is
-	// chosen when a project is entered and stays pinned for that project.
-	Tip string
 }
 
-// FactsFromStatus derives the identity facts from rendered state. The tip is a
-// stored project fact, not a fresh roll: rendering must not shuffle it.
+// FactsFromStatus derives the identity facts from rendered state.
 func FactsFromStatus(s State) IdentityFacts {
 	return IdentityFacts{
 		User:     s.Status.User,
 		Greeting: s.Status.Greeting,
-		Tip:      s.Tip,
 	}
 }
 
@@ -44,76 +36,122 @@ var capabilityModes = []struct{ name, desc string }{
 
 // identitySubtitle is the product line under the greeting. It is a constant so
 // the layout and the styling layer agree on the exact content; a drifted copy
-// would silently lose its Medium Focus role.
+// would silently lose its Muted role.
 const identitySubtitle = "agent runtime for real codebases"
 
-// identityFrameLegend is the quickstart panel's category label. It is shared
-// with the styling layer so the legend can take the document-structure accent
-// while the border stays a separator.
-const identityFrameLegend = "Quickstart"
+// identityFrameLegend is the quickstart panel's quiet category label. It is
+// deliberately lowercase and shares the border's role, so it reads as part of
+// the frame rather than competing with the greeting inside.
+const identityFrameLegend = "quickstart"
 
 // identityBrandText is the single-line product mark. The header carries it in
-// the High Focus title role; no block glyph or icon competes with it.
+// the High Focus title role.
 const identityBrandText = "OHGO"
 
-// triggerShortcuts are the affordances the empty screen teaches. They are a
-// pure function of the product, never of state: the same triggers on every
-// fresh session, so the surface never advertises a shortcut that does not
-// exist. Each pair is a token and its low-focus explanation. The grid pairs
-// them two per row; the last cell of the second row is the dynamic Tip slot.
-var triggerShortcuts = [][2]string{
-	{"/model", "choose model"},
-	{"/help", "all commands"},
-	{"@files", "attach context files"},
-}
-
-// identityTipLabel introduces the dynamic tip in the bottom grid. It takes the
-// warm reasoning accent so the annotation reads as a helpful aside rather than
-// another command token.
-const identityTipLabel = "Tip"
-
-// quickstartTips is the curated pool behind the dynamic Tip slot.
+// The composer's placeholder rotation. Each pool groups hints by the
+// interaction they belong to, so the hint a user sees is relevant to the
+// authority they are in rather than a mechanical passthrough of one list.
 //
-// A tip is only worth teaching if the runtime actually implements it, so every
-// entry names a binding or command from Keybindings or Commands. Keep entries
-// short: the grid gives the tip one column beside a command, and a long line
-// would fold into a paragraph and break the panel's rhythm.
-var quickstartTips = []string{
-	"Ctrl+O expands activity",
-	"Ctrl+S opens support",
-	"PgUp scrolls the transcript",
-	"Ctrl+P recalls prompt history",
-	"Alt+Enter adds a line break",
-	"Type @ to attach a file",
-	"/compact trims the context",
-	"/permissions sets authority",
-	"/status shows runtime facts",
-	"/diff shows working tree",
-	"Ctrl+D exits when idle",
-	"? opens command help",
+// A hint is only worth teaching if the runtime actually implements it, so
+// every entry names a binding or command from Keybindings or Commands. Keep
+// entries short: the hint shares one row with the prompt and the caret.
+const (
+	hintContextWelcome = "welcome"
+	hintContextAsk     = "ASK"
+	hintContextBuild   = "BUILD"
+	hintContextFuzz    = "FUZZ"
+)
+
+var promptHintPools = map[string][]string{
+	hintContextWelcome: {
+		"Type @ to attach a file",
+		"? opens command help",
+		"Alt+Enter adds a line break",
+		"Ctrl+P recalls prompt history",
+	},
+	hintContextAsk: {
+		"Type @ to attach a file",
+		"/diff shows working tree",
+		"/status shows runtime facts",
+		"PgUp scrolls the transcript",
+		"? opens command help",
+	},
+	hintContextBuild: {
+		"/permissions sets authority",
+		"Alt+Enter adds a line break",
+		"Type @ to attach a file",
+		"/diff shows working tree",
+		"Ctrl+P recalls prompt history",
+		"Ctrl+O expands activity",
+	},
+	hintContextFuzz: {
+		"/permissions sets authority",
+		"? opens command help",
+		"Type @ to attach a file",
+		"Ctrl+O expands activity",
+		"Ctrl+D exits when idle",
+	},
 }
 
-// GetRandomTip returns one tip from the curated pool. It is called when a
-// project is entered, not per frame, so the annotation changes at human
-// navigation boundaries rather than while the surface is being viewed.
-func GetRandomTip() string {
-	if len(quickstartTips) == 0 {
+// hintContext classifies the composer's current interaction so the placeholder
+// teaches a binding that applies now. A fresh conversation gets onboarding
+// hints; an active one follows the authority that owns the next prompt.
+func hintContext(s State) string {
+	if !s.SessionActive && len(s.Entries) == 0 {
+		return hintContextWelcome
+	}
+	switch strings.ToUpper(strings.TrimSpace(s.Status.Workspace)) {
+	case hintContextAsk:
+		return hintContextAsk
+	case hintContextBuild:
+		return hintContextBuild
+	case hintContextFuzz:
+		return hintContextFuzz
+	}
+	return hintContextWelcome
+}
+
+// hintPool returns the hints for one interaction. An unknown context degrades
+// to the onboarding pool instead of rendering nothing.
+func hintPool(ctx string) []string {
+	if pool := promptHintPools[ctx]; len(pool) > 0 {
+		return pool
+	}
+	return promptHintPools[hintContextWelcome]
+}
+
+// firstHint is the deterministic starting hint for a context. Randomising here
+// would make two independently constructed states render differently, which
+// breaks frame comparisons; variety comes from advancing the pool.
+func firstHint(ctx string) string {
+	pool := hintPool(ctx)
+	if len(pool) == 0 {
 		return ""
 	}
-	return quickstartTips[rand.IntN(len(quickstartTips))]
+	return pool[0]
 }
 
-// identityTipText keeps the slot populated for callers that compose the
-// surface without a state snapshot. The first pool entry is the fallback, so
-// there is only one authored copy of it.
-func identityTipText(tip string) string {
-	if tip = strings.TrimSpace(tip); tip != "" {
-		return tip
+// nextHint advances the rotation deterministically within one context. A hint
+// that is not in the pool starts at the top, so a context change or a
+// hand-authored fixture can never stall the rotation.
+func nextHint(ctx, current string) string {
+	pool := hintPool(ctx)
+	if len(pool) == 0 {
+		return ""
 	}
-	if len(quickstartTips) > 0 {
-		return quickstartTips[0]
+	for i, tip := range pool {
+		if tip == current {
+			return pool[(i+1)%len(pool)]
+		}
 	}
-	return ""
+	return pool[0]
+}
+
+// nextHintFor advances the placeholder to the next hint for the current
+// interaction. A changed authority starts at that pool's first hint unless the
+// current hint already belongs to it, in which case the rotation continues.
+func (s State) nextHintFor() string {
+	return nextHint(hintContext(s), s.Tip)
 }
 
 // Panel geometry.
@@ -122,24 +160,20 @@ func identityTipText(tip string) string {
 // not a floating card, so it should occupy the same field as the transcript it
 // replaces. Padding is the only inset; there is no width ceiling.
 const (
-	// identityPadX is the horizontal inset inside the frame.
-	identityPadX = 2
-	// identityModeLabelWidth aligns every mode description on one column.
-	identityModeLabelWidth = 7
-	// identityTriggerTokenWidth aligns the shortcut hints on one column.
-	identityTriggerTokenWidth = 9
-	// identityCommandGap separates the two quick-command columns.
-	identityCommandGap = 4
-	// identityCommandMinColumn is the narrowest command column worth a grid:
-	// the token column plus room for a short hint. Below two of these the
-	// grid folds to one column instead of crushing both.
-	identityCommandMinColumn = identityTriggerTokenWidth + 11
+	// identityPadX is the horizontal inset inside the frame. It is generous
+	// enough that the border reads as a quiet margin rather than a box around
+	// the copy.
+	identityPadX = 3
+	// identityModeLabelWidth aligns every mode description on one column. The
+	// gap is intentionally wider than the longest label so the authority names
+	// and their explanations read as two distinct columns.
+	identityModeLabelWidth = 12
 	// identityMinFrameWidth is the narrowest panel that can still draw a
 	// frame around readable content. Below it the content wins.
 	identityMinFrameWidth = 20
-	// identityFallbackRuleWidth is the divider length when no viewport has
-	// been measured.
-	identityFallbackRuleWidth = 56
+	// identityFallbackWidth is the composition width when no viewport has been
+	// measured.
+	identityFallbackWidth = 72
 )
 
 // RenderIdentitySurface renders the runtime identity surface for facts at
@@ -156,15 +190,14 @@ func RenderIdentitySurface(f IdentityFacts, width int) string {
 }
 
 // renderIdentitySurface is the composition seam. Compact drops the decorative
-// blank rows around the section rule so a short viewport can still show the
-// whole panel, including its modes and the tip slot, instead of losing the top
-// of the card.
+// blank rows inside the frame so a short viewport can still show the whole
+// panel, including its modes, instead of losing the top of the card.
 func renderIdentitySurface(f IdentityFacts, width int, compact bool) string {
 	if width <= 0 {
-		return strings.Join(identityLogicalRows(f, identityFallbackRuleWidth, compact), "\n")
+		return strings.Join(identityBodyRows(f, identityFallbackWidth, compact), "\n")
 	}
 	if width < identityMinFrameWidth {
-		return strings.Join(wrapIdentityLines(identityLogicalRows(f, width, compact), width), "\n")
+		return strings.Join(wrapIdentityLines(identityBodyRows(f, width, compact), width), "\n")
 	}
 	return renderIdentityPanel(f, width, compact)
 }
@@ -178,9 +211,12 @@ func renderIdentityPanel(f IdentityFacts, width int, compact bool) string {
 	if contentW < 1 {
 		contentW = 1
 	}
-	lines := make([]string, 0, len(capabilityModes)+12)
-	lines = append(lines, identityTopBorder(inner), identityBlankRow(inner))
-	for _, row := range identityLogicalRows(f, contentW, compact) {
+	lines := make([]string, 0, len(capabilityModes)+10)
+	lines = append(lines, identityTopBorder(inner))
+	if !compact {
+		lines = append(lines, identityBlankRow(inner))
+	}
+	for _, row := range identityBodyRows(f, contentW, compact) {
 		for _, wrapped := range wrapIdentityLine(row, contentW) {
 			lines = append(lines, "│"+
 				strings.Repeat(" ", identityPadX)+
@@ -189,33 +225,58 @@ func renderIdentityPanel(f IdentityFacts, width int, compact bool) string {
 				"│")
 		}
 	}
+	if !compact {
+		lines = append(lines, identityBlankRow(inner))
+	}
 	lines = append(lines, identityBottomBorder(inner))
 	return strings.Join(lines, "\n")
 }
 
-// identityLogicalRows composes the semantic sections in reading order: header,
-// authority modes, a low-focus divider, then the quick commands and tip. Blank
-// rows carry the vertical rhythm; compact omits the two around the divider when
-// a short viewport must show the whole card.
-func identityLogicalRows(f IdentityFacts, contentW int, compact bool) []string {
-	rows := make([]string, 0, len(capabilityModes)+10)
-	rows = append(rows, identityGreetingLine(f), identitySubtitle, "")
+// identityBodyRows composes the stack in reading order: greeting, subtitle,
+// then the authority modes. Blank rows carry the vertical rhythm; compact omits
+// only the panel's outer padding, so the stack itself never loses a section.
+func identityBodyRows(f IdentityFacts, contentW int, compact bool) []string {
+	rows := make([]string, 0, len(capabilityModes)+8)
+	rows = append(rows, wrapIdentityText(identityGreetingLine(f), contentW, 0)...)
+	rows = append(rows, wrapIdentityText(identitySubtitle, contentW, 0)...)
+	if !compact {
+		rows = append(rows, "")
+	}
+	modeW := identityModeWidth(contentW, compact)
 	for _, m := range capabilityModes {
-		rows = append(rows, padCells(m.name, identityModeLabelWidth)+m.desc)
+		row := padCells(m.name, modeW) + m.desc
+		rows = append(rows, wrapIdentityText(row, contentW, modeW)...)
 	}
-	if !compact {
-		rows = append(rows, "")
-	}
-	ruleW := contentW
-	if ruleW <= 0 {
-		ruleW = identityFallbackRuleWidth
-	}
-	rows = append(rows, strings.Repeat("─", ruleW))
-	if !compact {
-		rows = append(rows, "")
-	}
-	rows = append(rows, identityCommandRows(contentW, f.Tip)...)
 	return rows
+}
+
+// identityModeWidth keeps the label column aligned while shrinking it enough
+// to keep a description readable. The normal form only protects the first
+// word; the compact form fits the whole description on one row, because a
+// short viewport cannot spend rows on wraps.
+func identityModeWidth(contentW int, compact bool) int {
+	width := identityModeLabelWidth
+	if contentW <= 0 {
+		return width
+	}
+	for _, m := range capabilityModes {
+		text := m.desc
+		if !compact {
+			if space := strings.IndexByte(text, ' '); space >= 0 {
+				text = text[:space]
+			}
+		}
+		if need := contentW - CellWidth(text); need < width {
+			width = need
+		}
+	}
+	if minimum := len("BUILD") + 1; width < minimum {
+		width = minimum
+	}
+	if width < 1 {
+		width = 1
+	}
+	return width
 }
 
 // identityGreetingLine joins product identity and the personal address with a
@@ -232,92 +293,15 @@ func identityGreetingLine(f IdentityFacts) string {
 	return identityBrandText + "  ·  " + address
 }
 
-// identityCommandRows lays the quick commands and the dynamic tip on the
-// panel's bottom grid.
-//
-// Two balanced columns are the normal form: commands on the left and right,
-// with the tip as the last cell. A cell folds its hint under the token column
-// when the pane cannot carry it on one line, and the grid falls back to one
-// column only when two would crush both. Every line is padded to the content
-// field, so the columns stay aligned at every width.
-func identityCommandRows(contentW int, tip string) []string {
-	cells := identityCommandCells(tip)
-	if contentW >= identityCommandGridWidth() {
-		colW := (contentW - identityCommandGap) / 2
-		if colW > 0 {
-			rows := make([]string, 0, (len(cells)+1)/2)
-			for i := 0; i < len(cells); i += 2 {
-				left := wrapIdentityCommandCell(cells[i], colW)
-				var right []string
-				if j := i + 1; j < len(cells) {
-					right = wrapIdentityCommandCell(cells[j], colW)
-				}
-				height := len(left)
-				if len(right) > height {
-					height = len(right)
-				}
-				for line := 0; line < height; line++ {
-					row := strings.Repeat(" ", colW) + strings.Repeat(" ", identityCommandGap)
-					if line < len(left) {
-						row = padCells(left[line], colW) + strings.Repeat(" ", identityCommandGap)
-					}
-					if line < len(right) {
-						row += padCells(right[line], colW)
-					} else {
-						row += strings.Repeat(" ", colW)
-					}
-					rows = append(rows, padCells(row, contentW))
-				}
-			}
-			return rows
-		}
-	}
-	rows := make([]string, 0, len(cells))
-	for _, cell := range cells {
-		rows = append(rows, wrapIdentityCommandCell(cell, contentW)...)
-	}
-	return rows
-}
-
-// identityCommandCells is the bottom grid's reading order. The first two cells
-// fill the left column, the next two the right; the final Tip cell is the
-// dynamic annotation that replaces the old static fourth shortcut.
-func identityCommandCells(tip string) [][2]string {
-	cells := make([][2]string, 0, len(triggerShortcuts)+1)
-	cells = append(cells, triggerShortcuts...)
-	return append(cells, [2]string{identityTipLabel, identityTipText(tip)})
-}
-
-// wrapIdentityCommandCell renders one token/hint pair on the token column and
-// folds its hint under that column when the pane is narrow.
-func wrapIdentityCommandCell(cell [2]string, width int) []string {
-	line := identityCommandPair(cell)
-	if width <= 0 || CellWidth(line) <= width {
-		return []string{line}
-	}
-	indent := identityTriggerTokenWidth
-	if indent >= width {
-		indent = 0
-	}
-	return wrapIdentityText(line, width, indent)
-}
-
-// identityCommandPair renders one token/hint pair on the shared columns.
-func identityCommandPair(pair [2]string) string {
-	return padCells(pair[0], identityTriggerTokenWidth) + pair[1]
-}
-
-// identityCommandGridWidth is the content width the two-column command grid
-// needs before two readable columns exist. It is a geometry floor, not the
-// width of the current copy: a long tip folds inside its cell instead of
-// collapsing the whole grid into a list.
-func identityCommandGridWidth() int {
-	return 2*identityCommandMinColumn + identityCommandGap
-}
-
-// identityTopBorder embeds the category legend in the panel's top rule.
+// identityTopBorder embeds the category legend in the panel's top rule. The
+// legend starts on the same column as the content below, so the frame and the
+// greeting share one left edge instead of the label sitting in its own groove.
 func identityTopBorder(inner int) string {
-	title := "─ " + identityFrameLegend + " "
+	inset := identityPadX - 1
+	if inset < 0 {
+		inset = 0
+	}
+	title := strings.Repeat("─", inset) + " " + identityFrameLegend + " "
 	if CellWidth(title) >= inner {
 		return "┌" + strings.Repeat("─", inner) + "┐"
 	}
@@ -370,8 +354,16 @@ func wrapIdentityText(line string, width, indent int) []string {
 			break
 		}
 		cut := len(prefix)
-		if space := strings.LastIndex(prefix, " "); space > indent {
-			cut = space
+		switch {
+		case len(rest) > len(prefix) && rest[len(prefix)] == ' ':
+			// The width boundary already falls on a word boundary; keep the
+			// whole prefix instead of backing up into its indentation.
+		case strings.LastIndex(prefix, " ") > indent:
+			cut = strings.LastIndex(prefix, " ")
+		case indent > 0 && strings.LastIndex(prefix, " ") > 0:
+			// The first content word does not fit after the hanging indent.
+			// Break after the label instead of splitting the word.
+			cut = strings.LastIndex(prefix, " ")
 		}
 		head := strings.TrimRight(rest[:cut], " ")
 		if head == "" {
@@ -387,8 +379,8 @@ func wrapIdentityText(line string, width, indent int) []string {
 	return rows
 }
 
-// identityHangingIndent is the description column for a mode row, zero for
-// prose.
+// identityHangingIndent is the description column for a wrapped mode row, zero
+// for prose.
 func identityHangingIndent(line string) int {
 	if _, ok := leadingMode(line); ok {
 		return identityModeLabelWidth

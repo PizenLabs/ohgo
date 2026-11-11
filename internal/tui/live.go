@@ -950,8 +950,13 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 		text, rowCursor = highlightMentions(pal.Mention, text, rowCursor)
 		text, rowCursor = renderPasteChips(s.Pastes, pal.Chip, text, rowCursor)
 		if isCursorRow {
-			text = insertAt(text, rowCursor, pal.Cursor.Render("▌"))
-			text = appendGhost(text, ghost, width, pal.Ghost)
+			cursor := pal.Cursor.Render("▌")
+			if hint := s.composerHint(); hint != "" {
+				text = cursor + composerHintText(hint, width, pal.Faint)
+			} else {
+				text = insertAt(text, rowCursor, cursor)
+				text = appendGhost(text, ghost, width, pal.Ghost)
+			}
 		}
 		prefix := composerContPrefix(s)
 		if i == 0 {

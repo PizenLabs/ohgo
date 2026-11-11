@@ -661,12 +661,10 @@ type State struct {
 	Entries []Entry
 	// Status is the footer.
 	Status Status
-	// Tip is the quickstart's dynamic annotation. It is chosen once per
-	// project so repaints, resizes, and theme changes cannot shuffle it.
+	// Tip is the rotating hint the composer paints ahead of the caret while
+	// the input is empty. A submitted prompt advances it to the next curated
+	// entry; repaints, resizes, and theme changes never shuffle it.
 	Tip string
-	// tipProject is the working directory that owns Tip. It stays unexported
-	// because only a workspace transition may declare a new project.
-	tipProject string
 	// Integrations is the sidebar's snapshot of active MCP and LSP
 	// connections. It is a projection with no connection authority: the
 	// managers remain the owners and the view never probes a server.
@@ -968,32 +966,8 @@ func New() State {
 		ThemePreference: config.DefaultThemePreference,
 		ThemeSource:     ThemeSourceFallback,
 		KeepRecentMax:   DefaultKeepRecentSessions,
-		Tip:             GetRandomTip(),
+		Tip:             firstHint(hintContextWelcome),
 	}
-}
-
-// enterProject pins the quickstart tip to the observed project directory.
-//
-// The first directory adopts the tip already chosen for this state; a later
-// directory is a different project and re-rolls exactly once. Repaints, resizes,
-// and authority switches never call this, so the tip cannot move continuously.
-func (s *State) enterProject(cwd string) {
-	s.enterProjectWith(cwd, GetRandomTip)
-}
-
-// enterProjectWith is the selection seam. A nil chooser falls back to the real
-// pool, so a zero State still adopts a tip when it first enters a project.
-func (s *State) enterProjectWith(cwd string, choose func() string) {
-	if cwd == "" || s.tipProject == cwd {
-		return
-	}
-	if s.Tip == "" || s.tipProject != "" {
-		if choose == nil {
-			choose = GetRandomTip
-		}
-		s.Tip = choose()
-	}
-	s.tipProject = cwd
 }
 
 // sessionSlotID parses the "#N" slot label into the session id. It returns
@@ -1075,6 +1049,10 @@ func (s *State) Apply(event Event) {
 		s.Input = ""
 		s.Cursor = 0
 		s.Pastes = nil
+		// Each submitted prompt advances the composer's placeholder hint
+		// within the authority that now owns the next prompt, so the next
+		// empty composer teaches a different, relevant binding.
+		s.Tip = s.nextHintFor()
 		s.Status.Busy = true
 		// The prompt joins recallable history. Consecutive duplicates are
 		// collapsed so holding enter does not flood the history.
@@ -2389,7 +2367,6 @@ func (s *State) Apply(event Event) {
 	case WorkspaceUpdated:
 		if e.HasCwd {
 			s.Status.Cwd = e.Cwd
-			s.enterProject(e.Cwd)
 		}
 		if e.HasSession {
 			s.Status.Session = e.Session
@@ -2398,10 +2375,16 @@ func (s *State) Apply(event Event) {
 			s.Status.UsageText = e.UsageText
 		}
 		if e.HasWorkspace {
+			changed := s.Status.Workspace != e.Workspace
 			s.Status.Workspace = e.Workspace
 			s.Status.WorkspaceAccent = e.WorkspaceAccent
 			// The workspace moved, so a proposal naming the old one is stale.
 			s.Transition = nil
+			// The placeholder follows the authority: a new mode teaches a
+			// binding that mode can actually use.
+			if changed {
+				s.Tip = s.nextHintFor()
+			}
 		}
 		if e.HasUser {
 			s.Status.User = e.User
@@ -2649,6 +2632,9 @@ func (s *State) Apply(event Event) {
 		s.recapEmitted = nil
 		s.OutputTokens = 0
 		s.resetSessionMetrics()
+		// Clearing returns to the onboarding interaction, so the placeholder
+		// starts from that pool rather than carrying an active-session hint.
+		s.Tip = firstHint(hintContext(*s))
 	}
 }
 

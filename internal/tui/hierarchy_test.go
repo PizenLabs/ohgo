@@ -8,19 +8,17 @@ import (
 )
 
 // The quickstart is where the hierarchy is most visible: title, mode identity,
-// supporting descriptions, and taught affordances must each resolve to a
-// different focus tier. A flat surface is the failure this test defends.
-func TestQuickstartUsesThreeFocusTiers(t *testing.T) {
+// and supporting descriptions must each resolve to a different focus tier. A
+// flat surface is the failure this test defends.
+func TestQuickstartUsesFocusTiers(t *testing.T) {
 	forceTrueColor(t)
 	pal := forcedPalette()
 	chrome := ChromeFor(ThemeDark)
 	modeLine := padCells("ASK", identityModeLabelWidth) + "Understand, inspect, reason"
-	shortcutLine := padCells(triggerShortcuts[0][0], identityTriggerTokenWidth) + triggerShortcuts[0][1]
 	lines := []string{
 		identityGreetingLine(identityTestFacts()),
 		identitySubtitle,
 		modeLine,
-		shortcutLine,
 	}
 	for _, line := range lines {
 		if got := ansi.Strip(styleIdentityLine(line, pal, chrome)); got != line {
@@ -49,19 +47,12 @@ func TestQuickstartUsesThreeFocusTiers(t *testing.T) {
 	if !strings.Contains(mode, fg(accent).Bold(true).Render("ASK")) {
 		t.Errorf("mode row = %q, want ASK in its bold signature accent %q", mode, accent)
 	}
-	if !strings.Contains(mode, pal.Secondary.Render("    Understand, inspect, reason")) {
+	desc := strings.Repeat(" ", identityModeLabelWidth-len("ASK")) + "Understand, inspect, reason"
+	if !strings.Contains(mode, pal.Secondary.Render(desc)) {
 		t.Errorf("mode row = %q, want the description in the Medium Focus role", mode)
 	}
-	if strings.Contains(mode, pal.Faint.Render("    Understand, inspect, reason")) {
+	if strings.Contains(mode, pal.Faint.Render(desc)) {
 		t.Errorf("mode row = %q, want the description above the Low Focus role", mode)
-	}
-
-	triggers := styleIdentityLine(lines[3], pal, chrome)
-	if !strings.Contains(triggers, pal.Title.Render("/model")) {
-		t.Errorf("trigger row = %q, want /model in the High Focus role", triggers)
-	}
-	if strings.Contains(triggers, pal.Title.Render("choose model")) {
-		t.Errorf("trigger row = %q, want the hint below the High Focus role", triggers)
 	}
 }
 
@@ -87,8 +78,8 @@ func TestQuickstartRendersFuzzInSoftViolet(t *testing.T) {
 }
 
 // The quickstart is one full-width stack: modes share a strict description
-// column, the quick commands sit on a balanced two-column grid, and no inner
-// divider fragments the surface.
+// column, the tip starts on the same authority column, and no inner divider
+// fragments the surface.
 func TestQuickstartAlignsFullWidthSections(t *testing.T) {
 	const width = 120
 	out := RenderIdentitySurface(identityTestFacts(), width)
@@ -135,47 +126,12 @@ func TestQuickstartAlignsFullWidthSections(t *testing.T) {
 		}
 	}
 
-	commandRow := func(pair [2]string) int {
-		for i, line := range lines {
-			if strings.Contains(line, pair[0]) && strings.Contains(line, pair[1]) {
-				return i
-			}
+	for _, duplicate := range []string{"/model", "/help", "@files"} {
+		if strings.Contains(out, duplicate) {
+			t.Errorf("quickstart duplicated the composer shortcut %q:\n%s", duplicate, out)
 		}
-		return -1
-	}
-	modelRow, helpRow := commandRow(triggerShortcuts[0]), commandRow(triggerShortcuts[1])
-	filesRow := commandRow(triggerShortcuts[2])
-	tipRow := -1
-	for i, line := range lines {
-		if strings.Contains(line, identityTipLabel+" ") {
-			tipRow = i
-			break
-		}
-	}
-	for name, row := range map[string]int{"/model": modelRow, "@files": filesRow, "/help": helpRow, identityTipLabel: tipRow} {
-		if row < 0 {
-			t.Fatalf("quickstart lacks command %q:\n%s", name, out)
-		}
-	}
-	if modelRow != helpRow {
-		t.Errorf("/model row %d and /help row %d, want one balanced command row", modelRow, helpRow)
-	}
-	if filesRow != tipRow {
-		t.Errorf("@files row %d and Tip row %d, want one balanced tip row", filesRow, tipRow)
-	}
-	left := cellIndex(lines[modelRow], "/model")
-	if got := cellIndex(lines[filesRow], "@files"); got != left {
-		t.Errorf("@files starts at %d, want the shared left command column %d", got, left)
-	}
-	right := cellIndex(lines[helpRow], "/help")
-	if got := cellIndex(lines[tipRow], identityTipLabel); got != right {
-		t.Errorf("Tip starts at %d, want the shared right command column %d", got, right)
-	}
-	if right <= left {
-		t.Errorf("command columns overlap: left %d, right %d", left, right)
 	}
 
-	foundRule := false
 	for _, line := range lines {
 		segs := strings.Split(line, "│")
 		if len(segs) != 3 {
@@ -193,11 +149,8 @@ func TestQuickstartAlignsFullWidthSections(t *testing.T) {
 			}
 		}
 		if rule {
-			foundRule = true
+			t.Errorf("quickstart kept an inner section rule: %q", line)
 		}
-	}
-	if !foundRule {
-		t.Errorf("quickstart has no full-width section rule:\n%s", out)
 	}
 }
 

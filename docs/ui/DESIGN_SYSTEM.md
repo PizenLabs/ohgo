@@ -99,8 +99,8 @@ the High Focus tier; they do not create a fourth brightness ladder.
   warnings that are not critical, placeholders).
 - `TextFaint` is intentionally below the 4.5:1 normal-text floor (measured at
   roughly 2.6:1 dark and 2.4:1 light). It is therefore reserved for metadata
-  that is useful but not required: measured durations, `ctrl+o` hints, and
-  quickstart hint text. Essential information never uses it.
+  that is useful but not required: measured durations and `ctrl+o` hints.
+  Essential information never uses it.
 - `tokens_test.go` enforces that the tiers stay ordered (`title > primary >
   faint`) in both appearances, and that heading, emphasis, list marker, and body
   copy stay distinct values.
@@ -190,17 +190,15 @@ calibration guard, not a claim of full terminal-theme conformance.
   not body-coloured; the colour is what makes the reference artifact pop, with
   the tint acting as its surface. Bullet glyphs use `ListMarker`; item text stays
   body copy.
-- The quickstart panel's legend ("Quickstart") uses `Heading`; the rule around
-  it stays `BorderDefault`, so the category label has gravity without a bright
-  frame. The panel spans the conversation width with only an inner padding
-  inset. Its header is a single-line `OHGO` brand in `TextTitle` followed by the
-  greeting, never a block glyph or icon. Modes have no bullet anchor and no
-  inner vertical divider: their descriptions share one strict column, and a
-  low-focus `BorderDefault` rule separates the authority family from the quick
-  commands. The commands and the dynamic tip sit on a balanced two-column grid;
-  a cell folds its hint under the token column before the panel can overflow a
-  split pane. The compact composition drops only the decorative blank rows
-  around the rule when a short viewport would otherwise hide the panel title.
+- The quickstart panel's legend ("quickstart") is lowercase and takes the same
+  `BorderDefault` role as the rule, aligned with the content's left edge: the
+  category reads as part of the frame instead of competing with the greeting.
+  The panel spans the conversation width with only an inner padding inset. Its
+  header is a single-line `OHGO` brand in `TextTitle` followed by the greeting —
+  never a block glyph, icon, or dot-matrix mark. Modes have no bullet anchor and
+  no inner vertical divider: their descriptions share one strict column. The
+  compact composition drops only the decorative blank rows when a short viewport
+  would otherwise hide the panel title.
 - A completed tool row colours the status glyph, not the command. Command text
   is `TextPrimary`; measured durations and `ctrl+o` hints use `TextFaint`. A
   failed command colours its glyph and branch marker, while the reason remains
@@ -214,10 +212,14 @@ calibration guard, not a claim of full terminal-theme conformance.
   exit code is `TextMuted`, and the measured duration is `TextFaint`.
 - Reasoning uses the amber thought pair: a bold `ThoughtHeader` disclosure row
   and an italic `ThoughtBody` behind the dim guide.
-- Descriptions in the quickstart use `TextSecondary`; taught affordances
-  (`/model`, `/help`, `@files`) use `TextTitle`; their hints and the dynamic tip
-  body use `TextFaint`. The tip label uses the bold amber `ThoughtHeader`
-  accent, so the annotation is warm without outranking a command.
+- Descriptions in the quickstart use `TextSecondary`. The rotating binding hint
+  lives in the composer, not the panel: while the input is empty the caret stays
+  at the input origin and a `TextFaint` suggestion trails it, so the prompt
+  feels embedded rather than pushed aside. The first keystroke replaces the
+  hint. Hints are grouped by interaction — onboarding, ASK, BUILD, FUZZ — and
+  each submitted prompt advances within the active group, so the suggestion is
+  relevant to the authority that owns the next prompt rather than a mechanical
+  rotation through one list.
 - Authority identity is confined to the prompt word, the footer badge, and
   authority-specific dialogs. It never paints a whole panel.
 - Every coloured state also carries a text marker or word, so a monochrome
