@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -390,6 +391,9 @@ func renderPlaneModal(plane *ModelPlaneState, pal *Palette, state State, layout 
 	out = append(out, "│"+TruncateToWidth(divider, interior)+"│")
 	out = append(out, "│"+TruncateToWidth(footer, interior)+"│")
 	out = append(out, "└"+strings.Repeat("─", interior)+"┘")
+	// The dialog is a raised surface: fill it before adding the margins so
+	// the transparent terminal canvas stays outside the card, not inside it.
+	out = strings.Split(paintSurface(strings.Join(out, "\n"), design.For(themeOf(pal)).SurfaceElevated), "\n")
 	// Center horizontally within the terminal: margins on both sides keep
 	// the dialog off the edges and the background chrome conceptually
 	// visible around it.

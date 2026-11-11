@@ -3002,13 +3002,13 @@ func quitCardForTheme(confirm *PendingApproval, cardW int, theme string) string 
 		Foreground(lipgloss.Color(t.TextSecondary)).
 		Render("←→ move · enter confirm · y quit · n/esc stay")
 	inner := lipgloss.JoinVertical(lipgloss.Left, title, question, "", buttons, "", hints)
-	return lipgloss.NewStyle().
+	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(t.Brand)).
-		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
+	return paintSurface(card, t.SurfaceElevated)
 }
 
 // transitionCardWidth bounds the centered transition dialog: wide enough for
@@ -3093,13 +3093,13 @@ func transitionCardForTheme(prompt *TransitionPrompt, cardW int, theme string) s
 	}
 	rows = append(rows, "", buttons, "", hints)
 	inner := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	return lipgloss.NewStyle().
+	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(proposedAccent)).
-		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
+	return paintSurface(card, t.SurfaceElevated)
 }
 
 // handoffCarriedLine summarises the shared records a handoff references. It

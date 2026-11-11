@@ -22,6 +22,63 @@ func fg(token string) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(token))
 }
 
+// sgrReset is the sequence lipgloss emits at the end of a styled span.
+const sgrReset = "\x1b[0m"
+
+// backgroundSequence returns the sequence that makes the given colour the
+// active SGR background. A profile without colour yields "", which tells a
+// caller to leave the text untouched rather than inject escape codes into an
+// environment that opted out.
+func backgroundSequence(token string) string {
+	const sentinel = "\x00"
+	painted := lipgloss.NewStyle().Background(lipgloss.Color(token)).Render(sentinel)
+	prefix, _, ok := strings.Cut(painted, sentinel)
+	if !ok {
+		return ""
+	}
+	return prefix
+}
+
+// paintSurface makes an already-rendered card opaque.
+//
+// A nested lipgloss style ends its span with an SGR reset, and that reset also
+// clears the card's own background for the rest of the row: the terminal then
+// paints those cells with its default background. On a translucent terminal
+// the window behind the card shows through exactly those spans, which makes a
+// dialog look like it has holes in it. Re-asserting the surface after every
+// reset, and padding each row to the card's widest row, turns the block into
+// one solid rectangle without changing its text or colours.
+func paintSurface(rendered, token string) string {
+	if rendered == "" {
+		return ""
+	}
+	surface := backgroundSequence(token)
+	if surface == "" {
+		return rendered
+	}
+	lines := strings.Split(rendered, "\n")
+	width := 0
+	for _, line := range lines {
+		if w := CellWidth(line); w > width {
+			width = w
+		}
+	}
+	for i, line := range lines {
+		line = strings.ReplaceAll(line, sgrReset, sgrReset+surface)
+		line = strings.ReplaceAll(line, "\x1b[m", "\x1b[m"+surface)
+		var b strings.Builder
+		b.Grow(len(line) + width + len(surface) + len(sgrReset))
+		b.WriteString(surface)
+		b.WriteString(line)
+		if gap := width - CellWidth(line); gap > 0 {
+			b.WriteString(strings.Repeat(" ", gap))
+		}
+		b.WriteString(sgrReset)
+		lines[i] = b.String()
+	}
+	return strings.Join(lines, "\n")
+}
+
 // DarkTokens and LightTokens are the resolved design foundation. Constructors
 // in this package consume these roles; no component below should reach for a
 // raw colour literal.
