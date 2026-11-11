@@ -12,8 +12,8 @@ import (
 // resumed or in-progress transcript.
 //
 // The surface is a runtime identity surface: product identity, greeting,
-// model, workspace, git state, capability modes, and real affordances —
-// never marketing, tips, or invented state.
+// capability modes, real affordances, and a curated tip drawn from bindings
+// the runtime implements — never marketing or invented state.
 
 const welcomeInvite = "agent runtime for real codebases"
 
@@ -138,14 +138,14 @@ func TestWelcomeSuppressedBehindOverlays(t *testing.T) {
 	}
 }
 
-func TestWelcomeIsCompactOnNarrowTerminals(t *testing.T) {
+func TestWelcomePanelScalesAcrossWidths(t *testing.T) {
 	wide := New()
 	wide.Status.Model = "groq/m"
 	wide.Apply(TerminalResized{Width: 120, Height: 30})
 
 	narrow := New()
 	narrow.Status.Model = "groq/m"
-	narrow.Apply(TerminalResized{Width: 50, Height: 30})
+	narrow.Apply(TerminalResized{Width: 42, Height: 30})
 
 	wideOut := Render(wide)
 	narrowOut := Render(narrow)
@@ -156,14 +156,12 @@ func TestWelcomeIsCompactOnNarrowTerminals(t *testing.T) {
 				t.Errorf("tier lost essential content %q: %q", want, out)
 			}
 		}
+		if !strings.Contains(out, "┌") {
+			t.Errorf("panel lost its frame: %q", out)
+		}
 	}
-	// The wide tier boxes the composition; the narrow tier drops decoration
-	// rather than clipping content.
-	if !strings.Contains(wideOut, "┌") {
-		t.Errorf("wide identity surface lost its frame: %q", wideOut)
-	}
-	if strings.Contains(narrowOut, "┌") {
-		t.Errorf("narrow identity surface kept a frame that risks clipping: %q", narrowOut)
+	if strings.Contains(wideOut, "▸") || strings.Contains(narrowOut, "▸") {
+		t.Errorf("panel kept a redundant mode anchor")
 	}
 }
 
@@ -341,5 +339,63 @@ func TestThemesRenderCoherently(t *testing.T) {
 	}
 	if ExtrasFor(ThemeDark).Header.GetForeground() == ExtrasFor(ThemeLight).Header.GetForeground() {
 		t.Error("theme switch does not change the chrome styles")
+	}
+}
+
+// The quickstart must survive the viewports the product promises: a split
+// pane, a laptop, and a wide desktop. Each render fills exactly its viewport,
+// never overflows a cell, keeps the authority vocabulary, and spans the panel
+// instead of shrinking into a floating micro-box.
+func TestWelcomeCardFitsAcceptanceViewports(t *testing.T) {
+	for _, size := range [][2]int{{60, 20}, {80, 24}, {120, 40}} {
+		s := New()
+		s.Status.Model = "groq/m"
+		s.Apply(IdentityUpdated{User: "Zoro", Greeting: "Good evening, Zoro."})
+		s.Apply(TerminalResized{Width: size[0], Height: size[1]})
+
+		out := Render(s)
+		lines := strings.Split(out, "\n")
+		if len(lines) != size[1] {
+			t.Fatalf("%dx%d rendered %d lines, want %d:\n%s", size[0], size[1], len(lines), size[1], out)
+		}
+		for i, line := range lines {
+			if CellWidth(line) > size[0] {
+				t.Errorf("%dx%d line %d = %d cells, want <= %d:\n%s", size[0], size[1], i, CellWidth(line), size[0], line)
+			}
+		}
+		for _, want := range []string{"Quickstart", "OHGO", "ASK", "BUILD", "FUZZ", "/model", "$sup"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%dx%d lost %q:\n%s", size[0], size[1], want, out)
+			}
+		}
+		for _, gone := range []string{"▸", "▄", "▀", "█"} {
+			if strings.Contains(out, gone) {
+				t.Errorf("%dx%d kept %q:\n%s", size[0], size[1], gone, out)
+			}
+		}
+
+		start, end := -1, -1
+		for i, line := range lines {
+			if start < 0 && strings.Contains(line, identityFrameLegend) {
+				start = i
+			}
+			if start >= 0 && strings.HasPrefix(strings.TrimSpace(line), "└") {
+				end = i
+				break
+			}
+		}
+		if start < 0 || end < 0 {
+			t.Fatalf("%dx%d rendered no complete panel:\n%s", size[0], size[1], out)
+		}
+		panelW := size[0] - 1 // displayWidth leaves one trailing margin cell
+		for i := start; i <= end; i++ {
+			if got := CellWidth(lines[i]); got != panelW {
+				t.Errorf("%dx%d panel line %d = %d cells, want the full %d-cell panel: %q",
+					size[0], size[1], i, got, panelW, lines[i])
+			}
+			if strings.Count(lines[i], "│") > 2 {
+				t.Errorf("%dx%d panel line %d kept an inner divider: %q", size[0], size[1], i, lines[i])
+			}
+		}
 	}
 }

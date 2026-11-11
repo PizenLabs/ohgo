@@ -190,11 +190,17 @@ calibration guard, not a claim of full terminal-theme conformance.
   not body-coloured; the colour is what makes the reference artifact pop, with
   the tint acting as its surface. Bullet glyphs use `ListMarker`; item text stays
   body copy.
-- The quickstart card's legend ("Quickstart") uses `Heading`; the rule around
+- The quickstart panel's legend ("Quickstart") uses `Heading`; the rule around
   it stays `BorderDefault`, so the category label has gravity without a bright
-  frame. The greeting above it remains `TextTitle`. Sections are separated by a
-  blank row, mode rows carry a faint `▸` anchor, and a low-focus `BorderDefault`
-  rule separates the taught affordances from the mode definitions.
+  frame. The panel spans the conversation width with only an inner padding
+  inset. Its header is a single-line `OHGO` brand in `TextTitle` followed by the
+  greeting, never a block glyph or icon. Modes have no bullet anchor and no
+  inner vertical divider: their descriptions share one strict column, and a
+  low-focus `BorderDefault` rule separates the authority family from the quick
+  commands. The commands and the dynamic tip sit on a balanced two-column grid;
+  a cell folds its hint under the token column before the panel can overflow a
+  split pane. The compact composition drops only the decorative blank rows
+  around the rule when a short viewport would otherwise hide the panel title.
 - A completed tool row colours the status glyph, not the command. Command text
   is `TextPrimary`; measured durations and `ctrl+o` hints use `TextFaint`. A
   failed command colours its glyph and branch marker, while the reason remains
@@ -209,8 +215,9 @@ calibration guard, not a claim of full terminal-theme conformance.
 - Reasoning uses the amber thought pair: a bold `ThoughtHeader` disclosure row
   and an italic `ThoughtBody` behind the dim guide.
 - Descriptions in the quickstart use `TextSecondary`; taught affordances
-  (`/model`, `/help`, `@files`, `$sup`) use `TextTitle`; their hints use
-  `TextFaint`.
+  (`/model`, `/help`, `@files`) use `TextTitle`; their hints and the dynamic tip
+  body use `TextFaint`. The tip label uses the bold amber `ThoughtHeader`
+  accent, so the annotation is warm without outranking a command.
 - Authority identity is confined to the prompt word, the footer badge, and
   authority-specific dialogs. It never paints a whole panel.
 - Every coloured state also carries a text marker or word, so a monochrome

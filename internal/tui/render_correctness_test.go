@@ -391,7 +391,7 @@ func TestSlashTypingShowsInlinePicker(t *testing.T) {
 	p.state.Apply(TerminalResized{Width: 100, Height: 24})
 	p.state.Apply(ComposerChanged{Text: "/", Cursor: 1})
 	out := Render(p.state)
-	if !strings.Contains(out, "/help") || !strings.Contains(out, "/model") {
+	if !strings.Contains(out, "/ask") || !strings.Contains(out, "esc dismiss") {
 		t.Errorf("bare / shows no discovery:\n%s", out)
 	}
 	// The transcript stays visible behind inline discovery.

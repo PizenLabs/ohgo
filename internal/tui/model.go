@@ -661,6 +661,12 @@ type State struct {
 	Entries []Entry
 	// Status is the footer.
 	Status Status
+	// Tip is the quickstart's dynamic annotation. It is chosen once per
+	// project so repaints, resizes, and theme changes cannot shuffle it.
+	Tip string
+	// tipProject is the working directory that owns Tip. It stays unexported
+	// because only a workspace transition may declare a new project.
+	tipProject string
 	// Integrations is the sidebar's snapshot of active MCP and LSP
 	// connections. It is a projection with no connection authority: the
 	// managers remain the owners and the view never probes a server.
@@ -962,7 +968,32 @@ func New() State {
 		ThemePreference: config.DefaultThemePreference,
 		ThemeSource:     ThemeSourceFallback,
 		KeepRecentMax:   DefaultKeepRecentSessions,
+		Tip:             GetRandomTip(),
 	}
+}
+
+// enterProject pins the quickstart tip to the observed project directory.
+//
+// The first directory adopts the tip already chosen for this state; a later
+// directory is a different project and re-rolls exactly once. Repaints, resizes,
+// and authority switches never call this, so the tip cannot move continuously.
+func (s *State) enterProject(cwd string) {
+	s.enterProjectWith(cwd, GetRandomTip)
+}
+
+// enterProjectWith is the selection seam. A nil chooser falls back to the real
+// pool, so a zero State still adopts a tip when it first enters a project.
+func (s *State) enterProjectWith(cwd string, choose func() string) {
+	if cwd == "" || s.tipProject == cwd {
+		return
+	}
+	if s.Tip == "" || s.tipProject != "" {
+		if choose == nil {
+			choose = GetRandomTip
+		}
+		s.Tip = choose()
+	}
+	s.tipProject = cwd
 }
 
 // sessionSlotID parses the "#N" slot label into the session id. It returns
@@ -2358,6 +2389,7 @@ func (s *State) Apply(event Event) {
 	case WorkspaceUpdated:
 		if e.HasCwd {
 			s.Status.Cwd = e.Cwd
+			s.enterProject(e.Cwd)
 		}
 		if e.HasSession {
 			s.Status.Session = e.Session

@@ -918,11 +918,24 @@ func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 // greeting. The model, workspace, working directory, git state, and readiness
 // live in the top bar; repeating them here would double a fact the user can
 // already see. It is chrome, never an Entry, so it vanishes the moment real
-// content lands and never persists. Layout follows the responsive tier: wide
-// and medium box the composition, narrow renders it borderless.
+// content lands and never persists. The panel spans the conversation column and
+// folds its copy on narrow terminals; it drops the frame only below the
+// minimum width that can draw one without breaking.
 func renderWelcome(state State, pal *Palette, layout Layout) string {
 	facts := FactsFromStatus(state)
-	surface := RenderIdentitySurface(facts, columnWidth(state, layout))
+	width := columnWidth(state, layout)
+	surface := RenderIdentitySurface(facts, width)
+	if state.Height > 0 {
+		// A short transcript area shows the bottom of an overlong card, which
+		// would hide the panel's own title. The compact composition keeps the
+		// full grid (modes, commands, tip) visible by dropping only decorative
+		// blank rows; use it whenever it fits and the full form does not.
+		if budget := transcriptBudget(state, layout); budget > 0 && len(splitLines(surface)) > budget {
+			if compact := renderIdentitySurface(facts, width, true); len(splitLines(compact)) <= budget {
+				surface = compact
+			}
+		}
+	}
 	if state.Width > 0 {
 		// The transcript area slices by lines; style after measuring so ANSI
 		// never inflates the viewport budget. Keep it quiet: identity first,
@@ -951,46 +964,132 @@ func styleIdentityLine(line string, pal *Palette, chrome *Chrome) string {
 	if strings.HasPrefix(trimmed, "┌") {
 		return styleBoxLegend(line, pal)
 	}
-	if strings.HasPrefix(trimmed, "└") || strings.HasPrefix(trimmed, "─") {
+	if strings.HasPrefix(trimmed, "└") {
 		return pal.Separator.Render(line)
 	}
 	if strings.Contains(line, "│") {
-		if styled, ok := styleBoxedModes(line, pal, chrome); ok {
-			return styled
-		}
-		if boxedDivider(line) {
-			return styleBoxedCells(line, pal, func(cell string) string { return pal.Separator.Render(cell) })
-		}
-		if greetingBrandIndex(line) >= 0 {
-			return styleGreetingTitle(line, pal)
-		}
-		if strings.Contains(line, identitySubtitle) {
-			return styleBoxedCells(line, pal, func(cell string) string { return pal.Muted.Render(cell) })
-		}
-		if lineHasTrigger(line) {
-			return styleBoxedCells(line, pal, func(cell string) string { return styleTriggerText(cell, pal) })
-		}
-		return styleBoxedCells(line, pal, func(cell string) string { return pal.Faint.Render(cell) })
+		return styleIdentityBoxRow(line, pal, chrome)
 	}
-	if greetingBrandIndex(line) >= 0 {
-		return styleGreetingTitle(line, pal)
-	}
-	if styled := styleModeBadges(line, pal, chrome); styled != line {
-		return styled
-	}
-	if strings.Contains(line, identitySubtitle) {
-		return pal.Muted.Render(line)
-	}
-	if lineHasTrigger(line) {
-		return styleTriggerText(line, pal)
-	}
-	return line
+	return styleIdentityCell(line, pal, chrome)
 }
 
-// styleBoxLegend renders the quickstart card's top rule: the category legend
-// takes the document-structure accent while the rule around it stays a
-// separator. The legend is the card's structural header, so it must outrank the
-// rows it introduces without turning the whole frame bright.
+// styleIdentityBoxRow styles each boxed interior cell independently. The
+// panel owns one outer frame; splitting on its borders keeps them in the
+// separator role while each row's content resolves to its own focus tier.
+func styleIdentityBoxRow(line string, pal *Palette, chrome *Chrome) string {
+	segs := strings.Split(line, "│")
+	var sb strings.Builder
+	for i, seg := range segs {
+		if i > 0 {
+			sb.WriteString(pal.Separator.Render("│"))
+		}
+		if i == 0 || i == len(segs)-1 {
+			sb.WriteString(pal.Separator.Render(seg))
+			continue
+		}
+		sb.WriteString(styleIdentityCell(seg, pal, chrome))
+	}
+	return sb.String()
+}
+
+// styleIdentityCell resolves one semantic cell to its focus role. Leading and
+// trailing padding is carried by the styled style itself, so stripping the
+// result always returns the measured cells.
+func styleIdentityCell(cell string, pal *Palette, chrome *Chrome) string {
+	trimmed := strings.TrimSpace(cell)
+	if trimmed == "" {
+		return cell
+	}
+	if identityRuleCell(trimmed) {
+		return pal.Separator.Render(cell)
+	}
+	if greetingBrandIndex(cell) >= 0 {
+		return styleTitleText(cell, pal)
+	}
+	if strings.Contains(cell, identitySubtitle) {
+		return pal.Muted.Render(cell)
+	}
+	if mode, ok := leadingMode(cell); ok {
+		idx := strings.Index(cell, mode)
+		if idx < 0 {
+			return pal.Secondary.Render(cell)
+		}
+		return pal.Faint.Render(cell[:idx]) +
+			modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) +
+			pal.Secondary.Render(cell[idx+len(mode):])
+	}
+	if lineHasCommandSlot(cell) {
+		return styleCommandCell(cell, pal)
+	}
+	if identityCommandContinuation(cell) {
+		return pal.Faint.Render(cell)
+	}
+	return pal.Secondary.Render(cell)
+}
+
+// lineHasCommandSlot reports a cell that carries a taught command or the Tip
+// label. A folded continuation line has neither, and is styled separately.
+func lineHasCommandSlot(cell string) bool {
+	return lineHasTrigger(cell) || tipLabelIndex(cell) >= 0
+}
+
+// identityCommandContinuation reports a row folded out of a command or tip
+// cell. Such a row has no token of its own, only the hanging indent the
+// command grid uses, so it must stay in the low-focus hint role.
+func identityCommandContinuation(cell string) bool {
+	indent := len(cell) - len(strings.TrimLeft(cell, " "))
+	return indent >= identityPadX+identityTriggerTokenWidth
+}
+
+// styleCommandCell styles a command-grid cell: taught tokens take the High
+// Focus title role, the Tip label takes the warm reasoning accent, and all
+// supporting copy stays in the low-focus hint role. The tip body stays quiet
+// even when it names an affordance, so the annotation never outranks a command.
+func styleCommandCell(cell string, pal *Palette) string {
+	if tip := tipLabelIndex(cell); tip >= 0 {
+		end := tip + len(identityTipLabel)
+		return styleTriggerText(cell[:tip], pal) +
+			pal.Thought.Render(identityTipLabel) +
+			pal.Faint.Render(cell[end:])
+	}
+	return styleTriggerText(cell, pal)
+}
+
+// tipLabelIndex locates the Tip label as a standalone word. Matching the whole
+// token avoids treating a "Tip" inside prose or a path as the slot label.
+func tipLabelIndex(cell string) int {
+	for i := 0; i+len(identityTipLabel) <= len(cell); i++ {
+		if cell[i:i+len(identityTipLabel)] != identityTipLabel {
+			continue
+		}
+		before := i == 0 || cell[i-1] == ' '
+		after := i + len(identityTipLabel)
+		afterOK := after == len(cell) || cell[after] == ' '
+		if before && afterOK {
+			return i
+		}
+	}
+	return -1
+}
+
+// identityRuleCell reports a cell that is only a horizontal stroke. The
+// section divider keeps the low-focus separator role instead of falling
+// through to the medium-focus body role.
+func identityRuleCell(cell string) bool {
+	if cell == "" {
+		return false
+	}
+	for _, r := range cell {
+		if r != '─' {
+			return false
+		}
+	}
+	return true
+}
+
+// styleBoxLegend renders the quickstart panel's top rule: the category legend
+// is structural, while the rule around it stays a separator. The legend must
+// outrank the rows it introduces without turning the whole frame bright.
 func styleBoxLegend(line string, pal *Palette) string {
 	idx := strings.Index(line, identityFrameLegend)
 	if idx < 0 {
@@ -1007,8 +1106,7 @@ func styleBoxLegend(line string, pal *Palette) string {
 // mid-row — a workspace path, a model id — so those rows keep their own
 // styling instead of borrowing the title's.
 func greetingBrandIndex(line string) int {
-	const brand = "OHGO"
-	idx := strings.Index(line, brand)
+	idx := strings.Index(line, identityBrandText)
 	if idx < 0 {
 		return -1
 	}
@@ -1017,84 +1115,31 @@ func greetingBrandIndex(line string) int {
 			return -1
 		}
 	}
-	if tail := line[idx+len(brand):]; tail != "" && !strings.HasPrefix(tail, " ") && !strings.HasPrefix(tail, "│") {
+	if tail := line[idx+len(identityBrandText):]; tail != "" && !strings.HasPrefix(tail, " ") && !strings.HasPrefix(tail, "│") {
 		return -1
 	}
 	return idx
 }
 
-// styleGreetingTitle renders the identity title row: the OHGO brand and the
-// personal address share the High Focus title role, so the first row is the
-// strongest text on the surface. Box borders keep the separator role instead
-// of inheriting the title colour. Styling wraps measured cells, so the
-// stripped row still equals the input.
-func styleGreetingTitle(line string, pal *Palette) string {
-	if strings.Contains(line, "│") {
-		return styleBoxedCells(line, pal, func(cell string) string { return styleTitleText(cell, pal) })
-	}
-	return styleTitleText(line, pal)
-}
-
 // styleTitleText applies the title role to one bare cell. The brand and the
 // address both take it; padding stays faint so the row does not glow.
 func styleTitleText(cell string, pal *Palette) string {
-	const brand = "OHGO"
 	idx := greetingBrandIndex(cell)
 	if idx < 0 {
 		return pal.Title.Render(cell)
 	}
-	tail := cell[idx+len(brand):]
+	tail := cell[idx+len(identityBrandText):]
 	if dot := strings.Index(tail, "·"); dot >= 0 {
 		// The separator between brand and address is punctuation, not part
 		// of either phrase: keep it low-focus so the greeting still reads as
 		// one title rather than two competing labels.
 		return pal.Faint.Render(cell[:idx]) +
-			pal.Title.Render(brand) +
+			pal.Title.Render(identityBrandText) +
 			pal.Faint.Render(tail[:dot]) +
 			pal.Faint.Render("·") +
 			pal.Title.Render(tail[dot+len("·"):])
 	}
-	return pal.Faint.Render(cell[:idx]) + pal.Title.Render(brand) + pal.Title.Render(tail)
-}
-
-// boxedDivider reports a frame row whose interior is only the section rule.
-// Separating it from prose rows lets the rule keep the low-focus separator
-// role instead of borrowing the muted body fallback.
-func boxedDivider(line string) bool {
-	segs := strings.Split(line, "│")
-	if len(segs) != 3 {
-		return false
-	}
-	interior := strings.TrimSpace(segs[1])
-	if interior == "" {
-		return false
-	}
-	for _, r := range interior {
-		if r != '─' {
-			return false
-		}
-	}
-	return true
-}
-
-// styleBoxedCells styles the interior of a boxed line while leaving its
-// borders in the separator role. One box drawing colour must survive every
-// row, or the frame appears to change brightness between sections.
-func styleBoxedCells(line string, pal *Palette, style func(string) string) string {
-	segs := strings.Split(line, "│")
-	if len(segs) < 3 {
-		return style(line)
-	}
-	var sb strings.Builder
-	sb.WriteString(pal.Separator.Render(segs[0] + "│"))
-	for i := 1; i < len(segs)-1; i++ {
-		sb.WriteString(style(segs[i]))
-		sb.WriteString(pal.Separator.Render("│"))
-	}
-	if last := segs[len(segs)-1]; last != "" {
-		sb.WriteString(pal.Separator.Render(last))
-	}
-	return sb.String()
+	return pal.Faint.Render(cell[:idx]) + pal.Title.Render(identityBrandText) + pal.Title.Render(tail)
 }
 
 // modeLabels are the authority names that render as accent badges.
@@ -1102,12 +1147,9 @@ var modeLabels = map[string]bool{"ASK": true, "BUILD": true, "FUZZ": true}
 
 // leadingMode reports the authority label heading a cell, if any. The label
 // must be the whole first token: a description that merely starts with those
-// letters never matches. The quickstart's alignment glyph is skipped first so
-// the anchor can sit before the label without hiding it.
+// letters never matches.
 func leadingMode(cell string) (string, bool) {
 	rest := strings.TrimLeft(cell, " ")
-	rest = strings.TrimPrefix(rest, identityModeGlyph)
-	rest = strings.TrimLeft(rest, " ")
 	for mode := range modeLabels {
 		if rest == mode || strings.HasPrefix(rest, mode+" ") {
 			return mode, true
@@ -1116,73 +1158,10 @@ func leadingMode(cell string) (string, bool) {
 	return "", false
 }
 
-// styleBoxedModes accents the mode labels inside a boxed row, leaving every
-// other cell muted. It reports false when the row holds no label, so the
-// caller falls back to the plain muted row.
-func styleBoxedModes(line string, pal *Palette, chrome *Chrome) (string, bool) {
-	segs := strings.Split(line, "│")
-	if len(segs) < 3 {
-		return "", false
-	}
-	holds := false
-	for i := 1; i < len(segs)-1; i++ {
-		if _, ok := leadingMode(segs[i]); ok {
-			holds = true
-		}
-	}
-	if !holds {
-		return "", false
-	}
-	var sb strings.Builder
-	sb.WriteString(pal.Separator.Render(segs[0] + "│"))
-	for i := 1; i < len(segs)-1; i++ {
-		sb.WriteString(styleModeCell(segs[i], pal, chrome))
-		sb.WriteString(pal.Separator.Render("│"))
-	}
-	if last := segs[len(segs)-1]; last != "" {
-		sb.WriteString(pal.Separator.Render(last))
-	}
-	return sb.String(), true
-}
-
-// styleModeCell accents a leading authority label, renders the description in
-// the Medium Focus support role, and fades the indent, glyph, and padding.
-// Cells without a label render as secondary text.
-func styleModeCell(cell string, pal *Palette, chrome *Chrome) string {
-	mode, ok := leadingMode(cell)
-	if !ok {
-		return pal.Secondary.Render(cell)
-	}
-	idx := strings.Index(cell, mode)
-	if idx < 0 {
-		return pal.Secondary.Render(cell)
-	}
-	return pal.Faint.Render(cell[:idx]) +
-		modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) +
-		pal.Secondary.Render(cell[idx+len(mode):])
-}
-
-// styleModeBadges accents a leading authority label on a borderless line. The
-// alignment glyph stays faint so it anchors the row without competing with the
-// authority accent.
-func styleModeBadges(line string, pal *Palette, chrome *Chrome) string {
-	mode, ok := leadingMode(line)
-	if !ok {
-		return line
-	}
-	idx := strings.Index(line, mode)
-	if idx < 0 {
-		return line
-	}
-	return pal.Faint.Render(line[:idx]) +
-		modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) +
-		pal.Secondary.Render(line[idx+len(mode):])
-}
-
 // triggerTokens are the affordances the quickstart row teaches. They are data,
 // not styling accidents: the renderer bolds exactly these and fades the hints
 // between them.
-var triggerTokens = []string{"/model", "/help", "@files", "$sup"}
+var triggerTokens = []string{"/model", "/help", "@files"}
 
 // lineHasTrigger reports whether a quickstart line carries a taught affordance.
 func lineHasTrigger(line string) bool {

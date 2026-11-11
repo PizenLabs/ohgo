@@ -14,11 +14,13 @@ func TestQuickstartUsesThreeFocusTiers(t *testing.T) {
 	forceTrueColor(t)
 	pal := forcedPalette()
 	chrome := ChromeFor(ThemeDark)
+	modeLine := padCells("ASK", identityModeLabelWidth) + "Understand, inspect, reason"
+	shortcutLine := padCells(triggerShortcuts[0][0], identityTriggerTokenWidth) + triggerShortcuts[0][1]
 	lines := []string{
-		identityIndent + "OHGO  ·  Good evening, Jack.",
-		identityIndent + identitySubtitle,
-		identityIndent + identityModeGlyph + " " + padCells("ASK", identityModeLabelWidth) + "Understand, inspect, reason",
-		identityIndent + identityShortcutLine(triggerShortcuts[0]),
+		identityGreetingLine(identityTestFacts()),
+		identitySubtitle,
+		modeLine,
+		shortcutLine,
 	}
 	for _, line := range lines {
 		if got := ansi.Strip(styleIdentityLine(line, pal, chrome)); got != line {
@@ -47,9 +49,6 @@ func TestQuickstartUsesThreeFocusTiers(t *testing.T) {
 	if !strings.Contains(mode, fg(accent).Bold(true).Render("ASK")) {
 		t.Errorf("mode row = %q, want ASK in its bold signature accent %q", mode, accent)
 	}
-	if !strings.Contains(mode, pal.Faint.Render(identityIndent+identityModeGlyph+" ")) {
-		t.Errorf("mode row = %q, want the indent and alignment glyph in the Low Focus role", mode)
-	}
 	if !strings.Contains(mode, pal.Secondary.Render("    Understand, inspect, reason")) {
 		t.Errorf("mode row = %q, want the description in the Medium Focus role", mode)
 	}
@@ -58,10 +57,8 @@ func TestQuickstartUsesThreeFocusTiers(t *testing.T) {
 	}
 
 	triggers := styleIdentityLine(lines[3], pal, chrome)
-	for _, token := range []string{"/model", "/help"} {
-		if !strings.Contains(triggers, pal.Title.Render(token)) {
-			t.Errorf("trigger row = %q, want %q in the High Focus role", triggers, token)
-		}
+	if !strings.Contains(triggers, pal.Title.Render("/model")) {
+		t.Errorf("trigger row = %q, want /model in the High Focus role", triggers)
 	}
 	if strings.Contains(triggers, pal.Title.Render("choose model")) {
 		t.Errorf("trigger row = %q, want the hint below the High Focus role", triggers)
@@ -73,7 +70,7 @@ func TestQuickstartUsesThreeFocusTiers(t *testing.T) {
 // unaccented row would teach the wrong signature.
 func TestQuickstartRendersFuzzInSoftViolet(t *testing.T) {
 	forceTrueColor(t)
-	line := identityIndent + identityModeGlyph + " " + padCells("FUZZ", identityModeLabelWidth) + "$sup · fast assistance"
+	line := padCells("FUZZ", identityModeLabelWidth) + capabilityModes[2].desc
 	for _, theme := range []string{ThemeDark, ThemeLight} {
 		styled := styleIdentityLine(line, PaletteFor(theme), ChromeFor(theme))
 		accent := ModeAccentFor(theme, "FUZZ")
@@ -89,58 +86,129 @@ func TestQuickstartRendersFuzzInSoftViolet(t *testing.T) {
 	}
 }
 
-// The quickstart is a composed card, not a dense list: mode rows carry an
-// alignment anchor, sections are separated by breathing rows, and a low-focus
-// rule introduces the shortcut grid. This pins the structural polish the card
-// promises without asserting a single terminal width.
-func TestQuickstartGroupsSectionsWithBreathingAndRule(t *testing.T) {
+// The quickstart is one full-width stack: modes share a strict description
+// column, the quick commands sit on a balanced two-column grid, and no inner
+// divider fragments the surface.
+func TestQuickstartAlignsFullWidthSections(t *testing.T) {
 	const width = 120
 	out := RenderIdentitySurface(identityTestFacts(), width)
 	lines := strings.Split(out, "\n")
 
-	for _, want := range []string{"▸ ASK", "▸ BUILD", "▸ FUZZ"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("quickstart lacks the mode anchor %q:\n%s", want, out)
+	if strings.Contains(out, "▸") {
+		t.Errorf("quickstart kept a redundant arrow anchor:\n%s", out)
+	}
+	if strings.ContainsAny(out, "▄▀█") {
+		t.Errorf("quickstart kept a block-glyph wordmark:\n%s", out)
+	}
+	for _, line := range lines {
+		if got := CellWidth(line); got != width {
+			t.Errorf("line = %d cells, want the full %d-cell panel: %q", got, width, line)
+		}
+		if strings.Count(line, "│") > 2 {
+			t.Errorf("line kept an inner vertical divider: %q", line)
 		}
 	}
 
-	rule := -1
+	modeStart := -1
+	for _, m := range capabilityModes {
+		row := -1
+		for i, line := range lines {
+			if strings.Contains(line, m.name+" ") && strings.Contains(line, m.desc) {
+				row = i
+				break
+			}
+		}
+		if row < 0 {
+			t.Fatalf("quickstart lacks the %s row:\n%s", m.name, out)
+		}
+		start := cellIndex(lines[row], m.name)
+		desc := cellIndex(lines[row], m.desc)
+		if got := desc - start; got != identityModeLabelWidth {
+			t.Errorf("%s description starts %d cells after the label, want %d:\n%s",
+				m.name, got, identityModeLabelWidth, lines[row])
+		}
+		if modeStart < 0 {
+			modeStart = start
+		}
+		if start != modeStart {
+			t.Errorf("%s label starts at %d, want the shared mode column %d", m.name, start, modeStart)
+		}
+	}
+
+	commandRow := func(pair [2]string) int {
+		for i, line := range lines {
+			if strings.Contains(line, pair[0]) && strings.Contains(line, pair[1]) {
+				return i
+			}
+		}
+		return -1
+	}
+	modelRow, helpRow := commandRow(triggerShortcuts[0]), commandRow(triggerShortcuts[1])
+	filesRow := commandRow(triggerShortcuts[2])
+	tipRow := -1
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "│") && strings.Contains(trimmed, "───") &&
-			!strings.ContainsAny(trimmed, "┌└┐┘") {
-			rule = i
+		if strings.Contains(line, identityTipLabel+" ") {
+			tipRow = i
 			break
 		}
 	}
-	if rule < 0 {
-		t.Fatalf("quickstart has no section rule:\n%s", out)
-	}
-	if !blankBoxRow(lines[rule-1]) || !blankBoxRow(lines[rule+1]) {
-		t.Errorf("section rule is not surrounded by breathing rows:\n%s", out)
-	}
-
-	modelRow, filesRow := -1, -1
-	for i, line := range lines {
-		switch {
-		case strings.Contains(line, "/model"):
-			modelRow = i
-		case strings.Contains(line, "@files"):
-			filesRow = i
+	for name, row := range map[string]int{"/model": modelRow, "@files": filesRow, "/help": helpRow, identityTipLabel: tipRow} {
+		if row < 0 {
+			t.Fatalf("quickstart lacks command %q:\n%s", name, out)
 		}
 	}
-	if modelRow < 0 || filesRow < 0 {
-		t.Fatalf("quickstart lacks the shortcut rows:\n%s", out)
+	if modelRow != helpRow {
+		t.Errorf("/model row %d and /help row %d, want one balanced command row", modelRow, helpRow)
 	}
-	if got, want := strings.Index(lines[modelRow], "/help"), strings.Index(lines[filesRow], "$sup"); got != want {
-		t.Errorf("shortcut columns are not aligned: /help at %d, $sup at %d", got, want)
+	if filesRow != tipRow {
+		t.Errorf("@files row %d and Tip row %d, want one balanced tip row", filesRow, tipRow)
+	}
+	left := cellIndex(lines[modelRow], "/model")
+	if got := cellIndex(lines[filesRow], "@files"); got != left {
+		t.Errorf("@files starts at %d, want the shared left command column %d", got, left)
+	}
+	right := cellIndex(lines[helpRow], "/help")
+	if got := cellIndex(lines[tipRow], identityTipLabel); got != right {
+		t.Errorf("Tip starts at %d, want the shared right command column %d", got, right)
+	}
+	if right <= left {
+		t.Errorf("command columns overlap: left %d, right %d", left, right)
+	}
+
+	foundRule := false
+	for _, line := range lines {
+		segs := strings.Split(line, "│")
+		if len(segs) != 3 {
+			continue
+		}
+		interior := strings.TrimSpace(segs[1])
+		if interior == "" {
+			continue
+		}
+		rule := true
+		for _, r := range interior {
+			if r != '─' {
+				rule = false
+				break
+			}
+		}
+		if rule {
+			foundRule = true
+		}
+	}
+	if !foundRule {
+		t.Errorf("quickstart has no full-width section rule:\n%s", out)
 	}
 }
 
-// blankBoxRow reports a frame row whose interior is empty.
-func blankBoxRow(line string) bool {
-	segs := strings.Split(line, "│")
-	return len(segs) == 3 && strings.TrimSpace(segs[1]) == ""
+// cellIndex is the terminal column of sub in line, not the byte offset: content
+// may mix wide glyphs, and columns must compare in cells.
+func cellIndex(line, sub string) int {
+	idx := strings.Index(line, sub)
+	if idx < 0 {
+		return -1
+	}
+	return CellWidth(line[:idx])
 }
 
 // The palette itself must expose the three tiers, the amber thought pair, and
@@ -174,5 +242,22 @@ func TestPaletteExposesFocusTiersAndThoughtPair(t *testing.T) {
 		if !pal.ThoughtBody.GetItalic() {
 			t.Errorf("%s thought body is not italic", theme)
 		}
+	}
+}
+
+// The header brand is a single-line title, not a graphic: it must take the
+// High Focus role and keep its measured cells so the rows below stay on the
+// same left edge.
+func TestQuickstartBrandIsSingleLineTitle(t *testing.T) {
+	forceTrueColor(t)
+	pal := forcedPalette()
+	chrome := ChromeFor(ThemeDark)
+	line := identityGreetingLine(identityTestFacts())
+	styled := styleIdentityLine(line, pal, chrome)
+	if !strings.Contains(styled, pal.Title.Render("OHGO")) {
+		t.Fatalf("brand did not take the title role: %q", styled)
+	}
+	if got := ansi.Strip(styled); got != line {
+		t.Fatalf("stripped brand = %q, want the cells unchanged %q", got, line)
 	}
 }

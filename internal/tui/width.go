@@ -97,6 +97,21 @@ func TruncateToWidth(s string, width int) string {
 	return runewidth.Truncate(stripped, width-1, "…")
 }
 
+// CellPrefix cuts s to at most width cells without an ellipsis. Word wrapping
+// needs the raw prefix it can break on; a truncation marker inside a folded
+// row would become visible content.
+func CellPrefix(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	s = expandTabsStyled(s)
+	stripped := ansi.Strip(s)
+	if runewidth.StringWidth(stripped) <= width {
+		return s
+	}
+	return runewidth.Truncate(stripped, width, "")
+}
+
 // TruncateMiddleToWidth cuts s to at most width cells, keeping both the head
 // and the tail and replacing the removed middle with one ellipsis cell.
 //
