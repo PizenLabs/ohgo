@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // A fresh session shows the shortcut bar and no token counters: there is
@@ -286,5 +287,70 @@ func TestBusyFooterShowsGitWithoutSessionMarker(t *testing.T) {
 	}
 	if strings.Contains(row, "#9") {
 		t.Errorf("busy hint bar = %q, want no session marker while busy", row)
+	}
+}
+
+// The busy footer is two zones, like the idle one: the turn timer and measured
+// telemetry own the left, and the queue/cancel keys pin to the far edge. While
+// they trailed the metrics as one joined sentence they read as more telemetry,
+// so the row competed with the transcript instead of reporting the turn.
+func TestBusyFooterPinsActionKeysToTheFarEdge(t *testing.T) {
+	s := New()
+	s.Status.Model = "p/m"
+	s.Apply(TerminalResized{Width: 120, Height: 30})
+	s.Apply(UserSubmitted{Text: "go"})
+	s.Apply(SessionMetricsUpdated{Input: 1200, Output: 340})
+
+	rows := map[string]string{
+		"plain":  ansi.Strip(composerHintBar(s, 120)),
+		"framed": ansi.Strip(composerHintRow(s, forcedPalette(), 120)),
+	}
+	for name, row := range rows {
+		if got := CellWidth(row); got != 120 {
+			t.Fatalf("%s footer row is %d cells, want the full 120-cell frame: %q", name, got, row)
+		}
+		if !strings.HasSuffix(row, ComposerHints(true)) {
+			t.Fatalf("%s footer row = %q, want the action keys pinned at the far edge", name, row)
+		}
+		head := strings.TrimSpace(strings.TrimSuffix(row, ComposerHints(true)))
+		if !strings.HasPrefix(head, "⏱") || !strings.Contains(head, "↑1.2k") {
+			t.Fatalf("%s footer head = %q, want the turn timer and metrics at the left", name, head)
+		}
+		if strings.Contains(head, "· enter queue") {
+			t.Fatalf("%s footer head = %q, want the keys out of the metric sentence", name, head)
+		}
+	}
+}
+
+// The zones render one focus tier apart: measured telemetry keeps the readable
+// muted role it must be acted on in, while the action keys drop to faint so the
+// footer stops competing with the timeline. A single style for the whole row
+// erased that distinction.
+func TestHintZoneRendersOneFocusTierBelowTelemetry(t *testing.T) {
+	s := New()
+	s.Status.Model = "p/m"
+	s.Apply(TerminalResized{Width: 120, Height: 30})
+	s.Apply(UserSubmitted{Text: "go"})
+	s.Apply(SessionMetricsUpdated{Input: 1200, Output: 340})
+
+	pal := forcedPalette()
+	left, right := composerHintZones(s)
+	if right == "" || left == "" {
+		t.Fatalf("busy zones = (%q, %q), want both populated", left, right)
+	}
+	row := composerHintRow(s, pal, 120)
+	mutedAt := strings.Index(row, pal.Muted.Render(left))
+	faintAt := strings.Index(row, pal.Faint.Render(right))
+	if mutedAt < 0 {
+		t.Fatalf("telemetry is not in the muted tier: %q", row)
+	}
+	if faintAt < 0 {
+		t.Fatalf("action keys are not in the faint tier: %q", row)
+	}
+	if faintAt < mutedAt {
+		t.Fatalf("footer = %q, want the metrics ahead of the faint keys", row)
+	}
+	if strings.Contains(row, pal.Muted.Render(right)) {
+		t.Fatalf("footer = %q, want the keys held back from the readable tier", row)
 	}
 }

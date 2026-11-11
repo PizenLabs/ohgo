@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -178,7 +179,7 @@ func renderModalFrameWithFooter(title string, content []string, footer string, p
 	out = append(out, "│"+statusFooterRule(pal, interior)+"│")
 	out = append(out, "│"+padRight(TruncateToWidth(footer, interior), interior)+"│")
 	out = append(out, "└"+strings.Repeat("─", interior)+"┘")
-	return strings.Join(out, "\n")
+	return paintSurface(strings.Join(out, "\n"), design.For(themeOf(pal)).SurfaceElevated)
 }
 
 // statusModalContent builds the card body: each labelled block heads with a

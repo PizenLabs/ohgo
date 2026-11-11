@@ -319,7 +319,17 @@ func renderState(state State, frame *transcriptFrame) string {
 		return sb.String()
 	}
 	if layout.TaskLines > 0 {
-		sb.WriteString(renderStickyTaskRow(state, pal, layout) + "\n")
+		// The pinned task area owns exactly the rows the layout claimed: the
+		// projection block, its spacer, and blank padding if the projection
+		// shrank between the layout pass and this render. The transcript below
+		// it is the only scrolling surface.
+		area := pinnedTaskArea(state, pal, layout, layout.TaskLines)
+		for _, line := range area {
+			sb.WriteString(line + "\n")
+		}
+		for i := len(area); i < layout.TaskLines; i++ {
+			sb.WriteString("\n")
+		}
 	}
 	sb.WriteString(body.String())
 	return sb.String()
@@ -387,14 +397,7 @@ func renderCanvasBody(sb *strings.Builder, state State, pal *Palette, layout Lay
 		}
 		sb.WriteString(renderComposer(state, pal, layout))
 		if layout.ShowHints {
-			hintStyle := pal.Muted
-			if interruptConfirmVisible(state) {
-				// The double-tap warning is a hazard prompt, not metadata: it
-				// takes the warning role so it cannot be mistaken for the
-				// ordinary busy hint row.
-				hintStyle = ExtrasFor(state.Theme).Warning
-			}
-			sb.WriteString("\n" + hintStyle.Render(composerHintBar(state, columnWidth(state, layout))))
+			sb.WriteString("\n" + composerHintRow(state, pal, columnWidth(state, layout)))
 		} else {
 			sb.WriteString("\n" + renderStatus(state, pal, layout))
 		}
@@ -445,105 +448,89 @@ func composeWorkspaceFrame(sb *strings.Builder, body, sidebar string, layout Lay
 	}
 }
 
-// composerHintsFor picks the hint row for the current interaction: slash
-// navigation while discovering commands, the busy set while a turn runs, and
-// progressive disclosure while idle. Every hint shown must work.
+// composerHintZones reports the footer's two zones for the current
+// interaction: the measured left zone and the action-key right zone.
 //
-// An open approval owns the interaction, so no composer hint is produced: the
+// An open approval owns the interaction, so neither zone is produced: the
 // dialog has captured enter, esc, and the scroll keys, and advertising them
 // here would contradict the key line it prints instead. ComputeLayout drops
 // the row in the same case, so the frame keeps its budget either way.
+func composerHintZones(state State) (left, right string) {
+	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
+		return "", ""
+	}
+	if interruptConfirmVisible(state) {
+		// The armed warning replaces the ordinary busy hints: the one key the
+		// user needs this instant is the second Esc, not the queue chord.
+		return interruptConfirmText, ""
+	}
+	if paletteOwnsKeys(state) && state.ConnectKey == nil {
+		return "↑↓ navigate · enter/tab accept · esc dismiss", ""
+	}
+	if state.Status.Busy {
+		// The busy footer keeps the turn timer and measured session telemetry
+		// at the left and pins the queue/cancel keys to the right edge. Joined
+		// into one sentence, the keys trailed the metrics and read as more
+		// telemetry, so the row competed with the transcript instead of
+		// reporting. The live phase lives in the telemetry bar above the
+		// composer, so repeating it here would put one fact on two surfaces,
+		// and nothing here changes the row count, so a hand-off can never move
+		// the composer.
+		return withTurnElapsed(state, busyTelemetry(state)), ComposerHints(true)
+	}
+	left, right = idleHintZones(state)
+	return withTurnElapsed(state, left), right
+}
+
+// composerHintsFor joins the zones into the single row the live region and
+// narrow fallbacks render. Every hint shown must work.
 //
 // Progressive disclosure: a fresh session shows minimal path-only left with
 // the full shortcut right ("? help · ^p settings"); the first executed prompt
 // swaps the left for measured telemetry (↑in · ↓out (ctx%) · cost · path:branch)
 // and narrows the right to "? help" so ^p never promises settings when it
 // recalls history. The measured turn timer leads that line once a prompt has
-// run. The busy and slash-navigation rows stay authoritative while they apply —
-// they name keys the user needs this instant, so telemetry never displaces
-// them. This joined form is for tests and narrow fallbacks; the frame renders
-// the padded split via composerHintBar.
+// run. The busy and slash-navigation rows stay authoritative while they apply.
 func composerHintsFor(state State) string {
-	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
-		return ""
-	}
-	if interruptConfirmVisible(state) {
-		// The armed warning replaces the ordinary busy hints: the one key the
-		// user needs this instant is the second Esc, not the queue chord.
-		return interruptConfirmText
-	}
-	if paletteOwnsKeys(state) && state.ConnectKey == nil {
-		return "↑↓ navigate · enter/tab accept · esc dismiss"
-	}
-	if state.Status.Busy {
-		// The busy row owns the turn timer, measured session telemetry, and
-		// the queue/cancel keys. The live phase lives in the telemetry bar
-		// above the composer, so repeating it here would put one fact on two
-		// surfaces. Nothing here changes the row count, so a hand-off can
-		// never move the composer.
-		var parts []string
-		if telemetry := busyTelemetry(state); telemetry != "" {
-			parts = append(parts, telemetry)
-		}
-		parts = append(parts, ComposerHints(true))
-		return withTurnElapsed(state, strings.Join(parts, " · "))
-	}
-	left, right := idleHintZones(state)
-	left = withTurnElapsed(state, left)
-	if left == "" {
+	left, right := composerHintZones(state)
+	switch {
+	case left == "":
 		return right
-	}
-	if right == "" {
+	case right == "":
 		return left
 	}
 	return left + " · " + right
 }
 
-// composerHintBar renders the same hint row as composerHintsFor but split
-// into left/right zones pinned to the frame edges when width allows. Slash
-// navigation and busy rows are transient and authoritative: they truncate to
-// width but never split, so the key the user needs this instant stays intact.
-// Idle telemetry splits via sessionBarRow: left metrics survive, right
-// shortcuts yield first on narrowing, and the row never wraps.
+// composerHintBar renders the zones padded to the frame edges when width
+// allows. A row too narrow to split truncates instead of wrapping: the left
+// zone's metric-first head survives over the shortcuts, and the key the user
+// needs this instant stays intact while a warning or the command palette owns
+// the row, because those own the whole line rather than a zone.
 func composerHintBar(state State, width int) string {
-	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
-		return ""
+	if width <= 0 {
+		return composerHintsFor(state)
 	}
-	if interruptConfirmVisible(state) {
-		// Same stable-band contract as composerHintsFor: the warning owns the
-		// whole row and truncates rather than yielding its key to telemetry.
-		if width > 0 {
-			return TruncateToWidth(interruptConfirmText, width)
-		}
-		return interruptConfirmText
-	}
-	if paletteOwnsKeys(state) && state.ConnectKey == nil {
-		const hint = "↑↓ navigate · enter/tab accept · esc dismiss"
-		if width > 0 {
-			return TruncateToWidth(hint, width)
-		}
-		return hint
-	}
-	if state.Status.Busy {
-		// Same stable-band contract as composerHintsFor: the telemetry bar
-		// above the composer owns the live phase, while this row keeps the
-		// turn timer and measured session telemetry at the left and
-		// queue/cancel keys at the right. The session marker still yields
-		// while busy (busyTelemetry), and truncation keeps the metric-first
-		// head.
-		right := ComposerHints(true)
-		if telemetry := busyTelemetry(state); telemetry != "" {
-			right = telemetry + " · " + right
-		}
-		right = withTurnElapsed(state, right)
-		if width <= 0 {
-			return right
-		}
-		return sessionBarRow("", right, width)
-	}
-	left, right := idleHintZones(state)
-	left = withTurnElapsed(state, left)
+	left, right := composerHintZones(state)
 	return sessionBarRow(left, right, width)
+}
+
+// composerHintRow renders the footer in the two focus tiers it owns: the
+// measured left zone in the readable muted role, and the action-key right zone
+// in faint, where it stays available without competing with telemetry or the
+// transcript. Position carries the de-emphasis as much as colour does — the
+// right zone is pinned to the frame edge across the full row of padding — so
+// the eye reaches the metrics first even on a terminal that renders only the
+// colour distinction.
+//
+// A hazard warning is not metadata: it takes the warning role for the whole
+// row so it cannot be mistaken for an ordinary hint.
+func composerHintRow(state State, pal *Palette, width int) string {
+	if interruptConfirmVisible(state) {
+		return ExtrasFor(state.Theme).Warning.Render(composerHintBar(state, width))
+	}
+	left, right := composerHintZones(state)
+	return sessionBarRow(pal.Muted.Render(left), pal.Faint.Render(right), width)
 }
 
 // renderMini concedes a viewport too small for the workbench. It keeps the
@@ -3015,13 +3002,13 @@ func quitCardForTheme(confirm *PendingApproval, cardW int, theme string) string 
 		Foreground(lipgloss.Color(t.TextSecondary)).
 		Render("←→ move · enter confirm · y quit · n/esc stay")
 	inner := lipgloss.JoinVertical(lipgloss.Left, title, question, "", buttons, "", hints)
-	return lipgloss.NewStyle().
+	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(t.Brand)).
-		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
+	return paintSurface(card, t.SurfaceElevated)
 }
 
 // transitionCardWidth bounds the centered transition dialog: wide enough for
@@ -3106,13 +3093,13 @@ func transitionCardForTheme(prompt *TransitionPrompt, cardW int, theme string) s
 	}
 	rows = append(rows, "", buttons, "", hints)
 	inner := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	return lipgloss.NewStyle().
+	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(proposedAccent)).
-		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
+	return paintSurface(card, t.SurfaceElevated)
 }
 
 // handoffCarriedLine summarises the shared records a handoff references. It

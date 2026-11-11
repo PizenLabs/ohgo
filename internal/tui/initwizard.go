@@ -531,13 +531,13 @@ func (w *InitWizardModel) View(width int) string {
 			Render(sanitizeInline(w.errMsg))
 		inner = lipgloss.JoinVertical(lipgloss.Left, inner, "", errLine)
 	}
-	return lipgloss.NewStyle().
+	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(t.Brand)).
-		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
+	return paintSurface(card, t.SurfaceElevated)
 }
 
 // stepLabel names the current step for the "Step N of M" indicator.

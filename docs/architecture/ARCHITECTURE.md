@@ -858,8 +858,10 @@ approval, shutting down) are computed per render, never stored.
   border token. The telemetry bar sits immediately above the composer only
   while a turn runs and carries the live intent only; an idle frame reserves
   no row, so the transcript meets the composer directly. The measured turn
-  timer, session telemetry, and keys stay in the hint/status row below the
-  composer. The
+  timer and session telemetry own the left edge of the hint/status row below
+  the composer; the keys that act on the running turn pin to its right edge in
+  the faint tier, so the footer reports instead of reading as one long
+  telemetry sentence. The
   upper rule is a
   border block header naming the live session
   (`──────────── [Fix failing parser] ───`), with a discrete `★` when

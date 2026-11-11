@@ -257,10 +257,11 @@ func renderPermissionsModalForTheme(selectedIdx int, currentMode AuthorityMode, 
 	rows = append(rows, "")
 	rows = append(rows, permissionsCenter(footerStyle, permissionsFooterHint, interior))
 
-	return lipgloss.NewStyle().
+	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(t.BorderDefault)).
 		Render(strings.Join(rows, "\n"))
+	return paintSurface(card, t.SurfaceElevated)
 }
 
 // permissionsOptionRow renders one option: the selection arrow, its number, the

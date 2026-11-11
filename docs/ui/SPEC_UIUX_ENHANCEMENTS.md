@@ -12,11 +12,11 @@ and bounded output.
 The full-screen canvas is responsive without changing execution state.
 
 - The rail is transient chrome, not the default canvas. It appears only when an
-  open execution task has at least one open todo. An idle session, an ordinary
-  question, a task with no todo or only finished todos, and every terminal task
-  (`COMPLETED`, `FAILED`, `CANCELLED`) render the ordinary full-width
-  transcript; a completed task settles back into history rather than remaining
-  pinned beside later turns.
+  open execution task has a todo plan. An idle session, an ordinary question, a
+  task with no todo plan, and every terminal task (`COMPLETED`, `FAILED`,
+  `CANCELLED`) render the ordinary full-width transcript. The rail closes on the
+  terminal transition, not when the last todo is marked done: the final answer
+  still belongs to the task and keeps it anchored while the transcript scrolls.
 - The rail is enabled by default. `/settings` opens the preferences surface and
   can disable it; the choice applies immediately and persists in
   `settings.json` as `taskRail`. Disabling it never hides task history: the
@@ -30,11 +30,14 @@ The full-screen canvas is responsive without changing execution state.
   task; they never keep the rail on screen by themselves.
 - The tracker is sticky by construction: scrolling the transcript changes only
   the conversation column. The rail is a projection, never a second viewport.
-- **Narrow and medium terminals** hide the rail and reserve exactly one sticky
-  task row immediately below the title separator while an open task has at
-  least one open todo. That row names the objective, lifecycle status,
-  progress, and the one active todo. With no such task, the row is absent and
-  the transcript starts directly below the title bar.
+- **Narrow and medium terminals** hide the rail and pin the task area
+  immediately below the title separator while an open task has a todo plan. The
+  area renders the projection block (objective, lifecycle, todos) followed by
+  one blank spacer row; it is bounded to nine rows and always leaves at least
+  three rows for the conversation. A projection longer than the budget ends
+  with a counted overflow marker naming the active todo. On a viewport too short
+  for the block, a single compact row carries the objective, status, progress,
+  and active todo. Scrolling moves only the transcript below the pinned area.
 - The transcript suppresses its own task block whenever the tracker owns the
   projection. One fact has one home on the same screen. When the task reaches a
   terminal state the tracker releases the projection, so the block returns to

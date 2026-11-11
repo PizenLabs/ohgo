@@ -7,6 +7,12 @@ immutable.
 
 ### Fixed
 
+- Split-pane task visibility: on narrow and medium terminals the task area is
+  now pinned below the title bar for the whole open task instead of collapsing
+  to a single row and releasing when the last todo is marked done. It renders
+  the bounded projection block and a spacer, so scrolling moves only the
+  transcript below it. The rail now closes on the terminal task transition,
+  matching the wide sidebar, rather than on the last completed todo.
 - Interrupted BUILD continuation: a resumed task now derives its execution
   stage from durable evidence, so a change applied before the interruption
   stays in post-change verification. The task briefing carries a resume
@@ -60,6 +66,14 @@ immutable.
   text are now normalized at the provider boundary in both the JSON and
   key/value spellings. Previously the raw protocol reached the transcript as
   prose and the proposed calls were never authorized or executed.
+
+### Changed
+
+- Composer footer hierarchy: while a turn runs, the measured timer and session
+  telemetry now hold the left edge and the queue/cancel/scroll keys pin to the
+  right edge in the faint tier. Joined into one sentence, the keys trailed the
+  metrics and read as more telemetry, so the footer competed with the
+  transcript and left the right half of the row empty.
 
 ## [v0.1.0] - 2026-11-09
 

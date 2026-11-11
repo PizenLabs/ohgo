@@ -245,13 +245,13 @@ func updateRestartCard(view *UpdateRestartView, pal *Palette, cardW int) string 
 		Foreground(lipgloss.Color(t.Brand)).Bold(true).
 		Render("Press Enter to exit")
 	inner := lipgloss.JoinVertical(lipgloss.Left, title, "", body, "", footer)
-	return lipgloss.NewStyle().
+	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(t.Brand)).
-		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
+	return paintSurface(card, t.SurfaceElevated)
 }
 
 // renderUpdateRestartArea draws the restart-required card as a centered modal.
@@ -357,13 +357,13 @@ func postUpdateCard(view *PostUpdateView, pal *Palette, cardW int) string {
 	rows = append(rows, lipgloss.NewStyle().
 		Foreground(lipgloss.Color(t.Brand)).Bold(true).
 		Render(TruncateToWidth(hint, cardW)))
-	return lipgloss.NewStyle().
+	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(t.Brand)).
-		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
+	return paintSurface(card, t.SurfaceElevated)
 }
 
 // renderPostUpdateArea draws the What's New card as a centered modal.
