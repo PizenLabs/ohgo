@@ -99,7 +99,8 @@ the High Focus tier; they do not create a fourth brightness ladder.
   warnings that are not critical, placeholders).
 - `TextFaint` is intentionally below the 4.5:1 normal-text floor (measured at
   roughly 2.6:1 dark and 2.4:1 light). It is therefore reserved for metadata
-  that is useful but not required: measured durations and `ctrl+o` hints.
+  that is useful but not required: measured durations, `ctrl+o` hints, and the
+  footer's right-hand shortcut zone.
   Essential information never uses it.
 - `tokens_test.go` enforces that the tiers stay ordered (`title > primary >
   faint`) in both appearances, and that heading, emphasis, list marker, and body

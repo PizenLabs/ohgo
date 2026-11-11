@@ -67,6 +67,14 @@ immutable.
   key/value spellings. Previously the raw protocol reached the transcript as
   prose and the proposed calls were never authorized or executed.
 
+### Changed
+
+- Composer footer hierarchy: while a turn runs, the measured timer and session
+  telemetry now hold the left edge and the queue/cancel/scroll keys pin to the
+  right edge in the faint tier. Joined into one sentence, the keys trailed the
+  metrics and read as more telemetry, so the footer competed with the
+  transcript and left the right half of the row empty.
+
 ## [v0.1.0] - 2026-11-09
 
 ### Added
