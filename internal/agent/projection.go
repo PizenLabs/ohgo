@@ -1,6 +1,10 @@
 package agent
 
-import "github.com/PizenLabs/ohgo/internal/provider/ai"
+import (
+	"strings"
+
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
+)
 
 // ProjectionRequest is the runtime state a projection may use to build the next
 // model request.
@@ -84,6 +88,13 @@ type ProjectionReport struct {
 	Sufficiency string `json:"sufficiency,omitempty"`
 	// Stage is the projected task stage.
 	Stage string `json:"stage,omitempty"`
+	// Progress classifies how the last completed turn changed the task:
+	// "advancing", "stalled", or empty when the run has not been judged yet.
+	// It is audit data for the semantic no-progress bound, never authority.
+	Progress string `json:"progress,omitempty"`
+	// NoProgressTurns is the number of consecutive completed turns that did
+	// not advance the task boundary. It resets on any meaningful transition.
+	NoProgressTurns int `json:"no_progress_turns,omitempty"`
 	// AnswerEligible reports that the runtime already holds the evidence an
 	// informational objective requires. The next visible assistant text is a
 	// candidate final answer, so tool calls emitted alongside it are
@@ -132,6 +143,13 @@ type ProjectionElision struct {
 // The mapping lives here, on the report both the UI and headless paths already
 // carry, so no host has to parse audit text or duplicate the vocabulary.
 func (r ProjectionReport) EvidenceReview() string {
+	// A terminal projection carries the runtime's own reason for closing the
+	// task. It is more specific than the sufficiency category, and it is the
+	// reason a review must preserve (a stalled run must not be reported as a
+	// generic evidence gap or as a resource limit).
+	if r.Terminal && strings.TrimSpace(r.StopReason) != "" {
+		return r.StopReason
+	}
 	switch r.Sufficiency {
 	case "", "SUFFICIENT":
 		return ""

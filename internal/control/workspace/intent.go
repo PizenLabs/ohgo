@@ -1,6 +1,10 @@
 package workspace
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/PizenLabs/ohgo/internal/control/contract"
+)
 
 // Intent is the semantic capability a user request asks for.
 //
@@ -136,7 +140,10 @@ func ClassifyPrediction(text string) Prediction {
 	// mutation clause ("check this project and write README.md"). Clause
 	// heads are therefore considered for the mutation/investigation intents,
 	// while a read signal is taken only from the leading clause so an
-	// informational opener is not fabricated from a later noun phrase.
+	// informational opener is not fabricated from a later noun phrase. The one
+	// exception is a leading whole-change prohibition: it is a constraint, not
+	// an objective, so a later explicit read verb is the requested effect (see
+	// the NoMutationRequested branch below).
 	read := evidenceNone
 	if len(clauses) > 0 {
 		head := clauseHead(clauses[0].text)
@@ -154,6 +161,17 @@ func ClassifyPrediction(text string) Prediction {
 			// A first-person question frame ("I want to ask if ...") carries
 			// no verb the classifier recognises, but it is still a question.
 			read = evidencePhrase
+		}
+	}
+	// A whole-change prohibition is a constraint, not the objective. When it
+	// opens the request, a later read verb is the requested effect even if a
+	// discourse word or a sentence boundary keeps it out of the head position
+	// ("Actually don't change anything. Explain the architecture."). Without
+	// this, the READ fallback left a request that explicitly forbids mutation
+	// as an ambiguous BUILD turn instead of offering the ASK boundary.
+	if read == evidenceNone && contract.NoMutationRequested(request) {
+		if laterReadRequest(request) {
+			read = evidenceHead
 		}
 	}
 	investigateHead := false
@@ -674,6 +692,34 @@ var readHeads = map[string]bool{
 // signals, but not enough to silently choose a narrower workspace.
 var ambiguousReadHeads = map[string]bool{
 	"check": true, "inspect": true, "review": true,
+}
+
+// readRequestWords are explicit read verbs and question words that can name
+// the objective after a leading whole-change prohibition. The set is narrower
+// than readHeads: auxiliaries and generic nouns ("is", "can", "build") would
+// make an ordinary statement look like a request for understanding.
+var readRequestWords = map[string]bool{
+	"what": true, "what's": true, "whats": true,
+	"why": true, "how": true, "where": true, "when": true, "which": true,
+	"who": true, "whose": true,
+	"explain": true, "describe": true, "summarize": true, "summarise": true,
+	"compare": true, "outline": true, "tell": true, "walk": true,
+	"define": true, "clarify": true, "show": true, "list": true,
+	"review": true, "analyze": true, "analyse": true, "inspect": true,
+	"examine": true, "discuss": true, "elaborate": true, "explore": true,
+	"read": true, "check": true,
+}
+
+// laterReadRequest reports whether the request contains a read-request word
+// anywhere after its leading constraint.
+func laterReadRequest(request string) bool {
+	for _, token := range strings.Fields(request) {
+		token = strings.Trim(token, ".,!?;:'\"")
+		if headMatches(readRequestWords, token) {
+			return true
+		}
+	}
+	return false
 }
 
 // investigateHeads are leading verbs that ask to probe or reproduce rather

@@ -108,7 +108,8 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	fmt.Fprintf(&suffLine, "Available actions: %s\n", candidates.CandidateSummary(420))
 	if len(candidates.Tools) == 0 &&
 		(candidates.AnswerOnly || suff.Stage == StageAnswer ||
-			suff.Stage == StageComplete || suff.Kind == BlockCapabilityFailure) {
+			suff.Stage == StageComplete || suff.Kind == BlockCapabilityFailure ||
+			suff.Kind == BlockProgressStalled) {
 		// This is runtime state, not a provider prompt: the evidence lifecycle
 		// is at the answer/report boundary, so the only correct next output is
 		// prose. Stating it removes an ambiguity some models resolve by naming
@@ -118,6 +119,8 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 			suffLine.WriteString("Next action: answer from the evidence above; the runtime refused the last proposed actions and no tool is available. Report the refusal and any remaining gap.\n")
 		case suff.Kind == BlockCapabilityFailure:
 			suffLine.WriteString("Next action: report the block and the evidence gap. No tool is available.\n")
+		case suff.Kind == BlockProgressStalled:
+			suffLine.WriteString("Next action: report the lack of meaningful progress and the remaining evidence gap. Do not repeat the same observation; no tool is available.\n")
 		default:
 			suffLine.WriteString("Next action: answer from the evidence above. No tool is available.\n")
 		}
@@ -342,6 +345,9 @@ func RenderAudit(report agent.ProjectionReport) string {
 	}
 	if report.Sufficiency != "" || report.Stage != "" {
 		fmt.Fprintf(&sb, "sufficiency: %s stage=%s\n", report.Sufficiency, report.Stage)
+	}
+	if report.Progress != "" {
+		fmt.Fprintf(&sb, "progress: %s stalled=%d\n", report.Progress, report.NoProgressTurns)
 	}
 	if report.Terminal {
 		fmt.Fprintf(&sb, "terminal: %s\n", report.StopReason)

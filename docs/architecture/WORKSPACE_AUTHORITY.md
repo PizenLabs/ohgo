@@ -245,6 +245,39 @@ verify it`) also attaches to the open task. A prompt that names a new subject
 owns no continuation: repeating `verify the fix` after `PROVEN` reports the
 finished state instead of archiving the proof and starting a duplicate task.
 
+### Implementation refinement
+
+An open BUILD mutation objective is an evolving unit of work. Once a turn has
+applied a change but has not proven it, the next user message often names only
+the delta ("I want to use green and black", "make it green", "make it wider")
+and carries no verb the classifier can place. That is a continuation of the
+open implementation, not a new informational objective: the delta inherits the
+persisted contract and the mutation authority the contract requires. Without
+this, the READ fallback rebuilt an informational contract, and the projection
+withheld the only tools that could apply the refinement even though the live
+workspace was BUILD.
+
+The inheritance is bounded. It applies only when the open contract is a
+mutation objective under BUILD and the delta carries no capability signal of
+its own. An explicit mutation prompt is a new mutation objective: it stays
+under BUILD and keeps the write surface, but it does not impersonate the open
+objective. A request that states a read or investigation capability, or an
+explicit whole-repository no-mutation limit, remains a new turn and is routed
+by the ordinary policy. A whole-change prohibition followed by a request to
+understand is a strong READ signal: it can narrow BUILD to the ASK
+confirmation boundary, and it never continues the mutation. The task still owns
+its evidence and completion requirements; the delta does not create a new
+proof or relax a verification requirement.
+
+> **Continuation authority preservation.** A continuation that refines an
+> active implementation inherits the current authority. Only a new objective
+> that explicitly requires a different capability class moves it.
+
+A rework request such as `redesign it` is still a refinement when the open
+contract already owns the object; it remains a new mutation objective when the
+open task is informational. The task layer decides attachment from the open
+contract and the delta, never from similarity alone.
+
 ### Conditional objectives and phase completion
 
 A contract records `ConditionalMutation` when the request stages an
@@ -624,6 +657,10 @@ that a classifier returned a string.
 | Turn state is ephemeral | `tui.TestTurnSemanticsAreClearedOnCompletion`, `cmd/ohgo.TestDelegatedTurnDoesNotLeakIntoTheNextRoute` |
 | A resumed task's repeated objective is routed | `tui.TestRepeatedInvestigationObjectiveRoutesOpenBuildTaskToFuzz` |
 | Task continuation keeps the active authority | `workspace.TestRouteTurnKeepsTaskContinuationInTheActiveWorkspace`, `workspace.TestVerificationContinuationIsAboutExistingWork`, `cmd/ohgo.TestTurnTransitionDoesNotAskWorkspaceForTaskContinuation`, `tui.TestVerificationContinuationRunsUnderBuildAndProves`, `tui.TestVerificationQuestionContinuationKeepsTaskIdentityAndProves`, `tui.TestOpenFuzzTaskContinueStaysInFuzz`, `tui.TestLifecycleUnderstandInvestigateImplementThenVerify` |
+| An implementation refinement keeps BUILD mutation | `tui.TestContinuationAuthorityPreservationKeepsBuildMutationAuthority`, `tui.TestTaskTurnDecisionNamesImplementationRefinement` |
+| An explicit mutation remains BUILD without inheriting the task | `tui.TestExplicitMutationRefinementStaysBuildWithANewContract` |
+| An explicit no-mutation request does not inherit the implementation | `tui.TestImplementationRefinementStopsAtAnExplicitNoMutationRequest`, `workspace.TestWholeChangeProhibitionWithReadRequestNarrowsToAsk`, `workspace.TestBuildIntentContractRecognizesAContractedNoMutationLimit`, `contract.TestNoMutationRequestedRecognizesWholeChangeLimits`, `cognition.TestBuildShapeHonorsAContractedNoMutationLimit` |
+| Investigation yields from an open implementation | `tui.TestImplementationRefinementYieldsToInvestigation` |
 | Lower authority completes a phase, not the task | `workspace.TestPhaseContractDefersObjectivesTheAuthorityCannotPerform`, `tui.TestFuzzInvestigationPhaseOfMutationTaskStaysActive`, `tui.TestFuzzInvestigationPhaseContinuesIntoBuildSameTask`, `tui.TestFuzzInvestigationPhaseRejectsADeferredPlan`, `tui.TestLifecycleUnderstandInvestigateImplementThenVerify` |
 | Continuation grants no authority | `tui.TestVerificationContinuationUnderAskCannotExecute` |
 | Failed verification stays unproven | `tui.TestFailingVerificationContinuationDoesNotProve` |

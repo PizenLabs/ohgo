@@ -1116,3 +1116,21 @@ func TestDirectoryContentIsItsCompleteListing(t *testing.T) {
 		t.Fatal("a truncated directory listing satisfied directory content")
 	}
 }
+
+// A whole-change prohibition is a contraction in ordinary speech. The shape
+// must still withhold mutation; otherwise a contradictory request reaches the
+// write surface because the router saw a mutation verb first.
+func TestBuildShapeHonorsAContractedNoMutationLimit(t *testing.T) {
+	c := contract.IntentContract{
+		Objective: "Fix the parser. Actually don't change anything; explain the current behavior.",
+		Kind:      contract.ObjectiveMutation,
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "parser.go"}},
+	}
+	shape := BuildShape(c, ShapeParams{Authority: "build"})
+	if shape.Mutation.Allowed {
+		t.Fatal("a contracted no-mutation limit left mutation allowed")
+	}
+	if shape.Authority.MutationAllowed {
+		t.Fatal("a contracted no-mutation limit left mutation permitted")
+	}
+}

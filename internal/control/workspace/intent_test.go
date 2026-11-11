@@ -622,3 +622,25 @@ func TestIntentSelectsMinimumSufficientAuthority(t *testing.T) {
 		}
 	}
 }
+
+// A whole-change prohibition with a read request is informational even when a
+// discourse opener keeps the read verb out of the head position. The request
+// must reach the ASK boundary instead of remaining an ambiguous BUILD turn.
+func TestWholeChangeProhibitionWithReadRequestNarrowsToAsk(t *testing.T) {
+	text := "Actually don't change anything. Explain the current architecture."
+	prediction := ClassifyPrediction(text)
+	if prediction.Intent != IntentRead || prediction.Strength != StrengthStrong {
+		t.Fatalf("prediction = %+v, want a strong READ signal", prediction)
+	}
+	decision := DecideTransition(Build, AnalyzeRequest(text))
+	if !decision.NeedsConfirmation() || decision.Target != Ask {
+		t.Fatalf("decision = %+v, want the ASK confirmation boundary", decision)
+	}
+	contract := BuildIntentContract(text)
+	if contract.Kind != ObjectiveInformational {
+		t.Fatalf("contract kind = %s, want informational", contract.Kind)
+	}
+	if contract.Grounding == nil || !containsString(contract.Grounding.Constraints, "no_mutation") {
+		t.Fatal("the no-mutation limit was dropped")
+	}
+}

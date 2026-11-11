@@ -315,6 +315,107 @@ func TestControllerCheckpointRecordsLastAction(t *testing.T) {
 	}
 }
 
+// A continuation after a mutation must carry the checkpoint the next turn
+// needs: the change is already applied, verification is still owed, and the
+// directive says to resume there instead of re-planning from the objective.
+// Once the check is recorded, the same resume must not keep claiming that
+// verification is pending.
+func TestControllerResumeDirectiveCarriesPendingVerification(t *testing.T) {
+	controller := NewController(NewStore(t.TempDir()), nil)
+	intent := workspace.BuildIntentContract("Fix README.md and run go test ./...")
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	controller.ObserveTurns([]agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "write-1", ToolName: "write", Args: map[string]any{"path": "README.md"},
+		Result: agent.Result{Text: "wrote", Mutates: true, Details: map[string]any{
+			"path": "README.md", "bytes": 10, "diff": "changed",
+		}},
+	}}}})
+	if _, err := controller.NeedsReview("the repository change was not followed by a successful verification"); err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("resume Begin: %v", err)
+	}
+	briefing := strings.Join(controller.Context(), "\n")
+	for _, want := range []string{
+		"Resume directive:",
+		"Last observed change: changed README.md",
+		"Verification: pending",
+		"Resume from post-change verification",
+		"Outstanding evidence boundary:",
+	} {
+		if !strings.Contains(briefing, want) {
+			t.Errorf("resume briefing is missing %q:\n%s", want, briefing)
+		}
+	}
+
+	controller.ObserveTurns([]agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "check-1", ToolName: "bash", Args: map[string]any{"command": "go test ./..."},
+		Result: agent.Result{
+			Text: "ok", Executes: true, Finished: true, Verifies: true,
+			Verification: &agent.VerificationEvidence{
+				Check:  contract.CheckTest,
+				Scopes: []agent.VerificationScope{{All: true}},
+			},
+		},
+	}}}})
+	if _, err := controller.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	briefing = strings.Join(controller.Context(), "\n")
+	if strings.Contains(briefing, "Verification: pending") {
+		t.Fatalf("a recorded check still reported pending verification:\n%s", briefing)
+	}
+	if !strings.Contains(briefing, "Verification: already recorded") {
+		t.Fatalf("the resume directive did not report the recorded check:\n%s", briefing)
+	}
+}
+
+// Cancellation is the other interruption path. A paused task with an applied
+// change must still carry the verification checkpoint into the next turn; the
+// pause reason is not the last meaningful action.
+func TestControllerResumeDirectiveAfterInterruptedChange(t *testing.T) {
+	controller := NewController(NewStore(t.TempDir()), nil)
+	intent := workspace.BuildIntentContract("Fix README.md and run go test ./...")
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	controller.ObserveTurns([]agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "write-1", ToolName: "write", Args: map[string]any{"path": "README.md"},
+		Result: agent.Result{Text: "wrote", Mutates: true, Details: map[string]any{
+			"path": "README.md", "bytes": 10, "diff": "changed",
+		}},
+	}}}})
+	paused, err := controller.Pause("interrupted")
+	if err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	// /task resume attaches the task directly, before any new objective. The
+	// explicit resume must reach the same context and be consumed by exactly
+	// the next Begin.
+	if _, err := controller.ResumeTask(paused.ID); err != nil {
+		t.Fatalf("ResumeTask: %v", err)
+	}
+	if briefing := strings.Join(controller.Context(), "\n"); !strings.Contains(briefing, "Verification: pending") {
+		t.Fatalf("/task resume lost the pending verification:\n%s", briefing)
+	}
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("resume Begin: %v", err)
+	}
+	briefing := strings.Join(controller.Context(), "\n")
+	for _, want := range []string{
+		"Last observed change: changed README.md",
+		"Verification: pending",
+		"Resume from post-change verification",
+	} {
+		if !strings.Contains(briefing, want) {
+			t.Errorf("interrupted resume is missing %q:\n%s", want, briefing)
+		}
+	}
+}
+
 // Re-syncing the todo owner must keep ids stable by label, or the checkpoint's
 // todo references churn on every boundary.
 func TestControllerSyncKeepsTodoIDsByLabel(t *testing.T) {

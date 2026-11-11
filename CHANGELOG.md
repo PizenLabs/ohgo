@@ -7,6 +7,26 @@ immutable.
 
 ### Fixed
 
+- Interrupted BUILD continuation: a resumed task now derives its execution
+  stage from durable evidence, so a change applied before the interruption
+  stays in post-change verification. The task briefing carries a resume
+  directive naming the last observed change, the pending check, and the rule
+  against re-planning or repeating completed discovery.
+- Runaway continuation: the control plane now stops a run after
+  `MaxConsecutiveNoProgress` completed turns that do not change the task
+  boundary. During verification only a change or a check counts; elsewhere new
+  evidence, a stage/requirement change, or an explicit blocker counts. The
+  stop is reported as `NEEDS_REVIEW` with its semantic reason, not as a
+  model-turn limit. The model-turn cap remains the last-resort resource bound.
+- BUILD implementation continuity: after a change is applied but not yet
+  verified, a refinement prompt such as “I want to use green and black” now
+  inherits the open mutation contract instead of being rebuilt as a new
+  informational task. The task identity, change evidence, and write surface
+  continue under BUILD, and the refinement still owes the same post-change
+  verification. Explicit mutation prompts keep BUILD and the write surface as
+  new objectives. Read questions, investigation requests, and explicit
+  no-mutation limits remain new objectives; a no-mutation request that also
+  asks to understand offers the ASK boundary.
 - Rework follow-ups: `redesign`, `rework`, `revamp`, `restyle`, `redo`,
   `overhaul`, `modernize`, `redraw`, `reimplement`, and `rearchitect` are
   repository-change heads. After a design turn, “redesign it” now derives a

@@ -944,6 +944,64 @@ func taskFollowUp(current TaskResume, text string) bool {
 	return workspace.IsTaskFollowUp(text)
 }
 
+// implementationRefinement reports whether an open mutation task owns a delta
+// turn that states no capability of its own.
+//
+// A BUILD objective is an evolving unit of work: after a change is applied and
+// before it is proven, the user often answers with a refinement ("I want to use
+// green and black", "make it green", "make the buttons bigger") instead of
+// repeating the objective. Such a statement carries no verb the classifier can
+// place, so classifying it in isolation falls back to READ and builds an
+// informational contract, which withholds the write surface from a BUILD task
+// that is still executing. The delta therefore inherits the open mutation
+// contract and its evidence.
+//
+// The rule is not "sticky BUILD", and it is not a general similarity rule. An
+// explicit mutation prompt is a new mutation objective: it still reaches BUILD
+// and the write surface, but it does not impersonate the open objective. An
+// explicit read or investigation request states a different authority class; a
+// whole-repository no-mutation limit vetoes attachment. Only a delta with no
+// capability signal of its own, against an open mutation contract under BUILD,
+// is a refinement.
+func implementationRefinement(current TaskResume, text, active string, next contract.IntentContract) bool {
+	if !current.HasContract || strings.TrimSpace(text) == "" {
+		return false
+	}
+	if current.Contract.Kind != contract.ObjectiveMutation {
+		return false
+	}
+	if role, err := workspace.Parse(active); err != nil || role != workspace.Build {
+		return false
+	}
+	// The delta must be the READ fallback, not a request with an effect. A
+	// mutation, execution, read, or investigation action chooses the turn's
+	// own contract and is handled by the ordinary objective/authority policy.
+	if next.Kind != contract.ObjectiveInformational {
+		return false
+	}
+	if next.Grounding != nil && len(next.Grounding.Actions) > 0 {
+		return false
+	}
+	if hasNoMutationConstraint(next) {
+		return false
+	}
+	return true
+}
+
+// hasNoMutationConstraint reports whether the delta itself forbids repository
+// mutation. That limit is an authority constraint, not a refinement.
+func hasNoMutationConstraint(next contract.IntentContract) bool {
+	if next.Grounding == nil {
+		return false
+	}
+	for _, constraint := range next.Grounding.Constraints {
+		if constraint == "no_mutation" {
+			return true
+		}
+	}
+	return false
+}
+
 // taskTurnDecision reports which continuation rule owns the prompt, if any.
 // The task layer makes one decision; routing, prediction, and attachment all
 // consume it instead of each classifying the text separately.
@@ -961,6 +1019,8 @@ func taskTurnDecision(current TaskResume, text, active string, next contract.Int
 		return "ROLE_CONTINUATION", true
 	case objectiveContinuation(current, next):
 		return "OBJECTIVE_CONTINUATION", true
+	case implementationRefinement(current, text, active, next):
+		return "IMPLEMENTATION_REFINEMENT", true
 	default:
 		return "", false
 	}
@@ -1040,11 +1100,12 @@ func (p *Program) taskContinuationFor(text, active string) (TaskResume, string, 
 //
 // Only continuations whose wording carries no capability signal bypass
 // prediction: an explicit "continue", a verification of the task's own result,
-// or a handoff the human already decided. An exact repeat of the objective
-// still states what the turn needs, so the control plane must be allowed to
-// route it: a BUILD task resubmitted with an investigation objective has to
-// reach FUZZ instead of silently staying in BUILD merely because the task is
-// open. A task follow-up ("fix it") is predicted for the same reason.
+// an implementation refinement of the open task's own object, or a handoff the
+// human already decided. An exact repeat of the objective still states what the
+// turn needs, so the control plane must be allowed to route it: a BUILD task
+// resubmitted with an investigation objective has to reach FUZZ instead of
+// silently staying in BUILD merely because the task is open. A task follow-up
+// ("fix it") is predicted for the same reason.
 func (p *Program) continuesOpenTask(text string) bool {
 	active := ""
 	if p.workspace.Current != nil {
@@ -1055,7 +1116,7 @@ func (p *Program) continuesOpenTask(text string) bool {
 		return false
 	}
 	switch decision {
-	case "EXPLICIT_RESUME", "HANDOFF_CONTINUATION", "VERIFICATION_CONTINUATION":
+	case "EXPLICIT_RESUME", "HANDOFF_CONTINUATION", "VERIFICATION_CONTINUATION", "IMPLEMENTATION_REFINEMENT":
 		return true
 	default:
 		return false

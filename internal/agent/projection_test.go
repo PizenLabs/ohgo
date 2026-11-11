@@ -273,6 +273,25 @@ func TestProviderFailureWithProjectionDoesNotClaimCompletion(t *testing.T) {
 	}
 }
 
+// A terminal projection's own stop reason is the review reason. A stalled
+// semantic stop must not be reported as a generic evidence gap or as a
+// resource limit.
+func TestTerminalProjectionReviewPreservesTheStopReason(t *testing.T) {
+	report := ProjectionReport{
+		Terminal:    true,
+		StopReason:  "no meaningful task progress: no change or verification advanced the task",
+		Sufficiency: "BLOCKED",
+		Stage:       "blocked",
+	}
+	if got := report.EvidenceReview(); got != report.StopReason {
+		t.Fatalf("review = %q, want the terminal stop reason", got)
+	}
+	nonTerminal := ProjectionReport{Sufficiency: "INSUFFICIENT", Stage: "verify"}
+	if review := nonTerminal.EvidenceReview(); review == "" || strings.Contains(review, "no meaningful") {
+		t.Fatalf("non-terminal review = %q, want the evidence-gap verdict", review)
+	}
+}
+
 func TestProjectionReportIsEmitted(t *testing.T) {
 	tool := newScriptedTool("read", "visible")
 	stream, _ := scriptedStream(
