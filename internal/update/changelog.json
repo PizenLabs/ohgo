@@ -335,6 +335,101 @@
           "description": "an indented fence under a list item stays a code block, wrapped bullet continuations are joined before wrapping, and an ordered marker is budgeted by its real width. A long continuation previously bypassed the wrap pass, reached the terminal as one oversized row, and was truncated at the right edge; nested examples also printed their fence delimiters literally instead of rendering as code."
         }
       ]
+    },
+    "v0.1.1": {
+      "title": "What's new in v0.1.1",
+      "changes": [
+        {
+          "id": "automatic-appearance",
+          "type": "added",
+          "title": "Automatic appearance",
+          "description": "`internal/tui/design` is now the single token source for a Dark and a Light palette, and `theme` is stored as a preference — `auto`, `dark`, or `light` — resolved once at startup. `auto` follows the host appearance on macOS, Linux, and Windows behind a bounded poll with a dark fallback, so a light terminal is legible without per-view overrides. `/theme` switches the appearance in place."
+        },
+        {
+          "id": "inline-composer-hints",
+          "type": "added",
+          "title": "Inline composer hints",
+          "description": "the binding suggestion is painted at the input origin ahead of the caret while the composer is empty, so the prompt reads as embedded instead of displaced. Hints are grouped by interaction (onboarding, ASK, BUILD, FUZZ) and advance within the active group on submit and on authority change; the first keystroke replaces the hint without touching the buffer. The quickstart command grid and its per-project random tip are removed in favour of one framed panel with a static tip."
+        },
+        {
+          "id": "split-pane-task-visibility",
+          "type": "fixed",
+          "title": "Split-pane task visibility",
+          "description": "on narrow and medium terminals the task area is now pinned below the title bar for the whole open task instead of collapsing to a single row and releasing when the last todo is marked done. It renders the bounded projection block and a spacer, so scrolling moves only the transcript below it. The rail now closes on the terminal task transition, matching the wide sidebar, rather than on the last completed todo."
+        },
+        {
+          "id": "interrupted-build-continuation",
+          "type": "fixed",
+          "title": "Interrupted BUILD continuation",
+          "description": "a resumed task now derives its execution stage from durable evidence, so a change applied before the interruption stays in post-change verification. The task briefing carries a resume directive naming the last observed change, the pending check, and the rule against re-planning or repeating completed discovery."
+        },
+        {
+          "id": "runaway-continuation",
+          "type": "fixed",
+          "title": "Runaway continuation",
+          "description": "the control plane now stops a run after `MaxConsecutiveNoProgress` completed turns that do not change the task boundary. During verification only a change or a check counts; elsewhere new evidence, a stage/requirement change, or an explicit blocker counts. The stop is reported as `NEEDS_REVIEW` with its semantic reason, not as a model-turn limit. The model-turn cap remains the last-resort resource bound."
+        },
+        {
+          "id": "build-implementation-continuity",
+          "type": "fixed",
+          "title": "BUILD implementation continuity",
+          "description": "after a change is applied but not yet verified, a refinement prompt such as “I want to use green and black” now inherits the open mutation contract instead of being rebuilt as a new informational task. The task identity, change evidence, and write surface continue under BUILD, and the refinement still owes the same post-change verification. Explicit mutation prompts keep BUILD and the write surface as new objectives. Read questions, investigation requests, and explicit no-mutation limits remain new objectives; a no-mutation request that also asks to understand offers the ASK boundary."
+        },
+        {
+          "id": "rework-follow-ups",
+          "type": "fixed",
+          "title": "Rework follow-ups",
+          "description": "`redesign`, `rework`, `revamp`, `restyle`, `redo`, `overhaul`, `modernize`, `redraw`, `reimplement`, and `rearchitect` are repository-change heads. After a design turn, “redesign it” now derives a mutation contract in BUILD, offers the write surface, and cannot be proven from another plan or a recorded change artifact without an observed change and a later check."
+        },
+        {
+          "id": "task-plan-isolation",
+          "type": "fixed",
+          "title": "Task plan isolation",
+          "description": "a new task starts with an empty session todo plan. The previous task keeps its todo snapshot in its archive, but its completed items no longer appear as the new task's progress or get imported into its checkpoint."
+        },
+        {
+          "id": "resumed-investigation-tasks",
+          "type": "fixed",
+          "title": "Resumed investigation tasks",
+          "description": "repeating a task's own objective no longer bypasses workspace prediction. A BUILD task handed back with a strong investigation request now moves to FUZZ instead of staying in BUILD until a new session is started."
+        },
+        {
+          "id": "fuzz-scratch-execution",
+          "type": "fixed",
+          "title": "FUZZ scratch execution",
+          "description": "a shell redirect to an absolute path outside the workspace is execution, not a repository mutation. Starting a local server that logs to a temporary file is no longer refused by semantic admission."
+        },
+        {
+          "id": "refused-proposal-recovery",
+          "type": "fixed",
+          "title": "Refused-proposal recovery",
+          "description": "a model that stops with no visible text immediately after a refusal-only turn now gets one answer-only request from the evidence already gathered, rather than ending the task with an empty final message."
+        },
+        {
+          "id": "answer-only-silence",
+          "type": "fixed",
+          "title": "Answer-only silence",
+          "description": "when the already-closed answer surface returns only reasoning, the loop makes one bounded answer-only retry, with a runtime-authored request that no tool is available, instead of ending the run with an empty final assistant message after a completed investigation."
+        },
+        {
+          "id": "investigation-evidence-retention",
+          "type": "fixed",
+          "title": "Investigation evidence retention",
+          "description": "trimming the durable evidence state now evicts transient command diagnostics before content-bearing file reads and directory listings. A long FUZZ run no longer loses the observations that satisfy `repository_overview` and `repository_survey`, which previously kept the answer boundary closed and the investigation reported as insufficient."
+        },
+        {
+          "id": "longcat-serialized-tool-calls",
+          "type": "fixed",
+          "title": "LongCat serialized tool calls",
+          "description": "`\u003clongcat_tool_call\u003e` envelopes in assistant text are now normalized at the provider boundary in both the JSON and key/value spellings. Previously the raw protocol reached the transcript as prose and the proposed calls were never authorized or executed."
+        },
+        {
+          "id": "composer-footer-hierarchy",
+          "type": "changed",
+          "title": "Composer footer hierarchy",
+          "description": "while a turn runs, the measured timer and session telemetry now hold the left edge and the queue/cancel/scroll keys pin to the right edge in the faint tier. Joined into one sentence, the keys trailed the metrics and read as more telemetry, so the footer competed with the transcript and left the right half of the row empty."
+        }
+      ]
     }
   }
 }

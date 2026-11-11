@@ -5,6 +5,24 @@ immutable.
 
 ## [Unreleased]
 
+## [v0.1.1] - 2026-11-12
+
+### Added
+
+- Automatic appearance: `internal/tui/design` is now the single token source for
+  a Dark and a Light palette, and `theme` is stored as a preference — `auto`,
+  `dark`, or `light` — resolved once at startup. `auto` follows the host
+  appearance on macOS, Linux, and Windows behind a bounded poll with a dark
+  fallback, so a light terminal is legible without per-view overrides.
+  `/theme` switches the appearance in place.
+- Inline composer hints: the binding suggestion is painted at the input origin
+  ahead of the caret while the composer is empty, so the prompt reads as
+  embedded instead of displaced. Hints are grouped by interaction (onboarding,
+  ASK, BUILD, FUZZ) and advance within the active group on submit and on
+  authority change; the first keystroke replaces the hint without touching the
+  buffer. The quickstart command grid and its per-project random tip are
+  removed in favour of one framed panel with a static tip.
+
 ### Fixed
 
 - Split-pane task visibility: on narrow and medium terminals the task area is
