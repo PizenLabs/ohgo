@@ -108,8 +108,8 @@ func TestProposalUsesTheOriginalPermissionSurface(t *testing.T) {
 	if pending == nil || pending.Proposal == nil {
 		t.Fatal("no proposal is pending")
 	}
-	if got := approvalBorderColor(pending); got != ColorMutedAmber {
-		t.Errorf("proposal frame accent = %q, want the permission amber %q", got, ColorMutedAmber)
+	if got := approvalBorderColor(pending, ThemeDark); got != DarkTokens().Warning {
+		t.Errorf("proposal frame accent = %q, want the permission amber %q", got, DarkTokens().Warning)
 	}
 
 	out := stripANSI(Render(p.state))

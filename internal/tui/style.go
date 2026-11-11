@@ -2,8 +2,10 @@ package tui
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -15,128 +17,35 @@ const (
 	GapY = 1
 )
 
-// Semantic colour tokens. Every style in the package resolves through one of
-// these, so a theme change lands here and nowhere else.
-//
-// Most tokens are 256-colour indexes: they resolve on every terminal that
-// reports colour and degrade predictably on the rest. Body text, borders, and
-// the code surface use truecolor pairs so light and dark resolve to the exact
-// same semantic values rather than approximating them with indexes. Colour
-// signals state or voice; it never decorates ordinary metadata, and every state
-// that uses colour also carries a text marker (✔ ✗ ● ○ ■ ◐ ⠋).
-const (
-	// Dark theme: muted surfaces with one restrained accent. Body text and
-	// borders are truecolor here so both themes share one adaptive pair
-	// rather than approximating the same neutrals with 256-colour indexes.
-	darkText    = "#d6dedb" // body text
-	darkMuted   = "244"     // metadata, hints
-	darkAccent  = "121"     // mint: focus, the user's voice, selection
-	darkTool    = "73"      // soft teal: tool identity, distinct from the accent
-	darkSuccess = "42"
-	darkWarning = "214"
-	darkDanger  = "196"
-	darkCodeFg  = "#a7f3d0"
-	// The code surface is a soft forest tint, not a black block: inline spans
-	// and fenced blocks must read on a bright terminal too.
-	darkCodeBg = "#1b2a24"
-	// Deep-forest header scale: bright emerald H1, sage H2, muted sage H3.
-	darkH1 = "85"
-	darkH2 = "114"
-	darkH3 = "144"
-	// Warm amber strings read against the dark code background.
-	darkCodeStr = "214"
-	// Selection surface: the subtle row tint shared by list pickers. The
-	// transcript prompt never uses it; attribution carries that role.
-	darkUserBg = "237"
-
-	// Light theme: dark foregrounds on a bright screen, same semantics.
-	lightText    = "#1f2335"
-	lightMuted   = "242"
-	lightAccent  = "28"
-	lightTool    = "30"
-	lightSuccess = "28"
-	lightWarning = "166"
-	lightDanger  = "160"
-	lightCodeFg  = "#064e3b"
-	// The light code surface is a soft mint tint with deep emerald text.
-	// It replaces any opaque black block or reverse-video span, which break
-	// on a bright terminal.
-	lightCodeBg = "#e2ece8"
-	// Same forest scale for bright terminals: deep emerald H1, dark sage
-	// H2, muted grey H3.
-	lightH1      = "28"
-	lightH2      = "65"
-	lightH3      = "242"
-	lightCodeStr = "166"
-	// Selection surface for bright terminals: slightly darker than the
-	// screen, distinct from the code surface.
-	lightUserBg = "253"
-
-	// Borders and dividers adapt as one pair, so a rule stays a rule rather
-	// than competing with body text on either background.
-	darkBorder  = "#2d3748"
-	lightBorder = "#cbd5e1"
-)
-
 // fg is the single place a token becomes a style foreground.
 func fg(token string) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(token))
 }
 
-// Semantic chrome tokens: a cohesive low-contrast dark palette
-// (Catppuccin / Forest Minimal inspired) for the header, footer, and composer
-// chrome.
-//
-// These are truecolor hex: the chrome targets modern terminals where the
-// brand, model, and status segments must read as distinct hues, and the
-// semantic mode accents must survive both themes unchanged. Every state that
-// uses colour also carries a text marker (● ○ ◐), so nothing depends on hue
-// alone.
-const (
-	// ColorPrimary is subtle mint teal: the app name, the active cursor,
-	// and focused borders.
-	ColorPrimary = "#5FB3A1"
-	// ColorModel is muted sage green: the model name / active engine.
-	ColorModel = "#8FB08D"
-	// ColorStatus is muted amber: warnings and check-status indicators.
-	ColorStatus = "#C9A86A"
-	// ColorAccent is soft steel blue: mode badges and the active runtime.
-	ColorAccent = "#7AA8C9"
-	// ColorFuzz is FUZZ's magenta workspace identity: semantic authority
-	// accent, not theme chrome, so it reads the same under every palette.
-	ColorFuzz = workspace.AccentFuzz
-	// ColorDim is the dark-theme rule colour: dot separators, dividers, and
-	// borders. It is intentionally below body text in contrast.
-	ColorDim = darkBorder
-	// ColorText is the dark-theme primary body text.
-	ColorText = darkText
-	// ColorMuted is muted gray: labels such as model, workspace, and git.
-	ColorMuted = "#6C7A89"
-	// ColorMutedAmber is warm muted amber, the approval frame accent for a
-	// read or inspect call: the action is side-effect free, so the boundary
-	// reads as a checkpoint rather than a hazard. It shares the status amber,
-	// so the two amber roles stay one value.
-	ColorMutedAmber = ColorStatus
-	// ColorRose is warm burnt rose, the approval frame accent for a call that
-	// mutates or destroys: the boundary reads as a hazard before the text is.
-	ColorRose = "#CD694A"
-	// ColorRecap is the dim sage-teal for the post-task summary line. It is
-	// deliberately below muted text in contrast: closure is metadata, not a
-	// second answer, and it must recede into the transcript.
-	ColorRecap = "#5C7E70"
-)
+// DarkTokens and LightTokens are the resolved design foundation. Constructors
+// in this package consume these roles; no component below should reach for a
+// raw colour literal.
+func DarkTokens() design.Tokens  { return design.Dark() }
+func LightTokens() design.Tokens { return design.Light() }
 
-// Light-theme counterparts, darkened to read on a bright screen. The hues
-// stay in the same families so the chrome keeps one identity per role.
-const (
-	chromeLightPrimary = "#1F6F61"
-	chromeLightModel   = "#4E7A4C"
-	chromeLightStatus  = "#8A6D2B"
-	chromeLightAccent  = "#3E6E8E"
-	chromeLightDim     = lightBorder
-	// chromeLightRecap is the same dim sage role darkened for a bright
-	// screen: still quieter than body text, still readable.
-	chromeLightRecap = "#4F6E61"
+// Palette and chrome caches: a render asks for a theme's style bundle many
+// times per frame, and the tokens never change at runtime. Caching keeps a
+// theme switch a lookup rather than a rebuild.
+var (
+	darkPaletteOnce   sync.Once
+	darkPaletteCache  *Palette
+	lightPaletteOnce  sync.Once
+	lightPaletteCache *Palette
+
+	darkChromeOnce   sync.Once
+	darkChromeCache  *Chrome
+	lightChromeOnce  sync.Once
+	lightChromeCache *Chrome
+
+	darkExtrasOnce   sync.Once
+	darkExtrasCache  *ExtraStyles
+	lightExtrasOnce  sync.Once
+	lightExtrasCache *ExtraStyles
 )
 
 // Semantic mode accents are the workspace's identity colors, re-exported here
@@ -145,17 +54,17 @@ const (
 // and readable on a bright one, without turning the mode into a different
 // color.
 const (
-	// ModeAccentAsk is ASK's muted teal on a dark screen.
+	// ModeAccentAsk is ASK's teal identity on a dark screen.
 	ModeAccentAsk = workspace.AccentAsk
-	// ModeAccentAskLight is ASK's deep teal on a bright screen.
+	// ModeAccentAskLight is ASK's deep teal identity on a bright screen.
 	ModeAccentAskLight = workspace.AccentAskLight
-	// ModeAccentBuild is BUILD's muted steel blue on a dark screen.
+	// ModeAccentBuild is BUILD's blue identity on a dark screen.
 	ModeAccentBuild = workspace.AccentBuild
-	// ModeAccentBuildLight is BUILD's deep blue on a bright screen.
+	// ModeAccentBuildLight is BUILD's deep blue identity on a bright screen.
 	ModeAccentBuildLight = workspace.AccentBuildLight
-	// ModeAccentFuzz is FUZZ's muted mauve on a dark screen.
+	// ModeAccentFuzz is FUZZ's soft violet identity on a dark screen.
 	ModeAccentFuzz = workspace.AccentFuzz
-	// ModeAccentFuzzLight is FUZZ's deep purple on a bright screen.
+	// ModeAccentFuzzLight is FUZZ's deep violet identity on a bright screen.
 	ModeAccentFuzzLight = workspace.AccentFuzzLight
 )
 
@@ -180,6 +89,47 @@ func ModeAccent(label string) string {
 	return ModeAccentFor(ThemeDark, label)
 }
 
+// themeOf reports the appearance behind a palette, defaulting to dark for a
+// nil or hand-built style bundle.
+func themeOf(pal *Palette) string {
+	if pal != nil && pal.Theme != "" {
+		return NormalizeTheme(pal.Theme)
+	}
+	return ThemeDark
+}
+
+// themeSummaryFor names the stored preference, the effective palette, and how
+// it was resolved. One formatter serves /theme, the picker card, and notices,
+// so the three-part contract cannot drift between surfaces.
+func themeSummaryFor(state State) string {
+	return formatThemeSummary(state.ThemePreference, state.Theme, state.ThemeSource)
+}
+
+func formatThemeSummary(preference, effective, source string) string {
+	preference = NormalizeThemePreference(preference)
+	effective = NormalizeTheme(effective)
+	if preference != ThemeAuto {
+		return "Theme: " + titleTheme(preference) + " (explicit)"
+	}
+	switch source {
+	case ThemeSourceSystem:
+		return "Theme: Auto → " + titleTheme(effective) + " (system)"
+	case ThemeSourceFallback:
+		return "Theme: Auto → " + titleTheme(effective) + " (fallback: system unavailable)"
+	default:
+		return "Theme: Auto → " + titleTheme(effective)
+	}
+}
+
+// titleTheme formats an effective or explicit appearance for user-facing
+// chrome. Auto is not a palette and must be resolved before calling this.
+func titleTheme(theme string) string {
+	if NormalizeTheme(theme) == ThemeLight {
+		return "Light"
+	}
+	return "Dark"
+}
+
 // modeStyle renders an authority label in its semantic accent for a theme.
 // The fallback is used only for an unknown label: a malformed mode must not
 // borrow a real authority's identity.
@@ -198,7 +148,9 @@ type Chrome struct {
 	// accents use it so a caller holding only Chrome still resolves the right
 	// light/dark form.
 	Theme string
-	// Brand renders the app name.
+	// Brand renders the app name in the High Focus title role: the product
+	// identity is the strongest text on the chrome, not an accent-coloured
+	// label competing with the authority modes.
 	Brand lipgloss.Style
 	// Version renders the release label beside the brand, e.g. "v1.0.0".
 	// It stays muted: identity first, release metadata second.
@@ -222,31 +174,39 @@ type Chrome struct {
 // ChromeFor resolves the chrome styles for a theme.
 func ChromeFor(theme string) *Chrome {
 	if NormalizeTheme(theme) == ThemeLight {
-		return &Chrome{
-			Theme:     ThemeLight,
-			Brand:     fg(chromeLightPrimary).Bold(true),
-			Version:   fg(lightMuted),
-			Model:     fg(chromeLightModel),
-			Active:    fg(chromeLightAccent).Bold(true),
-			Idle:      fg(lightMuted),
-			Check:     fg(chromeLightStatus),
-			Separator: fg(chromeLightDim),
-			Prompt:    fg(chromeLightPrimary),
-			Context:   fg(lightMuted),
+		lightChromeOnce.Do(func() {
+			t := LightTokens()
+			lightChromeCache = &Chrome{
+				Theme:     ThemeLight,
+				Brand:     fg(t.TextTitle).Bold(true),
+				Version:   fg(t.TextMuted),
+				Model:     fg(t.Model),
+				Active:    fg(t.Active).Bold(true),
+				Idle:      fg(t.Idle),
+				Check:     fg(t.Check),
+				Separator: fg(t.BorderDefault),
+				Prompt:    fg(t.Prompt),
+				Context:   fg(t.TextMuted),
+			}
+		})
+		return lightChromeCache
+	}
+	darkChromeOnce.Do(func() {
+		t := DarkTokens()
+		darkChromeCache = &Chrome{
+			Theme:     ThemeDark,
+			Brand:     fg(t.TextTitle).Bold(true),
+			Version:   fg(t.TextMuted),
+			Model:     fg(t.Model),
+			Active:    fg(t.Active).Bold(true),
+			Idle:      fg(t.Idle),
+			Check:     fg(t.Check),
+			Separator: fg(t.BorderDefault),
+			Prompt:    fg(t.Prompt),
+			Context:   fg(t.TextMuted),
 		}
-	}
-	return &Chrome{
-		Theme:     ThemeDark,
-		Brand:     fg(ColorPrimary).Bold(true),
-		Version:   fg(ColorMuted),
-		Model:     fg(ColorModel),
-		Active:    fg(ColorAccent).Bold(true),
-		Idle:      fg(ColorMuted),
-		Check:     fg(ColorStatus),
-		Separator: fg(ColorDim),
-		Prompt:    fg(ColorPrimary),
-		Context:   fg(ColorMuted),
-	}
+	})
+	return darkChromeCache
 }
 
 // ExtraStyles carries the semantic chrome styles that sit above the base
@@ -268,27 +228,35 @@ type ExtraStyles struct {
 // ExtrasFor resolves semantic chrome styles for a theme.
 func ExtrasFor(theme string) *ExtraStyles {
 	if NormalizeTheme(theme) == ThemeLight {
-		return &ExtraStyles{
-			Separator: fg(chromeLightDim),
-			Header:    fg(lightText).Bold(true),
-			Focus:     fg(lightAccent).Bold(true),
-			Success:   fg(lightSuccess),
-			Warning:   fg(lightWarning),
-			Danger:    fg(lightDanger),
-			Hint:      fg(lightMuted),
-			Key:       fg(lightText).Bold(true),
+		lightExtrasOnce.Do(func() {
+			t := LightTokens()
+			lightExtrasCache = &ExtraStyles{
+				Separator: fg(t.BorderDefault),
+				Header:    fg(t.TextTitle).Bold(true),
+				Focus:     fg(t.BorderFocus).Bold(true),
+				Success:   fg(t.Success),
+				Warning:   fg(t.Warning),
+				Danger:    fg(t.Error),
+				Hint:      fg(t.TextMuted),
+				Key:       fg(t.TextPrimary).Bold(true),
+			}
+		})
+		return lightExtrasCache
+	}
+	darkExtrasOnce.Do(func() {
+		t := DarkTokens()
+		darkExtrasCache = &ExtraStyles{
+			Separator: fg(t.BorderDefault),
+			Header:    fg(t.TextTitle).Bold(true),
+			Focus:     fg(t.BorderFocus).Bold(true),
+			Success:   fg(t.Success),
+			Warning:   fg(t.Warning),
+			Danger:    fg(t.Error),
+			Hint:      fg(t.TextMuted),
+			Key:       fg(t.TextPrimary).Bold(true),
 		}
-	}
-	return &ExtraStyles{
-		Separator: fg(ColorDim),
-		Header:    fg(darkText).Bold(true),
-		Focus:     fg(ColorPrimary).Bold(true),
-		Success:   fg(darkSuccess),
-		Warning:   fg(darkWarning),
-		Danger:    fg(darkDanger),
-		Hint:      fg(darkMuted),
-		Key:       fg(darkText).Bold(true),
-	}
+	})
+	return darkExtrasCache
 }
 
 // SeparatorLine draws a subtle rule across width cells in the dim chrome
@@ -306,7 +274,7 @@ const badgeNeutral = "244"
 // WorkspaceBadge renders the execution-authority label with its semantic
 // accent.
 //
-// The accent is a workspace-owned identity colour (ASK teal, FUZZ magenta,
+// The accent is a workspace-owned identity colour (ASK teal, FUZZ violet,
 // BUILD blue), not a theme token: it must read the same under every palette
 // (§9). It is passed in by the producer, which reads it from
 // workspace.Style(), so this package never hardcodes a workspace colour. An

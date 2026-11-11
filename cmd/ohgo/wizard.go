@@ -201,7 +201,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	if store != nil {
 		installSessionManager(program, store, held, opts)
 	}
-	program.SetTheme(opts.settings.Theme)
+	program.SetTheme(opts.settings.ThemePreference())
 	program.SetThemeChangedHandler(func(theme string) {
 		opts.settings.Theme = theme
 		if err := config.Save(opts.settings); err != nil {

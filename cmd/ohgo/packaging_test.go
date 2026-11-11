@@ -75,8 +75,8 @@ func TestPlanInitRefusesAnUnknownModel(t *testing.T) {
 	}
 }
 
-// TestPlanInitNormalizesTheTheme proves a typo degrades to dark rather than
-// failing the setup over a cosmetic choice.
+// TestPlanInitNormalizesTheTheme proves a typo follows the system default
+// rather than failing the setup over a cosmetic choice.
 func TestPlanInitNormalizesTheTheme(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 
@@ -91,8 +91,8 @@ func TestPlanInitNormalizesTheTheme(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planInit: %v", err)
 	}
-	if plan.theme != "dark" {
-		t.Errorf("theme = %q, want a typo to degrade to dark", plan.theme)
+	if plan.theme != "auto" {
+		t.Errorf("theme = %q, want a typo to follow the system default", plan.theme)
 	}
 }
 

@@ -501,7 +501,7 @@ func TestFencedCodeKeepsDelimitersLiteral(t *testing.T) {
 			t.Errorf("code content altered: missing %q in:\n%s", literal, stripped)
 		}
 	}
-	if probe := pal.Bold.Render("class"); strings.Contains(out, probe) {
+	if probe := pal.Strong.Render("class"); strings.Contains(out, probe) {
 		t.Errorf("Markdown emphasis leaked into fenced code: %q", probe)
 	}
 	if probe := pal.CodeKeyword.Render("class"); !strings.Contains(out, probe) {
@@ -509,7 +509,7 @@ func TestFencedCodeKeepsDelimitersLiteral(t *testing.T) {
 	}
 	// Prose emphasis outside the fence still renders as emphasis (the word
 	// painter emits per-word runs, so probe one word, not the whole line).
-	if probe := pal.Bold.Render("Example"); !strings.Contains(out, probe) {
+	if probe := pal.Strong.Render("Example"); !strings.Contains(out, probe) {
 		t.Errorf("prose emphasis lost outside the fence")
 	}
 }

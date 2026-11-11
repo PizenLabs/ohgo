@@ -86,6 +86,37 @@ type UserDefaults struct {
 	Name string `json:"name,omitempty"`
 }
 
+// Theme preferences. The stored value is a preference, never an effective
+// appearance: "auto" follows the system and is resolved at render time.
+const (
+	// ThemeAuto follows the system appearance and is the default.
+	ThemeAuto = "auto"
+	// ThemeDark forces the Midnight Slate appearance.
+	ThemeDark = "dark"
+	// ThemeLight forces the Warm Porcelain appearance.
+	ThemeLight = "light"
+	// DefaultThemePreference is what an unset or invalid preference resolves
+	// to. Auto keeps a new installation aligned with its environment.
+	DefaultThemePreference = ThemeAuto
+)
+
+// NormalizeThemePreference maps a stored value to a known preference.
+//
+// Unknown and empty values degrade to Auto rather than failing or silently
+// pinning a palette: the user asked for no choice, so following the system is
+// the deterministic reading of that state.
+func NormalizeThemePreference(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case ThemeDark:
+		return ThemeDark
+	case ThemeLight:
+		return ThemeLight
+	case ThemeAuto:
+		return ThemeAuto
+	}
+	return DefaultThemePreference
+}
+
 // Settings is the user-facing configuration.
 //
 // Every field is optional: a zero Settings is a valid configuration that uses
@@ -123,9 +154,11 @@ type Settings struct {
 	AutoApprove []string `json:"autoApprove,omitempty"`
 	// SystemPrompt is appended to the built-in system prompt.
 	SystemPrompt string `json:"systemPrompt,omitempty"`
-	// Theme selects the UI palette: "dark" (default) or "light". Any other
-	// value behaves as dark, so a typo degrades to the default rather than
-	// an error.
+	// Theme stores the appearance preference: "auto" (default, follow the
+	// system), "dark", or "light". The effective palette is resolved by the
+	// renderer; this field is never overwritten with the currently resolved
+	// value. Any other value behaves as auto, so a typo follows the system
+	// rather than pinning an unrelated palette.
 	Theme string `json:"theme,omitempty"`
 	// TaskRail enables the contextual task rail for execution tasks with open
 	// todos. Absence means enabled; the rail still stays hidden until such a
@@ -364,6 +397,7 @@ func Default() Settings {
 		ReasoningEffort: "medium",
 		Approvals:       map[string]string{},
 		Roles:           map[string]Profile{},
+		Theme:           DefaultThemePreference,
 		Compaction:      defaultCompaction(),
 		Cleanup:         defaultCleanup(),
 	}
@@ -491,6 +525,13 @@ func Save(settings Settings) error {
 // authoritative project worker identity.
 func (s Settings) GlobalName() string {
 	return strings.TrimSpace(s.UserDefaults.Name)
+}
+
+// ThemePreference resolves the stored theme field to a known preference.
+// It is the single parser for the persisted format; the UI must not invent a
+// second interpretation of "auto", "dark", or "light".
+func (s Settings) ThemePreference() string {
+	return NormalizeThemePreference(s.Theme)
 }
 
 // TaskRailEnabled reports whether the contextual task rail may appear.

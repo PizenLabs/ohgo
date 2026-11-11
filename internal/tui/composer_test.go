@@ -207,8 +207,8 @@ func TestComposerPrefixColorsOnlyTheModeWord(t *testing.T) {
 	}
 }
 
-// Each authority keeps its own accent: ASK teal/primary, BUILD blue/accent,
-// FUZZ magenta. Sharing one style would make the boundary unreadable.
+// Each authority keeps its own accent: ASK teal, BUILD blue, FUZZ violet.
+// Sharing one style would make the boundary unreadable.
 func TestComposerPrefixStylesDifferPerMode(t *testing.T) {
 	pal := DarkPalette()
 	mk := func(workspace string) string {
@@ -224,20 +224,20 @@ func TestComposerPrefixStylesDifferPerMode(t *testing.T) {
 		t.Errorf("BUILD prefix = %q, want the fixed blue %q", build, ModeAccentBuild)
 	}
 	if fuzz != ModeAccentFuzz {
-		t.Errorf("FUZZ prefix = %q, want the fixed magenta %q", fuzz, ModeAccentFuzz)
+		t.Errorf("FUZZ prefix = %q, want the fixed violet %q", fuzz, ModeAccentFuzz)
 	}
 	if fuzz == ask || fuzz == build {
-		t.Errorf("FUZZ prefix = %q, want its own magenta, not ASK %q or BUILD %q", fuzz, ask, build)
+		t.Errorf("FUZZ prefix = %q, want its own violet, not ASK %q or BUILD %q", fuzz, ask, build)
 	}
 }
 
-// The semantic accents are deliberately muted, not neon: each authority has a
-// soft dark-screen hue and a deepened light-screen hue.
-func TestModeAccentsUseMutedThemePairs(t *testing.T) {
+// The semantic accents are OHGO's fixed identity pairs: one signature hue per
+// authority, deepened for bright terminals.
+func TestModeAccentsUseSignatureThemePairs(t *testing.T) {
 	cases := map[string][2]string{
-		"ASK":   {"#2dd4bf", "#0f766e"},
-		"BUILD": {"#60a5fa", "#1d4ed8"},
-		"FUZZ":  {"#e879f9", "#a21caf"},
+		"ASK":   {"#5FB3A1", "#1F6F61"},
+		"BUILD": {"#61AFEF", "#2B6CB0"},
+		"FUZZ":  {"#C678DD", "#8C4398"},
 	}
 	for workspace, pair := range cases {
 		if got := ModeAccentFor(ThemeDark, workspace); got != pair[0] {

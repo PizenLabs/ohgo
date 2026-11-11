@@ -325,8 +325,16 @@ type Program struct {
 	// lastJobs remembers the listed jobs so choosing one can show its
 	// output. It is only touched from the update goroutine.
 	lastJobs []JobItem
-	// onThemeChanged persists a theme switch. Nil means session-only.
+	// onThemeChanged persists a theme preference. Nil means session-only.
 	onThemeChanged func(theme string)
+	// detectAppearance reports the host appearance for the Auto preference.
+	// Nil disables detection and makes Auto use the documented fallback.
+	detectAppearance func() (theme string, ok bool)
+	// lastAppearanceCheck throttles the Auto poll. It is updated when a probe
+	// is dispatched, never during a render.
+	lastAppearanceCheck time.Time
+	// appearanceSeq invalidates a probe whose preference changed while it ran.
+	appearanceSeq uint64
 	// onTaskRailChanged persists the task-rail preference. Nil means
 	// session-only, which is also the safe default for embedded hosts.
 	onTaskRailChanged func(enabled bool)
@@ -908,6 +916,7 @@ func NewProgram(loop *agent.Loop, model string, window int, opts ...ProgramOptio
 	}
 	p.state.Status.Model = model
 	p.state.Status.ContextWindow = window
+	p.detectAppearance = DetectSystemAppearance
 	// OSC 52 is the only clipboard transport. A dumb terminal or an explicit
 	// opt-out disables it; the copy is then a no-op rather than a spawned
 	// process or a false success.
@@ -983,7 +992,27 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.lastSpinnerAt = at
 			}
 		}
+		if probe := p.appearancePoll(at); probe != nil {
+			return p, tea.Batch(tick(), probe)
+		}
 		return p, tick()
+
+	case appearanceProbeMsg:
+		// A probe belongs to the preference that scheduled it. If the user
+		// changed the choice while it ran, the result describes a question
+		// nobody is asking anymore.
+		if m.Seq != p.appearanceSeq || NormalizeThemePreference(p.state.ThemePreference) != ThemeAuto {
+			return p, nil
+		}
+		theme, source := ThemeDark, ThemeSourceFallback
+		if m.OK {
+			theme, source = NormalizeTheme(m.Theme), ThemeSourceSystem
+		}
+		if theme == p.state.Theme && source == p.state.ThemeSource {
+			return p, nil
+		}
+		p.apply(ThemeChanged{Name: theme, Preference: ThemeAuto, Source: source})
+		return p, nil
 
 	case escFlushMsg:
 		// The deferred Escape was not claimed by a fragmented report. Dispatch
@@ -1245,6 +1274,17 @@ func (p *Program) onModelsRefreshed(m modelsRefreshedMsg) (tea.Model, tea.Cmd) {
 func (p *Program) apply(event Event) {
 	p.eventsApplied++
 	p.state.Apply(event)
+	if _, ok := event.(ThemeChanged); ok {
+		// Surfaces that retain resolved styles receive the new appearance
+		// through the same transition. The main canvas and modals resolve
+		// per frame; these two hold a model of their own.
+		if p.state.Diff != nil {
+			p.state.Diff.SetTheme(p.state.Theme)
+		}
+		if p.wizard != nil {
+			p.wizard.SetTheme(p.state.Theme)
+		}
+	}
 	// A prompt joins durable history only when it actually becomes a turn.
 	// Drafts, ghost suggestions, queued lines that never run, and slash or
 	// shell commands are not prompts and must not pollute recall.
@@ -2170,7 +2210,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 // Nothing else reaches the composer while the overlay is open.
 func (p *Program) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	picker := p.state.Picker
-	// The theme chooser is a fixed two-row card, not a searchable catalog:
+	// The theme chooser is a fixed three-row card, not a searchable catalog:
 	// only navigation, selection, and dismissal are meaningful. Inert keys
 	// never accumulate an invisible filter that Esc would clear first.
 	if picker != nil && picker.Kind == PickerThemes {
@@ -3696,25 +3736,31 @@ func (p *Program) openJobsView() {
 	p.state.Apply(PickerOpened{Kind: PickerJobs, Title: "background jobs", Items: items})
 }
 
-// applyThemeCommand handles /theme. With an explicit name it switches
+// applyThemeCommand handles /theme. With an explicit preference it switches
 // immediately for scripted and muscle-memory use; bare /theme opens the
-// interactive picker so the two palettes can be compared without knowing the
-// spelling. The change persists through the handler when one is installed, so
-// a restart keeps what the user picked.
+// interactive picker so Auto, Dark, and Light can be compared without knowing
+// the spelling. The preference persists through the handler when one is
+// installed; the effective palette is recomputed from it.
 func (p *Program) applyThemeCommand(args []string) {
 	if len(args) == 0 {
 		p.openThemePicker()
 		return
 	}
-	if _, ok := directThemeName(args[0]); !ok {
-		p.state.Apply(Notice{Text: fmt.Sprintf("theme: unknown %q — using dark (choose dark or light)", args[0])})
+	preference, ok := directThemeName(args[0])
+	if !ok {
+		p.state.Apply(Notice{Text: fmt.Sprintf("theme: unknown %q — choose auto, dark, or light", args[0])})
+		return
 	}
-	p.applyTheme(NormalizeTheme(args[0]))
+	p.applyTheme(preference)
+	p.state.Apply(Notice{Text: p.themeSummary()})
 }
 
-// directThemeName reports whether an explicit /theme argument names a palette.
+// directThemeName reports whether an explicit /theme argument names a
+// preference.
 func directThemeName(arg string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case ThemeAuto:
+		return ThemeAuto, true
 	case ThemeDark:
 		return ThemeDark, true
 	case ThemeLight:
@@ -3723,31 +3769,73 @@ func directThemeName(arg string) (string, bool) {
 	return "", false
 }
 
-// applyTheme switches the live palette and persists the choice. Every path
-// that changes theme goes through here, so the direct command and the picker
-// cannot drift.
-func (p *Program) applyTheme(name string) {
-	name = NormalizeTheme(name)
-	p.state.Apply(ThemeChanged{Name: name})
-	if p.onThemeChanged != nil {
-		p.onThemeChanged(name)
+// resolveAppearance maps a preference to the effective palette and its source.
+// Auto asks the detector once; explicit choices never do. A failed detection
+// always falls back to Dark and is labelled as a fallback rather than a system
+// result.
+func (p *Program) resolveAppearance(preference string) (theme, source string) {
+	preference = NormalizeThemePreference(preference)
+	if preference == ThemeDark || preference == ThemeLight {
+		return preference, ThemeSourceExplicit
+	}
+	if p.detectAppearance != nil {
+		if detected, ok := p.detectAppearance(); ok {
+			return NormalizeTheme(detected), ThemeSourceSystem
+		}
+	}
+	return ThemeDark, ThemeSourceFallback
+}
+
+// applyTheme switches the live appearance from a stored preference and
+// persists the preference. Every explicit path that changes theme goes through
+// here, so the direct command and the picker cannot drift.
+func (p *Program) applyTheme(preference string) {
+	p.setThemePreference(preference, true)
+}
+
+// setThemePreference resolves and applies one preference. persist separates
+// startup application from an explicit user choice: restoring saved settings
+// must not rewrite them.
+func (p *Program) setThemePreference(preference string, persist bool) {
+	preference = NormalizeThemePreference(preference)
+	theme, source := p.resolveAppearance(preference)
+	// Invalidate an in-flight Auto probe: it was issued for an older choice.
+	p.appearanceSeq++
+	p.lastAppearanceCheck = time.Now()
+	p.apply(ThemeChanged{Name: theme, Preference: preference, Source: source})
+	if persist && p.onThemeChanged != nil {
+		p.onThemeChanged(preference)
 	}
 }
 
-// openThemePicker opens the interactive palette chooser. The current theme is
-// pre-highlighted, so Enter without moving reaffirms the active look rather
-// than silently flipping the screen.
+// themeSummary names the stored preference, the effective palette, and how it
+// was resolved. It is the one presentation of that three-part contract.
+func (p *Program) themeSummary() string {
+	return formatThemeSummary(p.state.ThemePreference, p.state.Theme, p.state.ThemeSource)
+}
+
+// openThemePicker opens the interactive appearance chooser. The current
+// preference is pre-highlighted, so Enter without moving reaffirms the choice
+// rather than silently flipping the screen.
 func (p *Program) openThemePicker() {
-	current := NormalizeTheme(p.state.Theme)
+	current := NormalizeThemePreference(p.state.ThemePreference)
+	effective := NormalizeTheme(p.state.Theme)
+	autoDetail := "follow system · now " + strings.ToLower(titleTheme(effective))
+	switch p.state.ThemeSource {
+	case ThemeSourceSystem:
+		autoDetail += " (system)"
+	case ThemeSourceFallback:
+		autoDetail += " (fallback)"
+	}
 	items := []PickerItem{
-		{Title: "Dark Theme", Detail: "Deep Forest · muted adaptive dark", Value: themeDarkValue},
-		{Title: "Light Theme", Detail: "Clean Studio · soft adaptive light", Value: themeLightValue},
+		{Title: "Auto", Detail: autoDetail, Value: ThemeAuto},
+		{Title: "Dark Theme", Detail: "Midnight Slate · cool adaptive dark", Value: ThemeDark},
+		{Title: "Light Theme", Detail: "Warm Porcelain · soft adaptive light", Value: ThemeLight},
 	}
 	cursor := 0
 	for i := range items {
 		if items[i].Value == current {
 			items[i].Active = true
-			items[i].Detail += " · current"
 			cursor = i
 		}
 	}
@@ -3815,9 +3903,16 @@ func (p *Program) SetThemeChangedHandler(onChange func(theme string)) {
 	p.onThemeChanged = onChange
 }
 
-// SetTheme applies the initial palette, e.g. from saved settings.
-func (p *Program) SetTheme(theme string) {
-	p.state.Apply(ThemeChanged{Name: theme})
+// SetTheme applies the saved theme preference, e.g. from settings. It resolves
+// Auto against the host exactly once and does not persist the result.
+func (p *Program) SetTheme(preference string) {
+	p.setThemePreference(preference, false)
+}
+
+// SetAppearanceDetector replaces the host appearance probe. It is intended for
+// embedded hosts and tests; nil makes Auto use the deterministic fallback.
+func (p *Program) SetAppearanceDetector(detect func() (theme string, ok bool)) {
+	p.detectAppearance = detect
 }
 
 // PublishWorkspace records chrome metadata (cwd, session, usage) without
@@ -4154,6 +4249,33 @@ func (p *Program) waitForApproval() tea.Cmd {
 
 func tick() tea.Cmd {
 	return tea.Tick(frameInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// appearanceProbeMsg carries one asynchronous Auto resolution. Seq ties the
+// answer to the preference generation that requested it.
+type appearanceProbeMsg struct {
+	Seq   uint64
+	Theme string
+	OK    bool
+}
+
+// appearancePoll dispatches a host appearance probe at a bounded cadence while
+// Auto is active. It never blocks Update and never runs for an explicit choice,
+// so a user who forced a palette pays nothing for detection.
+func (p *Program) appearancePoll(at time.Time) tea.Cmd {
+	if NormalizeThemePreference(p.state.ThemePreference) != ThemeAuto || p.detectAppearance == nil {
+		return nil
+	}
+	if !p.lastAppearanceCheck.IsZero() && at.Sub(p.lastAppearanceCheck) < appearancePollInterval {
+		return nil
+	}
+	p.lastAppearanceCheck = at
+	seq := p.appearanceSeq
+	detect := p.detectAppearance
+	return func() tea.Msg {
+		theme, ok := detect()
+		return appearanceProbeMsg{Seq: seq, Theme: theme, OK: ok}
+	}
 }
 
 // handleProposalKey answers a request-derived proposal. The interaction is

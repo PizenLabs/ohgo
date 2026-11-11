@@ -162,8 +162,8 @@ func TestRecapStyleIsQuietItalic(t *testing.T) {
 			t.Errorf("%s recap style is not italic", name)
 		}
 	}
-	if got := colorName(DarkPalette().Recap.GetForeground()); got != "#5C7E70" {
-		t.Errorf("dark recap foreground = %q, want #5C7E70", got)
+	if got := colorName(DarkPalette().Recap.GetForeground()); got != DarkTokens().Recap {
+		t.Errorf("dark recap foreground = %q, want the dim token %s", got, DarkTokens().Recap)
 	}
 }
 

@@ -24,7 +24,7 @@
         ┌───────────────────┴───────────────────┐
         │                                       │
    internal/tui                          internal/{commit,startup,update,
-   (+ tui/diff)                           history,gryhook}        application services
+   (+ tui/design, tui/diff)               history,gryhook}        application services
         │                                       │
         └───────────────┬───────────────────────┘
                         │
@@ -86,7 +86,7 @@ create a boundary that does not exist.
 | **vcs** | `vcs` | Git primitives | Whether a commit is allowed |
 | **prompt** | `prompt`, `promptopt` | System prompt text, `AGENTS.md` discovery, mention context; deterministic prompt compression and title sanitization | Deciding what to do with it, model calls |
 | **application** | `commit`, `startup`, `update`, `history`, `gryhook` | The `/commit` workflow; the initialization gate; the updater; durable prompt history and ephemeral oversized-prompt scratch; GRY lifecycle hooks | Execution authority |
-| **presentation** | `tui`, `tui/diff` | State machine, renderer, command registry, live mode, diff inspector | Task lifecycle, completion, authority |
+| **presentation** | `tui`, `tui/design`, `tui/diff` | State machine, renderer, command registry, live mode, canonical design tokens, diff inspector | Task lifecycle, completion, authority |
 | **governance** | `architecture` | The machine-checked manifest and boundaries | Production behaviour (it has no non-test code) |
 
 ---

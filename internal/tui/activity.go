@@ -162,9 +162,9 @@ func ActivityLineText(s State, now time.Time, tick int, width int) string {
 	if activity.Surface != ActivityLine {
 		return ""
 	}
-	lines := RenderThinkingFrame(activity.Thinking, now, tick, width)
+	lines := renderThinkingThemed(activity.Thinking, now, tick, false, width, s.Theme)
 	if shimmerSupported() {
-		lines = RenderThinkingTick(activity.Thinking, now, tick, width)
+		lines = renderThinkingThemed(activity.Thinking, now, tick, true, width, s.Theme)
 	}
 	if len(lines) == 0 {
 		return ""

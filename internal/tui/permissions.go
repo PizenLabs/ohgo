@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -176,13 +177,13 @@ func permissionSelection(index int) (AuthorityOption, bool) {
 }
 
 // authorityAccent is the mode's fixed semantic identity colour: ASK teal,
-// BUILD blue, FUZZ magenta. An invalid mode degrades to the dim slate rather
+// BUILD blue, FUZZ violet. An invalid mode degrades to the dim slate rather
 // than borrowing an authority's colour.
-func authorityAccent(mode AuthorityMode) string {
-	if accent := ModeAccent(string(mode)); accent != "" {
+func authorityAccent(mode AuthorityMode, theme string) string {
+	if accent := ModeAccentFor(theme, string(mode)); accent != "" {
 		return accent
 	}
-	return ColorDim
+	return design.For(theme).BorderStrong
 }
 
 // RenderPermissionsModal renders the bordered authority selector.
@@ -193,10 +194,11 @@ func authorityAccent(mode AuthorityMode) string {
 // Every emitted line is padded to the interior width, which keeps the rounded
 // border aligned and guarantees no row exceeds width.
 func RenderPermissionsModal(selectedIdx int, currentMode AuthorityMode, width int) string {
-	return renderPermissionsModal(selectedIdx, currentMode, width, "", "", "")
+	return renderPermissionsModalForTheme(selectedIdx, currentMode, width, "", "", "", ThemeDark)
 }
 
-func renderPermissionsModal(selectedIdx int, currentMode AuthorityMode, width int, title, reason, request string) string {
+func renderPermissionsModalForTheme(selectedIdx int, currentMode AuthorityMode, width int, title, reason, request, theme string) string {
+	t := design.For(theme)
 	if width <= 0 {
 		width = permissionsDefaultWidth
 	}
@@ -221,9 +223,9 @@ func renderPermissionsModal(selectedIdx int, currentMode AuthorityMode, width in
 		selected = 0
 	}
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorText))
-	descStyle := fg(ColorDim)
-	footerStyle := fg(ColorDim)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(t.TextPrimary))
+	descStyle := fg(t.TextMuted)
+	footerStyle := fg(t.BorderStrong)
 
 	var rows []string
 	if strings.TrimSpace(title) == "" {
@@ -244,7 +246,7 @@ func renderPermissionsModal(selectedIdx int, currentMode AuthorityMode, width in
 	}
 	rows = append(rows, "")
 	for i, opt := range AuthorityOptions {
-		rows = append(rows, permissionsOptionRow(i, i == selected, opt, currentMode, interior))
+		rows = append(rows, permissionsOptionRow(i, i == selected, opt, currentMode, interior, theme))
 		for _, line := range WrapToWidth(opt.Description, descWidth) {
 			rows = append(rows, descStyle.Render(permissionsIndent+line))
 		}
@@ -257,7 +259,7 @@ func renderPermissionsModal(selectedIdx int, currentMode AuthorityMode, width in
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(ColorDim)).
+		BorderForeground(lipgloss.Color(t.BorderDefault)).
 		Render(strings.Join(rows, "\n"))
 }
 
@@ -266,7 +268,8 @@ func renderPermissionsModal(selectedIdx int, currentMode AuthorityMode, width in
 // authority in force. The selection is carried by the arrow glyph and the
 // label emphasis together, so a monochrome terminal still shows where Enter
 // would land.
-func permissionsOptionRow(index int, selected bool, opt AuthorityOption, current AuthorityMode, interior int) string {
+func permissionsOptionRow(index int, selected bool, opt AuthorityOption, current AuthorityMode, interior int, theme string) string {
+	t := design.For(theme)
 	indicator := "  "
 	if selected {
 		indicator = "› "
@@ -287,17 +290,17 @@ func permissionsOptionRow(index int, selected bool, opt AuthorityOption, current
 
 	indicatorStyle := lipgloss.NewStyle()
 	if selected {
-		indicatorStyle = fg(ColorPrimary)
+		indicatorStyle = fg(t.BorderFocus)
 	}
-	labelStyle := fg(authorityAccent(opt.Mode))
+	labelStyle := fg(authorityAccent(opt.Mode, theme))
 	if selected {
 		labelStyle = labelStyle.Bold(true)
 	}
 	row := indicatorStyle.Render(indicator) +
-		fg(ColorMuted).Render(number) +
+		fg(t.TextMuted).Render(number) +
 		labelStyle.Render(label)
 	if tag != "" {
-		row += fg(ColorMuted).Render(tag)
+		row += fg(t.TextMuted).Render(tag)
 	}
 	if gap := interior - CellWidth(indicator) - CellWidth(number) - CellWidth(label) - CellWidth(tag); gap > 0 {
 		row += strings.Repeat(" ", gap)
@@ -352,7 +355,7 @@ func renderPermissionsArea(sb *strings.Builder, state State, _ *Palette, layout 
 		return
 	}
 	current, _ := AuthorityModeFromLabel(state.Status.Workspace)
-	card := renderPermissionsModal(modal.Cursor, current, permissionsCardWidth(state.Width), modal.Title, modal.Reason, modal.Request)
+	card := renderPermissionsModalForTheme(modal.Cursor, current, permissionsCardWidth(state.Width), modal.Title, modal.Reason, modal.Request, state.Theme)
 	if state.Width <= 0 || state.Height <= 0 {
 		sb.WriteString(card)
 		if !strings.HasSuffix(card, "\n") {

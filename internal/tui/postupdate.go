@@ -6,6 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 )
 
 // postUpdateMaxChanges bounds the acknowledgement card. What's New is a short
@@ -219,7 +221,7 @@ func postUpdateCardWidth(termWidth int) int {
 
 // updateRestartCard builds the truthful completion state: the new binary is
 // on disk, while the running process is still the old one.
-func updateRestartCard(view *UpdateRestartView, _ *Palette, cardW int) string {
+func updateRestartCard(view *UpdateRestartView, pal *Palette, cardW int) string {
 	if view == nil {
 		return ""
 	}
@@ -231,20 +233,22 @@ func updateRestartCard(view *UpdateRestartView, _ *Palette, cardW int) string {
 	if version != "" {
 		titleText = "Update installed: " + version
 	}
+	theme := themeOf(pal)
+	t := design.For(theme)
 	title := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardTeal)).Bold(true).
+		Foreground(lipgloss.Color(t.Brand)).Bold(true).
 		Render(TruncateToWidth(titleText, cardW))
 	body := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextSecondary)).
 		Render("Restart ohgo to use the new version.")
 	footer := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardTeal)).Bold(true).
+		Foreground(lipgloss.Color(t.Brand)).Bold(true).
 		Render("Press Enter to exit")
 	inner := lipgloss.JoinVertical(lipgloss.Left, title, "", body, "", footer)
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(wizardTeal)).
-		Background(lipgloss.Color(wizardBG)).
+		BorderForeground(lipgloss.Color(t.Brand)).
+		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
@@ -288,8 +292,10 @@ func postUpdateCard(view *PostUpdateView, pal *Palette, cardW int) string {
 	if version != "" {
 		titleText = "Updated to " + version
 	}
+	theme := themeOf(pal)
+	t := design.For(theme)
 	title := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardTeal)).Bold(true).
+		Foreground(lipgloss.Color(t.Brand)).Bold(true).
 		Render(TruncateToWidth(titleText, cardW))
 
 	heading := strings.TrimSpace(view.Title)
@@ -298,16 +304,16 @@ func postUpdateCard(view *PostUpdateView, pal *Palette, cardW int) string {
 	}
 	rows := []string{title, ""}
 	rows = append(rows, lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).Bold(true).
+		Foreground(lipgloss.Color(t.TextSecondary)).Bold(true).
 		Render(TruncateToWidth(heading, cardW)))
 
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color(wizardTeal)).Bold(true)
-	label := lipgloss.NewStyle().Foreground(lipgloss.Color(wizardGrey))
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Brand)).Bold(true)
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextSecondary))
 
 	changes := postUpdateVisibleChanges(view)
 	if len(changes) == 0 {
 		rows = append(rows, lipgloss.NewStyle().
-			Foreground(lipgloss.Color(wizardGrey)).
+			Foreground(lipgloss.Color(t.TextSecondary)).
 			Render("No release notes are available for this release."))
 	} else {
 		for i, change := range changes {
@@ -321,7 +327,7 @@ func postUpdateCard(view *PostUpdateView, pal *Palette, cardW int) string {
 		}
 		if hidden := postUpdateHiddenChanges(view); hidden > 0 {
 			rows = append(rows, lipgloss.NewStyle().
-				Foreground(lipgloss.Color(wizardGrey)).
+				Foreground(lipgloss.Color(t.TextSecondary)).
 				Render(fmt.Sprintf("… and %d more", hidden)))
 		}
 	}
@@ -349,12 +355,12 @@ func postUpdateCard(view *PostUpdateView, pal *Palette, cardW int) string {
 		hint = "↑↓ navigate · m release page · Enter dismiss"
 	}
 	rows = append(rows, lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardTeal)).Bold(true).
+		Foreground(lipgloss.Color(t.Brand)).Bold(true).
 		Render(TruncateToWidth(hint, cardW)))
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(wizardTeal)).
-		Background(lipgloss.Color(wizardBG)).
+		BorderForeground(lipgloss.Color(t.Brand)).
+		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(lipgloss.JoinVertical(lipgloss.Left, rows...))

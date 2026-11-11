@@ -112,7 +112,7 @@ and any subagent read at call time:
 The full matrix, state model, and invariants are in
 [`WORKSPACE_AUTHORITY.md`](WORKSPACE_AUTHORITY.md).
 
-Semantic identity (`workspace.Style`) is teal/magenta/blue for ASK/FUZZ/BUILD.
+Semantic identity (`workspace.Style`) is teal/violet/blue for ASK/FUZZ/BUILD.
 The hue is fixed across themes while its depth adapts for contrast on dark and
 light terminals; it never participates in an authority decision.
 
@@ -235,8 +235,8 @@ marker. `EventThinkingDelta` reaches the runtime through its own hook
 (`ai.DrainStreamHooks`), becomes its own presentation block, and is collapsed
 by default into a one-line badge (`+ Thought · 1.1s`). The badge's `+`/`-`
 marker is the disclosure affordance: the shared presentation-only Ctrl+O chord
-or a click expands it to `- Thought · 6.5s` and a `│`-guided, desaturated body,
-bounded so one long trace cannot displace the answer. The completed
+or a click expands it to `- Thought · 6.5s` and a `│`-guided, muted amber
+italic body, bounded so one long trace cannot displace the answer. The completed
 `AssistantMessage` keeps the same thinking block, so a resumed transcript
 renders it without re-parsing provider output.
 
@@ -642,6 +642,11 @@ pages + markdown from the live cobra tree.
 
 ## Terminal workspace (`tui`)
 
+The visual contract — identity colours, semantic tokens, Dark/Light values,
+appearance preference, system detection, and fallback behaviour — lives in
+[`../ui/DESIGN_SYSTEM.md`](../ui/DESIGN_SYSTEM.md). This section describes the
+execution architecture around it.
+
 The workbench separates runtime truth from rendering: `State.Apply(Event)`
 is the only transition (terminal-free, test-covered); `Render(State)` is
 pure and performs no I/O; `Program` bridges the agent loop via buffered
@@ -657,7 +662,14 @@ approval, shutting down) are computed per render, never stored.
   follow), queue, overlays, sessions (Session Manager) and providers (Connect
   Provider Manager and its API-key modal) plus the models/jobs/theme pickers and
   the two-tab Command & Help Center (Commands / Shortcuts), workspace,
-  probe/doctor/usage wiring. Slash
+  probe/doctor/usage wiring. The theme picker stores an appearance preference
+  (`auto`, `dark`, or `light`) separately from the resolved palette; Auto is the
+  default for new and unset settings. `internal/tui/appearance.go` resolves the
+  host appearance on macOS, GNOME/KDE Linux, and Windows, returns unknown for
+  SSH or unsupported hosts, and falls back deterministically to dark. An
+  explicit preference never probes; Auto probes once at startup and on a
+  bounded 10-second poll. Theme resolution lives in one program seam and updates
+  only presentation state, so it never resets the session or the composer. Slash
   discovery state filters the authoritative
   `Commands` registry inline — never a second catalog.
 - `internal/tui/composer.go`: multiline input (alt+enter / ctrl+j), cursor editing,

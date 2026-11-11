@@ -618,8 +618,8 @@ func TestThemeCommandPersists(t *testing.T) {
 		t.Errorf("theme = %q saved = %q, want light applied and persisted", p.state.Theme, saved)
 	}
 	Command{Name: "theme", Args: []string{"nope"}}.runOn(p)
-	if p.state.Theme != ThemeDark {
-		t.Errorf("theme = %q, want an unknown name to degrade to dark", p.state.Theme)
+	if p.state.Theme != ThemeLight {
+		t.Errorf("theme = %q, want an unknown name to leave the choice unchanged", p.state.Theme)
 	}
 }
 

@@ -81,7 +81,7 @@ func splitSupportText(text string, pal *Palette) []chunk {
 		match := rest[bestLoc[0]:bestLoc[1]]
 		switch bestKind {
 		case "pill":
-			out = append(out, styledChunk(match, pal.Code))
+			out = append(out, styledChunk(match, pal.InlineCode))
 		case "alt":
 			out = append(out, styledChunk(match, pal.SupportHiAlt))
 		default:
@@ -118,19 +118,11 @@ func isSupportSectionHeader(text string) bool {
 	return true
 }
 
-// boldPlainChunks gives a section header its high-contrast weight while
-// keeping entity colors: plain runs take Bold, highlighted runs keep
-// their own style (already bold cyan/amber).
+// boldPlainChunks gives a section header its structural weight while keeping
+// entity colors: plain runs take the Heading role, highlighted runs keep their
+// own style (already bold cyan/amber).
 func boldPlainChunks(chunks []chunk, pal *Palette) []chunk {
-	out := make([]chunk, 0, len(chunks))
-	for _, c := range chunks {
-		if c.style == nil {
-			out = append(out, styledChunk(c.text, pal.Bold))
-			continue
-		}
-		out = append(out, c)
-	}
-	return out
+	return headingChunks(chunks, pal)
 }
 
 // RenderSupportMarkdownWrapped renders $sup answer text with the overlay

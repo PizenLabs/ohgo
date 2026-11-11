@@ -1148,7 +1148,15 @@ func taskLines(projection *TaskProjection, pal *Palette, layout Layout) []string
 	if state := strings.ToUpper(strings.TrimSpace(projection.ObjectiveState)); state == "PROVEN" || state == "COMPLETED_UNPROVEN" {
 		header += "  · " + strings.ToLower(state)
 	}
-	lines := []string{pal.Notice.Render(fit(header))}
+	// A review is a stop that needs a human: the header and its reason take
+	// the warning role so the row cannot hide among muted telemetry. Every
+	// other task state stays in the quiet notice role.
+	headerStyle := pal.Notice
+	needsReview := strings.EqualFold(projection.Status, "needs_review")
+	if needsReview {
+		headerStyle = pal.Warning
+	}
+	lines := []string{headerStyle.Render(fit(header))}
 
 	// A review is waiting on a human decision, so the reason is the most
 	// useful row. Render it wrapped instead of leaving the user with an
@@ -1170,7 +1178,7 @@ func taskLines(projection *TaskProjection, pal *Palette, layout Layout) []string
 			} else {
 				line = "    " + line
 			}
-			lines = append(lines, pal.Notice.Render(fit(line)))
+			lines = append(lines, headerStyle.Render(fit(line)))
 		}
 	} else if len(projection.Items) == 0 {
 		lines = append(lines, pal.Status.Render(fit("  ◻ no todos")))

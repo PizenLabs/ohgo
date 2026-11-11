@@ -20,7 +20,31 @@ func TestThemeCommandOpensPickerCard(t *testing.T) {
 		t.Fatalf("picker = %+v, want the theme chooser", p.state.Picker)
 	}
 	out := ansi.Strip(Render(p.state))
-	for _, want := range []string{"THEME", "Dark Theme", "Light Theme", "Enter", "Esc"} {
+	for _, want := range []string{"THEME", "Auto", "Dark Theme", "Light Theme", "Enter", "Esc"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("theme card = %q, want %q", out, want)
+		}
+	}
+}
+
+// The picker starts on the stored preference, not on the palette Auto happens
+// to resolve to, and it names the effective appearance and its source.
+func TestThemePickerShowsAutoPreference(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.SetAppearanceDetector(func() (string, bool) { return ThemeLight, true })
+	p.SetTheme(ThemeAuto)
+	p.state.Apply(TerminalResized{Width: 80, Height: 26})
+
+	Command{Name: "theme"}.runOn(p)
+
+	if p.state.Picker == nil || p.state.Picker.Cursor != 0 {
+		t.Fatalf("picker = %+v, want Auto at the cursor", p.state.Picker)
+	}
+	if !p.state.Picker.Items[0].Active {
+		t.Fatal("the Auto row is not marked current")
+	}
+	out := ansi.Strip(Render(p.state))
+	for _, want := range []string{"Auto", "Theme: Auto → Light (system)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("theme card = %q, want %q", out, want)
 		}
@@ -38,10 +62,10 @@ func TestThemePickerStartsOnCurrentTheme(t *testing.T) {
 	if p.state.Picker == nil {
 		t.Fatal("theme picker did not open")
 	}
-	if p.state.Picker.Cursor != 1 {
+	if p.state.Picker.Cursor != 2 {
 		t.Errorf("cursor = %d, want the active light row", p.state.Picker.Cursor)
 	}
-	if !p.state.Picker.Items[1].Active {
+	if !p.state.Picker.Items[2].Active {
 		t.Error("the light row is not marked current")
 	}
 }
@@ -55,6 +79,7 @@ func TestThemePickerSelectionAppliesAndPersists(t *testing.T) {
 	p.SetThemeChangedHandler(func(theme string) { saved = theme })
 
 	Command{Name: "theme"}.runOn(p)
+	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyDown})
 	keyPress(p, tea.KeyMsg{Type: tea.KeyEnter})
 

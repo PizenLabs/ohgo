@@ -91,7 +91,7 @@ func renderSupportArea(sb *strings.Builder, state State, pal *Palette, layout La
 		return
 	}
 	if state.Width <= 0 || state.Height <= 0 {
-		sb.WriteString(pal.Heading.Render("SUPPORT") + "\n")
+		sb.WriteString(pal.Title.Render("SUPPORT") + "\n")
 		for _, line := range supportModalLines(panel, pal, 80, 99, state) {
 			sb.WriteString(line + "\n")
 		}
@@ -99,7 +99,7 @@ func renderSupportArea(sb *strings.Builder, state State, pal *Palette, layout La
 	}
 	rect := SupportModalRect(state.Width, state.Height)
 	if rect.Width <= 0 || rect.Height <= 0 {
-		sb.WriteString(pal.Heading.Render("SUPPORT") + "\n")
+		sb.WriteString(pal.Title.Render("SUPPORT") + "\n")
 		for _, line := range supportModalLines(panel, pal, 80, 99, state) {
 			sb.WriteString(line + "\n")
 		}
@@ -385,7 +385,7 @@ func supportQueryLines(panel *SupportPanel, pal *Palette, width int) []string {
 // edge so a truncated answer reads as scrollable rather than cut off.
 func supportAnswerHeader(pal *Palette, width, above, below int) string {
 	pad := strings.Repeat(" ", supportPadX)
-	left := pad + pal.Heading.Render("ANSWER")
+	left := pad + pal.Title.Render("ANSWER")
 	var indicator string
 	switch {
 	case above > 0 && below > 0:

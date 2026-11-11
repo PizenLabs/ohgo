@@ -27,6 +27,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 )
 
 // Help Center geometry. The dialog is responsive: it grows with the terminal up
@@ -640,14 +642,15 @@ func helpCardWidth(termWidth int) int {
 
 // helpCategoryAccent is the badge colour for a category. Each category reuses a
 // semantic token, so the rosters read apart without a second literal.
-func helpCategoryAccent(category string) string {
+func helpCategoryAccent(category, theme string) string {
+	t := design.For(theme)
 	switch category {
 	case CommandGroupWorkspace, ShortcutGroupNavigation:
-		return ColorAccent
+		return t.Active
 	case CommandGroupControl, ShortcutGroupSession:
-		return ColorPrimary
+		return t.Brand
 	default:
-		return ColorModel
+		return t.Model
 	}
 }
 
@@ -732,7 +735,7 @@ func renderHelpRow(row helpRow, view HelpCenterState, pal *Palette, interior, ca
 	marker := "  "
 	markerStyle := pal.Muted
 	nameStyle := pal.Choice
-	catStyle := fg(helpCategoryAccent(category)).Bold(true)
+	catStyle := fg(helpCategoryAccent(category, pal.Theme)).Bold(true)
 	descStyle := pal.Muted
 	if row.Index == view.ActiveCursor() {
 		// The tint and the green cursor share one background, derived from the
@@ -742,7 +745,7 @@ func renderHelpRow(row helpRow, view HelpCenterState, pal *Palette, interior, ca
 		bg := pal.UserBG.GetBackground()
 		markerStyle = pal.Selected.Background(bg)
 		nameStyle = pal.Choice.Background(bg)
-		catStyle = fg(helpCategoryAccent(category)).Bold(true).Background(bg)
+		catStyle = fg(helpCategoryAccent(category, pal.Theme)).Bold(true).Background(bg)
 		descStyle = pal.Muted.Background(bg)
 	}
 	body := helpRowText(lineW, helpCommandForm(item), category, item.Description, catW, nameStyle, catStyle, descStyle)

@@ -217,7 +217,7 @@ func TestHeaderDropsEffortBeforeTruncatingModel(t *testing.T) {
 }
 
 // The badge styles through the chrome roles: the glyph in the check amber,
-// the level in muted context, so it stays distinct from the sage model
+// the level in muted context, so it stays distinct from the blue-slate model
 // without competing with the active phase. Stripping returns the plain
 // contract, so the viewport budget measured on plain text still holds.
 func TestHeaderEffortBadgeUsesChromeRoles(t *testing.T) {

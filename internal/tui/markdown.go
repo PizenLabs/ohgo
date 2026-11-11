@@ -195,15 +195,10 @@ func (r *blockRenderer) renderHeading(trimmed string) string {
 	}
 	text := strings.TrimSpace(trimmed[level:])
 	chunks := r.inline(text)
-	// Headers stratify down the forest scale so depth reads without
-	// parsing: bright emerald H1, sage H2, muted sage H3 and below.
+	// Every heading is a structural lead: the violet structure accent,
+	// bold, so a section boundary is instantly scannable. Depth comes from
+	// the document's own spacing, not from a second heading palette.
 	outer := r.pal.Heading
-	switch level {
-	case 2:
-		outer = r.pal.Heading2
-	case 3, 4, 5, 6:
-		outer = r.pal.Heading3
-	}
 	styled := applyChunks(chunks, "", outer)
 	// Headings are short by construction; wrap only on overflow.
 	if w := r.wrapWidth(); w > 0 && CellWidth(styled) > w {
@@ -618,7 +613,7 @@ func (r *blockRenderer) renderList(items []string) []string {
 		} else {
 			bullet = r.pal.Bullet.Render("•")
 		}
-		chunks := r.inline(item.body)
+		chunks := bodyChunks(r.inline(item.body), r.pal)
 		if w := r.wrapWidth(); w > 0 {
 			cont := item.indent + "  "
 			if item.ordered {
@@ -669,6 +664,7 @@ func (r *blockRenderer) renderParagraph(src []string) []string {
 	if r.support && isSupportSectionHeader(text) {
 		chunks = boldPlainChunks(chunks, r.pal)
 	}
+	chunks = bodyChunks(chunks, r.pal)
 	if w := r.wrapWidth(); w > 0 {
 		return wrapChunks(chunks, w, "", "", nil)
 	}
@@ -860,6 +856,11 @@ func (r *blockRenderer) renderTable(lines []string, start int) ([]string, int) {
 		height := 1
 		for c, cell := range cells {
 			chunks := r.inline(cell)
+			if isHeader {
+				chunks = headingChunks(chunks, r.pal)
+			} else {
+				chunks = bodyChunks(chunks, r.pal)
+			}
 			lines := wrapChunks(chunks, colW[c], "", "", nil)
 			wrapped[c] = lines
 			if len(lines) > height {
@@ -875,13 +876,6 @@ func (r *blockRenderer) renderTable(lines []string, start int) ([]string, int) {
 					text = wrapped[c][row]
 				}
 				padded := padCellAlign(text, colW[c], aligns[c])
-				if isHeader {
-					// Bold per cell rather than the whole row so the
-					// solid borders stay muted while the header text
-					// keeps its emphasis. Nested ANSI from inline
-					// markup survives, as before.
-					padded = r.pal.Bold.Render(padded)
-				}
 				sb.WriteString(padded)
 				if c < ncols-1 {
 					sb.WriteString(r.pal.Muted.Render(" │ "))
@@ -926,11 +920,11 @@ func (r *blockRenderer) renderTableStacked(header []string, rows [][]string) []s
 			if c < len(header) {
 				label = strings.TrimSpace(stripInline(header[c], r.pal))
 			}
-			chunks := parseInline(strings.TrimSpace(cell), r.pal)
+			chunks := bodyChunks(parseInline(strings.TrimSpace(cell), r.pal), r.pal)
 			text := applyChunksPlain(chunks)
 			var line string
 			if label != "" {
-				line = r.pal.Bold.Render(label+": ") + text
+				line = r.pal.Strong.Render(label+": ") + text
 			} else {
 				line = r.pal.Bullet.Render("•") + " " + text
 			}
@@ -1022,7 +1016,7 @@ func parseInline(text string, pal *Palette) []chunk {
 				continue
 			}
 			flush()
-			out = append(out, styledChunk(string(runes[i+1:i+1+end]), pal.Code))
+			out = append(out, styledChunk(string(runes[i+1:i+1+end]), pal.InlineCode))
 			i += end + 2
 		case runes[i] == '[':
 			if link, rest, ok := parseLink(runes[i:], pal); ok {
@@ -1041,7 +1035,7 @@ func parseInline(text string, pal *Palette) []chunk {
 				continue
 			}
 			flush()
-			out = append(out, styledChunk(string(runes[i+2:i+2+end]), pal.Bold))
+			out = append(out, styledChunk(string(runes[i+2:i+2+end]), pal.Strong))
 			i += end + 4
 		case runes[i] == '*' || runes[i] == '_':
 			marker := runes[i]
@@ -1127,6 +1121,34 @@ func indexDouble(hay []rune) int {
 		}
 	}
 	return -1
+}
+
+// bodyChunks gives every unstyled run the body role. Prose is rendered
+// outside a wrapping Assistant style, so without this a paragraph would fall
+// back to the terminal's own foreground instead of the calibrated TextPrimary
+// pair. Explicit runs (code, emphasis, links) keep their own meaning.
+func bodyChunks(chunks []chunk, pal *Palette) []chunk {
+	return stylePlainChunks(chunks, pal.Assistant)
+}
+
+// headingChunks is bodyChunks for structural labels: headings, table headers,
+// and section prefixes that must read as document structure, not emphasis.
+func headingChunks(chunks []chunk, pal *Palette) []chunk {
+	return stylePlainChunks(chunks, pal.Heading)
+}
+
+// stylePlainChunks assigns one role to every unstyled run. Explicit runs keep
+// their own meaning.
+func stylePlainChunks(chunks []chunk, style lipgloss.Style) []chunk {
+	out := make([]chunk, 0, len(chunks))
+	for _, c := range chunks {
+		if c.style == nil {
+			out = append(out, styledChunk(c.text, style))
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // applyChunksPlain renders chunks with ANSI styling.

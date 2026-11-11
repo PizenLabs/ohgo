@@ -20,14 +20,15 @@ func TestChromeTokensResolveToPalette(t *testing.T) {
 		"dim":   colorName(chrome.Separator.GetForeground()),
 		"rel":   colorName(chrome.Version.GetForeground()),
 	}
-	// Literal hex: the palette is the contract, not the constant names.
+	// The wiring is the contract here; exact values are pinned by the design
+	// token tests, so a retune lands in one place.
 	want := map[string]string{
-		"brand": "#5FB3A1",
-		"model": "#8FB08D",
-		"check": "#C9A86A",
-		"modes": "#7AA8C9",
-		"dim":   darkBorder,
-		"rel":   "#6C7A89",
+		"brand": DarkTokens().TextTitle,
+		"model": DarkTokens().Model,
+		"check": DarkTokens().Check,
+		"modes": DarkTokens().Active,
+		"dim":   DarkTokens().BorderDefault,
+		"rel":   DarkTokens().TextMuted,
 	}
 	for name, w := range want {
 		if got[name] != w {
@@ -48,10 +49,10 @@ func TestAdaptiveBaseNeutrals(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"dark text", colorName(dark.Assistant.GetForeground()), "#d6dedb"},
-		{"light text", colorName(light.Assistant.GetForeground()), "#1f2335"},
-		{"dark border", colorName(dark.Separator.GetForeground()), "#2d3748"},
-		{"light border", colorName(light.Separator.GetForeground()), "#cbd5e1"},
+		{"dark text", colorName(dark.Assistant.GetForeground()), DarkTokens().TextPrimary},
+		{"light text", colorName(light.Assistant.GetForeground()), LightTokens().TextPrimary},
+		{"dark border", colorName(dark.Separator.GetForeground()), DarkTokens().BorderDefault},
+		{"light border", colorName(light.Separator.GetForeground()), LightTokens().BorderDefault},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -65,20 +66,20 @@ func TestAdaptiveBaseNeutrals(t *testing.T) {
 // and rules draw dim.
 func TestPromptAndRulesShareTheChrome(t *testing.T) {
 	pal := PaletteFor(ThemeDark)
-	if got := colorName(pal.Prompt.GetForeground()); got != "#5FB3A1" {
-		t.Errorf("prompt = %q, want the primary %q", got, "#5FB3A1")
+	if got := colorName(pal.Prompt.GetForeground()); got != DarkTokens().Brand {
+		t.Errorf("prompt = %q, want the primary %q", got, DarkTokens().Brand)
 	}
-	if got := colorName(pal.Cursor.GetForeground()); got != "#5FB3A1" {
-		t.Errorf("cursor = %q, want the primary %q", got, "#5FB3A1")
+	if got := colorName(pal.Cursor.GetForeground()); got != DarkTokens().Brand {
+		t.Errorf("cursor = %q, want the primary %q", got, DarkTokens().Brand)
 	}
-	if got := colorName(ExtrasFor(ThemeDark).Focus.GetForeground()); got != "#5FB3A1" {
-		t.Errorf("focus = %q, want the primary %q", got, "#5FB3A1")
+	if got := colorName(ExtrasFor(ThemeDark).Focus.GetForeground()); got != DarkTokens().Brand {
+		t.Errorf("focus = %q, want the primary %q", got, DarkTokens().Brand)
 	}
-	if got := colorName(pal.Status.GetForeground()); got != "#6C7A89" {
+	if got := colorName(pal.Status.GetForeground()); got != DarkTokens().TextMuted {
 		t.Errorf("status = %q, want the muted %q", got, "#6C7A89")
 	}
-	if got := colorName(pal.Separator.GetForeground()); got != darkBorder {
-		t.Errorf("separator = %q, want the dim border %q", got, darkBorder)
+	if got := colorName(pal.Separator.GetForeground()); got != DarkTokens().BorderDefault {
+		t.Errorf("separator = %q, want the dim border %q", got, DarkTokens().BorderDefault)
 	}
 }
 
@@ -263,22 +264,26 @@ func TestHeaderWithVersionFitsAcrossWidths(t *testing.T) {
 	}
 }
 
-// The greeting address reads bold while the brand keeps the heading style,
-// boxed or bare alike: emphasis must not move cells either.
+// The greeting row uses the High Focus title role for both the brand and the
+// address, boxed or bare alike: the first row must outrank the body, and
+// emphasis must not move cells either.
 func TestGreetingAddressRendersBold(t *testing.T) {
 	fp := forcedPalette()
 	chrome := ChromeFor(ThemeDark)
 	bare := "OHGO   Good evening, Jack."
-	if styled := styleIdentityLine(bare, fp, chrome); !strings.Contains(styled, fp.Bold.Render("   Good evening, Jack.")) {
-		t.Errorf("bare title = %q, want the address in bold", ansi.Strip(styled))
+	if styled := styleIdentityLine(bare, fp, chrome); !strings.Contains(styled, fp.Title.Render("   Good evening, Jack.")) {
+		t.Errorf("bare title = %q, want the address in the title role", ansi.Strip(styled))
 	}
 	boxed := "│ OHGO   Good evening, Jack. │"
 	styled := styleIdentityLine(boxed, fp, chrome)
-	if !strings.Contains(styled, fp.Heading.Render("OHGO")) {
-		t.Errorf("boxed title = %q, want the brand in the heading style", ansi.Strip(styled))
+	if !strings.Contains(styled, fp.Title.Render("OHGO")) {
+		t.Errorf("boxed title = %q, want the brand in the title role", ansi.Strip(styled))
 	}
-	if !strings.Contains(styled, fp.Bold.Render("   Good evening, Jack. │")) {
-		t.Errorf("boxed title = %q, want the address in bold", ansi.Strip(styled))
+	if !strings.Contains(styled, fp.Title.Render("   Good evening, Jack. ")) {
+		t.Errorf("boxed title = %q, want the address in the title role", ansi.Strip(styled))
+	}
+	if !strings.Contains(styled, fp.Separator.Render("│")) {
+		t.Errorf("boxed title = %q, want the frame to keep the separator role", ansi.Strip(styled))
 	}
 	for _, line := range []string{bare, boxed} {
 		if got := ansi.Strip(styleIdentityLine(line, fp, chrome)); got != line {
@@ -299,7 +304,7 @@ func TestGreetingTitleIgnoresMidRowBrand(t *testing.T) {
 		if greetingBrandIndex(line) >= 0 {
 			t.Errorf("brand index matched mid-row content: %q", line)
 		}
-		if styled := styleIdentityLine(line, fp, chrome); strings.Contains(styled, fp.Heading.Render("OHGO")) {
+		if styled := styleIdentityLine(line, fp, chrome); strings.Contains(styled, fp.Title.Render("OHGO")) {
 			t.Errorf("row = %q, want no title styling on brand-like content", ansi.Strip(styled))
 		}
 	}

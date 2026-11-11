@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"time"
+
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 )
 
 // This file is the thinking projection seam.
@@ -225,7 +227,14 @@ func RenderThinkingFrame(state ThinkingState, now time.Time, tick int, width int
 }
 
 func renderThinking(state ThinkingState, now time.Time, tick int, shimmer bool, width int) []string {
-	return renderThinkingZoned(state, now, tick, shimmer, width, liveThinkingZones)
+	return renderThinkingThemed(state, now, tick, shimmer, width, ThemeDark)
+}
+
+// renderThinkingThemed resolves the activity zones for the effective
+// appearance. The public RenderThinking* entry points keep the historical
+// dark default; the workspace passes the live theme through this seam.
+func renderThinkingThemed(state ThinkingState, now time.Time, tick int, shimmer bool, width int, theme string) []string {
+	return renderThinkingZoned(state, now, tick, shimmer, width, thinkingZonesFor(theme))
 }
 
 // thinkingZones maps each activity-line zone to its style, keeping color
@@ -251,29 +260,25 @@ type thinkingZones struct {
 	wave func(label string, tick int) string
 }
 
-// Thinking zone styles, resolved once from the chrome tokens: primary for
-// the live head, muted for parked text and token telemetry, dim slate for
-// punctuation and tail status.
-var (
-	thinkingActiveStyle  = fg(ColorPrimary)
-	thinkingWaitingStyle = fg(ColorMuted)
-	thinkingMetaStyle    = fg(ColorMuted)
-	thinkingDimStyle     = fg(ColorDim)
-	thinkingTailStyle    = fg(ColorDim)
-)
-
-// liveThinkingZones is the production zoning. Lipgloss resolves the profile
-// from the terminal, so colorless environments render plain text and every
-// stripped assertion keeps holding.
-var liveThinkingZones = thinkingZones{
-	active: func(s string) string { return thinkingActiveStyle.Render(s) },
-	waiting: func(s string) string {
-		return thinkingWaitingStyle.Render(s)
-	},
-	meta: func(s string) string { return thinkingMetaStyle.Render(s) },
-	dim:  func(s string) string { return thinkingDimStyle.Render(s) },
-	tail: func(s string) string { return thinkingTailStyle.Render(s) },
-	wave: ShimmerText,
+// Thinking zone styles, resolved from the semantic tokens for an appearance:
+// the live head uses the primary chrome colour, parked text and token
+// telemetry read muted, and punctuation stays dim. No zone carries meaning by
+// hue alone; the glyph and words already name the state.
+func thinkingZonesFor(theme string) thinkingZones {
+	t := design.For(theme)
+	active := fg(t.Brand)
+	waiting := fg(t.TextMuted)
+	meta := fg(t.TextMuted)
+	dim := fg(t.BorderDefault)
+	tail := fg(t.TextMuted)
+	return thinkingZones{
+		active:  func(s string) string { return active.Render(s) },
+		waiting: func(s string) string { return waiting.Render(s) },
+		meta:    func(s string) string { return meta.Render(s) },
+		dim:     func(s string) string { return dim.Render(s) },
+		tail:    func(s string) string { return tail.Render(s) },
+		wave:    func(label string, tick int) string { return ShimmerTextForTheme(label, tick, theme) },
+	}
 }
 
 func renderThinkingZoned(state ThinkingState, now time.Time, tick int, shimmer bool, width int, z thinkingZones) []string {

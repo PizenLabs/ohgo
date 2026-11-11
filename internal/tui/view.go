@@ -7,6 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 )
 
 // Palette holds every named style the view uses.
@@ -15,7 +17,11 @@ import (
 // so a theme change lands in one place. The two constructors below are the
 // only literals.
 type Palette struct {
-	User lipgloss.Style
+	// Theme is the effective appearance these styles were resolved for.
+	// Components holding only a Palette can still resolve authority and modal
+	// roles without threading a second theme argument.
+	Theme string
+	User  lipgloss.Style
 	// UserBG is the one-row surface behind a selected list entry. It is not
 	// painted behind a transcript prompt: prompt attribution is the name and
 	// glyph, and the terminal background stays untouched.
@@ -25,19 +31,42 @@ type Palette struct {
 	ToolDone  lipgloss.Style
 	ToolError lipgloss.Style
 	ToolRun   lipgloss.Style
-	Notice    lipgloss.Style
-	Status    lipgloss.Style
+	// Warning renders a non-fatal operational warning: a review that needs a
+	// human decision, a budget nearing its limit, or an approval that requires
+	// attention. It never replaces an authority accent.
+	Warning lipgloss.Style
+	Notice  lipgloss.Style
+	Status  lipgloss.Style
+	// Title is the High Focus chrome tier: application brand, greetings, and
+	// dialog titles. Nothing that is merely content uses it, so a title always
+	// outranks the body it introduces.
+	Title lipgloss.Style
+	// Heading is the document-structure accent: markdown headings and table
+	// headers. It is High Focus as well, distinguished by hue rather than by a
+	// separate focus tier, so a report reads as a structured document.
+	Heading lipgloss.Style
+	// Secondary is the Medium Focus support tier: descriptions, labels, and
+	// explanatory text that accompanies a primary keyword.
+	Secondary lipgloss.Style
+	// Faint is the Low Focus tier: timings, shortcuts, and other supporting
+	// metadata. It is dimmer than Muted by design and never carries an action
+	// the user must be able to read.
+	Faint lipgloss.Style
 	// Thought renders a reasoning block's disclosure header. Amber marks the
 	// internal thinking channel as inspectable telemetry: it is distinct from
-	// the answer without borrowing the tool identity colour, which belongs to
-	// actions the runtime actually executed.
-	Thought   lipgloss.Style
-	Prompt    lipgloss.Style
-	Choice    lipgloss.Style
-	Selected  lipgloss.Style
-	Truncated lipgloss.Style
-	Cursor    lipgloss.Style
-	Queued    lipgloss.Style
+	// both the answer and the operational warning state, which belongs to
+	// actual degradation.
+	Thought lipgloss.Style
+	// ThoughtBody renders the expanded reasoning prose: the muted half of the
+	// same amber family, italicised so a cognitive stop reads as an aside
+	// rather than a second answer.
+	ThoughtBody lipgloss.Style
+	Prompt      lipgloss.Style
+	Choice      lipgloss.Style
+	Selected    lipgloss.Style
+	Truncated   lipgloss.Style
+	Cursor      lipgloss.Style
+	Queued      lipgloss.Style
 	// Chip renders a collapsed paste pill in the composer, distinct from the
 	// editable text around it without shouting.
 	Chip lipgloss.Style
@@ -55,12 +84,7 @@ type Palette struct {
 	ShellPrompt  lipgloss.Style
 	ShellCommand lipgloss.Style
 	// Markdown styles.
-	Code    lipgloss.Style
-	Heading lipgloss.Style
-	// Heading2 and Heading3 stratify the header hierarchy below Heading
-	// (H1): H2 is sage, H3 muted sage, so depth reads without parsing.
-	Heading2 lipgloss.Style
-	Heading3 lipgloss.Style
+	Code lipgloss.Style
 	// Code token styles highlight fenced code lexically. Every token
 	// carries the same background as Code so a highlighted line keeps one
 	// uniform block; the foreground alone signals the token kind.
@@ -69,10 +93,18 @@ type Palette struct {
 	CodeComment lipgloss.Style
 	CodeNumber  lipgloss.Style
 	Bold        lipgloss.Style
-	Italic      lipgloss.Style
-	Quote       lipgloss.Style
-	Bullet      lipgloss.Style
-	Muted       lipgloss.Style
+	// Strong is the inline-emphasis accent: a lead-in of a paragraph or a
+	// "Section:" prefix reads warmer and heavier than the explanation it
+	// introduces, without becoming another heading hue.
+	Strong lipgloss.Style
+	// InlineCode is a technical artifact inside prose (a path, filename, or
+	// config value): the subtle pill separates reference data from the
+	// sentence without turning it into a fenced block.
+	InlineCode lipgloss.Style
+	Italic     lipgloss.Style
+	Quote      lipgloss.Style
+	Bullet     lipgloss.Style
+	Muted      lipgloss.Style
 	// DiffAdd styles lines an edit introduced, in diff previews (approval
 	// cards and inline diffs). The soft tint is part of the style so an
 	// approval row reads as an added line even when the terminal profile
@@ -86,7 +118,8 @@ type Palette struct {
 	DiffDeleteBG lipgloss.Color
 	// DiffContext dims unchanged context rows so changes read first.
 	DiffContext lipgloss.Style
-	// Cyan is a context colour for hunk headers and metadata.
+	// Cyan is the reference/context blue: hunk headers, diff paths, and the
+	// structural phase span on a tool-run row.
 	Cyan lipgloss.Style
 	// Comment styles secondary/explanatory text.
 	Comment lipgloss.Style
@@ -98,125 +131,139 @@ type Palette struct {
 	// never a second answer, and never part of the block's copy payload.
 	Recap lipgloss.Style
 	// SupportHi highlights key entities inside the $sup answer viewport:
-	// bright cyan for concepts/technologies, amber for dates/specs.
+	// reference blue for concepts/technologies, gold for dates/specs.
 	// Main-chat markdown never uses them, so the overlay hierarchy stays
 	// distinct without changing the transcript.
 	SupportHi    lipgloss.Style
 	SupportHiAlt lipgloss.Style
 }
 
-// DarkPalette is the default: muted surfaces with a single mint accent for
-// the user's voice and focus, primary text for the assistant. Headers step
-// down a deep-forest scale — bright emerald H1, sage H2, muted sage H3 —
-// and code tokens reuse the same scale so prose and code read as one theme.
-// The question is attributed by a mint name and dim glyph on the terminal's
-// own background, never by a painted strip that competes with the answer.
-//
-// The chrome roles resolve through the semantic tokens in style.go: the
-// prompt cursor and focus accent share ColorPrimary with the header brand,
-// secondary context (status line, hints, labels) reads in ColorMuted, and
-// full-width rules draw in the dim slate.
+// DarkPalette is the Midnight Slate appearance: a cool near-black canvas, soft
+// slate body text, and restrained accent families — violet for structure, gold
+// for emphasis, blue for reference data, amber for reasoning. The neutral base
+// carries no green cast, so an accent is always intentional.
 func DarkPalette() *Palette {
-	return &Palette{
-		User:         fg(darkAccent).Bold(true),
-		UserBG:       fg(darkText).Background(lipgloss.Color(darkUserBg)),
-		Assistant:    fg(ColorText),
-		ToolName:     fg(darkTool).Bold(true),
-		ToolDone:     fg(darkSuccess),
-		ToolError:    fg(darkDanger),
-		ToolRun:      fg(darkWarning),
-		Notice:       fg(darkMuted).Italic(true),
-		Status:       fg(ColorMuted),
-		Thought:      fg(ColorStatus),
-		Prompt:       fg(ColorPrimary),
-		Choice:       fg(darkText),
-		Selected:     fg(darkAccent).Bold(true),
-		Truncated:    fg(darkMuted),
-		Cursor:       fg(ColorPrimary).Reverse(true),
-		Queued:       fg(darkMuted).Italic(true),
-		Chip:         fg(ColorAccent).Bold(true),
-		Mention:      fg(ColorPrimary).Bold(true),
-		Ghost:        fg(ColorRecap),
-		ShellPrompt:  fg(ColorPrimary).Bold(true),
-		ShellCommand: fg(darkText),
-		Code:         fg(darkCodeFg).Background(lipgloss.Color(darkCodeBg)),
-		Heading:      fg(darkH1).Bold(true),
-		Heading2:     fg(darkH2).Bold(true),
-		Heading3:     fg(darkH3).Bold(true),
-		CodeKeyword:  fg(darkH1).Background(lipgloss.Color(darkCodeBg)).Bold(true),
-		CodeString:   fg(darkCodeStr).Background(lipgloss.Color(darkCodeBg)),
-		CodeComment:  fg(darkMuted).Background(lipgloss.Color(darkCodeBg)).Italic(true),
-		CodeNumber:   fg(darkTool).Background(lipgloss.Color(darkCodeBg)),
-		Bold:         lipgloss.NewStyle().Bold(true),
-		Italic:       lipgloss.NewStyle().Italic(true),
-		Quote:        fg(darkMuted).Italic(true),
-		Bullet:       fg(darkAccent),
-		Muted:        fg(ColorMuted),
-		DiffAdd:      fg("#a6e3a1").Background(lipgloss.Color("#16281E")),
-		DiffDelete:   fg("#f38ba8").Background(lipgloss.Color("#2A191D")),
-		DiffAddBG:    lipgloss.Color("#16281E"),
-		DiffDeleteBG: lipgloss.Color("#2A191D"),
-		DiffContext:  fg("#6B6B6B"),
-		Cyan:         fg("#89dceb"),
-		Comment:      fg(ColorMuted).Italic(true),
-		Separator:    fg(ColorDim),
-		Recap:        fg(ColorRecap).Italic(true),
-		SupportHi:    fg("87").Bold(true),
-		SupportHiAlt: fg("220").Bold(true),
-	}
+	darkPaletteOnce.Do(func() {
+		t := DarkTokens()
+		darkPaletteCache = &Palette{
+			Theme:        ThemeDark,
+			User:         fg(t.User).Bold(true),
+			UserBG:       fg(t.TextPrimary).Background(lipgloss.Color(t.SurfaceSelection)),
+			Assistant:    fg(t.TextPrimary),
+			ToolName:     fg(t.ToolName).Bold(true),
+			ToolDone:     fg(t.Success),
+			ToolError:    fg(t.Error),
+			ToolRun:      fg(t.Running),
+			Warning:      fg(t.Warning),
+			Notice:       fg(t.TextMuted).Italic(true),
+			Status:       fg(t.TextMuted),
+			Title:        fg(t.TextTitle).Bold(true),
+			Heading:      fg(t.Heading).Bold(true),
+			Secondary:    fg(t.TextSecondary),
+			Faint:        fg(t.TextFaint),
+			Thought:      fg(t.ThoughtHeader).Bold(true),
+			ThoughtBody:  fg(t.ThoughtBody).Italic(true),
+			Prompt:       fg(t.Prompt),
+			Choice:       fg(t.TextPrimary),
+			Selected:     fg(t.User).Bold(true),
+			Truncated:    fg(t.TextMuted),
+			Cursor:       fg(t.Prompt).Reverse(true),
+			Queued:       fg(t.TextMuted).Italic(true),
+			Chip:         fg(t.Active).Bold(true),
+			Mention:      fg(t.Brand).Bold(true),
+			Ghost:        fg(t.BrandMute),
+			ShellPrompt:  fg(t.Brand).Bold(true),
+			ShellCommand: fg(t.TextPrimary),
+			Code:         fg(t.CodeForeground).Background(lipgloss.Color(t.CodeBackground)),
+			CodeKeyword:  fg(t.CodeKeyword).Background(lipgloss.Color(t.CodeBackground)).Bold(true),
+			CodeString:   fg(t.CodeString).Background(lipgloss.Color(t.CodeBackground)),
+			CodeComment:  fg(t.TextMuted).Background(lipgloss.Color(t.CodeBackground)).Italic(true),
+			CodeNumber:   fg(t.ToolName).Background(lipgloss.Color(t.CodeBackground)),
+			Bold:         lipgloss.NewStyle().Bold(true),
+			Strong:       fg(t.Emphasis).Bold(true),
+			InlineCode:   fg(t.InlineCodeForeground).Background(lipgloss.Color(t.InlineCodeBackground)),
+			Italic:       fg(t.TextPrimary).Italic(true),
+			Quote:        fg(t.Quote).Italic(true),
+			Bullet:       fg(t.ListMarker),
+			Muted:        fg(t.TextMuted),
+			DiffAdd:      fg(t.DiffAddForeground).Background(lipgloss.Color(t.DiffAddBackground)),
+			DiffDelete:   fg(t.DiffDeleteForeground).Background(lipgloss.Color(t.DiffDeleteBackground)),
+			DiffAddBG:    lipgloss.Color(t.DiffAddBackground),
+			DiffDeleteBG: lipgloss.Color(t.DiffDeleteBackground),
+			DiffContext:  fg(t.DiffContext),
+			Cyan:         fg(t.DiffHeader),
+			Comment:      fg(t.TextMuted).Italic(true),
+			Separator:    fg(t.BorderDefault),
+			Recap:        fg(t.Recap).Italic(true),
+			SupportHi:    fg(t.SupportPrimary).Bold(true),
+			SupportHiAlt: fg(t.SupportSecondary).Bold(true),
+		}
+	})
+	return darkPaletteCache
 }
 
-// LightPalette reads on bright terminals: dark foregrounds, no heavy
-// backgrounds that would clash with a light screen, the same semantics.
-// The question uses the same name-and-glyph attribution as the dark theme.
+// LightPalette is the Warm Porcelain appearance: independent bright-surface
+// values with the same semantic roles. It is not an inversion of Dark: the
+// canvas is barely warm, the ink is cool, and every accent is deepened for a
+// bright terminal.
 func LightPalette() *Palette {
-	return &Palette{
-		User:         fg(lightAccent).Bold(true),
-		UserBG:       fg(lightText).Background(lipgloss.Color(lightUserBg)),
-		Assistant:    fg(lightText),
-		ToolName:     fg(lightTool).Bold(true),
-		ToolDone:     fg(lightSuccess),
-		ToolError:    fg(lightDanger),
-		ToolRun:      fg(lightWarning),
-		Notice:       fg(lightMuted).Italic(true),
-		Status:       fg(lightMuted),
-		Thought:      fg(chromeLightStatus),
-		Prompt:       fg(lightAccent),
-		Choice:       fg(lightText),
-		Selected:     fg(lightAccent).Bold(true),
-		Truncated:    fg(lightMuted),
-		Cursor:       fg(lightAccent).Reverse(true),
-		Queued:       fg(lightMuted).Italic(true),
-		Chip:         fg(chromeLightAccent).Bold(true),
-		Mention:      fg(chromeLightPrimary).Bold(true),
-		Ghost:        fg(chromeLightRecap),
-		ShellPrompt:  fg(chromeLightPrimary).Bold(true),
-		ShellCommand: fg(lightText),
-		Code:         fg(lightCodeFg).Background(lipgloss.Color(lightCodeBg)),
-		Heading:      fg(lightH1).Bold(true),
-		Heading2:     fg(lightH2).Bold(true),
-		Heading3:     fg(lightH3).Bold(true),
-		CodeKeyword:  fg(lightH1).Background(lipgloss.Color(lightCodeBg)).Bold(true),
-		CodeString:   fg(lightCodeStr).Background(lipgloss.Color(lightCodeBg)),
-		CodeComment:  fg(lightMuted).Background(lipgloss.Color(lightCodeBg)).Italic(true),
-		CodeNumber:   fg(lightTool).Background(lipgloss.Color(lightCodeBg)),
-		Bold:         lipgloss.NewStyle().Bold(true),
-		Italic:       lipgloss.NewStyle().Italic(true),
-		Quote:        fg(lightMuted).Italic(true),
-		Bullet:       fg(lightAccent),
-		Muted:        fg(lightMuted),
-		DiffAdd:      fg("#166534").Background(lipgloss.Color("#E7F4EC")),
-		DiffDelete:   fg("#9F1239").Background(lipgloss.Color("#FCE9E7")),
-		DiffAddBG:    lipgloss.Color("#E7F4EC"),
-		DiffDeleteBG: lipgloss.Color("#FCE9E7"),
-		DiffContext:  fg("#4B5563"),
-		Cyan:         fg("#0B7285"),
-		Comment:      fg(lightMuted).Italic(true),
-		Separator:    fg(chromeLightDim),
-		Recap:        fg(chromeLightRecap).Italic(true),
-		SupportHi:    fg("30").Bold(true),
-		SupportHiAlt: fg("166").Bold(true),
-	}
+	lightPaletteOnce.Do(func() {
+		t := LightTokens()
+		lightPaletteCache = &Palette{
+			Theme:        ThemeLight,
+			User:         fg(t.User).Bold(true),
+			UserBG:       fg(t.TextPrimary).Background(lipgloss.Color(t.SurfaceSelection)),
+			Assistant:    fg(t.TextPrimary),
+			ToolName:     fg(t.ToolName).Bold(true),
+			ToolDone:     fg(t.Success),
+			ToolError:    fg(t.Error),
+			ToolRun:      fg(t.Running),
+			Warning:      fg(t.Warning),
+			Notice:       fg(t.TextMuted).Italic(true),
+			Status:       fg(t.TextMuted),
+			Title:        fg(t.TextTitle).Bold(true),
+			Heading:      fg(t.Heading).Bold(true),
+			Secondary:    fg(t.TextSecondary),
+			Faint:        fg(t.TextFaint),
+			Thought:      fg(t.ThoughtHeader).Bold(true),
+			ThoughtBody:  fg(t.ThoughtBody).Italic(true),
+			Prompt:       fg(t.Prompt),
+			Choice:       fg(t.TextPrimary),
+			Selected:     fg(t.User).Bold(true),
+			Truncated:    fg(t.TextMuted),
+			Cursor:       fg(t.Prompt).Reverse(true),
+			Queued:       fg(t.TextMuted).Italic(true),
+			Chip:         fg(t.Active).Bold(true),
+			Mention:      fg(t.Brand).Bold(true),
+			Ghost:        fg(t.BrandMute),
+			ShellPrompt:  fg(t.Brand).Bold(true),
+			ShellCommand: fg(t.TextPrimary),
+			Code:         fg(t.CodeForeground).Background(lipgloss.Color(t.CodeBackground)),
+			CodeKeyword:  fg(t.CodeKeyword).Background(lipgloss.Color(t.CodeBackground)).Bold(true),
+			CodeString:   fg(t.CodeString).Background(lipgloss.Color(t.CodeBackground)),
+			CodeComment:  fg(t.TextMuted).Background(lipgloss.Color(t.CodeBackground)).Italic(true),
+			CodeNumber:   fg(t.ToolName).Background(lipgloss.Color(t.CodeBackground)),
+			Bold:         lipgloss.NewStyle().Bold(true),
+			Strong:       fg(t.Emphasis).Bold(true),
+			InlineCode:   fg(t.InlineCodeForeground).Background(lipgloss.Color(t.InlineCodeBackground)),
+			Italic:       fg(t.TextPrimary).Italic(true),
+			Quote:        fg(t.Quote).Italic(true),
+			Bullet:       fg(t.ListMarker),
+			Muted:        fg(t.TextMuted),
+			DiffAdd:      fg(t.DiffAddForeground).Background(lipgloss.Color(t.DiffAddBackground)),
+			DiffDelete:   fg(t.DiffDeleteForeground).Background(lipgloss.Color(t.DiffDeleteBackground)),
+			DiffAddBG:    lipgloss.Color(t.DiffAddBackground),
+			DiffDeleteBG: lipgloss.Color(t.DiffDeleteBackground),
+			DiffContext:  fg(t.DiffContext),
+			Cyan:         fg(t.DiffHeader),
+			Comment:      fg(t.TextMuted).Italic(true),
+			Separator:    fg(t.BorderDefault),
+			Recap:        fg(t.Recap).Italic(true),
+			SupportHi:    fg(t.SupportPrimary).Bold(true),
+			SupportHiAlt: fg(t.SupportSecondary).Bold(true),
+		}
+	})
+	return lightPaletteCache
 }
 
 // PaletteFor resolves a theme name to its palette. Unknown names degrade to
@@ -512,7 +559,7 @@ func renderMini(state State, pal *Palette, layout Layout) string {
 		return s
 	}
 	var sb strings.Builder
-	sb.WriteString(pal.Heading.Render(fit("ohgo — terminal too small")) + "\n")
+	sb.WriteString(pal.Title.Render(fit("ohgo — terminal too small")) + "\n")
 	sb.WriteString(pal.Muted.Render(fit(fmt.Sprintf("%dx%d: enlarge to at least %dx%d for the workbench.",
 		state.Width, state.Height, MiniMinWidth, MiniMinHeight))) + "\n")
 	if state.Status.Model != "" {
@@ -552,7 +599,7 @@ const (
 // model · phase · check` at rest and drops the phase segment while work is
 // represented below.
 // Each segment resolves through its chrome role: the brand in primary, the
-// release label muted beside it, the model in sage, a resting phase in muted,
+// release label muted beside it, the blue-slate model, a resting phase in muted,
 // the check status in amber, and every separator in dim slate. A known newer
 // release appends an update segment last: availability, or the stage of an
 // explicit /update. Phase and connection stay words, never colour alone. An
@@ -630,7 +677,7 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 	sb.WriteString(chrome.Model.Render(modelShown))
 	if effortShown != "" {
 		// The badge reads in the check amber for the glyph and muted
-		// context for the level, so it stays distinct from the sage model
+		// context for the level, so it stays distinct from the blue-slate model
 		// without competing with the active phase.
 		sb.WriteString(" ")
 		sb.WriteString(chrome.Check.Render("◈"))
@@ -644,8 +691,16 @@ func renderHeader(state State, pal *Palette, layout Layout) string {
 		sb.WriteString(phaseStyle.Render(phase))
 	}
 	if showConn {
+		connStyle := chrome.Check
+		if state.ConnDetail != "" {
+			if state.ConnOK {
+				connStyle = ExtrasFor(state.Theme).Success
+			} else {
+				connStyle = ExtrasFor(state.Theme).Danger
+			}
+		}
 		sb.WriteString(chrome.Separator.Render(" · "))
-		sb.WriteString(chrome.Check.Render(conn))
+		sb.WriteString(connStyle.Render(conn))
 	}
 	if updateHint != "" {
 		// Update availability is chrome, not a second header row. It sits
@@ -863,11 +918,24 @@ func renderTranscriptBody(state State, pal *Palette, layout Layout) string {
 // greeting. The model, workspace, working directory, git state, and readiness
 // live in the top bar; repeating them here would double a fact the user can
 // already see. It is chrome, never an Entry, so it vanishes the moment real
-// content lands and never persists. Layout follows the responsive tier: wide
-// and medium box the composition, narrow renders it borderless.
+// content lands and never persists. The panel spans the conversation column and
+// folds its copy on narrow terminals; it drops the frame only below the
+// minimum width that can draw one without breaking.
 func renderWelcome(state State, pal *Palette, layout Layout) string {
 	facts := FactsFromStatus(state)
-	surface := RenderIdentitySurface(facts, columnWidth(state, layout))
+	width := columnWidth(state, layout)
+	surface := RenderIdentitySurface(facts, width)
+	if state.Height > 0 {
+		// A short transcript area shows the bottom of an overlong card, which
+		// would hide the panel's own title. The compact composition keeps the
+		// full grid (modes, commands, tip) visible by dropping only decorative
+		// blank rows; use it whenever it fits and the full form does not.
+		if budget := transcriptBudget(state, layout); budget > 0 && len(splitLines(surface)) > budget {
+			if compact := renderIdentitySurface(facts, width, true); len(splitLines(compact)) <= budget {
+				surface = compact
+			}
+		}
+	}
 	if state.Width > 0 {
 		// The transcript area slices by lines; style after measuring so ANSI
 		// never inflates the viewport budget. Keep it quiet: identity first,
@@ -884,27 +952,152 @@ func renderWelcome(state State, pal *Palette, layout Layout) string {
 
 // styleIdentityLine keeps box borders dim and lets identity content read.
 // Mode labels (ASK/BUILD/FUZZ) render in the accent badge style shared with
-// the header and footer, so the authority reads as one family across the
-// surface. Styling wraps measured cells, so widths never change.
+// the header, so the authority reads as one family across the surface. Titles
+// take the High Focus role, descriptions the Medium Focus role, and trigger
+// hints the Low Focus role. Styling wraps measured cells, so widths never
+// change.
 func styleIdentityLine(line string, pal *Palette, chrome *Chrome) string {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
 		return line
 	}
-	if strings.HasPrefix(trimmed, "┌") || strings.HasPrefix(trimmed, "└") ||
-		strings.HasPrefix(trimmed, "─") {
+	if strings.HasPrefix(trimmed, "┌") {
+		return styleBoxLegend(line, pal)
+	}
+	if strings.HasPrefix(trimmed, "└") {
 		return pal.Separator.Render(line)
 	}
-	if greetingBrandIndex(line) >= 0 {
-		return styleGreetingTitle(line, pal)
-	}
 	if strings.Contains(line, "│") {
-		if styled, ok := styleBoxedModes(line, pal, chrome); ok {
-			return styled
-		}
-		return pal.Muted.Render(line)
+		return styleIdentityBoxRow(line, pal, chrome)
 	}
-	return styleModeBadges(line, pal, chrome)
+	return styleIdentityCell(line, pal, chrome)
+}
+
+// styleIdentityBoxRow styles each boxed interior cell independently. The
+// panel owns one outer frame; splitting on its borders keeps them in the
+// separator role while each row's content resolves to its own focus tier.
+func styleIdentityBoxRow(line string, pal *Palette, chrome *Chrome) string {
+	segs := strings.Split(line, "│")
+	var sb strings.Builder
+	for i, seg := range segs {
+		if i > 0 {
+			sb.WriteString(pal.Separator.Render("│"))
+		}
+		if i == 0 || i == len(segs)-1 {
+			sb.WriteString(pal.Separator.Render(seg))
+			continue
+		}
+		sb.WriteString(styleIdentityCell(seg, pal, chrome))
+	}
+	return sb.String()
+}
+
+// styleIdentityCell resolves one semantic cell to its focus role. Leading and
+// trailing padding is carried by the styled style itself, so stripping the
+// result always returns the measured cells.
+func styleIdentityCell(cell string, pal *Palette, chrome *Chrome) string {
+	trimmed := strings.TrimSpace(cell)
+	if trimmed == "" {
+		return cell
+	}
+	if identityRuleCell(trimmed) {
+		return pal.Separator.Render(cell)
+	}
+	if greetingBrandIndex(cell) >= 0 {
+		return styleTitleText(cell, pal)
+	}
+	if strings.Contains(cell, identitySubtitle) {
+		return pal.Muted.Render(cell)
+	}
+	if mode, ok := leadingMode(cell); ok {
+		idx := strings.Index(cell, mode)
+		if idx < 0 {
+			return pal.Secondary.Render(cell)
+		}
+		return pal.Faint.Render(cell[:idx]) +
+			modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) +
+			pal.Secondary.Render(cell[idx+len(mode):])
+	}
+	if lineHasCommandSlot(cell) {
+		return styleCommandCell(cell, pal)
+	}
+	if identityCommandContinuation(cell) {
+		return pal.Faint.Render(cell)
+	}
+	return pal.Secondary.Render(cell)
+}
+
+// lineHasCommandSlot reports a cell that carries a taught command or the Tip
+// label. A folded continuation line has neither, and is styled separately.
+func lineHasCommandSlot(cell string) bool {
+	return lineHasTrigger(cell) || tipLabelIndex(cell) >= 0
+}
+
+// identityCommandContinuation reports a row folded out of a command or tip
+// cell. Such a row has no token of its own, only the hanging indent the
+// command grid uses, so it must stay in the low-focus hint role.
+func identityCommandContinuation(cell string) bool {
+	indent := len(cell) - len(strings.TrimLeft(cell, " "))
+	return indent >= identityPadX+identityTriggerTokenWidth
+}
+
+// styleCommandCell styles a command-grid cell: taught tokens take the High
+// Focus title role, the Tip label takes the warm reasoning accent, and all
+// supporting copy stays in the low-focus hint role. The tip body stays quiet
+// even when it names an affordance, so the annotation never outranks a command.
+func styleCommandCell(cell string, pal *Palette) string {
+	if tip := tipLabelIndex(cell); tip >= 0 {
+		end := tip + len(identityTipLabel)
+		return styleTriggerText(cell[:tip], pal) +
+			pal.Thought.Render(identityTipLabel) +
+			pal.Faint.Render(cell[end:])
+	}
+	return styleTriggerText(cell, pal)
+}
+
+// tipLabelIndex locates the Tip label as a standalone word. Matching the whole
+// token avoids treating a "Tip" inside prose or a path as the slot label.
+func tipLabelIndex(cell string) int {
+	for i := 0; i+len(identityTipLabel) <= len(cell); i++ {
+		if cell[i:i+len(identityTipLabel)] != identityTipLabel {
+			continue
+		}
+		before := i == 0 || cell[i-1] == ' '
+		after := i + len(identityTipLabel)
+		afterOK := after == len(cell) || cell[after] == ' '
+		if before && afterOK {
+			return i
+		}
+	}
+	return -1
+}
+
+// identityRuleCell reports a cell that is only a horizontal stroke. The
+// section divider keeps the low-focus separator role instead of falling
+// through to the medium-focus body role.
+func identityRuleCell(cell string) bool {
+	if cell == "" {
+		return false
+	}
+	for _, r := range cell {
+		if r != '─' {
+			return false
+		}
+	}
+	return true
+}
+
+// styleBoxLegend renders the quickstart panel's top rule: the category legend
+// is structural, while the rule around it stays a separator. The legend must
+// outrank the rows it introduces without turning the whole frame bright.
+func styleBoxLegend(line string, pal *Palette) string {
+	idx := strings.Index(line, identityFrameLegend)
+	if idx < 0 {
+		return pal.Separator.Render(line)
+	}
+	return pal.Separator.Render(line[:idx]) +
+		pal.Heading.Render(identityFrameLegend) +
+		pal.Separator.Render(line[idx+len(identityFrameLegend):])
 }
 
 // greetingBrandIndex locates the identity title brand when it leads the row:
@@ -913,8 +1106,7 @@ func styleIdentityLine(line string, pal *Palette, chrome *Chrome) string {
 // mid-row — a workspace path, a model id — so those rows keep their own
 // styling instead of borrowing the title's.
 func greetingBrandIndex(line string) int {
-	const brand = "OHGO"
-	idx := strings.Index(line, brand)
+	idx := strings.Index(line, identityBrandText)
 	if idx < 0 {
 		return -1
 	}
@@ -923,25 +1115,31 @@ func greetingBrandIndex(line string) int {
 			return -1
 		}
 	}
-	if tail := line[idx+len(brand):]; tail != "" && !strings.HasPrefix(tail, " ") && !strings.HasPrefix(tail, "│") {
+	if tail := line[idx+len(identityBrandText):]; tail != "" && !strings.HasPrefix(tail, " ") && !strings.HasPrefix(tail, "│") {
 		return -1
 	}
 	return idx
 }
 
-// styleGreetingTitle renders the identity title row: the OHGO brand keeps
-// the heading style while the personal address ("Good evening, Toma.") reads
-// in bold body text, so the greeting carries emphasis instead of blending
-// into the brand — or, on the boxed surface, into the muted row. Borders
-// stay muted, bare or boxed alike. Styling wraps measured cells, so the
-// stripped row still equals the input.
-func styleGreetingTitle(line string, pal *Palette) string {
-	const brand = "OHGO"
-	idx := greetingBrandIndex(line)
+// styleTitleText applies the title role to one bare cell. The brand and the
+// address both take it; padding stays faint so the row does not glow.
+func styleTitleText(cell string, pal *Palette) string {
+	idx := greetingBrandIndex(cell)
 	if idx < 0 {
-		return pal.Heading.Render(line)
+		return pal.Title.Render(cell)
 	}
-	return pal.Muted.Render(line[:idx]) + pal.Heading.Render(brand) + pal.Bold.Render(line[idx+len(brand):])
+	tail := cell[idx+len(identityBrandText):]
+	if dot := strings.Index(tail, "·"); dot >= 0 {
+		// The separator between brand and address is punctuation, not part
+		// of either phrase: keep it low-focus so the greeting still reads as
+		// one title rather than two competing labels.
+		return pal.Faint.Render(cell[:idx]) +
+			pal.Title.Render(identityBrandText) +
+			pal.Faint.Render(tail[:dot]) +
+			pal.Faint.Render("·") +
+			pal.Title.Render(tail[dot+len("·"):])
+	}
+	return pal.Faint.Render(cell[:idx]) + pal.Title.Render(identityBrandText) + pal.Title.Render(tail)
 }
 
 // modeLabels are the authority names that render as accent badges.
@@ -960,53 +1158,54 @@ func leadingMode(cell string) (string, bool) {
 	return "", false
 }
 
-// styleBoxedModes accents the mode labels inside a boxed row, leaving every
-// other cell muted. It reports false when the row holds no label, so the
-// caller falls back to the plain muted row.
-func styleBoxedModes(line string, pal *Palette, chrome *Chrome) (string, bool) {
-	segs := strings.Split(line, "│")
-	if len(segs) < 3 {
-		return "", false
-	}
-	holds := false
-	for i := 1; i < len(segs)-1; i++ {
-		if _, ok := leadingMode(segs[i]); ok {
-			holds = true
+// triggerTokens are the affordances the quickstart row teaches. They are data,
+// not styling accidents: the renderer bolds exactly these and fades the hints
+// between them.
+var triggerTokens = []string{"/model", "/help", "@files"}
+
+// lineHasTrigger reports whether a quickstart line carries a taught affordance.
+func lineHasTrigger(line string) bool {
+	for _, token := range triggerTokens {
+		if strings.Contains(line, token) {
+			return true
 		}
 	}
-	if !holds {
-		return "", false
-	}
+	return false
+}
+
+// styleTriggerText renders taught affordances in the High Focus title role and
+// everything between them in the Low Focus hint role. It never changes the
+// visible text, only its emphasis, so the quickstart keeps its cell geometry.
+func styleTriggerText(line string, pal *Palette) string {
 	var sb strings.Builder
-	sb.WriteString(pal.Muted.Render(segs[0] + "│"))
-	for i := 1; i < len(segs)-1; i++ {
-		sb.WriteString(styleModeCell(segs[i], pal, chrome))
-		sb.WriteString(pal.Muted.Render("│"))
+	rest := line
+	for rest != "" {
+		index, token := nextTrigger(rest)
+		if index < 0 {
+			sb.WriteString(pal.Faint.Render(rest))
+			break
+		}
+		if index > 0 {
+			sb.WriteString(pal.Faint.Render(rest[:index]))
+		}
+		sb.WriteString(pal.Title.Render(token))
+		rest = rest[index+len(token):]
 	}
-	sb.WriteString(pal.Muted.Render(segs[len(segs)-1]))
-	return sb.String(), true
+	return sb.String()
 }
 
-// styleModeCell accents a leading authority label and mutes the rest of the
-// cell. Cells without a label render muted wholesale.
-func styleModeCell(cell string, pal *Palette, chrome *Chrome) string {
-	mode, ok := leadingMode(cell)
-	if !ok {
-		return pal.Muted.Render(cell)
+// nextTrigger finds the earliest taught affordance in s. Earliest wins so a
+// line with several triggers is styled left to right in one pass.
+func nextTrigger(s string) (int, string) {
+	best := -1
+	token := ""
+	for _, candidate := range triggerTokens {
+		if index := strings.Index(s, candidate); index >= 0 && (best < 0 || index < best) {
+			best = index
+			token = candidate
+		}
 	}
-	lead := cell[:len(cell)-len(strings.TrimLeft(cell, " "))]
-	rest := strings.TrimLeft(cell, " ")[len(mode):]
-	return pal.Muted.Render(lead) + modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) + pal.Muted.Render(rest)
-}
-
-// styleModeBadges accents a leading authority label on a borderless line.
-func styleModeBadges(line string, pal *Palette, chrome *Chrome) string {
-	mode, ok := leadingMode(line)
-	if !ok {
-		return line
-	}
-	rest := strings.TrimLeft(line, " ")[len(mode):]
-	return modeStyle(chrome.Theme, mode, chrome.Active).Render(mode) + pal.Muted.Render(rest)
+	return best, token
 }
 
 // splitLines splits rendered output into lines without a trailing empty.
@@ -1218,7 +1417,7 @@ func newSessionPickerFooter(pal *Palette, layout Layout, interior int) string {
 	return TruncateToWidth(line, interior)
 }
 
-// themePickerWidth keeps the palette chooser compact: two choices and one
+// themePickerWidth keeps the appearance chooser compact: three choices and one
 // sentence read best in a narrow decision card, not a full-width catalog.
 func themePickerWidth(terminal int) int {
 	return mcpPickerWidth(terminal)
@@ -1230,13 +1429,14 @@ func themePickerWidth(terminal int) int {
 // manager: border-embedded title, a short list, a footer rule, and a key bar.
 // The active palette carries both the selection marker and a text "current"
 // badge, so the state never depends on color alone.
-func renderThemePickerCard(picker *PickerState, pal *Palette, layout Layout, width, height int) string {
+func renderThemePickerCard(picker *PickerState, pal *Palette, layout Layout, width, height int, summary string) string {
 	interior := width - 2
 	if interior < statusMinContent {
 		interior = statusMinContent
 	}
 
 	rows := []string{""}
+	const themeTitleWidth = 13
 	for i, item := range picker.Filtered() {
 		marker := "  "
 		if i == picker.Cursor {
@@ -1244,17 +1444,29 @@ func renderThemePickerCard(picker *PickerState, pal *Palette, layout Layout, wid
 		}
 		title := sanitizeInline(item.Title)
 		line := marker + title
+		// A fixed title column keeps the three details on one axis, so the
+		// card scans as a comparison rather than three ragged sentences.
+		if pad := themeTitleWidth - CellWidth(title); pad > 0 {
+			line += strings.Repeat(" ", pad)
+		}
+		current := ""
 		if item.Active {
-			line += "  " + pal.ToolDone.Render("● current")
+			current = "  " + pal.ToolDone.Render("●")
 		}
 		if detail := sanitizeInline(item.Detail); detail != "" && layout.ShowDetail {
-			if room := interior - statusFieldIndent - CellWidth(line) - 2; room >= 8 {
-				line += "  " + pal.Muted.Render(TruncateToWidth(detail, room))
+			room := interior - statusFieldIndent - CellWidth(line) - CellWidth(current) - 2
+			if room >= 8 {
+				line += pal.Muted.Render(TruncateToWidth(detail, room))
 			}
 		}
+		line += current
 		rows = append(rows, strings.Repeat(" ", statusFieldIndent)+TruncateToWidth(line, interior-statusFieldIndent))
 	}
 	rows = append(rows, "")
+	if strings.TrimSpace(summary) != "" {
+		rows = append(rows, strings.Repeat(" ", statusFieldIndent)+
+			pal.Choice.Render(TruncateToWidth(summary, interior-statusFieldIndent)))
+	}
 	note := "Theme applies immediately and is saved for the next launch."
 	rows = append(rows, strings.Repeat(" ", statusFieldIndent)+
 		pal.Muted.Render(TruncateToWidth(note, interior-statusFieldIndent)))
@@ -1301,7 +1513,7 @@ func renderPickerArea(sb *strings.Builder, state State, pal *Palette, layout Lay
 	picker := state.Picker
 	if picker.Kind == PickerThemes {
 		renderCardAreaWidth(sb, state, layout, themePickerWidth, func(width, height int) string {
-			return renderThemePickerCard(picker, pal, layout, width, height)
+			return renderThemePickerCard(picker, pal, layout, width, height, themeSummaryFor(state))
 		})
 		return
 	}
@@ -1318,7 +1530,7 @@ func renderPickerArea(sb *strings.Builder, state State, pal *Palette, layout Lay
 		return
 	}
 	width := displayWidth(state, layout)
-	header := pal.Heading.Render(TruncateToWidth(pickerHeader(picker), width))
+	header := pal.Title.Render(TruncateToWidth(pickerHeader(picker), width))
 	search := renderPickerSearch(picker, pal, width)
 	footer := pal.Muted.Render(TruncateToWidth(pickerFooter(picker, layout), width))
 
@@ -1680,7 +1892,7 @@ func composerPrefixText(state State, pal *Palette) string {
 }
 
 // composerPrefixStyle resolves the affordance colour per authority: ASK teal,
-// BUILD blue, FUZZ magenta. The hue is semantic identity; only its depth
+// BUILD blue, FUZZ violet. The hue is semantic identity; only its depth
 // follows the theme, so the prompt stays soft on a dark screen and readable on
 // a bright one without ever blurring which authority owns the next word.
 // Unknown authorities degrade to the prompt style rather than borrowing an
@@ -2188,7 +2400,7 @@ func renderReasoningAt(sb *strings.Builder, reasoning *ReasoningEntry, pal *Pale
 		// The disclosure state is real even when the provider sent no prose:
 		// duration-only or whitespace-only traces must stay inspectable rather
 		// than silently collapsing to a row that cannot be opened.
-		sb.WriteString(guide + pal.Muted.Render("(no detailed reasoning text provided)") + "\n")
+		sb.WriteString(guide + pal.ThoughtBody.Render("(no detailed reasoning text provided)") + "\n")
 		sb.WriteString("\n")
 		return
 	}
@@ -2196,9 +2408,10 @@ func renderReasoningAt(sb *strings.Builder, reasoning *ReasoningEntry, pal *Pale
 		if shown >= limit {
 			break
 		}
-		// Thinking prose is deliberately desaturated: it is available on
-		// request, never a second answer competing with the transcript.
-		sb.WriteString(guide + pal.Muted.Render(line) + "\n")
+		// Thinking prose is the muted half of the cognitive amber: available
+		// on request, orphaned from the answer by italics, and never a second
+		// answer competing with the transcript.
+		sb.WriteString(guide + pal.ThoughtBody.Render(line) + "\n")
 		shown++
 	}
 	if len(lines) > shown {
@@ -2279,8 +2492,10 @@ func renderToolRun(sb *strings.Builder, run *toolRun, pal *Palette, layout Layou
 		marker = blockExpandedMarker
 	}
 	parts := make([]string, 0, 3)
+	phaseLabel := ""
 	if phase := sanitizeInline(run.phaseLabel()); phase != "" {
-		parts = append(parts, "[Phase: "+phase+"]")
+		phaseLabel = "[Phase: " + phase + "]"
+		parts = append(parts, phaseLabel)
 	}
 	parts = append(parts, toolCountLabel(len(run.members)))
 	if span, ok := run.duration(); ok {
@@ -2295,7 +2510,19 @@ func renderToolRun(sb *strings.Builder, run *toolRun, pal *Palette, layout Layou
 	if width > 0 {
 		head = TruncateToWidth(head, width)
 	}
-	sb.WriteString(pal.Status.Render(head) + "\n")
+	// The phase span is the only structural fact on an otherwise quiet
+	// telemetry row: give it the context-blue accent while tool counts and
+	// durations stay muted. Style after truncation so ANSI never affects the
+	// width budget, and keep the whole row muted when the label was cut.
+	styledHead := pal.Status.Render(head)
+	if phaseLabel != "" {
+		if idx := strings.Index(head, phaseLabel); idx >= 0 {
+			styledHead = pal.Status.Render(head[:idx]) +
+				pal.Cyan.Render(phaseLabel) +
+				pal.Status.Render(head[idx+len(phaseLabel):])
+		}
+	}
+	sb.WriteString(styledHead + "\n")
 	if !expanded {
 		return
 	}
@@ -2315,6 +2542,10 @@ func renderToolRun(sb *strings.Builder, run *toolRun, pal *Palette, layout Layou
 		slot := statusSlot(glyph)
 		prefix := "  " + branch + " " + slot
 		invocation := sanitizeInline(toolInvocation(member))
+		invocationStyle := pal.Choice
+		if status == ToolRunning && member.ID != currentID && !member.dwelling(now) {
+			invocationStyle = pal.Muted
+		}
 		elapsed := ""
 		if status != ToolPending {
 			elapsed = member.elapsedAt(now)
@@ -2353,13 +2584,9 @@ func renderToolRun(sb *strings.Builder, run *toolRun, pal *Palette, layout Layou
 			budget = 1
 		}
 		invocation = TruncateMiddleToWidth(invocation, budget)
-		line := pal.Muted.Render("  "+branch+" ") + style.Render(slot+invocation)
+		line := pal.Muted.Render("  "+branch+" ") + style.Render(slot) + invocationStyle.Render(invocation)
 		if suffix != "" {
-			outcomeStyle := pal.Muted
-			if status == ToolError {
-				outcomeStyle = pal.ToolError
-			}
-			line += outcomeStyle.Render(suffix)
+			line += pal.Muted.Render(suffix)
 		}
 		if width > 0 && CellWidth(line) > width {
 			line = TruncateToWidth(line, width)
@@ -2442,10 +2669,13 @@ func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Lay
 	status := tool.presentationStatus(now)
 	glyph := toolStatusGlyph(status, tick)
 	style := toolStatusStyle(tool, status, pal, theme, now)
+	invocationStyle := pal.Choice
 	if status == ToolRunning && !current && !tool.dwelling(now) {
 		// A concurrent running call is still live, but it does not compete
-		// with the one activity that owns the clock.
+		// with the one activity that owns the clock. Its glyph and command
+		// content both recede; the status never turns the command green.
 		style = pal.Muted
+		invocationStyle = pal.Muted
 	}
 	slot := statusSlot(glyph)
 
@@ -2475,12 +2705,12 @@ func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Lay
 		// Expansion is the user asking to see the whole target. Never
 		// middle-cut it then: wrap the complete invocation across rows so a
 		// long path stays fully readable instead of collapsing to "…".
-		writeExpandedInvocation(sb, slot, invocationText, rightText, style, pal, width)
+		writeExpandedInvocation(sb, slot, invocationText, rightText, style, invocationStyle, pal, width)
 	} else {
 		invocation := TruncateMiddleToWidth(invocationText, leftBudget)
-		left := style.Render(slot + invocation)
+		left := style.Render(slot) + invocationStyle.Render(invocation)
 		if rightText != "" {
-			right := pal.Status.Render(rightText)
+			right := pal.Faint.Render(rightText)
 			if gap := width - CellWidth(left) - CellWidth(right); gap >= 2 {
 				sb.WriteString(left + strings.Repeat(" ", gap) + right + "\n")
 			} else {
@@ -2530,13 +2760,18 @@ func renderToolAt(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout Lay
 			if budget < 1 {
 				budget = 1
 			}
+			// The branch marker carries the error role and the message keeps
+			// neutral body text. A failed command is recognisable at a glance
+			// without turning the whole outcome into a red block.
+			branchStyle := pal.Status
 			outcomeStyle := pal.Status
 			if status == ToolError {
-				outcomeStyle = pal.ToolError
+				branchStyle = pal.ToolError
+				outcomeStyle = pal.Choice
 			}
-			line := "  " + outcomeStyle.Render("└─ "+TruncateToWidth(outcome, budget))
+			line := "  " + branchStyle.Render("└─ ") + outcomeStyle.Render(TruncateToWidth(outcome, budget))
 			if hint != "" {
-				line += pal.Muted.Render(hint)
+				line += pal.Faint.Render(hint)
 			}
 			if width > 0 && CellWidth(line) > width {
 				line = TruncateToWidth(line, width)
@@ -2624,7 +2859,7 @@ func renderToolBody(sb *strings.Builder, tool *ToolEntry, pal *Palette, layout L
 // fit on one row. Continuations align under the first text cell and no row is
 // truncated, so every path segment survives; the duration is kept only when
 // the first row has room for it.
-func writeExpandedInvocation(sb *strings.Builder, slot, invocation, rightText string, style lipgloss.Style, pal *Palette, width int) {
+func writeExpandedInvocation(sb *strings.Builder, slot, invocation, rightText string, statusStyle, invocationStyle lipgloss.Style, pal *Palette, width int) {
 	const maxLines = 64
 	prefixWidth := CellWidth(slot)
 	budget := width - prefixWidth
@@ -2646,14 +2881,14 @@ func writeExpandedInvocation(sb *strings.Builder, slot, invocation, rightText st
 		}
 		var line string
 		if i == 0 {
-			line = style.Render(slot + chunk)
+			line = statusStyle.Render(slot) + invocationStyle.Render(chunk)
 			if right != "" {
 				if gap := width - CellWidth(line) - CellWidth(right); gap >= 2 {
 					line += strings.Repeat(" ", gap) + right
 				}
 			}
 		} else {
-			line = strings.Repeat(" ", prefixWidth) + style.Render(chunk)
+			line = strings.Repeat(" ", prefixWidth) + invocationStyle.Render(chunk)
 		}
 		sb.WriteString(line + "\n")
 	}
@@ -2790,7 +3025,7 @@ func renderShell(sb *strings.Builder, shell *ShellEntry, pal *Palette, layout La
 // reason in place of a code.
 func shellExitLine(shell *ShellEntry, pal *Palette) string {
 	if shell.Err != "" {
-		return pal.ToolError.Render("✗ " + sanitizeInline(shell.Err))
+		return pal.ToolError.Render("✗ ") + pal.Choice.Render(sanitizeInline(shell.Err))
 	}
 	style := pal.ToolDone
 	mark := "✓"
@@ -2798,9 +3033,9 @@ func shellExitLine(shell *ShellEntry, pal *Palette) string {
 		style = pal.ToolError
 		mark = "✗"
 	}
-	line := style.Render(fmt.Sprintf("%s exit %d", mark, shell.ExitCode))
+	line := style.Render(mark) + pal.Status.Render(fmt.Sprintf(" exit %d", shell.ExitCode))
 	if elapsed := shellElapsed(shell); elapsed != "" {
-		line += pal.Status.Render(" · " + elapsed)
+		line += pal.Faint.Render(" · " + elapsed)
 	}
 	return line
 }
@@ -2844,26 +3079,31 @@ func quitCardWidth(termWidth int) int {
 }
 
 // quitCard builds the centered bordered confirmation: title, horizontal
-// Yes/No buttons reusing the wizard badges, and a hint naming the left/right
-// keys. The selected button is flanked by ◀ ▶ so the choice never depends on
-// hue alone — a monochrome terminal still shows which option Enter confirms.
+// Yes/No buttons, and a hint naming the left/right keys. The selected button
+// is flanked by ◀ ▶ so the choice never depends on hue alone.
 func quitCard(confirm *PendingApproval, cardW int) string {
+	return quitCardForTheme(confirm, cardW, ThemeDark)
+}
+
+// quitCardForTheme resolves the dialog from the current appearance.
+func quitCardForTheme(confirm *PendingApproval, cardW int, theme string) string {
 	if confirm == nil {
 		return ""
 	}
+	t := design.For(theme)
 	if cardW < 10 {
 		cardW = 10
 	}
 	title := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardTeal)).Bold(true).
+		Foreground(lipgloss.Color(t.Brand)).Bold(true).
 		Render("Really quit?")
 	question := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextSecondary)).
 		Render("Exit the session?")
 	yesActive := confirm.Cursor == 0
 	noActive := !yesActive
 	arrow := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardTeal)).Bold(true)
+		Foreground(lipgloss.Color(t.Brand)).Bold(true)
 	leftYes, rightYes := "  ", "  "
 	leftNo, rightNo := "  ", "  "
 	if yesActive {
@@ -2875,18 +3115,18 @@ func quitCard(confirm *PendingApproval, cardW int) string {
 		rightNo = arrow.Render(" ▶")
 	}
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
-		leftYes, gitButton("Yes", yesActive), rightYes,
+		leftYes, gitButtonForTheme("Yes", yesActive, theme), rightYes,
 		"   ",
-		leftNo, gitButton("No", noActive), rightNo,
+		leftNo, gitButtonForTheme("No", noActive, theme), rightNo,
 	)
 	hints := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextSecondary)).
 		Render("←→ move · enter confirm · y quit · n/esc stay")
 	inner := lipgloss.JoinVertical(lipgloss.Left, title, question, "", buttons, "", hints)
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(wizardTeal)).
-		Background(lipgloss.Color(wizardBG)).
+		BorderForeground(lipgloss.Color(t.Brand)).
+		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
@@ -2907,20 +3147,38 @@ func transitionCardWidth(termWidth int) int {
 // dialog contains no percentage: Strength is an evidence level, and the copy
 // names it in words rather than implying a calibrated score (I12).
 func transitionCard(prompt *TransitionPrompt, cardW int) string {
+	return transitionCardForTheme(prompt, cardW, ThemeDark)
+}
+
+// transitionCardForTheme resolves the dialog from the current appearance.
+func transitionCardForTheme(prompt *TransitionPrompt, cardW int, theme string) string {
 	if prompt == nil {
 		return ""
 	}
+	t := design.For(theme)
 	if cardW < 12 {
 		cardW = 12
 	}
+	// Producer accents are the dark-screen identity forms. Resolve the
+	// light-screen depth from the same authority label when possible, so a
+	// transition prompt stays legible without turning the mode into a
+	// different hue.
+	currentAccent := prompt.CurrentAccent
+	if accent := ModeAccentFor(theme, prompt.Current); accent != "" {
+		currentAccent = accent
+	}
+	proposedAccent := prompt.ProposedAccent
+	if accent := ModeAccentFor(theme, prompt.Proposed); accent != "" {
+		proposedAccent = accent
+	}
 	title := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(prompt.ProposedAccent)).Bold(true).
+		Foreground(lipgloss.Color(proposedAccent)).Bold(true).
 		Render(prompt.Question)
 	reason := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextSecondary)).
 		Render(prompt.Reason)
 	arrow := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(prompt.ProposedAccent)).Bold(true)
+		Foreground(lipgloss.Color(proposedAccent)).Bold(true)
 	keepActive := prompt.Selection == 0
 	switchActive := !keepActive
 	leftKeep, rightKeep := "  ", "  "
@@ -2932,17 +3190,17 @@ func transitionCard(prompt *TransitionPrompt, cardW int) string {
 		leftSwitch, rightSwitch = arrow.Render("◀ "), arrow.Render(" ▶")
 	}
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
-		leftKeep, transitionButton("Keep "+prompt.Current, prompt.CurrentAccent, keepActive), rightKeep,
+		leftKeep, transitionButtonForTheme("Keep "+prompt.Current, currentAccent, keepActive, theme), rightKeep,
 		"   ",
-		leftSwitch, transitionButton(prompt.Proposed, prompt.ProposedAccent, switchActive), rightSwitch,
+		leftSwitch, transitionButtonForTheme(prompt.Proposed, proposedAccent, switchActive, theme), rightSwitch,
 	)
 	hints := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(t.TextSecondary)).
 		Render("Enter to confirm · Esc keeps " + prompt.Current)
 	rows := []string{title, reason}
 	if prompt.Handoff != nil {
 		detail := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(wizardGrey))
+			Foreground(lipgloss.Color(t.TextSecondary))
 		if prompt.Handoff.Objective != "" {
 			rows = append(rows, detail.Render("Task: "+TruncateToWidth(prompt.Handoff.Objective, cardW)))
 		}
@@ -2958,8 +3216,8 @@ func transitionCard(prompt *TransitionPrompt, cardW int) string {
 	inner := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(prompt.ProposedAccent)).
-		Background(lipgloss.Color(wizardBG)).
+		BorderForeground(lipgloss.Color(proposedAccent)).
+		Background(lipgloss.Color(t.SurfaceElevated)).
 		Padding(1, 2).
 		Width(cardW).
 		Render(inner)
@@ -2992,7 +3250,7 @@ func handoffCarriedLine(handoff HandoffView) string {
 
 // transitionButton renders one workspace choice: its own accent when
 // highlighted, a quiet grey label otherwise.
-func transitionButton(label, accent string, active bool) string {
+func transitionButtonForTheme(label, accent string, active bool, theme string) string {
 	text := "[ " + label + " ]"
 	if active {
 		return lipgloss.NewStyle().
@@ -3000,7 +3258,7 @@ func transitionButton(label, accent string, active bool) string {
 			Render(text)
 	}
 	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color(wizardGrey)).
+		Foreground(lipgloss.Color(design.For(theme).TextSecondary)).
 		Render(text)
 }
 
@@ -3015,7 +3273,7 @@ func renderTransitionArea(sb *strings.Builder, state State, _ *Palette, layout L
 		return
 	}
 	if state.Width <= 0 || state.Height <= 0 {
-		card := transitionCard(prompt, transitionCardWidth(0))
+		card := transitionCardForTheme(prompt, transitionCardWidth(0), state.Theme)
 		sb.WriteString(card)
 		if !strings.HasSuffix(card, "\n") {
 			sb.WriteString("\n")
@@ -3033,7 +3291,7 @@ func renderTransitionArea(sb *strings.Builder, state State, _ *Palette, layout L
 	if width <= 0 {
 		width = 80
 	}
-	card := transitionCard(prompt, transitionCardWidth(width))
+	card := transitionCardForTheme(prompt, transitionCardWidth(width), state.Theme)
 	placed := lipgloss.Place(width, avail, lipgloss.Center, lipgloss.Center, card)
 	lines := strings.Split(placed, "\n")
 	if len(lines) > avail {
@@ -3059,7 +3317,7 @@ func renderQuitConfirmArea(sb *strings.Builder, state State, _ *Palette, layout 
 		return
 	}
 	if state.Width <= 0 || state.Height <= 0 {
-		card := quitCard(confirm, quitCardWidth(0))
+		card := quitCardForTheme(confirm, quitCardWidth(0), state.Theme)
 		sb.WriteString(card)
 		if !strings.HasSuffix(card, "\n") {
 			sb.WriteString("\n")
@@ -3077,7 +3335,7 @@ func renderQuitConfirmArea(sb *strings.Builder, state State, _ *Palette, layout 
 	if width <= 0 {
 		width = 80
 	}
-	card := quitCard(confirm, quitCardWidth(width))
+	card := quitCardForTheme(confirm, quitCardWidth(width), state.Theme)
 	placed := lipgloss.Place(width, avail, lipgloss.Center, lipgloss.Center, card)
 	lines := strings.Split(placed, "\n")
 	if len(lines) > avail {

@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/tokens"
@@ -660,6 +661,12 @@ type State struct {
 	Entries []Entry
 	// Status is the footer.
 	Status Status
+	// Tip is the quickstart's dynamic annotation. It is chosen once per
+	// project so repaints, resizes, and theme changes cannot shuffle it.
+	Tip string
+	// tipProject is the working directory that owns Tip. It stays unexported
+	// because only a workspace transition may declare a new project.
+	tipProject string
 	// Integrations is the sidebar's snapshot of active MCP and LSP
 	// connections. It is a projection with no connection authority: the
 	// managers remain the owners and the view never probes a server.
@@ -734,8 +741,20 @@ type State struct {
 	// in which case the view renders everything without slicing.
 	Width  int
 	Height int
-	// Theme names the palette: "dark" (default) or "light".
+	// Theme is the effective appearance used for rendering: ThemeDark or
+	// ThemeLight. Components consume this resolved value and never inspect
+	// system configuration themselves.
 	Theme string
+	// ThemePreference is the stored choice: "auto", "dark", or "light". It is
+	// deliberately separate from Theme so an auto preference survives a
+	// resolution and a system appearance change never rewrites the choice.
+	ThemePreference string
+	// ThemeSource records where the effective appearance came from:
+	// ThemeSourceSystem when auto detected the system, ThemeSourceExplicit
+	// when the user forced a palette, and ThemeSourceFallback when auto could
+	// not detect one and the deterministic dark fallback applied. It is
+	// presentation metadata, never a claim that detection succeeded.
+	ThemeSource string
 	// Picker is the open selection overlay, or nil.
 	Picker *PickerState
 	// Plane is the open model control plane, or nil. It is the persistent
@@ -943,11 +962,38 @@ type State struct {
 // New returns an empty state.
 func New() State {
 	return State{
-		HistCursor:    -1,
-		Follow:        true,
-		Theme:         ThemeDark,
-		KeepRecentMax: DefaultKeepRecentSessions,
+		HistCursor:      -1,
+		Follow:          true,
+		Theme:           ThemeDark,
+		ThemePreference: config.DefaultThemePreference,
+		ThemeSource:     ThemeSourceFallback,
+		KeepRecentMax:   DefaultKeepRecentSessions,
+		Tip:             GetRandomTip(),
 	}
+}
+
+// enterProject pins the quickstart tip to the observed project directory.
+//
+// The first directory adopts the tip already chosen for this state; a later
+// directory is a different project and re-rolls exactly once. Repaints, resizes,
+// and authority switches never call this, so the tip cannot move continuously.
+func (s *State) enterProject(cwd string) {
+	s.enterProjectWith(cwd, GetRandomTip)
+}
+
+// enterProjectWith is the selection seam. A nil chooser falls back to the real
+// pool, so a zero State still adopts a tip when it first enters a project.
+func (s *State) enterProjectWith(cwd string, choose func() string) {
+	if cwd == "" || s.tipProject == cwd {
+		return
+	}
+	if s.Tip == "" || s.tipProject != "" {
+		if choose == nil {
+			choose = GetRandomTip
+		}
+		s.Tip = choose()
+	}
+	s.tipProject = cwd
 }
 
 // sessionSlotID parses the "#N" slot label into the session id. It returns
@@ -1941,7 +1987,23 @@ func (s *State) Apply(event Event) {
 		s.syncComposerScroll()
 
 	case ThemeChanged:
-		s.Theme = NormalizeTheme(e.Name)
+		if strings.TrimSpace(e.Preference) != "" {
+			s.ThemePreference = NormalizeThemePreference(e.Preference)
+		}
+		if strings.TrimSpace(e.Name) != "" {
+			s.Theme = NormalizeTheme(e.Name)
+		}
+		switch e.Source {
+		case ThemeSourceSystem, ThemeSourceExplicit, ThemeSourceFallback:
+			s.ThemeSource = e.Source
+		}
+		if s.ThemeSource == "" {
+			if s.ThemePreference == ThemeAuto {
+				s.ThemeSource = ThemeSourceFallback
+			} else {
+				s.ThemeSource = ThemeSourceExplicit
+			}
+		}
 
 	case DiffOpened:
 		s.Diff = e.Model
@@ -2327,6 +2389,7 @@ func (s *State) Apply(event Event) {
 	case WorkspaceUpdated:
 		if e.HasCwd {
 			s.Status.Cwd = e.Cwd
+			s.enterProject(e.Cwd)
 		}
 		if e.HasSession {
 			s.Status.Session = e.Session
@@ -4374,7 +4437,7 @@ var Commands = []CommandSpec{
 	{Name: "task", Usage: "task [status|list|show|resume|cancel|accept]", Description: "manage durable tasks: inspect, list, resume, or abandon", Category: CommandGroupControl},
 	{Name: "experience", Usage: "experience [list|show <id>|retire <id>|reject <id>]", Description: "inspect or retire learned execution experience", Category: CommandGroupControl},
 	{Name: "audit", Usage: "audit", Description: "explain the last context projection and action surface", Category: CommandGroupControl},
-	{Name: "theme", Usage: "theme [dark|light]", Description: "choose the palette", Category: CommandGroupControl},
+	{Name: "theme", Usage: "theme [auto|dark|light]", Description: "choose the appearance", Category: CommandGroupControl},
 	{Name: "settings", Usage: "settings", Description: "configure interface preferences", Category: CommandGroupControl},
 	{Name: "connect", Usage: "connect", Description: "set up a provider connection", Category: CommandGroupControl},
 	{Name: "disconnect", Usage: "disconnect [provider]", Description: "remove a saved credential", Category: CommandGroupControl},
@@ -4631,14 +4694,36 @@ func (TerminalResized) eventKind() string { return "terminal_resized" }
 
 // Theme names.
 const (
-	// ThemeDark is the default palette.
-	ThemeDark = "dark"
-	// ThemeLight is the bright palette.
-	ThemeLight = "light"
+	// ThemeAuto follows the system appearance. It resolves to ThemeDark or
+	// ThemeLight at the presentation boundary; it is never a palette.
+	ThemeAuto = config.ThemeAuto
+	// ThemeDark is the Midnight Slate appearance and the deterministic fallback.
+	ThemeDark = config.ThemeDark
+	// ThemeLight is the Warm Porcelain appearance.
+	ThemeLight = config.ThemeLight
 )
 
-// NormalizeTheme maps a name to a known theme. Anything unrecognised becomes
-// dark: a typo degrades to the default rather than an error.
+// Theme sources. They describe how the effective appearance was resolved and
+// keep a detected system value distinguishable from the fallback.
+const (
+	// ThemeSourceSystem means auto resolved from the host's appearance.
+	ThemeSourceSystem = "system"
+	// ThemeSourceExplicit means the user forced dark or light.
+	ThemeSourceExplicit = "explicit"
+	// ThemeSourceFallback means auto could not detect the host and used dark.
+	ThemeSourceFallback = "fallback"
+)
+
+// NormalizeThemePreference maps a stored choice to auto, dark, or light. The
+// persisted format has one parser, owned by config; this alias keeps callers
+// inside presentation from importing policy twice.
+func NormalizeThemePreference(name string) string {
+	return config.NormalizeThemePreference(name)
+}
+
+// NormalizeTheme maps an effective appearance name to a palette. Auto is not
+// valid here: resolution must happen first. Anything unrecognised becomes
+// dark, so a render can never fail.
 func NormalizeTheme(name string) string {
 	if strings.EqualFold(strings.TrimSpace(name), ThemeLight) {
 		return ThemeLight
@@ -4668,8 +4753,17 @@ func NormalizeMouse(name string) string {
 	return MouseSelect
 }
 
-// ThemeChanged switches the palette.
-type ThemeChanged struct{ Name string }
+// ThemeChanged resolves an appearance transition.
+//
+// Name is the effective palette (dark or light). Preference, when non-empty,
+// records the stored choice that produced it; an empty value preserves the
+// existing preference so a system-driven resolution never overwrites auto.
+// Source names how the effective value was obtained.
+type ThemeChanged struct {
+	Name       string
+	Preference string
+	Source     string
+}
 
 func (ThemeChanged) eventKind() string { return "theme_changed" }
 

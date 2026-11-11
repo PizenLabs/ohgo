@@ -221,23 +221,29 @@ func TestRenderDiffHunkNeverPanics(t *testing.T) {
 }
 
 // The design tokens are wired through the styles: with a forced true-color
-// profile the mint glyph, cyan path, row tints, panel background, and border
+// profile the success glyph, blue path, row tints, panel background, and border
 // all reach the terminal.
 func TestRenderDiffHunkWiresTheDesignTokens(t *testing.T) {
 	r := lipgloss.NewRenderer(io.Discard)
 	r.SetColorProfile(termenv.TrueColor)
-	out := renderDiffHunk(newDiffStyles(r), sampleDiffHunk(), 80)
+	out := renderDiffHunk(newDiffStyles(r, ThemeDark), sampleDiffHunk(), 80)
 	tokens := map[string]string{
-		"mint glyph":  "38;2;78;169;111",  // #4EA96F
-		"cyan path":   "38;2;125;207;255", // #7DCFFF
-		"add tint":    "48;2;22;40;30",    // #16281E
-		"delete tint": "48;2;42;25;29",    // #2A191D
-		"panel bg":    "48;2;16;16;16",    // #101010
-		"panel edge":  "38;2;32;32;34",    // #202022
+		"success glyph": rgbSeq(DarkTokens().Success),
+		"cyan path":     rgbSeq(DarkTokens().DiffHeader),
+		"add tint":      "48;2;" + rgbSeq(DarkTokens().DiffAddBackground),
+		"delete tint":   "48;2;" + rgbSeq(DarkTokens().DiffDeleteBackground),
+		"panel bg":      "48;2;" + rgbSeq(DarkTokens().SurfacePrimary),
 	}
 	for name, seq := range tokens {
 		if !strings.Contains(out, seq) {
 			t.Errorf("%s (%s) missing from styled output", name, seq)
 		}
+	}
+	edge := newDiffStyles(r, ThemeDark).edge
+	if got := colorName(edge.GetForeground()); got != DarkTokens().BorderDefault {
+		t.Errorf("panel edge foreground = %q, want %s", got, DarkTokens().BorderDefault)
+	}
+	if got := colorName(edge.GetBackground()); got != DarkTokens().SurfacePrimary {
+		t.Errorf("panel edge background = %q, want %s", got, DarkTokens().SurfacePrimary)
 	}
 }

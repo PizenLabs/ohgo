@@ -56,17 +56,18 @@ func TestReasoningBlockIsCollapsedAndMeasured(t *testing.T) {
 	}
 }
 
-// Expanded thinking is desaturated, not assistant prose: the body uses the
-// palette's muted role so internal reasoning cannot read as a second answer.
-func TestExpandedReasoningBodyUsesMutedRole(t *testing.T) {
+// Expanded thinking is the muted half of the cognitive amber, not assistant
+// prose: the body uses the ThoughtBody role so internal reasoning cannot read
+// as a second answer.
+func TestExpandedReasoningBodyUsesThoughtBodyRole(t *testing.T) {
 	pal := forcedPalette()
 	reasoning := &ReasoningEntry{Text: "inspect the cache", Closed: true, Expanded: true}
 	var b strings.Builder
 	renderReasoning(&b, reasoning, pal, Layout{ContentWidth: 80, Mode: LayoutWide}, 0)
 
 	out := b.String()
-	if !strings.Contains(out, pal.Separator.Render("│ ")+pal.Muted.Render("inspect the cache")) {
-		t.Fatalf("expanded body is not the indented muted role behind the guide: %q", out)
+	if !strings.Contains(out, pal.Separator.Render("│ ")+pal.ThoughtBody.Render("inspect the cache")) {
+		t.Fatalf("expanded body is not the indented thought-body role behind the guide: %q", out)
 	}
 	if !strings.Contains(out, pal.Thought.Render("- Thought")) {
 		t.Fatalf("expanded header lost its open marker or amber role: %q", out)

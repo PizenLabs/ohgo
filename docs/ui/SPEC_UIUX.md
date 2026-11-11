@@ -551,10 +551,12 @@ Expanded:
 │ configuration before determining the architecture.
 ```
 
-The header renders in the status amber; the body is muted prose behind a dim
-`│` indent guide, so the trace reads as an annotating child of the disclosure
-row rather than a second answer. An empty or whitespace-only trace still owns
-its disclosure state: expanding it renders
+The header renders in the bold amber ThoughtHeader role, and the body is muted
+amber italic prose behind a dim `│` indent guide, so the trace reads as an
+annotating cognitive stop rather than a second answer. In the light appearance
+the amber value coincides with the operational warning value; the bold
+disclosure header and its role keep the two meanings distinct. An empty or
+whitespace-only trace still owns its disclosure state: expanding it renders
 `│ (no detailed reasoning text provided)` rather than refusing the toggle.
 
 Reasoning must be:
@@ -798,19 +800,28 @@ Status should remain understandable in monochrome or reduced-color terminal envi
 
 # 21. Color Semantics
 
-Preserve Ohgo's existing semantic color system where possible.
+Exact values and contrast measurements live in `docs/ui/DESIGN_SYSTEM.md`;
+`internal/tui/design/tokens.go` is the only value source. Components consume
+semantic roles, never literals.
 
 Recommended semantic meaning:
 
 ```text
-success  → green
-failure  → red
-active   → current accent
-reasoning → subdued
-secondary metadata → muted
+success    → green
+failure    → red
+warning    → warm orange
+active     → current accent
+reasoning  → amber thought pair
+structure  → violet headings and table headers
+emphasis   → warm gold bold lead-ins
+reference  → blue inline code and technical artifacts
+metadata   → muted neutral
 ```
 
-Do not introduce arbitrary new colors merely for visual variety.
+The accent families are semantic, not decoration: violet means document
+structure, gold means an authorial claim, blue means reference data, and amber
+means internal reasoning. Do not introduce arbitrary new colors merely for
+visual variety.
 
 Do not use color as the only representation of state.
 

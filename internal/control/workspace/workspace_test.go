@@ -130,7 +130,7 @@ func TestAdmitRefusesExecInAskWithItsOwnReason(t *testing.T) {
 }
 
 func TestStyleIsSemanticAndStable(t *testing.T) {
-	// ASK teal, BUILD blue, FUZZ magenta: three distinct accents in both the
+	// ASK teal, BUILD blue, FUZZ violet: three distinct accents in both the
 	// dark and light forms. The hue stays the identity; only its depth adapts
 	// to the screen.
 	accents := map[string]Workspace{}

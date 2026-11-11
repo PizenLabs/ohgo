@@ -254,7 +254,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				}
 				continue
 			case "theme":
-				_, _ = fmt.Fprintln(out, "theme applies to the full-screen UI (dark or light via /theme there)")
+				_, _ = fmt.Fprintln(out, "theme applies to the full-screen UI (auto, dark, or light via /theme there)")
 				continue
 			case "commands":
 				_, _ = fmt.Fprintln(out, tui.HelpText())

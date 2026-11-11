@@ -258,7 +258,9 @@ func TestExpandedToolRendersCodeDiff(t *testing.T) {
 		}
 	}
 	// Dark add/delete tints are part of the row style, not just the mark.
-	for _, tint := range []string{"48;2;22;40;30", "48;2;42;25;29"} {
+	addTint := "48;2;" + rgbSeq(DarkTokens().DiffAddBackground)
+	delTint := "48;2;" + rgbSeq(DarkTokens().DiffDeleteBackground)
+	for _, tint := range []string{addTint, delTint} {
 		if !strings.Contains(out, tint) {
 			t.Errorf("expanded diff missing row tint %s", tint)
 		}
@@ -299,7 +301,9 @@ func TestApprovalMetadataAndTintedPreview(t *testing.T) {
 			t.Errorf("approval missing %q:\n%s", want, plain)
 		}
 	}
-	for _, tint := range []string{"48;2;22;40;30", "48;2;42;25;29"} {
+	addTint := "48;2;" + rgbSeq(DarkTokens().DiffAddBackground)
+	delTint := "48;2;" + rgbSeq(DarkTokens().DiffDeleteBackground)
+	for _, tint := range []string{addTint, delTint} {
 		if !strings.Contains(out, tint) {
 			t.Errorf("approval diff missing row tint %s", tint)
 		}

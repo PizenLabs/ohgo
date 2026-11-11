@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/PizenLabs/ohgo/internal/tui/design"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -164,25 +165,15 @@ type paletteStyles struct {
 // description in ColorDim, border in ColorDim. Light keeps the same roles with
 // the darkened counterparts so a bright screen stays legible.
 func paletteStylesFor(theme string) paletteStyles {
-	if NormalizeTheme(theme) == ThemeLight {
-		return paletteStyles{
-			border:       fg(chromeLightDim),
-			header:       fg(lightMuted).Bold(true),
-			marker:       fg(chromeLightPrimary),
-			activeName:   fg(chromeLightPrimary).Bold(true),
-			activeDesc:   fg(lightText),
-			inactiveName: fg(lightMuted),
-			inactiveDesc: fg(chromeLightDim),
-		}
-	}
+	t := design.For(theme)
 	return paletteStyles{
-		border:       fg(ColorDim),
-		header:       fg(ColorMuted).Bold(true),
-		marker:       fg(ColorPrimary),
-		activeName:   fg(ColorPrimary).Bold(true),
-		activeDesc:   fg(ColorText),
-		inactiveName: fg(ColorMuted),
-		inactiveDesc: fg(ColorDim),
+		border:       fg(t.BorderDefault),
+		header:       fg(t.TextMuted).Bold(true),
+		marker:       fg(t.Brand),
+		activeName:   fg(t.Brand).Bold(true),
+		activeDesc:   fg(t.TextPrimary),
+		inactiveName: fg(t.TextMuted),
+		inactiveDesc: fg(t.BorderStrong),
 	}
 }
 
