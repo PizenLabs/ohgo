@@ -7,6 +7,16 @@ immutable.
 
 ### Fixed
 
+- Rework follow-ups: `redesign`, `rework`, `revamp`, `restyle`, `redo`,
+  `overhaul`, `modernize`, `redraw`, `reimplement`, and `rearchitect` are
+  repository-change heads. After a design turn, “redesign it” now derives a
+  mutation contract in BUILD, offers the write surface, and cannot be proven
+  from another plan or a recorded change artifact without an observed change
+  and a later check.
+- Task plan isolation: a new task starts with an empty session todo plan. The
+  previous task keeps its todo snapshot in its archive, but its completed items
+  no longer appear as the new task's progress or get imported into its
+  checkpoint.
 - Resumed investigation tasks: repeating a task's own objective no longer
   bypasses workspace prediction. A BUILD task handed back with a strong
   investigation request now moves to FUZZ instead of staying in BUILD until a

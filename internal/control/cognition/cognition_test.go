@@ -7,6 +7,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/security"
@@ -19,6 +20,24 @@ func readContract(objective string) contract.IntentContract {
 		Targets:         []contract.Target{{Kind: contract.TargetPath, Value: "README.md"}},
 		ExpectedChanges: []contract.ExpectedChange{{Target: contract.Target{Kind: contract.TargetPath, Value: "README.md"}, Operation: contract.ChangeAny}},
 		Verification:    []contract.VerificationRequirement{{Kind: contract.VerifyAny}},
+	}
+}
+
+// BUILD + a mutation objective must describe mutation as allowed. This is the
+// runtime-state guard that kept "redesign it" from becoming a design-only turn:
+// the contract is a change objective, so the shape cannot report
+// "mutation=forbidden" while BUILD is the active authority.
+func TestBuildShapeAllowsMutationForAReworkObjectiveInBuild(t *testing.T) {
+	intent := workspace.BuildIntentContract("redesign it")
+	if intent.Kind != contract.ObjectiveMutation {
+		t.Fatalf("contract kind = %s, want mutation", intent.Kind)
+	}
+	shape := BuildShape(intent, ShapeParams{Authority: "build"})
+	if !shape.Mutation.Allowed || !shape.Authority.MutationAllowed || shape.Authority.ReadOnly {
+		t.Fatalf("shape = %+v, want mutation allowed under BUILD", shape)
+	}
+	if strings.Contains(shape.Summary(), "mutation=forbidden") {
+		t.Fatalf("summary = %q, want the allowed mutation scope", shape.Summary())
 	}
 }
 

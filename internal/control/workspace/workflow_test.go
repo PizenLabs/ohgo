@@ -86,6 +86,7 @@ func TestIsTaskFollowUpIsAboutTheOpenResult(t *testing.T) {
 	yes := []string{
 		"fix it", "implement the fix", "implement the fix and verify it",
 		"reproduce it", "verify the fix", "apply the fix",
+		"redesign it", "rework it", "revamp it", "restyle it",
 	}
 	for _, text := range yes {
 		if !IsTaskFollowUp(text) {

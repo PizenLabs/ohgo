@@ -37,6 +37,22 @@ func TestTodoInitCreatesASingleInProgressTask(t *testing.T) {
 	}
 }
 
+func TestTodoResetClearsTheSessionPlan(t *testing.T) {
+	tool := NewTodoTool()
+	if result := tool.Execute(testContext(), map[string]any{
+		"op": "init", "phase": "design", "tasks": []any{"analyze", "layout"},
+	}); result.IsError {
+		t.Fatalf("init: %s", result.Text)
+	}
+	if len(tool.Snapshot().Phases) == 0 {
+		t.Fatal("setup did not create a plan")
+	}
+	tool.Reset()
+	if list := tool.Snapshot(); len(list.Phases) != 0 || list.Progress().Total != 0 {
+		t.Fatalf("reset left a plan behind: %+v", list)
+	}
+}
+
 func TestTodoInitRejectsBadInput(t *testing.T) {
 	cases := []struct {
 		name string

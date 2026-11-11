@@ -66,7 +66,7 @@ question can carry execution intent and an imperative can be informational.
 | Intent        | Examples                                                         | Handler semantics |
 | ------------- | ---------------------------------------------------------------- | ----------------- |
 | `READ`        | what is…, why does…, how does…, explain, describe, summarize, compare, what changed… | ASK |
-| `EXECUTE`     | implement, fix, modify, refactor, create, delete, apply, run, change… | BUILD |
+| `EXECUTE`     | implement, fix, modify, refactor, redesign, rework, create, delete, apply, run, change… | BUILD |
 | `INVESTIGATE` | reproduce, investigate, diagnose, troubleshoot, stress, probe, try to break, find edge cases, benchmark, test failure modes… | FUZZ |
 
 Intent and completion are different axes. A standalone `INVESTIGATE` request
@@ -105,6 +105,15 @@ their own. A verb only requests an effect in a clause that is not a question.
 The same rule governs `workspace.RequestsMutation` (the completion contract) and
 the grounding action extractor, so a question is never given a mutation
 objective that completion would then demand evidence for.
+
+Rework verbs (`redesign`, `rework`, `revamp`, `restyle`, `redo`, `overhaul`,
+`modernize`, `redraw`, `reimplement`, `rearchitect`) head a repository change,
+not a description. A follow-up such as “redesign it” after an informational
+design turn is therefore a new mutation objective, not another read of the
+design. It is a new task under the ordinary new-intent rule; the finished design
+task is archived rather than reinterpreted, and completion requires an observed
+change and a later check. The classifier never turns a question about a rework
+(“should the site be redesigned?”) into the change itself.
 
 **Ambiguity resolves downward.** A request the classifier cannot place becomes
 `READ`, the lowest-authority interpretation, so a misclassification can only
@@ -639,6 +648,13 @@ that a classifier returned a string.
 | A failed check resolves after correction | `agent.TestEvaluateCompletionResolvesAFailedVerificationAfterCorrection` |
 | A verification artifact needs an observed check | `agent.TestLoopTracksVerificationAfterTheLastDefiniteChange`, `tools.TestArtifactVerificationRequiresAnObservedCheck`, `cmd/ohgo.TestArtifactToolFollowsTheLiveWorkspace` |
 | Model specialization survives a switch | `cmd/ohgo.TestSwitchWorkspaceRebindsTheRoleModel` |
+| A rework follow-up is a mutation objective | `workspace.TestClassifyTreatsReworkAsRepositoryChange`, `cognition.TestBuildShapeAllowsMutationForAReworkObjectiveInBuild`, `tui.TestRedesignFollowUpStartsANewMutationTaskAndCannotProveFromDesignWork` |
+| A question about a rework stays informational | `workspace.TestClassifyKeepsReworkQuestionsInformational` |
+| A rework under ASK is refused before the model | `tui.TestRedesignUnderAskIsRefusedBeforeTheModel` |
+| A change artifact is not an observed mutation | `agent.TestChangeArtifactIsNotAnObservedMutation` |
+| Completed todos are not objective proof | `task.TestCompletedTodosDoNotProveAMutationObjective` |
+| A new task starts with an empty plan | `task.TestNewTaskDoesNotInheritThePreviousTodoPlan`, `tools.TestTodoResetClearsTheSessionPlan` |
+| Resuming a task clears the previous plan | `task.TestResumeTaskClearsThePreviousSessionPlan` |
 
 Run the full suite:
 

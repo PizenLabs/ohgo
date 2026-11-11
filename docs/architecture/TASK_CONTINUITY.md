@@ -199,6 +199,14 @@ todo labels as its plan. A todo is a model proposal, so it is plan context, neve
 a fact. Semantic reasoning, strategy, and hypotheses still require a host write;
 they are not inferred from model prose.
 
+A new task starts with an empty session plan. The todo tool is a session-scoped
+owner, so the controller asks it to clear at the new-task boundary before the
+new checkpoint can snapshot it; the previous task keeps its own todo snapshot in
+its archive. Resuming a different task clears the plan that belonged to the
+task being left behind; the resumed task keeps its own checkpoint snapshot. This
+keeps a finished plan from being read as, or imported into, the next objective's
+progress.
+
 **A role context is not authority.** A BUILD plan or mutation scope in the
 record does not permit a write; a FUZZ strategy does not grant execution; an ASK
 fact does not grant a read. The workspace gate and the security gate remain the
@@ -701,7 +709,9 @@ Specific rules:
   contract; a read-only resume or an unrelated check still cannot complete;
 - the proof's `Verified` list contains only checks that followed the last
   change, not every current check;
-- open todo work refuses completion and leaves the task active;
+- open todo work refuses completion and leaves the task active; a fully
+  completed todo list is not evidence for a mutation or execution objective,
+  because the todo tool records a model plan and not an observed result;
 - a non-complete evaluation is refused;
 - a task must be `RUNNING`: `PAUSED` and `NEEDS_REVIEW` resume through `Begin`
   first, so the boundary that reconciles the live workspace is not skipped.

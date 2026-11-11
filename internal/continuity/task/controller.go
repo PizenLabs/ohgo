@@ -30,7 +30,17 @@ type Source func() []Todo
 type Controller struct {
 	store  *Store
 	source Source
-	now    func() time.Time
+	// resetSource clears the session-scoped planning state the source reads.
+	// The task package does not own that state; it invokes the owner exactly at
+	// a new-task boundary so an unrelated objective cannot inherit the previous
+	// task's todo list. Nil means the host has no plan owner to reset.
+	resetSource func()
+	// planStale records that a task was detached and the session plan now
+	// belongs to that archived task. The next new task clears it before the
+	// plan can be read or snapshotted; a first task, a resume, or a restored
+	// checkpoint leaves it false so a legitimate current plan is preserved.
+	planStale bool
+	now       func() time.Time
 
 	task       Task
 	lastAction string
@@ -88,6 +98,17 @@ func NewController(store *Store, source Source) *Controller {
 // authority and a nil source keeps the pre-Phase-1 BUILD default.
 func (c *Controller) SetRoleSource(source func() workspace.Workspace) {
 	c.roleSource = source
+}
+
+// SetTodoResetter installs the callback that clears the runtime's
+// session-scoped todo list when a new task starts.
+//
+// The todo tool remains the single owner of todo mutation. The controller only
+// invokes the boundary reset: a session list can outlive a turn, but it must
+// not become the next objective's plan or be imported into its checkpoint. A
+// resumed task keeps its durable snapshot and is not reset.
+func (c *Controller) SetTodoResetter(reset func()) {
+	c.resetSource = reset
 }
 
 // CurrentRole returns the role currently used for context assembly.
@@ -314,6 +335,7 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 
 	switch {
 	case c.task.ID != "" && !c.task.Status.IsTerminal():
+		c.planStale = false
 		if c.task.Contract == nil {
 			return Task{}, fmt.Errorf("%w: %q has no persisted completion contract; cancel or replace it explicitly",
 				ErrObjectiveConflict, c.task.Objective)
@@ -334,6 +356,14 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 		}
 		c.task.UpdatedAt = now
 	default:
+		// A new objective starts a new plan, but only when the plan belongs to
+		// a predecessor. A first task, a resume, or a restored checkpoint keeps
+		// the plan it already owns; a detached or replaced task leaves its plan
+		// behind, and it must not become this task's progress.
+		if c.resetSource != nil && (hadTask || c.planStale) {
+			c.resetSource()
+		}
+		c.planStale = false
 		created, err := New(objective)
 		if err != nil {
 			return Task{}, err
@@ -856,6 +886,7 @@ func (c *Controller) Detach() (Task, bool, error) {
 		}
 		c.task = Task{}
 		c.roleKnown = false
+		c.planStale = true
 		c.evidence = cognition.NewEvidenceState()
 		c.auditMu.Lock()
 		c.audit = ""
@@ -905,6 +936,7 @@ func (c *Controller) Detach() (Task, bool, error) {
 	archived := c.task.Clone()
 	c.task = Task{}
 	c.roleKnown = false
+	c.planStale = true
 	c.evidence = cognition.NewEvidenceState()
 	c.auditMu.Lock()
 	c.audit = ""
@@ -1004,7 +1036,14 @@ func (c *Controller) ResumeTask(id string) (Task, error) {
 		}
 	}
 	wasLive := c.task.ID == target.ID
+	if !wasLive && c.resetSource != nil {
+		// The session plan belongs to the task being left behind. Clear it so
+		// the resumed task cannot read the previous task's items as its own;
+		// the resumed task keeps its durable snapshot in the checkpoint.
+		c.resetSource()
+	}
 	c.task = target
+	c.planStale = false
 	// Attribute the resumed task's projection to the role it last ran under,
 	// not to whatever role the previously active task used.
 	if last := target.LastRole(); last.Valid() {
