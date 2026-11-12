@@ -300,6 +300,29 @@ func needsReview(format string, args ...any) Completion {
 	return Completion{State: CompletionNeedsReview, Reason: fmt.Sprintf(format, args...)}
 }
 
+// pendingFailureVetoes reports whether an unrecovered tool failure still
+// invalidates the answer.
+//
+// The evidence review is the runtime's statement that the objective's required
+// observations are missing. When it is non-empty, every pending failure is part
+// of that gap and must veto. When it is empty, the evidence contract is
+// satisfied: an unavailable alternative provider is a real failure worth
+// reporting, but it did not prevent the proof, so it cannot veto the answer.
+// Verification and runtime failures stay hard vetoes because they contradict
+// the final state the proof depends on, not merely one acquisition path.
+func pendingFailureVetoes(evidence completionEvidence, evidenceReview string) bool {
+	if strings.TrimSpace(evidenceReview) != "" {
+		return true
+	}
+	for _, class := range evidence.pendingFailureClasses {
+		switch class {
+		case ToolFailureVerification, ToolFailureInsufficient, ToolFailureRuntime:
+			return true
+		}
+	}
+	return false
+}
+
 // CompletionInput is the evidence a task-aware completion decision uses.
 //
 // Turns are observations from the loop. The contract is the bounded expectation
@@ -428,7 +451,7 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		return needsReview("no intent contract was supplied")
 	}
 	evidence := scanCompletionEvidence(input.Turns, intent.Kind == contract.ObjectiveMutation)
-	if len(evidence.pendingFailures) > 0 {
+	if len(evidence.pendingFailures) > 0 && pendingFailureVetoes(evidence, input.EvidenceReview) {
 		return needsReview("a tool call failed and no later success or verification recovered it: %s",
 			pendingFailureNames(evidence.pendingFailures, evidence.pendingFailureClasses))
 	}

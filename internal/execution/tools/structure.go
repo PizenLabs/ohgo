@@ -27,6 +27,27 @@ type StructureTool struct {
 	lastOverview string
 }
 
+// structureViews is the registered view vocabulary. The schema, dispatch, and
+// correction text all read this one list, so a model can never receive guidance
+// for a view the tool does not actually accept.
+var structureViews = []string{
+	"overview", "scope", "languages", "files", "packages", "entrypoints",
+	"configs", "tests", "relations", "impact",
+}
+
+// structureArgs is the registered argument vocabulary, in schema order.
+var structureArgs = []string{
+	"view", "path", "package", "symbol", "limit", "skip", "depth", "activation",
+}
+
+func structureViewEnum() []any {
+	out := make([]any, len(structureViews))
+	for i, view := range structureViews {
+		out[i] = view
+	}
+	return out
+}
+
 // NewStructureTool returns the inventory tool over source.
 func NewStructureTool(source *StructuralSource) *StructureTool {
 	root := ""
@@ -58,7 +79,7 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 			"properties": map[string]any{
 				"view": map[string]any{
 					"type":        "string",
-					"enum":        []any{"overview", "scope", "languages", "files", "packages", "entrypoints", "configs", "tests", "relations", "impact"},
+					"enum":        structureViewEnum(),
 					"description": "Inventory view. Defaults to overview.",
 				},
 				"path": map[string]any{
@@ -119,73 +140,81 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 		return agent.ErrorResult("%v", err)
 	}
 	if err := validateStructureArgs(args); err != nil {
-		return agent.ErrorResult("%v", err)
+		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 
 	view := "overview"
 	if raw, ok := args["view"]; ok {
 		value, ok := raw.(string)
 		if !ok {
-			return agent.ErrorResult("argument %q must be a string", "view")
+			return structureRequestError(agent.ToolFailureInvalidArgument,
+				"argument %q must be a string; nothing executed. Valid views: %s.",
+				"view", strings.Join(structureViews, ", "))
 		}
 		view = strings.TrimSpace(value)
-		switch view {
-		case "overview", "scope", "languages", "files", "packages", "entrypoints", "configs", "tests", "relations", "impact":
-		default:
-			return agent.ErrorResult("unsupported view %q", value)
+		if !validStructureView(view) {
+			return structureRequestError(agent.ToolFailureInvalidSelector,
+				"unsupported view %q; nothing executed. Valid views: %s. To inspect a path, use view %q with path %q.",
+				value, strings.Join(structureViews, ", "), "files", value)
 		}
 	}
 
 	pathArg, err := strArg(args, "path", "")
 	if err != nil {
-		return agent.ErrorResult("%v", err)
+		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	pathArg = strings.TrimSpace(pathArg)
 	packageArg, err := strArg(args, "package", "")
 	if err != nil {
-		return agent.ErrorResult("%v", err)
+		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	packageArg = strings.TrimSpace(packageArg)
 	symbolArg, err := strArg(args, "symbol", "")
 	if err != nil {
-		return agent.ErrorResult("%v", err)
+		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	symbolArg = strings.TrimSpace(symbolArg)
 	limit, err := intArg(args, "limit", ast.StructureDefaultLimit)
 	if err != nil {
-		return agent.ErrorResult("%v", err)
+		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	if limit < 1 || limit > ast.StructureMaxLimit {
-		return agent.ErrorResult("limit must be between 1 and %d, got %d", ast.StructureMaxLimit, limit)
+		return structureRequestError(agent.ToolFailureInvalidArgument,
+			"limit must be between 1 and %d, got %d; nothing executed.", ast.StructureMaxLimit, limit)
 	}
 	skip, err := intArg(args, "skip", 0)
 	if err != nil {
-		return agent.ErrorResult("%v", err)
+		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	if skip < 0 {
-		return agent.ErrorResult("skip must be >= 0, got %d", skip)
+		return structureRequestError(agent.ToolFailureInvalidArgument,
+			"skip must be >= 0, got %d; nothing executed.", skip)
 	}
 	depth, err := intArg(args, "depth", 1)
 	if err != nil {
-		return agent.ErrorResult("%v", err)
+		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	if depth < 1 || depth > ast.RefMaxDepth {
-		return agent.ErrorResult("depth must be between 1 and %d, got %d", ast.RefMaxDepth, depth)
+		return structureRequestError(agent.ToolFailureInvalidArgument,
+			"depth must be between 1 and %d, got %d; nothing executed.", ast.RefMaxDepth, depth)
 	}
 	if (view == "impact" || view == "relations") && symbolArg == "" && pathArg == "" {
-		return agent.ErrorResult("%s requires symbol or path", view)
+		return structureRequestError(agent.ToolFailureInvalidArgument,
+			"%s requires symbol or path; nothing executed. Provide {\"view\":%q,\"symbol\":\"Name\"} or {\"view\":%q,\"path\":\"internal/foo\"}.",
+			view, view, view)
 	}
 	activation, err := structureActivation(args, view)
 	if err != nil {
-		return agent.ErrorResult("%v", err)
+		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	if activation == ast.ActivationSemantic {
-		return agent.ErrorResult("semantic structural activation is unsupported: no semantic resolver is configured")
+		return structureRequestError(agent.ToolFailureUnsupported,
+			"semantic structural activation is unsupported: no semantic resolver is configured; nothing executed. Use activation \"overview\", \"targeted\", or \"impact\".")
 	}
 	switch view {
 	case "overview", "scope", "entrypoints", "configs":
 		if pathArg != "" || packageArg != "" || symbolArg != "" {
-			return agent.ErrorResult("%s does not take path, package, or symbol selectors", view)
+			return structureSelectorCorrection(view, pathArg, packageArg, symbolArg)
 		}
 	}
 	// Resolve every model-supplied path through the workspace containment
@@ -193,28 +222,33 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 	if pathArg != "" {
 		resolved, err := resolvePath(t.Root, pathArg)
 		if err != nil {
-			return agent.ErrorResult("resolve path: %v", err)
+			return structureRequestError(agent.ToolFailureInvalidArgument,
+				"resolve path %q: %v; nothing executed.", pathArg, err)
 		}
 		if _, err := os.Stat(resolved); err != nil {
 			if os.IsNotExist(err) {
 				return absenceResult("stat %q: %v", pathArg, err)
 			}
-			return agent.ErrorResult("stat %q: %v", pathArg, err)
+			return agent.Result{Text: fmt.Sprintf("stat %q: %v", pathArg, err), IsError: true,
+				FailureClass: agent.ToolFailureExecutionFailed}
 		}
 		rel, err := filepath.Rel(t.Root, resolved)
 		if err != nil {
-			return agent.ErrorResult("relativize %q: %v", pathArg, err)
+			return structureRequestError(agent.ToolFailureInvalidArgument,
+				"relativize %q: %v; nothing executed.", pathArg, err)
 		}
 		pathArg = filepath.ToSlash(rel)
 	}
 
 	idx, err := t.index()
 	if err != nil {
-		return agent.ErrorResult("build repository index: %v", err)
+		return agent.Result{Text: fmt.Sprintf("build repository index: %v", err), IsError: true,
+			FailureClass: agent.ToolFailureExecutionFailed}
 	}
 	if activation.ParsesSource() {
 		if err := idx.EnsureParsed(ctx.Ctx); err != nil {
-			return agent.ErrorResult("parse repository structure: %v", err)
+			return agent.Result{Text: fmt.Sprintf("parse repository structure: %v", err), IsError: true,
+				FailureClass: agent.ToolFailureExecutionFailed}
 		}
 	}
 	if err := checkCancelled(ctx.Ctx); err != nil {
@@ -960,16 +994,64 @@ func (t *StructureTool) impact(ctx agent.Context, idx *ast.Index, symbolArg, pat
 
 // validateStructureArgs rejects arguments outside the closed schema.
 func validateStructureArgs(args map[string]any) error {
-	allowed := map[string]bool{
-		"view": true, "path": true, "package": true, "symbol": true,
-		"limit": true, "skip": true, "depth": true, "activation": true,
+	allowed := make(map[string]bool, len(structureArgs))
+	for _, name := range structureArgs {
+		allowed[name] = true
 	}
 	for key := range args {
 		if !allowed[key] {
-			return fmt.Errorf("unknown structure argument %q", key)
+			return fmt.Errorf("unknown structure argument %q; supported arguments: %s",
+				key, strings.Join(structureArgs, ", "))
 		}
 	}
 	return nil
+}
+
+// validStructureView reports whether view is in the registered vocabulary.
+func validStructureView(view string) bool {
+	for _, candidate := range structureViews {
+		if candidate == view {
+			return true
+		}
+	}
+	return false
+}
+
+// structureRequestError builds a typed request-level rejection. It is an error
+// for the model, never a capability-health event: nothing executed, the tool
+// remains available, and a corrected invocation is eligible immediately.
+func structureRequestError(class, format string, args ...any) agent.Result {
+	return agent.Result{
+		Text:         fmt.Sprintf(format, args...),
+		IsError:      true,
+		FailureClass: class,
+	}
+}
+
+// structureSelectorCorrection explains which registered views do accept the
+// selector the model supplied. It reads structureViews, so the guidance cannot
+// name a view the dispatch would reject.
+func structureSelectorCorrection(view, pathArg, packageArg, symbolArg string) agent.Result {
+	var alternatives []string
+	if pathArg != "" {
+		alternatives = append(alternatives,
+			fmt.Sprintf("for a path-scoped file inventory use view \"files\" with path %q", pathArg))
+	}
+	if packageArg != "" {
+		alternatives = append(alternatives,
+			fmt.Sprintf("for a package-scoped inventory use view \"packages\" with package %q", packageArg))
+	}
+	if symbolArg != "" {
+		alternatives = append(alternatives,
+			fmt.Sprintf("for a declaration named %q use the symbols tool, or use view \"impact\" with symbol %q", symbolArg, symbolArg))
+	}
+	hint := "remove the selector"
+	if len(alternatives) > 0 {
+		hint = strings.Join(alternatives, "; ")
+	}
+	return structureRequestError(agent.ToolFailureInvalidSelector,
+		"%s does not take path, package, or symbol selectors; nothing executed. To inspect that coordinate, %s. Valid views: %s.",
+		view, hint, strings.Join(structureViews, ", "))
 }
 
 // structureActivation resolves the requested depth and rejects a view that

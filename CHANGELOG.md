@@ -92,6 +92,17 @@ immutable.
 
 ### Fixed
 
+- An invalid tool invocation no longer poisons capability health or blocks a
+  recoverable task. Argument, selector, unknown-tool, unsupported-operation,
+  authority, budget, and stale-evidence failures are request-level: the
+  identical request is refused once with schema-grounded correction, a corrected
+  request remains eligible, and only genuine capability failures enter provider
+  health. A failed structural provider is reconciled against independent
+  authorized providers (README, manifests, listings, source reads), a successful
+  overview survives a later targeted failure, and completion only excuses a
+  pending provider failure when the evidence contract is actually satisfied.
+  This closes the session-224 failure mode where `structure backend` was
+  reported as a `remote_tool_error` and blocked the project analysis.
 - A project-analysis request that opens with an ambiguous read verb and adds a
   later explicit read clause (`check this project and analyze what this project
   is about?`) now carries a strong READ signal and reaches the ASK authority

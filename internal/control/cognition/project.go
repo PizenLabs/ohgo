@@ -227,6 +227,12 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// independent of the capability-failure boundary above: that one says a
 	// required capability cannot run, this one says the last several actions
 	// did not advance the task.
+	//
+	// Before that verdict closes the surface, ask whether the failed provider
+	// was the only authorized acquisition path. A structural query that fails
+	// does not make README, manifests, root listings, or source reads
+	// unavailable; only a genuine absence of every provider is a task block.
+	suff = ReconcileAcquisition(p.Evidence, req.Tools, suff)
 	p.trackProgress(req.Turns, suff, novel)
 	p.stall(&suff)
 	failures := p.Evidence.FailureState()

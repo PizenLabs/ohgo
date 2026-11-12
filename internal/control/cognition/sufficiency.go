@@ -519,6 +519,81 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 	}
 }
 
+// ReconcileAcquisition keeps a capability failure from closing the task while
+// every missing requirement still has an independent authorized provider.
+//
+// Sufficiency sees evidence, not the constructed action surface, so it cannot
+// decide whether a failed tool was the only acquisition path. This reconciliation
+// runs after candidate construction is still possible and before the surface is
+// closed. It only relaxes a BlockCapabilityFailure: budget, mutation, scope, and
+// external-only boundaries keep their own verdict.
+func ReconcileAcquisition(evidence *EvidenceState, tools []agent.Tool, suff Sufficiency) Sufficiency {
+	if evidence == nil || suff.Kind != BlockCapabilityFailure || len(suff.Missing) == 0 {
+		return suff
+	}
+	failures := evidence.FailureState()
+	blocked := make(map[string]bool, len(failures.Records))
+	for _, record := range failures.Records {
+		if record.Blocks() {
+			blocked[record.Tool] = true
+		}
+	}
+	alternatives := make([]string, 0, len(suff.Missing))
+	for _, key := range suff.Missing {
+		providers := acquisitionProviders(key, tools, blocked)
+		if len(providers) == 0 {
+			// One required observation has no remaining provider, so the task
+			// is still genuinely blocked. A partial fallback cannot prove the
+			// objective.
+			return suff
+		}
+		alternatives = append(alternatives, key+" via "+strings.Join(providers, ", "))
+	}
+	suff.State = Insufficient
+	suff.Stage = StageExplore
+	suff.Kind = BlockNone
+	suff.Reasons = append(suff.Reasons,
+		"the failed capability is not the only acquisition path; independent authorized providers remain available")
+	suff.Next = nil
+	for _, key := range suff.Missing {
+		suff.Next = append(suff.Next, nextEvidence(key))
+	}
+	suff.Next = append(suff.Next, alternatives...)
+	return suff
+}
+
+// acquisitionProviders returns the offered tools that can satisfy one
+// requirement. It maps a semantic requirement to capability classes, never to
+// a vendor or a fixed tool name: read, ls, glob, and structure all provide
+// inventory or content observation, while external and execution requirements
+// keep their own class.
+func acquisitionProviders(key string, tools []agent.Tool, blocked map[string]bool) []string {
+	var needed []agent.ActionClass
+	switch key {
+	case "external_observation":
+		needed = []agent.ActionClass{agent.ActionExternal}
+	case "verification", "execution_result", "runtime_observation":
+		needed = []agent.ActionClass{agent.ActionExecute}
+	case "test_inventory":
+		needed = []agent.ActionClass{agent.ActionStructure, agent.ActionObserve}
+	default:
+		needed = []agent.ActionClass{agent.ActionObserve, agent.ActionStructure}
+	}
+	var providers []string
+	for _, tool := range tools {
+		if blocked[tool.Name()] {
+			continue
+		}
+		for _, class := range needed {
+			if agent.HasActionClass(tool, class) {
+				providers = append(providers, tool.Name())
+				break
+			}
+		}
+	}
+	return providers
+}
+
 // missingForAction returns the requirements that must be known before the
 // current stage can proceed. Verification is excluded here because it is a
 // post-change need, not a pre-action one.
@@ -559,12 +634,26 @@ func failureRecordReason(record FailureRecord) string {
 	if class == "" {
 		class = "unclassified"
 	}
+	if record.RequestLevel() {
+		return record.Tool + " rejected an invocation with " + class + " (" +
+			itoa(record.Failures) + " rejection(s)" +
+			refusalSuffix(record) + "); the capability remains available"
+	}
 	reason := record.Tool + " failed with " + class + " (" +
 		itoa(record.Failures) + " attempt(s)"
 	if record.Refusals > 0 {
 		reason += ", " + itoa(record.Refusals) + " identical refusal(s)"
 	}
 	return reason + ")"
+}
+
+// refusalSuffix renders the repeated-refusal count once, without duplicating
+// the closing parenthesis between the request-level and capability branches.
+func refusalSuffix(record FailureRecord) string {
+	if record.Refusals <= 0 {
+		return ""
+	}
+	return ", " + itoa(record.Refusals) + " identical refusal(s)"
 }
 
 // nextEvidence renders the highest-value next observation for a requirement.

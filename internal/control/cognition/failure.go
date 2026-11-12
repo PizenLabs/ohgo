@@ -28,12 +28,14 @@ const (
 	MaxRequiredExternalFailures = 3
 )
 
-// FailureRecord is one durable capability failure.
+// FailureRecord is one durable tool failure.
 //
 // It is keyed by the exact invocation signature so a model can recover by
 // changing the capability or the arguments, while an identical repeat is a
-// deterministic runtime decision rather than another execution. The record is
-// observation state, never authority.
+// deterministic runtime decision rather than another execution. A record may
+// describe a failed capability or a rejected invocation; RequestLevel decides
+// which, and only a capability failure can influence provider health or block
+// the task. The record is observation state, never authority.
 type FailureRecord struct {
 	// Signature is agent.CallSignature(tool, args).
 	Signature string `json:"signature"`
@@ -71,18 +73,32 @@ func (r FailureRecord) Fatal() bool {
 	if r.Resolved {
 		return false
 	}
+	if r.Class.RequestLevel() {
+		return false
+	}
 	switch r.Class {
 	case knowledge.FailureAuthentication, knowledge.FailureNotConfigured,
-		knowledge.FailureUnsupported, knowledge.FailureProtocol:
+		knowledge.FailureProtocol:
 		return true
 	}
 	return false
+}
+
+// RequestLevel reports a rejected invocation rather than a failed capability.
+func (r FailureRecord) RequestLevel() bool {
+	return r.Class.RequestLevel()
 }
 
 // Refuses reports that the exact invocation must not execute again.
 func (r FailureRecord) Refuses() bool {
 	if r.Resolved || r.Failures == 0 {
 		return false
+	}
+	if r.RequestLevel() {
+		// One rejected request is enough correction information; repeating the
+		// identical bytes cannot produce a different result. A corrected
+		// invocation has a different signature and remains eligible.
+		return true
 	}
 	if r.Fatal() {
 		return true
@@ -97,8 +113,13 @@ func (r FailureRecord) Refuses() bool {
 // A non-retryable failure blocks only after the model repeats the identical
 // proposal and the runtime refuses it; that gives the model one chance to
 // correct the capability or its arguments while still closing the loop.
+//
+// A request-level failure never blocks here. It says one invocation was
+// malformed, not that the capability, provider, or task is unavailable. Task
+// viability is decided by the acquisition reconciliation, which can still see
+// every independent provider.
 func (r FailureRecord) Blocks() bool {
-	if r.Resolved {
+	if r.Resolved || r.RequestLevel() {
 		return false
 	}
 	if r.Fatal() {
@@ -161,6 +182,15 @@ func failureRefusalText(record FailureRecord) string {
 	if class == "" {
 		class = "unclassified"
 	}
+	if record.RequestLevel() {
+		detail := strings.TrimSpace(record.Summary)
+		if detail == "" {
+			detail = "the invocation did not satisfy the tool contract"
+		}
+		return fmt.Sprintf(
+			"The identical %s invocation was already rejected as %s: %s Nothing executed. The capability remains available; submit corrected arguments or use another authorized observation.",
+			record.Tool, class, ensureSentence(detail))
+	}
 	if record.Fatal() {
 		return fmt.Sprintf(
 			"Capability %q already failed with a non-recoverable %s failure. No retry of this call is permitted; report the failure and answer from the evidence already established.",
@@ -171,11 +201,26 @@ func failureRefusalText(record FailureRecord) string {
 		record.Tool, class)
 }
 
-// recordFailure folds one failed execution into the ledger.
+// ensureSentence keeps a bounded correction readable inside a refusal without
+// letting an unbounded model-facing error grow the state block.
+func ensureSentence(text string) string {
+	text = firstLine(text)
+	if text == "" {
+		return ""
+	}
+	if strings.ContainsAny(text[len(text)-1:], ".!?") {
+		return bound(text, 480)
+	}
+	return bound(text, 479) + "."
+}
+
+// recordFailure folds one failed outcome into the ledger.
 //
-// It is called only for an execution that actually ran. A refusal, a denial,
-// an observed absence, and a resource stop are control decisions, not failed
-// capabilities, and must not enter this ledger.
+// A control decision never calls this: a refusal, a denial, an observed
+// absence, and a resource stop are not failed requests or capabilities. A
+// schema or selector rejection does call it, because the ledger must refuse an
+// identical repeat; its request-level class keeps that record out of capability
+// health and task blocking.
 func (s *EvidenceState) recordFailure(outcome agent.ToolOutcome, seq int) {
 	if s == nil {
 		return
@@ -232,18 +277,11 @@ func (s *EvidenceState) recordFailureRefusal(outcome agent.ToolOutcome, seq int)
 		return
 	}
 	// The durable record may have been evicted while the loop still remembers
-	// the refusal. Keep a minimal record so the next projection can close the
-	// task rather than silently allow another attempt.
-	s.Failures = append(s.Failures, FailureRecord{
-		Signature: signature,
-		Target:    agent.CallTarget(outcome.ToolName, outcome.Args),
-		Tool:      outcome.ToolName,
-		Class:     "tool_error",
-		Refusals:  1,
-		Summary:   firstLine(outcome.Result.Text),
-		Seq:       seq,
-	})
-	s.trimFailures()
+	// the refusal. Do not invent a capability failure from a control decision:
+	// the class that justified the refusal is gone with the record, and a
+	// synthetic blocking record would close a task whose provider may still be
+	// healthy. The loop's refusal memory still prevents the identical call from
+	// executing.
 }
 
 // resolveNonFatalFailures marks every non-fatal failure recovered after a
@@ -287,28 +325,66 @@ func (s *EvidenceState) resolveFailure(outcome agent.ToolOutcome) {
 // recorded conservatively as non-retryable tool_error.
 func failureDetails(outcome agent.ToolOutcome) (knowledge.FailureClass, bool, bool, string) {
 	if outcome.Result.Exhausted != nil {
-		return "", false, false, firstLine(outcome.Result.Text)
+		return knowledge.FailureBudgetExhausted, false, false, firstLine(outcome.Result.Text)
 	}
 	details := detailsMap(outcome.Result.Details)
-	external := detailString(details, "capability") != "" ||
-		detailString(details, "trust") != "" ||
-		detailString(details, "provider") != ""
-	if class := strings.TrimSpace(outcome.Result.FailureClass); class != "" {
-		return knowledge.FailureClass(class), outcome.Result.FailureRetryable, external, firstLine(outcome.Result.Text)
-	}
-	switch value := details["failure"].(type) {
-	case knowledge.Failure:
-		return value.Class, value.Retryable, external, firstLine(outcome.Result.Text)
-	case *knowledge.Failure:
-		if value != nil {
-			return value.Class, value.Retryable, external, firstLine(outcome.Result.Text)
+	class := knowledge.FailureClass(strings.TrimSpace(outcome.Result.FailureClass))
+	retryable := outcome.Result.FailureRetryable
+	if class == "" {
+		switch value := details["failure"].(type) {
+		case knowledge.Failure:
+			class, retryable = value.Class, value.Retryable
+		case *knowledge.Failure:
+			if value != nil {
+				class, retryable = value.Class, value.Retryable
+			}
 		}
 	}
-	if class, ok := details["failure_classification"].(string); ok && strings.TrimSpace(class) != "" {
-		retryable, _ := details["retryable"].(bool)
-		return knowledge.FailureClass(class), retryable, external, firstLine(outcome.Result.Text)
+	if class == "" {
+		if raw, ok := details["failure_classification"].(string); ok && strings.TrimSpace(raw) != "" {
+			class = knowledge.FailureClass(strings.TrimSpace(raw))
+			retryable, _ = details["retryable"].(bool)
+		}
 	}
-	return knowledge.FailureToolError, false, external, firstLine(outcome.Result.Text)
+	class = normalizeFailureClass(class)
+	if class == "" {
+		class = knowledge.FailureToolError
+	}
+	// A rejected invocation is not an external-provider outage. Keeping the
+	// external bit clear is what stops request-level failures from consuming
+	// the required external capability's bounded failure budget.
+	external := !class.RequestLevel() && (detailString(details, "capability") != "" ||
+		detailString(details, "trust") != "" ||
+		detailString(details, "provider") != "")
+	return class, retryable, external, firstLine(outcome.Result.Text)
+}
+
+// normalizeFailureClass maps the loop's request-stage class vocabulary onto the
+// shared failure taxonomy. They are separate constants because the agent kernel
+// cannot import the external knowledge package, but the control plane must see
+// one vocabulary.
+func normalizeFailureClass(class knowledge.FailureClass) knowledge.FailureClass {
+	switch string(class) {
+	case agent.ToolFailureInvalidArgument:
+		return knowledge.FailureInvalidArgument
+	case agent.ToolFailureInvalidSelector:
+		return knowledge.FailureInvalidSelector
+	case agent.ToolFailureUnknownTool:
+		return knowledge.FailureUnknownTool
+	case agent.ToolFailureUnsupported:
+		return knowledge.FailureUnsupported
+	case agent.ToolFailureAuthorization:
+		return knowledge.FailureAuthorityDenied
+	case agent.ToolFailureExecutionFailed, agent.ToolFailureDispatch,
+		agent.ToolFailureStart, agent.ToolFailureRuntime:
+		return knowledge.FailureExecutionFailed
+	case agent.ToolFailureTimeout:
+		return knowledge.FailureTimeout
+	case agent.ToolFailureCancelled:
+		return knowledge.FailureCancelled
+	default:
+		return class
+	}
 }
 
 // trimFailures bounds the ledger. Resolved and oldest records go first so the

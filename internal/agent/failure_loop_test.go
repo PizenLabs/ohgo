@@ -55,6 +55,7 @@ type failureRun struct {
 	turns    []agent.Turn
 	intent   contract.IntentContract
 	report   agent.ProjectionReport
+	evidence *cognition.EvidenceState
 	requests int64
 	err      error
 }
@@ -95,7 +96,8 @@ func runFailureLoop(t *testing.T, prompt string, tools []agent.Tool, script []ai
 		t.Fatalf("agent.New: %v", err)
 	}
 	turns, runErr := loop.Run(context.Background(), []agent.Message{agent.UserMessage{Text: prompt}})
-	return failureRun{turns: turns, intent: intent, report: lastReport, requests: requests.Load(), err: runErr}
+	return failureRun{turns: turns, intent: intent, report: lastReport,
+		evidence: projector.Evidence, requests: requests.Load(), err: runErr}
 }
 
 func repeatCapability(id, tool, capability string) ai.AssistantMessage {

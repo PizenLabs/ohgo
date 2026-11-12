@@ -38,6 +38,15 @@ const (
 	ToolFailureVerification    = "verification_failed"
 	ToolFailureInsufficient    = "verification_insufficient"
 	ToolFailureInvalidArgument = "tool_invalid_arguments"
+	// ToolFailureInvalidSelector is the request-level failure of a valid tool
+	// asked to use a selector its selected operation does not accept.
+	ToolFailureInvalidSelector = "tool_invalid_selector"
+	// ToolFailureUnknownTool is a proposal for a name the runtime does not
+	// register. It is discovery feedback for the model, not capability health.
+	ToolFailureUnknownTool = "tool_unknown_tool"
+	// ToolFailureExecutionFailed is an execution that started and did not
+	// complete. It never implies that retrying is safe.
+	ToolFailureExecutionFailed = "tool_execution_failed"
 )
 
 // normalizationFailureReason renders structured normalization evidence without

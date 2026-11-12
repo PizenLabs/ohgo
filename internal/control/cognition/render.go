@@ -146,10 +146,35 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	sections = append(sections, suffLine.String())
 
 	failures := evidence.FailureState()
-	if len(failures.Records) > 0 {
+	var corrections, failed []FailureRecord
+	for _, record := range failures.Records {
+		if record.RequestLevel() {
+			corrections = append(corrections, record)
+		} else {
+			failed = append(failed, record)
+		}
+	}
+	if len(corrections) > 0 {
+		var sb strings.Builder
+		sb.WriteString("Invocation corrections (the capability remains available; change the arguments):\n")
+		for i, record := range corrections {
+			if i >= 3 {
+				break
+			}
+			class := string(record.Class)
+			if class == "" {
+				class = "unclassified"
+			}
+			fmt.Fprintf(&sb, "- %s [%s] rejected=%d refusals=%d%s\n",
+				bound(record.Tool, 80), class, record.Failures, record.Refusals,
+				boundFailureSummary(record.Summary))
+		}
+		sections = append(sections, sb.String())
+	}
+	if len(failed) > 0 {
 		var sb strings.Builder
 		sb.WriteString("Failed capabilities (do not repeat an identical call):\n")
-		for i, record := range failures.Records {
+		for i, record := range failed {
 			if i >= 5 {
 				break
 			}

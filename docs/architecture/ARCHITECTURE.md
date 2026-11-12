@@ -507,19 +507,36 @@ the model said. Two properties keep the loop honest and small:
   and a successful check; the concept is a scope, not a synthetic path.
 - **Failure is durable evidence, not a transient error string.** Every failed
   execution is recorded under `agent.CallSignature` with its target, failure
-  class, and retryability. A class is fatal (`authentication_failure`,
-  `not_configured`, `unsupported_operation`, `protocol_error`) when no retry can
-  recover it; a retryable class gets one retry; an unclassified or
-  non-retryable class is refused on the identical repeat. The ledger is
-  persisted in `EvidenceState`, so a resumed turn cannot replay a spent failure.
-  A definite workspace change invalidates non-fatal failures, because the same
-  command observes a different state after the fix. A refusal is a control
-  decision: nothing executes and completion does not count it as a failed call.
-  This includes a tool's own authority refusal, such as the artifact tool
-  rejecting a kind the live workspace cannot produce. A malformed call is the
-  same boundary: the capability rejected the arguments before running anything,
-  so it is neither work nor an observation about the project, and it cannot
-  veto a proof real evidence already supports.
+  class, and retryability. The taxonomy separates request-level rejection from
+  capability health. Invalid arguments, an invalid selector, an unknown tool,
+  an unsupported operation, an authority denial, budget exhaustion, and stale
+  evidence are request-level: the operation was never exercised with a valid
+  request, so the capability remains available. The identical invocation is
+  refused after one rejection, a corrected invocation has a different signature
+  and is eligible immediately, and the rejection never trips a provider or task
+  circuit breaker. Capability classes keep their own policy: authentication,
+  not-configured, and protocol failures are fatal; a retryable class gets one
+  retry; an unclassified or non-retryable class is refused on the identical
+  repeat. The ledger is persisted in `EvidenceState`, so a resumed turn cannot
+  replay a spent failure. A definite workspace change invalidates non-fatal
+  failures, because the same command observes a different state after the fix.
+  A refusal is a control decision: nothing executes and completion does not
+  count it as a failed call. This includes a tool's own authority refusal, such
+  as the artifact tool rejecting a kind the live workspace cannot produce. A
+  malformed call is the same boundary: the capability rejected the arguments
+  before running anything, so it is neither work nor an observation about the
+  project, and it cannot veto a proof real evidence already supports.
+- **A failed provider is not a failed task.** Sufficiency sees evidence, not
+  the constructed action surface, so a capability block is reconciled against
+  the providers the task actually offers. If every missing requirement still has
+  an independent authorized provider, the block becomes ordinary `INSUFFICIENT`
+  exploration with concrete `Next evidence` guidance; only a requirement with
+  no remaining provider keeps the terminal capability verdict. The mapping is
+  by semantic requirement and capability class, never by vendor or fixed tool
+  name: documentation, manifests, root listings, and source reads all satisfy
+  observation requirements, while external and execution requirements keep
+  their own class. A successful overview is never rewritten by a later targeted
+  failure; the failed call adds its own diagnostic and failure record.
 - **Closure is one semantic state, not an empty tool slice.** A projection's
   `AnswerEligible` or `Terminal` verdict is the control plane's declaration that
   the action surface is closed. A complete evidence lifecycle (`StageComplete`)
@@ -527,12 +544,16 @@ the model said. Two properties keep the loop honest and small:
   a continuation call cannot be dispatched after the proving observation. The
   loop owns the request shape, so it withdraws every tool itself; a projector
   cannot leave a callable tool on a surface it has already closed. A blocked
-  capability (`BlockCapabilityFailure`) is terminal: the first stale proposal
-  without an answer reports `agent.ErrTaskBlocked`, which classifies as
-  `NEEDS_REVIEW`. The loop can also force the boundary itself: after a
-  refused-proposal recovery it asks the projection to close the surface
-  (`ForceAnswer`), even for a shape such as an investigation that would
-  otherwise keep probing.
+  capability (`BlockCapabilityFailure`) is terminal only after acquisition
+  reconciliation finds no independent provider for every missing requirement;
+  the first stale proposal without an answer then reports
+  `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`. The loop can also
+  force the boundary itself: after a refused-proposal recovery it asks the
+  projection to close the surface (`ForceAnswer`), even for a shape such as an
+  investigation that would otherwise keep probing. A refusal caused by the
+  request-level failure ledger gets one bounded corrected-invocation window
+  before that forced boundary, so malformed proposals cannot consume turns but
+  a valid correction is never mistaken for a repeated outage.
 - **An unproductive turn is counted from outcomes, never from the offered
   slice.** A refusal is a control decision, not work. If every call in a turn was
   refused, the turn could not change the runtime's state; this is true even when

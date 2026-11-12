@@ -1162,10 +1162,18 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// regardless of how many other tools the projection still offered.
 		executed := 0
 		offeredRefusals := 0
+		rejected := 0
 		for _, outcome := range outcomes {
-			if !outcome.Refused() {
+			// A rejected invocation never reached the capability with a valid
+			// request. It is feedback for a correction, not work: treating it
+			// as executed would let a model reset the unproductive-turn bound
+			// by submitting an endless stream of malformed proposals.
+			if !outcome.Refused() && !outcome.Result.Rejected() {
 				executed++
 				continue
+			}
+			if outcome.Result.Rejected() {
+				rejected++
 			}
 			// A refused call to a tool this projection offered was withheld
 			// by policy (grounding, authority, approval) at execution time.
@@ -1209,14 +1217,24 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// that keeps calling a withheld tool has already ignored the surface,
 		// and a model with no offered tools already had its answer-only turn.
 		if !forceAnswer && !closed && offeredRefusals > 0 {
+			// A refusal of an identical request-level rejection is correction
+			// feedback, not a hostile repeat of a withheld capability. Give the
+			// model one bounded corrected attempt before asking for prose; the
+			// modified invocation is a different proposal and may execute.
+			if allFailureRejected(outcomes) && unproductiveTurns <= maxUnproductiveTurns {
+				continue
+			}
 			forceAnswer = true
 			continue
 		}
 		reason := strings.TrimSpace(stopReason)
 		if reason == "" {
-			if closed {
+			switch {
+			case rejected > 0 && offeredRefusals == 0:
+				reason = "the runtime rejected every proposed invocation and the model did not submit a corrected action"
+			case closed:
 				reason = "the runtime offered no tool and the model did not answer"
-			} else {
+			default:
 				reason = "the runtime refused every proposed action and the model did not answer"
 			}
 		}
@@ -1235,6 +1253,23 @@ func answerRequired(outcomes []ToolOutcome) bool {
 	}
 	for _, outcome := range outcomes {
 		if !outcome.Result.AnswerRequired {
+			return false
+		}
+	}
+	return true
+}
+
+// allFailureRejected reports whether every outcome in the batch was refused
+// because it repeated an invocation the failure ledger already rejected. That
+// is the one refusal shape where the model has an actionable correction: change
+// the arguments, which produces a different signature, rather than choose a
+// different capability because the surface closed.
+func allFailureRejected(outcomes []ToolOutcome) bool {
+	if len(outcomes) == 0 {
+		return false
+	}
+	for _, outcome := range outcomes {
+		if !outcome.Result.FailureRejected {
 			return false
 		}
 	}
@@ -1625,6 +1660,11 @@ func (l *Loop) execute(
 	fail := func(text string) ToolOutcome {
 		return ToolOutcome{CallID: call.ID, ToolName: call.Name, Result: Result{Text: text, IsError: true}}
 	}
+	failClass := func(class, text string) ToolOutcome {
+		return ToolOutcome{CallID: call.ID, ToolName: call.Name, Result: Result{
+			Text: text, IsError: true, FailureClass: class,
+		}}
+	}
 
 	// A repeated failed proposal is decided before the capability boundary.
 	// The control plane recorded the failure class and retry budget; this
@@ -1709,7 +1749,7 @@ func (l *Loop) execute(
 			Result: Result{
 				Text:         fmt.Sprintf("Tool %q not found. Available tools: %s.", call.Name, strings.Join(sorted(names), ", ")),
 				IsError:      true,
-				FailureClass: ToolFailureUnsupported,
+				FailureClass: ToolFailureUnknownTool,
 			},
 		}
 	}
@@ -1768,7 +1808,8 @@ func (l *Loop) execute(
 		if outcome.Args != nil {
 			args = outcome.Args
 			if err := ValidateArgs(tool, args); err != nil {
-				return fail(fmt.Sprintf("Invalid arguments for %q: %v", call.Name, err))
+				return failClass(ToolFailureInvalidArgument,
+					fmt.Sprintf("Invalid arguments for %q: %v", call.Name, err))
 			}
 		}
 	}
