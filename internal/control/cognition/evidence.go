@@ -102,9 +102,10 @@ const (
 	// optional snapshot provenance to Source; version 3 adds language,
 	// adapter, resolution, completeness, and truncation; version 4 adds
 	// project-scope completeness; version 5 adds bounded structural counts
-	// for claim support. Older records stay readable because every new field
-	// is optional and additive.
-	EvidenceVersion = 5
+	// for claim support; version 6 adds inventory completeness, scope gaps,
+	// and the producing structural view. Older records stay readable because
+	// every new field is optional and additive.
+	EvidenceVersion = 6
 )
 
 // Source records where one observation came from.
@@ -149,6 +150,18 @@ type Source struct {
 	ScopeCompleteness string `json:"scopeCompleteness,omitempty"`
 	// Truncated reports that the producing query hit its own bound.
 	Truncated bool `json:"truncated,omitempty"`
+	// InventoryCompleteness is COMPLETE or PARTIAL for a structural
+	// snapshot's file inventory. It is independent of scope and structural
+	// completeness: a complete file list can still contain unparsed source.
+	InventoryCompleteness string `json:"inventoryCompleteness,omitempty"`
+	// ExcludedRoots and ExcludedSourceFiles are the scope gaps a structural
+	// observation disclosed. A nonzero count means an inventory is not
+	// repository-wide even when its own result is untruncated.
+	ExcludedRoots       int `json:"excludedRoots,omitempty"`
+	ExcludedSourceFiles int `json:"excludedSourceFiles,omitempty"`
+	// UnsupportedSources counts files whose language has no adapter. They are
+	// inventoried but their content is not observed structurally.
+	UnsupportedSources int `json:"unsupportedSources,omitempty"`
 }
 
 // EvidenceItem is one durable fact.
@@ -195,6 +208,197 @@ type EvidenceItem struct {
 	// the only one a runtime execution objective accepts. Additive and
 	// optional: legacy items are not runtime observations.
 	Runtime bool `json:"runtime,omitempty"`
+	// View names the producing structural query (overview, files, tests, …)
+	// when one applies. It lets the claim projection distinguish an inventory
+	// from a targeted source observation without parsing the rendered line.
+	View string `json:"view,omitempty"`
+}
+
+// EvidenceClass is the claim-facing class of one observation.
+//
+// It is derived from the existing provenance, identity, and payload; it is not
+// a second persisted model. The distinctions are load-bearing:
+//
+//	DOCUMENTATION   what the project says about itself
+//	CONFIGURATION   declared topology or deployment
+//	MANIFEST        declared modules and dependencies
+//	INVENTORY       files, directories, or structural entities exist
+//	SOURCE_PATH     a source coordinate exists; its content was not observed
+//	SOURCE_CONTENT  source content was observed
+//	SOURCE_IMPORT   observed source imports a dependency
+//	SOURCE_USE      observed source performs an operation with a dependency
+//	RUNTIME         behavior was observed while the project ran
+//	STRUCTURAL      a structural relationship or declaration was observed
+//	DIAGNOSTIC      the observation is a control or failure signal
+//
+// SOURCE_PATH and INVENTORY never support an implementation statement;
+// SOURCE_IMPORT is not SOURCE_USE; and STRUCTURAL is not source content.
+type EvidenceClass string
+
+// Evidence classes.
+const (
+	EvidenceDocumentation EvidenceClass = "DOCUMENTATION"
+	EvidenceConfiguration EvidenceClass = "CONFIGURATION"
+	EvidenceManifest      EvidenceClass = "MANIFEST"
+	EvidenceInventory     EvidenceClass = "INVENTORY"
+	EvidenceSourcePath    EvidenceClass = "SOURCE_PATH"
+	EvidenceSourceContent EvidenceClass = "SOURCE_CONTENT"
+	EvidenceSourceImport  EvidenceClass = "SOURCE_IMPORT"
+	EvidenceSourceUse     EvidenceClass = "SOURCE_USE"
+	EvidenceRuntime       EvidenceClass = "RUNTIME"
+	EvidenceStructural    EvidenceClass = "STRUCTURAL"
+	EvidenceDiagnostic    EvidenceClass = "DIAGNOSTIC"
+	EvidenceExternal      EvidenceClass = "EXTERNAL"
+	EvidenceGenerated     EvidenceClass = "GENERATED"
+)
+
+// EvidenceClass derives the claim-facing class of an observation.
+func (i EvidenceItem) EvidenceClass() EvidenceClass {
+	if i.Status == StatusConflicting || i.Status == StatusUnknown || i.Status == StatusRequired {
+		return EvidenceDiagnostic
+	}
+	if i.Runtime {
+		return EvidenceRuntime
+	}
+	switch i.Provenance {
+	case ProvenanceDocumentation:
+		return EvidenceDocumentation
+	case ProvenanceConfiguration:
+		return EvidenceConfiguration
+	case ProvenanceManifest:
+		return EvidenceManifest
+	case ProvenanceExternal:
+		return EvidenceExternal
+	case ProvenanceGenerated:
+		return EvidenceGenerated
+	case ProvenanceDiagnostic:
+		return EvidenceDiagnostic
+	}
+	switch {
+	case strings.HasPrefix(i.ID, "dir:"):
+		return EvidenceInventory
+	case strings.HasPrefix(i.ID, "search:glob:"):
+		if len(globPaths(i.Value)) > 0 {
+			return EvidenceSourcePath
+		}
+		return EvidenceDiagnostic
+	case strings.HasPrefix(i.ID, "search:grep:"):
+		if strings.TrimSpace(i.Value) == "" {
+			return EvidenceDiagnostic
+		}
+		if matches, known := i.Counts["matches"]; (known && matches == 0) ||
+			searchResultHasNoMatches(i.Value) {
+			// A no-match search is not observed source content. Its text is a
+			// diagnostic notice, not a matched line from the component. The
+			// text check keeps a legacy checkpoint without Counts honest.
+			return EvidenceDiagnostic
+		}
+		if !sourcePathIsImplementation(i.Source.Path) {
+			return EvidenceStructural
+		}
+		return sourceContentClass(i.Value)
+	case i.View != "" && strings.TrimSpace(i.Value) == "":
+		// A structural row is a coordinate, not source content.
+		return EvidenceStructural
+	case strings.HasPrefix(i.ID, "file:"):
+		if strings.TrimSpace(i.Value) == "" {
+			return EvidenceSourcePath
+		}
+		return sourceContentClass(i.Value)
+	case strings.HasPrefix(i.ID, "command:"):
+		return EvidenceDiagnostic
+	case strings.HasPrefix(i.ID, "verification:"):
+		return EvidenceDiagnostic
+	case strings.HasPrefix(i.ID, "external:"):
+		return EvidenceExternal
+	case strings.HasPrefix(i.ID, "error:"):
+		return EvidenceDiagnostic
+	default:
+		return EvidenceStructural
+	}
+}
+
+// searchResultHasNoMatches reports the producer's no-result notice. It is a
+// bounded text check for legacy evidence items that predate Counts.
+func searchResultHasNoMatches(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"no matches", "no files matched", "0 matches", "0 files",
+		"no results", "nothing matched",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// sourcePathIsImplementation duplicates the path classification used by
+// isImplementationObservation, keeping one decision in agent.ClassifyPath.
+func sourcePathIsImplementation(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "." || path == "./" {
+		return false
+	}
+	switch agent.ClassifyPath(path) {
+	case agent.PathDocumentation, agent.PathManifest, agent.PathConfiguration, agent.PathGenerated:
+		return false
+	default:
+		return true
+	}
+}
+
+// sourceContentClass distinguishes an import declaration from an actual
+// dependency operation. A read that only imports a package is not use.
+func sourceContentClass(text string) EvidenceClass {
+	lower := strings.ToLower(text)
+	if dependencyImportMarker(lower) {
+		if dependencyUseMarker(lower) {
+			return EvidenceSourceUse
+		}
+		return EvidenceSourceImport
+	}
+	// An operation-shaped call without an import/initialization is ordinary
+	// source content. Calling os.Open is not evidence that the project uses an
+	// external dependency.
+	return EvidenceSourceContent
+}
+
+// dependencyImportMarker reports an import/require statement. The vocabulary
+// is finite and language-shaped; it does not decide whether a dependency is
+// used.
+func dependencyImportMarker(text string) bool {
+	for _, marker := range []string{
+		"\nimport ", "\nimport(", "\nimport (", "\nfrom ", "\nrequire(",
+		"\nrequire \"", "#include", "\nuse ", "\nusing ", "import \"",
+		"import '", "from \"", "from '", "require(\"", "require('",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// dependencyUseMarker reports a concrete operation shape in source. It is a
+// bounded signal for the state projection; the claim audit binds it to a
+// dependency and component before accepting a claim.
+func dependencyUseMarker(text string) bool {
+	for _, marker := range []string{
+		".set(", ".get(", ".hset(", ".hget(", ".lpush(", ".rpush(",
+		".publish(", ".subscribe(", ".consume(", ".produce(", ".send(",
+		".query(", ".queryrow(", ".exec(", ".insert(", ".update(",
+		".delete(", ".find(", ".sign(", ".verify(", ".parse(", ".open(",
+		".dial(", ".connect(", "newclient(", "amqp.dial(", "jwt.new(",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Requirement is one evidence need declared by a task shape.
@@ -393,6 +597,8 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 		return s.hasRepositorySurvey(s.Facts)
 	case key == "external_observation":
 		return s.HasExternalObservation()
+	case key == "test_inventory":
+		return s.ClaimSummary().TestInventory == "COMPLETE"
 	case key == "verification":
 		return execution.VerifiedAfterMutation || len(execution.Verifications) > 0
 	case key == "execution_result":
@@ -636,6 +842,12 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 		}
 		return false, false
 	}
+	if outcome.Result.Reused {
+		// A reuse notice restates an observation that is already current. It
+		// is not a new repository fact, and recording it as a read would make
+		// the notice look like changed file content.
+		return false, false
+	}
 	defer s.trim()
 	s.Seq++
 	seq := s.Seq
@@ -857,11 +1069,26 @@ func (s *EvidenceState) addSearch(outcome agent.ToolOutcome, details map[string]
 	if first := firstContentLine(text); first != "" {
 		summary += " — " + bound(first, 140)
 	}
-	// A scan that pruned .gitignore paths did not cover the tree. It may still
-	// return useful matches, but it cannot establish that something absent from
-	// the result is absent from the repository.
+	// A scan that pruned .gitignore paths or built-in directories did not cover
+	// the tree. It may still return useful matches, but it cannot establish
+	// that something absent from the result is absent from the repository. An
+	// explicit gitignore=false override is an investigative scan, not a
+	// complete project inventory, and retains that distinction.
 	complete := detailInt(details, "ignored") == 0 &&
-		!strings.Contains(text, "pass skip=") && !strings.Contains(text, "raise \"limit\"")
+		detailInt(details, "excluded") == 0 &&
+		!strings.Contains(text, "pass skip=") && !strings.Contains(text, "raise \"limit\"") &&
+		!strings.Contains(strings.ToLower(text), "timed out") &&
+		!strings.Contains(strings.ToLower(text), "truncated") &&
+		gitignoreEnabled(details)
+	counts := map[string]int{}
+	for _, key := range []string{"matches", "files", "ignored", "excluded"} {
+		if value, ok := details[key].(int); ok {
+			counts[key] = value
+		}
+	}
+	if len(counts) == 0 {
+		counts = nil
+	}
 	return s.upsert(EvidenceItem{
 		ID:         id,
 		Status:     StatusDerived,
@@ -870,6 +1097,7 @@ func (s *EvidenceState) addSearch(outcome agent.ToolOutcome, details map[string]
 		Summary:    bound(summary, MaxEvidenceSummaryBytes),
 		Value:      text,
 		Digest:     digest(text),
+		Counts:     counts,
 		Complete:   complete,
 		Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: path},
 		Seq:        seq,
@@ -900,6 +1128,7 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 		Value:      text,
 		Digest:     digest(text),
 		Complete:   complete,
+		View:       "symbols",
 		Source:     structuralSource(details, "symbols", outcome.CallID, "", 0, 0),
 		Seq:        seq,
 	})
@@ -958,6 +1187,7 @@ func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[str
 		Digest:     digest(text),
 		Counts:     structuralCounts(details),
 		Complete:   complete,
+		View:       detailString(details, "view"),
 		Source:     structuralSource(details, outcome.ToolName, outcome.CallID, "", 0, 0),
 		Seq:        seq,
 	})
@@ -1035,22 +1265,72 @@ func structuralSource(details map[string]any, tool, callID, path string, start, 
 			scope = "PARTIAL"
 		}
 	}
-	return Source{
-		Tool:              tool,
-		CallID:            callID,
-		Path:              path,
-		StartLine:         start,
-		EndLine:           end,
-		SnapshotID:        detailString(details, "snapshot_id"),
-		GraphState:        detailString(details, "graph_state"),
-		Generation:        uint64(detailInt(details, "generation")),
-		Language:          detailString(details, "language"),
-		Adapter:           detailString(details, "adapter"),
-		Resolution:        detailString(details, "resolution"),
-		Completeness:      completeness,
-		ScopeCompleteness: scope,
-		Truncated:         detailBool(details, "truncated"),
+	inventory := ""
+	if complete, ok := details["inventory_complete"].(bool); ok {
+		if complete {
+			inventory = "COMPLETE"
+		} else {
+			inventory = "PARTIAL"
+		}
 	}
+	return Source{
+		Tool:                  tool,
+		CallID:                callID,
+		Path:                  path,
+		StartLine:             start,
+		EndLine:               end,
+		SnapshotID:            detailString(details, "snapshot_id"),
+		GraphState:            detailString(details, "graph_state"),
+		Generation:            uint64(detailInt(details, "generation")),
+		Language:              detailString(details, "language"),
+		Adapter:               detailString(details, "adapter"),
+		Resolution:            detailString(details, "resolution"),
+		Completeness:          completeness,
+		ScopeCompleteness:     scope,
+		Truncated:             detailBool(details, "truncated"),
+		InventoryCompleteness: inventory,
+		ExcludedRoots:         structuralExcludedRoots(details),
+		ExcludedSourceFiles:   detailInt(details, "excluded_source_files"),
+		UnsupportedSources:    structuralUnsupportedSources(details),
+	}
+}
+
+// structuralExcludedRoots counts the scope gaps in a structural result.
+func structuralExcludedRoots(details map[string]any) int {
+	switch values := details["excluded_roots"].(type) {
+	case []map[string]any:
+		return len(values)
+	case []any:
+		return len(values)
+	default:
+		return detailInt(details, "excluded_roots")
+	}
+}
+
+// structuralUnsupportedSources counts inventoried files whose language has no
+// adapter. A structural inventory is not complete source coverage when it
+// contains them.
+func structuralUnsupportedSources(details map[string]any) int {
+	switch values := details["unsupported_languages"].(type) {
+	case []map[string]any:
+		total := 0
+		for _, item := range values {
+			total += detailInt(item, "files")
+		}
+		return total
+	default:
+		return 0
+	}
+}
+
+// gitignoreEnabled reports whether a scan honoured .gitignore. An explicit
+// false override is an investigative scan; it does not establish a complete
+// project inventory.
+func gitignoreEnabled(details map[string]any) bool {
+	if value, ok := details["gitignore"].(bool); ok {
+		return value
+	}
+	return true
 }
 
 // structuralSourceWithCoordinate adds the per-coordinate language, adapter,
@@ -1573,6 +1853,12 @@ func isImplementationObservation(item EvidenceItem) bool {
 	case strings.HasPrefix(item.ID, "file:"):
 		return agent.ClassifyPath(item.Source.Path) == agent.PathSource
 	case strings.HasPrefix(item.ID, "search:grep:"):
+		if matches, known := item.Counts["matches"]; (known && matches == 0) ||
+			searchResultHasNoMatches(item.Value) {
+			// No matched source line was captured. The result is a diagnostic
+			// notice, not an implementation observation.
+			return false
+		}
 		path := strings.TrimSpace(item.Source.Path)
 		if path == "" || path == "." || path == "./" {
 			return false

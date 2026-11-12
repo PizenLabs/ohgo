@@ -583,7 +583,9 @@ func nextEvidence(key string) string {
 	case key == "repository_overview":
 		return "list the repository root and read the entry point or module file"
 	case key == "repository_survey":
-		return "read a source file (entry point or module) to observe implementation content; documentation, manifests, configuration, and inventory are not enough"
+		return "read a source file (entry point or module) for the components the answer will describe; documentation, manifests, configuration, and inventory are not implementation evidence"
+	case key == "test_inventory":
+		return "query the structure tool with view=tests, unscoped, and inspect scope, inventory, and structural completeness; an overview test_files count is not a filtered inventory"
 	case key == "external_observation":
 		return "use the external capability the request named and observe its result"
 	case key == "verification":

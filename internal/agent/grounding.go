@@ -634,7 +634,18 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 			case "glob":
 				pattern := proposalArgString(outcome.Args, "pattern")
 				path := proposalArgString(outcome.Args, "path")
-				if complete && (path == "" || path == "." || path == "./") &&
+				details, _ := outcome.Result.Details.(map[string]any)
+				// A gitignore=false scan is an investigative override, not a
+				// complete project inventory. A built-in exclusion (node_modules,
+				// dist, target) is a disclosed pruning gap too.
+				gitignoreComplete := true
+				if value, ok := details["gitignore"].(bool); ok {
+					gitignoreComplete = value
+				}
+				unpruned := detailValueInt(details, "ignored") == 0 &&
+					detailValueInt(details, "excluded") == 0
+				if complete && gitignoreComplete && unpruned &&
+					(path == "" || path == "." || path == "./") &&
 					strings.Contains(pattern, "**") {
 					coverage.globScans = append(coverage.globScans, globScan{
 						pattern: pattern,

@@ -30,7 +30,8 @@ func NewLsTool(root string) *LsTool {
 	tool := &LsTool{Root: root}
 	tool.Base = NewBase("ls",
 		"List the contents of a directory, one entry per line, with a size "+
-			"column for files. Directories are listed first.",
+			"column for files. Directories are listed first. A listing is "+
+			"inventory: it proves names exist, not what any file implements.",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{

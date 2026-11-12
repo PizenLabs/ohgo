@@ -302,6 +302,41 @@ func TestGlobReportsGitignoreExclusionWhenMatchesRemain(t *testing.T) {
 	}
 }
 
+// A scan's completeness facts are evidence, not presentation. The result must
+// disclose gitignore pruning, built-in directory pruning, and an investigative
+// gitignore override so the claim layer can keep them out of repository-wide
+// absence proofs.
+func TestGlobDisclosesCompletenessFacts(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"main.go":               "package main",
+		"node_modules/pkg/a.js": "module.exports = {}",
+		"ignored/old.go":        "package ignored",
+		".gitignore":            "ignored/\n",
+	})
+	tool := NewGlobTool(root)
+
+	normal := tool.Execute(testContext(), map[string]any{"pattern": "**/*.go"})
+	details, _ := normal.Details.(map[string]any)
+	if got, _ := details["ignored"].(int); got != 1 {
+		t.Fatalf("details = %#v, want ignored=1", normal.Details)
+	}
+	if got, _ := details["excluded"].(int); got != 1 {
+		t.Fatalf("details = %#v, want excluded=1 for node_modules", normal.Details)
+	}
+	if got, _ := details["gitignore"].(bool); !got {
+		t.Fatalf("details = %#v, want gitignore=true", normal.Details)
+	}
+
+	override := tool.Execute(testContext(), map[string]any{
+		"pattern": "**/*.go", "gitignore": false,
+	})
+	overrideDetails, _ := override.Details.(map[string]any)
+	if got, _ := overrideDetails["gitignore"].(bool); got {
+		t.Fatalf("details = %#v, want gitignore=false for the override", override.Details)
+	}
+}
+
 // An empty tree must not invent an ignore exclusion. The hint is evidence, not
 // a generic disclaimer.
 func TestGlobDoesNotInventGitignoreWhenNothingWasIgnored(t *testing.T) {

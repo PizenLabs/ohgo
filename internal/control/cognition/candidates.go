@@ -89,6 +89,10 @@ func Candidates(shape TaskShape, evidence *EvidenceState, execution ExecutionSta
 			exclude(tool, "the remaining evidence requires the external capability the request named")
 			continue
 		}
+		if sourceOnlyRemains(shape, evidence, suff) && inventoryOnlyTool(tool) {
+			exclude(tool, "the remaining evidence requires source content; another inventory cannot satisfy it")
+			continue
+		}
 		if reason, excluded := candidateExclusion(shape, execution, tool, facts, suff); excluded {
 			exclude(tool, reason)
 			continue
@@ -105,6 +109,44 @@ func Candidates(shape TaskShape, evidence *EvidenceState, execution ExecutionSta
 		set.Notices = append(set.Notices, fmt.Sprintf("%s (%d tool(s))", reason, counts[reason]))
 	}
 	return set
+}
+
+// sourceOnlyRemains reports a broad repository account whose inventory is
+// already known but whose implementation content is missing. A glob or
+// directory listing cannot resolve that gap: another path list is not source
+// content, and offering it let a model spend the turn budget rediscovering the
+// same tree instead of reading the component it needs.
+func sourceOnlyRemains(shape TaskShape, evidence *EvidenceState, suff Sufficiency) bool {
+	if shape.Kind != contract.ObjectiveInformational || !shape.RepositoryScope ||
+		!shape.BroadRepositoryAnalysis || suff.State != Insufficient {
+		return false
+	}
+	if !containsString(suff.Missing, "repository_survey") {
+		return false
+	}
+	summary := evidence.ClaimSummary()
+	if summary.HasImplementation || !summary.HasInventory {
+		return false
+	}
+	// Withhold inventory tools only when there is a concrete component to
+	// inspect. Excluding every ls/glob as soon as a root listing exists would
+	// also block the path discovery that identifies those components.
+	for _, component := range summary.Components {
+		if component.Structural && !component.SourceContent {
+			return true
+		}
+	}
+	return false
+}
+
+// inventoryOnlyTool reports a capability that can only add paths or listings.
+func inventoryOnlyTool(tool agent.Tool) bool {
+	switch tool.Name() {
+	case "glob", "ls":
+		return true
+	default:
+		return false
+	}
 }
 
 // onlyExternalRemains reports that the request explicitly requires external

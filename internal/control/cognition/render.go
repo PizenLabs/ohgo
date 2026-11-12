@@ -41,6 +41,10 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	// of the state that must survive context reduction: evidence is allowed to
 	// be summarized, but authority, task scope, verification, completion, and
 	// the reason for the current stage are not.
+	// Sections are separate budget units so a tight block drops the least
+	// important tail instead of the whole briefing: the claim boundary and the
+	// sufficiency verdict must survive, while shape details and evidence
+	// summaries may be summarized away.
 	var sections []string
 	var head strings.Builder
 	head.WriteString("# Runtime state (authoritative, not a user request)\n\n")
@@ -50,6 +54,8 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	if probe := workspaceProbeSummary(shape.RepositoryFacts); probe != "" {
 		fmt.Fprintf(&head, "Workspace probe: %s\n", probe)
 	}
+	sections = append(sections, head.String())
+
 	// The answer-side claim audit and this block are the same contract. The
 	// statuses are derived from the evidence ledger, so the model sees which
 	// claim classes the run actually supports before it writes: a manifest or
@@ -58,20 +64,21 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	// target and verification evidence instead, so it does not spend the block
 	// on this distinction.
 	if shape.Kind == contract.ObjectiveInformational {
-		head.WriteString(claimEvidenceBlock(evidence))
+		sections = append(sections, claimEvidenceBlock(evidence))
 	}
-	fmt.Fprintf(&head, "Task shape: %s\n", shape.Summary())
+	var contractLine strings.Builder
+	fmt.Fprintf(&contractLine, "Task shape: %s\n", shape.Summary())
 	if len(shape.Constraints) > 0 {
-		fmt.Fprintf(&head, "Constraints: %s\n", strings.Join(shape.Constraints, ", "))
+		fmt.Fprintf(&contractLine, "Constraints: %s\n", strings.Join(shape.Constraints, ", "))
 	}
 	if len(shape.NamedEntities) > 0 {
-		fmt.Fprintf(&head, "Named entities (preserve them): %s\n", strings.Join(shape.NamedEntities, ", "))
+		fmt.Fprintf(&contractLine, "Named entities (preserve them): %s\n", strings.Join(shape.NamedEntities, ", "))
 	}
 	if shape.RequestedAction != "" {
-		fmt.Fprintf(&head, "Requested action: %s\n", shape.RequestedAction)
+		fmt.Fprintf(&contractLine, "Requested action: %s\n", shape.RequestedAction)
 	}
 	if len(shape.Ambiguities) > 0 {
-		fmt.Fprintf(&head, "Ambiguity (do not collapse into an invented objective): %s\n",
+		fmt.Fprintf(&contractLine, "Ambiguity (do not collapse into an invented objective): %s\n",
 			strings.Join(shape.Ambiguities, ", "))
 	}
 	if shape.Mutation.Allowed {
@@ -79,33 +86,40 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 		if len(shape.Mutation.Paths) > 0 {
 			scope = strings.Join(shape.Mutation.Paths, ", ")
 		}
-		fmt.Fprintf(&head, "Mutation scope: %s\n", scope)
+		fmt.Fprintf(&contractLine, "Mutation scope: %s\n", scope)
 		if shape.Mutation.UnrelatedForbidden {
-			head.WriteString("Unrelated mutation: forbidden\n")
+			contractLine.WriteString("Unrelated mutation: forbidden\n")
 		}
 	} else {
-		head.WriteString("Mutation: forbidden\n")
+		contractLine.WriteString("Mutation: forbidden\n")
 	}
 	if len(shape.Verification) > 0 {
-		fmt.Fprintf(&head, "Verification: %s\n", verificationSummary(shape.Verification))
+		fmt.Fprintf(&contractLine, "Verification: %s\n", verificationSummary(shape.Verification))
 	}
 	if len(shape.Completion) > 0 {
 		var conditions []string
 		for _, condition := range shape.Completion {
 			conditions = append(conditions, condition.Description)
 		}
-		fmt.Fprintf(&head, "Completion: %s\n", bound(strings.Join(conditions, "; "), 360))
+		fmt.Fprintf(&contractLine, "Completion: %s\n", bound(strings.Join(conditions, "; "), 360))
 	}
-	sections = append(sections, head.String())
+	sections = append(sections, contractLine.String())
 
-	var suffLine strings.Builder
-	fmt.Fprintf(&suffLine, "Sufficiency: %s (%s)\n", suff.State, suff.Stage)
+	var verdictLine strings.Builder
+	fmt.Fprintf(&verdictLine, "Sufficiency: %s (%s)\n", suff.State, suff.Stage)
+	if len(suff.Missing) > 0 {
+		fmt.Fprintf(&verdictLine, "Missing: %s\n", bound(strings.Join(uniqueStrings(suff.Missing), ", "), 220))
+	}
 	if len(suff.Reasons) > 0 {
-		fmt.Fprintf(&suffLine, "Why: %s\n", bound(strings.Join(uniqueStrings(suff.Reasons), "; "), 420))
+		fmt.Fprintf(&verdictLine, "Why: %s\n", bound(strings.Join(uniqueStrings(suff.Reasons), "; "), 420))
 	}
+	sections = append(sections, verdictLine.String())
+
 	if len(suff.Next) > 0 {
-		fmt.Fprintf(&suffLine, "Next evidence: %s\n", bound(strings.Join(uniqueStrings(suff.Next), "; "), 320))
+		sections = append(sections, fmt.Sprintf("Next evidence: %s\n",
+			bound(strings.Join(uniqueStrings(suff.Next), "; "), 220)))
 	}
+	var suffLine strings.Builder
 	fmt.Fprintf(&suffLine, "Available actions: %s\n", candidates.CandidateSummary(420))
 	if len(candidates.Tools) == 0 &&
 		(candidates.AnswerOnly || suff.Stage == StageAnswer ||
@@ -190,8 +204,7 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	// durable evidence state; the model can re-read them.
 	known := orderedEvidence(evidence.Items, maxItems)
 	if len(known) > 0 {
-		var sb strings.Builder
-		sb.WriteString("Evidence known:\n")
+		sections = append(sections, "Evidence known:\n")
 		for _, item := range known {
 			if item.Status == StatusConflicting || item.Retention == RetentionExternal {
 				continue
@@ -200,11 +213,8 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 			if provenance == "" {
 				provenance = "unclassified"
 			}
-			fmt.Fprintf(&sb, "- [%s/%s/%s] %s%s\n", item.Status, item.Retention, provenance,
-				bound(item.Summary, 260), sourceSuffix(item.Source))
-		}
-		if sb.Len() > len("Evidence known:\n") {
-			sections = append(sections, sb.String())
+			sections = append(sections, fmt.Sprintf("- [%s/%s/%s] %s%s\n", item.Status, item.Retention, provenance,
+				bound(item.Summary, 260), sourceSuffix(item.Source)))
 		}
 	}
 
@@ -229,6 +239,12 @@ func claimEvidenceBlock(evidence *EvidenceState) string {
 	line.WriteString(claimStatus(summary.HasConfiguration))
 	line.WriteString("; documented=")
 	line.WriteString(claimStatus(summary.HasDocumentation))
+	line.WriteString("; inventory=")
+	line.WriteString(claimStatus(summary.HasInventory))
+	line.WriteString("; source_paths=")
+	line.WriteString(claimStatus(summary.HasSourcePath))
+	line.WriteString("; dependency=")
+	line.WriteString(summary.DependencyLevel)
 	line.WriteString("; scope=")
 	if summary.StructuralScope == "" {
 		line.WriteString("NOT_OBSERVED")
@@ -262,11 +278,24 @@ func claimEvidenceBlock(evidence *EvidenceState) string {
 		line.WriteString(" (absence unproven)")
 	}
 	line.WriteString("\n")
-	line.WriteString("Claim rule: configuration declares topology, not execution. " +
-		"Absence needs a complete, untruncated inventory; else say \"not found in inspected scope\" or mark it unverified. " +
-		"Implementation status and behavior need source/runtime evidence; " +
-		"docs, manifests, config, and inventory do not establish them. " +
-		"Metrics need a measured value.\n")
+	line.WriteString("Claim rule: configuration declares topology, not execution; " +
+		"absence needs a complete untruncated inventory (else \"not found in inspected scope\"); " +
+		"Implementation status and behavior need source/runtime evidence.\n")
+	frontier := summary.EvidenceFrontier()
+	if len(frontier) == 0 && !summary.HasImplementation {
+		frontier = []string{"implementation -> SOURCE_CONTENT missing; next: inspect the component entrypoint or implementation files"}
+	}
+	if len(frontier) > 0 {
+		line.WriteString("Evidence frontier:\n")
+		for i, entry := range frontier {
+			if i >= 2 {
+				break
+			}
+			line.WriteString("- ")
+			line.WriteString(bound(entry, 112))
+			line.WriteByte('\n')
+		}
+	}
 	return line.String()
 }
 

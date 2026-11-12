@@ -56,6 +56,17 @@ immutable.
   The pre-answer runtime state block reports which classes the run supports, so
   the model sees the claim boundary before it writes instead of learning it
   only from a completion review.
+- Evidence-to-claim completion: provenance now distinguishes documentation,
+  configuration/manifest, inventory, source path, source content, source
+  import, source use, structural evidence, and runtime (`EvidenceVersion` 6);
+  the state block derives an actionable evidence frontier and dependency
+  strength. Component identity is path-derived and shared with the answer
+  audit, so source from one component cannot support another. Strong
+  completeness claims require an observed component source scope; dependency
+  wording follows the `DECLARED`/`IMPORTED`/`INITIALIZED`/`USED_IN_SOURCE`/
+  `OBSERVED_AT_RUNTIME` ladder; unbounded concept absences stay review; and an
+  identical read-only observation in a later turn is reused instead of
+  re-executed.
 
 ### Changed
 

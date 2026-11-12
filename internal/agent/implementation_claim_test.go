@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -58,14 +59,25 @@ func TestImplementationStatusClaimRequiresSourceForEachComponent(t *testing.T) {
 	order := claimRead("backend/internal/order/service.go",
 		"package order\nfunc (s *Service) Checkout() error { return nil }", 40)
 	frontend := claimRead("src/App.tsx", "export default function App() { return null }", 40)
+	productScope := claimStructureFiles("backend/internal/product", []string{
+		"backend/internal/product/service.go",
+	})
+	orderScope := claimStructureFiles("backend/internal/order", []string{
+		"backend/internal/order/service.go",
+	})
+	frontendScope := claimStructureFiles("src", []string{"src/App.tsx"})
 
-	full := []Turn{{Results: []ToolOutcome{product, order, frontend}}}
+	full := []Turn{{Results: []ToolOutcome{
+		productScope, product, orderScope, order, frontendScope, frontend,
+	}}}
 	answer := "Fully implemented: product-service, order-service, and the frontend UI."
 	if verdict := claimVerdict(full, answer); !verdict.Complete() {
-		t.Fatalf("an implementation claim with source for every component was reviewed: %s", verdict.Reason)
+		t.Fatalf("an implementation claim with source and scope for every component was reviewed: %s", verdict.Reason)
 	}
 
-	missingOrder := []Turn{{Results: []ToolOutcome{product, frontend}}}
+	missingOrder := []Turn{{Results: []ToolOutcome{
+		productScope, product, orderScope, frontendScope, frontend,
+	}}}
 	verdict := claimVerdict(missingOrder, answer)
 	if verdict.Complete() {
 		t.Fatal("a product and frontend read supported a claim about order-service")
@@ -74,13 +86,104 @@ func TestImplementationStatusClaimRequiresSourceForEachComponent(t *testing.T) {
 		t.Fatalf("reason = %q, want the unobserved component", verdict.Reason)
 	}
 
-	missingFrontend := []Turn{{Results: []ToolOutcome{product, order}}}
+	missingFrontend := []Turn{{Results: []ToolOutcome{
+		productScope, product, orderScope, order,
+	}}}
 	verdict = claimVerdict(missingFrontend, answer)
 	if verdict.Complete() {
 		t.Fatal("backend reads supported a claim about the frontend UI")
 	}
 	if !strings.Contains(strings.ToLower(verdict.Reason), "frontend") {
 		t.Fatalf("reason = %q, want the unobserved frontend", verdict.Reason)
+	}
+}
+
+// claimStructureFiles builds a scoped, complete source inventory. Its files
+// are the component's source scope: a strong completeness claim may use it
+// only after every listed file is read.
+func claimStructureFiles(path string, files []string) ToolOutcome {
+	rows := make([]map[string]any, 0, len(files))
+	for _, file := range files {
+		rows = append(rows, map[string]any{
+			"path": file, "test": false, "unsupported": false, "kind": "source",
+		})
+	}
+	return ToolOutcome{
+		ToolName: "structure",
+		Args:     map[string]any{"view": "files", "path": path},
+		Result: Result{
+			Text: "view: files\ntotal: " + strconv.Itoa(len(files)) + "\n",
+			Details: map[string]any{
+				"view":                "files",
+				"path":                path,
+				"graph_state":         "CURRENT",
+				"complete":            true,
+				"partial":             false,
+				"truncated":           false,
+				"scope_complete":      true,
+				"inventory_complete":  true,
+				"structural_complete": true,
+				"total":               len(files),
+				"returned":            len(files),
+				"files":               rows,
+			},
+		},
+	}
+}
+
+// One source file is an observation of one file, not a complete component.
+// Only an observed component source scope can support whole-component
+// completeness wording.
+func TestFullImplementationNeedsComponentSourceScope(t *testing.T) {
+	answer := "Fully implemented: product-service, order-service, and the frontend UI."
+	isolated := []Turn{{Results: []ToolOutcome{
+		claimRead("backend/internal/product/service.go", "package product", 40),
+		claimRead("backend/internal/order/service.go", "package order", 40),
+		claimRead("src/App.tsx", "export default function App() { return null }", 40),
+	}}}
+	verdict := claimVerdict(isolated, answer)
+	if verdict.Complete() {
+		t.Fatal("three isolated source reads were accepted as whole-component completeness")
+	}
+	assessment := AssessGrounding(claimContract(), isolated, answer)
+	found := false
+	for _, issue := range assessment.Issues {
+		if issue.Code == "unsupported_completeness_claim" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("issues = %+v, want unsupported_completeness_claim", assessment.Issues)
+	}
+
+	// The same answer with a scoped inventory and every file read is the
+	// evidence class that can support it.
+	scoped := []Turn{{Results: []ToolOutcome{
+		claimStructureFiles("backend/internal/product", []string{"backend/internal/product/service.go"}),
+		claimRead("backend/internal/product/service.go", "package product", 40),
+		claimStructureFiles("backend/internal/order", []string{"backend/internal/order/service.go"}),
+		claimRead("backend/internal/order/service.go", "package order", 40),
+		claimStructureFiles("src", []string{"src/App.tsx"}),
+		claimRead("src/App.tsx", "export default function App() { return null }", 40),
+	}}}
+	if verdict := claimVerdict(scoped, answer); !verdict.Complete() {
+		t.Fatalf("a fully scoped component claim was reviewed: %s", verdict.Reason)
+	}
+
+	// A partial read of the scoped inventory is not full coverage.
+	partial := []Turn{{Results: []ToolOutcome{
+		claimStructureFiles("backend/internal/product", []string{
+			"backend/internal/product/service.go",
+			"backend/internal/product/handler.go",
+		}),
+		claimRead("backend/internal/product/service.go", "package product", 40),
+		claimStructureFiles("backend/internal/order", []string{"backend/internal/order/service.go"}),
+		claimRead("backend/internal/order/service.go", "package order", 40),
+		claimStructureFiles("src", []string{"src/App.tsx"}),
+		claimRead("src/App.tsx", "export default function App() { return null }", 40),
+	}}}
+	if verdict := claimVerdict(partial, "Fully implemented: product-service."); verdict.Complete() {
+		t.Fatal("a partially read component inventory supported full implementation")
 	}
 }
 
@@ -123,7 +226,9 @@ func TestStubClaimRequiresSourceForEachComponent(t *testing.T) {
 }
 
 // A status claim with no extractable component is still an implementation
-// claim: documentation, manifests, and inventory cannot support it.
+// claim: documentation, manifests, and inventory cannot support it, and one
+// source file cannot establish whole-project completeness. A narrower claim
+// about the inspected file is the admissible form.
 func TestImplementationStatusClaimWithoutComponentNeedsSomeSource(t *testing.T) {
 	docs := []Turn{{Results: []ToolOutcome{
 		claimRead("README.md", "The project is production-ready and fully implemented.", 100),
@@ -137,8 +242,13 @@ func TestImplementationStatusClaimWithoutComponentNeedsSomeSource(t *testing.T) 
 	withSource := []Turn{{Results: []ToolOutcome{
 		claimRead("backend/main.go", "package main\nfunc main() {}", 20),
 	}}}
-	if verdict := claimVerdict(withSource, answer); !verdict.Complete() {
-		t.Fatalf("a source-backed implementation status claim was reviewed: %s", verdict.Reason)
+	if verdict := claimVerdict(withSource, answer); verdict.Complete() {
+		t.Fatal("one source file supported a whole-project completeness claim")
+	}
+
+	narrowed := "The inspected backend/main.go implements an HTTP entrypoint."
+	if verdict := claimVerdict(withSource, narrowed); !verdict.Complete() {
+		t.Fatalf("a claim narrowed to the inspected file was reviewed: %s", verdict.Reason)
 	}
 }
 

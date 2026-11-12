@@ -365,8 +365,14 @@ func TestRuntimeObservationSupportsNamedPort(t *testing.T) {
 		return []Turn{{Results: []ToolOutcome{{
 			ToolName: "verify",
 			Result: Result{
-				Text:    "runtime ready",
-				Runtime: &RuntimeEvidence{URL: url, Checks: 1},
+				Text: "runtime ready",
+				// The runtime's own command is the component coordinate. A
+				// bare address does not say which service is listening.
+				Runtime: &RuntimeEvidence{
+					Command: "go run ./backend/cmd/cart-service",
+					URL:     url,
+					Checks:  1,
+				},
 			},
 		}}}}
 	}

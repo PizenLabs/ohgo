@@ -858,6 +858,39 @@ func needsRelationshipNavigation(objective string) bool {
 	return false
 }
 
+// wantsTestInventory reports a request whose answer can make a test claim. The
+// inventory requirement is what turns "no tests exist" into an observation the
+// runtime can acquire, rather than a conclusion from an overview count.
+func wantsTestInventory(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	for _, phrase := range []string{
+		" test ", " tests ", " testing ", " tested ", " test file ",
+		" test files ", " test suite ", " unit test ", " unit tests ",
+		" coverage ", " no tests ", " any tests ", " go test ", " go tests ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// testAbsenceQuestion reports a request that explicitly asks about test
+// presence, coverage, or test files. A targeted "read the test suite" question
+// is answered by source content and does not acquire this extra requirement.
+func testAbsenceQuestion(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	for _, phrase := range []string{
+		" no tests ", " any tests ", " are there tests ", " is there tests ",
+		" test coverage ", " test inventory ", " test file ", " test files ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // needsExecution reports whether the request names a process or check.
 func needsExecution(objective string) bool {
 	normalized := " " + normalizeWords(objective) + " "
@@ -1228,6 +1261,10 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 			if shape.BroadRepositoryAnalysis {
 				add("repository_survey", "a broad overview needs a second content observation or the repository's structure")
 			}
+		}
+		if wantsTestInventory(shape.Objective) &&
+			(shape.BroadRepositoryAnalysis || testAbsenceQuestion(shape.Objective)) {
+			add("test_inventory", "the request asks about tests, so a complete filtered inventory is needed before any absence claim")
 		}
 	}
 	return needs

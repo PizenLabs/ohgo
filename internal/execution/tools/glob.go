@@ -80,7 +80,11 @@ func NewGlobTool(root string) *GlobTool {
 	tool.Base = NewBase("glob",
 		"Find files by glob pattern and return their paths sorted by "+
 			"modification time, newest first. Searches the working directory "+
-			"by default; pass a subdirectory to narrow the scan.",
+			"by default; pass a subdirectory to narrow the scan. Results are "+
+			"inventory only: a path list never establishes implementation "+
+			"content or behavior. Read the source before making a source claim, "+
+			"and do not repeat the same pattern after it returned a complete "+
+			"result.",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -195,7 +199,7 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	defer cancel()
 
 	ignorer := newIgnorer(t.Root, useGitignore)
-	matches, timedOut, ignored := t.scan(scanCtx, scanRoot, pattern, hidden, ignorer)
+	matches, timedOut, ignored, excluded := t.scan(scanCtx, scanRoot, pattern, hidden, ignorer)
 
 	sort.SliceStable(matches, func(i, j int) bool {
 		if matches[i].modTime.Equal(matches[j].modTime) {
@@ -248,8 +252,11 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 				ignored, noun)
 		}
 		return agent.Result{
-			Text:    text,
-			Details: map[string]any{"matches": 0, "pattern": pattern, "ignored": ignored},
+			Text: text,
+			Details: map[string]any{
+				"matches": 0, "pattern": pattern, "ignored": ignored,
+				"excluded": excluded, "gitignore": useGitignore,
+			},
 			Useless: true,
 		}
 	}
@@ -274,26 +281,31 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	return agent.Result{
 		Text: text,
 		Details: map[string]any{
-			"matches":  len(matches),
-			"pattern":  pattern,
-			"path":     relativeToRoot(t.Root, scanRoot),
-			"timedOut": timedOut,
-			"ignored":  ignored,
+			"matches":   len(matches),
+			"pattern":   pattern,
+			"path":      relativeToRoot(t.Root, scanRoot),
+			"timedOut":  timedOut,
+			"ignored":   ignored,
+			"excluded":  excluded,
+			"gitignore": useGitignore,
 		},
 	}
 }
 
 // scan walks scanRoot and collects matches.
 //
-// It returns the matches found, whether the deadline was hit, and how many
-// paths were pruned by .gitignore. The ignored count is evidence for the
-// caller: "no matches" must not be presented as an empty tree when the only
-// reason is a rule.
-func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bool, ignorer *ignorer) ([]globResult, bool, int) {
+// It returns the matches found, whether the deadline was hit, how many paths
+// were pruned by .gitignore, and how many directories were pruned by the
+// built-in excludes (node_modules, dist, target, …). The counts are evidence
+// for the caller: "no matches" must not be presented as an empty tree when the
+// only reason is a rule, and a pruned scan is not a complete project
+// inventory.
+func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bool, ignorer *ignorer) ([]globResult, bool, int, int) {
 	var (
 		matches  []globResult
 		timedOut bool
 		ignored  int
+		excluded int
 	)
 
 	walkErr := filepath.WalkDir(scanRoot, func(path string, entry fs.DirEntry, err error) error {
@@ -326,6 +338,7 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 			// descending: walking into node_modules is the single largest
 			// glob cost.
 			if isBuiltInExclude(entry.Name()) {
+				excluded++
 				return filepath.SkipDir
 			}
 			if !hidden && isHidden(entry.Name()) {
@@ -361,9 +374,9 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 	if walkErr != nil {
 		// The walk failed at the root of the scan; the caller converts this
 		// into a tool error.
-		return matches, timedOut, ignored
+		return matches, timedOut, ignored, excluded
 	}
-	return matches, timedOut || ctx.Err() != nil, ignored
+	return matches, timedOut || ctx.Err() != nil, ignored, excluded
 }
 
 // matchGlob reports whether a pattern matches a path.

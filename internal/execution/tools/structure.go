@@ -48,8 +48,10 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 			"and governed by its own ignore files. A zero tests or files count "+
 			"is not proof of absence unless scope, inventory, and structural are "+
 			"all COMPLETE and the result is not truncated. Test associations are "+
-			"static and are not coverage. Semantic activation is unsupported "+
-			"and fails explicitly.",
+			"static and are not coverage. Structural inventory and coordinates "+
+			"are not source content: read the component's source before making "+
+			"an implementation-status or dependency-use claim. Semantic "+
+			"activation is unsupported and fails explicitly.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

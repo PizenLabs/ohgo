@@ -106,6 +106,11 @@ type Result struct {
 	// Useless marks a result that adds nothing to context and may be elided by
 	// compaction (zero matches, a timeout). Ignored when IsError is set.
 	Useless bool
+	// Reused marks a successful result that restates an observation already
+	// current in this run. It is not a new repository observation: evidence
+	// recording must skip it or a reuse notice would look like changed file
+	// content and manufacture a conflict.
+	Reused bool
 	// FailureClass is the provider-agnostic category of an execution failure,
 	// when the producer can classify it (a missing credential, an unknown
 	// capability, a timeout). Empty means unclassified.

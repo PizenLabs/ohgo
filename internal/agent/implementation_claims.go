@@ -13,11 +13,17 @@ import (
 // those observations shows what the implementation does. A status claim is
 // therefore supportable only by source content for the component it names.
 //
+// A second distinction matters just as much: one source file is an observation
+// of one file, not proof that a whole component is complete. Strong
+// completeness vocabulary ("fully implemented", "feature-complete",
+// "production-ready") additionally requires an observed component source
+// scope, and when that scope is unavailable the answer must narrow the claim
+// to the files inspected.
+//
 // The check is deterministic and narrow. It recognizes explicit status
-// vocabulary, extracts the components the claim names, and requires a source
-// observation for each. It never decides whether the implementation is
-// actually complete; it decides only whether the evidence class the claim
-// requires was observed.
+// vocabulary, extracts the components the claim names, and decides whether the
+// evidence class the claim requires was observed. It never judges whether the
+// implementation is actually complete.
 
 var (
 	// implementationStatusPattern matches a declarative completion, stub, mock,
@@ -31,81 +37,24 @@ var (
 		`feature[\s-]+complete|` +
 		`production[\s-]+ready|` +
 		`stubs?\s*\(|` +
-		`(?:is|are)\s+(?:a\s+)?stubs?\b|` +
-		`mock\s+(?:data|auth|backend|api)\b|` +
-		`scaffold(?:ed)?\b` +
+		`(?:is|are)\s+(?:a\s+)?(?:[a-z0-9][a-z0-9-]*\s+){0,2}stubs?\b|` +
+		`health[\s-]+check[\s-]+only\b|` +
+		`mock(?:ed)?\s+(?:data|auth(?:entication)?|backend|api)\b|` +
+		`scaffold(?:ed)?\b|` +
+		`placeholder\b|` +
+		`\b(?:is|are)\s+mocked\b|` +
+		`\bimplemented\s+(?:service|backend|frontend|api|application)\b|` +
+		`\b(?:service|backend|frontend|api)\s+(?:is|are)\s+implemented\b` +
 		`)`)
-
-	// implementationKebabPattern extracts a concrete component coordinate such
-	// as "product-service" or "api-gateway".
-	implementationKebabPattern = regexp.MustCompile(`(?i)\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b`)
-
-	// implementationParentheticalPattern removes a qualifier such as
-	// "(health checks only)" or "(REST CRUD, Redis caching)" before the
-	// component list is read. Parentheticals qualify a claim; they are not
-	// additional subjects.
-	implementationParentheticalPattern = regexp.MustCompile(`\([^)]*\)`)
-
-	// implementationListSeparator splits a component list. " and " is a list
-	// separator in this vocabulary; a sentence boundary has already split the
-	// answer into clauses.
-	implementationListSeparator = regexp.MustCompile(`(?i),\s*|\s+and\s+`)
-
-	// implementationSubjectStopWords are grammar and generic identity words
-	// that do not name a component. "service" is a suffix, not a subject:
-	// "product service" is the product component.
-	implementationSubjectStopWords = map[string]bool{
-		"the": true, "a": true, "an": true, "this": true, "that": true,
-		"these": true, "those": true, "its": true, "their": true, "our": true,
-		"your": true, "it": true, "and": true, "or": true, "of": true,
-		"for": true, "to": true, "in": true, "on": true, "with": true,
-		"by": true, "from": true, "as": true, "at": true, "is": true,
-		"are": true, "was": true, "were": true, "be": true, "been": true,
-		"being": true, "has": true, "have": true, "had": true,
-		"project": true, "repository": true, "repo": true, "codebase": true,
-		"workspace": true, "application": true, "app": true, "system": true,
-		"platform": true, "code": true, "source": true, "implementation": true,
-		"module": true, "package": true, "service": true, "services": true,
-	}
-
-	// implementationTrailingStatusWords are grammar or status words that may
-	// follow the component phrase before the status marker ("the backend is").
-	implementationTrailingStatusWords = map[string]bool{
-		"is": true, "are": true, "was": true, "were": true, "be": true,
-		"been": true, "being": true, "has": true, "have": true, "had": true,
-		"fully": true, "completely": true, "partially": true,
-		"implemented": true, "functional": true, "production": true,
-		"ready": true, "feature": true, "complete": true,
-		"stub": true, "stubs": true, "scaffolded": true,
-		"now": true, "currently": true, "already": true, "actually": true,
-		"also": true, "both": true, "all": true,
-	}
 )
-
-// implementationComponentNouns is the finite vocabulary of component names a
-// status claim can name. A kebab-case identifier is also accepted, so a
-// project-specific name such as "product-service" does not need a vocabulary
-// entry. The noun is chosen from the end of the phrase so "React frontend"
-// resolves to the frontend, not to the technology.
-var implementationComponentNouns = map[string]bool{
-	"product": true, "order": true, "cart": true, "delivery": true,
-	"notification": true, "payment": true, "inventory": true, "user": true,
-	"auth": true, "gateway": true, "frontend": true, "backend": true,
-	"web": true, "admin": true, "worker": true, "client": true,
-	"server": true, "api": true, "checkout": true, "catalog": true,
-	"search": true, "shipping": true, "billing": true, "email": true,
-	"account": true,
-}
 
 // implementationSubject is one component a status claim names.
 type implementationSubject struct {
-	// Label is the path or noun the source observation must carry.
+	// Label is the canonical component identity the source observation must
+	// cover.
 	Label string
 	// Name is the readable component name for the review reason.
 	Name string
-	// Words are the normalized content words of a compound label. They are
-	// used when the label itself is not a path segment.
-	Words []string
 }
 
 // implementationClaimIssue checks a status claim against source observations.
@@ -119,228 +68,133 @@ func implementationClaimIssue(sentence string, turns []Turn) *claimIssue {
 	claim := boundedClaim(sentence[match[0]:match[1]])
 	subjects := implementationClaimSubjects(sentence, match)
 	if len(subjects) == 0 {
-		if sourceObservationExists(turns) {
-			return nil
+		if !sourceObservationExists(turns) {
+			return &claimIssue{
+				Code: "unsupported_implementation_claim",
+				Detail: fmt.Sprintf(
+					"the answer states %q as implementation state, but the run observed only documentation, configuration, manifest, or inventory; read source before claiming implementation or mark it unverified",
+					claim),
+			}
 		}
-		return &claimIssue{
-			Code: "unsupported_implementation_claim",
-			Detail: fmt.Sprintf(
-				"the answer states %q as implementation state, but the run observed only documentation, configuration, manifest, or inventory; read source before claiming implementation or mark it unverified",
-				claim),
+		// A strong claim with no component cannot be bounded to an observed
+		// scope, so it is not automatically supported by an arbitrary source
+		// read.
+		if strongImplementationStatus(match, sentence) {
+			return &claimIssue{
+				Code: "unsupported_completeness_claim",
+				Detail: fmt.Sprintf(
+					"the answer states %q as complete implementation without naming the component whose full scope was observed; narrow the claim to the inspected source or state the component explicitly",
+					claim),
+			}
 		}
+		return nil
 	}
 	var missing []string
 	for _, subject := range subjects {
 		if !implementationSubjectObserved(turns, subject) {
-			name := subject.Name
-			if name == "" {
-				name = subject.Label
-			}
-			missing = append(missing, name)
+			missing = append(missing, implementationSubjectName(subject))
 		}
 	}
-	if len(missing) == 0 {
-		return nil
-	}
-	return &claimIssue{
-		Code: "unsupported_implementation_claim",
-		Detail: fmt.Sprintf(
-			"the answer states %q as implementation state, but no source observation covers %s; read that component or state the narrower claim",
-			claim, strings.Join(missing, ", ")),
-	}
-}
-
-// implementationClaimSubjects extracts the components a status claim names.
-// The explicit list after a colon is preferred; a kebab-case coordinate and
-// the phrase before the status marker are fallbacks.
-func implementationClaimSubjects(sentence string, match []int) []implementationSubject {
-	seen := map[string]bool{}
-	var out []implementationSubject
-	add := func(subject implementationSubject) {
-		if subject.Label == "" || seen[subject.Label] {
-			return
-		}
-		seen[subject.Label] = true
-		out = append(out, subject)
-	}
-	withoutParentheticals := implementationParentheticalPattern.ReplaceAllString(sentence, " ")
-
-	for _, item := range implementationStatusList(sentence, match[1]) {
-		add(normalizeImplementationSubject(item))
-	}
-	for _, token := range implementationKebabPattern.FindAllString(withoutParentheticals, -1) {
-		if implementationTokenIsStatus(token) || implementationTokenIsFileName(withoutParentheticals, token) {
-			continue
-		}
-		add(normalizeImplementationSubject(token))
-	}
-	if len(out) == 0 {
-		before := strings.TrimSpace(sentence[:match[0]])
-		for _, item := range implementationListSeparator.Split(before, -1) {
-			add(normalizeImplementationSubject(item))
+	if len(missing) > 0 {
+		return &claimIssue{
+			Code: "unsupported_implementation_claim",
+			Detail: fmt.Sprintf(
+				"the answer states %q as implementation state, but no source observation covers %s; read that component or state the narrower claim",
+				claim, strings.Join(missing, ", ")),
 		}
 	}
-	return out
-}
-
-// implementationStatusList returns the explicit component list after the status
-// marker. A colon that belongs to a later clause is not a component list.
-func implementationStatusList(sentence string, after int) []string {
-	rest := sentence[after:]
-	colon := strings.Index(rest, ":")
-	if colon < 0 || colon > 48 {
+	if !strongImplementationStatus(match, sentence) {
 		return nil
 	}
-	if strings.ContainsAny(rest[:colon], ";?!") {
-		return nil
+	var unscoped []string
+	for _, subject := range subjects {
+		if !componentSourceScopeObserved(turns, subject) {
+			unscoped = append(unscoped, implementationSubjectName(subject))
+		}
 	}
-	tail := strings.TrimSpace(rest[colon+1:])
-	if tail == "" {
-		return nil
-	}
-	// Parentheticals contain feature lists with their own commas. Remove them
-	// before splitting so "(REST CRUD, Redis caching)" is not mistaken for
-	// additional components.
-	tail = implementationParentheticalPattern.ReplaceAllString(tail, " ")
-	items := implementationListSeparator.Split(tail, -1)
-	for _, item := range items {
-		if normalizeImplementationSubject(item).Label != "" {
-			return items
+	if len(unscoped) > 0 {
+		return &claimIssue{
+			Code: "unsupported_completeness_claim",
+			Detail: fmt.Sprintf(
+				"the answer states %q as complete implementation, but only isolated source content was observed for %s; no complete source inventory for that component covers the claim. State what the inspected files implement or qualify that the component was not fully verified",
+				claim, strings.Join(unscoped, ", ")),
 		}
 	}
 	return nil
 }
 
-// normalizeImplementationSubject reduces a list item or phrase to one component
-// label. A recognised component noun wins; otherwise a kebab-case identifier or
-// path is retained so project-specific names remain checkable.
-func normalizeImplementationSubject(raw string) implementationSubject {
-	raw = implementationParentheticalPattern.ReplaceAllString(raw, " ")
-	raw = strings.TrimSpace(strings.Trim(raw, " \t\r\n.,;:!?()[]{}<>\"'`*_"))
-	if raw == "" {
-		return implementationSubject{}
+// strongImplementationStatus reports a completeness claim that covers a whole
+// component rather than a specific observed file.
+func strongImplementationStatus(match []int, sentence string) bool {
+	if len(match) < 2 {
+		return false
 	}
-	raw = trimImplementationLeadingArticle(raw)
-	display := trimImplementationTrailingStatusWords(raw)
-	words := strings.FieldsFunc(strings.ToLower(raw), func(r rune) bool {
-		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
-	})
-	var content []string
-	for _, word := range words {
-		if implementationSubjectStopWords[word] {
+	phrase := strings.ToLower(sentence[match[0]:match[1]])
+	for _, marker := range []string{
+		"fully implemented", "fully-implemented",
+		"completely implemented", "completely-implemented",
+		"fully functional", "fully-functional",
+		"feature complete", "feature-complete",
+		"production ready", "production-ready",
+	} {
+		if strings.Contains(phrase, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// implementationClaimSubjects extracts the components a status claim names.
+// The explicit list after a colon is preferred; a kebab coordinate and the
+// bounded component noun vocabulary follow.
+func implementationClaimSubjects(sentence string, match []int) []implementationSubject {
+	labels := ComponentSubjects(sentence, match[0], match[1])
+	seen := map[string]bool{}
+	var out []implementationSubject
+	for _, label := range labels {
+		label = strings.ToLower(strings.TrimSpace(label))
+		if label == "" || seen[label] || componentTokenIsRole(label) {
 			continue
 		}
-		content = append(content, singularImplementationComponent(word))
+		seen[label] = true
+		out = append(out, implementationSubject{
+			Label: label,
+			Name:  implementationDisplayName(sentence, label),
+		})
 	}
-	for len(content) > 0 && implementationTrailingStatusWords[content[len(content)-1]] {
-		content = content[:len(content)-1]
-	}
-	if len(content) == 0 {
-		return implementationSubject{}
-	}
-	for i := len(content) - 1; i >= 0; i-- {
-		if implementationComponentNouns[content[i]] {
-			return implementationSubject{Label: content[i], Name: display, Words: []string{content[i]}}
-		}
-	}
-	label := strings.Join(content, "-")
-	if strings.Contains(raw, "/") {
-		label = strings.Trim(strings.ToLower(filepath.ToSlash(raw)), "/")
-	}
-	if label == "" {
-		return implementationSubject{}
-	}
-	return implementationSubject{Label: label, Name: display, Words: content}
+	return out
 }
 
-// trimImplementationTrailingStatusWords removes the grammar and status words
-// that follow a component before the status marker. "The backend is" becomes
-// "backend" in the review reason.
-func trimImplementationTrailingStatusWords(raw string) string {
-	fields := strings.Fields(raw)
-	for len(fields) > 0 {
-		last := strings.ToLower(strings.Trim(fields[len(fields)-1], " \t\r\n.,;:!?()[]{}<>\"'`*_"))
-		if !implementationTrailingStatusWords[last] && !implementationSubjectStopWords[last] {
-			break
-		}
-		fields = fields[:len(fields)-1]
-	}
-	return strings.TrimSpace(strings.Join(fields, " "))
-}
-
-// singularImplementationComponent maps a plural component noun to its singular
-// form. The mapping is limited to the component vocabulary so an ordinary
-// plural does not become a subject; an unknown word is returned unchanged for
-// the kebab/path fallback.
-func singularImplementationComponent(word string) string {
-	if word == "" {
-		return ""
-	}
-	if implementationComponentNouns[word] {
-		return word
-	}
-	if implementationTrailingStatusWords[word] {
-		return word
-	}
-	if strings.HasSuffix(word, "ies") && len(word) > 3 {
-		candidate := word[:len(word)-3] + "y"
-		if implementationComponentNouns[candidate] {
-			return candidate
+// implementationDisplayName returns the readable component coordinate the
+// answer used. A kebab coordinate keeps its full spelling so the review can
+// name product-service rather than only product.
+func implementationDisplayName(sentence, label string) string {
+	for _, token := range kebabComponentPattern.FindAllString(sentence, -1) {
+		if strings.EqualFold(normalizeComponentPhrase(token), label) {
+			return token
 		}
 	}
-	if strings.HasSuffix(word, "s") && len(word) > 2 {
-		candidate := word[:len(word)-1]
-		if implementationComponentNouns[candidate] {
-			return candidate
+	for _, token := range strings.Fields(sentence) {
+		cleaned := strings.Trim(token, " \t\r\n.,;:!?()[]{}<>\"'`*_")
+		if strings.EqualFold(normalizeComponentPhrase(cleaned), label) {
+			return cleaned
 		}
 	}
-	return word
+	return label
 }
 
-// trimImplementationLeadingArticle removes a determiner that carries no
-// component identity.
-func trimImplementationLeadingArticle(raw string) string {
-	lower := strings.ToLower(strings.TrimSpace(raw))
-	for _, article := range []string{"the ", "a ", "an "} {
-		if strings.HasPrefix(lower, article) {
-			return strings.TrimSpace(raw[len(article):])
-		}
+// implementationSubjectName renders the review name, falling back to the
+// canonical label.
+func implementationSubjectName(subject implementationSubject) string {
+	if strings.TrimSpace(subject.Name) != "" {
+		return subject.Name
 	}
-	return raw
-}
-
-// implementationTokenIsStatus reports a kebab token that is part of the status
-// vocabulary rather than a component name.
-func implementationTokenIsStatus(token string) bool {
-	switch strings.ToLower(token) {
-	case "fully-implemented", "completely-implemented", "partially-implemented",
-		"fully-functional", "feature-complete", "production-ready",
-		"health-checks", "health-check", "mock-data", "mock-auth",
-		"mock-backend", "mock-api", "server-computed":
-		return true
-	default:
-		return false
-	}
-}
-
-// implementationTokenIsFileName reports a kebab fragment that is part of a
-// filename such as docker-compose.yml rather than a component coordinate.
-func implementationTokenIsFileName(sentence, token string) bool {
-	index := strings.Index(sentence, token)
-	if index < 0 {
-		return false
-	}
-	after := sentence[index+len(token):]
-	if strings.HasPrefix(after, ".") {
-		return true
-	}
-	before := sentence[:index]
-	return strings.HasSuffix(before, "/") || strings.HasSuffix(before, `\`)
+	return subject.Label
 }
 
 // implementationSubjectObserved reports a source read or source-scoped grep
-// that covers the subject. The path is the primary coordinate; a single-word
-// feature name may also be observed in the source text.
+// that covers the component. The path is the only coordinate: a phrase in the
+// source text does not prove that the file belongs to another component.
 func implementationSubjectObserved(turns []Turn, subject implementationSubject) bool {
 	if subject.Label == "" {
 		return false
@@ -351,26 +205,7 @@ func implementationSubjectObserved(turns []Turn, subject implementationSubject) 
 				continue
 			}
 			path := strings.ToLower(filepath.ToSlash(outcomePath(outcome)))
-			text := strings.ToLower(outcome.Result.Text)
-			switch subject.Label {
-			case "frontend":
-				if implementationPathUnderRoot(path, "src", "frontend", "client", "web", "ui", "app") {
-					return true
-				}
-			case "backend":
-				if implementationPathUnderRoot(path, "backend", "server", "api") {
-					return true
-				}
-			}
-			if strings.Contains(path, subject.Label) {
-				return true
-			}
-			if len(subject.Words) == 1 && len(subject.Words[0]) >= 4 &&
-				strings.Contains(text, subject.Words[0]) {
-				return true
-			}
-			if len(subject.Words) > 1 &&
-				implementationWordsInPath(path, subject.Words) {
+			if ComponentMatchesPath(subject.Label, path) {
 				return true
 			}
 		}
@@ -378,30 +213,180 @@ func implementationSubjectObserved(turns []Turn, subject implementationSubject) 
 	return false
 }
 
-// implementationPathUnderRoot reports a path under one of the named roots.
-func implementationPathUnderRoot(path string, roots ...string) bool {
-	path = strings.Trim(strings.ToLower(filepath.ToSlash(path)), "/")
-	if path == "" {
+// componentSourceScopeObserved reports an observed, current, complete source
+// inventory for the component whose files were all read. It is the evidence
+// that can support a whole-component completeness claim.
+func componentSourceScopeObserved(turns []Turn, subject implementationSubject) bool {
+	if subject.Label == "" {
 		return false
 	}
-	for _, root := range roots {
-		if path == root || strings.HasPrefix(path, root+"/") || strings.Contains(path, "/"+root+"/") {
-			return true
+	if componentScopeFromStructure(turns, subject) {
+		return true
+	}
+	return componentScopeFromGlob(turns, subject)
+}
+
+// componentScopeFromStructure accepts a scoped structure files view only when
+// every completeness axis is current and every returned source file was read.
+func componentScopeFromStructure(turns []Turn, subject implementationSubject) bool {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.IsError || outcome.Refused() || outcome.ToolName != "structure" {
+				continue
+			}
+			details, ok := outcome.Result.Details.(map[string]any)
+			if !ok || detailValueString(details, "view") != "files" {
+				continue
+			}
+			if !detailValueBool(details, "scope_complete") ||
+				!detailValueBool(details, "inventory_complete") ||
+				!detailValueBool(details, "structural_complete") ||
+				detailValueBool(details, "partial") ||
+				detailValueBool(details, "truncated") ||
+				detailValueString(details, "graph_state") != "CURRENT" {
+				continue
+			}
+			pathArg := proposalArgString(outcome.Args, "path")
+			if pathArg == "" {
+				pathArg = detailValueString(details, "path")
+			}
+			if pathArg == "" || !ComponentMatchesPath(subject.Label, pathArg) {
+				continue
+			}
+			total := detailValueInt(details, "total")
+			returned := detailValueInt(details, "returned")
+			if total <= 0 || returned < total {
+				continue
+			}
+			files := claimFileRows(details["files"])
+			if len(files) == 0 {
+				continue
+			}
+			sourceFiles := 0
+			allRead := true
+			for _, file := range files {
+				path := detailValueString(file, "path")
+				if path == "" || detailValueBool(file, "test") || detailValueBool(file, "unsupported") {
+					continue
+				}
+				if ClassifyPath(path) != PathSource {
+					continue
+				}
+				sourceFiles++
+				if !successfulSourceRead(turns, path) {
+					allRead = false
+					break
+				}
+			}
+			if sourceFiles > 0 && allRead {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// implementationWordsInPath reports a path that contains every word of a
-// compound subject. It allows "product service" to match
-// backend/internal/product/service.go without requiring the exact phrase.
-func implementationWordsInPath(path string, words []string) bool {
-	for _, word := range words {
-		if !strings.Contains(path, word) {
-			return false
+// componentScopeFromGlob accepts a complete, unpruned, component-scoped scan
+// only when every returned source file was read. A gitignore=false scan is an
+// investigative result, not a complete project inventory.
+func componentScopeFromGlob(turns []Turn, subject implementationSubject) bool {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.IsError || outcome.Refused() || outcome.ToolName != "glob" {
+				continue
+			}
+			details, ok := outcome.Result.Details.(map[string]any)
+			if !ok {
+				continue
+			}
+			if detailValueInt(details, "ignored") > 0 || detailValueInt(details, "excluded") > 0 {
+				continue
+			}
+			if value, ok := details["gitignore"].(bool); ok && !value {
+				continue
+			}
+			if detailValueBool(details, "timedOut") || detailValueBool(details, "truncated") {
+				continue
+			}
+			pathArg := proposalArgString(outcome.Args, "path")
+			if pathArg == "" {
+				pathArg = detailValueString(details, "path")
+			}
+			if pathArg == "" || !ComponentMatchesPath(subject.Label, pathArg) {
+				continue
+			}
+			sourceFiles := 0
+			allRead := true
+			for _, path := range globSourcePaths(outcome.Result.Text) {
+				sourceFiles++
+				if !successfulSourceRead(turns, path) {
+					allRead = false
+					break
+				}
+			}
+			if sourceFiles > 0 && allRead {
+				return true
+			}
 		}
 	}
-	return true
+	return false
+}
+
+// claimFileRows accepts the slice shape the structure tool returns.
+func claimFileRows(value any) []map[string]any {
+	switch typed := value.(type) {
+	case []map[string]any:
+		return typed
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, entry := range typed {
+			if row, ok := entry.(map[string]any); ok {
+				out = append(out, row)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// globSourcePaths extracts the paths a glob returned. Notes are not paths.
+func globSourcePaths(text string) []string {
+	var out []string
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "[") || strings.HasPrefix(line, "No files") {
+			continue
+		}
+		if strings.ContainsAny(line, " \t") {
+			continue
+		}
+		if ClassifyPath(line) == PathSource {
+			out = append(out, line)
+		}
+		if len(out) >= 200 {
+			break
+		}
+	}
+	return out
+}
+
+// successfulSourceRead reports a successful read of the exact source path.
+func successfulSourceRead(turns []Turn, path string) bool {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.ToolName != "read" || outcome.Result.IsError || outcome.Refused() {
+				continue
+			}
+			if !claimPathsMatch(outcomePath(outcome), path) {
+				continue
+			}
+			if strings.TrimSpace(outcome.Result.Text) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // sourceObservationExists reports at least one successful source observation.

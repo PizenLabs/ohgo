@@ -103,7 +103,7 @@ func addStructuralProvenance(details map[string]any, idx *ast.Index, complete bo
 	details["languages"] = languageMaps(info.Languages)
 	details["unsupported_languages"] = unsupportedMaps(info.Unsupported)
 	details["completeness"] = structuralCompleteness(info)
-	details["complete"] = complete && info.StructuralComplete && info.ScopeComplete
+	details["complete"] = complete && info.StructuralComplete && info.InventoryComplete && info.ScopeComplete
 }
 
 // structuralCompleteness is the evidence-facing label; it never upgrades a

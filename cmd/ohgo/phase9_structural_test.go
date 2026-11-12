@@ -39,11 +39,32 @@ func phase9Tool(t *testing.T, set []agent.Tool, name string) agent.Tool {
 	return nil
 }
 
+// astSupportsTypeScript reports whether the current build includes the
+// tree-sitter TypeScript adapter. It is a build capability, not a model or
+// project policy.
+func astSupportsTypeScript() bool {
+	for _, adapter := range ast.DefaultAdapters() {
+		for _, language := range adapter.Languages() {
+			if language == ast.LanguageTypeScript {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // TestNextJSAnalysisUsesOverviewWithoutFullParsing is the real-project
 // regression baseline for the fallback/non-Go path. It proves the runtime can
 // answer a broad project question with metadata first, then escalate only when
 // the task asks for declarations and relationships.
 func TestNextJSAnalysisUsesOverviewWithoutFullParsing(t *testing.T) {
+	if !astSupportsTypeScript() {
+		// The multi-language adapters are cgo-only by design. The no-cgo path
+		// is covered by internal/intelligence/ast's disclosure test; this
+		// regression is about parsing TypeScript, which the portable build
+		// intentionally cannot do.
+		t.Skip("tree-sitter TypeScript adapter requires cgo")
+	}
 	root := t.TempDir()
 	phase9Write(t, root, map[string]string{
 		"package.json":    `{"name":"next-blog","dependencies":{"next":"15.0.0","react":"19.0.0"}}`,

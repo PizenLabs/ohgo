@@ -92,17 +92,30 @@ zero test count remains a metadata fact, and only a complete filtered test
 inventory can support a test-file absence claim.
 
 The answer side classifies each observation by what it can establish:
-documentation, configuration/manifest, implementation source, or runtime. A
-Compose file, Makefile, dependency manifest, README, directory listing, or
-structural inventory never counts as implementation content; only a source read
-or source-scoped grep does, and only a live runtime observation proves
-execution. A broad project account therefore cannot complete from documentation
-plus metadata, and the pre-answer runtime state block reports the classes the
-run actually supports. The completion audit applies the same boundary, so an
-unsupported runtime claim, an absence claim without complete coverage, or a
-documentation/configuration claim presented as implementation is
+documentation, configuration/manifest, inventory, source path, source content,
+source import, source use, structural evidence, or runtime. A Compose file,
+Makefile, dependency manifest, README, directory listing, glob result, or
+structural inventory never counts as implementation content; only source
+content does, and only a live runtime observation proves execution. A source
+path is not source content, an import is not a use, and a constructed client is
+not an operation. A broad project account therefore cannot complete from
+documentation plus metadata, and the pre-answer runtime state block reports the
+classes the run actually supports, plus an actionable evidence frontier.
+
+Component identity is derived from the path's project structure, never from an
+arbitrary substring: a read of `product-service` cannot support a claim about
+`order-service`, and a file called `api.go` inside `cart/` is not the API
+gateway. Strong completeness wording ("fully implemented", "feature-complete",
+"production-ready") additionally requires an observed, current, complete source
+scope for the named component; one isolated file only supports a claim about
+what that file implements. Dependency claims follow a separate ladder:
+`DECLARED`, `IMPORTED`, `INITIALIZED`, `USED_IN_SOURCE`, and
+`OBSERVED_AT_RUNTIME`. The completion audit applies the same boundaries, so an
+unsupported runtime claim, an absence claim without complete coverage, a
+concept absence without a scoped proof, a documentation/configuration claim
+presented as implementation, or a dependency declaration presented as use is
 `NEEDS_REVIEW`. A behavior claim that names a port must find that port in a
-source observation that also carries the behavior, or in the address of a live
+source observation for the named component, or in the command/address of a live
 runtime observation; reading one service's listener does not prove another
 service's port.
 
@@ -371,8 +384,13 @@ user's request before execution and the evidence the runtime observed.
   in a source or structural observation, must be attributed ("the README
   describes ...") or the verdict is `NEEDS_REVIEW`. It also keeps evidence
   classes distinguishable: a manifest declares a dependency, Compose declares
-  topology, and only a source or execution observation establishes behavior.
-  A concrete line count needs the read's measurement, an independent-deployment
+  topology, a glob names a source path, and only source content or execution
+  establishes behavior. Dependency wording is checked against its own strength
+  ladder (`DECLARED`/`IMPORTED`/`INITIALIZED`/`USED_IN_SOURCE`/runtime) and is
+  bound to the component the evidence came from. A concept absence ("JWT is not
+  implemented") remains bounded to the inspected scope unless a scoped proof is
+  available; a complete file inventory is not a semantic absence proof. A
+  concrete line count needs the read's measurement, an independent-deployment
   conclusion needs a deployment artifact, and a path-scoped inference needs an
   observation of that path. The evaluator does not judge answer relevance beyond
   these deterministic provenance and claim-scope boundaries.
