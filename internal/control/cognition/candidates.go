@@ -57,8 +57,8 @@ func informationalEvidenceBoundary(shape TaskShape, suff Sufficiency) bool {
 //   - an external-knowledge tool when the task does not require external
 //     knowledge;
 //   - an execution tool when the task needs no process;
-//   - a structural Go tool when the repository has no Go sources or the task
-//     needs no code navigation;
+//   - a structural tool when no supported source exists, the task needs no
+//     code navigation, or the selected structural depth is NONE;
 //   - a create-only task's edit/delete tools;
 //   - a background-wait tool before any background job exists;
 //   - every tool once the evidence lifecycle is complete.
@@ -179,12 +179,23 @@ func candidateExclusion(shape TaskShape, execution ExecutionState, tool agent.To
 		return "the root grant is exhausted", true
 	}
 
-	if language := agent.ToolRequiredLanguage(tool); language != "" {
-		if !facts.HasLanguage(language) {
-			return "the repository has no " + language + " sources", true
+	if agent.HasActionClass(tool, agent.ActionStructure) &&
+		shape.StructuralDepth == StructuralNone {
+		return "the task does not require structural analysis", true
+	}
+	if languages := agent.ToolRequiredLanguages(tool); len(languages) > 0 {
+		supported := false
+		for _, language := range languages {
+			if facts.HasLanguage(language) {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return "the repository has none of the tool's supported source languages", true
 		}
 		if !shape.NeedsCodeNavigation {
-			return "the task does not need " + language + " structural navigation", true
+			return "the task does not need structural navigation", true
 		}
 	}
 	if agent.HasActionClass(tool, agent.ActionExternal) &&

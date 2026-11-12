@@ -17,42 +17,67 @@ an upward edge is a bug, not a shortcut.
 ## Repository intelligence
 
 `symbols`, `graph`, `refs`, and `structure` are four read-only surfaces over one
-`tools.StructuralSource` and one `ast.Index`. One `GoBackend.ParseFile` pass
-produces symbol coordinates, package imports, resolved references, static
-direct-call sites, test declarations, and entrypoints. There is no second
-parser, index, daemon, or graph database.
+`tools.StructuralSource` and one `ast.Index`. One parse pass per supported file
+produces canonical declarations, package/namespace facts, imports, references,
+calls, explicit inheritance/implementation clauses, test declarations, and
+entrypoints; Go keeps its native `go/ast` backend and every other configured
+language uses a pinned tree-sitter adapter. There is no second parser, index,
+daemon, graph database, or evidence path.
 
-- `symbols` returns exact declaration coordinates.
-- `graph` returns bounded package/import relationships with `file:line`
-  witnesses and explicit external/unresolved/ambiguous states.
-- `refs` returns package-scope symbol references and statically provable direct
-  callers/callees. Method dispatch, function values, dot imports, reflection,
-  and unresolved targets are counted as unknown or returned as `unsupported`;
-  they are never guessed. Callers/callees traversal is bounded by depth, node,
-  edge, and work limits, is cycle-safe, and is cancellation-aware.
-- `structure` returns bounded project inventory — files, directories, packages,
-  configs, test declarations, entrypoints, static test associations, and an
-  impact composition of references, callers, importers, and tests.
+- `symbols` returns exact declaration coordinates across Go, TypeScript/TSX,
+  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, C, and C++. A language filter is
+  a query convenience; the per-file language and native kind stay explicit.
+- `graph` remains the Go package/import graph. It reports the snapshot's
+  language coverage and points a non-Go selector at `structure`/`refs` instead
+  of pretending the Go package graph covers another language.
+- `refs` returns Go package-scope references and statically provable direct
+  callers/callees, plus name-resolved non-Go call sites only when the target is
+  unique. Method dispatch, function values, dot imports, reflection, unresolved
+  names, and ambiguous names are counted as unknown or returned as
+  `unsupported`; they are never guessed. Callers/callees traversal is bounded
+  by depth, node, edge, and work limits, is cycle-safe, and is
+  cancellation-aware.
+- `structure` returns bounded project inventory — languages and coverage,
+  files, directories/packages, configs, test declarations, entrypoints,
+  explicit relations, and an impact composition of references, callers,
+  importers, and tests. Its `overview` and `languages` views are metadata-first;
+  targeted/impact views parse the pending supported files on demand. Semantic
+  activation is reserved and fails explicitly because no semantic resolver is
+  configured.
 
 The index is an incremental in-process snapshot, not a stateless per-file
-searcher. A normal refresh stats the tree, parses only added or changed Go
+searcher. A normal refresh stats the tree, parses only added or changed source
 files, retains raw relationship syntax so unchanged files are re-resolved
 without a second parse, and republishes atomically with a monotonic generation,
 deterministic snapshot id, explicit `CURRENT`/`UPDATING`/`STALE`/`INVALID`
-freshness, parse-failure count, completeness, and the last update's resolution
-scope (`none`, `global_reresolve`, or `full_snapshot`). `.gitignore` membership comes
+freshness, parse-failure count, per-language coverage, structural completeness,
+and the last update's resolution scope (`inventory_only`,
+`targeted_parse`, `global_reresolve`, or `full_snapshot`).
+
+Production uses adaptive activation: inventory and language mix are available
+immediately, source parsing happens only when a targeted or impact query needs
+it, and a broad project question does not build a full cross-reference graph.
+The Control Plane derives `NONE` / `OVERVIEW` / `TARGETED` / `IMPACT` from the
+existing task shape and withholds structural tools at `NONE`; the runtime
+enforces the query's own activation and bounds. `.gitignore` membership comes
 through an injected `Scope` seam: `intelligence/ast` stays dependency-free and
 `intelligence/ignore` remains the only matcher. The index root remains the
 working directory; the nearest `go.mod` above it is recorded as metadata and
 never silently widens the walk. The snapshot is in memory only;
 `<project>/.ohgo/graph.db` stays a reserved, deferred location.
 
-All four share the same freshness check, workspace path containment, authority
-admission, tool-call budget, and child tool set. Their evidence is advisory: it
-cannot mutate, execute, grant authority, or complete a task. Structural results
-enter `cognition.EvidenceState` as structural observations with snapshot
-provenance; test associations are static, never coverage, and impact is static
-reachability, never a behavioural claim.
+The Go backend is always available. The tree-sitter adapters are compiled only
+with `cgo`; a no-cgo build keeps the Go path, reports other supported extensions
+as unsupported, and never substitutes lexical exploration for structural
+coverage. All four tools share the same freshness check, workspace path
+containment, authority admission, tool-call budget, and child tool set. Their
+evidence is advisory: it cannot mutate, execute, grant authority, or complete a
+task. Structural results enter `cognition.EvidenceState` as structural
+observations with snapshot, language, adapter, resolution, completeness, and
+truncation provenance; test associations are static, never coverage, and impact
+is static reachability, never a behavioural claim. The per-language capability
+and resolution table is
+[`STRUCTURAL_LANGUAGES.md`](STRUCTURAL_LANGUAGES.md).
 
 ## Authority
 

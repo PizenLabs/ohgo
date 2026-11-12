@@ -49,8 +49,9 @@ func TestStructureToolAnswersInventoryViews(t *testing.T) {
 	if details["snapshot_id"] == "" || details["generation"] == nil {
 		t.Errorf("overview lacks snapshot provenance: %+v", details)
 	}
-	if !strings.Contains(overview.Text, "entrypoints: 1") {
-		t.Errorf("overview text omitted entrypoint count:\n%s", overview.Text)
+	if !strings.Contains(overview.Text, "pending_files: 3") ||
+		!strings.Contains(overview.Text, "languages: Go=UNPARSED/3") {
+		t.Errorf("adaptive overview did not disclose its unparsed inventory:\n%s", overview.Text)
 	}
 
 	files := tool.Execute(ctx, map[string]any{"view": "files", "path": "pkg", "package": "pkg"})
@@ -68,6 +69,9 @@ func TestStructureToolAnswersInventoryViews(t *testing.T) {
 	}
 	if !strings.Contains(entrypoints.Text, "main.main") {
 		t.Errorf("entrypoint text omitted main.main:\n%s", entrypoints.Text)
+	}
+	if !strings.Contains(entrypoints.Text, "parsed_files: 3") {
+		t.Errorf("targeted entrypoint view did not parse the source:\n%s", entrypoints.Text)
 	}
 
 	configs := tool.Execute(ctx, map[string]any{"view": "configs"})
@@ -204,8 +208,11 @@ func TestStructureToolIsReadOnlyAndDiscoverable(t *testing.T) {
 	if tool.Approval().Tier != agent.TierRead {
 		t.Errorf("tier = %q, want read", tool.Approval().Tier)
 	}
-	if tool.RequiredLanguage() != "go" {
-		t.Errorf("required language = %q, want go", tool.RequiredLanguage())
+	if len(tool.SupportedLanguages()) != 0 {
+		t.Errorf("structure declared a language requirement: %v", tool.SupportedLanguages())
+	}
+	if tool.RequiredLanguage() != "" {
+		t.Errorf("required language = %q, want no single-language gate", tool.RequiredLanguage())
 	}
 	if !agent.ReadOnlyToolNames[tool.Name()] {
 		t.Error("structure is missing from ReadOnlyToolNames")

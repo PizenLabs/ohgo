@@ -26,15 +26,34 @@ immutable.
   parses only changed Go files and re-resolves relationships from retained raw
   syntax. `graph`, `refs`, and `structure` now enter `cognition` as structural
   evidence carrying snapshot provenance and completeness.
+- Adaptive multi-language structural runtime: Go keeps its native backend;
+  pinned tree-sitter adapters add TypeScript/TSX, JavaScript/JSX, Java, C#,
+  Rust, Kotlin, Ruby, C, and C++ over the same `ast.Index`. Canonical facts
+  preserve language-specific kinds, visibility, containers, imports, explicit
+  inheritance/implementation clauses, calls, tests, entries, and source
+  coordinates. `structure` adds `languages` and `relations` views; `symbols`
+  and `refs` expose language/native-kind/exported provenance. A no-cgo build
+  keeps Go and reports the other extensions as unsupported.
+- Adaptive activation: `TaskShape` derives `NONE`/`OVERVIEW`/`TARGETED`/
+  `IMPACT` from existing shape signals, withholds structural tools at `NONE`,
+  and lets overviews stay metadata-first. Targeted/impact queries parse pending
+  supported files on demand; semantic escalation is explicitly unsupported.
+- Structural evidence now carries language, adapter, resolution, structural
+  completeness, and truncation in addition to snapshot id and generation
+  (`EvidenceVersion` 3). Snapshots disclose per-language parsed/pending/failed
+  counts, inventory completeness, structural completeness, and unsupported
+  source extensions.
 
 ### Changed
 
 - Repository scoping is injected into the structural index from the shared
   `ignore.Matcher`, so `.gitignore` membership has one owner and `ast` stays a
   dependency-free intelligence leaf. A rule or scope fingerprint change
-  refreshes membership without re-parsing unchanged Go files.
-- The structural snapshot remains in memory. `<project>/.ohgo/graph.db` is
-  still reserved and unimplemented; no derived persistence was added.
+  refreshes membership without re-parsing unchanged source files.
+- `graph` remains the Go package import graph; a non-Go selector is pointed at
+  `structure`/`refs` instead of being folded into a false package edge. The
+  structural snapshot remains in memory. `<project>/.ohgo/graph.db` is still
+  reserved and unimplemented; no derived persistence was added.
 
 ### Fixed
 

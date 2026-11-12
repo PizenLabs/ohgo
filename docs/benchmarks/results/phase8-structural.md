@@ -1,5 +1,11 @@
 # Phase 8 — Structural runtime baseline
 
+> **Superseded measurement note:** the adaptive runtime keeps this Go baseline
+> but changes the cold path into metadata-first inventory. The current
+> multi-language and activation measurements are in
+> [`phase9-structural.md`](phase9-structural.md). The numbers below remain the
+> Phase 2 record for the native Go parser and incremental relationship path.
+
 > **Method:** deterministic Go benchmarks, not model calls. The cold benchmark
 > builds a snapshot of the real repository `cmd/ohgo` test working directory.
 > The incremental benchmark copies only Go source, `go.mod`, and `go.work` to a

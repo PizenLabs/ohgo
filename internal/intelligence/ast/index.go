@@ -19,6 +19,11 @@ import (
 // mixture of two source states would be worse than an explicit retryable error.
 var ErrSourceChanged = errors.New("source changed while indexing")
 
+// maxStructuralFileBytes bounds one parser pass. A larger file is reported as
+// an unparsed failure rather than risking unbounded parser memory; it remains
+// visible in inventory and blocks a clean structural-completeness claim.
+const maxStructuralFileBytes = 16 << 20
+
 // Scope is the repository-membership seam owned by the caller.
 //
 // The AST package is a dependency-free intelligence leaf: it must not import
@@ -40,6 +45,14 @@ type IndexOptions struct {
 	// Scope excludes repository paths. A nil scope includes every path the
 	// index's built-in non-source exclusions do not skip.
 	Scope Scope
+	// Adapters overrides the default adapter set. Nil uses DefaultAdapters.
+	Adapters []Adapter
+	// Adaptive defers source parsing until a query needs it. The inventory,
+	// language mix, manifests, and unsupported-extension facts are available
+	// immediately; symbols/relationships are parsed on demand. It is the
+	// production mode. The zero value is eager, preserving the historical
+	// NewIndex contract for callers and tests that expect a full snapshot.
+	Adaptive bool
 }
 
 // fileSig is the freshness fingerprint for one source file.
@@ -61,22 +74,34 @@ type moduleSig struct {
 // files carry metadata only; they are inventory facts, never symbols.
 type fileRecord struct {
 	language    string
+	adapter     string
+	parser      Parser
 	kind        FileKind
 	test        bool
 	size        int64
 	mtime       int64
 	packageName string
-	symbols     []Match
+	framework   string
+	// parsed distinguishes an inventory observation from an empty/failed
+	// file. Adaptive snapshots carry pending records; a query that needs
+	// declarations parses them before answering.
+	parsed  bool
+	partial bool
+	issues  []ParseIssue
+	symbols []Match
 	// imports, references, and calls are the retained syntactic projection.
 	// They are re-resolved after a change without re-parsing unchanged files:
 	// that is what makes incremental parsing possible. They never leave the
 	// package as raw data.
-	imports     []Import
-	references  []rawReference
-	calls       []rawCall
-	tests       []TestDecl
-	entrypoints []Match
-	err         error
+	imports           []Import
+	references        []rawReference
+	calls             []rawCall
+	genericCalls      []rawGenericCall
+	genericReferences []rawGenericReference
+	relations         []rawRelation
+	tests             []TestDecl
+	entrypoints       []Match
+	err               error
 }
 
 // indexedKinds is the symbol taxonomy.
@@ -112,6 +137,9 @@ type Index struct {
 
 	scope Scope
 
+	adapters *adapterSet
+	adaptive bool
+
 	mu    sync.Mutex
 	built bool
 	files map[string]fileRecord
@@ -138,6 +166,10 @@ type Index struct {
 	// the same records. It shares the records and package graph above; it is
 	// not a second parser or index.
 	symbolGraph *symbolGraph
+	// languageGraph is the language-neutral projection over the same records.
+	// It is derived, never stored, and contains only the facts the precise Go
+	// resolver does not own.
+	languageGraph *languageGraph
 
 	generation        uint64
 	snapshotID        string
@@ -148,6 +180,7 @@ type Index struct {
 	lastParsed        int
 	lastReused        int
 	lastResolution    string
+	activation        Activation
 }
 
 // NewIndex builds a fresh structural snapshot rooted at root.
@@ -170,14 +203,30 @@ func NewIndexWithOptions(root string, opts IndexOptions) (*Index, error) {
 	if resolved, err := filepath.EvalSymlinks(absRoot); err == nil {
 		walkRoot = resolved
 	}
+	adapters := opts.Adapters
+	if adapters == nil {
+		adapters = DefaultAdapters()
+	}
+	set, err := newAdapterSet(adapters)
+	if err != nil {
+		return nil, err
+	}
 	idx := &Index{
 		Root:       absRoot,
 		walkRoot:   walkRoot,
 		scope:      opts.Scope,
+		adapters:   set,
+		adaptive:   opts.Adaptive,
 		files:      map[string]fileRecord{},
 		snapshot:   map[string]fileSig{},
 		unreadable: map[string]bool{},
 		state:      FreshnessInvalid,
+		activation: ActivationOverview,
+	}
+	if idx.adaptive {
+		idx.activation = ActivationOverview
+	} else {
+		idx.activation = ActivationTargeted
 	}
 	if err := idx.build(); err != nil {
 		return nil, err
@@ -199,7 +248,7 @@ func (idx *Index) build() error {
 // returns the error; the caller cannot answer from stale coordinates. It is
 // also the explicit recovery path: every Go file is parsed again.
 func (idx *Index) buildLockedCtx(ctx context.Context) error {
-	return idx.refreshLockedCtx(ctx, true, true)
+	return idx.refreshLockedCtx(ctx, true, true, !idx.adaptive)
 }
 
 // treeScan is one stat-only observation of the indexed tree.
@@ -362,7 +411,7 @@ func (idx *Index) ensureFreshGraph(ctx context.Context) error {
 }
 
 // refreshLockedCtx applies one scan, rebuilding only when needed or forced.
-func (idx *Index) refreshLockedCtx(ctx context.Context, watchModule, force bool) error {
+func (idx *Index) refreshLockedCtx(ctx context.Context, watchModule, force, parseAll bool) error {
 	scan, err := idx.scanLockedCtx(ctx)
 	if err != nil {
 		if idx.built {
@@ -379,7 +428,7 @@ func (idx *Index) refreshLockedCtx(ctx context.Context, watchModule, force bool)
 		return nil
 	}
 	idx.state = FreshnessUpdating
-	if err := idx.updateLockedCtx(ctx, scan, force || !idx.built); err != nil {
+	if err := idx.updateLockedCtx(ctx, scan, force || !idx.built, parseAll); err != nil {
 		if idx.built {
 			idx.state = FreshnessStale
 		} else {
@@ -395,16 +444,18 @@ func (idx *Index) refreshLockedCtx(ctx context.Context, watchModule, force bool)
 // cancellation. The check and the update share one lock so concurrent queries
 // cannot each decide the tree changed and refresh in turn.
 func (idx *Index) refreshGraphLocked(ctx context.Context, watchModule bool) error {
-	return idx.refreshLockedCtx(ctx, watchModule, false)
+	return idx.refreshLockedCtx(ctx, watchModule, false, false)
 }
 
 // updateLockedCtx applies one scan and publishes the resulting snapshot.
 //
-// It parses only added/changed Go files for a normal refresh. Deleted files are
-// removed, unreadable subtrees retain their last known records, and package and
-// relationship graphs are re-derived from retained raw syntax without a
-// re-parse of unchanged files.
-func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull bool) error {
+// In eager mode it parses added/changed source files. In adaptive mode an
+// inventory refresh parses nothing; a later query that needs declarations
+// parses the pending files through ensureParsedLockedCtx. Deleted files are
+// removed, unreadable subtrees retain their last known records, and graph
+// projections are re-derived from retained raw syntax without re-parsing
+// unchanged files.
+func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull, parseAll bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -417,35 +468,72 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull 
 	sort.Strings(paths)
 
 	parsed, reused := 0, 0
-	backend := GoBackend{}
+	shouldParse := parseAll || !idx.adaptive
 	for _, rel := range paths {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		sig := scan.files[rel]
 		old, hadOld := idx.files[rel]
-		kind := fileKindFor(rel)
-		if !isGoFile(rel) {
+		language, isSource := LanguageForPath(rel)
+		adapter, hasAdapter := idx.adapters.AdapterFor(rel)
+		kind := fileKindForLanguage(rel, language, isSource)
+		if !isSource {
+			rec := fileRecord{
+				kind:     kind,
+				language: string(language),
+				test:     IsTestPath(rel),
+				size:     sig.size,
+				mtime:    sig.mtime,
+				parsed:   true,
+			}
+			if kind == FileConfig || kind == FileManifest {
+				rec.framework = detectFramework(filepath.Join(idx.walkRoot, filepath.FromSlash(rel)))
+			}
+			records[rel] = rec
+			continue
+		}
+		if !hasAdapter {
 			records[rel] = fileRecord{
-				kind:  kind,
-				test:  kind == FileGoTest,
-				size:  sig.size,
-				mtime: sig.mtime,
+				kind:     kind,
+				language: string(language),
+				test:     IsTestPath(rel),
+				size:     sig.size,
+				mtime:    sig.mtime,
 			}
 			continue
 		}
 
-		if hadOld && old.language == "go" && idx.snapshot[rel] == sig && !forceFull {
+		if hadOld && old.parsed && old.adapter == adapter.Name() &&
+			idx.snapshot[rel] == sig && !forceFull {
 			records[rel] = old
 			reused++
 			continue
 		}
-		rec, err := idx.parseGoRecord(ctx, rel, sig, backend)
+		if hadOld && !old.parsed && idx.snapshot[rel] == sig && !forceFull && !shouldParse {
+			records[rel] = old
+			continue
+		}
+		pending := fileRecord{
+			language: string(language),
+			adapter:  adapter.Name(),
+			kind:     kind,
+			test:     IsTestPath(rel),
+			size:     sig.size,
+			mtime:    sig.mtime,
+		}
+		if !shouldParse {
+			records[rel] = pending
+			continue
+		}
+		rec, err := idx.parseRecord(ctx, rel, sig, adapter)
 		if err != nil {
 			return err
 		}
 		records[rel] = rec
-		parsed++
+		if rec.parsed {
+			parsed++
+		}
 	}
 
 	// Preserve records from an unreadable subtree. Their absence from the
@@ -464,32 +552,39 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull 
 		return err
 	}
 
-	// Graph projections are derived from Go records. A non-Go-only change
-	// updates inventory metadata and reuses the existing projections; a Go,
-	// module, or scope change re-resolves them from retained syntax without
-	// reparsing unchanged files.
-	deletedGo := false
+	deletedParsed := false
 	for rel, rec := range idx.files {
-		if rec.language != "go" {
+		if !rec.parsed {
 			continue
 		}
 		if _, ok := records[rel]; !ok {
-			deletedGo = true
+			deletedParsed = true
 			break
 		}
 	}
 	graph := idx.graph
 	symbolGraph := idx.symbolGraph
+	languageGraph := idx.languageGraph
 	resolution := "none"
-	if forceFull || graph == nil || symbolGraph == nil || parsed > 0 || deletedGo ||
-		scan.moduleSig != idx.moduleSig || scan.scopeFingerprint != idx.scopeFingerprint {
+	if idx.adaptive && parsed == 0 && !parseAll {
+		resolution = "inventory_only"
+	}
+	needsProjection := forceFull || parsed > 0 || deletedParsed ||
+		scan.moduleSig != idx.moduleSig || scan.scopeFingerprint != idx.scopeFingerprint ||
+		(!idx.adaptive && (graph == nil || symbolGraph == nil || languageGraph == nil))
+	if needsProjection {
 		resolution = "global_reresolve"
-		if forceFull {
+		if parseAll {
 			resolution = "full_snapshot"
 		}
 		graph = buildPackageGraph(records, scan.module)
 		var err error
 		symbolGraph, err = buildSymbolGraph(ctx, records, scan.module, graph)
+		if err != nil {
+			return err
+		}
+		resolveRecordImports(records)
+		languageGraph, err = buildLanguageGraph(ctx, records)
 		if err != nil {
 			return err
 		}
@@ -508,6 +603,7 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull 
 	idx.moduleRoot = scan.moduleRoot
 	idx.graph = graph
 	idx.symbolGraph = symbolGraph
+	idx.languageGraph = languageGraph
 	idx.scopeFingerprint = scan.scopeFingerprint
 	idx.generation++
 	idx.builtAt = time.Now()
@@ -516,17 +612,110 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull 
 	idx.lastResolution = resolution
 	idx.sourceFingerprint = sourceFingerprint(scan)
 	idx.snapshotID = snapshotIdentity(idx.sourceFingerprint, scan.module, scan.scopeFingerprint)
+	if parsed > 0 {
+		if needsProjection && languageGraph != nil {
+			idx.activation = ActivationImpact
+		} else {
+			idx.activation = ActivationTargeted
+		}
+	} else {
+		idx.activation = ActivationOverview
+	}
 	idx.built = true
 	return nil
 }
 
-// parseGoRecord parses one Go file and guards against a source change during
-// the parse. A second change fails the refresh rather than publishing mixed
-// facts.
-func (idx *Index) parseGoRecord(ctx context.Context, rel string, sig fileSig, backend GoBackend) (fileRecord, error) {
-	rec := idx.parseGoFile(rel, sig, backend)
+// ensureParsedLockedCtx parses every pending source record. It is the
+// TARGETED/IMPACT activation step: inventory-only overviews never call it, so
+// a project question does not build a full cross-reference graph.
+func (idx *Index) ensureParsedLockedCtx(ctx context.Context) error {
+	if idx == nil || !idx.adaptive {
+		return nil
+	}
+	paths := make([]string, 0, len(idx.files))
+	for rel, rec := range idx.files {
+		if rec.parsed || rec.err != nil || !IsSourcePath(rel) {
+			continue
+		}
+		if _, ok := idx.adapters.AdapterFor(rel); !ok {
+			continue
+		}
+		paths = append(paths, rel)
+	}
+	if len(paths) == 0 {
+		if idx.languageGraph == nil && idx.graph != nil {
+			resolveRecordImports(idx.files)
+			graph, err := buildLanguageGraph(ctx, idx.files)
+			if err != nil {
+				return err
+			}
+			idx.languageGraph = graph
+		}
+		return nil
+	}
+	sort.Strings(paths)
+	records := make(map[string]fileRecord, len(idx.files))
+	for rel, rec := range idx.files {
+		records[rel] = rec
+	}
+	parsed := 0
+	newlyFailed := 0
+	for _, rel := range paths {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		adapter, ok := idx.adapters.AdapterFor(rel)
+		if !ok {
+			continue
+		}
+		sig := idx.snapshot[rel]
+		rec, err := idx.parseRecord(ctx, rel, sig, adapter)
+		if err != nil {
+			return err
+		}
+		records[rel] = rec
+		if rec.parsed {
+			parsed++
+		} else if rec.err != nil {
+			newlyFailed++
+		}
+	}
+	// A parse error is a published fact about the snapshot, not a reason to
+	// crash the query; failure counts are reported and negative claims stay
+	// incomplete.
+	graph := buildPackageGraph(records, idx.modulePath)
+	symbolGraph, err := buildSymbolGraph(ctx, records, idx.modulePath, graph)
+	if err != nil {
+		return err
+	}
+	resolveRecordImports(records)
+	languageGraph, err := buildLanguageGraph(ctx, records)
+	if err != nil {
+		return err
+	}
+	idx.files = records
+	idx.graph = graph
+	idx.symbolGraph = symbolGraph
+	idx.languageGraph = languageGraph
+	idx.generation++
+	idx.builtAt = time.Now()
+	idx.lastParsed = parsed
+	idx.lastReused = len(records) - parsed
+	idx.lastResolution = "targeted_parse"
+	idx.activation = ActivationImpact
+	_ = newlyFailed
+	return nil
+}
+
+// parseRecord parses one source file through its adapter and guards against a
+// source change during the parse.
+func (idx *Index) parseRecord(ctx context.Context, rel string, sig fileSig, adapter Adapter) (fileRecord, error) {
+	rec := idx.parseFileRecord(ctx, rel, sig, adapter)
 	if err := ctx.Err(); err != nil {
 		return fileRecord{}, err
+	}
+	if rec.err != nil {
+		return rec, nil
 	}
 	current, err := statSignature(filepath.Join(idx.walkRoot, filepath.FromSlash(rel)))
 	if err != nil {
@@ -535,10 +724,7 @@ func (idx *Index) parseGoRecord(ctx context.Context, rel string, sig fileSig, ba
 	if current == sig {
 		return rec, nil
 	}
-	// The file changed while it was parsed. Retry once against the new
-	// signature; if it changes again, fail the refresh instead of publishing
-	// a mixed snapshot.
-	rec = idx.parseGoFile(rel, current, backend)
+	rec = idx.parseFileRecord(ctx, rel, current, adapter)
 	if err := ctx.Err(); err != nil {
 		return fileRecord{}, err
 	}
@@ -552,25 +738,61 @@ func (idx *Index) parseGoRecord(ctx context.Context, rel string, sig fileSig, ba
 	return rec, nil
 }
 
-// parseGoFile performs exactly one parser pass for one file.
-func (idx *Index) parseGoFile(rel string, sig fileSig, backend GoBackend) fileRecord {
+// parseFileRecord performs exactly one adapter pass for one file.
+func (idx *Index) parseFileRecord(ctx context.Context, rel string, sig fileSig, adapter Adapter) fileRecord {
 	abs := filepath.Join(idx.walkRoot, filepath.FromSlash(rel))
-	kind := fileKindFor(rel)
+	language, _ := LanguageForPath(rel)
+	kind := fileKindForLanguage(rel, language, true)
 	rec := fileRecord{
-		language: "go",
+		language: string(language),
+		adapter:  adapter.Name(),
+		parser:   Parser{Name: adapter.Name()},
 		kind:     kind,
-		test:     kind == FileGoTest,
+		test:     IsTestPath(rel),
 		size:     sig.size,
 		mtime:    sig.mtime,
 	}
-	facts, err := backend.ParseFile(abs, Options{Kinds: indexedKinds, Relationships: true})
+	if sig.size > maxStructuralFileBytes {
+		rec.err = fmt.Errorf("ast: %q exceeds the %d-byte structural parse bound", rel, maxStructuralFileBytes)
+		return rec
+	}
+	var facts FileFacts
+	var err error
+	if contextual, ok := adapter.(ContextAdapter); ok {
+		facts, err = contextual.ParseFileContext(ctx, abs, Options{Kinds: indexedKinds, Relationships: true})
+	} else {
+		facts, err = adapter.ParseFile(abs, Options{Kinds: indexedKinds, Relationships: true})
+	}
 	if err != nil {
 		rec.err = err
 		return rec
 	}
+	if facts.Language != "" {
+		rec.language = string(facts.Language)
+	}
+	if facts.Adapter != "" {
+		rec.adapter = facts.Adapter
+	}
+	rec.parser = facts.Parser
+	rec.partial = facts.Partial
+	rec.issues = append([]ParseIssue(nil), facts.Issues...)
+	rec.packageName = facts.Package
+	if rec.packageName == "" {
+		rec.packageName = facts.Namespace
+	}
+
 	syms := make([]Match, 0, len(facts.Symbols))
 	for _, m := range facts.Symbols {
 		m.Path = rel
+		if m.Language == "" {
+			m.Language = language
+		}
+		if m.Adapter == "" {
+			m.Adapter = rec.adapter
+		}
+		if !m.Test {
+			m.Test = rec.test
+		}
 		// The index is a coordinate store, not a source cache. Doc and
 		// Signature duplicate source text; a lookup that needs them can read
 		// the file at the returned line range.
@@ -583,6 +805,9 @@ func (idx *Index) parseGoFile(rel string, sig fileSig, backend GoBackend) fileRe
 	tests := make([]TestDecl, 0, len(facts.Tests))
 	for _, test := range facts.Tests {
 		test.Symbol.Path = rel
+		if test.Symbol.Language == "" {
+			test.Symbol.Language = language
+		}
 		test.Symbol.Doc = ""
 		test.Symbol.Signature = ""
 		tests = append(tests, test)
@@ -597,17 +822,23 @@ func (idx *Index) parseGoFile(rel string, sig fileSig, backend GoBackend) fileRe
 	entries := make([]Match, 0, len(facts.Entrypoints))
 	for _, entry := range facts.Entrypoints {
 		entry.Path = rel
+		if entry.Language == "" {
+			entry.Language = language
+		}
 		entry.Doc = ""
 		entry.Signature = ""
 		entries = append(entries, entry)
 	}
 	sortSymbols(entries)
 
-	rec.packageName = facts.Package
+	rec.parsed = true
 	rec.symbols = syms
 	rec.imports = facts.Imports
 	rec.references = facts.references
 	rec.calls = facts.calls
+	rec.genericCalls = facts.genericCalls
+	rec.genericReferences = facts.genericReferences
+	rec.relations = facts.relations
 	rec.tests = tests
 	rec.entrypoints = entries
 	return rec
@@ -725,6 +956,9 @@ func (idx *Index) Symbols() ([]Match, error) {
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureParsedLockedCtx(context.Background()); err != nil {
+		return nil, err
+	}
 
 	var out []Match
 	for _, rec := range idx.files {
@@ -755,6 +989,9 @@ func (idx *Index) Lookup(name string) ([]Match, error) {
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureParsedLockedCtx(context.Background()); err != nil {
+		return nil, err
+	}
 
 	var out []Match
 	for _, rec := range idx.files {
@@ -779,13 +1016,13 @@ func (idx *Index) File(path string) ([]Match, error) {
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureParsedLockedCtx(context.Background()); err != nil {
+		return nil, err
+	}
 
 	rec, ok := idx.files[rel]
 	if !ok {
 		return nil, fmt.Errorf("ast: no indexed file %q", rel)
-	}
-	if rec.language != "go" {
-		return nil, nil
 	}
 	if rec.err != nil {
 		return nil, rec.err
@@ -801,6 +1038,9 @@ func (idx *Index) Package(name string) ([]Match, error) {
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureParsedLockedCtx(context.Background()); err != nil {
+		return nil, err
+	}
 
 	var out []Match
 	for _, rec := range idx.files {
@@ -840,34 +1080,153 @@ func (idx *Index) infoLocked() SnapshotInfo {
 		LastParsedFiles:   idx.lastParsed,
 		LastReusedFiles:   idx.lastReused,
 		LastResolution:    idx.lastResolution,
+		Activation:        idx.activation,
 	}
 	dirs := map[string]bool{}
 	packages := 0
 	if idx.graph != nil {
 		packages = len(idx.graph.order)
 	}
+	coverage := map[Language]*LanguageCoverage{}
+	unsupported := map[string]int{}
+	unsupportedSource := false
 	for rel, rec := range idx.files {
 		dirs[dirOf(rel)] = true
-		if rec.language == "go" {
+		language, source := LanguageForPath(rel)
+		if !source {
+			if ext := unsupportedSourceExtension(rel); ext != "" {
+				unsupported[ext]++
+			}
+			switch rec.kind {
+			case FileConfig, FileManifest:
+				info.Configs++
+			}
+			continue
+		}
+		info.SourceFiles++
+		item := coverage[language]
+		if item == nil {
+			item = &LanguageCoverage{Language: language}
+			coverage[language] = item
+		}
+		item.Files++
+		if language == LanguageGo {
 			info.GoFiles++
+		}
+		if _, supported := idx.adapterLanguageSupported(language); !supported {
+			item.Supported = false
+			item.Coverage = "UNSUPPORTED"
+			unsupportedSource = true
+			unsupported[pathExt(rel)]++
+			continue
+		}
+		if rec.parsed {
+			info.ParsedFiles++
+			item.Parsed++
 			info.Symbols += len(rec.symbols)
 			info.Tests += len(rec.tests)
 			info.Entrypoints += len(rec.entrypoints)
-			continue
-		}
-		switch rec.kind {
-		case FileConfig, FileManifest:
-			info.Configs++
+			item.Symbols += len(rec.symbols)
+			if rec.partial {
+				info.FailedFiles++
+				item.Failed++
+			}
+		} else if rec.err != nil {
+			info.FailedFiles++
+			item.Failed++
+		} else {
+			info.PendingFiles++
+			item.Pending++
 		}
 	}
+	for language, item := range coverage {
+		_, supported := idx.adapterLanguageSupported(language)
+		item.Supported = supported
+		switch {
+		case !supported:
+			item.Coverage = "UNSUPPORTED"
+		case item.Failed > 0:
+			item.Coverage = "PARTIAL"
+		case item.Pending > 0:
+			item.Coverage = "UNPARSED"
+		case item.Parsed == item.Files:
+			item.Coverage = "COMPLETE"
+		default:
+			item.Coverage = "PARTIAL"
+		}
+		info.Languages = append(info.Languages, *item)
+	}
+	sort.SliceStable(info.Languages, func(i, j int) bool {
+		return info.Languages[i].Language < info.Languages[j].Language
+	})
+	for ext, count := range unsupported {
+		info.Unsupported = append(info.Unsupported, UnsupportedLanguage{Extension: ext, Files: count})
+	}
+	sort.SliceStable(info.Unsupported, func(i, j int) bool {
+		return info.Unsupported[i].Extension < info.Unsupported[j].Extension
+	})
 	info.Directories = len(dirs)
 	info.Packages = packages
 	if idx.symbolGraph != nil {
 		info.References = len(idx.symbolGraph.refs)
 		info.Calls = len(idx.symbolGraph.calls)
 	}
-	info.Partial = info.ParseFailures > 0
+	if idx.languageGraph != nil {
+		info.References += len(idx.languageGraph.references)
+		info.Calls += len(idx.languageGraph.calls)
+	}
+	info.InventoryComplete = len(idx.unreadable) == 0
+	info.StructuralComplete = info.FailedFiles == 0 && info.PendingFiles == 0 &&
+		len(info.Unsupported) == 0 && !unsupportedSource && info.InventoryComplete
+	info.Partial = info.ParseFailures > 0 || info.FailedFiles > 0 || info.PendingFiles > 0 ||
+		len(info.Unsupported) > 0 || unsupportedSource
 	return info
+}
+
+// adapterLanguageSupported reports whether this build registered an adapter
+// for the language.
+func (idx *Index) adapterLanguageSupported(language Language) (Adapter, bool) {
+	for _, adapter := range idx.adapters.Adapters() {
+		for _, candidate := range adapter.Languages() {
+			if candidate == language {
+				return adapter, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// unsupportedSourceExtension reports a source-bearing extension this build
+// cannot parse. Unknown non-source suffixes (images, archives) are inventory,
+// not structural coverage gaps.
+func unsupportedSourceExtension(rel string) string {
+	ext := strings.ToLower(pathExt(rel))
+	switch ext {
+	case ".py", ".pyi", ".swift", ".php", ".scala", ".sc", ".sh", ".bash", ".zsh",
+		".lua", ".ex", ".exs", ".dart", ".vue", ".svelte", ".m", ".mm", ".fs",
+		".fsx", ".pl", ".pm", ".r", ".jl", ".zig", ".sol", ".groovy", ".clj",
+		".cljs", ".hs", ".ml", ".mli", ".elm", ".cl", ".adb", ".ads", ".asm",
+		".s", ".ps1", ".bat", ".cmd", ".sql":
+		return ext
+	default:
+		return ""
+	}
+}
+
+// EnsureParsed refreshes inventory and parses every pending supported source
+// file. It is the explicit TARGETED/IMPACT boundary: callers that need
+// declarations or relationships ask for it, while an overview can stay
+// metadata-only.
+func (idx *Index) EnsureParsed(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := idx.ensureFreshGraph(ctx); err != nil {
+		return err
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	return idx.ensureParsedLockedCtx(ctx)
 }
 
 // Snapshot refreshes the snapshot and returns its provenance header.
@@ -887,7 +1246,7 @@ func (idx *Index) ForceRefresh(ctx context.Context) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	idx.state = FreshnessUpdating
-	if err := idx.refreshLockedCtx(ctx, true, true); err != nil {
+	if err := idx.refreshLockedCtx(ctx, true, true, true); err != nil {
 		if idx.built {
 			idx.state = FreshnessStale
 		} else {

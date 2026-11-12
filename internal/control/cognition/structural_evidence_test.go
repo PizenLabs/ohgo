@@ -10,16 +10,19 @@ import (
 // evidence layer must read provenance from structured fields, not prose.
 func structuralDetails(tool string) map[string]any {
 	details := map[string]any{
-		"status":      "ok",
-		"snapshot_id": "snap-123",
-		"generation":  uint64(4),
-		"graph_state": "CURRENT",
-		"partial":     false,
-		"truncated":   false,
-		"complete":    true,
+		"status":              "ok",
+		"snapshot_id":         "snap-123",
+		"generation":          uint64(4),
+		"graph_state":         "CURRENT",
+		"partial":             false,
+		"truncated":           false,
+		"complete":            true,
+		"structural_complete": true,
 		"coordinates": []map[string]any{
-			{"path": "pkg/foo.go", "line": 3, "end_line": 5, "symbol": "pkg.Foo", "kind": "target"},
-			{"path": "pkg/foo_test.go", "line": 8, "column": 2, "symbol": "TestFoo", "kind": "test"},
+			{"path": "pkg/foo.go", "line": 3, "end_line": 5, "symbol": "pkg.Foo", "kind": "target",
+				"language": "go", "adapter": "go", "resolution": "RESOLVED"},
+			{"path": "pkg/foo_test.go", "line": 8, "column": 2, "symbol": "TestFoo", "kind": "test",
+				"language": "go", "adapter": "go"},
 		},
 	}
 	if tool == "structure" {
@@ -66,8 +69,11 @@ func TestGraphRefsAndStructureBecomeStructuralEvidence(t *testing.T) {
 		if !item.Complete {
 			t.Errorf("%s: exact structural observation was marked incomplete", tc.tool)
 		}
-		if _, ok := state.Find("symbol:pkg/foo.go:3:pkg.Foo"); !ok {
+		if coordinate, ok := state.Find("symbol:pkg/foo.go:3:pkg.Foo"); !ok {
 			t.Errorf("%s: target coordinate was not retained as evidence", tc.tool)
+		} else if coordinate.Source.Language != "go" || coordinate.Source.Adapter != "go" ||
+			coordinate.Source.Resolution != "RESOLVED" || coordinate.Source.Completeness != "COMPLETE" {
+			t.Errorf("%s: coordinate provenance = %+v", tc.tool, coordinate.Source)
 		}
 		if _, ok := state.Find("test:pkg/foo_test.go:8:TestFoo"); !ok {
 			t.Errorf("%s: test coordinate was not retained as evidence", tc.tool)

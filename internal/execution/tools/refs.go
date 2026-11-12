@@ -35,14 +35,15 @@ func NewRefsTool(source *StructuralSource) *RefsTool {
 	tool := &RefsTool{Root: root, source: source}
 	tool.Base = NewBase("refs",
 		"Answer symbol reference and direct-call questions over the shared "+
-			"repository index. Select exactly one exact symbol (or qualified "+
-			"name), then ask where it is referenced, who calls it, or what it "+
-			"calls. Every result carries repository-relative file:line "+
-			"coordinates. Package-qualified and unqualified references to "+
-			"package-scope declarations are static; method dispatch, function "+
-			"values, and dot imports are reported as explicit unknowns rather "+
-			"than guessed. This is advisory evidence, not permission and not "+
-			"completion.",
+			"repository index. Covers Go, TypeScript/TSX, JavaScript/JSX, "+
+			"Java, C#, Rust, Kotlin, Ruby, C, and C++. Select exactly one exact "+
+			"symbol (or qualified name), then ask where it is referenced, who "+
+			"calls it, or what it calls. Every result carries repository-relative "+
+			"file:line coordinates. Go package-qualified references and direct "+
+			"calls are statically resolved; non-Go calls are name-resolved only "+
+			"when the target is unique. Dispatch, function values, and dot "+
+			"imports are reported as explicit unknowns rather than guessed. "+
+			"This is advisory evidence, not permission and not completion.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -92,8 +93,8 @@ func NewRefsTool(source *StructuralSource) *RefsTool {
 		},
 		agent.Approval{Tier: agent.TierRead},
 	)
-	tool.SetRequiredLanguage("go")
-	tool.SetActionClasses(agent.ActionObserve, agent.ActionRelationship)
+	tool.SetSupportedLanguages(structuralLanguageNames()...)
+	tool.SetActionClasses(agent.ActionObserve, agent.ActionRelationship, agent.ActionStructure)
 	return tool
 }
 
@@ -252,6 +253,12 @@ func (t *RefsTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		fmt.Fprintf(&text, "target: %s:%d\n", result.Target.Path, result.Target.Line)
 		fmt.Fprintf(&text, "target_symbol: %s\n", result.Target.QualifiedName)
 		fmt.Fprintf(&text, "target_kind: %s\n", result.Target.Kind)
+		if result.Target.Language != "" {
+			fmt.Fprintf(&text, "target_language: %s\n", result.Target.Language)
+		}
+		if result.Target.Canonical != "" {
+			fmt.Fprintf(&text, "target_canonical_kind: %s\n", result.Target.Canonical)
+		}
 	}
 	if result.Ambiguous {
 		text.WriteString("ambiguous: true\n")
@@ -265,6 +272,12 @@ func (t *RefsTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 	if result.ParseFailures > 0 {
 		fmt.Fprintf(&text, "unparsed: %d\n", result.ParseFailures)
+	}
+	if len(result.UnsupportedLanguages) > 0 {
+		fmt.Fprintf(&text, "unsupported_languages: %d\n", len(result.UnsupportedLanguages))
+	}
+	if len(result.Languages) > 0 {
+		fmt.Fprintf(&text, "languages: %s\n", languageSummary(result.Languages))
 	}
 	if result.Relation == ast.RelationReferences {
 		text.WriteString("coverage: static_syntax\n")
@@ -375,6 +388,12 @@ func writeRefUnknown(sb *strings.Builder, unknown ast.UnknownSummary) {
 	if unknown.PackageInitializerCalls > 0 {
 		fmt.Fprintf(sb, "package_initializer_calls: %d\n", unknown.PackageInitializerCalls)
 	}
+	if unknown.GenericUnresolved > 0 {
+		fmt.Fprintf(sb, "generic_unresolved: %d\n", unknown.GenericUnresolved)
+	}
+	if unknown.GenericAmbiguous > 0 {
+		fmt.Fprintf(sb, "generic_ambiguous: %d\n", unknown.GenericAmbiguous)
+	}
 	if len(unknown.Reasons) > 0 {
 		reasons := make([]string, 0, len(unknown.Reasons))
 		for reason := range unknown.Reasons {
@@ -474,6 +493,9 @@ func refsDetails(status string, result ast.RefResult) map[string]any {
 		"unresolved_uses":           result.Unknown.UnresolvedUses,
 		"dynamic_calls":             result.Unknown.DynamicCalls,
 		"package_initializer_calls": result.Unknown.PackageInitializerCalls,
+		"generic_unresolved":        result.Unknown.GenericUnresolved,
+		"generic_ambiguous":         result.Unknown.GenericAmbiguous,
+		"unsupported_files":         result.Unknown.UnsupportedFiles,
 		"reasons":                   result.Unknown.Reasons,
 	}
 	coords := make([]map[string]any, 0, len(result.References)+len(result.Edges)+len(result.Nodes))
@@ -481,7 +503,8 @@ func refsDetails(status string, result ast.RefResult) map[string]any {
 		coords = append(coords, map[string]any{
 			"path": result.Target.Path, "line": result.Target.Line,
 			"end_line": result.Target.EndLine, "symbol": result.Target.QualifiedName,
-			"kind": "target",
+			"kind": "target", "language": string(result.Target.Language),
+			"adapter": result.Target.Adapter,
 		})
 	}
 	for _, ref := range result.References {
@@ -492,12 +515,14 @@ func refsDetails(status string, result ast.RefResult) map[string]any {
 		coords = append(coords, map[string]any{
 			"path": ref.Path, "line": ref.Line, "column": ref.Column,
 			"symbol": result.Symbol, "kind": kind, "test": ref.Test,
+			"language": string(ref.Language),
 		})
 	}
 	for _, edge := range result.Edges {
 		coords = append(coords, map[string]any{
 			"path": edge.CallPath, "line": edge.CallLine, "column": edge.Column,
 			"symbol": edge.Caller.QualifiedName(), "kind": "call",
+			"language": string(edge.Caller.Language),
 		})
 	}
 	for _, node := range result.Nodes {
@@ -507,34 +532,52 @@ func refsDetails(status string, result ast.RefResult) map[string]any {
 		})
 	}
 	return map[string]any{
-		"status":             status,
-		"module":             result.Module,
-		"snapshot_id":        result.SnapshotID,
-		"generation":         result.Generation,
-		"graph_state":        string(result.State),
-		"partial":            result.ParseFailures > 0,
-		"complete":           result.Complete,
-		"relation":           string(result.Relation),
-		"symbol":             result.Symbol,
-		"target":             refTargetDetails(result.Target),
-		"found":              result.Found,
-		"ambiguous":          result.Ambiguous,
-		"candidates":         candidates,
-		"unsupported":        result.Unsupported,
-		"unsupported_reason": result.UnsupportedReason,
-		"depth":              result.Depth,
-		"references":         references,
-		"nodes":              nodes,
-		"edges":              edges,
-		"total_references":   result.TotalReferences,
-		"total_edges":        result.TotalEdges,
-		"truncated":          result.Truncated,
-		"truncation_reason":  result.Reason,
-		"work":               result.Work,
-		"parse_failures":     result.ParseFailures,
-		"unknown":            unknown,
-		"coordinates":        coords,
+		"status":                status,
+		"module":                result.Module,
+		"snapshot_id":           result.SnapshotID,
+		"generation":            result.Generation,
+		"graph_state":           string(result.State),
+		"partial":               result.ParseFailures > 0,
+		"complete":              result.Complete,
+		"relation":              string(result.Relation),
+		"symbol":                result.Symbol,
+		"target":                refTargetDetails(result.Target),
+		"found":                 result.Found,
+		"ambiguous":             result.Ambiguous,
+		"candidates":            candidates,
+		"unsupported":           result.Unsupported,
+		"unsupported_reason":    result.UnsupportedReason,
+		"depth":                 result.Depth,
+		"references":            references,
+		"nodes":                 nodes,
+		"edges":                 edges,
+		"total_references":      result.TotalReferences,
+		"total_edges":           result.TotalEdges,
+		"truncated":             result.Truncated,
+		"truncation_reason":     result.Reason,
+		"work":                  result.Work,
+		"parse_failures":        result.ParseFailures,
+		"completeness":          refCompleteness(result),
+		"languages":             languageMaps(result.Languages),
+		"unsupported_languages": unsupportedMaps(result.UnsupportedLanguages),
+		"unknown":               unknown,
+		"coordinates":           coords,
 	}
+}
+
+func refCompleteness(result ast.RefResult) string {
+	if result.Complete {
+		return "COMPLETE"
+	}
+	for _, language := range result.Languages {
+		if language.Pending > 0 {
+			return "UNPARSED"
+		}
+	}
+	if result.Truncated {
+		return "TRUNCATED"
+	}
+	return "PARTIAL"
 }
 
 func refTargetDetails(target ast.RefTarget) map[string]any {
@@ -544,6 +587,11 @@ func refTargetDetails(target ast.RefTarget) map[string]any {
 		"symbol":         target.Symbol,
 		"qualified_name": target.QualifiedName,
 		"kind":           string(target.Kind),
+		"canonical_kind": string(target.Canonical),
+		"native_kind":    target.NativeKind,
+		"language":       string(target.Language),
+		"adapter":        target.Adapter,
+		"exported":       target.Exported,
 		"line":           target.Line,
 		"end_line":       target.EndLine,
 	}

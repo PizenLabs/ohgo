@@ -96,7 +96,7 @@ type RefQuery struct {
 type RefTarget struct {
 	// Path is the repository-relative file.
 	Path string
-	// Package is the Go package name.
+	// Package is the language package/namespace name.
 	Package string
 	// Symbol is the declaration name; a method is Receiver.Method.
 	Symbol string
@@ -104,6 +104,16 @@ type RefTarget struct {
 	QualifiedName string
 	// Kind is the declaration kind.
 	Kind Kind
+	// Canonical is the language-neutral symbol kind.
+	Canonical SymbolKind
+	// NativeKind is the adapter's original syntax kind.
+	NativeKind string
+	// Language is the declaration language.
+	Language Language
+	// Adapter is the parser identity.
+	Adapter string
+	// Exported reports a public/exported declaration.
+	Exported bool
 	// Line and EndLine bound the declaration.
 	Line    int
 	EndLine int
@@ -132,8 +142,16 @@ func (idx *Index) RelationshipStats() RelationshipStats {
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	if idx.symbolGraph == nil {
+	if idx.symbolGraph == nil && idx.languageGraph == nil {
 		return RelationshipStats{}
+	}
+	var stats RelationshipStats
+	if idx.languageGraph != nil {
+		stats.References = len(idx.languageGraph.references)
+		stats.Calls = len(idx.languageGraph.calls)
+	}
+	if idx.symbolGraph == nil {
+		return stats
 	}
 	dotFiles := map[string]bool{}
 	for _, files := range idx.symbolGraph.dotAffected {
@@ -141,12 +159,11 @@ func (idx *Index) RelationshipStats() RelationshipStats {
 			dotFiles[path] = true
 		}
 	}
-	return RelationshipStats{
-		References:     len(idx.symbolGraph.refs),
-		Calls:          len(idx.symbolGraph.calls),
-		UnknownCalls:   idx.symbolGraph.unknownTotal,
-		DotImportFiles: len(dotFiles),
-	}
+	stats.References += len(idx.symbolGraph.refs)
+	stats.Calls += len(idx.symbolGraph.calls)
+	stats.UnknownCalls += idx.symbolGraph.unknownTotal
+	stats.DotImportFiles = len(dotFiles)
+	return stats
 }
 
 // ReferenceSite is one static syntactic reference to a target declaration.
@@ -162,8 +179,10 @@ type ReferenceSite struct {
 	// Call reports that the reference is the statically resolved callee of a
 	// call expression.
 	Call bool
-	// Test reports a reference in a _test.go file.
+	// Test reports a reference in a test file.
 	Test bool
+	// Language is the referencing file's language.
+	Language Language
 
 	targetKey string
 }
@@ -181,6 +200,10 @@ type CallNode struct {
 	Symbol string
 	// Kind is the declaration kind. It is empty for a package initializer.
 	Kind Kind
+	// Language is the declaration language.
+	Language Language
+	// Adapter is the parser identity.
+	Adapter string
 	// Line and EndLine bound the declaration. A package initializer uses the
 	// call site line for both.
 	Line    int
@@ -236,6 +259,13 @@ type UnknownSummary struct {
 	// PackageInitializerCalls counts static calls made from package-level
 	// initializers.
 	PackageInitializerCalls int
+	// GenericUnresolved counts non-Go call/relationship sites whose target
+	// was not uniquely resolvable.
+	GenericUnresolved int
+	// GenericAmbiguous counts non-Go sites with more than one candidate.
+	GenericAmbiguous int
+	// UnsupportedFiles counts observed source files without an adapter.
+	UnsupportedFiles int
 	// Reasons aggregates the reasons behind DynamicCalls.
 	Reasons map[string]int
 }
@@ -290,6 +320,11 @@ type RefResult struct {
 	// external processes, and code outside the indexed source are outside this
 	// model.
 	Complete bool
+	// Languages lists the language coverage relevant to this answer.
+	Languages []LanguageCoverage
+	// UnsupportedLanguages lists source-bearing extensions this build could
+	// not parse. Their presence makes absence claims incomplete.
+	UnsupportedLanguages []UnsupportedLanguage
 	// Unknown states the blind spots that were observed.
 	Unknown UnknownSummary
 }
@@ -851,11 +886,11 @@ func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module
 	decls := map[packageKey]map[string][]Match{}
 	paths := make([]string, 0, len(records))
 	for rel, rec := range records {
-		if rec.language != "go" {
+		if !rec.parsed || rec.language != "go" {
 			continue
 		}
 		paths = append(paths, rel)
-		if rec.err != nil {
+		if !rec.parsed || rec.err != nil {
 			continue
 		}
 		key := packageKey{dir: packageDir(rel), pkg: rec.packageName}
@@ -887,7 +922,7 @@ func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module
 	callRefs := map[string]bool{}
 	for _, rel := range paths {
 		rec := records[rel]
-		if rec.err != nil {
+		if !rec.parsed || rec.err != nil {
 			continue
 		}
 		fileKey := packageKey{dir: packageDir(rel), pkg: rec.packageName}
@@ -1443,6 +1478,7 @@ func callNodeForRaw(rel, pkg string, raw rawCall) CallNode {
 		Package:    pkg,
 		Symbol:     raw.CallerName,
 		Kind:       kind,
+		Language:   LanguageGo,
 		Line:       raw.CallerLine,
 		EndLine:    raw.CallerEndLine,
 		CallerKind: callerKind,
@@ -1456,6 +1492,7 @@ func callNodeForMatch(match Match) CallNode {
 		Package:    match.Package,
 		Symbol:     match.Name,
 		Kind:       match.Kind,
+		Language:   match.Language,
 		Line:       match.Line,
 		EndLine:    match.EndLine,
 		CallerKind: callKindName(match.Kind),
@@ -1543,6 +1580,9 @@ func (idx *Index) References(ctx context.Context, query RefQuery) (RefResult, er
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureParsedLockedCtx(ctx); err != nil {
+		return RefResult{}, err
+	}
 
 	if idx.symbolGraph == nil {
 		return RefResult{}, fmt.Errorf("ast: relationship snapshot is unavailable")
@@ -1557,6 +1597,9 @@ func (idx *Index) References(ctx context.Context, query RefQuery) (RefResult, er
 		Generation:    idx.generation,
 		State:         idx.state,
 	}
+	info := idx.infoLocked()
+	result.Languages = info.Languages
+	result.UnsupportedLanguages = info.Unsupported
 	target, ambiguous, candidates, found, err := idx.resolveRefTargetLocked(query.Symbol, query.Path)
 	if err != nil {
 		return RefResult{}, err
@@ -1575,16 +1618,18 @@ func (idx *Index) References(ctx context.Context, query RefQuery) (RefResult, er
 
 	switch relation {
 	case RelationReferences:
-		if target.Kind == KindMethod {
+		if target.Language == LanguageGo && target.Kind == KindMethod {
 			result.Unsupported = true
-			result.UnsupportedReason = "method references require receiver type resolution; only package-scope declarations are indexed"
+			result.UnsupportedReason = "Go method references require receiver type resolution; only package-scope declarations are indexed"
 			return result, nil
 		}
 		if err := idx.referencesForTargetLocked(ctx, &result, target, query.Skip, limit); err != nil {
 			return RefResult{}, err
 		}
+		idx.mergeGenericReferencesLocked(&result, target, query.Skip, limit)
 	case RelationCallers, RelationCallees:
-		if target.Kind != KindFunc && target.Kind != KindMethod {
+		if target.Kind != KindFunc && target.Kind != KindMethod &&
+			target.Canonical != SymbolConstructor {
 			result.Unsupported = true
 			result.UnsupportedReason = "call edges exist only for functions and methods"
 			return result, nil
@@ -1592,8 +1637,112 @@ func (idx *Index) References(ctx context.Context, query RefQuery) (RefResult, er
 		if err := idx.callsForTargetLocked(ctx, &result, target, query.Skip, limit, edgeLimit); err != nil {
 			return RefResult{}, err
 		}
+		idx.mergeGenericCallsLocked(&result, target, relation, depth, query.Skip, limit)
 	}
 	return result, nil
+}
+
+// mergeGenericReferencesLocked appends the language-neutral reference
+// projection to a Go answer. The two projections share the target identity;
+// they never duplicate a Go reference because the generic projection excludes
+// Go call sites.
+func (idx *Index) mergeGenericReferencesLocked(result *RefResult, target RefTarget, skip, limit int) {
+	if idx.languageGraph == nil {
+		return
+	}
+	generic := idx.languageGraph.referencesTo(target)
+	if len(generic) == 0 {
+		result.Unknown = mergeUnknown(result.Unknown, idx.languageGraph.stats())
+		return
+	}
+	start := 0
+	if len(result.References) == 0 {
+		start = skip
+		if start > len(generic) {
+			start = len(generic)
+		}
+	}
+	total := len(generic)
+	result.TotalReferences += total
+	for _, ref := range generic[start:] {
+		if len(result.References) >= limit {
+			result.Truncated = true
+			if result.Reason == "" {
+				result.Reason = "limit"
+			}
+			break
+		}
+		result.References = append(result.References, ref)
+	}
+	result.Unknown = mergeUnknown(result.Unknown, idx.languageGraph.stats())
+	if idx.languageGraph.unresolved > 0 || idx.languageGraph.ambiguous > 0 {
+		result.Complete = false
+	}
+	if result.Truncated && result.Reason == "" {
+		result.Reason = "limit"
+	}
+}
+
+// mergeGenericCallsLocked appends direct name-resolved call edges. A transitive
+// traversal over the generic projection is not claimed: depth > 1 is reported
+// as a bounded limitation rather than silently returning only one hop.
+func (idx *Index) mergeGenericCallsLocked(result *RefResult, target RefTarget, relation RefRelation, depth, skip, limit int) {
+	if idx.languageGraph == nil {
+		return
+	}
+	edges := idx.languageGraph.callsFor(target, relation)
+	result.Unknown = mergeUnknown(result.Unknown, idx.languageGraph.stats())
+	if len(edges) == 0 {
+		if idx.languageGraph.unresolved > 0 || idx.languageGraph.ambiguous > 0 {
+			result.Complete = false
+		}
+		return
+	}
+	start := 0
+	if len(result.Edges) == 0 {
+		start = skip
+		if start > len(edges) {
+			start = len(edges)
+		}
+	}
+	result.TotalEdges += len(edges)
+	seenNode := map[string]bool{}
+	for _, node := range result.Nodes {
+		seenNode[node.key] = true
+	}
+	for _, edge := range edges[start:] {
+		if len(result.Edges) >= limit {
+			result.Truncated = true
+			if result.Reason == "" {
+				result.Reason = "limit"
+			}
+			break
+		}
+		result.Edges = append(result.Edges, edge)
+		if !seenNode[edge.Caller.key] {
+			seenNode[edge.Caller.key] = true
+			result.Nodes = append(result.Nodes, edge.Caller)
+		}
+		if !seenNode[edge.Callee.key] {
+			seenNode[edge.Callee.key] = true
+			result.Nodes = append(result.Nodes, edge.Callee)
+		}
+	}
+	if depth > 1 {
+		result.Truncated = true
+		if result.Reason == "" || result.Reason == "limit" {
+			result.Reason = "generic_depth"
+		}
+	}
+	if result.Truncated && result.Reason == "" {
+		result.Reason = "limit"
+	}
+}
+
+func mergeUnknown(base, extra UnknownSummary) UnknownSummary {
+	base.GenericUnresolved += extra.GenericUnresolved
+	base.GenericAmbiguous += extra.GenericAmbiguous
+	return base
 }
 
 // resolveRefTargetLocked resolves an exact symbol name or qualified name,
@@ -1660,6 +1809,11 @@ func refTarget(match Match) RefTarget {
 		Symbol:        match.Name,
 		QualifiedName: match.QualifiedName,
 		Kind:          match.Kind,
+		Canonical:     match.Canonical,
+		NativeKind:    match.NativeKind,
+		Language:      match.Language,
+		Adapter:       match.Adapter,
+		Exported:      match.Exported,
 		Line:          match.Line,
 		EndLine:       match.EndLine,
 	}

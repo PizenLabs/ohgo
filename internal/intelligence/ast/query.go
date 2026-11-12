@@ -22,6 +22,11 @@ func (idx *Index) Files(ctx context.Context, query FileQuery) (FileResult, error
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if query.Package != "" {
+		if err := idx.ensureParsedLockedCtx(ctx); err != nil {
+			return FileResult{}, err
+		}
+	}
 
 	result := FileResult{Snapshot: idx.infoLocked(), Reason: ""}
 	scope, scopeFile, err := idx.fileScopeLocked(query.Path)
@@ -75,6 +80,9 @@ func (idx *Index) Packages(ctx context.Context, query PackageQuery) (PackageResu
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureParsedLockedCtx(ctx); err != nil {
+		return PackageResult{}, err
+	}
 
 	result := PackageResult{Snapshot: idx.infoLocked()}
 	if idx.graph == nil {
@@ -97,8 +105,15 @@ func (idx *Index) Packages(ctx context.Context, query PackageQuery) (PackageResu
 		}
 		result.Packages = append(result.Packages, idx.packageInfoLocked(node))
 	}
+	result.Packages = append(result.Packages, idx.languagePackagesLocked(query, scope, scopeFile)...)
 	sort.SliceStable(result.Packages, func(i, j int) bool {
-		return result.Packages[i].Dir < result.Packages[j].Dir
+		if result.Packages[i].Dir != result.Packages[j].Dir {
+			return result.Packages[i].Dir < result.Packages[j].Dir
+		}
+		if result.Packages[i].Language != result.Packages[j].Language {
+			return result.Packages[i].Language < result.Packages[j].Language
+		}
+		return result.Packages[i].Name < result.Packages[j].Name
 	})
 	result.Total = len(result.Packages)
 	result.Packages, result.Truncated, result.Reason = pagePackages(result.Packages, limit, skip)
@@ -124,6 +139,8 @@ func (idx *Index) Overview(ctx context.Context, limit int) (OverviewResult, erro
 	defer idx.mu.Unlock()
 
 	result := OverviewResult{Snapshot: idx.infoLocked()}
+	result.Languages = append([]LanguageCoverage(nil), result.Snapshot.Languages...)
+	result.Unsupported = append([]UnsupportedLanguage(nil), result.Snapshot.Unsupported...)
 	if idx.graph != nil {
 		for _, dir := range idx.graph.order {
 			if len(result.Packages) >= limit {
@@ -133,6 +150,13 @@ func (idx *Index) Overview(ctx context.Context, limit int) (OverviewResult, erro
 			}
 			result.Packages = append(result.Packages, idx.packageInfoLocked(idx.graph.nodes[dir]))
 		}
+		result.Packages = append(result.Packages, idx.languagePackagesLocked(PackageQuery{}, "", false)...)
+		sort.SliceStable(result.Packages, func(i, j int) bool {
+			if result.Packages[i].Dir != result.Packages[j].Dir {
+				return result.Packages[i].Dir < result.Packages[j].Dir
+			}
+			return result.Packages[i].Language < result.Packages[j].Language
+		})
 	}
 	files := make([]FileInfo, 0, len(idx.files))
 	for rel, rec := range idx.files {
@@ -151,7 +175,8 @@ func (idx *Index) Overview(ctx context.Context, limit int) (OverviewResult, erro
 		for _, entry := range rec.entrypoints {
 			result.Entrypoints = append(result.Entrypoints, Entrypoint{
 				Path: rel, Package: entry.Package, Symbol: entry.Name,
-				QualifiedName: entry.QualifiedName, Line: entry.Line,
+				QualifiedName: entry.QualifiedName, Language: entry.Language,
+				NativeKind: entry.NativeKind, Line: entry.Line,
 				EndLine: entry.EndLine, Column: entry.Column,
 			})
 		}
@@ -162,6 +187,9 @@ func (idx *Index) Overview(ctx context.Context, limit int) (OverviewResult, erro
 		}
 		return result.Entrypoints[i].Line < result.Entrypoints[j].Line
 	})
+	if len(result.Packages) > result.Snapshot.Packages {
+		result.Snapshot.Packages = len(result.Packages)
+	}
 	if len(result.Entrypoints) > StructureMaxLimit {
 		result.Entrypoints = result.Entrypoints[:StructureMaxLimit]
 		result.Truncated = true
@@ -169,7 +197,19 @@ func (idx *Index) Overview(ctx context.Context, limit int) (OverviewResult, erro
 			result.Reason = "entrypoint_limit"
 		}
 	}
+	seenEntrypoints := map[string]bool{}
+	for _, entry := range result.Entrypoints {
+		seenEntrypoints[entry.Path+"\x00"+entry.QualifiedName] = true
+	}
+	for _, entry := range conventionalEntrypoints(idx.files) {
+		if seenEntrypoints[entry.Path] {
+			continue
+		}
+		seenEntrypoints[entry.Path] = true
+		result.Entrypoints = append(result.Entrypoints, entry)
+	}
 	result.Configs = configFacts(idx.files, idx.modulePath)
+	result.Frameworks = frameworkFacts(result.Configs)
 	if len(result.Configs) > StructureMaxLimit {
 		result.Configs = result.Configs[:StructureMaxLimit]
 		result.Truncated = true
@@ -182,21 +222,103 @@ func (idx *Index) Overview(ctx context.Context, limit int) (OverviewResult, erro
 
 // fileInfoLocked projects one record into the inventory shape.
 func (idx *Index) fileInfoLocked(rel string, rec fileRecord) FileInfo {
+	unsupported := false
+	if language, ok := LanguageForPath(rel); ok {
+		if _, supported := idx.adapterLanguageSupported(language); !supported {
+			unsupported = true
+		}
+	}
+	parseError := parseErrorText(rec.err)
+	if parseError == "" && rec.partial && len(rec.issues) > 0 {
+		parseError = rec.issues[0].Message
+	}
 	return FileInfo{
 		Path: rel, Dir: dirOf(rel), Package: rec.packageName,
-		Language: rec.language, Kind: rec.kind, Test: rec.test,
-		Size: rec.size, Symbols: len(rec.symbols),
+		Language: rec.language, Adapter: rec.adapter, Kind: rec.kind, Test: rec.test,
+		Parsed: rec.parsed, ParseError: parseError, Unsupported: unsupported,
+		Size: rec.size, Symbols: len(rec.symbols), Exports: exportedCount(rec.symbols),
 	}
+}
+
+func parseErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := err.Error()
+	if len(text) > 240 {
+		text = text[:240]
+	}
+	return text
+}
+
+func exportedCount(symbols []Match) int {
+	count := 0
+	for _, symbol := range symbols {
+		if symbol.Exported {
+			count++
+		}
+	}
+	return count
 }
 
 // packageInfoLocked projects one graph node into the inventory shape.
 func (idx *Index) packageInfoLocked(node *graphNode) PackageInfo {
 	return PackageInfo{
-		Dir: node.path, Name: node.name,
+		Dir: node.path, Name: node.name, Language: LanguageGo,
 		Packages: append([]string(nil), node.packages...),
 		Files:    node.files, TestFiles: node.testFiles, Symbols: node.symbols,
 		Imports: len(node.imports), Importers: node.importers, Ambiguous: node.ambiguous,
 	}
+}
+
+// languagePackagesLocked aggregates parsed non-Go files by directory and
+// namespace. It is derived from the same records; it is not a second package
+// graph. Go stays with the module-aware graph above.
+func (idx *Index) languagePackagesLocked(query PackageQuery, scope string, scopeFile bool) []PackageInfo {
+	type key struct {
+		dir, name string
+		language  Language
+	}
+	aggregates := map[key]*PackageInfo{}
+	for rel, rec := range idx.files {
+		if !rec.parsed || rec.err != nil || rec.language == string(LanguageGo) || !IsSourcePath(rel) {
+			continue
+		}
+		if scope != "" && !fileScopeContains(scope, scopeFile, rel) {
+			continue
+		}
+		dir := dirOf(rel)
+		name := rec.packageName
+		if name == "" {
+			name = dir
+		}
+		if query.Name != "" && name != query.Name {
+			continue
+		}
+		k := key{dir: dir, name: name, language: rec.languageValue()}
+		info := aggregates[k]
+		if info == nil {
+			info = &PackageInfo{Dir: dir, Name: name, Language: rec.languageValue()}
+			aggregates[k] = info
+		}
+		info.Files++
+		if rec.test {
+			info.TestFiles++
+		}
+		info.Symbols += len(rec.symbols)
+		info.Imports += len(rec.imports)
+	}
+	out := make([]PackageInfo, 0, len(aggregates))
+	for _, info := range aggregates {
+		out = append(out, *info)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Dir != out[j].Dir {
+			return out[i].Dir < out[j].Dir
+		}
+		return out[i].Language < out[j].Language
+	})
+	return out
 }
 
 // Entrypoints returns every proven non-test Go entrypoint. It is bounded by
@@ -211,6 +333,9 @@ func (idx *Index) Entrypoints(ctx context.Context) (EntrypointResult, error) {
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureParsedLockedCtx(ctx); err != nil {
+		return EntrypointResult{}, err
+	}
 
 	result := EntrypointResult{Snapshot: idx.infoLocked()}
 	for rel, rec := range idx.files {
@@ -280,6 +405,9 @@ func (idx *Index) Tests(ctx context.Context, query TestQuery) (TestResult, error
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureParsedLockedCtx(ctx); err != nil {
+		return TestResult{}, err
+	}
 
 	result := TestResult{Snapshot: idx.infoLocked(), Symbol: query.Symbol}
 	scope, scopeFile, err := idx.fileScopeLocked(query.Path)
@@ -372,6 +500,9 @@ func (idx *Index) Impact(ctx context.Context, query ImpactQuery) (ImpactResult, 
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureParsedLockedCtx(ctx); err != nil {
+		return ImpactResult{}, err
+	}
 
 	result := ImpactResult{
 		Snapshot:  idx.infoLocked(),
@@ -445,7 +576,9 @@ func (idx *Index) Impact(ctx context.Context, query ImpactQuery) (ImpactResult, 
 		}
 		result.Edges = append(result.Edges, Edge{
 			From: from, To: to, Kind: EdgeReferences,
-			Source: SourceRef{Path: ref.Path, StartLine: ref.Line, StartCol: ref.Column, Test: ref.Test},
+			Resolution: ResolutionResolved, Language: LanguageGo, Adapter: "go",
+			Source: SourceRef{Path: ref.Path, StartLine: ref.Line, StartCol: ref.Column,
+				Test: ref.Test, Language: LanguageGo, Adapter: "go"},
 		})
 	}
 
@@ -464,7 +597,9 @@ func (idx *Index) Impact(ctx context.Context, query ImpactQuery) (ImpactResult, 
 		nodes[callee] = callNodeToNode(edge.Callee)
 		result.Edges = append(result.Edges, Edge{
 			From: caller, To: callee, Kind: EdgeCalls, Certainty: string(edge.Certainty),
-			Source: SourceRef{Path: edge.CallPath, StartLine: edge.CallLine, StartCol: edge.Column, Test: edge.Test},
+			Resolution: ResolutionResolved, Language: edge.Caller.Language, Adapter: "go",
+			Source: SourceRef{Path: edge.CallPath, StartLine: edge.CallLine, StartCol: edge.Column,
+				Test: edge.Test, Language: edge.Caller.Language, Adapter: "go"},
 		})
 	}
 
@@ -481,6 +616,9 @@ func (idx *Index) Impact(ctx context.Context, query ImpactQuery) (ImpactResult, 
 		result.Truncated, result.Reason = true, "work_limit"
 	}
 	result.Tests = tests
+	if err := idx.mergeGenericImpactLocked(ctx, &result, targets, limit, nodes); err != nil {
+		return ImpactResult{}, err
+	}
 	sort.SliceStable(result.Tests, func(i, j int) bool {
 		if result.Tests[i].Test.Path != result.Tests[j].Test.Path {
 			return result.Tests[i].Test.Path < result.Tests[j].Test.Path
@@ -778,40 +916,91 @@ func (idx *Index) testAssociationsLocked(ctx context.Context, targets []RefTarge
 
 // impactUnknownLocked discloses the blind spots that apply to the projection.
 func (idx *Index) impactUnknownLocked(targets []RefTarget) UnknownSummary {
+	var result UnknownSummary
 	if idx.symbolGraph == nil {
-		return UnknownSummary{}
+		if idx.languageGraph != nil {
+			result = idx.languageGraph.stats()
+		}
+		return result
 	}
 	if len(targets) == 1 {
-		unknown := idx.referenceUnknownLocked(targets[0])
-		unknown.DynamicCalls = idx.symbolGraph.unknownTotal
-		unknown.Reasons = copyReasons(idx.symbolGraph.unknownReasons)
-		return unknown
-	}
-	dotFiles := map[string]bool{}
-	for _, files := range idx.symbolGraph.dotAffected {
-		for rel := range files {
-			dotFiles[rel] = true
+		result = idx.referenceUnknownLocked(targets[0])
+		result.DynamicCalls = idx.symbolGraph.unknownTotal
+		result.Reasons = copyReasons(idx.symbolGraph.unknownReasons)
+	} else {
+		dotFiles := map[string]bool{}
+		for _, files := range idx.symbolGraph.dotAffected {
+			for rel := range files {
+				dotFiles[rel] = true
+			}
+		}
+		result = UnknownSummary{
+			DotImportFiles: len(dotFiles),
+			AmbiguousUses:  idx.symbolGraph.ambiguousUses,
+			UnresolvedUses: idx.symbolGraph.unresolvedUses,
+			DynamicCalls:   idx.symbolGraph.unknownTotal,
+			Reasons:        copyReasons(idx.symbolGraph.unknownReasons),
 		}
 	}
-	return UnknownSummary{
-		DotImportFiles: len(dotFiles),
-		AmbiguousUses:  idx.symbolGraph.ambiguousUses,
-		UnresolvedUses: idx.symbolGraph.unresolvedUses,
-		DynamicCalls:   idx.symbolGraph.unknownTotal,
-		Reasons:        copyReasons(idx.symbolGraph.unknownReasons),
+	if idx.languageGraph != nil {
+		result = mergeUnknown(result, idx.languageGraph.stats())
 	}
+	return result
 }
 
 // targetNode projects one declaration into the canonical node vocabulary.
 func targetNode(target RefTarget) Node {
 	return Node{
-		ID:   SymbolNodeID(target.Path, target.Line, target.QualifiedName),
-		Kind: NodeSymbol,
-		Name: target.Symbol,
+		ID:         SymbolNodeID(target.Path, target.Line, target.QualifiedName),
+		Kind:       nodeKindForCanonical(target.Canonical),
+		Name:       target.Symbol,
+		Qualified:  target.QualifiedName,
+		NativeKind: target.NativeKind,
+		Language:   target.Language,
+		Exported:   target.Exported,
 		Source: SourceRef{
 			Path: target.Path, Package: target.Package, Symbol: target.Symbol,
-			StartLine: target.Line, EndLine: target.EndLine,
+			Language: target.Language, StartLine: target.Line, EndLine: target.EndLine,
 		},
+	}
+}
+
+// nodeKindForCanonical maps the declaration vocabulary into the canonical node
+// kinds used by graph projections.
+func nodeKindForCanonical(kind SymbolKind) NodeKind {
+	switch kind {
+	case SymbolClass:
+		return NodeClass
+	case SymbolStruct, SymbolUnion:
+		return NodeStruct
+	case SymbolInterface, SymbolTrait:
+		return NodeInterface
+	case SymbolEnum:
+		return NodeEnum
+	case SymbolFunction:
+		return NodeFunction
+	case SymbolMethod:
+		return NodeMethod
+	case SymbolField:
+		return NodeField
+	case SymbolProperty:
+		return NodeProperty
+	case SymbolConstant:
+		return NodeConstant
+	case SymbolVariable:
+		return NodeVariable
+	case SymbolTypeAlias, SymbolType:
+		return NodeTypeAlias
+	case SymbolRecord:
+		return NodeRecord
+	case SymbolObject:
+		return NodeObject
+	case SymbolConstructor:
+		return NodeConstructor
+	case SymbolNamespace, SymbolModule:
+		return NodeNamespace
+	default:
+		return NodeSymbol
 	}
 }
 
@@ -880,6 +1069,7 @@ func testInfo(test TestDecl) TestInfo {
 	return TestInfo{
 		Path: test.Symbol.Path, Package: test.Symbol.Package,
 		Symbol: test.Symbol.Name, QualifiedName: test.Symbol.QualifiedName,
+		Language: test.Symbol.Language, Framework: test.Framework,
 		Kind: test.Kind, Line: test.Symbol.Line, EndLine: test.Symbol.EndLine,
 	}
 }

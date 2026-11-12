@@ -14,23 +14,23 @@
 // (c) a pluggable backend where the default needs no C toolchain.
 //
 // Option (c) is what this package does. `BackendGo` uses the standard
-// library's `go/ast` and needs no cgo at all. A tree-sitter backend, if it is
-// ever added, lives behind an opt-in build tag, so the shipped binary stays a
-// single static Go executable and only a caller who explicitly wants
-// multi-language parsing pays for cgo.
-//
-// The rule is therefore amended rather than broken: **cgo is opt-in and
-// isolated, never a default dependency.**
+// library's `go/ast` and needs no cgo at all. The multi-language adapters live
+// in files guarded by `//go:build cgo`; the same package compiles without cgo,
+// keeps the native Go path, and reports every other supported extension as
+// unsupported. No grammar is fetched at runtime and no host shared library is
+// required: the grammar sources are pinned in go.mod and compiled into the
+// binary.
 //
 // # Repository snapshot
 //
-// GoBackend is also the MVP language adapter for Index, the in-process
+// GoBackend is also the native language adapter for Index, the in-process
 // structural snapshot shared by the symbols, graph, refs, and structure tools.
 // One Index owns symbol coordinates, file/package facts, imports, references,
-// direct calls, tests, and entrypoints. It is incremental: a refresh parses
-// only changed Go files and re-resolves relationships from retained syntax. It
-// writes nothing; the source tree remains authoritative and <project>/.ohgo/graph.db
-// stays a deferred, disposable location.
+// direct calls, tests, entrypoints, language coverage, and the canonical
+// relationship projection. It is incremental: a refresh parses only changed
+// files and re-resolves relationships from retained syntax. It writes nothing;
+// the source tree remains authoritative and <project>/.ohgo/graph.db stays a
+// deferred, disposable location.
 package ast
 
 import (
@@ -88,6 +88,21 @@ type Match struct {
 	// Canonical is the language-neutral declaration kind. Kind remains the
 	// Go adapter's compatibility projection.
 	Canonical SymbolKind
+	// NativeKind is the adapter's original syntax kind, e.g.
+	// "interface_declaration" or "impl_item". It is data, never a dispatch key.
+	NativeKind string
+	// Language is the declaration's source language.
+	Language Language
+	// Adapter is the parser identity that produced the declaration.
+	Adapter string
+	// Visibility is public, protected, private, internal, or package.
+	Visibility string
+	// Container is the enclosing class, struct, module, or namespace name.
+	Container string
+	// Receiver is the method receiver type, when the language has one.
+	Receiver string
+	// Exported reports a declaration visible outside its package/module.
+	Exported bool
 	// Doc is the declaration's doc comment, trimmed.
 	Doc string
 	// Signature is a one-line rendering of the declaration's head.
@@ -122,8 +137,20 @@ type Import struct {
 	Alias string
 	// Line is the 1-based line the import declaration starts on.
 	Line int
-	// Test reports that the declaration came from a _test.go file.
+	// Test reports that the declaration came from a test file.
 	Test bool
+	// Language is the importing file's language.
+	Language Language
+	// Kind is module, relative, include, require, package, or namespace.
+	Kind string
+	// Names are the imported symbols, when the syntax names them.
+	Names []string
+	// Resolution is RESOLVED when the import target exists in the snapshot,
+	// UNRESOLVED for an external/unindexed module, and UNSUPPORTED when the
+	// adapter cannot resolve this import form.
+	Resolution Resolution
+	// Resolved is the repository-relative target path or module node name.
+	Resolved string
 }
 
 // FileStructure is the result of one parse: the package clause, the
@@ -156,10 +183,12 @@ type Searcher interface {
 	Search(path string, opts Options) ([]Match, error)
 }
 
-// Registry maps paths to the backend that can parse them.
+// Registry maps paths to the legacy per-file Searcher backend.
 //
-// It exists so adding a language is a registration rather than a branch at
-// every call site.
+// The repository snapshot uses DefaultAdapters/adapterSet for structural
+// ownership; Registry remains the small compatibility surface for callers that
+// search one file. Both consume the same adapter identities, so this is not a
+// second structural registry.
 type Registry struct {
 	backends []Searcher
 }
@@ -338,7 +367,21 @@ func (b GoBackend) parse(path string, opts Options) (FileFacts, error) {
 	var entrypoints []Match
 	for i := range matches {
 		matches[i].Test = testFile
+		matches[i].Language = LanguageGo
 		matches[i].Canonical = canonicalKind(matches[i].Kind)
+		if matches[i].Kind == KindPackage {
+			matches[i].Exported = true
+		} else if name := matches[i].Name; name != "" {
+			if idx := strings.LastIndexByte(name, '.'); idx >= 0 {
+				name = name[idx+1:]
+			}
+			matches[i].Exported = token.IsExported(name)
+			if matches[i].Exported {
+				matches[i].Visibility = "public"
+			} else {
+				matches[i].Visibility = "private"
+			}
+		}
 		if matches[i].Package == "" {
 			matches[i].Package = file.Name.Name
 		}
@@ -358,7 +401,7 @@ func (b GoBackend) parse(path string, opts Options) (FileFacts, error) {
 		}
 		if testFile {
 			if kind, ok := testKindForName(matches[i].Name); ok {
-				tests = append(tests, TestDecl{Symbol: matches[i], Kind: kind})
+				tests = append(tests, TestDecl{Symbol: matches[i], Kind: kind, Framework: "go-test"})
 			}
 			continue
 		}
@@ -367,7 +410,9 @@ func (b GoBackend) parse(path string, opts Options) (FileFacts, error) {
 		}
 	}
 	return FileFacts{
-		Language:    "go",
+		Language:    LanguageGo,
+		Adapter:     "go",
+		Parser:      Parser{Name: "go", Version: "stdlib"},
 		Package:     file.Name.Name,
 		Symbols:     matches,
 		Imports:     imports,
@@ -430,11 +475,13 @@ func kindAllowed(opts Options, kind Kind) bool {
 func goFuncMatch(fset *token.FileSet, path string, decl *ast.FuncDecl) Match {
 	kind := KindFunc
 	name := decl.Name.Name
+	receiver := ""
 	if decl.Recv != nil && len(decl.Recv.List) > 0 {
 		kind = KindMethod
 		// A method is qualified by its receiver, because a bare method name is
 		// ambiguous across types.
-		if receiver := typeName(decl.Recv.List[0].Type); receiver != "" {
+		receiver = typeName(decl.Recv.List[0].Type)
+		if receiver != "" {
 			name = receiver + "." + decl.Name.Name
 		}
 	}
@@ -447,6 +494,8 @@ func goFuncMatch(fset *token.FileSet, path string, decl *ast.FuncDecl) Match {
 	return Match{
 		Kind:      kind,
 		Name:      name,
+		Container: receiver,
+		Receiver:  receiver,
 		Path:      path,
 		Line:      fset.Position(decl.Pos()).Line,
 		Column:    fset.Position(decl.Pos()).Column,
@@ -600,10 +649,12 @@ func goImportRecord(fset *token.FileSet, spec *ast.ImportSpec, testFile bool) Im
 		alias = spec.Name.Name
 	}
 	return Import{
-		Path:  path,
-		Alias: alias,
-		Line:  fset.Position(spec.Pos()).Line,
-		Test:  testFile,
+		Path:     path,
+		Alias:    alias,
+		Line:     fset.Position(spec.Pos()).Line,
+		Test:     testFile,
+		Language: LanguageGo,
+		Kind:     "module",
 	}
 }
 

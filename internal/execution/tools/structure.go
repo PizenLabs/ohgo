@@ -32,19 +32,21 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 	tool := &StructureTool{Root: root, source: source}
 	tool.Base = NewBase("structure",
 		"Answer project-structure inventory questions over the shared "+
-			"repository snapshot: files, packages, tests, configs, "+
-			"entrypoints, and bounded static impact. Select a view and "+
-			"optionally scope it with path, package, or symbol. Every result "+
-			"names its snapshot id, generation, and completeness; test "+
-			"associations are static and are not coverage. This is advisory "+
-			"evidence, not permission for mutation or execution.",
+			"repository snapshot: languages, files, packages, tests, configs, "+
+			"entrypoints, explicit relations, and bounded static impact. Select "+
+			"a view and optionally scope it with path, package, or symbol. "+
+			"Overview is metadata-first and does not parse source; targeted and "+
+			"impact views parse the pending supported files on demand. Every "+
+			"result names its snapshot id, generation, activation, and "+
+			"completeness; test associations are static and are not coverage. "+
+			"Semantic activation is unsupported and fails explicitly.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"view": map[string]any{
 					"type":        "string",
-					"enum":        []any{"overview", "files", "packages", "entrypoints", "configs", "tests", "impact"},
+					"enum":        []any{"overview", "languages", "files", "packages", "entrypoints", "configs", "tests", "relations", "impact"},
 					"description": "Inventory view. Defaults to overview.",
 				},
 				"path": map[string]any{
@@ -75,16 +77,20 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 				},
 				"depth": map[string]any{
 					"type":        "integer",
-					"description": "Caller traversal depth for impact (default 1).",
+					"description": "Caller traversal depth for impact/relations (default 1).",
 					"minimum":     1.0,
 					"maximum":     float64(ast.RefMaxDepth),
+				},
+				"activation": map[string]any{
+					"type":        "string",
+					"enum":        []any{"overview", "targeted", "impact", "semantic"},
+					"description": "Requested structural depth. Defaults from the view. Semantic is explicitly unsupported in this build.",
 				},
 			},
 		},
 		agent.Approval{Tier: agent.TierRead},
 	)
-	tool.SetRequiredLanguage("go")
-	tool.SetActionClasses(agent.ActionObserve)
+	tool.SetActionClasses(agent.ActionObserve, agent.ActionStructure)
 	return tool
 }
 
@@ -112,7 +118,7 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 		}
 		view = strings.TrimSpace(value)
 		switch view {
-		case "overview", "files", "packages", "entrypoints", "configs", "tests", "impact":
+		case "overview", "languages", "files", "packages", "entrypoints", "configs", "tests", "relations", "impact":
 		default:
 			return agent.ErrorResult("unsupported view %q", value)
 		}
@@ -154,8 +160,15 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 	if depth < 1 || depth > ast.RefMaxDepth {
 		return agent.ErrorResult("depth must be between 1 and %d, got %d", ast.RefMaxDepth, depth)
 	}
-	if view == "impact" && symbolArg == "" && pathArg == "" {
-		return agent.ErrorResult("impact requires symbol or path")
+	if (view == "impact" || view == "relations") && symbolArg == "" && pathArg == "" {
+		return agent.ErrorResult("%s requires symbol or path", view)
+	}
+	activation, err := structureActivation(args, view)
+	if err != nil {
+		return agent.ErrorResult("%v", err)
+	}
+	if activation == ast.ActivationSemantic {
+		return agent.ErrorResult("semantic structural activation is unsupported: no semantic resolver is configured")
 	}
 	switch view {
 	case "overview", "entrypoints", "configs":
@@ -187,6 +200,11 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 	if err != nil {
 		return agent.ErrorResult("build repository index: %v", err)
 	}
+	if activation.ParsesSource() {
+		if err := idx.EnsureParsed(ctx.Ctx); err != nil {
+			return agent.ErrorResult("parse repository structure: %v", err)
+		}
+	}
 	if err := checkCancelled(ctx.Ctx); err != nil {
 		return agent.ErrorResult("%v", err)
 	}
@@ -194,6 +212,8 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 	switch view {
 	case "overview":
 		return t.overview(ctx, idx, limit)
+	case "languages":
+		return t.languageView(ctx, idx, limit)
 	case "files":
 		return t.files(ctx, idx, pathArg, packageArg, limit, skip)
 	case "packages":
@@ -204,10 +224,145 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 		return t.configs(ctx, idx)
 	case "tests":
 		return t.tests(ctx, idx, symbolArg, pathArg, packageArg, limit, skip)
+	case "relations":
+		return t.relationsView(ctx, idx, symbolArg, pathArg, depth, limit)
 	case "impact":
 		return t.impact(ctx, idx, symbolArg, pathArg, depth, limit)
 	default:
 		return agent.ErrorResult("unsupported view %q", view)
+	}
+}
+
+func (t *StructureTool) languageView(ctx agent.Context, idx *ast.Index, limit int) agent.Result {
+	result, err := idx.Overview(ctx.Ctx, limit)
+	if err != nil {
+		return agent.ErrorResult("languages: %v", err)
+	}
+	status := "ok"
+	if len(result.Languages) == 0 {
+		status = "not_found"
+	}
+	var text strings.Builder
+	writeStructureHeader(&text, status, "languages", result.Snapshot)
+	fmt.Fprintf(&text, "languages: %d\n", len(result.Languages))
+	for _, language := range result.Languages {
+		fmt.Fprintf(&text, "  - language: %s\n", ast.DisplayLanguage(language.Language))
+		fmt.Fprintf(&text, "    supported: %v\n", language.Supported)
+		fmt.Fprintf(&text, "    coverage: %s\n", language.Coverage)
+		fmt.Fprintf(&text, "    files: %d\n", language.Files)
+		fmt.Fprintf(&text, "    parsed: %d\n", language.Parsed)
+		fmt.Fprintf(&text, "    pending: %d\n", language.Pending)
+		fmt.Fprintf(&text, "    failed: %d\n", language.Failed)
+		fmt.Fprintf(&text, "    symbols: %d\n", language.Symbols)
+	}
+	if len(result.Unsupported) > 0 {
+		text.WriteString("\nunsupported_source:\n")
+		for _, item := range result.Unsupported {
+			fmt.Fprintf(&text, "  - extension: %s\n    files: %d\n", item.Extension, item.Files)
+		}
+	}
+	if len(result.Frameworks) > 0 {
+		fmt.Fprintf(&text, "\nframeworks: %s\n", strings.Join(result.Frameworks, ", "))
+	}
+	details := map[string]any{
+		"status":      status,
+		"view":        "languages",
+		"snapshot":    snapshotMap(result.Snapshot),
+		"languages":   languageMaps(result.Languages),
+		"unsupported": unsupportedMaps(result.Unsupported),
+		"frameworks":  append([]string(nil), result.Frameworks...),
+	}
+	addStructuralProvenance(details, idx, result.Snapshot.StructuralComplete)
+	return agent.Result{
+		Text:    strings.TrimRight(text.String(), "\n"),
+		Details: details,
+		Useless: len(result.Languages) == 0,
+	}
+}
+
+// relationsView exposes the explicit inheritance/call neighbourhood without
+// dumping references. It is the IMPACT-level structural surface.
+func (t *StructureTool) relationsView(ctx agent.Context, idx *ast.Index, symbolArg, pathArg string, depth, limit int) agent.Result {
+	result, err := idx.Impact(ctx.Ctx, ast.ImpactQuery{
+		Symbol: symbolArg, Path: pathArg, Depth: depth, Limit: limit,
+	})
+	if err != nil {
+		return agent.ErrorResult("relations: %v", err)
+	}
+	status := structureStatus(len(result.Edges) == 0, result.Truncated)
+	if result.Ambiguous {
+		status = "ambiguous"
+	} else if !result.Found {
+		status = "not_found"
+	}
+	var text strings.Builder
+	writeStructureHeader(&text, status, "relations", result.Snapshot)
+	fmt.Fprintf(&text, "query: %s %s\n", result.QueryType, result.Selector)
+	if result.Ambiguous {
+		text.WriteString("ambiguous: true\n")
+		for _, candidate := range result.Candidates {
+			fmt.Fprintf(&text, "  - %s %s:%d\n", candidate.QualifiedName, candidate.Path, candidate.Line)
+		}
+	}
+	if result.Truncated {
+		fmt.Fprintf(&text, "truncated: true\nreason: %s\n", result.Reason)
+	}
+	fmt.Fprintf(&text, "targets: %d\n", len(result.Targets))
+	fmt.Fprintf(&text, "nodes: %d\n", len(result.Nodes))
+	fmt.Fprintf(&text, "edges: %d\n", len(result.Edges))
+	writeImpactUnknown(&text, result.Unknown)
+	if len(result.Targets) > 0 {
+		text.WriteString("\ntargets:\n")
+		for _, target := range result.Targets {
+			fmt.Fprintf(&text, "  - symbol: %s\n", target.QualifiedName)
+			fmt.Fprintf(&text, "    path: %s\n", target.Path)
+			fmt.Fprintf(&text, "    line: %d\n", target.Line)
+			if target.Language != "" {
+				fmt.Fprintf(&text, "    language: %s\n", target.Language)
+			}
+			if target.Canonical != "" {
+				fmt.Fprintf(&text, "    canonical_kind: %s\n", target.Canonical)
+			}
+		}
+	}
+	if len(result.Edges) > 0 {
+		text.WriteString("\nedges:\n")
+		for _, edge := range result.Edges {
+			fmt.Fprintf(&text, "  - from: %s\n", edge.From)
+			fmt.Fprintf(&text, "    to: %s\n", edge.To)
+			fmt.Fprintf(&text, "    kind: %s\n", edge.Kind)
+			if edge.Resolution != "" {
+				fmt.Fprintf(&text, "    resolution: %s\n", edge.Resolution)
+			}
+			if edge.Language != "" {
+				fmt.Fprintf(&text, "    language: %s\n", edge.Language)
+			}
+			fmt.Fprintf(&text, "    path: %s\n", edge.Source.Path)
+			fmt.Fprintf(&text, "    line: %d\n", edge.Source.StartLine)
+		}
+	}
+	details := map[string]any{
+		"status":     status,
+		"view":       "relations",
+		"snapshot":   snapshotMap(result.Snapshot),
+		"query_type": result.QueryType,
+		"selector":   result.Selector,
+		"found":      result.Found,
+		"ambiguous":  result.Ambiguous,
+		"candidates": refTargetMaps(result.Candidates),
+		"targets":    refTargetMaps(result.Targets),
+		"nodes":      nodeMaps(result.Nodes),
+		"edges":      edgeMaps(result.Edges),
+		"truncated":  result.Truncated,
+		"reason":     result.Reason,
+		"unknown":    unknownMap(result.Unknown),
+	}
+	addStructuralProvenance(details, idx, result.Found && !result.Truncated && !result.Ambiguous)
+	details["coordinates"] = impactCoordinates(result)
+	return agent.Result{
+		Text:    strings.TrimRight(text.String(), "\n"),
+		Details: details,
+		Useless: !result.Found && !result.Ambiguous,
 	}
 }
 
@@ -228,8 +383,20 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 	}
 	var text strings.Builder
 	writeStructureHeader(&text, status, "overview", info)
+	fmt.Fprintf(&text, "languages: %s\n", languageSummary(info.Languages))
+	if len(result.Frameworks) > 0 {
+		fmt.Fprintf(&text, "frameworks: %s\n", strings.Join(result.Frameworks, ", "))
+	}
+	if len(info.Unsupported) > 0 {
+		parts := make([]string, 0, len(info.Unsupported))
+		for _, item := range info.Unsupported {
+			parts = append(parts, fmt.Sprintf("%s(%d)", item.Extension, item.Files))
+		}
+		fmt.Fprintf(&text, "unsupported_source: %s\n", strings.Join(parts, ", "))
+	}
 	fmt.Fprintf(&text, "packages: %d\n", info.Packages)
-	fmt.Fprintf(&text, "files: %d (go: %d, configs: %d)\n", info.Files, info.GoFiles, info.Configs)
+	fmt.Fprintf(&text, "files: %d (go: %d, source: %d, configs: %d)\n", info.Files, info.GoFiles, info.SourceFiles, info.Configs)
+	fmt.Fprintf(&text, "parsed_files: %d pending_files: %d failed_files: %d\n", info.ParsedFiles, info.PendingFiles, info.FailedFiles)
 	fmt.Fprintf(&text, "symbols: %d\n", info.Symbols)
 	fmt.Fprintf(&text, "references: %d\n", info.References)
 	fmt.Fprintf(&text, "calls: %d\n", info.Calls)
@@ -270,6 +437,9 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 		"files":       fileMaps(result.Files),
 		"entrypoints": entrypointMaps(result.Entrypoints),
 		"configs":     configMaps(result.Configs),
+		"languages":   languageMaps(result.Languages),
+		"unsupported": unsupportedMaps(result.Unsupported),
+		"frameworks":  append([]string(nil), result.Frameworks...),
 		"truncated":   result.Truncated,
 		"reason":      result.Reason,
 	}
@@ -306,6 +476,12 @@ func (t *StructureTool) files(ctx agent.Context, idx *ast.Index, pathArg, packag
 			}
 			if file.Test {
 				text.WriteString("    test: true\n")
+			}
+			if file.Unsupported {
+				text.WriteString("    unsupported: true\n")
+			}
+			if file.ParseError != "" {
+				fmt.Fprintf(&text, "    parse_error: %s\n", file.ParseError)
 			}
 			fmt.Fprintf(&text, "    symbols: %d\n", file.Symbols)
 			fmt.Fprintf(&text, "    size: %d\n", file.Size)
@@ -350,6 +526,9 @@ func (t *StructureTool) packages(ctx agent.Context, idx *ast.Index, pathArg, pac
 		for _, pkg := range result.Packages {
 			fmt.Fprintf(&text, "  - dir: %s\n", pkg.Dir)
 			fmt.Fprintf(&text, "    package: %s\n", pkg.Name)
+			if pkg.Language != "" {
+				fmt.Fprintf(&text, "    language: %s\n", ast.DisplayLanguage(pkg.Language))
+			}
 			fmt.Fprintf(&text, "    files: %d\n", pkg.Files)
 			fmt.Fprintf(&text, "    test_files: %d\n", pkg.TestFiles)
 			fmt.Fprintf(&text, "    symbols: %d\n", pkg.Symbols)
@@ -393,6 +572,12 @@ func (t *StructureTool) entrypoints(ctx agent.Context, idx *ast.Index) agent.Res
 		for _, entry := range result.Entrypoints {
 			fmt.Fprintf(&text, "  - symbol: %s\n", entry.QualifiedName)
 			fmt.Fprintf(&text, "    path: %s\n", entry.Path)
+			if entry.Language != "" {
+				fmt.Fprintf(&text, "    language: %s\n", ast.DisplayLanguage(entry.Language))
+			}
+			if entry.NativeKind != "" {
+				fmt.Fprintf(&text, "    native_kind: %s\n", entry.NativeKind)
+			}
 			fmt.Fprintf(&text, "    line: %d\n", entry.Line)
 			fmt.Fprintf(&text, "    column: %d\n", entry.Column)
 		}
@@ -429,6 +614,12 @@ func (t *StructureTool) configs(ctx agent.Context, idx *ast.Index) agent.Result 
 		for _, config := range result.Configs {
 			fmt.Fprintf(&text, "  - path: %s\n", config.Path)
 			fmt.Fprintf(&text, "    kind: %s\n", config.Kind)
+			if config.Language != "" {
+				fmt.Fprintf(&text, "    language: %s\n", ast.DisplayLanguage(config.Language))
+			}
+			if config.Framework != "" {
+				fmt.Fprintf(&text, "    framework: %s\n", config.Framework)
+			}
 			if config.Value != "" {
 				fmt.Fprintf(&text, "    value: %s\n", config.Value)
 			}
@@ -491,6 +682,12 @@ func (t *StructureTool) tests(ctx agent.Context, idx *ast.Index, symbolArg, path
 		for _, test := range result.Tests {
 			fmt.Fprintf(&text, "  - symbol: %s\n", test.QualifiedName)
 			fmt.Fprintf(&text, "    path: %s\n", test.Path)
+			if test.Language != "" {
+				fmt.Fprintf(&text, "    language: %s\n", ast.DisplayLanguage(test.Language))
+			}
+			if test.Framework != "" {
+				fmt.Fprintf(&text, "    framework: %s\n", test.Framework)
+			}
 			fmt.Fprintf(&text, "    line: %d\n", test.Line)
 			fmt.Fprintf(&text, "    kind: %s\n", test.Kind)
 		}
@@ -643,7 +840,7 @@ func (t *StructureTool) impact(ctx agent.Context, idx *ast.Index, symbolArg, pat
 func validateStructureArgs(args map[string]any) error {
 	allowed := map[string]bool{
 		"view": true, "path": true, "package": true, "symbol": true,
-		"limit": true, "skip": true, "depth": true,
+		"limit": true, "skip": true, "depth": true, "activation": true,
 	}
 	for key := range args {
 		if !allowed[key] {
@@ -651,6 +848,59 @@ func validateStructureArgs(args map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// structureActivation resolves the requested depth and rejects a view that
+// would need more than the caller allowed. The default is the smallest depth
+// that can answer the view: overview views stay metadata-only.
+func structureActivation(args map[string]any, view string) (ast.Activation, error) {
+	required := ast.ActivationOverview
+	switch view {
+	case "overview", "languages", "files", "configs":
+		required = ast.ActivationOverview
+	case "packages", "entrypoints", "tests":
+		required = ast.ActivationTargeted
+	case "relations", "impact":
+		required = ast.ActivationImpact
+	}
+	requested := required
+	if raw, ok := args["activation"]; ok {
+		value, ok := raw.(string)
+		if !ok {
+			return "", fmt.Errorf("argument %q must be a string", "activation")
+		}
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "overview":
+			requested = ast.ActivationOverview
+		case "targeted":
+			requested = ast.ActivationTargeted
+		case "impact":
+			requested = ast.ActivationImpact
+		case "semantic":
+			requested = ast.ActivationSemantic
+		default:
+			return "", fmt.Errorf("unsupported activation %q", value)
+		}
+	}
+	if requested == ast.ActivationSemantic {
+		return requested, nil
+	}
+	rank := func(level ast.Activation) int {
+		switch level {
+		case ast.ActivationOverview:
+			return 1
+		case ast.ActivationTargeted:
+			return 2
+		case ast.ActivationImpact:
+			return 3
+		default:
+			return 0
+		}
+	}
+	if rank(requested) < rank(required) {
+		return "", fmt.Errorf("view %q requires %s activation, got %s", view, required, requested)
+	}
+	return requested, nil
 }
 
 // structureStatus is the shared inventory status vocabulary.
@@ -672,11 +922,21 @@ func writeStructureHeader(text *strings.Builder, status, view string, info ast.S
 	fmt.Fprintf(text, "snapshot_id: %s\n", info.SnapshotID)
 	fmt.Fprintf(text, "generation: %d\n", info.Generation)
 	fmt.Fprintf(text, "graph_state: %s\n", info.State)
+	fmt.Fprintf(text, "activation: %s\n", info.Activation)
 	if info.Module != "" {
 		fmt.Fprintf(text, "module: %s\n", info.Module)
 	}
+	fmt.Fprintf(text, "parsed_files: %d pending_files: %d failed_files: %d\n",
+		info.ParsedFiles, info.PendingFiles, info.FailedFiles)
 	if info.Partial {
 		fmt.Fprintf(text, "partial: true\nparse_failures: %d\n", info.ParseFailures)
+	}
+	if len(info.Unsupported) > 0 {
+		parts := make([]string, 0, len(info.Unsupported))
+		for _, item := range info.Unsupported {
+			parts = append(parts, fmt.Sprintf("%s(%d)", item.Extension, item.Files))
+		}
+		fmt.Fprintf(text, "unsupported_source: %s\n", strings.Join(parts, ", "))
 	}
 }
 
@@ -694,31 +954,77 @@ func displayPackage(pkg ast.PackageInfo) string {
 // snapshotMap projects the snapshot header into structured details.
 func snapshotMap(info ast.SnapshotInfo) map[string]any {
 	return map[string]any{
-		"root":               info.Root,
-		"module":             info.Module,
-		"module_root":        info.ModuleRoot,
-		"generation":         info.Generation,
-		"snapshot_id":        info.SnapshotID,
-		"source_fingerprint": info.SourceFingerprint,
-		"scope_fingerprint":  info.ScopeFingerprint,
-		"state":              string(info.State),
-		"built_at":           info.BuiltAt,
-		"files":              info.Files,
-		"go_files":           info.GoFiles,
-		"directories":        info.Directories,
-		"packages":           info.Packages,
-		"symbols":            info.Symbols,
-		"references":         info.References,
-		"calls":              info.Calls,
-		"tests":              info.Tests,
-		"entrypoints":        info.Entrypoints,
-		"configs":            info.Configs,
-		"parse_failures":     info.ParseFailures,
-		"partial":            info.Partial,
-		"last_parsed_files":  info.LastParsedFiles,
-		"last_reused_files":  info.LastReusedFiles,
-		"last_resolution":    info.LastResolution,
+		"root":                info.Root,
+		"module":              info.Module,
+		"module_root":         info.ModuleRoot,
+		"generation":          info.Generation,
+		"snapshot_id":         info.SnapshotID,
+		"source_fingerprint":  info.SourceFingerprint,
+		"scope_fingerprint":   info.ScopeFingerprint,
+		"state":               string(info.State),
+		"activation":          string(info.Activation),
+		"built_at":            info.BuiltAt,
+		"files":               info.Files,
+		"go_files":            info.GoFiles,
+		"source_files":        info.SourceFiles,
+		"parsed_files":        info.ParsedFiles,
+		"pending_files":       info.PendingFiles,
+		"failed_files":        info.FailedFiles,
+		"directories":         info.Directories,
+		"packages":            info.Packages,
+		"symbols":             info.Symbols,
+		"references":          info.References,
+		"calls":               info.Calls,
+		"tests":               info.Tests,
+		"entrypoints":         info.Entrypoints,
+		"configs":             info.Configs,
+		"parse_failures":      info.ParseFailures,
+		"partial":             info.Partial,
+		"inventory_complete":  info.InventoryComplete,
+		"structural_complete": info.StructuralComplete,
+		"languages":           languageMaps(info.Languages),
+		"unsupported":         unsupportedMaps(info.Unsupported),
+		"last_parsed_files":   info.LastParsedFiles,
+		"last_reused_files":   info.LastReusedFiles,
+		"last_resolution":     info.LastResolution,
 	}
+}
+
+// languageSummary renders the compact language mix for a text result.
+func languageSummary(languages []ast.LanguageCoverage) string {
+	parts := make([]string, 0, len(languages))
+	for _, language := range languages {
+		parts = append(parts, fmt.Sprintf("%s=%s/%d", ast.DisplayLanguage(language.Language), language.Coverage, language.Files))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func languageMaps(languages []ast.LanguageCoverage) []map[string]any {
+	out := make([]map[string]any, 0, len(languages))
+	for _, language := range languages {
+		out = append(out, map[string]any{
+			"language":  string(language.Language),
+			"supported": language.Supported,
+			"files":     language.Files,
+			"parsed":    language.Parsed,
+			"failed":    language.Failed,
+			"pending":   language.Pending,
+			"symbols":   language.Symbols,
+			"coverage":  language.Coverage,
+		})
+	}
+	return out
+}
+
+func unsupportedMaps(items []ast.UnsupportedLanguage) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"extension": item.Extension,
+			"files":     item.Files,
+		})
+	}
+	return out
 }
 
 func fileMaps(files []ast.FileInfo) []map[string]any {
@@ -726,8 +1032,10 @@ func fileMaps(files []ast.FileInfo) []map[string]any {
 	for _, file := range files {
 		out = append(out, map[string]any{
 			"path": file.Path, "dir": file.Dir, "package": file.Package,
-			"language": file.Language, "kind": string(file.Kind), "test": file.Test,
-			"size": file.Size, "symbols": file.Symbols,
+			"language": file.Language, "adapter": file.Adapter, "kind": string(file.Kind),
+			"test": file.Test, "parsed": file.Parsed, "parse_error": file.ParseError,
+			"unsupported": file.Unsupported, "size": file.Size, "symbols": file.Symbols,
+			"exports": file.Exports,
 		})
 	}
 	return out
@@ -738,6 +1046,7 @@ func packageMaps(packages []ast.PackageInfo) []map[string]any {
 	for _, pkg := range packages {
 		out = append(out, map[string]any{
 			"dir": pkg.Dir, "name": pkg.Name, "packages": append([]string(nil), pkg.Packages...),
+			"language": string(pkg.Language), "languages": append([]string(nil), pkg.Languages...),
 			"files": pkg.Files, "test_files": pkg.TestFiles, "symbols": pkg.Symbols,
 			"imports": pkg.Imports, "importers": pkg.Importers, "ambiguous": pkg.Ambiguous,
 		})
@@ -750,7 +1059,8 @@ func entrypointMaps(entries []ast.Entrypoint) []map[string]any {
 	for _, entry := range entries {
 		out = append(out, map[string]any{
 			"path": entry.Path, "package": entry.Package, "symbol": entry.Symbol,
-			"qualified_name": entry.QualifiedName, "line": entry.Line, "end_line": entry.EndLine,
+			"qualified_name": entry.QualifiedName, "language": string(entry.Language),
+			"native_kind": entry.NativeKind, "line": entry.Line, "end_line": entry.EndLine,
 			"column": entry.Column,
 		})
 	}
@@ -770,7 +1080,8 @@ func testMaps(tests []ast.TestInfo) []map[string]any {
 	for _, test := range tests {
 		out = append(out, map[string]any{
 			"path": test.Path, "package": test.Package, "symbol": test.Symbol,
-			"qualified_name": test.QualifiedName, "kind": string(test.Kind),
+			"qualified_name": test.QualifiedName, "language": string(test.Language),
+			"framework": test.Framework, "kind": string(test.Kind),
 			"line": test.Line, "end_line": test.EndLine,
 		})
 	}
@@ -839,6 +1150,8 @@ func nodeMaps(nodes []ast.Node) []map[string]any {
 	for _, node := range nodes {
 		out = append(out, map[string]any{
 			"id": node.ID, "kind": string(node.Kind), "name": node.Name,
+			"qualified_name": node.Qualified, "native_kind": node.NativeKind,
+			"language": string(node.Language), "exported": node.Exported,
 			"path": node.Source.Path, "line": node.Source.StartLine,
 		})
 	}
@@ -850,8 +1163,9 @@ func edgeMaps(edges []ast.Edge) []map[string]any {
 	for _, edge := range edges {
 		out = append(out, map[string]any{
 			"from": edge.From, "to": edge.To, "kind": string(edge.Kind),
-			"certainty": edge.Certainty, "path": edge.Source.Path,
-			"line": edge.Source.StartLine, "column": edge.Source.StartCol,
+			"certainty": edge.Certainty, "resolution": string(edge.Resolution),
+			"language": string(edge.Language), "adapter": edge.Adapter,
+			"path": edge.Source.Path, "line": edge.Source.StartLine, "column": edge.Source.StartCol,
 		})
 	}
 	return out
@@ -864,6 +1178,9 @@ func unknownMap(unknown ast.UnknownSummary) map[string]any {
 		"unresolved_uses":           unknown.UnresolvedUses,
 		"dynamic_calls":             unknown.DynamicCalls,
 		"package_initializer_calls": unknown.PackageInitializerCalls,
+		"generic_unresolved":        unknown.GenericUnresolved,
+		"generic_ambiguous":         unknown.GenericAmbiguous,
+		"unsupported_files":         unknown.UnsupportedFiles,
 		"reasons":                   unknown.Reasons,
 	}
 }
@@ -979,6 +1296,17 @@ func impactCoordinates(result ast.ImpactResult) []map[string]any {
 		out = append(out, map[string]any{
 			"path": association.Path, "line": association.Line,
 			"symbol": association.Test.QualifiedName, "kind": "test_association",
+		})
+	}
+	for _, edge := range result.Edges {
+		if edge.Source.Path == "" {
+			continue
+		}
+		out = append(out, map[string]any{
+			"path": edge.Source.Path, "line": edge.Source.StartLine,
+			"column": edge.Source.StartCol, "symbol": string(edge.Kind) + " " + edge.To,
+			"kind": "structural_edge", "language": string(edge.Language),
+			"resolution": string(edge.Resolution),
 		})
 	}
 	return out

@@ -45,8 +45,10 @@ func NewSymbolsToolWithSource(source *StructuralSource) *SymbolsTool {
 	}
 	tool := &SymbolsTool{Root: root, source: source}
 	tool.Base = NewBase("symbols",
-		"Locate Go declarations by exact symbol name, or list the declarations "+
-			"in a file, directory, or package. Returns repository-relative "+
+		"Locate declarations by exact symbol name, or list the declarations "+
+			"in a file, directory, namespace, or package. Covers registered Go, "+
+			"TypeScript/TSX, JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, C, "+
+			"and C++ adapters. Returns repository-relative "+
 			"coordinates (path, package, symbol, kind, start_line, end_line) "+
 			"without source. Use read on a returned coordinate for the exact "+
 			"declaration. Ambiguous, truncated, and partially parsed results "+
@@ -70,7 +72,12 @@ func NewSymbolsToolWithSource(source *StructuralSource) *SymbolsTool {
 				"package": map[string]any{
 					"type":        "string",
 					"minLength":   1,
-					"description": "Go package name to list or to scope a symbol query.",
+					"description": "Package, namespace, or module name to list or scope a symbol query.",
+				},
+				"language": map[string]any{
+					"type":        "string",
+					"enum":        structuralLanguageEnums(),
+					"description": "Optional language filter. A family spelling (typescript, javascript) includes its JSX/TSX variant.",
 				},
 				"limit": map[string]any{
 					"type":        "integer",
@@ -87,7 +94,8 @@ func NewSymbolsToolWithSource(source *StructuralSource) *SymbolsTool {
 		},
 		agent.Approval{Tier: agent.TierRead},
 	)
-	tool.SetRequiredLanguage("go")
+	tool.SetSupportedLanguages(structuralLanguageNames()...)
+	tool.SetActionClasses(agent.ActionObserve, agent.ActionStructure)
 	return tool
 }
 
@@ -174,6 +182,12 @@ func (t *SymbolsTool) Execute(ctx agent.Context, args map[string]any) agent.Resu
 		return agent.ErrorResult("%v", err)
 	}
 	pathArg = strings.TrimSpace(pathArg)
+
+	languageArg, err := strArg(args, "language", "")
+	if err != nil {
+		return agent.ErrorResult("%v", err)
+	}
+	languageArg = strings.TrimSpace(languageArg)
 
 	limit, err := intArg(args, "limit", SymbolDefaultLimit)
 	if err != nil {
@@ -275,6 +289,15 @@ func (t *SymbolsTool) Execute(ctx agent.Context, args map[string]any) agent.Resu
 			symbols = filtered
 		}
 	}
+	if languageArg != "" {
+		filtered := symbols[:0]
+		for _, s := range symbols {
+			if languageMatches(string(s.Language), languageArg) {
+				filtered = append(filtered, s)
+			}
+		}
+		symbols = filtered
+	}
 
 	// Every Index query already returns path/line/qualified-name order, and
 	// filtering preserves it, so there is no second ordering rule here.
@@ -353,6 +376,27 @@ func (t *SymbolsTool) Execute(ctx agent.Context, args map[string]any) agent.Resu
 		fmt.Fprintf(&sb, "    package: %s\n", s.Package)
 		fmt.Fprintf(&sb, "    symbol: %s\n", s.Name)
 		fmt.Fprintf(&sb, "    kind: %s\n", s.Kind)
+		if s.Canonical != "" && string(s.Canonical) != string(s.Kind) {
+			fmt.Fprintf(&sb, "    canonical_kind: %s\n", s.Canonical)
+		}
+		if s.Language != "" {
+			fmt.Fprintf(&sb, "    language: %s\n", s.Language)
+		}
+		if s.NativeKind != "" {
+			fmt.Fprintf(&sb, "    native_kind: %s\n", s.NativeKind)
+		}
+		if s.Adapter != "" {
+			fmt.Fprintf(&sb, "    adapter: %s\n", s.Adapter)
+		}
+		if s.Visibility != "" {
+			fmt.Fprintf(&sb, "    visibility: %s\n", s.Visibility)
+		}
+		if s.Exported {
+			sb.WriteString("    exported: true\n")
+		}
+		if s.Container != "" {
+			fmt.Fprintf(&sb, "    container: %s\n", s.Container)
+		}
 		fmt.Fprintf(&sb, "    start_line: %d\n", s.Line)
 		fmt.Fprintf(&sb, "    end_line: %d\n", s.EndLine)
 	}
@@ -360,12 +404,18 @@ func (t *SymbolsTool) Execute(ctx agent.Context, args map[string]any) agent.Resu
 	coords := make([]map[string]any, 0, len(symbols))
 	for _, s := range symbols {
 		coords = append(coords, map[string]any{
-			"path":       s.Path,
-			"package":    s.Package,
-			"symbol":     s.Name,
-			"kind":       string(s.Kind),
-			"start_line": s.Line,
-			"end_line":   s.EndLine,
+			"path":           s.Path,
+			"package":        s.Package,
+			"symbol":         s.Name,
+			"kind":           string(s.Kind),
+			"canonical_kind": string(s.Canonical),
+			"native_kind":    s.NativeKind,
+			"language":       string(s.Language),
+			"visibility":     s.Visibility,
+			"exported":       s.Exported,
+			"container":      s.Container,
+			"start_line":     s.Line,
+			"end_line":       s.EndLine,
 		})
 	}
 

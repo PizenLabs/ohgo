@@ -56,7 +56,10 @@ func (s *StructuralSource) Index() (*ast.Index, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.idx == nil {
-		idx, err := ast.NewIndexWithOptions(s.root, ast.IndexOptions{Scope: s.scope})
+		idx, err := ast.NewIndexWithOptions(s.root, ast.IndexOptions{
+			Scope:    s.scope,
+			Adaptive: true,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -79,7 +82,29 @@ func addStructuralProvenance(details map[string]any, idx *ast.Index, complete bo
 	details["graph_state"] = string(info.State)
 	details["partial"] = info.Partial
 	details["parse_failures"] = info.ParseFailures
-	details["complete"] = complete && !info.Partial
+	details["activation"] = string(info.Activation)
+	details["structural_complete"] = info.StructuralComplete
+	details["inventory_complete"] = info.InventoryComplete
+	details["parsed_files"] = info.ParsedFiles
+	details["pending_files"] = info.PendingFiles
+	details["failed_files"] = info.FailedFiles
+	details["languages"] = languageMaps(info.Languages)
+	details["unsupported_languages"] = unsupportedMaps(info.Unsupported)
+	details["completeness"] = structuralCompleteness(info)
+	details["complete"] = complete && info.StructuralComplete
+}
+
+// structuralCompleteness is the evidence-facing label; it never upgrades a
+// parse failure or unsupported source into COMPLETE.
+func structuralCompleteness(info ast.SnapshotInfo) string {
+	switch {
+	case info.StructuralComplete:
+		return "COMPLETE"
+	case info.PendingFiles > 0:
+		return "UNPARSED"
+	default:
+		return "PARTIAL"
+	}
 }
 
 // structuralSourceIndex builds and returns the shared snapshot, mapping the
@@ -89,6 +114,54 @@ func structuralSourceIndex(source *StructuralSource, name string) (*ast.Index, e
 		return nil, fmt.Errorf("tools: %s tool has no structural source", name)
 	}
 	return source.Index()
+}
+
+// structuralLanguageNames is the tool-facing language vocabulary. It mirrors
+// the adapters' canonical identities; an extension alias (ts/tsx) is resolved
+// by languageMatches rather than creating a second registry.
+func structuralLanguageNames() []string {
+	seen := map[string]bool{}
+	out := make([]string, 0)
+	for _, adapter := range ast.DefaultAdapters() {
+		for _, language := range adapter.Languages() {
+			name := string(language)
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func structuralLanguageEnums() []any {
+	names := structuralLanguageNames()
+	out := make([]any, 0, len(names))
+	for _, name := range names {
+		out = append(out, name)
+	}
+	return out
+}
+
+// languageMatches treats TS/TSX and JS/JSX as one family for a model-facing
+// filter. It is a query convenience, not adapter ownership: the per-file
+// language remains the exact observed identity.
+func languageMatches(actual, filter string) bool {
+	actual = strings.ToLower(strings.TrimSpace(actual))
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	switch filter {
+	case "typescript", "ts":
+		return actual == "typescript" || actual == "tsx"
+	case "javascript", "js":
+		return actual == "javascript" || actual == "jsx"
+	case "csharp", "c#", "cs":
+		return actual == "csharp"
+	case "c++":
+		return actual == "cpp"
+	default:
+		return actual == filter
+	}
 }
 
 type ignoreScope struct {

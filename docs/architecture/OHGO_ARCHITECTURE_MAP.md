@@ -76,7 +76,7 @@ create a boundary that does not exist.
 | **runtime** | `agent` | The turn loop, tool dispatch, the authorization sequence, grounding admission, completion evaluation, subagent execution, the projection seam, the edit-journal seam | Tool implementations, workspace policy, persistence, rendering |
 | **control** | `control/contract`, `control/budget`, `control/workspace`, `control/cognition`, `security` | Completion vocabulary; resource admission; authority policy + routing + intent contracts + transition decisions; task shape + evidence + narrowing; the authorization kernel | Execution, persistence, presentation |
 | **execution** | `execution/tools`, `execution/mcp`, `execution/sandbox`, `execution/shell`, `execution/exec` | Concrete capabilities; MCP transport + classification; the OS read-only boundary; shell-output decoding; the human `!` escape | The decision to allow an operation |
-| **intelligence** | `intelligence/ast`, `intelligence/ignore` | One in-process Go structural snapshot (symbols, packages, files, tests, entrypoints, refs) and repository scoping | Anything about the agent, models, or UI |
+| **intelligence** | `intelligence/ast`, `intelligence/ignore` | One in-process, incremental structural snapshot (Go native plus pinned tree-sitter adapters; symbols, packages/namespaces, files, tests, entrypoints, imports, references, calls, explicit relations, language coverage) and repository scoping | Anything about the agent, models, or UI |
 | **provider** | `provider/ai`, `provider/catalog`, `provider/creds` | Wire protocols and streams; canonical stream normalization (native and serialized tool calls); model facts and discovery; credential resolution | Policy, routing, cost decisions, execution authority |
 | **continuity** | `continuity/session`, `continuity/task`, `continuity/recovery`, `memory` | The durable transcript; the durable task checkpoint; the edit history; the project-memory trust boundary | What should be recorded (that is control-plane) |
 | **experience** | `experience` | Verified execution experience: deterministic incidents, lessons, candidate strategies, validation, promotion, scoped store, and advisory path advice | Authority, evidence, completion, task lifecycle, transcript, tool execution |
@@ -108,7 +108,7 @@ edges that are architecturally forbidden (the ones enforced today are marked).
 | `internal/execution/tools` | capabilities | `agent`, `control/*`, `security`, `provider/ai`, `intelligence/*`, `execution/{mcp,sandbox}`, `external/*`, `jsonschema`, `diff`, `edit` | `continuity/*`, `tui` **\[ENFORCED]** |
 | `internal/execution/mcp` | MCP client | `jsonschema`, `external/knowledge` | `agent` *(it does not import it today; classification is data, not policy)* |
 | `internal/execution/sandbox` | OS boundary | stdlib only **\[ENFORCED]** | every module package |
-| `internal/intelligence/ast` | the Go index | stdlib only **\[ENFORCED]** | `agent`, `control/*`, `execution/*`, `provider/*`, `tui` **\[ENFORCED]** |
+| `internal/intelligence/ast` | the structural index (native Go plus optional cgo adapters) | stdlib plus the pinned parsing dependency; no module-internal imports **\[ENFORCED]** | `agent`, `control/*`, `execution/*`, `provider/*`, `tui` **\[ENFORCED]** |
 | `internal/intelligence/ignore` | repo scoping | stdlib only **\[ENFORCED]** | every module package |
 | `internal/provider/*` | wire, facts, secrets | `internal/provider/*`, `state` — **only** | `agent`, `control/*`, `execution/*`, `continuity/*`, `intelligence/*`, `tui` **\[ENFORCED]** |
 | `internal/continuity/session` | transcript | `agent`, `provider/ai`, `state`, `tokens`, `control/workspace` | `tui`, `commit`, `startup`, `update`, `history` **\[ENFORCED]** |
@@ -159,7 +159,10 @@ implementation is `execution/tools`' own `SymbolsTool`, which shares one
 `ast.Index` through `tools.StructuralSource` with `GraphTool`, `RefsTool`, and
 `StructureTool`. There is exactly one index; a second one would break the
 invariant that coordinate evidence, relationship evidence, inventory, and
-completion verification describe the same repository snapshot.
+completion verification describe the same repository snapshot. Go stays on the
+native backend; other language adapters are syntax-only, pinned in `go.mod`,
+and compiled only with `cgo`. A no-cgo build keeps Go and reports the rest as
+unsupported rather than creating a second lexical truth.
 
 ### 4.4 Provider plane is below the runtime
 
@@ -211,7 +214,7 @@ Read this before adding a field to anything.
 | Transcript | `session` | the store | TUI entries, REPL history | `sessions.db` |
 | Edit history | `recovery` | the store | `/undo` output | `recovery.db` |
 | Verified execution experience | `experience` | the engine | `/experience`, advisory projection hints | `<project>/.ohgo/experience.json`; optional `~/.ohgo/experience/global.json` after explicit promotion |
-| Repository structure | `ast.Index` | `tools.StructuralSource` | tool results, impact/inventory queries | never (derived; rebuilt incrementally) |
+| Repository structure | `ast.Index` | `tools.StructuralSource` | tool results, impact/inventory queries, language coverage | never (derived; rebuilt incrementally) |
 | Model facts | `catalog` | the catalog | pickers, cost | `cache/*.json` (derived) |
 | Settings | `config` | the file | options | `settings.json` |
 

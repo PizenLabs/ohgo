@@ -14,9 +14,8 @@ import (
 // phase8Root is the repository root from the cmd/ohgo test working directory.
 func phase8Root() string { return filepath.Join("..", "..") }
 
-// BenchmarkPhase8StructuralColdIndex measures a cold snapshot of the real
-// repository. It is a benchmark, not a normal test: plain `go test` does not
-// pay the cost.
+// BenchmarkPhase8StructuralColdIndex measures the metadata-first cold
+// inventory of the real repository. It does not parse source.
 func BenchmarkPhase8StructuralColdIndex(b *testing.B) {
 	root, err := filepath.Abs(phase8Root())
 	if err != nil {
@@ -26,6 +25,26 @@ func BenchmarkPhase8StructuralColdIndex(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		source := tools.NewStructuralSource(root)
 		if _, err := source.Index(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkPhase8StructuralColdParsed measures the full targeted build: one
+// parse per supported source file plus relationship resolution.
+func BenchmarkPhase8StructuralColdParsed(b *testing.B) {
+	root, err := filepath.Abs(phase8Root())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		source := tools.NewStructuralSource(root)
+		idx, err := source.Index()
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := idx.EnsureParsed(context.Background()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -43,7 +62,7 @@ func BenchmarkPhase8WarmStructuralQueries(b *testing.B) {
 		b.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := idx.Snapshot(ctx); err != nil {
+	if err := idx.EnsureParsed(ctx); err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
@@ -77,6 +96,9 @@ func BenchmarkPhase8IncrementalSingleFile(b *testing.B) {
 	}
 	idx, err := tools.NewStructuralSource(root).Index()
 	if err != nil {
+		b.Fatal(err)
+	}
+	if err := idx.EnsureParsed(context.Background()); err != nil {
 		b.Fatal(err)
 	}
 	target := filepath.Join(root, "internal", "intelligence", "ast", "model.go")

@@ -38,6 +38,9 @@ const (
 	// call-graph questions. Such a tool is relevant only when the task asks a
 	// relationship question.
 	ActionRelationship ActionClass = "relationship"
+	// ActionStructure marks a language-neutral structural capability. It is
+	// withheld when the task shape selected NONE activation.
+	ActionStructure ActionClass = "structure"
 	// ActionBackground observes or waits for detached work.
 	ActionBackground ActionClass = "background"
 )
@@ -59,6 +62,13 @@ type ActionClassifier interface {
 // tool has no language requirement.
 type LanguageReporter interface {
 	RequiredLanguage() string
+}
+
+// LanguageSetReporter is the multi-language form of LanguageReporter. A tool
+// that can read several adapters declares the set; the runtime offers it when
+// the repository has at least one of those sources.
+type LanguageSetReporter interface {
+	SupportedLanguages() []string
 }
 
 // MutationReporter reports the repository change operations a tool performs.
@@ -103,6 +113,20 @@ func ToolRequiredLanguage(tool Tool) string {
 		return reporter.RequiredLanguage()
 	}
 	return ""
+}
+
+// ToolRequiredLanguages returns every source language the tool can use. A
+// single-language reporter is projected into a one-element set.
+func ToolRequiredLanguages(tool Tool) []string {
+	if reporter, ok := tool.(LanguageSetReporter); ok {
+		if languages := reporter.SupportedLanguages(); len(languages) > 0 {
+			return languages
+		}
+	}
+	if language := ToolRequiredLanguage(tool); language != "" {
+		return []string{language}
+	}
+	return nil
 }
 
 // ToolMutationOperations returns the declared operations, or nil.

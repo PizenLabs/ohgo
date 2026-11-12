@@ -70,6 +70,8 @@ type GraphQuery struct {
 type GraphNode struct {
 	// Path is the repository-relative package directory.
 	Path string
+	// Language is the package graph's language (Go in this build).
+	Language Language
 	// Package is the canonical package name, empty when ambiguous.
 	Package string
 	// Packages lists conflicting package names when the directory is
@@ -90,6 +92,8 @@ type GraphNode struct {
 
 // GraphEdge is one proven package import edge.
 type GraphEdge struct {
+	// Language is the package graph's language (Go in this build).
+	Language Language
 	// From imports To.
 	From string
 	// To is the imported package directory.
@@ -160,6 +164,13 @@ type GraphResult struct {
 	SnapshotID string
 	Generation uint64
 	State      Freshness
+	// Languages is the snapshot's language coverage. The package graph itself
+	// covers Go imports; other languages are disclosed, not silently folded
+	// into the Go package projection.
+	Languages []LanguageCoverage
+	// UnsupportedLanguages lists source-bearing extensions this build could
+	// not parse.
+	UnsupportedLanguages []UnsupportedLanguage
 	// Complete reports that the queried edge set was exact, untruncated, and
 	// free of observed parse failures.
 	Complete bool
@@ -213,7 +224,7 @@ func buildPackageGraph(records map[string]fileRecord, module string) *packageGra
 	}
 	names := map[string]*dirNames{}
 	for rel, rec := range records {
-		if rec.err != nil || rec.language != "go" {
+		if !rec.parsed || rec.err != nil || rec.language != "go" {
 			continue
 		}
 		dir := packageDir(rel)
@@ -288,7 +299,7 @@ func buildPackageGraph(records map[string]fileRecord, module string) *packageGra
 	// Second pass: aggregate imports into edges. External imports are a
 	// count; module-local imports that do not resolve are explicit.
 	for rel, rec := range records {
-		if rec.err != nil || rec.language != "go" {
+		if !rec.parsed || rec.err != nil || rec.language != "go" {
 			continue
 		}
 		dir := packageDir(rel)
@@ -441,11 +452,17 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	if err := idx.ensureParsedLockedCtx(ctx); err != nil {
+		return GraphResult{}, err
+	}
 
 	if idx.graph == nil {
 		return GraphResult{}, fmt.Errorf("ast: graph snapshot is unavailable")
 	}
 	if idx.modulePath == "" {
+		if language, ok := LanguageForPath(query.Path); ok && language != LanguageGo {
+			return GraphResult{}, fmt.Errorf("ast: graph is the Go package import graph; use the structure or refs tool for %s", language)
+		}
 		return GraphResult{}, fmt.Errorf("ast: graph requires a module path in go.mod")
 	}
 
@@ -461,16 +478,19 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 		return GraphResult{}, err
 	}
 
+	info := idx.infoLocked()
 	result := GraphResult{
-		Module:        idx.modulePath,
-		Relation:      relation,
-		Depth:         depth,
-		TotalPackages: len(idx.graph.order),
-		TotalEdges:    idx.graph.edgeNum,
-		ParseFailures: idx.parseFailuresLocked(),
-		SnapshotID:    idx.snapshotID,
-		Generation:    idx.generation,
-		State:         idx.state,
+		Module:               idx.modulePath,
+		Relation:             relation,
+		Depth:                depth,
+		TotalPackages:        len(idx.graph.order),
+		TotalEdges:           idx.graph.edgeNum,
+		ParseFailures:        idx.parseFailuresLocked(),
+		SnapshotID:           idx.snapshotID,
+		Generation:           idx.generation,
+		State:                idx.state,
+		Languages:            info.Languages,
+		UnsupportedLanguages: info.Unsupported,
 	}
 
 	focal, ambiguous, candidates, queryType, selector, err := idx.resolveGraphFocalLocked(query)
@@ -620,6 +640,7 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 			}
 			seenEdge[key] = true
 			edges = append(edges, GraphEdge{
+				Language:        LanguageGo,
 				From:            edge.from,
 				To:              edge.to,
 				Source:          edge.source,
@@ -705,7 +726,7 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 func (idx *Index) parseFailuresLocked() int {
 	count := len(idx.unreadable)
 	for _, rec := range idx.files {
-		if rec.err != nil {
+		if rec.err != nil || rec.partial {
 			count++
 		}
 	}
@@ -824,6 +845,7 @@ func (idx *Index) resolveGraphFocalLocked(query GraphQuery) (focal string, ambig
 
 func graphNodeView(node *graphNode, depth int) GraphNode {
 	return GraphNode{
+		Language:        LanguageGo,
 		Path:            node.path,
 		Package:         node.name,
 		Packages:        append([]string(nil), node.packages...),

@@ -34,15 +34,31 @@ type NodeKind string
 
 // Canonical node kinds.
 const (
-	NodeProject    NodeKind = "project"
-	NodeDirectory  NodeKind = "directory"
-	NodeFile       NodeKind = "file"
-	NodeModule     NodeKind = "module"
-	NodePackage    NodeKind = "package"
-	NodeSymbol     NodeKind = "symbol"
-	NodeTest       NodeKind = "test"
-	NodeConfig     NodeKind = "config"
-	NodeEntrypoint NodeKind = "entrypoint"
+	NodeProject     NodeKind = "project"
+	NodeDirectory   NodeKind = "directory"
+	NodeFile        NodeKind = "file"
+	NodeModule      NodeKind = "module"
+	NodePackage     NodeKind = "package"
+	NodeNamespace   NodeKind = "namespace"
+	NodeSymbol      NodeKind = "symbol"
+	NodeClass       NodeKind = "class"
+	NodeStruct      NodeKind = "struct"
+	NodeInterface   NodeKind = "interface"
+	NodeTrait       NodeKind = "trait"
+	NodeEnum        NodeKind = "enum"
+	NodeFunction    NodeKind = "function"
+	NodeMethod      NodeKind = "method"
+	NodeField       NodeKind = "field"
+	NodeProperty    NodeKind = "property"
+	NodeConstant    NodeKind = "constant"
+	NodeVariable    NodeKind = "variable"
+	NodeTypeAlias   NodeKind = "type_alias"
+	NodeRecord      NodeKind = "record"
+	NodeObject      NodeKind = "object"
+	NodeConstructor NodeKind = "constructor"
+	NodeTest        NodeKind = "test"
+	NodeConfig      NodeKind = "config"
+	NodeEntrypoint  NodeKind = "entrypoint"
 )
 
 // EdgeKind is the canonical structural edge vocabulary.
@@ -53,8 +69,12 @@ const (
 	EdgeContains   EdgeKind = "CONTAINS"
 	EdgeDefines    EdgeKind = "DEFINES"
 	EdgeImports    EdgeKind = "IMPORTS"
+	EdgeExports    EdgeKind = "EXPORTS"
 	EdgeReferences EdgeKind = "REFERENCES"
 	EdgeCalls      EdgeKind = "CALLS"
+	EdgeExtends    EdgeKind = "EXTENDS"
+	EdgeImplements EdgeKind = "IMPLEMENTS"
+	EdgeOverrides  EdgeKind = "OVERRIDES"
 	EdgeTests      EdgeKind = "TESTS"
 	EdgeEntrypoint EdgeKind = "ENTRYPOINT"
 	EdgeDependsOn  EdgeKind = "DEPENDS_ON"
@@ -62,37 +82,48 @@ const (
 
 // SourceRef is the provenance of one structural node or edge.
 //
-// Line and column fields are 1-based. An aggregate edge carries the
-// deterministic witness that proves it; when no witness exists the edge is not
-// emitted, so a consumer never receives an unsourced relationship.
+// Line and column fields are 1-based. Columns are UTF-8 byte offsets, matching
+// Go's token.Position; the source byte range remains the authoritative witness.
+// An aggregate edge carries the deterministic witness that proves it; when no
+// witness exists the edge is not emitted, so a consumer never receives an
+// unsourced relationship.
 type SourceRef struct {
-	Path      string `json:"path"`
-	Package   string `json:"package,omitempty"`
-	Symbol    string `json:"symbol,omitempty"`
-	StartLine int    `json:"start_line,omitempty"`
-	EndLine   int    `json:"end_line,omitempty"`
-	StartCol  int    `json:"start_column,omitempty"`
-	EndCol    int    `json:"end_column,omitempty"`
-	Test      bool   `json:"test,omitempty"`
+	Path      string   `json:"path"`
+	Package   string   `json:"package,omitempty"`
+	Symbol    string   `json:"symbol,omitempty"`
+	Language  Language `json:"language,omitempty"`
+	Adapter   string   `json:"adapter,omitempty"`
+	StartLine int      `json:"start_line,omitempty"`
+	EndLine   int      `json:"end_line,omitempty"`
+	StartCol  int      `json:"start_column,omitempty"`
+	EndCol    int      `json:"end_column,omitempty"`
+	Test      bool     `json:"test,omitempty"`
 }
 
 // Node is one canonical structural fact. ID is snapshot-scoped: a line change
 // changes a symbol coordinate, and every edge/query carries the generation so
 // a consumer can tell when it was observed.
 type Node struct {
-	ID     string    `json:"id"`
-	Kind   NodeKind  `json:"kind"`
-	Name   string    `json:"name"`
-	Source SourceRef `json:"source"`
+	ID         string    `json:"id"`
+	Kind       NodeKind  `json:"kind"`
+	Name       string    `json:"name"`
+	Qualified  string    `json:"qualified_name,omitempty"`
+	NativeKind string    `json:"native_kind,omitempty"`
+	Language   Language  `json:"language,omitempty"`
+	Exported   bool      `json:"exported,omitempty"`
+	Source     SourceRef `json:"source"`
 }
 
 // Edge is one proven structural relationship between two canonical nodes.
 type Edge struct {
-	From      string    `json:"from"`
-	To        string    `json:"to"`
-	Kind      EdgeKind  `json:"kind"`
-	Certainty string    `json:"certainty,omitempty"`
-	Source    SourceRef `json:"source"`
+	From       string     `json:"from"`
+	To         string     `json:"to"`
+	Kind       EdgeKind   `json:"kind"`
+	Certainty  string     `json:"certainty,omitempty"`
+	Resolution Resolution `json:"resolution,omitempty"`
+	Language   Language   `json:"language,omitempty"`
+	Adapter    string     `json:"adapter,omitempty"`
+	Source     SourceRef  `json:"source"`
 }
 
 // SymbolNodeID returns the canonical snapshot-scoped identity of a declaration.
@@ -151,12 +182,26 @@ type SymbolKind string
 
 // Canonical symbol kinds.
 const (
-	SymbolPackage  SymbolKind = "package"
-	SymbolFunction SymbolKind = "function"
-	SymbolMethod   SymbolKind = "method"
-	SymbolType     SymbolKind = "type"
-	SymbolVariable SymbolKind = "variable"
-	SymbolConstant SymbolKind = "constant"
+	SymbolPackage     SymbolKind = "package"
+	SymbolModule      SymbolKind = "module"
+	SymbolNamespace   SymbolKind = "namespace"
+	SymbolClass       SymbolKind = "class"
+	SymbolStruct      SymbolKind = "struct"
+	SymbolInterface   SymbolKind = "interface"
+	SymbolTrait       SymbolKind = "trait"
+	SymbolEnum        SymbolKind = "enum"
+	SymbolRecord      SymbolKind = "record"
+	SymbolFunction    SymbolKind = "function"
+	SymbolMethod      SymbolKind = "method"
+	SymbolField       SymbolKind = "field"
+	SymbolProperty    SymbolKind = "property"
+	SymbolConstant    SymbolKind = "constant"
+	SymbolVariable    SymbolKind = "variable"
+	SymbolTypeAlias   SymbolKind = "type_alias"
+	SymbolType        SymbolKind = "type"
+	SymbolObject      SymbolKind = "object"
+	SymbolConstructor SymbolKind = "constructor"
+	SymbolUnion       SymbolKind = "union"
 )
 
 // canonicalKind maps the Go adapter's Kind into the canonical vocabulary.
@@ -188,6 +233,8 @@ type FileKind string
 const (
 	FileGoSource      FileKind = "go_source"
 	FileGoTest        FileKind = "go_test"
+	FileSource        FileKind = "source"
+	FileTest          FileKind = "test"
 	FileConfig        FileKind = "config"
 	FileManifest      FileKind = "manifest"
 	FileDocumentation FileKind = "documentation"
@@ -213,6 +260,9 @@ type TestDecl struct {
 	Symbol Match
 	// Kind is the static test shape.
 	Kind TestKind
+	// Framework is the test convention that proved the declaration, e.g.
+	// "go-test", "jest", "junit", "xunit", "rust-test", "rspec".
+	Framework string
 }
 
 // SnapshotInfo is the provenance and completeness header of one published
@@ -240,8 +290,31 @@ type SnapshotInfo struct {
 	BuiltAt time.Time `json:"built_at"`
 	// Files counts every indexed file, not only Go files.
 	Files int `json:"files"`
-	// GoFiles counts parsed Go source and test files.
+	// GoFiles counts indexed Go source and test files, regardless of parse state.
 	GoFiles int `json:"go_files"`
+	// SourceFiles counts every supported source and test file.
+	SourceFiles int `json:"source_files"`
+	// ParsedFiles counts source files whose canonical facts are published.
+	ParsedFiles int `json:"parsed_files"`
+	// PendingFiles counts supported source files not parsed yet. A non-zero
+	// count is normal after an overview and makes structural absence claims
+	// incomplete.
+	PendingFiles int `json:"pending_files"`
+	// FailedFiles counts source files whose adapter reported a parse failure.
+	FailedFiles int `json:"failed_files"`
+	// Languages reports per-language inventory and parse coverage.
+	Languages []LanguageCoverage `json:"languages,omitempty"`
+	// Unsupported counts observed extensions with no registered adapter.
+	Unsupported []UnsupportedLanguage `json:"unsupported_languages,omitempty"`
+	// InventoryComplete reports that every observed source path was mapped to
+	// a language and included in the inventory.
+	InventoryComplete bool `json:"inventory_complete"`
+	// StructuralComplete reports that every supported source file parsed and
+	// no unsupported source-bearing extension remains. CURRENT does not imply
+	// this.
+	StructuralComplete bool `json:"structural_complete"`
+	// Activation is the depth used for the last refresh.
+	Activation Activation `json:"activation,omitempty"`
 	// Directories counts directories that contain indexed files.
 	Directories int `json:"directories"`
 	Packages    int `json:"packages"`
@@ -273,10 +346,20 @@ type FileInfo struct {
 	Dir      string   `json:"dir"`
 	Package  string   `json:"package,omitempty"`
 	Language string   `json:"language,omitempty"`
+	Adapter  string   `json:"adapter,omitempty"`
 	Kind     FileKind `json:"kind"`
 	Test     bool     `json:"test"`
-	Size     int64    `json:"size"`
-	Symbols  int      `json:"symbols"`
+	// Parsed reports that this file's declarations and relationships are in
+	// the published snapshot. A false value is a pending inventory fact, not
+	// an empty file.
+	Parsed bool `json:"parsed"`
+	// ParseError is the bounded reason a parsed file failed.
+	ParseError string `json:"parse_error,omitempty"`
+	// Unsupported reports a source extension this build has no adapter for.
+	Unsupported bool  `json:"unsupported,omitempty"`
+	Size        int64 `json:"size"`
+	Symbols     int   `json:"symbols"`
+	Exports     int   `json:"exports,omitempty"`
 }
 
 // PackageInfo is one Go package aggregate.
@@ -284,6 +367,8 @@ type PackageInfo struct {
 	Dir       string   `json:"dir"`
 	Name      string   `json:"name"`
 	Packages  []string `json:"packages,omitempty"`
+	Language  Language `json:"language,omitempty"`
+	Languages []string `json:"languages,omitempty"`
 	Files     int      `json:"files"`
 	TestFiles int      `json:"test_files"`
 	Symbols   int      `json:"symbols"`
@@ -296,13 +381,15 @@ type PackageInfo struct {
 // main. A package named main without a main function is not fabricated into an
 // entrypoint.
 type Entrypoint struct {
-	Path          string `json:"path"`
-	Package       string `json:"package"`
-	Symbol        string `json:"symbol"`
-	QualifiedName string `json:"qualified_name"`
-	Line          int    `json:"line"`
-	EndLine       int    `json:"end_line"`
-	Column        int    `json:"column"`
+	Path          string   `json:"path"`
+	Package       string   `json:"package"`
+	Symbol        string   `json:"symbol"`
+	QualifiedName string   `json:"qualified_name"`
+	Language      Language `json:"language,omitempty"`
+	NativeKind    string   `json:"native_kind,omitempty"`
+	Line          int      `json:"line"`
+	EndLine       int      `json:"end_line"`
+	Column        int      `json:"column"`
 }
 
 // TestInfo is one test declaration coordinate.
@@ -311,6 +398,8 @@ type TestInfo struct {
 	Package       string   `json:"package"`
 	Symbol        string   `json:"symbol"`
 	QualifiedName string   `json:"qualified_name"`
+	Language      Language `json:"language,omitempty"`
+	Framework     string   `json:"framework,omitempty"`
 	Kind          TestKind `json:"kind"`
 	Line          int      `json:"line"`
 	EndLine       int      `json:"end_line"`
@@ -330,20 +419,25 @@ type TestAssociation struct {
 
 // ConfigInfo is one configuration fact from the allowlist.
 type ConfigInfo struct {
-	Path  string `json:"path"`
-	Kind  string `json:"kind"`
-	Value string `json:"value,omitempty"`
+	Path      string   `json:"path"`
+	Kind      string   `json:"kind"`
+	Language  Language `json:"language,omitempty"`
+	Framework string   `json:"framework,omitempty"`
+	Value     string   `json:"value,omitempty"`
 }
 
 // OverviewResult is one bounded project summary from a single snapshot.
 type OverviewResult struct {
-	Snapshot    SnapshotInfo  `json:"snapshot"`
-	Packages    []PackageInfo `json:"packages,omitempty"`
-	Files       []FileInfo    `json:"files,omitempty"`
-	Entrypoints []Entrypoint  `json:"entrypoints,omitempty"`
-	Configs     []ConfigInfo  `json:"configs,omitempty"`
-	Truncated   bool          `json:"truncated"`
-	Reason      string        `json:"reason,omitempty"`
+	Snapshot    SnapshotInfo          `json:"snapshot"`
+	Packages    []PackageInfo         `json:"packages,omitempty"`
+	Files       []FileInfo            `json:"files,omitempty"`
+	Entrypoints []Entrypoint          `json:"entrypoints,omitempty"`
+	Configs     []ConfigInfo          `json:"configs,omitempty"`
+	Languages   []LanguageCoverage    `json:"languages,omitempty"`
+	Unsupported []UnsupportedLanguage `json:"unsupported_languages,omitempty"`
+	Frameworks  []string              `json:"frameworks,omitempty"`
+	Truncated   bool                  `json:"truncated"`
+	Reason      string                `json:"reason,omitempty"`
 }
 
 // Query bounds for inventory queries. They deliberately match the existing

@@ -96,11 +96,11 @@ Session Manager opens.
 There is no LLM-authored durable project knowledge anywhere in the codebase.
 The only durable knowledge about a project is a file a human wrote.
 
-### Derived code intelligence — stateless today
+### Derived code intelligence — in-memory today
 
 | Structure | Status |
 | --- | --- |
-| `ast` package | an **in-process, rebuildable** symbol index (`ast.Index`, `go/ast`); no graph, no storage — derived state only, source tree stays authoritative |
+| `ast` package | an **in-process, rebuildable** structural snapshot (`ast.Index`): native Go parsing plus pinned tree-sitter adapters; no persisted graph, no storage — derived state only, source tree stays authoritative |
 | `graph.db` | **does not exist**; the lifecycle is defined below, the store is deferred |
 
 ### Runtime scope
@@ -146,7 +146,7 @@ model output into durable state because no such path exists.
    PROJECT MEMORY (AGENTS.md, human-authored)
      promotion seam: `memory` (no store)
                   │
-   DERIVED CODE INTELLIGENCE (ast, stateless)
+   DERIVED CODE INTELLIGENCE (ast, in-memory)
      future graph.db: deferred, disposable
                   │
                RUNTIME
@@ -252,7 +252,7 @@ never let global state become an accidental authority for project-local state.**
 | project durability (human knowledge) | `prompt` (reader) | `AGENTS.md` in git | authoritative | project (versioned) | `git` |
 | promotion trust boundary | `memory` | **none** (seam) | authoritative decision | process | n/a |
 | project memory store | — | **not implemented** | — | — | — |
-| code intelligence | `ast` | **none** (stateless) | derived from source | process | n/a |
+| code intelligence | `ast` | **none** (in-memory) | derived from source | process | n/a |
 | code graph | — | `<project>/.ohgo/graph.db` (reserved) | derived; source wins | derived | delete + rebuild |
 | model cache | `catalog` | `~/.ohgo/cache/*.json` | derived | machine | delete + refetch |
 | prompt history | `history` | `~/.ohgo/history`, `<project>/.ohgo/history` | derived | machine + project | delete |
@@ -371,19 +371,23 @@ code structure, or anything a model asserted without confirmation.
 Code intelligence is **derived**, not memory. The source tree is the authority.
 
 Today the `ast` package owns one in-process, incremental structural snapshot:
-it parses Go source once per file, retains symbol coordinates, package imports,
-resolved references, static direct calls, test declarations, and entrypoints,
-and re-resolves relationships from retained syntax after a change. A normal
-refresh parses only added or changed Go files and publishes atomically with an
-explicit freshness state, generation, snapshot id, and parse-failure count.
+it parses each supported source file once, retains canonical declarations,
+packages/namespaces, imports, resolved references, static calls, explicit
+inheritance/implementation clauses, test declarations, and entrypoints, and
+re-resolves relationships from retained syntax after a change. Go keeps the
+native `go/ast` backend; other languages use pinned tree-sitter adapters (cgo
+builds only). A normal refresh parses only added or changed files and publishes
+atomically with an explicit freshness state, generation, snapshot id,
+per-language coverage, structural completeness, and parse-failure count.
 Nothing is written to the repository by the index.
 
-The snapshot is lazy: the first structural query builds it, and startup only
-runs the cheap `ProbeFacts` marker probe. `.gitignore` membership is injected
-from `intelligence/ignore` through the index's `Scope` seam, so there is one
-repository-scope matcher rather than two.
+The snapshot is adaptive: inventory and language mix are built metadata-first,
+and source parsing happens only when a targeted/impact query asks for it.
+Startup runs only the cheap bounded `ProbeFacts` marker probe. `.gitignore`
+membership is injected from `intelligence/ignore` through the index's `Scope`
+seam, so there is one repository-scope matcher rather than two.
 
-**No `graph.db` exists in the MVP.** The number of Go files, one parser pass,
+**No `graph.db` exists in the MVP.** The number of source files, one parser pass,
 the incremental update, and the model-facing query bounds do not yet justify a
 schema, corruption path, migration, or lock. The store remains deferred with
 this lifecycle fixed now so it is not invented ad hoc later:

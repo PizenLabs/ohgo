@@ -9,6 +9,13 @@
 > baseline is in `docs/benchmarks/results/phase8-structural.md`; the current
 > behavioural contract is in `docs/architecture/ARCHITECTURE.md`.
 >
+> **Adaptive multi-language evolution:** implemented as an additive extension
+> of the same index and evidence path. Go remains native; pinned tree-sitter
+> adapters cover TypeScript/TSX, JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby,
+> C, and C++ in cgo builds. Overviews stay metadata-first and targeted/impact
+> queries parse on demand. The multi-language benchmark record is in
+> `docs/benchmarks/results/phase9-structural.md`.
+>
 > **Stop condition:** no production code or repository source is changed in
 > Phase 1. Phase 2 begins only after this plan is reviewed.
 >

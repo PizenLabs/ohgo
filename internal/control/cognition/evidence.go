@@ -95,10 +95,11 @@ const (
 	// cannot grow into a second transcript. Values are bounded per item and
 	// the lowest-value items are evicted until the total fits.
 	MaxEvidenceBytes = 64 * 1024
-	// EvidenceVersion is the persisted schema version. Version 2 adds optional
-	// snapshot provenance to Source; version 1 records stay readable because
-	// the new fields are additive.
-	EvidenceVersion = 2
+	// EvidenceVersion is the persisted schema version. Version 2 added
+	// optional snapshot provenance to Source; version 3 adds language,
+	// adapter, resolution, completeness, and truncation. Older records stay
+	// readable because every new field is optional and additive.
+	EvidenceVersion = 3
 )
 
 // Source records where one observation came from.
@@ -128,6 +129,17 @@ type Source struct {
 	SnapshotID string `json:"snapshotId,omitempty"`
 	GraphState string `json:"graphState,omitempty"`
 	Generation uint64 `json:"generation,omitempty"`
+	// Language, Adapter, and Resolution identify the syntax provenance of a
+	// structural coordinate. They are empty for non-structural observations.
+	Language   string `json:"language,omitempty"`
+	Adapter    string `json:"adapter,omitempty"`
+	Resolution string `json:"resolution,omitempty"`
+	// Completeness is COMPLETE, PARTIAL, UNPARSED, or UNSUPPORTED. It is
+	// independent of GraphState: a CURRENT snapshot can be structurally
+	// partial.
+	Completeness string `json:"completeness,omitempty"`
+	// Truncated reports that the producing query hit its own bound.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // EvidenceItem is one durable fact.
@@ -885,7 +897,7 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 			Summary: bound(symbol+" at "+path+":"+itoa(detailInt(coord, "start_line"))+
 				"-"+itoa(detailInt(coord, "end_line")), MaxEvidenceSummaryBytes),
 			Complete: complete,
-			Source: structuralSource(details, "symbols", outcome.CallID, path,
+			Source: structuralSourceWithCoordinate(details, coord, "symbols", outcome.CallID, path,
 				detailInt(coord, "start_line"), detailInt(coord, "end_line")),
 			Seq: seq,
 		}) {
@@ -945,7 +957,7 @@ func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[str
 			Provenance: classifyPathProvenance(path),
 			Summary:    bound(symbol+" at "+path+":"+itoa(line), MaxEvidenceSummaryBytes),
 			Complete:   !detailBool(details, "partial") && !detailBool(details, "truncated"),
-			Source: structuralSource(details, outcome.ToolName, outcome.CallID, path,
+			Source: structuralSourceWithCoordinate(details, coord, outcome.ToolName, outcome.CallID, path,
 				line, endLine),
 			Seq: seq,
 		}) {
@@ -958,16 +970,51 @@ func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[str
 // structuralSource projects snapshot provenance into the existing Source
 // shape. This is a field addition, not a second evidence model.
 func structuralSource(details map[string]any, tool, callID, path string, start, end int) Source {
-	return Source{
-		Tool:       tool,
-		CallID:     callID,
-		Path:       path,
-		StartLine:  start,
-		EndLine:    end,
-		SnapshotID: detailString(details, "snapshot_id"),
-		GraphState: detailString(details, "graph_state"),
-		Generation: uint64(detailInt(details, "generation")),
+	completeness := detailString(details, "completeness")
+	if completeness == "" {
+		if complete, ok := details["structural_complete"].(bool); ok {
+			if complete {
+				completeness = "COMPLETE"
+			} else {
+				completeness = "PARTIAL"
+			}
+		}
 	}
+	return Source{
+		Tool:         tool,
+		CallID:       callID,
+		Path:         path,
+		StartLine:    start,
+		EndLine:      end,
+		SnapshotID:   detailString(details, "snapshot_id"),
+		GraphState:   detailString(details, "graph_state"),
+		Generation:   uint64(detailInt(details, "generation")),
+		Language:     detailString(details, "language"),
+		Adapter:      detailString(details, "adapter"),
+		Resolution:   detailString(details, "resolution"),
+		Completeness: completeness,
+		Truncated:    detailBool(details, "truncated"),
+	}
+}
+
+// structuralSourceWithCoordinate adds the per-coordinate language, adapter,
+// resolution, and truncation facts that the aggregate query header cannot
+// attribute to a single row.
+func structuralSourceWithCoordinate(details, coord map[string]any, tool, callID, path string, start, end int) Source {
+	source := structuralSource(details, tool, callID, path, start, end)
+	if value := detailString(coord, "language"); value != "" {
+		source.Language = value
+	}
+	if value := detailString(coord, "adapter"); value != "" {
+		source.Adapter = value
+	}
+	if value := detailString(coord, "resolution"); value != "" {
+		source.Resolution = value
+	}
+	if truncated, ok := coord["truncated"].(bool); ok {
+		source.Truncated = truncated
+	}
+	return source
 }
 
 // structuralCoordinateID namespaces one coordinate by its graph role.
