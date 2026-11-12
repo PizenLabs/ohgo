@@ -292,6 +292,19 @@ model's pre-answer state block can report `implementation=NOT_OBSERVED` and
 `runtime=NOT_OBSERVED` instead of letting a configuration file stand in for
 execution.
 
+An implementation-status claim (“fully implemented”, “stubs (health checks
+only)”, “mock data”, “scaffolded”) is a positive claim about source content.
+A README, manifest, Compose file, directory listing, or structural inventory
+does not establish it. The audit extracts the components the claim names — a
+kebab coordinate such as `product-service`, an explicit list after the colon,
+or a recognized component noun — and requires a source read or source-scoped
+grep for each. Reading product-service source supports product-service, not
+order-service or the frontend. A status claim with no extractable component
+requires at least one source observation. Documentation attribution and
+explicit unverified wording remain lower-assertion forms. The audit does not
+judge completeness: a source read proves the evidence class, not that every
+path or feature was implemented.
+
 A concrete line count needs the file's read `totalLines` (or a line-count
 command). A directory listing's byte size is not a line count; a gross
 contradiction between the answer and the observed total is reviewed. An
@@ -374,6 +387,10 @@ request path.
 - The answer check is English-pattern based. A paraphrased global conclusion,
   an unusual behavior verb, or an inference without an explicit marker outside
   the patterns is not detected; the structural completion rules still apply.
+- Implementation-status subject extraction is finite: it recognizes kebab
+  coordinates, an explicit list after the status marker, and a bounded
+  component vocabulary. A status claim with no extractable component is
+  checked only against the presence of any source observation.
 - Claim scope depends on the observations in the tool turns. Content supplied
   only in the user's `@` file context is not a tool observation, so a behavior
   claim about it may be reviewed; the conservative direction is a review, not a

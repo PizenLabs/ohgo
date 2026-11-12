@@ -79,6 +79,7 @@ func TestRenderStateCarriesClaimBoundary(t *testing.T) {
 		"test_inventory=NOT_QUERIED",
 		"configuration declares topology, not execution",
 		"not found in inspected scope",
+		"Implementation status and behavior need source/runtime evidence",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("state block missing %q:\n%s", want, rendered)

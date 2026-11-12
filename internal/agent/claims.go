@@ -127,6 +127,9 @@ func claimScopeIssues(answer string, turns []Turn) []claimIssue {
 		if lineIssue != nil {
 			issues = append(issues, *lineIssue)
 		}
+		if issue := implementationClaimIssue(sentence, turns); issue != nil {
+			issues = append(issues, *issue)
+		}
 		if issue := behaviorClaimIssue(sentence, turns); issue != nil {
 			issues = append(issues, *issue)
 		}

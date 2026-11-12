@@ -94,6 +94,12 @@ immutable.
   `implementation=NOT_OBSERVED` and `runtime=NOT_OBSERVED`, and the completion
   audit still rejects an active behavior claim without source or runtime
   evidence.
+- An implementation-status claim ("fully implemented", "stubs (health checks
+  only)", "scaffolded") can no longer be supported by a README, manifest,
+  Compose file, directory listing, or structural inventory. The answer audit
+  requires a source observation for each named component and names the missing
+  component in the review reason; reading one component does not support a
+  claim about another.
 - A behavior claim that names a port must be supported by a source observation
   containing that same port or by a live runtime address on that port. Reading
   one service's listener no longer supports a claim about a different service's

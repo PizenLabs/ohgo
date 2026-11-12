@@ -263,9 +263,10 @@ func claimEvidenceBlock(evidence *EvidenceState) string {
 	}
 	line.WriteString("\n")
 	line.WriteString("Claim rule: configuration declares topology, not execution. " +
-		"Only a complete, untruncated inventory can support an absence claim; " +
-		"otherwise say \"not found in inspected scope\" or mark it unverified. " +
-		"Behavior needs source or runtime evidence; metrics need a measured value.\n")
+		"Absence needs a complete, untruncated inventory; else say \"not found in inspected scope\" or mark it unverified. " +
+		"Implementation status and behavior need source/runtime evidence; " +
+		"docs, manifests, config, and inventory do not establish them. " +
+		"Metrics need a measured value.\n")
 	return line.String()
 }
 
