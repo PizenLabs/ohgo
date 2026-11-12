@@ -13,8 +13,11 @@
 package ignore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -30,6 +33,10 @@ type Matcher struct {
 	disabled bool
 	// rules holds every loaded rule, outermost first, so a deeper file wins.
 	rules []rule
+	// contents retains the exact rule text that produced rules. It exists so
+	// a structural index can fingerprint repository scope without re-reading
+	// or re-implementing .gitignore semantics.
+	contents strings.Builder
 }
 
 // rule is one parsed pattern from one .gitignore.
@@ -44,6 +51,13 @@ type rule struct {
 	dirOnly bool
 	// anchored is true when the pattern contained a non-trailing "/".
 	anchored bool
+	// source is the ignore file that contributed the rule, root-relative.
+	source string
+	// line is the 1-based line in source that carried the rule.
+	line int
+	// raw is the trimmed rule text, retained so a scope exclusion can name the
+	// exact decision instead of presenting an unexplained disappearance.
+	raw string
 }
 
 // New loads every .gitignore under root.
@@ -101,7 +115,15 @@ func (m *Matcher) Append(base, contents string) {
 	if m == nil {
 		return
 	}
-	for _, raw := range strings.Split(contents, "\n") {
+	m.contents.WriteString(base)
+	m.contents.WriteByte(0)
+	m.contents.WriteString(contents)
+	m.contents.WriteByte(0)
+	source := ".gitignore"
+	if base != "" {
+		source = base + "/.gitignore"
+	}
+	for index, raw := range strings.Split(contents, "\n") {
 		line := strings.TrimRight(raw, "\r")
 		// A trailing space not escaped with a backslash is stripped by git.
 		trimmed := strings.TrimSpace(line)
@@ -109,7 +131,7 @@ func (m *Matcher) Append(base, contents string) {
 			continue
 		}
 
-		r := rule{base: base, pattern: trimmed}
+		r := rule{base: base, pattern: trimmed, source: source, line: index + 1, raw: trimmed}
 		if strings.HasPrefix(r.pattern, "!") {
 			r.negated = true
 			r.pattern = strings.TrimPrefix(r.pattern, "!")
@@ -139,18 +161,76 @@ func (m *Matcher) Append(base, contents string) {
 // Disabled reports whether the matcher excludes nothing.
 func (m *Matcher) Disabled() bool { return m == nil || m.disabled }
 
+// Fingerprint is a deterministic identity of the loaded rule text.
+//
+// A structural index records it with every snapshot. When a .gitignore rule
+// changes, the fingerprint changes even if no source-file signature did, so the
+// snapshot is refreshed and file membership is recomputed. A disabled matcher
+// has its own stable identity rather than the empty-rule hash, so enabling or
+// disabling repository scoping is observable.
+func (m *Matcher) Fingerprint() string {
+	if m == nil || m.disabled {
+		return "disabled"
+	}
+	sum := sha256.Sum256([]byte(m.contents.String()))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
 // Ignored reports whether a root-relative path is excluded.
 //
 // Later rules win, which is what makes a negation in a deeper .gitignore
 // override an exclusion set by an outer one.
 func (m *Matcher) Ignored(rel string, isDir bool) bool {
+	ignored, _ := m.Match(rel, isDir)
+	return ignored
+}
+
+// IgnoredFrom applies only the rules rooted at or below base.
+//
+// It is the nested-project boundary: a repository's own ignore files govern
+// its contents, while the enclosing repository's rules stop at the boundary.
+// A path outside base is evaluated normally, so a caller can use this
+// unconditionally after choosing the nearest boundary.
+func (m *Matcher) IgnoredFrom(base, rel string, isDir bool) bool {
+	ignored, _ := m.MatchFrom(base, rel, isDir)
+	return ignored
+}
+
+// Match reports whether rel is excluded and, when it is, the rule that decided
+// it in "source:line: pattern" form.
+func (m *Matcher) Match(rel string, isDir bool) (bool, string) {
+	return m.MatchFrom("", rel, isDir)
+}
+
+// MatchFrom is Match limited to the rules rooted at or below base. An empty
+// base evaluates the complete rule set, which is the repository-root scope.
+func (m *Matcher) MatchFrom(base, rel string, isDir bool) (bool, string) {
+	return m.matchWhere(rel, isDir, func(r rule) bool {
+		return base == "" || r.base == base || strings.HasPrefix(r.base, base+"/")
+	})
+}
+
+// MatchOutside is Match limited to the rules outside base. It answers why an
+// enclosing repository would have excluded a nested project root without
+// treating the nested project's own rules as the cause.
+func (m *Matcher) MatchOutside(base, rel string, isDir bool) (bool, string) {
+	return m.matchWhere(rel, isDir, func(r rule) bool {
+		return r.base != base && !strings.HasPrefix(r.base, base+"/")
+	})
+}
+
+func (m *Matcher) matchWhere(rel string, isDir bool, keep func(rule) bool) (bool, string) {
 	if m == nil || m.disabled || len(m.rules) == 0 {
-		return false
+		return false, ""
 	}
 	rel = filepath.ToSlash(rel)
 
 	ignored := false
+	reason := ""
 	for _, r := range m.rules {
+		if !keep(r) {
+			continue
+		}
 		if r.dirOnly && !isDir {
 			continue
 		}
@@ -158,8 +238,14 @@ func (m *Matcher) Ignored(rel string, isDir bool) bool {
 			continue
 		}
 		ignored = !r.negated
+		reason = r.source + ":" + strconv.Itoa(r.line) + ": " + r.raw
 	}
-	return ignored
+	if !ignored {
+		// A negation may have rescued the path after an exclusion. The reason
+		// only describes an actual exclusion.
+		return false, ""
+	}
+	return true, reason
 }
 
 // appliesTo reports whether the rule's pattern matches the path.

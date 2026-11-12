@@ -31,6 +31,12 @@ type claimIssue struct {
 }
 
 var (
+	// claimSentenceBoundary splits an answer into claim-sized clauses. It is
+	// finer than the completion sentence splitter because a semicolon or a
+	// contrast can join a supported claim and an unsupported one; auditing
+	// them as one sentence would let the supported half hide the other.
+	claimSentenceBoundary = regexp.MustCompile(`[.!?]+[ \t]+|\n+|;\s+|,\s+but\s+`)
+
 	// behaviorClaimPattern matches a declarative claim about what a service
 	// does at runtime. Dependency names, Compose topology, and documentation
 	// prose do not satisfy it.
@@ -45,6 +51,7 @@ var (
 		`reads?\s+from\b|` +
 		`writes?\s+to\b|` +
 		`auto[- ]?appl(?:y|ies|ied|ying)\b|` +
+		`executes?\s+(?:the\s+)?(?:job|task|command|process|query|migration|workflow|pipeline|handler|request)\b|` +
 		`routes?\s+(?:requests?\s+)?(?:to|through)\b|` +
 		`listens?\s+(?:on|for)\b|` +
 		`process(?:es)?\s+(?:orders?|payments?|events?)\b|` +
@@ -104,6 +111,11 @@ var (
 	// excusing the same sentence's repository-wide conclusion.
 	globalNegativeScopePattern = regexp.MustCompile(
 		`(?i)\b(?:in|across|throughout)\s+(?:the\s+)?(?:repository|repo|project|codebase|workspace|directory|folder)\b|\banywhere\b|\bat\s+all\b`)
+
+	// claimedPortPattern extracts a concrete port literal from a behavior
+	// sentence. It requires a colon or the word "port" so a version, a count,
+	// or a timestamp is not mistaken for a service coordinate.
+	claimedPortPattern = regexp.MustCompile(`(?i)(?::|\bport\s+)(\d{2,5})\b`)
 )
 
 // claimScopeIssues returns the answer claims the run's observations cannot
@@ -112,15 +124,23 @@ var (
 func claimScopeIssues(answer string, turns []Turn) []claimIssue {
 	answer = stripFencedCode(answer)
 	var issues []claimIssue
-	for _, raw := range answerSentenceBoundary.Split(strings.TrimSpace(answer), -1) {
+	for _, raw := range claimSentenceBoundary.Split(strings.TrimSpace(answer), -1) {
 		sentence := strings.TrimSpace(raw)
-		if sentence == "" || claimIsBounded(sentence) || claimIsDocumentationAttributed(sentence) {
+		if sentence == "" || claimIsNonAssertive(sentence) || claimIsBounded(sentence) ||
+			claimIsDocumentationAttributed(sentence) {
 			continue
 		}
 		lineIssue := lineCountClaimIssue(sentence, turns)
 		if lineIssue != nil {
 			issues = append(issues, *lineIssue)
 		}
+		if issue := implementationClaimIssue(sentence, turns); issue != nil {
+			issues = append(issues, *issue)
+		}
+		if issue := conceptAbsenceIssue(sentence); issue != nil {
+			issues = append(issues, *issue)
+		}
+		issues = append(issues, dependencyClaimIssues(sentence, turns)...)
 		if issue := behaviorClaimIssue(sentence, turns); issue != nil {
 			issues = append(issues, *issue)
 		}
@@ -147,9 +167,12 @@ func claimScopeIssues(answer string, turns []Turn) []claimIssue {
 func prioritizeClaimIssues(issues []claimIssue) []claimIssue {
 	rank := map[string]int{
 		"unsupported_implementation_claim": 0,
-		"unsupported_deployment_claim":     1,
-		"unsupported_line_count":           2,
-		"unverified_speculation":           3,
+		"unsupported_completeness_claim":   1,
+		"unsupported_dependency_claim":     2,
+		"unsupported_concept_absence":      3,
+		"unsupported_deployment_claim":     4,
+		"unsupported_line_count":           5,
+		"unverified_speculation":           6,
 	}
 	sort.SliceStable(issues, func(i, j int) bool {
 		return rank[issues[i].Code] < rank[issues[j].Code]
@@ -203,14 +226,16 @@ func lineCountClaimIssue(sentence string, turns []Turn) *claimIssue {
 	return nil
 }
 
-// behaviorClaimIssue checks a runtime-behavior claim against source
-// observations. Configuration and manifests declare intent; they do not prove
-// execution.
+// behaviorClaimIssue checks a runtime-behavior claim against source and live
+// runtime observations. Configuration and manifests declare intent; they do
+// not prove execution. A named port narrows the check to the observation that
+// actually carries that port.
 func behaviorClaimIssue(sentence string, turns []Turn) *claimIssue {
-	match := behaviorClaimPattern.FindString(sentence)
-	if match == "" {
+	matchIndex := behaviorClaimPattern.FindStringIndex(sentence)
+	if matchIndex == nil {
 		return nil
 	}
+	match := sentence[matchIndex[0]:matchIndex[1]]
 	if autoApplyClaim(match) {
 		// A database init hook is a configuration mechanism: the Compose
 		// mount into docker-entrypoint-initdb.d proves that init scripts are
@@ -227,14 +252,125 @@ func behaviorClaimIssue(sentence string, turns []Turn) *claimIssue {
 		}
 	}
 	stem := behaviorStem(match)
-	if stem == "" || implementationTextContains(turns, stem) {
+	// Ports after the behavior verb belong to this claim. Ports earlier in the
+	// sentence may describe the container mapping or another clause, so they
+	// must not be attributed to the observed listener.
+	ports := claimedPorts(sentence[matchIndex[1]:])
+	// The component before the behavior verb is the subject. A claim about
+	// cart is not supported by reading product, even when both contain the
+	// same behavior word.
+	subject := ComponentSubject(sentence, matchIndex[0])
+	if stem == "" || behaviorClaimObserved(subject, stem, ports, turns) {
 		return nil
 	}
+	detail := "the answer states %q as runtime behavior without a source observation; configuration declares topology, not execution. Verify it or mark it unverified"
+	if len(ports) > 0 {
+		detail = "the answer states %q at port %s without a source observation naming that port; configuration declares topology, not execution. Verify it or mark it unverified"
+		return &claimIssue{
+			Code:   "unsupported_implementation_claim",
+			Detail: fmt.Sprintf(detail, boundedClaim(match), strings.Join(ports, ", ")),
+		}
+	}
 	return &claimIssue{
-		Code: "unsupported_implementation_claim",
-		Detail: fmt.Sprintf(
-			"the answer states %q as runtime behavior without a source observation; configuration declares topology, not execution. Verify it or mark it unverified",
-			boundedClaim(match)),
+		Code:   "unsupported_implementation_claim",
+		Detail: fmt.Sprintf(detail, boundedClaim(match)),
+	}
+}
+
+// claimedPorts returns the concrete port literals a behavior sentence names.
+func claimedPorts(sentence string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range claimedPortPattern.FindAllStringSubmatch(sentence, -1) {
+		if len(match) < 2 || seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		out = append(out, match[1])
+	}
+	return out
+}
+
+// behaviorClaimObserved reports whether source observations contain the
+// behavior stem for the claimed component. When the sentence names ports,
+// every claimed port must be present in a source observation that also carries
+// the behavior stem: reading product's listener does not prove that cart
+// listens on a different port, and a claim spanning several services may be
+// supported by several source reads.
+func behaviorClaimObserved(subject, stem string, ports []string, turns []Turn) bool {
+	if len(ports) == 0 {
+		return sourceObservationContains(turns, subject, stem, "")
+	}
+	for _, port := range ports {
+		if sourceObservationContains(turns, subject, stem, port) || runtimePortObserved(turns, subject, port) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// runtimePortObserved reports a live runtime whose observed address names the
+// port. A live service is stronger evidence than a source read for the port it
+// actually answered on, but it does not prove unrelated behavior. When the
+// claim names a component, the runtime's own command or URL must name that
+// component; an observation of another service's listener is not reusable.
+func runtimePortObserved(turns []Turn, subject, port string) bool {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.IsError || outcome.Refused() || outcome.Result.Runtime == nil {
+				continue
+			}
+			runtime := outcome.Result.Runtime
+			if !strings.Contains(runtime.URL, ":"+port) {
+				continue
+			}
+			if subject != "" &&
+				!ComponentMatchesText(subject, runtime.URL) &&
+				!ComponentMatchesText(subject, runtime.Command) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// sourceObservationContains reports a source read or source-scoped grep that
+// belongs to the named component and contains the behavior stem and, when
+// non-empty, the port literal.
+func sourceObservationContains(turns []Turn, subject, stem, port string) bool {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.IsError || outcome.Refused() || !sourceObservationOutcome(outcome) {
+				continue
+			}
+			if subject != "" && !ComponentMatchesPath(subject, outcomePath(outcome)) {
+				continue
+			}
+			text := strings.ToLower(outcome.Result.Text)
+			if !strings.Contains(text, stem) {
+				continue
+			}
+			if port == "" || strings.Contains(text, port) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sourceObservationOutcome reports whether an outcome is a source read or a
+// source-scoped grep. Configuration, documentation, and manifests are not
+// implementation observations.
+func sourceObservationOutcome(outcome ToolOutcome) bool {
+	switch outcome.ToolName {
+	case "read":
+		return isImplementationPath(outcomePath(outcome))
+	case "grep":
+		return isImplementationSearchPath(outcomePath(outcome))
+	default:
+		return false
 	}
 }
 
@@ -281,6 +417,11 @@ func speculationClaimIssue(sentence string, turns []Turn) *claimIssue {
 // claimIsBounded reports an explicit limitation. An answer that says a claim
 // is unverified, not checked, or worth verifying is using the lower-assertion
 // option rather than presenting the claim as observed.
+//
+// "not implemented" and "not used" are deliberately absent: those are exactly
+// the concept-absence conclusions this audit exists to bound. A scoped form
+// ("no JWT implementation was found in the inspected authentication source")
+// is recognized separately by conceptAbsenceIssue.
 func claimIsBounded(sentence string) bool {
 	lower := strings.ToLower(sentence)
 	for _, marker := range []string{
@@ -288,9 +429,50 @@ func claimIsBounded(sentence string) bool {
 		"could not verify", "couldn't verify", "not established",
 		"no evidence", "would need", "worth verifying", "not evaluated",
 		"not inspected", "not checked", "not probed", "in the probes",
-		"in this pass", "does not show", "doesn't show", "does not establish",
-		"doesn't establish", "does not prove", "doesn't prove", "not shown",
-		"not proven", "not implemented", "planned", "stubbed", "inferred",
+		"in this pass", "in this scan", "does not show", "doesn't show",
+		"did not show", "didn't show", "does not establish",
+		"doesn't establish", "did not establish", "does not prove",
+		"doesn't prove", "did not prove", "not shown", "not proven",
+		"not found in the inspected", "not found in the searched",
+		"not present in the inspected", "in the inspected ",
+		"from the inspected ", "the inspected ", "in the inspected files",
+		"in the files inspected",
+		"in the observed source", "within the inspected",
+		"based on the inspected", "so far", "inferred",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// claimIsNonAssertive reports a question, hypothetical, recommendation, or
+// plan. None of those is a factual claim about the repository, so the claim
+// audit must not turn an honest recommendation into a review boundary.
+func claimIsNonAssertive(sentence string) bool {
+	trimmed := strings.TrimSpace(sentence)
+	if trimmed == "" {
+		return true
+	}
+	if strings.HasSuffix(trimmed, "?") {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range []string{
+		"if ", "should ", "consider ", "recommend ", "recommended ",
+		"we could ", "you could ", "you may ", "you might ", "it would ",
+		"it may ", "it might ", "maybe ", "perhaps ", "let me ",
+		"let's ", "next, ", "next step", "todo:",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	for _, marker := range []string{
+		"i recommend", "we recommend", "would recommend", "should consider",
+		"could add", "could implement", "might want", "may want",
+		"would be worth", "is worth considering", "if you want",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -326,7 +508,8 @@ func boundedNegativeReport(sentence string) bool {
 	lower := strings.ToLower(sentence)
 	for _, marker := range []string{
 		"not evaluated", "not inspected", "not checked", "not probed",
-		"not searched", "worth verifying", "would need to check",
+		"not searched", "in the inspected scope", "in the inspected source",
+		"in the inspected files", "worth verifying", "would need to check",
 		"would need to verify", "would need to inspect", "would need to search",
 		"in the probes", "in this pass", "in this scan",
 	} {
@@ -500,31 +683,6 @@ func claimCount(raw string) int {
 	return value
 }
 
-// implementationTextContains reports whether a source observation contains the
-// behavior stem.
-func implementationTextContains(turns []Turn, stem string) bool {
-	for _, turn := range turns {
-		for _, outcome := range turn.Results {
-			if outcome.Result.IsError || outcome.Refused() {
-				continue
-			}
-			switch outcome.ToolName {
-			case "read":
-				if isImplementationPath(outcomePath(outcome)) &&
-					strings.Contains(strings.ToLower(outcome.Result.Text), stem) {
-					return true
-				}
-			case "grep":
-				if isImplementationSearchPath(outcomePath(outcome)) &&
-					strings.Contains(strings.ToLower(outcome.Result.Text), stem) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
 // deploymentObserved reports a read deployment artifact. A Dockerfile or a
 // Kubernetes/Helm manifest is a deployment boundary; a Compose service entry
 // alone is topology.
@@ -673,6 +831,8 @@ func behaviorStem(phrase string) string {
 		return "call"
 	case strings.HasPrefix(word, "send"):
 		return "send"
+	case strings.HasPrefix(word, "execut"):
+		return "execut"
 	case strings.HasPrefix(word, "read"):
 		return "read"
 	case strings.HasPrefix(word, "writ"):

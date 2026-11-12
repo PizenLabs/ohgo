@@ -24,6 +24,23 @@ import (
 // ShapeVersion is the schema version of a TaskShape.
 const ShapeVersion = 1
 
+// StructuralDepth is the project-understanding depth a task shape selected.
+//
+// It is an activation policy, not a capability grant: a structural tool still
+// passes the same read-only admission and the index still enforces its own
+// parse and query bounds. The vocabulary mirrors the runtime's activation
+// levels so no second intent router is introduced.
+type StructuralDepth string
+
+// Structural depth levels.
+const (
+	StructuralNone     StructuralDepth = "NONE"
+	StructuralOverview StructuralDepth = "OVERVIEW"
+	StructuralTargeted StructuralDepth = "TARGETED"
+	StructuralImpact   StructuralDepth = "IMPACT"
+	StructuralSemantic StructuralDepth = "SEMANTIC"
+)
+
 // TaskShape is the declarative structural requirement of one task.
 //
 // It is derived deterministically from the user's completion contract and the
@@ -37,6 +54,8 @@ type TaskShape struct {
 	Objective string `json:"objective"`
 	// Kind is the completion objective from the contract.
 	Kind contract.ObjectiveKind `json:"kind"`
+	// StructuralDepth is the selected project-understanding depth.
+	StructuralDepth StructuralDepth `json:"structuralDepth,omitempty"`
 	// ExecutionMode refines an execution objective: a one-shot command or the
 	// project's own long-running runtime. Sufficiency and completion read it to
 	// decide whether a finished command is enough evidence.
@@ -197,8 +216,14 @@ func (b BudgetShape) Exhausted() bool {
 type RepositoryFacts struct {
 	Go         bool     `json:"go,omitempty"`
 	JavaScript bool     `json:"javascript,omitempty"`
+	TypeScript bool     `json:"typescript,omitempty"`
 	Python     bool     `json:"python,omitempty"`
 	Rust       bool     `json:"rust,omitempty"`
+	Java       bool     `json:"java,omitempty"`
+	CSharp     bool     `json:"csharp,omitempty"`
+	Kotlin     bool     `json:"kotlin,omitempty"`
+	Ruby       bool     `json:"ruby,omitempty"`
+	Cpp        bool     `json:"cpp,omitempty"`
 	Make       bool     `json:"make,omitempty"`
 	Markers    []string `json:"markers,omitempty"`
 	RootFiles  int      `json:"rootFiles,omitempty"`
@@ -209,12 +234,24 @@ func (f RepositoryFacts) HasLanguage(language string) bool {
 	switch strings.ToLower(strings.TrimSpace(language)) {
 	case "go":
 		return f.Go
-	case "javascript", "js", "typescript", "ts":
+	case "javascript", "js", "jsx":
 		return f.JavaScript
+	case "typescript", "ts", "tsx":
+		return f.TypeScript || f.JavaScript
 	case "python":
 		return f.Python
 	case "rust":
 		return f.Rust
+	case "java":
+		return f.Java
+	case "csharp", "c#", "cs":
+		return f.CSharp
+	case "kotlin", "kt":
+		return f.Kotlin
+	case "ruby", "rb":
+		return f.Ruby
+	case "c", "cpp", "c++":
+		return f.Cpp
 	default:
 		// An unknown language requirement is not evidence of absence.
 		return true
@@ -226,7 +263,8 @@ func (f RepositoryFacts) HasLanguage(language string) bool {
 // may still have a complete survey; a code project needs at least one source
 // or structural observation before a broad account can be called sufficient.
 func (f RepositoryFacts) HasSourceCode() bool {
-	return f.Go || f.JavaScript || f.Python || f.Rust
+	return f.Go || f.JavaScript || f.TypeScript || f.Python || f.Rust ||
+		f.Java || f.CSharp || f.Kotlin || f.Ruby || f.Cpp
 }
 
 // ProbeFacts reads a few marker files at the workspace root.
@@ -245,11 +283,18 @@ func ProbeFacts(root string) RepositoryFacts {
 	}{
 		{"go.mod", "go"},
 		{"go.work", "go"},
-		{"package.json", "javascript"},
-		{"tsconfig.json", "javascript"},
+		{"package.json", "typescript"},
+		{"tsconfig.json", "typescript"},
 		{"pyproject.toml", "python"},
 		{"requirements.txt", "python"},
 		{"Cargo.toml", "rust"},
+		{"pom.xml", "java"},
+		{"build.gradle", "java"},
+		{"build.gradle.kts", "kotlin"},
+		{"settings.gradle", "java"},
+		{"Gemfile", "ruby"},
+		{"CMakeLists.txt", "cpp"},
+		{"Directory.Build.props", "csharp"},
 		{"Makefile", "make"},
 	}
 	for _, marker := range markers {
@@ -260,32 +305,118 @@ func ProbeFacts(root string) RepositoryFacts {
 				facts.Go = true
 			case "javascript":
 				facts.JavaScript = true
+			case "typescript":
+				facts.TypeScript = true
+				facts.JavaScript = true
 			case "python":
 				facts.Python = true
 			case "rust":
 				facts.Rust = true
+			case "java":
+				facts.Java = true
+			case "csharp":
+				facts.CSharp = true
+			case "kotlin":
+				facts.Kotlin = true
+			case "ruby":
+				facts.Ruby = true
+			case "cpp":
+				facts.Cpp = true
 			case "make":
 				facts.Make = true
 			}
 		}
 	}
-	// A Go repository often has .go files without go.mod (a fixture or a
-	// GOPATH-style tree). One directory read is cheap and keeps the structural
-	// tool surface honest.
+	// A repository often has sources without a root manifest (a fixture, a
+	// monorepo, or a GOPATH-style tree). A depth- and count-bounded probe keeps
+	// the structural tool surface honest without indexing the tree.
 	entries, err := os.ReadDir(root)
 	if err == nil {
 		facts.RootFiles = len(entries)
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			if strings.HasSuffix(entry.Name(), ".go") {
-				facts.Go = true
-			}
-		}
+		probeSourceEntries(root, "", 0, &facts, map[string]bool{})
 	}
 	sort.Strings(facts.Markers)
 	return facts
+}
+
+// probeSourceEntries is metadata-only: it never parses and never walks into
+// generated or vendor trees. Depth 2 covers frontend/backend and
+// services/<module> layouts while keeping the probe O(bounded).
+func probeSourceEntries(root, rel string, depth int, facts *RepositoryFacts, seen map[string]bool) {
+	if depth > 2 || len(seen) > 512 {
+		return
+	}
+	dir := filepath.Join(root, filepath.FromSlash(rel))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if len(seen) > 512 {
+			return
+		}
+		name := entry.Name()
+		childRel := name
+		if rel != "" {
+			childRel = rel + "/" + name
+		}
+		if entry.IsDir() {
+			switch strings.ToLower(name) {
+			case ".git", "node_modules", "vendor", "testdata", "dist", "build", "target", ".next":
+				continue
+			}
+			if strings.HasPrefix(name, ".") && name != ".github" {
+				continue
+			}
+			probeSourceEntries(root, childRel, depth+1, facts, seen)
+			continue
+		}
+		seen[childRel] = true
+		probeFileName(name, facts)
+	}
+}
+
+func probeFileName(name string, facts *RepositoryFacts) {
+	lower := strings.ToLower(name)
+	switch lower {
+	case "go.mod", "go.work":
+		facts.Go = true
+	case "package.json", "tsconfig.json":
+		facts.TypeScript, facts.JavaScript = true, true
+	case "pom.xml", "build.gradle", "settings.gradle":
+		facts.Java = true
+	case "build.gradle.kts":
+		facts.Kotlin = true
+	case "cargo.toml":
+		facts.Rust = true
+	case "gemfile":
+		facts.Ruby = true
+	case "cmakelists.txt":
+		facts.Cpp = true
+	}
+	switch {
+	case strings.HasSuffix(lower, ".go"):
+		facts.Go = true
+	case strings.HasSuffix(lower, ".ts"), strings.HasSuffix(lower, ".tsx"):
+		facts.TypeScript, facts.JavaScript = true, true
+	case strings.HasSuffix(lower, ".js"), strings.HasSuffix(lower, ".jsx"),
+		strings.HasSuffix(lower, ".mjs"), strings.HasSuffix(lower, ".cjs"):
+		facts.JavaScript = true
+	case strings.HasSuffix(lower, ".java"):
+		facts.Java = true
+	case strings.HasSuffix(lower, ".cs"):
+		facts.CSharp = true
+	case strings.HasSuffix(lower, ".kt"), strings.HasSuffix(lower, ".kts"):
+		facts.Kotlin = true
+	case strings.HasSuffix(lower, ".rs"):
+		facts.Rust = true
+	case strings.HasSuffix(lower, ".rb"):
+		facts.Ruby = true
+	case strings.HasSuffix(lower, ".c"), strings.HasSuffix(lower, ".h"),
+		strings.HasSuffix(lower, ".cc"), strings.HasSuffix(lower, ".cpp"),
+		strings.HasSuffix(lower, ".hpp"), strings.HasSuffix(lower, ".cxx"):
+		facts.Cpp = true
+	}
 }
 
 // ShapeParams carries the non-contract facts BuildShape needs.
@@ -352,6 +483,7 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 	shape.BroadRepositoryAnalysis = shape.RepositoryScope && broadRepositoryAnalysis(shape.Objective, intent)
 	shape.NeedsCodeNavigation = needsCodeNavigation(shape.Objective, intent)
 	shape.NeedsRelationshipNavigation = needsRelationshipNavigation(shape.Objective)
+	shape.StructuralDepth = deriveStructuralDepth(shape)
 	// An explicit Gry/MCP request is structural by definition.
 	if strings.Contains(strings.ToLower(shape.Objective), "gry") ||
 		strings.Contains(strings.ToLower(shape.Objective), "mcp") {
@@ -652,6 +784,29 @@ func containsAnyWord(normalized string, words []string) bool {
 }
 
 // needsCodeNavigation reports whether structural code navigation is relevant.
+// deriveStructuralDepth is the single activation policy for the structural
+// runtime. It reads the existing shape signals rather than adding a second
+// intent router: broad repository account -> overview, relationship question
+// -> impact, symbol/package navigation -> targeted, otherwise none.
+func deriveStructuralDepth(shape TaskShape) StructuralDepth {
+	// A broad account is answered from metadata first even when the request
+	// also uses structural vocabulary ("architecture", "overview"). Impact is
+	// for a named relationship question, not for asking what the project is.
+	if shape.BroadRepositoryAnalysis {
+		return StructuralOverview
+	}
+	if shape.NeedsRelationshipNavigation {
+		return StructuralImpact
+	}
+	if shape.RepositoryScope && !shape.NeedsCodeNavigation {
+		return StructuralOverview
+	}
+	if shape.NeedsCodeNavigation {
+		return StructuralTargeted
+	}
+	return StructuralNone
+}
+
 func needsCodeNavigation(objective string, intent contract.IntentContract) bool {
 	for _, target := range intent.Targets {
 		if target.Kind == contract.TargetSymbol || target.Kind == contract.TargetPackage {
@@ -697,6 +852,39 @@ func needsRelationshipNavigation(objective string) bool {
 		"model context protocol",
 	} {
 		if strings.Contains(normalized, " "+phrase+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// wantsTestInventory reports a request whose answer can make a test claim. The
+// inventory requirement is what turns "no tests exist" into an observation the
+// runtime can acquire, rather than a conclusion from an overview count.
+func wantsTestInventory(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	for _, phrase := range []string{
+		" test ", " tests ", " testing ", " tested ", " test file ",
+		" test files ", " test suite ", " unit test ", " unit tests ",
+		" coverage ", " no tests ", " any tests ", " go test ", " go tests ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// testAbsenceQuestion reports a request that explicitly asks about test
+// presence, coverage, or test files. A targeted "read the test suite" question
+// is answered by source content and does not acquire this extra requirement.
+func testAbsenceQuestion(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	for _, phrase := range []string{
+		" no tests ", " any tests ", " are there tests ", " is there tests ",
+		" test coverage ", " test inventory ", " test file ", " test files ",
+	} {
+		if strings.Contains(normalized, phrase) {
 			return true
 		}
 	}
@@ -1073,6 +1261,10 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 			if shape.BroadRepositoryAnalysis {
 				add("repository_survey", "a broad overview needs a second content observation or the repository's structure")
 			}
+		}
+		if wantsTestInventory(shape.Objective) &&
+			(shape.BroadRepositoryAnalysis || testAbsenceQuestion(shape.Objective)) {
+			add("test_inventory", "the request asks about tests, so a complete filtered inventory is needed before any absence claim")
 		}
 	}
 	return needs

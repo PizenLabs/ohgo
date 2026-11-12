@@ -26,9 +26,13 @@ capabilities, or list your tools.
 Guidelines:
 - Prefer the dedicated tools over shell commands. Use read/edit/write for
   files, glob for finding files, grep for finding text, symbols for
-  locating Go declarations and their repository coordinates, graph for
-  package imports, and refs for exact symbol references and statically
-  provable direct callers/callees.
+  locating declarations and their repository coordinates across registered
+  languages, graph for Go package imports, refs for exact symbol references
+  and statically resolved callers/callees, and structure for bounded project
+  inventory (languages, files, packages, tests, configs, entrypoints,
+  explicit relations, and static impact). Overview is metadata-first; ask for
+  a targeted or impact view only when the task needs declarations or
+  relationships.
 - Make the smallest change that solves the problem. Do not refactor code the
   task did not ask you to touch.
 - Never guess a file's contents. Read it before editing it.

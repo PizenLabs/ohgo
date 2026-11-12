@@ -367,6 +367,21 @@ type Loop struct {
 	evidenceSeq     int
 	lastChangeSeq   int
 	lastVerifiedSeq int
+	// observationMu guards the current-observation index below. A repeated
+	// read-only observation of the same coordinate is answered from the
+	// existing result instead of spending another call and another context
+	// window; a change or execution clears the index because the workspace may
+	// no longer be the one that was observed.
+	observationMu sync.Mutex
+	observations  map[string]observationRecord
+}
+
+// observationRecord is one current read-only observation. Turn keeps a
+// same-batch duplicate from being answered from a sibling's result: only an
+// observation from an earlier turn is reusable.
+type observationRecord struct {
+	turn    int
+	summary string
 }
 
 // VerificationObserved reports whether a successful check has been observed
@@ -431,7 +446,102 @@ func New(cfg Config) (*Loop, error) {
 	if cfg.Compaction.Enabled && cfg.Compaction.Strategy != StrategyOff && cfg.Summarize == nil {
 		return nil, ErrNoSummarizer
 	}
-	return &Loop{cfg: cfg, budget: cfg.Budget, explicitBudget: explicitBudget}, nil
+	return &Loop{
+		cfg: cfg, budget: cfg.Budget, explicitBudget: explicitBudget,
+		observations: map[string]observationRecord{},
+	}, nil
+}
+
+// observationTool reports a read-only capability whose exact invocation is an
+// observation. Verification is excluded: its result is a state check, not a
+// repository coordinate.
+func observationTool(name string) bool {
+	switch name {
+	case "read", "ls", "glob", "grep", "structure", "symbols", "graph", "refs":
+		return true
+	default:
+		return false
+	}
+}
+
+// priorObservation returns the short result already observed for an identical
+// read-only invocation. It is a context-efficiency guard, not authority: the
+// tool is not run again, and the model is told to use the evidence it already
+// has or to change the coordinate.
+func (l *Loop) priorObservation(call ai.ToolCall, turnIndex int) (string, bool) {
+	if l == nil || !observationTool(call.Name) {
+		return "", false
+	}
+	signature := CallSignature(call.Name, call.Arguments)
+	l.observationMu.Lock()
+	defer l.observationMu.Unlock()
+	prior, ok := l.observations[signature]
+	if !ok || prior.summary == "" || prior.turn >= turnIndex {
+		return "", false
+	}
+	return "This exact observation is already current in this run: " + prior.summary +
+		". Use the recorded evidence instead of repeating it; re-inspect only after a change changes the workspace.", true
+}
+
+// noteObservation adds a successful read-only observation to the current
+// index. A definite change or any process execution invalidates the index,
+// because the workspace state the observations described may be gone.
+func (l *Loop) noteObservation(call ai.ToolCall, result Result, turnIndex int) {
+	if l == nil {
+		return
+	}
+	if result.IsError || result.Refused || result.Reused {
+		return
+	}
+	l.observationMu.Lock()
+	defer l.observationMu.Unlock()
+	if result.Mutates || result.Executes || result.Verifies {
+		l.observations = map[string]observationRecord{}
+		return
+	}
+	if l.observations == nil {
+		l.observations = map[string]observationRecord{}
+	}
+	if !observationTool(call.Name) {
+		return
+	}
+	summary := strings.TrimSpace(firstLineText(result.Text))
+	if summary == "" {
+		summary = call.Name + " returned an empty observation"
+	}
+	l.observations[CallSignature(call.Name, call.Arguments)] = observationRecord{
+		turn: turnIndex, summary: truncateRunes(summary, 120),
+	}
+}
+
+// firstLineText returns the first non-empty content line of tool output.
+func firstLineText(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if tab := strings.IndexByte(line, '\t'); tab >= 0 {
+			line = strings.TrimSpace(line[tab+1:])
+		}
+		if line == "" || strings.HasPrefix(line, "[showing ") {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
+// truncateRunes bounds a display summary without splitting a UTF-8 rune.
+func truncateRunes(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit]) + "…"
 }
 
 // defaultMaxTokens caps a completion when the caller did not pick a budget.
@@ -1052,10 +1162,18 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// regardless of how many other tools the projection still offered.
 		executed := 0
 		offeredRefusals := 0
+		rejected := 0
 		for _, outcome := range outcomes {
-			if !outcome.Refused() {
+			// A rejected invocation never reached the capability with a valid
+			// request. It is feedback for a correction, not work: treating it
+			// as executed would let a model reset the unproductive-turn bound
+			// by submitting an endless stream of malformed proposals.
+			if !outcome.Refused() && !outcome.Result.Rejected() {
 				executed++
 				continue
+			}
+			if outcome.Result.Rejected() {
+				rejected++
 			}
 			// A refused call to a tool this projection offered was withheld
 			// by policy (grounding, authority, approval) at execution time.
@@ -1099,14 +1217,24 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// that keeps calling a withheld tool has already ignored the surface,
 		// and a model with no offered tools already had its answer-only turn.
 		if !forceAnswer && !closed && offeredRefusals > 0 {
+			// A refusal of an identical request-level rejection is correction
+			// feedback, not a hostile repeat of a withheld capability. Give the
+			// model one bounded corrected attempt before asking for prose; the
+			// modified invocation is a different proposal and may execute.
+			if allFailureRejected(outcomes) && unproductiveTurns <= maxUnproductiveTurns {
+				continue
+			}
 			forceAnswer = true
 			continue
 		}
 		reason := strings.TrimSpace(stopReason)
 		if reason == "" {
-			if closed {
+			switch {
+			case rejected > 0 && offeredRefusals == 0:
+				reason = "the runtime rejected every proposed invocation and the model did not submit a corrected action"
+			case closed:
 				reason = "the runtime offered no tool and the model did not answer"
-			} else {
+			default:
 				reason = "the runtime refused every proposed action and the model did not answer"
 			}
 		}
@@ -1125,6 +1253,23 @@ func answerRequired(outcomes []ToolOutcome) bool {
 	}
 	for _, outcome := range outcomes {
 		if !outcome.Result.AnswerRequired {
+			return false
+		}
+	}
+	return true
+}
+
+// allFailureRejected reports whether every outcome in the batch was refused
+// because it repeated an invocation the failure ledger already rejected. That
+// is the one refusal shape where the model has an actionable correction: change
+// the arguments, which produces a different signature, rather than choose a
+// different capability because the surface closed.
+func allFailureRejected(outcomes []ToolOutcome) bool {
+	if len(outcomes) == 0 {
+		return false
+	}
+	for _, outcome := range outcomes {
+		if !outcome.Result.FailureRejected {
 			return false
 		}
 	}
@@ -1389,6 +1534,7 @@ func (l *Loop) dispatch(
 			defer wg.Done()
 			outcome := l.execute(ctx, byName, refusals, assistant, call, turn, turnIndex)
 			l.noteEvidence(outcome.Result)
+			l.noteObservation(call, outcome.Result, turnIndex)
 			record(position, outcome)
 		}(i, call)
 
@@ -1514,6 +1660,11 @@ func (l *Loop) execute(
 	fail := func(text string) ToolOutcome {
 		return ToolOutcome{CallID: call.ID, ToolName: call.Name, Result: Result{Text: text, IsError: true}}
 	}
+	failClass := func(class, text string) ToolOutcome {
+		return ToolOutcome{CallID: call.ID, ToolName: call.Name, Result: Result{
+			Text: text, IsError: true, FailureClass: class,
+		}}
+	}
 
 	// A repeated failed proposal is decided before the capability boundary.
 	// The control plane recorded the failure class and retry budget; this
@@ -1598,7 +1749,27 @@ func (l *Loop) execute(
 			Result: Result{
 				Text:         fmt.Sprintf("Tool %q not found. Available tools: %s.", call.Name, strings.Join(sorted(names), ", ")),
 				IsError:      true,
-				FailureClass: ToolFailureUnsupported,
+				FailureClass: ToolFailureUnknownTool,
+			},
+		}
+	}
+
+	// An identical read-only observation from an earlier turn that is still
+	// current adds no evidence. Answer from the recorded result rather than
+	// spending another tool call and context window; the model can still
+	// change the coordinate or re-inspect after a change. A same-batch
+	// duplicate is not reused: concurrency semantics and each call's own
+	// result remain intact.
+	if text, reused := l.priorObservation(call, turnIndex); reused {
+		return ToolOutcome{
+			CallID:   call.ID,
+			ToolName: call.Name,
+			Args:     call.Arguments,
+			Result: Result{
+				Text:    text,
+				Useless: true,
+				Reused:  true,
+				Details: map[string]any{"reused": true},
 			},
 		}
 	}
@@ -1637,7 +1808,8 @@ func (l *Loop) execute(
 		if outcome.Args != nil {
 			args = outcome.Args
 			if err := ValidateArgs(tool, args); err != nil {
-				return fail(fmt.Sprintf("Invalid arguments for %q: %v", call.Name, err))
+				return failClass(ToolFailureInvalidArgument,
+					fmt.Sprintf("Invalid arguments for %q: %v", call.Name, err))
 			}
 		}
 	}

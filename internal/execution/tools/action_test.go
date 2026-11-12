@@ -26,20 +26,23 @@ func hasOperation(tool agent.Tool, want contract.ChangeOp) bool {
 func TestBuiltinToolActionMetadata(t *testing.T) {
 	source := NewStructuralSource("")
 	cases := []struct {
-		name      string
-		tool      agent.Tool
-		classes   []agent.ActionClass
-		operation contract.ChangeOp
-		language  string
+		name          string
+		tool          agent.Tool
+		classes       []agent.ActionClass
+		operation     contract.ChangeOp
+		language      string
+		languages     []string
+		allStructural bool
 	}{
 		{name: "write", tool: NewWriteTool(""), classes: []agent.ActionClass{agent.ActionMutate}, operation: contract.ChangeCreate},
 		{name: "edit", tool: NewEditTool(""), classes: []agent.ActionClass{agent.ActionMutate, agent.ActionRequiresExisting}, operation: contract.ChangeModify},
 		{name: "delete", tool: NewDeleteTool(""), classes: []agent.ActionClass{agent.ActionMutate, agent.ActionRequiresExisting}, operation: contract.ChangeDelete},
 		{name: "bash", tool: NewBashTool(""), classes: []agent.ActionClass{agent.ActionExecute, agent.ActionMutate}, operation: contract.ChangeAny},
 		{name: "web_fetch", tool: NewWebFetchTool(), classes: []agent.ActionClass{agent.ActionExternal}},
-		{name: "symbols", tool: NewSymbolsToolWithSource(source), classes: []agent.ActionClass{agent.ActionObserve}, language: "go"},
-		{name: "graph", tool: NewGraphTool(source), classes: []agent.ActionClass{agent.ActionObserve, agent.ActionRelationship}, language: "go"},
-		{name: "refs", tool: NewRefsTool(source), classes: []agent.ActionClass{agent.ActionObserve, agent.ActionRelationship}, language: "go"},
+		{name: "symbols", tool: NewSymbolsToolWithSource(source), classes: []agent.ActionClass{agent.ActionObserve, agent.ActionStructure}, allStructural: true},
+		{name: "graph", tool: NewGraphTool(source), classes: []agent.ActionClass{agent.ActionObserve, agent.ActionRelationship, agent.ActionStructure}, language: "go"},
+		{name: "refs", tool: NewRefsTool(source), classes: []agent.ActionClass{agent.ActionObserve, agent.ActionRelationship, agent.ActionStructure}, allStructural: true},
+		{name: "structure", tool: NewStructureTool(source), classes: []agent.ActionClass{agent.ActionObserve, agent.ActionStructure}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,6 +56,31 @@ func TestBuiltinToolActionMetadata(t *testing.T) {
 			}
 			if tc.language != "" && agent.ToolRequiredLanguage(tc.tool) != tc.language {
 				t.Errorf("%s language = %q, want %q", tc.name, agent.ToolRequiredLanguage(tc.tool), tc.language)
+			}
+			if tc.allStructural {
+				got := agent.ToolRequiredLanguages(tc.tool)
+				want := structuralLanguageNames()
+				if len(got) != len(want) {
+					t.Errorf("%s languages = %v, want %v", tc.name, got, want)
+				}
+				for i := range want {
+					if i >= len(got) || got[i] != want[i] {
+						t.Errorf("%s languages = %v, want %v", tc.name, got, want)
+						break
+					}
+				}
+			}
+			for _, want := range tc.languages {
+				found := false
+				for _, got := range agent.ToolRequiredLanguages(tc.tool) {
+					if got == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("%s languages = %v, want %q", tc.name, agent.ToolRequiredLanguages(tc.tool), want)
+				}
 			}
 		})
 	}

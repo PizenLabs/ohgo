@@ -106,6 +106,11 @@ type Result struct {
 	// Useless marks a result that adds nothing to context and may be elided by
 	// compaction (zero matches, a timeout). Ignored when IsError is set.
 	Useless bool
+	// Reused marks a successful result that restates an observation already
+	// current in this run. It is not a new repository observation: evidence
+	// recording must skip it or a reuse notice would look like changed file
+	// content and manufacture a conflict.
+	Reused bool
 	// FailureClass is the provider-agnostic category of an execution failure,
 	// when the producer can classify it (a missing credential, an unknown
 	// capability, a timeout). Empty means unclassified.
@@ -153,16 +158,23 @@ type Result struct {
 }
 
 // Rejected reports that the capability never ran the call because its
-// arguments did not satisfy the capability's own contract.
+// arguments or operation shape did not satisfy the capability's own contract.
 //
 // A malformed invocation is a harness contract error, not an observation about
 // the project: it neither establishes nor contradicts anything, and nothing
 // executed. Completion must not let a late malformed continuation downgrade a
 // proof that real evidence already supports, so it is not pending failure and
 // not outstanding work. The failure ledger still counts it, because an
-// identical malformed repeat is a loop the runtime must be able to refuse.
+// identical malformed repeat is a loop the runtime must be able to refuse, but
+// it records the rejection at request level rather than as capability health.
 func (r Result) Rejected() bool {
-	return r.FailureClass == ToolFailureInvalidArgument
+	switch r.FailureClass {
+	case ToolFailureInvalidArgument, ToolFailureInvalidSelector,
+		ToolFailureUnknownTool, ToolFailureUnsupported,
+		ToolFailureAuthorization:
+		return true
+	}
+	return false
 }
 
 // ErrorResult builds an error result from a formatted message.

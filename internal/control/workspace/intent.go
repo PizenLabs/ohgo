@@ -174,6 +174,23 @@ func ClassifyPrediction(text string) Prediction {
 			read = evidenceHead
 		}
 	}
+	// A later clause with an unambiguous read head is still part of the
+	// request's objective. "Check this project and analyze what it is about"
+	// opens with an ambiguous read verb, and without this the whole request
+	// stayed a moderate READ: BUILD kept the turn and the model never entered
+	// the read-only ASK boundary. A later noun phrase is deliberately not
+	// enough; only an explicit read verb strengthens the signal.
+	for i, entry := range clauses {
+		if i == 0 || entry.asked {
+			continue
+		}
+		head := clauseHead(entry.text)
+		if headMatches(readHeads, head) && !headMatches(ambiguousReadHeads, head) &&
+			!headMatches(investigateHeads, head) && !headMatches(executeHeads, head) {
+			read = evidenceHead
+			break
+		}
+	}
 	investigateHead := false
 	executeHead := false
 	// executeClause records a mutation-bearing phrase in a later clause. A

@@ -16,23 +16,122 @@ an upward edge is a bug, not a shortcut.
 
 ## Repository intelligence
 
-`symbols`, `graph`, and `refs` are three read-only surfaces over one
-`tools.StructuralSource` and one `ast.Index`. One `GoBackend.Parse` pass
-produces symbol coordinates, package imports, resolved references, and static
-direct-call sites. There is no second parser, index, daemon, or graph database.
+`symbols`, `graph`, `refs`, and `structure` are four read-only surfaces over one
+`tools.StructuralSource` and one `ast.Index`. One parse pass per supported file
+produces canonical declarations, package/namespace facts, imports, references,
+calls, explicit inheritance/implementation clauses, test declarations, and
+entrypoints; Go keeps its native `go/ast` backend and every other configured
+language uses a pinned tree-sitter adapter. There is no second parser, index,
+daemon, graph database, or evidence path.
 
-- `symbols` returns exact declaration coordinates.
-- `graph` returns bounded package/import relationships with `file:line`
-  witnesses and explicit external/unresolved/ambiguous states.
-- `refs` returns package-scope symbol references and statically provable direct
-  callers/callees. Method dispatch, function values, dot imports, reflection,
-  and unresolved targets are counted as unknown or returned as `unsupported`;
-  they are never guessed. Callers/callees traversal is bounded by depth, node,
-  edge, and work limits, is cycle-safe, and is cancellation-aware.
+- `symbols` returns exact declaration coordinates across Go, TypeScript/TSX,
+  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, C, and C++. A language filter is
+  a query convenience; the per-file language and native kind stay explicit.
+- `graph` remains the Go package/import graph. It reports the snapshot's
+  language coverage and points a non-Go selector at `structure`/`refs` instead
+  of pretending the Go package graph covers another language.
+- `refs` returns Go package-scope references and statically provable direct
+  callers/callees, plus name-resolved non-Go call sites only when the target is
+  unique. Method dispatch, function values, dot imports, reflection, unresolved
+  names, and ambiguous names are counted as unknown or returned as
+  `unsupported`; they are never guessed. Callers/callees traversal is bounded
+  by depth, node, edge, and work limits, is cycle-safe, and is
+  cancellation-aware.
+- `structure` returns bounded project inventory — languages and coverage,
+  files, directories/packages, configs, test declarations, entrypoints,
+  explicit relations, and an impact composition of references, callers,
+  importers, and tests. Its `overview` and `languages` views are metadata-first;
+  targeted/impact views parse the pending supported files on demand. Semantic
+  activation is reserved and fails explicitly because no semantic resolver is
+  configured.
 
-All three share the same freshness check, workspace path containment, authority
-admission, tool-call budget, and child tool set. Their evidence is advisory: it
-cannot mutate, execute, grant authority, or complete a task.
+The index is an incremental in-process snapshot, not a stateless per-file
+searcher. A normal refresh stats the tree, parses only added or changed source
+files, retains raw relationship syntax so unchanged files are re-resolved
+without a second parse, and republishes atomically with a monotonic generation,
+deterministic snapshot id, explicit `CURRENT`/`UPDATING`/`STALE`/`INVALID`
+freshness, parse-failure count, per-language coverage, structural completeness,
+and the last update's resolution scope (`inventory_only`,
+`targeted_parse`, `global_reresolve`, or `full_snapshot`).
+
+Production uses adaptive activation: inventory and language mix are available
+immediately, source parsing happens only when a targeted or impact query needs
+it, and a broad project question does not build a full cross-reference graph.
+The Control Plane derives `NONE` / `OVERVIEW` / `TARGETED` / `IMPACT` from the
+existing task shape and withholds structural tools at `NONE`; the runtime
+enforces the query's own activation and bounds. `.gitignore` membership comes
+through an injected `Scope` seam: `intelligence/ast` stays dependency-free and
+`intelligence/ignore` remains the only matcher. The index root remains the
+working directory; the nearest `go.mod` above it is recorded as metadata and
+never silently widens the walk. The snapshot is in memory only;
+`<project>/.ohgo/graph.db` stays a reserved, deferred location.
+
+Structural scope is project-boundary-aware. A directory carrying its own
+`.git` entry is a nested repository. Structural discovery includes that
+boundary even when the enclosing repository's `.gitignore` excludes the
+directory, and evaluates the nested repository's own ignore files for its
+contents; otherwise the common root rule `backend/` makes a whole nested Go
+project disappear from every overview, package, test, and impact answer. An
+included nested repository contributes to the one shared snapshot and is not a
+second index; its boundary names the parent scope rule it overrides. Ordinary excluded directories remain out of scope, but are
+published as `excluded_roots` with the decisive rule and shallow build markers,
+and the `scope` view explains them without recursively walking or parsing their
+contents.
+
+Completeness has four independent axes: `scope` (every source-bearing path
+inspected or explicitly named as excluded, including file-level ignore rules),
+`inventory` (every in-scope path readable), `structural` (every supported source
+parsed, with unsupported source disclosed), and the query's own `result`
+truncation. A `CURRENT` snapshot can be structurally or
+scope-partial. A zero file or test count is not absence unless scope,
+inventory, and structural completeness all hold and the result was not
+truncated; a complete `structure tests` inventory is accepted as the
+structural equivalent of a complete Go file scan for the narrow Go test-file
+claim. These axes govern the answer, not only the tool result: an overview's
+zero test count remains a metadata fact, and only a complete filtered test
+inventory can support a test-file absence claim.
+
+The answer side classifies each observation by what it can establish:
+documentation, configuration/manifest, inventory, source path, source content,
+source import, source use, structural evidence, or runtime. A Compose file,
+Makefile, dependency manifest, README, directory listing, glob result, or
+structural inventory never counts as implementation content; only source
+content does, and only a live runtime observation proves execution. A source
+path is not source content, an import is not a use, and a constructed client is
+not an operation. A broad project account therefore cannot complete from
+documentation plus metadata, and the pre-answer runtime state block reports the
+classes the run actually supports, plus an actionable evidence frontier.
+
+Component identity is derived from the path's project structure, never from an
+arbitrary substring: a read of `product-service` cannot support a claim about
+`order-service`, and a file called `api.go` inside `cart/` is not the API
+gateway. Strong completeness wording ("fully implemented", "feature-complete",
+"production-ready") additionally requires an observed, current, complete source
+scope for the named component; one isolated file only supports a claim about
+what that file implements. Dependency claims follow a separate ladder:
+`DECLARED`, `IMPORTED`, `INITIALIZED`, `USED_IN_SOURCE`, and
+`OBSERVED_AT_RUNTIME`. The completion audit applies the same boundaries, so an
+unsupported runtime claim, an absence claim without complete coverage, a
+concept absence without a scoped proof, a documentation/configuration claim
+presented as implementation, or a dependency declaration presented as use is
+`NEEDS_REVIEW`. A behavior claim that names a port must find that port in a
+source observation for the named component, or in the command/address of a live
+runtime observation; reading one service's listener does not prove another
+service's port.
+
+The Go backend is always available. The tree-sitter adapters are compiled only
+with `cgo`; a no-cgo build keeps the Go path, reports other supported extensions
+as unsupported, and never substitutes lexical exploration for structural
+coverage. All four tools share the same freshness check, workspace path
+containment, authority admission, tool-call budget, and child tool set. Their
+evidence is advisory: it cannot mutate, execute, grant authority, or complete a
+task. Structural results enter `cognition.EvidenceState` as structural
+observations with snapshot, language, adapter, resolution, structural
+completeness, project-scope completeness, and truncation provenance; test
+associations are static, never coverage, and impact is static reachability,
+never a behavioural claim. The per-language capability
+and resolution table is
+[`STRUCTURAL_LANGUAGES.md`](STRUCTURAL_LANGUAGES.md).
 
 ## Authority
 
@@ -129,14 +228,15 @@ The same contract is consumed at three seams:
 - `agent.Loop` semantic admission refuses a mutating call when the request did
   not ground a mutation, before the security gate is consulted. A read may
   proceed as bounded observation; it cannot turn into the objective.
-- `cognition` projects the entities and ambiguity into the runtime state block
-  so the model sees what it must preserve.
+- `cognition` projects the entities, ambiguity, and the evidence-derived claim
+  classes into the runtime state block so the model sees what it must preserve
+  and which observations support which claim before it writes.
 - `agent.EvaluateTaskCompletion` calls `AssessGrounding` after structural
   evidence and before `COMPLETED`. Dropped entities, an invented action
   narrative, narrowed scope, unresolved references, unsupported negative
-  conclusions, and an unsupported claim scope (configuration promoted to
-  behavior, an unmeasured metric, independent deployment, or path-scoped
-  speculation) downgrade the result to `NEEDS_REVIEW`.
+  conclusions, and an unsupported claim scope (configuration or documentation
+  promoted to behavior, an unmeasured metric, independent deployment, or
+  path-scoped speculation) downgrade the result to `NEEDS_REVIEW`.
 
 Task persistence carries the grounding inside the existing `IntentContract`, so
 a resumed task keeps the same semantic boundary. `$sup` is deliberately not
@@ -284,8 +384,13 @@ user's request before execution and the evidence the runtime observed.
   in a source or structural observation, must be attributed ("the README
   describes ...") or the verdict is `NEEDS_REVIEW`. It also keeps evidence
   classes distinguishable: a manifest declares a dependency, Compose declares
-  topology, and only a source or execution observation establishes behavior.
-  A concrete line count needs the read's measurement, an independent-deployment
+  topology, a glob names a source path, and only source content or execution
+  establishes behavior. Dependency wording is checked against its own strength
+  ladder (`DECLARED`/`IMPORTED`/`INITIALIZED`/`USED_IN_SOURCE`/runtime) and is
+  bound to the component the evidence came from. A concept absence ("JWT is not
+  implemented") remains bounded to the inspected scope unless a scoped proof is
+  available; a complete file inventory is not a semantic absence proof. A
+  concrete line count needs the read's measurement, an independent-deployment
   conclusion needs a deployment artifact, and a path-scoped inference needs an
   observation of that path. The evaluator does not judge answer relevance beyond
   these deterministic provenance and claim-scope boundaries.
@@ -402,19 +507,36 @@ the model said. Two properties keep the loop honest and small:
   and a successful check; the concept is a scope, not a synthetic path.
 - **Failure is durable evidence, not a transient error string.** Every failed
   execution is recorded under `agent.CallSignature` with its target, failure
-  class, and retryability. A class is fatal (`authentication_failure`,
-  `not_configured`, `unsupported_operation`, `protocol_error`) when no retry can
-  recover it; a retryable class gets one retry; an unclassified or
-  non-retryable class is refused on the identical repeat. The ledger is
-  persisted in `EvidenceState`, so a resumed turn cannot replay a spent failure.
-  A definite workspace change invalidates non-fatal failures, because the same
-  command observes a different state after the fix. A refusal is a control
-  decision: nothing executes and completion does not count it as a failed call.
-  This includes a tool's own authority refusal, such as the artifact tool
-  rejecting a kind the live workspace cannot produce. A malformed call is the
-  same boundary: the capability rejected the arguments before running anything,
-  so it is neither work nor an observation about the project, and it cannot
-  veto a proof real evidence already supports.
+  class, and retryability. The taxonomy separates request-level rejection from
+  capability health. Invalid arguments, an invalid selector, an unknown tool,
+  an unsupported operation, an authority denial, budget exhaustion, and stale
+  evidence are request-level: the operation was never exercised with a valid
+  request, so the capability remains available. The identical invocation is
+  refused after one rejection, a corrected invocation has a different signature
+  and is eligible immediately, and the rejection never trips a provider or task
+  circuit breaker. Capability classes keep their own policy: authentication,
+  not-configured, and protocol failures are fatal; a retryable class gets one
+  retry; an unclassified or non-retryable class is refused on the identical
+  repeat. The ledger is persisted in `EvidenceState`, so a resumed turn cannot
+  replay a spent failure. A definite workspace change invalidates non-fatal
+  failures, because the same command observes a different state after the fix.
+  A refusal is a control decision: nothing executes and completion does not
+  count it as a failed call. This includes a tool's own authority refusal, such
+  as the artifact tool rejecting a kind the live workspace cannot produce. A
+  malformed call is the same boundary: the capability rejected the arguments
+  before running anything, so it is neither work nor an observation about the
+  project, and it cannot veto a proof real evidence already supports.
+- **A failed provider is not a failed task.** Sufficiency sees evidence, not
+  the constructed action surface, so a capability block is reconciled against
+  the providers the task actually offers. If every missing requirement still has
+  an independent authorized provider, the block becomes ordinary `INSUFFICIENT`
+  exploration with concrete `Next evidence` guidance; only a requirement with
+  no remaining provider keeps the terminal capability verdict. The mapping is
+  by semantic requirement and capability class, never by vendor or fixed tool
+  name: documentation, manifests, root listings, and source reads all satisfy
+  observation requirements, while external and execution requirements keep
+  their own class. A successful overview is never rewritten by a later targeted
+  failure; the failed call adds its own diagnostic and failure record.
 - **Closure is one semantic state, not an empty tool slice.** A projection's
   `AnswerEligible` or `Terminal` verdict is the control plane's declaration that
   the action surface is closed. A complete evidence lifecycle (`StageComplete`)
@@ -422,12 +544,16 @@ the model said. Two properties keep the loop honest and small:
   a continuation call cannot be dispatched after the proving observation. The
   loop owns the request shape, so it withdraws every tool itself; a projector
   cannot leave a callable tool on a surface it has already closed. A blocked
-  capability (`BlockCapabilityFailure`) is terminal: the first stale proposal
-  without an answer reports `agent.ErrTaskBlocked`, which classifies as
-  `NEEDS_REVIEW`. The loop can also force the boundary itself: after a
-  refused-proposal recovery it asks the projection to close the surface
-  (`ForceAnswer`), even for a shape such as an investigation that would
-  otherwise keep probing.
+  capability (`BlockCapabilityFailure`) is terminal only after acquisition
+  reconciliation finds no independent provider for every missing requirement;
+  the first stale proposal without an answer then reports
+  `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`. The loop can also
+  force the boundary itself: after a refused-proposal recovery it asks the
+  projection to close the surface (`ForceAnswer`), even for a shape such as an
+  investigation that would otherwise keep probing. A refusal caused by the
+  request-level failure ledger gets one bounded corrected-invocation window
+  before that forced boundary, so malformed proposals cannot consume turns but
+  a valid correction is never mistaken for a repeated outage.
 - **An unproductive turn is counted from outcomes, never from the offered
   slice.** A refusal is a control decision, not work. If every call in a turn was
   refused, the turn could not change the runtime's state; this is true even when

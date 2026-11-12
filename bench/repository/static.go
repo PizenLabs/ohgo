@@ -42,15 +42,73 @@ type StaticResult struct {
 }
 
 func runStatic(root string, tasks []Task) (StaticResult, error) {
-	symbols := tools.NewSymbolsTool(root)
+	source := tools.NewStructuralSource(root)
+	symbols := tools.NewSymbolsToolWithSource(source)
 	grep := tools.NewGrepTool(root)
+	structure := tools.NewStructureTool(source)
 	ctx := agent.Context{Ctx: context.Background()}
 	var probes []StaticProbe
 	for _, task := range tasks {
 		probes = append(probes, structuralProbe(ctx, symbols, task))
 		probes = append(probes, lexicalProbe(ctx, grep, task))
+		probes = append(probes, inventoryProbe(ctx, structure, task))
 	}
 	return StaticResult{Probes: probes}, nil
+}
+
+// inventoryProbe measures the structural inventory track. It asks one
+// bounded question per task: impact for a symbol task, files for a path task.
+// It is deterministic and shares no state with the symbols probe beyond the
+// same repository root.
+func inventoryProbe(ctx agent.Context, tool *tools.StructureTool, task Task) StaticProbe {
+	probe := StaticProbe{TaskID: task.ID, Category: task.Category, Track: "D-structural-inventory", Expected: len(task.Targets)}
+	args := map[string]any{"view": "files", "limit": 100.0}
+	switch {
+	case task.ExpectedStatus == "not_found":
+		args["view"] = "impact"
+		args["symbol"] = task.NegativeNames[0]
+	case len(task.Targets) > 0 && task.Targets[0].Symbol != "":
+		args["view"] = "impact"
+		args["symbol"] = task.Targets[0].Symbol
+		args["depth"] = 1.0
+	case len(task.Targets) > 0:
+		args["path"] = task.Targets[0].Path
+	}
+	data, _ := json.Marshal(args)
+	probe.Query = "structure " + string(data)
+	start := time.Now()
+	result := tool.Execute(ctx, args)
+	probe.LatencyMS = time.Since(start).Milliseconds()
+	probe.Bytes = len(result.Text)
+	probe.Text = result.Text
+	if result.IsError {
+		probe.Error = result.Text
+		return probe
+	}
+	details, _ := result.Details.(map[string]any)
+	probe.Status, _ = details["status"].(string)
+	probe.Results = countInventoryResults(details)
+	if coords, ok := details["coordinates"].([]map[string]any); ok {
+		files := map[string]bool{}
+		for _, coord := range coords {
+			if path, ok := coord["path"].(string); ok {
+				files[path] = true
+			}
+		}
+		probe.Files = len(files)
+	}
+	probe.ExpectedHit = staticHit(task, result.Text)
+	return probe
+}
+
+// countInventoryResults returns the primary row count for an inventory view.
+func countInventoryResults(details map[string]any) int {
+	for _, key := range []string{"total", "returned"} {
+		if value, ok := details[key].(int); ok {
+			return value
+		}
+	}
+	return 0
 }
 
 func structuralProbe(ctx agent.Context, tool *tools.SymbolsTool, task Task) StaticProbe {

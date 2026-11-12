@@ -58,9 +58,12 @@ type Provenance string
 
 // Provenance classes.
 const (
-	// ProvenanceObservation is source code, configuration, or a structural
-	// query: evidence of what the implementation does.
+	// ProvenanceObservation is source code or a structural query: evidence of
+	// what the implementation contains.
 	ProvenanceObservation Provenance = "observation"
+	// ProvenanceConfiguration is declared runtime or deployment configuration:
+	// it states intended topology, not observed execution.
+	ProvenanceConfiguration Provenance = "configuration"
 	// ProvenanceDocumentation is README, docs, or another prose artifact: it
 	// is evidence of what the project says about itself.
 	ProvenanceDocumentation Provenance = "documentation"
@@ -95,8 +98,14 @@ const (
 	// cannot grow into a second transcript. Values are bounded per item and
 	// the lowest-value items are evicted until the total fits.
 	MaxEvidenceBytes = 64 * 1024
-	// EvidenceVersion is the persisted schema version.
-	EvidenceVersion = 1
+	// EvidenceVersion is the persisted schema version. Version 2 added
+	// optional snapshot provenance to Source; version 3 adds language,
+	// adapter, resolution, completeness, and truncation; version 4 adds
+	// project-scope completeness; version 5 adds bounded structural counts
+	// for claim support; version 6 adds inventory completeness, scope gaps,
+	// and the producing structural view. Older records stay readable because
+	// every new field is optional and additive.
+	EvidenceVersion = 6
 )
 
 // Source records where one observation came from.
@@ -120,6 +129,39 @@ type Source struct {
 	// every package. It lets the durable completion boundary verify that a
 	// check covers what the contract asked for without re-deriving it.
 	Scope string `json:"scope,omitempty"`
+	// SnapshotID, GraphState, and Generation bind a structural observation to
+	// the published snapshot that produced it. They are additive: a legacy
+	// item without them is not treated as current.
+	SnapshotID string `json:"snapshotId,omitempty"`
+	GraphState string `json:"graphState,omitempty"`
+	Generation uint64 `json:"generation,omitempty"`
+	// Language, Adapter, and Resolution identify the syntax provenance of a
+	// structural coordinate. They are empty for non-structural observations.
+	Language   string `json:"language,omitempty"`
+	Adapter    string `json:"adapter,omitempty"`
+	Resolution string `json:"resolution,omitempty"`
+	// Completeness is COMPLETE, PARTIAL, UNPARSED, or UNSUPPORTED. It is
+	// independent of GraphState: a CURRENT snapshot can be structurally
+	// partial.
+	Completeness string `json:"completeness,omitempty"`
+	// ScopeCompleteness is COMPLETE or PARTIAL for a structural snapshot's
+	// project scope. Empty means the observation predates scope provenance or
+	// is not structural.
+	ScopeCompleteness string `json:"scopeCompleteness,omitempty"`
+	// Truncated reports that the producing query hit its own bound.
+	Truncated bool `json:"truncated,omitempty"`
+	// InventoryCompleteness is COMPLETE or PARTIAL for a structural
+	// snapshot's file inventory. It is independent of scope and structural
+	// completeness: a complete file list can still contain unparsed source.
+	InventoryCompleteness string `json:"inventoryCompleteness,omitempty"`
+	// ExcludedRoots and ExcludedSourceFiles are the scope gaps a structural
+	// observation disclosed. A nonzero count means an inventory is not
+	// repository-wide even when its own result is untruncated.
+	ExcludedRoots       int `json:"excludedRoots,omitempty"`
+	ExcludedSourceFiles int `json:"excludedSourceFiles,omitempty"`
+	// UnsupportedSources counts files whose language has no adapter. They are
+	// inventoried but their content is not observed structurally.
+	UnsupportedSources int `json:"unsupportedSources,omitempty"`
 }
 
 // EvidenceItem is one durable fact.
@@ -143,6 +185,11 @@ type EvidenceItem struct {
 	Digest string `json:"digest,omitempty"`
 	// Source records provenance and coordinates.
 	Source Source `json:"source,omitempty"`
+	// Counts retains the bounded numeric facts a structural result reported,
+	// such as test_files and total. They are additive and optional; a claim
+	// boundary must not have to parse a rendered line to know whether a
+	// complete inventory observed zero test files.
+	Counts map[string]int `json:"counts,omitempty"`
 	// Complete reports that a listing or search result was not truncated.
 	Complete bool `json:"complete,omitempty"`
 	// Seq is the observation order, used to detect stale file state.
@@ -161,6 +208,197 @@ type EvidenceItem struct {
 	// the only one a runtime execution objective accepts. Additive and
 	// optional: legacy items are not runtime observations.
 	Runtime bool `json:"runtime,omitempty"`
+	// View names the producing structural query (overview, files, tests, …)
+	// when one applies. It lets the claim projection distinguish an inventory
+	// from a targeted source observation without parsing the rendered line.
+	View string `json:"view,omitempty"`
+}
+
+// EvidenceClass is the claim-facing class of one observation.
+//
+// It is derived from the existing provenance, identity, and payload; it is not
+// a second persisted model. The distinctions are load-bearing:
+//
+//	DOCUMENTATION   what the project says about itself
+//	CONFIGURATION   declared topology or deployment
+//	MANIFEST        declared modules and dependencies
+//	INVENTORY       files, directories, or structural entities exist
+//	SOURCE_PATH     a source coordinate exists; its content was not observed
+//	SOURCE_CONTENT  source content was observed
+//	SOURCE_IMPORT   observed source imports a dependency
+//	SOURCE_USE      observed source performs an operation with a dependency
+//	RUNTIME         behavior was observed while the project ran
+//	STRUCTURAL      a structural relationship or declaration was observed
+//	DIAGNOSTIC      the observation is a control or failure signal
+//
+// SOURCE_PATH and INVENTORY never support an implementation statement;
+// SOURCE_IMPORT is not SOURCE_USE; and STRUCTURAL is not source content.
+type EvidenceClass string
+
+// Evidence classes.
+const (
+	EvidenceDocumentation EvidenceClass = "DOCUMENTATION"
+	EvidenceConfiguration EvidenceClass = "CONFIGURATION"
+	EvidenceManifest      EvidenceClass = "MANIFEST"
+	EvidenceInventory     EvidenceClass = "INVENTORY"
+	EvidenceSourcePath    EvidenceClass = "SOURCE_PATH"
+	EvidenceSourceContent EvidenceClass = "SOURCE_CONTENT"
+	EvidenceSourceImport  EvidenceClass = "SOURCE_IMPORT"
+	EvidenceSourceUse     EvidenceClass = "SOURCE_USE"
+	EvidenceRuntime       EvidenceClass = "RUNTIME"
+	EvidenceStructural    EvidenceClass = "STRUCTURAL"
+	EvidenceDiagnostic    EvidenceClass = "DIAGNOSTIC"
+	EvidenceExternal      EvidenceClass = "EXTERNAL"
+	EvidenceGenerated     EvidenceClass = "GENERATED"
+)
+
+// EvidenceClass derives the claim-facing class of an observation.
+func (i EvidenceItem) EvidenceClass() EvidenceClass {
+	if i.Status == StatusConflicting || i.Status == StatusUnknown || i.Status == StatusRequired {
+		return EvidenceDiagnostic
+	}
+	if i.Runtime {
+		return EvidenceRuntime
+	}
+	switch i.Provenance {
+	case ProvenanceDocumentation:
+		return EvidenceDocumentation
+	case ProvenanceConfiguration:
+		return EvidenceConfiguration
+	case ProvenanceManifest:
+		return EvidenceManifest
+	case ProvenanceExternal:
+		return EvidenceExternal
+	case ProvenanceGenerated:
+		return EvidenceGenerated
+	case ProvenanceDiagnostic:
+		return EvidenceDiagnostic
+	}
+	switch {
+	case strings.HasPrefix(i.ID, "dir:"):
+		return EvidenceInventory
+	case strings.HasPrefix(i.ID, "search:glob:"):
+		if len(globPaths(i.Value)) > 0 {
+			return EvidenceSourcePath
+		}
+		return EvidenceDiagnostic
+	case strings.HasPrefix(i.ID, "search:grep:"):
+		if strings.TrimSpace(i.Value) == "" {
+			return EvidenceDiagnostic
+		}
+		if matches, known := i.Counts["matches"]; (known && matches == 0) ||
+			searchResultHasNoMatches(i.Value) {
+			// A no-match search is not observed source content. Its text is a
+			// diagnostic notice, not a matched line from the component. The
+			// text check keeps a legacy checkpoint without Counts honest.
+			return EvidenceDiagnostic
+		}
+		if !sourcePathIsImplementation(i.Source.Path) {
+			return EvidenceStructural
+		}
+		return sourceContentClass(i.Value)
+	case i.View != "" && strings.TrimSpace(i.Value) == "":
+		// A structural row is a coordinate, not source content.
+		return EvidenceStructural
+	case strings.HasPrefix(i.ID, "file:"):
+		if strings.TrimSpace(i.Value) == "" {
+			return EvidenceSourcePath
+		}
+		return sourceContentClass(i.Value)
+	case strings.HasPrefix(i.ID, "command:"):
+		return EvidenceDiagnostic
+	case strings.HasPrefix(i.ID, "verification:"):
+		return EvidenceDiagnostic
+	case strings.HasPrefix(i.ID, "external:"):
+		return EvidenceExternal
+	case strings.HasPrefix(i.ID, "error:"):
+		return EvidenceDiagnostic
+	default:
+		return EvidenceStructural
+	}
+}
+
+// searchResultHasNoMatches reports the producer's no-result notice. It is a
+// bounded text check for legacy evidence items that predate Counts.
+func searchResultHasNoMatches(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"no matches", "no files matched", "0 matches", "0 files",
+		"no results", "nothing matched",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// sourcePathIsImplementation duplicates the path classification used by
+// isImplementationObservation, keeping one decision in agent.ClassifyPath.
+func sourcePathIsImplementation(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "." || path == "./" {
+		return false
+	}
+	switch agent.ClassifyPath(path) {
+	case agent.PathDocumentation, agent.PathManifest, agent.PathConfiguration, agent.PathGenerated:
+		return false
+	default:
+		return true
+	}
+}
+
+// sourceContentClass distinguishes an import declaration from an actual
+// dependency operation. A read that only imports a package is not use.
+func sourceContentClass(text string) EvidenceClass {
+	lower := strings.ToLower(text)
+	if dependencyImportMarker(lower) {
+		if dependencyUseMarker(lower) {
+			return EvidenceSourceUse
+		}
+		return EvidenceSourceImport
+	}
+	// An operation-shaped call without an import/initialization is ordinary
+	// source content. Calling os.Open is not evidence that the project uses an
+	// external dependency.
+	return EvidenceSourceContent
+}
+
+// dependencyImportMarker reports an import/require statement. The vocabulary
+// is finite and language-shaped; it does not decide whether a dependency is
+// used.
+func dependencyImportMarker(text string) bool {
+	for _, marker := range []string{
+		"\nimport ", "\nimport(", "\nimport (", "\nfrom ", "\nrequire(",
+		"\nrequire \"", "#include", "\nuse ", "\nusing ", "import \"",
+		"import '", "from \"", "from '", "require(\"", "require('",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// dependencyUseMarker reports a concrete operation shape in source. It is a
+// bounded signal for the state projection; the claim audit binds it to a
+// dependency and component before accepting a claim.
+func dependencyUseMarker(text string) bool {
+	for _, marker := range []string{
+		".set(", ".get(", ".hset(", ".hget(", ".lpush(", ".rpush(",
+		".publish(", ".subscribe(", ".consume(", ".produce(", ".send(",
+		".query(", ".queryrow(", ".exec(", ".insert(", ".update(",
+		".delete(", ".find(", ".sign(", ".verify(", ".parse(", ".open(",
+		".dial(", ".connect(", "newclient(", "amqp.dial(", "jwt.new(",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Requirement is one evidence need declared by a task shape.
@@ -220,6 +458,16 @@ func (s *EvidenceState) Clone() *EvidenceState {
 	out := *s
 	out.Items = make([]EvidenceItem, len(s.Items))
 	copy(out.Items, s.Items)
+	for i := range out.Items {
+		if len(out.Items[i].Counts) == 0 {
+			continue
+		}
+		counts := make(map[string]int, len(out.Items[i].Counts))
+		for key, value := range out.Items[i].Counts {
+			counts[key] = value
+		}
+		out.Items[i].Counts = counts
+	}
 	out.Requirements = append([]Requirement(nil), s.Requirements...)
 	out.ObservedCalls = make(map[string]bool, len(s.ObservedCalls))
 	for key, value := range s.ObservedCalls {
@@ -349,6 +597,8 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 		return s.hasRepositorySurvey(s.Facts)
 	case key == "external_observation":
 		return s.HasExternalObservation()
+	case key == "test_inventory":
+		return s.ClaimSummary().TestInventory == "COMPLETE"
 	case key == "verification":
 		return execution.VerifiedAfterMutation || len(execution.Verifications) > 0
 	case key == "execution_result":
@@ -592,6 +842,12 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 		}
 		return false, false
 	}
+	if outcome.Result.Reused {
+		// A reuse notice restates an observation that is already current. It
+		// is not a new repository fact, and recording it as a read would make
+		// the notice look like changed file content.
+		return false, false
+	}
 	defer s.trim()
 	s.Seq++
 	seq := s.Seq
@@ -646,6 +902,8 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 		return true, s.addSearch(outcome, details, seq)
 	case "symbols":
 		return true, s.addSymbols(outcome, details, seq)
+	case "graph", "refs", "structure":
+		return true, s.addStructural(outcome, details, seq)
 	case "write", "edit", "delete":
 		return true, s.addMutation(outcome, path, details, seq)
 	case "bash", "verify":
@@ -811,11 +1069,26 @@ func (s *EvidenceState) addSearch(outcome agent.ToolOutcome, details map[string]
 	if first := firstContentLine(text); first != "" {
 		summary += " — " + bound(first, 140)
 	}
-	// A scan that pruned .gitignore paths did not cover the tree. It may still
-	// return useful matches, but it cannot establish that something absent from
-	// the result is absent from the repository.
+	// A scan that pruned .gitignore paths or built-in directories did not cover
+	// the tree. It may still return useful matches, but it cannot establish
+	// that something absent from the result is absent from the repository. An
+	// explicit gitignore=false override is an investigative scan, not a
+	// complete project inventory, and retains that distinction.
 	complete := detailInt(details, "ignored") == 0 &&
-		!strings.Contains(text, "pass skip=") && !strings.Contains(text, "raise \"limit\"")
+		detailInt(details, "excluded") == 0 &&
+		!strings.Contains(text, "pass skip=") && !strings.Contains(text, "raise \"limit\"") &&
+		!strings.Contains(strings.ToLower(text), "timed out") &&
+		!strings.Contains(strings.ToLower(text), "truncated") &&
+		gitignoreEnabled(details)
+	counts := map[string]int{}
+	for _, key := range []string{"matches", "files", "ignored", "excluded"} {
+		if value, ok := details[key].(int); ok {
+			counts[key] = value
+		}
+	}
+	if len(counts) == 0 {
+		counts = nil
+	}
 	return s.upsert(EvidenceItem{
 		ID:         id,
 		Status:     StatusDerived,
@@ -824,6 +1097,7 @@ func (s *EvidenceState) addSearch(outcome agent.ToolOutcome, details map[string]
 		Summary:    bound(summary, MaxEvidenceSummaryBytes),
 		Value:      text,
 		Digest:     digest(text),
+		Counts:     counts,
 		Complete:   complete,
 		Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Path: path},
 		Seq:        seq,
@@ -841,6 +1115,10 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 		query = argString(outcome.Args, "path")
 	}
 	text := bound(outcome.Result.Text, MaxEvidenceValueBytes)
+	complete := !detailBool(details, "truncated")
+	if _, ok := details["complete"]; ok {
+		complete = detailBool(details, "complete") && !detailBool(details, "partial")
+	}
 	changed := s.upsert(EvidenceItem{
 		ID:         "symbols:" + query,
 		Status:     StatusDerived,
@@ -849,8 +1127,9 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 		Summary:    bound("symbol query "+query+": "+firstLine(text), MaxEvidenceSummaryBytes),
 		Value:      text,
 		Digest:     digest(text),
-		Complete:   !detailBool(details, "truncated"),
-		Source:     Source{Tool: "symbols", CallID: outcome.CallID},
+		Complete:   complete,
+		View:       "symbols",
+		Source:     structuralSource(details, "symbols", outcome.CallID, "", 0, 0),
 		Seq:        seq,
 	})
 	coords := coordinateMaps(details["coordinates"])
@@ -867,17 +1146,240 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 			ID:         "symbol:" + path + ":" + symbol,
 			Status:     StatusKnown,
 			Retention:  RetentionStructural,
-			Provenance: ProvenanceObservation,
+			Provenance: classifyPathProvenance(path),
 			Summary: bound(symbol+" at "+path+":"+itoa(detailInt(coord, "start_line"))+
 				"-"+itoa(detailInt(coord, "end_line")), MaxEvidenceSummaryBytes),
-			Source: Source{Tool: "symbols", CallID: outcome.CallID, Path: path,
-				StartLine: detailInt(coord, "start_line"), EndLine: detailInt(coord, "end_line")},
+			Complete: complete,
+			Source: structuralSourceWithCoordinate(details, coord, "symbols", outcome.CallID, path,
+				detailInt(coord, "start_line"), detailInt(coord, "end_line")),
 			Seq: seq,
 		}) {
 			changed = true
 		}
 	}
 	return changed
+}
+
+// addStructural records graph, refs, and structure observations as structural
+// evidence. It reuses the existing evidence model: one aggregate item per
+// query plus a small bounded set of coordinate items.
+func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
+	query := argString(outcome.Args, "symbol")
+	if query == "" {
+		query = argString(outcome.Args, "package")
+	}
+	if query == "" {
+		query = argString(outcome.Args, "path")
+	}
+	if query == "" {
+		query = detailString(details, "view")
+	}
+	text := bound(outcome.Result.Text, MaxEvidenceValueBytes)
+	complete := detailBool(details, "complete") && !detailBool(details, "partial") &&
+		!detailBool(details, "truncated")
+	changed := s.upsert(EvidenceItem{
+		ID:         outcome.ToolName + ":" + query,
+		Status:     StatusDerived,
+		Retention:  RetentionStructural,
+		Provenance: ProvenanceObservation,
+		Summary:    bound(outcome.ToolName+" "+query+": "+firstLine(text), MaxEvidenceSummaryBytes),
+		Value:      text,
+		Digest:     digest(text),
+		Counts:     structuralCounts(details),
+		Complete:   complete,
+		View:       detailString(details, "view"),
+		Source:     structuralSource(details, outcome.ToolName, outcome.CallID, "", 0, 0),
+		Seq:        seq,
+	})
+	coords := coordinateMaps(details["coordinates"])
+	for i, coord := range coords {
+		if i >= 24 {
+			break
+		}
+		path := detailString(coord, "path")
+		if path == "" {
+			continue
+		}
+		symbol := detailString(coord, "symbol")
+		kind := detailString(coord, "kind")
+		line := detailInt(coord, "line")
+		endLine := detailInt(coord, "end_line")
+		id := structuralCoordinateID(kind, path, line, symbol)
+		if s.upsert(EvidenceItem{
+			ID:         id,
+			Status:     StatusKnown,
+			Retention:  RetentionStructural,
+			Provenance: classifyPathProvenance(path),
+			Summary:    bound(symbol+" at "+path+":"+itoa(line), MaxEvidenceSummaryBytes),
+			Complete:   !detailBool(details, "partial") && !detailBool(details, "truncated"),
+			Source: structuralSourceWithCoordinate(details, coord, outcome.ToolName, outcome.CallID, path,
+				line, endLine),
+			Seq: seq,
+		}) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// structuralCounts retains the numeric facts a structure view reports. The
+// keys are a closed vocabulary shared with structuralSource; a missing key is
+// unknown, never zero.
+func structuralCounts(details map[string]any) map[string]int {
+	keys := []string{
+		"test_files", "total", "returned", "files", "packages", "symbols",
+		"references", "calls", "entrypoints", "configs", "directories",
+	}
+	var counts map[string]int
+	for _, key := range keys {
+		value, ok := details[key].(int)
+		if !ok {
+			continue
+		}
+		if counts == nil {
+			counts = map[string]int{}
+		}
+		counts[key] = value
+	}
+	return counts
+}
+
+// structuralSource projects snapshot provenance into the existing Source
+// shape. This is a field addition, not a second evidence model.
+func structuralSource(details map[string]any, tool, callID, path string, start, end int) Source {
+	completeness := detailString(details, "completeness")
+	if completeness == "" {
+		if complete, ok := details["structural_complete"].(bool); ok {
+			if complete {
+				completeness = "COMPLETE"
+			} else {
+				completeness = "PARTIAL"
+			}
+		}
+	}
+	scope := ""
+	if complete, ok := details["scope_complete"].(bool); ok {
+		if complete {
+			scope = "COMPLETE"
+		} else {
+			scope = "PARTIAL"
+		}
+	}
+	inventory := ""
+	if complete, ok := details["inventory_complete"].(bool); ok {
+		if complete {
+			inventory = "COMPLETE"
+		} else {
+			inventory = "PARTIAL"
+		}
+	}
+	return Source{
+		Tool:                  tool,
+		CallID:                callID,
+		Path:                  path,
+		StartLine:             start,
+		EndLine:               end,
+		SnapshotID:            detailString(details, "snapshot_id"),
+		GraphState:            detailString(details, "graph_state"),
+		Generation:            uint64(detailInt(details, "generation")),
+		Language:              detailString(details, "language"),
+		Adapter:               detailString(details, "adapter"),
+		Resolution:            detailString(details, "resolution"),
+		Completeness:          completeness,
+		ScopeCompleteness:     scope,
+		Truncated:             detailBool(details, "truncated"),
+		InventoryCompleteness: inventory,
+		ExcludedRoots:         structuralExcludedRoots(details),
+		ExcludedSourceFiles:   detailInt(details, "excluded_source_files"),
+		UnsupportedSources:    structuralUnsupportedSources(details),
+	}
+}
+
+// structuralExcludedRoots counts the scope gaps in a structural result.
+func structuralExcludedRoots(details map[string]any) int {
+	switch values := details["excluded_roots"].(type) {
+	case []map[string]any:
+		return len(values)
+	case []any:
+		return len(values)
+	default:
+		return detailInt(details, "excluded_roots")
+	}
+}
+
+// structuralUnsupportedSources counts inventoried files whose language has no
+// adapter. A structural inventory is not complete source coverage when it
+// contains them.
+func structuralUnsupportedSources(details map[string]any) int {
+	switch values := details["unsupported_languages"].(type) {
+	case []map[string]any:
+		total := 0
+		for _, item := range values {
+			total += detailInt(item, "files")
+		}
+		return total
+	default:
+		return 0
+	}
+}
+
+// gitignoreEnabled reports whether a scan honoured .gitignore. An explicit
+// false override is an investigative scan; it does not establish a complete
+// project inventory.
+func gitignoreEnabled(details map[string]any) bool {
+	if value, ok := details["gitignore"].(bool); ok {
+		return value
+	}
+	return true
+}
+
+// structuralSourceWithCoordinate adds the per-coordinate language, adapter,
+// resolution, and truncation facts that the aggregate query header cannot
+// attribute to a single row.
+func structuralSourceWithCoordinate(details, coord map[string]any, tool, callID, path string, start, end int) Source {
+	source := structuralSource(details, tool, callID, path, start, end)
+	if value := detailString(coord, "language"); value != "" {
+		source.Language = value
+	}
+	if value := detailString(coord, "adapter"); value != "" {
+		source.Adapter = value
+	}
+	if value := detailString(coord, "resolution"); value != "" {
+		source.Resolution = value
+	}
+	if truncated, ok := coord["truncated"].(bool); ok {
+		source.Truncated = truncated
+	}
+	return source
+}
+
+// structuralCoordinateID namespaces one coordinate by its graph role.
+func structuralCoordinateID(kind, path string, line int, symbol string) string {
+	prefix := "structure"
+	switch kind {
+	case "graph_edge":
+		prefix = "graph_edge"
+	case "package":
+		prefix = "package"
+	case "entrypoint":
+		prefix = "entrypoint"
+	case "test", "test_association":
+		prefix = "test"
+	case "call", "caller":
+		prefix = "call"
+	case "reference", "ref":
+		prefix = "ref"
+	case "file":
+		prefix = "file"
+	case "config":
+		prefix = "config"
+	case "target", "impact_target":
+		prefix = "symbol"
+	}
+	if symbol == "" {
+		symbol = kind
+	}
+	return prefix + ":" + path + ":" + itoa(line) + ":" + symbol
 }
 
 // addMutation records a definite repository change.
@@ -1122,7 +1624,8 @@ func (s *EvidenceState) upsert(item EvidenceItem) bool {
 		changed := s.Items[i].Digest != item.Digest ||
 			s.Items[i].Status != item.Status ||
 			s.Items[i].Complete != item.Complete ||
-			s.Items[i].Value != item.Value
+			s.Items[i].Value != item.Value ||
+			!equalCounts(s.Items[i].Counts, item.Counts)
 		s.Items[i] = item
 		return changed
 	}
@@ -1137,7 +1640,17 @@ func (s *EvidenceState) Bytes() int {
 	}
 	total := 0
 	for _, item := range s.Items {
-		total += len(item.ID) + len(item.Summary) + len(item.Value) + len(item.Conflict)
+		total += item.retainedBytes()
+	}
+	return total
+}
+
+// retainedBytes is one item's contribution to the evidence bound. Bounded
+// counts are small but they are still retained state, so they are counted.
+func (i EvidenceItem) retainedBytes() int {
+	total := len(i.ID) + len(i.Summary) + len(i.Value) + len(i.Conflict)
+	for key := range i.Counts {
+		total += len(key) + 8
 	}
 	return total
 }
@@ -1183,7 +1696,7 @@ func (s *EvidenceState) trim() {
 	})
 	total := s.Bytes()
 	for len(s.Items) > 1 && (len(s.Items) > MaxEvidenceItems || total > MaxEvidenceBytes) {
-		total -= len(s.Items[0].ID) + len(s.Items[0].Summary) + len(s.Items[0].Value) + len(s.Items[0].Conflict)
+		total -= s.Items[0].retainedBytes()
 		s.Items = s.Items[1:]
 	}
 	// The replay guard and mutation clock are metadata, not facts. Cap them so
@@ -1211,6 +1724,19 @@ func (s *EvidenceState) trim() {
 	s.trimFailures()
 }
 
+// equalCounts reports whether two bounded count maps carry the same facts.
+func equalCounts(a, b map[string]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
 // detailsMap returns a tool result's details as a map.
 func detailsMap(details any) map[string]any {
 	if details == nil {
@@ -1232,6 +1758,10 @@ func detailInt(details map[string]any, key string) int {
 	case int:
 		return value
 	case int64:
+		return int(value)
+	case uint64:
+		return int(value)
+	case uint:
 		return int(value)
 	case float64:
 		return int(value)
@@ -1283,15 +1813,17 @@ func isMissingFileError(text string) bool {
 //
 // The path classification is owned by agent.ClassifyPath, so answer claim
 // scope and evidence provenance cannot drift apart. Documentation is what the
-// project says about itself; a manifest states dependencies; vendored and
-// generated files are not the project's own implementation. Configuration and
-// source observations remain implementation observations for provenance.
+// project says about itself; a manifest states dependencies; configuration
+// declares intended topology; vendored and generated files are not the
+// project's own implementation. Only source content can establish behavior.
 func classifyPathProvenance(path string) Provenance {
 	switch agent.ClassifyPath(path) {
 	case agent.PathDocumentation:
 		return ProvenanceDocumentation
 	case agent.PathManifest:
 		return ProvenanceManifest
+	case agent.PathConfiguration:
+		return ProvenanceConfiguration
 	case agent.PathGenerated:
 		return ProvenanceGenerated
 	default:
@@ -1299,20 +1831,44 @@ func classifyPathProvenance(path string) Provenance {
 	}
 }
 
-// isImplementationObservation reports whether an evidence item proves what the
-// implementation does rather than what its documentation claims.
+// isImplementationObservation reports whether an evidence item observed source
+// content rather than a declaration about it.
+//
+// A Compose file, Makefile, dependency manifest, README, directory listing, or
+// structural inventory describes intended topology and identity. None of them
+// establishes that the implementation executes the described behavior. Only a
+// source read or a source-scoped grep carries the content a behavior claim can
+// be checked against.
 func isImplementationObservation(item EvidenceItem) bool {
 	if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
 		return false
 	}
-	switch item.Provenance {
-	case ProvenanceObservation:
-		// A directory listing is structure, not implementation. Symbol and
-		// source reads are the observations that can support an architecture
-		// or behaviour claim.
-		return !strings.HasPrefix(item.ID, "dir:")
-	case ProvenanceManifest:
+	if strings.TrimSpace(item.Value) == "" {
 		return false
+	}
+	if item.Provenance != ProvenanceObservation {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(item.ID, "file:"):
+		return agent.ClassifyPath(item.Source.Path) == agent.PathSource
+	case strings.HasPrefix(item.ID, "search:grep:"):
+		if matches, known := item.Counts["matches"]; (known && matches == 0) ||
+			searchResultHasNoMatches(item.Value) {
+			// No matched source line was captured. The result is a diagnostic
+			// notice, not an implementation observation.
+			return false
+		}
+		path := strings.TrimSpace(item.Source.Path)
+		if path == "" || path == "." || path == "./" {
+			return false
+		}
+		switch agent.ClassifyPath(path) {
+		case agent.PathDocumentation, agent.PathManifest, agent.PathConfiguration, agent.PathGenerated:
+			return false
+		default:
+			return true
+		}
 	default:
 		return false
 	}

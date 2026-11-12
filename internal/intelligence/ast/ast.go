@@ -14,13 +14,23 @@
 // (c) a pluggable backend where the default needs no C toolchain.
 //
 // Option (c) is what this package does. `BackendGo` uses the standard
-// library's `go/ast` and needs no cgo at all. A tree-sitter backend, if it is
-// ever added, lives behind an opt-in build tag, so the shipped binary stays a
-// single static Go executable and only a caller who explicitly wants
-// multi-language parsing pays for cgo.
+// library's `go/ast` and needs no cgo at all. The multi-language adapters live
+// in files guarded by `//go:build cgo`; the same package compiles without cgo,
+// keeps the native Go path, and reports every other supported extension as
+// unsupported. No grammar is fetched at runtime and no host shared library is
+// required: the grammar sources are pinned in go.mod and compiled into the
+// binary.
 //
-// The rule is therefore amended rather than broken: **cgo is opt-in and
-// isolated, never a default dependency.**
+// # Repository snapshot
+//
+// GoBackend is also the native language adapter for Index, the in-process
+// structural snapshot shared by the symbols, graph, refs, and structure tools.
+// One Index owns symbol coordinates, file/package facts, imports, references,
+// direct calls, tests, entrypoints, language coverage, and the canonical
+// relationship projection. It is incremental: a refresh parses only changed
+// files and re-resolves relationships from retained syntax. It writes nothing;
+// the source tree remains authoritative and <project>/.ohgo/graph.db stays a
+// deferred, disposable location.
 package ast
 
 import (
@@ -69,8 +79,30 @@ type Match struct {
 	Path string
 	// Line is the 1-based line the declaration starts on.
 	Line int
+	// Column is the 1-based column the declaration starts on.
+	Column int
 	// EndLine is the 1-based line it ends on.
 	EndLine int
+	// Test reports that the declaration came from a _test.go file.
+	Test bool
+	// Canonical is the language-neutral declaration kind. Kind remains the
+	// Go adapter's compatibility projection.
+	Canonical SymbolKind
+	// NativeKind is the adapter's original syntax kind, e.g.
+	// "interface_declaration" or "impl_item". It is data, never a dispatch key.
+	NativeKind string
+	// Language is the declaration's source language.
+	Language Language
+	// Adapter is the parser identity that produced the declaration.
+	Adapter string
+	// Visibility is public, protected, private, internal, or package.
+	Visibility string
+	// Container is the enclosing class, struct, module, or namespace name.
+	Container string
+	// Receiver is the method receiver type, when the language has one.
+	Receiver string
+	// Exported reports a declaration visible outside its package/module.
+	Exported bool
 	// Doc is the declaration's doc comment, trimmed.
 	Doc string
 	// Signature is a one-line rendering of the declaration's head.
@@ -105,8 +137,20 @@ type Import struct {
 	Alias string
 	// Line is the 1-based line the import declaration starts on.
 	Line int
-	// Test reports that the declaration came from a _test.go file.
+	// Test reports that the declaration came from a test file.
 	Test bool
+	// Language is the importing file's language.
+	Language Language
+	// Kind is module, relative, include, require, package, or namespace.
+	Kind string
+	// Names are the imported symbols, when the syntax names them.
+	Names []string
+	// Resolution is RESOLVED when the import target exists in the snapshot,
+	// UNRESOLVED for an external/unindexed module, and UNSUPPORTED when the
+	// adapter cannot resolve this import form.
+	Resolution Resolution
+	// Resolved is the repository-relative target path or module node name.
+	Resolved string
 }
 
 // FileStructure is the result of one parse: the package clause, the
@@ -139,10 +183,12 @@ type Searcher interface {
 	Search(path string, opts Options) ([]Match, error)
 }
 
-// Registry maps paths to the backend that can parse them.
+// Registry maps paths to the legacy per-file Searcher backend.
 //
-// It exists so adding a language is a registration rather than a branch at
-// every call site.
+// The repository snapshot uses DefaultAdapters/adapterSet for structural
+// ownership; Registry remains the small compatibility surface for callers that
+// search one file. Both consume the same adapter identities, so this is not a
+// second structural registry.
 type Registry struct {
 	backends []Searcher
 }
@@ -219,14 +265,31 @@ func (b GoBackend) Search(path string, opts Options) ([]Match, error) {
 // Parse parses one file once and returns its package clause, the declarations
 // selected by opts, and every import declaration.
 //
-// Index uses Parse rather than Search because the package graph needs the
-// imports from the same pass that produces symbol coordinates. A second parse
-// would double the cold cost and create a second source of truth.
-func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
+// Index uses ParseFile rather than Search because the package graph needs the
+// imports from the same pass that produces symbol coordinates. This wrapper
+// preserves the historical FileStructure API while ParseFile carries the
+// canonical facts (tests, entrypoints, relationship projection).
+func (b GoBackend) Parse(path string, opts Options) (FileStructure, error) {
+	facts, err := b.parse(path, opts)
+	if err != nil {
+		return FileStructure{}, err
+	}
+	return FileStructure{
+		Package:    facts.Package,
+		Symbols:    facts.Symbols,
+		Imports:    facts.Imports,
+		references: facts.references,
+		calls:      facts.calls,
+	}, nil
+}
+
+// parse is the one Go parser pass. ParseFile and Parse are projections of this
+// method, so no caller can accidentally introduce a second parse.
+func (b GoBackend) parse(path string, opts Options) (FileFacts, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
-		return FileStructure{}, fmt.Errorf("ast: parse %s: %w", path, err)
+		return FileFacts{}, fmt.Errorf("ast: parse %s: %w", path, err)
 	}
 
 	var matches []Match
@@ -236,12 +299,14 @@ func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
 	// A package declaration is a first-class symbol: it anchors every other
 	// declaration in the file and is what a package-level query resolves to.
 	if kindAllowed(opts, KindPackage) {
+		pos := fset.Position(file.Package)
 		matches = append(matches, Match{
 			Kind:      KindPackage,
 			Name:      file.Name.Name,
 			Package:   file.Name.Name,
 			Path:      path,
-			Line:      fset.Position(file.Package).Line,
+			Line:      pos.Line,
+			Column:    pos.Column,
 			EndLine:   fset.Position(file.Name.End()).Line,
 			Signature: "package " + file.Name.Name,
 		})
@@ -298,7 +363,25 @@ func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
 	// Populate package and qualified coordinates deterministically. The
 	// package clause is the authority for the package name; never fabricate
 	// one when it is missing.
+	var tests []TestDecl
+	var entrypoints []Match
 	for i := range matches {
+		matches[i].Test = testFile
+		matches[i].Language = LanguageGo
+		matches[i].Canonical = canonicalKind(matches[i].Kind)
+		if matches[i].Kind == KindPackage {
+			matches[i].Exported = true
+		} else if name := matches[i].Name; name != "" {
+			if idx := strings.LastIndexByte(name, '.'); idx >= 0 {
+				name = name[idx+1:]
+			}
+			matches[i].Exported = token.IsExported(name)
+			if matches[i].Exported {
+				matches[i].Visibility = "public"
+			} else {
+				matches[i].Visibility = "private"
+			}
+		}
 		if matches[i].Package == "" {
 			matches[i].Package = file.Name.Name
 		}
@@ -313,14 +396,61 @@ func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
 				matches[i].QualifiedName = matches[i].Name
 			}
 		}
+		if matches[i].Kind != KindFunc {
+			continue
+		}
+		if testFile {
+			if kind, ok := testKindForName(matches[i].Name); ok {
+				tests = append(tests, TestDecl{Symbol: matches[i], Kind: kind, Framework: "go-test"})
+			}
+			continue
+		}
+		if matches[i].Name == "main" && file.Name.Name == "main" {
+			entrypoints = append(entrypoints, matches[i])
+		}
 	}
-	return FileStructure{
-		Package:    file.Name.Name,
-		Symbols:    matches,
-		Imports:    imports,
-		references: references,
-		calls:      calls,
+	return FileFacts{
+		Language:    LanguageGo,
+		Adapter:     "go",
+		Parser:      Parser{Name: "go", Version: "stdlib"},
+		Package:     file.Name.Name,
+		Symbols:     matches,
+		Imports:     imports,
+		Tests:       tests,
+		Entrypoints: entrypoints,
+		references:  references,
+		calls:       calls,
 	}, nil
+}
+
+// testKindForName applies the Go testing package's declaration convention.
+// A prefix followed by a lowercase letter is a helper, not a test.
+func testKindForName(name string) (TestKind, bool) {
+	if name == "TestMain" {
+		return TestMain, true
+	}
+	for _, candidate := range []struct {
+		prefix string
+		kind   TestKind
+	}{
+		{"Test", TestUnit},
+		{"Benchmark", TestBenchmark},
+		{"Fuzz", TestFuzz},
+		{"Example", TestExample},
+	} {
+		if !strings.HasPrefix(name, candidate.prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(name, candidate.prefix)
+		if rest == "" {
+			return candidate.kind, true
+		}
+		first := rune(rest[0])
+		if first < 'a' || first > 'z' {
+			return candidate.kind, true
+		}
+	}
+	return "", false
 }
 
 // kindAllowed reports whether a declaration kind passes the filter.
@@ -345,11 +475,13 @@ func kindAllowed(opts Options, kind Kind) bool {
 func goFuncMatch(fset *token.FileSet, path string, decl *ast.FuncDecl) Match {
 	kind := KindFunc
 	name := decl.Name.Name
+	receiver := ""
 	if decl.Recv != nil && len(decl.Recv.List) > 0 {
 		kind = KindMethod
 		// A method is qualified by its receiver, because a bare method name is
 		// ambiguous across types.
-		if receiver := typeName(decl.Recv.List[0].Type); receiver != "" {
+		receiver = typeName(decl.Recv.List[0].Type)
+		if receiver != "" {
 			name = receiver + "." + decl.Name.Name
 		}
 	}
@@ -362,8 +494,11 @@ func goFuncMatch(fset *token.FileSet, path string, decl *ast.FuncDecl) Match {
 	return Match{
 		Kind:      kind,
 		Name:      name,
+		Container: receiver,
+		Receiver:  receiver,
 		Path:      path,
 		Line:      fset.Position(decl.Pos()).Line,
+		Column:    fset.Position(decl.Pos()).Column,
 		EndLine:   fset.Position(decl.End()).Line,
 		Doc:       trimDoc(decl.Doc),
 		Signature: signature,
@@ -456,11 +591,13 @@ func exprString(expr ast.Expr) string {
 }
 
 func goSpecMatch(fset *token.FileSet, path string, kind Kind, spec *ast.TypeSpec, gen *ast.GenDecl) Match {
+	pos := fset.Position(spec.Pos())
 	return Match{
 		Kind:      kind,
 		Name:      spec.Name.Name,
 		Path:      path,
-		Line:      fset.Position(spec.Pos()).Line,
+		Line:      pos.Line,
+		Column:    pos.Column,
 		EndLine:   fset.Position(spec.End()).Line,
 		Doc:       firstNonEmpty(trimDoc(spec.Doc), trimDoc(gen.Doc)),
 		Signature: spec.Name.Name,
@@ -472,11 +609,13 @@ func goNamedMatch(fset *token.FileSet, path string, kind Kind, name string, spec
 	if spec.Type != nil {
 		signature += " " + exprString(spec.Type)
 	}
+	pos := fset.Position(spec.Pos())
 	return Match{
 		Kind:      kind,
 		Name:      name,
 		Path:      path,
-		Line:      fset.Position(spec.Pos()).Line,
+		Line:      pos.Line,
+		Column:    pos.Column,
 		EndLine:   fset.Position(spec.End()).Line,
 		Doc:       firstNonEmpty(trimDoc(spec.Doc), trimDoc(gen.Doc)),
 		Signature: signature,
@@ -485,11 +624,13 @@ func goNamedMatch(fset *token.FileSet, path string, kind Kind, name string, spec
 
 func goImportMatch(fset *token.FileSet, path string, spec *ast.ImportSpec) Match {
 	name := strings.Trim(spec.Path.Value, `"`)
+	pos := fset.Position(spec.Pos())
 	return Match{
 		Kind:      KindImport,
 		Name:      name,
 		Path:      path,
-		Line:      fset.Position(spec.Pos()).Line,
+		Line:      pos.Line,
+		Column:    pos.Column,
 		EndLine:   fset.Position(spec.End()).Line,
 		Signature: name,
 	}
@@ -508,10 +649,12 @@ func goImportRecord(fset *token.FileSet, spec *ast.ImportSpec, testFile bool) Im
 		alias = spec.Name.Name
 	}
 	return Import{
-		Path:  path,
-		Alias: alias,
-		Line:  fset.Position(spec.Pos()).Line,
-		Test:  testFile,
+		Path:     path,
+		Alias:    alias,
+		Line:     fset.Position(spec.Pos()).Line,
+		Test:     testFile,
+		Language: LanguageGo,
+		Kind:     "module",
 	}
 }
 

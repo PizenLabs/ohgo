@@ -471,6 +471,11 @@ type groundingCoverage struct {
 	// retained so a language-qualified test-file claim can be checked against
 	// the names the scan actually returned.
 	globScans []globScan
+	// structuralTestAbsence is a complete, unscoped structure tests query that
+	// saw no test files. It is equivalent to a complete recursive scan for the
+	// narrow Go test-file claim, but only when scope, inventory, and structural
+	// completeness all hold.
+	structuralTestAbsence bool
 	// rootListing is a complete listing of the repository root.
 	rootListing bool
 	// external reports a successful observation of a remote surface: a
@@ -522,6 +527,9 @@ func (c groundingCoverage) supports(claim negativeClaim) bool {
 func (c groundingCoverage) supportsGoTestFiles(subject string) bool {
 	if !strings.Contains(subject, "test") || !mentionsGoLanguage(subject) {
 		return false
+	}
+	if c.structuralTestAbsence {
+		return true
 	}
 	for _, scan := range c.globScans {
 		if !strings.Contains(scan.pattern, "**") ||
@@ -626,17 +634,92 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 			case "glob":
 				pattern := proposalArgString(outcome.Args, "pattern")
 				path := proposalArgString(outcome.Args, "path")
-				if complete && (path == "" || path == "." || path == "./") &&
+				details, _ := outcome.Result.Details.(map[string]any)
+				// A gitignore=false scan is an investigative override, not a
+				// complete project inventory. A built-in exclusion (node_modules,
+				// dist, target) is a disclosed pruning gap too.
+				gitignoreComplete := true
+				if value, ok := details["gitignore"].(bool); ok {
+					gitignoreComplete = value
+				}
+				unpruned := detailValueInt(details, "ignored") == 0 &&
+					detailValueInt(details, "excluded") == 0
+				if complete && gitignoreComplete && unpruned &&
+					(path == "" || path == "." || path == "./") &&
 					strings.Contains(pattern, "**") {
 					coverage.globScans = append(coverage.globScans, globScan{
 						pattern: pattern,
 						text:    outcome.Result.Text,
 					})
 				}
+			case "structure":
+				if complete && structureProvesNoTestFiles(outcome) {
+					coverage.structuralTestAbsence = true
+				}
 			}
 		}
 	}
 	return coverage
+}
+
+// structureProvesNoTestFiles reports a complete, unscoped structure tests
+// query with no test files and no excluded or unparsed scope.
+//
+// It is deliberately narrower than "the snapshot has zero tests": a pending
+// parse, an unsupported language, an unreadable directory, or an excluded root
+// each leaves the absence unproven. The same boundary that makes an overview
+// honest makes a negative conclusion safe.
+func structureProvesNoTestFiles(outcome ToolOutcome) bool {
+	details, ok := outcome.Result.Details.(map[string]any)
+	if !ok {
+		return false
+	}
+	if detailValueString(details, "view") != "tests" || detailValueBool(details, "truncated") {
+		return false
+	}
+	// Freshness is independent of completeness: a complete inventory of a
+	// snapshot that no longer matches the tree does not establish current
+	// absence.
+	if detailValueString(details, "graph_state") != "CURRENT" {
+		return false
+	}
+	if !detailValueBool(details, "scope_complete") ||
+		!detailValueBool(details, "inventory_complete") ||
+		!detailValueBool(details, "structural_complete") {
+		return false
+	}
+	if detailValueInt(details, "test_files") != 0 || detailValueInt(details, "total") != 0 {
+		return false
+	}
+	if proposalArgString(outcome.Args, "path") != "" ||
+		proposalArgString(outcome.Args, "package") != "" ||
+		proposalArgString(outcome.Args, "symbol") != "" {
+		return false
+	}
+	return true
+}
+
+func detailValueString(details map[string]any, key string) string {
+	value, _ := details[key].(string)
+	return value
+}
+
+func detailValueBool(details map[string]any, key string) bool {
+	value, _ := details[key].(bool)
+	return value
+}
+
+func detailValueInt(details map[string]any, key string) int {
+	switch value := details[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
 }
 
 // observedExternal reports whether one successful outcome saw a remote surface.

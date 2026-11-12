@@ -388,7 +388,11 @@ func TestNonAnsweringModelWithMalformedCallsIsBounded(t *testing.T) {
 	if !errors.Is(result.err, agent.ErrTaskBlocked) {
 		t.Fatalf("Run error = %v, want ErrTaskBlocked", result.err)
 	}
-	if result.requests > 3 {
+	if result.requests > 4 {
+		// One corrected-invocation window is intentional: a model that repeats
+		// the identical malformed proposal still closes after the bounded
+		// recovery request, but the runtime must first give it a chance to fix
+		// the arguments rather than treating the capability as failed.
 		t.Fatalf("model requests = %d, want a bounded decision", result.requests)
 	}
 	failureRejected := 0

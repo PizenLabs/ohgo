@@ -118,6 +118,81 @@ func TestCompleteGoScanProvesNoGoTestFiles(t *testing.T) {
 	}
 }
 
+func claimStructureOverview(testFiles int, scopeComplete, truncated bool) ToolOutcome {
+	return ToolOutcome{
+		ToolName: "structure",
+		Args:     map[string]any{"view": "overview"},
+		Result: Result{
+			Text: "status: ok\nview: overview\ntests: 0 (test_files: 0)\n",
+			Details: map[string]any{
+				"view":                "overview",
+				"graph_state":         "CURRENT",
+				"truncated":           truncated,
+				"scope_complete":      scopeComplete,
+				"inventory_complete":  true,
+				"structural_complete": true,
+				"test_files":          testFiles,
+				"total":               0,
+			},
+		},
+	}
+}
+
+func claimStructureTests(testFiles int, scopeComplete bool) ToolOutcome {
+	return ToolOutcome{
+		ToolName: "structure",
+		Args:     map[string]any{"view": "tests"},
+		Result: Result{
+			Text: "status: ok\nview: tests\ntests: 0\n",
+			Details: map[string]any{
+				"view":                "tests",
+				"graph_state":         "CURRENT",
+				"truncated":           false,
+				"scope_complete":      scopeComplete,
+				"inventory_complete":  true,
+				"structural_complete": true,
+				"test_files":          testFiles,
+				"total":               0,
+			},
+		},
+	}
+}
+
+// A stale snapshot is not a current absence proof, even when its four
+// completeness axes were complete when it was taken.
+func TestStaleTestInventoryDoesNotProveAbsence(t *testing.T) {
+	stale := claimStructureTests(0, true)
+	details, ok := stale.Result.Details.(map[string]any)
+	if !ok {
+		t.Fatalf("details = %T, want map[string]any", stale.Result.Details)
+	}
+	details["graph_state"] = "STALE"
+	turns := []Turn{{Results: []ToolOutcome{stale}}}
+	if verdict := claimVerdict(turns, "No Go test files are present."); verdict.Complete() {
+		t.Fatal("a stale test inventory was accepted as current absence proof")
+	}
+}
+
+// A complete structural test inventory is equivalent to a complete recursive
+// scan for the narrow Go test-file claim. A scope exclusion or an observed test
+// file must still block it.
+func TestCompleteStructuralTestInventoryProvesNoGoTestFiles(t *testing.T) {
+	complete := []Turn{{Results: []ToolOutcome{claimStructureTests(0, true)}}}
+	if verdict := claimVerdict(complete, "No Go test files are present."); !verdict.Complete() {
+		t.Fatalf("a complete structural test inventory did not prove absence: %s", verdict.Reason)
+	}
+
+	scoped := []Turn{{Results: []ToolOutcome{claimStructureTests(0, false)}}}
+	if verdict := claimVerdict(scoped, "No Go test files are present."); verdict.Complete() {
+		t.Fatal("a structural test inventory with an excluded root proved absence")
+	}
+
+	present := []Turn{{Results: []ToolOutcome{claimStructureTests(1, true)}}}
+	if verdict := claimVerdict(present, "No Go test files are present."); verdict.Complete() {
+		t.Fatal("a structural test inventory containing a test file proved absence")
+	}
+}
+
 // A language name that merely contains "go" is not a Go test claim.
 func TestUnrelatedLanguageNameDoesNotBecomeGoTestProof(t *testing.T) {
 	turns := []Turn{{Results: []ToolOutcome{
@@ -170,6 +245,75 @@ func TestConfigurationTopologyDoesNotProveRuntimeBehavior(t *testing.T) {
 	}
 }
 
+// The practical Phase 9 regression: a broad analysis read documentation,
+// manifests, a Makefile, a Compose file, and a truncated structural overview,
+// then asserted a listening port as code behavior and a Go test-file absence.
+// Neither claim is supported by the observed evidence classes.
+func TestProjectAnalysisRejectsConfigBehaviorAndOverviewAbsence(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimListing(".", "README.md\npackage.json\nbackend\nsrc\n"),
+		claimRead("README.md", "# E-commerce Microservices Platform", 333),
+		claimRead("package.json", `{"dependencies":{"react":"18"}}`, 35),
+		claimRead("backend/go.mod", "module ecommerce", 52),
+		claimRead("backend/go.work", "go 1.24.4", 3),
+		claimRead("backend/Makefile", "build:\n\tgo build ./...\n", 134),
+		claimRead("backend/docker-compose.yml",
+			"services:\n  cart-service:\n    ports:\n      - \"8082:8080\"\n", 266),
+		claimStructureOverview(0, false, true),
+	}}}
+	answer := strings.Join([]string{
+		"Known issues flagged in README",
+		"Compose port mismatches for stub services (mapped to container 8080 but code listens on :8082–:8085).",
+		"No Go test files are present.",
+		"No tests exist yet.",
+	}, "\n\n")
+
+	assessment := AssessGrounding(claimContract(), turns, answer)
+	if assessment.Pass() {
+		t.Fatal("configuration-derived behavior and overview-derived absence were accepted")
+	}
+	codes := map[string]bool{}
+	for _, issue := range assessment.Issues {
+		codes[issue.Code] = true
+	}
+	if !codes["unsupported_implementation_claim"] {
+		t.Fatalf("issues = %+v, want unsupported_implementation_claim", assessment.Issues)
+	}
+	if !codes["unsupported_negative_conclusion"] {
+		t.Fatalf("issues = %+v, want unsupported_negative_conclusion", assessment.Issues)
+	}
+
+	verdict := claimVerdict(turns, answer)
+	if verdict.Complete() {
+		t.Fatal("the practical project analysis completed")
+	}
+	for _, want := range []string{"listens", "test"} {
+		if !strings.Contains(strings.ToLower(verdict.Reason), want) {
+			t.Fatalf("reason = %q, want %q", verdict.Reason, want)
+		}
+	}
+}
+
+// "Executes" is the same active behavior class as "listens" and "connects":
+// a Compose service declaration or a Makefile target is not execution evidence.
+func TestExecutionClaimNeedsSourceObservation(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimRead("backend/docker-compose.yml",
+			"services:\n  worker:\n    image: worker:latest\n", 266),
+	}}}
+	if verdict := claimVerdict(turns, "The worker executes the job every night."); verdict.Complete() {
+		t.Fatal("a Compose service declaration supported an execution claim")
+	}
+
+	withSource := []Turn{{Results: []ToolOutcome{
+		claimRead("backend/internal/worker/worker.go",
+			"func (w *Worker) Run(job Job) { w.executor.Execute(job) }", 40),
+	}}}
+	if verdict := claimVerdict(withSource, "The worker executes the job every night."); !verdict.Complete() {
+		t.Fatalf("a source-backed execution claim was reviewed: %s", verdict.Reason)
+	}
+}
+
 // A source observation is the evidence class that can support a behavior
 // claim. The check must not reject behavior categorically.
 func TestSourceObservationCanSupportBehaviorClaim(t *testing.T) {
@@ -180,6 +324,63 @@ func TestSourceObservationCanSupportBehaviorClaim(t *testing.T) {
 	verdict := claimVerdict(turns, "cart validates against product.")
 	if !verdict.Complete() {
 		t.Fatalf("a source-supported behavior claim was reviewed: %s", verdict.Reason)
+	}
+}
+
+// A source read of one service does not prove another service's port. The
+// claim must name a port the same source observation actually contains.
+func TestBehaviorClaimRequiresObservedPort(t *testing.T) {
+	wrongService := []Turn{{Results: []ToolOutcome{
+		claimRead("backend/cmd/product-service/main.go",
+			"func main() { http.ListenAndServe(\":8081\", nil) }", 20),
+	}}}
+	verdict := claimVerdict(wrongService, "The cart service listens on :8082.")
+	if verdict.Complete() {
+		t.Fatal("a product-service read was accepted as proof of cart's port")
+	}
+	if !strings.Contains(strings.ToLower(verdict.Reason), "8082") {
+		t.Fatalf("reason = %q, want the unobserved port", verdict.Reason)
+	}
+
+	rightService := []Turn{{Results: []ToolOutcome{
+		claimRead("backend/cmd/cart-service/main.go",
+			"func main() { http.ListenAndServe(\":8082\", nil) }", 20),
+	}}}
+	if verdict := claimVerdict(rightService, "The cart service listens on :8082."); !verdict.Complete() {
+		t.Fatalf("the observed cart port was reviewed: %s", verdict.Reason)
+	}
+	// A preceding container mapping is not the listener's port. Only the
+	// clause after the behavior verb is checked.
+	if verdict := claimVerdict(rightService,
+		"The container is mapped to port 8080 but the code listens on :8082."); !verdict.Complete() {
+		t.Fatalf("the observed listener port was rejected because of the container mapping: %s", verdict.Reason)
+	}
+}
+
+// A live runtime observation of the named port is the other accepted evidence
+// class for a listener claim. It must be the same port, not merely a running
+// process.
+func TestRuntimeObservationSupportsNamedPort(t *testing.T) {
+	runtimeTurn := func(url string) []Turn {
+		return []Turn{{Results: []ToolOutcome{{
+			ToolName: "verify",
+			Result: Result{
+				Text: "runtime ready",
+				// The runtime's own command is the component coordinate. A
+				// bare address does not say which service is listening.
+				Runtime: &RuntimeEvidence{
+					Command: "go run ./backend/cmd/cart-service",
+					URL:     url,
+					Checks:  1,
+				},
+			},
+		}}}}
+	}
+	if verdict := claimVerdict(runtimeTurn("http://localhost:8082"), "The cart service listens on :8082."); !verdict.Complete() {
+		t.Fatalf("the observed runtime port was reviewed: %s", verdict.Reason)
+	}
+	if verdict := claimVerdict(runtimeTurn("http://localhost:8083"), "The cart service listens on :8082."); verdict.Complete() {
+		t.Fatal("a runtime observation on a different port supported the claim")
 	}
 }
 

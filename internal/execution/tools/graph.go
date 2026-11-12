@@ -89,7 +89,7 @@ func NewGraphTool(source *StructuralSource) *GraphTool {
 		agent.Approval{Tier: agent.TierRead},
 	)
 	tool.SetRequiredLanguage("go")
-	tool.SetActionClasses(agent.ActionObserve, agent.ActionRelationship)
+	tool.SetActionClasses(agent.ActionObserve, agent.ActionRelationship, agent.ActionStructure)
 	return tool
 }
 
@@ -174,6 +174,9 @@ func (t *GraphTool) Execute(ctx agent.Context, args map[string]any) agent.Result
 	// model-supplied path argument. The index then sees a repository-relative
 	// spelling.
 	if pathArg != "" {
+		if language, ok := ast.LanguageForPath(pathArg); ok && language != ast.LanguageGo {
+			return agent.ErrorResult("graph is the Go package import graph; use structure or refs for %s", language)
+		}
 		resolved, err := resolvePath(t.Root, pathArg)
 		if err != nil {
 			return agent.ErrorResult("resolve path: %v", err)
@@ -222,6 +225,17 @@ func (t *GraphTool) Execute(ctx agent.Context, args map[string]any) agent.Result
 	var text strings.Builder
 	fmt.Fprintf(&text, "status: %s\n", status)
 	fmt.Fprintf(&text, "module: %s\n", result.Module)
+	if result.SnapshotID != "" {
+		fmt.Fprintf(&text, "snapshot_id: %s\n", result.SnapshotID)
+		fmt.Fprintf(&text, "generation: %d\n", result.Generation)
+		fmt.Fprintf(&text, "graph_state: %s\n", result.State)
+	}
+	if len(result.Languages) > 0 {
+		fmt.Fprintf(&text, "languages: %s\n", languageSummary(result.Languages))
+	}
+	if len(result.UnsupportedLanguages) > 0 {
+		fmt.Fprintf(&text, "unsupported_languages: %d\n", len(result.UnsupportedLanguages))
+	}
 	fmt.Fprintf(&text, "query: %s %s\n", result.QueryType, result.Selector)
 	fmt.Fprintf(&text, "relation: %s\n", result.Relation)
 	fmt.Fprintf(&text, "depth: %d\n", result.Depth)
@@ -352,11 +366,27 @@ func edgeKinds(edge ast.GraphEdge) string {
 }
 
 // graphDetails is the structured payload for the UI and benchmarks.
+func graphCompleteness(result ast.GraphResult) string {
+	if result.Complete {
+		return "COMPLETE"
+	}
+	if result.Truncated {
+		return "TRUNCATED"
+	}
+	for _, language := range result.Languages {
+		if language.Pending > 0 {
+			return "UNPARSED"
+		}
+	}
+	return "PARTIAL"
+}
+
 func graphDetails(status string, result ast.GraphResult) map[string]any {
 	nodes := make([]map[string]any, 0, len(result.Nodes))
 	for _, node := range result.Nodes {
 		nodes = append(nodes, map[string]any{
 			"path":             node.Path,
+			"language":         string(node.Language),
 			"package":          node.Package,
 			"packages":         append([]string(nil), node.Packages...),
 			"depth":            node.Depth,
@@ -370,6 +400,7 @@ func graphDetails(status string, result ast.GraphResult) map[string]any {
 	edges := make([]map[string]any, 0, len(result.Edges))
 	for _, edge := range result.Edges {
 		edges = append(edges, map[string]any{
+			"language":         string(edge.Language),
 			"from":             edge.From,
 			"to":               edge.To,
 			"source":           edge.Source,
@@ -389,9 +420,35 @@ func graphDetails(status string, result ast.GraphResult) map[string]any {
 			"reason": item.Reason,
 		})
 	}
+	coords := make([]map[string]any, 0, len(result.Nodes)+len(result.Edges))
+	for _, node := range result.Nodes {
+		coords = append(coords, map[string]any{
+			"path": node.Path, "line": 1, "symbol": node.Package, "kind": "package",
+		})
+	}
+	for _, edge := range result.Edges {
+		witnessPath, witnessLine := edge.SourceFile, edge.SourceLine
+		kind := "graph_edge"
+		if witnessPath == "" {
+			witnessPath, witnessLine = edge.TestFile, edge.TestLine
+		}
+		if witnessPath == "" {
+			witnessPath, witnessLine = edge.From, 1
+		}
+		coords = append(coords, map[string]any{
+			"path": witnessPath, "line": witnessLine,
+			"symbol": edge.From + "->" + edge.To, "kind": kind,
+		})
+	}
 	return map[string]any{
 		"status":            status,
 		"module":            result.Module,
+		"snapshot_id":       result.SnapshotID,
+		"generation":        result.Generation,
+		"graph_state":       string(result.State),
+		"partial":           result.ParseFailures > 0,
+		"complete":          result.Complete,
+		"completeness":      graphCompleteness(result),
 		"query_type":        result.QueryType,
 		"selector":          result.Selector,
 		"relation":          string(result.Relation),
@@ -408,5 +465,6 @@ func graphDetails(status string, result ast.GraphResult) map[string]any {
 		"truncation_reason": result.Reason,
 		"parse_failures":    result.ParseFailures,
 		"work":              result.Work,
+		"coordinates":       coords,
 	}
 }

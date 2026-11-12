@@ -19,9 +19,117 @@ immutable.
   `UNSUPPORTED`) with a bounded raw fragment, protocol, provider, and
   recoverability. The raw fragment is audit-only and is never executed or
   published as an answer.
+- Project structural runtime: `ast.Index` is now an incremental snapshot over
+  files, packages, configs, tests, and entrypoints, with `CURRENT`/`UPDATING`/
+  `STALE`/`INVALID` freshness, generation, snapshot identity, parse-failure
+  disclosure, and a bounded `structure` read-only tool. Incremental refresh
+  parses only changed Go files and re-resolves relationships from retained raw
+  syntax. `graph`, `refs`, and `structure` now enter `cognition` as structural
+  evidence carrying snapshot provenance and completeness.
+- Adaptive multi-language structural runtime: Go keeps its native backend;
+  pinned tree-sitter adapters add TypeScript/TSX, JavaScript/JSX, Java, C#,
+  Rust, Kotlin, Ruby, C, and C++ over the same `ast.Index`. Canonical facts
+  preserve language-specific kinds, visibility, containers, imports, explicit
+  inheritance/implementation clauses, calls, tests, entries, and source
+  coordinates. `structure` adds `languages` and `relations` views; `symbols`
+  and `refs` expose language/native-kind/exported provenance. A no-cgo build
+  keeps Go and reports the other extensions as unsupported.
+- Adaptive activation: `TaskShape` derives `NONE`/`OVERVIEW`/`TARGETED`/
+  `IMPACT` from existing shape signals, withholds structural tools at `NONE`,
+  and lets overviews stay metadata-first. Targeted/impact queries parse pending
+  supported files on demand; semantic escalation is explicitly unsupported.
+- Structural evidence now carries language, adapter, resolution, structural
+  completeness, project-scope completeness, and truncation in addition to
+  snapshot id and generation (`EvidenceVersion` 4). Snapshots disclose
+  per-language parsed/pending/failed counts, inventory completeness, structural
+  completeness, and unsupported source extensions.
+- Project-boundary scope: a nested repository is included in the same
+  structural snapshot even when the enclosing repository's `.gitignore` hides
+  its directory, and the nested repository's own ignore rules govern its
+  contents. `structure` adds a metadata-only `scope` view, and snapshots report
+  `nested_projects`, `excluded_roots`, file-level `excluded_source_files`, the
+  decisive rule, shallow build markers, `test_files`, and independent
+  scope/inventory/structural/result completeness.
+- Evidence claim classes: `cognition` now classifies each observation as
+  documentation, configuration/manifest, implementation source, or runtime, and
+  retains bounded structural counts such as `test_files` (`EvidenceVersion` 5).
+  The pre-answer runtime state block reports which classes the run supports, so
+  the model sees the claim boundary before it writes instead of learning it
+  only from a completion review.
+- Evidence-to-claim completion: provenance now distinguishes documentation,
+  configuration/manifest, inventory, source path, source content, source
+  import, source use, structural evidence, and runtime (`EvidenceVersion` 6);
+  the state block derives an actionable evidence frontier and dependency
+  strength. Component identity is path-derived and shared with the answer
+  audit, so source from one component cannot support another. Strong
+  completeness claims require an observed component source scope; dependency
+  wording follows the `DECLARED`/`IMPORTED`/`INITIALIZED`/`USED_IN_SOURCE`/
+  `OBSERVED_AT_RUNTIME` ladder; unbounded concept absences stay review; and an
+  identical read-only observation in a later turn is reused instead of
+  re-executed.
+
+### Changed
+
+- Repository scoping is injected into the structural index from the shared
+  `ignore.Matcher`, so `.gitignore` membership has one owner and `ast` stays a
+  dependency-free intelligence leaf. A rule or scope fingerprint change
+  refreshes membership without re-parsing unchanged source files. Structural
+  scope treats a nested repository as a project boundary and evaluates that
+  repository's own ignore rules inside it.
+- `structure` overview no longer repeats `parsed_files`, `unsupported_source`,
+  or the module line in both the header and the body. A repeated overview of
+  the same snapshot is marked `repeated: true` so the model can recognize that
+  it adds no new inventory facts.
+- `graph` remains the Go package import graph; a non-Go selector is pointed at
+  `structure`/`refs` instead of being folded into a false package edge. The
+  structural snapshot remains in memory. `<project>/.ohgo/graph.db` is still
+  reserved and unimplemented; no derived persistence was added.
+- Configuration and manifest observations are no longer implementation
+  evidence. A Makefile, Compose file, dependency manifest, README, directory
+  listing, or structural inventory declares topology, dependencies, or
+  metadata; a broad project survey now requires an observed source read before
+  it can close. The state block names that missing class directly.
 
 ### Fixed
 
+- An invalid tool invocation no longer poisons capability health or blocks a
+  recoverable task. Argument, selector, unknown-tool, unsupported-operation,
+  authority, budget, and stale-evidence failures are request-level: the
+  identical request is refused once with schema-grounded correction, a corrected
+  request remains eligible, and only genuine capability failures enter provider
+  health. A failed structural provider is reconciled against independent
+  authorized providers (README, manifests, listings, source reads), a successful
+  overview survives a later targeted failure, and completion only excuses a
+  pending provider failure when the evidence contract is actually satisfied.
+  This closes the session-224 failure mode where `structure backend` was
+  reported as a `remote_tool_error` and blocked the project analysis.
+- A project-analysis request that opens with an ambiguous read verb and adds a
+  later explicit read clause (`check this project and analyze what this project
+  is about?`) now carries a strong READ signal and reaches the ASK authority
+  boundary instead of silently staying in BUILD.
+- A truncated metadata overview's `tests: 0` is no longer treated as proof that
+  no tests exist. Only a complete, unscoped structural test inventory (or the
+  narrow complete Go scan) can support a test-file absence claim, and the
+  state block reports a partial inventory as `absence unproven`.
+- A configuration-derived runtime claim is no longer promoted by a
+  Makefile/Compose/README observation. The runtime state block reports
+  `implementation=NOT_OBSERVED` and `runtime=NOT_OBSERVED`, and the completion
+  audit still rejects an active behavior claim without source or runtime
+  evidence.
+- An implementation-status claim ("fully implemented", "stubs (health checks
+  only)", "scaffolded") can no longer be supported by a README, manifest,
+  Compose file, directory listing, or structural inventory. The answer audit
+  requires a source observation for each named component and names the missing
+  component in the review reason; reading one component does not support a
+  claim about another.
+- A behavior claim that names a port must be supported by a source observation
+  containing that same port or by a live runtime address on that port. Reading
+  one service's listener no longer supports a claim about a different service's
+  port.
+- Structural inventory no longer loses a nested repository to the enclosing
+  repository's `.gitignore`. A root rule such as `backend/` no longer reports
+  `go: 0` when `backend/` is a nested Go project; the boundary is included,
+  disclosed, and its tests remain discoverable.
 - A malformed call can no longer downgrade a proof the runtime already holds.
   A schema violation never executed, so it is neither work nor an observation
   about the project: completion ignores it for pending failures and outstanding

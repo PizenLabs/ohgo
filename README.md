@@ -64,13 +64,23 @@ it is done. ohgo is built around the opposite contract.
 ## Features
 
 - **A focused tool set** — `read`, `write`, `edit`, `delete`, `bash`, `wait`,
-  `verify`, `glob`, `grep`, `ls`, `symbols`, `graph`, `refs`, `webfetch`, `todo`,
-  `task`, and `artifact` when a session is attached. `verify` owns a service's
-  start/readiness/checks/cleanup lifecycle instead of making the model poll and
-  kill it turn by turn.
-- **Repository intelligence** — `symbols`, `graph`, and `refs` share one Go
-  AST index. Reference and call queries report `ambiguous`, `truncated`,
-  `unsupported`, and `unknown` explicitly instead of guessing.
+  `verify`, `glob`, `grep`, `ls`, `symbols`, `graph`, `refs`, `structure`,
+  `webfetch`, `todo`, `task`, and `artifact` when a session is attached.
+  `verify` owns a service's start/readiness/checks/cleanup lifecycle instead of
+  making the model poll and kill it turn by turn.
+- **Repository intelligence** — `symbols`, `graph`, `refs`, and `structure`
+  share one incremental structural snapshot. Go uses the native `go/ast`
+  backend; cgo builds add pinned tree-sitter adapters for TypeScript/TSX,
+  JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, C, and C++. A broad project
+  question stays metadata-first, while targeted/impact queries parse only the
+  pending supported files they need. Reference and call queries report
+  `ambiguous`, `truncated`, `unsupported`, and `unknown` explicitly instead of
+  guessing; inventory reports snapshot freshness, generation, language
+  coverage, separate scope/inventory/structural/result completeness, excluded
+  roots, and unsupported source. A nested repository is treated as a project
+  boundary even when the enclosing `.gitignore` hides its directory, so a root
+  `backend/` rule cannot erase a nested Go project. Test associations stay
+  static rather than being presented as coverage.
 - **Sessions that survive** — transcripts are stored in a pure-Go SQLite
   database, and a resumed session restores its own workspace, project, and
   effective model.
@@ -128,8 +138,14 @@ make build          # CGO_ENABLED=0, static binary at ./ohgo
 ./ohgo --help
 ```
 
-Requires **Go 1.27+**. No C toolchain: `CGO_ENABLED=0 go build ./...` succeeds
-and the dependency graph contains zero C packages.
+Requires **Go 1.27+**. `CGO_ENABLED=0 go build ./...` succeeds without a C
+toolchain and keeps the native Go structural backend; the other language
+adapters are then reported as unsupported. Build with `CGO_ENABLED=1` (the
+default on a machine with a C compiler) to compile the pinned tree-sitter
+grammars into the binary. `make build-multilang` builds that variant; the
+portable static release target stays `CGO_ENABLED=0` and therefore ships the
+native Go structural backend only. No grammar is downloaded or loaded at
+runtime.
 
 ### Install into your user prefix
 

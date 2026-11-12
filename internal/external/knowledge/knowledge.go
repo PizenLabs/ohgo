@@ -202,6 +202,34 @@ const (
 	FailureRateLimited FailureClass = "rate_limited"
 	// FailureInvalidRequest means the request or arguments were invalid.
 	FailureInvalidRequest FailureClass = "invalid_request"
+	// FailureInvalidArgument means one invocation did not satisfy the tool's
+	// argument contract. It is a request-level failure: the capability itself
+	// was never exercised and remains available for a corrected invocation.
+	FailureInvalidArgument FailureClass = "invalid_argument"
+	// FailureInvalidSelector means the tool exists but the selected view does
+	// not accept the supplied path, package, or symbol. It is request-level for
+	// the same reason as FailureInvalidArgument.
+	FailureInvalidSelector FailureClass = "invalid_selector"
+	// FailureUnknownTool means the model named a tool that is not registered.
+	// It is a request-level discovery failure, never evidence that every
+	// authorized acquisition path is unavailable.
+	FailureUnknownTool FailureClass = "unknown_tool"
+	// FailureExecutionFailed means execution started and did not complete. It
+	// carries no implied retry safety: a mutating operation may have applied a
+	// side effect before failing.
+	FailureExecutionFailed FailureClass = "execution_failed"
+	// FailureTransport means the transport between the runtime and a provider
+	// failed. Retry is bounded and does not imply the operation was idempotent.
+	FailureTransport FailureClass = "transport_failure"
+	// FailureAuthorityDenied means the live authority refused the operation.
+	// Retrying with elevated authority is forbidden; the class is request-level
+	// because the capability itself was never exercised.
+	FailureAuthorityDenied FailureClass = "authority_denied"
+	// FailureBudgetExhausted means the applicable resource grant was spent.
+	FailureBudgetExhausted FailureClass = "budget_exhausted"
+	// FailureStaleEvidence means a prior observation is no longer current.
+	// Recovery is limited to reacquiring the affected observation.
+	FailureStaleEvidence FailureClass = "stale_evidence"
 	// FailureEmptyResult means the request succeeded with no results.
 	FailureEmptyResult FailureClass = "empty_result"
 	// FailurePartialResult means some results were usable and some were not.
@@ -227,6 +255,24 @@ const (
 	// FailureToolError means a remote tool returned an error result.
 	FailureToolError FailureClass = "remote_tool_error"
 )
+
+// RequestLevel reports whether the class describes a rejected invocation
+// rather than a failed capability.
+//
+// A request-level failure means the tool's operation was never exercised with
+// a valid request. It must not poison capability health, trip a provider
+// circuit breaker, or block the task while another authorized acquisition path
+// remains. A corrected invocation is a different proposal and is always
+// eligible; only an identical repeat is refused.
+func (c FailureClass) RequestLevel() bool {
+	switch c {
+	case FailureInvalidRequest, FailureInvalidArgument, FailureInvalidSelector,
+		FailureUnknownTool, FailureUnsupported, FailureAuthorityDenied,
+		FailureBudgetExhausted, FailureStaleEvidence:
+		return true
+	}
+	return false
+}
 
 // Failure is a structured external failure.
 type Failure struct {

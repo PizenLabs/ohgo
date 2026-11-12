@@ -35,6 +35,20 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 	if s == nil {
 		return summary
 	}
+	claims := s.ClaimSummary()
+	summary.HasImplementation = claims.HasImplementation
+	summary.HasConfiguration = claims.HasConfiguration
+	summary.HasDocumentation = claims.HasDocumentation
+	summary.HasRuntimeObservation = claims.HasRuntime
+	summary.StructuralScope = claims.StructuralScope
+	summary.TestInventory = claims.TestInventory
+	summary.TestFiles = claims.TestFiles
+	summary.TestFilesKnown = claims.TestFilesKnown
+	summary.TestTotal = claims.TestTotal
+	summary.TestTotalKnown = claims.TestTotalKnown
+	summary.ImplementationPaths = claims.ImplementationPaths
+	summary.ConfigurationPaths = claims.ConfigurationPaths
+	summary.DocumentationPaths = claims.DocumentationPaths
 	var documentation, implementation, external []string
 	var manifests []string
 	titles := map[string]bool{}
@@ -44,7 +58,6 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 		}
 		switch item.Provenance {
 		case ProvenanceDocumentation:
-			summary.HasDocumentation = true
 			documentation = append(documentation, item.Value)
 			for _, term := range DocumentationTitleTerms(item.Value) {
 				titles[term] = true
@@ -55,8 +68,7 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 				external = append(external, item.Value)
 			}
 		case ProvenanceObservation:
-			if isImplementationObservation(item) && strings.TrimSpace(item.Value) != "" {
-				summary.HasImplementation = true
+			if isImplementationObservation(item) {
 				implementation = append(implementation, item.Value)
 			}
 		case ProvenanceManifest:

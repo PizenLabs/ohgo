@@ -192,6 +192,12 @@ func TestAESBenchLive(t *testing.T) {
 
 	program := tui.NewProgram(loop, model.Ref(), model.ContextWindow)
 	program.SetUsageLog(usageLog)
+	// The production hosts install the workspace root for the pre-run target
+	// snapshot and completion context. Without it the benchmark built the task
+	// shape with empty repository facts, which made a code-project survey look
+	// satisfied by documentation and metadata alone. This is the same seam the
+	// interactive and one-shot hosts use.
+	program.SetCompletionContext(root, structuralResolver(loop.Tools()))
 	// The production TUI installs workspace hooks. The benchmark needs the same
 	// live authority on the task shape without a full harness; this minimal
 	// owner reports the fixed ASK authority and performs no transition.

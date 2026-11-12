@@ -339,7 +339,7 @@ func ignoredTool(tool string) bool {
 // observationTool reports a capability that observes repository state.
 func observationTool(tool string) bool {
 	switch tool {
-	case "read", "ls", "glob", "grep", "symbols", "graph", "refs":
+	case "read", "ls", "glob", "grep", "symbols", "graph", "refs", "structure":
 		return true
 	default:
 		return false

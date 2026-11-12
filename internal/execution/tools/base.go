@@ -38,6 +38,9 @@ type Base struct {
 	classes []agent.ActionClass
 	// language is the source language the tool needs, or "".
 	language string
+	// languages is the multi-language set, when the tool supports more than
+	// one adapter.
+	languages []string
 	// mutations is the declared repository change surface, or nil when the
 	// tool does not declare one.
 	mutations []contract.ChangeOp
@@ -88,6 +91,22 @@ func (b Base) RequiredLanguage() string { return b.language }
 
 // SetRequiredLanguage declares the source language a tool needs.
 func (b *Base) SetRequiredLanguage(language string) { b.language = language }
+
+// SupportedLanguages implements agent.LanguageSetReporter.
+func (b Base) SupportedLanguages() []string {
+	if len(b.languages) > 0 {
+		return append([]string(nil), b.languages...)
+	}
+	if b.language != "" {
+		return []string{b.language}
+	}
+	return nil
+}
+
+// SetSupportedLanguages declares the source languages a tool can use.
+func (b *Base) SetSupportedLanguages(languages ...string) {
+	b.languages = append([]string(nil), languages...)
+}
 
 // MutationOperations implements agent.MutationReporter.
 func (b Base) MutationOperations() []contract.ChangeOp {

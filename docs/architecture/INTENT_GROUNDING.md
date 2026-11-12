@@ -223,9 +223,16 @@ not exist. A concept claim (“no documentation”, “no tests”)
 cannot be proven by a file scan and stays `NEEDS_REVIEW`. The one narrow
 exception is Go's mandatory `_test.go` suffix: a complete recursive scan of
 every `.go` file that contains no `_test.go` file proves the narrowed claim “no
-Go test files”. A bare “no tests” claim, and frontend test absence where naming
-is convention-based, remain concept absences. An answer that only reports “I
-could not find …” is an unverified negative result, not completion. The failure
+Go test files”. A complete, unscoped, `CURRENT` `structure` tests inventory
+with scope, inventory, and structural completeness all `COMPLETE`, an
+untruncated result, and zero test files is accepted as the structural
+equivalent of that scan. A bare “no tests” claim, and frontend test absence
+where naming is convention-based, remain concept absences. A snapshot that
+reports `scope: PARTIAL`, an excluded root, a pending parse, unsupported
+source, or `STALE` freshness cannot prove a repository-wide absence. A
+metadata overview is not a filtered test inventory, even when it prints
+`tests: 0`. An answer that only reports “I could not find …” is an unverified
+negative result, not completion. The failure
 form includes passive voice (“could not be read”), and a qualifier does not turn
 a category into a file coordinate: “no Go source files” is still a category
 absence, not a concrete file claim.
@@ -266,12 +273,66 @@ directory listing         names and sizes, not content or line counts
 ```
 
 A runtime-behavior claim (“cart validates against product”, “order publishes
-events”, “delivery fulfills”) needs a source observation containing the
-behavior; a dependency or topology declaration is not enough. Documentation
-attribution (“the README describes …”) and an explicit limitation (“not
-verified”) are lower-assertion forms and pass. A configuration mechanism can
-support its own claim: a Compose mount into `docker-entrypoint-initdb.d` proves
-that PostgreSQL init scripts are supplied, even without a source read.
+events”, “delivery fulfills”, “code listens on :8082”) needs source content
+that carries the behavior, or a live runtime observation that carries the
+named port; a dependency, topology, or documentation declaration is not
+enough. A port in the behavior clause must appear in the same source
+observation or runtime address: reading product-service's listener does not
+prove that cart-service uses a different port. Documentation attribution (“the
+README describes …”) and an explicit limitation (“not verified”) are
+lower-assertion forms and pass. A configuration mechanism can support its own
+claim: a Compose mount into `docker-entrypoint-initdb.d` proves that PostgreSQL
+init scripts are supplied, even without a source read.
+
+Configuration, manifests, documentation, directory listings, and structural
+inventory are not implementation content. A broad project survey therefore
+needs at least one source read; documentation plus metadata cannot close it.
+The evidence ledger and the answer audit use the same classification, so the
+model's pre-answer state block can report `implementation=NOT_OBSERVED` and
+`runtime=NOT_OBSERVED` instead of letting a configuration file stand in for
+execution.
+
+An implementation-status claim (“fully implemented”, “stubs (health checks
+only)”, “mock data”, “scaffolded”) is a positive claim about source content.
+A README, manifest, Compose file, directory listing, glob result, or structural
+inventory does not establish it. The audit extracts the components the claim
+names — a kebab coordinate such as `product-service`, an explicit list after
+the colon, or a recognized component noun — and requires a source read or
+source-scoped grep for each. Reading product-service source supports
+product-service, not order-service or the frontend. Component identity is
+derived from the path's project structure: a file named `api.go` inside
+`cart/` is cart, not the API gateway, and an absolute user directory is never a
+component.
+
+Strong completeness wording (“fully implemented”, “completely implemented”,
+“feature-complete”, “production-ready”, “fully functional”) additionally
+requires an observed, current, complete source scope for the named component:
+a scoped structural file inventory with every completeness axis and every
+returned source file read, or an equivalent complete unpruned component-scoped
+glob. One source file supports a claim about the operation observed in that
+file, not a claim that the whole component is complete. When the scope is not
+observed, the admissible form is narrower: “the inspected handler implements
+the observed CRUD endpoints” or “I have not verified whether the component is
+fully implemented.”
+
+Dependency claims are a separate category with their own strength ladder:
+`DECLARED` (manifest/configuration), `IMPORTED` (source import), `INITIALIZED`
+(constructed client or opened connection), `USED_IN_SOURCE` (a concrete source
+operation), and `OBSERVED_AT_RUNTIME`. Wording must match evidence strength:
+“declares” needs a manifest/configuration, “imports” needs an import, and
+“uses/caches/publishes/consumes” needs a source operation or runtime
+observation. The evidence is bound to the component that owns the file:
+product-service's Redis operations do not support “order-service uses Redis.”
+A README statement is documentation, not dependency evidence.
+
+A concept-level negative conclusion (“JWT is not implemented”, “RabbitMQ is
+unused”, “there is no authentication”, “no database integration”) is not
+proved by a complete file inventory or one empty search. It remains
+`NEEDS_REVIEW` unless the answer bounds it to what was inspected (“no JWT
+implementation was found in the inspected authentication source”, “the
+inspected source did not show RabbitMQ operations”) or explicitly says it could
+not verify the claim. File and test absence keep their stricter completeness
+gate; a concept absence has no deterministic proof mechanism in this layer.
 
 A concrete line count needs the file's read `totalLines` (or a line-count
 command). A directory listing's byte size is not a line count; a gross
@@ -285,8 +346,16 @@ evidence and provenance layers.
 
 The claim audit applies to informational answers only. A mutation answer is
 judged by target, mutation, and verification evidence, not by its prose. The
-informational runtime state block carries the same boundary as a bounded line,
-so the model sees it before writing the answer.
+informational runtime state block carries the same boundary as evidence-derived
+statuses: observed implementation, runtime, configuration, documentation,
+inventory, source paths, dependency strength, scope, and the test-inventory
+support state. It also carries a bounded, actionable evidence frontier derived
+from the observations themselves: which components lack source content, whether
+the test inventory is complete, whether scope is partial or truncated, and
+whether dependency evidence is only declared or imported. The frontier never
+hardcodes project names; component identities come from the structural and
+source coordinates. The model sees what the run can claim before writing, and
+the completion audit still reviews a claim that exceeds it.
 
 ### 4.7 Completion integrity
 
@@ -352,6 +421,19 @@ request path.
 - The answer check is English-pattern based. A paraphrased global conclusion,
   an unusual behavior verb, or an inference without an explicit marker outside
   the patterns is not detected; the structural completion rules still apply.
+- Implementation-status subject extraction is finite: it recognizes kebab
+  coordinates, an explicit list after the status marker, and a bounded
+  component vocabulary. Component identity is path-derived; an ambiguous path
+  is left as a weaker aggregate rather than guessed. A strong completeness
+  claim without a scoped component inventory is reviewed, not silently
+  downgraded.
+- Dependency detection uses a bounded technology vocabulary and
+  language-shaped import/constructor/operation markers. A dependency outside
+  the vocabulary is not recognized by this layer; the evidence and provenance
+  gates still apply.
+- Concept absence uses a bounded vocabulary and scope markers. A paraphrased
+  unbounded absence can escape detection; the gate is conservative in the
+  review direction, never an absence proof.
 - Claim scope depends on the observations in the tool turns. Content supplied
   only in the user's `@` file context is not a tool observation, so a behavior
   claim about it may be reviewed; the conservative direction is a review, not a

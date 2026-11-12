@@ -58,6 +58,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewSymbolsToolWithSource(structural),
 		tools.NewGraphTool(structural),
 		tools.NewRefsTool(structural),
+		tools.NewStructureTool(structural),
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}
