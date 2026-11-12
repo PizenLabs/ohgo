@@ -282,6 +282,11 @@ func observationKind(item cognition.EvidenceItem) EvidenceKind {
 	switch {
 	case item.Source.URL != "" || item.Source.Trust != "":
 		return EvidenceExternal
+	case item.Runtime:
+		// A live runtime is an execution observation, not merely a test. The
+		// distinct kind is what lets a runtime objective prove itself without
+		// accepting any other successful command.
+		return EvidenceRuntime
 	case isVerificationObservation(item):
 		return EvidenceTest
 	case item.Source.Tool == "bash":

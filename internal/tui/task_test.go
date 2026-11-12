@@ -523,12 +523,12 @@ drain:
 	if task == nil || task.Status != "NEEDS_REVIEW" {
 		t.Fatalf("task = %+v, want NEEDS_REVIEW", task)
 	}
-	if !strings.Contains(task.ReviewReason, "announces a further action") {
-		t.Fatalf("task review reason = %q", task.ReviewReason)
+	if !strings.Contains(task.ReviewReason, "EXECUTION_INTENT_WITHOUT_TOOL") {
+		t.Fatalf("task review reason = %q, want the execution-protocol classification", task.ReviewReason)
 	}
 	last := p.state.Entries[len(p.state.Entries)-1]
 	if last.Kind != EntryNotice || !strings.Contains(last.Notice, reviewPrefix) ||
-		!strings.Contains(last.Notice, "announces a further action") {
+		!strings.Contains(last.Notice, "EXECUTION_INTENT_WITHOUT_TOOL") {
 		t.Fatalf("last entry = %+v, want the review verdict after the answer", last)
 	}
 }

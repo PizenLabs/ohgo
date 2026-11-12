@@ -119,6 +119,16 @@ type Config struct {
 	// from a system block after a tool result. It is a runtime view, never
 	// persisted, and empty disables it while keeping the one retry.
 	AnswerRequest string
+	// ExecutionRecoveryRequest is the user-role message appended once when the
+	// model announces an action but emits no tool call. It asks for the actual
+	// canonical call; the runtime never executes the prose. Empty keeps the
+	// classification but does not spend the recovery request.
+	ExecutionRecoveryRequest string
+	// ProtocolRecoveryRequest is the user-role message appended once when a
+	// serialized tool-call envelope could not be normalized. It asks for a
+	// native or correctly serialized call without inventing arguments. Empty
+	// keeps the classification but does not spend the recovery request.
+	ProtocolRecoveryRequest string
 	// Tools are offered to the model.
 	Tools []Tool
 	// MaxTokens caps each completion.
@@ -645,6 +655,25 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// covers both a forced answer after refusals and a natural evidence
 	// boundary where the first answer request produced only reasoning.
 	answerRetried := false
+	// executionRecoveryAttempted and normalizationRecoveryAttempted are the
+	// bounded protocol recoveries. Each is spent at most once per run and the
+	// run/turn budget still bounds the whole loop, so neither can become an
+	// infinite retry.
+	executionRecoveryAttempted := false
+	normalizationRecoveryAttempted := false
+	// executionIntentPending means the previous turn announced an action and
+	// the runtime asked for the actual call. If the next turn still has no
+	// call, the failure is classified as a protocol failure, never executed.
+	executionIntentPending := false
+	// normalizationPending means a failed normalization is awaiting the one
+	// recovery request. Valid calls in the next turn clear it; another failed
+	// turn is terminal for the run's protocol stage.
+	normalizationPending := false
+	// activityObserved records that any turn produced a call or visible text.
+	// An empty model stop after activity is a completion question, not a
+	// missing-output protocol failure; NO_MODEL_OUTPUT is reserved for a run
+	// that never produced text or a call at all.
+	activityObserved := false
 	stopReason := ""
 	turns = nil
 	for {
@@ -827,6 +856,16 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		live = append(live, AssistantMessage{Message: assistant})
 
 		calls := assistant.ToolCalls()
+		if len(calls) > 0 || strings.TrimSpace(assistant.Text()) != "" {
+			activityObserved = true
+		}
+		if len(calls) > 0 {
+			// A canonical call is the correction both protocol recoveries ask
+			// for. It may still be refused by authority or schema, but it is
+			// no longer a missing or malformed representation.
+			normalizationPending = false
+			executionIntentPending = false
+		}
 		if len(calls) == 0 {
 			turns = append(turns, turn)
 			if l.cfg.OnTurn != nil {
@@ -842,6 +881,39 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					reason = "the runtime closed the task because no further action can make progress"
 				}
 				return turns, fmt.Errorf("%w: %s", ErrTaskBlocked, reason)
+			}
+			// Serialized syntax that could not be normalized is a provider
+			// protocol failure, not an answer. Spend one bounded recovery
+			// request asking for the canonical call; never execute or invent
+			// the partial envelope. A second failure is terminal for this run.
+			if len(assistant.NormalizationFailures) > 0 && !closed {
+				normalizationPending = true
+				if !normalizationRecoveryAttempted && len(activeTools) > 0 && len(turns) < l.cfg.MaxTurns {
+					normalizationRecoveryAttempted = true
+					if strings.TrimSpace(l.cfg.ProtocolRecoveryRequest) != "" {
+						live = append(live, UserMessage{Text: l.cfg.ProtocolRecoveryRequest})
+					}
+					continue
+				}
+				return turns, fmt.Errorf("%w: %s", ErrToolNormalizationFailed,
+					normalizationFailureReason(assistant.NormalizationFailures))
+			}
+			// Execution intent without a tool call is its own lifecycle
+			// failure. The prose is not an action: one bounded request asks for
+			// the canonical call, and a second narration is reported rather
+			// than executed or promoted to an answer.
+			if text := strings.TrimSpace(assistant.Text()); text != "" && !closed &&
+				len(activeTools) > 0 && executionIntentWithoutTool(text) {
+				executionIntentPending = true
+				if !executionRecoveryAttempted && len(turns) < l.cfg.MaxTurns {
+					executionRecoveryAttempted = true
+					if strings.TrimSpace(l.cfg.ExecutionRecoveryRequest) != "" {
+						live = append(live, UserMessage{Text: l.cfg.ExecutionRecoveryRequest})
+					}
+					continue
+				}
+				return turns, fmt.Errorf("%w: the model announced an execution it never emitted as a tool call",
+					ErrExecutionIntentWithoutTool)
 			}
 			// A model can stop without any visible text immediately after a
 			// refusal-only turn. The refusal is feedback it has not answered
@@ -877,6 +949,28 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				forceAnswer = true
 				answerRetried = true
 				continue
+			}
+			if strings.TrimSpace(assistant.Text()) == "" {
+				// The previous turn was already a protocol recovery request.
+				// Silence after it is the outcome of that stage, not a generic
+				// empty model stop.
+				if executionIntentPending {
+					return turns, fmt.Errorf("%w: the model announced an execution and then produced no tool call",
+						ErrExecutionIntentWithoutTool)
+				}
+				if normalizationPending {
+					return turns, fmt.Errorf("%w: provider tool-call syntax did not resolve after recovery",
+						ErrToolNormalizationFailed)
+				}
+				if activityObserved {
+					// Work already ran; an empty closing turn is a completion
+					// question. Returning the turns lets the evaluator judge
+					// the evidence instead of replacing it with a protocol
+					// error.
+					return turns, nil
+				}
+				return turns, fmt.Errorf("%w: the provider produced no visible text and no tool call",
+					ErrNoModelOutput)
 			}
 			return turns, nil
 		}
@@ -1255,7 +1349,8 @@ func (l *Loop) dispatch(
 					Result: Result{
 						Text: fmt.Sprintf(
 							"recovery checkpoint unavailable: %v; no files were modified", err),
-						IsError: true,
+						IsError:      true,
+						FailureClass: ToolFailureDispatch,
 					},
 				}
 			}
@@ -1340,6 +1435,15 @@ func batchMayMutate(byName map[string]Tool, calls []ai.ToolCall) bool {
 		tool, ok := byName[call.Name]
 		if !ok {
 			continue
+		}
+		// A capability may refine its tier from this invocation's arguments
+		// (verify runs a service and checks that can include a mutating
+		// command). The journal must cover that per-call possibility even when
+		// the static action surface is execution-only.
+		if reporter, ok := tool.(CapabilityReporter); ok {
+			if reporter.Capability(call.Arguments) == TierWrite {
+				return true
+			}
 		}
 		for _, class := range ToolActionClasses(tool) {
 			if class == ActionMutate || class == ActionDelegate {
@@ -1489,7 +1593,14 @@ func (l *Loop) execute(
 				},
 			}
 		}
-		return fail(fmt.Sprintf("Tool %q not found. Available tools: %s.", call.Name, strings.Join(sorted(names), ", ")))
+		return ToolOutcome{
+			CallID: call.ID, ToolName: call.Name, Args: call.Arguments,
+			Result: Result{
+				Text:         fmt.Sprintf("Tool %q not found. Available tools: %s.", call.Name, strings.Join(sorted(names), ", ")),
+				IsError:      true,
+				FailureClass: ToolFailureUnsupported,
+			},
+		}
 	}
 
 	args := call.Arguments
@@ -1499,7 +1610,14 @@ func (l *Loop) execute(
 	if err := ValidateArgs(tool, args); err != nil {
 		// A schema violation is reported back to the model rather than
 		// aborting the turn, so it can fix its own arguments.
-		return fail(fmt.Sprintf("Invalid arguments for %q: %v", call.Name, err))
+		return ToolOutcome{
+			CallID: call.ID, ToolName: call.Name, Args: args,
+			Result: Result{
+				Text:         fmt.Sprintf("Invalid arguments for %q: %v", call.Name, err),
+				IsError:      true,
+				FailureClass: ToolFailureInvalidArgument,
+			},
+		}
 	}
 
 	if l.cfg.BeforeToolCall != nil {
@@ -1511,7 +1629,10 @@ func (l *Loop) execute(
 			if reason == "" {
 				reason = "blocked by policy"
 			}
-			return fail(reason)
+			return ToolOutcome{
+				CallID: call.ID, ToolName: call.Name, Args: args,
+				Result: Result{Text: reason, IsError: true, FailureClass: ToolFailureAuthorization},
+			}
 		}
 		if outcome.Args != nil {
 			args = outcome.Args
@@ -1565,7 +1686,10 @@ func (l *Loop) execute(
 	// human was being asked must not start the tool. The check is repeated
 	// after authorization because approval can block indefinitely.
 	if err := ctx.Err(); err != nil {
-		return fail(err.Error())
+		return ToolOutcome{
+			CallID: call.ID, ToolName: call.Name, Args: args,
+			Result: Result{Text: err.Error(), IsError: true, FailureClass: ToolFailureCancelled},
+		}
 	}
 
 	// The security boundary runs immediately before execution. When an
@@ -1584,7 +1708,7 @@ func (l *Loop) execute(
 				CallID:        call.ID,
 				ToolName:      call.Name,
 				Args:          args,
-				Result:        Result{Text: failure, IsError: true},
+				Result:        Result{Text: failure, IsError: true, FailureClass: ToolFailureAuthorization},
 				Authorization: &resolved,
 			}
 		}

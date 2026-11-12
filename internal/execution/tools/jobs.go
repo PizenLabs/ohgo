@@ -235,6 +235,28 @@ func (t *BackgroundJobs) finish(id string, exitCode int, timedOut bool) {
 	job.cmd = nil
 }
 
+// StopAll terminates every running job's process group and returns how many
+// were still running. Completed jobs stay in the table so a final wait can
+// still observe their exit; only live processes are killed. It is the
+// session-shutdown cleanup path, not a per-turn policy: a background job is
+// explicitly detached, while the process tree that owns it must not outlive
+// the session.
+func (t *BackgroundJobs) StopAll() int {
+	t.mu.Lock()
+	cmds := make([]*exec.Cmd, 0, len(t.jobs))
+	for _, job := range t.jobs {
+		if job.done || job.cmd == nil || job.cmd.Process == nil {
+			continue
+		}
+		cmds = append(cmds, job.cmd)
+	}
+	t.mu.Unlock()
+	for _, cmd := range cmds {
+		_ = sandbox.Kill(cmd)
+	}
+	return len(cmds)
+}
+
 // kill stops a running job. It reports whether anything was running: a kill
 // against an already-finished job is a no-op, not an error, because the
 // timeout timer and natural exit race by construction.

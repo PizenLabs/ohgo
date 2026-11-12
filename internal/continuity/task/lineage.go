@@ -301,10 +301,18 @@ func evidenceLineage(t Task, record EvidenceRecord) LineageEntry {
 // that the whole objective was met.
 func isExecutedEvidence(record EvidenceRecord) bool {
 	switch record.Kind {
-	case EvidenceCommand, EvidenceTest, EvidenceBenchmark, EvidenceReproduction:
+	case EvidenceCommand, EvidenceRuntime, EvidenceTest, EvidenceBenchmark, EvidenceReproduction:
 		return true
 	}
 	return strings.Contains(record.Source, "check:")
+}
+
+// isRuntimeEvidence reports whether the record observed a live project
+// runtime. A command record, even a successful one, is not a runtime: it
+// finished, while a runtime objective needs the service observed alive and
+// answering a check.
+func isRuntimeEvidence(record EvidenceRecord) bool {
+	return record.Kind == EvidenceRuntime
 }
 
 func missingClaims(t Task, ids []string) []string {

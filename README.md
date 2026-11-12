@@ -64,8 +64,10 @@ it is done. ohgo is built around the opposite contract.
 ## Features
 
 - **A focused tool set** — `read`, `write`, `edit`, `delete`, `bash`, `wait`,
-  `glob`, `grep`, `ls`, `symbols`, `graph`, `refs`, `webfetch`, `todo`, `task`,
-  and `artifact` when a session is attached.
+  `verify`, `glob`, `grep`, `ls`, `symbols`, `graph`, `refs`, `webfetch`, `todo`,
+  `task`, and `artifact` when a session is attached. `verify` owns a service's
+  start/readiness/checks/cleanup lifecycle instead of making the model poll and
+  kill it turn by turn.
 - **Repository intelligence** — `symbols`, `graph`, and `refs` share one Go
   AST index. Reference and call queries report `ambiguous`, `truncated`,
   `unsupported`, and `unknown` explicitly instead of guessing.

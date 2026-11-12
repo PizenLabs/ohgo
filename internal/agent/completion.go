@@ -20,7 +20,7 @@ import (
 // explanatory lead ("let me summarise…") is an answer, and "let me know…" is a
 // closing courtesy; neither is a deferred action.
 var deferredAnswerPattern = regexp.MustCompile(
-	`(?i)^(?:so|first|next|now)?\s*(?:let\s+me|i(?:['’]ll|\s+will|\s+am\s+going\s+to|['’]m\s+going\s+to)|we(?:['’]ll|\s+will|\s+are\s+going\s+to|['’]re\s+going\s+to))\s+(?:now\s+|first\s+|also\s+|quickly\s+|just\s+)?(?:explore|check|look|inspect|read|search|find|list|examine|investigate|scan|try|run|gather|review|open|locate|analy[sz]e|probe|walk)\b`)
+	`(?i)^(?:so|first|next|now)?[,:]?\s*(?:(?:let\s+me|let['’]s)|i(?:['’]ll|\s+will|\s+am\s+going\s+to|['’]m\s+going\s+to|\s+need\s+to)|we(?:['’]ll|\s+will|\s+are\s+going\s+to|['’]re\s+going\s+to))\s+(?:now\s+|first\s+|also\s+|quickly\s+|just\s+)?(?:go\s+ahead\s+and\s+)?(?:explore|check|look|inspect|read|search|find|list|examine|investigate|scan|try|run|gather|review|open|locate|analy[sz]e|probe|walk|use|start|serve|launch|spin|boot|host|test|verify)\b`)
 
 // answerSentenceBoundary splits an answer into the clauses that must each be
 // substantive. The separator requires whitespace so a period inside a path or
@@ -51,6 +51,14 @@ func answerIsDeferredPlan(answer string) bool {
 		}
 	}
 	return seen
+}
+
+// executionIntentWithoutTool reports that a message consists only of a
+// first-person promise to perform an action. The loop uses the same
+// deterministic vocabulary as the completion gate: it never turns the prose
+// into a call, only into a bounded request for the canonical call.
+func executionIntentWithoutTool(text string) bool {
+	return answerIsDeferredPlan(text)
 }
 
 // CompletionState is the runtime's verdict on whether a run reached its
@@ -121,7 +129,7 @@ func EvaluateCompletion(turns []Turn, mutationIntent bool) Completion {
 	evidence := scanCompletionEvidence(turns, mutationIntent)
 	if len(evidence.pendingFailures) > 0 {
 		return needsReview("a tool call failed and no later success or verification recovered it: %s",
-			pendingFailureNames(evidence.pendingFailures))
+			pendingFailureNames(evidence.pendingFailures, evidence.pendingFailureClasses))
 	}
 	if mutationIntent && !evidence.mutated {
 		return needsReview("the request asked for a repository change but no change was observed")
@@ -160,6 +168,10 @@ type completionEvidence struct {
 	// successful verification (which is itself execution evidence). A started
 	// but unfinished background job is not evidence.
 	executed bool
+	// runtimeObserved is a live project runtime that reached readiness, ran at
+	// least one passing check, and stayed alive. It is the only evidence that
+	// proves a runtime objective; an unrelated finished command is not.
+	runtimeObserved bool
 	// mutated is a definite change: a write/edit/delete, or a shell command
 	// classified as mutating.
 	mutated bool
@@ -169,6 +181,7 @@ type completionEvidence struct {
 	lastPotentialMutation int
 	lastVerification      int
 	pendingFailures       map[string]int
+	pendingFailureClasses map[string]string
 	// verifications records every successful check and the scope it covered.
 	// The position is the outcome's index in the run, so a check that happened
 	// before the last change can be excluded.
@@ -193,13 +206,22 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 		lastPotentialMutation: -1,
 		lastVerification:      -1,
 		pendingFailures:       map[string]int{},
+		pendingFailureClasses: map[string]string{},
 	}
 	position := 0
 	for _, turn := range turns {
 		for _, outcome := range turn.Results {
 			if outcome.Result.IsError {
-				if !outcome.Refused() && !outcome.Result.ObservedAbsence {
+				// A malformed call never executed, so it is not an observation
+				// that can contradict the objective. Counting it would let a
+				// late continuation downgrade a proof the runtime already
+				// holds; the missing-evidence rules still decide the objective
+				// on its own terms.
+				if !outcome.Refused() && !outcome.Result.ObservedAbsence && !outcome.Result.Rejected() {
 					evidence.pendingFailures[outcome.ToolName]++
+					if class := strings.TrimSpace(outcome.Result.FailureClass); class != "" {
+						evidence.pendingFailureClasses[outcome.ToolName] = class
+					}
 				}
 				position++
 				continue
@@ -220,6 +242,12 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 			if outcome.Result.Executes && outcome.Result.Finished {
 				evidence.executed = true
 			}
+			if outcome.Result.Runtime != nil {
+				// The live runtime observation is stronger than a finished
+				// command and is the only evidence a runtime objective accepts.
+				evidence.runtimeObserved = true
+				evidence.executed = true
+			}
 			if outcome.Result.Verifies {
 				// A successful check proves a process ran and completed even
 				// when the tool cannot report an Executes/Finished pair (a
@@ -233,6 +261,7 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 				// A successful verification is evidence that the final state
 				// is sound, so earlier failures no longer block completion.
 				evidence.pendingFailures = map[string]int{}
+				evidence.pendingFailureClasses = map[string]string{}
 			}
 			if evidence.pendingFailures[outcome.ToolName] > 0 {
 				// Any later success of the same capability supersedes its
@@ -240,6 +269,7 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 				// different coordinates require two successes, so a model that
 				// recovered once would still be reported as unrecovered.
 				delete(evidence.pendingFailures, outcome.ToolName)
+				delete(evidence.pendingFailureClasses, outcome.ToolName)
 			}
 			position++
 		}
@@ -255,7 +285,10 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 func outstandingCalls(turn Turn) int {
 	count := 0
 	for _, outcome := range turn.Results {
-		if outcome.Refused() {
+		if outcome.Refused() || outcome.Result.Rejected() {
+			// Neither ran. A refusal is a control decision and a malformed
+			// call never reached the capability, so neither leaves work
+			// outstanding.
 			continue
 		}
 		count++
@@ -350,14 +383,17 @@ type BehavioralEvidence struct {
 
 // pendingFailureNames renders the tools with unrecovered failures so the
 // review reason names the capability instead of saying only "a tool call".
-func pendingFailureNames(failures map[string]int) string {
+func pendingFailureNames(failures map[string]int, classes map[string]string) string {
 	names := make([]string, 0, len(failures))
 	for name, count := range failures {
-		if count > 1 {
-			names = append(names, fmt.Sprintf("%s x%d", name, count))
-			continue
+		label := name
+		if class := strings.TrimSpace(classes[name]); class != "" {
+			label += " [" + class + "]"
 		}
-		names = append(names, name)
+		if count > 1 {
+			label += fmt.Sprintf(" x%d", count)
+		}
+		names = append(names, label)
 	}
 	sort.Strings(names)
 	return strings.Join(names, ", ")
@@ -394,7 +430,7 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	evidence := scanCompletionEvidence(input.Turns, intent.Kind == contract.ObjectiveMutation)
 	if len(evidence.pendingFailures) > 0 {
 		return needsReview("a tool call failed and no later success or verification recovered it: %s",
-			pendingFailureNames(evidence.pendingFailures))
+			pendingFailureNames(evidence.pendingFailures, evidence.pendingFailureClasses))
 	}
 	// A conditional mutation starts in the investigation phase. Until a change
 	// is actually observed (or a durable prior change exists), the turn is
@@ -409,6 +445,16 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	}
 	if effective.Kind == contract.ObjectiveMutation && !evidence.mutated && !input.PriorChange {
 		return needsReview("the request asked for a repository change but no change was observed")
+	}
+	if effective.Kind == contract.ObjectiveExecution &&
+		effective.ExecutionMode == contract.ExecutionRuntime && !evidence.runtimeObserved {
+		// "Run this project" is not proven by any process that finished. The
+		// environment probe that satisfied an earlier classifier ("node -v &&
+		// npm -v") is real execution, but it is not the requested execution.
+		// A clean stop, a model claim, and a successful exit code are all
+		// insufficient without an observed live runtime.
+		return needsReview("the request asked to run the project's runtime but no live runtime observation was made; " +
+			"launch the project's entry point and observe it reach readiness and answer a check")
 	}
 	if effective.Kind == contract.ObjectiveExecution && len(effective.Verification) == 0 && !evidence.executed {
 		// A clean model stop is not execution evidence. A started background

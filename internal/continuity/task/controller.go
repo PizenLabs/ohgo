@@ -266,6 +266,7 @@ func (c *Controller) Restore() (Task, bool, error) {
 	if c.task.ID == "" {
 		return Task{}, false, nil
 	}
+	c.reconcileStaleState()
 	return c.task.Clone(), true, nil
 }
 
@@ -273,6 +274,100 @@ func (c *Controller) Restore() (Task, bool, error) {
 // before a load and never persisted.
 func (c *Controller) Recovery() RecoveryReport {
 	return c.recovery
+}
+
+// reconcileStaleState removes transient state that contradicts the current
+// objective before any of it reaches the model.
+//
+// A completion proof on a non-terminal task is impossible in a valid
+// checkpoint; keeping it would present completion=achieved while work is still
+// running. A completion contract is derived deterministically from the user's
+// objective, so an older projection can be stale after a classifier change;
+// re-deriving it from the same objective is a truthful repair, not a new
+// grant. Authority still decides what the turn may execute.
+func (c *Controller) reconcileStaleState() bool {
+	if c.task.ID == "" {
+		return false
+	}
+	changed := false
+	if !c.task.Status.IsTerminal() && c.task.Completion != nil {
+		c.task.Completion = nil
+		c.task.AppendEvent(TimelineEvent{
+			At:      c.now().UTC(),
+			Kind:    TimelineCheckpoint,
+			Role:    c.role,
+			Status:  string(c.task.Status),
+			Summary: "discarded a completion proof attached to a non-terminal task",
+		})
+		changed = true
+	}
+	if c.task.Contract != nil && strings.TrimSpace(c.task.Objective) != "" {
+		current := workspace.BuildIntentContract(c.task.Objective)
+		// Only a stale informational projection of an explicit service
+		// execution is reconciled. A host or test may deliberately persist a
+		// narrower contract for the same text; rewriting every differing kind
+		// would make the loader a second contract authority. The observed
+		// stale state is narrower than that: an old classifier read "use npx
+		// live-server…" as READ and then presented execution as forbidden.
+		staleServiceExecution := c.task.Contract.Kind == contract.ObjectiveInformational &&
+			current.Kind == contract.ObjectiveExecution &&
+			workspace.RequestsServiceExecution(c.task.Objective)
+		if staleServiceExecution {
+			cloned := cloneContract(current)
+			c.task.Contract = &cloned
+			c.task.AppendEvent(TimelineEvent{
+				At:      c.now().UTC(),
+				Kind:    TimelineCheckpoint,
+				Role:    c.role,
+				Status:  string(c.task.Status),
+				Summary: "completion contract re-derived from the objective because the checkpoint was stale",
+			})
+			changed = true
+		}
+		// An execution contract written before the runtime requirement existed
+		// classified "run this project" as any other execution, so a finished
+		// environment probe could support a completion proof. Re-deriving the
+		// mode from the same objective makes that proof stop resolving, which
+		// reports COMPLETED_UNPROVEN instead of a false PROVEN. Only the mode is
+		// upgraded: the contract's targets and verification stay as recorded.
+		if c.task.Contract.Kind == contract.ObjectiveExecution &&
+			current.Kind == contract.ObjectiveExecution &&
+			current.ExecutionMode == contract.ExecutionRuntime &&
+			c.task.Contract.ExecutionMode != contract.ExecutionRuntime {
+			c.task.Contract.ExecutionMode = contract.ExecutionRuntime
+			c.task.AppendEvent(TimelineEvent{
+				At:      c.now().UTC(),
+				Kind:    TimelineCheckpoint,
+				Role:    c.role,
+				Status:  string(c.task.Status),
+				Summary: "execution contract now requires a live runtime observation; a command-only proof no longer resolves",
+			})
+			changed = true
+		}
+	}
+	if !changed {
+		return false
+	}
+	if c.recovery.Empty() {
+		c.recovery = RecoveryReport{State: RecoveryIntact}
+	}
+	if c.recovery.State == RecoveryIntact {
+		c.recovery.State = RecoveryReconstructed
+	}
+	c.recovery.Detail = firstNonEmpty(c.recovery.Detail,
+		"stale completion state was reconciled from the objective")
+	const missing = "stale transient state"
+	found := false
+	for _, item := range c.recovery.Missing {
+		if item == missing {
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.recovery.Missing = append(c.recovery.Missing, missing)
+	}
+	return true
 }
 
 // Begin records that a turn is starting with this contract and pre-run target
@@ -1159,6 +1254,11 @@ func (c *Controller) ResumeTask(id string) (Task, error) {
 	}
 	c.task = target
 	c.planStale = false
+	// A restored checkpoint can carry a contract from an older deterministic
+	// classifier. Re-derive it before the resumed turn is routed or offered a
+	// tool surface, so contradictory authority/completion state is never
+	// presented to the model.
+	c.reconcileStaleState()
 	// Attribute the resumed task's projection to the role it last ran under,
 	// not to whatever role the previously active task used.
 	if last := target.LastRole(); last.Valid() {

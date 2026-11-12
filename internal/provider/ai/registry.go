@@ -335,7 +335,10 @@ func (r *Registry) StreamFn() StreamFn {
 		if err != nil {
 			return nil, err
 		}
-		return NormalizeStream(ctx, stream, NormalizeOptions{Tools: req.Tools}), nil
+		return NormalizeStream(ctx, stream, NormalizeOptions{
+			Tools:    req.Tools,
+			Provider: req.Model.Provider,
+		}), nil
 	}
 }
 

@@ -58,6 +58,18 @@ Prefer the shortest answer that fully answers the question.`
 // the transcript.
 const AnswerRequest = `Runtime: no tool is available for this response. Provide the final answer to the user's request now, using the observations already gathered where they apply. Do not propose or describe another tool call. State any remaining evidence gap explicitly.`
 
+// ExecutionRecoveryRequest is the one bounded correction the loop appends when
+// the model announces an action but emits no tool call. It does not authorize
+// anything and does not restate the action: it asks for the model's own
+// canonical call, so the runtime can normalize and authorize it normally.
+const ExecutionRecoveryRequest = `Runtime protocol recovery: your previous message announced an action but contained no tool call. Do not describe the action again. Emit the actual tool call now with complete arguments, or stop and answer from evidence already observed.`
+
+// ProtocolRecoveryRequest is the one bounded correction the loop appends when
+// serialized provider tool syntax could not be normalized. The malformed
+// fragment was not executed and no arguments were invented; the model must
+// re-emit the operation through the canonical tool channel.
+const ProtocolRecoveryRequest = `Runtime protocol recovery: your previous message contained serialized tool syntax that could not be normalized into a tool call. The malformed call was not executed. Re-emit the operation as a native tool call with complete arguments, or answer without protocol syntax. Do not repeat the serialized envelope.`
+
 // WorkspaceContract returns the semantic contract for a workspace, or "" for
 // an unknown name.
 //

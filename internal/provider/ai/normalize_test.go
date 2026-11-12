@@ -1381,3 +1381,56 @@ func hasDiagnostic(diags []NormalizationDiagnostic, kind NormalizationDiagnostic
 	}
 	return false
 }
+
+func TestNormalizeMessageRecordsStructuredFailureStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want NormalizationStatus
+	}{
+		{
+			name: "invalid JSON envelope",
+			text: `<longcat_tool_call>{"name":"bash","arguments":{"command":` +
+				`"npx live-server"}</longcat_tool_call>`,
+			want: NormalizationInvalid,
+		},
+		{
+			name: "incomplete envelope",
+			text: `<longcat_tool_call>bash<longcat_arg_key>command</longcat_arg_key>` +
+				`<longcat_arg_value>npx live-server</longcat_arg_value>`,
+			want: NormalizationIncomplete,
+		},
+		{
+			name: "unsupported family spelling",
+			text: `<dots_protocol_call><invoke name="bash"><parameter name="command">` +
+				`npx live-server</parameter></invoke></dots_protocol_call>`,
+			want: NormalizationUnsupported,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NormalizeMessage(AssistantMessage{
+				Content: []ContentBlock{TextContent{Text: tc.text}},
+			}, NormalizeOptions{Provider: "test"})
+			if len(got.NormalizationFailures) == 0 {
+				t.Fatal("failure was not recorded")
+			}
+			failure := got.NormalizationFailures[0]
+			if failure.Status != tc.want {
+				t.Fatalf("status = %q, want %q", failure.Status, tc.want)
+			}
+			if failure.Provider != "test" {
+				t.Fatalf("provider = %q, want test", failure.Provider)
+			}
+			if failure.RawFragment == "" {
+				t.Fatal("raw evidence was not retained")
+			}
+			if tc.want == NormalizationUnsupported && failure.Recoverable {
+				t.Fatal("an unsupported spelling was marked recoverable")
+			}
+			if !got.ProtocolResidue {
+				t.Fatal("a failed envelope did not mark protocol residue")
+			}
+		})
+	}
+}

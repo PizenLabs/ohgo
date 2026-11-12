@@ -99,6 +99,10 @@ type Result struct {
 	// child, for example), which satisfies a generic requirement but not a
 	// target-scoped one.
 	Verification *VerificationEvidence
+	// Runtime reports a live project runtime the capability started, observed
+	// ready, checked, and confirmed stayed alive. It is nil for a command that
+	// merely finished: Verifies alone never proves a runtime objective.
+	Runtime *RuntimeEvidence
 	// Useless marks a result that adds nothing to context and may be elided by
 	// compaction (zero matches, a timeout). Ignored when IsError is set.
 	Useless bool
@@ -146,6 +150,19 @@ type Result struct {
 	// turn, so a budget refusal inside a tool is visible to the root instead
 	// of looking like an ordinary tool error.
 	Exhausted *budget.ExhaustedError
+}
+
+// Rejected reports that the capability never ran the call because its
+// arguments did not satisfy the capability's own contract.
+//
+// A malformed invocation is a harness contract error, not an observation about
+// the project: it neither establishes nor contradicts anything, and nothing
+// executed. Completion must not let a late malformed continuation downgrade a
+// proof that real evidence already supports, so it is not pending failure and
+// not outstanding work. The failure ledger still counts it, because an
+// identical malformed repeat is a loop the runtime must be able to refuse.
+func (r Result) Rejected() bool {
+	return r.FailureClass == ToolFailureInvalidArgument
 }
 
 // ErrorResult builds an error result from a formatted message.

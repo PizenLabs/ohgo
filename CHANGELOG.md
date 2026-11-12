@@ -5,6 +5,72 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- Structured verification runtime: the `verify` capability owns a service
+  lifecycle (`STARTING`/`RUNNING`/`READY`/`FAILED`/`STOPPING`/`STOPPED`/
+  `TIMED_OUT`), HTTP/TCP/output readiness, port discovery, bounded HTTP and
+  command checks, an optional headless-browser check, and process-group cleanup
+  on every exit path. Independent checks run with bounded concurrency; browser
+  verification is optional and reports `VERIFICATION_INSUFFICIENT` when no
+  headless browser exists.
+- Structured normalization evidence: provider envelopes that fail to parse now
+  carry `ToolNormalizationFailure` records (`INCOMPLETE`, `INVALID`,
+  `UNSUPPORTED`) with a bounded raw fragment, protocol, provider, and
+  recoverability. The raw fragment is audit-only and is never executed or
+  published as an answer.
+
+### Fixed
+
+- A malformed call can no longer downgrade a proof the runtime already holds.
+  A schema violation never executed, so it is neither work nor an observation
+  about the project: completion ignores it for pending failures and outstanding
+  work, and a late malformed continuation after a successful runtime
+  verification still reports the objective as proven.
+- A complete evidence lifecycle is an answer-only surface. The projection now
+  marks `StageComplete` as answer-eligible in addition to withdrawing every
+  tool, so a continuation call cannot be dispatched once the objective's
+  evidence is complete even if a future narrowing leaves a capability behind.
+- `verify` accepts the equivalent argument shapes models routinely emit instead
+  of spending a turn on a harness contract error: a single literal for
+  `checks[].contains` is the same assertion as a one-element list, and a
+  service `cwd` may be an absolute path inside the workspace (an absolute path
+  outside it is still refused as an escape).
+- The recap attributes the outcome to the observation that proved it. A live
+  runtime is narrated as "Ran <service> and verified <url> answered", not as
+  the environment probes that ran while the model oriented itself; a sentence
+  announcing an observation still to come is no longer quoted as a finding.
+- Running the project is no longer reported `PROVEN` by a command that merely
+  finished. `run this project`, `run it`, `run the app`, `start the dev
+  server`, and package-manager `start`/`dev` scripts are runtime execution
+  contracts: completion requires a live runtime observation (service reached
+  readiness, a check passed while it was alive, and it stayed up). An
+  environment probe such as `node -v && npm -v` leaves the task active with the
+  runtime gap named instead of closing the tool surface, and an older
+  checkpoint whose command-only proof supported a false `PROVEN` now reports
+  `COMPLETED_UNPROVEN`.
+- `run it` after a runtime or execution task is an execution follow-up, not a
+  verification. It continues an open task instead of aborting with an objective
+  conflict, and a finished task no longer answers “already proven” instead of
+  running again. `is it running?` remains a verification question.
+- Service requests now route to execution instead of ASK. `use npx live-server
+  test this project`, `serve this project and verify it`, and `start the
+  development server and check the page` are execution contracts, and a bare
+  “test this project” accepts behavioural HTTP/browser evidence rather than
+  requiring a code-test check.
+- Execution protocol failures are classified at the stage they occurred:
+  `NO_MODEL_OUTPUT`, `EXECUTION_INTENT_WITHOUT_TOOL`, and
+  `TOOL_NORMALIZATION_FAILED`. Each gets at most one bounded recovery request;
+  prose is never executed, malformed syntax is never dispatched, and a second
+  failure ends in a review verdict rather than a retry loop.
+- Stale checkpoints no longer present a contradictory runtime state. A
+  non-terminal task drops an impossible completion proof, and an older
+  informational projection of an explicit service-execution objective is
+  re-derived from the same user text before the resumed turn is routed.
+- Background jobs are no longer orphaned: session shutdown terminates every
+  running job's process group, while normal turns still leave detached jobs
+  available to `wait`.
+
 ## [v0.1.1] - 2026-11-12
 
 ### Added

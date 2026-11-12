@@ -43,6 +43,25 @@ func (s VerificationScope) Covers(required string) bool {
 	return false
 }
 
+// RuntimeEvidence records that an execution capability started the project's
+// runtime, observed it reach its declared ready state, ran at least one check
+// against the live process, and saw it stay alive for the observation.
+//
+// It exists because an exit code is not a running application. A command that
+// finished successfully ("node -v", "npm -v") is execution evidence for a
+// command objective, never for "run this project". Completion for a runtime
+// objective requires this observation instead.
+type RuntimeEvidence struct {
+	// Command is the exact service command that was launched.
+	Command string
+	// URL is the discovered or checked address, when one was observed.
+	URL string
+	// PID is the service process the runtime owned and cleaned up.
+	PID int
+	// Checks is how many checks passed while the service was alive.
+	Checks int
+}
+
 // VerificationEvidence records what a successful check actually checked.
 //
 // Scopes may be empty for a recognised check whose package arguments the

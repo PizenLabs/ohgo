@@ -144,6 +144,10 @@ type SubagentResult struct {
 	// so the parent's scoped verification requirement can be satisfied by the
 	// child's real command rather than by an unscoped boolean.
 	Verification *VerificationEvidence
+	// Runtime is the live runtime the child observed, when it launched one.
+	// A parent's runtime objective can inherit the child's observation, but
+	// the child's answer alone still proves nothing.
+	Runtime *RuntimeEvidence
 	// Budget is the shared root grant after the child ran. It is a snapshot,
 	// never a fresh budget: the parent and child consumed the same instance.
 	Budget budget.Snapshot
@@ -282,6 +286,11 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 
 	turns, err := loop.Run(ctx, []Message{UserMessage{Text: spec.Task}})
 	if err != nil {
+		// The child boundary has one no-output contract. Preserve it even
+		// though the loop now classifies the same condition explicitly.
+		if errors.Is(err, ErrNoModelOutput) {
+			return SubagentResult{}, ErrNoSubagentResult
+		}
 		return SubagentResult{}, err
 	}
 
@@ -321,6 +330,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 	verified := evidence.mutated && evidence.lastVerification >= evidence.lastPotentialMutation
 	executed := evidence.executed
 	verification := verificationFromTurns(turns)
+	runtime := runtimeFromTurns(turns)
 	if text == "" {
 		return SubagentResult{
 			Turns:        turns,
@@ -330,6 +340,7 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 			Executed:     executed,
 			Verified:     verified,
 			Verification: verification,
+			Runtime:      runtime,
 			Budget:       parent.Budget.Snapshot(),
 		}, ErrNoSubagentResult
 	}
@@ -344,8 +355,24 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 		Executed:     executed,
 		Verified:     verified,
 		Verification: verification,
+		Runtime:      runtime,
 		Budget:       parent.Budget.Snapshot(),
 	}, nil
+}
+
+// runtimeFromTurns returns the last live runtime the child observed. The
+// newest observation wins because an earlier attempt may have failed its
+// readiness check; only a passing runtime observation reaches this list.
+func runtimeFromTurns(turns []Turn) *RuntimeEvidence {
+	var out *RuntimeEvidence
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.Runtime != nil {
+				out = outcome.Result.Runtime
+			}
+		}
+	}
+	return out
 }
 
 // verificationFromTurns collects the successful check scopes a child produced.

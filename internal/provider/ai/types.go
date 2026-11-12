@@ -90,9 +90,62 @@ type ToolCall struct {
 	Name      string
 	Arguments map[string]any
 
+	// Origin records how the call reached the canonical boundary. It is audit
+	// metadata: downstream execution, authority, and completion see the same
+	// call regardless of transport representation.
+	Origin ToolCallOrigin
+	// Protocol names the serialized envelope a synthesized call came from. It
+	// is empty for a native call and never participates in authorization.
+	Protocol string
+
 	// argumentsJSON accumulates the streamed argument fragments. It is cleared
 	// when the call closes and Arguments is populated.
 	argumentsJSON string
+}
+
+// ToolCallOrigin identifies the transport representation a canonical call came
+// from.
+type ToolCallOrigin string
+
+const (
+	// ToolCallNative is a provider-native structured tool call.
+	ToolCallNative ToolCallOrigin = "native"
+	// ToolCallSerialized is a tool call recovered from an assistant-text
+	// envelope at the provider boundary.
+	ToolCallSerialized ToolCallOrigin = "serialized"
+)
+
+// NormalizationStatus is the state of one attempted tool-call normalization.
+type NormalizationStatus string
+
+const (
+	// NormalizationValid means a complete envelope produced canonical calls.
+	NormalizationValid NormalizationStatus = "VALID"
+	// NormalizationIncomplete means the stream ended inside a recognized
+	// envelope. No call was produced; the model may still correct it.
+	NormalizationIncomplete NormalizationStatus = "INCOMPLETE"
+	// NormalizationInvalid means a complete envelope could not be decoded.
+	NormalizationInvalid NormalizationStatus = "INVALID"
+	// NormalizationUnsupported means the envelope belongs to a recognized
+	// family whose spelling this build cannot decode.
+	NormalizationUnsupported NormalizationStatus = "UNSUPPORTED"
+)
+
+// ToolNormalizationFailure is the structured evidence of one failed
+// normalization decision.
+//
+// RawFragment is bounded provider evidence for debug/audit sinks. It is never
+// published as assistant prose, never executed, and never persisted in the
+// normal transcript. Reason is a sanitized explanation suitable for a model
+// recovery request or a user-facing failure classification.
+type ToolNormalizationFailure struct {
+	Status      NormalizationStatus
+	Provider    string
+	Protocol    string
+	ToolName    string
+	RawFragment string
+	Reason      string
+	Recoverable bool
 }
 
 // RawArguments returns the accumulated, not-yet-decoded argument fragments.
@@ -150,6 +203,10 @@ type AssistantMessage struct {
 	// an unknown spelling. The text is preserved truthfully, but it is not an
 	// ordinary answer: completion must not report success for it.
 	ProtocolResidue bool
+	// NormalizationFailures carries one structured record per failed envelope.
+	// It preserves the failure stage and bounded raw evidence without leaking
+	// provider syntax into the answer or the execution path.
+	NormalizationFailures []ToolNormalizationFailure
 }
 
 // Role implements Message.

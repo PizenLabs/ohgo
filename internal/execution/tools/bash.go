@@ -91,6 +91,16 @@ func (t *BashTool) Jobs() *BackgroundJobs {
 	return t.jobs
 }
 
+// StopJobs terminates every running background job's process group. It is
+// called once when the owning session ends; normal turns deliberately leave
+// detached jobs alive so `wait` can observe them.
+func (t *BashTool) StopJobs() int {
+	if t == nil || t.jobs == nil {
+		return 0
+	}
+	return t.jobs.StopAll()
+}
+
 // Exclusive implements agent.Tool: concurrent foreground shell commands
 // would interleave their output and compete for the working tree.
 //
@@ -240,13 +250,25 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		// was classified as mutating may have changed the workspace before it
 		// was killed, so the evidence still requires verification.
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			return agent.Result{Text: fmt.Sprintf("command timed out after %s", timeout), IsError: true, Mutates: mutates, Executes: true, Finished: true}
+			return agent.Result{
+				Text: fmt.Sprintf("command timed out after %s", timeout), IsError: true,
+				Mutates: mutates, Executes: true, Finished: true,
+				FailureClass: agent.ToolFailureTimeout, FailureRetryable: true,
+			}
 		}
-		return agent.Result{Text: "command cancelled", IsError: true, Mutates: mutates, Executes: true, Finished: true}
+		return agent.Result{
+			Text: "command cancelled", IsError: true,
+			Mutates: mutates, Executes: true, Finished: true,
+			FailureClass: agent.ToolFailureCancelled,
+		}
 	case errors.As(runErr, &exitErr):
 		exitCode = exitErr.ExitCode()
 	default:
-		return agent.Result{Text: fmt.Sprintf("run command: %v", runErr), IsError: true, Mutates: mutates, Executes: true, Finished: true}
+		return agent.Result{
+			Text: fmt.Sprintf("run command: %v", runErr), IsError: true,
+			Mutates: mutates, Executes: true, Finished: true,
+			FailureClass: agent.ToolFailureRuntime,
+		}
 	}
 
 	text := fmt.Sprintf("$ %s\n\n%s", command, strings.TrimRight(combined, "\n"))
@@ -257,11 +279,12 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 
 	if exitCode != 0 {
 		return agent.Result{
-			Text:     text,
-			IsError:  true,
-			Mutates:  mutates,
-			Executes: true,
-			Finished: true,
+			Text:         text,
+			IsError:      true,
+			Mutates:      mutates,
+			Executes:     true,
+			Finished:     true,
+			FailureClass: agent.ToolFailureRuntime,
 			Details: map[string]any{
 				"command":  command,
 				"exitCode": exitCode,
@@ -367,7 +390,11 @@ func (t *BashTool) spawnBackground(ctx agent.Context, command string, timeout ti
 	}
 	if err := cmd.Start(); err != nil {
 		jobs.discard(id)
-		return agent.ErrorResult("start background command: %v", err)
+		return agent.Result{
+			Text:         fmt.Sprintf("start background command: %v", err),
+			IsError:      true,
+			FailureClass: agent.ToolFailureStart,
+		}
 	}
 	pid := 0
 	if cmd.Process != nil {

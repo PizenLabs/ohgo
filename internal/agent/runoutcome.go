@@ -72,6 +72,12 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 			reason = "the runtime closed the task because no further action can make progress"
 		}
 		return RunNeedsReview, reason
+	case errors.Is(err, ErrNoModelOutput), errors.Is(err, ErrExecutionIntentWithoutTool),
+		errors.Is(err, ErrToolNormalizationFailed):
+		// These are model/protocol lifecycle failures before any requested
+		// action executed. They are non-terminal: the task identity, evidence,
+		// and authority remain valid, so the human can retry the turn.
+		return RunNeedsReview, strings.TrimPrefix(err.Error(), "agent: ")
 	case err != nil:
 		return RunFailed, err.Error()
 	}

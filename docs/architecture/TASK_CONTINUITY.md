@@ -123,7 +123,7 @@ require at least one **current**, usable evidence record:
 
 - `validity = current`
 - `outcome = observed` or `supporting`
-- `kind` is one of tool, command, test, benchmark, source, artifact,
+- `kind` is one of tool, command, runtime, test, benchmark, source, artifact,
   reproduction, external, or human
 
 A model assertion, a repeated assertion in another role, a hypothesis, and an
@@ -696,6 +696,21 @@ The classification is derived on every load and never persisted. The report also
 counts outstanding todos. Recovery never invents progress, never marks an
 interrupted task complete, and never changes authority.
 
+A load also reconciles transient state that contradicts the lifecycle. A
+completion proof on a non-terminal task is discarded, because a live turn cannot
+be `PROVEN`. A stored informational contract for an objective that the current
+deterministic classifier identifies as an explicit service execution
+(`use npx live-server…`, `serve…`, `start the development server…`) is
+re-derived from the same user text before the resumed turn is routed. A
+persisted execution contract is also upgraded to `ExecutionRuntime` when the
+current classifier reads the same objective as running the project itself; an
+older checkpoint had no way to express that distinction, so its command-only
+proof would otherwise keep reporting `PROVEN`. Upgrading the mode makes that
+proof stop resolving and the task reports `COMPLETED_UNPROVEN` instead. This is
+narrow on purpose: the objective text did not change, only an older projection
+of its evidence boundary. A host-supplied narrowing or a genuinely different
+objective is never rewritten, and authority still gates every call.
+
 ### 9.5 Objective state and proven completion
 
 `Task.ObjectiveState` projects the lifecycle and proof into `ACTIVE`,
@@ -711,7 +726,8 @@ requirement:
 | Kind | Durable requirement | What `PROVEN` means |
 | --- | --- | --- |
 | `informational` | a non-empty final answer | an answer was produced; its correctness is not verified |
-| `execution` | a current, attributable execution observation, or the contract's required verification | a process or check reached a successful terminal state |
+| `execution` (`ExecutionCommand`) | a current, attributable execution observation, or the contract's required verification | a process or check reached a successful terminal state |
+| `execution` (`ExecutionRuntime`) | a current live-runtime observation: the service reached readiness, a check passed while it was alive, and it did not exit | the project runtime was observed running, not merely a command that finished |
 | `mutation` | an observed definite change **and** a current verification that followed it and covers the contract's declared check kind and scope | the named change was made and checked afterwards |
 | unsupported | refused | no claim |
 
@@ -726,6 +742,14 @@ Specific rules:
 - an answer alone never proves an execution objective;
 - a successful command exit establishes execution only when its observation was
   projected into the task and associated with it;
+- a malformed call never executed, so it is not an observation that can
+  contradict a proof; completion ignores it for pending failures and
+  outstanding work while the missing-evidence rules still decide the objective;
+- a runtime execution objective (`run this project`, `run it`, `run the app`,
+  `npm run dev`) accepts only a projected live-runtime record; a command record,
+  however successful, is not the requested execution and leaves the task
+  active so the next turn can run the runtime; a runtime proof whose evidence
+  is superseded or invalidated stops reporting `PROVEN`;
 - a verification that predates the last observed change is not accepted; the
   runtime's observation order is authoritative, with the durable record
   timestamp as the fallback for host-recorded evidence;

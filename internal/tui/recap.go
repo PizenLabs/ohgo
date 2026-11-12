@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -38,6 +39,8 @@ func recapNarrative(objective string, turns []agent.Turn) string {
 	switch {
 	case len(evidence.changed) > 0:
 		return mutationRecap(evidence, finding)
+	case evidence.runtime != nil:
+		return runtimeRecap(evidence, finding)
 	case len(evidence.commands) > 0:
 		return executionRecap(evidence, finding)
 	case len(recapPaths(evidence.read, 2)) > 0:
@@ -66,6 +69,18 @@ type recapChange struct {
 	remove bool
 }
 
+// recapRuntime is the live project runtime the run actually observed.
+//
+// It is a separate fact from the commands that ran: an environment probe such
+// as "node -v" is a command, while "npm run dev served and answered a check" is
+// the outcome that proved the objective. Keeping them apart is what stops the
+// recap from attributing a runtime result to an incidental probe.
+type recapRuntime struct {
+	command string
+	url     string
+	checks  int
+}
+
 // recapEvidence is the bounded set of facts the narrator may use.
 //
 // Only successful calls contribute: a failed write did not change a file, and
@@ -74,6 +89,7 @@ type recapEvidence struct {
 	changed  []recapChange
 	read     []string
 	commands []string
+	runtime  *recapRuntime
 }
 
 // collectRecapEvidence folds a run's tool outcomes into recap facts.
@@ -87,6 +103,15 @@ func collectRecapEvidence(turns []agent.Turn) recapEvidence {
 		for _, outcome := range turn.Results {
 			if outcome.Refused() || outcome.Result.IsError {
 				continue
+			}
+			// A live runtime is the outcome, not the commands that led to it.
+			// Keep the newest observation: an earlier attempt may have failed.
+			if runtime := outcome.Result.Runtime; runtime != nil {
+				evidence.runtime = &recapRuntime{
+					command: runtime.Command,
+					url:     runtime.URL,
+					checks:  runtime.Checks,
+				}
 			}
 			name := strings.ToLower(strings.TrimSpace(outcome.ToolName))
 			switch name {
@@ -164,6 +189,28 @@ func mutationRecap(evidence recapEvidence, finding string) string {
 // without one the recap names only the command it can prove ran.
 func executionRecap(evidence recapEvidence, finding string) string {
 	recap := "Ran " + recapList(evidence.commands)
+	return finishSentence(appendFinding(recap, finding))
+}
+
+// runtimeRecap narrates the live runtime observation that proved the objective.
+//
+// The environment probe a model runs while orienting itself ("node -v",
+// "npm -v") is real work, but it is not the result. Naming those commands
+// attributed the proof to the wrong action; the recap names the service that
+// was launched and the address it answered on.
+func runtimeRecap(evidence recapEvidence, finding string) string {
+	observed := evidence.runtime
+	recap := "Ran " + recapCommand(observed.command)
+	switch {
+	case observed.url != "" && observed.checks > 1:
+		recap += fmt.Sprintf(" and verified %s answered %d checks", observed.url, observed.checks)
+	case observed.url != "":
+		recap += " and verified " + observed.url + " answered"
+	case observed.checks > 1:
+		recap += fmt.Sprintf(" and verified the live process with %d checks", observed.checks)
+	default:
+		recap += " and verified the live process"
+	}
 	return finishSentence(appendFinding(recap, finding))
 }
 
@@ -344,6 +391,8 @@ func answerLeadIn(line string) bool {
 		"here's what", "here is what",
 		"below is", "the following is",
 		"let me explain", "let me summarize", "let me summarise",
+		"let me check", "let me verify", "let me look", "let me inspect",
+		"let me read", "let me run", "let me see", "let me confirm",
 		"i'll explain", "i will explain",
 		"i'll inspect", "i will inspect", "i'll analyze", "i will analyze",
 		"i'll analyse", "i will analyse", "i'll examine", "i will examine",

@@ -4166,6 +4166,16 @@ func toolSummaryBody(name string, args map[string]any, full bool) string {
 			return fmt.Sprintf("browser %s #%d", operation, int(index))
 		}
 		return "browser " + operation
+	case "verify":
+		if service, ok := args["service"].(map[string]any); ok {
+			if command, ok := service["command"].(string); ok && command != "" {
+				return "verify " + oneLine(command)
+			}
+		}
+		if checks, ok := args["checks"].([]any); ok {
+			return fmt.Sprintf("verify %d check(s)", len(checks))
+		}
+		return "verify"
 	}
 	for _, key := range []string{"path", "command", "pattern", "url", "file"} {
 		if value, ok := args[key]; ok {

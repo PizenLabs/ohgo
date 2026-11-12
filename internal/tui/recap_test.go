@@ -96,6 +96,49 @@ func TestRecapNarrativeDescribesExecution(t *testing.T) {
 	}
 }
 
+// A live runtime observation is the result the recap must narrate. The
+// environment probes that ran while the model oriented itself are real
+// commands, but naming them attributes the proof to the wrong action: the
+// runtime came from "npm run dev", not from "node -v".
+func TestRecapNarrativeAttributesRuntimeObservation(t *testing.T) {
+	turns := []agent.Turn{recapTurn("The project is running.",
+		agent.ToolOutcome{
+			ToolName: "bash",
+			Args:     map[string]any{"command": "node -v; npm -v; ls node_modules"},
+			Result:   agent.Result{Executes: true, Finished: true},
+		},
+		agent.ToolOutcome{
+			ToolName: "bash",
+			Args:     map[string]any{"command": "ls app"},
+			Result:   agent.Result{},
+		},
+		agent.ToolOutcome{
+			ToolName: "verify",
+			Args:     map[string]any{"service": map[string]any{"command": "npm run dev"}},
+			Result: agent.Result{
+				Executes: true,
+				Finished: true,
+				Verifies: true,
+				Runtime: &agent.RuntimeEvidence{
+					Command: "npm run dev",
+					URL:     "http://localhost:3000",
+					PID:     11260,
+					Checks:  2,
+				},
+			},
+		},
+	)}
+
+	got := recapNarrative("run this project help me", turns)
+	want := "Ran npm run dev and verified http://localhost:3000 answered 2 checks — the project is running."
+	if got != want {
+		t.Fatalf("recap = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "node -v") || strings.Contains(got, "ls node_modules") {
+		t.Fatalf("recap attributed the runtime to an environment probe: %q", got)
+	}
+}
+
 // Every footer carries the stable marker exactly once, even when the stored
 // narrative already names it.
 func TestRecapLineCarriesMarkerOnce(t *testing.T) {
@@ -293,5 +336,20 @@ func TestRecapSkipsAnAnalysisLeadIn(t *testing.T) {
 	want := "Inspected backend/go.mod — the services are health-check skeletons."
 	if got != want {
 		t.Fatalf("recap = %q, want %q", got, want)
+	}
+}
+
+// A sentence that announces an observation the turn is about to make is not a
+// finding: the turn is over, and repeating it in the footer promises work that
+// will never happen after the completion line.
+func TestRecapDropsDeferredAnnouncement(t *testing.T) {
+	turns := []agent.Turn{recapTurn(
+		"The project launched and passed verification. Let me check the project metadata to give you a complete picture.")}
+	got := recapNarrative("run this project help me", turns)
+	if strings.Contains(got, "Let me check") {
+		t.Fatalf("recap promised work after the turn: %q", got)
+	}
+	if !strings.Contains(got, "launched and passed verification") {
+		t.Fatalf("recap lost the substantive finding: %q", got)
 	}
 }

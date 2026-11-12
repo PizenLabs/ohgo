@@ -603,7 +603,7 @@ func decodeAnthropicBlock(raw json.RawMessage) (ContentBlock, error) {
 		// Anthropic always sends an empty input object here and streams the
 		// real arguments through input_json_delta. Keeping a non-nil empty map
 		// would make content_block_stop believe the call already had input.
-		return ToolCall{ID: block.ID, Name: block.Name, Arguments: block.Input}, nil
+		return ToolCall{ID: block.ID, Name: block.Name, Arguments: block.Input, Origin: ToolCallNative}, nil
 	case "redacted_thinking":
 		// The opaque payload is not replayable; drop it.
 		return TextContent{Text: ""}, nil

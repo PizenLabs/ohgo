@@ -1011,6 +1011,13 @@ func taskTurnDecision(current TaskResume, text, active string, next contract.Int
 		return "EXPLICIT_RESUME", true
 	case handoffContinuation(current, active, text, next):
 		return "HANDOFF_CONTINUATION", true
+	case executionFollowUp(current, text):
+		// "Run it" asks for the action again, not for a check of the previous
+		// result. It must attach to the open execution task before the
+		// verification rule can claim it; otherwise it either becomes a
+		// verification (and a finished task answers "already proven") or a new
+		// objective that conflicts with the open contract.
+		return "EXECUTION_FOLLOW_UP", true
 	case verificationContinuation(current, text):
 		return "VERIFICATION_CONTINUATION", true
 	case taskFollowUp(current, text):
@@ -1037,6 +1044,19 @@ func taskIntentLabel(current TaskResume) string {
 		}
 	}
 	return "READ"
+}
+
+// executionFollowUp recognizes a short request to perform the open execution
+// task's action again ("run it", "start it"). It is narrower than a
+// verification continuation: it names the action, not the result, so it keeps
+// the open task attached and its runtime evidence obligation intact. A
+// terminal task is never continued by it, so the repeated attempt starts a
+// fresh task and must produce its own observation.
+func executionFollowUp(current TaskResume, text string) bool {
+	if !current.HasContract || current.Contract.Kind != contract.ObjectiveExecution {
+		return false
+	}
+	return workspace.IsExecutionFollowUp(text)
 }
 
 // terminalTaskContinuation reports whether a continuation names a task that

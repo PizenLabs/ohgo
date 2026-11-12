@@ -27,6 +27,28 @@ const (
 	ObjectiveMutation ObjectiveKind = "mutation"
 )
 
+// ExecutionMode says which observation proves an execution objective.
+//
+// ObjectiveExecution alone only says "something must run". That is too weak
+// when the request asks to run the project itself: a successful environment
+// probe ("node -v && npm -v") is an execution, but it is not the requested
+// execution. The mode keeps the distinction deterministic, so completion can
+// require the observation the request actually named.
+type ExecutionMode string
+
+// Execution modes.
+const (
+	// ExecutionCommand means the objective is a process or check that runs to a
+	// successful terminal state. A named check, a build, or a one-shot command
+	// proves it. It is the zero value so older checkpoints keep their meaning.
+	ExecutionCommand ExecutionMode = ""
+	// ExecutionRuntime means the objective is a long-running project or
+	// service. A finished unrelated command is not proof: the runtime must be
+	// launched and observed reaching a ready state and answering at least one
+	// check while it stays alive.
+	ExecutionRuntime ExecutionMode = "runtime"
+)
+
 // ChangeOp is the expected direction of one target change.
 type ChangeOp string
 
@@ -140,6 +162,10 @@ type IntentContract struct {
 	Objective string
 	// Kind is the completion objective.
 	Kind ObjectiveKind
+	// ExecutionMode refines an ObjectiveExecution: a one-shot command or check
+	// versus the project's own long-running runtime. It is meaningless for any
+	// other kind and stays empty (ExecutionCommand) for legacy contracts.
+	ExecutionMode ExecutionMode
 	// Targets are the unique repository coordinates the request names.
 	Targets []Target
 	// ExpectedChanges binds each target to its requested direction.
@@ -182,6 +208,7 @@ type IntentContract struct {
 func (c IntentContract) InformationalPhase() IntentContract {
 	phase := c
 	phase.Kind = ObjectiveInformational
+	phase.ExecutionMode = ExecutionCommand
 	phase.Verification = nil
 	phase.BehavioralObjective = false
 	phase.Ambiguous = false
