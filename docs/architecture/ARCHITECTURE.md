@@ -16,10 +16,11 @@ an upward edge is a bug, not a shortcut.
 
 ## Repository intelligence
 
-`symbols`, `graph`, and `refs` are three read-only surfaces over one
-`tools.StructuralSource` and one `ast.Index`. One `GoBackend.Parse` pass
-produces symbol coordinates, package imports, resolved references, and static
-direct-call sites. There is no second parser, index, daemon, or graph database.
+`symbols`, `graph`, `refs`, and `structure` are four read-only surfaces over one
+`tools.StructuralSource` and one `ast.Index`. One `GoBackend.ParseFile` pass
+produces symbol coordinates, package imports, resolved references, static
+direct-call sites, test declarations, and entrypoints. There is no second
+parser, index, daemon, or graph database.
 
 - `symbols` returns exact declaration coordinates.
 - `graph` returns bounded package/import relationships with `file:line`
@@ -29,10 +30,29 @@ direct-call sites. There is no second parser, index, daemon, or graph database.
   and unresolved targets are counted as unknown or returned as `unsupported`;
   they are never guessed. Callers/callees traversal is bounded by depth, node,
   edge, and work limits, is cycle-safe, and is cancellation-aware.
+- `structure` returns bounded project inventory — files, directories, packages,
+  configs, test declarations, entrypoints, static test associations, and an
+  impact composition of references, callers, importers, and tests.
 
-All three share the same freshness check, workspace path containment, authority
+The index is an incremental in-process snapshot, not a stateless per-file
+searcher. A normal refresh stats the tree, parses only added or changed Go
+files, retains raw relationship syntax so unchanged files are re-resolved
+without a second parse, and republishes atomically with a monotonic generation,
+deterministic snapshot id, explicit `CURRENT`/`UPDATING`/`STALE`/`INVALID`
+freshness, parse-failure count, completeness, and the last update's resolution
+scope (`none`, `global_reresolve`, or `full_snapshot`). `.gitignore` membership comes
+through an injected `Scope` seam: `intelligence/ast` stays dependency-free and
+`intelligence/ignore` remains the only matcher. The index root remains the
+working directory; the nearest `go.mod` above it is recorded as metadata and
+never silently widens the walk. The snapshot is in memory only;
+`<project>/.ohgo/graph.db` stays a reserved, deferred location.
+
+All four share the same freshness check, workspace path containment, authority
 admission, tool-call budget, and child tool set. Their evidence is advisory: it
-cannot mutate, execute, grant authority, or complete a task.
+cannot mutate, execute, grant authority, or complete a task. Structural results
+enter `cognition.EvidenceState` as structural observations with snapshot
+provenance; test associations are static, never coverage, and impact is static
+reachability, never a behavioural claim.
 
 ## Authority
 

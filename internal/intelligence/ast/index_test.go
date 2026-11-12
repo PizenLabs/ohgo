@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -399,7 +400,8 @@ func TestIndexDetectsCreatedFile(t *testing.T) {
 }
 
 func TestIndexIgnoresNonGoFiles(t *testing.T) {
-	// Irrelevant files must neither poison the snapshot nor appear as symbols.
+	// Irrelevant files must not appear as symbols. They are still structural
+	// inventory facts: the snapshot tracks them without parsing Go.
 	root := indexFixture(t, map[string]string{
 		"a.go": "package main\n\nfunc alpha() {}\n",
 	})
@@ -408,11 +410,21 @@ func TestIndexIgnoresNonGoFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("func Fake() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if idx.Stale() {
-		t.Error("a non-Go file marked the Go index stale")
+	if !idx.Stale() {
+		t.Error("a non-Go file did not mark the structural snapshot stale")
 	}
 	if lookupCount(t, idx, "Fake") != 0 {
 		t.Error("text content leaked into the symbol index")
+	}
+	files, err := idx.Files(context.Background(), FileQuery{Path: "notes.txt"})
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	if len(files.Files) != 1 || files.Files[0].Kind != FileOther {
+		t.Fatalf("non-Go inventory = %+v, want one other-kind file", files.Files)
+	}
+	if info := idx.Info(); info.LastParsedFiles != 0 {
+		t.Errorf("LastParsedFiles = %d after a non-Go change, want 0", info.LastParsedFiles)
 	}
 }
 
@@ -433,6 +445,9 @@ func TestIndexSurvivesMalformedSource(t *testing.T) {
 	}
 	if got := idx.ParseFailures(); got != 1 {
 		t.Errorf("ParseFailures = %d, want 1", got)
+	}
+	if info := idx.Info(); !info.Partial || info.ParseFailures != 1 {
+		t.Errorf("snapshot = %+v, want partial with one parse failure", info)
 	}
 }
 

@@ -64,13 +64,16 @@ it is done. ohgo is built around the opposite contract.
 ## Features
 
 - **A focused tool set** — `read`, `write`, `edit`, `delete`, `bash`, `wait`,
-  `verify`, `glob`, `grep`, `ls`, `symbols`, `graph`, `refs`, `webfetch`, `todo`,
-  `task`, and `artifact` when a session is attached. `verify` owns a service's
-  start/readiness/checks/cleanup lifecycle instead of making the model poll and
-  kill it turn by turn.
-- **Repository intelligence** — `symbols`, `graph`, and `refs` share one Go
-  AST index. Reference and call queries report `ambiguous`, `truncated`,
-  `unsupported`, and `unknown` explicitly instead of guessing.
+  `verify`, `glob`, `grep`, `ls`, `symbols`, `graph`, `refs`, `structure`,
+  `webfetch`, `todo`, `task`, and `artifact` when a session is attached.
+  `verify` owns a service's start/readiness/checks/cleanup lifecycle instead of
+  making the model poll and kill it turn by turn.
+- **Repository intelligence** — `symbols`, `graph`, `refs`, and `structure`
+  share one incremental Go AST snapshot. Reference and call queries report
+  `ambiguous`, `truncated`, `unsupported`, and `unknown` explicitly instead of
+  guessing; inventory reports snapshot freshness, generation, and completeness,
+  parses only changed Go files on refresh, and keeps test associations static
+  rather than presenting them as coverage.
 - **Sessions that survive** — transcripts are stored in a pure-Go SQLite
   database, and a resumed session restores its own workspace, project, and
   effective model.

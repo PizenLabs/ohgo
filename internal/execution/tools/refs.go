@@ -236,6 +236,11 @@ func (t *RefsTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	var text strings.Builder
 	fmt.Fprintf(&text, "status: %s\n", status)
 	fmt.Fprintf(&text, "module: %s\n", result.Module)
+	if result.SnapshotID != "" {
+		fmt.Fprintf(&text, "snapshot_id: %s\n", result.SnapshotID)
+		fmt.Fprintf(&text, "generation: %d\n", result.Generation)
+		fmt.Fprintf(&text, "graph_state: %s\n", result.State)
+	}
 	fmt.Fprintf(&text, "query: %s %s\n", result.Relation, result.Symbol)
 	fmt.Fprintf(&text, "relation: %s\n", result.Relation)
 	if result.Relation == ast.RelationReferences {
@@ -471,9 +476,44 @@ func refsDetails(status string, result ast.RefResult) map[string]any {
 		"package_initializer_calls": result.Unknown.PackageInitializerCalls,
 		"reasons":                   result.Unknown.Reasons,
 	}
+	coords := make([]map[string]any, 0, len(result.References)+len(result.Edges)+len(result.Nodes))
+	if result.Found {
+		coords = append(coords, map[string]any{
+			"path": result.Target.Path, "line": result.Target.Line,
+			"end_line": result.Target.EndLine, "symbol": result.Target.QualifiedName,
+			"kind": "target",
+		})
+	}
+	for _, ref := range result.References {
+		kind := "reference"
+		if ref.Call {
+			kind = "call"
+		}
+		coords = append(coords, map[string]any{
+			"path": ref.Path, "line": ref.Line, "column": ref.Column,
+			"symbol": result.Symbol, "kind": kind, "test": ref.Test,
+		})
+	}
+	for _, edge := range result.Edges {
+		coords = append(coords, map[string]any{
+			"path": edge.CallPath, "line": edge.CallLine, "column": edge.Column,
+			"symbol": edge.Caller.QualifiedName(), "kind": "call",
+		})
+	}
+	for _, node := range result.Nodes {
+		coords = append(coords, map[string]any{
+			"path": node.Path, "line": node.Line, "end_line": node.EndLine,
+			"symbol": node.Symbol, "kind": node.CallerKind,
+		})
+	}
 	return map[string]any{
 		"status":             status,
 		"module":             result.Module,
+		"snapshot_id":        result.SnapshotID,
+		"generation":         result.Generation,
+		"graph_state":        string(result.State),
+		"partial":            result.ParseFailures > 0,
+		"complete":           result.Complete,
 		"relation":           string(result.Relation),
 		"symbol":             result.Symbol,
 		"target":             refTargetDetails(result.Target),
@@ -493,6 +533,7 @@ func refsDetails(status string, result ast.RefResult) map[string]any {
 		"work":               result.Work,
 		"parse_failures":     result.ParseFailures,
 		"unknown":            unknown,
+		"coordinates":        coords,
 	}
 }
 

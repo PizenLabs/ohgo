@@ -95,8 +95,10 @@ const (
 	// cannot grow into a second transcript. Values are bounded per item and
 	// the lowest-value items are evicted until the total fits.
 	MaxEvidenceBytes = 64 * 1024
-	// EvidenceVersion is the persisted schema version.
-	EvidenceVersion = 1
+	// EvidenceVersion is the persisted schema version. Version 2 adds optional
+	// snapshot provenance to Source; version 1 records stay readable because
+	// the new fields are additive.
+	EvidenceVersion = 2
 )
 
 // Source records where one observation came from.
@@ -120,6 +122,12 @@ type Source struct {
 	// every package. It lets the durable completion boundary verify that a
 	// check covers what the contract asked for without re-deriving it.
 	Scope string `json:"scope,omitempty"`
+	// SnapshotID, GraphState, and Generation bind a structural observation to
+	// the published snapshot that produced it. They are additive: a legacy
+	// item without them is not treated as current.
+	SnapshotID string `json:"snapshotId,omitempty"`
+	GraphState string `json:"graphState,omitempty"`
+	Generation uint64 `json:"generation,omitempty"`
 }
 
 // EvidenceItem is one durable fact.
@@ -646,6 +654,8 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 		return true, s.addSearch(outcome, details, seq)
 	case "symbols":
 		return true, s.addSymbols(outcome, details, seq)
+	case "graph", "refs", "structure":
+		return true, s.addStructural(outcome, details, seq)
 	case "write", "edit", "delete":
 		return true, s.addMutation(outcome, path, details, seq)
 	case "bash", "verify":
@@ -841,6 +851,10 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 		query = argString(outcome.Args, "path")
 	}
 	text := bound(outcome.Result.Text, MaxEvidenceValueBytes)
+	complete := !detailBool(details, "truncated")
+	if _, ok := details["complete"]; ok {
+		complete = detailBool(details, "complete") && !detailBool(details, "partial")
+	}
 	changed := s.upsert(EvidenceItem{
 		ID:         "symbols:" + query,
 		Status:     StatusDerived,
@@ -849,8 +863,8 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 		Summary:    bound("symbol query "+query+": "+firstLine(text), MaxEvidenceSummaryBytes),
 		Value:      text,
 		Digest:     digest(text),
-		Complete:   !detailBool(details, "truncated"),
-		Source:     Source{Tool: "symbols", CallID: outcome.CallID},
+		Complete:   complete,
+		Source:     structuralSource(details, "symbols", outcome.CallID, "", 0, 0),
 		Seq:        seq,
 	})
 	coords := coordinateMaps(details["coordinates"])
@@ -867,17 +881,122 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 			ID:         "symbol:" + path + ":" + symbol,
 			Status:     StatusKnown,
 			Retention:  RetentionStructural,
-			Provenance: ProvenanceObservation,
+			Provenance: classifyPathProvenance(path),
 			Summary: bound(symbol+" at "+path+":"+itoa(detailInt(coord, "start_line"))+
 				"-"+itoa(detailInt(coord, "end_line")), MaxEvidenceSummaryBytes),
-			Source: Source{Tool: "symbols", CallID: outcome.CallID, Path: path,
-				StartLine: detailInt(coord, "start_line"), EndLine: detailInt(coord, "end_line")},
+			Complete: complete,
+			Source: structuralSource(details, "symbols", outcome.CallID, path,
+				detailInt(coord, "start_line"), detailInt(coord, "end_line")),
 			Seq: seq,
 		}) {
 			changed = true
 		}
 	}
 	return changed
+}
+
+// addStructural records graph, refs, and structure observations as structural
+// evidence. It reuses the existing evidence model: one aggregate item per
+// query plus a small bounded set of coordinate items.
+func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
+	query := argString(outcome.Args, "symbol")
+	if query == "" {
+		query = argString(outcome.Args, "package")
+	}
+	if query == "" {
+		query = argString(outcome.Args, "path")
+	}
+	if query == "" {
+		query = detailString(details, "view")
+	}
+	text := bound(outcome.Result.Text, MaxEvidenceValueBytes)
+	complete := detailBool(details, "complete") && !detailBool(details, "partial") &&
+		!detailBool(details, "truncated")
+	changed := s.upsert(EvidenceItem{
+		ID:         outcome.ToolName + ":" + query,
+		Status:     StatusDerived,
+		Retention:  RetentionStructural,
+		Provenance: ProvenanceObservation,
+		Summary:    bound(outcome.ToolName+" "+query+": "+firstLine(text), MaxEvidenceSummaryBytes),
+		Value:      text,
+		Digest:     digest(text),
+		Complete:   complete,
+		Source:     structuralSource(details, outcome.ToolName, outcome.CallID, "", 0, 0),
+		Seq:        seq,
+	})
+	coords := coordinateMaps(details["coordinates"])
+	for i, coord := range coords {
+		if i >= 24 {
+			break
+		}
+		path := detailString(coord, "path")
+		if path == "" {
+			continue
+		}
+		symbol := detailString(coord, "symbol")
+		kind := detailString(coord, "kind")
+		line := detailInt(coord, "line")
+		endLine := detailInt(coord, "end_line")
+		id := structuralCoordinateID(kind, path, line, symbol)
+		if s.upsert(EvidenceItem{
+			ID:         id,
+			Status:     StatusKnown,
+			Retention:  RetentionStructural,
+			Provenance: classifyPathProvenance(path),
+			Summary:    bound(symbol+" at "+path+":"+itoa(line), MaxEvidenceSummaryBytes),
+			Complete:   !detailBool(details, "partial") && !detailBool(details, "truncated"),
+			Source: structuralSource(details, outcome.ToolName, outcome.CallID, path,
+				line, endLine),
+			Seq: seq,
+		}) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// structuralSource projects snapshot provenance into the existing Source
+// shape. This is a field addition, not a second evidence model.
+func structuralSource(details map[string]any, tool, callID, path string, start, end int) Source {
+	return Source{
+		Tool:       tool,
+		CallID:     callID,
+		Path:       path,
+		StartLine:  start,
+		EndLine:    end,
+		SnapshotID: detailString(details, "snapshot_id"),
+		GraphState: detailString(details, "graph_state"),
+		Generation: uint64(detailInt(details, "generation")),
+	}
+}
+
+// structuralCoordinateID namespaces one coordinate by its graph role.
+func structuralCoordinateID(kind, path string, line int, symbol string) string {
+	prefix := "structure"
+	switch kind {
+	case "graph_edge":
+		prefix = "graph_edge"
+	case "package":
+		prefix = "package"
+	case "entrypoint":
+		prefix = "entrypoint"
+	case "test", "test_association":
+		prefix = "test"
+	case "call", "caller":
+		prefix = "call"
+	case "reference", "ref":
+		prefix = "ref"
+	case "file":
+		prefix = "file"
+	case "config":
+		prefix = "config"
+	case "target", "impact_target":
+		prefix = "symbol"
+	}
+	if symbol == "" {
+		symbol = kind
+	}
+	return prefix + ":" + path + ":" + itoa(line) + ":" + symbol
 }
 
 // addMutation records a definite repository change.
@@ -1232,6 +1351,10 @@ func detailInt(details map[string]any, key string) int {
 	case int:
 		return value
 	case int64:
+		return int(value)
+	case uint64:
+		return int(value)
+	case uint:
 		return int(value)
 	case float64:
 		return int(value)

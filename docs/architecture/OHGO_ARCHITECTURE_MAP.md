@@ -76,7 +76,7 @@ create a boundary that does not exist.
 | **runtime** | `agent` | The turn loop, tool dispatch, the authorization sequence, grounding admission, completion evaluation, subagent execution, the projection seam, the edit-journal seam | Tool implementations, workspace policy, persistence, rendering |
 | **control** | `control/contract`, `control/budget`, `control/workspace`, `control/cognition`, `security` | Completion vocabulary; resource admission; authority policy + routing + intent contracts + transition decisions; task shape + evidence + narrowing; the authorization kernel | Execution, persistence, presentation |
 | **execution** | `execution/tools`, `execution/mcp`, `execution/sandbox`, `execution/shell`, `execution/exec` | Concrete capabilities; MCP transport + classification; the OS read-only boundary; shell-output decoding; the human `!` escape | The decision to allow an operation |
-| **intelligence** | `intelligence/ast`, `intelligence/ignore` | One in-process Go index (symbols, package graph, refs); repository scoping | Anything about the agent, models, or UI |
+| **intelligence** | `intelligence/ast`, `intelligence/ignore` | One in-process Go structural snapshot (symbols, packages, files, tests, entrypoints, refs) and repository scoping | Anything about the agent, models, or UI |
 | **provider** | `provider/ai`, `provider/catalog`, `provider/creds` | Wire protocols and streams; canonical stream normalization (native and serialized tool calls); model facts and discovery; credential resolution | Policy, routing, cost decisions, execution authority |
 | **continuity** | `continuity/session`, `continuity/task`, `continuity/recovery`, `memory` | The durable transcript; the durable task checkpoint; the edit history; the project-memory trust boundary | What should be recorded (that is control-plane) |
 | **experience** | `experience` | Verified execution experience: deterministic incidents, lessons, candidate strategies, validation, promotion, scoped store, and advisory path advice | Authority, evidence, completion, task lifecycle, transcript, tool execution |
@@ -156,9 +156,10 @@ verdict comes from `agent.ClassifyRun` / `EvaluateTaskCompletion`.
 `intelligence/*` has no dependency on the runtime. The runtime reaches it only
 through the `agent.StructuralResolver` interface, and the production
 implementation is `execution/tools`' own `SymbolsTool`, which shares one
-`ast.Index` through `tools.StructuralSource`. There is exactly one index; a
-second one would break the invariant that coordinate evidence and completion
-verification describe the same repository snapshot.
+`ast.Index` through `tools.StructuralSource` with `GraphTool`, `RefsTool`, and
+`StructureTool`. There is exactly one index; a second one would break the
+invariant that coordinate evidence, relationship evidence, inventory, and
+completion verification describe the same repository snapshot.
 
 ### 4.4 Provider plane is below the runtime
 
@@ -210,7 +211,7 @@ Read this before adding a field to anything.
 | Transcript | `session` | the store | TUI entries, REPL history | `sessions.db` |
 | Edit history | `recovery` | the store | `/undo` output | `recovery.db` |
 | Verified execution experience | `experience` | the engine | `/experience`, advisory projection hints | `<project>/.ohgo/experience.json`; optional `~/.ohgo/experience/global.json` after explicit promotion |
-| Repository symbols | `ast.Index` | `tools.StructuralSource` | tool results | never (derived; rebuilt) |
+| Repository structure | `ast.Index` | `tools.StructuralSource` | tool results, impact/inventory queries | never (derived; rebuilt incrementally) |
 | Model facts | `catalog` | the catalog | pickers, cost | `cache/*.json` (derived) |
 | Settings | `config` | the file | options | `settings.json` |
 
@@ -251,7 +252,7 @@ reasoning, and `internal/architecture/rules_test.go` is the executable form.
 | Future change | Where it goes | What it must not do |
 |---|---|---|
 | **New tool / execution capability** | `internal/execution/tools/<name>.go`, embedding `tools.Base`; register in `cmd/ohgo/build.go: buildTools` | Declare a false `Approval` tier; know about the TUI; decide its own authorization |
-| **New repository-intelligence query** | `internal/intelligence/ast` (index capability) + a thin tool in `internal/execution/tools` | Import `agent`; build a second index; return stale coordinates |
+| **New repository-intelligence query** | `internal/intelligence/ast` (snapshot/query capability) + a thin tool in `internal/execution/tools`; share `tools.StructuralSource` | Import `agent`; build a second index; return stale coordinates or a duplicate graph |
 | **New provider** | `internal/provider/ai/<name>.go` implementing `ai.Provider`; register in `Registry.ProviderFor`; env var in `provider/creds`; facts in `provider/catalog` | Reach into `agent` or config policy; add a per-model special case in the loop |
 | **New model-selection policy** | facts in `provider/catalog`; persisted roles in `config`; resolution in `cmd/ohgo/options.go`; `harness` applies it | Make `agent` choose a model; branch on a model id in the engine |
 | **New persistence record** | the owning `continuity/*` package + a versioned schema; a migration note in the migration doc | Add a second source of truth; change a JSON shape without a version bump |

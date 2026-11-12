@@ -19,6 +19,22 @@ immutable.
   `UNSUPPORTED`) with a bounded raw fragment, protocol, provider, and
   recoverability. The raw fragment is audit-only and is never executed or
   published as an answer.
+- Project structural runtime: `ast.Index` is now an incremental snapshot over
+  files, packages, configs, tests, and entrypoints, with `CURRENT`/`UPDATING`/
+  `STALE`/`INVALID` freshness, generation, snapshot identity, parse-failure
+  disclosure, and a bounded `structure` read-only tool. Incremental refresh
+  parses only changed Go files and re-resolves relationships from retained raw
+  syntax. `graph`, `refs`, and `structure` now enter `cognition` as structural
+  evidence carrying snapshot provenance and completeness.
+
+### Changed
+
+- Repository scoping is injected into the structural index from the shared
+  `ignore.Matcher`, so `.gitignore` membership has one owner and `ast` stays a
+  dependency-free intelligence leaf. A rule or scope fingerprint change
+  refreshes membership without re-parsing unchanged Go files.
+- The structural snapshot remains in memory. `<project>/.ohgo/graph.db` is
+  still reserved and unimplemented; no derived persistence was added.
 
 ### Fixed
 

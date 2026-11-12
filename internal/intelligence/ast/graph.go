@@ -154,6 +154,15 @@ type GraphResult struct {
 	// ParseFailures is the number of entries the index could not parse or
 	// read. A positive count makes the result partial, not a proven negative.
 	ParseFailures int
+	// SnapshotID, Generation, and State identify the snapshot the edges were
+	// observed in. A consumer must not present them as current after a
+	// restart without comparing the snapshot.
+	SnapshotID string
+	Generation uint64
+	State      Freshness
+	// Complete reports that the queried edge set was exact, untruncated, and
+	// free of observed parse failures.
+	Complete bool
 	// Work is the number of edge inspections performed.
 	Work int
 }
@@ -176,6 +185,7 @@ type graphNode struct {
 	packages    []string
 	files       int
 	testFiles   int
+	symbols     int
 	ambiguous   bool
 	externals   int
 	externalSet map[string]bool
@@ -185,6 +195,9 @@ type graphNode struct {
 	// unresolved is keyed by import path and keeps the first deterministic
 	// reason. Multiple files importing the same missing path merge.
 	unresolved map[string]string
+	// importers counts module-local packages that import this one. It is
+	// derived from the same edges, never stored independently.
+	importers int
 }
 
 // buildPackageGraph derives the graph from parsed file records.
@@ -200,7 +213,7 @@ func buildPackageGraph(records map[string]fileRecord, module string) *packageGra
 	}
 	names := map[string]*dirNames{}
 	for rel, rec := range records {
-		if rec.err != nil {
+		if rec.err != nil || rec.language != "go" {
 			continue
 		}
 		dir := packageDir(rel)
@@ -215,6 +228,7 @@ func buildPackageGraph(records map[string]fileRecord, module string) *packageGra
 			g.nodes[dir] = node
 		}
 		node.files++
+		node.symbols += len(rec.symbols)
 		if isTestFile(rel) {
 			node.testFiles++
 		}
@@ -274,7 +288,7 @@ func buildPackageGraph(records map[string]fileRecord, module string) *packageGra
 	// Second pass: aggregate imports into edges. External imports are a
 	// count; module-local imports that do not resolve are explicit.
 	for rel, rec := range records {
-		if rec.err != nil {
+		if rec.err != nil || rec.language != "go" {
 			continue
 		}
 		dir := packageDir(rel)
@@ -340,6 +354,16 @@ func buildPackageGraph(records map[string]fileRecord, module string) *packageGra
 		node.externals = len(node.externalSet)
 		node.externalSet = nil
 		g.edgeNum += len(node.imports)
+	}
+	// Reverse counts are derived from the same edges. Building them once keeps
+	// a package inventory query linear in the returned page, not quadratic in
+	// the whole graph.
+	for _, from := range g.order {
+		for to := range g.nodes[from].imports {
+			if target := g.nodes[to]; target != nil {
+				target.importers++
+			}
+		}
 	}
 	return g
 }
@@ -444,6 +468,9 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 		TotalPackages: len(idx.graph.order),
 		TotalEdges:    idx.graph.edgeNum,
 		ParseFailures: idx.parseFailuresLocked(),
+		SnapshotID:    idx.snapshotID,
+		Generation:    idx.generation,
+		State:         idx.state,
 	}
 
 	focal, ambiguous, candidates, queryType, selector, err := idx.resolveGraphFocalLocked(query)
@@ -455,9 +482,11 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 	if ambiguous {
 		result.Ambiguous = true
 		result.Candidates = candidates
+		result.Complete = false
 		return result, nil
 	}
 	if focal == "" {
+		result.Complete = result.ParseFailures == 0
 		return result, nil
 	}
 	result.Found = true
@@ -668,6 +697,7 @@ func (idx *Index) Graph(ctx context.Context, query GraphQuery) (GraphResult, err
 	result.Truncated = truncated
 	result.Reason = reason
 	result.Work = work
+	result.Complete = result.ParseFailures == 0 && !truncated
 	return result, nil
 }
 

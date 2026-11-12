@@ -280,6 +280,11 @@ type RefResult struct {
 	Work int
 	// ParseFailures counts files or directories the index could not inspect.
 	ParseFailures int
+	// SnapshotID, Generation, and State identify the snapshot the references
+	// were observed in.
+	SnapshotID string
+	Generation uint64
+	State      Freshness
 	// Complete reports that no *observed static* blind spot affects this
 	// answer. It is not a claim that no runtime caller exists: reflection,
 	// external processes, and code outside the indexed source are outside this
@@ -846,6 +851,9 @@ func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module
 	decls := map[packageKey]map[string][]Match{}
 	paths := make([]string, 0, len(records))
 	for rel, rec := range records {
+		if rec.language != "go" {
+			continue
+		}
 		paths = append(paths, rel)
 		if rec.err != nil {
 			continue
@@ -1006,20 +1014,10 @@ func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module
 		return g.calls[i].calleeKey < g.calls[j].calleeKey
 	})
 
-	// The raw projection is no longer needed; resolved coordinates are
-	// retained instead. Clearing it keeps resident memory proportional to the
-	// answered relationships, not to every syntactic identifier.
-	for rel, rec := range records {
-		if rec.references != nil || rec.calls != nil || rec.imports != nil {
-			rec.references = nil
-			rec.calls = nil
-			// Imports have already been projected into the package graph and
-			// the resolved relationships; retaining the raw declarations
-			// would only duplicate that memory.
-			rec.imports = nil
-			records[rel] = rec
-		}
-	}
+	// The raw projection is deliberately retained. A later incremental update
+	// re-resolves these coordinates from retained syntax instead of parsing
+	// unchanged files again. Resident memory grows with syntactic references,
+	// not with source text; the benchmark tracks the trade explicitly.
 	return g, nil
 }
 
@@ -1555,6 +1553,9 @@ func (idx *Index) References(ctx context.Context, query RefQuery) (RefResult, er
 		Symbol:        query.Symbol,
 		Depth:         depth,
 		ParseFailures: idx.parseFailuresLocked(),
+		SnapshotID:    idx.snapshotID,
+		Generation:    idx.generation,
+		State:         idx.state,
 	}
 	target, ambiguous, candidates, found, err := idx.resolveRefTargetLocked(query.Symbol, query.Path)
 	if err != nil {
@@ -1566,6 +1567,7 @@ func (idx *Index) References(ctx context.Context, query RefQuery) (RefResult, er
 		return result, nil
 	}
 	if !found {
+		result.Complete = result.ParseFailures == 0
 		return result, nil
 	}
 	result.Found = true
@@ -1729,7 +1731,7 @@ func (idx *Index) referencesForTargetLocked(ctx context.Context, result *RefResu
 	// a uniquely resolved declaration is only incomplete when its own package
 	// has a dot import (which can capture an unqualified name) or the index
 	// could not inspect part of the tree.
-	result.Complete = result.ParseFailures == 0 && result.Unknown.DotImportFiles == 0
+	result.Complete = result.ParseFailures == 0 && result.Unknown.DotImportFiles == 0 && !result.Truncated
 	return nil
 }
 
@@ -1764,7 +1766,7 @@ func (idx *Index) callsForTargetLocked(ctx context.Context, result *RefResult, t
 		result.Unknown.DynamicCalls = idx.symbolGraph.unknownByCaller[focal.key]
 		result.Unknown.Reasons = copyReasons(idx.symbolGraph.unknownReasonsByCaller[focal.key])
 	}
-	result.Complete = result.ParseFailures == 0 && result.Unknown.DynamicCalls == 0
+	result.Complete = result.ParseFailures == 0 && result.Unknown.DynamicCalls == 0 && !result.Truncated
 
 	if result.Depth <= 1 {
 		return idx.directCallsLocked(ctx, result, focal, skip, limit)
@@ -2044,7 +2046,7 @@ func (idx *Index) traverseCallsLocked(ctx context.Context, result *RefResult, fo
 		}
 		result.Unknown.DynamicCalls = dynamic
 		result.Unknown.Reasons = copyReasons(reasons)
-		result.Complete = result.ParseFailures == 0 && dynamic == 0
+		result.Complete = result.ParseFailures == 0 && dynamic == 0 && !result.Truncated
 	}
 	return nil
 }

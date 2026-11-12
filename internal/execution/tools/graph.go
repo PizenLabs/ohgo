@@ -222,6 +222,11 @@ func (t *GraphTool) Execute(ctx agent.Context, args map[string]any) agent.Result
 	var text strings.Builder
 	fmt.Fprintf(&text, "status: %s\n", status)
 	fmt.Fprintf(&text, "module: %s\n", result.Module)
+	if result.SnapshotID != "" {
+		fmt.Fprintf(&text, "snapshot_id: %s\n", result.SnapshotID)
+		fmt.Fprintf(&text, "generation: %d\n", result.Generation)
+		fmt.Fprintf(&text, "graph_state: %s\n", result.State)
+	}
 	fmt.Fprintf(&text, "query: %s %s\n", result.QueryType, result.Selector)
 	fmt.Fprintf(&text, "relation: %s\n", result.Relation)
 	fmt.Fprintf(&text, "depth: %d\n", result.Depth)
@@ -389,9 +394,34 @@ func graphDetails(status string, result ast.GraphResult) map[string]any {
 			"reason": item.Reason,
 		})
 	}
+	coords := make([]map[string]any, 0, len(result.Nodes)+len(result.Edges))
+	for _, node := range result.Nodes {
+		coords = append(coords, map[string]any{
+			"path": node.Path, "line": 1, "symbol": node.Package, "kind": "package",
+		})
+	}
+	for _, edge := range result.Edges {
+		witnessPath, witnessLine := edge.SourceFile, edge.SourceLine
+		kind := "graph_edge"
+		if witnessPath == "" {
+			witnessPath, witnessLine = edge.TestFile, edge.TestLine
+		}
+		if witnessPath == "" {
+			witnessPath, witnessLine = edge.From, 1
+		}
+		coords = append(coords, map[string]any{
+			"path": witnessPath, "line": witnessLine,
+			"symbol": edge.From + "->" + edge.To, "kind": kind,
+		})
+	}
 	return map[string]any{
 		"status":            status,
 		"module":            result.Module,
+		"snapshot_id":       result.SnapshotID,
+		"generation":        result.Generation,
+		"graph_state":       string(result.State),
+		"partial":           result.ParseFailures > 0,
+		"complete":          result.Complete,
 		"query_type":        result.QueryType,
 		"selector":          result.Selector,
 		"relation":          string(result.Relation),
@@ -408,5 +438,6 @@ func graphDetails(status string, result ast.GraphResult) map[string]any {
 		"truncation_reason": result.Reason,
 		"parse_failures":    result.ParseFailures,
 		"work":              result.Work,
+		"coordinates":       coords,
 	}
 }

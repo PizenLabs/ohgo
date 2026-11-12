@@ -136,7 +136,7 @@ func TestReadOnlyToolNamesCoverTheReadTier(t *testing.T) {
 			t.Error("the read-only set contains an empty name")
 		}
 	}
-	for _, name := range []string{"read", "grep", "glob", "todo"} {
+	for _, name := range []string{"read", "grep", "glob", "todo", "structure"} {
 		if !ReadOnlyToolNames[name] {
 			t.Errorf("%q is a read-tier tool but is missing from the set", name)
 		}

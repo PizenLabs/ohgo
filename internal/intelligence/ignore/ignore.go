@@ -13,6 +13,8 @@
 package ignore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +32,10 @@ type Matcher struct {
 	disabled bool
 	// rules holds every loaded rule, outermost first, so a deeper file wins.
 	rules []rule
+	// contents retains the exact rule text that produced rules. It exists so
+	// a structural index can fingerprint repository scope without re-reading
+	// or re-implementing .gitignore semantics.
+	contents strings.Builder
 }
 
 // rule is one parsed pattern from one .gitignore.
@@ -101,6 +107,10 @@ func (m *Matcher) Append(base, contents string) {
 	if m == nil {
 		return
 	}
+	m.contents.WriteString(base)
+	m.contents.WriteByte(0)
+	m.contents.WriteString(contents)
+	m.contents.WriteByte(0)
 	for _, raw := range strings.Split(contents, "\n") {
 		line := strings.TrimRight(raw, "\r")
 		// A trailing space not escaped with a backslash is stripped by git.
@@ -138,6 +148,21 @@ func (m *Matcher) Append(base, contents string) {
 
 // Disabled reports whether the matcher excludes nothing.
 func (m *Matcher) Disabled() bool { return m == nil || m.disabled }
+
+// Fingerprint is a deterministic identity of the loaded rule text.
+//
+// A structural index records it with every snapshot. When a .gitignore rule
+// changes, the fingerprint changes even if no source-file signature did, so the
+// snapshot is refreshed and file membership is recomputed. A disabled matcher
+// has its own stable identity rather than the empty-rule hash, so enabling or
+// disabling repository scoping is observable.
+func (m *Matcher) Fingerprint() string {
+	if m == nil || m.disabled {
+		return "disabled"
+	}
+	sum := sha256.Sum256([]byte(m.contents.String()))
+	return hex.EncodeToString(sum[:])[:16]
+}
 
 // Ignored reports whether a root-relative path is excluded.
 //

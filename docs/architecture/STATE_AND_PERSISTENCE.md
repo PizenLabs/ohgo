@@ -370,12 +370,23 @@ code structure, or anything a model asserted without confirmation.
 
 Code intelligence is **derived**, not memory. The source tree is the authority.
 
-Today the `ast` package is a stateless per-file searcher: it parses a file,
-returns declarations, and writes nothing. There is no index, no cache, and no
-`graph.db`. That is sufficient for the current `ast-grep` tool and is preserved.
+Today the `ast` package owns one in-process, incremental structural snapshot:
+it parses Go source once per file, retains symbol coordinates, package imports,
+resolved references, static direct calls, test declarations, and entrypoints,
+and re-resolves relationships from retained syntax after a change. A normal
+refresh parses only added or changed Go files and publishes atomically with an
+explicit freshness state, generation, snapshot id, and parse-failure count.
+Nothing is written to the repository by the index.
 
-**A future `graph.db` (`<project>/.ohgo/graph.db`) is deferred**, with this
-lifecycle fixed now so the store is not invented ad hoc later:
+The snapshot is lazy: the first structural query builds it, and startup only
+runs the cheap `ProbeFacts` marker probe. `.gitignore` membership is injected
+from `intelligence/ignore` through the index's `Scope` seam, so there is one
+repository-scope matcher rather than two.
+
+**No `graph.db` exists in the MVP.** The number of Go files, one parser pass,
+the incremental update, and the model-facing query bounds do not yet justify a
+schema, corruption path, migration, or lock. The store remains deferred with
+this lifecycle fixed now so it is not invented ad hoc later:
 
 ```text
 No graph → initial index → graph.db
@@ -635,9 +646,10 @@ metadata is supplied fails `TestEnsureWithPreservesIDAndCompletes`,
 session memory  ≠ project memory   sessions.db has no knowledge table;
                                    project memory is AGENTS.md (human-authored)
 project memory  ≠ graph            memory is durable human knowledge (seam);
-                                   graph is derived structure (stateless today)
+                                   graph is derived, in-process structure,
+                                   rebuilt from source and never persisted today
 graph           ≠ source authority source is authoritative; ast writes nothing,
-                                   a future graph.db is disposable
+                                   and the deferred graph.db is disposable
 runtime state   ≠ durable state    TUI/loop run without a session store
 ```
 

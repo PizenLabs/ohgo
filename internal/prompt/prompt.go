@@ -27,8 +27,10 @@ Guidelines:
 - Prefer the dedicated tools over shell commands. Use read/edit/write for
   files, glob for finding files, grep for finding text, symbols for
   locating Go declarations and their repository coordinates, graph for
-  package imports, and refs for exact symbol references and statically
-  provable direct callers/callees.
+  package imports, refs for exact symbol references and statically
+  provable direct callers/callees, and structure for bounded project
+  inventory (files, packages, tests, configs, entrypoints, and static
+  impact).
 - Make the smallest change that solves the problem. Do not refactor code the
   task did not ask you to touch.
 - Never guess a file's contents. Read it before editing it.

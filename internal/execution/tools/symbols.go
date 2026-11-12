@@ -304,22 +304,30 @@ func (t *SymbolsTool) Execute(ctx agent.Context, args map[string]any) agent.Resu
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "status: %s\n", status)
+	info := idx.Info()
+	if info.SnapshotID != "" {
+		fmt.Fprintf(&sb, "snapshot_id: %s\n", info.SnapshotID)
+		fmt.Fprintf(&sb, "generation: %d\n", info.Generation)
+		fmt.Fprintf(&sb, "graph_state: %s\n", info.State)
+	}
 	if total == 0 {
 		fmt.Fprintf(&sb, "query_type: %s\n", queryType)
 		if parseFailures > 0 {
 			fmt.Fprintf(&sb, "unparsed: %d\n", parseFailures)
 		}
+		details := map[string]any{
+			"status":         "not_found",
+			"query_type":     queryType,
+			"results":        0,
+			"returned":       0,
+			"truncated":      false,
+			"ambiguous":      false,
+			"parse_failures": parseFailures,
+		}
+		addStructuralProvenance(details, idx, parseFailures == 0)
 		return agent.Result{
-			Text: strings.TrimRight(sb.String(), "\n"),
-			Details: map[string]any{
-				"status":         "not_found",
-				"query_type":     queryType,
-				"results":        0,
-				"returned":       0,
-				"truncated":      false,
-				"ambiguous":      false,
-				"parse_failures": parseFailures,
-			},
+			Text:    strings.TrimRight(sb.String(), "\n"),
+			Details: details,
 			Useless: parseFailures == 0,
 		}
 	}
@@ -361,18 +369,20 @@ func (t *SymbolsTool) Execute(ctx agent.Context, args map[string]any) agent.Resu
 		})
 	}
 
+	details := map[string]any{
+		"status":         status,
+		"query_type":     queryType,
+		"results":        total,
+		"returned":       returned,
+		"truncated":      truncated,
+		"ambiguous":      ambiguous,
+		"parse_failures": parseFailures,
+		"coordinates":    coords,
+	}
+	addStructuralProvenance(details, idx, !truncated && !ambiguous && parseFailures == 0)
 	return agent.Result{
-		Text: strings.TrimRight(sb.String(), "\n"),
-		Details: map[string]any{
-			"status":         status,
-			"query_type":     queryType,
-			"results":        total,
-			"returned":       returned,
-			"truncated":      truncated,
-			"ambiguous":      ambiguous,
-			"parse_failures": parseFailures,
-			"coordinates":    coords,
-		},
+		Text:    strings.TrimRight(sb.String(), "\n"),
+		Details: details,
 	}
 }
 

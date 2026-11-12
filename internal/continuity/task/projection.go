@@ -362,7 +362,7 @@ func isReadObservation(item cognition.EvidenceItem) bool {
 
 func isReadTool(tool string) bool {
 	switch tool {
-	case "read", "ls", "glob", "grep", "symbols", "refs", "graph":
+	case "read", "ls", "glob", "grep", "symbols", "refs", "graph", "structure":
 		return true
 	default:
 		return false

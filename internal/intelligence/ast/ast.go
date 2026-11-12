@@ -21,6 +21,16 @@
 //
 // The rule is therefore amended rather than broken: **cgo is opt-in and
 // isolated, never a default dependency.**
+//
+// # Repository snapshot
+//
+// GoBackend is also the MVP language adapter for Index, the in-process
+// structural snapshot shared by the symbols, graph, refs, and structure tools.
+// One Index owns symbol coordinates, file/package facts, imports, references,
+// direct calls, tests, and entrypoints. It is incremental: a refresh parses
+// only changed Go files and re-resolves relationships from retained syntax. It
+// writes nothing; the source tree remains authoritative and <project>/.ohgo/graph.db
+// stays a deferred, disposable location.
 package ast
 
 import (
@@ -69,8 +79,15 @@ type Match struct {
 	Path string
 	// Line is the 1-based line the declaration starts on.
 	Line int
+	// Column is the 1-based column the declaration starts on.
+	Column int
 	// EndLine is the 1-based line it ends on.
 	EndLine int
+	// Test reports that the declaration came from a _test.go file.
+	Test bool
+	// Canonical is the language-neutral declaration kind. Kind remains the
+	// Go adapter's compatibility projection.
+	Canonical SymbolKind
 	// Doc is the declaration's doc comment, trimmed.
 	Doc string
 	// Signature is a one-line rendering of the declaration's head.
@@ -219,14 +236,31 @@ func (b GoBackend) Search(path string, opts Options) ([]Match, error) {
 // Parse parses one file once and returns its package clause, the declarations
 // selected by opts, and every import declaration.
 //
-// Index uses Parse rather than Search because the package graph needs the
-// imports from the same pass that produces symbol coordinates. A second parse
-// would double the cold cost and create a second source of truth.
-func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
+// Index uses ParseFile rather than Search because the package graph needs the
+// imports from the same pass that produces symbol coordinates. This wrapper
+// preserves the historical FileStructure API while ParseFile carries the
+// canonical facts (tests, entrypoints, relationship projection).
+func (b GoBackend) Parse(path string, opts Options) (FileStructure, error) {
+	facts, err := b.parse(path, opts)
+	if err != nil {
+		return FileStructure{}, err
+	}
+	return FileStructure{
+		Package:    facts.Package,
+		Symbols:    facts.Symbols,
+		Imports:    facts.Imports,
+		references: facts.references,
+		calls:      facts.calls,
+	}, nil
+}
+
+// parse is the one Go parser pass. ParseFile and Parse are projections of this
+// method, so no caller can accidentally introduce a second parse.
+func (b GoBackend) parse(path string, opts Options) (FileFacts, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
-		return FileStructure{}, fmt.Errorf("ast: parse %s: %w", path, err)
+		return FileFacts{}, fmt.Errorf("ast: parse %s: %w", path, err)
 	}
 
 	var matches []Match
@@ -236,12 +270,14 @@ func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
 	// A package declaration is a first-class symbol: it anchors every other
 	// declaration in the file and is what a package-level query resolves to.
 	if kindAllowed(opts, KindPackage) {
+		pos := fset.Position(file.Package)
 		matches = append(matches, Match{
 			Kind:      KindPackage,
 			Name:      file.Name.Name,
 			Package:   file.Name.Name,
 			Path:      path,
-			Line:      fset.Position(file.Package).Line,
+			Line:      pos.Line,
+			Column:    pos.Column,
 			EndLine:   fset.Position(file.Name.End()).Line,
 			Signature: "package " + file.Name.Name,
 		})
@@ -298,7 +334,11 @@ func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
 	// Populate package and qualified coordinates deterministically. The
 	// package clause is the authority for the package name; never fabricate
 	// one when it is missing.
+	var tests []TestDecl
+	var entrypoints []Match
 	for i := range matches {
+		matches[i].Test = testFile
+		matches[i].Canonical = canonicalKind(matches[i].Kind)
 		if matches[i].Package == "" {
 			matches[i].Package = file.Name.Name
 		}
@@ -313,14 +353,59 @@ func (GoBackend) Parse(path string, opts Options) (FileStructure, error) {
 				matches[i].QualifiedName = matches[i].Name
 			}
 		}
+		if matches[i].Kind != KindFunc {
+			continue
+		}
+		if testFile {
+			if kind, ok := testKindForName(matches[i].Name); ok {
+				tests = append(tests, TestDecl{Symbol: matches[i], Kind: kind})
+			}
+			continue
+		}
+		if matches[i].Name == "main" && file.Name.Name == "main" {
+			entrypoints = append(entrypoints, matches[i])
+		}
 	}
-	return FileStructure{
-		Package:    file.Name.Name,
-		Symbols:    matches,
-		Imports:    imports,
-		references: references,
-		calls:      calls,
+	return FileFacts{
+		Language:    "go",
+		Package:     file.Name.Name,
+		Symbols:     matches,
+		Imports:     imports,
+		Tests:       tests,
+		Entrypoints: entrypoints,
+		references:  references,
+		calls:       calls,
 	}, nil
+}
+
+// testKindForName applies the Go testing package's declaration convention.
+// A prefix followed by a lowercase letter is a helper, not a test.
+func testKindForName(name string) (TestKind, bool) {
+	if name == "TestMain" {
+		return TestMain, true
+	}
+	for _, candidate := range []struct {
+		prefix string
+		kind   TestKind
+	}{
+		{"Test", TestUnit},
+		{"Benchmark", TestBenchmark},
+		{"Fuzz", TestFuzz},
+		{"Example", TestExample},
+	} {
+		if !strings.HasPrefix(name, candidate.prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(name, candidate.prefix)
+		if rest == "" {
+			return candidate.kind, true
+		}
+		first := rune(rest[0])
+		if first < 'a' || first > 'z' {
+			return candidate.kind, true
+		}
+	}
+	return "", false
 }
 
 // kindAllowed reports whether a declaration kind passes the filter.
@@ -364,6 +449,7 @@ func goFuncMatch(fset *token.FileSet, path string, decl *ast.FuncDecl) Match {
 		Name:      name,
 		Path:      path,
 		Line:      fset.Position(decl.Pos()).Line,
+		Column:    fset.Position(decl.Pos()).Column,
 		EndLine:   fset.Position(decl.End()).Line,
 		Doc:       trimDoc(decl.Doc),
 		Signature: signature,
@@ -456,11 +542,13 @@ func exprString(expr ast.Expr) string {
 }
 
 func goSpecMatch(fset *token.FileSet, path string, kind Kind, spec *ast.TypeSpec, gen *ast.GenDecl) Match {
+	pos := fset.Position(spec.Pos())
 	return Match{
 		Kind:      kind,
 		Name:      spec.Name.Name,
 		Path:      path,
-		Line:      fset.Position(spec.Pos()).Line,
+		Line:      pos.Line,
+		Column:    pos.Column,
 		EndLine:   fset.Position(spec.End()).Line,
 		Doc:       firstNonEmpty(trimDoc(spec.Doc), trimDoc(gen.Doc)),
 		Signature: spec.Name.Name,
@@ -472,11 +560,13 @@ func goNamedMatch(fset *token.FileSet, path string, kind Kind, name string, spec
 	if spec.Type != nil {
 		signature += " " + exprString(spec.Type)
 	}
+	pos := fset.Position(spec.Pos())
 	return Match{
 		Kind:      kind,
 		Name:      name,
 		Path:      path,
-		Line:      fset.Position(spec.Pos()).Line,
+		Line:      pos.Line,
+		Column:    pos.Column,
 		EndLine:   fset.Position(spec.End()).Line,
 		Doc:       firstNonEmpty(trimDoc(spec.Doc), trimDoc(gen.Doc)),
 		Signature: signature,
@@ -485,11 +575,13 @@ func goNamedMatch(fset *token.FileSet, path string, kind Kind, name string, spec
 
 func goImportMatch(fset *token.FileSet, path string, spec *ast.ImportSpec) Match {
 	name := strings.Trim(spec.Path.Value, `"`)
+	pos := fset.Position(spec.Pos())
 	return Match{
 		Kind:      KindImport,
 		Name:      name,
 		Path:      path,
-		Line:      fset.Position(spec.Pos()).Line,
+		Line:      pos.Line,
+		Column:    pos.Column,
 		EndLine:   fset.Position(spec.End()).Line,
 		Signature: name,
 	}
