@@ -61,6 +61,105 @@ func TestEvaluateCompletionRejectsUnexpectedMutation(t *testing.T) {
 	}
 }
 
+// "Run this project" is not proved by a command that finished. The probe is
+// real execution, but it is not the requested execution; only a runtime that
+// reached readiness and answered a check while alive can complete the
+// objective. The failure this guards against reported PROVEN after "node -v"
+// and then refused the user's "run it" as redundant.
+func TestRuntimeExecutionRequiresLiveRuntimeObservation(t *testing.T) {
+	intent := contract.IntentContract{
+		Objective:     "run this project help me",
+		Kind:          contract.ObjectiveExecution,
+		ExecutionMode: contract.ExecutionRuntime,
+	}
+	probe := []Turn{
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text:     "v24.11.0\n11.6.1",
+			Executes: true,
+			Finished: true,
+			Details:  map[string]any{"command": "node -v && npm -v", "exitCode": 0},
+		})}},
+		answerTurn("Run npm run dev to start the project."),
+	}
+	verdict := EvaluateTaskCompletion(CompletionInput{Turns: probe, Contract: intent})
+	if verdict.Complete() {
+		t.Fatal("a finished environment probe completed a runtime objective")
+	}
+	if !strings.Contains(verdict.Reason, "live runtime") {
+		t.Fatalf("reason = %q, want it to name the missing live runtime", verdict.Reason)
+	}
+
+	ran := []Turn{
+		{Results: []ToolOutcome{toolOutcome("verify", Result{
+			Text:         "verification: PASS\nservice: npm run dev\n- http: PASS status 200",
+			Executes:     true,
+			Finished:     true,
+			Verifies:     true,
+			Verification: &VerificationEvidence{Command: "npm run dev"},
+			Runtime: &RuntimeEvidence{
+				Command: "npm run dev",
+				URL:     "http://127.0.0.1:3000",
+				PID:     4242,
+				Checks:  1,
+			},
+		})}},
+		answerTurn("The project is serving at http://127.0.0.1:3000."),
+	}
+	if verdict := EvaluateTaskCompletion(CompletionInput{Turns: ran, Contract: intent}); !verdict.Complete() {
+		t.Fatalf("runtime completion = %s (%s), want COMPLETED", verdict.State, verdict.Reason)
+	}
+}
+
+// A malformed call emitted after the proof is a harness contract error, not an
+// observation. It never executed, so it must not downgrade a runtime proof that
+// real evidence already supports. A genuine execution failure in the same
+// position still must, because that is evidence about the project.
+func TestLateMalformedCallDoesNotDowngradeRuntimeProof(t *testing.T) {
+	intent := contract.IntentContract{
+		Objective:     "run this project help me",
+		Kind:          contract.ObjectiveExecution,
+		ExecutionMode: contract.ExecutionRuntime,
+	}
+	runtimeTurn := Turn{Results: []ToolOutcome{toolOutcome("verify", Result{
+		Text:         "verification: PASS",
+		Executes:     true,
+		Finished:     true,
+		Verifies:     true,
+		Verification: &VerificationEvidence{Command: "npm run dev"},
+		Runtime:      &RuntimeEvidence{Command: "npm run dev", URL: "http://127.0.0.1:3000", PID: 4242, Checks: 1},
+	})}}
+	lateCall := func(result Result) Turn {
+		return Turn{
+			Assistant: ai.AssistantMessage{
+				Content: []ai.ContentBlock{
+					ai.TextContent{Text: "The project is running."},
+					ai.ToolCall{ID: "late-1", Name: "verify", Arguments: map[string]any{"checks": []any{}}},
+				},
+				StopReason: ai.StopToolUse,
+			},
+			Results: []ToolOutcome{toolOutcome("verify", result)},
+		}
+	}
+
+	malformed := lateCall(Result{
+		Text:         `Invalid arguments for "verify": /checks/0/contains: must be of type array`,
+		IsError:      true,
+		FailureClass: ToolFailureInvalidArgument,
+	})
+	if verdict := EvaluateTaskCompletion(CompletionInput{Turns: []Turn{runtimeTurn, malformed}, Contract: intent}); !verdict.Complete() {
+		t.Fatalf("a malformed continuation downgraded the runtime proof: %s", verdict.Reason)
+	}
+
+	failed := lateCall(Result{
+		Text:         "verification: FAIL: the service exited during the check",
+		IsError:      true,
+		FailureClass: ToolFailureVerification,
+	})
+	if verdict := EvaluateTaskCompletion(CompletionInput{Turns: []Turn{runtimeTurn, failed}, Contract: intent}); verdict.Complete() {
+		t.Fatal("a later failed verification was ignored")
+	}
+}
+
 func TestInformationalPathTargetDoesNotRequireVerification(t *testing.T) {
 	// Naming a Go file in a question does not make the answer a checked
 	// change. Before this rule, "what package is declared in tui/x.go?"

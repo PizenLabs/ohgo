@@ -267,7 +267,15 @@ user's request before execution and the evidence the runtime observed.
   potential mutation, so an investigation probe cannot create a verification
   debt. A checkless execution objective needs a process that reached a
   successful terminal state (`Executes` + `Finished`); a started background
-  spawn is not evidence. An informational objective needs
+  spawn is not evidence. A **runtime** execution objective (`run this project`,
+  `run the app`, `npm run dev`, `start the dev server`) is stronger than that:
+  the contract records `ExecutionRuntime`, and completion requires the runtime
+  itself to be observed. A finished environment probe such as
+  `node -v && npm -v` is real execution, but it is not the requested execution,
+  so it cannot prove the objective. The only accepted observation is the
+  `Runtime` evidence a successful `verify` plan reports: the service reached
+  readiness, at least one check passed against it while it was alive, and it
+  did not exit mid-verification. An informational objective needs
   non-empty visible assistant text in the final turn. Empty or whitespace text
   is `NEEDS_REVIEW`. A request that explicitly required external knowledge also
   needs a successful external observation; a local answer does not satisfy it.
@@ -324,8 +332,11 @@ user's request before execution and the evidence the runtime observed.
   outside the completion boundary. A `verify` result is different: its service
   reached a declared readiness state, its checks ran, and cleanup completed, so
   it reports `Executes` + `Finished` + `Verifies` only when every non-optional
-  check passed. A service start failure, a failed check, or an unavailable
-  optional browser never produces verification evidence.
+  check passed. A passing plan with a service also reports `Runtime` evidence
+  (command, owned pid, observed address, passing-check count); a command-only
+  plan does not, because no live process was observed. A service start failure,
+  a failed check, a service that exits while checks run, or an unavailable
+  optional browser never produces verification or runtime evidence.
 - **Cancellation.** The TUI turn owns one atomic terminal claim shared by
   Ctrl+C and the post-run transition. A cancellation that wins turns the
   action into `PAUSE`; a completion claim that wins first is not rewritten.
@@ -400,17 +411,23 @@ the model said. Two properties keep the loop honest and small:
   command observes a different state after the fix. A refusal is a control
   decision: nothing executes and completion does not count it as a failed call.
   This includes a tool's own authority refusal, such as the artifact tool
-  rejecting a kind the live workspace cannot produce.
+  rejecting a kind the live workspace cannot produce. A malformed call is the
+  same boundary: the capability rejected the arguments before running anything,
+  so it is neither work nor an observation about the project, and it cannot
+  veto a proof real evidence already supports.
 - **Closure is one semantic state, not an empty tool slice.** A projection's
   `AnswerEligible` or `Terminal` verdict is the control plane's declaration that
-  the action surface is closed. The loop owns the request shape, so it withdraws
-  every tool itself; a projector cannot leave a callable tool on a surface it
-  has already closed. A blocked capability (`BlockCapabilityFailure`) is
-  terminal: the first stale proposal without an answer reports
-  `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`. The loop can also
-  force the boundary itself: after a refused-proposal recovery it asks the
-  projection to close the surface (`ForceAnswer`), even for a shape such as an
-  investigation that would otherwise keep probing.
+  the action surface is closed. A complete evidence lifecycle (`StageComplete`)
+  is answer-eligible for every objective kind, not only informational ones, so
+  a continuation call cannot be dispatched after the proving observation. The
+  loop owns the request shape, so it withdraws every tool itself; a projector
+  cannot leave a callable tool on a surface it has already closed. A blocked
+  capability (`BlockCapabilityFailure`) is terminal: the first stale proposal
+  without an answer reports `agent.ErrTaskBlocked`, which classifies as
+  `NEEDS_REVIEW`. The loop can also force the boundary itself: after a
+  refused-proposal recovery it asks the projection to close the surface
+  (`ForceAnswer`), even for a shape such as an investigation that would
+  otherwise keep probing.
 - **An unproductive turn is counted from outcomes, never from the offered
   slice.** A refusal is a control decision, not work. If every call in a turn was
   refused, the turn could not change the runtime's state; this is true even when
@@ -574,11 +591,24 @@ headless Chromium/Chrome binary (`OHGO_CHROMIUM`/`OHGO_BROWSER` may override),
 runs it against the already-ready local URL, and reports unsupported when none
 is available. The core plan never requires Chromium.
 
+Plan arguments accept the equivalent shapes models routinely emit: a service
+`cwd` may be workspace-relative or an absolute path inside the workspace (an
+absolute path outside it is still an escape and is refused), and a single
+literal for `checks[].contains` is the same assertion as a one-element list.
+These are contract normalisations, not relaxations: the containment and
+assertion semantics are unchanged, and a shape mistake no longer costs a turn
+that teaches the model nothing about the project.
+
 The result carries the same `Executes`/`Finished`/`Verifies` evidence every
 other capability uses, plus compact structured details (service state, pid,
-discovered URL, per-check status/bytes/duration). The model sees a short
-summary, not a transcript dump. Completion still decides PROVEN; readiness, a
-tool call, or a zero exit code alone is not proof.
+discovered URL, per-check status/bytes/duration). A passing plan with a service
+additionally reports `agent.RuntimeEvidence`, and that observation is what a
+runtime execution objective accepts. Attribution is outcome-based, not
+command-name-based: the runtime does not need to know that `npm run dev` is
+this project's entry point, only that something the model launched became ready
+and answered a check while it stayed alive. The model sees a short summary, not
+a transcript dump. Completion still decides PROVEN; readiness, a tool call, or a
+zero exit code alone is not proof.
 
 ## Concurrency
 

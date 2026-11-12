@@ -123,6 +123,11 @@ type ExecutionState struct {
 	VerifiedAfterExecution bool
 	// Executed reports a successful terminal process.
 	Executed bool
+	// RuntimeObserved reports a live project runtime: a service reached
+	// readiness, at least one check passed against it while it was alive, and
+	// it did not exit. It is the observation a runtime execution objective
+	// requires; Executed alone is not enough for it.
+	RuntimeObserved bool
 	// BackgroundStarted reports a detached job that has not been collected.
 	BackgroundStarted bool
 	// PendingFailures counts unrecovered failures per tool.
@@ -162,6 +167,11 @@ func SummarizeExecution(turns []agent.Turn) ExecutionState {
 				}
 			}
 			if outcome.Result.Executes && outcome.Result.Finished {
+				state.Executed = true
+				state.LastExecution = position
+			}
+			if outcome.Result.Runtime != nil {
+				state.RuntimeObserved = true
 				state.Executed = true
 				state.LastExecution = position
 			}
@@ -248,6 +258,11 @@ func ExecutionFromEvidence(state *EvidenceState) ExecutionState {
 			out.LastVerification = maxInt(out.LastVerification, item.Seq)
 		}
 		if item.Executed {
+			out.Executed = true
+			out.LastExecution = maxInt(out.LastExecution, item.Seq)
+		}
+		if item.Runtime {
+			out.RuntimeObserved = true
 			out.Executed = true
 			out.LastExecution = maxInt(out.LastExecution, item.Seq)
 		}
@@ -470,6 +485,22 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 			result.Reasons = append(result.Reasons, "the requested check has not run successfully")
 			return result
 		}
+		if shape.ExecutionMode == contract.ExecutionRuntime && !execution.RuntimeObserved {
+			// A finished command is execution, not a running application. The
+			// runtime objective stays in the act stage until a service is
+			// observed reaching readiness and answering a check.
+			result.State = Insufficient
+			result.Stage = StageAct
+			result.Missing = append(result.Missing, "runtime_observation")
+			result.Next = append(result.Next, nextEvidence("runtime_observation"))
+			result.Reasons = append(result.Reasons,
+				"the request asked to run the project's runtime but no live runtime was observed")
+			if execution.Executed {
+				result.Reasons = append(result.Reasons,
+					"a completed command is not the requested runtime; a command that exited proves only that it ran")
+			}
+			return result
+		}
 		if !execution.Executed {
 			result.State = Insufficient
 			result.Stage = StageAct
@@ -557,6 +588,8 @@ func nextEvidence(key string) string {
 		return "run the requested check and require a successful result"
 	case key == "execution_result":
 		return "run the requested command and observe its terminal state"
+	case key == "runtime_observation":
+		return "launch the project's entry point with the verify capability, declare readiness, and observe a passing HTTP/browser/command check against the live process; a command that merely exited is not the runtime"
 	default:
 		return "acquire evidence for " + key
 	}

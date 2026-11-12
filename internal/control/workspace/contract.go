@@ -28,6 +28,9 @@ const (
 	ObjectiveExecution     = contract.ObjectiveExecution
 	ObjectiveMutation      = contract.ObjectiveMutation
 
+	ExecutionCommand = contract.ExecutionCommand
+	ExecutionRuntime = contract.ExecutionRuntime
+
 	ChangeAny    = contract.ChangeAny
 	ChangeCreate = contract.ChangeCreate
 	ChangeModify = contract.ChangeModify
@@ -90,6 +93,12 @@ func BuildIntentContract(text string) IntentContract {
 		contract.Kind = ObjectiveInformational
 	default:
 		contract.Kind = ObjectiveExecution
+	}
+	if contract.Kind == ObjectiveExecution && RequestsRuntimeExecution(objective) {
+		// Running the project is not proven by any finished process. The
+		// contract must name the stronger observation before the model can
+		// satisfy it with an environment probe such as "node --version".
+		contract.ExecutionMode = ExecutionRuntime
 	}
 
 	contract.Verification = verificationRequirements(objective, contract.Kind)

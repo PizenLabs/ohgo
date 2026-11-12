@@ -155,6 +155,12 @@ type EvidenceItem struct {
 	// diagnostic. It is additive and optional: a legacy item without it is
 	// treated as unknown, never as success.
 	Executed bool `json:"executed,omitempty"`
+	// Runtime reports that the observation is a live project runtime: a
+	// service reached readiness, a check ran against it while it was alive,
+	// and it did not exit. It is a stronger observation than Executed and is
+	// the only one a runtime execution objective accepts. Additive and
+	// optional: legacy items are not runtime observations.
+	Runtime bool `json:"runtime,omitempty"`
 }
 
 // Requirement is one evidence need declared by a task shape.
@@ -945,6 +951,10 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 		summary += fmt.Sprintf(" (exit %d)", exit)
 	}
 	executed := outcome.Result.Executes && outcome.Result.Finished && !outcome.Result.IsError
+	runtime := outcome.Result.Runtime != nil
+	if runtime {
+		summary += fmt.Sprintf(" (runtime observed: %d check(s))", outcome.Result.Runtime.Checks)
+	}
 	changed := s.upsert(EvidenceItem{
 		ID:         "command:" + digest(idKey),
 		Status:     StatusKnown,
@@ -956,6 +966,7 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 		Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID},
 		Seq:        seq,
 		Executed:   executed,
+		Runtime:    runtime,
 	})
 	if outcome.Result.Verifies {
 		check := ""
@@ -984,6 +995,7 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Check: check, Scope: scope},
 			Seq:        seq,
 			Executed:   true,
+			Runtime:    runtime,
 		}) {
 			changed = true
 		}

@@ -295,7 +295,14 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// answer is final and the call is continuation, not evidence gathering.
 	// A blocked capability has the same answer boundary: the runtime cannot
 	// acquire more evidence, so the next visible text is the candidate report.
+	//
+	// A complete lifecycle is the same boundary for every objective kind. The
+	// candidates normally close the surface at StageComplete, but this makes
+	// the closure explicit: a completed objective is answer-only by definition,
+	// so a continuation call can never be dispatched even if some future
+	// narrowing leaves a tool behind.
 	report.AnswerEligible = req.ForceAnswer || informationalEvidenceBoundary(shape, suff) ||
+		suff.Stage == StageComplete ||
 		(shape.Kind == contract.ObjectiveInformational && suff.Kind == BlockCapabilityFailure)
 	report.Terminal = suff.Kind == BlockCapabilityFailure || suff.Kind == BlockProgressStalled
 	switch {

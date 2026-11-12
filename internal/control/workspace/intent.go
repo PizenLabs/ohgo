@@ -458,6 +458,24 @@ func IsTaskFollowUp(text string) bool {
 	return false
 }
 
+// IsExecutionFollowUp reports whether a short request asks to perform the open
+// task's execution again, rather than to check the task's result.
+//
+// "Run it" after "run this project" is a new attempt at the action, not a
+// verification of the old one. It must attach to an open execution task so the
+// request is not refused as a new conflicting objective; a finished task does
+// not own it, so the attempt starts fresh and must produce its own observation.
+func IsExecutionFollowUp(text string) bool {
+	switch normalizeRequest(text) {
+	case "run it", "run this", "run that", "run it again", "run this again",
+		"start it", "start this", "start that", "start it again",
+		"launch it", "launch this", "launch that", "launch it again":
+		return true
+	default:
+		return false
+	}
+}
+
 // isTaskFollowUpCore reports a short request whose object is the open task's
 // own result.
 func isTaskFollowUpCore(normalized string) bool {
@@ -513,14 +531,21 @@ func IsVerificationContinuation(text string) bool {
 	return hasOutcomeQuestion(normalized) && hasOutcomeWord(normalized)
 }
 
-// hasVerificationAction reports an explicit check or run request.
+// hasVerificationAction reports an explicit check request.
+//
+// Launch verbs are deliberately absent. "Run it" asks to execute the task's
+// object again; treating it as verification let a finished task answer
+// "already proven" instead of running, and made a new execution request
+// indistinguishable from a check of old work. A question about whether it is
+// running is still verification: hasOutcomeWord names that state, and
+// hasOutcomeQuestion supplies the question frame.
 func hasVerificationAction(normalized string) bool {
 	padded := " " + normalized + " "
 	for _, phrase := range []string{
 		"check", "checks", "checking", "recheck", "re check",
 		"verify", "verifies", "verifying", "verification",
 		"confirm", "confirms", "confirming", "validate", "validates", "validating",
-		"test", "retest", "re test", "run", "runs", "running", "rerun", "re run",
+		"test", "retest", "re test",
 		"see", "prove", "proves",
 	} {
 		if strings.Contains(padded, " "+phrase+" ") {
@@ -553,6 +578,7 @@ func hasOutcomeWord(normalized string) bool {
 		"work", "works", "worked", "working",
 		"fix", "fixed", "fixes", "change", "changed", "changes",
 		"pass", "passes", "passed", "passing", "green",
+		"running", "listening",
 		"fail", "fails", "failed", "failing",
 		"compile", "compiles", "compiled", "build", "builds", "built",
 		"succeed", "succeeds", "succeeded", "success", "successful",
@@ -982,6 +1008,127 @@ func RequestsServiceExecution(text string) bool {
 		}
 	}
 	return false
+}
+
+// RequestsRuntimeExecution reports whether the request asks to run the
+// project's own long-running runtime: the application, server, site, or
+// service, rather than a one-shot command or a named check.
+//
+// The distinction is the completion contract's, not the router's. "Run the
+// tests" and "run the build" are execution objectives that a successful
+// command proves. "Run this project" is not: a finished environment probe is
+// an execution, but it is not the requested execution, so completion must
+// require the runtime itself to be observed alive and answering a check.
+//
+// The classifier is deliberately finite. An explicit service phrase
+// ("live-server", "dev server", "localhost") settles the question; otherwise a
+// launch verb must name a runtime object or a deictic result ("run it"). A
+// named check or artifact object vetoes the runtime reading, so "run the tests
+// again" cannot demand a server.
+func RequestsRuntimeExecution(text string) bool {
+	request := stripPoliteness(normalizeRequest(text))
+	if request == "" {
+		return false
+	}
+	for _, entry := range requestClauses(request) {
+		if entry.asked {
+			continue
+		}
+		if runtimeExecutionClause(entry.text) {
+			return true
+		}
+	}
+	return false
+}
+
+// runtimeExecutionClause reports whether one clause asks for a live runtime.
+func runtimeExecutionClause(clause string) bool {
+	// An explicit service phrase overrides the rest of the clause: "test this
+	// project with npx live-server" still needs the server observed, even
+	// though its head verb is investigative.
+	if containsPhrase(clause, explicitRuntimePhrases) {
+		return true
+	}
+	if containsPhrase(clause, nonRuntimeObjects) {
+		return false
+	}
+	head := clauseHead(clause)
+	if !runtimeExecutionHeads[head] {
+		return false
+	}
+	if containsPhrase(clause, runtimeObjects) {
+		return true
+	}
+	return deicticExecutionObject(clause, head)
+}
+
+// deicticExecutionObject reports a launch verb whose whole object is a
+// reference to the task's own result ("run it", "run this again"). The object
+// is not named in the clause, so the veto list above is the only thing that can
+// disagree; a named object would have matched runtimeObjects.
+func deicticExecutionObject(clause, head string) bool {
+	fields := strings.Fields(clause)
+	index := 0
+	for index < len(fields) && fields[index] != head {
+		index++
+	}
+	rest := fields[index+1:]
+	if len(rest) == 0 || len(rest) > 3 {
+		return false
+	}
+	for _, token := range rest {
+		token = strings.Trim(token, ".,!?;:'\"")
+		switch token {
+		case "it", "this", "that", "these", "those", "one", "again", "now", "please":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// runtimeExecutionHeads are the launch verbs whose object is a runtime.
+//
+// "Use" belongs to the broader service-execution vocabulary but not here: "use
+// this project structure" names an object, not a process to start. An explicit
+// service phrase still covers "use the dev server".
+var runtimeExecutionHeads = map[string]bool{
+	"run": true, "start": true, "serve": true, "launch": true,
+	"host": true, "boot": true, "spin": true,
+}
+
+// explicitRuntimePhrases name a live service regardless of the clause's head
+// verb or its other objects.
+var explicitRuntimePhrases = []string{
+	"live-server", "live server", "dev server", "development server",
+	"local server", "web server", "http server", "preview server",
+	"localhost", "serve the site", "serve the app", "serve this",
+	// Package-manager start/dev scripts are long-running by convention. A
+	// configuration read cannot prove them from an exit code, so they get the
+	// live-runtime requirement even though the request names a command.
+	"npm start", "npm run start", "npm run dev", "npm run serve", "npm run preview",
+	"yarn start", "yarn dev", "pnpm start", "pnpm dev", "bun start", "bun dev",
+	"docker compose up", "docker-compose up",
+	"make run", "make serve", "make dev",
+	"runserver", "uvicorn", "gunicorn",
+}
+
+// runtimeObjects name the project runtime a launch verb can start.
+var runtimeObjects = []string{
+	"project", "repository", "repo", "app", "application", "site", "website",
+	"web app", "web application", "server", "service", "program", "process",
+	"runtime", "preview", "dashboard", "backend", "frontend", "blog",
+}
+
+// nonRuntimeObjects name what a launch verb executes without starting a
+// service. They veto the runtime reading even when the clause also names the
+// project ("run the project tests").
+var nonRuntimeObjects = []string{
+	"test", "tests", "suite", "unit", "integration", "e2e", "test suite",
+	"build", "compile", "bundle", "lint", "vet", "typecheck", "types",
+	"format", "formatter", "check", "checks", "migration", "migrations",
+	"install", "upgrade", "update", "setup", "seed", "deploy", "publish",
+	"release", "version", "benchmark", "benchmarks", "command", "commands",
 }
 
 // headMatches reports whether token is a recognised head verb, including

@@ -225,6 +225,12 @@ func (t Task) proofCurrent() bool {
 	case t.Contract.Kind == contract.ObjectiveInformational:
 		return proof.Answered
 	case t.Contract.Kind == contract.ObjectiveExecution:
+		if t.Contract.ExecutionMode == contract.ExecutionRuntime {
+			// A runtime objective is only current while the proof names the
+			// live-runtime observation itself. A legacy or stale proof that
+			// rests on an unrelated finished command no longer supports it.
+			return proof.Executed && t.proofHasRuntimeEvidence(proof)
+		}
 		return len(proof.EvidenceIDs) > 0 && (proof.Executed || len(proof.Verified) > 0)
 	case t.Contract.Kind == contract.ObjectiveMutation:
 		return proof.Observed && len(proof.Verified) > 0 && len(proof.EvidenceIDs) > 0
@@ -232,6 +238,25 @@ func (t Task) proofCurrent() bool {
 		// An unknown contract kind cannot authorize any completion claim.
 		return false
 	}
+}
+
+// proofHasRuntimeEvidence reports whether at least one observation the proof
+// names is still a live-runtime record. A proof whose evidence was superseded
+// or invalidated fails this check and stops reporting PROVEN.
+func (t Task) proofHasRuntimeEvidence(proof *CompletionProof) bool {
+	if proof == nil {
+		return false
+	}
+	for _, id := range proof.EvidenceIDs {
+		record, ok := t.Context.evidenceByID(id)
+		if !ok || !isSupporting(record) {
+			continue
+		}
+		if isRuntimeEvidence(record) {
+			return true
+		}
+	}
+	return false
 }
 
 // proofMateriallyContradicted reports whether current evidence disputes a
@@ -285,7 +310,11 @@ func (t Task) CompletionSummary() string {
 		case proof.Observed:
 			parts = append(parts, "an observed change was verified afterwards")
 		case proof.Executed:
-			parts = append(parts, "a successful execution was observed")
+			if t.Contract != nil && t.Contract.ExecutionMode == contract.ExecutionRuntime {
+				parts = append(parts, "a live project runtime was observed ready and answering a check")
+			} else {
+				parts = append(parts, "a successful execution was observed")
+			}
 		}
 		if len(proof.Verified) > 0 {
 			parts = append(parts, "observed: "+strings.Join(proof.Verified, "; "))
@@ -398,7 +427,13 @@ func (c *Controller) CompleteWithEvidence(in CompletionEvidence) (Task, error) {
 	case contract.ObjectiveExecution:
 		executed := c.executionEvidence()
 		verified := c.verificationEvidence()
-		if len(executed) == 0 && len(verified) == 0 {
+		runtimeRequired := c.task.Contract.ExecutionMode == contract.ExecutionRuntime
+		if runtimeRequired && len(executed) == 0 {
+			// executionEvidence is runtime-filtered for this mode, so an empty
+			// set means no live runtime was observed even if other commands ran.
+			return c.task.Clone(), fmt.Errorf("%w: the objective asked to run the project's runtime and no live runtime observation was recorded", ErrUnprovenCompletion)
+		}
+		if !runtimeRequired && len(executed) == 0 && len(verified) == 0 {
 			return c.task.Clone(), fmt.Errorf("%w: an answer alone cannot prove an execution objective", ErrUnprovenCompletion)
 		}
 		if len(c.task.Contract.Verification) > 0 && (len(verified) == 0 || !c.verificationsCoverContract(verified)) {
@@ -436,7 +471,7 @@ func (c *Controller) CompleteWithEvidence(in CompletionEvidence) (Task, error) {
 		Kind:    TimelineCompleted,
 		Role:    role,
 		Status:  string(ObjectiveProven),
-		Summary: completionEventSummary(c.task.Contract.Kind, proof),
+		Summary: completionEventSummary(c.task.Contract.Kind, c.task.Contract.ExecutionMode, proof),
 		Refs:    proof.EvidenceIDs,
 	})
 	c.lastAction = "completed and proven"
@@ -452,11 +487,14 @@ func (c *Controller) CompleteWithEvidence(in CompletionEvidence) (Task, error) {
 
 // completionEventSummary states what the proof actually established. It never
 // claims more evidence than the proof carries.
-func completionEventSummary(kind contract.ObjectiveKind, proof CompletionProof) string {
+func completionEventSummary(kind contract.ObjectiveKind, mode contract.ExecutionMode, proof CompletionProof) string {
 	switch kind {
 	case contract.ObjectiveInformational:
 		return "objective completed: a non-empty answer was produced (answer correctness is not verified)"
 	case contract.ObjectiveExecution:
+		if mode == contract.ExecutionRuntime {
+			return "objective completed: the project runtime was observed ready and answering a check"
+		}
 		return "objective completed: a successful execution was observed"
 	case contract.ObjectiveMutation:
 		return "objective completed: an observed change was verified afterwards"
@@ -579,16 +617,26 @@ func (c *Controller) verificationEvidence() []EvidenceRecord {
 }
 
 // executionEvidence returns current observations of a successful execution.
+//
+// A runtime objective narrows the set to live-runtime observations. A
+// successful command is execution evidence, but it is not the requested
+// execution when the request asked to run the project itself.
 func (c *Controller) executionEvidence() []EvidenceRecord {
+	runtimeRequired := c.task.Contract != nil &&
+		c.task.Contract.ExecutionMode == contract.ExecutionRuntime
 	var out []EvidenceRecord
 	for i := len(c.task.Context.Evidence) - 1; i >= 0; i-- {
 		record := c.task.Context.Evidence[i]
 		if !isSupporting(record) {
 			continue
 		}
-		if isExecutedEvidence(record) {
-			out = append(out, record)
+		if !isExecutedEvidence(record) {
+			continue
 		}
+		if runtimeRequired && !isRuntimeEvidence(record) {
+			continue
+		}
+		out = append(out, record)
 	}
 	return out
 }

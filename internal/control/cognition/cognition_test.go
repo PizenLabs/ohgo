@@ -697,6 +697,96 @@ func TestSufficiencyRequiresVerificationAfterMutation(t *testing.T) {
 	}
 }
 
+// A runtime objective is not complete because a command finished. The
+// environment probe is Executed evidence, but only the live service that
+// reached readiness and answered a check is Runtime evidence. Reproduces the
+// "run this project" trace where "node -v && npm -v" was accepted as execution
+// and the tool surface closed before the project ever ran.
+func TestSufficiencyRequiresLiveRuntimeObservation(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Objective:     "run this project help me",
+		Kind:          contract.ObjectiveExecution,
+		ExecutionMode: contract.ExecutionRuntime,
+	}, ShapeParams{Authority: "build"})
+	if !hasCompletionCondition(shape, "runtime_observed") {
+		t.Fatalf("runtime completion condition missing: %+v", shape.Completion)
+	}
+
+	evidence := NewEvidenceState()
+	evidence.ObserveTurns(shape, []agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "probe-1", ToolName: "bash",
+		Result: agent.Result{Text: "v24.11.0\n11.6.1", Executes: true, Finished: true,
+			Details: map[string]any{"command": "node -v && npm -v", "exitCode": 0}},
+	}}}})
+	execution := ExecutionFromEvidence(evidence)
+	if !execution.Executed {
+		t.Fatal("the probe was not observed as execution")
+	}
+	if execution.RuntimeObserved {
+		t.Fatal("a finished command was treated as a live runtime")
+	}
+	suff := EvaluateSufficiency(shape, evidence, execution, false)
+	if suff.State != Insufficient || suff.Stage != StageAct {
+		t.Fatalf("sufficiency = %s/%s, want INSUFFICIENT/act", suff.State, suff.Stage)
+	}
+	if !containsString(suff.Missing, "runtime_observation") {
+		t.Fatalf("missing = %v, want runtime_observation", suff.Missing)
+	}
+
+	evidence.ObserveTurns(shape, []agent.Turn{{Results: []agent.ToolOutcome{{
+		CallID: "verify-1", ToolName: "verify",
+		Result: agent.Result{
+			Text: "verification: PASS", Executes: true, Finished: true, Verifies: true,
+			Verification: &agent.VerificationEvidence{Command: "npm run dev"},
+			Runtime:      &agent.RuntimeEvidence{Command: "npm run dev", URL: "http://127.0.0.1:3000", PID: 99, Checks: 1},
+			Details:      map[string]any{"verification": map[string]any{"status": "PASS"}},
+		},
+	}}}})
+	execution = ExecutionFromEvidence(evidence)
+	if !execution.RuntimeObserved {
+		t.Fatal("the live runtime observation was not projected")
+	}
+	suff = EvaluateSufficiency(shape, evidence, execution, false)
+	if suff.State != Sufficient || suff.Stage != StageComplete {
+		t.Fatalf("sufficiency after runtime observation = %s/%s, want SUFFICIENT/complete", suff.State, suff.Stage)
+	}
+
+	// A complete lifecycle is an answer-only surface. The candidate layer
+	// normally withdraws every tool, and the projection must also say so
+	// independently: a continuation call can never be dispatched once the
+	// objective's evidence is complete.
+	report := NewProjector(shape, evidence, RepositoryFacts{}).Project(agent.ProjectionRequest{
+		Turn:     3,
+		Tools:    []agent.Tool{testTool{name: "verify", tier: agent.TierExec, classes: []agent.ActionClass{agent.ActionExecute}}},
+		Messages: []agent.Message{agent.UserMessage{Text: "run this project help me"}},
+	})
+	if !report.Report.AnswerEligible {
+		t.Fatalf("a complete runtime objective was not answer-eligible: %+v", report.Report)
+	}
+	if len(report.Tools) != 0 {
+		t.Fatalf("a complete runtime objective still offered tools: %v", toolNames(report.Tools))
+	}
+
+	// The zero mode keeps the weaker one-shot rule: a completed command is
+	// still execution evidence for "run the tests" or "run the build".
+	command := BuildShape(contract.IntentContract{
+		Objective: "run go build ./...", Kind: contract.ObjectiveExecution,
+	}, ShapeParams{Authority: "build"})
+	commandSuff := EvaluateSufficiency(command, evidence, execution, false)
+	if commandSuff.Stage != StageComplete {
+		t.Fatalf("command objective stage = %s, want complete", commandSuff.Stage)
+	}
+}
+
+func hasCompletionCondition(shape TaskShape, key string) bool {
+	for _, condition := range shape.Completion {
+		if condition.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSufficiencyBlocksMutationTheShapeDidNotPermit(t *testing.T) {
 	// A read-only task whose run changed the repository is blocked even when
 	// the workspace authority allowed the call. The shape describes the

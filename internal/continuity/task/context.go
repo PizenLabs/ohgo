@@ -66,6 +66,7 @@ type EvidenceKind string
 const (
 	EvidenceTool         EvidenceKind = "tool"
 	EvidenceCommand      EvidenceKind = "command"
+	EvidenceRuntime      EvidenceKind = "runtime"
 	EvidenceTest         EvidenceKind = "test"
 	EvidenceBenchmark    EvidenceKind = "benchmark"
 	EvidenceSource       EvidenceKind = "source"
@@ -78,9 +79,9 @@ const (
 // Valid reports whether the evidence kind is defined.
 func (k EvidenceKind) Valid() bool {
 	switch k {
-	case EvidenceTool, EvidenceCommand, EvidenceTest, EvidenceBenchmark,
-		EvidenceSource, EvidenceArtifact, EvidenceReproduction, EvidenceExternal,
-		EvidenceHuman:
+	case EvidenceTool, EvidenceCommand, EvidenceRuntime, EvidenceTest,
+		EvidenceBenchmark, EvidenceSource, EvidenceArtifact, EvidenceReproduction,
+		EvidenceExternal, EvidenceHuman:
 		return true
 	default:
 		return false

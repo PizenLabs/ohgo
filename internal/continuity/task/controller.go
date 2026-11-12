@@ -324,6 +324,26 @@ func (c *Controller) reconcileStaleState() bool {
 			})
 			changed = true
 		}
+		// An execution contract written before the runtime requirement existed
+		// classified "run this project" as any other execution, so a finished
+		// environment probe could support a completion proof. Re-deriving the
+		// mode from the same objective makes that proof stop resolving, which
+		// reports COMPLETED_UNPROVEN instead of a false PROVEN. Only the mode is
+		// upgraded: the contract's targets and verification stay as recorded.
+		if c.task.Contract.Kind == contract.ObjectiveExecution &&
+			current.Kind == contract.ObjectiveExecution &&
+			current.ExecutionMode == contract.ExecutionRuntime &&
+			c.task.Contract.ExecutionMode != contract.ExecutionRuntime {
+			c.task.Contract.ExecutionMode = contract.ExecutionRuntime
+			c.task.AppendEvent(TimelineEvent{
+				At:      c.now().UTC(),
+				Kind:    TimelineCheckpoint,
+				Role:    c.role,
+				Status:  string(c.task.Status),
+				Summary: "execution contract now requires a live runtime observation; a command-only proof no longer resolves",
+			})
+			changed = true
+		}
 	}
 	if !changed {
 		return false

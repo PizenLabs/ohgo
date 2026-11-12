@@ -200,6 +200,7 @@ func (t *TaskTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		Finished:     result.Executed,
 		Verifies:     result.Verified,
 		Verification: result.Verification,
+		Runtime:      result.Runtime,
 	}
 	// A child that stopped without completion evidence is not a successful
 	// delegation. The parent sees the child's answer plus an explicit error, so

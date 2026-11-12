@@ -168,6 +168,10 @@ type completionEvidence struct {
 	// successful verification (which is itself execution evidence). A started
 	// but unfinished background job is not evidence.
 	executed bool
+	// runtimeObserved is a live project runtime that reached readiness, ran at
+	// least one passing check, and stayed alive. It is the only evidence that
+	// proves a runtime objective; an unrelated finished command is not.
+	runtimeObserved bool
 	// mutated is a definite change: a write/edit/delete, or a shell command
 	// classified as mutating.
 	mutated bool
@@ -208,7 +212,12 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 	for _, turn := range turns {
 		for _, outcome := range turn.Results {
 			if outcome.Result.IsError {
-				if !outcome.Refused() && !outcome.Result.ObservedAbsence {
+				// A malformed call never executed, so it is not an observation
+				// that can contradict the objective. Counting it would let a
+				// late continuation downgrade a proof the runtime already
+				// holds; the missing-evidence rules still decide the objective
+				// on its own terms.
+				if !outcome.Refused() && !outcome.Result.ObservedAbsence && !outcome.Result.Rejected() {
 					evidence.pendingFailures[outcome.ToolName]++
 					if class := strings.TrimSpace(outcome.Result.FailureClass); class != "" {
 						evidence.pendingFailureClasses[outcome.ToolName] = class
@@ -231,6 +240,12 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 				evidence.lastPotentialMutation = position
 			}
 			if outcome.Result.Executes && outcome.Result.Finished {
+				evidence.executed = true
+			}
+			if outcome.Result.Runtime != nil {
+				// The live runtime observation is stronger than a finished
+				// command and is the only evidence a runtime objective accepts.
+				evidence.runtimeObserved = true
 				evidence.executed = true
 			}
 			if outcome.Result.Verifies {
@@ -270,7 +285,10 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 func outstandingCalls(turn Turn) int {
 	count := 0
 	for _, outcome := range turn.Results {
-		if outcome.Refused() {
+		if outcome.Refused() || outcome.Result.Rejected() {
+			// Neither ran. A refusal is a control decision and a malformed
+			// call never reached the capability, so neither leaves work
+			// outstanding.
 			continue
 		}
 		count++
@@ -427,6 +445,16 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	}
 	if effective.Kind == contract.ObjectiveMutation && !evidence.mutated && !input.PriorChange {
 		return needsReview("the request asked for a repository change but no change was observed")
+	}
+	if effective.Kind == contract.ObjectiveExecution &&
+		effective.ExecutionMode == contract.ExecutionRuntime && !evidence.runtimeObserved {
+		// "Run this project" is not proven by any process that finished. The
+		// environment probe that satisfied an earlier classifier ("node -v &&
+		// npm -v") is real execution, but it is not the requested execution.
+		// A clean stop, a model claim, and a successful exit code are all
+		// insufficient without an observed live runtime.
+		return needsReview("the request asked to run the project's runtime but no live runtime observation was made; " +
+			"launch the project's entry point and observe it reach readiness and answer a check")
 	}
 	if effective.Kind == contract.ObjectiveExecution && len(effective.Verification) == 0 && !evidence.executed {
 		// A clean model stop is not execution evidence. A started background

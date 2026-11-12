@@ -37,6 +37,10 @@ type TaskShape struct {
 	Objective string `json:"objective"`
 	// Kind is the completion objective from the contract.
 	Kind contract.ObjectiveKind `json:"kind"`
+	// ExecutionMode refines an execution objective: a one-shot command or the
+	// project's own long-running runtime. Sufficiency and completion read it to
+	// decide whether a finished command is enough evidence.
+	ExecutionMode contract.ExecutionMode `json:"executionMode,omitempty"`
 	// Intent is the routed intent (read, execute, investigate), when known.
 	Intent string `json:"intent,omitempty"`
 	// Phase reports that this shape describes the informational phase of an
@@ -319,6 +323,7 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		Version:         ShapeVersion,
 		Objective:       strings.TrimSpace(intent.Objective),
 		Kind:            intent.Kind,
+		ExecutionMode:   intent.ExecutionMode,
 		Intent:          strings.ToLower(strings.TrimSpace(params.Intent)),
 		Phase:           params.Phase,
 		RepositoryFacts: params.Facts,
@@ -456,6 +461,9 @@ func (s TaskShape) Summary() string {
 	}
 	if s.NeedsExecution {
 		parts = append(parts, "execution=yes")
+	}
+	if s.ExecutionMode == contract.ExecutionRuntime {
+		parts = append(parts, "runtime=required")
 	}
 	if s.NeedsRelationshipNavigation {
 		parts = append(parts, "relationships=yes")
@@ -1077,7 +1085,14 @@ func completionConditions(shape TaskShape, intent contract.IntentContract) []Com
 	case contract.ObjectiveInformational:
 		out = append(out, CompletionCondition{Key: "answer_present", Description: "a non-empty answer was produced"})
 	case contract.ObjectiveExecution:
-		out = append(out, CompletionCondition{Key: "execution_observed", Description: "a requested process reached a successful terminal state"})
+		if shape.ExecutionMode == contract.ExecutionRuntime {
+			out = append(out, CompletionCondition{
+				Key:         "runtime_observed",
+				Description: "the project runtime was launched, reached readiness, and answered a check while alive; a finished unrelated command is not proof",
+			})
+		} else {
+			out = append(out, CompletionCondition{Key: "execution_observed", Description: "a requested process reached a successful terminal state"})
+		}
 		if len(shape.Verification) > 0 {
 			out = append(out, CompletionCondition{Key: "verification_after_execution", Description: "a successful check followed the execution"})
 		}

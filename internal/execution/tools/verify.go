@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -86,7 +85,7 @@ func NewVerifyTool(root string) *VerifyTool {
 						},
 						"cwd": map[string]any{
 							"type":        "string",
-							"description": "Workspace-relative working directory.",
+							"description": "Working directory, workspace-relative or an absolute path inside the workspace.",
 						},
 						"readiness": map[string]any{
 							"type":                 "object",
@@ -139,10 +138,15 @@ func NewVerifyTool(root string) *VerifyTool {
 								"description": "Exact HTTP status. Omit to accept any 2xx response.",
 							},
 							"contains": map[string]any{
-								"type":        "array",
-								"items":       map[string]any{"type": "string"},
-								"maxItems":    float64(16),
-								"description": "Literal strings the response body or rendered DOM must contain.",
+								"description": "Literal strings the response body or rendered DOM must contain. A single string is accepted as a one-element list.",
+								"anyOf": []any{
+									map[string]any{"type": "string"},
+									map[string]any{
+										"type":     "array",
+										"items":    map[string]any{"type": "string"},
+										"maxItems": float64(16),
+									},
+								},
 							},
 							"command": map[string]any{
 								"type":        "string",
@@ -409,6 +413,21 @@ func (t *VerifyTool) execute(ctx agent.Context, args map[string]any) agent.Resul
 		Verification: verification,
 		Mutates:      anyCheckMutated(results),
 	}
+	if service != nil && verdict.Status == "PASS" {
+		// A passing plan with a service is the observation a runtime objective
+		// needs: the process reached readiness, checks ran against it while it
+		// was alive, and it did not exit mid-verification (a PASS whose service
+		// exited is downgraded above). A finished command without this is not
+		// the same evidence.
+		if passed := passedChecks(results); passed > 0 {
+			base.Runtime = &agent.RuntimeEvidence{
+				Command: plan.Service.Command,
+				URL:     observedRuntimeURL(service, results),
+				PID:     service.pid(),
+				Checks:  passed,
+			}
+		}
+	}
 	if verdict.Status == "PASS" {
 		details["verification"] = verificationDetails(plan, service, results, verdict, cleanup, elapsed)
 		return base
@@ -506,9 +525,11 @@ func (t *VerifyTool) resolveDir(raw string) (string, error) {
 	if raw == "" {
 		return t.Root, nil
 	}
-	if filepath.IsAbs(raw) {
-		return "", fmt.Errorf("cwd must be workspace-relative")
-	}
+	// A model may name the workspace by its absolute path. The boundary is
+	// containment, not spelling: resolvePath accepts any spelling that stays
+	// inside the root and rejects anything that escapes it. Refusing the
+	// absolute form before resolution cost a turn and taught the model nothing
+	// about the project.
 	path, err := resolvePath(t.Root, raw)
 	if err != nil {
 		return "", err
@@ -1197,6 +1218,37 @@ func anyCheckMutated(results []verifyCheckResult) bool {
 	return false
 }
 
+// passedChecks counts the checks that passed while the service was alive.
+func passedChecks(results []verifyCheckResult) int {
+	passed := 0
+	for _, result := range results {
+		if result.Status == "PASS" {
+			passed++
+		}
+	}
+	return passed
+}
+
+// observedRuntimeURL returns the address the runtime actually served: the
+// service's own advertised URL when it printed one, otherwise the first HTTP
+// target a check exercised. Empty means the observation had no address.
+func observedRuntimeURL(service *verifyService, results []verifyCheckResult) string {
+	if service != nil {
+		if base := service.base(); base != "" {
+			return base
+		}
+		if discovered, ok := discoverServiceURL(service.output.String()); ok {
+			return discovered
+		}
+	}
+	for _, result := range results {
+		if strings.HasPrefix(result.Target, "http") {
+			return result.Target
+		}
+	}
+	return ""
+}
+
 func verificationEvidence(plan verifyPlan, results []verifyCheckResult) *agent.VerificationEvidence {
 	evidence := &agent.VerificationEvidence{Check: contract.CheckAny}
 	if plan.Service != nil {
@@ -1508,16 +1560,26 @@ func parseCheckPlan(raw map[string]any) (verifyCheckPlan, error) {
 		}
 		plan.Status = value
 	}
-	if contains, ok := raw["contains"].([]any); ok {
-		if len(contains) > 16 {
-			return plan, fmt.Errorf("contains has more than 16 entries")
-		}
-		for _, entry := range contains {
-			value, ok := entry.(string)
-			if !ok {
-				return plan, fmt.Errorf("contains entries must be strings")
+	if contains, ok := raw["contains"]; ok {
+		// A single literal is the same assertion as a one-element list. Models
+		// emit the scalar form routinely, and rejecting it spent a turn on a
+		// shape difference that says nothing about the project.
+		switch value := contains.(type) {
+		case string:
+			if strings.TrimSpace(value) != "" {
+				plan.Contains = []string{value}
 			}
-			plan.Contains = append(plan.Contains, value)
+		case []any:
+			if len(value) > 16 {
+				return plan, fmt.Errorf("contains has more than 16 entries")
+			}
+			for _, entry := range value {
+				literal, ok := entry.(string)
+				if !ok {
+					return plan, fmt.Errorf("contains entries must be strings")
+				}
+				plan.Contains = append(plan.Contains, literal)
+			}
 		}
 	}
 	if command, ok := raw["command"].(string); ok {

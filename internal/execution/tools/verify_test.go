@@ -59,6 +59,12 @@ func TestVerifyToolStartsReadyHTTPAndCleansUp(t *testing.T) {
 	if !result.Verifies || !result.Executes || !result.Finished {
 		t.Fatalf("result evidence = %+v", result)
 	}
+	if result.Runtime == nil {
+		t.Fatal("a service that reached readiness and passed a check produced no runtime evidence")
+	}
+	if result.Runtime.Checks < 1 || result.Runtime.PID <= 0 || result.Runtime.Command == "" {
+		t.Fatalf("runtime evidence = %+v, want one passing check against an owned process", result.Runtime)
+	}
 	details := verifyDetails(t, result)
 	if details["status"] != "PASS" {
 		t.Fatalf("status = %v, want PASS", details["status"])
@@ -112,6 +118,9 @@ func TestVerifyToolReportsStartFailureWithCapturedStderr(t *testing.T) {
 	}
 	if result.Verifies {
 		t.Fatal("a failed start was recorded as verification evidence")
+	}
+	if result.Runtime != nil {
+		t.Fatal("a service that never reached readiness produced runtime evidence")
 	}
 	intent := workspace.BuildIntentContract("use npx live-server test this project")
 	completion := agent.EvaluateTaskCompletion(agent.CompletionInput{
@@ -257,6 +266,52 @@ func TestVerifyToolReportsOptionalBrowserAsInsufficient(t *testing.T) {
 	}
 }
 
+// The service directory is a workspace coordinate, not a spelling test: an
+// absolute path inside the workspace is the same directory as its relative
+// form. A model that names the root absolutely should not lose a turn to a
+// harness contract error, and an absolute path outside the workspace must
+// still be refused.
+func TestVerifyToolResolvesDirectoryContainment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "<html>root served</html>")
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	command := fmt.Sprintf("printf 'serving at %s\\n'; sleep 30", server.URL)
+	args := map[string]any{
+		"service": map[string]any{"command": command, "cwd": root},
+		"checks":  []any{map[string]any{"kind": "http", "contains": "root served"}},
+	}
+	// The loop validates arguments before execution. A single literal is the
+	// same assertion as a one-element list, so the schema must accept it.
+	if err := agent.ValidateArgs(NewVerifyTool(root), args); err != nil {
+		t.Fatalf("a single-string contains assertion was rejected by the schema: %v", err)
+	}
+	result := NewVerifyTool(root).Execute(agent.Context{Ctx: context.Background()}, args)
+	if result.IsError {
+		t.Fatalf("an absolute workspace root was rejected as a service directory: %s", result.Text)
+	}
+	if result.Runtime == nil || result.Runtime.Checks < 1 {
+		t.Fatalf("the plan did not observe the runtime: %+v", result.Runtime)
+	}
+	if service, _ := verifyDetails(t, result)["service"].(map[string]any); service["state"] != string(verifyStopped) {
+		t.Fatalf("service state = %v, want a clean stop", service["state"])
+	}
+
+	outside := t.TempDir()
+	refused := NewVerifyTool(root).Execute(agent.Context{Ctx: context.Background()}, map[string]any{
+		"service": map[string]any{"command": "sleep 30", "cwd": outside},
+		"checks":  []any{map[string]any{"kind": "command", "command": "true"}},
+	})
+	if !refused.IsError {
+		t.Fatal("a service directory outside the workspace was accepted")
+	}
+	if !strings.Contains(refused.Text, "escapes the working directory") {
+		t.Fatalf("refusal = %q, want an escape reason", refused.Text)
+	}
+}
+
 func TestVerifyToolWaitsForReadinessBeforeDependentChecks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, "<html>ready page</html>")
@@ -303,6 +358,9 @@ func TestVerifyToolRunsIndependentChecksConcurrently(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
 		t.Fatalf("checks took %s; the barrier only succeeds when they overlap", elapsed)
+	}
+	if result.Runtime != nil {
+		t.Fatal("command-only verification produced runtime evidence with no service")
 	}
 }
 
