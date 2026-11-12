@@ -71,7 +71,10 @@ entrypoint, reference, and evidence paths are unchanged. The mixed-project
 fixture verifies that a nested Go backend remains visible when the root
 `.gitignore` contains `backend/`: the same overview reports its Go files and
 test files, names the included nested project, and lists ordinary excluded
-roots such as `dist/` with the decisive rule. The self-analysis
+roots such as `dist/` with the decisive rule. The same regression observes both
+results in the claim layer: a metadata-only overview is not implementation
+evidence, and a scope-partial test inventory cannot support a repository-wide
+absence claim even though the nested test files remain visible. The self-analysis
 baseline verifies the real repository's own Go snapshot and impact lookup;
 unsupported Python/shell utilities remain disclosed instead of being folded
 into the Go claim.

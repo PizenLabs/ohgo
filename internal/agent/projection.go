@@ -184,11 +184,37 @@ type EvidenceProvenance struct {
 	// RequireAttribution reports that the objective is a broad repository
 	// account, so documentation-only claims must be attributed.
 	RequireAttribution bool `json:"require_attribution,omitempty"`
-	// HasImplementation reports at least one observed source or structural
-	// implementation fact.
+	// HasImplementation reports at least one observed source-content fact. A
+	// manifest, configuration file, README, directory listing, or structural
+	// inventory does not satisfy it: none of them proves execution.
 	HasImplementation bool `json:"has_implementation,omitempty"`
+	// HasConfiguration reports at least one configuration or manifest
+	// observation. It declares intended topology or dependencies.
+	HasConfiguration bool `json:"has_configuration,omitempty"`
 	// HasDocumentation reports at least one documentation observation.
 	HasDocumentation bool `json:"has_documentation,omitempty"`
+	// HasRuntimeObservation reports a live runtime observation: a service
+	// reached readiness and answered a check while alive. A finished build or
+	// test is not a runtime observation.
+	HasRuntimeObservation bool `json:"has_runtime_observation,omitempty"`
+	// StructuralScope is COMPLETE, PARTIAL, or empty when no structural
+	// observation exists.
+	StructuralScope string `json:"structural_scope,omitempty"`
+	// TestInventory is COMPLETE, PARTIAL, or NOT_QUERIED.
+	TestInventory string `json:"test_inventory,omitempty"`
+	// TestFiles is the observed snapshot test-file count, when known.
+	TestFiles int `json:"test_files,omitempty"`
+	// TestFilesKnown distinguishes an observed zero from an unknown count.
+	TestFilesKnown bool `json:"test_files_known,omitempty"`
+	// TestTotal is the observed test-symbol count, when known.
+	TestTotal int `json:"test_total,omitempty"`
+	// TestTotalKnown distinguishes an observed zero from an unknown count.
+	TestTotalKnown bool `json:"test_total_known,omitempty"`
+	// ImplementationPaths, ConfigurationPaths, and DocumentationPaths are
+	// bounded coordinates for the observed claim classes.
+	ImplementationPaths []string `json:"implementation_paths,omitempty"`
+	ConfigurationPaths  []string `json:"configuration_paths,omitempty"`
+	DocumentationPaths  []string `json:"documentation_paths,omitempty"`
 	// ExternalRequired reports that the request explicitly needs external
 	// knowledge.
 	ExternalRequired bool `json:"external_required,omitempty"`

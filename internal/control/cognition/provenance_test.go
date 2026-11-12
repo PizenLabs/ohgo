@@ -1,6 +1,7 @@
 package cognition
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -42,6 +43,172 @@ func TestSurveyRequiresImplementationObservationInCodeRepository(t *testing.T) {
 	suff = EvaluateSufficiency(shape, withSource, ExecutionState{}, false)
 	if suff.State != Sufficient || suff.Stage != StageAnswer {
 		t.Fatalf("a documentation plus implementation survey = %s/%s, want SUFFICIENT/answer", suff.State, suff.Stage)
+	}
+}
+
+// A Compose file, Makefile, and manifest declare topology and dependencies.
+// They are not implementation content, even when the runtime reads them.
+func TestConfigurationObservedButNotImplementation(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "The platform uses PostgreSQL."),
+		readEvidenceForTest("read-2", "backend/docker-compose.yml", "services:\n  product-service:\n    ports:\n      - \"8081:8080\"\n"),
+		readEvidenceForTest("read-3", "backend/Makefile", "build:\n\tgo build ./...\n"),
+		readEvidenceForTest("read-4", "backend/go.mod", "module ecommerce"),
+	)
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID:   "structure-overview",
+		ToolName: "structure",
+		Args:     map[string]any{"view": "overview"},
+		Result: agent.Result{
+			Text: "view: overview\ntests: 0 (test_files: 0)\n",
+			Details: map[string]any{
+				"view":                "overview",
+				"graph_state":         "CURRENT",
+				"complete":            false,
+				"partial":             true,
+				"truncated":           true,
+				"scope_complete":      false,
+				"structural_complete": true,
+				"test_files":          0,
+				"total":               0,
+			},
+		},
+	})
+	summary := state.Provenance(shape)
+	if summary.HasImplementation {
+		t.Fatalf("configuration/manifest evidence was counted as implementation: %+v", summary)
+	}
+	if !summary.HasConfiguration || !summary.HasDocumentation {
+		t.Fatalf("declared evidence was not classified: %+v", summary)
+	}
+	if summary.HasRuntimeObservation {
+		t.Fatalf("a metadata overview was counted as a runtime observation: %+v", summary)
+	}
+	if summary.StructuralScope != "PARTIAL" {
+		t.Fatalf("structural scope = %q, want PARTIAL", summary.StructuralScope)
+	}
+	if state.Satisfied("repository_survey", ExecutionState{}) {
+		t.Fatal("configuration and inventory satisfied a code repository survey")
+	}
+	suff := EvaluateSufficiency(shape, state, ExecutionState{}, false)
+	if suff.State != Insufficient || suff.Stage != StageExplore {
+		t.Fatalf("sufficiency = %s/%s, want INSUFFICIENT/explore", suff.State, suff.Stage)
+	}
+	if !containsString(suff.Missing, "repository_survey") {
+		t.Fatalf("missing = %v, want repository_survey", suff.Missing)
+	}
+	if !strings.Contains(strings.Join(suff.Next, " "), "read a source file") {
+		t.Fatalf("next evidence = %v, want a source-read instruction", suff.Next)
+	}
+}
+
+// A source read is the content observation that can support a behavior claim.
+func TestSourceReadSatisfiesImplementationClaim(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "The platform uses PostgreSQL."),
+		readEvidenceForTest("read-2", "backend/cmd/product-service/main.go",
+			"func main() { http.ListenAndServe(\":8081\", nil) }"),
+	)
+	summary := state.Provenance(shape)
+	if !summary.HasImplementation || len(summary.ImplementationPaths) == 0 {
+		t.Fatalf("a source read was not counted as implementation: %+v", summary)
+	}
+	if !state.Satisfied("repository_survey", ExecutionState{}) {
+		t.Fatal("a documentation plus source survey did not satisfy repository_survey")
+	}
+}
+
+// A complete test inventory is the only structural observation that supports a
+// test-file absence claim. A partial inventory leaves it unproven.
+func TestClaimSummaryTracksTestInventoryCompleteness(t *testing.T) {
+	complete := NewEvidenceState()
+	complete.ObserveOutcome(agent.ToolOutcome{
+		CallID:   "structure-tests",
+		ToolName: "structure",
+		Args:     map[string]any{"view": "tests"},
+		Result: agent.Result{
+			Text: "view: tests\nreturned: 0\ntotal: 0\n",
+			Details: map[string]any{
+				"view":                "tests",
+				"graph_state":         "CURRENT",
+				"complete":            true,
+				"partial":             false,
+				"truncated":           false,
+				"scope_complete":      true,
+				"inventory_complete":  true,
+				"structural_complete": true,
+				"completeness":        "COMPLETE",
+				"test_files":          0,
+				"total":               0,
+			},
+		},
+	})
+	summary := complete.ClaimSummary()
+	if summary.TestInventory != "COMPLETE" || !summary.TestFilesKnown || summary.TestFiles != 0 ||
+		!summary.TestTotalKnown || summary.TestTotal != 0 {
+		t.Fatalf("complete inventory summary = %+v", summary)
+	}
+
+	partial := NewEvidenceState()
+	partial.ObserveOutcome(agent.ToolOutcome{
+		CallID:   "structure-tests",
+		ToolName: "structure",
+		Args:     map[string]any{"view": "tests"},
+		Result: agent.Result{
+			Text: "view: tests\nscope: PARTIAL\nreturned: 0\ntotal: 0\n",
+			Details: map[string]any{
+				"view":                "tests",
+				"graph_state":         "CURRENT",
+				"complete":            false,
+				"partial":             true,
+				"truncated":           false,
+				"scope_complete":      false,
+				"inventory_complete":  true,
+				"structural_complete": true,
+				"completeness":        "COMPLETE",
+				"test_files":          0,
+				"total":               0,
+			},
+		},
+	})
+	if got := partial.ClaimSummary().TestInventory; got != "PARTIAL" {
+		t.Fatalf("partial inventory = %q, want PARTIAL", got)
+	}
+}
+
+// A checkpoint clone must not alias the bounded counts. Mutating one state
+// must not rewrite the other's claim support.
+func TestEvidenceCloneDoesNotAliasStructuralCounts(t *testing.T) {
+	state := NewEvidenceState()
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID:   "structure-tests",
+		ToolName: "structure",
+		Args:     map[string]any{"view": "tests"},
+		Result: agent.Result{
+			Text: "view: tests\ntotal: 0\n",
+			Details: map[string]any{
+				"view": "tests", "graph_state": "CURRENT", "complete": true,
+				"scope_complete": true, "structural_complete": true,
+				"completeness": "COMPLETE", "test_files": 0, "total": 0,
+			},
+		},
+	})
+	item, ok := state.Find("structure:tests")
+	if !ok {
+		t.Fatal("the structural count observation was not recorded")
+	}
+	clone := state.Clone()
+	cloneItem, ok := clone.Find("structure:tests")
+	if !ok {
+		t.Fatal("the clone lost the structural count observation")
+	}
+	cloneItem.Counts["test_files"] = 9
+	if item.Counts["test_files"] != 0 {
+		t.Fatal("the clone aliased the live count map")
 	}
 }
 
@@ -282,7 +449,9 @@ func TestPathProvenanceClassification(t *testing.T) {
 		"vendor/lib/client.go":        ProvenanceGenerated,
 		"api/service.pb.go":           ProvenanceGenerated,
 		"web/app.min.js":              ProvenanceGenerated,
-		"config/settings.yaml":        ProvenanceObservation,
+		"config/settings.yaml":        ProvenanceConfiguration,
+		"docker-compose.yml":          ProvenanceConfiguration,
+		"Makefile":                    ProvenanceConfiguration,
 		"docs/requirements.txt":       ProvenanceManifest,
 		"docs/guide.markdown":         ProvenanceDocumentation,
 		"internal/agent/loop_test.go": ProvenanceObservation,

@@ -87,7 +87,24 @@ scope-partial. A zero file or test count is not absence unless scope,
 inventory, and structural completeness all hold and the result was not
 truncated; a complete `structure tests` inventory is accepted as the
 structural equivalent of a complete Go file scan for the narrow Go test-file
-claim.
+claim. These axes govern the answer, not only the tool result: an overview's
+zero test count remains a metadata fact, and only a complete filtered test
+inventory can support a test-file absence claim.
+
+The answer side classifies each observation by what it can establish:
+documentation, configuration/manifest, implementation source, or runtime. A
+Compose file, Makefile, dependency manifest, README, directory listing, or
+structural inventory never counts as implementation content; only a source read
+or source-scoped grep does, and only a live runtime observation proves
+execution. A broad project account therefore cannot complete from documentation
+plus metadata, and the pre-answer runtime state block reports the classes the
+run actually supports. The completion audit applies the same boundary, so an
+unsupported runtime claim, an absence claim without complete coverage, or a
+documentation/configuration claim presented as implementation is
+`NEEDS_REVIEW`. A behavior claim that names a port must find that port in a
+source observation that also carries the behavior, or in the address of a live
+runtime observation; reading one service's listener does not prove another
+service's port.
 
 The Go backend is always available. The tree-sitter adapters are compiled only
 with `cgo`; a no-cgo build keeps the Go path, reports other supported extensions
@@ -198,14 +215,15 @@ The same contract is consumed at three seams:
 - `agent.Loop` semantic admission refuses a mutating call when the request did
   not ground a mutation, before the security gate is consulted. A read may
   proceed as bounded observation; it cannot turn into the objective.
-- `cognition` projects the entities and ambiguity into the runtime state block
-  so the model sees what it must preserve.
+- `cognition` projects the entities, ambiguity, and the evidence-derived claim
+  classes into the runtime state block so the model sees what it must preserve
+  and which observations support which claim before it writes.
 - `agent.EvaluateTaskCompletion` calls `AssessGrounding` after structural
   evidence and before `COMPLETED`. Dropped entities, an invented action
   narrative, narrowed scope, unresolved references, unsupported negative
-  conclusions, and an unsupported claim scope (configuration promoted to
-  behavior, an unmeasured metric, independent deployment, or path-scoped
-  speculation) downgrade the result to `NEEDS_REVIEW`.
+  conclusions, and an unsupported claim scope (configuration or documentation
+  promoted to behavior, an unmeasured metric, independent deployment, or
+  path-scoped speculation) downgrade the result to `NEEDS_REVIEW`.
 
 Task persistence carries the grounding inside the existing `IntentContract`, so
 a resumed task keeps the same semantic boundary. `$sup` is deliberately not

@@ -223,13 +223,16 @@ not exist. A concept claim (“no documentation”, “no tests”)
 cannot be proven by a file scan and stays `NEEDS_REVIEW`. The one narrow
 exception is Go's mandatory `_test.go` suffix: a complete recursive scan of
 every `.go` file that contains no `_test.go` file proves the narrowed claim “no
-Go test files”. A complete, unscoped `structure` tests inventory with scope,
-inventory, and structural completeness all `COMPLETE` and zero test files is
-accepted as the structural equivalent of that scan. A bare “no tests” claim, and
-frontend test absence where naming is convention-based, remain concept
-absences. A snapshot that reports `scope: PARTIAL`, an excluded root, a pending
-parse, or unsupported source cannot prove a repository-wide absence. An answer that only reports “I
-could not find …” is an unverified negative result, not completion. The failure
+Go test files”. A complete, unscoped, `CURRENT` `structure` tests inventory
+with scope, inventory, and structural completeness all `COMPLETE`, an
+untruncated result, and zero test files is accepted as the structural
+equivalent of that scan. A bare “no tests” claim, and frontend test absence
+where naming is convention-based, remain concept absences. A snapshot that
+reports `scope: PARTIAL`, an excluded root, a pending parse, unsupported
+source, or `STALE` freshness cannot prove a repository-wide absence. A
+metadata overview is not a filtered test inventory, even when it prints
+`tests: 0`. An answer that only reports “I could not find …” is an unverified
+negative result, not completion. The failure
 form includes passive voice (“could not be read”), and a qualifier does not turn
 a category into a file coordinate: “no Go source files” is still a category
 absence, not a concrete file claim.
@@ -270,12 +273,24 @@ directory listing         names and sizes, not content or line counts
 ```
 
 A runtime-behavior claim (“cart validates against product”, “order publishes
-events”, “delivery fulfills”) needs a source observation containing the
-behavior; a dependency or topology declaration is not enough. Documentation
-attribution (“the README describes …”) and an explicit limitation (“not
-verified”) are lower-assertion forms and pass. A configuration mechanism can
-support its own claim: a Compose mount into `docker-entrypoint-initdb.d` proves
-that PostgreSQL init scripts are supplied, even without a source read.
+events”, “delivery fulfills”, “code listens on :8082”) needs source content
+that carries the behavior, or a live runtime observation that carries the
+named port; a dependency, topology, or documentation declaration is not
+enough. A port in the behavior clause must appear in the same source
+observation or runtime address: reading product-service's listener does not
+prove that cart-service uses a different port. Documentation attribution (“the
+README describes …”) and an explicit limitation (“not verified”) are
+lower-assertion forms and pass. A configuration mechanism can support its own
+claim: a Compose mount into `docker-entrypoint-initdb.d` proves that PostgreSQL
+init scripts are supplied, even without a source read.
+
+Configuration, manifests, documentation, directory listings, and structural
+inventory are not implementation content. A broad project survey therefore
+needs at least one source read; documentation plus metadata cannot close it.
+The evidence ledger and the answer audit use the same classification, so the
+model's pre-answer state block can report `implementation=NOT_OBSERVED` and
+`runtime=NOT_OBSERVED` instead of letting a configuration file stand in for
+execution.
 
 A concrete line count needs the file's read `totalLines` (or a line-count
 command). A directory listing's byte size is not a line count; a gross
@@ -289,8 +304,11 @@ evidence and provenance layers.
 
 The claim audit applies to informational answers only. A mutation answer is
 judged by target, mutation, and verification evidence, not by its prose. The
-informational runtime state block carries the same boundary as a bounded line,
-so the model sees it before writing the answer.
+informational runtime state block carries the same boundary as evidence-derived
+statuses: observed implementation, runtime, configuration, documentation, and
+scope, plus the test-inventory support state. The model sees what the run can
+claim before writing, and the completion audit still reviews a claim that
+exceeds it.
 
 ### 4.7 Completion integrity
 

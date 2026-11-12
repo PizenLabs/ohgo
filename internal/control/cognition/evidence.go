@@ -58,9 +58,12 @@ type Provenance string
 
 // Provenance classes.
 const (
-	// ProvenanceObservation is source code, configuration, or a structural
-	// query: evidence of what the implementation does.
+	// ProvenanceObservation is source code or a structural query: evidence of
+	// what the implementation contains.
 	ProvenanceObservation Provenance = "observation"
+	// ProvenanceConfiguration is declared runtime or deployment configuration:
+	// it states intended topology, not observed execution.
+	ProvenanceConfiguration Provenance = "configuration"
 	// ProvenanceDocumentation is README, docs, or another prose artifact: it
 	// is evidence of what the project says about itself.
 	ProvenanceDocumentation Provenance = "documentation"
@@ -98,9 +101,10 @@ const (
 	// EvidenceVersion is the persisted schema version. Version 2 added
 	// optional snapshot provenance to Source; version 3 adds language,
 	// adapter, resolution, completeness, and truncation; version 4 adds
-	// project-scope completeness. Older records stay readable because every
-	// new field is optional and additive.
-	EvidenceVersion = 4
+	// project-scope completeness; version 5 adds bounded structural counts
+	// for claim support. Older records stay readable because every new field
+	// is optional and additive.
+	EvidenceVersion = 5
 )
 
 // Source records where one observation came from.
@@ -168,6 +172,11 @@ type EvidenceItem struct {
 	Digest string `json:"digest,omitempty"`
 	// Source records provenance and coordinates.
 	Source Source `json:"source,omitempty"`
+	// Counts retains the bounded numeric facts a structural result reported,
+	// such as test_files and total. They are additive and optional; a claim
+	// boundary must not have to parse a rendered line to know whether a
+	// complete inventory observed zero test files.
+	Counts map[string]int `json:"counts,omitempty"`
 	// Complete reports that a listing or search result was not truncated.
 	Complete bool `json:"complete,omitempty"`
 	// Seq is the observation order, used to detect stale file state.
@@ -245,6 +254,16 @@ func (s *EvidenceState) Clone() *EvidenceState {
 	out := *s
 	out.Items = make([]EvidenceItem, len(s.Items))
 	copy(out.Items, s.Items)
+	for i := range out.Items {
+		if len(out.Items[i].Counts) == 0 {
+			continue
+		}
+		counts := make(map[string]int, len(out.Items[i].Counts))
+		for key, value := range out.Items[i].Counts {
+			counts[key] = value
+		}
+		out.Items[i].Counts = counts
+	}
 	out.Requirements = append([]Requirement(nil), s.Requirements...)
 	out.ObservedCalls = make(map[string]bool, len(s.ObservedCalls))
 	for key, value := range s.ObservedCalls {
@@ -937,6 +956,7 @@ func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[str
 		Summary:    bound(outcome.ToolName+" "+query+": "+firstLine(text), MaxEvidenceSummaryBytes),
 		Value:      text,
 		Digest:     digest(text),
+		Counts:     structuralCounts(details),
 		Complete:   complete,
 		Source:     structuralSource(details, outcome.ToolName, outcome.CallID, "", 0, 0),
 		Seq:        seq,
@@ -970,6 +990,28 @@ func (s *EvidenceState) addStructural(outcome agent.ToolOutcome, details map[str
 		}
 	}
 	return changed
+}
+
+// structuralCounts retains the numeric facts a structure view reports. The
+// keys are a closed vocabulary shared with structuralSource; a missing key is
+// unknown, never zero.
+func structuralCounts(details map[string]any) map[string]int {
+	keys := []string{
+		"test_files", "total", "returned", "files", "packages", "symbols",
+		"references", "calls", "entrypoints", "configs", "directories",
+	}
+	var counts map[string]int
+	for _, key := range keys {
+		value, ok := details[key].(int)
+		if !ok {
+			continue
+		}
+		if counts == nil {
+			counts = map[string]int{}
+		}
+		counts[key] = value
+	}
+	return counts
 }
 
 // structuralSource projects snapshot provenance into the existing Source
@@ -1302,7 +1344,8 @@ func (s *EvidenceState) upsert(item EvidenceItem) bool {
 		changed := s.Items[i].Digest != item.Digest ||
 			s.Items[i].Status != item.Status ||
 			s.Items[i].Complete != item.Complete ||
-			s.Items[i].Value != item.Value
+			s.Items[i].Value != item.Value ||
+			!equalCounts(s.Items[i].Counts, item.Counts)
 		s.Items[i] = item
 		return changed
 	}
@@ -1317,7 +1360,17 @@ func (s *EvidenceState) Bytes() int {
 	}
 	total := 0
 	for _, item := range s.Items {
-		total += len(item.ID) + len(item.Summary) + len(item.Value) + len(item.Conflict)
+		total += item.retainedBytes()
+	}
+	return total
+}
+
+// retainedBytes is one item's contribution to the evidence bound. Bounded
+// counts are small but they are still retained state, so they are counted.
+func (i EvidenceItem) retainedBytes() int {
+	total := len(i.ID) + len(i.Summary) + len(i.Value) + len(i.Conflict)
+	for key := range i.Counts {
+		total += len(key) + 8
 	}
 	return total
 }
@@ -1363,7 +1416,7 @@ func (s *EvidenceState) trim() {
 	})
 	total := s.Bytes()
 	for len(s.Items) > 1 && (len(s.Items) > MaxEvidenceItems || total > MaxEvidenceBytes) {
-		total -= len(s.Items[0].ID) + len(s.Items[0].Summary) + len(s.Items[0].Value) + len(s.Items[0].Conflict)
+		total -= s.Items[0].retainedBytes()
 		s.Items = s.Items[1:]
 	}
 	// The replay guard and mutation clock are metadata, not facts. Cap them so
@@ -1389,6 +1442,19 @@ func (s *EvidenceState) trim() {
 		}
 	}
 	s.trimFailures()
+}
+
+// equalCounts reports whether two bounded count maps carry the same facts.
+func equalCounts(a, b map[string]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 // detailsMap returns a tool result's details as a map.
@@ -1467,15 +1533,17 @@ func isMissingFileError(text string) bool {
 //
 // The path classification is owned by agent.ClassifyPath, so answer claim
 // scope and evidence provenance cannot drift apart. Documentation is what the
-// project says about itself; a manifest states dependencies; vendored and
-// generated files are not the project's own implementation. Configuration and
-// source observations remain implementation observations for provenance.
+// project says about itself; a manifest states dependencies; configuration
+// declares intended topology; vendored and generated files are not the
+// project's own implementation. Only source content can establish behavior.
 func classifyPathProvenance(path string) Provenance {
 	switch agent.ClassifyPath(path) {
 	case agent.PathDocumentation:
 		return ProvenanceDocumentation
 	case agent.PathManifest:
 		return ProvenanceManifest
+	case agent.PathConfiguration:
+		return ProvenanceConfiguration
 	case agent.PathGenerated:
 		return ProvenanceGenerated
 	default:
@@ -1483,20 +1551,38 @@ func classifyPathProvenance(path string) Provenance {
 	}
 }
 
-// isImplementationObservation reports whether an evidence item proves what the
-// implementation does rather than what its documentation claims.
+// isImplementationObservation reports whether an evidence item observed source
+// content rather than a declaration about it.
+//
+// A Compose file, Makefile, dependency manifest, README, directory listing, or
+// structural inventory describes intended topology and identity. None of them
+// establishes that the implementation executes the described behavior. Only a
+// source read or a source-scoped grep carries the content a behavior claim can
+// be checked against.
 func isImplementationObservation(item EvidenceItem) bool {
 	if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
 		return false
 	}
-	switch item.Provenance {
-	case ProvenanceObservation:
-		// A directory listing is structure, not implementation. Symbol and
-		// source reads are the observations that can support an architecture
-		// or behaviour claim.
-		return !strings.HasPrefix(item.ID, "dir:")
-	case ProvenanceManifest:
+	if strings.TrimSpace(item.Value) == "" {
 		return false
+	}
+	if item.Provenance != ProvenanceObservation {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(item.ID, "file:"):
+		return agent.ClassifyPath(item.Source.Path) == agent.PathSource
+	case strings.HasPrefix(item.ID, "search:grep:"):
+		path := strings.TrimSpace(item.Source.Path)
+		if path == "" || path == "." || path == "./" {
+			return false
+		}
+		switch agent.ClassifyPath(path) {
+		case agent.PathDocumentation, agent.PathManifest, agent.PathConfiguration, agent.PathGenerated:
+			return false
+		default:
+			return true
+		}
 	default:
 		return false
 	}

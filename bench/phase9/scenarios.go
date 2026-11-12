@@ -118,6 +118,10 @@ func matrix() []scenario {
 		{Tool: "read", Args: map[string]any{"path": "logs/huge.log"}},
 		{Tool: "ls", Args: map[string]any{"path": "."}},
 		{Tool: "read", Args: map[string]any{"path": "index.html"}},
+		// The markup describes the product, but the client behavior lives in
+		// the script. A broad account needs that implementation observation;
+		// otherwise the new evidence boundary correctly leaves it in review.
+		{Tool: "read", Args: map[string]any{"path": "script.js"}},
 		{Text: "Nimbus Notes is a static notebook. The large log file is unrelated operational noise."},
 	}
 

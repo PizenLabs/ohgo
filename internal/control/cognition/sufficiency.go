@@ -582,6 +582,8 @@ func nextEvidence(key string) string {
 		return "locate the requested declaration with the symbols tool"
 	case key == "repository_overview":
 		return "list the repository root and read the entry point or module file"
+	case key == "repository_survey":
+		return "read a source file (entry point or module) to observe implementation content; documentation, manifests, configuration, and inventory are not enough"
 	case key == "external_observation":
 		return "use the external capability the request named and observe its result"
 	case key == "verification":

@@ -45,6 +45,7 @@ var (
 		`reads?\s+from\b|` +
 		`writes?\s+to\b|` +
 		`auto[- ]?appl(?:y|ies|ied|ying)\b|` +
+		`executes?\s+(?:the\s+)?(?:job|task|command|process|query|migration|workflow|pipeline|handler|request)\b|` +
 		`routes?\s+(?:requests?\s+)?(?:to|through)\b|` +
 		`listens?\s+(?:on|for)\b|` +
 		`process(?:es)?\s+(?:orders?|payments?|events?)\b|` +
@@ -104,6 +105,11 @@ var (
 	// excusing the same sentence's repository-wide conclusion.
 	globalNegativeScopePattern = regexp.MustCompile(
 		`(?i)\b(?:in|across|throughout)\s+(?:the\s+)?(?:repository|repo|project|codebase|workspace|directory|folder)\b|\banywhere\b|\bat\s+all\b`)
+
+	// claimedPortPattern extracts a concrete port literal from a behavior
+	// sentence. It requires a colon or the word "port" so a version, a count,
+	// or a timestamp is not mistaken for a service coordinate.
+	claimedPortPattern = regexp.MustCompile(`(?i)(?::|\bport\s+)(\d{2,5})\b`)
 )
 
 // claimScopeIssues returns the answer claims the run's observations cannot
@@ -203,14 +209,16 @@ func lineCountClaimIssue(sentence string, turns []Turn) *claimIssue {
 	return nil
 }
 
-// behaviorClaimIssue checks a runtime-behavior claim against source
-// observations. Configuration and manifests declare intent; they do not prove
-// execution.
+// behaviorClaimIssue checks a runtime-behavior claim against source and live
+// runtime observations. Configuration and manifests declare intent; they do
+// not prove execution. A named port narrows the check to the observation that
+// actually carries that port.
 func behaviorClaimIssue(sentence string, turns []Turn) *claimIssue {
-	match := behaviorClaimPattern.FindString(sentence)
-	if match == "" {
+	matchIndex := behaviorClaimPattern.FindStringIndex(sentence)
+	if matchIndex == nil {
 		return nil
 	}
+	match := sentence[matchIndex[0]:matchIndex[1]]
 	if autoApplyClaim(match) {
 		// A database init hook is a configuration mechanism: the Compose
 		// mount into docker-entrypoint-initdb.d proves that init scripts are
@@ -227,14 +235,107 @@ func behaviorClaimIssue(sentence string, turns []Turn) *claimIssue {
 		}
 	}
 	stem := behaviorStem(match)
-	if stem == "" || implementationTextContains(turns, stem) {
+	// Ports after the behavior verb belong to this claim. Ports earlier in the
+	// sentence may describe the container mapping or another clause, so they
+	// must not be attributed to the observed listener.
+	ports := claimedPorts(sentence[matchIndex[1]:])
+	if stem == "" || behaviorClaimObserved(stem, ports, turns) {
 		return nil
 	}
+	detail := "the answer states %q as runtime behavior without a source observation; configuration declares topology, not execution. Verify it or mark it unverified"
+	if len(ports) > 0 {
+		detail = "the answer states %q at port %s without a source observation naming that port; configuration declares topology, not execution. Verify it or mark it unverified"
+		return &claimIssue{
+			Code:   "unsupported_implementation_claim",
+			Detail: fmt.Sprintf(detail, boundedClaim(match), strings.Join(ports, ", ")),
+		}
+	}
 	return &claimIssue{
-		Code: "unsupported_implementation_claim",
-		Detail: fmt.Sprintf(
-			"the answer states %q as runtime behavior without a source observation; configuration declares topology, not execution. Verify it or mark it unverified",
-			boundedClaim(match)),
+		Code:   "unsupported_implementation_claim",
+		Detail: fmt.Sprintf(detail, boundedClaim(match)),
+	}
+}
+
+// claimedPorts returns the concrete port literals a behavior sentence names.
+func claimedPorts(sentence string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range claimedPortPattern.FindAllStringSubmatch(sentence, -1) {
+		if len(match) < 2 || seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		out = append(out, match[1])
+	}
+	return out
+}
+
+// behaviorClaimObserved reports whether source observations contain the
+// behavior stem. When the sentence names ports, every claimed port must be
+// present in a source observation that also carries the behavior stem: reading
+// product's listener does not prove that cart listens on a different port, but
+// a claim spanning several services may be supported by several source reads.
+func behaviorClaimObserved(stem string, ports []string, turns []Turn) bool {
+	if len(ports) == 0 {
+		return sourceObservationContains(turns, stem, "")
+	}
+	for _, port := range ports {
+		if sourceObservationContains(turns, stem, port) || runtimePortObserved(turns, port) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// runtimePortObserved reports a live runtime whose observed address names the
+// port. A live service is stronger evidence than a source read for the port it
+// actually answered on, but it does not prove unrelated behavior.
+func runtimePortObserved(turns []Turn, port string) bool {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.IsError || outcome.Refused() || outcome.Result.Runtime == nil {
+				continue
+			}
+			if strings.Contains(outcome.Result.Runtime.URL, ":"+port) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sourceObservationContains reports a source read or source-scoped grep that
+// contains the behavior stem and, when non-empty, the port literal.
+func sourceObservationContains(turns []Turn, stem, port string) bool {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.IsError || outcome.Refused() || !sourceObservationOutcome(outcome) {
+				continue
+			}
+			text := strings.ToLower(outcome.Result.Text)
+			if !strings.Contains(text, stem) {
+				continue
+			}
+			if port == "" || strings.Contains(text, port) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sourceObservationOutcome reports whether an outcome is a source read or a
+// source-scoped grep. Configuration, documentation, and manifests are not
+// implementation observations.
+func sourceObservationOutcome(outcome ToolOutcome) bool {
+	switch outcome.ToolName {
+	case "read":
+		return isImplementationPath(outcomePath(outcome))
+	case "grep":
+		return isImplementationSearchPath(outcomePath(outcome))
+	default:
+		return false
 	}
 }
 
@@ -500,31 +601,6 @@ func claimCount(raw string) int {
 	return value
 }
 
-// implementationTextContains reports whether a source observation contains the
-// behavior stem.
-func implementationTextContains(turns []Turn, stem string) bool {
-	for _, turn := range turns {
-		for _, outcome := range turn.Results {
-			if outcome.Result.IsError || outcome.Refused() {
-				continue
-			}
-			switch outcome.ToolName {
-			case "read":
-				if isImplementationPath(outcomePath(outcome)) &&
-					strings.Contains(strings.ToLower(outcome.Result.Text), stem) {
-					return true
-				}
-			case "grep":
-				if isImplementationSearchPath(outcomePath(outcome)) &&
-					strings.Contains(strings.ToLower(outcome.Result.Text), stem) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
 // deploymentObserved reports a read deployment artifact. A Dockerfile or a
 // Kubernetes/Helm manifest is a deployment boundary; a Compose service entry
 // alone is topology.
@@ -673,6 +749,8 @@ func behaviorStem(phrase string) string {
 		return "call"
 	case strings.HasPrefix(word, "send"):
 		return "send"
+	case strings.HasPrefix(word, "execut"):
+		return "execut"
 	case strings.HasPrefix(word, "read"):
 		return "read"
 	case strings.HasPrefix(word, "writ"):

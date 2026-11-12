@@ -50,14 +50,15 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	if probe := workspaceProbeSummary(shape.RepositoryFacts); probe != "" {
 		fmt.Fprintf(&head, "Workspace probe: %s\n", probe)
 	}
-	// The answer-side claim audit and this line are the same contract: a
-	// manifest or topology declaration is not an implementation observation.
-	// Stating it in the state block keeps the model from paying for the
-	// distinction only after a completion review. A mutation answer is judged
-	// by target and verification evidence instead, so it does not spend the
-	// block on this distinction.
+	// The answer-side claim audit and this block are the same contract. The
+	// statuses are derived from the evidence ledger, so the model sees which
+	// claim classes the run actually supports before it writes: a manifest or
+	// topology declaration is not an implementation observation, and a
+	// metadata overview is not an absence proof. A mutation answer is judged by
+	// target and verification evidence instead, so it does not spend the block
+	// on this distinction.
 	if shape.Kind == contract.ObjectiveInformational {
-		head.WriteString("Claim boundary: configuration declares topology, not behavior; unobserved metrics and path content stay unverified.\n")
+		head.WriteString(claimEvidenceBlock(evidence))
 	}
 	fmt.Fprintf(&head, "Task shape: %s\n", shape.Summary())
 	if len(shape.Constraints) > 0 {
@@ -195,7 +196,12 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 			if item.Status == StatusConflicting || item.Retention == RetentionExternal {
 				continue
 			}
-			fmt.Fprintf(&sb, "- [%s/%s] %s%s\n", item.Status, item.Retention, bound(item.Summary, 260), sourceSuffix(item.Source))
+			provenance := string(item.Provenance)
+			if provenance == "" {
+				provenance = "unclassified"
+			}
+			fmt.Fprintf(&sb, "- [%s/%s/%s] %s%s\n", item.Status, item.Retention, provenance,
+				bound(item.Summary, 260), sourceSuffix(item.Source))
 		}
 		if sb.Len() > len("Evidence known:\n") {
 			sections = append(sections, sb.String())
@@ -203,6 +209,91 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	}
 
 	return boundSections(sections, maxBytes)
+}
+
+// claimEvidenceBlock renders the evidence-derived claim classes for an
+// informational answer. It is the generation-side half of the completion
+// claim audit: the model is told which observations support which class before
+// it writes, instead of learning the boundary only from a review.
+func claimEvidenceBlock(evidence *EvidenceState) string {
+	summary := evidence.ClaimSummary()
+	var line strings.Builder
+	line.WriteString("Claim evidence: implementation=")
+	line.WriteString(claimStatus(summary.HasImplementation))
+	if summary.HasImplementation && len(summary.ImplementationPaths) > 0 {
+		line.WriteString(claimPathList(summary.ImplementationPaths))
+	}
+	line.WriteString("; runtime=")
+	line.WriteString(claimStatus(summary.HasRuntime))
+	line.WriteString("; configured=")
+	line.WriteString(claimStatus(summary.HasConfiguration))
+	line.WriteString("; documented=")
+	line.WriteString(claimStatus(summary.HasDocumentation))
+	line.WriteString("; scope=")
+	if summary.StructuralScope == "" {
+		line.WriteString("NOT_OBSERVED")
+	} else {
+		line.WriteString(summary.StructuralScope)
+	}
+	line.WriteString("; test_inventory=")
+	line.WriteString(summary.TestInventory)
+	switch summary.TestInventory {
+	case "COMPLETE":
+		var counts []string
+		if summary.TestFilesKnown {
+			counts = append(counts, fmt.Sprintf("%d test files", summary.TestFiles))
+		}
+		if summary.TestTotalKnown {
+			counts = append(counts, fmt.Sprintf("%d tests", summary.TestTotal))
+		}
+		if len(counts) == 0 {
+			counts = append(counts, "count unknown")
+		}
+		absence := "test-file absence unproven"
+		switch {
+		case summary.TestFilesKnown && summary.TestFiles == 0 &&
+			summary.TestTotalKnown && summary.TestTotal == 0:
+			absence = "test-file absence supported"
+		case summary.TestFilesKnown || summary.TestTotalKnown:
+			absence = "test-file absence not supported"
+		}
+		line.WriteString(" (" + strings.Join(counts, ", ") + "; " + absence + ")")
+	case "PARTIAL":
+		line.WriteString(" (absence unproven)")
+	}
+	line.WriteString("\n")
+	line.WriteString("Claim rule: configuration declares topology, not execution. " +
+		"Only a complete, untruncated inventory can support an absence claim; " +
+		"otherwise say \"not found in inspected scope\" or mark it unverified. " +
+		"Behavior needs source or runtime evidence; metrics need a measured value.\n")
+	return line.String()
+}
+
+// claimStatus renders one evidence class without implying confidence.
+func claimStatus(observed bool) string {
+	if observed {
+		return "OBSERVED"
+	}
+	return "NOT_OBSERVED"
+}
+
+// claimPathList renders a bounded set of coordinates for one class.
+func claimPathList(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	var bounded []string
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		bounded = append(bounded, bound(path, 80))
+	}
+	if len(bounded) == 0 {
+		return ""
+	}
+	return "[" + strings.Join(bounded, ", ") + "]"
 }
 
 // orderedEvidence selects and orders the most decision-relevant items.
@@ -352,9 +443,13 @@ func RenderAudit(report agent.ProjectionReport) string {
 	if report.Terminal {
 		fmt.Fprintf(&sb, "terminal: %s\n", report.StopReason)
 	}
-	if report.Provenance.HasImplementation || report.Provenance.HasDocumentation || report.Provenance.ExternalRequired {
-		fmt.Fprintf(&sb, "provenance: implementation=%t documentation=%t external_required=%t external_observed=%t doc_terms=%d\n",
-			report.Provenance.HasImplementation, report.Provenance.HasDocumentation,
+	if report.Provenance.HasImplementation || report.Provenance.HasConfiguration ||
+		report.Provenance.HasDocumentation || report.Provenance.HasRuntimeObservation ||
+		report.Provenance.ExternalRequired {
+		fmt.Fprintf(&sb, "provenance: implementation=%t configuration=%t documentation=%t runtime=%t scope=%s test_inventory=%s external_required=%t external_observed=%t doc_terms=%d\n",
+			report.Provenance.HasImplementation, report.Provenance.HasConfiguration,
+			report.Provenance.HasDocumentation, report.Provenance.HasRuntimeObservation,
+			report.Provenance.StructuralScope, report.Provenance.TestInventory,
 			report.Provenance.ExternalRequired, report.Provenance.ExternalObserved,
 			len(report.Provenance.DocumentationTerms))
 	}

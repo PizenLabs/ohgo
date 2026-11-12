@@ -279,6 +279,44 @@ func TestNestedRepositoryProjectAnalysis(t *testing.T) {
 	if testsView.IsError || !strings.Contains(testsView.Text, "Test") {
 		t.Fatalf("tests view did not see the nested Go tests: %s", testsView.Text)
 	}
+
+	// The claim layer must agree with the structural result: a metadata
+	// overview is not implementation evidence, and a test inventory with
+	// excluded roots cannot support a repository-wide absence claim.
+	facts := cognition.ProbeFacts(root)
+	shape := cognition.BuildShape(contract.IntentContract{
+		Objective: "check this project and analyze what this project is about?",
+		Kind:      contract.ObjectiveInformational,
+	}, cognition.ShapeParams{Authority: "ask", Intent: "read", Facts: facts})
+	evidence := cognition.NewEvidenceState()
+	evidence.ObserveOutcome(agent.ToolOutcome{
+		ToolName: "structure", Args: map[string]any{}, Result: overview,
+	})
+	summary := evidence.ClaimSummary()
+	if summary.HasImplementation {
+		t.Fatalf("a metadata overview was counted as implementation: %+v", summary)
+	}
+	if summary.TestInventory != "NOT_QUERIED" {
+		t.Fatalf("an overview set the filtered test inventory to %q", summary.TestInventory)
+	}
+	if summary.StructuralScope != "PARTIAL" {
+		t.Fatalf("structural scope = %q, want PARTIAL with excluded roots", summary.StructuralScope)
+	}
+	evidence.ObserveOutcome(agent.ToolOutcome{
+		ToolName: "structure", Args: map[string]any{"view": "tests"}, Result: testsView,
+	})
+	summary = evidence.ClaimSummary()
+	if summary.TestInventory != "PARTIAL" {
+		t.Fatalf("a scope-partial test inventory = %q, want PARTIAL", summary.TestInventory)
+	}
+	if !summary.TestFilesKnown || summary.TestFiles == 0 {
+		t.Fatalf("the nested test files disappeared from the claim inventory: %+v", summary)
+	}
+	if suff := cognition.EvaluateSufficiency(shape, evidence, cognition.ExecutionState{}, false); suff.State != cognition.Insufficient {
+		t.Fatalf("a metadata-only broad analysis = %s/%s, want INSUFFICIENT",
+			suff.State, suff.Stage)
+	}
+
 	packagesView := structure.Execute(ctx, map[string]any{"view": "packages", "path": "backend"})
 	if packagesView.IsError || !strings.Contains(packagesView.Text, "backend/internal/order") {
 		t.Fatalf("packages view lost the nested Go packages: %s", packagesView.Text)

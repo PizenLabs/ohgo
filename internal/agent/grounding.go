@@ -666,6 +666,12 @@ func structureProvesNoTestFiles(outcome ToolOutcome) bool {
 	if detailValueString(details, "view") != "tests" || detailValueBool(details, "truncated") {
 		return false
 	}
+	// Freshness is independent of completeness: a complete inventory of a
+	// snapshot that no longer matches the tree does not establish current
+	// absence.
+	if detailValueString(details, "graph_state") != "CURRENT" {
+		return false
+	}
 	if !detailValueBool(details, "scope_complete") ||
 		!detailValueBool(details, "inventory_complete") ||
 		!detailValueBool(details, "structural_complete") {

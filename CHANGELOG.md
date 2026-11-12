@@ -50,6 +50,12 @@ immutable.
   `nested_projects`, `excluded_roots`, file-level `excluded_source_files`, the
   decisive rule, shallow build markers, `test_files`, and independent
   scope/inventory/structural/result completeness.
+- Evidence claim classes: `cognition` now classifies each observation as
+  documentation, configuration/manifest, implementation source, or runtime, and
+  retains bounded structural counts such as `test_files` (`EvidenceVersion` 5).
+  The pre-answer runtime state block reports which classes the run supports, so
+  the model sees the claim boundary before it writes instead of learning it
+  only from a completion review.
 
 ### Changed
 
@@ -67,6 +73,11 @@ immutable.
   `structure`/`refs` instead of being folded into a false package edge. The
   structural snapshot remains in memory. `<project>/.ohgo/graph.db` is still
   reserved and unimplemented; no derived persistence was added.
+- Configuration and manifest observations are no longer implementation
+  evidence. A Makefile, Compose file, dependency manifest, README, directory
+  listing, or structural inventory declares topology, dependencies, or
+  metadata; a broad project survey now requires an observed source read before
+  it can close. The state block names that missing class directly.
 
 ### Fixed
 
@@ -74,6 +85,19 @@ immutable.
   later explicit read clause (`check this project and analyze what this project
   is about?`) now carries a strong READ signal and reaches the ASK authority
   boundary instead of silently staying in BUILD.
+- A truncated metadata overview's `tests: 0` is no longer treated as proof that
+  no tests exist. Only a complete, unscoped structural test inventory (or the
+  narrow complete Go scan) can support a test-file absence claim, and the
+  state block reports a partial inventory as `absence unproven`.
+- A configuration-derived runtime claim is no longer promoted by a
+  Makefile/Compose/README observation. The runtime state block reports
+  `implementation=NOT_OBSERVED` and `runtime=NOT_OBSERVED`, and the completion
+  audit still rejects an active behavior claim without source or runtime
+  evidence.
+- A behavior claim that names a port must be supported by a source observation
+  containing that same port or by a live runtime address on that port. Reading
+  one service's listener no longer supports a claim about a different service's
+  port.
 - Structural inventory no longer loses a nested repository to the enclosing
   repository's `.gitignore`. A root rule such as `backend/` no longer reports
   `go: 0` when `backend/` is a nested Go project; the boundary is included,
