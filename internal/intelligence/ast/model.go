@@ -288,6 +288,25 @@ type SnapshotInfo struct {
 	State Freshness `json:"state"`
 	// BuiltAt is when this generation was published.
 	BuiltAt time.Time `json:"built_at"`
+	// ScopeComplete reports that every source-bearing path under the root was
+	// either inspected or named as excluded. False means the inventory is
+	// complete only for the included scope and a repository-wide absence claim
+	// is unsupported.
+	ScopeComplete bool `json:"scope_complete"`
+	// ExcludedRoots names directories the scope did not inspect. A nested
+	// repository owned by another project is included in structural scope; an
+	// ordinary ignored directory is reported here instead of disappearing.
+	ExcludedRoots []ExcludedRoot `json:"excluded_roots,omitempty"`
+	// ExcludedSourceFiles counts source-bearing files a file-level scope rule
+	// removed. A directory report is not enough: "*_test.go" can hide a test
+	// file while leaving its directory in scope, and that must still block an
+	// absence claim.
+	ExcludedSourceFiles int `json:"excluded_source_files,omitempty"`
+	// ExcludedFiles is a bounded sample of those paths.
+	ExcludedFiles []ExcludedFile `json:"excluded_files,omitempty"`
+	// NestedProjects records nested repository boundaries. An included boundary
+	// contributes files to this same snapshot; it is not a second index.
+	NestedProjects []ProjectBoundary `json:"nested_projects,omitempty"`
 	// Files counts every indexed file, not only Go files.
 	Files int `json:"files"`
 	// GoFiles counts indexed Go source and test files, regardless of parse state.
@@ -321,7 +340,10 @@ type SnapshotInfo struct {
 	Symbols     int `json:"symbols"`
 	References  int `json:"references"`
 	Calls       int `json:"calls"`
+	// Tests counts test declarations. TestFiles counts source files classified
+	// as tests; the two differ for a test file without a declaration.
 	Tests       int `json:"tests"`
+	TestFiles   int `json:"test_files"`
 	Entrypoints int `json:"entrypoints"`
 	Configs     int `json:"configs"`
 	// ParseFailures counts entries the snapshot could not parse or read.
@@ -338,6 +360,45 @@ type SnapshotInfo struct {
 	// "global_reresolve" means retained syntax was re-resolved without a
 	// re-parse; "full_snapshot" means every Go file was parsed.
 	LastResolution string `json:"last_resolution"`
+}
+
+// ExcludedFile is one source-bearing file a file-level scope rule removed.
+type ExcludedFile struct {
+	Path string `json:"path"`
+	Rule string `json:"rule,omitempty"`
+}
+
+// ExcludedRoot is one directory the structural scope did not inspect.
+//
+// It is inventory provenance, not a second tree walk: the path was observed
+// during the same scan that built the snapshot. Markers and languages are
+// shallow hints read from that directory's immediate children so a caller can
+// tell a generated directory from an out-of-scope source project without
+// pretending the excluded contents were indexed.
+type ExcludedRoot struct {
+	Path             string     `json:"path"`
+	Reason           string     `json:"reason"`
+	Rule             string     `json:"rule,omitempty"`
+	NestedRepository bool       `json:"nested_repository,omitempty"`
+	Markers          []string   `json:"markers,omitempty"`
+	Languages        []Language `json:"languages,omitempty"`
+}
+
+// ProjectBoundary is a nested repository root observed under the index root.
+//
+// Included boundaries contribute their files to the one shared snapshot.
+// Excluded boundaries remain visible here with the reason they were not
+// inspected, so a project overview cannot silently present one repository as
+// the whole project.
+type ProjectBoundary struct {
+	Path     string `json:"path"`
+	Included bool   `json:"included"`
+	// ParentScopeRule names the enclosing ignore rule the boundary overrides,
+	// when the enclosing scope would otherwise have hidden the nested project.
+	ParentScopeRule string     `json:"parent_scope_rule,omitempty"`
+	Reason          string     `json:"reason,omitempty"`
+	Markers         []string   `json:"markers,omitempty"`
+	Languages       []Language `json:"languages,omitempty"`
 }
 
 // FileInfo is one file fact from the structural inventory.

@@ -76,8 +76,11 @@ it is done. ohgo is built around the opposite contract.
   pending supported files they need. Reference and call queries report
   `ambiguous`, `truncated`, `unsupported`, and `unknown` explicitly instead of
   guessing; inventory reports snapshot freshness, generation, language
-  coverage, structural completeness, and unsupported source, and keeps test
-  associations static rather than presenting them as coverage.
+  coverage, separate scope/inventory/structural/result completeness, excluded
+  roots, and unsupported source. A nested repository is treated as a project
+  boundary even when the enclosing `.gitignore` hides its directory, so a root
+  `backend/` rule cannot erase a nested Go project. Test associations stay
+  static rather than being presented as coverage.
 - **Sessions that survive** — transcripts are stored in a pure-Go SQLite
   database, and a resumed session restores its own workspace, project, and
   effective model.

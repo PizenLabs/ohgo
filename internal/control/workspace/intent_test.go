@@ -220,6 +220,22 @@ func TestClassifyUsesTheWholeRequestForMutationIntent(t *testing.T) {
 	}
 }
 
+// The exact product regression: a project-analysis request opened with the
+// ambiguous verb "check" and a later explicit "analyze" clause. The later read
+// verb is the request's objective, so the turn must reach the ASK authority
+// boundary instead of silently staying in BUILD.
+func TestProjectAnalysisPromptRoutesToAsk(t *testing.T) {
+	text := "check this project and analyze what this project is about?"
+	prediction := ClassifyPrediction(text)
+	if prediction.Intent != IntentRead || prediction.Strength != StrengthStrong {
+		t.Fatalf("prediction = %+v, want a strong READ signal", prediction)
+	}
+	decision := DecideTransition(Build, AnalyzeRequest(text))
+	if !decision.NeedsConfirmation() || decision.Target != Ask {
+		t.Fatalf("decision = %+v, want the ASK confirmation boundary", decision)
+	}
+}
+
 func TestAmbiguousReadVerbStaysInACapableWorkspace(t *testing.T) {
 	prediction := ClassifyPrediction("check this project")
 	if prediction.Intent != IntentRead || prediction.Strength != StrengthModerate {

@@ -223,8 +223,12 @@ not exist. A concept claim (“no documentation”, “no tests”)
 cannot be proven by a file scan and stays `NEEDS_REVIEW`. The one narrow
 exception is Go's mandatory `_test.go` suffix: a complete recursive scan of
 every `.go` file that contains no `_test.go` file proves the narrowed claim “no
-Go test files”. A bare “no tests” claim, and frontend test absence where naming
-is convention-based, remain concept absences. An answer that only reports “I
+Go test files”. A complete, unscoped `structure` tests inventory with scope,
+inventory, and structural completeness all `COMPLETE` and zero test files is
+accepted as the structural equivalent of that scan. A bare “no tests” claim, and
+frontend test absence where naming is convention-based, remain concept
+absences. A snapshot that reports `scope: PARTIAL`, an excluded root, a pending
+parse, or unsupported source cannot prove a repository-wide absence. An answer that only reports “I
 could not find …” is an unverified negative result, not completion. The failure
 form includes passive voice (“could not be read”), and a qualifier does not turn
 a category into a file coordinate: “no Go source files” is still a category

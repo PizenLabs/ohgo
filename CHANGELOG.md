@@ -39,17 +39,30 @@ immutable.
   and lets overviews stay metadata-first. Targeted/impact queries parse pending
   supported files on demand; semantic escalation is explicitly unsupported.
 - Structural evidence now carries language, adapter, resolution, structural
-  completeness, and truncation in addition to snapshot id and generation
-  (`EvidenceVersion` 3). Snapshots disclose per-language parsed/pending/failed
-  counts, inventory completeness, structural completeness, and unsupported
-  source extensions.
+  completeness, project-scope completeness, and truncation in addition to
+  snapshot id and generation (`EvidenceVersion` 4). Snapshots disclose
+  per-language parsed/pending/failed counts, inventory completeness, structural
+  completeness, and unsupported source extensions.
+- Project-boundary scope: a nested repository is included in the same
+  structural snapshot even when the enclosing repository's `.gitignore` hides
+  its directory, and the nested repository's own ignore rules govern its
+  contents. `structure` adds a metadata-only `scope` view, and snapshots report
+  `nested_projects`, `excluded_roots`, file-level `excluded_source_files`, the
+  decisive rule, shallow build markers, `test_files`, and independent
+  scope/inventory/structural/result completeness.
 
 ### Changed
 
 - Repository scoping is injected into the structural index from the shared
   `ignore.Matcher`, so `.gitignore` membership has one owner and `ast` stays a
   dependency-free intelligence leaf. A rule or scope fingerprint change
-  refreshes membership without re-parsing unchanged source files.
+  refreshes membership without re-parsing unchanged source files. Structural
+  scope treats a nested repository as a project boundary and evaluates that
+  repository's own ignore rules inside it.
+- `structure` overview no longer repeats `parsed_files`, `unsupported_source`,
+  or the module line in both the header and the body. A repeated overview of
+  the same snapshot is marked `repeated: true` so the model can recognize that
+  it adds no new inventory facts.
 - `graph` remains the Go package import graph; a non-Go selector is pointed at
   `structure`/`refs` instead of being folded into a false package edge. The
   structural snapshot remains in memory. `<project>/.ohgo/graph.db` is still
@@ -57,6 +70,14 @@ immutable.
 
 ### Fixed
 
+- A project-analysis request that opens with an ambiguous read verb and adds a
+  later explicit read clause (`check this project and analyze what this project
+  is about?`) now carries a strong READ signal and reaches the ASK authority
+  boundary instead of silently staying in BUILD.
+- Structural inventory no longer loses a nested repository to the enclosing
+  repository's `.gitignore`. A root rule such as `backend/` no longer reports
+  `go: 0` when `backend/` is a nested Go project; the boundary is included,
+  disclosed, and its tests remain discoverable.
 - A malformed call can no longer downgrade a proof the runtime already holds.
   A schema violation never executed, so it is neither work nor an observation
   about the project: completion ignores it for pending failures and outstanding

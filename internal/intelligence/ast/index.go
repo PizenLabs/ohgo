@@ -40,6 +40,27 @@ type Scope interface {
 	Fingerprint() string
 }
 
+// ScopeExplainer optionally names the rule that excluded a path. The index
+// keeps the decision visible in SnapshotInfo instead of reporting an
+// unexplained file-count drop.
+type ScopeExplainer interface {
+	Explain(rel string, isDir bool) string
+}
+
+// ProjectBoundaryScope optionally reports root-relative nested repository
+// roots. The scope owner decides whether a boundary is included or excluded;
+// the index only records the boundary and its effect on the inventory.
+type ProjectBoundaryScope interface {
+	NestedRepositories() []string
+}
+
+// BoundaryRuleScope optionally reports the enclosing scope rule that a nested
+// project boundary overrides. It keeps the override explainable instead of
+// making the parent .gitignore silently irrelevant.
+type BoundaryRuleScope interface {
+	BoundaryRule(rel string) string
+}
+
 // IndexOptions configures one index without changing the default constructor.
 type IndexOptions struct {
 	// Scope excludes repository paths. A nil scope includes every path the
@@ -150,6 +171,12 @@ type Index struct {
 	// build could not inspect. Their contents are unknown, so they are counted
 	// as unparsed: a lookup must not present their absence as a fact.
 	unreadable map[string]bool
+	// excludedRoots and nestedProjects are the scope facts of the same scan.
+	// They are published atomically with the file records they describe.
+	excludedRoots       []ExcludedRoot
+	excludedSourceFiles int
+	excludedFiles       []ExcludedFile
+	nestedProjects      []ProjectBoundary
 	// modulePath is the module clause from go.mod, empty when absent or
 	// unparseable. The graph cannot prove a module-local edge without it.
 	modulePath string
@@ -253,12 +280,16 @@ func (idx *Index) buildLockedCtx(ctx context.Context) error {
 
 // treeScan is one stat-only observation of the indexed tree.
 type treeScan struct {
-	files            map[string]fileSig
-	unreadable       map[string]bool
-	scopeFingerprint string
-	module           string
-	moduleSig        moduleSig
-	moduleRoot       string
+	files               map[string]fileSig
+	unreadable          map[string]bool
+	excludedRoots       []ExcludedRoot
+	excludedSourceFiles int
+	excludedFiles       []ExcludedFile
+	nestedProjects      []ProjectBoundary
+	scopeFingerprint    string
+	module              string
+	moduleSig           moduleSig
+	moduleRoot          string
 }
 
 // scanLockedCtx walks the tree and records signatures. It does not parse:
@@ -271,8 +302,16 @@ func (idx *Index) scanLockedCtx(ctx context.Context) (treeScan, error) {
 	if err := ctx.Err(); err != nil {
 		return treeScan{}, err
 	}
+	var nestedRoots []string
 	if idx.scope != nil {
 		scan.scopeFingerprint = idx.scope.Fingerprint()
+		if boundaries, ok := idx.scope.(ProjectBoundaryScope); ok {
+			nestedRoots = boundaries.NestedRepositories()
+		}
+	}
+	nestedSet := make(map[string]bool, len(nestedRoots))
+	for _, rel := range nestedRoots {
+		nestedSet[rel] = true
 	}
 
 	err := filepath.WalkDir(idx.walkRoot, func(path string, entry os.DirEntry, walkErr error) error {
@@ -292,11 +331,23 @@ func (idx *Index) scanLockedCtx(ctx context.Context) (treeScan, error) {
 				return filepath.SkipDir
 			}
 			if path != idx.walkRoot && idx.scope != nil && idx.scope.Ignored(rel, true) {
+				scan.excludedRoots = append(scan.excludedRoots, idx.excludedRoot(rel, path, nestedSet[rel]))
 				return filepath.SkipDir
 			}
 			return nil
 		}
+		if entry.Name() == ".git" {
+			// A worktree .git is a file pointing at the real metadata
+			// directory. It is a boundary marker, never repository source.
+			return nil
+		}
 		if idx.scope != nil && idx.scope.Ignored(rel, false) {
+			if sourceBearingPath(rel) {
+				scan.excludedSourceFiles++
+				if len(scan.excludedFiles) < 16 {
+					scan.excludedFiles = append(scan.excludedFiles, idx.excludedFile(rel))
+				}
+			}
 			return nil
 		}
 		if !entry.Type().IsRegular() {
@@ -322,9 +373,130 @@ func (idx *Index) scanLockedCtx(ctx context.Context) (treeScan, error) {
 	if err := ctx.Err(); err != nil {
 		return treeScan{}, err
 	}
+	for _, rel := range nestedRoots {
+		scan.nestedProjects = append(scan.nestedProjects, idx.projectBoundary(rel, scan.excludedRoots))
+	}
 	scan.module, scan.moduleSig = readModule(idx.walkRoot)
 	scan.moduleRoot = nearestModuleRoot(idx.walkRoot)
 	return scan, nil
+}
+
+// excludedRoot records one scope exclusion with the rule that caused it and a
+// shallow hint of what the excluded directory contains.
+func (idx *Index) excludedRoot(rel, path string, nested bool) ExcludedRoot {
+	root := ExcludedRoot{
+		Path:             rel,
+		Reason:           "repository scope",
+		NestedRepository: nested,
+	}
+	if nested {
+		root.Reason = "nested repository boundary"
+	}
+	if explainer, ok := idx.scope.(ScopeExplainer); ok {
+		root.Rule = explainer.Explain(rel, true)
+	}
+	root.Markers, root.Languages = boundaryHints(path)
+	return root
+}
+
+// excludedFile records one source-bearing file removed by a file-level scope
+// rule. The rule is retained so the inventory can explain the gap.
+func (idx *Index) excludedFile(rel string) ExcludedFile {
+	file := ExcludedFile{Path: rel}
+	if explainer, ok := idx.scope.(ScopeExplainer); ok {
+		file.Rule = explainer.Explain(rel, false)
+	}
+	return file
+}
+
+// sourceBearingPath reports a path whose extension belongs to a known source
+// language, supported or not. A generated text file is not a source gap.
+func sourceBearingPath(rel string) bool {
+	if _, ok := LanguageForPath(rel); ok {
+		return true
+	}
+	return unsupportedSourceExtension(rel) != ""
+}
+
+// projectBoundary records one nested repository root and whether an enclosing
+// exclusion kept it out of the snapshot.
+func (idx *Index) projectBoundary(rel string, excluded []ExcludedRoot) ProjectBoundary {
+	boundary := ProjectBoundary{Path: rel, Included: true}
+	if rules, ok := idx.scope.(BoundaryRuleScope); ok {
+		boundary.ParentScopeRule = rules.BoundaryRule(rel)
+	}
+	for _, root := range excluded {
+		if rel == root.Path || strings.HasPrefix(rel, root.Path+"/") {
+			boundary.Included = false
+			boundary.Reason = "enclosing root " + root.Path + " is excluded by repository scope"
+			break
+		}
+	}
+	boundary.Markers, boundary.Languages = boundaryHints(filepath.Join(idx.walkRoot, filepath.FromSlash(rel)))
+	return boundary
+}
+
+// boundaryMarkers are top-level names that identify a nested project's build
+// vocabulary without reading or parsing its contents.
+var boundaryMarkers = map[string]bool{
+	"go.mod": true, "go.work": true, "go.sum": true,
+	"package.json": true, "pnpm-workspace.yaml": true, "yarn.lock": true,
+	"Cargo.toml": true, "pom.xml": true, "build.gradle": true,
+	"build.gradle.kts": true, "settings.gradle": true, "settings.gradle.kts": true,
+	"Gemfile": true, "Rakefile": true, "CMakeLists.txt": true,
+	"Makefile": true, "pyproject.toml": true, "requirements.txt": true,
+	"composer.json": true, "deno.json": true, "mix.exs": true,
+	"docker-compose.yml": true, "compose.yaml": true,
+}
+
+// boundaryHints reads one directory level to name the build markers and
+// language vocabulary a project boundary exposes. It never descends, parses,
+// or publishes file contents.
+func boundaryHints(path string) ([]string, []Language) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, nil
+	}
+	var markers []string
+	languages := map[Language]bool{}
+	for _, entry := range entries {
+		name := entry.Name()
+		marker := boundaryMarkers[name] || strings.HasSuffix(name, ".csproj") ||
+			strings.HasSuffix(name, ".sln")
+		if marker && len(markers) < 8 {
+			markers = append(markers, name)
+		}
+		switch name {
+		case "go.mod", "go.work", "go.sum":
+			languages[LanguageGo] = true
+		case "Cargo.toml":
+			languages[LanguageRust] = true
+		case "pom.xml":
+			languages[LanguageJava] = true
+		case "build.gradle", "build.gradle.kts",
+			"settings.gradle", "settings.gradle.kts":
+			languages[LanguageJava] = true
+			languages[LanguageKotlin] = true
+		case "Gemfile", "Rakefile":
+			languages[LanguageRuby] = true
+		case "CMakeLists.txt":
+			languages[LanguageC] = true
+			languages[LanguageCpp] = true
+		}
+		if strings.HasSuffix(name, ".csproj") || strings.HasSuffix(name, ".sln") {
+			languages[LanguageCSharp] = true
+		}
+	}
+	out := make([]Language, 0, len(languages))
+	for _, language := range []Language{
+		LanguageGo, LanguageJava, LanguageCSharp, LanguageRust,
+		LanguageKotlin, LanguageRuby, LanguageC, LanguageCpp,
+	} {
+		if languages[language] {
+			out = append(out, language)
+		}
+	}
+	return markers, out
 }
 
 // treeChangedLocked compares a scan to the published snapshot.
@@ -352,7 +524,82 @@ func (idx *Index) treeChangedLocked(scan treeScan, watchModule bool) bool {
 			return true
 		}
 	}
+	if !sameExcludedRoots(scan.excludedRoots, idx.excludedRoots) ||
+		scan.excludedSourceFiles != idx.excludedSourceFiles ||
+		!sameExcludedFiles(scan.excludedFiles, idx.excludedFiles) ||
+		!sameProjectBoundaries(scan.nestedProjects, idx.nestedProjects) {
+		return true
+	}
 	return false
+}
+
+func sameExcludedRoots(left, right []ExcludedRoot) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].Path != right[i].Path ||
+			left[i].Reason != right[i].Reason ||
+			left[i].Rule != right[i].Rule ||
+			left[i].NestedRepository != right[i].NestedRepository ||
+			!sameStrings(left[i].Markers, right[i].Markers) ||
+			!sameLanguages(left[i].Languages, right[i].Languages) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameProjectBoundaries(left, right []ProjectBoundary) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].Path != right[i].Path || left[i].Included != right[i].Included ||
+			left[i].ParentScopeRule != right[i].ParentScopeRule ||
+			left[i].Reason != right[i].Reason ||
+			!sameStrings(left[i].Markers, right[i].Markers) ||
+			!sameLanguages(left[i].Languages, right[i].Languages) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameExcludedFiles(left, right []ExcludedFile) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameLanguages(left, right []Language) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Stale reports whether the on-disk tree differs from the indexed snapshot.
@@ -598,6 +845,10 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull,
 	idx.files = records
 	idx.snapshot = scan.files
 	idx.unreadable = scan.unreadable
+	idx.excludedRoots = scan.excludedRoots
+	idx.excludedSourceFiles = scan.excludedSourceFiles
+	idx.excludedFiles = scan.excludedFiles
+	idx.nestedProjects = scan.nestedProjects
 	idx.modulePath = scan.module
 	idx.moduleSig = scan.moduleSig
 	idx.moduleRoot = scan.moduleRoot
@@ -919,6 +1170,16 @@ func sourceFingerprint(scan treeScan) string {
 		_, _ = fmt.Fprintf(hasher, "%s\x00%d\x00%d\n", rel, sig.size, sig.mtime)
 	}
 	_, _ = fmt.Fprintf(hasher, "scope\x00%s\nmodule\x00%s\n", scan.scopeFingerprint, scan.module)
+	for _, root := range scan.excludedRoots {
+		_, _ = fmt.Fprintf(hasher, "excluded\x00%s\n", root.Path)
+	}
+	_, _ = fmt.Fprintf(hasher, "excluded_files\x00%d\n", scan.excludedSourceFiles)
+	for _, file := range scan.excludedFiles {
+		_, _ = fmt.Fprintf(hasher, "excluded_file\x00%s\n", file.Path)
+	}
+	for _, boundary := range scan.nestedProjects {
+		_, _ = fmt.Fprintf(hasher, "nested\x00%s\x00%v\n", boundary.Path, boundary.Included)
+	}
 	return hex.EncodeToString(hasher.Sum(nil))[:16]
 }
 
@@ -1092,6 +1353,9 @@ func (idx *Index) infoLocked() SnapshotInfo {
 	unsupportedSource := false
 	for rel, rec := range idx.files {
 		dirs[dirOf(rel)] = true
+		if rec.test {
+			info.TestFiles++
+		}
 		language, source := LanguageForPath(rel)
 		if !source {
 			if ext := unsupportedSourceExtension(rel); ext != "" {
@@ -1175,6 +1439,11 @@ func (idx *Index) infoLocked() SnapshotInfo {
 		info.References += len(idx.languageGraph.references)
 		info.Calls += len(idx.languageGraph.calls)
 	}
+	info.ScopeComplete = len(idx.excludedRoots) == 0 && idx.excludedSourceFiles == 0
+	info.ExcludedRoots = append([]ExcludedRoot(nil), idx.excludedRoots...)
+	info.ExcludedSourceFiles = idx.excludedSourceFiles
+	info.ExcludedFiles = append([]ExcludedFile(nil), idx.excludedFiles...)
+	info.NestedProjects = append([]ProjectBoundary(nil), idx.nestedProjects...)
 	info.InventoryComplete = len(idx.unreadable) == 0
 	info.StructuralComplete = info.FailedFiles == 0 && info.PendingFiles == 0 &&
 		len(info.Unsupported) == 0 && !unsupportedSource && info.InventoryComplete

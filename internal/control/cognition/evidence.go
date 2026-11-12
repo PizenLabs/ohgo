@@ -97,9 +97,10 @@ const (
 	MaxEvidenceBytes = 64 * 1024
 	// EvidenceVersion is the persisted schema version. Version 2 added
 	// optional snapshot provenance to Source; version 3 adds language,
-	// adapter, resolution, completeness, and truncation. Older records stay
-	// readable because every new field is optional and additive.
-	EvidenceVersion = 3
+	// adapter, resolution, completeness, and truncation; version 4 adds
+	// project-scope completeness. Older records stay readable because every
+	// new field is optional and additive.
+	EvidenceVersion = 4
 )
 
 // Source records where one observation came from.
@@ -138,6 +139,10 @@ type Source struct {
 	// independent of GraphState: a CURRENT snapshot can be structurally
 	// partial.
 	Completeness string `json:"completeness,omitempty"`
+	// ScopeCompleteness is COMPLETE or PARTIAL for a structural snapshot's
+	// project scope. Empty means the observation predates scope provenance or
+	// is not structural.
+	ScopeCompleteness string `json:"scopeCompleteness,omitempty"`
 	// Truncated reports that the producing query hit its own bound.
 	Truncated bool `json:"truncated,omitempty"`
 }
@@ -980,20 +985,29 @@ func structuralSource(details map[string]any, tool, callID, path string, start, 
 			}
 		}
 	}
+	scope := ""
+	if complete, ok := details["scope_complete"].(bool); ok {
+		if complete {
+			scope = "COMPLETE"
+		} else {
+			scope = "PARTIAL"
+		}
+	}
 	return Source{
-		Tool:         tool,
-		CallID:       callID,
-		Path:         path,
-		StartLine:    start,
-		EndLine:      end,
-		SnapshotID:   detailString(details, "snapshot_id"),
-		GraphState:   detailString(details, "graph_state"),
-		Generation:   uint64(detailInt(details, "generation")),
-		Language:     detailString(details, "language"),
-		Adapter:      detailString(details, "adapter"),
-		Resolution:   detailString(details, "resolution"),
-		Completeness: completeness,
-		Truncated:    detailBool(details, "truncated"),
+		Tool:              tool,
+		CallID:            callID,
+		Path:              path,
+		StartLine:         start,
+		EndLine:           end,
+		SnapshotID:        detailString(details, "snapshot_id"),
+		GraphState:        detailString(details, "graph_state"),
+		Generation:        uint64(detailInt(details, "generation")),
+		Language:          detailString(details, "language"),
+		Adapter:           detailString(details, "adapter"),
+		Resolution:        detailString(details, "resolution"),
+		Completeness:      completeness,
+		ScopeCompleteness: scope,
+		Truncated:         detailBool(details, "truncated"),
 	}
 }
 

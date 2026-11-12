@@ -37,9 +37,10 @@ func TestAskQuestionStaysAskWithoutWorkspaceDecision(t *testing.T) {
 	}
 }
 
-// Scenario D: BUILD may inspect. A mixed "check and understand" request must
-// not force a workspace choice or a repository change.
-func TestBuildInvestigationStaysBuildWithoutPickerOrMutation(t *testing.T) {
+// Scenario D: BUILD may inspect, but an explicit analysis request still asks
+// before crossing into the read-only ASK authority. Nothing runs until the
+// human decision, and accepting changes no repository source.
+func TestBuildAnalysisConfirmsAskBoundary(t *testing.T) {
 	root := t.TempDir()
 	writeReadinessModule(t, root)
 	r := newReadinessRuntime(t, root, workspace.Build,
@@ -49,9 +50,20 @@ func TestBuildInvestigationStaysBuildWithoutPickerOrMutation(t *testing.T) {
 			readinessAnswer("The order/checkout flow is represented by the tools package in this snapshot."),
 		})
 
-	cmd := r.program.submit("Check this project and understand how the order/checkout flow works.")
+	if cmd := r.program.submit("Check this project and understand how the order/checkout flow works."); cmd != nil {
+		t.Fatalf("BUILD analysis ran before the ASK decision: %+v", r.program.state.Transition)
+	}
+	pending := r.program.state.Transition
+	if pending == nil || pending.Proposed != "ASK" || pending.Automatic {
+		t.Fatalf("transition = %+v, want a confirmed ASK boundary", pending)
+	}
+	if *r.role != workspace.Build {
+		t.Fatalf("the pending decision moved authority to %s", *r.role)
+	}
+
+	_, cmd := r.program.resolveTransition(true)
 	if cmd == nil {
-		t.Fatalf("BUILD investigation opened a decision: %+v", r.program.state.Transition)
+		t.Fatal("accepting the ASK boundary did not release the turn")
 	}
 	cmd()
 	drainProgram(r.program)
@@ -63,8 +75,8 @@ func TestBuildInvestigationStaysBuildWithoutPickerOrMutation(t *testing.T) {
 	if current.Completion != nil && current.Completion.Observed {
 		t.Fatal("an investigation with no change claimed a proven repository change")
 	}
-	if *r.role != workspace.Build {
-		t.Fatalf("role = %s, want BUILD", *r.role)
+	if *r.role != workspace.Ask {
+		t.Fatalf("role = %s, want ASK", *r.role)
 	}
 }
 

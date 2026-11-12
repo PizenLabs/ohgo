@@ -118,6 +118,45 @@ func TestCompleteGoScanProvesNoGoTestFiles(t *testing.T) {
 	}
 }
 
+func claimStructureTests(testFiles int, scopeComplete bool) ToolOutcome {
+	return ToolOutcome{
+		ToolName: "structure",
+		Args:     map[string]any{"view": "tests"},
+		Result: Result{
+			Text: "status: ok\nview: tests\ntests: 0\n",
+			Details: map[string]any{
+				"view":                "tests",
+				"truncated":           false,
+				"scope_complete":      scopeComplete,
+				"inventory_complete":  true,
+				"structural_complete": true,
+				"test_files":          testFiles,
+				"total":               0,
+			},
+		},
+	}
+}
+
+// A complete structural test inventory is equivalent to a complete recursive
+// scan for the narrow Go test-file claim. A scope exclusion or an observed test
+// file must still block it.
+func TestCompleteStructuralTestInventoryProvesNoGoTestFiles(t *testing.T) {
+	complete := []Turn{{Results: []ToolOutcome{claimStructureTests(0, true)}}}
+	if verdict := claimVerdict(complete, "No Go test files are present."); !verdict.Complete() {
+		t.Fatalf("a complete structural test inventory did not prove absence: %s", verdict.Reason)
+	}
+
+	scoped := []Turn{{Results: []ToolOutcome{claimStructureTests(0, false)}}}
+	if verdict := claimVerdict(scoped, "No Go test files are present."); verdict.Complete() {
+		t.Fatal("a structural test inventory with an excluded root proved absence")
+	}
+
+	present := []Turn{{Results: []ToolOutcome{claimStructureTests(1, true)}}}
+	if verdict := claimVerdict(present, "No Go test files are present."); verdict.Complete() {
+		t.Fatal("a structural test inventory containing a test file proved absence")
+	}
+}
+
 // A language name that merely contains "go" is not a Go test claim.
 func TestUnrelatedLanguageNameDoesNotBecomeGoTestProof(t *testing.T) {
 	turns := []Turn{{Results: []ToolOutcome{

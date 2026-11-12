@@ -234,6 +234,60 @@ func TestRun(t *testing.T) { Run() }
 	}
 }
 
+// TestNestedRepositoryProjectAnalysis is the gated real-project regression for
+// the failure where a root ".gitignore" rule "backend/" hid a nested Go
+// repository from structural inventory. It skips unless the caller supplies the
+// project root, so the suite never depends on a machine-specific path.
+func TestNestedRepositoryProjectAnalysis(t *testing.T) {
+	root := strings.TrimSpace(os.Getenv("OHGO_ECOMMERCE_ROOT"))
+	if root == "" {
+		t.Skip("set OHGO_ECOMMERCE_ROOT to a mixed frontend/nested-Go project")
+	}
+	source := tools.NewStructuralSource(root)
+	idx, err := source.Index()
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	info := idx.Info()
+	if info.GoFiles < 10 || info.TestFiles < 1 {
+		t.Fatalf("nested Go repository disappeared: go=%d tests=%d excluded=%+v",
+			info.GoFiles, info.TestFiles, info.ExcludedRoots)
+	}
+	included := false
+	for _, boundary := range info.NestedProjects {
+		if boundary.Path == "backend" && boundary.Included {
+			included = true
+			if boundary.ParentScopeRule == "" {
+				t.Errorf("nested backend does not name the parent rule it overrides: %+v", boundary)
+			}
+		}
+	}
+	if !included {
+		t.Fatalf("nested backend is not an included project boundary: %+v", info.NestedProjects)
+	}
+	structure := tools.NewStructureTool(source)
+	ctx := agent.Context{Ctx: context.Background()}
+	overview := structure.Execute(ctx, map[string]any{})
+	if overview.IsError {
+		t.Fatalf("overview: %s", overview.Text)
+	}
+	if !strings.Contains(overview.Text, "nested_projects: 1") ||
+		!strings.Contains(overview.Text, "- path: backend") {
+		t.Fatalf("overview omitted the nested backend:\n%s", overview.Text)
+	}
+	testsView := structure.Execute(ctx, map[string]any{"view": "tests"})
+	if testsView.IsError || !strings.Contains(testsView.Text, "Test") {
+		t.Fatalf("tests view did not see the nested Go tests: %s", testsView.Text)
+	}
+	packagesView := structure.Execute(ctx, map[string]any{"view": "packages", "path": "backend"})
+	if packagesView.IsError || !strings.Contains(packagesView.Text, "backend/internal/order") {
+		t.Fatalf("packages view lost the nested Go packages: %s", packagesView.Text)
+	}
+	if parsed := idx.Info(); parsed.Entrypoints == 0 {
+		t.Fatalf("nested service entrypoints were not discovered: %+v", parsed)
+	}
+}
+
 // TestSelfAnalysisStructuralRuntime is the gated self-analysis baseline. It
 // verifies that the same runtime comprehends OHGO's own architecture without
 // changing the native Go path.

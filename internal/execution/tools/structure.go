@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
@@ -21,6 +22,9 @@ type StructureTool struct {
 	Root string
 
 	source *StructuralSource
+
+	mu           sync.Mutex
+	lastOverview string
 }
 
 // NewStructureTool returns the inventory tool over source.
@@ -37,16 +41,22 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 			"a view and optionally scope it with path, package, or symbol. "+
 			"Overview is metadata-first and does not parse source; targeted and "+
 			"impact views parse the pending supported files on demand. Every "+
-			"result names its snapshot id, generation, activation, and "+
-			"completeness; test associations are static and are not coverage. "+
-			"Semantic activation is unsupported and fails explicitly.",
+			"result names its snapshot id, generation, activation, and four "+
+			"independent completeness axes: scope, inventory, structural, and "+
+			"result. Scope reports excluded_roots and nested repository "+
+			"boundaries; a nested repository is included in the same snapshot "+
+			"and governed by its own ignore files. A zero tests or files count "+
+			"is not proof of absence unless scope, inventory, and structural are "+
+			"all COMPLETE and the result is not truncated. Test associations are "+
+			"static and are not coverage. Semantic activation is unsupported "+
+			"and fails explicitly.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"view": map[string]any{
 					"type":        "string",
-					"enum":        []any{"overview", "languages", "files", "packages", "entrypoints", "configs", "tests", "relations", "impact"},
+					"enum":        []any{"overview", "scope", "languages", "files", "packages", "entrypoints", "configs", "tests", "relations", "impact"},
 					"description": "Inventory view. Defaults to overview.",
 				},
 				"path": map[string]any{
@@ -118,7 +128,7 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 		}
 		view = strings.TrimSpace(value)
 		switch view {
-		case "overview", "languages", "files", "packages", "entrypoints", "configs", "tests", "relations", "impact":
+		case "overview", "scope", "languages", "files", "packages", "entrypoints", "configs", "tests", "relations", "impact":
 		default:
 			return agent.ErrorResult("unsupported view %q", value)
 		}
@@ -171,7 +181,7 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 		return agent.ErrorResult("semantic structural activation is unsupported: no semantic resolver is configured")
 	}
 	switch view {
-	case "overview", "entrypoints", "configs":
+	case "overview", "scope", "entrypoints", "configs":
 		if pathArg != "" || packageArg != "" || symbolArg != "" {
 			return agent.ErrorResult("%s does not take path, package, or symbol selectors", view)
 		}
@@ -212,6 +222,8 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 	switch view {
 	case "overview":
 		return t.overview(ctx, idx, limit)
+	case "scope":
+		return t.scope(ctx, idx)
 	case "languages":
 		return t.languageView(ctx, idx, limit)
 	case "files":
@@ -243,7 +255,7 @@ func (t *StructureTool) languageView(ctx agent.Context, idx *ast.Index, limit in
 		status = "not_found"
 	}
 	var text strings.Builder
-	writeStructureHeader(&text, status, "languages", result.Snapshot)
+	writeStructureHeader(&text, status, "languages", result.Snapshot, result.Truncated, result.Reason)
 	fmt.Fprintf(&text, "languages: %d\n", len(result.Languages))
 	for _, language := range result.Languages {
 		fmt.Fprintf(&text, "  - language: %s\n", ast.DisplayLanguage(language.Language))
@@ -271,6 +283,8 @@ func (t *StructureTool) languageView(ctx agent.Context, idx *ast.Index, limit in
 		"languages":   languageMaps(result.Languages),
 		"unsupported": unsupportedMaps(result.Unsupported),
 		"frameworks":  append([]string(nil), result.Frameworks...),
+		"truncated":   result.Truncated,
+		"reason":      result.Reason,
 	}
 	addStructuralProvenance(details, idx, result.Snapshot.StructuralComplete)
 	return agent.Result{
@@ -296,7 +310,7 @@ func (t *StructureTool) relationsView(ctx agent.Context, idx *ast.Index, symbolA
 		status = "not_found"
 	}
 	var text strings.Builder
-	writeStructureHeader(&text, status, "relations", result.Snapshot)
+	writeStructureHeader(&text, status, "relations", result.Snapshot, result.Truncated, result.Reason)
 	fmt.Fprintf(&text, "query: %s %s\n", result.QueryType, result.Selector)
 	if result.Ambiguous {
 		text.WriteString("ambiguous: true\n")
@@ -381,34 +395,28 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 	if result.Truncated {
 		status = "truncated"
 	}
+	repeated := t.markOverview(info.SnapshotID, slice)
 	var text strings.Builder
-	writeStructureHeader(&text, status, "overview", info)
+	writeStructureHeader(&text, status, "overview", info, result.Truncated, result.Reason)
+	if repeated {
+		text.WriteString("repeated: true (the same snapshot was already reported)\n")
+	}
 	fmt.Fprintf(&text, "languages: %s\n", languageSummary(info.Languages))
 	if len(result.Frameworks) > 0 {
 		fmt.Fprintf(&text, "frameworks: %s\n", strings.Join(result.Frameworks, ", "))
 	}
-	if len(info.Unsupported) > 0 {
-		parts := make([]string, 0, len(info.Unsupported))
-		for _, item := range info.Unsupported {
-			parts = append(parts, fmt.Sprintf("%s(%d)", item.Extension, item.Files))
-		}
-		fmt.Fprintf(&text, "unsupported_source: %s\n", strings.Join(parts, ", "))
-	}
 	fmt.Fprintf(&text, "packages: %d\n", info.Packages)
 	fmt.Fprintf(&text, "files: %d (go: %d, source: %d, configs: %d)\n", info.Files, info.GoFiles, info.SourceFiles, info.Configs)
-	fmt.Fprintf(&text, "parsed_files: %d pending_files: %d failed_files: %d\n", info.ParsedFiles, info.PendingFiles, info.FailedFiles)
 	fmt.Fprintf(&text, "symbols: %d\n", info.Symbols)
 	fmt.Fprintf(&text, "references: %d\n", info.References)
 	fmt.Fprintf(&text, "calls: %d\n", info.Calls)
-	fmt.Fprintf(&text, "tests: %d\n", info.Tests)
+	fmt.Fprintf(&text, "tests: %d (test_files: %d)\n", info.Tests, info.TestFiles)
 	fmt.Fprintf(&text, "entrypoints: %d\n", info.Entrypoints)
 	fmt.Fprintf(&text, "directories: %d\n", info.Directories)
 	fmt.Fprintf(&text, "last_parsed_files: %d\n", info.LastParsedFiles)
 	fmt.Fprintf(&text, "last_reused_files: %d\n", info.LastReusedFiles)
 	fmt.Fprintf(&text, "last_resolution: %s\n", info.LastResolution)
-	if info.Module != "" {
-		fmt.Fprintf(&text, "module: %s\n", info.Module)
-	}
+	writeScopeInventory(&text, info)
 	if len(result.Packages) > 0 {
 		text.WriteString("\npackages:\n")
 		for _, pkg := range result.Packages {
@@ -442,10 +450,122 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 		"frameworks":  append([]string(nil), result.Frameworks...),
 		"truncated":   result.Truncated,
 		"reason":      result.Reason,
+		"repeated":    repeated,
 	}
 	addStructuralProvenance(details, idx, !result.Truncated)
 	details["coordinates"] = overviewCoordinates(result.Packages, result.Entrypoints)
 	return agent.Result{Text: strings.TrimRight(text.String(), "\n"), Details: details}
+}
+
+// scope is the project-boundary view. It is metadata-only: an excluded root is
+// described, never recursively walked or parsed, and an included nested
+// repository is already part of the same snapshot.
+func (t *StructureTool) scope(ctx agent.Context, idx *ast.Index) agent.Result {
+	info, err := idx.Snapshot(ctx.Ctx)
+	if err != nil {
+		return agent.ErrorResult("scope: %v", err)
+	}
+	status := "ok"
+	var text strings.Builder
+	writeStructureHeader(&text, status, "scope", info, false, "")
+	if len(info.ExcludedRoots) == 0 {
+		text.WriteString("excluded_roots: 0\n")
+	}
+	writeScopeInventory(&text, info)
+	details := map[string]any{
+		"status":          status,
+		"view":            "scope",
+		"snapshot":        snapshotMap(info),
+		"excluded_roots":  excludedRootMaps(info.ExcludedRoots),
+		"nested_projects": projectBoundaryMaps(info.NestedProjects),
+		"scope_complete":  info.ScopeComplete,
+	}
+	addStructuralProvenance(details, idx, info.ScopeComplete)
+	return agent.Result{Text: strings.TrimRight(text.String(), "\n"), Details: details}
+}
+
+// writeScopeInventory renders the excluded roots and included nested projects
+// that explain why an inventory is or is not repository-wide.
+func writeScopeInventory(text *strings.Builder, info ast.SnapshotInfo) {
+	if len(info.ExcludedRoots) > 0 {
+		fmt.Fprintf(text, "excluded_roots: %d (contents not indexed)\n", len(info.ExcludedRoots))
+	}
+	const maxScopeRows = 10
+	for i, root := range info.ExcludedRoots {
+		if i >= maxScopeRows {
+			fmt.Fprintf(text, "  - ... %d more excluded roots\n", len(info.ExcludedRoots)-maxScopeRows)
+			break
+		}
+		fmt.Fprintf(text, "  - path: %s\n", root.Path)
+		fmt.Fprintf(text, "    reason: %s\n", root.Reason)
+		if root.Rule != "" {
+			fmt.Fprintf(text, "    rule: %s\n", root.Rule)
+		}
+		if root.NestedRepository {
+			text.WriteString("    nested_repository: true\n")
+		}
+		if len(root.Markers) > 0 {
+			fmt.Fprintf(text, "    markers: %s\n", strings.Join(root.Markers, ", "))
+		}
+		if len(root.Languages) > 0 {
+			fmt.Fprintf(text, "    languages: %s\n", strings.Join(languageStrings(root.Languages), ", "))
+		}
+	}
+	if info.ExcludedSourceFiles > 0 {
+		fmt.Fprintf(text, "excluded_source_files: %d (contents not indexed)\n", info.ExcludedSourceFiles)
+		shown := 0
+		for _, file := range info.ExcludedFiles {
+			if shown >= maxScopeRows {
+				break
+			}
+			fmt.Fprintf(text, "  - path: %s\n", file.Path)
+			if file.Rule != "" {
+				fmt.Fprintf(text, "    rule: %s\n", file.Rule)
+			}
+			shown++
+		}
+		if remaining := info.ExcludedSourceFiles - shown; remaining > 0 {
+			fmt.Fprintf(text, "  - ... %d more excluded source files\n", remaining)
+		}
+	}
+	if len(info.NestedProjects) > 0 {
+		fmt.Fprintf(text, "nested_projects: %d\n", len(info.NestedProjects))
+		for i, boundary := range info.NestedProjects {
+			if i >= maxScopeRows {
+				fmt.Fprintf(text, "  - ... %d more nested projects\n", len(info.NestedProjects)-maxScopeRows)
+				break
+			}
+			fmt.Fprintf(text, "  - path: %s\n", boundary.Path)
+			fmt.Fprintf(text, "    included: %v\n", boundary.Included)
+			if boundary.ParentScopeRule != "" {
+				fmt.Fprintf(text, "    parent_scope_rule: %s\n", boundary.ParentScopeRule)
+			}
+			if boundary.Reason != "" {
+				fmt.Fprintf(text, "    reason: %s\n", boundary.Reason)
+			}
+			if len(boundary.Markers) > 0 {
+				fmt.Fprintf(text, "    markers: %s\n", strings.Join(boundary.Markers, ", "))
+			}
+			if len(boundary.Languages) > 0 {
+				fmt.Fprintf(text, "    languages: %s\n", strings.Join(languageStrings(boundary.Languages), ", "))
+			}
+		}
+	}
+}
+
+// markOverview reports whether this exact overview was already returned for
+// the same snapshot and page size. It is a presentation hint, never a cache:
+// the full result is still rendered so a compacted context can recover it.
+func (t *StructureTool) markOverview(snapshotID string, limit int) bool {
+	if snapshotID == "" {
+		return false
+	}
+	key := snapshotID + ":" + fmt.Sprintf("%d", limit)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	repeated := t.lastOverview == key
+	t.lastOverview = key
+	return repeated
 }
 
 func (t *StructureTool) files(ctx agent.Context, idx *ast.Index, pathArg, packageArg string, limit, skip int) agent.Result {
@@ -457,7 +577,7 @@ func (t *StructureTool) files(ctx agent.Context, idx *ast.Index, pathArg, packag
 	}
 	status := structureStatus(result.Total == 0, result.Truncated)
 	var text strings.Builder
-	writeStructureHeader(&text, status, "files", result.Snapshot)
+	writeStructureHeader(&text, status, "files", result.Snapshot, result.Truncated, result.Reason)
 	fmt.Fprintf(&text, "returned: %d\n", len(result.Files))
 	fmt.Fprintf(&text, "total: %d\n", result.Total)
 	if result.Truncated {
@@ -515,7 +635,7 @@ func (t *StructureTool) packages(ctx agent.Context, idx *ast.Index, pathArg, pac
 	}
 	status := structureStatus(result.Total == 0, result.Truncated)
 	var text strings.Builder
-	writeStructureHeader(&text, status, "packages", result.Snapshot)
+	writeStructureHeader(&text, status, "packages", result.Snapshot, result.Truncated, result.Reason)
 	fmt.Fprintf(&text, "returned: %d\n", len(result.Packages))
 	fmt.Fprintf(&text, "total: %d\n", result.Total)
 	if result.Truncated {
@@ -565,7 +685,7 @@ func (t *StructureTool) entrypoints(ctx agent.Context, idx *ast.Index) agent.Res
 	}
 	status := structureStatus(len(result.Entrypoints) == 0, result.Truncated)
 	var text strings.Builder
-	writeStructureHeader(&text, status, "entrypoints", result.Snapshot)
+	writeStructureHeader(&text, status, "entrypoints", result.Snapshot, result.Truncated, result.Reason)
 	fmt.Fprintf(&text, "total: %d\n", len(result.Entrypoints))
 	if len(result.Entrypoints) > 0 {
 		text.WriteString("\nentrypoints:\n")
@@ -607,7 +727,7 @@ func (t *StructureTool) configs(ctx agent.Context, idx *ast.Index) agent.Result 
 	}
 	status := structureStatus(len(result.Configs) == 0, result.Truncated)
 	var text strings.Builder
-	writeStructureHeader(&text, status, "configs", result.Snapshot)
+	writeStructureHeader(&text, status, "configs", result.Snapshot, result.Truncated, result.Reason)
 	fmt.Fprintf(&text, "total: %d\n", len(result.Configs))
 	if len(result.Configs) > 0 {
 		text.WriteString("\nconfigs:\n")
@@ -661,7 +781,7 @@ func (t *StructureTool) tests(ctx agent.Context, idx *ast.Index, symbolArg, path
 		}
 	}
 	var text strings.Builder
-	writeStructureHeader(&text, status, "tests", result.Snapshot)
+	writeStructureHeader(&text, status, "tests", result.Snapshot, result.Truncated, result.Reason)
 	if result.Symbol != "" {
 		fmt.Fprintf(&text, "symbol: %s\n", result.Symbol)
 	}
@@ -745,7 +865,7 @@ func (t *StructureTool) impact(ctx agent.Context, idx *ast.Index, symbolArg, pat
 		status = "ok"
 	}
 	var text strings.Builder
-	writeStructureHeader(&text, status, "impact", result.Snapshot)
+	writeStructureHeader(&text, status, "impact", result.Snapshot, result.Truncated, result.Reason)
 	fmt.Fprintf(&text, "query: %s %s\n", result.QueryType, result.Selector)
 	if result.Ambiguous {
 		text.WriteString("ambiguous: true\n")
@@ -856,7 +976,7 @@ func validateStructureArgs(args map[string]any) error {
 func structureActivation(args map[string]any, view string) (ast.Activation, error) {
 	required := ast.ActivationOverview
 	switch view {
-	case "overview", "languages", "files", "configs":
+	case "overview", "scope", "languages", "files", "configs":
 		required = ast.ActivationOverview
 	case "packages", "entrypoints", "tests":
 		required = ast.ActivationTargeted
@@ -916,7 +1036,13 @@ func structureStatus(empty, truncated bool) string {
 }
 
 // writeStructureHeader renders the provenance every inventory view shares.
-func writeStructureHeader(text *strings.Builder, status, view string, info ast.SnapshotInfo) {
+//
+// Completeness is four independent axes. A CURRENT snapshot can be
+// structurally partial, a structurally complete snapshot can have excluded
+// roots, and a complete query can still be truncated by its own page bound.
+// Collapsing them into one "partial" flag is what lets an absence claim escape
+// a scope it never covered.
+func writeStructureHeader(text *strings.Builder, status, view string, info ast.SnapshotInfo, resultTruncated bool, reason string) {
 	fmt.Fprintf(text, "status: %s\n", status)
 	fmt.Fprintf(text, "view: %s\n", view)
 	fmt.Fprintf(text, "snapshot_id: %s\n", info.SnapshotID)
@@ -926,10 +1052,21 @@ func writeStructureHeader(text *strings.Builder, status, view string, info ast.S
 	if info.Module != "" {
 		fmt.Fprintf(text, "module: %s\n", info.Module)
 	}
+	fmt.Fprintf(text, "scope: %s\n", completeLabel(info.ScopeComplete))
+	if !info.ScopeComplete {
+		fmt.Fprintf(text, "scope_gaps: %d excluded_roots, %d excluded_source_files\n",
+			len(info.ExcludedRoots), info.ExcludedSourceFiles)
+	}
+	fmt.Fprintf(text, "inventory: %s\n", completeLabel(info.InventoryComplete))
+	fmt.Fprintf(text, "structural: %s\n", structuralCompleteness(info))
+	fmt.Fprintf(text, "result: %s\n", resultLabel(resultTruncated))
+	if resultTruncated && reason != "" {
+		fmt.Fprintf(text, "result_reason: %s\n", reason)
+	}
 	fmt.Fprintf(text, "parsed_files: %d pending_files: %d failed_files: %d\n",
 		info.ParsedFiles, info.PendingFiles, info.FailedFiles)
-	if info.Partial {
-		fmt.Fprintf(text, "partial: true\nparse_failures: %d\n", info.ParseFailures)
+	if info.ParseFailures > 0 {
+		fmt.Fprintf(text, "parse_failures: %d\n", info.ParseFailures)
 	}
 	if len(info.Unsupported) > 0 {
 		parts := make([]string, 0, len(info.Unsupported))
@@ -938,6 +1075,20 @@ func writeStructureHeader(text *strings.Builder, status, view string, info ast.S
 		}
 		fmt.Fprintf(text, "unsupported_source: %s\n", strings.Join(parts, ", "))
 	}
+}
+
+func completeLabel(complete bool) string {
+	if complete {
+		return "COMPLETE"
+	}
+	return "PARTIAL"
+}
+
+func resultLabel(truncated bool) string {
+	if truncated {
+		return "TRUNCATED"
+	}
+	return "COMPLETE"
 }
 
 // displayPackage renders a package name, or the ambiguity list.
@@ -954,39 +1105,45 @@ func displayPackage(pkg ast.PackageInfo) string {
 // snapshotMap projects the snapshot header into structured details.
 func snapshotMap(info ast.SnapshotInfo) map[string]any {
 	return map[string]any{
-		"root":                info.Root,
-		"module":              info.Module,
-		"module_root":         info.ModuleRoot,
-		"generation":          info.Generation,
-		"snapshot_id":         info.SnapshotID,
-		"source_fingerprint":  info.SourceFingerprint,
-		"scope_fingerprint":   info.ScopeFingerprint,
-		"state":               string(info.State),
-		"activation":          string(info.Activation),
-		"built_at":            info.BuiltAt,
-		"files":               info.Files,
-		"go_files":            info.GoFiles,
-		"source_files":        info.SourceFiles,
-		"parsed_files":        info.ParsedFiles,
-		"pending_files":       info.PendingFiles,
-		"failed_files":        info.FailedFiles,
-		"directories":         info.Directories,
-		"packages":            info.Packages,
-		"symbols":             info.Symbols,
-		"references":          info.References,
-		"calls":               info.Calls,
-		"tests":               info.Tests,
-		"entrypoints":         info.Entrypoints,
-		"configs":             info.Configs,
-		"parse_failures":      info.ParseFailures,
-		"partial":             info.Partial,
-		"inventory_complete":  info.InventoryComplete,
-		"structural_complete": info.StructuralComplete,
-		"languages":           languageMaps(info.Languages),
-		"unsupported":         unsupportedMaps(info.Unsupported),
-		"last_parsed_files":   info.LastParsedFiles,
-		"last_reused_files":   info.LastReusedFiles,
-		"last_resolution":     info.LastResolution,
+		"root":                  info.Root,
+		"module":                info.Module,
+		"module_root":           info.ModuleRoot,
+		"generation":            info.Generation,
+		"snapshot_id":           info.SnapshotID,
+		"source_fingerprint":    info.SourceFingerprint,
+		"scope_fingerprint":     info.ScopeFingerprint,
+		"state":                 string(info.State),
+		"activation":            string(info.Activation),
+		"built_at":              info.BuiltAt,
+		"files":                 info.Files,
+		"go_files":              info.GoFiles,
+		"source_files":          info.SourceFiles,
+		"parsed_files":          info.ParsedFiles,
+		"pending_files":         info.PendingFiles,
+		"failed_files":          info.FailedFiles,
+		"directories":           info.Directories,
+		"packages":              info.Packages,
+		"symbols":               info.Symbols,
+		"references":            info.References,
+		"calls":                 info.Calls,
+		"tests":                 info.Tests,
+		"test_files":            info.TestFiles,
+		"entrypoints":           info.Entrypoints,
+		"configs":               info.Configs,
+		"parse_failures":        info.ParseFailures,
+		"partial":               info.Partial,
+		"scope_complete":        info.ScopeComplete,
+		"excluded_roots":        excludedRootMaps(info.ExcludedRoots),
+		"excluded_source_files": info.ExcludedSourceFiles,
+		"excluded_files":        excludedFileMaps(info.ExcludedFiles),
+		"nested_projects":       projectBoundaryMaps(info.NestedProjects),
+		"inventory_complete":    info.InventoryComplete,
+		"structural_complete":   info.StructuralComplete,
+		"languages":             languageMaps(info.Languages),
+		"unsupported":           unsupportedMaps(info.Unsupported),
+		"last_parsed_files":     info.LastParsedFiles,
+		"last_reused_files":     info.LastReusedFiles,
+		"last_resolution":       info.LastResolution,
 	}
 }
 
@@ -1023,6 +1180,52 @@ func unsupportedMaps(items []ast.UnsupportedLanguage) []map[string]any {
 			"extension": item.Extension,
 			"files":     item.Files,
 		})
+	}
+	return out
+}
+
+func excludedRootMaps(items []ast.ExcludedRoot) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"path":              item.Path,
+			"reason":            item.Reason,
+			"rule":              item.Rule,
+			"nested_repository": item.NestedRepository,
+			"markers":           append([]string(nil), item.Markers...),
+			"languages":         languageStrings(item.Languages),
+		})
+	}
+	return out
+}
+
+func excludedFileMaps(items []ast.ExcludedFile) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{"path": item.Path, "rule": item.Rule})
+	}
+	return out
+}
+
+func projectBoundaryMaps(items []ast.ProjectBoundary) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"path":              item.Path,
+			"included":          item.Included,
+			"parent_scope_rule": item.ParentScopeRule,
+			"reason":            item.Reason,
+			"markers":           append([]string(nil), item.Markers...),
+			"languages":         languageStrings(item.Languages),
+		})
+	}
+	return out
+}
+
+func languageStrings(items []ast.Language) []string {
+	out := make([]string, 0, len(items))
+	for _, language := range items {
+		out = append(out, string(language))
 	}
 	return out
 }

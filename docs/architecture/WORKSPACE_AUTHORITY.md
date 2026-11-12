@@ -124,6 +124,14 @@ The list of low-confidence examples the spec calls ambiguous — "Take a look at
 this.", "Can you handle this?", "Check this.", "Make this better." — all
 classify as `READ`.
 
+A later clause with an explicit, unambiguous read head strengthens the READ
+signal. "Check this project and analyze what this project is about?" opens with
+the ambiguous verb `check`, so its first clause alone is only a moderate READ;
+the later `analyze` clause is the objective's verb and makes the prediction
+strong. Strength is still a level, not a score, and a later noun phrase is
+deliberately not enough. A later mutation clause still wins as the objective,
+so "check this project and create the missing files" remains EXECUTE.
+
 `Classify` returns the intent alone. `ClassifyPrediction` returns it with an
 **evidence level**, because routing may want to know how well the request was
 placed without inventing a probability:
@@ -645,8 +653,8 @@ that a classifier returned a string.
 | --------- | ---- |
 | A — ASK cannot escalate to BUILD | `cmd/ohgo.TestAskRefusesExecutionWithoutCallingTheModel` |
 | B — ASK cannot escalate to FUZZ | `cmd/ohgo.TestAskRefusesInvestigation` |
-| C — BUILD may read and investigate | `cmd/ohgo.TestBuildExecutesExplicitMutation`, `tui.TestBuildInvestigationStaysBuildWithoutPickerOrMutation` |
-| D — BUILD investigation does not force mutation | `tui.TestBuildInvestigationStaysBuildWithoutPickerOrMutation` |
+| C — BUILD may read and investigate | `cmd/ohgo.TestBuildExecutesExplicitMutation`, `workspace.TestRouteTurnTransitionMatrix` |
+| D — BUILD analysis does not force mutation | `tui.TestBuildAnalysisConfirmsAskBoundary` |
 | E — a FUZZ finding does not authorize mutation | `cmd/ohgo.TestFuzzFindingDoesNotAuthorizeMutation` |
 | F — mutation requires BUILD, automatically from FUZZ | `cmd/ohgo.TestFuzzMutationHandsOffToBuild`, `workspace.TestRouteTurnTransitionMatrix` |
 | G — routing never changes authority | `workspace.TestRouteTurnNeverChangesTheActiveWorkspace`, `cmd/ohgo.TestRouteTurnKeepsBuildAuthority` |
@@ -679,7 +687,8 @@ that a classifier returned a string.
 | No fabricated confidence | `cmd/ohgo.TestTurnTransitionCarriesNoProbability`, `tui.TestTransitionPromptRendersTheDecision` |
 | Automatic BUILD <-> FUZZ cooperation | `tui.TestHandoffThroughTurnEntrypointPreservesTaskAndAuthority`, `TestBuildToFuzzTransitionPreservesImplementationContext`, `TestRepeatedHandoffsPreserveContextsAndWorkspace` |
 | Tool-boundary phase handoff | `workspace.TestToolCallTransitionRoutesCapabilityBoundary`, `workspace.TestToolCallTransitionKeepsReadOnlyShellInFuzz`, `agent.TestWorkspaceHandoffRunsBeforeAdmission`, `agent.TestWorkspaceHandoffCannotGroundAnUngroundedMutation`, `tui.TestToolBoundaryHandoffRoundTripKeepsOneTask` |
-| ASK boundary confirmation | `tui.TestBuildStrongQuestionConfirmsAskBoundary`, `TestAskMutationRequiresBuildConfirmation`, `cmd/ohgo.TestWideningFromAskIsOnlyAHandoff` |
+| ASK boundary confirmation | `tui.TestBuildStrongQuestionConfirmsAskBoundary`, `TestBuildAnalysisConfirmsAskBoundary`, `TestAskMutationRequiresBuildConfirmation`, `cmd/ohgo.TestWideningFromAskIsOnlyAHandoff` |
+| Later read clause strengthens READ | `workspace.TestProjectAnalysisPromptRoutesToAsk`, `workspace.TestAmbiguousReadVerbStaysInACapableWorkspace` |
 | Staged conditional workflow | `workspace.TestConditionalWorkflowRequiresAStagedInvestigation`, `tui.TestConditionalWorkflowStartsInvestigatingThenContinuesIntoBuild` |
 | Conditional completion is phase-aware | `agent.TestConditionalMutationCompletesInvestigationWithoutAChange`, `tui.TestBuildConditionalInvestigationStaysActiveWithoutMutation` |
 | A failed check resolves after correction | `agent.TestEvaluateCompletionResolvesAFailedVerificationAfterCorrection` |

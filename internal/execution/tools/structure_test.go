@@ -183,6 +183,178 @@ func TestStructureToolHonoursGitignoreScope(t *testing.T) {
 	}
 }
 
+// A nested repository is a project boundary, not a directory the enclosing
+// repository's .gitignore may silently erase. The exact failure this guards:
+// a root rule "backend/" plus backend/.git made every backend Go file and test
+// disappear from the inventory.
+func TestStructureToolIncludesNestedRepositoryBoundary(t *testing.T) {
+	root := structureFixture(t, map[string]string{
+		".gitignore":                           "backend/\n",
+		"backend/.git/HEAD":                    "ref: refs/heads/main\n",
+		"backend/go.mod":                       "module example.com/backend\n\ngo 1.21\n",
+		"backend/go.work":                      "go 1.21\n\nuse .\n",
+		"backend/cmd/api/main.go":              "package main\n\nfunc main() {}\n",
+		"backend/internal/order/order_test.go": "package order\n\nimport \"testing\"\n\nfunc TestOrder(t *testing.T) {}\n",
+	})
+	tool := NewStructureTool(NewStructuralSource(root))
+	ctx := testContext()
+
+	overview := tool.Execute(ctx, map[string]any{})
+	if overview.IsError {
+		t.Fatalf("overview: %s", overview.Text)
+	}
+	details := structureDetails(t, overview)
+	snapshot, _ := details["snapshot"].(map[string]any)
+	if snapshot["go_files"] != 2 {
+		t.Fatalf("go_files = %v, want the nested repository's two Go files:\n%s",
+			snapshot["go_files"], overview.Text)
+	}
+	if details["test_files"] != 1 {
+		t.Errorf("test_files = %v, want the nested test file", details["test_files"])
+	}
+	if details["scope_complete"] != true {
+		t.Errorf("scope_complete = %v, want true; a nested repository is included:\n%s",
+			details["scope_complete"], overview.Text)
+	}
+	nested, _ := details["nested_projects"].([]map[string]any)
+	if len(nested) != 1 || nested[0]["path"] != "backend" || nested[0]["included"] != true {
+		t.Fatalf("nested_projects = %+v, want an included backend boundary", nested)
+	}
+	if rule, _ := nested[0]["parent_scope_rule"].(string); !strings.Contains(rule, ".gitignore:1") {
+		t.Errorf("parent_scope_rule = %q, want the overridden root rule", rule)
+	}
+	if !strings.Contains(overview.Text, "nested_projects: 1") ||
+		!strings.Contains(overview.Text, "backend") {
+		t.Errorf("overview did not disclose the nested project:\n%s", overview.Text)
+	}
+
+	files := tool.Execute(ctx, map[string]any{"view": "files", "path": "backend"})
+	if files.IsError {
+		t.Fatalf("files: %s", files.Text)
+	}
+	if !strings.Contains(files.Text, "backend/cmd/api/main.go") ||
+		!strings.Contains(files.Text, "backend/internal/order/order_test.go") {
+		t.Fatalf("nested repository files are missing:\n%s", files.Text)
+	}
+
+	testsView := tool.Execute(ctx, map[string]any{"view": "tests"})
+	if testsView.IsError {
+		t.Fatalf("tests: %s", testsView.Text)
+	}
+	if !strings.Contains(testsView.Text, "TestOrder") {
+		t.Fatalf("nested test was not discovered:\n%s", testsView.Text)
+	}
+
+	scopeView := tool.Execute(ctx, map[string]any{"view": "scope"})
+	if scopeView.IsError {
+		t.Fatalf("scope: %s", scopeView.Text)
+	}
+	if !strings.Contains(scopeView.Text, "included: true") ||
+		!strings.Contains(scopeView.Text, "backend") {
+		t.Errorf("scope view omitted the included nested project:\n%s", scopeView.Text)
+	}
+}
+
+// An ordinary ignored directory is still excluded, but it is named rather than
+// disappearing. A zero source count is then visibly scoped, not a clean
+// repository-wide absence.
+func TestStructureToolDisclosesExcludedRoot(t *testing.T) {
+	root := structureFixture(t, map[string]string{
+		"main.go":        "package main\n\nfunc main() {}\n",
+		"ignored/gen.go": "package ignored\n\nfunc Generated() {}\n",
+		".gitignore":     "ignored/\n",
+	})
+	tool := NewStructureTool(NewStructuralSource(root))
+	ctx := testContext()
+
+	overview := tool.Execute(ctx, map[string]any{})
+	if overview.IsError {
+		t.Fatalf("overview: %s", overview.Text)
+	}
+	details := structureDetails(t, overview)
+	if details["scope_complete"] != false {
+		t.Errorf("scope_complete = %v, want false", details["scope_complete"])
+	}
+	excluded, _ := details["excluded_roots"].([]map[string]any)
+	if len(excluded) != 1 || excluded[0]["path"] != "ignored" {
+		t.Fatalf("excluded_roots = %+v, want ignored/", excluded)
+	}
+	if rule, _ := excluded[0]["rule"].(string); !strings.Contains(rule, ".gitignore:1") {
+		t.Errorf("exclusion rule = %q, want the decisive .gitignore line", rule)
+	}
+	if !strings.Contains(overview.Text, "excluded_roots: 1 (contents not indexed)") ||
+		!strings.Contains(overview.Text, "path: ignored") {
+		t.Errorf("overview did not disclose the excluded root:\n%s", overview.Text)
+	}
+	if strings.Contains(overview.Text, "ignored/gen.go") {
+		t.Errorf("excluded file leaked into the inventory:\n%s", overview.Text)
+	}
+
+	// The scope view owns freshness too: removing the rule must clear the
+	// exclusion without requiring a separate inventory query first.
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("# no rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scopeView := tool.Execute(ctx, map[string]any{"view": "scope"})
+	if scopeView.IsError {
+		t.Fatalf("scope after rule removal: %s", scopeView.Text)
+	}
+	if !strings.Contains(scopeView.Text, "scope: COMPLETE") ||
+		!strings.Contains(scopeView.Text, "excluded_roots: 0") {
+		t.Errorf("scope view did not refresh after the rule changed:\n%s", scopeView.Text)
+	}
+}
+
+// A file-level rule can hide a source file without excluding its directory.
+// The scope report must name that gap, or a complete-looking test inventory
+// could still prove a false absence.
+func TestStructureToolDisclosesExcludedSourceFile(t *testing.T) {
+	root := structureFixture(t, map[string]string{
+		"main.go":      "package main\n\nfunc main() {}\n",
+		"main_test.go": "package main\n\nimport \"testing\"\n\nfunc TestMain(t *testing.T) {}\n",
+		".gitignore":   "*_test.go\n",
+	})
+	tool := NewStructureTool(NewStructuralSource(root))
+	ctx := testContext()
+
+	overview := tool.Execute(ctx, map[string]any{})
+	if overview.IsError {
+		t.Fatalf("overview: %s", overview.Text)
+	}
+	details := structureDetails(t, overview)
+	if details["scope_complete"] != false {
+		t.Errorf("scope_complete = %v, want false", details["scope_complete"])
+	}
+	if details["excluded_source_files"] != 1 {
+		t.Errorf("excluded_source_files = %v, want 1", details["excluded_source_files"])
+	}
+	if !strings.Contains(overview.Text, "excluded_source_files: 1") ||
+		!strings.Contains(overview.Text, "main_test.go") {
+		t.Errorf("overview did not disclose the excluded source file:\n%s", overview.Text)
+	}
+}
+
+func TestStructureToolMarksARepeatedOverview(t *testing.T) {
+	root := structureFixture(t, map[string]string{"main.go": "package main\n\nfunc main() {}\n"})
+	tool := NewStructureTool(NewStructuralSource(root))
+	ctx := testContext()
+
+	first := tool.Execute(ctx, map[string]any{})
+	second := tool.Execute(ctx, map[string]any{})
+	if first.IsError || second.IsError {
+		t.Fatalf("overviews failed: %s / %s", first.Text, second.Text)
+	}
+	if strings.Contains(first.Text, "repeated: true") {
+		t.Errorf("first overview was marked repeated:\n%s", first.Text)
+	}
+	if !strings.Contains(second.Text, "repeated: true") {
+		t.Errorf("second overview of the same snapshot was not marked repeated:\n%s", second.Text)
+	}
+	if repeated, _ := structureDetails(t, second)["repeated"].(bool); !repeated {
+		t.Errorf("second overview details did not carry repeated: %+v", structureDetails(t, second))
+	}
+}
+
 func TestStructureToolRejectsEscapeAndUnknownArguments(t *testing.T) {
 	root := structureFixture(t, map[string]string{"main.go": "package main\n\nfunc main() {}\n"})
 	tool := NewStructureTool(NewStructuralSource(root))

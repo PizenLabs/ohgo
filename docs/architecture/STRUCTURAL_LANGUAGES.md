@@ -19,6 +19,19 @@ The dependency is pinned in `go.mod`; grammar versions are fixed by that module
 revision. The release matrix stays CGO-free for portability; use
 `make build-multilang` for the complete adapter build.
 
+## Project scope
+
+Structural scope follows project boundaries, not only the enclosing
+repository's `.gitignore`. A directory carrying its own `.git` entry is a nested
+repository and is included in the same snapshot even when a parent rule such as
+`backend/` excludes it; its own ignore files govern its contents. The
+`nested_projects` field reports the boundary and the `scope` view explains it.
+Ordinary excluded directories are not indexed and are reported as
+`excluded_roots` with the decisive ignore rule and shallow markers such as
+`go.mod` or `go.work`. Scope, inventory, structural, and result completeness are
+separate fields; a language table cannot make an excluded or unparsed path
+appear covered.
+
 ## Adapter coverage
 
 | Language | Extensions | Symbols | Imports | Calls | Inheritance | Tests | Entrypoints |

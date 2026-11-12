@@ -58,6 +58,8 @@ requests declarations or relationships.
 ```sh
 OHGO_PHASE9=1 go test ./cmd/ohgo -run TestSelfAnalysisStructuralRuntime
 OHGO_PHASE8=1 go test ./cmd/ohgo -run TestPhase8StructuralSnapshot
+OHGO_ECOMMERCE_ROOT=/path/to/go-ecommerce \
+  go test ./cmd/ohgo -run TestNestedRepositoryProjectAnalysis
 go test ./cmd/ohgo -run 'TestNextJSAnalysis|TestGoProjectAnalysis'
 ```
 
@@ -65,7 +67,11 @@ The Next.js fixture verifies ASK-style overview without source parsing,
 TypeScript/TSX detection, Next.js framework discovery, route entrypoint
 convention, targeted symbol lookup, reference call sites, and an explicit
 `IMPLEMENTS` relation. The Go fixture verifies that the native parser, tests,
-entrypoint, reference, and evidence paths are unchanged. The self-analysis
+entrypoint, reference, and evidence paths are unchanged. The mixed-project
+fixture verifies that a nested Go backend remains visible when the root
+`.gitignore` contains `backend/`: the same overview reports its Go files and
+test files, names the included nested project, and lists ordinary excluded
+roots such as `dist/` with the decisive rule. The self-analysis
 baseline verifies the real repository's own Go snapshot and impact lookup;
 unsupported Python/shell utilities remain disclosed instead of being folded
 into the Go claim.

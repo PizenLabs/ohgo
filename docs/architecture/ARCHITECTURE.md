@@ -66,6 +66,29 @@ working directory; the nearest `go.mod` above it is recorded as metadata and
 never silently widens the walk. The snapshot is in memory only;
 `<project>/.ohgo/graph.db` stays a reserved, deferred location.
 
+Structural scope is project-boundary-aware. A directory carrying its own
+`.git` entry is a nested repository. Structural discovery includes that
+boundary even when the enclosing repository's `.gitignore` excludes the
+directory, and evaluates the nested repository's own ignore files for its
+contents; otherwise the common root rule `backend/` makes a whole nested Go
+project disappear from every overview, package, test, and impact answer. An
+included nested repository contributes to the one shared snapshot and is not a
+second index; its boundary names the parent scope rule it overrides. Ordinary excluded directories remain out of scope, but are
+published as `excluded_roots` with the decisive rule and shallow build markers,
+and the `scope` view explains them without recursively walking or parsing their
+contents.
+
+Completeness has four independent axes: `scope` (every source-bearing path
+inspected or explicitly named as excluded, including file-level ignore rules),
+`inventory` (every in-scope path readable), `structural` (every supported source
+parsed, with unsupported source disclosed), and the query's own `result`
+truncation. A `CURRENT` snapshot can be structurally or
+scope-partial. A zero file or test count is not absence unless scope,
+inventory, and structural completeness all hold and the result was not
+truncated; a complete `structure tests` inventory is accepted as the
+structural equivalent of a complete Go file scan for the narrow Go test-file
+claim.
+
 The Go backend is always available. The tree-sitter adapters are compiled only
 with `cgo`; a no-cgo build keeps the Go path, reports other supported extensions
 as unsupported, and never substitutes lexical exploration for structural
@@ -73,9 +96,10 @@ coverage. All four tools share the same freshness check, workspace path
 containment, authority admission, tool-call budget, and child tool set. Their
 evidence is advisory: it cannot mutate, execute, grant authority, or complete a
 task. Structural results enter `cognition.EvidenceState` as structural
-observations with snapshot, language, adapter, resolution, completeness, and
-truncation provenance; test associations are static, never coverage, and impact
-is static reachability, never a behavioural claim. The per-language capability
+observations with snapshot, language, adapter, resolution, structural
+completeness, project-scope completeness, and truncation provenance; test
+associations are static, never coverage, and impact is static reachability,
+never a behavioural claim. The per-language capability
 and resolution table is
 [`STRUCTURAL_LANGUAGES.md`](STRUCTURAL_LANGUAGES.md).
 

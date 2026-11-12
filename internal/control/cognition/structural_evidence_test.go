@@ -18,6 +18,7 @@ func structuralDetails(tool string) map[string]any {
 		"truncated":           false,
 		"complete":            true,
 		"structural_complete": true,
+		"scope_complete":      true,
 		"coordinates": []map[string]any{
 			{"path": "pkg/foo.go", "line": 3, "end_line": 5, "symbol": "pkg.Foo", "kind": "target",
 				"language": "go", "adapter": "go", "resolution": "RESOLVED"},
@@ -72,12 +73,37 @@ func TestGraphRefsAndStructureBecomeStructuralEvidence(t *testing.T) {
 		if coordinate, ok := state.Find("symbol:pkg/foo.go:3:pkg.Foo"); !ok {
 			t.Errorf("%s: target coordinate was not retained as evidence", tc.tool)
 		} else if coordinate.Source.Language != "go" || coordinate.Source.Adapter != "go" ||
-			coordinate.Source.Resolution != "RESOLVED" || coordinate.Source.Completeness != "COMPLETE" {
+			coordinate.Source.Resolution != "RESOLVED" || coordinate.Source.Completeness != "COMPLETE" ||
+			coordinate.Source.ScopeCompleteness != "COMPLETE" {
 			t.Errorf("%s: coordinate provenance = %+v", tc.tool, coordinate.Source)
 		}
 		if _, ok := state.Find("test:pkg/foo_test.go:8:TestFoo"); !ok {
 			t.Errorf("%s: test coordinate was not retained as evidence", tc.tool)
 		}
+	}
+}
+
+// A snapshot that parsed everything it saw is still not repository-complete
+// when scope excluded a source-bearing path. The evidence carries that axis so
+// a later projection cannot turn it into a clean absence.
+func TestScopePartialStructuralEvidenceIsNotComplete(t *testing.T) {
+	state := NewEvidenceState()
+	details := structuralDetails("structure")
+	details["scope_complete"] = false
+	details["complete"] = false
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "structure-1", ToolName: "structure", Args: map[string]any{"view": "files"},
+		Result: agent.Result{Text: "status: ok", Details: details},
+	})
+	item, ok := state.Find("structure:files")
+	if !ok {
+		t.Fatal("aggregate structure evidence missing")
+	}
+	if item.Complete {
+		t.Error("a scope-partial structure result was recorded as complete")
+	}
+	if item.Source.ScopeCompleteness != "PARTIAL" {
+		t.Errorf("scope completeness = %q, want PARTIAL", item.Source.ScopeCompleteness)
 	}
 }
 
