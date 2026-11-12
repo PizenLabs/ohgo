@@ -753,6 +753,13 @@ var executeHeads = map[string]bool{
 	"seed": true, "compile": true, "bundle": true, "connect": true,
 	"disconnect": true, "set": true, "tidy": true, "ensure": true,
 	"organize": true, "organise": true,
+	// Running a service is execution, not understanding. "use", "serve",
+	// "start", and "launch" are how a request names a long-running capability
+	// ("use npx live-server test this project"); without them the classifier
+	// fallback made the turn read-only, so the exact action the user asked for
+	// was refused before the model could propose it.
+	"use": true, "serve": true, "start": true, "launch": true,
+	"spin": true, "boot": true, "host": true,
 	// Rework verbs ask to make an existing object over. They carry a change,
 	// not a request to describe one: "redesign it" after a design turn is the
 	// implementation follow-up, and classifying it as the READ fallback let
@@ -799,6 +806,12 @@ var executePhrases = []string{
 	"commit the", "revert the", "replace the", "replace it", "patch the",
 	"bump the", "compile the", "build the", "install the", "migrate the",
 	"make sure", "tidy up", "clean up",
+	// Long-running service requests are execution even when the head token is
+	// a generic connective ("please use live-server and check the page").
+	"use the server", "use live-server", "use npx", "serve the", "serve this",
+	"start the server", "start the dev server", "start the development server",
+	"start the app", "start the application", "start it", "launch the",
+	"launch this", "launch it", "spin up", "boot the",
 	// Re work framing ("I want to redesign the page", "we should revamp it")
 	// puts a non-verb token at the head. The phrase keeps the change visible
 	// without promoting a question, which the clause model already filters.
@@ -910,7 +923,65 @@ func clauseRequestsMutation(entry clause) bool {
 	if headMatches(mutationHeads, head) {
 		return true
 	}
+	if verificationObservationPhrase(entry.text) {
+		// "make sure the site works" after starting a service is a
+		// verification of observable behaviour, not a request to change the
+		// repository. The same phrase still carries a change when it names an
+		// effect ("make sure the timeout is applied").
+		return false
+	}
 	return !headMatches(readHeads, head) && containsPhrase(entry.text, mutationPhrases)
+}
+
+// verificationObservationPhrases name observable behaviour a check can
+// confirm. They disambiguate "make sure" so a serve-and-verify request is not
+// misclassified as a mutation objective.
+var verificationObservationPhrases = []string{
+	"works", "working", "loads", "renders", "responds", "serves",
+	"passes", "passing", "is ready", "is running", "starts correctly",
+	"loads correctly", "works correctly",
+}
+
+func verificationObservationPhrase(text string) bool {
+	if !containsPhrase(text, []string{"make sure"}) {
+		return false
+	}
+	return containsPhrase(text, verificationObservationPhrases)
+}
+
+// serviceExecutionHeads are execution verbs whose object is normally a
+// long-running service or application. They keep the completion contract an
+// execution even when a later clause adds an investigative verb ("run the app
+// and test it"): testing the running app is verification, not the deliverable.
+var serviceExecutionHeads = map[string]bool{
+	"run": true, "use": true, "serve": true, "start": true,
+	"launch": true, "host": true, "boot": true, "spin": true,
+}
+
+// RequestsServiceExecution reports whether the request asks to run or serve a
+// process whose result must be observed, even if an investigation verb also
+// appears. It is a contract-kind signal only; authority still comes from the
+// route and the live gate.
+func RequestsServiceExecution(text string) bool {
+	request := stripPoliteness(normalizeRequest(text))
+	if request == "" {
+		return false
+	}
+	for _, entry := range requestClauses(request) {
+		if entry.asked {
+			continue
+		}
+		if serviceExecutionHeads[clauseHead(entry.text)] {
+			return true
+		}
+		if containsPhrase(entry.text, []string{
+			"npx ", "live-server", "live server", "dev server", "development server",
+			"local server", "run the app", "run the application", "serve the site",
+		}) {
+			return true
+		}
+	}
+	return false
 }
 
 // headMatches reports whether token is a recognised head verb, including

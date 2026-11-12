@@ -398,7 +398,7 @@ func (a *ollamaAccumulator) apply(ctx context.Context, chunk ollamaChunk) []Stre
 			out = append(out, EventToolCallDelta{ID: id, Delta: rawArgs})
 			// Place the call in the content sequence when it arrives, not at
 			// finish: text that follows it belongs after it.
-			a.msg.Content = append(a.msg.Content, ToolCall{ID: id, Name: name, Arguments: decoded})
+			a.msg.Content = append(a.msg.Content, ToolCall{ID: id, Name: name, Arguments: decoded, Origin: ToolCallNative})
 			a.calls = append(a.calls, ollamaCall{id: id, name: name, arguments: decoded})
 		}
 	}

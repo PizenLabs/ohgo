@@ -537,7 +537,7 @@ func (a *openAIAccumulator) appendThinking(text string) {
 func (a *openAIAccumulator) applyToolCallDelta(wire openAIWireToolCall) error {
 	call, known := a.toolCalls[wire.Index]
 	if !known {
-		call = &ToolCall{}
+		call = &ToolCall{Origin: ToolCallNative}
 		a.toolCalls[wire.Index] = call
 		a.order = append(a.order, wire.Index)
 		a.contentIndex[wire.Index] = len(a.msg.Content)

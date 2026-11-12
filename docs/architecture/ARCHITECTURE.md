@@ -202,6 +202,21 @@ Recognition is an incremental, bounded state machine:
   assistant prose: the provider's serialization is not persisted as an answer
   and no call is fabricated. The message is marked as protocol residue, so
   completion reports `NEEDS_REVIEW` instead of success.
+- Every failed decision also becomes a structured
+  `ToolNormalizationFailure` on the assembled message: `INCOMPLETE`, `INVALID`,
+  or `UNSUPPORTED`, with the provider, protocol, a sanitized reason, a bounded
+  raw fragment for audit, and recoverability. The raw fragment is never executed
+  or shown as assistant text. The loop classifies a run whose envelope never
+  resolves as `TOOL_NORMALIZATION_FAILED`, after at most one bounded recovery
+  request that asks the model to re-emit the operation canonically. Malformed
+  syntax therefore cannot reach authorization or execution, and the retry
+  cannot become a loop.
+- The model announcing an action in prose is a separate lifecycle state. If a
+  turn contains an execution promise and no tool call, the loop spends one
+  bounded recovery request asking for the actual call. If the next turn still
+  has no call, it reports `EXECUTION_INTENT_WITHOUT_TOOL`; the prose is never
+  interpreted as a command. A turn with neither text nor a call reports
+  `NO_MODEL_OUTPUT`. Both are review verdicts, never execution evidence.
 - The registry recognizes the provider's observed spellings
   (`<dotsfunctioncall>`, `<dots_function_call>`, and their mixed closing
   markers) as one protocol family. A new spelling is a descriptor there, never
@@ -306,7 +321,11 @@ user's request before execution and the evidence the runtime observed.
   not `Mutates`. `wait` reports a finished job as `IsError` when it timed out
   or exited non-zero, reports a mutating job's mutation, and reports
   verification only for a successful recognised check. An un-awaited job is
-  outside the completion boundary.
+  outside the completion boundary. A `verify` result is different: its service
+  reached a declared readiness state, its checks ran, and cleanup completed, so
+  it reports `Executes` + `Finished` + `Verifies` only when every non-optional
+  check passed. A service start failure, a failed check, or an unavailable
+  optional browser never produces verification evidence.
 - **Cancellation.** The TUI turn owns one atomic terminal claim shared by
   Ctrl+C and the post-run transition. A cancellation that wins turns the
   action into `PAUSE`; a completion claim that wins first is not rewritten.
@@ -523,6 +542,44 @@ A background spawn is shared (`Exclusive` false); foreground runs stay
 serialised. Both tools are built from one `BashTool` instance — two job
 tables would let `bash` start jobs no `wait` could ever see.
 
+A detached job survives the turn so `wait` can observe it, but it does not
+outlive the session that owns it: session shutdown terminates every running
+job's process group. "Detached from the turn" is not "orphaned".
+
+## Verification runtime
+
+`verify` is one execution capability for a structured verification plan, not a
+browser-specific hack. The model declares intent; the capability performs the
+mechanical lifecycle:
+
+```
+service command
+  → STARTING → RUNNING → READY (HTTP / TCP / output / process)
+  → independent checks (HTTP, command, optional headless browser)
+  → bounded evidence
+  → STOPPING → STOPPED (process group killed on every path)
+```
+
+The service and every check run in owned process groups. Readiness is a
+dependency: no check starts until it succeeds. Independent checks run with a
+bounded concurrency cap and results keep plan order. A service that exits before
+readiness, or never becomes ready, is `TOOL_START_FAILED` with captured output;
+an HTTP/command assertion failure is `VERIFICATION_FAILED`; an unavailable
+optional browser is `VERIFICATION_INSUFFICIENT`, never a fabricated pass.
+Cleanup is deferred and idempotent, so cancellation, a failed check, or a failed
+start cannot leave an orphaned server.
+
+HTTP targets are loopback-only. The browser check is optional: it discovers a
+headless Chromium/Chrome binary (`OHGO_CHROMIUM`/`OHGO_BROWSER` may override),
+runs it against the already-ready local URL, and reports unsupported when none
+is available. The core plan never requires Chromium.
+
+The result carries the same `Executes`/`Finished`/`Verifies` evidence every
+other capability uses, plus compact structured details (service state, pid,
+discovered URL, per-check status/bytes/duration). The model sees a short
+summary, not a transcript dump. Completion still decides PROVEN; readiness, a
+tool call, or a zero exit code alone is not proof.
+
 ## Concurrency
 
 - Shared tools run in parallel; `Exclusive(args)` tools drain the batch
@@ -552,6 +609,17 @@ tables would let `bash` start jobs no `wait` could ever see.
 | Schema violation | error `Result`, never raised | missing required argument |
 | Misconfiguration | fail at construction | compaction without a summarizer |
 | Spent budget | `nil` error, turns returned | wall-clock deadline expiry |
+
+Protocol/lifecycle failures are classified before a generic verdict:
+`NO_MODEL_OUTPUT`, `EXECUTION_INTENT_WITHOUT_TOOL`, and
+`TOOL_NORMALIZATION_FAILED` stop a run in which no requested action executed and
+are reported as review (non-terminal), preserving the task identity. Tool
+outcomes carry a provider-agnostic `FailureClass` such as `tool_start_failed`,
+`tool_runtime_failed`, `tool_timeout`, `tool_cancelled`,
+`tool_authorization_denied`, `verification_failed`, or
+`verification_insufficient`, so the UI can say whether failure happened before
+or after execution. A model claim, a tool emission, and a zero exit code remain
+distinct from verification and proof.
 
 A deadline is not a failure: reporting it as one would make callers discard
 work they were entitled to keep.

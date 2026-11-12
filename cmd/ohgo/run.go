@@ -143,6 +143,7 @@ func runOnce(cmd *cobra.Command, text string) error {
 	if err != nil {
 		return err
 	}
+	defer tools.StopToolProcesses(loop.Tools())
 	// The one-shot path uses the same tool-boundary policy as the interactive
 	// hosts: a staged task can move between BUILD and FUZZ when the model's own
 	// action requires the other capability. The target role's model is
@@ -287,6 +288,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer opts.closeMCP()
+	defer tools.StopToolProcesses(loop.Tools())
 
 	// One ephemeral surface serves both interfaces. It is created here, not in
 	// buildLoop, because it owns its own SUP-role runtime and is deliberately

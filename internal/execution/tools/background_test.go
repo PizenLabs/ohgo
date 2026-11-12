@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -450,4 +451,41 @@ func TestWaitOnAnyJobPicksUnreadOutput(t *testing.T) {
 	if !strings.Contains(result.Text, "from-first") {
 		t.Errorf("result = %q, want the finished job's output, not the sleeper", result.Text)
 	}
+}
+
+// Session shutdown owns detached jobs: a running job must not outlive the
+// process tree that started it, even though normal turns leave it available to
+// wait.
+func TestBackgroundJobsStopAllKillsRunningProcessGroups(t *testing.T) {
+	root := t.TempDir()
+	pidFile := filepath.Join(root, "job.pid")
+	bash, _ := spawnPair(root)
+	spawned := bash.Execute(bgCtx(), bgArgs("echo $$ > "+pidFile+"; sleep 30"))
+	if spawned.IsError {
+		t.Fatalf("spawn: %s", spawned.Text)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var pid string
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(pidFile)
+		if err == nil && strings.TrimSpace(string(data)) != "" {
+			pid = strings.TrimSpace(string(data))
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pid == "" {
+		t.Fatal("job pid was not recorded")
+	}
+	if stopped := bash.StopJobs(); stopped != 1 {
+		t.Fatalf("StopJobs = %d, want 1 running job", stopped)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := exec.Command("kill", "-0", pid).Run(); err != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("background job pid %s survived session cleanup", pid)
 }

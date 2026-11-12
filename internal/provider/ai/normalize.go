@@ -40,6 +40,11 @@ import (
 // runaway or hostile stream cannot grow memory without bound.
 const DefaultMaxPseudoEnvelopeBytes = 1 << 20
 
+// maxNormalizationEvidenceBytes bounds the raw provider fragment retained for
+// one failed normalization. The full envelope can be much larger; evidence is
+// for audit and the beginning is enough to identify the representation.
+const maxNormalizationEvidenceBytes = 4096
+
 // NormalizationDiagnosticKind classifies one normalization decision.
 type NormalizationDiagnosticKind string
 
@@ -61,13 +66,28 @@ const (
 
 // NormalizationDiagnostic reports one normalization decision.
 //
-// Diagnostics never include the raw model payload. They are intended for
-// debug/audit sinks; the default is silence.
+// Diagnostics never include the raw model payload in user-visible text. The
+// bounded RawFragment field exists for an explicit debug/audit sink; the
+// default is silence. Independently of the sink, a failed decision is attached
+// to the assembled AssistantMessage as structured
+// ToolNormalizationFailure evidence.
 type NormalizationDiagnostic struct {
 	Kind      NormalizationDiagnosticKind
 	Protocol  string
 	Detail    string
 	ToolCalls int
+
+	// Status is the canonical normalization state for this decision.
+	Status NormalizationStatus
+	// Provider is the provider name that produced the stream, when known.
+	Provider string
+	// ToolName is the envelope-declared tool name, when it could be read.
+	ToolName string
+	// RawFragment is bounded provider evidence. It is audit-only.
+	RawFragment string
+	// Recoverable reports whether another model turn can plausibly correct the
+	// representation without changing authority or tools.
+	Recoverable bool
 }
 
 // NormalizeOptions configures stream normalization.
@@ -77,6 +97,9 @@ type NormalizeOptions struct {
 	// expects (number, boolean, array, object). Missing or unhelpful schemas
 	// leave the parameter as a string.
 	Tools []ToolSpec
+	// Provider names the wire provider for structured failure evidence. It is
+	// descriptive metadata and never changes parsing.
+	Provider string
 	// MaxEnvelopeBytes bounds one pseudo-tool envelope. Zero uses
 	// DefaultMaxPseudoEnvelopeBytes.
 	MaxEnvelopeBytes int
@@ -357,6 +380,7 @@ func normalizeAssistantMessage(msg AssistantMessage, opts NormalizeOptions) Assi
 
 	msg.Content = out
 	msg.ProtocolResidue = normalizer.residue
+	msg.NormalizationFailures = append([]ToolNormalizationFailure(nil), normalizer.failures...)
 	// A spelling the registry does not know still belongs to the protocol
 	// family when it names a dots/tool_call envelope. It reached this point as
 	// text because there was no descriptor to parse it; replace it with the
@@ -377,6 +401,13 @@ func normalizeAssistantMessage(msg AssistantMessage, opts NormalizeOptions) Assi
 		}
 		msg.Content[i] = TextContent{Text: sanitized}
 		msg.ProtocolResidue = true
+		msg.NormalizationFailures = append(msg.NormalizationFailures, ToolNormalizationFailure{
+			Status:      NormalizationUnsupported,
+			Provider:    opts.Provider,
+			Protocol:    "dots_call_family",
+			Reason:      "unrecognized serialized tool-call spelling",
+			Recoverable: false,
+		})
 	}
 	if hasToolCall(out) && (msg.StopReason == "" || msg.StopReason == StopEndTurn) {
 		// A recognized pseudo call is a tool-use turn even when the transport
@@ -562,6 +593,9 @@ type pseudoProtocol struct {
 	// separator spelling, and the body can still be consumed instead of being
 	// published as assistant prose.
 	familyClose bool
+	// unsupported marks a recognized family spelling this build cannot decode.
+	// It changes the failure classification, never the containment behaviour.
+	unsupported bool
 	// parse turns the inner body into canonical calls. A non-nil error means
 	// the envelope is not trusted and must not become assistant prose.
 	parse func(body string, coercer *argumentCoercer) ([]ToolCall, error)
@@ -582,6 +616,7 @@ func unknownFamilyProtocol(open []byte) pseudoProtocol {
 		name:        "dots_call_family",
 		open:        opened,
 		familyClose: true,
+		unsupported: true,
 		parse: func(string, *argumentCoercer) ([]ToolCall, error) {
 			return nil, errors.New("unrecognized dots-family tool-call spelling")
 		},
@@ -662,6 +697,7 @@ type textNormalizer struct {
 	closes      [][]byte
 	coercer     *argumentCoercer
 	diagnostic  func(NormalizationDiagnostic)
+	provider    string
 	maxEnvelope int
 	firstBytes  [256]bool
 
@@ -673,6 +709,10 @@ type textNormalizer struct {
 	calls      int
 	// residue records that a recognized envelope could not be normalized.
 	residue bool
+	// failures is the structured evidence of every failed decision, in stream
+	// order. It survives resetEnvelope so the completed message can carry the
+	// canonical failure state.
+	failures []ToolNormalizationFailure
 	// discarding means an oversized envelope is being consumed without
 	// retaining or publishing its body. The close marker is still recognized
 	// so ordinary text after the envelope can resume.
@@ -696,6 +736,7 @@ func newTextNormalizer(opts NormalizeOptions) *textNormalizer {
 		protocols:   protocols,
 		coercer:     newArgumentCoercer(opts.Tools),
 		diagnostic:  opts.OnDiagnostic,
+		provider:    opts.Provider,
 		maxEnvelope: maxEnvelope,
 	}
 	for _, protocol := range protocols {
@@ -759,7 +800,7 @@ func (n *textNormalizer) flush(kind NormalizationDiagnosticKind) []parsedItem {
 		n.residue = true
 	}
 	if kind != "" {
-		n.report(kind, n.proto.name, "pseudo-tool envelope did not complete", 0)
+		n.reportFailure(kind, n.proto.name, n.proto.unsupported, "pseudo-tool envelope did not complete", raw)
 	}
 	n.pending = n.pending[:0]
 	n.resetEnvelope()
@@ -815,8 +856,8 @@ func (n *textNormalizer) process() []parsedItem {
 				if len(n.raw) > n.maxEnvelope {
 					out = appendTextItem(out, protocolFailureText(DiagnosticOversizedPseudoToolCall, n.proto.name))
 					n.residue = true
-					n.report(DiagnosticOversizedPseudoToolCall, n.proto.name,
-						fmt.Sprintf("envelope exceeded %d bytes", n.maxEnvelope), 0)
+					n.reportFailure(DiagnosticOversizedPseudoToolCall, n.proto.name, false,
+						fmt.Sprintf("envelope exceeded %d bytes", n.maxEnvelope), n.raw)
 					n.resetEnvelope()
 					continue
 				}
@@ -826,15 +867,18 @@ func (n *textNormalizer) process() []parsedItem {
 				case err != nil:
 					out = appendTextItem(out, protocolFailureText(DiagnosticMalformedPseudoToolCall, n.proto.name))
 					n.residue = true
-					n.report(DiagnosticMalformedPseudoToolCall, n.proto.name, err.Error(), 0)
+					n.reportFailure(DiagnosticMalformedPseudoToolCall, n.proto.name, n.proto.unsupported, err.Error(), n.raw)
 				case len(calls) == 0:
 					out = appendTextItem(out, protocolFailureText(DiagnosticMalformedPseudoToolCall, n.proto.name))
 					n.residue = true
-					n.report(DiagnosticMalformedPseudoToolCall, n.proto.name, "envelope contained no tool call", 0)
+					n.reportFailure(DiagnosticMalformedPseudoToolCall, n.proto.name, n.proto.unsupported,
+						"envelope contained no tool call", n.raw)
 				default:
 					for i := range calls {
 						n.calls++
 						calls[i].ID = pseudoCallID(n.proto.name, string(n.body), n.calls)
+						calls[i].Origin = ToolCallSerialized
+						calls[i].Protocol = n.proto.name
 						out = append(out, parsedItem{call: calls[i], isCall: true})
 					}
 					n.report(DiagnosticPseudoToolCall, n.proto.name, "", len(calls))
@@ -855,8 +899,8 @@ func (n *textNormalizer) process() []parsedItem {
 				if !n.discarding {
 					out = appendTextItem(out, protocolFailureText(DiagnosticOversizedPseudoToolCall, n.proto.name))
 					n.residue = true
-					n.report(DiagnosticOversizedPseudoToolCall, n.proto.name,
-						fmt.Sprintf("envelope exceeded %d bytes", n.maxEnvelope), 0)
+					n.reportFailure(DiagnosticOversizedPseudoToolCall, n.proto.name, false,
+						fmt.Sprintf("envelope exceeded %d bytes", n.maxEnvelope), n.raw)
 					n.discarding = true
 					n.body = n.body[:0]
 					n.raw = n.raw[:0]
@@ -881,6 +925,8 @@ func (n *textNormalizer) process() []parsedItem {
 		if closeIdx, length := n.earliestStrayClose(mask); closeIdx >= 0 && (idx < 0 || closeIdx < idx) {
 			out = n.emitText(out, string(n.pending[:closeIdx]))
 			n.residue = true
+			n.reportFailure(DiagnosticMalformedPseudoToolCall, "", false,
+				"closing marker appeared before an opening marker", n.pending[closeIdx:closeIdx+length])
 			n.pending = append(n.pending[:0], n.pending[closeIdx+length:]...)
 			continue
 		}
@@ -1440,15 +1486,77 @@ func (n *textNormalizer) resetEnvelope() {
 }
 
 func (n *textNormalizer) report(kind NormalizationDiagnosticKind, protocol, detail string, calls int) {
+	status := NormalizationValid
+	if kind != DiagnosticPseudoToolCall {
+		status = statusForDiagnostic(kind)
+	}
+	if n.diagnostic != nil {
+		n.diagnostic(NormalizationDiagnostic{
+			Kind:      kind,
+			Protocol:  protocol,
+			Detail:    detail,
+			ToolCalls: calls,
+			Status:    status,
+			Provider:  n.provider,
+		})
+	}
+}
+
+// reportFailure records one failed normalization as both a bounded diagnostic
+// and durable structured evidence on the message. The raw fragment is bounded
+// and audit-only; it is never emitted as prose or executed.
+func (n *textNormalizer) reportFailure(kind NormalizationDiagnosticKind, protocol string, unsupported bool, detail string, raw []byte) {
+	status := statusForDiagnostic(kind)
+	if unsupported {
+		status = NormalizationUnsupported
+	}
+	fragment := boundedEvidenceFragment(raw)
+	failure := ToolNormalizationFailure{
+		Status:      status,
+		Provider:    n.provider,
+		Protocol:    protocol,
+		RawFragment: fragment,
+		Reason:      detail,
+		Recoverable: status != NormalizationUnsupported,
+	}
+	n.failures = append(n.failures, failure)
 	if n.diagnostic == nil {
 		return
 	}
 	n.diagnostic(NormalizationDiagnostic{
-		Kind:      kind,
-		Protocol:  protocol,
-		Detail:    detail,
-		ToolCalls: calls,
+		Kind:        kind,
+		Protocol:    protocol,
+		Detail:      detail,
+		Status:      status,
+		Provider:    n.provider,
+		RawFragment: fragment,
+		Recoverable: failure.Recoverable,
 	})
+}
+
+// statusForDiagnostic maps the transport diagnostic vocabulary onto the
+// canonical normalization state.
+func statusForDiagnostic(kind NormalizationDiagnosticKind) NormalizationStatus {
+	switch kind {
+	case DiagnosticIncompletePseudoToolCall:
+		return NormalizationIncomplete
+	case DiagnosticMalformedPseudoToolCall, DiagnosticOversizedPseudoToolCall:
+		return NormalizationInvalid
+	default:
+		return NormalizationValid
+	}
+}
+
+// boundedEvidenceFragment keeps the beginning and end of a failed envelope so
+// a debug sink can identify the representation without retaining an unbounded
+// model payload.
+func boundedEvidenceFragment(raw []byte) string {
+	if len(raw) <= maxNormalizationEvidenceBytes {
+		return string(raw)
+	}
+	half := maxNormalizationEvidenceBytes / 2
+	return string(raw[:half]) + "\n…[truncated]…\n" +
+		string(raw[len(raw)-half:])
 }
 
 func appendTextItem(out []parsedItem, text string) []parsedItem {

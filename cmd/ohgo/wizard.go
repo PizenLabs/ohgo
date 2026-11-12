@@ -56,6 +56,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		return err
 	}
 	defer opts.closeMCP()
+	defer tools.StopToolProcesses(loop.Tools())
 
 	surface := newSupportSurface(supportBuilder(opts, registry))
 

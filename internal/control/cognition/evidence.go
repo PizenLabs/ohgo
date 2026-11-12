@@ -642,7 +642,7 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 		return true, s.addSymbols(outcome, details, seq)
 	case "write", "edit", "delete":
 		return true, s.addMutation(outcome, path, details, seq)
-	case "bash":
+	case "bash", "verify":
 		return true, s.addBash(outcome, details, seq)
 	case "web_fetch", "search", "browser", "mcp_list", "mcp_read", "mcp_call":
 		return true, s.addExternal(outcome, details, seq)
@@ -913,25 +913,47 @@ func (s *EvidenceState) addMutation(outcome agent.ToolOutcome, path string, deta
 // addBash records command execution, verification, and mutation evidence.
 func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
 	command := detailString(details, "command")
+	if command == "" && outcome.Result.Verification != nil {
+		command = outcome.Result.Verification.Command
+	}
 	if command == "" {
 		command = argString(outcome.Args, "command")
+	}
+	if command == "" && outcome.ToolName == "verify" {
+		if service, ok := details["service"].(map[string]any); ok {
+			command = detailString(service, "command")
+		}
+	}
+	if command == "" {
+		command = outcome.ToolName + " " + outcome.CallID
+	}
+	// Preserve the historical bash evidence identity: checkpoints store these
+	// ids, and changing them would orphan every prior observation. Any other
+	// capability gets its own namespace so a command run by verify cannot
+	// overwrite the same command's bash observation.
+	idKey := command
+	if outcome.ToolName != "bash" {
+		idKey = outcome.ToolName + ":" + command
 	}
 	text := bound(outcome.Result.Text, MaxEvidenceValueBytes)
 	exit := detailInt(details, "exitCode")
 	summary := "$ " + bound(command, 160)
+	if outcome.ToolName == "verify" {
+		summary = "verification " + bound(command, 160)
+	}
 	if exit != 0 {
 		summary += fmt.Sprintf(" (exit %d)", exit)
 	}
 	executed := outcome.Result.Executes && outcome.Result.Finished && !outcome.Result.IsError
 	changed := s.upsert(EvidenceItem{
-		ID:         "command:" + digest(command),
+		ID:         "command:" + digest(idKey),
 		Status:     StatusKnown,
 		Retention:  RetentionDiagnostic,
 		Provenance: ProvenanceDiagnostic,
 		Summary:    bound(summary, MaxEvidenceSummaryBytes),
 		Value:      text,
 		Digest:     digest(text),
-		Source:     Source{Tool: "bash", CallID: outcome.CallID},
+		Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID},
 		Seq:        seq,
 		Executed:   executed,
 	})
@@ -950,24 +972,24 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 				}
 			}
 		}
-		id := "verification:" + digest(command)
+		id := "verification:" + digest(idKey)
 		if s.upsert(EvidenceItem{
 			ID:         id,
 			Status:     StatusKnown,
-			Retention:  RetentionDiagnostic,
-			Provenance: ProvenanceDiagnostic,
+			Retention:  RetentionExact,
+			Provenance: ProvenanceObservation,
 			Summary:    bound("verification "+check+" "+scope+": "+summary, MaxEvidenceSummaryBytes),
 			Value:      text,
 			Digest:     digest(text),
-			Source:     Source{Tool: "bash", CallID: outcome.CallID, Check: check, Scope: scope},
+			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID, Check: check, Scope: scope},
 			Seq:        seq,
-			Executed:   executed,
+			Executed:   true,
 		}) {
 			changed = true
 		}
 	}
 	if outcome.Result.Mutates {
-		id := "mutation:" + digest(command)
+		id := "mutation:" + digest(idKey)
 		if s.upsert(EvidenceItem{
 			ID:         id,
 			Status:     StatusKnown,
@@ -976,7 +998,7 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 			Summary:    bound("command may have changed the workspace: "+summary, MaxEvidenceSummaryBytes),
 			Value:      text,
 			Digest:     digest(text),
-			Source:     Source{Tool: "bash", CallID: outcome.CallID},
+			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID},
 			Seq:        seq,
 		}) {
 			changed = true

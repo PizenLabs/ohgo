@@ -5,6 +5,41 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- Structured verification runtime: the `verify` capability owns a service
+  lifecycle (`STARTING`/`RUNNING`/`READY`/`FAILED`/`STOPPING`/`STOPPED`/
+  `TIMED_OUT`), HTTP/TCP/output readiness, port discovery, bounded HTTP and
+  command checks, an optional headless-browser check, and process-group cleanup
+  on every exit path. Independent checks run with bounded concurrency; browser
+  verification is optional and reports `VERIFICATION_INSUFFICIENT` when no
+  headless browser exists.
+- Structured normalization evidence: provider envelopes that fail to parse now
+  carry `ToolNormalizationFailure` records (`INCOMPLETE`, `INVALID`,
+  `UNSUPPORTED`) with a bounded raw fragment, protocol, provider, and
+  recoverability. The raw fragment is audit-only and is never executed or
+  published as an answer.
+
+### Fixed
+
+- Service requests now route to execution instead of ASK. `use npx live-server
+  test this project`, `serve this project and verify it`, and `start the
+  development server and check the page` are execution contracts, and a bare
+  “test this project” accepts behavioural HTTP/browser evidence rather than
+  requiring a code-test check.
+- Execution protocol failures are classified at the stage they occurred:
+  `NO_MODEL_OUTPUT`, `EXECUTION_INTENT_WITHOUT_TOOL`, and
+  `TOOL_NORMALIZATION_FAILED`. Each gets at most one bounded recovery request;
+  prose is never executed, malformed syntax is never dispatched, and a second
+  failure ends in a review verdict rather than a retry loop.
+- Stale checkpoints no longer present a contradictory runtime state. A
+  non-terminal task drops an impossible completion proof, and an older
+  informational projection of an explicit service-execution objective is
+  re-derived from the same user text before the resumed turn is routed.
+- Background jobs are no longer orphaned: session shutdown terminates every
+  running job's process group, while normal turns still leave detached jobs
+  available to `wait`.
+
 ## [v0.1.1] - 2026-11-12
 
 ### Added

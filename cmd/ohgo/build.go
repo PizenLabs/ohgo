@@ -51,6 +51,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewDeleteTool(opts.root),
 		bash,
 		tools.NewWaitTool(bash.Jobs()),
+		tools.NewVerifyTool(opts.root),
 		tools.NewGlobTool(opts.root),
 		tools.NewGrepTool(opts.root),
 		tools.NewLsTool(opts.root),
@@ -175,16 +176,19 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 			childTools = readOnlyToolSet(childTools)
 		}
 		parent := agent.Config{
-			Model:      opts.model,
-			Stream:     registry.StreamFn(),
-			Tools:      childTools,
-			MaxTokens:  opts.maxTokens,
-			Budget:     opts.ensureBudget().Get(),
-			Reasoning:  opts.reasoning,
-			Admit:      opts.admit(),
-			Authorize:  gate,
-			Compaction: compactionFromSettings(opts.settings),
-			Summarize:  newSummarizer(registry.StreamFn(), opts.model, opts.budget),
+			Model:                    opts.model,
+			Stream:                   registry.StreamFn(),
+			Tools:                    childTools,
+			MaxTokens:                opts.maxTokens,
+			Budget:                   opts.ensureBudget().Get(),
+			Reasoning:                opts.reasoning,
+			Admit:                    opts.admit(),
+			Authorize:                gate,
+			AnswerRequest:            prompt.AnswerRequest,
+			ExecutionRecoveryRequest: prompt.ExecutionRecoveryRequest,
+			ProtocolRecoveryRequest:  prompt.ProtocolRecoveryRequest,
+			Compaction:               compactionFromSettings(opts.settings),
+			Summarize:                newSummarizer(registry.StreamFn(), opts.model, opts.budget),
 			// The spawner is a separate parent config from the top-level loop,
 			// so every bound the user set must be copied here too. Omitting the
 			// deadline would make the D-2 inheritance fix vacuous in production.
@@ -306,19 +310,21 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 	}
 
 	loop, err := agent.New(agent.Config{
-		Model:           opts.model,
-		Stream:          registry.StreamFn(),
-		SystemFn:        systemPrompt,
-		Tools:           toolSet,
-		AnswerRequest:   prompt.AnswerRequest,
-		MaxTokens:       opts.maxTokens,
-		Budget:          opts.budget.Get(),
-		Deadline:        opts.deadline,
-		MaxTurns:        opts.maxTurns,
-		Reasoning:       opts.reasoning,
-		ReasoningEffort: opts.effort,
-		SessionID:       sessionProviderID(sess),
-		OnTurn:          onTurn,
+		Model:                    opts.model,
+		Stream:                   registry.StreamFn(),
+		SystemFn:                 systemPrompt,
+		Tools:                    toolSet,
+		AnswerRequest:            prompt.AnswerRequest,
+		ExecutionRecoveryRequest: prompt.ExecutionRecoveryRequest,
+		ProtocolRecoveryRequest:  prompt.ProtocolRecoveryRequest,
+		MaxTokens:                opts.maxTokens,
+		Budget:                   opts.budget.Get(),
+		Deadline:                 opts.deadline,
+		MaxTurns:                 opts.maxTurns,
+		Reasoning:                opts.reasoning,
+		ReasoningEffort:          opts.effort,
+		SessionID:                sessionProviderID(sess),
+		OnTurn:                   onTurn,
 		// The security boundary replaces the legacy admit/approve pair. The
 		// gate performs the authority check, the policy decision, and (for an
 		// APPROVE) the human approval, so there is exactly one path to

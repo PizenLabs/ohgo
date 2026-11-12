@@ -696,6 +696,16 @@ The classification is derived on every load and never persisted. The report also
 counts outstanding todos. Recovery never invents progress, never marks an
 interrupted task complete, and never changes authority.
 
+A load also reconciles transient state that contradicts the lifecycle. A
+completion proof on a non-terminal task is discarded, because a live turn cannot
+be `PROVEN`. A stored informational contract for an objective that the current
+deterministic classifier identifies as an explicit service execution
+(`use npx live-server…`, `serve…`, `start the development server…`) is
+re-derived from the same user text before the resumed turn is routed. This is
+narrow on purpose: the objective text did not change, only an older projection
+of its capability boundary. A host-supplied narrowing or a genuinely different
+objective is never rewritten, and authority still gates every call.
+
 ### 9.5 Objective state and proven completion
 
 `Task.ObjectiveState` projects the lifecycle and proof into `ACTIVE`,

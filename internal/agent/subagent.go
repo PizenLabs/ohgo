@@ -282,6 +282,11 @@ func RunSubagent(ctx context.Context, parent Config, spec SubagentSpec) (Subagen
 
 	turns, err := loop.Run(ctx, []Message{UserMessage{Text: spec.Task}})
 	if err != nil {
+		// The child boundary has one no-output contract. Preserve it even
+		// though the loop now classifies the same condition explicitly.
+		if errors.Is(err, ErrNoModelOutput) {
+			return SubagentResult{}, ErrNoSubagentResult
+		}
 		return SubagentResult{}, err
 	}
 

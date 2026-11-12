@@ -120,3 +120,22 @@ func TestClassifyRunEvidenceDecidesWithoutAStop(t *testing.T) {
 		t.Fatal("a review verdict must carry the evidence reason")
 	}
 }
+
+// Protocol failures before any requested action are review verdicts with the
+// stage named in the reason, not a generic "blocked" or a false failure.
+func TestClassifyRunPreservesProtocolFailureStage(t *testing.T) {
+	for _, sentinel := range []error{
+		ErrNoModelOutput,
+		ErrExecutionIntentWithoutTool,
+		ErrToolNormalizationFailed,
+	} {
+		err := errors.Join(sentinel, errors.New("detail"))
+		verdict, reason := ClassifyRun(err, CompletionInput{}, false)
+		if verdict != RunNeedsReview {
+			t.Errorf("%v verdict = %v, want RunNeedsReview", sentinel, verdict)
+		}
+		if !strings.Contains(reason, strings.TrimPrefix(sentinel.Error(), "agent: ")) {
+			t.Errorf("%v reason = %q, want the stage name", sentinel, reason)
+		}
+	}
+}

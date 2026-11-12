@@ -73,7 +73,14 @@ func BuildIntentContract(text string) IntentContract {
 	switch {
 	case mutation:
 		contract.Kind = ObjectiveMutation
-	case intent == IntentRead, intent == IntentInvestigate:
+	case intent == IntentRead:
+		contract.Kind = ObjectiveInformational
+	case RequestsServiceExecution(objective):
+		// Starting a service is an execution deliverable even when the request
+		// also says to test it: the process and its readiness must be observed,
+		// so an answer alone cannot complete the objective.
+		contract.Kind = ObjectiveExecution
+	case intent == IntentInvestigate:
 		// Investigation is an informational deliverable even though it runs
 		// under FUZZ and may execute to acquire evidence. Mapping it to an
 		// execution objective made any successful process (the first `ls`, for
@@ -407,13 +414,22 @@ func commandCheck(subcommand string) VerificationCheck {
 func proseCheck(text string) VerificationCheck {
 	normalized := " " + normalizeRequest(text) + " "
 	switch {
-	case containsPhrase(normalized, []string{"test", "tests", "test suite", "pytest", "unit tests"}):
+	case containsPhrase(normalized, []string{
+		"tests", "test suite", "unit tests", "integration tests", "pytest",
+		"run test", "run tests", "the test", "this test", "that test",
+		"failing test", "failing tests", "npm test", "yarn test", "pnpm test",
+		"cargo test", "go test",
+	}):
 		return CheckTest
 	case containsPhrase(normalized, []string{"build", "builds", "compile", "compiles"}):
 		return CheckBuild
 	case containsPhrase(normalized, []string{"vet", "staticcheck", "lint"}):
 		return CheckVet
 	default:
+		// A bare "test this project" names a verification outcome, not a
+		// particular test-runner kind. HTTP/browser behaviour checks are valid
+		// evidence for it; requiring a code-test check would reject the exact
+		// serve-and-test workflow the runtime supports.
 		return CheckAny
 	}
 }
