@@ -41,24 +41,57 @@ var (
 	// does at runtime. Dependency names, Compose topology, and documentation
 	// prose do not satisfy it.
 	behaviorClaimPattern = regexp.MustCompile(`(?i)\b(?:` +
-		`validat(?:es?|ed|ing)\s+(?:against|with)\b|` +
-		`publishes?\b|` +
-		`consumes?\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,2}(?:cart|queue|message|event|stream|api|service|order|product|payment)s?\b|` +
-		`subscribes?\s+to\b|` +
-		`fulfills?\b|` +
-		`calls?\s+(?:the\s+)?[a-z0-9_-]+\s+(?:service|api|endpoint)\b|` +
-		`sends?\s+(?:an?\s+)?(?:request|event|message)\s+to\b|` +
-		`reads?\s+from\b|` +
-		`writes?\s+to\b|` +
+		`validat(?:e|es|ed|ing)\s+(?:against|with)\b|` +
+		`publish(?:es|ing)?\b|` +
+		`consum(?:e|es|ing)?\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,2}(?:cart|queue|message|event|stream|api|service|order|product|payment)s?\b|` +
+		`subscrib(?:e|es|ing)?\s+to\b|` +
+		`fulfil(?:l(?:s|ing)?)?\b|` +
+		`call(?:s|ing)?\s+(?:the\s+)?[a-z0-9_-]+\s+(?:service|api|endpoint)\b|` +
+		`send(?:s|ing)?\s+(?:an?\s+)?(?:request|event|message)\s+to\b|` +
+		`read(?:s|ing)?\s+from\b|` +
+		`writ(?:e|es|ing)?\s+to\b|` +
 		`auto[- ]?appl(?:y|ies|ied|ying)\b|` +
-		`executes?\s+(?:the\s+)?(?:job|task|command|process|query|migration|workflow|pipeline|handler|request)\b|` +
-		`routes?\s+(?:requests?\s+)?(?:to|through)\b|` +
-		`listens?\s+(?:on|for)\b|` +
-		`process(?:es)?\s+(?:orders?|payments?|events?)\b|` +
-		`handles?\s+(?:orders?|requests?|events?)\b|` +
-		`stores?\s+(?:data|orders?|sessions?)\s+in\b|` +
-		`connects?\s+to\b` +
+		`execut(?:e|es|ing)?\s+(?:the\s+)?(?:job|task|command|process|query|migration|workflow|pipeline|handler|request)\b|` +
+		`(?:is|are)\s+running\s+(?:the\s+)?(?:job|task|command|process|query|migration|workflow|pipeline|handler|request)\b|` +
+		`rout(?:e|es|ing)?\s+(?:requests?\s+)?(?:to|through)\b|` +
+		`listen(?:s|ing)?\s+(?:on|for)\b|` +
+		`process(?:es|ing)?\s+(?:orders?|payments?|events?)\b|` +
+		`handl(?:e|es|ing)?\s+(?:orders?|requests?|events?)\b|` +
+		`stor(?:e|es|ing)?\s+(?:data|orders?|sessions?)\s+in\b|` +
+		`connect(?:s|ing)?\s+to\b` +
 		`)`)
+
+	// runtimeStateClaimPattern matches a claim that a project runtime is
+	// currently alive. Configuration declares that a service exists; source
+	// content describes what it would do; only a live runtime observation
+	// establishes that it is running now.
+	runtimeStateClaimPattern = regexp.MustCompile(`(?i)\b(?:` +
+		`service|server|application|app|process|container|instance|worker|` +
+		`gateway|backend|frontend|endpoint|project` +
+		`)\b[^.\n]{0,40}\b(?:is|are|was|were)\s+` +
+		`(?:currently\s+|now\s+|still\s+)?` +
+		`(?:running|live|up|healthy|serving|ready)\b`)
+
+	// testCountClaimPattern matches a concrete test-inventory count. A test
+	// count is an inventory observation, not a documentation fact. The two
+	// alternatives cover "the project has 120 tests" and "120 tests are
+	// present"; a bare count in prose is left to provenance.
+	testCountClaimPattern = regexp.MustCompile(`(?i)\b(?:` +
+		`(?:there\s+(?:are|is)|contains?|has|have|reports?|totals?|total\s+of|with)\s+` +
+		`(?:about\s+|approximately\s+|around\s+)?(\d[\d,]*)\s+` +
+		`(?:[a-z][a-z0-9-]*\s+){0,2}(?:tests?|test\s+files?|test\s+cases?|test\s+functions?)\b|` +
+		`(\d[\d,]*)\s+(?:[a-z][a-z0-9-]*\s+){0,2}` +
+		`(?:tests?|test\s+files?|test\s+cases?|test\s+functions?)\s+(?:are|is)\s+present\b` +
+		`)`)
+
+	// structuralRelationClaimPattern matches an explicit code-level relation
+	// between two endpoints. It requires a dotted endpoint, so a component
+	// behavior sentence ("cart calls product") stays with the behavior audit.
+	structuralRelationClaimPattern = regexp.MustCompile(`(?i)\b(` +
+		`[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*` +
+		`)\s+(calls?|invokes?|references?|depends\s+on)\s+(` +
+		`[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*` +
+		`)\b`)
 
 	// deploymentClaimPattern matches a conclusion that services can be
 	// deployed independently. Separate service declarations are not that
@@ -144,6 +177,15 @@ func claimScopeIssues(answer string, turns []Turn) []claimIssue {
 		if issue := behaviorClaimIssue(sentence, turns); issue != nil {
 			issues = append(issues, *issue)
 		}
+		if issue := runtimeStateClaimIssue(sentence, turns); issue != nil {
+			issues = append(issues, *issue)
+		}
+		if issue := testInventoryClaimIssue(sentence, turns); issue != nil {
+			issues = append(issues, *issue)
+		}
+		if issue := structuralRelationClaimIssue(sentence, turns); issue != nil {
+			issues = append(issues, *issue)
+		}
 		if issue := deploymentClaimIssue(sentence, turns); issue != nil {
 			issues = append(issues, *issue)
 		}
@@ -168,11 +210,14 @@ func prioritizeClaimIssues(issues []claimIssue) []claimIssue {
 	rank := map[string]int{
 		"unsupported_implementation_claim": 0,
 		"unsupported_completeness_claim":   1,
-		"unsupported_dependency_claim":     2,
-		"unsupported_concept_absence":      3,
-		"unsupported_deployment_claim":     4,
-		"unsupported_line_count":           5,
-		"unverified_speculation":           6,
+		"unsupported_runtime_state":        2,
+		"unsupported_dependency_claim":     3,
+		"unsupported_test_inventory_claim": 4,
+		"unsupported_structural_claim":     5,
+		"unsupported_concept_absence":      6,
+		"unsupported_deployment_claim":     7,
+		"unsupported_line_count":           8,
+		"unverified_speculation":           9,
 	}
 	sort.SliceStable(issues, func(i, j int) bool {
 		return rank[issues[i].Code] < rank[issues[j].Code]
@@ -299,7 +344,8 @@ func claimedPorts(sentence string) []string {
 // supported by several source reads.
 func behaviorClaimObserved(subject, stem string, ports []string, turns []Turn) bool {
 	if len(ports) == 0 {
-		return sourceObservationContains(turns, subject, stem, "")
+		return sourceObservationContains(turns, subject, stem, "") ||
+			runtimeBehaviorObserved(turns, subject, stem)
 	}
 	for _, port := range ports {
 		if sourceObservationContains(turns, subject, stem, port) || runtimePortObserved(turns, subject, port) {
@@ -308,6 +354,35 @@ func behaviorClaimObserved(subject, stem string, ports []string, turns []Turn) b
 		return false
 	}
 	return true
+}
+
+// runtimeBehaviorObserved reports a live runtime whose own output carries the
+// behavior stem. A runtime observation is behavior evidence, not a listener
+// claim: it supports "connects" only when the observed process output says so.
+func runtimeBehaviorObserved(turns []Turn, subject, stem string) bool {
+	if stem == "" {
+		return false
+	}
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.IsError || outcome.Refused() || outcome.Result.Runtime == nil {
+				continue
+			}
+			runtime := outcome.Result.Runtime
+			if subject != "" &&
+				!ComponentMatchesText(subject, runtime.Command) &&
+				!ComponentMatchesText(subject, runtime.URL) {
+				continue
+			}
+			// The process output carries the behavior. The command and URL
+			// name the component coordinate; a component called
+			// "connect-service" must not become a "connects" observation.
+			if strings.Contains(strings.ToLower(outcome.Result.Text), stem) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // runtimePortObserved reports a live runtime whose observed address names the
@@ -334,6 +409,336 @@ func runtimePortObserved(turns []Turn, subject, port string) bool {
 		}
 	}
 	return false
+}
+
+// runtimeStateClaimIssue checks a claim that the project runtime is alive.
+// A manifest, Compose entry, or source read describes what exists or what the
+// code would do; none establishes that a process is currently running.
+func runtimeStateClaimIssue(sentence string, turns []Turn) *claimIssue {
+	match := runtimeStateClaimPattern.FindStringIndex(sentence)
+	if match == nil || runtimeStateIdiom(sentence) || runtimeStateTransitive(sentence, match[1]) {
+		return nil
+	}
+	subject := runtimeStateSubject(sentence, match)
+	if runtimeStateObserved(turns, subject) {
+		return nil
+	}
+	where := "the project"
+	if subject != "" {
+		where = subject
+	}
+	return &claimIssue{
+		Code: "unsupported_runtime_state",
+		Detail: fmt.Sprintf(
+			"the answer states %q as current runtime state for %s, but the run observed no live runtime; configuration and source content declare what would run, not that it is running. Verify it or mark it unverified",
+			boundedClaim(sentence[match[0]:match[1]]), where),
+	}
+}
+
+// runtimeStateIdiom reports a phrase that uses "up" or "ready" without
+// describing a running process.
+func runtimeStateIdiom(sentence string) bool {
+	lower := strings.ToLower(sentence)
+	for _, marker := range []string{"up to date", "up-to-date", "up to you", "ready to", "ready for"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// runtimeStateTransitive reports "is running <object>" rather than "is
+// running". The behavior audit owns the transitive form; the runtime-state
+// audit owns the live-process form.
+func runtimeStateTransitive(sentence string, end int) bool {
+	if end < 0 || end >= len(sentence) {
+		return false
+	}
+	rest := strings.ToLower(strings.TrimSpace(sentence[end:]))
+	for _, prefix := range []string{
+		"the ", "a ", "an ", "its ", "their ", "our ", "my ", "this ", "that ",
+	} {
+		if strings.HasPrefix(rest, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// runtimeStateSubject reads the component before the copula. The matched span
+// starts at the subject noun ("service is running"), so the prefix alone would
+// omit a preceding qualifier ("cart service"); the copula is the subject
+// boundary.
+func runtimeStateSubject(sentence string, match []int) string {
+	if len(match) < 2 {
+		return ""
+	}
+	window := sentence[match[0]:match[1]]
+	lower := strings.ToLower(window)
+	for _, copula := range []string{" is ", " are ", " was ", " were "} {
+		if index := strings.Index(lower, copula); index >= 0 {
+			return ComponentSubject(sentence, match[0]+index)
+		}
+	}
+	return ComponentSubject(sentence, match[0])
+}
+
+// runtimeStateObserved reports a live runtime observation bound to the subject.
+// A bare address is not a component coordinate; the runtime's own command or
+// URL must name the subject when the claim names one.
+func runtimeStateObserved(turns []Turn, subject string) bool {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.IsError || outcome.Refused() || outcome.Result.Runtime == nil {
+				continue
+			}
+			if subject == "" {
+				return true
+			}
+			runtime := outcome.Result.Runtime
+			if ComponentMatchesText(subject, runtime.Command) ||
+				ComponentMatchesText(subject, runtime.URL) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// testInventoryClaimIssue checks a concrete test count against a complete,
+// current, unscoped test inventory. A README count and a metadata overview are
+// not a filtered inventory.
+func testInventoryClaimIssue(sentence string, turns []Turn) *claimIssue {
+	match := testCountClaimPattern.FindStringSubmatchIndex(sentence)
+	if match == nil {
+		return nil
+	}
+	raw := ""
+	for index := 2; index+1 < len(match); index += 2 {
+		if match[index] >= 0 && match[index+1] > match[index] {
+			raw = sentence[match[index]:match[index+1]]
+			break
+		}
+	}
+	claimed, ok := claimCountAllowZero(raw)
+	if !ok {
+		return nil
+	}
+	counts, current := observedTestCounts(turns)
+	if !current {
+		return &claimIssue{
+			Code: "unsupported_test_inventory_claim",
+			Detail: fmt.Sprintf(
+				"the answer states a test count of %d, but the run has no complete current unscoped test inventory; a metadata overview, README, or partial query cannot establish the count. Query structure view=tests or remove the count",
+				claimed),
+		}
+	}
+	if len(counts) == 0 {
+		return &claimIssue{
+			Code: "unsupported_test_inventory_claim",
+			Detail: fmt.Sprintf(
+				"the answer states a test count of %d, but the observed test inventory did not report a usable count; remove the count or cite the inventory",
+				claimed),
+		}
+	}
+	if counts[claimed] {
+		return nil
+	}
+	return &claimIssue{
+		Code: "unsupported_test_inventory_claim",
+		Detail: fmt.Sprintf(
+			"the answer states a test count of %d, but the current complete test inventory reported %s; correct the count or cite the observed inventory",
+			claimed, joinTestCounts(counts)),
+	}
+}
+
+// observedTestCounts returns the counts a complete current unscoped test
+// inventory reported, or current=false when no such inventory exists.
+func observedTestCounts(turns []Turn) (map[int]bool, bool) {
+	counts := map[int]bool{}
+	current := false
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.IsError || outcome.Refused() || outcome.ToolName != "structure" {
+				continue
+			}
+			if proposalArgString(outcome.Args, "path") != "" ||
+				proposalArgString(outcome.Args, "package") != "" ||
+				proposalArgString(outcome.Args, "symbol") != "" {
+				continue
+			}
+			details, ok := outcome.Result.Details.(map[string]any)
+			if !ok || detailValueString(details, "view") != "tests" {
+				continue
+			}
+			if detailValueString(details, "graph_state") != "CURRENT" ||
+				detailValueBool(details, "truncated") ||
+				!detailValueBool(details, "scope_complete") ||
+				!detailValueBool(details, "inventory_complete") ||
+				!detailValueBool(details, "structural_complete") ||
+				!nestedProjectsResolved(details) {
+				continue
+			}
+			current = true
+			for _, key := range []string{"test_files", "total"} {
+				if value, known := details[key].(int); known {
+					counts[value] = true
+				}
+			}
+		}
+	}
+	return counts, current
+}
+
+// nestedProjectsResolved reports that every disclosed nested repository was
+// included in the same snapshot. An unresolved boundary leaves the inventory
+// unable to establish a repository-wide count or absence.
+func nestedProjectsResolved(details map[string]any) bool {
+	for _, project := range claimFileRows(details["nested_projects"]) {
+		if included, ok := project["included"].(bool); !ok || !included {
+			return false
+		}
+	}
+	return true
+}
+
+// joinTestCounts renders observed counts deterministically.
+func joinTestCounts(counts map[int]bool) string {
+	values := make([]int, 0, len(counts))
+	for value := range counts {
+		values = append(values, value)
+	}
+	sort.Ints(values)
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, strconv.Itoa(value))
+	}
+	return strings.Join(parts, " or ")
+}
+
+// structuralRelationClaimIssue checks an explicit code-level relationship
+// between two endpoints. A relationship is not implied by reading one of its
+// endpoints; the observation must bind both of them.
+func structuralRelationClaimIssue(sentence string, turns []Turn) *claimIssue {
+	for _, match := range structuralRelationClaimPattern.FindAllStringSubmatchIndex(sentence, -1) {
+		if len(match) < 8 {
+			continue
+		}
+		left := sentence[match[2]:match[3]]
+		verb := strings.TrimSpace(sentence[match[4]:match[5]])
+		right := sentence[match[6]:match[7]]
+		if !strings.Contains(left, ".") && !strings.Contains(right, ".") {
+			continue
+		}
+		if structuralEndpointIsGeneric(left) || structuralEndpointIsGeneric(right) {
+			continue
+		}
+		if structuralRelationObserved(turns, left, verb, right) {
+			continue
+		}
+		return &claimIssue{
+			Code: "unsupported_structural_claim",
+			Detail: fmt.Sprintf(
+				"the answer states %q, but no observation binds %s and %s; a structural query or the call site must show the relationship. Verify it or state the narrower observation",
+				boundedClaim(sentence[match[0]:match[1]]), left, right),
+		}
+	}
+	return nil
+}
+
+// structuralEndpointIsGeneric filters ordinary prose words that are not code
+// endpoints. A dotted endpoint is always concrete enough to audit.
+func structuralEndpointIsGeneric(endpoint string) bool {
+	endpoint = strings.ToLower(strings.TrimSpace(endpoint))
+	if strings.Contains(endpoint, ".") {
+		return false
+	}
+	switch endpoint {
+	case "the", "this", "that", "it", "which", "who", "service", "services",
+		"server", "app", "application", "process", "component", "function",
+		"method", "code", "package", "module", "file", "handler":
+		return true
+	default:
+		return false
+	}
+}
+
+// structuralRelationObserved reports a structural observation binding both
+// endpoints, or a source call site that contains both and the call syntax.
+func structuralRelationObserved(turns []Turn, left, verb, right string) bool {
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.Result.IsError || outcome.Refused() {
+				continue
+			}
+			text := strings.ToLower(outcome.Result.Text)
+			if !relationEndpointObserved(text, left) || !relationEndpointObserved(text, right) {
+				continue
+			}
+			switch outcome.ToolName {
+			case "structure", "symbols", "graph", "refs":
+				return true
+			}
+			if !sourceObservationOutcome(outcome) {
+				continue
+			}
+			if strings.Contains(strings.ToLower(verb), "depend") {
+				if strings.Contains(text, "depend") {
+					return true
+				}
+				continue
+			}
+			if relationCallSiteObserved(text, right) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// relationEndpointObserved matches a qualified endpoint by its full spelling,
+// or by both its qualifier and member when the observation drops the package.
+func relationEndpointObserved(text, endpoint string) bool {
+	endpoint = strings.ToLower(strings.TrimSpace(endpoint))
+	if endpoint == "" {
+		return false
+	}
+	if strings.Contains(text, endpoint) {
+		return true
+	}
+	if !strings.Contains(endpoint, ".") {
+		return false
+	}
+	parts := strings.Split(endpoint, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	member := parts[len(parts)-1]
+	qualifier := parts[len(parts)-2]
+	return strings.Contains(text, member) && strings.Contains(text, qualifier)
+}
+
+// relationCallSiteObserved reports call syntax for the right endpoint, so a
+// file that merely mentions both names is not a call site.
+func relationCallSiteObserved(text, endpoint string) bool {
+	endpoint = strings.ToLower(strings.TrimSpace(endpoint))
+	if endpoint == "" {
+		return false
+	}
+	for _, candidate := range []string{endpoint, lastEndpointSegment(endpoint)} {
+		if strings.Contains(text, candidate+"(") {
+			return true
+		}
+	}
+	return false
+}
+
+// lastEndpointSegment returns the member of a qualified endpoint.
+func lastEndpointSegment(endpoint string) string {
+	if index := strings.LastIndex(endpoint, "."); index >= 0 {
+		return endpoint[index+1:]
+	}
+	return endpoint
 }
 
 // sourceObservationContains reports a source read or source-scoped grep that
@@ -683,6 +1088,16 @@ func claimCount(raw string) int {
 	return value
 }
 
+// claimCountAllowZero parses a non-negative decimal count. A zero test count is
+// a valid inventory observation, not a missing value.
+func claimCountAllowZero(raw string) (int, bool) {
+	value, err := strconv.Atoi(strings.ReplaceAll(strings.TrimSpace(raw), ",", ""))
+	if err != nil || value < 0 {
+		return 0, false
+	}
+	return value, true
+}
+
 // deploymentObserved reports a read deployment artifact. A Dockerfile or a
 // Kubernetes/Helm manifest is a deployment boundary; a Compose service entry
 // alone is topology.
@@ -849,6 +1264,8 @@ func behaviorStem(phrase string) string {
 		return "stor"
 	case strings.HasPrefix(word, "connect"):
 		return "connect"
+	case strings.HasPrefix(word, "run"):
+		return "run"
 	default:
 		return ""
 	}

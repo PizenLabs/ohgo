@@ -1,6 +1,8 @@
 # Claim-to-Evidence Alignment
 
-> **Status:** implemented and verified.
+> **Status:** implemented and verified; the finalized claim classes and coverage
+> contract are canonical in
+> [`docs/architecture/INTENT_GROUNDING.md`](../architecture/INTENT_GROUNDING.md) §4.6.
 > **Scope:** the evidence class an informational answer may promote into a
 > claim, the negative-claim boundary, and the claim orientation in the runtime
 > state block.

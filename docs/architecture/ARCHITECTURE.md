@@ -102,18 +102,35 @@ not an operation. A broad project account therefore cannot complete from
 documentation plus metadata, and the pre-answer runtime state block reports the
 classes the run actually supports, plus an actionable evidence frontier.
 
+The claim classes are explicit: project identity, topology, configuration,
+implementation status, dependency use, behavior, runtime state, structural
+relationships, absence, and test inventory. `cognition.ClaimSummary.Coverage`
+projects each class as `SUPPORTED`, `PARTIAL`, or `NOT_OBSERVED` from the same
+ledger the answer audit reads; there is no second evidence store or planner
+database. A runtime-state claim ("the service is running") needs a live runtime
+observation, not configuration or source. A concrete test count needs a
+complete current unscoped test inventory, not a README or metadata overview. A
+structural relationship needs an observation that binds both endpoints.
+Recovery is ordered as recovery → evidence update → answer audit → completion:
+a corrected call may add evidence while the earlier request rejection remains
+diagnostic history, and recovery never promotes a task to `PROVEN` by itself.
+
 Component identity is derived from the path's project structure, never from an
 arbitrary substring: a read of `product-service` cannot support a claim about
 `order-service`, and a file called `api.go` inside `cart/` is not the API
 gateway. Strong completeness wording ("fully implemented", "feature-complete",
 "production-ready") additionally requires an observed, current, complete source
 scope for the named component; one isolated file only supports a claim about
-what that file implements. Dependency claims follow a separate ladder:
-`DECLARED`, `IMPORTED`, `INITIALIZED`, `USED_IN_SOURCE`, and
+what that file implements. A capability list inside a status claim ("with CRUD,
+Redis caching, graceful shutdown, and structured logging") additionally needs
+source evidence for each asserted capability, and a mock/scaffold claim needs
+the marker in the component's source. Dependency claims follow a separate
+ladder: `DECLARED`, `IMPORTED`, `INITIALIZED`, `USED_IN_SOURCE`, and
 `OBSERVED_AT_RUNTIME`. The completion audit applies the same boundaries, so an
-unsupported runtime claim, an absence claim without complete coverage, a
-concept absence without a scoped proof, a documentation/configuration claim
-presented as implementation, or a dependency declaration presented as use is
+unsupported runtime claim, an unobserved test count, an unbound structural
+relationship, an absence claim without complete coverage, a concept absence
+without a scoped proof, a documentation/configuration claim presented as
+implementation, or a dependency declaration presented as use is
 `NEEDS_REVIEW`. A behavior claim that names a port must find that port in a
 source observation for the named component, or in the command/address of a live
 runtime observation; reading one service's listener does not prove another
@@ -235,8 +252,11 @@ The same contract is consumed at three seams:
   evidence and before `COMPLETED`. Dropped entities, an invented action
   narrative, narrowed scope, unresolved references, unsupported negative
   conclusions, and an unsupported claim scope (configuration or documentation
-  promoted to behavior, an unmeasured metric, independent deployment, or
-  path-scoped speculation) downgrade the result to `NEEDS_REVIEW`.
+  promoted to implementation, behavior, or runtime state; a documentation-only
+  implementation status; an unobserved capability, test count, or structural
+  relationship; an unmeasured metric; independent deployment; or path-scoped
+  speculation) downgrade the result to `NEEDS_REVIEW`. Recovery only updates
+  evidence; it never bypasses this audit or the completion evaluator.
 
 Task persistence carries the grounding inside the existing `IntentContract`, so
 a resumed task keeps the same semantic boundary. `$sup` is deliberately not

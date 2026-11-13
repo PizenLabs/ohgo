@@ -233,6 +233,63 @@ func TestRequestRejectionSurvivesCheckpoint(t *testing.T) {
 	}
 }
 
+// A corrected structure request adds valid evidence while the earlier
+// rejection remains diagnostic history. Recovery never fabricates the evidence
+// the failed call would have produced, and it does not close the remaining
+// evidence gap by itself.
+func TestCorrectedStructureObservationAddsEvidenceAndKeepsHistory(t *testing.T) {
+	state := NewEvidenceState()
+	shape := broadProjectShape()
+	badArgs := map[string]any{"path": "backend"}
+	state.ObserveOutcome(requestRejection("bad-1", "structure", badArgs,
+		agent.ToolFailureInvalidSelector))
+
+	if _, ok := state.Find("structure:backend"); ok {
+		t.Fatal("a rejected structure request was recorded as evidence")
+	}
+	if len(state.Failures) != 1 || state.Failures[0].Class != knowledge.FailureInvalidSelector {
+		t.Fatalf("failure history = %+v, want the invalid selector", state.Failures)
+	}
+
+	corrected := agent.ToolOutcome{
+		CallID: "fixed-1", ToolName: "structure",
+		Args: map[string]any{"view": "files", "path": "backend"},
+		Result: agent.Result{
+			Text: "view: files\nreturned: 1\ntotal: 1\n",
+			Details: map[string]any{
+				"view": "files", "path": "backend", "graph_state": "CURRENT",
+				"complete": true, "scope_complete": true,
+				"inventory_complete": true, "structural_complete": true,
+				"completeness": "COMPLETE", "total": 1, "returned": 1,
+				"files": []map[string]any{{
+					"path": "backend/main.go", "test": false, "unsupported": false,
+				}},
+			},
+		},
+	}
+	state.ObserveOutcome(corrected)
+	if _, ok := state.Find("structure:backend"); !ok {
+		t.Fatal("the corrected structure observation was not recorded")
+	}
+	if len(state.Failures) == 0 ||
+		state.Failures[0].Class != knowledge.FailureInvalidSelector {
+		t.Fatalf("the earlier rejection was erased: %+v", state.Failures)
+	}
+
+	suff := EvaluateSufficiency(shape, state, ExecutionState{}, false)
+	if suff.State == Sufficient {
+		t.Fatalf("recovery alone made the broad task sufficient: %+v", suff)
+	}
+	turns := []agent.Turn{
+		{Results: []agent.ToolOutcome{requestRejection("bad-1", "structure", badArgs,
+			agent.ToolFailureInvalidSelector)}},
+		{Results: []agent.ToolOutcome{corrected}},
+	}
+	if verdict := agent.EvaluateCompletion(turns, false); verdict.Complete() {
+		t.Fatal("a corrected tool call auto-promoted PROVEN without an answer")
+	}
+}
+
 // The state block tells the model that an invocation was corrected, not that
 // the capability failed, so it does not close the acquisition surface.
 func TestRequestRejectionRendersAsCorrection(t *testing.T) {

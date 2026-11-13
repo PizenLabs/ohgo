@@ -688,6 +688,23 @@ func structureProvesNoTestFiles(outcome ToolOutcome) bool {
 		!detailValueBool(details, "structural_complete") {
 		return false
 	}
+	// A disclosed scope gap is a gap even if a producer reports a stale
+	// completeness boolean. Excluded roots, excluded source files, and
+	// unsupported languages each leave the inventory unable to prove absence.
+	if len(claimFileRows(details["excluded_roots"])) > 0 ||
+		detailValueInt(details, "excluded_source_files") > 0 {
+		return false
+	}
+	for _, project := range claimFileRows(details["nested_projects"]) {
+		if included, ok := project["included"].(bool); !ok || !included {
+			return false
+		}
+	}
+	for _, language := range claimFileRows(details["unsupported_languages"]) {
+		if detailValueInt(language, "files") > 0 {
+			return false
+		}
+	}
 	if detailValueInt(details, "test_files") != 0 || detailValueInt(details, "total") != 0 {
 		return false
 	}
