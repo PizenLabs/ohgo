@@ -97,6 +97,11 @@ var (
 	ErrEmptyPayload = errors.New("session: empty message payload")
 	// ErrUnknownRole means a stored message has an unrecognised role.
 	ErrUnknownRole = errors.New("session: unknown message role")
+	// ErrDisplayOnlyMessage means a stored row has no provider-sendable
+	// content: reasoning with no text and no tool call. It is presentation for
+	// the transcript that produced it, not conversation the next request can
+	// replay. Replay skips it; the provider boundary would reject it.
+	ErrDisplayOnlyMessage = errors.New("session: display-only message")
 )
 
 // Open opens or creates the database at path.
@@ -915,11 +920,18 @@ func ToAgentMessage(stored StoredMessage) (agent.Message, error) {
 				content = append(content, ai.ToolCall{ID: call.ID, Name: call.Name, Arguments: args})
 			}
 		}
-		return agent.AssistantMessage{Message: ai.AssistantMessage{
+		message := agent.AssistantMessage{Message: ai.AssistantMessage{
 			Content:    content,
 			Model:      ai.Model{ID: stored.Model},
 			StopReason: ai.StopReason(stored.StopReason),
-		}}, nil
+		}}
+		if !ai.HasSendableContent(message.Message) {
+			// A reasoning-only row is a display record from a retried empty
+			// turn, never a conversation turn: it cannot be sent back. Older
+			// sessions persisted these next to the real answer.
+			return nil, ErrDisplayOnlyMessage
+		}
+		return message, nil
 	case "toolResult":
 		var content []ai.ContentBlock
 		if stored.Text != "" {
@@ -944,6 +956,12 @@ func Replay(stored []StoredMessage) ([]agent.Message, error) {
 	out := make([]agent.Message, 0, len(stored))
 	for i, msg := range stored {
 		converted, err := ToAgentMessage(msg)
+		if errors.Is(err, ErrDisplayOnlyMessage) {
+			// The row carries only reasoning. It has no replayable form, and
+			// fabricating text for it would put words in the model's history
+			// it never sent.
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("session: message %d: %w", i, err)
 		}

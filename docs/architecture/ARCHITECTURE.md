@@ -337,6 +337,36 @@ Recognition is an incremental, bounded state machine:
   has no call, it reports `EXECUTION_INTENT_WITHOUT_TOOL`; the prose is never
   interpreted as a command. A turn with neither text nor a call reports
   `NO_MODEL_OUTPUT`. Both are review verdicts, never execution evidence.
+
+### Outbound message contract
+
+The canonical message model is validated before any transport serializes it.
+`ai.ValidateMessages` is the provider-independent contract:
+`ai.Registry.StreamFn` enforces it once at the production boundary, and the
+agent loop enforces the same check with per-message provenance (`history`,
+`user`, `assistant`, `tool_result`, `recovery`, `synthetic`) before opening a
+stream.
+
+- A text content part always carries a non-empty string. An empty part is a
+  construction defect, not "no output": an empty tool result is encoded as an
+  empty string content, never as a text part without text.
+- A user turn has at least one sendable block.
+- An assistant turn has non-empty text or a complete tool call (id and name).
+  Reasoning alone is display content, never conversation content: a turn that
+  produced only reasoning stays in the run's turns as an observation, and
+  `agent.ConversationMessages` excludes it when a host rebuilds the next
+  request. That single projection is shared by the live history, persistence,
+  and session replay.
+- A tool result names the call it answers.
+
+A violation is `agent.ErrInvalidProviderContext` — an internal
+construction/serialization failure reported before the provider call, naming
+the message index, role, provenance, and issue kind. It is never translated
+into an empty text part, dropped silently, weakened, or retried, and no adapter
+fabricates content to make an invalid message sendable. Adapters emit a
+canonical empty shape only where the wire protocol allows it (an assistant turn
+with tool calls omits content; a tool result with no output is the empty
+string).
 - The registry recognizes the provider's observed spellings
   (`<dotsfunctioncall>`, `<dots_function_call>`, and their mixed closing
   markers) as one protocol family. A new spelling is a descriptor there, never

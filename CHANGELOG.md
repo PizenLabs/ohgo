@@ -92,6 +92,21 @@ immutable.
 
 ### Fixed
 
+- A reasoning-only assistant turn is no longer replayed as conversation
+  content. The retried empty answer stayed in the run's turns, and every host
+  rebuilt its next request from them; the resulting assistant message had no
+  sendable block and providers rejected it (`messages[13].content`, a text part
+  with no `text`). `agent.ConversationMessages` is now the single projection for
+  live history, persistence, and session replay, and `session.Replay` skips a
+  stored display-only assistant row instead of failing the resume.
+- The canonical message contract is enforced before any transport serializes a
+  request (`ai.ValidateMessages` at `Registry.StreamFn` and in the agent loop,
+  with per-message provenance). An empty text part, an assistant turn with only
+  reasoning, or a tool call without id/name is reported as
+  `agent.ErrInvalidProviderContext` with the message index, role, provenance,
+  and issue kind, instead of reaching a provider as `{"type":"text"}`.
+  Serializers no longer fabricate empty text parts: an empty tool result is the
+  empty string, and a call-only assistant turn omits content.
 - `/commit` no longer fails with "the COMMIT model ran out of output budget"
   for a reasoning-by-default model whose role effort is `off`. Omitting the
   effort selected the provider default and spent the whole completion on

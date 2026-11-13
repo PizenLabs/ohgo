@@ -5959,19 +5959,24 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				})
 			}
 		}
-		// Every turn persists its assistant plus all of its results, in the
-		// same order as the plain path: dropping non-final results would lose
-		// the evidence the transcript replays, and persisting is the program's
-		// job here (the loop's turn hook only publishes live metrics in UI
-		// mode — transcript text still travels through AssistantDelta events).
-		// They land in the turn's own session, never in a session created
-		// mid-turn.
+		// Every conversational turn persists its assistant plus all of its
+		// results, in the same order as the plain path: dropping non-final
+		// results would lose the evidence the transcript replays, and
+		// persisting is the program's job here (the loop's turn hook only
+		// publishes live metrics in UI mode — transcript text still travels
+		// through AssistantDelta events). A turn that produced only reasoning
+		// has no replayable form, so it is displayed but never stored as
+		// conversation. They land in the turn's own session, never in a
+		// session created mid-turn.
+		if !turn.Conversational() {
+			continue
+		}
 		persistTo(agent.AssistantMessage{Message: turn.Assistant})
 		for _, outcome := range turn.Results {
 			persistTo(agent.ToolResultMessage{
 				ToolCallID: outcome.CallID,
 				ToolName:   outcome.ToolName,
-				Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
+				Content:    ai.TextBlocks(outcome.Result.Text),
 				IsError:    outcome.Result.IsError,
 			})
 		}
@@ -6290,22 +6295,7 @@ func (p *Program) PublishUpdateAvailable(version string) {
 // inherit tool calls that were never actions.
 func rebase(request []agent.Message, turns []agent.Turn) []agent.Message {
 	out := append([]agent.Message(nil), request...)
-	for _, rawTurn := range turns {
-		turn := agent.TranscriptTurn(rawTurn)
-		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
-			continue
-		}
-		out = append(out, agent.AssistantMessage{Message: turn.Assistant})
-		for _, outcome := range turn.Results {
-			out = append(out, agent.ToolResultMessage{
-				ToolCallID: outcome.CallID,
-				ToolName:   outcome.ToolName,
-				Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
-				IsError:    outcome.Result.IsError,
-			})
-		}
-	}
-	return out
+	return append(out, agent.ConversationMessages(turns)...)
 }
 
 // commonPrefixLen reports the shared byte prefix of two strings, so text

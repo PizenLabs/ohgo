@@ -741,6 +741,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 
 	live := make([]Message, len(messages))
 	copy(live, messages)
+	// origins is aligned with live so a canonical-contract failure can name
+	// the constructing stage. The input is the replayed transcript plus the
+	// current request; anything this run appends is attributed as it is added.
+	origins := historyOrigins(len(live))
 
 	// maxUnproductiveTurns is a semantic bound, not a resource bound. A turn
 	// that executed nothing and produced no answer cannot change the runtime's
@@ -813,6 +817,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		}
 
 		if l.compactIfNeeded(ctx, &live) {
+			// Compaction rewrites the conversation, so the per-message history
+			// provenance no longer describes it. The reconstructed context is
+			// history by definition.
+			origins = historyOrigins(len(live))
 			continue
 		}
 
@@ -912,9 +920,15 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			closed = true
 		}
 
-		converted, err := l.convert(requestMessages)
+		converted, requestOrigins, err := l.convert(requestMessages, origins)
 		if err != nil {
 			return turns, fmt.Errorf("agent: convert context: %w", err)
+		}
+		// The canonical contract is checked before any transport sees the
+		// conversation. A malformed message is an internal construction
+		// failure: sending it would ask a provider to diagnose runtime state.
+		if err := ai.ValidateMessages(converted, requestOrigins); err != nil {
+			return turns, fmt.Errorf("%w: %w", ErrInvalidProviderContext, err)
 		}
 
 		activeByName := make(map[string]Tool, len(activeTools))
@@ -964,6 +978,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 
 		turn := Turn{Assistant: assistant}
 		live = append(live, AssistantMessage{Message: assistant})
+		origins = append(origins, ai.ProvenanceAssistant)
 
 		calls := assistant.ToolCalls()
 		if len(calls) > 0 || strings.TrimSpace(assistant.Text()) != "" {
@@ -1002,6 +1017,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					normalizationRecoveryAttempted = true
 					if strings.TrimSpace(l.cfg.ProtocolRecoveryRequest) != "" {
 						live = append(live, UserMessage{Text: l.cfg.ProtocolRecoveryRequest})
+						origins = append(origins, ai.ProvenanceRecovery)
 					}
 					continue
 				}
@@ -1019,6 +1035,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					executionRecoveryAttempted = true
 					if strings.TrimSpace(l.cfg.ExecutionRecoveryRequest) != "" {
 						live = append(live, UserMessage{Text: l.cfg.ExecutionRecoveryRequest})
+						origins = append(origins, ai.ProvenanceRecovery)
 					}
 					continue
 				}
@@ -1034,7 +1051,11 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// useful to the model and some providers reject it.
 			if strings.TrimSpace(assistant.Text()) == "" && !closed && !forceAnswer &&
 				unproductiveTurns > 0 && len(turns) < l.cfg.MaxTurns {
+				// The turn stays in turns as a run observation, but it is not
+				// conversation content: a reasoning-only assistant message
+				// cannot be replayed. Drop it from the next request.
 				live = live[:len(live)-1]
+				origins = origins[:len(origins)-1]
 				forceAnswer = true
 				continue
 			}
@@ -1049,8 +1070,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			if strings.TrimSpace(assistant.Text()) == "" && (closed || forceAnswer) &&
 				!answerRetried && len(turns) < l.cfg.MaxTurns {
 				live = live[:len(live)-1]
+				origins = origins[:len(origins)-1]
 				if strings.TrimSpace(l.cfg.AnswerRequest) != "" {
 					live = append(live, UserMessage{Text: l.cfg.AnswerRequest})
+					origins = append(origins, ai.ProvenanceRecovery)
 				}
 				// Keep the retry answer-only even if a projector would
 				// otherwise re-offer the probe surface. The model already had
@@ -1116,6 +1139,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if l.cfg.GetSteeringMessages != nil {
 			if steered := l.cfg.GetSteeringMessages(ctx); len(steered) > 0 {
 				live = append(live, steered...)
+				for range steered {
+					origins = append(origins, ai.ProvenanceSynthetic)
+				}
 			}
 		}
 
@@ -1125,9 +1151,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			live = append(live, ToolResultMessage{
 				ToolCallID: outcome.CallID,
 				ToolName:   outcome.ToolName,
-				Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
+				Content:    ai.TextBlocks(outcome.Result.Text),
 				IsError:    outcome.Result.IsError,
 			})
+			origins = append(origins, ai.ProvenanceToolResult)
 		}
 
 		turns = append(turns, turn)
@@ -1419,16 +1446,41 @@ func (l *Loop) SetSessionID(id string) {
 	l.cfg.SessionID = id
 }
 
+// historyOrigins labels a restored or reconstructed conversation: every entry
+// is history except the final user request that triggers the run.
+func historyOrigins(count int) []ai.Provenance {
+	origins := make([]ai.Provenance, count)
+	for i := range origins {
+		origins[i] = ai.ProvenanceHistory
+	}
+	if count > 0 {
+		origins[count-1] = ai.ProvenanceUser
+	}
+	return origins
+}
+
 // convert turns agent messages into provider messages.
-func (l *Loop) convert(messages []Message) ([]ai.Message, error) {
+//
+// origins is aligned with messages and is carried through so the canonical
+// validation can name the constructing subsystem. A host TransformContext hook
+// may rewrite the list arbitrarily, so it is treated as history: the runtime
+// no longer knows which stage produced those entries.
+func (l *Loop) convert(messages []Message, origins []ai.Provenance) ([]ai.Message, []ai.Provenance, error) {
 	if l.cfg.TransformContext != nil {
 		messages = l.cfg.TransformContext(messages)
+		origins = nil
 	}
 	out := make([]ai.Message, 0, len(messages))
-	for _, msg := range messages {
+	outOrigins := make([]ai.Provenance, 0, len(messages))
+	for i, msg := range messages {
+		provenance := ai.ProvenanceUnknown
+		if i < len(origins) && origins[i] != "" {
+			provenance = origins[i]
+		}
 		switch m := msg.(type) {
 		case ai.Message:
 			out = append(out, m)
+			outOrigins = append(outOrigins, provenance)
 		case Message:
 			converted, ok := m.toLLM()
 			if !ok {
@@ -1436,11 +1488,12 @@ func (l *Loop) convert(messages []Message) ([]ai.Message, error) {
 				continue
 			}
 			out = append(out, converted)
+			outOrigins = append(outOrigins, provenance)
 		default:
-			return nil, fmt.Errorf("unsupported message type %T", msg)
+			return nil, nil, fmt.Errorf("unsupported message type %T", msg)
 		}
 	}
-	return out, nil
+	return out, outOrigins, nil
 }
 
 // drain consumes a stream to completion and returns the assembled message.

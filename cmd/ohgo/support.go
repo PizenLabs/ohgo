@@ -110,7 +110,13 @@ func (s *supportSurface) ask(ctx context.Context, question string, onDelta func(
 	}
 
 	s.mu.Lock()
-	s.msgs = append(s.msgs, supUserMessage(question), answer)
+	s.msgs = append(s.msgs, supUserMessage(question))
+	// A reply that carried only reasoning has no sendable form. Keeping it in
+	// the thread would make the next $sup request invalid for every provider;
+	// the question still belongs to the thread because the user asked it.
+	if ai.HasSendableContent(answer) {
+		s.msgs = append(s.msgs, answer)
+	}
 	s.mu.Unlock()
 	return answer.Text(), nil
 }

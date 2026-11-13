@@ -22,6 +22,13 @@ var (
 	// ErrToolNormalizationFailed means provider tool-call syntax could not be
 	// normalized into canonical calls after the bounded recovery request.
 	ErrToolNormalizationFailed = errors.New("agent: TOOL_NORMALIZATION_FAILED")
+	// ErrInvalidProviderContext means the assembled outbound conversation
+	// violates the provider-independent canonical contract. It is an internal
+	// construction/serialization failure, not a provider or model failure: the
+	// request never leaves the runtime, and the message names the offending
+	// index, role, provenance, and shape so the constructing stage is
+	// identifiable. See ai.ValidateMessages.
+	ErrInvalidProviderContext = errors.New("agent: INVALID_PROVIDER_CONTEXT")
 )
 
 // Failure classes attached to Result.FailureClass. They are strings because a

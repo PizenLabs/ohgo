@@ -85,6 +85,14 @@ prompt by `promptopt.SanitizeTitle`: it is local, deterministic, and never a
 provider request. Legacy rows without a title are labeled locally when the
 Session Manager opens.
 
+Replay is a conversation projection, not a row decode. An assistant row with
+no text and no tool call (reasoning only, or an empty retried turn) has no
+provider-sendable form: `session.ToAgentMessage` reports
+`ErrDisplayOnlyMessage` and `Replay` skips it, so an older transcript cannot
+re-inject an invalid assistant message into the next request. Every other role
+converts exactly, and a row that cannot be converted still fails the replay by
+name rather than being dropped.
+
 ### Project instructions — human-authored
 
 | Structure | Status |

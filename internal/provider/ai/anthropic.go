@@ -362,8 +362,11 @@ func toAnthropicAssistantBlocks(msg AssistantMessage) []anthropicBlock {
 		}
 	}
 	if len(blocks) == 0 {
-		// The API rejects an empty assistant turn.
-		blocks = append(blocks, anthropicBlock{Type: "text", Text: ""})
+		// The API rejects an empty assistant turn, and a zero-length text block
+		// is a text block without text. The canonical validator rejects this
+		// message before the transport is reached; returning no blocks keeps
+		// the adapter from fabricating content that was never produced.
+		return nil
 	}
 	return blocks
 }
