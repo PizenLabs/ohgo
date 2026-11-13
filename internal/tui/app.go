@@ -293,6 +293,15 @@ type Program struct {
 	// commitSeq invalidates a proposal that was generated against a session
 	// the user has since left, or a proposal the user cancelled.
 	commitSeq int
+	// commitPlan is the current automatic logical commit plan. commitAuto is
+	// true for the whole /commit -a walk; commitAutoDone counts verified
+	// commits; commitAutoTotal is the last published plan size.
+	commitPlan         *commit.Plan
+	commitAuto         bool
+	commitAutoDone     int
+	commitAutoTotal    int
+	commitStaleRetries int
+	commitPlanPropose  func(context.Context, *commit.Plan, string) (*commit.Request, error)
 	// sessionActions are the Session Manager's write operations. Every field
 	// is nil-safe: a missing hook reports the action unavailable rather than
 	// pretending it succeeded.
@@ -1051,6 +1060,9 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateFinishedMsg:
 		return p.onUpdateFinished(m)
+
+	case commitPlannedMsg:
+		return p.onCommitPlanned(m)
 
 	case commitProposedMsg:
 		return p.onCommitProposed(m)
@@ -3679,6 +3691,7 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 	p.commitRequest = nil
 	p.commitProposing = false
 	p.commitEditing = false
+	p.clearCommitPlan()
 	p.stopCommitRequest(commit.ErrSessionClosed)
 	// A cancelled generation must not leave the new session's activity line
 	// spinning. An execution already in flight stays visible so its real
@@ -3954,6 +3967,7 @@ func (p *Program) quitNow() tea.Cmd {
 	p.commitRequest = nil
 	p.commitProposing = false
 	p.commitEditing = false
+	p.clearCommitPlan()
 	p.stopCommitRequest(commit.ErrSessionClosed)
 	if p.state.Pending != nil {
 		p.answer(false, "denied by user")

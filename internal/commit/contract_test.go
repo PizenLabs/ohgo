@@ -372,6 +372,7 @@ func TestAbortTextHandlesEveryTerminalClass(t *testing.T) {
 		{"invalid without rule", ErrInvalidProposal,
 			"Commit proposal failed.\nThe COMMIT model did not produce a valid proposal."},
 		{"staged excluded", fmt.Errorf("%w: .ohgo", ErrStagedExcluded), "commit: staged changes include excluded paths: .ohgo"},
+		{"grouping", fmt.Errorf("%w: a.go", ErrGrouping), "Commit grouping failed.\na.go"},
 		{"too many", fmt.Errorf("%w: 2001", ErrTooManyChanges), "commit: too many changed paths: 2001"},
 		{"unclassified", errors.New("plain failure"), "plain failure"},
 	} {
@@ -495,6 +496,10 @@ func TestFileChangeCodeAndDisplay(t *testing.T) {
 	if got := (FileChange{Path: "a.go", Index: ' ', Worktree: 'M'}).Display(); got != "M a.go" {
 		t.Errorf("Display = %q", got)
 	}
+	// A newline in a Git path must not forge another display row.
+	if got := (FileChange{Path: "a\nb", Index: 'M'}).Display(); strings.Contains(got, "\n") {
+		t.Errorf("Display kept a raw newline: %q", got)
+	}
 }
 
 func TestDedupeChangesKeepsTheFirstRecord(t *testing.T) {
@@ -509,13 +514,20 @@ func TestDedupeChangesKeepsTheFirstRecord(t *testing.T) {
 }
 
 func TestExpectedStagedPathsIncludesBothSidesOfARename(t *testing.T) {
-	snapshot := &Snapshot{Scope: []FileChange{
+	snapshot := &Snapshot{Mode: ModeStaged, Scope: []FileChange{
 		{Path: "b.go", OrigPath: "a.go", Index: 'R'},
 		{Path: "c.go", Index: 'A'},
 	}}
 	got := strings.Join(snapshot.ExpectedStagedPaths(), ",")
 	if got != "a.go,b.go,c.go" {
 		t.Errorf("ExpectedStagedPaths = %q", got)
+	}
+	// A copy leaves the source path unchanged; only the new path is staged.
+	copied := &Snapshot{Mode: ModeStaged, Scope: []FileChange{
+		{Path: "copy.go", OrigPath: "source.go", Index: 'C'},
+	}}
+	if got := strings.Join(copied.ExpectedStagedPaths(), ","); got != "copy.go" {
+		t.Errorf("copy ExpectedStagedPaths = %q, want only the new path", got)
 	}
 }
 

@@ -79,6 +79,17 @@ type NumstatEntry struct {
 	Removed *int
 }
 
+// CommitRecord is one recent commit as style evidence.
+//
+// Subject and Body are raw commit text. A consumer that learns conventions from
+// them owns the bounding: this type preserves what Git reported rather than
+// silently shortening a message that a verification path may need.
+type CommitRecord struct {
+	SHA     string
+	Subject string
+	Body    string
+}
+
 // CommitDetails is one commit.
 type CommitDetails struct {
 	SHA     string
@@ -90,7 +101,9 @@ type CommitDetails struct {
 
 // Diff returns the unified diff for the working tree.
 func (info *RepoInfo) Diff(ctx context.Context, opts DiffOptions) (string, error) {
-	args := []string{"diff", "--no-ext-diff", "--no-color"}
+	// Literal pathspecs keep a repository path such as ":(top)file" from
+	// selecting a different file than the caller named.
+	args := []string{"--literal-pathspecs", "diff", "--no-ext-diff", "--no-color"}
 	if opts.Context > 0 {
 		args = append(args, fmt.Sprintf("--unified=%d", opts.Context))
 	}
@@ -117,7 +130,7 @@ func (info *RepoInfo) Diff(ctx context.Context, opts DiffOptions) (string, error
 // The NUL-separated form is used unconditionally: path quoting otherwise mangles
 // any path with a non-ASCII character or a quote in it.
 func (info *RepoInfo) StatusPorcelain(ctx context.Context, opts StatusOptions) (string, error) {
-	args := []string{"status", "-z", "--porcelain"}
+	args := []string{"--literal-pathspecs", "status", "-z", "--porcelain"}
 	if opts.Untracked != "" {
 		args = append(args, "--untracked-files="+opts.Untracked)
 	}
@@ -134,7 +147,7 @@ func (info *RepoInfo) StatusPorcelain(ctx context.Context, opts StatusOptions) (
 // same status bytes the summary counts, including the original path of a
 // rename, instead of re-parsing quoted porcelain text themselves.
 func (info *RepoInfo) StatusEntries(ctx context.Context, opts StatusOptions) ([]StatusEntry, error) {
-	args := []string{"status", "-z", "--porcelain"}
+	args := []string{"--literal-pathspecs", "status", "-z", "--porcelain"}
 	if opts.Untracked != "" {
 		args = append(args, "--untracked-files="+opts.Untracked)
 	}
@@ -179,6 +192,39 @@ func parseStatusEntries(output string) []StatusEntry {
 	return entries
 }
 
+// OperationInProgress names an in-progress multi-commit operation, or "".
+//
+// /commit creates an ordinary single-parent commit. A merge, rebase,
+// cherry-pick, revert, or bisect changes that shape and is a human decision, so
+// the commit workflow refuses rather than creating a commit the verifier would
+// have to reject after the fact.
+func (info *RepoInfo) OperationInProgress() (string, error) {
+	markers := []struct {
+		name  string
+		label string
+	}{
+		{"MERGE_HEAD", "merge"},
+		{"CHERRY_PICK_HEAD", "cherry-pick"},
+		{"REVERT_HEAD", "revert"},
+		{"BISECT_LOG", "bisect"},
+		{"rebase-merge", "rebase"},
+		{"rebase-apply", "rebase"},
+		{"sequencer", "cherry-pick or revert sequence"},
+	}
+	for _, marker := range markers {
+		_, err := os.Lstat(filepath.Join(info.GitDir, marker.name))
+		switch {
+		case err == nil:
+			return marker.label, nil
+		case os.IsNotExist(err):
+			continue
+		default:
+			return "", err
+		}
+	}
+	return "", nil
+}
+
 // HeadSHA resolves HEAD, returning "" for an unborn branch.
 func (info *RepoInfo) HeadSHA(ctx context.Context) (string, error) {
 	out, code, err := info.runExit(ctx, nil, "rev-parse", "--verify", "--quiet", "HEAD")
@@ -212,8 +258,41 @@ func (info *RepoInfo) StagePaths(ctx context.Context, paths []string) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("vcs: no paths to stage")
 	}
-	args := append([]string{"add", "-A", "--"}, paths...)
+	args := append([]string{"--literal-pathspecs", "add", "-A", "--"}, paths...)
 	_, err := info.run(ctx, args...)
+	return err
+}
+
+// UnstagePaths removes exactly the named paths from the index without touching
+// the worktree.
+//
+// It exists for one narrow failure: StagingPaths failed after partially moving
+// the index, and /commit must leave the repository at the boundary the human
+// approved (a clean index in worktree mode) rather than commit a partial
+// subset on the next attempt. A pre-existing staged change is never removed by
+// this path because worktree-mode staging is only entered with a clean index.
+func (info *RepoInfo) UnstagePaths(ctx context.Context, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"--literal-pathspecs", "reset", "-q", "--"}, paths...)
+	if _, code, err := info.runExit(ctx, nil, args...); err != nil {
+		return err
+	} else if code == 0 {
+		return nil
+	}
+	// An unborn branch has no HEAD to reset against. Removing the entries is
+	// the same index state for a first commit. On a born branch, never fall
+	// back to removing entries: that could turn a cleanup into a deletion.
+	head, err := info.HeadSHA(ctx)
+	if err != nil {
+		return err
+	}
+	if head != "" {
+		return fmt.Errorf("vcs: could not unstage the approved paths")
+	}
+	remove := append([]string{"--literal-pathspecs", "rm", "--cached", "-q", "--ignore-unmatch", "--"}, paths...)
+	_, err = info.run(ctx, remove...)
 	return err
 }
 
@@ -237,7 +316,7 @@ func (info *RepoInfo) IndexHashes(ctx context.Context, paths []string) (map[stri
 	if len(paths) == 0 {
 		return hashes, nil
 	}
-	args := append([]string{"ls-files", "--stage", "-z", "--"}, paths...)
+	args := append([]string{"--literal-pathspecs", "ls-files", "--stage", "-z", "--"}, paths...)
 	out, err := info.run(ctx, args...)
 	if err != nil {
 		return nil, err
@@ -278,6 +357,9 @@ func (info *RepoInfo) HashPath(ctx context.Context, path string) (hash string, f
 	}
 	if fi.IsDir() {
 		return "", false, fmt.Errorf("vcs: %q is a directory; submodule and nested-repository changes are not supported", path)
+	}
+	if !fi.Mode().IsRegular() && fi.Mode()&os.ModeSymlink == 0 {
+		return "", false, fmt.Errorf("vcs: %q is not a regular file", path)
 	}
 
 	var (
@@ -392,7 +474,7 @@ func parsePorcelainSummary(output string) Summary {
 
 // Numstat returns per-file line counts.
 func (info *RepoInfo) Numstat(ctx context.Context, opts DiffOptions) ([]NumstatEntry, error) {
-	args := []string{"diff", "--numstat"}
+	args := []string{"--literal-pathspecs", "diff", "--numstat"}
 	if opts.Cached {
 		args = append(args, "--cached")
 	}
@@ -444,7 +526,7 @@ func parseCount(field string) *int {
 
 // ChangedFiles lists paths that differ, relative to the repository root.
 func (info *RepoInfo) ChangedFiles(ctx context.Context, opts DiffOptions) ([]string, error) {
-	args := []string{"diff", "--name-only"}
+	args := []string{"--literal-pathspecs", "diff", "--name-only"}
 	if opts.Cached {
 		args = append(args, "--cached")
 	}
@@ -471,6 +553,68 @@ func (info *RepoInfo) LogOnelines(ctx context.Context, n int) ([]string, error) 
 		return nil, err
 	}
 	return splitLines(out), nil
+}
+
+// RecentCommits returns up to n commits, newest first, as style evidence.
+//
+// It is one process invocation rather than n CommitDetails calls: /commit reads
+// history to learn the repository's message conventions, not to reconstruct any
+// single commit. An unborn branch has no history and is not an error, so a fresh
+// repository reports an empty slice instead of a failed inspection.
+func (info *RepoInfo) RecentCommits(ctx context.Context, n int) ([]CommitRecord, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	if n > 64 {
+		n = 64
+	}
+	const (
+		field  = "\x1f"
+		record = "\x1e"
+	)
+	out, code, err := info.runExit(ctx, nil, "log", fmt.Sprintf("-%d", n),
+		"--format=%H"+field+"%s"+field+"%b"+record)
+	if err != nil {
+		return nil, err
+	}
+	if code != 0 {
+		// An empty repository has no HEAD to log. That is a repository fact,
+		// not an inspection failure.
+		return nil, nil
+	}
+	var commits []CommitRecord
+	for _, chunk := range strings.Split(out, record) {
+		chunk = strings.TrimLeft(chunk, "\n")
+		if strings.TrimSpace(chunk) == "" {
+			continue
+		}
+		parts := strings.SplitN(chunk, field, 3)
+		if len(parts) != 3 {
+			continue
+		}
+		commits = append(commits, CommitRecord{
+			SHA:     strings.TrimSpace(parts[0]),
+			Subject: strings.TrimSpace(parts[1]),
+			Body:    strings.TrimSpace(parts[2]),
+		})
+	}
+	return commits, nil
+}
+
+// Upstream returns the configured upstream ref, or "" when the branch has none.
+//
+// Branch/base context is evidence for /commit's classification, not a condition
+// for proposing: a local-only branch is a normal state, so a missing upstream is
+// reported as empty rather than as an error.
+func (info *RepoInfo) Upstream(ctx context.Context) (string, error) {
+	out, code, err := info.runExit(ctx, nil, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // CommitDetails returns one commit's metadata and message.

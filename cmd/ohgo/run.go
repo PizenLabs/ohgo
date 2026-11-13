@@ -334,11 +334,21 @@ func runSession(cmd *cobra.Command, args []string) error {
 		recoverer := openRecoveryService(opts.root)
 		defer func() { _ = recoverer.Close() }()
 		program.SetRecovery(recoverer)
-		program.SetCommitHooks(commitHooks(opts.root, &opts.settings, registry))
 		attachShellEscape(program, opts.root, opts.security)
 		controller := installTaskContinuity(program, opts.root, loop.Tools(), func() workspace.Workspace {
 			return opts.authority()
 		}, opts.budget)
+		// /commit follows the task continuity boundary: the active objective
+		// is grouping evidence, not authority over the working tree.
+		program.SetCommitHooks(commitHooks(opts.root, &opts.settings, registry, func() string {
+			if controller == nil {
+				return ""
+			}
+			if current, ok := controller.Current(); ok {
+				return current.Objective
+			}
+			return ""
+		}))
 		installExperience(program, opts.root, opts.projectID)
 		program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
 		// A grant is bound to the task it was approved for, when the task layer

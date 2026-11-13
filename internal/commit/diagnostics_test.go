@@ -40,8 +40,8 @@ func TestReasoningOnlyReplyIsATruncatedModelFailure(t *testing.T) {
 	if errors.Is(err, ErrInvalidProposal) {
 		t.Errorf("truncation was misclassified as an invalid proposal: %v", err)
 	}
-	if got := calls.Load(); got != 1 {
-		t.Errorf("truncation was retried %d times; an empty reply has nothing to correct", got)
+	if got := calls.Load(); got != 2 {
+		t.Errorf("calls = %d, want the proposal plus one bounded truncation retry", got)
 	}
 	if !strings.Contains(err.Error(), "budget") {
 		t.Errorf("internal error %q does not preserve the budget diagnostic", err)
@@ -190,6 +190,80 @@ func TestInvalidProposalTextIsOneBoundedLine(t *testing.T) {
 	}
 }
 
+// TestFailureDiagnosticsNameThePipelinePhase proves a model budget exhaustion
+// and a classification refusal cannot be confused with a Git failure.
+func TestFailureDiagnosticsNameThePipelinePhase(t *testing.T) {
+	repo := newTestRepo(t)
+	initialCommit(t, repo, "a.txt", "one\n")
+
+	service := &Service{Root: repo, Model: ai.Model{Provider: "test", ID: "commit-model", API: "test"}}
+	_, err := service.Propose(context.Background())
+	if !errors.Is(err, ErrNoChanges) {
+		t.Fatalf("clean repository = %v, want ErrNoChanges", err)
+	}
+	diag, ok := DiagnosticsOf(err)
+	if !ok {
+		t.Fatal("classification failure carried no diagnostics")
+	}
+	if diag.Phase != PhaseClassification || PhaseOf(err) != PhaseClassification {
+		t.Errorf("phase = %q/%q, want classification", diag.Phase, PhaseOf(err))
+	}
+
+	writeTestFile(t, repo, "a.txt", "two\n")
+	service.Stream = func(context.Context, ai.Request) (*ai.Stream, error) {
+		return ai.NewCompletedStream(ai.AssistantMessage{StopReason: ai.StopMaxTokens}), nil
+	}
+	_, err = service.Propose(context.Background())
+	if !errors.Is(err, ErrModelTruncated) {
+		t.Fatalf("truncated proposal = %v, want ErrModelTruncated", err)
+	}
+	diag, ok = DiagnosticsOf(err)
+	if !ok {
+		t.Fatal("truncation carried no diagnostics")
+	}
+	if diag.Phase != PhaseProposal || PhaseOf(err) != "" {
+		t.Errorf("phase = %q/%q, want proposal", diag.Phase, PhaseOf(err))
+	}
+}
+
+// TestTruncationRetryBumpsTheBudgetWhenReasoningWasNotRequested proves the
+// reported production failure has a bounded recovery even when a model reasons
+// without being asked: one retry spends a larger completion, and a second
+// exhaustion still fails truthfully.
+func TestTruncationRetryBumpsTheBudgetWhenReasoningWasNotRequested(t *testing.T) {
+	repo := newTestRepo(t)
+	initialCommit(t, repo, "base.txt", "base\n")
+	writeTestFile(t, repo, "pkg/new.go", "package pkg\n")
+
+	var calls int
+	var second ai.Request
+	service := &Service{
+		Root:  repo,
+		Model: ai.Model{Provider: "test", ID: "commit-model", API: "test", MaxOutputTokens: 4096},
+		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+			calls++
+			if calls == 1 {
+				return ai.NewCompletedStream(ai.AssistantMessage{
+					StopReason: ai.StopMaxTokens,
+				}), nil
+			}
+			second = req
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content: []ai.ContentBlock{ai.TextContent{Text: "feat(pkg): add a new file"}},
+			}), nil
+		},
+	}
+	if _, err := service.Propose(context.Background()); err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("calls = %d, want one bounded budget retry", calls)
+	}
+	if second.MaxTokens != DefaultProposalTokens*2 {
+		t.Errorf("retry budget = %d, want %d", second.MaxTokens, DefaultProposalTokens*2)
+	}
+}
+
 // TestProposalBudgetIsDedicatedAndClamped proves COMMIT owns a small budget
 // that is far below a coding turn, and never exceeds a known model ceiling.
 func TestProposalBudgetIsDedicatedAndClamped(t *testing.T) {
@@ -237,8 +311,8 @@ func TestTruncatedReplyDiscardsVisibleText(t *testing.T) {
 	if errors.Is(err, ErrInvalidProposal) {
 		t.Errorf("truncation was misclassified as invalid: %v", err)
 	}
-	if got := calls.Load(); got != 1 {
-		t.Errorf("truncated reply made %d calls; it must not be retried", got)
+	if got := calls.Load(); got != 2 {
+		t.Errorf("truncated reply made %d calls, want one bounded budget retry", got)
 	}
 	if staged := strings.TrimSpace(runTestGit(t, repo, "diff", "--cached", "--name-only")); staged != "" {
 		t.Errorf("a truncated proposal staged files: %q", staged)

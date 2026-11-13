@@ -161,6 +161,81 @@ func TestCommitREPLReportsAReadFailure(t *testing.T) {
 	}
 }
 
+// TestCommitREPLAllWalksEveryLogicalCommit proves /commit -a creates one
+// commit per logical change with one explicit approval each.
+func TestCommitREPLAllWalksEveryLogicalCommit(t *testing.T) {
+	root := commitTestRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "alpha.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "beta.txt"), []byte("beta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server, capture := newCommitProvider(t, "feat(scope): update files")
+	defer server.Close()
+	registry := ai.NewRegistry()
+	registry.SetAPIKey("groq", "test-key")
+	registry.SetBaseURL("groq", server.URL)
+	settings := config.Settings{
+		Model: "groq/llama-3.1-8b-instant",
+		Roles: map[string]config.Profile{"commit": {Model: "groq/llama-3.1-8b-instant"}},
+	}
+	h := &harness{registry: registry, settings: &settings, root: root}
+	var out strings.Builder
+	if err := h.commitREPL(&out, bufio.NewReader(strings.NewReader("y\ny\n")), "-a"); err != nil {
+		t.Fatalf("commitREPL -a: %v", err)
+	}
+	if got := commitCount(t, root); got != 3 {
+		t.Errorf("commits = %d, want the initial commit plus two logical commits", got)
+	}
+	if capture.snapshot().Calls != 2 {
+		t.Errorf("model calls = %d, want one message per logical commit", capture.snapshot().Calls)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"Commit 1 / 2", "Commit 2 / 2",
+		"Commit plan complete: 2 commits created.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("output = %q, want %q", text, want)
+		}
+	}
+}
+
+// TestCommitREPLAllCancellationLeavesLaterCommitsUntouched proves the resting
+// answer stops the plan rather than approving the next proposal.
+func TestCommitREPLAllCancellationLeavesLaterCommitsUntouched(t *testing.T) {
+	root := commitTestRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "alpha.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "beta.txt"), []byte("beta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := newCommitProvider(t, "feat(scope): update files")
+	defer server.Close()
+	registry := ai.NewRegistry()
+	registry.SetAPIKey("groq", "test-key")
+	registry.SetBaseURL("groq", server.URL)
+	settings := config.Settings{
+		Model: "groq/llama-3.1-8b-instant",
+		Roles: map[string]config.Profile{"commit": {Model: "groq/llama-3.1-8b-instant"}},
+	}
+	h := &harness{registry: registry, settings: &settings, root: root}
+	var out strings.Builder
+	if err := h.commitREPL(&out, bufio.NewReader(strings.NewReader("y\nn\n")), "-a"); err != nil {
+		t.Fatalf("commitREPL -a: %v", err)
+	}
+	if got := commitCount(t, root); got != 2 {
+		t.Errorf("commits = %d, want only the first approved commit", got)
+	}
+	text := out.String()
+	if !strings.Contains(text, "stopped after 1 of 2") ||
+		!strings.Contains(text, "remaining changes are untouched") {
+		t.Errorf("output = %q, want truthful partial completion", text)
+	}
+}
+
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("stdin closed") }

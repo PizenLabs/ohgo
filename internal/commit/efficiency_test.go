@@ -68,17 +68,18 @@ func TestCommitEvidenceCarriesOnlyTheApprovedChange(t *testing.T) {
 	}
 	evidence := request.Snapshot.Evidence()
 	for _, want := range []string{
-		"repository:", "approved scope:", "M a.txt", "?? new.txt",
+		"repository:", "branch:", "approved scope:", "M a.txt", "?? new.txt",
 		"change summary:", "a.txt +1 -1", "relevant diff:",
-		"new files:", "new.txt:",
+		"new files:", "new.txt:", "commit constraints:", "types: feat",
+		"recent commits", "commit style:",
 	} {
 		if !strings.Contains(evidence, want) {
 			t.Errorf("evidence = %q, want %q", evidence, want)
 		}
 	}
 	for _, redundant := range []string{
-		"head:", "head subject:", "branch:", "scope mode:",
-		"staged:", "unstaged:", "untracked:", "recent commits:",
+		"head:", "head subject:", "scope mode:",
+		"staged:", "unstaged:", "untracked:",
 		"ignored (excluded):", "internal .ohgo",
 	} {
 		if strings.Contains(evidence, redundant) {

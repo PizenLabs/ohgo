@@ -49,6 +49,99 @@ func TestStatusEntryPredicatesClassifyIndexAndWorktree(t *testing.T) {
 	}
 }
 
+// TestOperationInProgressNamesMultiCommitStates proves /commit can refuse a
+// merge/rebase/cherry-pick state before creating an unexpected commit shape.
+func TestOperationInProgressNamesMultiCommitStates(t *testing.T) {
+	root := initRepo(t)
+	info := discoverTestRepo(t, root)
+	if operation, err := info.OperationInProgress(); err != nil || operation != "" {
+		t.Fatalf("clean repository = %q, %v; want no operation", operation, err)
+	}
+	for _, tc := range []struct {
+		marker string
+		label  string
+		dir    bool
+	}{
+		{"MERGE_HEAD", "merge", false},
+		{"CHERRY_PICK_HEAD", "cherry-pick", false},
+		{"rebase-merge", "rebase", true},
+		{"rebase-apply", "rebase", true},
+	} {
+		t.Run(tc.label+"/"+tc.marker, func(t *testing.T) {
+			path := filepath.Join(root, ".git", tc.marker)
+			if tc.dir {
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, []byte("deadbeef\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = os.RemoveAll(path) }()
+			operation, err := info.OperationInProgress()
+			if err != nil || operation != tc.label {
+				t.Errorf("OperationInProgress = %q, %v; want %q", operation, err, tc.label)
+			}
+		})
+	}
+}
+
+// TestUnstagePathsRestoresTheIndexWithoutTouchingTheWorktree pins the cleanup
+// contract /commit uses after a failed staging step: the next proposal must not
+// mistake a partial index for the approved scope.
+func TestUnstagePathsRestoresTheIndexWithoutTouchingTheWorktree(t *testing.T) {
+	root := initRepo(t)
+	write(t, root, "a.txt", "one\n")
+	git(t, root, "add", "a.txt")
+	git(t, root, "commit", "-m", "initial")
+	write(t, root, "a.txt", "two\n")
+	write(t, root, "b.txt", "new\n")
+
+	info := discoverTestRepo(t, root)
+	if err := info.StagePaths(context.Background(), []string{"a.txt", "b.txt"}); err != nil {
+		t.Fatalf("StagePaths: %v", err)
+	}
+	if err := info.UnstagePaths(context.Background(), []string{"a.txt", "b.txt"}); err != nil {
+		t.Fatalf("UnstagePaths: %v", err)
+	}
+	staged, err := info.StagedPaths(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged) != 0 {
+		t.Errorf("staged paths = %v, want an empty index", staged)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil || string(data) != "two\n" {
+		t.Errorf("worktree a.txt = %q err=%v, want the content untouched", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "b.txt")); err != nil {
+		t.Errorf("worktree b.txt disappeared: %v", err)
+	}
+}
+
+// TestUnstagePathsHandlesAnUnbornBranch proves the first-commit cleanup path.
+func TestUnstagePathsHandlesAnUnbornBranch(t *testing.T) {
+	root := initRepo(t)
+	write(t, root, "first.txt", "first\n")
+	info := discoverTestRepo(t, root)
+	if err := info.StagePaths(context.Background(), []string{"first.txt"}); err != nil {
+		t.Fatalf("StagePaths: %v", err)
+	}
+	if err := info.UnstagePaths(context.Background(), []string{"first.txt"}); err != nil {
+		t.Fatalf("UnstagePaths: %v", err)
+	}
+	staged, err := info.StagedPaths(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged) != 0 {
+		t.Errorf("staged paths = %v, want an empty index", staged)
+	}
+	if _, err := os.Stat(filepath.Join(root, "first.txt")); err != nil {
+		t.Errorf("worktree file disappeared: %v", err)
+	}
+}
+
 func TestStatusQueriesHonorPathspecsAndFailure(t *testing.T) {
 	root := initRepo(t)
 	write(t, root, "a.txt", "one\n")
