@@ -72,6 +72,12 @@ immutable.
   what it does, so a citation of an unread file is now a review
   (`unsupported_source_citation`) instead of an inspected-looking inference.
   Prose mentions, route tables, and non-source files are not citations.
+- Dependency-wiring audit: a mechanism phrase attached to a declared dependency
+  ("FlexSearch with a build-time prebuilt index") is now a review
+  (`unsupported_wiring_claim`) unless source evidence of that dependency was
+  observed. Dependency names are read from the manifests the run actually
+  opened, not from a hardcoded ecosystem list; a version-only stack row, and a
+  property in the next comma-separated item, stay declaration claims.
 
 ### Changed
 
@@ -143,6 +149,28 @@ immutable.
 
 ### Fixed
 
+- A status word's subject is read from the text before it. A colon after a
+  status word introduces either a component list ("Fully implemented:
+  product-service, order-service") or an explanation of the status ("It is an
+  in-progress scaffold: the order-service now implements checkout, …"). Only
+  the list form names subjects, so the explanation's verbs and adjectives are no
+  longer reported as components ("checkout", "in-progress") in a review that no
+  source path can satisfy.
+- A test-absence review now names the contradiction it already holds: when an
+  observed structure snapshot reported test files, "No Go tests exist" is
+  answered with that count ("the observed inventory already reports 5 test
+  file(s)") instead of asking for evidence the run already has. Without a count
+  the general absence reason is unchanged.
+- A kebab adjective is no longer extracted as a component subject. Session 307's
+  "role-protected admin console" produced the review subject "role-protected",
+  so the model was told to read a component no path can match; qualifier
+  suffixes (`-protected`, `-based`, `-driven`, `-ready`, …) are skipped and the
+  qualified noun is named instead.
+- Root-scoped absence claims ("No README at repo root") are no longer promoted
+  to repository-wide claims by the word "repo" inside "repo root". A complete
+  root listing covers them; the repository-wide form still requires coverage
+  that can establish it, so an unrelated mention of the root does not weaken a
+  real global claim.
 - `glob` expands `{ts,tsx}` alternation instead of treating the pattern as a
   literal. A shell-style pattern previously matched nothing and reported "no
   files matched", which reads as an empty tree and sends the model into a
