@@ -67,9 +67,33 @@ immutable.
   `OBSERVED_AT_RUNTIME` ladder; unbounded concept absences stay review; and an
   identical read-only observation in a later turn is reused instead of
   re-executed.
+- Source-citation audit: an answer that presents a repository file as evidence
+  (`(lib/search.ts)`) must have opened it. A listing proves the path exists, not
+  what it does, so a citation of an unread file is now a review
+  (`unsupported_source_citation`) instead of an inspected-looking inference.
+  Prose mentions, route tables, and non-source files are not citations.
 
 ### Changed
 
+- An observation reused from an earlier turn now replays the recorded payload
+  instead of a first-line summary. The previous notice named the coordinate and
+  withheld the evidence, so the model had to repeat the call to recover data it
+  had already paid for; the replay is bounded at 32 KiB and states the cut.
+- `structure` has one entrypoint authority. The overview and the `entrypoints`
+  view derive from the same merged list and report `verified`/`discovered`
+  totals, so a convention-discovered route module (`app/page.tsx`) can no
+  longer be counted in one view and missing from the other. A framework route
+  module stays a discovery even after parsing: the adapter matched its path,
+  which is not proof that it executes.
+- The structure header names what each axis covers (`scope: COMPLETE (path
+  inclusion)`, `inventory: COMPLETE (file observation)`, and `graph_state`
+  qualified by whether structural knowledge is complete). A snapshot whose
+  source has no adapter can no longer read as a complete understanding of the
+  repository.
+- `ls` accepts `depth` and walks a bounded pre-order tree in one read-only
+  call, honouring `.gitignore` and pruning dependency/build directories, with
+  an explicit notice when the entry limit stopped the walk. This is the
+  topology primitive a read-only session needs without shell access.
 - Repository scoping is injected into the structural index from the shared
   `ignore.Matcher`, so `.gitignore` membership has one owner and `ast` stays a
   dependency-free intelligence leaf. A rule or scope fingerprint change
@@ -119,6 +143,10 @@ immutable.
 
 ### Fixed
 
+- `glob` expands `{ts,tsx}` alternation instead of treating the pattern as a
+  literal. A shell-style pattern previously matched nothing and reported "no
+  files matched", which reads as an empty tree and sends the model into a
+  retry loop; expansion is bounded and nested groups are supported.
 - A survey answer that bounds its negatives to what it inspected is no longer
   reviewed as a repository-wide absence claim. "No tests detected in inspected
   scope (test inventory not queried)" completes; "the project has no tests"

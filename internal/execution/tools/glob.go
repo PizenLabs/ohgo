@@ -80,7 +80,8 @@ func NewGlobTool(root string) *GlobTool {
 	tool.Base = NewBase("glob",
 		"Find files by glob pattern and return their paths sorted by "+
 			"modification time, newest first. Searches the working directory "+
-			"by default; pass a subdirectory to narrow the scan. Results are "+
+			"by default; pass a subdirectory to narrow the scan. \"**\" matches "+
+			"any depth and \"{ts,tsx}\" alternation is expanded. Results are "+
 			"inventory only: a path list never establishes implementation "+
 			"content or behavior. Read the source before making a source claim, "+
 			"and do not repeat the same pattern after it returned a complete "+
@@ -307,6 +308,10 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 		ignored  int
 		excluded int
 	)
+	// A model writes shell-style alternation because a shell would accept it.
+	// Without expansion the pattern is a literal and matches nothing, which
+	// reads as an empty tree and sends the model into a retry loop.
+	patterns := expandBraces(pattern)
 
 	walkErr := filepath.WalkDir(scanRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -361,7 +366,7 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 
 		// Match against both the Root-relative path and the name alone, so a
 		// pattern like "*.go" matches at any depth, as the model expects.
-		if matchGlob(pattern, rel) || matchGlob(pattern, entry.Name()) {
+		if matchAnyGlob(patterns, rel) || matchAnyGlob(patterns, entry.Name()) {
 			info, statErr := entry.Info()
 			var modTime time.Time
 			if statErr == nil {
@@ -377,6 +382,61 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 		return matches, timedOut, ignored, excluded
 	}
 	return matches, timedOut || ctx.Err() != nil, ignored, excluded
+}
+
+// globBraceLimit caps the alternatives one pattern may expand to. A pattern is
+// model input, so the expansion must stay bounded.
+const globBraceLimit = 64
+
+// expandBraces expands shell-style {a,b,c} alternation into concrete patterns.
+//
+// Glob syntax has no alternation. A pattern like "app/**/*.{ts,tsx}" is
+// therefore a literal that matches nothing, and a model that receives "no
+// files matched" concludes the directory is empty. Alternation nests, so the
+// expansion recurses from the innermost group outward and stops at
+// globBraceLimit.
+func expandBraces(pattern string) []string {
+	open, close := innermostBrace(pattern)
+	if open < 0 {
+		return []string{pattern}
+	}
+	out := make([]string, 0, 4)
+	for _, alternative := range strings.Split(pattern[open+1:close], ",") {
+		for _, expanded := range expandBraces(pattern[:open] + alternative + pattern[close+1:]) {
+			out = append(out, expanded)
+			if len(out) >= globBraceLimit {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// innermostBrace returns the offsets of the first balanced {...} group, or
+// -1 when the pattern has no group.
+func innermostBrace(pattern string) (int, int) {
+	open := -1
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '{':
+			open = i
+		case '}':
+			if open >= 0 {
+				return open, i
+			}
+		}
+	}
+	return -1, -1
+}
+
+// matchAnyGlob reports whether any expanded alternative matches name.
+func matchAnyGlob(patterns []string, name string) bool {
+	for _, pattern := range patterns {
+		if matchGlob(pattern, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchGlob reports whether a pattern matches a path.

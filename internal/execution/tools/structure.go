@@ -70,7 +70,10 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 			"and governed by its own ignore files. A zero tests or files count "+
 			"is not proof of absence unless scope, inventory, and structural are "+
 			"all COMPLETE and the result is not truncated. Test associations are "+
-			"static and are not coverage. Structural inventory and coordinates "+
+			"static and are not coverage. An entrypoint is verified only when an "+
+			"adapter proved an executable entry; a framework route module found "+
+			"by path convention is a discovery, not proof that it runs. "+
+			"Structural inventory and coordinates "+
 			"are not source content: read the component's source before making "+
 			"an implementation-status or dependency-use claim. Semantic "+
 			"activation is unsupported and fails explicitly.",
@@ -462,7 +465,8 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 	// test_files is classified from paths at inventory time, so it stays a
 	// number even when no adapter can parse the file.
 	fmt.Fprintf(&text, "test_files: %d\n", info.TestFiles)
-	fmt.Fprintf(&text, "entrypoints: %d\n", result.EntrypointsTotal)
+	fmt.Fprintf(&text, "entrypoints: %d (verified: %d, discovered: %d)\n",
+		result.EntrypointsTotal, result.EntrypointsVerified, result.EntrypointsDiscovered)
 	fmt.Fprintf(&text, "directories: %d\n", info.Directories)
 	fmt.Fprintf(&text, "last_parsed_files: %d\n", info.LastParsedFiles)
 	fmt.Fprintf(&text, "last_reused_files: %d\n", info.LastReusedFiles)
@@ -478,7 +482,11 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 	if len(result.Entrypoints) > 0 {
 		text.WriteString("\nentrypoints:\n")
 		for _, entry := range result.Entrypoints {
-			fmt.Fprintf(&text, "  - %s %s:%d\n", entry.QualifiedName, entry.Path, entry.Line)
+			source := ""
+			if !entry.Verified {
+				source = " (discovered: filename convention, not proven executed)"
+			}
+			fmt.Fprintf(&text, "  - %s %s:%d%s\n", entry.QualifiedName, entry.Path, entry.Line, source)
 		}
 	}
 	if len(result.Configs) > 0 {
@@ -740,12 +748,17 @@ func (t *StructureTool) entrypoints(ctx agent.Context, idx *ast.Index) agent.Res
 	status := structureStatus(len(result.Entrypoints) == 0, result.Truncated)
 	var text strings.Builder
 	writeStructureHeader(&text, status, "entrypoints", result.Snapshot, result.Truncated, result.Reason)
-	fmt.Fprintf(&text, "total: %d\n", len(result.Entrypoints))
+	fmt.Fprintf(&text, "total: %d (verified: %d, discovered: %d)\n",
+		result.Total, result.Verified, result.Discovered)
 	if len(result.Entrypoints) > 0 {
 		text.WriteString("\nentrypoints:\n")
 		for _, entry := range result.Entrypoints {
 			fmt.Fprintf(&text, "  - symbol: %s\n", entry.QualifiedName)
 			fmt.Fprintf(&text, "    path: %s\n", entry.Path)
+			fmt.Fprintf(&text, "    verified: %t\n", entry.Verified)
+			if !entry.Verified {
+				text.WriteString("    source: filename convention (a route module exists; execution is not proven)\n")
+			}
 			if entry.Language != "" {
 				fmt.Fprintf(&text, "    language: %s\n", ast.DisplayLanguage(entry.Language))
 			}
@@ -761,7 +774,9 @@ func (t *StructureTool) entrypoints(ctx agent.Context, idx *ast.Index) agent.Res
 		"view":        "entrypoints",
 		"snapshot":    snapshotMap(result.Snapshot),
 		"entrypoints": entrypointMaps(result.Entrypoints),
-		"total":       len(result.Entrypoints),
+		"total":       result.Total,
+		"verified":    result.Verified,
+		"discovered":  result.Discovered,
 		"truncated":   result.Truncated,
 		"reason":      result.Reason,
 	}
@@ -1167,17 +1182,26 @@ func writeStructureHeader(text *strings.Builder, status, view string, info ast.S
 	fmt.Fprintf(text, "view: %s\n", view)
 	fmt.Fprintf(text, "snapshot_id: %s\n", info.SnapshotID)
 	fmt.Fprintf(text, "generation: %d\n", info.Generation)
-	fmt.Fprintf(text, "graph_state: %s\n", info.State)
+	// graph_state is the snapshot's freshness, not a claim about structural
+	// knowledge. Naming the scope of CURRENT stops "graph_state: CURRENT" from
+	// reading as "the symbol graph is complete".
+	if info.StructuralComplete {
+		fmt.Fprintf(text, "graph_state: %s (snapshot freshness; structural graph is current)\n", info.State)
+	} else {
+		fmt.Fprintf(text, "graph_state: %s (snapshot freshness only; structural is not complete)\n", info.State)
+	}
 	fmt.Fprintf(text, "activation: %s\n", info.Activation)
 	if info.Module != "" {
 		fmt.Fprintf(text, "module: %s\n", info.Module)
 	}
-	fmt.Fprintf(text, "scope: %s\n", completeLabel(info.ScopeComplete))
+	// scope and inventory are independent dimensions that are easy to read as
+	// a global verdict, so each names what it actually covers.
+	fmt.Fprintf(text, "scope: %s (path inclusion)\n", completeLabel(info.ScopeComplete))
 	if !info.ScopeComplete {
 		fmt.Fprintf(text, "scope_gaps: %d excluded_roots, %d excluded_source_files\n",
 			len(info.ExcludedRoots), info.ExcludedSourceFiles)
 	}
-	fmt.Fprintf(text, "inventory: %s\n", completeLabel(info.InventoryComplete))
+	fmt.Fprintf(text, "inventory: %s (file observation)\n", completeLabel(info.InventoryComplete))
 	if state := describeStructural(info); state.Detail != "" {
 		fmt.Fprintf(text, "structural: %s (%s)\n", state.Label, state.Detail)
 	} else {
@@ -1294,30 +1318,33 @@ func displayPackage(pkg ast.PackageInfo) string {
 // snapshotMap projects the snapshot header into structured details.
 func snapshotMap(info ast.SnapshotInfo) map[string]any {
 	return map[string]any{
-		"root":                  info.Root,
-		"module":                info.Module,
-		"module_root":           info.ModuleRoot,
-		"generation":            info.Generation,
-		"snapshot_id":           info.SnapshotID,
-		"source_fingerprint":    info.SourceFingerprint,
-		"scope_fingerprint":     info.ScopeFingerprint,
-		"state":                 string(info.State),
-		"activation":            string(info.Activation),
-		"built_at":              info.BuiltAt,
-		"files":                 info.Files,
-		"go_files":              info.GoFiles,
-		"source_files":          info.SourceFiles,
-		"parsed_files":          info.ParsedFiles,
-		"pending_files":         info.PendingFiles,
-		"failed_files":          info.FailedFiles,
-		"directories":           info.Directories,
-		"packages":              info.Packages,
-		"symbols":               info.Symbols,
-		"references":            info.References,
-		"calls":                 info.Calls,
-		"tests":                 info.Tests,
-		"test_files":            info.TestFiles,
-		"entrypoints":           info.Entrypoints,
+		"root":               info.Root,
+		"module":             info.Module,
+		"module_root":        info.ModuleRoot,
+		"generation":         info.Generation,
+		"snapshot_id":        info.SnapshotID,
+		"source_fingerprint": info.SourceFingerprint,
+		"scope_fingerprint":  info.ScopeFingerprint,
+		"state":              string(info.State),
+		"activation":         string(info.Activation),
+		"built_at":           info.BuiltAt,
+		"files":              info.Files,
+		"go_files":           info.GoFiles,
+		"source_files":       info.SourceFiles,
+		"parsed_files":       info.ParsedFiles,
+		"pending_files":      info.PendingFiles,
+		"failed_files":       info.FailedFiles,
+		"directories":        info.Directories,
+		"packages":           info.Packages,
+		"symbols":            info.Symbols,
+		"references":         info.References,
+		"calls":              info.Calls,
+		"tests":              info.Tests,
+		"test_files":         info.TestFiles,
+		// verified_entrypoints is the adapter-proven count. The merged
+		// discovered list lives beside the view, so this key must not be read
+		// as the total number of entry coordinates.
+		"verified_entrypoints":  info.Entrypoints,
 		"configs":               info.Configs,
 		"parse_failures":        info.ParseFailures,
 		"partial":               info.Partial,
@@ -1453,7 +1480,7 @@ func entrypointMaps(entries []ast.Entrypoint) []map[string]any {
 			"path": entry.Path, "package": entry.Package, "symbol": entry.Symbol,
 			"qualified_name": entry.QualifiedName, "language": string(entry.Language),
 			"native_kind": entry.NativeKind, "line": entry.Line, "end_line": entry.EndLine,
-			"column": entry.Column,
+			"column": entry.Column, "verified": entry.Verified,
 		})
 	}
 	return out

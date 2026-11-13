@@ -201,6 +201,9 @@ func claimScopeIssues(answer string, turns []Turn) []claimIssue {
 		if issue := structuralRelationClaimIssue(sentence, turns); issue != nil {
 			issues = append(issues, *issue)
 		}
+		if issue := citationClaimIssue(sentence, turns); issue != nil {
+			issues = append(issues, *issue)
+		}
 		if issue := deploymentClaimIssue(sentence, turns); issue != nil {
 			issues = append(issues, *issue)
 		}
@@ -229,6 +232,7 @@ func prioritizeClaimIssues(issues []claimIssue) []claimIssue {
 		"unsupported_dependency_claim":     3,
 		"unsupported_test_inventory_claim": 4,
 		"unsupported_structural_claim":     5,
+		"unsupported_source_citation":      5,
 		"unsupported_concept_absence":      6,
 		"unsupported_deployment_claim":     7,
 		"unsupported_line_count":           8,

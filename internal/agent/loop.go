@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
@@ -396,9 +397,21 @@ type Loop struct {
 // same-batch duplicate from being answered from a sibling's result: only an
 // observation from an earlier turn is reusable.
 type observationRecord struct {
-	turn    int
-	summary string
+	turn int
+	// text is the recorded payload, not a summary of it. A reuse must be a
+	// replay of the evidence: a notice that the observation is already current
+	// without the data it reported is unusable, and a model that receives one
+	// has to repeat the call to get the payload back.
+	text string
+	// cut reports that text was bounded at observationReplayBytes. The replay
+	// states the cut instead of presenting a partial payload as the whole.
+	cut bool
 }
+
+// observationReplayBytes bounds the payload retained for reuse. Tool results
+// are already bounded per call; this cap only stops one unusually large
+// observation (a long read window) from being held for the rest of the run.
+const observationReplayBytes = 32 << 10
 
 // VerificationObserved reports whether a successful check has been observed
 // since the last definite repository change.
@@ -515,11 +528,16 @@ func (l *Loop) priorObservation(call ai.ToolCall, turnIndex int) (string, bool) 
 	l.observationMu.Lock()
 	defer l.observationMu.Unlock()
 	prior, ok := l.observations[signature]
-	if !ok || prior.summary == "" || prior.turn >= turnIndex {
+	if !ok || prior.text == "" || prior.turn >= turnIndex {
 		return "", false
 	}
-	return "This exact observation is already current in this run: " + prior.summary +
-		". Use the recorded evidence instead of repeating it; re-inspect only after a change changes the workspace.", true
+	var replay strings.Builder
+	replay.WriteString("This observation is unchanged since your earlier call in this run. Its payload is replayed below; do not call the tool again for it.\n\n")
+	replay.WriteString(prior.text)
+	if prior.cut {
+		replay.WriteString("\n\n[replay bounded at 32 KiB; the omitted tail is the only part a repeat would add]")
+	}
+	return replay.String(), true
 }
 
 // noteObservation adds a successful read-only observation to the current
@@ -544,43 +562,27 @@ func (l *Loop) noteObservation(call ai.ToolCall, result Result, turnIndex int) {
 	if !observationTool(call.Name) {
 		return
 	}
-	summary := strings.TrimSpace(firstLineText(result.Text))
-	if summary == "" {
-		summary = call.Name + " returned an empty observation"
+	text, cut := boundObservationText(result.Text)
+	if text == "" {
+		text = call.Name + " returned an empty observation"
 	}
 	l.observations[CallSignature(call.Name, call.Arguments)] = observationRecord{
-		turn: turnIndex, summary: truncateRunes(summary, 120),
+		turn: turnIndex, text: text, cut: cut,
 	}
 }
 
-// firstLineText returns the first non-empty content line of tool output.
-func firstLineText(text string) string {
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if tab := strings.IndexByte(line, '\t'); tab >= 0 {
-			line = strings.TrimSpace(line[tab+1:])
-		}
-		if line == "" || strings.HasPrefix(line, "[showing ") {
-			continue
-		}
-		return line
+// boundObservationText keeps a recorded payload consumable on replay while
+// bounding what one observation may retain for the run.
+func boundObservationText(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	if len(text) <= observationReplayBytes {
+		return text, false
 	}
-	return ""
-}
-
-// truncateRunes bounds a display summary without splitting a UTF-8 rune.
-func truncateRunes(text string, limit int) string {
-	if limit <= 0 {
-		return ""
+	cut := observationReplayBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
 	}
-	runes := []rune(strings.TrimSpace(text))
-	if len(runes) <= limit {
-		return string(runes)
-	}
-	return string(runes[:limit]) + "…"
+	return strings.TrimSpace(text[:cut]), true
 }
 
 // defaultMaxTokens caps a completion when the caller did not pick a budget.
