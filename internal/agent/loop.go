@@ -383,6 +383,13 @@ type Loop struct {
 	// no longer be the one that was observed.
 	observationMu sync.Mutex
 	observations  map[string]observationRecord
+	// mutationMu guards lastMutation. The journal publishes its evidence when
+	// the run ends, and the host reads it immediately after Run returns.
+	mutationMu   sync.Mutex
+	lastMutation MutationProvenance
+	// runSeq issues a local run identity for mutation provenance when the host
+	// has none. It is process-local and never a durable task identity.
+	runSeq int
 }
 
 // observationRecord is one current read-only observation. Turn keeps a
@@ -422,6 +429,29 @@ func (l *Loop) noteEvidence(result Result) {
 	if result.Verifies && !result.IsError {
 		l.lastVerifiedSeq = l.evidenceSeq
 	}
+}
+
+// recordMutation stores the run's published mutation evidence.
+func (l *Loop) recordMutation(provenance MutationProvenance) {
+	l.mutationMu.Lock()
+	defer l.mutationMu.Unlock()
+	l.lastMutation = provenance
+}
+
+// LastMutation returns the mutation evidence published by the most recent run.
+//
+// It is empty when no journal was installed or the journal published nothing.
+// The caller can distinguish that from a captured boundary with no changes via
+// Captured, so completion never invents attribution.
+func (l *Loop) LastMutation() MutationProvenance {
+	if l == nil {
+		return MutationProvenance{}
+	}
+	l.mutationMu.Lock()
+	defer l.mutationMu.Unlock()
+	out := l.lastMutation
+	out.Changes = append([]MutationChange(nil), l.lastMutation.Changes...)
+	return out
 }
 
 // New returns a Loop. It returns ErrNoTools when the config has no tools,
@@ -727,12 +757,22 @@ func (l *Loop) Tools() []Tool {
 // attempted even after cancellation: the mutation already happened, so its
 // recovery point must not be dropped merely because the turn stopped early.
 func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runErr error) {
+	l.mutationMu.Lock()
+	l.runSeq++
+	runID := fmt.Sprintf("run-%d", l.runSeq)
+	l.lastMutation = MutationProvenance{}
+	l.mutationMu.Unlock()
+
 	edit := &runEdit{journal: l.cfg.Journal}
 	defer func() {
 		if edit.txn == nil {
 			return
 		}
 		commitErr := edit.txn.Commit(context.WithoutCancel(ctx))
+		if provenance, ok := edit.txn.Mutation(); ok {
+			provenance.RunID = runID
+			l.recordMutation(provenance)
+		}
 		if commitErr == nil {
 			return
 		}

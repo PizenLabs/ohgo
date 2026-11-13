@@ -21,7 +21,7 @@ func TestTurnTaskOutcomeCompletesAfterVerifiedWorkWhenBudgetEnds(t *testing.T) {
 	turns := []agent.Turn{
 		{Results: []agent.ToolOutcome{{
 			ToolName: "write",
-			Result:   agent.Result{Text: "wrote", Mutates: true},
+			Result:   agent.Result{Text: "wrote", Mutates: true, Details: map[string]any{"path": "tools/grep.go"}},
 		}}},
 		{Results: []agent.ToolOutcome{{
 			ToolName: "bash",

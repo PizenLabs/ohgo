@@ -11,6 +11,15 @@ import (
 )
 
 func toolOutcome(name string, result Result) ToolOutcome {
+	if result.Details == nil {
+		switch name {
+		case "write", "edit", "delete":
+			// Production file tools carry the authorized path. A fixture
+			// without one is not a pathless shell mutation, so keep the
+			// attribution evidence realistic.
+			result.Details = map[string]any{"path": "note.txt"}
+		}
+	}
 	return ToolOutcome{ToolName: name, Result: result}
 }
 

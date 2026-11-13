@@ -273,6 +273,14 @@ func groundingEntities(text string, intent contract.IntentContract) []contract.E
 			add(target.Value, contract.EntitySymbol, false)
 		case contract.TargetPackage:
 			add(target.Value, contract.EntityPackage, false)
+		case contract.TargetTechnology:
+			add(target.Value, contract.EntityTechnology, false)
+		case contract.TargetRepository:
+			add(target.Value, contract.EntityRepository, false)
+		case contract.TargetCommand:
+			add(target.Value, contract.EntityCommand, false)
+		case contract.TargetResource:
+			add(target.Value, contract.EntityResource, false)
 		}
 	}
 
@@ -490,13 +498,21 @@ var entityStopWords = map[string]bool{
 // entity set, which is a different contract.
 func groundingScope(text string, entities []contract.Entity) contract.GroundingScope {
 	scope := contract.GroundingScope{Kind: contract.ScopeUnknown}
+	repository := false
 	for _, entity := range entities {
-		if entity.Kind == contract.EntityTopic {
+		switch entity.Kind {
+		case contract.EntityTopic:
 			continue
+		case contract.EntityRepository:
+			repository = true
+		default:
+			scope.Values = append(scope.Values, entity.Value)
 		}
-		scope.Values = append(scope.Values, entity.Value)
 	}
-	if len(scope.Values) > 0 {
+	switch {
+	case repository:
+		scope.Kind = contract.ScopeRepository
+	case len(scope.Values) > 0:
 		scope.Kind = contract.ScopeNamed
 	}
 	normalized := " " + normalizeRequest(text) + " "

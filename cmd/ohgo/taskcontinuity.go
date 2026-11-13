@@ -173,6 +173,7 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		},
 		Context:          controller.Context,
 		ObserveTurns:     controller.ObserveTurns,
+		ObserveJournal:   controller.ObserveJournal,
 		RecordArtifacts:  artifacts.drain,
 		HasCurrentChange: controller.HasCurrentChange,
 		Evidence:         controller.Evidence,

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -197,5 +198,88 @@ func TestCommandMutatesInRootDistinguishesInsideAndOutsideTargets(t *testing.T) 
 	}
 	if !CommandMutates("echo x > " + outside) {
 		t.Fatalf("the root-less classifier stopped being conservative")
+	}
+}
+
+// outsideWorkspacePath returns a path that is outside both root and the
+// operating system's temporary area, without touching the filesystem.
+func outsideWorkspacePath() string {
+	temp := filepath.Clean(os.TempDir())
+	return filepath.Join(filepath.Dir(temp), "ohgo-outside-workspace-test")
+}
+
+// A destructive command that names an outside target is refused before
+// execution, even when the target is quoted or appears after another command.
+func TestOutsideWorkspaceMutationRejectsAbsoluteAndTraversalWrites(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspace")
+	outside := outsideWorkspacePath()
+	for _, command := range []string{
+		"rm -rf " + outside,
+		`rm -rf "` + outside + `"`,
+		"true; rm -rf " + outside,
+		"echo x > " + outside,
+		"cp inside.txt " + outside,
+		"mkdir -p " + outside,
+		"sed -i s/a/b/ " + outside,
+	} {
+		if target, rejected := OutsideWorkspaceMutation(command, root); !rejected {
+			t.Errorf("OutsideWorkspaceMutation(%q) = allowed, want rejected", command)
+		} else if target == "" {
+			t.Errorf("OutsideWorkspaceMutation(%q) reported no target", command)
+		}
+	}
+
+	relative, err := filepath.Rel(root, outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, rejected := OutsideWorkspaceMutation("rm -rf "+relative, root); !rejected {
+		t.Fatalf("a .. traversal outside the workspace was allowed: %s", relative)
+	}
+}
+
+// An absolute path inside the workspace is authorized, and temporary staging is
+// not a persistent repository write.
+func TestOutsideWorkspaceMutationAllowsInsideAndTemporaryTargets(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspace")
+	inside := filepath.Join(root, "app", "page.tsx")
+	if _, rejected := OutsideWorkspaceMutation("rm -f "+inside, root); rejected {
+		t.Fatalf("an absolute path inside the workspace was rejected")
+	}
+	temp := filepath.Join(os.TempDir(), "nextapp")
+	for _, command := range []string{
+		"mkdir -p " + temp,
+		"rm -rf " + temp,
+		"cp -r " + temp + "/. .",
+	} {
+		if target, rejected := OutsideWorkspaceMutation(command, root); rejected {
+			t.Errorf("temporary staging %q was rejected at %q", command, target)
+		}
+	}
+}
+
+// A command's own syntax is deterministic evidence of the workspace paths it
+// writes. This is the direct attribution path the journal supplements.
+func TestCommandAffectedPaths(t *testing.T) {
+	root := t.TempDir()
+	cases := map[string]string{
+		"echo x > app/page.tsx":        "app/page.tsx",
+		`echo x > "app/page.tsx"`:      "app/page.tsx",
+		"mkdir -p components/button":   "components/button",
+		"cp notes.txt app/page.tsx":    "app/page.tsx",
+		"rm -f app/page.tsx":           "app/page.tsx",
+		"mv app/old.tsx app/new.tsx":   "app/new.tsx",
+		"tee app/page.tsx < /dev/null": "app/page.tsx",
+	}
+	for command, want := range cases {
+		found := false
+		for _, path := range CommandAffectedPaths(command, root) {
+			if path == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("CommandAffectedPaths(%q) = %v, want %q", command, CommandAffectedPaths(command, root), want)
+		}
 	}
 }

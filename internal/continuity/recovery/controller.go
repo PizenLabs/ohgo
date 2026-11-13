@@ -151,6 +151,7 @@ func (c *Controller) BeginEdit(ctx context.Context, boundary agent.EditBoundary)
 		startedAt:  startedAt,
 		before:     before,
 		metadata:   boundaryMetadata(boundary),
+		turn:       boundary.Turn,
 	}, nil
 }
 
@@ -162,6 +163,9 @@ type editTransaction struct {
 	startedAt  string
 	before     *Tree
 	metadata   map[string]string
+	turn       int
+	changes    []Change
+	published  bool
 	done       bool
 }
 
@@ -181,7 +185,36 @@ func (t *editTransaction) Commit(ctx context.Context) error {
 		// start can repair the checkpoint without guessing.
 		return fmt.Errorf("recovery: capture post-edit workspace: %w", err)
 	}
-	return c.publishEdit(ctx, t, after)
+	if err := c.publishEdit(ctx, t, after); err != nil {
+		return err
+	}
+	t.published = true
+	return nil
+}
+
+// Mutation returns the evidence this transaction published.
+//
+// The boolean is false when the transaction never published: a failed capture
+// or an aborted boundary has no evidence, and completion must not read that as
+// "the workspace did not change".
+func (t *editTransaction) Mutation() (agent.MutationProvenance, bool) {
+	if t == nil || !t.published {
+		return agent.MutationProvenance{}, false
+	}
+	changes := make([]agent.MutationChange, 0, len(t.changes))
+	for _, change := range t.changes {
+		changes = append(changes, agent.MutationChange{
+			Path:   change.Path,
+			Status: string(change.Status),
+		})
+	}
+	return agent.MutationProvenance{
+		CheckpointID: t.id,
+		Turn:         t.turn,
+		Source:       "recovery.edit",
+		Captured:     true,
+		Changes:      changes,
+	}, true
 }
 
 // Abort discards an unpublished transaction.
@@ -203,6 +236,7 @@ func (t *editTransaction) Abort() {
 // publishEdit turns a captured edit into an immutable checkpoint.
 func (c *Controller) publishEdit(ctx context.Context, t *editTransaction, after *Tree) error {
 	changes := Diff(t.before, after)
+	t.changes = changes
 	if len(changes) == 0 {
 		// An authorizing path that never ran, or a no-op rewrite, is not an
 		// edit. Publishing it would put a phantom undo point in the timeline.

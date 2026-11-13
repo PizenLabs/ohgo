@@ -264,6 +264,11 @@ type TaskHooks struct {
 	// evidence state. It is called at the turn boundary so an interrupted or
 	// final run is observed even if no later projection request ran.
 	ObserveTurns func([]agent.Turn)
+	// ObserveJournal folds the host edit journal's workspace diff into the
+	// durable evidence state at the run position of the mutating batch. It is
+	// what makes a shell mutation whose command text names no paths visible to
+	// the durable completion proof. Nil disables the projection.
+	ObserveJournal func(agent.MutationProvenance, int)
 	// RecordArtifacts drains structured artifacts produced during the turn
 	// into the durable task. It runs at the same turn boundary, before the
 	// completion transition, so a finding can become a BUILD-visible

@@ -306,3 +306,48 @@ func processAlive(pid string) bool {
 	err = syscall.Kill(n, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
+
+// A command that names a persistent write outside the workspace is refused
+// before the process runs, regardless of the authorized BUILD workspace.
+func TestBashRefusesOutsideWorkspaceWriteBeforeExecution(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := outsideWorkspacePath()
+	tool := NewBashTool(root)
+	result := tool.Execute(agent.Context{Ctx: context.Background()}, map[string]any{
+		"command": "rm -rf " + outside,
+	})
+	if !result.IsError || !result.Refused {
+		t.Fatalf("result = %+v, want a pre-execution refusal", result)
+	}
+	if result.FailureClass != agent.ToolFailureOutsideWorkspace {
+		t.Fatalf("failure class = %q, want %q", result.FailureClass, agent.ToolFailureOutsideWorkspace)
+	}
+	if result.Mutates || result.Executes {
+		t.Fatalf("a refused command reported execution evidence: %+v", result)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("the refused target exists: %v", err)
+	}
+}
+
+// An absolute path inside the workspace is authorized and executes.
+func TestBashAllowsAbsolutePathInsideWorkspace(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(root, "inside.txt")
+	tool := NewBashTool(root)
+	result := tool.Execute(agent.Context{Ctx: context.Background()}, map[string]any{
+		"command": "touch " + inside,
+	})
+	if result.IsError {
+		t.Fatalf("inside absolute path was refused: %+v", result)
+	}
+	if _, err := os.Stat(inside); err != nil {
+		t.Fatalf("the command did not create the inside path: %v", err)
+	}
+}

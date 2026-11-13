@@ -171,9 +171,20 @@ execution`:
   mutation (a redirect into the repository, a mutating program, a mutating git
   subcommand) so FUZZ cannot use the shell as a back door. A redirect to an
   absolute path outside the workspace is execution, not a source change: a local
-  server may log to a temporary file without becoming a mutation. The classifier
-  is a strong default, not a sandbox: an interpreter one-liner that writes a file
-  is a documented residual.
+  server may log to a temporary file without becoming a mutation.
+- The execution plane enforces a deterministic workspace write boundary for
+  shell commands independently of the model's spelling. A target the command
+  itself names (a redirect, `rm`, `cp`/`mv` destination, `mkdir`, `chmod`,
+  `sed -i`, `tee`, `dd of=`) is resolved against the command's tracked `cd`
+  directory, including `..` and symlinks, and is refused before the process
+  starts when it lands outside both the workspace and the operating system's
+  temporary area. Temporary staging (`/tmp/nextapp`) remains execution, and a
+  later copy into the workspace is the attributable mutation. This is a
+  boundary for named targets, not a sandbox for arbitrary programs: command
+  substitution, globs, and an interpreter whose own arguments are opaque remain
+  residual risks. BUILD intentionally permits ordinary tool caches (npm, Go,
+  cargo) to write outside the workspace; the journal diff attributes only the
+  workspace changes those commands produce.
 - The session records its workspace, project identity, and effective model.
   A resumed session restores its own snapshot rather than silently following a
   changed configuration.
@@ -445,6 +456,24 @@ authoritative evaluator is `agent.EvaluateTaskCompletion`; every production
 path that reports a task outcome calls it with the contract built from the
 user's request before execution and the evidence the runtime observed.
 
+- **Target semantics.** `contract.Target` distinguishes `technology`,
+  `repository`, `command`, and `resource` from the filesystem kinds
+  `path`/`symbol`/`package`. A technology target describes the desired result;
+  it is never a path and completion never requires a changed filename to contain
+  it. `IntentContract.MutationScope` is the separate dimension that says where a
+  persistent change is allowed: `workspace` for a migration or behavioural
+  objective, `paths` (files and directories) only when the request named a
+  filesystem boundary.
+- **Mutation provenance.** A shell command can change paths its own text never
+  names. The host edit journal already captures the workspace before the first
+  mutating batch and diffs it after the run; `agent.MutationProvenance` carries
+  that diff, the checkpoint identity, and the mutating turn into completion.
+  Each change is classified `EXPECTED`, `UNEXPECTED`, `UNATTRIBUTED`, or
+  `OUTSIDE_WORKSPACE`. A tool's own `AffectedPaths` is direct evidence; the
+  journal diff attributes the rest. A mutation with neither remains
+  `UNATTRIBUTED` and `NEEDS_REVIEW`, never silently accepted. The same journal
+  diff is folded into the durable evidence state, so a shell-only mutation can
+  support the task's completion proof.
 - **Evidence.** A mutation objective needs an observed target change and a
   successful verification after it. An execution authorized read-only is not a
   potential mutation, so an investigation probe cannot create a verification

@@ -34,6 +34,20 @@ func (c *Controller) ObserveTurns(turns []agent.Turn) {
 	c.evidence.ObserveTurns(cognition.TaskShape{}, turns)
 }
 
+// ObserveJournal folds the host edit journal's workspace diff into the durable
+// evidence state.
+//
+// It is the shell-mutation counterpart of ObserveTurns: a command can change
+// paths its own text never names, and the journal diff is the runtime evidence
+// that a change happened and where. position is the run position of the
+// mutating batch, so a later verification remains ordered after it.
+func (c *Controller) ObserveJournal(provenance agent.MutationProvenance, position int) {
+	if c.evidence == nil {
+		c.evidence = cognition.NewEvidenceState()
+	}
+	c.evidence.ObserveJournal(provenance, position)
+}
+
 // projectTaskContext turns the runtime's material observations into durable,
 // task-linked context at a checkpoint boundary.
 //

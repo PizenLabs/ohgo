@@ -49,7 +49,10 @@ func TestToolBudgetRefusalStopsTheRunAfterTheTurn(t *testing.T) {
 // informational read or an unverified change gains nothing.
 func TestEvaluateBudgetCompletionOnlyClosesVerifiedMutations(t *testing.T) {
 	write := Turn{Results: []ToolOutcome{{
-		ToolName: "write", Result: Result{Text: "wrote", Mutates: true},
+		ToolName: "write", Result: Result{
+			Text: "wrote", Mutates: true,
+			Details: map[string]any{"path": "note.txt"},
+		},
 	}}}
 	verify := Turn{Results: []ToolOutcome{{
 		ToolName: "bash", Result: Result{

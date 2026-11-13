@@ -44,7 +44,7 @@ func turnTaskOutcome(err error, turns []agent.Turn, intent contract.IntentContra
 // The stop classification and the completion rules belong to agent.ClassifyRun;
 // this function only projects its verdict into the durable task lifecycle.
 func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance) (taskAction, string) {
-	return turnTaskOutcomeForAuthority(err, turns, intent, snapshot, resolver, evidenceReview, priorChange, provenance, "")
+	return turnTaskOutcomeForAuthority(err, turns, intent, snapshot, resolver, evidenceReview, priorChange, provenance, agent.MutationProvenance{}, "")
 }
 
 // turnTaskOutcomeForAuthority is the completion boundary when the live
@@ -57,7 +57,7 @@ func turnTaskOutcomeWithReview(err error, turns []agent.Turn, intent contract.In
 // An empty or invalid authority disables the phase projection. The caller has
 // no trustworthy capability context, so the persisted objective is evaluated
 // unchanged.
-func turnTaskOutcomeForAuthority(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance, authority string) (taskAction, string) {
+func turnTaskOutcomeForAuthority(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, evidenceReview string, priorChange bool, provenance agent.EvidenceProvenance, mutations agent.MutationProvenance, authority string) (taskAction, string) {
 	if err == nil {
 		if active, parseErr := workspace.Parse(authority); parseErr == nil {
 			if phase, deferred := workspace.PhaseContract(intent, active); deferred {
@@ -69,6 +69,7 @@ func turnTaskOutcomeForAuthority(err error, turns []agent.Turn, intent contract.
 					EvidenceReview: evidenceReview,
 					PriorChange:    priorChange,
 					Provenance:     provenance,
+					Mutations:      mutations,
 				}, false)
 				return projectTaskVerdict(verdict, reason, true)
 			}
@@ -82,6 +83,7 @@ func turnTaskOutcomeForAuthority(err error, turns []agent.Turn, intent contract.
 		EvidenceReview: evidenceReview,
 		PriorChange:    priorChange,
 		Provenance:     provenance,
+		Mutations:      mutations,
 	}, false)
 	// A conditional mutation that has not entered its change branch completed
 	// the investigation phase, not the persisted objective. The mutation is

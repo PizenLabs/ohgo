@@ -65,7 +65,7 @@ func TestTurnTaskOutcomeAcceptsVerifiedMutation(t *testing.T) {
 	turns := []agent.Turn{
 		{Results: []agent.ToolOutcome{{
 			ToolName: "write",
-			Result:   agent.Result{Text: "wrote", Mutates: true},
+			Result:   agent.Result{Text: "wrote", Mutates: true, Details: map[string]any{"path": "tools/grep.go"}},
 		}}},
 		{Results: []agent.ToolOutcome{{
 			ToolName: "bash",
@@ -92,7 +92,7 @@ func TestTurnTaskOutcomeRejectsAmbiguousMutation(t *testing.T) {
 	turns := []agent.Turn{
 		{Results: []agent.ToolOutcome{{
 			ToolName: "write",
-			Result:   agent.Result{Text: "wrote", Mutates: true},
+			Result:   agent.Result{Text: "wrote", Mutates: true, Details: map[string]any{"path": "tools/grep.go"}},
 		}}},
 		{Results: []agent.ToolOutcome{{
 			ToolName: "bash",
@@ -127,5 +127,59 @@ func TestTurnTaskOutcomeFailsOnExecutionError(t *testing.T) {
 	action, reason := turnTaskOutcome(errors.New("provider unavailable"), nil, workspace.BuildIntentContract("Explain this."), nil, nil)
 	if action != taskActionFail || reason != "provider unavailable" {
 		t.Fatalf("action/reason = %v/%q, want fail/provider unavailable", action, reason)
+	}
+}
+
+// The Next.js migration trace: the technology target is semantic, the mutation
+// is attributed by the run journal, and the build that followed the change
+// proves the objective at the durable task boundary.
+func TestTurnTaskOutcomeProvesTechnologyMigration(t *testing.T) {
+	intent := workspace.BuildIntentContract("ok, convert this project to Next.js help me")
+	turns := []agent.Turn{
+		{Results: []agent.ToolOutcome{
+			{ToolName: "write", Result: agent.Result{
+				Text: "wrote", Mutates: true,
+				Details: map[string]any{"path": "package.json"},
+			}},
+			{ToolName: "write", Result: agent.Result{
+				Text: "wrote", Mutates: true,
+				Details: map[string]any{"path": "app/page.tsx"},
+			}},
+		}},
+		{Results: []agent.ToolOutcome{{
+			ToolName: "bash",
+			Result: agent.Result{
+				Text: "$ npx create-next-app .", Mutates: true,
+				Executes: true, Finished: true,
+				Details: map[string]any{"command": "npx create-next-app ."},
+			},
+		}}},
+		{Results: []agent.ToolOutcome{{
+			ToolName: "bash",
+			Result: agent.Result{
+				Text: "$ npm run build", Executes: true, Finished: true, Verifies: true,
+				Verification: &agent.VerificationEvidence{
+					Check:  contract.CheckBuild,
+					Scopes: []agent.VerificationScope{{All: true}},
+				},
+				Details: map[string]any{"command": "npm run build"},
+			},
+		}}},
+		stopTurn(),
+	}
+	mutations := agent.MutationProvenance{
+		Captured: true,
+		Source:   "recovery.edit",
+		Turn:     1,
+		Changes: []agent.MutationChange{
+			{Path: "package.json", Status: "M"},
+			{Path: "app/page.tsx", Status: "A"},
+			{Path: "next.config.ts", Status: "A"},
+		},
+	}
+	action, reason := turnTaskOutcomeForAuthority(nil, turns, intent, nil, nil, "", false,
+		agent.EvidenceProvenance{}, mutations, "build")
+	if action != taskActionComplete {
+		t.Fatalf("action = %v (%s), want complete", action, reason)
 	}
 }

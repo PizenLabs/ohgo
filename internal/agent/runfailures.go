@@ -54,6 +54,11 @@ const (
 	// ToolFailureExecutionFailed is an execution that started and did not
 	// complete. It never implies that retrying is safe.
 	ToolFailureExecutionFailed = "tool_execution_failed"
+	// ToolFailureOutsideWorkspace is a command refused before execution
+	// because its own syntax names a persistent write outside the authorized
+	// workspace. Nothing ran, so this is a control decision, not a failed
+	// action.
+	ToolFailureOutsideWorkspace = "outside_workspace"
 	// ToolFailureCapabilityUnavailable is a proposal for a capability the task
 	// surface does not offer. Nothing ran. It is discovery feedback for the
 	// model, distinct from an execution failure, and the control plane blocks

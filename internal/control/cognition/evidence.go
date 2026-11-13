@@ -1449,6 +1449,48 @@ func (s *EvidenceState) addMutation(outcome agent.ToolOutcome, path string, deta
 	return changed
 }
 
+// ObserveJournal records the host edit journal's workspace diff as mutation
+// evidence.
+//
+// The journal captures what the command text cannot reveal: a shell mutation
+// such as create-next-app changed paths the tool never named. The position is
+// the run position of the mutating batch, so a verification that followed it is
+// ordered after the change. A captured journal with no changes records nothing:
+// the workspace did not change, and absence of evidence is not evidence of a
+// change.
+func (s *EvidenceState) ObserveJournal(provenance agent.MutationProvenance, position int) {
+	if s == nil || !provenance.Captured {
+		return
+	}
+	if s.LastMutationSeq == nil {
+		s.LastMutationSeq = map[string]int{}
+	}
+	if position < 0 {
+		position = 0
+	}
+	if position > s.Seq {
+		s.Seq = position
+	}
+	for _, change := range provenance.Changes {
+		path := cleanPath(change.Path)
+		if path == "" {
+			continue
+		}
+		id := "mutation:journal:" + path
+		s.upsert(EvidenceItem{
+			ID:         id,
+			Status:     StatusKnown,
+			Retention:  RetentionExact,
+			Provenance: ProvenanceObservation,
+			Summary:    bound("changed "+path, MaxEvidenceSummaryBytes),
+			Source:     Source{Tool: "edit-journal", Path: path},
+			Seq:        position,
+		})
+		s.LastMutationSeq[path] = position
+	}
+	s.trim()
+}
+
 // addBash records command execution, verification, and mutation evidence.
 func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
 	command := detailString(details, "command")

@@ -46,6 +46,10 @@ func (t *recordingTxn) Commit(context.Context) error {
 
 func (t *recordingTxn) Abort() { t.journal.aborts++ }
 
+func (t *recordingTxn) Mutation() (MutationProvenance, bool) {
+	return MutationProvenance{}, false
+}
+
 // newTestLoop builds a loop with the given tools and scripted model answers.
 func newTestLoop(t *testing.T, journal EditJournal, tools []Tool, messages ...ai.AssistantMessage) (*Loop, func() []ai.Request) {
 	t.Helper()

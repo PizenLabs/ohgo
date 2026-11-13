@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/cognition"
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
@@ -600,4 +601,47 @@ func TestCompletionRefusesVerificationBeforeTheLastChange(t *testing.T) {
 			t.Fatalf("CompleteWithEvidence after the ordered check: %v", err)
 		}
 	})
+}
+
+// A shell mutation whose command text names no paths is still provable when
+// the host's edit journal recorded the workspace diff and a check followed it.
+func TestJournalMutationSupportsDurableCompletion(t *testing.T) {
+	controller := NewController(NewStore(t.TempDir()), nil)
+	controller.SetRoleSource(func() workspace.Workspace { return workspace.Build })
+	intent := mutationIntent("convert this project to Next.js")
+	intent.Verification = []contract.VerificationRequirement{{Kind: contract.VerifyAny, Check: contract.CheckBuild}}
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	controller.ObserveTurns([]agent.Turn{{Results: []agent.ToolOutcome{{
+		ToolName: "bash",
+		Result: agent.Result{
+			Text:     "$ npm run build",
+			Executes: true,
+			Finished: true,
+			Verifies: true,
+			Verification: &agent.VerificationEvidence{
+				Check:  contract.CheckBuild,
+				Scopes: []agent.VerificationScope{{All: true}},
+			},
+		},
+	}}}})
+	controller.ObserveJournal(agent.MutationProvenance{
+		Captured: true,
+		Source:   "recovery.edit",
+		Changes: []agent.MutationChange{
+			{Path: "package.json", Status: "M"},
+			{Path: "app/page.tsx", Status: "A"},
+		},
+	}, 0)
+	if _, err := controller.CompleteWithEvidence(CompletionEvidence{Complete: true}); err != nil {
+		t.Fatalf("journal mutation did not support completion: %v", err)
+	}
+	recorded, ok := controller.Current()
+	if !ok {
+		t.Fatal("the completed task was not readable")
+	}
+	if state := recorded.ObjectiveState(); state != ObjectiveProven {
+		t.Fatalf("objective state = %s, want PROVEN", state)
+	}
 }

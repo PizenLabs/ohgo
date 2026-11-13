@@ -115,7 +115,7 @@ func contextAuditEnabled() bool {
 // reimplements completion or the stop classification: agent.ClassifyRun owns
 // the decision, and this function only projects the verdict into the exit-code
 // vocabulary a script can branch on.
-func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, deadlineExpired bool, evidenceReview string, provenance agent.EvidenceProvenance) runOutcome {
+func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, snapshot *agent.TargetSnapshot, resolver agent.StructuralResolver, deadlineExpired bool, evidenceReview string, provenance agent.EvidenceProvenance, mutations agent.MutationProvenance) runOutcome {
 	input := agent.CompletionInput{
 		Turns:          turns,
 		Contract:       intent,
@@ -123,6 +123,7 @@ func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, s
 		Resolver:       resolver,
 		EvidenceReview: evidenceReview,
 		Provenance:     provenance,
+		Mutations:      mutations,
 	}
 
 	verdict, reason := agent.ClassifyRun(err, input, deadlineExpired)
@@ -252,7 +253,7 @@ func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out i
 		review = lastReport.EvidenceReview()
 		provenance = lastReport.Provenance
 	}
-	outcome := projectRun(err, turns, intent, snapshot, resolver, deadlineExpired, review, provenance)
+	outcome := projectRun(err, turns, intent, snapshot, resolver, deadlineExpired, review, provenance, loop.LastMutation())
 	if out != nil {
 		_, _ = fmt.Fprintln(out, outcome.line())
 	}

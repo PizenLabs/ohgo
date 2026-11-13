@@ -522,9 +522,8 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 	}
 
 	shape.Mutation = MutationScope{
-		Allowed:  authority == "build" && shape.Kind == contract.ObjectiveMutation,
-		Explicit: len(intent.Targets) > 0,
-		Targets:  append([]contract.Target(nil), intent.Targets...),
+		Allowed: authority == "build" && shape.Kind == contract.ObjectiveMutation,
+		Targets: append([]contract.Target(nil), intent.Targets...),
 	}
 	shape.Authority.MutationAllowed = shape.Mutation.Allowed
 	shape.Authority.ReadOnly = !shape.Mutation.Allowed
@@ -536,6 +535,11 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		}
 		shape.Mutation.Operations = appendOperation(shape.Mutation.Operations, intent.OperationFor(target))
 	}
+	// Explicitness is a filesystem property, not a target count. A technology
+	// migration names a target ("Next.js") but its scope is the whole
+	// workspace; treating the semantic name as a path boundary would forbid
+	// every file the migration must touch.
+	shape.Mutation.Explicit = intent.MutationScope.ExplicitPaths() || len(shape.Mutation.Paths) > 0
 	sort.Strings(shape.Mutation.Paths)
 	shape.Mutation.DeleteRequested = requestsDelete(shape.Objective)
 	shape.Mutation.UnrelatedForbidden = shape.Mutation.Allowed && shape.Mutation.Explicit

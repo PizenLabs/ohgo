@@ -111,6 +111,21 @@ immutable.
 
 ### Fixed
 
+- A semantic migration target is no longer read as a file path. `Target` now
+  carries explicit `technology`, `repository`, `command`, and `resource` kinds
+  alongside `path`/`symbol`/`package`, and `IntentContract.MutationScope` states
+  whether a persistent change is bounded to named files/directories or the whole
+  workspace. "Convert this project to Next.js" therefore produces a technology
+  objective with workspace scope instead of a target named `Next.js`; completion
+  no longer requires a changed path to contain the technology name.
+- Shell mutations now carry provenance. The recovery edit journal exposes the
+  workspace diff it already captured, and completion classifies each change as
+  `EXPECTED`, `UNEXPECTED`, `UNATTRIBUTED`, or `OUTSIDE_WORKSPACE` from the run's
+  journal, a tool's own `AffectedPaths`, or the security scope. A shell mutation
+  whose command text names no paths is attributed to the current task instead of
+  `<unattributed>`; with no journal evidence it still requires review. A
+  deterministically named persistent write outside the workspace (and outside
+  the temporary execution area) is refused before the process starts.
 - An approved widening transition now runs the objective it approved. The handoff
   records the approving request's objective (`Handoff.ApprovedObjective`), the
   turn gate attaches only that objective, and `Controller.Begin` re-scopes the

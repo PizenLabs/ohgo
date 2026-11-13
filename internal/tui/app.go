@@ -5727,13 +5727,25 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if p.task.ProjectionProvenance != nil {
 		provenance = p.task.ProjectionProvenance()
 	}
-	action, reason := turnTaskOutcomeForAuthority(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance, activeAuthority)
+	// The host's edit journal captured the run's workspace diff before and
+	// after the mutating batch. It is the only evidence that can attribute a
+	// shell mutation whose command text does not name the resulting paths.
+	mutations := p.loop.LastMutation()
+	mutations.TaskID = taskID
+	mutations.ObjectiveID = taskID
+	action, reason := turnTaskOutcomeForAuthority(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance, mutations, activeAuthority)
 	// The turn boundary is also the evidence boundary. The loop projects
 	// before each request, but a run that stopped on a deadline, a turn limit,
 	// or its final answer may have an unobserved last turn. Folding it here
 	// keeps the checkpoint truthful without a second observation store.
 	if p.task.ObserveTurns != nil {
 		p.task.ObserveTurns(turns)
+	}
+	// The journal diff is the durable counterpart of a shell mutation whose
+	// command text names no paths. It is recorded at the mutating batch's run
+	// position so a later check remains ordered after the change.
+	if p.task.ObserveJournal != nil && mutations.Captured {
+		p.task.ObserveJournal(mutations, agent.MutationTurnPosition(turns, mutations.Turn))
 	}
 	// Artifacts are captured on the tool goroutine during the run. Project
 	// them at this boundary, where task state has one writer, so a FUZZ finding

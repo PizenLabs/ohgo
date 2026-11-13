@@ -64,26 +64,99 @@ const (
 	ChangeDelete ChangeOp = "delete"
 )
 
-// TargetKind names the repository coordinate a target uses.
+// TargetKind names the kind of object a target addresses.
+//
+// A target is not always a repository coordinate. A migration names a
+// technology, a request can name a command, and a report can address a
+// resource. Keeping the kind explicit is what stops a semantic name such as
+// "Next.js" from being mistaken for the file "Next.js".
 type TargetKind string
 
 // Target kinds.
 const (
-	// TargetPath is a repository-relative file path.
+	// TargetPath is a repository-relative file or directory path.
 	TargetPath TargetKind = "path"
 	// TargetSymbol is a Go symbol name, optionally package-qualified.
 	TargetSymbol TargetKind = "symbol"
 	// TargetPackage is a Go package name.
 	TargetPackage TargetKind = "package"
+	// TargetTechnology is a technology, framework, or language the request
+	// names as an objective ("convert this project to Next.js"). It is a
+	// semantic target: it says what the result should be, never where the
+	// files are.
+	TargetTechnology TargetKind = "technology"
+	// TargetRepository is the workspace itself ("this project", "the
+	// repository"). It is a mutation scope, never a filesystem coordinate.
+	TargetRepository TargetKind = "repository"
+	// TargetCommand is a command the request names as an operation.
+	TargetCommand TargetKind = "command"
+	// TargetResource is a named non-code artifact or class ("documentation",
+	// "configuration", "tests", "JSON"). It is a semantic target.
+	TargetResource TargetKind = "resource"
 )
 
-// Target is one repository coordinate named by the request.
+// Filesystem reports whether the target addresses a concrete filesystem
+// coordinate that structural evidence can check.
+func (k TargetKind) Filesystem() bool {
+	return k == TargetPath || k == TargetSymbol || k == TargetPackage
+}
+
+// Target is one object named by the request.
 type Target struct {
 	// Kind is how Value is interpreted.
 	Kind TargetKind
-	// Value is a path, symbol, or package name exactly as the user named it
-	// (after trimming path punctuation).
+	// Value is the user's name for the target, after trimming path
+	// punctuation. For a technology it is the technology name. For a
+	// repository target it is a canonical label, not a path.
 	Value string
+	// Directory reports that a path target names a directory rather than one
+	// file. It is meaningless for other kinds.
+	Directory bool `json:"directory,omitempty"`
+}
+
+// MutationScopeKind says what a mutation objective may change.
+type MutationScopeKind string
+
+// Mutation scope kinds.
+const (
+	// MutationScopeUnspecified means the contract predates the explicit
+	// scope. The evaluator falls back to the captured target snapshot.
+	MutationScopeUnspecified MutationScopeKind = ""
+	// MutationScopeWorkspace means the objective may change any path inside
+	// the authorized workspace. A technology migration or a behavioural
+	// objective ("fix the failing tests") normally has this scope.
+	MutationScopeWorkspace MutationScopeKind = "workspace"
+	// MutationScopePaths means the objective is bounded to the named files
+	// and directories.
+	MutationScopePaths MutationScopeKind = "paths"
+)
+
+// MutationScope is the explicit persistent mutation scope of an objective.
+//
+// It is deliberately separate from Targets: a target describes the desired
+// result (a technology, a symbol, a file), while the scope describes where a
+// persistent change is allowed. Deriving a path scope from a technology name
+// would turn "convert to Next.js" into "change the file Next.js".
+type MutationScope struct {
+	// Kind is the scope class.
+	Kind MutationScopeKind `json:"kind,omitempty"`
+	// Files are the exact repository-relative files the objective may change.
+	Files []string `json:"files,omitempty"`
+	// Directories are repository-relative directories whose contents the
+	// objective may change.
+	Directories []string `json:"directories,omitempty"`
+}
+
+// Workspace reports whether the objective may change the whole workspace.
+func (s MutationScope) Workspace() bool {
+	return s.Kind == MutationScopeWorkspace
+}
+
+// ExplicitPaths reports whether the objective named a filesystem scope. A
+// semantic or behavioural objective with no named path is not an explicit
+// path scope even though it has targets.
+func (s MutationScope) ExplicitPaths() bool {
+	return s.Kind == MutationScopePaths && (len(s.Files) > 0 || len(s.Directories) > 0)
 }
 
 // ExpectedChange binds a target to the operation the request asks for.
@@ -166,10 +239,14 @@ type IntentContract struct {
 	// versus the project's own long-running runtime. It is meaningless for any
 	// other kind and stays empty (ExecutionCommand) for legacy contracts.
 	ExecutionMode ExecutionMode
-	// Targets are the unique repository coordinates the request names.
+	// Targets are the unique objects the request names.
 	Targets []Target
 	// ExpectedChanges binds each target to its requested direction.
 	ExpectedChanges []ExpectedChange
+	// MutationScope is where a persistent change is allowed. It is separate
+	// from Targets so a semantic target such as a technology never becomes a
+	// filesystem scope.
+	MutationScope MutationScope `json:"mutationScope,omitempty"`
 	// Verification lists the behavioural checks the request asks for. A
 	// mutation objective always has at least one requirement, because Phase 3
 	// already requires a check after a change.
