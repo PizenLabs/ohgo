@@ -567,13 +567,22 @@ the model said. Two properties keep the loop honest and small:
   capability (`BlockCapabilityFailure`) is terminal only after acquisition
   reconciliation finds no independent provider for every missing requirement;
   the first stale proposal without an answer then reports
-  `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`. The loop can also
-  force the boundary itself: after a refused-proposal recovery it asks the
-  projection to close the surface (`ForceAnswer`), even for a shape such as an
-  investigation that would otherwise keep probing. A refusal caused by the
-  request-level failure ledger gets one bounded corrected-invocation window
-  before that forced boundary, so malformed proposals cannot consume turns but
-  a valid correction is never mistaken for a repeated outage.
+  `agent.ErrTaskBlocked`, which classifies as `NEEDS_REVIEW`. A substantive
+  answer is also terminal on a partially narrowed surface when the rest of the
+  message cannot add evidence: every call is either a capability the stage
+  withheld or an exact repetition of an observation already current in the run.
+  The loop drops those continuation calls before dispatch, so a finished answer
+  is not followed by refusal or reuse cards. A new offered capability keeps the
+  normal path because the text may be narration before real work. A message
+  that only announces an action keeps the bounded recovery, and a
+  policy-sensitive proposal is still dispatched so its refusal remains visible.
+  The loop can also force the boundary itself: after a refused-proposal
+  recovery it asks the projection to close the surface (`ForceAnswer`), even
+  for a shape such as an investigation that would otherwise keep probing. A
+  refusal caused by the request-level failure ledger gets one bounded
+  corrected-invocation window before that forced boundary, so malformed
+  proposals cannot consume turns but a valid correction is never mistaken for a
+  repeated outage.
 - **An unproductive turn is counted from outcomes, never from the offered
   slice.** A refusal is a control decision, not work. If every call in a turn was
   refused, the turn could not change the runtime's state; this is true even when
@@ -762,9 +771,12 @@ zero exit code alone is not proof.
   before and after. Results are reassembled in model emission order, so the
   transcript always matches the assistant message.
 - Tool → loop progress flows through `Context.OnProgress`; loop → UI through
-  `Config.OnToolProgress` (`started → update → finished`). The final report
-  carries the post-`AfterToolCall` result, so the UI never shows output the
-  model will not receive. Progress callbacks run outside locks.
+  `Config.OnToolProgress` (`started → update → finished`). Every
+  transcript-visible outcome gets the pair, including a reused or refused call
+  that never reached execution; an `AnswerRequired` refusal is excluded
+  because the transcript projection removes it. The final report carries the
+  post-`AfterToolCall` result, so the UI never shows output the model will not
+  receive. Progress callbacks run outside locks.
 - UI state is owned by the update goroutine. Loop goroutines send `Event`
   values through a buffered channel that drops on full — a stalled command
   is worse than a missing preview line. Approvals carry per-request reply

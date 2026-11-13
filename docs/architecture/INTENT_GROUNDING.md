@@ -136,13 +136,18 @@ request action = unknown
 A rejection is returned to the model as a structured tool error, and the loop
 allows one recovery request. The refusal itself is not a completion event: the
 model must see the reason before its accompanying narration can be judged as an
-answer. If the recovery also proposes only refused actions and emits no answer,
-the loop closes the still-open action surface and makes one answer-only request
-instead of blocking. The same recovery applies when the model stops with no text
-at all immediately after a refusal-only turn: an empty stop is not an answer, so
-the loop drops the empty assistant message and asks once for the answer from the
-evidence. Nothing can execute, so the evidence already gathered is the only basis
-for the answer; completion still decides whether it is sufficient.
+answer. A tool call that accompanies a substantive answer is not an
+action-fidelity rejection when the stage withholds it or the run already has
+the exact observation: it is continuation after the answer and is dropped
+before dispatch rather than executed or returned as a tool error (the closure
+contract lives in [`ARCHITECTURE.md`](ARCHITECTURE.md)). If the recovery also
+proposes only refused actions and emits no answer, the loop closes the
+still-open action surface and makes one answer-only request instead of
+blocking. The same recovery applies when the model stops with no text at all
+immediately after a refusal-only turn: an empty stop is not an answer, so the
+loop drops the empty assistant message and asks once for the answer from the
+evidence. Nothing can execute, so the evidence already gathered is the only
+basis for the answer; completion still decides whether it is sufficient.
 
 A second empty stop can happen on the answer-only request itself: the surface
 is already closed and the model returns only reasoning. The runtime has asked

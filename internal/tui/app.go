@@ -5468,11 +5468,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			}
 		}
 	})
-	// The progress hook carries only calls that reached execution. A refused,
-	// denied, or schema-invalid call never fires it, so the post-run pass
-	// below uses this ledger to publish the missing block with its real
-	// outcome. Without it the live transcript would hide exactly the failures
-	// the user most needs to see.
+	// The progress hook carries every transcript-visible call, including a
+	// reused or refused one that never reached execution. This ledger tracks
+	// what the live channel actually published, so the post-run pass can
+	// publish anything a dropped event left behind. Without it the live
+	// transcript would hide exactly the failures the user most needs to see.
 	type publishedTool struct{ started, finished bool }
 	var (
 		publishedMu sync.Mutex
@@ -5868,9 +5868,23 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// Reasoning omitted by a non-streaming transport is revealed before the
 	// answer, which is the order providers produce it. Text already revealed
 	// live is skipped by common prefix, exactly as before.
+	//
+	// Text and outcomes publish per completed turn, never all text first and
+	// all outcomes last. The live progress hook normally publishes every
+	// visible outcome; this pass is the fallback for one that did not, and it
+	// must land inside its own turn rather than after a later answer.
 	streamedThinking := liveThinking.String()
 	consumedThinking := 0
-	for _, turn := range turns {
+	streamed := live.String()
+	consumed := 0
+	for _, rawTurn := range turns {
+		turn := agent.TranscriptTurn(rawTurn)
+		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
+			// The turn contained only answer-required control refusals. It
+			// produced no action and no visible text, so it has no transcript
+			// record.
+			continue
+		}
 		if thinking := turn.Assistant.ThinkingText(); thinking != "" {
 			rest := thinking
 			if consumedThinking < len(streamedThinking) {
@@ -5882,10 +5896,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				p.publish(ReasoningDelta{Text: chunk, At: time.Now(), Seq: seq})
 			}
 		}
-	}
-	streamed := live.String()
-	consumed := 0
-	for _, turn := range turns {
 		if text := turn.Assistant.Text(); text != "" {
 			rest := text
 			if consumed < len(streamed) {
@@ -5896,22 +5906,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			for _, chunk := range splitAssistantChunks(rest) {
 				p.publish(AssistantDelta{Text: chunk, At: time.Now(), Seq: seq})
 			}
-		}
-	}
-
-	// Every turn persists its assistant plus all of its results, in the same
-	// order as the plain path: dropping non-final results would lose the
-	// evidence the transcript replays, and persisting is the program's job
-	// here (the loop's turn hook only publishes live metrics in UI mode —
-	// transcript text still travels through AssistantDelta events).
-	// They land in the turn's own session, never in a session created mid-turn.
-	for _, rawTurn := range turns {
-		turn := agent.TranscriptTurn(rawTurn)
-		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
-			// The turn contained only answer-required control refusals. It
-			// produced no action and no visible text, so it has no transcript
-			// record.
-			continue
 		}
 		// A call that never reached execution (denied authority, grounding
 		// refusal, invalid arguments, budget stop) still produced a real
@@ -5951,6 +5945,13 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				})
 			}
 		}
+		// Every turn persists its assistant plus all of its results, in the
+		// same order as the plain path: dropping non-final results would lose
+		// the evidence the transcript replays, and persisting is the program's
+		// job here (the loop's turn hook only publishes live metrics in UI
+		// mode — transcript text still travels through AssistantDelta events).
+		// They land in the turn's own session, never in a session created
+		// mid-turn.
 		persistTo(agent.AssistantMessage{Message: turn.Assistant})
 		for _, outcome := range turn.Results {
 			persistTo(agent.ToolResultMessage{

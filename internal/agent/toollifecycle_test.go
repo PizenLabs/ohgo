@@ -170,6 +170,61 @@ func TestLifecycleFailureStaysFailure(t *testing.T) {
 	}
 }
 
+// A reused observation never reaches Execute, but the UI still needs a
+// start/finish pair in the turn it belongs to. Without it the host can only
+// replay the outcome after a later answer.
+func TestLifecycleReusedObservationReportsStartAndFinish(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	streamFn, _ := scriptedStream(
+		toolCallMessage(ai.ToolCall{ID: "c1", Name: "read", Arguments: map[string]any{"path": path}}),
+		toolCallMessage(ai.ToolCall{ID: "c2", Name: "read", Arguments: map[string]any{"path": path}}),
+		textMessage("done"),
+	)
+	var (
+		mu       sync.Mutex
+		progress []ToolProgress
+	)
+	loop, err := New(Config{
+		Model:  catalog.MustResolve("anthropic/claude-sonnet-4-5"),
+		Stream: streamFn,
+		Tools:  []Tool{&fileReadTool{}},
+		OnToolProgress: func(p ToolProgress) {
+			mu.Lock()
+			progress = append(progress, p)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := loop.Run(context.Background(), []Message{UserMessage{Text: "go"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var stages []ToolProgressStage
+	reused := false
+	for _, p := range progress {
+		if p.CallID != "c2" {
+			continue
+		}
+		stages = append(stages, p.Stage())
+		if p.Stage() == ProgressFinished && p.Result.Reused {
+			reused = true
+		}
+	}
+	if len(stages) < 2 || stages[0] != ProgressStarted || stages[len(stages)-1] != ProgressFinished {
+		t.Fatalf("reused call stages = %v, want started..finished", stages)
+	}
+	if !reused {
+		t.Fatal("the finished report did not mark the outcome reused")
+	}
+}
+
 // A mutation tool must run the same lifecycle and leave its effect on disk.
 func TestLifecycleMutationToolWrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.txt")

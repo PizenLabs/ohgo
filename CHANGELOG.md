@@ -92,6 +92,18 @@ immutable.
 
 ### Fixed
 
+- A reused or refused tool outcome now publishes its start/finish pair in its
+  own turn. A stale read that had actually run earlier can no longer be
+  replayed after the final answer by the host's post-run fallback, which now
+  publishes per completed turn.
+- A substantive answer that shares one assistant message with a batch that
+  cannot add evidence—every call is withheld by the task stage or repeats an
+  observation already current in the run—is now the agent loop's terminal
+  transition. Those continuation calls are dropped before dispatch, so a
+  finished answer is no longer followed by refusal or reuse cards. A new
+  offered capability keeps the normal path because the text may be narration
+  before real work; a message that only announces an action keeps the bounded
+  recovery, and policy-sensitive proposals remain visible.
 - An invalid tool invocation no longer poisons capability health or blocks a
   recoverable task. Argument, selector, unknown-tool, unsupported-operation,
   authority, budget, and stale-evidence failures are request-level: the
