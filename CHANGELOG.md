@@ -111,6 +111,12 @@ immutable.
 
 ### Fixed
 
+- A survey answer that bounds its negatives to what it inspected is no longer
+  reviewed as a repository-wide absence claim. "No tests detected in inspected
+  scope (test inventory not queried)" completes; "the project has no tests"
+  still needs coverage. The bounded-scope and non-observation forms are
+  recognised as claims, contractions are normalised, and the repository-wide
+  veto now outranks the literal marker list instead of being bypassed by it.
 - `structure` overview no longer reports declaration totals it never observed.
   Navigation counts (`symbols`, `references`, `calls`, `tests`) render
   `0 (source not parsed)` before parsing and `unobservable (no adapter)` when no
