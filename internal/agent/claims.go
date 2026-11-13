@@ -140,6 +140,21 @@ var (
 	boundedRunPattern = regexp.MustCompile(
 		`(?i)\bno\s+(?:tests?|checks?|commands?)\s+(?:were|was|have\s+been|has\s+been)?\s*(?:run|executed|performed)\b`)
 
+	// boundedScopePattern reports a claim limited to what this run actually
+	// inspected: "no tests detected in inspected scope", "no API routes in the
+	// files read". The limitation is part of the claim, not boilerplate around
+	// a repository-wide conclusion.
+	boundedScopePattern = regexp.MustCompile(
+		`(?i)\b(?:in|within)\s+(?:the\s+|this\s+|our\s+|an?\s+)?(?:inspected|read|queried|listed|observed|examined|reviewed|sampled)\s+(?:scope|source|files?|code|content|portion|part|subset|range|listing|inventory)\b`)
+
+	// boundedUnqueriedPattern reports that the check behind a negative claim
+	// never ran, which is a run fact rather than a repository property. It is
+	// limited to inspection verbs: "tests are not run" describes the project,
+	// and boundedRunPattern already covers the run-fact form ("no tests were
+	// run").
+	boundedUnqueriedPattern = regexp.MustCompile(
+		`(?i)\b(?:not|never)\s+(?:been\s+)?(?:queried|evaluated|inspected|checked|probed|searched|observed|read|examined)\b`)
+
 	// globalNegativeScopePattern prevents a bounded-search phrase from
 	// excusing the same sentence's repository-wide conclusion.
 	globalNegativeScopePattern = regexp.MustCompile(
@@ -911,6 +926,14 @@ func claimIsDocumentationAttributed(sentence string) bool {
 // claim.
 func boundedNegativeReport(sentence string) bool {
 	lower := strings.ToLower(sentence)
+	// Contractions carry the same negation the marker scan looks for:
+	// "wasn't queried" bounds a claim exactly like "was not queried".
+	lower = strings.ReplaceAll(lower, "n't", " not")
+	// The veto runs first: "not inspected ... anywhere" is a repository-wide
+	// conclusion, and a bounded phrase in the same sentence cannot excuse it.
+	if globalNegativeScopePattern.MatchString(lower) {
+		return false
+	}
 	for _, marker := range []string{
 		"not evaluated", "not inspected", "not checked", "not probed",
 		"not searched", "in the inspected scope", "in the inspected source",
@@ -922,10 +945,10 @@ func boundedNegativeReport(sentence string) bool {
 			return true
 		}
 	}
-	if globalNegativeScopePattern.MatchString(lower) {
-		return false
-	}
-	return boundedObservationPattern.MatchString(lower) || boundedRunPattern.MatchString(lower)
+	return boundedObservationPattern.MatchString(lower) ||
+		boundedRunPattern.MatchString(lower) ||
+		boundedScopePattern.MatchString(lower) ||
+		boundedUnqueriedPattern.MatchString(lower)
 }
 
 // nearestClaimPath returns the path token closest to the metric span. It
