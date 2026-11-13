@@ -109,14 +109,71 @@ func addStructuralProvenance(details map[string]any, idx *ast.Index, complete bo
 // structuralCompleteness is the evidence-facing label; it never upgrades a
 // parse failure or unsupported source into COMPLETE.
 func structuralCompleteness(info ast.SnapshotInfo) string {
+	return describeStructural(info).Label
+}
+
+// structuralState is the snapshot-level structural verdict plus the decisive
+// limitation behind it.
+//
+// The detail exists because PARTIAL alone is ambiguous: a snapshot whose
+// source languages have no adapter in this build is not waiting for more
+// parsing, it can never yield a symbol, and a model that reads PARTIAL as
+// "more evidence is coming" will wait for evidence that does not exist.
+type structuralState struct {
+	Label  string
+	Detail string
+}
+
+func describeStructural(info ast.SnapshotInfo) structuralState {
 	switch {
 	case info.StructuralComplete:
-		return "COMPLETE"
+		return structuralState{Label: "COMPLETE"}
 	case info.PendingFiles > 0:
-		return "UNPARSED"
+		return structuralState{
+			Label:  "UNPARSED",
+			Detail: fmt.Sprintf("%d supported source files not parsed yet", info.PendingFiles),
+		}
+	case unsupportedOnlySource(info):
+		return structuralState{
+			Label: "UNSUPPORTED",
+			Detail: fmt.Sprintf("no adapter for %s; 0 of %d source files parsed",
+				strings.Join(unsupportedExtensions(info), ", "), info.SourceFiles),
+		}
+	case info.FailedFiles > 0:
+		return structuralState{
+			Label:  "PARTIAL",
+			Detail: fmt.Sprintf("%d of %d source files failed to parse", info.FailedFiles, info.SourceFiles),
+		}
 	default:
-		return "PARTIAL"
+		return structuralState{Label: "PARTIAL", Detail: "some source files produced no structural facts"}
 	}
+}
+
+// unsupportedOnlySource reports that every source-bearing language in the
+// inventory lacks an adapter in this build. It is the difference between "no
+// symbols found" and "symbols are unreachable in this binary".
+func unsupportedOnlySource(info ast.SnapshotInfo) bool {
+	source := 0
+	for _, coverage := range info.Languages {
+		if coverage.Files == 0 {
+			continue
+		}
+		source += coverage.Files
+		if coverage.Supported {
+			return false
+		}
+	}
+	return source > 0 && info.ParsedFiles == 0
+}
+
+// unsupportedExtensions lists inventoried extensions with no adapter in the
+// stable order the snapshot recorded.
+func unsupportedExtensions(info ast.SnapshotInfo) []string {
+	out := make([]string, 0, len(info.Unsupported))
+	for _, item := range info.Unsupported {
+		out = append(out, item.Extension)
+	}
+	return out
 }
 
 // structuralSourceIndex builds and returns the shared snapshot, mapping the

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -432,8 +433,15 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 		status = "truncated"
 	}
 	repeated := t.markOverview(info.SnapshotID, slice)
+	// The overview slices its own file and package lists; naming the cut is
+	// what makes "result: TRUNCATED" attributable to a specific list.
+	shown := []structureSliceCount{
+		{Label: "files", Shown: len(result.Files), Total: info.Files},
+		{Label: "packages", Shown: len(result.Packages), Total: info.Packages},
+		{Label: "entrypoints", Shown: len(result.Entrypoints), Total: result.EntrypointsTotal},
+	}
 	var text strings.Builder
-	writeStructureHeader(&text, status, "overview", info, result.Truncated, result.Reason)
+	writeStructureHeader(&text, status, "overview", info, result.Truncated, result.Reason, shown...)
 	if repeated {
 		text.WriteString("repeated: true (the same snapshot was already reported)\n")
 	}
@@ -443,11 +451,18 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 	}
 	fmt.Fprintf(&text, "packages: %d\n", info.Packages)
 	fmt.Fprintf(&text, "files: %d (go: %d, source: %d, configs: %d)\n", info.Files, info.GoFiles, info.SourceFiles, info.Configs)
-	fmt.Fprintf(&text, "symbols: %d\n", info.Symbols)
-	fmt.Fprintf(&text, "references: %d\n", info.References)
-	fmt.Fprintf(&text, "calls: %d\n", info.Calls)
-	fmt.Fprintf(&text, "tests: %d (test_files: %d)\n", info.Tests, info.TestFiles)
-	fmt.Fprintf(&text, "entrypoints: %d\n", info.Entrypoints)
+	// Declaration totals are observations, not inventory: an unparsed or
+	// adapter-less snapshot cannot report them as zero without the model
+	// reading that zero as absence.
+	state := describeStructural(info)
+	fmt.Fprintf(&text, "symbols: %s\n", declarationCount(info.Symbols, state))
+	fmt.Fprintf(&text, "references: %s\n", declarationCount(info.References, state))
+	fmt.Fprintf(&text, "calls: %s\n", declarationCount(info.Calls, state))
+	fmt.Fprintf(&text, "tests: %s\n", declarationCount(info.Tests, state))
+	// test_files is classified from paths at inventory time, so it stays a
+	// number even when no adapter can parse the file.
+	fmt.Fprintf(&text, "test_files: %d\n", info.TestFiles)
+	fmt.Fprintf(&text, "entrypoints: %d\n", result.EntrypointsTotal)
 	fmt.Fprintf(&text, "directories: %d\n", info.Directories)
 	fmt.Fprintf(&text, "last_parsed_files: %d\n", info.LastParsedFiles)
 	fmt.Fprintf(&text, "last_reused_files: %d\n", info.LastReusedFiles)
@@ -487,6 +502,9 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 		"truncated":   result.Truncated,
 		"reason":      result.Reason,
 		"repeated":    repeated,
+		// bounds mirrors the header's slice counts: which list was cut, how
+		// much this result displayed, and the snapshot total it refers to.
+		"bounds": sliceCountMaps(shown),
 	}
 	addStructuralProvenance(details, idx, !result.Truncated)
 	details["coordinates"] = overviewCoordinates(result.Packages, result.Entrypoints)
@@ -1126,7 +1144,25 @@ func structureStatus(empty, truncated bool) string {
 // roots, and a complete query can still be truncated by its own page bound.
 // Collapsing them into one "partial" flag is what lets an absence claim escape
 // a scope it never covered.
-func writeStructureHeader(text *strings.Builder, status, view string, info ast.SnapshotInfo, resultTruncated bool, reason string) {
+
+// structureSliceCount names one bounded slice and how much of it a view
+// displayed. A bare "result: TRUNCATED" cannot be attributed to a specific
+// list, so a model cannot tell whether the cut hid a count it already has.
+type structureSliceCount struct {
+	Label string
+	Shown int
+	Total int
+}
+
+// Cut reports that the view displayed fewer entries than the total it refers
+// to. A view can also display more than the snapshot count (conventional
+// entrypoints are discovered by the view, not the snapshot); that is not a cut
+// and must never render as "2 of 0".
+func (s structureSliceCount) Cut() bool {
+	return s.Shown < s.Total
+}
+
+func writeStructureHeader(text *strings.Builder, status, view string, info ast.SnapshotInfo, resultTruncated bool, reason string, shown ...structureSliceCount) {
 	fmt.Fprintf(text, "status: %s\n", status)
 	fmt.Fprintf(text, "view: %s\n", view)
 	fmt.Fprintf(text, "snapshot_id: %s\n", info.SnapshotID)
@@ -1142,8 +1178,13 @@ func writeStructureHeader(text *strings.Builder, status, view string, info ast.S
 			len(info.ExcludedRoots), info.ExcludedSourceFiles)
 	}
 	fmt.Fprintf(text, "inventory: %s\n", completeLabel(info.InventoryComplete))
-	fmt.Fprintf(text, "structural: %s\n", structuralCompleteness(info))
-	fmt.Fprintf(text, "result: %s\n", resultLabel(resultTruncated))
+	if state := describeStructural(info); state.Detail != "" {
+		fmt.Fprintf(text, "structural: %s (%s)\n", state.Label, state.Detail)
+	} else {
+		fmt.Fprintf(text, "structural: %s\n", state.Label)
+	}
+	fmt.Fprintf(text, "adapters: %s\n", adapterSummary())
+	fmt.Fprintf(text, "result: %s%s\n", resultLabel(resultTruncated), sliceSuffix(shown))
 	if resultTruncated && reason != "" {
 		fmt.Fprintf(text, "result_reason: %s\n", reason)
 	}
@@ -1153,12 +1194,60 @@ func writeStructureHeader(text *strings.Builder, status, view string, info ast.S
 		fmt.Fprintf(text, "parse_failures: %d\n", info.ParseFailures)
 	}
 	if len(info.Unsupported) > 0 {
-		parts := make([]string, 0, len(info.Unsupported))
-		for _, item := range info.Unsupported {
-			parts = append(parts, fmt.Sprintf("%s(%d)", item.Extension, item.Files))
-		}
-		fmt.Fprintf(text, "unsupported_source: %s\n", strings.Join(parts, ", "))
+		fmt.Fprintf(text, "unsupported_source: %s\n", unsupportedSummary(info.Unsupported))
 	}
+}
+
+// adapterSummary names the syntax adapters compiled into this binary. Without
+// it a symbol-free snapshot is unattributable: "no symbols" and "no adapter"
+// would render identically.
+func adapterSummary() string {
+	names := structuralLanguageNames()
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
+}
+
+// sliceSuffix renders the counts of every slice a view actually cut. Slices it
+// displayed in full are omitted so the one count that matters is not buried.
+func sliceSuffix(shown []structureSliceCount) string {
+	parts := make([]string, 0, len(shown))
+	for _, slice := range shown {
+		if !slice.Cut() {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s %d of %d", slice.Label, slice.Shown, slice.Total))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+// unsupportedSummary renders the inventoried extensions that have no adapter.
+func unsupportedSummary(items []ast.UnsupportedLanguage) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, fmt.Sprintf("%s(%d)", item.Extension, item.Files))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// sliceCountMaps projects the slice counts into the details shape.
+func sliceCountMaps(shown []structureSliceCount) []map[string]any {
+	out := make([]map[string]any, 0, len(shown))
+	for _, slice := range shown {
+		if !slice.Cut() {
+			continue
+		}
+		out = append(out, map[string]any{
+			"slice": slice.Label,
+			"shown": slice.Shown,
+			"total": slice.Total,
+		})
+	}
+	return out
 }
 
 func completeLabel(complete bool) string {
@@ -1173,6 +1262,22 @@ func resultLabel(truncated bool) string {
 		return "TRUNCATED"
 	}
 	return "COMPLETE"
+}
+
+// declarationCount renders a declaration total only when the snapshot could
+// have observed it.
+//
+// A bare 0 from a snapshot that parsed nothing, or that has no adapter for the
+// sources it inventoried, is indistinguishable from "this project declares
+// none" — and that absence is exactly what the inventory cannot establish.
+func declarationCount(value int, state structuralState) string {
+	if value > 0 || state.Label == "COMPLETE" {
+		return strconv.Itoa(value)
+	}
+	if state.Label == "UNSUPPORTED" {
+		return "unobservable (no adapter)"
+	}
+	return "0 (source not parsed)"
 }
 
 // displayPackage renders a package name, or the ambiguity list.

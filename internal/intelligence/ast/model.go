@@ -489,16 +489,19 @@ type ConfigInfo struct {
 
 // OverviewResult is one bounded project summary from a single snapshot.
 type OverviewResult struct {
-	Snapshot    SnapshotInfo          `json:"snapshot"`
-	Packages    []PackageInfo         `json:"packages,omitempty"`
-	Files       []FileInfo            `json:"files,omitempty"`
-	Entrypoints []Entrypoint          `json:"entrypoints,omitempty"`
-	Configs     []ConfigInfo          `json:"configs,omitempty"`
-	Languages   []LanguageCoverage    `json:"languages,omitempty"`
-	Unsupported []UnsupportedLanguage `json:"unsupported_languages,omitempty"`
-	Frameworks  []string              `json:"frameworks,omitempty"`
-	Truncated   bool                  `json:"truncated"`
-	Reason      string                `json:"reason,omitempty"`
+	Snapshot    SnapshotInfo  `json:"snapshot"`
+	Packages    []PackageInfo `json:"packages,omitempty"`
+	Files       []FileInfo    `json:"files,omitempty"`
+	Entrypoints []Entrypoint  `json:"entrypoints,omitempty"`
+	Configs     []ConfigInfo  `json:"configs,omitempty"`
+	// EntrypointsTotal counts every merged entrypoint before the bound was
+	// applied, so a truncated overview can attribute the cut.
+	EntrypointsTotal int                   `json:"entrypoints_total,omitempty"`
+	Languages        []LanguageCoverage    `json:"languages,omitempty"`
+	Unsupported      []UnsupportedLanguage `json:"unsupported_languages,omitempty"`
+	Frameworks       []string              `json:"frameworks,omitempty"`
+	Truncated        bool                  `json:"truncated"`
+	Reason           string                `json:"reason,omitempty"`
 }
 
 // Query bounds for inventory queries. They deliberately match the existing
