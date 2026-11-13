@@ -80,6 +80,14 @@ immutable.
   or the module line in both the header and the body. A repeated overview of
   the same snapshot is marked `repeated: true` so the model can recognize that
   it adds no new inventory facts.
+- The completion recap now names what carried the answer instead of what the
+  run opened first. Inspected files are ranked by whether the answer cites them,
+  then by returned content, so a survey that read README and settings before the
+  source that answered the question no longer cites only the README. When more
+  files were read than the footer names, it reports the total ("Inspected 5
+  files, including app/portfolio.tsx and README.md"), and a read that returned a
+  window states its range ("truncated at 400 of 512 lines") instead of implying
+  a whole-file reading.
 - `graph` remains the Go package import graph; a non-Go selector is pointed at
   `structure`/`refs` instead of being folded into a false package edge. The
   structural snapshot remains in memory. `<project>/.ohgo/graph.db` is still
