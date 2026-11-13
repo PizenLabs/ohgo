@@ -37,6 +37,79 @@ func TestAskQuestionStaysAskWithoutWorkspaceDecision(t *testing.T) {
 	}
 }
 
+// A new session defaults to BUILD, but an investigative objective is the
+// current phase and crosses automatically to FUZZ before the model runs. The
+// task and the live role must both record FUZZ; otherwise the transcript shows
+// a BUILD phase for work that is explicitly non-mutating.
+func TestInvestigativeRequestAutomaticallyStartsInFuzz(t *testing.T) {
+	root := t.TempDir()
+	writeReadinessModule(t, root)
+	const prompt = "investigate this project and analyze what this project is about?"
+	r := newReadinessRuntime(t, root, workspace.Build,
+		[]agent.Tool{tools.NewReadTool(root)},
+		[]ai.AssistantMessage{
+			readinessToolCall("read-1", "read", map[string]any{"path": "tools/grep.go"}),
+			readinessAnswer("The tools package contains a grep helper."),
+		})
+
+	cmd := r.program.submit(prompt)
+	if cmd == nil {
+		t.Fatalf("the investigation opened a decision instead of starting under FUZZ: %+v", r.program.state.Transition)
+	}
+	if r.program.state.Transition != nil {
+		t.Fatalf("automatic handoff left a pending transition: %+v", r.program.state.Transition)
+	}
+	if *r.role != workspace.Fuzz {
+		t.Fatalf("live role after the handoff = %s, want FUZZ", *r.role)
+	}
+	cmd()
+	drainProgram(r.program)
+
+	current := r.currentTask()
+	if current.ID == "" {
+		t.Fatal("the investigation created no durable task")
+	}
+	if current.ActiveRole != workspace.Fuzz {
+		t.Fatalf("task role = %s, want FUZZ", current.ActiveRole)
+	}
+	if current.Contract.Kind != workspace.ObjectiveInformational {
+		t.Fatalf("contract kind = %s, want informational", current.Contract.Kind)
+	}
+	if current.Completion != nil && current.Completion.Observed {
+		t.Fatal("a read-only investigation claimed a repository change")
+	}
+}
+
+// The automatic handoff is a routing preference, not a capability the runtime
+// may impose on an explicit human choice. Selecting BUILD for the same
+// investigative objective keeps BUILD authority and still performs no change.
+func TestExplicitBuildChoiceRunsInvestigationWithoutDowngrade(t *testing.T) {
+	root := t.TempDir()
+	writeReadinessModule(t, root)
+	const prompt = "investigate this project and analyze what this project is about?"
+	r := newReadinessRuntime(t, root, workspace.Build,
+		[]agent.Tool{tools.NewReadTool(root)},
+		[]ai.AssistantMessage{
+			readinessToolCall("read-1", "read", map[string]any{"path": "tools/grep.go"}),
+			readinessAnswer("The tools package contains a grep helper."),
+		})
+
+	r.turnAs(prompt, workspace.Build)
+	if *r.role != workspace.Build {
+		t.Fatalf("live role = %s, want the explicit BUILD choice", *r.role)
+	}
+	current := r.currentTask()
+	if current.ActiveRole != workspace.Build {
+		t.Fatalf("task role = %s, want BUILD", current.ActiveRole)
+	}
+	if current.Contract.Kind != workspace.ObjectiveInformational {
+		t.Fatalf("contract kind = %s, want informational", current.Contract.Kind)
+	}
+	if current.Completion != nil && current.Completion.Observed {
+		t.Fatal("the read-only investigation claimed a repository change")
+	}
+}
+
 // Scenario D: BUILD may inspect, but an explicit analysis request still asks
 // before crossing into the read-only ASK authority. Nothing runs until the
 // human decision, and accepting changes no repository source.

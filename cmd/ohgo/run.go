@@ -107,10 +107,7 @@ func runOnce(cmd *cobra.Command, text string) error {
 		}
 		opts.model = model
 		opts.maxTokens = resolveMaxTokens(opts.settings, model)
-		if sess != nil {
-			sess.Workspace = decision.Target.String()
-			sess.Model = model.Ref()
-		}
+		recordRunAuthority(store, sess, decision.Target, model)
 		_, _ = fmt.Fprintf(out, "workspace %s -> %s: %s\n",
 			decision.Current.Label(), decision.Target.Label(), decision.Reason)
 	case decision.NeedsConfirmation():
@@ -158,19 +155,17 @@ func runOnce(cmd *cobra.Command, text string) error {
 		}
 		from := opts.authority()
 		opts.setAuthority(decision.Target)
-		if sess != nil {
-			sess.Workspace = decision.Target.String()
-		}
 		if model, modelErr := resolveWorkspaceModel(opts.settings, decision.Target,
 			flagValue(cmd, "model"), os.Getenv("OHGO_MODEL"),
 			dynamicResolver(context.Background(), registry)); modelErr == nil {
 			opts.model = model
 			opts.maxTokens = resolveMaxTokens(opts.settings, model)
 			loop.SetModel(model)
-			if sess != nil {
-				sess.Model = model.Ref()
-			}
 		}
+		// The authority moved even when the target role's model could not be
+		// resolved. Record the authority actually in force with the model the
+		// loop still holds, so the durable snapshot never claims the old role.
+		recordRunAuthority(store, sess, decision.Target, opts.model)
 		_, _ = fmt.Fprintf(out, "workspace %s -> %s: %s\n",
 			from.Label(), decision.Target.Label(), decision.Reason)
 		return true

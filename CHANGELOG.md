@@ -119,6 +119,19 @@ immutable.
   later explicit read clause (`check this project and analyze what this project
   is about?`) now carries a strong READ signal and reaches the ASK authority
   boundary instead of silently staying in BUILD.
+- An investigative opener followed by an explanatory clause (`investigate this
+  project and analyze what this project is about?`) now remains a strong
+  INVESTIGATE request. The explanatory clause describes the investigation's
+  deliverable instead of contesting it into an ambiguous READ, so an automatic
+  BUILD session hands the turn to FUZZ before the model runs. `trace` and
+  `explore`, and causal/relational inquiry such as `find why`, `find where`, and
+  `analyze how`, are investigation signals; `analyze what` and other pure
+  explanations remain READ. A leading investigation followed by a change
+  ("investigate and fix the checkout failure") starts in FUZZ and hands off to
+  BUILD after evidence exists.
+- An automatic one-shot handoff now updates the session's persisted workspace
+  and model snapshot. A turn that ran under FUZZ is no longer listed or resumed
+  as BUILD because only the in-memory session recorded the move.
 - A truncated metadata overview's `tests: 0` is no longer treated as proof that
   no tests exist. Only a complete, unscoped structural test inventory (or the
   narrow complete Go scan) can support a test-file absence claim, and the

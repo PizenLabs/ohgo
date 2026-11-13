@@ -236,6 +236,103 @@ func TestProjectAnalysisPromptRoutesToAsk(t *testing.T) {
 	}
 }
 
+// An investigative opener is the current objective, not a request to summarize
+// what is already known. A later explanatory clause describes the deliverable
+// of the investigation, so it must not become a rival READ signal: a contested
+// prediction is ambiguous, BUILD keeps the turn, and FUZZ is never reached.
+func TestInvestigativeObjectiveSurvivesAnExplanatoryClause(t *testing.T) {
+	cases := []string{
+		"investigate this project",
+		"investigate this project and analyze what this project is about?",
+		"trace how authentication works",
+		"explore how authentication works",
+		"diagnose why checkout fails",
+		"analyze how this subsystem is connected",
+		"find where this behavior comes from",
+		"find whether the cache is stale",
+	}
+	for _, text := range cases {
+		t.Run(text, func(t *testing.T) {
+			prediction := ClassifyPrediction(text)
+			if prediction.Intent != IntentInvestigate || prediction.Strength != StrengthStrong {
+				t.Fatalf("prediction = %+v, want a strong investigation", prediction)
+			}
+			requirement := AnalyzeRequest(text)
+			if requirement.Capability != CapabilityInvestigate || requirement.Intent != IntentInvestigate {
+				t.Fatalf("requirement = %+v, want investigation", requirement)
+			}
+			decision := DecideTransition(Build, requirement)
+			if !decision.Automatic() || decision.Target != Fuzz {
+				t.Fatalf("decision = %+v, want an automatic BUILD -> FUZZ handoff", decision)
+			}
+		})
+	}
+}
+
+// The investigation fix must not widen plain explanation. These requests ask
+// for an answer, not for active probing, even though they contain investigative
+// vocabulary. A leading read verb remains the objective.
+func TestExplanatoryRequestsStayAsk(t *testing.T) {
+	cases := []string{
+		"what is this project about?",
+		"analyze what this project is about",
+		"check this project and analyze what this project is about?",
+		"explain how authentication works",
+		"understand why checkout fails",
+		"look at the authentication flow",
+		"compare the test failure modes",
+	}
+	for _, text := range cases {
+		t.Run(text, func(t *testing.T) {
+			prediction := ClassifyPrediction(text)
+			if prediction.Intent != IntentRead {
+				t.Fatalf("prediction = %+v, want READ", prediction)
+			}
+			requirement := AnalyzeRequest(text)
+			if requirement.Capability != CapabilityRead || requirement.Intent != IntentRead {
+				t.Fatalf("requirement = %+v, want READ", requirement)
+			}
+		})
+	}
+}
+
+// A leading investigation is the current phase of a composite objective. The
+// later change is a BUILD handoff after the evidence exists, not a reason to
+// start with mutation authority.
+func TestLeadingInvestigationWithLaterMutationStartsInFuzz(t *testing.T) {
+	const text = "investigate and fix the checkout failure"
+
+	prediction := ClassifyPrediction(text)
+	if prediction.Intent != IntentInvestigate || prediction.Strength != StrengthStrong {
+		t.Fatalf("prediction = %+v, want a strong investigation phase", prediction)
+	}
+	first := DecideTransition(Build, AnalyzeRequest(text))
+	if !first.Automatic() || first.Target != Fuzz {
+		t.Fatalf("initial decision = %+v, want an automatic BUILD -> FUZZ handoff", first)
+	}
+
+	// Once FUZZ has the evidence and the user asks for the change itself, the
+	// same objective crosses to the only mutation authority.
+	next := DecideTransition(Fuzz, AnalyzeRequest("fix the checkout failure"))
+	if !next.Automatic() || next.Target != Build {
+		t.Fatalf("follow-up decision = %+v, want an automatic FUZZ -> BUILD handoff", next)
+	}
+}
+
+// BUILD authority can perform an investigation; the automatic handoff is a
+// routing preference, not a capability requirement. This is the invariant an
+// explicit human BUILD choice relies on.
+func TestBuildAuthorityCanRunInvestigationReadOnly(t *testing.T) {
+	const text = "investigate this project and analyze what this project is about?"
+	route := RouteTurn(Build, text)
+	if !route.Allowed() || route.Active != Build || route.Intent != IntentInvestigate {
+		t.Fatalf("route = %+v, want the BUILD authority running the investigation", route)
+	}
+	if contract := BuildIntentContract(text); contract.Kind != ObjectiveInformational {
+		t.Fatalf("contract kind = %s, want informational", contract.Kind)
+	}
+}
+
 func TestAmbiguousReadVerbStaysInACapableWorkspace(t *testing.T) {
 	prediction := ClassifyPrediction("check this project")
 	if prediction.Intent != IntentRead || prediction.Strength != StrengthModerate {

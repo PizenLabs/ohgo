@@ -174,21 +174,34 @@ func ClassifyPrediction(text string) Prediction {
 			read = evidenceHead
 		}
 	}
-	// A later clause with an unambiguous read head is still part of the
-	// request's objective. "Check this project and analyze what it is about"
-	// opens with an ambiguous read verb, and without this the whole request
-	// stayed a moderate READ: BUILD kept the turn and the model never entered
-	// the read-only ASK boundary. A later noun phrase is deliberately not
-	// enough; only an explicit read verb strengthens the signal.
-	for i, entry := range clauses {
-		if i == 0 || entry.asked {
-			continue
-		}
-		head := clauseHead(entry.text)
-		if headMatches(readHeads, head) && !headMatches(ambiguousReadHeads, head) &&
-			!headMatches(investigateHeads, head) && !headMatches(executeHeads, head) {
-			read = evidenceHead
-			break
+	// A later clause with an unambiguous read head can strengthen a leading
+	// read signal. "Check this project and analyze what it is about" opens with
+	// the ambiguous verb "check"; the later "analyze" clause is the objective's
+	// verb and makes the prediction strong.
+	//
+	// It must not turn an investigative opener into a contested READ:
+	// "investigate this project and analyze what it is about" asks for an
+	// investigation whose deliverable is an explanation. Treating the
+	// explanatory clause as a rival read objective made the prediction both
+	// READ and ambiguous, so BUILD kept the turn and never handed off to FUZZ.
+	leadingInvestigation := len(clauses) > 0 && clauseInvestigates(clauses[0].text)
+	if leadingInvestigation {
+		// "Analyze how ..." is both a read verb and an investigative
+		// construction. The complement decides its effect, so it must not
+		// leave a READ signal that contests its own investigation.
+		read = evidenceNone
+	}
+	if !leadingInvestigation {
+		for i, entry := range clauses {
+			if i == 0 || entry.asked {
+				continue
+			}
+			head := clauseHead(entry.text)
+			if headMatches(readHeads, head) && !headMatches(ambiguousReadHeads, head) &&
+				!headMatches(investigateHeads, head) && !headMatches(executeHeads, head) {
+				read = evidenceHead
+				break
+			}
 		}
 	}
 	investigateHead := false
@@ -208,7 +221,7 @@ func ClassifyPrediction(text string) Prediction {
 		}
 		token := clauseHead(entry.text)
 		requested = append(requested, entry.text)
-		if headMatches(investigateHeads, token) {
+		if clauseInvestigates(entry.text) {
 			investigateHead = true
 		}
 		if headMatches(executeHeads, token) {
@@ -285,9 +298,17 @@ func ClassifyPrediction(text string) Prediction {
 	// mutation, not for a decision between reading and executing it.
 	decisiveMutation := intent == IntentExecute && (executeHead || executeClause) && competing == IntentRead
 
+	// A leading investigative objective is the current phase, not a rival to
+	// a later change: "investigate and fix the checkout failure" starts in
+	// FUZZ and hands the confirmed change to BUILD. The reverse order
+	// ("fix it and then try to break it") remains ambiguous because there the
+	// leading objective is the change and the investigation may be its
+	// verification.
+	decisiveInvestigation := intent == IntentInvestigate && leadingInvestigation && winner == evidenceHead
+
 	prediction := Prediction{Intent: intent, Competing: competing}
 	switch {
-	case winner == evidenceNone || (rival >= winner && !decisiveMutation):
+	case winner == evidenceNone || (rival >= winner && !decisiveMutation && !decisiveInvestigation):
 		prediction.Strength = StrengthAmbiguous
 	case winner == evidenceHead:
 		prediction.Strength = StrengthStrong
@@ -765,16 +786,46 @@ func laterReadRequest(request string) bool {
 	return false
 }
 
-// investigateHeads are leading verbs that ask to probe or reproduce rather
-// than to understand or to change. They map to FUZZ semantics.
+// investigateHeads are leading verbs that ask to probe, trace, or reproduce
+// rather than to understand or to change. They map to FUZZ semantics.
 var investigateHeads = map[string]bool{
 	"reproduce": true, "repro": true, "probe": true, "fuzz": true,
 	"stress": true, "benchmark": true, "challenge": true, "break": true,
 	"test": true, "attack": true, "exploit": true,
-	// Diagnostic verbs. "Investigate why this fails" asks for exploration, not
-	// for a repository change; mapping it to READ would let the runtime answer
-	// from configuration without ever observing the failure.
+	// Diagnostic and discovery verbs. "Investigate why this fails" asks for
+	// exploration, not for a repository change; mapping it to READ would let
+	// the runtime answer from configuration without ever observing the
+	// failure. "Trace" and "explore" ask for the same active evidence
+	// gathering rather than a summary of what is already known.
 	"investigate": true, "diagnose": true, "troubleshoot": true,
+	"trace": true, "explore": true,
+}
+
+// investigativeHeadPhrases open a clause with an inquiry whose object is a
+// cause, relation, or unknown rather than a summary. They are head evidence,
+// not corroborating phrases: "analyze how this subsystem is connected" asks for
+// active investigation, while "analyze what this project is about" asks for an
+// explanation. The distinction is the complement, not the verb alone.
+var investigativeHeadPhrases = []string{
+	"find why", "find where", "find how", "find whether",
+	"analyze how", "analyse how", "analyze why", "analyse why",
+	"analyze where", "analyse where", "analyze whether", "analyse whether",
+}
+
+// clauseInvestigates reports whether a clause opens with an investigative
+// objective. The head verb and the head construction are separate from the
+// corroborating phrase set so a later read clause cannot make a leading
+// investigation ambiguous.
+func clauseInvestigates(clause string) bool {
+	if headMatches(investigateHeads, clauseHead(clause)) {
+		return true
+	}
+	for _, phrase := range investigativeHeadPhrases {
+		if clause == phrase || strings.HasPrefix(clause, phrase+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // executeHeads are leading verbs that ask for a change or a run. They map to
@@ -1322,7 +1373,7 @@ func opensQuestion(clause string) bool {
 func requestsAction(clause string) bool {
 	head := clauseHead(clause)
 	if headMatches(readHeads, head) || headMatches(executeHeads, head) ||
-		headMatches(investigateHeads, head) {
+		clauseInvestigates(clause) {
 		return true
 	}
 	for _, phrase := range requestPhraseHeads {

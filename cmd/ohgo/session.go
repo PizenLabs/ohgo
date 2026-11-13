@@ -105,6 +105,29 @@ func openSession(opts options, resumeID int64) (*session.Store, *session.Session
 	return store, &sess, func() { _ = store.Close() }, nil
 }
 
+// recordRunAuthority persists the authority a one-shot turn actually runs
+// under.
+//
+// The one-shot path decides its workspace before the loop exists and can move
+// again at the tool boundary. The in-memory session must carry that move and
+// the durable snapshot must agree with it, otherwise `ohgo sessions show`
+// reports BUILD for a turn that ran under FUZZ and a later resume restores the
+// wrong starting authority. A storage failure is reported but never fails a
+// run: execution is already correct in memory.
+func recordRunAuthority(store *session.Store, sess *session.Session, ws workspace.Workspace, model ai.Model) {
+	if sess == nil {
+		return
+	}
+	sess.Workspace = ws.String()
+	sess.Model = model.Ref()
+	if store == nil {
+		return
+	}
+	if err := store.SetAuthority(sess.ID, ws.String(), model.Ref()); err != nil {
+		fmt.Fprintf(os.Stderr, "ohgo: could not record session authority: %v\n", err)
+	}
+}
+
 // installSessionManager wires the /sessions Session Manager: the roster
 // listing, the resume opener, and the write actions (new, rename, archive,
 // delete). A nil store installs nothing, so the command reports itself

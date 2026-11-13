@@ -42,6 +42,29 @@ func TestTurnTransitionRoutesStagedConditionalByItsCurrentPhase(t *testing.T) {
 	}
 }
 
+// The exact product regression: an investigative opener whose later clause
+// says what the answer should describe. The explanatory clause is part of the
+// investigation's deliverable, not a rival READ objective, so BUILD must hand
+// the turn to FUZZ automatically instead of keeping it or asking for ASK.
+func TestTurnTransitionRoutesInvestigativeAnalysisToFuzz(t *testing.T) {
+	held := &harness{workspace: "BUILD", root: t.TempDir()}
+	const request = "investigate this project and analyze what this project is about?"
+
+	transition, ok := turnTransition(held, request)
+	if !ok {
+		t.Fatal("the investigative request produced no workspace decision")
+	}
+	if transition.Proposed != "FUZZ" || !transition.Automatic {
+		t.Fatalf("transition = %+v, want an automatic FUZZ handoff", transition)
+	}
+	if transition.Intent != "INVESTIGATE" {
+		t.Fatalf("intent = %q, want INVESTIGATE", transition.Intent)
+	}
+	if held.activeWorkspace() != workspace.Build {
+		t.Fatalf("prediction moved authority to %s before the decision was applied", held.activeWorkspace())
+	}
+}
+
 func TestTurnTransitionDoesNotAskWorkspaceForNoSignalGreeting(t *testing.T) {
 	held := &harness{workspace: "BUILD", root: t.TempDir()}
 	for _, request := range []string{"hello", "thanks"} {
