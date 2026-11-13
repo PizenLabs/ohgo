@@ -229,7 +229,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				_, _ = fmt.Fprintln(out, formatRecoveryResult(h.Redo()))
 				continue
 			case "commit":
-				if err := h.commitREPL(out, reader); err != nil {
+				if err := h.commitREPL(out, reader, command.Args...); err != nil {
 					_, _ = fmt.Fprintln(out, commit.AbortText(err))
 				}
 				continue

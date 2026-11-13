@@ -653,6 +653,102 @@ evidence, not the model. The semantic no-progress bound exists so a model that
 only repeats an already-known observation reaches review in a few turns instead
 of spending the whole grant.
 
+## Commit workflow (`/commit`)
+
+`/commit` is a bounded transaction, not an agent turn. `internal/commit` owns
+the control plane, the proposal contract, staging, and verification;
+`internal/tui/commit.go` only projects the held request and the approved edit.
+The COMMIT model has no tools, no shell, and no path to the index.
+
+The pipeline is: discover repository state → classify every relevant path →
+identify logical groups → protect unsafe or unrelated work → build bounded
+semantic evidence → ask the model for text → validate it deterministically and
+semantically → human review/edit → stage exactly the approved paths → commit →
+verify Git's result.
+
+Classification is deterministic and fail-closed. Every path is one of
+`committable`, `protected`, `unrelated`, `ambiguous`, `blocked`, or
+`insufficient_evidence`.
+`.ohgo/`, ignored paths, credential names and private-key material, generated
+or machine-local artifacts, operating-system files, nested repositories, and
+submodules never enter the model diff. A deletion of a protected file is
+committable because it includes no protected bytes; its content is still
+redacted from the evidence. An unresolved conflict, or an in-progress merge,
+rebase, cherry-pick, revert, or bisect, blocks the operation; a nested boundary
+or submodule is excluded and reported. A staged protected path
+is refused rather than reset behind the human's back. Staged changes are the
+human's explicit selection and keep precedence; otherwise the dominant logical
+group is selected and the remaining groups are excluded with a visible note.
+
+A file, directory, and package are each **not** a commit. A commit is one
+logical change, and one logical change may span many files. Grouping is a
+connected-component decision over proven evidence, never a directory bucket:
+
+- a bounded `StructuralEvidenceProvider` supplies module-local Go import edges;
+  a future AST/graph runtime can replace it without changing `/commit` semantics;
+- a declaration/reference relationship between changed files is symbol evidence;
+- an exact or subsystem-backed test stem joins a test to its implementation;
+- a document whose stem names the changed subsystem joins that implementation;
+- a distinctive basename token that names the same subsystem joins files across
+  directories;
+- co-location alone is insufficient: two independent `components/*` changes, or
+  two packages that merely share a parent directory, stay separate.
+
+Grouping records why the files belong together. `unrelated`, `ambiguous`, and
+`insufficient_evidence` are distinct: the control plane calls a path unrelated
+only when it has established a different logical change; a change with no
+semantic evidence (an empty or opaque blob) is surfaced as
+`insufficient_evidence`, never manufactured into a one-file commit. A task
+objective may select a named group but never overrides the working tree. Recent
+commit subjects teach the type/scope and body conventions without copying a
+message or granting invented references.
+
+### Automatic plan (`/commit -a`)
+
+`/commit -a` builds a complete `Plan` first, read-only, before asking the model
+for anything. The plan covers the whole repository change universe and accounts
+for every relevant path exactly once: logical groups, protected, blocked,
+unrelated, ambiguous, and insufficient evidence. Group order is deterministic:
+an imported group precedes its importer, then implementation before tests,
+docs, and build/CI, with the group key as the final tie-break.
+
+The host then walks the plan one commit at a time. Each group gets its own
+bounded model invocation, its own deterministic validation, and the existing
+proposal dialog. `Enter` authorizes exactly the displayed commit, never the
+remaining plan; there is no "approve all". After a verified commit the host
+re-reads the repository and rebuilds the remaining plan, because HEAD, the
+index, and the worktree changed. A stale plan is refused (`ErrPlanStale`) rather
+than staged; cancellation stops future proposals and leaves the remaining
+changes untouched. Partial completion is a valid state, and a failure stops the
+walk without hidden recovery. The plan is a proposal: Git remains authoritative.
+
+A staged index is still special because committing it commits the whole index.
+`/commit -a` refuses a partially staged path, or staged changes that span more
+than one logical change, and asks the human to commit the index with `/commit`
+or unstage it first. It never runs `git add -A` or `git add .`; execution uses
+the existing explicit literal path list and rollback.
+
+The model receives bounded evidence: selected scope, diffstat, the selected
+diff (never excluded content), exclusions with reasons, group plan, branch and
+upstream, bounded recent subjects, the canonical type vocabulary, and the
+message limits. It returns only `type(scope): summary` plus an optional body.
+`Parse` owns syntax and length; `Snapshot.ValidateProposal` owns meaning: the
+type must belong to the repository vocabulary and match the shape of the whole
+change set (docs-only, tests-only, build-only, implementation), removals and
+additions must be supported by churn, file claims must name approved paths, and
+agent-process narration is rejected. A rejection is repaired at most once with
+the concrete code (`INVALID_TYPE`, `UNSUPPORTED_CLAIM`, ...), never by restarting
+discovery. A reasoning model that exhausts its completion budget gets one
+bounded retry with reasoning disabled; a partial message is never accepted.
+
+Execution revalidates the exact bytes and the semantic alignment, compares a
+content fingerprint of HEAD, index, and worktree, stages only the approved
+paths, verifies the index paths and blob hashes, pins the index tree, commits
+once, and verifies HEAD, tree, parents, and message. A stale workspace, staging
+mismatch, commit failure, and post-commit mismatch are distinct failures. The UI
+renders the verified result and any remaining changes; it is never the source of
+truth for success.
+
 ## Execution experience (AES)
 
 The runtime may learn **execution strategy** from completed turns. It may never

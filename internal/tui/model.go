@@ -4452,7 +4452,7 @@ var Commands = []CommandSpec{
 		{Usage: "disable <server>", Description: "disable one MCP server"},
 	}},
 	{Name: "diff", Usage: "diff [target]", Description: "inspect the working-tree diff", Category: CommandGroupControl},
-	{Name: "commit", Usage: "commit [--retry|--edit]", Description: "propose and create one Git commit", Category: CommandGroupControl},
+	{Name: "commit", Usage: "commit [--all|-a] [--retry|--edit]", Description: "propose one commit, or plan and approve all logical commits", Category: CommandGroupControl},
 	{Name: "undo", Usage: "undo", Description: "revert the last agent edit", Category: CommandGroupControl},
 	{Name: "redo", Usage: "redo", Description: "restore an undone agent edit", Category: CommandGroupControl},
 	{Name: "retry", Usage: "retry", Description: "re-send the last prompt", Category: CommandGroupControl},

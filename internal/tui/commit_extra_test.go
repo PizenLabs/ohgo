@@ -41,6 +41,12 @@ func TestParseCommitArgsRejectsConflictingFlags(t *testing.T) {
 	if retry, edit, message := parseCommitArgs([]string{"-e"}); retry || !edit || message != "" {
 		t.Errorf("edit args = %v/%v/%q", retry, edit, message)
 	}
+	if options, message := parseCommitOptions([]string{"-a"}); !options.all || message != "" {
+		t.Errorf("all args = %+v/%q", options, message)
+	}
+	if _, message := parseCommitOptions([]string{"-a", "--edit"}); !strings.Contains(message, "--all cannot") {
+		t.Errorf("all+edit = %q, want the explicit refusal", message)
+	}
 }
 
 func TestStartCommitRefusesUnavailableAndRacingStates(t *testing.T) {

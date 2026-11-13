@@ -24,10 +24,17 @@ Rules:
 - the complete subject must be at most 36 characters
 - subject form: lowercase type, a required scope in parentheses, colon, summary
 - keep the summary near 15 characters so the full subject fits
-- types: feat fix refactor test docs chore perf build ci style revert
+- use a type from "types:" in the evidence; use a scope from "repository scopes:" when one fits
 - optional body: one blank line, <= 5 bullets, each "- " and <= 50 characters
-- describe only changes in the evidence; never invent files, issues, URLs, or references
+- describe the resulting repository change, not the work used to make it
+- do not claim a removal, addition, file, issue, URL, or reference the evidence does not contain
 - no preamble, no explanation, no code fence, no trailing spaces`
+
+// CommitTruncatedRetry asks for the same bounded proposal after a reasoning
+// model spent its whole completion budget on hidden tokens. It carries no new
+// repository facts: the context did not change, only how the budget is spent.
+const CommitTruncatedRetry = `The previous reply exhausted its output budget before producing a message.
+Return only the commit message now, with no reasoning or explanation.`
 
 // CommitShorten rewrites only an overlong subject. It is a focused correction:
 // the body was already valid and the model does not need the repository again.
@@ -57,5 +64,15 @@ func CommitShortenSubject(subject string) string {
 func CommitRetry(reason, previous string) string {
 	return "The previous message was rejected: " + reason +
 		"\nPrevious message:\n" + previous +
+		"\n\nReturn only a corrected commit message."
+}
+
+// CommitRepair is the bounded validation-repair request. It carries the
+// already-computed scope and change summary, not the repository again: the
+// failed rule is the only new information the model needs.
+func CommitRepair(reason, previous, scope string) string {
+	return "The previous message was rejected: " + reason +
+		"\nPrevious message:\n" + previous +
+		"\n\nApproved change set:\n" + scope +
 		"\n\nReturn only a corrected commit message."
 }

@@ -34,6 +34,10 @@ func TestSnapshotUsesTheIndexWhenAnythingIsStaged(t *testing.T) {
 	if !containsPath(snapshot.Unstaged, "b.txt") {
 		t.Errorf("unstaged changes = %s, want b.txt", renderChanges(snapshot.Unstaged))
 	}
+	if !containsPath(snapshot.Context.Excluded, "b.txt") {
+		t.Errorf("excluded = %s, want the unstaged b.txt outside the staged scope",
+			renderChanges(snapshot.Context.Excluded))
+	}
 }
 
 func TestSnapshotUsesTheWorktreeWhenTheIndexIsClean(t *testing.T) {
@@ -46,8 +50,21 @@ func TestSnapshotUsesTheWorktreeWhenTheIndexIsClean(t *testing.T) {
 	if snapshot.Mode != ModeWorktree {
 		t.Fatalf("mode = %q, want worktree", snapshot.Mode)
 	}
+	// Both paths are candidates in worktree mode. They are independent
+	// changes with no relationship, so they are separate logical groups and
+	// normal /commit selects the dominant one.
+	if !containsPath(snapshot.Context.Changes, "a.txt") || !containsPath(snapshot.Context.Changes, "b.txt") {
+		t.Fatalf("changes = %s, want the tracked edit and the untracked file",
+			renderChanges(snapshot.Context.Changes))
+	}
+	if len(snapshot.Context.Groups) != 2 {
+		t.Fatalf("groups = %s, want the two independent files apart",
+			FormatGroupSummary(snapshot.Context.Groups))
+	}
+	// With no implementation source, the whole support change set is one
+	// purpose and normal /commit selects it together.
 	if !containsPath(snapshot.Scope, "a.txt") || !containsPath(snapshot.Scope, "b.txt") {
-		t.Fatalf("scope = %s, want the tracked edit and the untracked file", renderChanges(snapshot.Scope))
+		t.Fatalf("scope = %s, want both support changes", renderChanges(snapshot.Scope))
 	}
 }
 
@@ -333,6 +350,8 @@ func TestFailedCommitDoesNotTriggerAnotherCommit(t *testing.T) {
 	before := commitCount(t, repo)
 	if _, err := service.Execute(context.Background(), request); err == nil {
 		t.Fatal("Execute succeeded despite a rejecting pre-commit hook")
+	} else if !errors.Is(err, ErrCommitStep) {
+		t.Errorf("Execute = %v, want the git-commit failure class", err)
 	}
 	if got := commitCount(t, repo); got != before {
 		t.Fatalf("commits = %d, want no corrective commit after a failure", got)
@@ -406,7 +425,7 @@ func TestInvalidOutputIsRegeneratedWhenValidReplyArrives(t *testing.T) {
 func TestUnrulyModelTextIsRepairedInsteadOfFailing(t *testing.T) {
 	repo := newTestRepo(t)
 	initialCommit(t, repo, "a.txt", "one\n")
-	writeTestFile(t, repo, "commit/change.go", "package commit\n")
+	writeTestFile(t, repo, "commit/README.md", "# commit\n")
 
 	text := "docs: update the readme with a much longer introduction\n\n- " + strings.Repeat("a", 60)
 	service := testService(repo, text)

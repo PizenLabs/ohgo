@@ -262,6 +262,11 @@ func approvalPlan(pending *PendingApproval, layout Layout) []approvalRow {
 func commitApprovalRows(view *CommitProposalView, body int) []approvalRow {
 	var rows []approvalRow
 	rows = append(rows, approvalRow{kind: approvalRowSpacer, drop: dropSpacerTop})
+	if strings.TrimSpace(view.Progress) != "" {
+		for _, line := range WrapToWidth(sanitizeInline(view.Progress), body) {
+			rows = append(rows, approvalRow{kind: approvalRowCommitLabel, text: line, drop: protectedRow})
+		}
+	}
 	for _, line := range WrapToWidth(sanitizeInline(view.Subject), body) {
 		rows = append(rows, approvalRow{kind: approvalRowCommitSubject, text: line, drop: protectedRow})
 	}

@@ -1,9 +1,12 @@
 // Package commit turns repository state into one validated Git commit.
 //
-// It owns the deterministic half of /commit: deciding the exact candidate
-// scope, asking the dedicated commit model for text, validating that text, and
-// executing exactly the approved commit. The model never receives a tool, a
-// shell, or a path to the index; its output is untrusted proposal data.
+// It owns the deterministic half of /commit: inspecting repository state,
+// classifying every path, identifying logical change groups, protecting
+// credentials and unrelated work, building bounded semantic evidence, asking
+// the dedicated commit model for text, validating that text syntactically and
+// semantically, and executing exactly the approved commit. The model never
+// receives a tool, a shell, or a path to the index; its output is untrusted
+// proposal data.
 package commit
 
 import (
@@ -156,7 +159,8 @@ func (p Proposal) Validate(refs map[string]bool) error {
 		return invalid("the subject contains a control character")
 	}
 	if n := utf8.RuneCountInString(subject); n > MaxSubjectRunes {
-		return invalid("the subject is %d characters; the limit is %d", n, MaxSubjectRunes)
+		return invalidCode(CodeSubjectLength,
+			"the subject is %d characters; the limit is %d", n, MaxSubjectRunes)
 	}
 	if err := validateReferences(subject, refs); err != nil {
 		return err
@@ -176,7 +180,8 @@ func (p Proposal) Validate(refs map[string]bool) error {
 			return invalid("body line %q contains a control character", line)
 		}
 		if n := utf8.RuneCountInString(line); n > MaxBulletRunes {
-			return invalid("body line %q is %d characters; the limit is %d", line, n, MaxBulletRunes)
+			return invalidCode(CodeBulletLength,
+				"body line %q is %d characters; the limit is %d", line, n, MaxBulletRunes)
 		}
 		if err := validateReferences(line, refs); err != nil {
 			return err
@@ -395,7 +400,51 @@ func hasControl(value string) bool {
 	return false
 }
 
+// RuleError is one deterministic validation rule with a stable code.
+//
+// Error() remains the human sentence, so existing rendering and tests do not
+// gain a second prefix. The code exists so a bounded repair turn can name the
+// exact failure (INVALID_TYPE, UNSUPPORTED_CLAIM, ...) without restarting
+// repository discovery.
+type RuleError struct {
+	// Code is the stable failure code.
+	Code string
+	// Message is the human-readable rule.
+	Message string
+}
+
+func (e *RuleError) Error() string { return e.Message }
+
+// Unwrap makes every RuleError match ErrInvalidProposal.
+func (e *RuleError) Unwrap() error { return ErrInvalidProposal }
+
+// ValidationCode returns the stable code of a validation failure, or "".
+func ValidationCode(err error) string {
+	var rule *RuleError
+	if errors.As(err, &rule) {
+		return rule.Code
+	}
+	return ""
+}
+
+// ValidationReason renders the code with the rule for a repair prompt.
+func ValidationReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := ValidationText(err)
+	if code := ValidationCode(err); code != "" {
+		return code + ": " + text
+	}
+	return text
+}
+
 // invalid wraps the sentinel so callers can classify without matching text.
 func invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalidProposal, fmt.Sprintf(format, args...))
+}
+
+// invalidCode records a stable rule code with the sentence.
+func invalidCode(code, format string, args ...any) error {
+	return &RuleError{Code: code, Message: fmt.Sprintf(format, args...)}
 }

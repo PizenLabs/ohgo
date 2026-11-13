@@ -55,9 +55,17 @@ var (
 	// ErrStagingMismatch means the index does not hold exactly the approved
 	// paths and content.
 	ErrStagingMismatch = errors.New("commit: staged content does not match the approved scope")
+	// ErrStaging means Git refused the explicit path staging step.
+	ErrStaging = errors.New("commit: staging the approved paths failed")
+	// ErrCommitStep means Git refused to create the commit itself.
+	ErrCommitStep = errors.New("commit: git commit failed")
 	// ErrCommitVerification means Git reported success but the resulting
 	// commit does not match the approved message or parent.
 	ErrCommitVerification = errors.New("commit: committed result failed verification")
+	// ErrPlanStale means the repository no longer matches the logical commit
+	// plan that produced a proposal. The plan is a proposal; Git is
+	// authoritative, so a stale plan is replanned rather than executed.
+	ErrPlanStale = errors.New("commit: logical commit plan is stale")
 )
 
 // Errors that classify a failed proposal request. They exist so a caller can
@@ -137,6 +145,17 @@ type ProposalDiagnostics struct {
 	CancellationReason string
 	// ProviderStatus is the HTTP status when the provider returned one.
 	ProviderStatus int
+	// Phase names the pipeline stage that failed: "inspection",
+	// "classification", "proposal", "repair", or "execution". It prevents a
+	// model budget failure from being confused with a Git execution failure.
+	Phase string
+	// SelectedFiles, ProtectedFiles, ExcludedFiles, and Groups describe the
+	// authoritative context the model received. They are classification
+	// measurements, not model claims.
+	SelectedFiles  int
+	ProtectedFiles int
+	ExcludedFiles  int
+	Groups         int
 }
 
 // ProposalError classifies one failed proposal request and preserves the
@@ -184,19 +203,24 @@ func DiagnosticsOf(err error) (ProposalDiagnostics, bool) {
 	if errors.As(err, &proposalErr) {
 		return proposalErr.Diagnostics, true
 	}
+	var phaseErr *PhaseError
+	if errors.As(err, &phaseErr) {
+		return phaseErr.Diagnostics, true
+	}
 	return ProposalDiagnostics{}, false
 }
 
 // DiagnosticText renders the internal facts in one line. It is for logs and
 // tests, never for the rendered transcript.
 func DiagnosticText(d ProposalDiagnostics) string {
-	return fmt.Sprintf("commit request provider=%s model=%s max_output_tokens=%d configured_timeout=%s started_at=%s elapsed=%s deadline=%s context_deadline=%s attempts=%d regenerations=%d cancellation=%s status=%d prompt_bytes=%d evidence_bytes=%d input_tokens=%d output_tokens=%d reasoning_tokens=%d reasoning=%t effort=%s valid=%t",
-		d.Provider, d.Model, d.MaxOutputTokens, d.Timeout,
+	return fmt.Sprintf("commit request phase=%s provider=%s model=%s max_output_tokens=%d configured_timeout=%s started_at=%s elapsed=%s deadline=%s context_deadline=%s attempts=%d regenerations=%d cancellation=%s status=%d prompt_bytes=%d evidence_bytes=%d input_tokens=%d output_tokens=%d reasoning_tokens=%d reasoning=%t effort=%s valid=%t selected=%d protected=%d excluded=%d groups=%d",
+		d.Phase, d.Provider, d.Model, d.MaxOutputTokens, d.Timeout,
 		d.StartedAt.Format(time.RFC3339Nano), d.Elapsed.Round(time.Millisecond),
 		formatDeadline(d.Deadline), formatDeadline(d.ContextDeadline),
 		d.Attempts, d.Regenerations, d.CancellationReason, d.ProviderStatus,
 		d.PromptBytes, d.EvidenceBytes, d.InputTokens, d.OutputTokens,
-		d.ReasoningTokens, d.Reasoning, d.ReasoningEffort, d.ProposalValid)
+		d.ReasoningTokens, d.Reasoning, d.ReasoningEffort, d.ProposalValid,
+		d.SelectedFiles, d.ProtectedFiles, d.ExcludedFiles, d.Groups)
 }
 
 func formatDeadline(t time.Time) string {
@@ -206,12 +230,25 @@ func formatDeadline(t time.Time) string {
 	return t.Format(time.RFC3339Nano)
 }
 
+// PlanProgress locates one proposal inside an automatic logical commit plan.
+type PlanProgress struct {
+	// Position is the 1-based proposal number.
+	Position int
+	// Total is the number of logical commits currently planned.
+	Total int
+	// Key is the stable plan group key.
+	Key string
+}
+
 // Request is one reviewable proposal plus the frozen state it came from.
 type Request struct {
 	// Proposal is the validated commit text.
 	Proposal Proposal
 	// Snapshot is the exact scope and concurrency guard.
 	Snapshot *Snapshot
+	// Progress is set only for a proposal inside an automatic plan. Nil means
+	// this is a normal single /commit proposal.
+	Progress *PlanProgress
 }
 
 // Result is the verified outcome of an approved commit.
@@ -246,6 +283,13 @@ type Service struct {
 	Model ai.Model
 	// Effort is the role's thinking effort ("", "off", or a level).
 	Effort string
+	// Objective is the authoritative task objective, when one is available.
+	// It is grouping evidence only; the working tree remains authoritative.
+	Objective string
+	// Structural supplies grouping relationships. Nil uses the bounded
+	// import provider; a future AST/graph runtime can replace it without
+	// changing /commit or /commit -a semantics.
+	Structural StructuralEvidenceProvider
 	// MaxTokens bounds the proposal completion.
 	MaxTokens int
 	// Timeout bounds one proposal request. Zero uses DefaultProposalTimeout.
@@ -266,14 +310,24 @@ type Service struct {
 //
 // A complete message is roughly 100 tokens, so this cap is a guardrail rather
 // than a target. It is deliberately far below the coding-turn ceiling: COMMIT
-// proposes text and does no reasoning over the repository. A model whose
-// reasoning cannot be disabled may still spend hidden tokens here; that case is
-// reported as ErrModelTruncated rather than accepted as a partial message. The
-// value is clamped to the model's own ceiling where the catalog knows it.
+// proposes text and does no reasoning over the repository. A reasoning model
+// that spends hidden tokens here gets one bounded retry with the least effort it
+// exposes and a larger completion; if the budget is exhausted again, the failure
+// is reported as ErrModelTruncated rather than accepted as a partial message.
+// The value is clamped to the model's own ceiling where the catalog knows it.
 const DefaultProposalTokens = 1024
 
-// defaultAttempts is the bounded regeneration policy for invalid output.
-const defaultAttempts = 3
+// maxProposalRetryTokens bounds the single truncation retry. The retry exists
+// because a reasoning model can spend the whole visible-completion budget on
+// hidden tokens; repeating the same cap would repeat the failure. It stays
+// below a coding-turn completion because a commit message never needs one, and
+// it is clamped to the model's own ceiling by the caller.
+const maxProposalRetryTokens = 4096
+
+// defaultAttempts is the bounded regeneration policy for invalid output: the
+// first proposal plus at most one validation repair. More turns do not make the
+// context better; they only make /commit slower and less predictable.
+const defaultAttempts = 2
 
 // Propose inspects the repository and asks the commit model for one validated
 // proposal. It is read-only.
@@ -282,7 +336,17 @@ const defaultAttempts = 3
 // The bounded COMMIT deadline applies to the model request itself, so a slow
 // local Git inspection is never misreported as a model timeout and the policy
 // is not duplicated in every host.
-func (s *Service) Propose(ctx context.Context) (request *Request, err error) {
+func (s *Service) Propose(ctx context.Context) (*Request, error) {
+	return s.propose(ctx, snapshotRequest{
+		Objective:  s.Objective,
+		Selection:  SelectionDominant,
+		Structural: s.Structural,
+	}, nil)
+}
+
+// propose runs one bounded generation/validation loop over an inspected
+// snapshot. The caller decides how the snapshot scope was selected.
+func (s *Service) propose(ctx context.Context, selection snapshotRequest, progress *PlanProgress) (request *Request, err error) {
 	started := time.Now()
 	timeout := s.Timeout
 	if timeout <= 0 {
@@ -307,6 +371,10 @@ func (s *Service) Propose(ctx context.Context) (request *Request, err error) {
 		if errors.As(err, &proposalErr) {
 			proposalErr.Diagnostics = diag
 		}
+		var phaseErr *PhaseError
+		if errors.As(err, &phaseErr) {
+			phaseErr.Diagnostics = diag
+		}
 		if s.OnDiagnostics != nil {
 			s.OnDiagnostics(diag)
 		}
@@ -314,16 +382,25 @@ func (s *Service) Propose(ctx context.Context) (request *Request, err error) {
 
 	repo, err := vcs.Discover(s.Root)
 	if err != nil {
-		return nil, err
+		return nil, &PhaseError{Phase: PhaseInspection,
+			Cause: fmt.Errorf("%w: %w", ErrRepository, err)}
 	}
 	if repo == nil {
-		return nil, fmt.Errorf("commit: %s is not inside a Git repository", s.Root)
+		return nil, &PhaseError{Phase: PhaseInspection,
+			Cause: fmt.Errorf("%w: %s is not inside a Git repository", ErrRepository, s.Root)}
 	}
-	snapshot, err := BuildSnapshot(ctx, repo)
+	snapshot, err := buildSnapshot(ctx, repo, selection)
 	if err != nil {
-		return nil, err
+		diag.Phase = phaseForSnapshotError(err)
+		return nil, &PhaseError{Phase: diag.Phase, Cause: err}
 	}
 	diag.EvidenceBytes = len(snapshot.Evidence())
+	if snapshot.Context != nil {
+		diag.SelectedFiles = len(snapshot.Scope)
+		diag.ProtectedFiles = len(snapshot.Context.Protected)
+		diag.ExcludedFiles = len(snapshot.Context.Excluded) + len(snapshot.Context.Ambiguous)
+		diag.Groups = len(snapshot.Context.Groups)
+	}
 
 	requestCtx, cancel := context.WithTimeoutCause(ctx, timeout, ErrProposalTimeout)
 	defer cancel()
@@ -333,7 +410,64 @@ func (s *Service) Propose(ctx context.Context) (request *Request, err error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Request{Proposal: proposal, Snapshot: snapshot}, nil
+	return &Request{Proposal: proposal, Snapshot: snapshot, Progress: progress}, nil
+}
+
+// Pipeline phases. A failure names the stage that stopped, so a model budget
+// exhaustion during proposal generation can never read like a Git failure.
+const (
+	PhaseInspection     = "inspection"
+	PhaseClassification = "classification"
+	PhaseProposal       = "proposal"
+	PhaseRepair         = "repair"
+	PhaseExecution      = "execution"
+)
+
+// PhaseError attaches a pipeline stage to an error without hiding its cause.
+type PhaseError struct {
+	// Phase is one of the Phase constants.
+	Phase string
+	// Cause is the original classified error.
+	Cause error
+	// Diagnostics describes the request that failed before the model ran.
+	Diagnostics ProposalDiagnostics
+}
+
+func (e *PhaseError) Error() string {
+	if e == nil || e.Cause == nil {
+		return ""
+	}
+	return e.Cause.Error()
+}
+
+// Unwrap exposes the original cause to errors.Is and errors.As.
+func (e *PhaseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// PhaseOf returns the pipeline stage attached to an error, or "".
+func PhaseOf(err error) string {
+	var phase *PhaseError
+	if errors.As(err, &phase) {
+		return phase.Phase
+	}
+	return ""
+}
+
+// phaseForSnapshotError classifies a pre-model refusal.
+func phaseForSnapshotError(err error) string {
+	switch {
+	case errors.Is(err, ErrNoChanges), errors.Is(err, ErrNeedsDecision),
+		errors.Is(err, ErrBlockedChanges), errors.Is(err, ErrStagedExcluded),
+		errors.Is(err, ErrGrouping), errors.Is(err, ErrTooManyChanges),
+		errors.Is(err, ErrPlanStale):
+		return PhaseClassification
+	default:
+		return PhaseInspection
+	}
 }
 
 // proposeText runs the bounded generation/validation loop.
@@ -353,6 +487,7 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 	maxTokens := proposalBudget(s.MaxTokens, s.Model)
 	diag.Reasoning = enabled
 	diag.ReasoningEffort = level
+	diag.Phase = PhaseProposal
 
 	evidence := snapshot.Evidence()
 	fullText := prompt.CommitEvidence(evidence)
@@ -366,6 +501,7 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 
 	var lastErr error
 	lastCandidate := ""
+	truncationRetried := false
 	for attempt := 0; attempt < attempts; attempt++ {
 		diag.Attempts++
 		diag.PromptBytes = len(systemText) + len(userText)
@@ -395,8 +531,62 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 
 		// A budget-exhausted reply is incomplete by definition, even when it
 		// happens to parse. Accepting it would let a small cap silently shorten
-		// the message, so it is a classified failure, never a retry.
+		// the message. One bounded truncation retry changes how the budget is
+		// spent, never what the commit may contain: the request keeps the least
+		// reasoning the model exposes and spends a larger completion. A second
+		// exhaustion is the truthful failure.
 		if message.StopReason == ai.StopMaxTokens {
+			if !truncationRetried && attempt+1 < attempts {
+				truncationRetried = true
+				shortening = false
+				// Keep a validation-repair instruction (rule, previous
+				// message, scope) when that turn is the one that exhausted the
+				// budget. A focused subject rewrite or the first attempt falls
+				// back to the full bounded evidence.
+				if systemText != prompt.Commit || diag.Phase != PhaseRepair {
+					userText = fullText
+				}
+				systemText = prompt.Commit
+				userText += "\n\n" + prompt.CommitTruncatedRetry
+				// A retry first reduces reasoning only through a control the
+				// model actually exposes. Dropping the effort to omission is
+				// not a disable for a reasoning-by-default model: it selects
+				// the provider default, which can be more reasoning than the
+				// attempt that just failed.
+				reason := "the previous reply exhausted its output budget"
+				switch {
+				case enabled && !s.Model.Reasoning:
+					enabled, level = false, ""
+					diag.Reasoning = false
+					diag.ReasoningEffort = ""
+					reason = "the previous reply exhausted its output budget with reasoning enabled"
+				case enabled && s.Model.ReasoningDisable != "" && level != s.Model.ReasoningDisable:
+					level = s.Model.ReasoningDisable
+					diag.ReasoningEffort = level
+					reason = "the previous reply exhausted its output budget with reasoning enabled"
+				case enabled && len(s.Model.ReasoningEfforts) > 0 && level != s.Model.ReasoningEfforts[0]:
+					level = s.Model.ReasoningEfforts[0]
+					diag.ReasoningEffort = level
+					reason = "the previous reply exhausted its output budget with reasoning enabled"
+				}
+				// The retry must spend more than the attempt that failed. A
+				// same-sized retry repeats the same exhaustion, so the
+				// completion grows regardless of the effort decision above.
+				bumped := maxTokens * 2
+				if bumped < maxProposalRetryTokens {
+					bumped = maxProposalRetryTokens
+				}
+				if s.Model.MaxOutputTokens > 0 && bumped > s.Model.MaxOutputTokens {
+					bumped = s.Model.MaxOutputTokens
+				}
+				if bumped > maxTokens {
+					maxTokens = bumped
+					diag.MaxOutputTokens = maxTokens
+				}
+				diag.RetryReasons = append(diag.RetryReasons, reason)
+				continue
+			}
+			diag.Phase = PhaseProposal
 			return Proposal{}, truncatedResponse(message, maxTokens, diag)
 		}
 		raw := message.Text()
@@ -414,35 +604,48 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 		lastCandidate = candidate
 		proposal, err := Parse(candidate, snapshot.Refs)
 		if err == nil {
-			diag.ProposalValid = true
-			return proposal, nil
+			// Parse owns syntax and length; this pass owns meaning. A
+			// semantically unsupported message is untrusted output even when
+			// every character is well-formed.
+			if err = snapshot.ValidateProposal(proposal); err == nil {
+				diag.ProposalValid = true
+				return proposal, nil
+			}
 		}
 		lastErr = err
-		diag.RetryReasons = append(diag.RetryReasons, invalidCause(err))
+		diag.RetryReasons = append(diag.RetryReasons, ValidationReason(err))
 
 		if subject, body, overlong := overlongSubject(candidate, snapshot.Refs); overlong {
 			if !shortening {
 				shortBody = body
 			}
 			shortening = true
+			diag.Phase = PhaseRepair
 			systemText = prompt.CommitShorten
 			userText = prompt.CommitShortenSubject(subject)
 			continue
 		}
 		// Another rule failed (missing scope, invented reference, a bad
-		// body). That needs the evidence again, not a subject rewrite.
+		// body, or a semantic mismatch). That needs the evidence and the
+		// specific code, not a subject rewrite.
 		shortening = false
+		diag.Phase = PhaseRepair
 		systemText = prompt.Commit
-		userText = fullText + "\n\n" + prompt.CommitRetry(invalidCause(err), raw)
+		userText = prompt.CommitRepair(ValidationReason(err), raw, snapshot.RepairEvidence())
 	}
 	// A small model can fix every rule except the scope or the total subject
 	// length. Rather than fail an otherwise valid proposal, fill a missing
 	// scope from the approved paths and fit an overlong summary into the
 	// budget. This is deterministic, preserves the reviewed body, and still
-	// goes through Parse so no other rule is bypassed.
+	// goes through Parse and semantic validation so no rule is bypassed.
+	diag.Phase = PhaseRepair
 	if proposal, ok := repairProposal(lastCandidate, snapshot.Refs, snapshot.SuggestedScope()); ok {
-		diag.ProposalValid = true
-		return proposal, nil
+		if err := snapshot.ValidateProposal(proposal); err == nil {
+			diag.ProposalValid = true
+			return proposal, nil
+		} else {
+			lastErr = err
+		}
 	}
 	// Keep the sentinel and the final reason in one chain: wrapping the
 	// already-sentinel-wrapped Parse error would print "commit: invalid
@@ -602,9 +805,7 @@ func invalidCause(err error) string {
 	if err == nil {
 		return "the proposal was empty"
 	}
-	text := err.Error()
-	prefix := ErrInvalidProposal.Error() + ": "
-	return strings.TrimPrefix(text, prefix)
+	return ValidationText(err)
 }
 
 // Execute commits exactly the approved request, at most once.
@@ -613,8 +814,12 @@ func (s *Service) Execute(ctx context.Context, request *Request) (Result, error)
 		return Result{}, fmt.Errorf("commit: no approved proposal")
 	}
 	// Revalidate the exact bytes that will reach Git. Approval cannot make an
-	// invalid or edited message valid.
+	// invalid or edited message valid, and it cannot make an unsupported claim
+	// true.
 	if err := request.Proposal.Validate(request.Snapshot.Refs); err != nil {
+		return Result{}, err
+	}
+	if err := request.Snapshot.ValidateProposal(request.Proposal); err != nil {
 		return Result{}, err
 	}
 
@@ -624,10 +829,10 @@ func (s *Service) Execute(ctx context.Context, request *Request) (Result, error)
 	}
 	repo, err := vcs.Discover(root)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("%w: %w", ErrRepository, err)
 	}
 	if repo == nil {
-		return Result{}, fmt.Errorf("commit: %s is not inside a Git repository", root)
+		return Result{}, fmt.Errorf("%w: %s is not inside a Git repository", ErrRepository, root)
 	}
 
 	// The first guard: nothing may have moved since the human was shown the
@@ -641,8 +846,13 @@ func (s *Service) Execute(ctx context.Context, request *Request) (Result, error)
 	}
 
 	if request.Snapshot.Mode == ModeWorktree {
-		if err := repo.StagePaths(ctx, request.Snapshot.StagePaths()); err != nil {
-			return Result{}, fmt.Errorf("commit: stage approved paths: %w", err)
+		stagePaths := request.Snapshot.StagePaths()
+		if err := repo.StagePaths(ctx, stagePaths); err != nil {
+			// A failed `git add` can leave a partial index. Restore the
+			// approved pre-staging boundary so a later /commit cannot see a
+			// subset as the whole approved scope.
+			_ = repo.UnstagePaths(ctx, stagePaths)
+			return Result{}, fmt.Errorf("%w: %w", ErrStaging, err)
 		}
 		// Staging moved index codes, so compare the worktree form: content,
 		// paths, and HEAD must still be what the human approved.
@@ -695,9 +905,9 @@ func (s *Service) Execute(ctx context.Context, request *Request) (Result, error)
 
 	sha, err := repo.CommitMessage(ctx, request.Proposal.Message())
 	if err != nil {
-		// The real Git failure is reported as-is. No second commit, amend,
-		// or cleanup commit is attempted.
-		return Result{}, fmt.Errorf("commit: %w", err)
+		// The real Git failure is reported with its stage. No second commit,
+		// amend, or cleanup commit is attempted.
+		return Result{}, fmt.Errorf("%w: %w", ErrCommitStep, err)
 	}
 
 	result := Result{
@@ -721,10 +931,14 @@ func (s *Service) Execute(ctx context.Context, request *Request) (Result, error)
 // state-change refusal. "No changes" is correct before a proposal, but after
 // approval it means the repository moved away from what was approved.
 func executionStateError(err error) error {
-	if errors.Is(err, ErrNoChanges) {
+	switch {
+	case errors.Is(err, ErrNoChanges), errors.Is(err, ErrNeedsDecision),
+		errors.Is(err, ErrBlockedChanges), errors.Is(err, ErrStagedExcluded),
+		errors.Is(err, ErrGrouping), errors.Is(err, ErrTooManyChanges):
 		return ErrStateChanged
+	default:
+		return err
 	}
-	return err
 }
 
 // verifyStaged proves the index holds exactly the approved paths and blobs.
@@ -839,10 +1053,14 @@ func displayList(values []string) string {
 	if len(values) == 0 {
 		return "(none)"
 	}
-	if len(values) <= shown {
-		return strings.Join(values, ", ")
+	safe := make([]string, len(values))
+	for i, value := range values {
+		safe[i] = safePath(value)
 	}
-	return fmt.Sprintf("%s, … (%d more)", strings.Join(values[:shown], ", "), len(values)-shown)
+	if len(safe) <= shown {
+		return strings.Join(safe, ", ")
+	}
+	return fmt.Sprintf("%s, … (%d more)", strings.Join(safe[:shown], ", "), len(safe)-shown)
 }
 
 // reasoning maps a role effort to the provider's thinking fields.
@@ -882,9 +1100,24 @@ func AbortText(err error) string {
 		return invalidProposalText(err)
 	case errors.Is(err, ErrStateChanged):
 		return "Commit aborted: repository state changed after proposal."
+	case errors.Is(err, ErrPlanStale):
+		return "Commit plan is stale.\nThe repository changed; re-run /commit -a to replan."
 	case errors.Is(err, ErrNoChanges):
 		return "No changes to commit."
-	case errors.Is(err, ErrStagedExcluded), errors.Is(err, ErrTooManyChanges):
+	case errors.Is(err, ErrNeedsDecision):
+		return "Commit requires a decision.\n" + trimSentinel(err, ErrNeedsDecision)
+	case errors.Is(err, ErrBlockedChanges):
+		return "Commit requires a decision.\n" + trimSentinel(err, ErrBlockedChanges)
+	case errors.Is(err, ErrStaging):
+		return "Commit failed during staging.\n" + trimSentinel(err, ErrStaging)
+	case errors.Is(err, ErrCommitStep):
+		return "Commit failed while creating the commit.\n" + trimSentinel(err, ErrCommitStep)
+	case errors.Is(err, ErrRepository):
+		return "Commit inspection failed.\n" + trimSentinel(err, ErrRepository)
+	case errors.Is(err, ErrGrouping):
+		return "Commit grouping failed.\n" + trimSentinel(err, ErrGrouping)
+	case errors.Is(err, ErrStagingMismatch), errors.Is(err, ErrCommitVerification),
+		errors.Is(err, ErrStagedExcluded), errors.Is(err, ErrTooManyChanges):
 		return err.Error()
 	default:
 		return err.Error()
@@ -918,7 +1151,7 @@ func formatElapsed(elapsed time.Duration) string {
 // notice into a paste of the whole reply.
 func invalidProposalText(err error) string {
 	const limit = 180
-	reason := strings.Join(strings.Fields(ValidationText(err)), " ")
+	reason := strings.Join(strings.Fields(ValidationReason(err)), " ")
 	if reason == ErrInvalidProposal.Error() {
 		reason = ""
 	}
@@ -967,11 +1200,19 @@ func FormatProposal(request *Request) string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("Commit proposal\n\n")
+	if progress := FormatProposalProgress(request); progress != "" {
+		sb.WriteString(progress + "\n\n")
+	} else {
+		sb.WriteString("Commit proposal\n\n")
+	}
 	sb.WriteString(request.Proposal.Message())
 	sb.WriteString("\n\nFiles:")
 	for _, change := range request.Snapshot.Scope {
 		sb.WriteString("\n  " + change.Display())
+	}
+	if request.Snapshot.Context != nil && len(request.Snapshot.Context.Groups) > 1 {
+		sb.WriteString("\n\nChange groups:\n")
+		sb.WriteString(FormatGroupSummary(request.Snapshot.Context.Groups))
 	}
 	if note := ScopeNote(request.Snapshot); note != "" {
 		sb.WriteString("\n\n" + note)
@@ -995,13 +1236,81 @@ func ScopeNote(snapshot *Snapshot) string {
 	default:
 		notes = append(notes, "Tracked and untracked changes will be staged explicitly.")
 	}
+	if snapshot.Auto {
+		notes = append(notes, "This is one logical commit in an automatic plan; other logical changes are deferred.")
+		if groups := deferredGroupLabels(snapshot.Context); groups != "" {
+			notes = append(notes, "Deferred: "+groups+".")
+		}
+	}
 	if len(snapshot.Internal) > 0 {
 		notes = append(notes, ".ohgo/ internal state is excluded.")
 	}
 	if len(snapshot.Ignored) > 0 {
 		notes = append(notes, "Ignored files are excluded.")
 	}
+	if context := snapshot.Context; context != nil {
+		unrelated, blocked, insufficient := 0, 0, 0
+		for _, change := range context.Excluded {
+			switch change.Category {
+			case CategoryBlocked:
+				blocked++
+			case CategoryInsufficientEvidence:
+				insufficient++
+			default:
+				unrelated++
+			}
+		}
+		if unrelated > 0 {
+			if snapshot.Auto {
+				notes = append(notes, fmt.Sprintf("%d %s deferred to later proposals.",
+					unrelated, plural("change", unrelated)))
+			} else {
+				notes = append(notes, fmt.Sprintf("%d unrelated %s excluded.",
+					unrelated, plural("change", unrelated)))
+			}
+		}
+		if blocked > 0 {
+			notes = append(notes, fmt.Sprintf("%d repository boundary %s excluded.", blocked, plural("change", blocked)))
+		}
+		if insufficient == 1 {
+			notes = append(notes, "1 change has insufficient evidence and is excluded.")
+		} else if insufficient > 1 {
+			notes = append(notes, fmt.Sprintf("%d changes have insufficient evidence and are excluded.", insufficient))
+		}
+		if n := len(context.Protected); n > 0 {
+			notes = append(notes, fmt.Sprintf("%d local or protected %s excluded.", n, plural("file", n)))
+		}
+		if n := len(context.Ambiguous); n > 0 {
+			if n == 1 {
+				notes = append(notes, "1 change needs a decision and is excluded.")
+			} else {
+				notes = append(notes, fmt.Sprintf("%d changes need a decision and are excluded.", n))
+			}
+		}
+	}
 	return strings.Join(notes, " ")
+}
+
+// deferredGroupLabels names the remaining logical changes without listing
+// every path. The dialog stays readable while the reviewer still knows what is
+// outside this approval.
+func deferredGroupLabels(context *CommitContext) string {
+	if context == nil {
+		return ""
+	}
+	var parts []string
+	for _, group := range context.Groups {
+		if group.Selected || !group.Confidence.Committable() {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s (%d %s)",
+			safePath(group.Label), len(group.Files), plural("file", len(group.Files))))
+	}
+	const limit = 5
+	if len(parts) > limit {
+		parts = append(parts[:limit], fmt.Sprintf("… %d more", len(parts)-limit))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // plural picks the singular or plural noun.

@@ -82,11 +82,19 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	recoverer := openRecoveryService(opts.root)
 	defer func() { _ = recoverer.Close() }()
 	program.SetRecovery(recoverer)
-	program.SetCommitHooks(commitHooks(opts.root, &opts.settings, registry))
 	attachShellEscape(program, opts.root, opts.security)
 	controller := installTaskContinuity(program, opts.root, loop.Tools(), func() workspace.Workspace {
 		return opts.authority()
 	}, opts.budget)
+	program.SetCommitHooks(commitHooks(opts.root, &opts.settings, registry, func() string {
+		if controller == nil {
+			return ""
+		}
+		if current, ok := controller.Current(); ok {
+			return current.Objective
+		}
+		return ""
+	}))
 	installExperience(program, opts.root, opts.projectID)
 	program.SetCompletionContext(opts.root, structuralResolver(loop.Tools()))
 	opts.security.SetTaskSource(func() string {
