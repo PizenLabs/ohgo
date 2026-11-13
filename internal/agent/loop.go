@@ -29,6 +29,15 @@ var ErrTurnLimit = errors.New("agent: turn limit reached")
 // must report it as review rather than success.
 var ErrTaskBlocked = errors.New("agent: task blocked")
 
+// ErrCapabilityUnavailable means the objective requires an operation the
+// runtime cannot perform, discovered before the model was asked to act.
+//
+// It is deliberately distinct from ErrTaskBlocked and from a failed execution:
+// nothing ran, nothing failed, and no model turn was spent. The caller must
+// report it as a blocked capability rather than a review or a model failure, so
+// the human can decide whether to enable the capability or change the objective.
+var ErrCapabilityUnavailable = errors.New("agent: capability unavailable")
+
 // DefaultMaxTurns bounds a run when the caller does not choose a budget.
 //
 // The deadline bounds money spent on wall-clock time; this bounds the number
@@ -374,6 +383,13 @@ type Loop struct {
 	// no longer be the one that was observed.
 	observationMu sync.Mutex
 	observations  map[string]observationRecord
+	// mutationMu guards lastMutation. The journal publishes its evidence when
+	// the run ends, and the host reads it immediately after Run returns.
+	mutationMu   sync.Mutex
+	lastMutation MutationProvenance
+	// runSeq issues a local run identity for mutation provenance when the host
+	// has none. It is process-local and never a durable task identity.
+	runSeq int
 }
 
 // observationRecord is one current read-only observation. Turn keeps a
@@ -413,6 +429,29 @@ func (l *Loop) noteEvidence(result Result) {
 	if result.Verifies && !result.IsError {
 		l.lastVerifiedSeq = l.evidenceSeq
 	}
+}
+
+// recordMutation stores the run's published mutation evidence.
+func (l *Loop) recordMutation(provenance MutationProvenance) {
+	l.mutationMu.Lock()
+	defer l.mutationMu.Unlock()
+	l.lastMutation = provenance
+}
+
+// LastMutation returns the mutation evidence published by the most recent run.
+//
+// It is empty when no journal was installed or the journal published nothing.
+// The caller can distinguish that from a captured boundary with no changes via
+// Captured, so completion never invents attribution.
+func (l *Loop) LastMutation() MutationProvenance {
+	if l == nil {
+		return MutationProvenance{}
+	}
+	l.mutationMu.Lock()
+	defer l.mutationMu.Unlock()
+	out := l.lastMutation
+	out.Changes = append([]MutationChange(nil), l.lastMutation.Changes...)
+	return out
 }
 
 // New returns a Loop. It returns ErrNoTools when the config has no tools,
@@ -718,12 +757,22 @@ func (l *Loop) Tools() []Tool {
 // attempted even after cancellation: the mutation already happened, so its
 // recovery point must not be dropped merely because the turn stopped early.
 func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runErr error) {
+	l.mutationMu.Lock()
+	l.runSeq++
+	runID := fmt.Sprintf("run-%d", l.runSeq)
+	l.lastMutation = MutationProvenance{}
+	l.mutationMu.Unlock()
+
 	edit := &runEdit{journal: l.cfg.Journal}
 	defer func() {
 		if edit.txn == nil {
 			return
 		}
 		commitErr := edit.txn.Commit(context.WithoutCancel(ctx))
+		if provenance, ok := edit.txn.Mutation(); ok {
+			provenance.RunID = runID
+			l.recordMutation(provenance)
+		}
 		if commitErr == nil {
 			return
 		}
@@ -741,6 +790,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 
 	live := make([]Message, len(messages))
 	copy(live, messages)
+	// origins is aligned with live so a canonical-contract failure can name
+	// the constructing stage. The input is the replayed transcript plus the
+	// current request; anything this run appends is attributed as it is added.
+	origins := historyOrigins(len(live))
 
 	// maxUnproductiveTurns is a semantic bound, not a resource bound. A turn
 	// that executed nothing and produced no answer cannot change the runtime's
@@ -813,6 +866,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		}
 
 		if l.compactIfNeeded(ctx, &live) {
+			// Compaction rewrites the conversation, so the per-message history
+			// provenance no longer describes it. The reconstructed context is
+			// history by definition.
+			origins = historyOrigins(len(live))
 			continue
 		}
 
@@ -907,14 +964,33 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			if l.cfg.OnProjection != nil {
 				l.cfg.OnProjection(report)
 			}
+			// The control plane resolved the objective's required capabilities
+			// and the runtime cannot perform one of them. No later turn can
+			// either, so the request is never sent: the model is not asked to
+			// discover a limit by proposing an action that cannot run, and the
+			// turn is not spent on prose that explains it.
+			if len(report.MissingCapabilities) > 0 {
+				reason := strings.TrimSpace(report.StopReason)
+				if reason == "" {
+					reason = "the runtime cannot perform a required capability: " +
+						strings.Join(report.MissingCapabilities, ", ")
+				}
+				return turns, fmt.Errorf("%w: %s", ErrCapabilityUnavailable, reason)
+			}
 		} else if forceAnswer {
 			activeTools = []Tool{}
 			closed = true
 		}
 
-		converted, err := l.convert(requestMessages)
+		converted, requestOrigins, err := l.convert(requestMessages, origins)
 		if err != nil {
 			return turns, fmt.Errorf("agent: convert context: %w", err)
+		}
+		// The canonical contract is checked before any transport sees the
+		// conversation. A malformed message is an internal construction
+		// failure: sending it would ask a provider to diagnose runtime state.
+		if err := ai.ValidateMessages(converted, requestOrigins); err != nil {
+			return turns, fmt.Errorf("%w: %w", ErrInvalidProviderContext, err)
 		}
 
 		activeByName := make(map[string]Tool, len(activeTools))
@@ -964,6 +1040,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 
 		turn := Turn{Assistant: assistant}
 		live = append(live, AssistantMessage{Message: assistant})
+		origins = append(origins, ai.ProvenanceAssistant)
 
 		calls := assistant.ToolCalls()
 		if len(calls) > 0 || strings.TrimSpace(assistant.Text()) != "" {
@@ -1002,6 +1079,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					normalizationRecoveryAttempted = true
 					if strings.TrimSpace(l.cfg.ProtocolRecoveryRequest) != "" {
 						live = append(live, UserMessage{Text: l.cfg.ProtocolRecoveryRequest})
+						origins = append(origins, ai.ProvenanceRecovery)
 					}
 					continue
 				}
@@ -1019,6 +1097,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 					executionRecoveryAttempted = true
 					if strings.TrimSpace(l.cfg.ExecutionRecoveryRequest) != "" {
 						live = append(live, UserMessage{Text: l.cfg.ExecutionRecoveryRequest})
+						origins = append(origins, ai.ProvenanceRecovery)
 					}
 					continue
 				}
@@ -1034,7 +1113,11 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			// useful to the model and some providers reject it.
 			if strings.TrimSpace(assistant.Text()) == "" && !closed && !forceAnswer &&
 				unproductiveTurns > 0 && len(turns) < l.cfg.MaxTurns {
+				// The turn stays in turns as a run observation, but it is not
+				// conversation content: a reasoning-only assistant message
+				// cannot be replayed. Drop it from the next request.
 				live = live[:len(live)-1]
+				origins = origins[:len(origins)-1]
 				forceAnswer = true
 				continue
 			}
@@ -1049,8 +1132,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			if strings.TrimSpace(assistant.Text()) == "" && (closed || forceAnswer) &&
 				!answerRetried && len(turns) < l.cfg.MaxTurns {
 				live = live[:len(live)-1]
+				origins = origins[:len(origins)-1]
 				if strings.TrimSpace(l.cfg.AnswerRequest) != "" {
 					live = append(live, UserMessage{Text: l.cfg.AnswerRequest})
+					origins = append(origins, ai.ProvenanceRecovery)
 				}
 				// Keep the retry answer-only even if a projector would
 				// otherwise re-offer the probe surface. The model already had
@@ -1116,6 +1201,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if l.cfg.GetSteeringMessages != nil {
 			if steered := l.cfg.GetSteeringMessages(ctx); len(steered) > 0 {
 				live = append(live, steered...)
+				for range steered {
+					origins = append(origins, ai.ProvenanceSynthetic)
+				}
 			}
 		}
 
@@ -1125,9 +1213,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			live = append(live, ToolResultMessage{
 				ToolCallID: outcome.CallID,
 				ToolName:   outcome.ToolName,
-				Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
+				Content:    ai.TextBlocks(outcome.Result.Text),
 				IsError:    outcome.Result.IsError,
 			})
+			origins = append(origins, ai.ProvenanceToolResult)
 		}
 
 		turns = append(turns, turn)
@@ -1419,16 +1508,41 @@ func (l *Loop) SetSessionID(id string) {
 	l.cfg.SessionID = id
 }
 
+// historyOrigins labels a restored or reconstructed conversation: every entry
+// is history except the final user request that triggers the run.
+func historyOrigins(count int) []ai.Provenance {
+	origins := make([]ai.Provenance, count)
+	for i := range origins {
+		origins[i] = ai.ProvenanceHistory
+	}
+	if count > 0 {
+		origins[count-1] = ai.ProvenanceUser
+	}
+	return origins
+}
+
 // convert turns agent messages into provider messages.
-func (l *Loop) convert(messages []Message) ([]ai.Message, error) {
+//
+// origins is aligned with messages and is carried through so the canonical
+// validation can name the constructing subsystem. A host TransformContext hook
+// may rewrite the list arbitrarily, so it is treated as history: the runtime
+// no longer knows which stage produced those entries.
+func (l *Loop) convert(messages []Message, origins []ai.Provenance) ([]ai.Message, []ai.Provenance, error) {
 	if l.cfg.TransformContext != nil {
 		messages = l.cfg.TransformContext(messages)
+		origins = nil
 	}
 	out := make([]ai.Message, 0, len(messages))
-	for _, msg := range messages {
+	outOrigins := make([]ai.Provenance, 0, len(messages))
+	for i, msg := range messages {
+		provenance := ai.ProvenanceUnknown
+		if i < len(origins) && origins[i] != "" {
+			provenance = origins[i]
+		}
 		switch m := msg.(type) {
 		case ai.Message:
 			out = append(out, m)
+			outOrigins = append(outOrigins, provenance)
 		case Message:
 			converted, ok := m.toLLM()
 			if !ok {
@@ -1436,11 +1550,12 @@ func (l *Loop) convert(messages []Message) ([]ai.Message, error) {
 				continue
 			}
 			out = append(out, converted)
+			outOrigins = append(outOrigins, provenance)
 		default:
-			return nil, fmt.Errorf("unsupported message type %T", msg)
+			return nil, nil, fmt.Errorf("unsupported message type %T", msg)
 		}
 	}
-	return out, nil
+	return out, outOrigins, nil
 }
 
 // drain consumes a stream to completion and returns the assembled message.
@@ -1798,6 +1913,7 @@ func (l *Loop) execute(
 				Result: Result{
 					Text:              fmt.Sprintf("No tool is available in the current task stage; this call is not offered for the objective. Answer from the evidence already established. Ignored call: %q.", call.Name),
 					IsError:           true,
+					FailureClass:      ToolFailureCapabilityUnavailable,
 					CandidateRejected: true,
 					AnswerRequired:    !policyRefusal,
 				},
@@ -1816,6 +1932,7 @@ func (l *Loop) execute(
 					Text: fmt.Sprintf("Tool %q is not offered in the current task stage. Available tools: %s.",
 						call.Name, strings.Join(sorted(names), ", ")),
 					IsError:           true,
+					FailureClass:      ToolFailureCapabilityUnavailable,
 					CandidateRejected: true,
 				},
 			}

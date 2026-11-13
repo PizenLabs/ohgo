@@ -171,9 +171,20 @@ execution`:
   mutation (a redirect into the repository, a mutating program, a mutating git
   subcommand) so FUZZ cannot use the shell as a back door. A redirect to an
   absolute path outside the workspace is execution, not a source change: a local
-  server may log to a temporary file without becoming a mutation. The classifier
-  is a strong default, not a sandbox: an interpreter one-liner that writes a file
-  is a documented residual.
+  server may log to a temporary file without becoming a mutation.
+- The execution plane enforces a deterministic workspace write boundary for
+  shell commands independently of the model's spelling. A target the command
+  itself names (a redirect, `rm`, `cp`/`mv` destination, `mkdir`, `chmod`,
+  `sed -i`, `tee`, `dd of=`) is resolved against the command's tracked `cd`
+  directory, including `..` and symlinks, and is refused before the process
+  starts when it lands outside both the workspace and the operating system's
+  temporary area. Temporary staging (`/tmp/nextapp`) remains execution, and a
+  later copy into the workspace is the attributable mutation. This is a
+  boundary for named targets, not a sandbox for arbitrary programs: command
+  substitution, globs, and an interpreter whose own arguments are opaque remain
+  residual risks. BUILD intentionally permits ordinary tool caches (npm, Go,
+  cargo) to write outside the workspace; the journal diff attributes only the
+  workspace changes those commands produce.
 - The session records its workspace, project identity, and effective model.
   A resumed session restores its own snapshot rather than silently following a
   changed configuration.
@@ -287,6 +298,39 @@ Compaction itself is injected, never constructed in the loop: `New` fails
 without a summarizer when compaction is enabled, and the summarizer takes
 its `StreamFn` as a parameter so tests substitute a stub.
 
+### Capability preflight
+
+Before a turn is admitted, the control plane compares what the objective needs
+against what this runtime can actually do:
+
+```text
+contract.RequiredCapabilities     read, and the operations the objective needs
+agent.AvailableOperations(tools)  what the constructed tool set can perform
+workspace.Workspace.Permits       what the live authority allows
+```
+
+`workspace.PreflightTurn` is the host-side verdict and
+`cognition.CapabilityGap` the per-request one. Both are deterministic: no model
+call, no repository probe, no second planner. A missing *mandatory* capability
+(mutation, command execution) stops the turn before the provider is called and
+is reported as `CAPABILITY_UNAVAILABLE` with a BLOCKED task — never as a model
+failure, a verification failure, or a review. Reading is required but not
+mandatory: an observation-free answer is already a review verdict the evidence
+layer reports.
+
+The contract's requirement is minimal on purpose: a documentation change does
+not require command execution unless the contract itself requires a check, and
+an undirected change is satisfied by either a create or an edit. Capabilities
+are never derived from the workspace name (`BUILD implies write` is exactly the
+inference this removes), and never from model output.
+
+A capability answer is about the runtime, not the environment. `exec` being
+available says the runtime can run commands; it says nothing about whether
+`node`, `npm`, or a network exists. Environment facts stay the objective's own
+work, discovered through the capability when the objective actually needs them,
+and are not part of the preflight: probing every environment before every turn
+would spend the tool calls the preflight exists to save.
+
 ### Provider stream normalization
 
 `ai.Stream` is the canonical event boundary between a provider's wire
@@ -337,6 +381,36 @@ Recognition is an incremental, bounded state machine:
   has no call, it reports `EXECUTION_INTENT_WITHOUT_TOOL`; the prose is never
   interpreted as a command. A turn with neither text nor a call reports
   `NO_MODEL_OUTPUT`. Both are review verdicts, never execution evidence.
+
+### Outbound message contract
+
+The canonical message model is validated before any transport serializes it.
+`ai.ValidateMessages` is the provider-independent contract:
+`ai.Registry.StreamFn` enforces it once at the production boundary, and the
+agent loop enforces the same check with per-message provenance (`history`,
+`user`, `assistant`, `tool_result`, `recovery`, `synthetic`) before opening a
+stream.
+
+- A text content part always carries a non-empty string. An empty part is a
+  construction defect, not "no output": an empty tool result is encoded as an
+  empty string content, never as a text part without text.
+- A user turn has at least one sendable block.
+- An assistant turn has non-empty text or a complete tool call (id and name).
+  Reasoning alone is display content, never conversation content: a turn that
+  produced only reasoning stays in the run's turns as an observation, and
+  `agent.ConversationMessages` excludes it when a host rebuilds the next
+  request. That single projection is shared by the live history, persistence,
+  and session replay.
+- A tool result names the call it answers.
+
+A violation is `agent.ErrInvalidProviderContext` — an internal
+construction/serialization failure reported before the provider call, naming
+the message index, role, provenance, and issue kind. It is never translated
+into an empty text part, dropped silently, weakened, or retried, and no adapter
+fabricates content to make an invalid message sendable. Adapters emit a
+canonical empty shape only where the wire protocol allows it (an assistant turn
+with tool calls omits content; a tool result with no output is the empty
+string).
 - The registry recognizes the provider's observed spellings
   (`<dotsfunctioncall>`, `<dots_function_call>`, and their mixed closing
   markers) as one protocol family. A new spelling is a descriptor there, never
@@ -382,6 +456,24 @@ authoritative evaluator is `agent.EvaluateTaskCompletion`; every production
 path that reports a task outcome calls it with the contract built from the
 user's request before execution and the evidence the runtime observed.
 
+- **Target semantics.** `contract.Target` distinguishes `technology`,
+  `repository`, `command`, and `resource` from the filesystem kinds
+  `path`/`symbol`/`package`. A technology target describes the desired result;
+  it is never a path and completion never requires a changed filename to contain
+  it. `IntentContract.MutationScope` is the separate dimension that says where a
+  persistent change is allowed: `workspace` for a migration or behavioural
+  objective, `paths` (files and directories) only when the request named a
+  filesystem boundary.
+- **Mutation provenance.** A shell command can change paths its own text never
+  names. The host edit journal already captures the workspace before the first
+  mutating batch and diffs it after the run; `agent.MutationProvenance` carries
+  that diff, the checkpoint identity, and the mutating turn into completion.
+  Each change is classified `EXPECTED`, `UNEXPECTED`, `UNATTRIBUTED`, or
+  `OUTSIDE_WORKSPACE`. A tool's own `AffectedPaths` is direct evidence; the
+  journal diff attributes the rest. A mutation with neither remains
+  `UNATTRIBUTED` and `NEEDS_REVIEW`, never silently accepted. The same journal
+  diff is folded into the durable evidence state, so a shell-only mutation can
+  support the task's completion proof.
 - **Evidence.** A mutation objective needs an observed target change and a
   successful verification after it. An execution authorized read-only is not a
   potential mutation, so an investigation probe cannot create a verification
@@ -900,10 +992,19 @@ Protocol/lifecycle failures are classified before a generic verdict:
 are reported as review (non-terminal), preserving the task identity. Tool
 outcomes carry a provider-agnostic `FailureClass` such as `tool_start_failed`,
 `tool_runtime_failed`, `tool_timeout`, `tool_cancelled`,
-`tool_authorization_denied`, `verification_failed`, or
-`verification_insufficient`, so the UI can say whether failure happened before
-or after execution. A model claim, a tool emission, and a zero exit code remain
-distinct from verification and proof.
+`tool_authorization_denied`, `tool_capability_unavailable`,
+`verification_failed`, or `verification_insufficient`, so the UI can say whether
+failure happened before or after execution. A model claim, a tool emission, and a
+zero exit code remain distinct from verification and proof.
+
+An unavailable capability is its own terminal class. `agent.ErrCapabilityUnavailable`
+is returned before any provider request when the objective needs an operation no
+constructed capability can perform; it classifies as `RunBlocked`, the task
+records `CAPABILITY_UNAVAILABLE`, and its `ObjectiveState` is `BLOCKED`. It is
+not `NEEDS_REVIEW` (nothing happened to review), not `FAILED` (nothing failed),
+and not a model failure. An operation the live authority forbids is
+`AUTHORITY_DENIED`, decided by `RouteTurn` or by projecting the objective to its
+informational phase.
 
 A deadline is not a failure: reporting it as one would make callers discard
 work they were entitled to keep.

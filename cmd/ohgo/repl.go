@@ -16,7 +16,6 @@ import (
 	"github.com/PizenLabs/ohgo/internal/commit"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
-	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/state"
 	"github.com/PizenLabs/ohgo/internal/tui"
 	"github.com/PizenLabs/ohgo/internal/update"
@@ -518,16 +517,5 @@ func toolDiffs(turns []agent.Turn) string {
 // the user turn plus whatever the assistant produced is kept.
 func rebaseHistory(request []agent.Message, turns []agent.Turn) []agent.Message {
 	out := append([]agent.Message(nil), request...)
-	for _, turn := range turns {
-		out = append(out, agent.AssistantMessage{Message: turn.Assistant})
-		for _, outcome := range turn.Results {
-			out = append(out, agent.ToolResultMessage{
-				ToolCallID: outcome.CallID,
-				ToolName:   outcome.ToolName,
-				Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
-				IsError:    outcome.Result.IsError,
-			})
-		}
-	}
-	return out
+	return append(out, agent.ConversationMessages(turns)...)
 }

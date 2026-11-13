@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -30,12 +31,19 @@ const recapGreeting = "Greeted and returned to the prompt."
 // described as a change, a read-only turn names the inspected files and its
 // finding, and a greeting stays a greeting. A turn with no evidence and no
 // finding produces no footer rather than boilerplate.
+//
+// An inspection names the files the answer is about, not the first files the
+// run happened to open: a survey that read five files to explain one of them
+// must not cite only the README it skimmed. When more files were read than
+// named, the count says so, and a read that returned a window rather than a
+// whole file is disclosed instead of implying a complete reading.
 func recapNarrative(objective string, turns []agent.Turn) string {
 	if recapIsGreeting(objective) {
 		return recapGreeting
 	}
 	evidence := collectRecapEvidence(turns)
-	finding := recapFinding(turns)
+	answer := finalAssistantText(turns)
+	finding := recapFinding(answer)
 	switch {
 	case len(evidence.changed) > 0:
 		return mutationRecap(evidence, finding)
@@ -43,8 +51,8 @@ func recapNarrative(objective string, turns []agent.Turn) string {
 		return runtimeRecap(evidence, finding)
 	case len(evidence.commands) > 0:
 		return executionRecap(evidence, finding)
-	case len(recapPaths(evidence.read, 2)) > 0:
-		return inspectionRecap(evidence, finding)
+	case len(recapReadPaths(evidence.read)) > 0:
+		return inspectionRecap(evidence, finding, answer)
 	default:
 		return finishSentence(finding)
 	}
@@ -53,8 +61,7 @@ func recapNarrative(objective string, turns []agent.Turn) string {
 // recapFinding is the answer's substantive finding plus one useful detail: when
 // the answer includes fenced code, the recap names the worked example instead
 // of leaving a reader to scroll back to discover it.
-func recapFinding(turns []agent.Turn) string {
-	answer := finalAssistantText(turns)
+func recapFinding(answer string) string {
 	finding := answerSubject(answer)
 	if finding == "" || !strings.Contains(answer, "```") {
 		return finding
@@ -81,13 +88,33 @@ type recapRuntime struct {
 	checks  int
 }
 
+// recapRead is one file the run actually read.
+//
+// chars records what the read returned, so a survey that read five files to
+// explain one of them can name the file that carried the content instead of
+// the first file opened. truncated/shown/total come from the read tool's own
+// range, and exist so the footer never implies a whole-file reading it did
+// not perform.
+type recapRead struct {
+	path      string
+	order     int
+	chars     int
+	truncated bool
+	// firstLine and lastLine bound the window the read returned; totalLines is
+	// the file's own line count. A paged read starts above one, so the footer
+	// can say "lines 200-400 of 512" instead of implying the file head.
+	firstLine  int
+	lastLine   int
+	totalLines int
+}
+
 // recapEvidence is the bounded set of facts the narrator may use.
 //
 // Only successful calls contribute: a failed write did not change a file, and
 // a denied call ran nothing, so neither may appear as accomplished work.
 type recapEvidence struct {
 	changed  []recapChange
-	read     []string
+	read     []recapRead
 	commands []string
 	runtime  *recapRuntime
 }
@@ -131,7 +158,11 @@ func collectRecapEvidence(turns []agent.Turn) recapEvidence {
 				// structural query names a directory or a scope; calling that
 				// a read would misdescribe the work.
 				if path := recapPathArg(outcome.Args); path != "" {
-					evidence.read = appendUnique(evidence.read, path)
+					window := recapReadWindow(outcome.Result.Details)
+					window.path = path
+					window.order = len(evidence.read)
+					window.chars = len(outcome.Result.Text)
+					evidence.read = appendUniqueRead(evidence.read, window)
 				}
 			}
 		}
@@ -218,10 +249,142 @@ func runtimeRecap(evidence recapEvidence, finding string) string {
 // read and the finding above it. Paths are removed from the finding first so
 // "Inspected backend/go.mod — the module name in backend/go.mod is ecommerce"
 // does not repeat the same file twice.
-func inspectionRecap(evidence recapEvidence, finding string) string {
-	recap := "Inspected " + recapList(recapPaths(evidence.read, 2))
-	finding = stripRecapPaths(finding, evidence.read)
+//
+// The named files are ranked by how much they carried the answer (see
+// rankRecapReads), the total is reported when it was larger, and a read that
+// stopped at a window names the range. A footer that named only the first two
+// files opened described the run's ordering, not its finding.
+func inspectionRecap(evidence recapEvidence, finding, answer string) string {
+	ranked := rankRecapReads(evidence.read, answer)
+	names := recapPaths(recapReadPaths(ranked), 2)
+	recap := "Inspected " + recapList(names)
+	if len(ranked) > len(names) {
+		recap = fmt.Sprintf("Inspected %d files, including %s", len(ranked), recapList(names))
+	}
+	if clause := recapTruncationClause(ranked, len(ranked)); clause != "" {
+		recap += " (" + clause + ")"
+	}
+	finding = stripRecapPaths(finding, recapReadPaths(evidence.read))
 	return finishSentence(appendFinding(recap, finding))
+}
+
+// rankRecapReads orders inspected files by how much they carried the answer.
+//
+// Priority is: a path the answer itself cites, then the file that returned the
+// most content, then first-seen order. The answer's own citation is the
+// strongest signal available without a model call, and content volume is the
+// next best proxy for which file the finding came from. The order is total and
+// deterministic, so the same run always narrates identically.
+func rankRecapReads(reads []recapRead, answer string) []recapRead {
+	ranked := append([]recapRead(nil), reads...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		citedI := answerMentionsRead(answer, ranked[i].path)
+		citedJ := answerMentionsRead(answer, ranked[j].path)
+		if citedI != citedJ {
+			return citedI
+		}
+		if ranked[i].chars != ranked[j].chars {
+			return ranked[i].chars > ranked[j].chars
+		}
+		return ranked[i].order < ranked[j].order
+	})
+	return ranked
+}
+
+// answerMentionsRead reports whether the answer cites a inspected file, by its
+// display path or its base name. A path named in the conclusion is evidence
+// the reader needs; a path the run merely skimmed is not.
+func answerMentionsRead(answer, path string) bool {
+	lower := strings.ToLower(answer)
+	if lower == "" {
+		return false
+	}
+	if display := strings.ToLower(recapPath(path)); display != "" && strings.Contains(lower, display) {
+		return true
+	}
+	base := strings.ToLower(filepath.Base(filepath.ToSlash(strings.TrimSpace(path))))
+	return base != "" && base != "." && base != "/" && strings.Contains(lower, base)
+}
+
+// recapTruncationClause names the read window that stopped short. It is silent
+// when every read returned the whole file, and omits the path when the recap
+// already names exactly one file.
+func recapTruncationClause(ranked []recapRead, total int) string {
+	for _, read := range ranked {
+		if !read.truncated || read.totalLines <= 0 {
+			continue
+		}
+		var rangeText string
+		if read.firstLine > 1 {
+			rangeText = fmt.Sprintf("lines %d-%d of %d read", read.firstLine, read.lastLine, read.totalLines)
+		} else {
+			rangeText = fmt.Sprintf("%d of %d lines", read.lastLine, read.totalLines)
+		}
+		if total == 1 {
+			if read.firstLine > 1 {
+				return rangeText
+			}
+			return "truncated at " + rangeText
+		}
+		if read.firstLine > 1 {
+			return fmt.Sprintf("%s: %s", recapPath(read.path), rangeText)
+		}
+		return fmt.Sprintf("%s was truncated at %s", recapPath(read.path), rangeText)
+	}
+	return ""
+}
+
+// recapReadPaths projects reads to display paths, preserving the ranked order.
+func recapReadPaths(reads []recapRead) []string {
+	out := make([]string, 0, len(reads))
+	for _, read := range reads {
+		out = append(out, read.path)
+	}
+	return out
+}
+
+// recapReadWindow reports the line window a read returned, and whether it
+// stopped short of the whole file. The read tool publishes the range; without
+// it the recap claims no completeness either way.
+func recapReadWindow(details any) recapRead {
+	values, ok := details.(map[string]any)
+	if !ok {
+		return recapRead{}
+	}
+	total := recapInt(values["totalLines"])
+	limit := recapInt(values["limit"])
+	offset := recapInt(values["offset"])
+	if offset <= 0 {
+		offset = 1
+	}
+	if total <= 0 || limit <= 0 {
+		return recapRead{}
+	}
+	end := offset + limit - 1
+	if end >= total {
+		return recapRead{}
+	}
+	if end > total {
+		end = total
+	}
+	return recapRead{truncated: true, firstLine: offset, lastLine: end, totalLines: total}
+}
+
+// recapInt reads an integer from tool details, which may carry any numeric
+// type depending on the JSON decode path.
+func recapInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case uint64:
+		return int(typed)
+	default:
+		return 0
+	}
 }
 
 // appendFinding joins the observed action with the answer's substantive
@@ -278,6 +441,16 @@ func stripRecapPaths(text string, paths []string) string {
 			if variant == "" {
 				continue
 			}
+			// A parenthesised citation is removed whole: leaving "()" behind
+			// would make the footer look like a code change.
+			for _, wrapped := range []string{
+				"(" + variant + ")",
+				"(see " + variant + ")",
+				"(in " + variant + ")",
+				"(from " + variant + ")",
+			} {
+				text = strings.ReplaceAll(text, wrapped, "")
+			}
 			for _, lead := range []string{" in ", " from ", " at "} {
 				text = strings.ReplaceAll(text, lead+variant, "")
 			}
@@ -287,6 +460,10 @@ func stripRecapPaths(text string, paths []string) string {
 	text = strings.Join(strings.Fields(text), " ")
 	text = strings.ReplaceAll(text, " ,", ",")
 	text = strings.ReplaceAll(text, " .", ".")
+	// Removing a parenthesised path would otherwise leave an empty pair.
+	for _, empty := range []string{"()", "[]", "( )", "[ ]"} {
+		text = strings.ReplaceAll(text, empty, "")
+	}
 	return strings.TrimSpace(text)
 }
 
@@ -571,6 +748,29 @@ func appendUniqueChange(values []recapChange, change recapChange) []recapChange 
 		}
 	}
 	return append(values, change)
+}
+
+// appendUniqueRead records one inspected file. Repeated reads of the same file
+// are one inspection; the widest range and the largest payload win, and any
+// observed truncation is kept because the footer must not imply a whole-file
+// reading the run never had.
+func appendUniqueRead(values []recapRead, read recapRead) []recapRead {
+	for i, existing := range values {
+		if existing.path != read.path {
+			continue
+		}
+		if read.chars > existing.chars {
+			values[i].chars = read.chars
+		}
+		if read.totalLines > existing.totalLines || (read.truncated && !existing.truncated) {
+			values[i].firstLine = read.firstLine
+			values[i].lastLine = read.lastLine
+			values[i].totalLines = read.totalLines
+		}
+		values[i].truncated = existing.truncated || read.truncated
+		return values
+	}
+	return append(values, read)
 }
 
 // taskRecapText returns the completion footer text for a task, or empty when

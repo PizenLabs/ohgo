@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/PizenLabs/ohgo/internal/execution/exec"
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
@@ -21,6 +22,10 @@ func attachShellEscape(program *tui.Program, root string, gate *securityGate) {
 			// The escape's execution boundary is the same authority decision
 			// that admitted it. A human in ASK or FUZZ may execute, but the
 			// command runs read-only there however it is spelled.
+			if target, outside := tools.OutsideWorkspaceMutation(command, root); outside {
+				return exec.EscapeResult{}, fmt.Errorf(
+					"refused: %q is outside the workspace and outside the temporary execution area", target)
+			}
 			readOnly := false
 			if gate != nil {
 				readOnly = gate.EvaluateCommand(command).ReadOnly

@@ -184,6 +184,21 @@ func runOnce(cmd *cobra.Command, text string) error {
 	grySession := attachGRYEvidence(ctx, opts.root, taskID, text, loop)
 	defer finishGRYEvidence(grySession)
 
+	// A mutation objective needs the same pre-mutation workspace capture the
+	// interactive path installs. Without it a shell mutation such as
+	// create-next-app has no attributable paths and completion would have to
+	// report it as unattributed.
+	if workspace.BuildIntentContract(text).Kind == workspace.ObjectiveMutation {
+		recoveryHost := openRecoveryService(opts.root)
+		defer func() { _ = recoveryHost.Close() }()
+		var sessionID int64
+		if sess != nil {
+			sessionID = sess.ID
+		}
+		loop.SetJournal(recoveryHost.Journal(sessionID))
+		defer loop.SetJournal(nil)
+	}
+
 	outcome, _ := runHeadlessTurnAs(ctx, loop, opts.root, out, text, history, route.Active.String())
 	if outcome.State == runCompleted {
 		return nil

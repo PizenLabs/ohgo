@@ -173,6 +173,11 @@ func NewTextStream(deltas ...string) *Stream {
 // call more than once; only the first call has an effect.
 func (s *Stream) finish(msg AssistantMessage, err error) {
 	s.once.Do(func() {
+		// The authoritative message never carries a zero-length part. A block
+		// that received no delta (or a decoded opaque block) is not content,
+		// and replaying it as a text part without text is exactly the provider
+		// rejection this boundary exists to prevent.
+		msg.Content = stripEmptyBlocks(msg.Content)
 		s.msg = msg
 		s.err = err
 		s.closed = true

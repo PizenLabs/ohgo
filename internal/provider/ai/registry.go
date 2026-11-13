@@ -327,6 +327,14 @@ type StreamFn func(ctx context.Context, req Request) (*Stream, error)
 // it. A provider that already emits native calls is unchanged.
 func (r *Registry) StreamFn() StreamFn {
 	return func(ctx context.Context, req Request) (*Stream, error) {
+		// Every production request crosses this boundary before any transport
+		// serializes it. The same malformed state is therefore rejected once,
+		// with the same classification, whatever provider would have received
+		// it; no adapter is allowed to translate invalid canonical content into
+		// a wire shape the provider then rejects.
+		if err := ValidateMessages(req.Messages, nil); err != nil {
+			return nil, err
+		}
 		provider, err := r.ProviderFor(req.Model)
 		if err != nil {
 			return nil, err

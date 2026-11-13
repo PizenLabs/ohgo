@@ -48,7 +48,7 @@ func TestHandoffThroughTurnEntrypointPreservesTaskAndAuthority(t *testing.T) {
 	loop, err := agent.New(agent.Config{
 		Model:  ai.Model{ID: "m", Provider: "p"},
 		Stream: stream,
-		Tools:  []agent.Tool{&runtimeBashTool{}},
+		Tools:  runtimeCaps(&runtimeBashTool{}),
 	})
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
@@ -271,7 +271,7 @@ func TestBuildToFuzzTransitionPreservesImplementationContext(t *testing.T) {
 	loop, err := agent.New(agent.Config{
 		Model:  ai.Model{ID: "m", Provider: "p"},
 		Stream: stream,
-		Tools:  []agent.Tool{&runtimeWriteTool{path: "note.txt"}},
+		Tools:  runtimeCaps(&runtimeWriteTool{path: "note.txt"}),
 	})
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)

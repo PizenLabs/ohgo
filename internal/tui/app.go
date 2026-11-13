@@ -4642,7 +4642,7 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 	// turn will create one under the target role.
 	handoffID := ""
 	if p.task.ProposeHandoff != nil && p.hasOpenTask() {
-		view, err := p.task.ProposeHandoff(target, pending.Reason, summary, workspaceState)
+		view, err := p.task.ProposeHandoff(target, pending.Reason, summary, workspaceState, approvedTransitionObjective(text))
 		if err != nil {
 			p.state.Apply(Notice{Text: "handoff: " + err.Error()})
 			p.restoreAuthorityRequest(text)
@@ -5322,6 +5322,15 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 					return
 				}
 				intent = current.Contract
+				// An approved widening transition that stated its own objective
+				// runs that objective's contract. The persisted contract
+				// describes the task it was working on before the approval;
+				// running it here would shape a BUILD turn as the ASK
+				// investigation the user just moved past, which is how a
+				// mutation request reached a read-only tool surface.
+				if approved, ok := handoffContract(current, workspace.BuildIntentContract(text)); ok {
+					intent = approved
+				}
 				if current.Snapshot != nil {
 					cloned := *current.Snapshot
 					if p.completionRoot != "" {
@@ -5406,9 +5415,32 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// investigation/answer phase into a false evidence gap. The persisted
 	// contract is unchanged; only the projection is narrowed.
 	shapeIntent, phaseDeferred := intent, false
-	if parsed, err := workspace.Parse(authorityLabel); err == nil {
-		if phase, deferred := workspace.PhaseContract(intent, parsed); deferred {
+	parsedAuthority, authorityErr := workspace.Parse(authorityLabel)
+	if authorityErr == nil {
+		if phase, deferred := workspace.PhaseContract(intent, parsedAuthority); deferred {
 			shapeIntent, phaseDeferred = phase, true
+		}
+	}
+	// Capability preflight, before any model turn. Authority is a permission,
+	// not a promise: a BUILD turn whose objective needs a repository change or
+	// a command must be refused here when the runtime cannot provide it.
+	// Otherwise the model discovers the limit by proposing a call the task
+	// surface withholds and then improvises prose, which spends a turn and
+	// answers an execution request with a plan.
+	//
+	// The verdict is deterministic: the contract says what the objective needs,
+	// and the constructed tool set says what this runtime can do. It is judged
+	// against the shape phase, because a deferred objective legitimately needs
+	// nothing beyond reading under the current authority.
+	if authorityErr == nil {
+		preflight := workspace.PreflightTurn(parsedAuthority, shapeIntent, p.loop.Tools())
+		if !preflight.Ready() {
+			reason := preflight.Reason()
+			if p.task.Fail != nil {
+				p.PublishTask(p.task.Fail(agent.RunBlocked.String() + ": " + reason))
+			}
+			abortTurn("BLOCKED — " + reason + ". No files were changed and no implementation was attempted.")
+			return
 		}
 	}
 	shape := cognition.BuildShape(shapeIntent, cognition.ShapeParams{
@@ -5695,13 +5727,25 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	if p.task.ProjectionProvenance != nil {
 		provenance = p.task.ProjectionProvenance()
 	}
-	action, reason := turnTaskOutcomeForAuthority(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance, activeAuthority)
+	// The host's edit journal captured the run's workspace diff before and
+	// after the mutating batch. It is the only evidence that can attribute a
+	// shell mutation whose command text does not name the resulting paths.
+	mutations := p.loop.LastMutation()
+	mutations.TaskID = taskID
+	mutations.ObjectiveID = taskID
+	action, reason := turnTaskOutcomeForAuthority(err, turns, intent, targetSnapshot, p.completionResolver, evidenceReview, priorChange, provenance, mutations, activeAuthority)
 	// The turn boundary is also the evidence boundary. The loop projects
 	// before each request, but a run that stopped on a deadline, a turn limit,
 	// or its final answer may have an unobserved last turn. Folding it here
 	// keeps the checkpoint truthful without a second observation store.
 	if p.task.ObserveTurns != nil {
 		p.task.ObserveTurns(turns)
+	}
+	// The journal diff is the durable counterpart of a shell mutation whose
+	// command text names no paths. It is recorded at the mutating batch's run
+	// position so a later check remains ordered after the change.
+	if p.task.ObserveJournal != nil && mutations.Captured {
+		p.task.ObserveJournal(mutations, agent.MutationTurnPosition(turns, mutations.Turn))
 	}
 	// Artifacts are captured on the tool goroutine during the run. Project
 	// them at this boundary, where task state has one writer, so a FUZZ finding
@@ -5959,19 +6003,24 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 				})
 			}
 		}
-		// Every turn persists its assistant plus all of its results, in the
-		// same order as the plain path: dropping non-final results would lose
-		// the evidence the transcript replays, and persisting is the program's
-		// job here (the loop's turn hook only publishes live metrics in UI
-		// mode — transcript text still travels through AssistantDelta events).
-		// They land in the turn's own session, never in a session created
-		// mid-turn.
+		// Every conversational turn persists its assistant plus all of its
+		// results, in the same order as the plain path: dropping non-final
+		// results would lose the evidence the transcript replays, and
+		// persisting is the program's job here (the loop's turn hook only
+		// publishes live metrics in UI mode — transcript text still travels
+		// through AssistantDelta events). A turn that produced only reasoning
+		// has no replayable form, so it is displayed but never stored as
+		// conversation. They land in the turn's own session, never in a
+		// session created mid-turn.
+		if !turn.Conversational() {
+			continue
+		}
 		persistTo(agent.AssistantMessage{Message: turn.Assistant})
 		for _, outcome := range turn.Results {
 			persistTo(agent.ToolResultMessage{
 				ToolCallID: outcome.CallID,
 				ToolName:   outcome.ToolName,
-				Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
+				Content:    ai.TextBlocks(outcome.Result.Text),
 				IsError:    outcome.Result.IsError,
 			})
 		}
@@ -6290,22 +6339,7 @@ func (p *Program) PublishUpdateAvailable(version string) {
 // inherit tool calls that were never actions.
 func rebase(request []agent.Message, turns []agent.Turn) []agent.Message {
 	out := append([]agent.Message(nil), request...)
-	for _, rawTurn := range turns {
-		turn := agent.TranscriptTurn(rawTurn)
-		if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
-			continue
-		}
-		out = append(out, agent.AssistantMessage{Message: turn.Assistant})
-		for _, outcome := range turn.Results {
-			out = append(out, agent.ToolResultMessage{
-				ToolCallID: outcome.CallID,
-				ToolName:   outcome.ToolName,
-				Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
-				IsError:    outcome.Result.IsError,
-			})
-		}
-	}
-	return out
+	return append(out, agent.ConversationMessages(turns)...)
 }
 
 // commonPrefixLen reports the shared byte prefix of two strings, so text

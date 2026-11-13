@@ -135,6 +135,12 @@ func (t *BashTool) Capability(args map[string]any) agent.Tier {
 	if err != nil || strings.TrimSpace(command) == "" {
 		return agent.TierWrite
 	}
+	if _, outside := OutsideWorkspaceMutation(command, t.Root); outside {
+		// The call will be refused before execution, but it is still a
+		// mutation attempt: the authority layer must see the write risk it
+		// would have carried rather than an ordinary execution.
+		return agent.TierWrite
+	}
 	return commandCapabilityInRoot(command, t.Root)
 }
 
@@ -150,6 +156,19 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 	if strings.TrimSpace(command) == "" {
 		return agent.ErrorResult("command must not be empty")
+	}
+	// The workspace boundary is enforced here, below every tool caller and
+	// independent of the model's spelling. A target the command names
+	// deterministically is refused before the process starts; the OS sandbox
+	// still covers the read-only authority and opaque programs.
+	if target, outside := OutsideWorkspaceMutation(command, t.Root); outside {
+		return agent.Result{
+			Text: fmt.Sprintf(
+				"command refused: %q is outside the workspace and outside the temporary execution area", target),
+			IsError:      true,
+			Refused:      true,
+			FailureClass: agent.ToolFailureOutsideWorkspace,
+		}
 	}
 
 	timeout := t.Timeout
@@ -167,6 +186,10 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 
 	mutates := t.Capability(args) == agent.TierWrite && !ctx.ReadOnly
+	affectedPaths := []string(nil)
+	if mutates {
+		affectedPaths = CommandAffectedPaths(command, t.Root)
+	}
 
 	// Foreground work is bounded by the root deadline as well as its own
 	// timeout. A command that outlives the tree is a deadline escape even when
@@ -252,13 +275,13 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 			return agent.Result{
 				Text: fmt.Sprintf("command timed out after %s", timeout), IsError: true,
-				Mutates: mutates, Executes: true, Finished: true,
+				Mutates: mutates, AffectedPaths: affectedPaths, Executes: true, Finished: true,
 				FailureClass: agent.ToolFailureTimeout, FailureRetryable: true,
 			}
 		}
 		return agent.Result{
 			Text: "command cancelled", IsError: true,
-			Mutates: mutates, Executes: true, Finished: true,
+			Mutates: mutates, AffectedPaths: affectedPaths, Executes: true, Finished: true,
 			FailureClass: agent.ToolFailureCancelled,
 		}
 	case errors.As(runErr, &exitErr):
@@ -266,7 +289,7 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	default:
 		return agent.Result{
 			Text: fmt.Sprintf("run command: %v", runErr), IsError: true,
-			Mutates: mutates, Executes: true, Finished: true,
+			Mutates: mutates, AffectedPaths: affectedPaths, Executes: true, Finished: true,
 			FailureClass: agent.ToolFailureRuntime,
 		}
 	}
@@ -279,12 +302,13 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 
 	if exitCode != 0 {
 		return agent.Result{
-			Text:         text,
-			IsError:      true,
-			Mutates:      mutates,
-			Executes:     true,
-			Finished:     true,
-			FailureClass: agent.ToolFailureRuntime,
+			Text:          text,
+			IsError:       true,
+			Mutates:       mutates,
+			AffectedPaths: affectedPaths,
+			Executes:      true,
+			Finished:      true,
+			FailureClass:  agent.ToolFailureRuntime,
 			Details: map[string]any{
 				"command":  command,
 				"exitCode": exitCode,
@@ -294,12 +318,13 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 	verification := VerificationForIn(t.Root, command)
 	return agent.Result{
-		Text:         text,
-		Mutates:      mutates,
-		Executes:     true,
-		Finished:     true,
-		Verifies:     verification != nil,
-		Verification: verification,
+		Text:          text,
+		Mutates:       mutates,
+		AffectedPaths: affectedPaths,
+		Executes:      true,
+		Finished:      true,
+		Verifies:      verification != nil,
+		Verification:  verification,
 		Details: map[string]any{
 			"command":  command,
 			"exitCode": 0,

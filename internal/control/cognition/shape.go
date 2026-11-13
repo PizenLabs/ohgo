@@ -119,6 +119,12 @@ type TaskShape struct {
 	// Budget is an optional snapshot of the enclosing grant. Zero fields mean
 	// unknown, never unlimited.
 	Budget BudgetShape `json:"budget,omitempty"`
+	// RequiredCapabilities is what executing this contract needs the runtime to
+	// be able to perform, derived from the contract itself. The projection
+	// compares it against the constructed tool set before a model turn, so a
+	// capability the runtime cannot provide stops the turn instead of costing
+	// one to discover.
+	RequiredCapabilities []contract.CapabilityNeed `json:"requiredCapabilities,omitempty"`
 }
 
 // Authority describes the turn's effective authority.
@@ -464,6 +470,10 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		},
 		Verification: append([]contract.VerificationRequirement(nil), intent.Verification...),
 		Budget:       params.Budget,
+		// The contract is the only source of capability requirements. A phase
+		// contract therefore asks for reading only, which is exactly what the
+		// deferred authority can perform.
+		RequiredCapabilities: intent.RequiredCapabilities(),
 	}
 	if shape.Kind == "" {
 		shape.Kind = contract.ObjectiveInformational
@@ -512,9 +522,8 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 	}
 
 	shape.Mutation = MutationScope{
-		Allowed:  authority == "build" && shape.Kind == contract.ObjectiveMutation,
-		Explicit: len(intent.Targets) > 0,
-		Targets:  append([]contract.Target(nil), intent.Targets...),
+		Allowed: authority == "build" && shape.Kind == contract.ObjectiveMutation,
+		Targets: append([]contract.Target(nil), intent.Targets...),
 	}
 	shape.Authority.MutationAllowed = shape.Mutation.Allowed
 	shape.Authority.ReadOnly = !shape.Mutation.Allowed
@@ -526,6 +535,11 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		}
 		shape.Mutation.Operations = appendOperation(shape.Mutation.Operations, intent.OperationFor(target))
 	}
+	// Explicitness is a filesystem property, not a target count. A technology
+	// migration names a target ("Next.js") but its scope is the whole
+	// workspace; treating the semantic name as a path boundary would forbid
+	// every file the migration must touch.
+	shape.Mutation.Explicit = intent.MutationScope.ExplicitPaths() || len(shape.Mutation.Paths) > 0
 	sort.Strings(shape.Mutation.Paths)
 	shape.Mutation.DeleteRequested = requestsDelete(shape.Objective)
 	shape.Mutation.UnrelatedForbidden = shape.Mutation.Allowed && shape.Mutation.Explicit

@@ -277,6 +277,43 @@ func scanCompletionEvidence(turns []Turn, mutationIntent bool) completionEvidenc
 	return evidence
 }
 
+// applyMutationProvenance merges the host's journal evidence into the turn
+// scan.
+//
+// A shell command such as "npx create-next-app ." can change the repository
+// without the tool being able to report the resulting paths, so the turn scan
+// cannot see a definite mutation. The journal captured the actual diff; that is
+// runtime evidence of a change, not a model claim. The mutation position is the
+// start of the turn whose batch first could mutate, so a check that ran before
+// that turn cannot satisfy the verification obligation.
+func applyMutationProvenance(evidence *completionEvidence, turns []Turn, provenance MutationProvenance) {
+	if evidence == nil || !provenance.Captured || len(provenance.Changes) == 0 {
+		return
+	}
+	evidence.mutated = true
+	position := MutationTurnPosition(turns, provenance.Turn)
+	if position > evidence.lastPotentialMutation {
+		evidence.lastPotentialMutation = position
+	}
+}
+
+// MutationTurnPosition returns the run position of the first outcome in a
+// turn. It lets the host record journal evidence at the same observation order
+// the completion evaluator uses.
+func MutationTurnPosition(turns []Turn, turn int) int {
+	if turn <= 0 {
+		return 0
+	}
+	position := 0
+	for index, item := range turns {
+		if index >= turn {
+			break
+		}
+		position += len(item.Results)
+	}
+	return position
+}
+
 // outstandingCalls counts the last turn's results that represent work the run
 // left undone. A refusal is a control decision: the call did not run and the
 // runtime did not leave it pending, so it is never outstanding. Counting it
@@ -352,6 +389,11 @@ type CompletionInput struct {
 	// and cover the contract. It can only enable that boundary, never complete
 	// the objective by itself.
 	PriorChange bool
+	// Mutations is the run-level workspace mutation evidence captured by the
+	// host's edit journal. It attributes a shell mutation whose paths the
+	// command text cannot reveal. It is runtime evidence, never model output,
+	// and an empty Captured=false value must stay unattributed.
+	Mutations MutationProvenance
 	// Provenance summarizes what kind of evidence the run can truthfully rely
 	// on. It can only downgrade completion: an explicit external requirement
 	// that was never observed, or a documentation-only claim presented as an
@@ -451,6 +493,7 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		return needsReview("no intent contract was supplied")
 	}
 	evidence := scanCompletionEvidence(input.Turns, intent.Kind == contract.ObjectiveMutation)
+	applyMutationProvenance(&evidence, input.Turns, input.Mutations)
 	if len(evidence.pendingFailures) > 0 && pendingFailureVetoes(evidence, input.EvidenceReview) {
 		return needsReview("a tool call failed and no later success or verification recovered it: %s",
 			pendingFailureNames(evidence.pendingFailures, evidence.pendingFailureClasses))
@@ -515,14 +558,25 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 
 	var structural StructuralEvidence
 	if effective.Kind == contract.ObjectiveMutation && len(effective.Targets) > 0 {
-		structural = CheckTargets(input.Snapshot, input.Resolver)
+		if input.Snapshot != nil {
+			structural = CheckTargets(input.Snapshot, input.Resolver)
+		} else {
+			structural = TargetEvidenceWithoutSnapshot(effective)
+		}
 	}
-	unexpected := UnexpectedMutations(root, input.Turns, effective, input.Snapshot)
-	if len(unexpected) > 0 {
-		structural.Unexpected = uniqueSorted(append(structural.Unexpected, unexpected...))
+	classified := ClassifyMutations(root, input.Turns, effective, input.Snapshot, input.Mutations)
+	for _, mutation := range classified {
+		switch mutation.Class {
+		case MutationUnexpected, MutationOutsideWorkspace:
+			structural.Unexpected = append(structural.Unexpected, mutation.Path)
+		case MutationUnattributed:
+			structural.Unattributed = append(structural.Unattributed, mutation.Path)
+		}
 	}
+	structural.Unexpected = uniqueSorted(structural.Unexpected)
+	structural.Unattributed = uniqueSorted(structural.Unattributed)
 	behavioral := AssessBehavior(effective, input.Snapshot, evidence,
-		goSourceDirectories(ObservedMutationPaths(root, input.Turns, input.Snapshot)))
+		goSourceDirectories(ObservedMutationPathsWithProvenance(root, input.Turns, input.Snapshot, input.Mutations)))
 	assessment := AssessAlignment(effective, structural, behavioral)
 
 	var reasons []string
@@ -531,6 +585,11 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 			reasons = append(reasons, "target evidence is incomplete: "+issue)
 		}
 		for _, check := range structural.Checks {
+			if check.Status == TargetSemantic {
+				// Semantic targets are judged by mutation and verification
+				// evidence, not by a matching changed path.
+				continue
+			}
 			if check.Status != TargetSatisfied {
 				reasons = append(reasons, check.Detail)
 			}
@@ -539,6 +598,10 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	if len(structural.Unexpected) > 0 {
 		reasons = append(reasons, "observed change outside the requested scope: "+
 			strings.Join(structural.Unexpected, ", "))
+	}
+	if len(structural.Unattributed) > 0 {
+		reasons = append(reasons, "observed change could not be attributed to a path: "+
+			strings.Join(structural.Unattributed, ", "))
 	}
 	if !behavioral.Satisfied {
 		reasons = append(reasons, behavioral.Detail)
@@ -834,6 +897,12 @@ func AssessAlignment(intent contract.IntentContract, structural StructuralEviden
 		case TargetSatisfied:
 			add("satisfied: " + string(check.Target.Kind) + " " + check.Target.Value)
 			continue
+		case TargetSemantic:
+			// A technology or repository target describes the result and the
+			// scope. It is not a changed path, and requiring its name in a
+			// filename would be a false target.
+			add("semantic objective: " + string(check.Target.Kind) + " " + check.Target.Value)
+			continue
 		case TargetUnresolved:
 			assessment.Alignment = AlignmentUncertain
 			assessment.Rationale = firstNonEmptyString(check.Detail, "a target could not be verified")
@@ -849,6 +918,11 @@ func AssessAlignment(intent contract.IntentContract, structural StructuralEviden
 		assessment.Alignment = AlignmentMisaligned
 		assessment.Rationale = "the run changed a path outside the requested target scope"
 		add("unexpected: " + strings.Join(structural.Unexpected, ", "))
+	}
+	if len(structural.Unattributed) > 0 {
+		assessment.Alignment = AlignmentUncertain
+		assessment.Rationale = "a mutation could not be attributed to a path"
+		add("unattributed: " + strings.Join(structural.Unattributed, ", "))
 	}
 	if assessment.Alignment != AlignmentNotApplicable {
 		return assessment

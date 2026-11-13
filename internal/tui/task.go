@@ -101,9 +101,14 @@ type TaskResume struct {
 	HandoffTo       string
 	HandoffBy       string
 	HandoffConsumed bool
-	Contract        contract.IntentContract
-	HasContract     bool
-	Snapshot        *agent.TargetSnapshot
+	// HandoffApprovedObjective is the objective a human-approved transition
+	// actually approved, when it differs from the task objective. It is how the
+	// turn boundary knows the approval covered a new objective rather than the
+	// task's previous one. Continuity metadata, never authority.
+	HandoffApprovedObjective string
+	Contract                 contract.IntentContract
+	HasContract              bool
+	Snapshot                 *agent.TargetSnapshot
 	// ObjectiveState is the truthful completion projection (PROVEN,
 	// NEEDS_REVIEW, BLOCKED, ...). It is read-only.
 	ObjectiveState string
@@ -244,7 +249,9 @@ type TaskHooks struct {
 	// transition.
 	PreviewHandoff func(target workspace.Workspace) (HandoffView, error)
 	// ProposeHandoff records a pending transition without moving authority.
-	ProposeHandoff func(target workspace.Workspace, reason, summary, workspaceState string) (HandoffView, error)
+	// approvedObjective is the objective the approving turn stated, or "" when
+	// the transition preserves the task's own objective.
+	ProposeHandoff func(target workspace.Workspace, reason, summary, workspaceState, approvedObjective string) (HandoffView, error)
 	// ApproveHandoff records the human's authorization before the host moves
 	// authority. It does not move authority itself.
 	ApproveHandoff func(id string) (HandoffView, error)
@@ -257,6 +264,11 @@ type TaskHooks struct {
 	// evidence state. It is called at the turn boundary so an interrupted or
 	// final run is observed even if no later projection request ran.
 	ObserveTurns func([]agent.Turn)
+	// ObserveJournal folds the host edit journal's workspace diff into the
+	// durable evidence state at the run position of the mutating batch. It is
+	// what makes a shell mutation whose command text names no paths visible to
+	// the durable completion proof. Nil disables the projection.
+	ObserveJournal func(agent.MutationProvenance, int)
 	// RecordArtifacts drains structured artifacts produced during the turn
 	// into the durable task. It runs at the same turn boundary, before the
 	// completion transition, so a finding can become a BUILD-visible
@@ -893,7 +905,54 @@ func handoffContinuation(current TaskResume, active, text string, next contract.
 	if strings.EqualFold(strings.TrimSpace(current.HandoffBy), "control-plane") {
 		return objectiveContinuation(current, next) || taskFollowUp(current, text)
 	}
+	// A human approval is itself the continuation decision, and it covers the
+	// turn that follows it: that turn states the objective the human approved,
+	// so it is ownership by lifecycle rather than by comparing prose.
 	return true
+}
+
+// approvedTransitionObjective is the objective a widening approval covers.
+//
+// A request that states an executable objective approves that objective: the
+// human approved moving authority to perform *this* work. A question or a bare
+// acknowledgement approves nothing new, so the transition preserves the task's
+// own objective and no re-scope is recorded.
+func approvedTransitionObjective(text string) string {
+	intent := workspace.BuildIntentContract(text)
+	switch intent.Kind {
+	case contract.ObjectiveMutation, contract.ObjectiveExecution:
+		return intent.Objective
+	}
+	return ""
+}
+
+// handoffContract reports the contract a human-approved transition turn must
+// run.
+//
+// The persisted contract belongs to the objective the task was working on. A
+// transition that approved a *new* objective must run that objective's
+// contract, or BUILD would be shaped as the weaker task it succeeded. The
+// caller uses the returned contract instead of the persisted one; adoption of
+// it is the task controller's job at Begin.
+//
+// The approval is decided by its lifecycle, never by comparing prose: the
+// recorded objective is the approving request's own text, while the turn's
+// contract may be derived from a prepared form of it (a long prompt is
+// compressed before the model sees it). What matters is that a human approved
+// moving authority for the turn that follows the decision; that turn's contract
+// is the one to run.
+func handoffContract(current TaskResume, requested contract.IntentContract) (contract.IntentContract, bool) {
+	pending := current.HandoffStatus == "APPROVED" ||
+		(current.HandoffStatus == "APPLIED" && !current.HandoffConsumed)
+	if !pending || strings.EqualFold(strings.TrimSpace(current.HandoffBy), "control-plane") {
+		return contract.IntentContract{}, false
+	}
+	if strings.TrimSpace(current.HandoffApprovedObjective) == "" {
+		// The transition recorded no new objective, so it preserves the
+		// task's. Replacing that contract would be a re-scope nobody approved.
+		return contract.IntentContract{}, false
+	}
+	return requested, true
 }
 
 // continuationPrompt recognizes a deliberate continuation of the open task.

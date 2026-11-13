@@ -78,6 +78,12 @@ type Result struct {
 	// model text, and is the runtime evidence completion uses to decide whether
 	// a change still needs verification.
 	Mutates bool
+	// AffectedPaths are the repository-relative paths the tool deterministically
+	// changed or wrote. A shell command can set this when its own syntax names
+	// the targets (a redirect, rm, cp, mv). It is execution evidence, not a
+	// model claim, and is empty when the tool cannot establish the paths: a
+	// missing value must stay unattributed rather than become a guess.
+	AffectedPaths []string `json:"affected_paths,omitempty"`
 	// Executes reports that the tool started an arbitrary process. Such a
 	// process may have changed the workspace even when the runtime cannot prove
 	// it, so a mutation objective treats a successful execution as requiring a

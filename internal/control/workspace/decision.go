@@ -24,25 +24,9 @@ import (
 // only needs to leave those to ASK/FUZZ when doing so is better for the user's
 // intent, not because the operation is impossible.
 
-// Capability is what a request needs the runtime to be able to do.
-//
-// It is coarser than a tool name and finer than an intent: a request to run
-// tests and a request to reproduce a failure both need execution, but only the
-// latter prefers FUZZ.
-type Capability string
-
-// Request capabilities.
-const (
-	// CapabilityRead needs inspection, search, and reasoning only.
-	CapabilityRead Capability = "read"
-	// CapabilityExecute needs to run a process or check.
-	CapabilityExecute Capability = "execute"
-	// CapabilityInvestigate needs autonomous probing, reproduction, or
-	// experimentation. ASK cannot perform it; FUZZ and BUILD can.
-	CapabilityInvestigate Capability = "investigate"
-	// CapabilityMutate needs a repository change. Only BUILD can perform it.
-	CapabilityMutate Capability = "mutate"
-)
+// Request capabilities are the contract's capability vocabulary. The control
+// plane reads them from one owner so the transition policy and the capability
+// preflight cannot disagree about what a request needs.
 
 // Requirement is the control plane's deterministic reading of what a request
 // needs from a workspace.
@@ -260,7 +244,7 @@ func DecideTransition(active Workspace, requirement Requirement) TransitionDecis
 		Requirement: requirement,
 		Reason:      requirement.Reason,
 	}
-	if !active.Valid() || !requirement.Capability.valid() {
+	if !active.Valid() || !validCapability(requirement.Capability) {
 		return decision
 	}
 	target := preferredWorkspace(requirement.Capability)
@@ -341,14 +325,8 @@ func canPerform(active Workspace, capability Capability) bool {
 	return false
 }
 
-// valid reports whether the capability is one this package defines.
-func (c Capability) valid() bool {
-	switch c {
-	case CapabilityRead, CapabilityExecute, CapabilityInvestigate, CapabilityMutate:
-		return true
-	}
-	return false
-}
+// valid reports whether the capability is one the contract vocabulary defines.
+func validCapability(c Capability) bool { return c.Valid() }
 
 // confirmationReason explains a human-boundary decision in the target's terms.
 func confirmationReason(target Workspace) string {

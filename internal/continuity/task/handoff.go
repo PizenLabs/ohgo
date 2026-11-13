@@ -68,6 +68,12 @@ const (
 	maxHandoffRefs = MaxRoleNotes
 	// maxHandoffText bounds a free-text field.
 	maxHandoffText = 1024
+	// maxApprovedObjective bounds the objective an approval re-scopes a task
+	// to. It is far larger than maxHandoffText because the value is the user's
+	// verbatim request: truncating it would make the approving turn's objective
+	// disagree with the record, and the transition would then fail for a reason
+	// nobody could see.
+	maxApprovedObjective = 16 * 1024
 )
 
 // Handoff is one durable role transition.
@@ -88,6 +94,16 @@ type Handoff struct {
 	To workspace.Workspace `json:"to"`
 	// Objective is the task objective the transition preserves.
 	Objective string `json:"objective"`
+	// ApprovedObjective is the objective the turn that requested this
+	// transition actually stated, when it differs from Objective.
+	//
+	// A widening approval is a decision about the request that triggered it. A
+	// user who investigates in ASK and then approves a change has approved the
+	// change, not the question: applying the handoff adopts this objective and
+	// the contract the approving turn carried, so BUILD never runs the READ
+	// task's contract with mutation authority. Empty means the transition
+	// preserves Objective unchanged.
+	ApprovedObjective string `json:"approvedObjective,omitempty"`
 	// Status is the transition lifecycle position.
 	Status HandoffStatus `json:"status"`
 	// Reason explains why the handoff is needed.
@@ -173,6 +189,9 @@ func (h Handoff) Validate(t Task) error {
 	}
 	if h.Objective != t.Objective {
 		return fmt.Errorf("%w: objective %q does not match the task", ErrInvalidHandoff, h.Objective)
+	}
+	if len(h.ApprovedObjective) > maxApprovedObjective {
+		return fmt.Errorf("%w: the approved objective is too large to record", ErrInvalidHandoff)
 	}
 	return nil
 }
@@ -327,6 +346,11 @@ type HandoffInput struct {
 	Summary string
 	// Workspace is the measured workspace state, when the host has one.
 	Workspace string
+	// ApprovedObjective is the objective the approving turn stated, when it
+	// differs from the task objective. It is how a widening approval re-scopes
+	// the task to the work the human actually approved instead of running the
+	// previous, weaker objective under the new authority.
+	ApprovedObjective string
 }
 
 // ProposeHandoff records a pending transition without moving authority.
@@ -423,6 +447,14 @@ func (c *Controller) snapshotHandoff(from workspace.Workspace, in HandoffInput, 
 		Workspace: boundText(strings.TrimSpace(in.Workspace), maxHandoffText),
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	// The approving turn's objective is recorded only when it is a different
+	// objective. A transition that preserves the task's objective says so by
+	// leaving the field empty, so a reader cannot mistake one case for the
+	// other. The value is copied verbatim: it is compared with the objective the
+	// approving turn carries, and a truncated copy could never match.
+	if approved := strings.TrimSpace(in.ApprovedObjective); approved != "" && approved != c.task.Objective {
+		handoff.ApprovedObjective = approved
 	}
 	handoff.Constraints = boundRefs(c.task.Constraints)
 	for _, fact := range c.task.Context.Facts {
@@ -798,6 +830,7 @@ func sanitizeHandoff(h *Handoff, t Task) (*Handoff, int, string) {
 	out.ID = strings.TrimSpace(out.ID)
 	out.TaskID = strings.TrimSpace(out.TaskID)
 	out.Objective = strings.TrimSpace(out.Objective)
+	out.ApprovedObjective = strings.TrimSpace(out.ApprovedObjective)
 	out.Reason = boundText(strings.TrimSpace(out.Reason), maxHandoffText)
 	out.Summary = boundText(strings.TrimSpace(out.Summary), maxHandoffText)
 	out.Workspace = boundText(strings.TrimSpace(out.Workspace), maxHandoffText)

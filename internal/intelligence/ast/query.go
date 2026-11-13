@@ -190,13 +190,6 @@ func (idx *Index) Overview(ctx context.Context, limit int) (OverviewResult, erro
 	if len(result.Packages) > result.Snapshot.Packages {
 		result.Snapshot.Packages = len(result.Packages)
 	}
-	if len(result.Entrypoints) > StructureMaxLimit {
-		result.Entrypoints = result.Entrypoints[:StructureMaxLimit]
-		result.Truncated = true
-		if result.Reason == "" {
-			result.Reason = "entrypoint_limit"
-		}
-	}
 	seenEntrypoints := map[string]bool{}
 	for _, entry := range result.Entrypoints {
 		seenEntrypoints[entry.Path+"\x00"+entry.QualifiedName] = true
@@ -207,6 +200,16 @@ func (idx *Index) Overview(ctx context.Context, limit int) (OverviewResult, erro
 		}
 		seenEntrypoints[entry.Path] = true
 		result.Entrypoints = append(result.Entrypoints, entry)
+	}
+	// The bound applies to the merged list, and the total is recorded before the
+	// cut so a truncated overview can name how many it dropped.
+	result.EntrypointsTotal = len(result.Entrypoints)
+	if len(result.Entrypoints) > StructureMaxLimit {
+		result.Entrypoints = result.Entrypoints[:StructureMaxLimit]
+		result.Truncated = true
+		if result.Reason == "" {
+			result.Reason = "entrypoint_limit"
+		}
 	}
 	result.Configs = configFacts(idx.files, idx.modulePath)
 	result.Frameworks = frameworkFacts(result.Configs)

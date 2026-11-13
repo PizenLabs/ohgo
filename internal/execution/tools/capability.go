@@ -4,6 +4,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -64,6 +65,303 @@ func CommandMutates(command string) bool {
 // probe.
 func CommandMutatesInRoot(command, root string) bool {
 	return commandWritesInRoot(command, root)
+}
+
+// OutsideWorkspaceMutation returns the first target a command would write
+// outside the workspace and outside the operating system's temporary area.
+//
+// This is a deterministic pre-execution boundary, not a classifier: it only
+// names a target the command's own syntax spells out (a redirect, rm, cp, mv,
+// mkdir, sed -i, …). It deliberately does not guess through command
+// substitution, globs, or an interpreter whose arguments are opaque. The
+// authoritative BUILD workspace is unrestricted for ordinary tool caches
+// (npm, Go, cargo), so the boundary rejects persistent writes outside the
+// workspace while allowing temporary execution artifacts such as
+// /tmp/nextapp.
+func OutsideWorkspaceMutation(command, root string) (string, bool) {
+	root = strings.TrimSpace(root)
+	if root == "" || strings.TrimSpace(command) == "" {
+		return "", false
+	}
+	root = resolveCommandPath(root)
+	for _, target := range commandWriteTargets(command, root) {
+		if pathWithinRoot(root, target) || isTemporaryPath(target) {
+			continue
+		}
+		return target, true
+	}
+	return "", false
+}
+
+// CommandAffectedPaths returns the repository-relative paths a command's own
+// syntax deterministically writes.
+//
+// It is completion evidence, not authorization: a command this function cannot
+// parse yields no paths and the host's edit journal remains the only source of
+// attribution.
+func CommandAffectedPaths(command, root string) []string {
+	root = strings.TrimSpace(root)
+	if root == "" || strings.TrimSpace(command) == "" {
+		return nil
+	}
+	root = resolveCommandPath(root)
+	seen := map[string]bool{}
+	var out []string
+	for _, target := range commandWriteTargets(command, root) {
+		if !pathWithinRoot(root, target) {
+			continue
+		}
+		rel, err := filepath.Rel(root, target)
+		if err != nil || rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		if !seen[rel] {
+			seen[rel] = true
+			out = append(out, rel)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// commandWriteTargets resolves every deterministic write target in a command.
+func commandWriteTargets(command, root string) []string {
+	cwd := root
+	var out []string
+	for _, segment := range shellSegments(command) {
+		words := shellWords(segment)
+		program, args := programAndArgs(words)
+		base := path.Base(program)
+		if base == "cd" || base == "pushd" {
+			raw := firstNonFlag(args)
+			if raw == "" {
+				// A bare cd goes to HOME, not to the current directory. Treating
+				// it as a no-op would resolve a later relative write to the
+				// workspace when the shell would actually write to HOME.
+				if home, err := os.UserHomeDir(); err == nil {
+					cwd = resolveCommandPath(home)
+				}
+				continue
+			}
+			if next, ok := resolveShellPath(raw, cwd); ok {
+				cwd = next
+			}
+			continue
+		}
+		if base == "popd" {
+			// A directory stack is not modelled. Leaving the cwd unchanged is
+			// the safe direction for a boundary: it cannot turn an outside
+			// write into a claimed workspace write.
+			continue
+		}
+		out = append(out, redirectTargets(segment, cwd)...)
+		if program == "" {
+			continue
+		}
+		for _, raw := range writeProgramArgs(base, args) {
+			if target, ok := resolveShellPath(raw, cwd); ok {
+				out = append(out, target)
+			}
+		}
+	}
+	return out
+}
+
+// redirectTargets returns the resolved file targets of output redirections in
+// one shell segment. Descriptor duplications and character devices are not
+// filesystem mutations.
+func redirectTargets(segment, cwd string) []string {
+	var out []string
+	quoted := false
+	var quote rune
+	runes := []rune(segment)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if quoted {
+			if r == quote {
+				quoted = false
+			}
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quoted = true
+			quote = r
+			continue
+		}
+		if r != '>' {
+			continue
+		}
+		j := i + 1
+		if j < len(runes) && runes[j] == '>' {
+			j++
+		}
+		if j < len(runes) && runes[j] == '&' {
+			i = j
+			continue
+		}
+		for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t') {
+			j++
+		}
+		target := readWord(runes, j)
+		if target == "" || isCharDevice(target) {
+			continue
+		}
+		if resolved, ok := resolveShellPath(target, cwd); ok {
+			out = append(out, resolved)
+		}
+	}
+	return out
+}
+
+// writeProgramArgs returns the path arguments of a program whose only effect
+// on each argument is a write or a removal.
+func writeProgramArgs(program string, args []string) []string {
+	nonFlags := func() []string {
+		var out []string
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "-") || arg == "--" {
+				continue
+			}
+			out = append(out, arg)
+		}
+		return out
+	}
+	switch program {
+	case "rm", "rmdir", "unlink", "shred", "touch", "mknod":
+		return nonFlags()
+	case "mkdir", "truncate":
+		var out []string
+		for i := 0; i < len(args); i++ {
+			arg := args[i]
+			if arg == "-m" || arg == "-s" || arg == "--mode" || arg == "--size" || arg == "-d" {
+				i++
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				continue
+			}
+			out = append(out, arg)
+		}
+		return out
+	case "cp", "install", "rsync", "ln":
+		// Only the destination is written; the sources may be read from
+		// anywhere, including a temporary staging directory.
+		values := nonFlags()
+		if len(values) < 2 {
+			return nil
+		}
+		return values[len(values)-1:]
+	case "mv":
+		// The source leaves its path and the destination is written, so both
+		// are workspace changes.
+		return nonFlags()
+	case "tee":
+		return nonFlags()
+	case "chmod", "chown", "chgrp":
+		values := nonFlags()
+		if len(values) < 2 {
+			return nil
+		}
+		return values[1:]
+	case "dd":
+		var out []string
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "of=") {
+				out = append(out, strings.TrimPrefix(arg, "of="))
+			}
+		}
+		return out
+	case "sed":
+		if !hasInPlaceFlag(program, args) {
+			return nil
+		}
+		values := nonFlags()
+		if len(values) < 2 {
+			return nil
+		}
+		return values[1:]
+	case "perl":
+		if !hasInPlaceFlag(program, args) {
+			return nil
+		}
+		var out []string
+		skipScript := false
+		for _, arg := range args {
+			if skipScript {
+				skipScript = false
+				continue
+			}
+			if arg == "-e" || arg == "-E" {
+				skipScript = true
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				// -eSCRIPT carries the script in the same word.
+				continue
+			}
+			out = append(out, arg)
+		}
+		return out
+	case "gofmt", "goimports":
+		if !hasInPlaceFlag(program, args) {
+			return nil
+		}
+		return nonFlags()
+	}
+	return nil
+}
+
+// resolveShellPath resolves one shell path argument against the command's
+// current directory. A shell expansion or an empty value is not deterministic,
+// so it returns false rather than guessing.
+func resolveShellPath(raw, cwd string) (string, bool) {
+	raw = strings.TrimSpace(strings.Trim(raw, `"'`))
+	if raw == "" {
+		return "", false
+	}
+	switch {
+	case strings.ContainsAny(raw, "$`*?[]{}"):
+		return "", false
+	case raw == "~" || strings.HasPrefix(raw, "~/"):
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", false
+		}
+		raw = filepath.Join(home, strings.TrimPrefix(raw, "~"))
+	case filepath.IsAbs(raw):
+	default:
+		raw = filepath.Join(cwd, raw)
+	}
+	return resolveCommandPath(raw), true
+}
+
+// pathWithinRoot reports whether target is inside root.
+func pathWithinRoot(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// isTemporaryPath reports whether target is inside an operating-system
+// temporary directory, where a command may stage execution artifacts.
+func isTemporaryPath(target string) bool {
+	candidates := []string{os.TempDir()}
+	if value := strings.TrimSpace(os.Getenv("TMPDIR")); value != "" {
+		candidates = append(candidates, value)
+	}
+	candidates = append(candidates, "/tmp", "/var/tmp")
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if pathWithinRoot(resolveCommandPath(candidate), target) {
+			return true
+		}
+	}
+	return false
 }
 
 // CommandDestructive reports whether a shell command is destructive or

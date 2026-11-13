@@ -376,6 +376,24 @@ func TestAssessGroundingSeparatesChangeReportsFromAbsenceClaims(t *testing.T) {
 			answer: "No test files exist in this repository.",
 			review: true,
 		},
+		{
+			// The observed session-276 answer: the model bounded the absence
+			// to what it inspected and admitted the test inventory was never
+			// queried. The boundary is the claim's scope, so it is a report,
+			// not a repository-wide conclusion. Flagging it left the run with
+			// no recap and no actionable next step.
+			name:   "absence bounded to inspected scope",
+			answer: "No API routes, no database, no tests detected in inspected scope (test inventory not queried), no additional pages beyond /.",
+		},
+		{
+			name:   "absence with contracted non-observation",
+			answer: "Evidence gaps: the test inventory wasn't queried.",
+		},
+		{
+			name:   "bounded phrase beside a global conclusion",
+			answer: "No tests were found in the inspected scope, and the project has no tests anywhere.",
+			review: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -785,5 +803,16 @@ func TestAssessGroundingRequiresAnObservationForExternalState(t *testing.T) {
 	}}})
 	if verdict := AssessGrounding(intent, observed, "The workflow ran successfully at 03:17 today."); !verdict.Pass() {
 		t.Fatalf("an observed remote run was not accepted: %s", verdict.Reason())
+	}
+}
+
+// "Tests are not run" describes the project, not this run. Only the run-fact
+// form ("no tests were run") is a bounded report.
+func TestUnrunTestsAreNotExcusedAsABoundedReport(t *testing.T) {
+	if boundedNegativeReport("Tests are not run for this module.") {
+		t.Error("a project property was excused as a run fact")
+	}
+	if !boundedNegativeReport("No tests were run in this pass.") {
+		t.Error("the run-fact form was treated as a repository absence")
 	}
 }

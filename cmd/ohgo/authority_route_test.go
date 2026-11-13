@@ -106,6 +106,18 @@ func readCall() ai.ToolCall {
 	return ai.ToolCall{ID: "call_1", Name: "read", Arguments: map[string]any{"path": "x.go"}}
 }
 
+// mutationSurface is the capability set a mutation objective needs to run: a
+// mutating capability and an execution capability, which is also what makes the
+// change verifiable.
+//
+// The production runtime always builds both. A fixture with only a write tool
+// describes a runtime that cannot verify its own change, and the control plane
+// correctly reports that objective as blocked — which is not what these routing
+// tests are about.
+func mutationSurface(write *spyTool) []agent.Tool {
+	return []agent.Tool{write, &spyTool{name: "bash", tier: agent.TierExec}}
+}
+
 // TestAskRefusesExecutionWithoutCallingTheModel is invariant A: ASK + EXECUTE
 // must not reach a mutation, and must not even be handed to the model to
 // attempt.
@@ -202,7 +214,7 @@ func TestBuildExecutesExplicitMutation(t *testing.T) {
 	write := &spyTool{name: "write", tier: agent.TierWrite}
 	stream := &routeStream{call: writeCall()}
 	gate := newAuthorityGate(workspace.Build)
-	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, write), "BUILD")
+	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, mutationSurface(write)...), "BUILD")
 	// BUILD holds the read capability. The transition policy prefers ASK for a
 	// strong human-facing question, but a direct route does not deny work the
 	// live authority can perform.
@@ -284,7 +296,7 @@ func TestFuzzMutationHandsOffToBuild(t *testing.T) {
 	write := &spyTool{name: "write", tier: agent.TierWrite}
 	stream := &routeStream{call: writeCall()}
 	gate := newAuthorityGate(workspace.Fuzz)
-	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, write), "FUZZ")
+	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, mutationSurface(write)...), "FUZZ")
 
 	var out strings.Builder
 	if err := repl(h, &out, strings.NewReader("fix the bug\n/quit\n"), nil); err != nil {
@@ -335,7 +347,7 @@ func TestCrossWorkspaceSessionKeepsAuthority(t *testing.T) {
 	write := &spyTool{name: "write", tier: agent.TierWrite}
 	stream := &routeStream{call: writeCall()}
 	gate := newAuthorityGate(workspace.Build)
-	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, write), "BUILD")
+	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, mutationSurface(write)...), "BUILD")
 
 	input := strings.Join([]string{
 		"/ask",                          // explicit switch to ASK
@@ -438,7 +450,7 @@ func TestRefusedBuildReadDoesNotPoisonLaterMutation(t *testing.T) {
 	write := &spyTool{name: "write", tier: agent.TierWrite}
 	stream := &routeStream{call: writeCall()}
 	gate := newAuthorityGate(workspace.Build)
-	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, write), "BUILD")
+	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, mutationSurface(write)...), "BUILD")
 
 	var out strings.Builder
 	input := "why does this work?\n" + "implement the fix\n" + "/quit\n"
@@ -495,7 +507,7 @@ func TestTransitionThenMutationThenNarrowingKeepsAuthorityTruthful(t *testing.T)
 	write := &spyTool{name: "write", tier: agent.TierWrite}
 	stream := &routeStream{call: writeCall()}
 	gate := newAuthorityGate(workspace.Ask)
-	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, write), "ASK")
+	h := routedHarness(gate, newRoutedLoop(t, stream.fn(), gate, mutationSurface(write)...), "ASK")
 
 	var out strings.Builder
 	input := "/build\nimplement the fix\n/ask\nwhy does this work?\n/quit\n"

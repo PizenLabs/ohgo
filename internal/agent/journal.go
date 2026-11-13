@@ -27,6 +27,10 @@ type EditTransaction interface {
 	Commit(ctx context.Context) error
 	// Abort discards the transaction without publishing a checkpoint.
 	Abort()
+	// Mutation returns the workspace mutation evidence published by this
+	// transaction. The boolean is false when no evidence was published, which
+	// is different from a captured boundary with no changes.
+	Mutation() (MutationProvenance, bool)
 }
 
 // EditBoundary describes the turn whose tools are about to run.

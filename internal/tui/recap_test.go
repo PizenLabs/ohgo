@@ -353,3 +353,115 @@ func TestRecapDropsDeferredAnnouncement(t *testing.T) {
 		t.Fatalf("recap lost the substantive finding: %q", got)
 	}
 }
+
+// recapReadOutcome builds a file read with the range the read tool publishes.
+func recapReadOutcome(path, text string, totalLines, limit int) agent.ToolOutcome {
+	details := map[string]any{"path": path}
+	if totalLines > 0 && limit > 0 {
+		details["offset"] = 1
+		details["limit"] = limit
+		details["totalLines"] = totalLines
+	}
+	return agent.ToolOutcome{
+		ToolName: "read",
+		Args:     map[string]any{"path": path},
+		Result:   agent.Result{Text: text, Details: details},
+	}
+}
+
+// A survey reads README and settings to orient itself, then the source that
+// answers the question. The footer must cite the file the answer is about, not
+// the first file the run opened, and it must disclose that it was not the only
+// one.
+func TestRecapNamesTheFileTheAnswerCites(t *testing.T) {
+	turns := []agent.Turn{recapTurn(
+		"This is a Next.js 16 portfolio site (see app/portfolio.tsx).",
+		recapReadOutcome("README.md", strings.Repeat("readme ", 800), 0, 0),
+		recapReadOutcome("package.json", strings.Repeat("dep ", 200), 0, 0),
+		recapReadOutcome("app/portfolio.tsx", strings.Repeat("jsx ", 2000), 0, 0),
+	)}
+	got := recapNarrative("check this project", turns)
+	want := "Inspected 3 files, including app/portfolio.tsx and README.md — this is a Next.js 16 portfolio site."
+	if got != want {
+		t.Fatalf("recap = %q, want %q", got, want)
+	}
+}
+
+// More reads than the footer can name are counted, not silently dropped.
+func TestRecapReportsEveryFileItRead(t *testing.T) {
+	turns := []agent.Turn{recapTurn("The services are health-check skeletons.",
+		recapReadOutcome("services/a/main.go", strings.Repeat("a", 900), 0, 0),
+		recapReadOutcome("services/b/main.go", strings.Repeat("b", 800), 0, 0),
+		recapReadOutcome("services/c/main.go", strings.Repeat("c", 700), 0, 0),
+		recapReadOutcome("services/d/main.go", strings.Repeat("d", 600), 0, 0),
+	)}
+	got := recapNarrative("check this project", turns)
+	if !strings.HasPrefix(got, "Inspected 4 files, including ") {
+		t.Fatalf("recap hid the read count: %q", got)
+	}
+	if !strings.Contains(got, "a/main.go and b/main.go") {
+		t.Fatalf("recap did not name the largest reads: %q", got)
+	}
+}
+
+// A read that returned a window is disclosed: the footer must not imply a
+// whole-file reading the run never performed.
+func TestRecapDisclosesATruncatedRead(t *testing.T) {
+	turns := []agent.Turn{recapTurn("A single-screen animated portfolio.",
+		recapReadOutcome("app/portfolio.tsx", strings.Repeat("jsx ", 400), 512, 400),
+	)}
+	got := recapNarrative("what is this project", turns)
+	want := "Inspected app/portfolio.tsx (truncated at 400 of 512 lines) — a single-screen animated portfolio."
+	if got != want {
+		t.Fatalf("recap = %q, want %q", got, want)
+	}
+}
+
+// With several files read, the truncation clause names which one was cut.
+func TestRecapNamesTheTruncatedFile(t *testing.T) {
+	turns := []agent.Turn{recapTurn("A single-screen animated portfolio.",
+		recapReadOutcome("app/portfolio.tsx", strings.Repeat("jsx ", 400), 512, 400),
+		recapReadOutcome("app/page.tsx", "export default function Page() {}", 0, 0),
+	)}
+	got := recapNarrative("what is this project", turns)
+	want := "Inspected app/portfolio.tsx and app/page.tsx (app/portfolio.tsx was truncated at 400 of 512 lines) — a single-screen animated portfolio."
+	if got != want {
+		t.Fatalf("recap = %q, want %q", got, want)
+	}
+}
+
+// Citation outranks volume: the file the answer names is the evidence the
+// reader needs, even when another read returned far more text.
+func TestRecapCitesTheFileEvenWhenItIsSmall(t *testing.T) {
+	turns := []agent.Turn{recapTurn(
+		"The route in app/page.tsx renders the portfolio.",
+		recapReadOutcome("app/portfolio.tsx", strings.Repeat("jsx ", 3000), 0, 0),
+		recapReadOutcome("app/page.tsx", "export default function Page() {}", 0, 0),
+	)}
+	got := recapNarrative("what does the app render", turns)
+	// The action already names the file, so the finding drops its own citation.
+	want := "Inspected app/page.tsx and app/portfolio.tsx — the route renders the portfolio."
+	if got != want {
+		t.Fatalf("recap = %q, want %q", got, want)
+	}
+}
+
+// A paged read is described as a window, not as "truncated at": the run read
+// lines 200-400, so "truncated at 400 of 512" would imply it saw the head.
+func TestRecapDescribesAPagedReadAsAWindow(t *testing.T) {
+	turns := []agent.Turn{recapTurn("The contact section lists an email address.",
+		agent.ToolOutcome{
+			ToolName: "read",
+			Args:     map[string]any{"path": "app/portfolio.tsx"},
+			Result: agent.Result{
+				Text:    strings.Repeat("jsx ", 200),
+				Details: map[string]any{"path": "app/portfolio.tsx", "offset": 200, "limit": 200, "totalLines": 512},
+			},
+		},
+	)}
+	got := recapNarrative("find the contact section", turns)
+	want := "Inspected app/portfolio.tsx (lines 200-399 of 512 read) — the contact section lists an email address."
+	if got != want {
+		t.Fatalf("recap = %q, want %q", got, want)
+	}
+}

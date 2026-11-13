@@ -471,8 +471,9 @@ func TestOpenAIConvertsToolResultsToToolRole(t *testing.T) {
 	if tool.Role != "tool" || tool.ToolCallID != "c0" {
 		t.Errorf("tool message = %+v, want role tool id c0", tool)
 	}
-	if !strings.Contains(tool.Content[0].Text, "file a") {
-		t.Errorf("tool content = %q, want the result text", tool.Content[0].Text)
+	content, ok := tool.Content.(string)
+	if !ok || !strings.Contains(content, "file a") {
+		t.Errorf("tool content = %#v, want the result text as a string", tool.Content)
 	}
 	assistant := converted[1]
 	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].Function.Name != "read" {

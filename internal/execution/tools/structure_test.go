@@ -1,12 +1,14 @@
 package tools
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
 )
 
 // structureFixture writes a module-shaped repository with inventory facts.
@@ -392,5 +394,109 @@ func TestStructureToolIsReadOnlyAndDiscoverable(t *testing.T) {
 	result := tool.Execute(testContext(), map[string]any{})
 	if result.Mutates || result.Executes || result.Verifies {
 		t.Errorf("structure reported a mutation/execution capability: %+v", result)
+	}
+}
+
+// TestDescribeStructuralNeverCallsUnparseableSourcePartial pins the four-state
+// verdict: a snapshot whose source languages have no adapter in this build is
+// UNSUPPORTED, not PARTIAL. Reading it as PARTIAL makes a model wait for
+// structural evidence that can never arrive.
+func TestDescribeStructuralNeverCallsUnparseableSourcePartial(t *testing.T) {
+	noAdapters := []ast.LanguageCoverage{
+		{Language: ast.LanguageJavaScript, Files: 1, Coverage: "UNSUPPORTED"},
+		{Language: ast.LanguageTypeScript, Files: 1, Coverage: "UNSUPPORTED"},
+		{Language: ast.LanguageTSX, Files: 3, Coverage: "UNSUPPORTED"},
+	}
+	unsupported := ast.SnapshotInfo{
+		SourceFiles: 5,
+		Languages:   noAdapters,
+		Unsupported: []ast.UnsupportedLanguage{
+			{Extension: ".mjs", Files: 1},
+			{Extension: ".ts", Files: 1},
+			{Extension: ".tsx", Files: 3},
+		},
+	}
+	goSource := []ast.LanguageCoverage{
+		{Language: ast.LanguageGo, Files: 3, Supported: true, Coverage: "PARTIAL"},
+	}
+	cases := []struct {
+		name   string
+		info   ast.SnapshotInfo
+		label  string
+		detail string
+	}{
+		{
+			name:  "complete",
+			info:  ast.SnapshotInfo{StructuralComplete: true, SourceFiles: 3, ParsedFiles: 3, Languages: goSource},
+			label: "COMPLETE",
+		},
+		{
+			name:   "pending",
+			info:   ast.SnapshotInfo{SourceFiles: 5, PendingFiles: 2, Languages: goSource},
+			label:  "UNPARSED",
+			detail: "2 supported source files not parsed yet",
+		},
+		{
+			name:   "no adapter",
+			info:   unsupported,
+			label:  "UNSUPPORTED",
+			detail: "no adapter for .mjs, .ts, .tsx; 0 of 5 source files parsed",
+		},
+		{
+			name:   "parse failure",
+			info:   ast.SnapshotInfo{SourceFiles: 3, ParsedFiles: 1, FailedFiles: 1, Languages: goSource},
+			label:  "PARTIAL",
+			detail: "1 of 3 source files failed to parse",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := describeStructural(tc.info)
+			if state.Label != tc.label {
+				t.Fatalf("label = %q, want %q", state.Label, tc.label)
+			}
+			if state.Detail != tc.detail {
+				t.Errorf("detail = %q, want %q", state.Detail, tc.detail)
+			}
+			if got := structuralCompleteness(tc.info); got != tc.label {
+				t.Errorf("structuralCompleteness = %q, want %q", got, tc.label)
+			}
+		})
+	}
+}
+
+// TestStructureToolNamesTheSliceBehindTruncation pins that a truncated
+// overview says which list it cut and against which total. Without the count
+// the model must issue a second inventory query to learn that the file total
+// it already received was complete.
+func TestStructureToolNamesTheSliceBehindTruncation(t *testing.T) {
+	files := map[string]string{}
+	for i := 1; i <= 14; i++ {
+		files[fmt.Sprintf("pkg/f%02d.go", i)] = fmt.Sprintf("package pkg\n\nfunc F%02d() {}\n", i)
+	}
+	root := symbolsFixture(t, files)
+	tool := NewStructureTool(NewStructuralSource(root))
+
+	overview := tool.Execute(testContext(), map[string]any{})
+	if overview.IsError {
+		t.Fatalf("overview: %s", overview.Text)
+	}
+	if !strings.Contains(overview.Text, "result: TRUNCATED (files 10 of 14)") {
+		t.Errorf("overview did not name the truncated slice:\n%s", overview.Text)
+	}
+	if !strings.Contains(overview.Text, "result_reason: file_limit") {
+		t.Errorf("overview did not name the decisive bound:\n%s", overview.Text)
+	}
+	// An overview does not parse, so its declaration totals are not zero
+	// observations; they are simply not made yet.
+	if !strings.Contains(overview.Text, "symbols: 0 (source not parsed)") {
+		t.Errorf("overview reported unparsed declarations as an observed zero:\n%s", overview.Text)
+	}
+	bounds, ok := structureDetails(t, overview)["bounds"].([]map[string]any)
+	if !ok {
+		t.Fatalf("bounds = %T, want []map[string]any", structureDetails(t, overview)["bounds"])
+	}
+	if len(bounds) != 1 || bounds[0]["slice"] != "files" || bounds[0]["shown"] != 10 || bounds[0]["total"] != 14 {
+		t.Errorf("bounds = %+v, want only the cut slice files 10 of 14", bounds)
 	}
 }

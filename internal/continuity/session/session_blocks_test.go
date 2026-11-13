@@ -69,3 +69,59 @@ func TestReplayFallsBackToLegacyTextAndCalls(t *testing.T) {
 		t.Errorf("calls = %+v, want the legacy call", calls)
 	}
 }
+
+// The observed failure left a reasoning-only assistant row in the transcript:
+// a retried empty turn persisted beside the real answer. Replay must treat it
+// as display history, not conversation content, or the next request carries an
+// assistant message with nothing a provider can send.
+func TestReplaySkipsReasoningOnlyAssistant(t *testing.T) {
+	stored := []StoredMessage{
+		{Role: "user", Text: "run this project help me"},
+		{
+			Role: "assistant", Model: "beam-free", StopReason: "end_turn",
+			Blocks: []StoredBlock{{Kind: StoredBlockThinking, Text: "the server answered 200"}},
+		},
+		{
+			Role: "assistant", Text: "Done.", Model: "beam-free", StopReason: "end_turn",
+			Blocks: []StoredBlock{
+				{Kind: StoredBlockThinking, Text: "report the result"},
+				{Kind: StoredBlockText, Text: "Done."},
+			},
+		},
+		{Role: "user", Text: "How to convert this project to Next.js?"},
+	}
+	replayed, err := Replay(stored)
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if len(replayed) != 3 {
+		t.Fatalf("replayed = %d messages, want the user, the answer, and the next request: %#v", len(replayed), replayed)
+	}
+	for index, message := range replayed {
+		if assistant, ok := message.(agent.AssistantMessage); ok {
+			if !ai.HasSendableContent(assistant.Message) {
+				t.Fatalf("message %d = %#v, want only sendable assistant turns", index, assistant)
+			}
+			if assistant.Message.Text() != "Done." {
+				t.Fatalf("message %d text = %q, want the real answer", index, assistant.Message.Text())
+			}
+		}
+	}
+}
+
+// A legacy row with no text, no calls, and no blocks has no replayable form
+// either. It is skipped rather than failing the whole transcript, because a
+// session must remain resumable.
+func TestReplaySkipsEmptyAssistantRow(t *testing.T) {
+	replayed, err := Replay([]StoredMessage{
+		{Role: "user", Text: "run this project"},
+		{Role: "assistant", Model: "m", StopReason: "end_turn"},
+		{Role: "user", Text: "and then?"},
+	})
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if len(replayed) != 2 {
+		t.Fatalf("replayed = %d messages, want both user turns and no empty assistant", len(replayed))
+	}
+}

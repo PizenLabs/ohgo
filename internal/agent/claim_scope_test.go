@@ -603,3 +603,75 @@ func TestClaimAuditIgnoresFencedCode(t *testing.T) {
 		t.Fatalf("a quoted code block was treated as a claim: %s", verdict.Reason)
 	}
 }
+
+// session276Overview reproduces the structural overview the observed session
+// received: a Go-only build over a TypeScript project. Every navigation count
+// is unobservable and the inventory is complete.
+func session276Overview() ToolOutcome {
+	return ToolOutcome{
+		ToolName: "structure",
+		Args:     map[string]any{"view": "overview"},
+		Result: Result{
+			Text: "status: truncated\nview: overview\ngraph_state: CURRENT\n" +
+				"scope: PARTIAL\ninventory: COMPLETE\nstructural: UNSUPPORTED\n" +
+				"result: TRUNCATED (files 10 of 14)\n",
+			Details: map[string]any{
+				"view":                  "overview",
+				"graph_state":           "CURRENT",
+				"truncated":             true,
+				"reason":                "file_limit",
+				"scope_complete":        false,
+				"excluded_source_files": 1,
+				"inventory_complete":    true,
+				"structural_complete":   false,
+				"completeness":          "UNSUPPORTED",
+				"parsed_files":          0,
+				"pending_files":         0,
+				"failed_files":          0,
+				"test_files":            0,
+				"files":                 14,
+				"unsupported_languages": []map[string]any{{"extension": ".tsx", "files": 3}},
+				"complete":              false,
+			},
+		},
+	}
+}
+
+// The observed session-276 answer: the survey was grounded in real source
+// reads and bounded its negatives to what it inspected. The negative
+// conclusion check reviewed it anyway, so the run ended needs_review with no
+// recap and nothing to act on.
+func TestSurveyAnswerBoundedToInspectedScopeIsNotAnAbsenceClaim(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		session276Overview(),
+		claimListing(".", "AGENTS.md\nREADME.md\napp\nnext.config.ts\npackage.json\nstyles.css\ntsconfig.json\n"),
+		claimGlob("app/**/*", "app/page.tsx\napp/portfolio.tsx\napp/globals.css\napp/layout.tsx\napp/favicon.ico\n"),
+		claimRead("README.md", "# Getting Started\n\nRun `npm run dev`.\n", 36),
+		claimRead("package.json", `{"dependencies":{"next":"16.4.6","react":"19.3.0"},"devDependencies":{"typescript":"^5","tailwindcss":"^4.3.3"}}`, 26),
+		claimRead("app/page.tsx", "import Portfolio from \"./portfolio\";\n\nexport default function Page() {\n  return <Portfolio />;\n}\n", 5),
+		claimRead("app/layout.tsx", "export const metadata = { title: \"John Martin — AI & Agent Developer\" };\n", 28),
+		claimRead("app/portfolio.tsx", "export default function Portfolio() {\n  return <main>About Skills Projects Contact</main>;\n}\n", 204),
+	}}}
+	answer := strings.Join([]string{
+		"This is a Next.js 16 / React 19 single-page portfolio site (\"web-test5\"), bootstrapped from create-next-app.",
+		"What it is:",
+		"- A client-rendered animated portfolio for \"John Martin — AI & Agent Developer\" (app/layout.tsx metadata; app/portfolio.tsx).",
+		"- The home route (app/page.tsx) renders the Portfolio component, which is a single-screen interactive experience.",
+		"Tech details:",
+		"- Next.js 16.4.6, React 19.3.0, TypeScript 5, Tailwind CSS 4.3.3.",
+		"- UI behavior: pill navigation between sections, animated metric counter, dynamic --hue CSS variable theming per section.",
+		"- No API routes, no database, no tests detected in inspected scope (test inventory not queried), no additional pages beyond /.",
+		"Evidence gaps: the test inventory wasn't queried, and portfolio.tsx was partially truncated in the read output.",
+	}, "\n")
+
+	assessment := AssessGrounding(claimContract(), turns, answer)
+	for _, issue := range assessment.Issues {
+		if issue.Code == "unsupported_negative_conclusion" {
+			t.Fatalf("bounded survey answer was treated as an absence claim: %s", issue.Detail)
+		}
+	}
+	verdict := claimVerdict(turns, answer)
+	if !verdict.Complete() {
+		t.Fatalf("grounded survey was not completed: %s", verdict.Reason)
+	}
+}

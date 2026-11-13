@@ -51,7 +51,7 @@ func TestPhaseCompletionDoesNotDemandAConceptualSlashPath(t *testing.T) {
 	}}
 	turns := append(append([]agent.Turn(nil), observed...), answer)
 	action, reason := turnTaskOutcomeForAuthority(nil, turns, intent, nil, nil,
-		projected.Report.EvidenceReview(), false, agent.EvidenceProvenance{}, "fuzz")
+		projected.Report.EvidenceReview(), false, agent.EvidenceProvenance{}, agent.MutationProvenance{}, "fuzz")
 	if action != taskActionPhaseComplete {
 		t.Fatalf("phase outcome = %v (%s), want phase-complete", action, reason)
 	}

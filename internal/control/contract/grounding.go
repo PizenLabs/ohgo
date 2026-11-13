@@ -46,6 +46,15 @@ const (
 	// "order/checkout flow". It is not a filesystem coordinate: the answer
 	// lives in whichever implementation files realize the concept.
 	EntityTopic EntityKind = "topic"
+	// EntityTechnology is a named technology, framework, or language. It
+	// describes the desired result, never a path.
+	EntityTechnology EntityKind = "technology"
+	// EntityRepository is the workspace itself, not a path inside it.
+	EntityRepository EntityKind = "repository"
+	// EntityCommand is a command the request names.
+	EntityCommand EntityKind = "command"
+	// EntityResource is a named non-code artifact or class.
+	EntityResource EntityKind = "resource"
 )
 
 // Entity is one named thing the user's request contains.

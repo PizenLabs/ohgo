@@ -150,3 +150,91 @@ func ToolMutationOperations(tool Tool) []contract.ChangeOp {
 	}
 	return nil
 }
+
+// ToolOperations returns the repository operations a tool can perform.
+//
+// It is the capability view of a tool, derived from the same declarations the
+// action-space narrowing reads, so the two cannot disagree: a tool offered for
+// a task is a tool that can serve that task's required operation.
+//
+// The mapping is deliberately conservative. Observation classes serve reading;
+// execution serves running; a mutation class serves the operations the tool
+// declares, or every file operation when it declares none (an undeclared
+// mutating tool must not be reported as unable to mutate). Bookkeeping and
+// delegation add nothing: writing a todo list is not reading the repository,
+// and a child agent is not itself a capability.
+func ToolOperations(tool Tool) []contract.Operation {
+	var ops []contract.Operation
+	add := func(op contract.Operation) {
+		for _, existing := range ops {
+			if existing == op {
+				return
+			}
+		}
+		ops = append(ops, op)
+	}
+	classes := ToolActionClasses(tool)
+	for _, class := range classes {
+		switch class {
+		case ActionObserve, ActionRelationship, ActionStructure:
+			add(contract.OpRead)
+		case ActionExecute:
+			add(contract.OpExec)
+			// A general process capability observes the repository: listing a
+			// tree, reading a file, and searching text are commands it can run.
+			// Counting it as a read capability is what keeps a shell-only
+			// runtime able to answer a repository question, and it is the same
+			// reason the sandbox classifies a reading command as read-only.
+			add(contract.OpRead)
+		case ActionMutate:
+			added := false
+			for _, change := range ToolMutationOperations(tool) {
+				switch change {
+				case contract.ChangeCreate:
+					add(contract.OpWrite)
+					added = true
+				case contract.ChangeModify:
+					add(contract.OpPatch)
+					added = true
+				case contract.ChangeDelete:
+					add(contract.OpDelete)
+					added = true
+				case contract.ChangeAny:
+					add(contract.OpWrite)
+					add(contract.OpPatch)
+					added = true
+				}
+			}
+			if !added {
+				add(contract.OpWrite)
+				add(contract.OpPatch)
+				add(contract.OpDelete)
+			}
+		}
+	}
+	return ops
+}
+
+// AvailableOperations returns every operation a tool set can perform.
+//
+// It is the control plane's availability fact for a capability preflight: the
+// union of what the runtime was actually constructed with, never what it was
+// configured to prefer.
+func AvailableOperations(tools []Tool) []contract.Operation {
+	var ops []contract.Operation
+	for _, tool := range tools {
+		for _, op := range ToolOperations(tool) {
+			duplicate := false
+			for _, existing := range ops {
+				if existing == op {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				ops = append(ops, op)
+			}
+		}
+	}
+	return ops
+}

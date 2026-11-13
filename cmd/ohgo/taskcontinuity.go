@@ -153,12 +153,13 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 			recorded, err := controller.PreviewHandoff(task.HandoffInput{To: target})
 			return handoffView(recorded), err
 		},
-		ProposeHandoff: func(target workspace.Workspace, reason, summary, workspaceState string) (tui.HandoffView, error) {
+		ProposeHandoff: func(target workspace.Workspace, reason, summary, workspaceState, approvedObjective string) (tui.HandoffView, error) {
 			recorded, err := controller.ProposeHandoff(task.HandoffInput{
-				To:        target,
-				Reason:    reason,
-				Summary:   summary,
-				Workspace: workspaceState,
+				To:                target,
+				Reason:            reason,
+				Summary:           summary,
+				Workspace:         workspaceState,
+				ApprovedObjective: approvedObjective,
 			})
 			return handoffView(recorded), err
 		},
@@ -172,6 +173,7 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		},
 		Context:          controller.Context,
 		ObserveTurns:     controller.ObserveTurns,
+		ObserveJournal:   controller.ObserveJournal,
 		RecordArtifacts:  artifacts.drain,
 		HasCurrentChange: controller.HasCurrentChange,
 		Evidence:         controller.Evidence,
@@ -403,6 +405,7 @@ func taskResume(recorded task.Task) tui.TaskResume {
 		resume.HandoffTo = recorded.Handoff.To.String()
 		resume.HandoffBy = recorded.Handoff.ApprovedBy
 		resume.HandoffConsumed = recorded.Handoff.Consumed
+		resume.HandoffApprovedObjective = recorded.Handoff.ApprovedObjective
 	}
 	if recorded.Contract != nil {
 		resume.Contract = *recorded.Contract

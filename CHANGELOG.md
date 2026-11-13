@@ -80,6 +80,14 @@ immutable.
   or the module line in both the header and the body. A repeated overview of
   the same snapshot is marked `repeated: true` so the model can recognize that
   it adds no new inventory facts.
+- The completion recap now names what carried the answer instead of what the
+  run opened first. Inspected files are ranked by whether the answer cites them,
+  then by returned content, so a survey that read README and settings before the
+  source that answered the question no longer cites only the README. When more
+  files were read than the footer names, it reports the total ("Inspected 5
+  files, including app/portfolio.tsx and README.md"), and a read that returned a
+  window states its range ("truncated at 400 of 512 lines") instead of implying
+  a whole-file reading.
 - `graph` remains the Go package import graph; a non-Go selector is pointed at
   `structure`/`refs` instead of being folded into a false package edge. The
   structural snapshot remains in memory. `<project>/.ohgo/graph.db` is still
@@ -90,8 +98,98 @@ immutable.
   metadata; a broad project survey now requires an observed source read before
   it can close. The state block names that missing class directly.
 
+### Added
+
+- Capability preflight: `contract.IntentContract.RequiredCapabilities` derives
+  the operations an objective needs (reading, the mutation operation the request
+  names, command execution when the contract requires a check) and
+  `workspace.PreflightTurn` compares them against the constructed tool set and
+  the live authority before the first model turn. A missing mandatory capability
+  is refused with zero provider requests, no tool call, and a task recorded as
+  BLOCKED with the class `CAPABILITY_UNAVAILABLE`; it is not a model failure, a
+  verification failure, or a review. `cognition.CapabilityGap` enforces the same
+  invariant on every later request through
+  `agent.ProjectionReport.MissingCapabilities`, and the loop returns
+  `agent.ErrCapabilityUnavailable` before it sends the request. Reading is
+  required but not blocking: an observation-free answer is still the evidence
+  layer's review verdict.
+- `RunVerdict.String()` names the run classification (`COMPLETED`,
+  `NEEDS_REVIEW`, `PAUSED`, `FAILED`, `CANCELLED`, `CAPABILITY_UNAVAILABLE`) so
+  the TUI, the headless verdict, and durable task records share one vocabulary.
+
 ### Fixed
 
+- A survey answer that bounds its negatives to what it inspected is no longer
+  reviewed as a repository-wide absence claim. "No tests detected in inspected
+  scope (test inventory not queried)" completes; "the project has no tests"
+  still needs coverage. The bounded-scope and non-observation forms are
+  recognised as claims, contractions are normalised, and the repository-wide
+  veto now outranks the literal marker list instead of being bypassed by it.
+- `structure` overview no longer reports declaration totals it never observed.
+  Navigation counts (`symbols`, `references`, `calls`, `tests`) render
+  `0 (source not parsed)` before parsing and `unobservable (no adapter)` when no
+  adapter can parse the inventoried sources; `test_files` stays a number
+  because it is classified from paths at inventory time. Previously a Go-only
+  build over a TypeScript project printed `tests: 0 (test_files: 0)`, which an
+  answer read as "the project has no tests" — an absence the inventory cannot
+  establish, and a `needs_review` on an otherwise grounded survey.
+- A structural snapshot no longer reports `PARTIAL` when no adapter in this
+  build can parse its sources. The verdict is `UNSUPPORTED` with the decisive
+  limitation (`no adapter for .ts, .tsx; 0 of 5 source files parsed`), and the
+  header names the compiled `adapters:` so a symbol-free result is attributable
+  to the code or to the build variant.
+- A truncated `structure` result now names the slice it cut and the total it
+  refers to (`result: TRUNCATED (files 10 of 14)`), and the overview exposes the
+  same counts as `bounds`. Previously a 14-file repository reported
+  `result: TRUNCATED` with `result_reason: file_limit` while the rendered text
+  showed the complete file count and no file list, so the model could not tell
+  what was cut and issued a redundant inventory query.
+- `structure` overview applies its entrypoint bound to the merged entrypoint
+  list, reports `entrypoints:` from that list instead of the symbol-only
+  snapshot count, and no longer prints a slice as cut when a view displayed more
+  entries than the snapshot counted.
+- A semantic migration target is no longer read as a file path. `Target` now
+  carries explicit `technology`, `repository`, `command`, and `resource` kinds
+  alongside `path`/`symbol`/`package`, and `IntentContract.MutationScope` states
+  whether a persistent change is bounded to named files/directories or the whole
+  workspace. "Convert this project to Next.js" therefore produces a technology
+  objective with workspace scope instead of a target named `Next.js`; completion
+  no longer requires a changed path to contain the technology name.
+- Shell mutations now carry provenance. The recovery edit journal exposes the
+  workspace diff it already captured, and completion classifies each change as
+  `EXPECTED`, `UNEXPECTED`, `UNATTRIBUTED`, or `OUTSIDE_WORKSPACE` from the run's
+  journal, a tool's own `AffectedPaths`, or the security scope. A shell mutation
+  whose command text names no paths is attributed to the current task instead of
+  `<unattributed>`; with no journal evidence it still requires review. A
+  deterministically named persistent write outside the workspace (and outside
+  the temporary execution area) is refused before the process starts.
+- An approved widening transition now runs the objective it approved. The handoff
+  records the approving request's objective (`Handoff.ApprovedObjective`), the
+  turn gate attaches only that objective, and `Controller.Begin` re-scopes the
+  task's completion contract to it while keeping identity, carried context, and
+  observed evidence. Previously ASK → BUILD ran the task's previous
+  informational contract, so the BUILD turn was shaped as a read-only
+  investigation: no write or command capability was offered, the model reported
+  that it could not edit, and an execution request came back as a manual
+  implementation plan.
+- A capability the task surface withholds is now classified as
+  `tool_capability_unavailable` instead of an unclassified candidate rejection,
+  so a withheld proposal is diagnosable without parsing prose.
+- A reasoning-only assistant turn is no longer replayed as conversation
+  content. The retried empty answer stayed in the run's turns, and every host
+  rebuilt its next request from them; the resulting assistant message had no
+  sendable block and providers rejected it (`messages[13].content`, a text part
+  with no `text`). `agent.ConversationMessages` is now the single projection for
+  live history, persistence, and session replay, and `session.Replay` skips a
+  stored display-only assistant row instead of failing the resume.
+- The canonical message contract is enforced before any transport serializes a
+  request (`ai.ValidateMessages` at `Registry.StreamFn` and in the agent loop,
+  with per-message provenance). An empty text part, an assistant turn with only
+  reasoning, or a tool call without id/name is reported as
+  `agent.ErrInvalidProviderContext` with the message index, role, provenance,
+  and issue kind, instead of reaching a provider as `{"type":"text"}`.
+  Serializers no longer fabricate empty text parts: an empty tool result is the
+  empty string, and a call-only assistant turn omits content.
 - `/commit` no longer fails with "the COMMIT model ran out of output budget"
   for a reasoning-by-default model whose role effort is `off`. Omitting the
   effort selected the provider default and spent the whole completion on

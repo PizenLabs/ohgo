@@ -21,6 +21,28 @@ type (
 	VerificationCheck       = contract.VerificationCheck
 	VerificationRequirement = contract.VerificationRequirement
 	IntentContract          = contract.IntentContract
+	Operation               = contract.Operation
+	Capability              = contract.Capability
+	CapabilityNeed          = contract.CapabilityNeed
+)
+
+const (
+	// Request capabilities.
+	CapabilityRead        = contract.CapabilityRead
+	CapabilityExecute     = contract.CapabilityExecute
+	CapabilityInvestigate = contract.CapabilityInvestigate
+	CapabilityMutate      = contract.CapabilityMutate
+)
+
+const (
+	OpRead    = contract.OpRead
+	OpSearch  = contract.OpSearch
+	OpInspect = contract.OpInspect
+	OpExec    = contract.OpExec
+	OpWrite   = contract.OpWrite
+	OpPatch   = contract.OpPatch
+	OpDelete  = contract.OpDelete
+	OpMove    = contract.OpMove
 )
 
 const (
@@ -36,9 +58,16 @@ const (
 	ChangeModify = contract.ChangeModify
 	ChangeDelete = contract.ChangeDelete
 
-	TargetPath    = contract.TargetPath
-	TargetSymbol  = contract.TargetSymbol
-	TargetPackage = contract.TargetPackage
+	TargetPath       = contract.TargetPath
+	TargetSymbol     = contract.TargetSymbol
+	TargetPackage    = contract.TargetPackage
+	TargetTechnology = contract.TargetTechnology
+	TargetRepository = contract.TargetRepository
+	TargetCommand    = contract.TargetCommand
+	TargetResource   = contract.TargetResource
+
+	MutationScopeWorkspace = contract.MutationScopeWorkspace
+	MutationScopePaths     = contract.MutationScopePaths
 
 	VerifyAny   = contract.VerifyAny
 	VerifyScope = contract.VerifyScope
@@ -108,7 +137,11 @@ func BuildIntentContract(text string) IntentContract {
 	// "go test ./tools" is the verification scope, not the file to change.
 	commandSpans := verificationArgumentSpans(objective)
 
-	paths := extractPathTargets(objective, commandSpans)
+	// Semantic targets are extracted first so a technology name such as
+	// "Next.js" can never be re-read as a file path: the extension test that
+	// recognises source files would otherwise classify it as one.
+	semantic := extractSemanticTargets(objective)
+	paths := extractPathTargets(objective, commandSpans, semantic.values())
 	symbols := extractSymbolTargets(objective)
 	packages := extractPackageTargets(objective)
 
@@ -140,8 +173,11 @@ func BuildIntentContract(text string) IntentContract {
 			Operation: changeForAt(objective, target, targetStart(objective, target.Value)),
 		})
 	}
-	for _, value := range paths {
-		add(Target{Kind: TargetPath, Value: value})
+	for _, target := range semantic.all() {
+		add(target)
+	}
+	for _, path := range paths {
+		add(Target{Kind: TargetPath, Value: path.value, Directory: path.directory})
 	}
 	for _, value := range symbols {
 		add(Target{Kind: TargetSymbol, Value: value})
@@ -149,6 +185,7 @@ func BuildIntentContract(text string) IntentContract {
 	for _, value := range packages {
 		add(Target{Kind: TargetPackage, Value: value})
 	}
+	contract.MutationScope = mutationScopeFor(contract)
 	contract.Grounding = buildGrounding(objective, contract)
 
 	// A conditional change may be scoped by a named repository concept and an
@@ -616,6 +653,182 @@ func looksLikeFile(value string) bool {
 	return knownFileExtensions[strings.ToLower(match[1])]
 }
 
+// semanticTargets are the non-filesystem objectives a request names.
+//
+// They are extracted before path targets because a technology name can look
+// like a filename ("Next.js", "Node.js"). The semantic reading is the stronger
+// one: a migration objective describes the result it wants, not a file to
+// create.
+type semanticTargets struct {
+	technologies []string
+	resources    []string
+	repositories []string
+}
+
+// values returns the lower-case spellings that path extraction must not
+// reinterpret as files.
+func (s semanticTargets) values() map[string]bool {
+	out := map[string]bool{}
+	for _, value := range append(append(append([]string(nil), s.technologies...), s.resources...), s.repositories...) {
+		if value != "" {
+			out[strings.ToLower(value)] = true
+		}
+	}
+	return out
+}
+
+// all returns the contract targets in a stable order.
+func (s semanticTargets) all() []Target {
+	var out []Target
+	for _, value := range s.technologies {
+		out = append(out, Target{Kind: TargetTechnology, Value: value})
+	}
+	for _, value := range s.resources {
+		out = append(out, Target{Kind: TargetResource, Value: value})
+	}
+	for _, value := range s.repositories {
+		out = append(out, Target{Kind: TargetRepository, Value: value})
+	}
+	return out
+}
+
+// technologyNames are technology-shaped words that are unambiguous even
+// without a migration verb. A bare language name ("go", "rust") is
+// deliberately absent: it is ordinary English in "go test" and only becomes a
+// technology target when a migration verb names it as the destination.
+var technologyNames = map[string]bool{
+	"next.js": true, "nextjs": true, "node.js": true, "nodejs": true,
+	"vue.js": true, "vuejs": true, "nuxt.js": true, "react.js": true,
+	"express.js": true, "solid.js": true, "sveltekit": true,
+	"d3.js": true, "three.js": true, "chart.js": true, "ember.js": true,
+	"backbone.js": true, "socket.io": true, "tailwindcss": true,
+	"nestjs": true, "astro.build": true,
+}
+
+// migrationTechnologyNames are bare names that are technologies only in a
+// migration destination. The set is data; it is not a model or provider
+// special case.
+var migrationTechnologyNames = map[string]bool{
+	"react": true, "angular": true, "vue": true, "svelte": true,
+	"solid": true, "typescript": true, "javascript": true, "python": true,
+	"rust": true, "golang": true, "go": true, "java": true, "kotlin": true,
+	"swift": true, "php": true, "ruby": true, "rails": true, "django": true,
+	"flask": true, "fastapi": true, "spring": true, "dotnet": true,
+	".net": true, "c#": true, "c++": true, "tailwind": true,
+	"bootstrap": true, "vite": true, "webpack": true, "deno": true,
+	"bun": true, "pnpm": true, "npm": true, "yarn": true,
+}
+
+// resourceNames are non-code objectives that must not become paths either.
+var resourceNames = map[string]bool{
+	"documentation": true, "docs": true, "readme": true, "markdown": true,
+	"configuration": true, "config": true, "tests": true, "test suite": true,
+	"json": true, "yaml": true, "toml": true, "csv": true, "xml": true,
+	"unit tests": true, "integration tests": true,
+}
+
+// migrationDestination captures the object of a migration or conversion verb.
+// The gap is bounded and excludes sentence punctuation so the capture cannot
+// reach across clauses.
+var migrationDestination = regexp.MustCompile(
+	`(?i)\b(?:convert|migrate|port|rewrite|transition|upgrade|move|switch)\b[^.;\n]{0,80}?\b(?:to|into|onto)\s+(?:the\s+)?([A-Za-z][A-Za-z0-9.+#_-]*)`)
+
+// repositoryReference matches an explicit reference to the workspace itself.
+var repositoryReference = regexp.MustCompile(
+	`(?i)\b(?:this|the|our|my|current)\s+(?:project|repository|repo|codebase|workspace|app|application)\b`)
+
+// migrationDestinationStopWords are grammar words that can follow "to" without
+// naming a technology.
+var migrationDestinationStopWords = map[string]bool{
+	"the": true, "a": true, "an": true, "it": true, "this": true,
+	"that": true, "these": true, "those": true, "be": true, "use": true,
+	"using": true, "match": true, "work": true, "build": true,
+	"run": true, "pass": true,
+}
+
+// extractSemanticTargets reads the semantic objective a request names.
+//
+// It is deliberately finite: a technology is recognised from an unambiguous
+// technology-shaped spelling or from a migration destination. It never invents
+// a target from an ordinary noun, and it never produces a filesystem path.
+func extractSemanticTargets(text string) semanticTargets {
+	var out semanticTargets
+	addTechnology := func(value string) {
+		if value != "" {
+			out.technologies = appendUnique(out.technologies, value)
+		}
+	}
+	addResource := func(value string) {
+		if value != "" {
+			out.resources = appendUnique(out.resources, value)
+		}
+	}
+	for _, match := range pathToken.FindAllStringIndex(text, -1) {
+		value := strings.TrimRight(text[match[0]:match[1]], ".,;:!?()")
+		if technologyNames[strings.ToLower(value)] {
+			addTechnology(value)
+		}
+	}
+	for _, match := range migrationDestination.FindAllStringSubmatch(text, -1) {
+		value := strings.Trim(match[1], ".,;:!?`'\"()")
+		lower := strings.ToLower(value)
+		switch {
+		case technologyNames[lower], migrationTechnologyNames[lower]:
+			addTechnology(value)
+		case resourceNames[lower]:
+			addResource(value)
+		case migrationDestinationStopWords[lower]:
+		case strings.Contains(value, "/") || strings.Contains(value, "..") || looksLikeFile(value):
+			// A converted file keeps its filesystem semantics: "convert this
+			// to main.js" is a path target, not a technology.
+		case hasUpper(value) && !strings.ContainsAny(value, " \t"):
+			// A proper-noun destination with no path shape is the technology
+			// the request wants ("convert this to SvelteKit").
+			addTechnology(value)
+		}
+	}
+	if len(out.technologies) > 0 || len(out.resources) > 0 {
+		if repositoryReference.MatchString(text) {
+			out.repositories = append(out.repositories, "current workspace")
+		}
+	}
+	return out
+}
+
+// mutationScopeFor derives the explicit persistent mutation scope.
+//
+// A semantic objective (a technology or the repository itself) defaults to the
+// whole workspace: "convert this project to Next.js" describes the result, not
+// a file. Only a named filesystem coordinate narrows the scope.
+func mutationScopeFor(intent IntentContract) contract.MutationScope {
+	if intent.Kind != ObjectiveMutation {
+		return contract.MutationScope{}
+	}
+	// A repository objective ("convert this project to Next.js") is scoped to
+	// the workspace even when the request also names a file it expects to
+	// change. The named file is part of the migration, not the whole scope.
+	for _, target := range intent.Targets {
+		if target.Kind == TargetRepository {
+			return contract.MutationScope{Kind: MutationScopeWorkspace}
+		}
+	}
+	var files, dirs []string
+	for _, target := range intent.Targets {
+		if target.Kind != TargetPath {
+			continue
+		}
+		if target.Directory {
+			dirs = appendUnique(dirs, target.Value)
+		} else {
+			files = appendUnique(files, target.Value)
+		}
+	}
+	if len(files) > 0 || len(dirs) > 0 {
+		return contract.MutationScope{Kind: MutationScopePaths, Files: files, Directories: dirs}
+	}
+	return contract.MutationScope{Kind: MutationScopeWorkspace}
+}
+
 // extractPathTargets returns explicit file paths in the request.
 //
 // A slash alone is not proof of a coordinate. "order/checkout flow" names a
@@ -623,14 +836,20 @@ func looksLikeFile(value string) bool {
 // "fix it in order/checkout" name filesystem objects. The distinction is
 // load-bearing: a literal target demands target_state/target_content, while a
 // concept is answered from the implementing files.
-func extractPathTargets(text string, commandSpans [][2]int) []string {
-	var out []string
+func extractPathTargets(text string, commandSpans [][2]int, semantic map[string]bool) []pathTarget {
+	var out []pathTarget
 	for _, match := range pathToken.FindAllStringIndex(text, -1) {
 		if insideAnySpan(match[0], commandSpans) {
 			continue
 		}
 		value := strings.TrimRight(text[match[0]:match[1]], ".-")
 		if value == "" || strings.Contains(value, "..") {
+			continue
+		}
+		if semantic[strings.ToLower(value)] {
+			// "Next.js" and "Node.js" end in a source-file extension but name
+			// a technology. The semantic reading wins; a path target demands
+			// that exact file change and would reject the migration.
 			continue
 		}
 		lower := strings.ToLower(value)
@@ -643,13 +862,32 @@ func extractPathTargets(text string, commandSpans [][2]int) []string {
 		if !literalPathTarget(text, match[0], match[1], value) {
 			continue
 		}
+		directory := strings.HasSuffix(value, "/") || !looksLikeFile(value)
 		value = strings.TrimPrefix(value, "./")
+		value = strings.TrimSuffix(value, "/")
 		if value == "" || value == "." || value == "..." {
 			continue
 		}
-		out = appendUnique(out, value)
+		out = appendPathTarget(out, pathTarget{value: value, directory: directory})
 	}
 	return out
+}
+
+// pathTarget is one filesystem coordinate with its directory hint. The hint
+// comes from the request's own spelling; capture also detects an existing
+// directory, so a trailing slash is not the only evidence.
+type pathTarget struct {
+	value     string
+	directory bool
+}
+
+func appendPathTarget(values []pathTarget, value pathTarget) []pathTarget {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 // pathObjectNouns name a filesystem object in a request.

@@ -21,7 +21,9 @@ import (
 // failed would be the worse trade.
 func persistTurn(store *session.Store, sess session.Session, turn agent.Turn) {
 	turn = agent.TranscriptTurn(turn)
-	if len(turn.Assistant.Content) == 0 && len(turn.Results) == 0 {
+	if !turn.Conversational() {
+		// A turn that produced no visible text and no tool call was an
+		// observation, not conversation: it has no replayable form.
 		return
 	}
 	assistant, err := session.FromAgentMessage(agent.AssistantMessage{Message: turn.Assistant})
@@ -34,7 +36,7 @@ func persistTurn(store *session.Store, sess session.Session, turn agent.Turn) {
 		stored, err := session.FromAgentMessage(agent.ToolResultMessage{
 			ToolCallID: outcome.CallID,
 			ToolName:   outcome.ToolName,
-			Content:    []ai.ContentBlock{ai.TextContent{Text: outcome.Result.Text}},
+			Content:    ai.TextBlocks(outcome.Result.Text),
 			IsError:    outcome.Result.IsError,
 		})
 		if err != nil || stored.Role == "" {

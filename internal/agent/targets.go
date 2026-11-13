@@ -126,6 +126,11 @@ const (
 	// TargetUnresolved means the coordinate could not be mapped to concrete
 	// evidence, so no claim can be made.
 	TargetUnresolved TargetStatus = "unresolved"
+	// TargetSemantic means the target describes a result or a scope (a
+	// technology, the repository, a command, a resource) rather than a
+	// filesystem coordinate. Structural checking does not apply, and completion
+	// must never require a changed path to contain the target's name.
+	TargetSemantic TargetStatus = "semantic"
 )
 
 // TargetCheck is the structural result for one expected change.
@@ -147,6 +152,10 @@ type StructuralEvidence struct {
 	Checks []TargetCheck
 	// Unexpected lists observed mutation paths outside the requested scope.
 	Unexpected []string
+	// Unattributed lists observed mutations whose path the runtime could not
+	// establish. It stays separate from Unexpected: "outside the scope" and
+	// "cannot say where" are different evidence gaps.
+	Unattributed []string
 	// Issues are capture or resolution failures not tied to one target.
 	Issues []string
 }
@@ -222,13 +231,43 @@ type targetFile struct {
 func captureTarget(entry *TargetSnapshotEntry, root string, resolver StructuralResolver, cache map[string]targetFile, reads *targetReads) {
 	switch entry.Target.Kind {
 	case contract.TargetPath:
+		if entry.Target.Directory {
+			files, err := readTargetDirectory(root, entry.Target.Value, cache, reads)
+			if err != nil {
+				entry.Issue = err.Error()
+				return
+			}
+			entry.Resolved = true
+			entry.Files = files
+			return
+		}
 		state, err := readTargetFile(root, entry.Target.Value, cache, reads)
 		if err != nil {
+			// A path target may name an existing directory without the
+			// extractor having marked it. Capture the directory rather than
+			// failing the whole target on a filesystem fact the request
+			// implies.
+			if directoryExists(root, entry.Target.Value) {
+				files, walkErr := readTargetDirectory(root, entry.Target.Value, cache, reads)
+				if walkErr == nil {
+					entry.Target.Directory = true
+					entry.Resolved = true
+					entry.Files = files
+					return
+				}
+			}
 			entry.Issue = err.Error()
 			return
 		}
 		entry.Resolved = true
 		entry.Files = []FileState{state}
+
+	case contract.TargetTechnology, contract.TargetRepository,
+		contract.TargetCommand, contract.TargetResource:
+		// These targets describe a result or a scope. There is no filesystem
+		// coordinate to capture, and requiring one would turn "Next.js" back
+		// into a path.
+		entry.Resolved = true
 
 	case contract.TargetSymbol:
 		if resolver == nil {
@@ -355,6 +394,97 @@ func readTargetFile(root, value string, cache map[string]targetFile, reads *targ
 	return state, nil
 }
 
+// directoryExists reports whether value resolves inside the workspace to an
+// existing directory.
+func directoryExists(root, value string) bool {
+	rel, ok := repositoryRelative(root, value)
+	if !ok {
+		return false
+	}
+	scope := security.NormalizeScope(root, rel)
+	if scope.Class != security.ScopeInside {
+		return false
+	}
+	info, err := os.Stat(scope.Path)
+	return err == nil && info.IsDir()
+}
+
+// readTargetDirectory captures the bounded file set under one directory
+// target.
+//
+// A directory target is a scope, not one file: "add app/" means files may
+// appear anywhere under app/. Only the files are captured, so a rename inside
+// the directory is visible as a changed path set rather than as an opaque
+// directory hash.
+func readTargetDirectory(root, value string, cache map[string]targetFile, reads *targetReads) ([]FileState, error) {
+	rel, ok := repositoryRelative(root, value)
+	if !ok {
+		return nil, fmt.Errorf("target %q is outside the workspace", value)
+	}
+	scope := security.NormalizeScope(root, rel)
+	if scope.Class != security.ScopeInside {
+		return nil, fmt.Errorf("target %q is outside the workspace", value)
+	}
+	info, err := os.Stat(scope.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat target %q: %w", value, err)
+	}
+	if !info.IsDir() {
+		state, err := readTargetFile(root, value, cache, reads)
+		if err != nil {
+			return nil, err
+		}
+		return []FileState{state}, nil
+	}
+	var files []FileState
+	var total int
+	err = filepath.WalkDir(scope.Path, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if reads.ctx != nil {
+			if err := reads.ctx.Err(); err != nil {
+				return fmt.Errorf("verification cancelled: %w", err)
+			}
+		}
+		if entry.IsDir() {
+			switch strings.ToLower(entry.Name()) {
+			case ".git", ".ohgo", "node_modules", "vendor", ".next", "dist", "build", "target":
+				if path != scope.Path {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		targetRel, ok := repositoryRelative(root, path)
+		if !ok {
+			return nil
+		}
+		state, err := readTargetFile(root, targetRel, cache, reads)
+		if err != nil {
+			return err
+		}
+		files = append(files, state)
+		total++
+		if total > MaxTargetFiles {
+			return fmt.Errorf("target %q has more than %d files, above the verification bound",
+				value, MaxTargetFiles)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, nil
+}
+
 // readSymbolState hashes one declaration's source range.
 func readSymbolState(root string, location SymbolLocation, cache map[string]targetFile, reads *targetReads) (SymbolState, error) {
 	fileState, err := readTargetFile(root, location.Path, cache, reads)
@@ -393,6 +523,10 @@ func CheckTargets(snapshot *TargetSnapshot, resolver StructuralResolver) Structu
 		case entry.Ambiguous:
 			check.Status = TargetUnresolved
 			check.Detail = firstNonEmptyString(entry.Issue, "the target is ambiguous")
+		case !entry.Target.Kind.Filesystem():
+			check.Status = TargetSemantic
+			check.Detail = fmt.Sprintf("%s target %q describes the objective, not a filesystem coordinate",
+				entry.Target.Kind, entry.Target.Value)
 		default:
 			check = checkCurrentTarget(snapshot.Root, entry, resolver, cache, reads, &evidence)
 		}
@@ -402,11 +536,44 @@ func CheckTargets(snapshot *TargetSnapshot, resolver StructuralResolver) Structu
 	return evidence
 }
 
+// TargetEvidenceWithoutSnapshot derives the checks a contract can still make
+// when no pre-run capture exists.
+//
+// A semantic target needs no capture: it describes the objective, and the
+// mutation and verification evidence decide completion. A filesystem target
+// without a pre-run state is unresolved evidence, not a satisfied target, so it
+// remains a review boundary.
+func TargetEvidenceWithoutSnapshot(intent contract.IntentContract) StructuralEvidence {
+	var evidence StructuralEvidence
+	for _, target := range intent.Targets {
+		check := TargetCheck{Target: target, Operation: intent.OperationFor(target)}
+		if target.Kind.Filesystem() {
+			check.Status = TargetUnresolved
+			check.Detail = "no pre-run target evidence was captured for " + target.Value
+		} else {
+			check.Status = TargetSemantic
+			check.Detail = fmt.Sprintf("%s target %q describes the objective, not a filesystem coordinate",
+				target.Kind, target.Value)
+		}
+		evidence.Checks = append(evidence.Checks, check)
+	}
+	return evidence
+}
+
 // checkCurrentTarget performs the post-run comparison for one entry.
 func checkCurrentTarget(root string, entry TargetSnapshotEntry, resolver StructuralResolver, cache map[string]targetFile, reads *targetReads, evidence *StructuralEvidence) TargetCheck {
 	check := TargetCheck{Target: entry.Target, Operation: entry.Operation}
 	switch entry.Target.Kind {
 	case contract.TargetPath:
+		if entry.Target.Directory || (len(entry.Files) > 1) {
+			current, err := readTargetDirectory(root, entry.Target.Value, cache, reads)
+			if err != nil {
+				check.Status = TargetUnresolved
+				check.Detail = err.Error()
+				return check
+			}
+			return comparePathSet(entry.Files, current, check)
+		}
 		current, err := readTargetFile(root, entry.Target.Value, cache, reads)
 		if err != nil {
 			check.Status = TargetUnresolved
@@ -536,6 +703,51 @@ func comparePath(before, after FileState, check TargetCheck) TargetCheck {
 	return check
 }
 
+// comparePathSet applies the requested direction to a directory target's file
+// set. It is the same rule as a package target: a directory is a scope, so any
+// change to the files under it satisfies a modify request, and an empty scope
+// is the absence the create/delete directions require.
+func comparePathSet(before, after []FileState, check TargetCheck) TargetCheck {
+	changed := len(before) != len(after)
+	beforeByPath := map[string]string{}
+	for _, state := range before {
+		beforeByPath[state.Path] = state.Hash
+	}
+	for _, state := range after {
+		hash, ok := beforeByPath[state.Path]
+		if !ok || hash != state.Hash || !state.Exists {
+			changed = true
+		}
+	}
+	switch check.Operation {
+	case contract.ChangeCreate:
+		if len(before) > 0 {
+			check.Status = TargetWrongOperation
+			check.Detail = fmt.Sprintf("directory %q already had files before the run", check.Target.Value)
+		} else if len(after) == 0 {
+			check.Status = TargetMissing
+			check.Detail = fmt.Sprintf("directory %q has no files after the run", check.Target.Value)
+		} else {
+			check.Status = TargetSatisfied
+		}
+	case contract.ChangeDelete:
+		if len(after) > 0 {
+			check.Status = TargetWrongOperation
+			check.Detail = fmt.Sprintf("directory %q still has files after a delete request", check.Target.Value)
+		} else {
+			check.Status = TargetSatisfied
+		}
+	default:
+		if !changed {
+			check.Status = TargetUnchanged
+			check.Detail = fmt.Sprintf("directory %q did not change", check.Target.Value)
+		} else {
+			check.Status = TargetSatisfied
+		}
+	}
+	return check
+}
+
 // compareSymbol applies the requested direction to one declaration.
 func compareSymbol(before, after SymbolState, check TargetCheck) TargetCheck {
 	beforeExists := before.Exists || before.Hash != ""
@@ -630,32 +842,63 @@ func comparePackage(before, after []FileState, check TargetCheck) TargetCheck {
 	return check
 }
 
-// UnexpectedMutations returns observed mutation paths outside the requested
-// target scope.
+// ClassifyMutations returns the scope verdict for every observed change.
 //
-// It only attributes a mutation when the runtime recorded a concrete path (the
-// security decision for a file tool, or a command that names a target). An
-// arbitrary shell mutation with no attributable path is reported as
-// unattributed for a bounded mutation objective, because the runtime cannot
-// prove it stayed inside the requested scope.
-func UnexpectedMutations(root string, turns []Turn, intent contract.IntentContract, snapshot *TargetSnapshot) []string {
-	allowedFiles, allowedDirs := allowedTargetScope(snapshot)
-	hasExplicitScope := len(intent.Targets) > 0
+// Three evidence sources are kept distinct:
+//
+//   - a tool that recorded a concrete path (a write/edit call, or a shell
+//     command whose syntax names a target) is attributed to that path;
+//   - the host edit journal records the workspace diff for the run, which
+//     attributes a shell mutation whose paths the command text cannot reveal;
+//   - neither is available, so the mutation stays UNATTRIBUTED.
+//
+// A captured journal is authoritative about the workspace: an empty diff means
+// the run changed no captured workspace path, not that evidence is missing.
+func ClassifyMutations(root string, turns []Turn, intent contract.IntentContract, snapshot *TargetSnapshot, provenance MutationProvenance) []ClassifiedMutation {
 	mutationObjective := intent.Kind == contract.ObjectiveMutation
-	if mutationObjective && !hasExplicitScope {
-		// No bounded scope was requested, so "outside the requested scope" has
-		// no meaning. The evaluator handles the unbounded objective separately.
-		return nil
+	workspaceScope, allowedFiles, allowedDirs := mutationScopeForIntent(intent, snapshot)
+
+	var out []ClassifiedMutation
+	seen := map[string]bool{}
+	add := func(mutation ClassifiedMutation) {
+		if mutation.Path == "" {
+			return
+		}
+		key := mutation.Path + "\x00" + string(mutation.Class)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, mutation)
+	}
+	classify := func(path, status, source string) {
+		class := MutationExpected
+		switch {
+		case !mutationObjective:
+			class = MutationUnexpected
+		case !workspaceScope && !pathAllowed(path, allowedFiles, allowedDirs):
+			class = MutationUnexpected
+		}
+		add(ClassifiedMutation{Path: path, Status: status, Class: class, Source: source})
 	}
 
-	var unexpected []string
-	seen := map[string]bool{}
-	add := func(value string) {
-		if value != "" && !seen[value] {
-			seen[value] = true
-			unexpected = append(unexpected, value)
+	for _, change := range provenance.Changes {
+		if change.Path == "" {
+			continue
 		}
+		rel, ok := repositoryRelative(root, change.Path)
+		if !ok {
+			add(ClassifiedMutation{
+				Path:   change.Path,
+				Status: change.Status,
+				Class:  MutationOutsideWorkspace,
+				Source: "journal",
+			})
+			continue
+		}
+		classify(rel, change.Status, "journal")
 	}
+
 	for _, turn := range turns {
 		for _, outcome := range turn.Results {
 			if outcome.Result.IsError {
@@ -665,33 +908,76 @@ func UnexpectedMutations(root string, turns []Turn, intent contract.IntentContra
 			if !mutates {
 				continue
 			}
-			path, ok := observedMutationPath(root, outcome, allowedFiles, allowedDirs)
-			if !ok {
-				if !mutationObjective || hasExplicitScope {
-					add("<unattributed>")
+			paths := observedMutationPaths(root, outcome, allowedFiles, allowedDirs)
+			if len(paths) == 0 {
+				if !provenance.Captured {
+					add(ClassifiedMutation{
+						Path:   "<unattributed>",
+						Class:  MutationUnattributed,
+						Source: "unattributed",
+					})
 				}
 				continue
 			}
-			if !mutationObjective {
-				add(path)
-				continue
-			}
-			if !pathAllowed(path, allowedFiles, allowedDirs) {
-				add(path)
+			for _, path := range paths {
+				classify(path, "", "tool")
 			}
 		}
 	}
-	sort.Strings(unexpected)
-	return unexpected
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Path != out[j].Path {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].Class < out[j].Class
+	})
+	return out
+}
+
+// UnexpectedMutations returns the paths a completion decision must report as
+// outside the requested scope or outside the workspace when no journal evidence
+// is available. Unattributed mutations are returned by ClassifyMutations, not
+// folded into this list.
+func UnexpectedMutations(root string, turns []Turn, intent contract.IntentContract, snapshot *TargetSnapshot) []string {
+	return UnexpectedMutationsWithProvenance(root, turns, intent, snapshot, MutationProvenance{})
+}
+
+// UnexpectedMutationsWithProvenance is UnexpectedMutations with the run's
+// journal evidence.
+func UnexpectedMutationsWithProvenance(root string, turns []Turn, intent contract.IntentContract, snapshot *TargetSnapshot, provenance MutationProvenance) []string {
+	var out []string
+	for _, mutation := range ClassifyMutations(root, turns, intent, snapshot, provenance) {
+		switch mutation.Class {
+		case MutationUnexpected, MutationOutsideWorkspace:
+			out = append(out, mutation.Path)
+		}
+	}
+	return uniqueSorted(out)
 }
 
 // ObservedMutationPaths returns the repository-relative paths the runtime can
-// attribute to definite mutations in the run. It is used to bound a targetless
-// behavioural objective to the packages that actually changed.
+// attribute to definite mutations in the run without journal evidence.
 func ObservedMutationPaths(root string, turns []Turn, snapshot *TargetSnapshot) []string {
+	return ObservedMutationPathsWithProvenance(root, turns, snapshot, MutationProvenance{})
+}
+
+// ObservedMutationPathsWithProvenance is ObservedMutationPaths with the run's
+// journal evidence. It is used to bound a targetless behavioural objective to
+// the packages that actually changed.
+func ObservedMutationPathsWithProvenance(root string, turns []Turn, snapshot *TargetSnapshot, provenance MutationProvenance) []string {
 	allowedFiles, allowedDirs := allowedTargetScope(snapshot)
-	var out []string
 	seen := map[string]bool{}
+	var out []string
+	add := func(path string) {
+		if path != "" && !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	for _, change := range provenance.Changes {
+		if rel, ok := repositoryRelative(root, change.Path); ok {
+			add(rel)
+		}
+	}
 	for _, turn := range turns {
 		for _, outcome := range turn.Results {
 			if outcome.Result.IsError {
@@ -701,15 +987,61 @@ func ObservedMutationPaths(root string, turns []Turn, snapshot *TargetSnapshot) 
 			if !mutates {
 				continue
 			}
-			path, ok := observedMutationPath(root, outcome, allowedFiles, allowedDirs)
-			if ok && !seen[path] {
-				seen[path] = true
-				out = append(out, path)
+			for _, path := range observedMutationPaths(root, outcome, allowedFiles, allowedDirs) {
+				add(path)
 			}
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// mutationScopeForIntent resolves the explicit mutation scope.
+//
+// The contract's MutationScope is authoritative when set. Older contracts and
+// direct test fixtures fall back to the captured snapshot and then to the
+// request's own path targets. A mutation objective whose scope cannot be
+// determined is treated as workspace-scoped: that is the only boundary the
+// runtime can actually enforce, and it does not turn a semantic target into a
+// path.
+func mutationScopeForIntent(intent contract.IntentContract, snapshot *TargetSnapshot) (bool, map[string]bool, []string) {
+	files := map[string]bool{}
+	var dirs []string
+	switch intent.MutationScope.Kind {
+	case contract.MutationScopeWorkspace:
+		return true, files, dirs
+	case contract.MutationScopePaths:
+		for _, value := range intent.MutationScope.Files {
+			files[value] = true
+		}
+		dirs = append(dirs, intent.MutationScope.Directories...)
+		for _, target := range intent.Targets {
+			if target.Kind == contract.TargetPath && target.Directory {
+				dirs = append(dirs, target.Value)
+			}
+		}
+		return false, files, uniqueStrings(dirs)
+	}
+	if snapshot != nil && len(snapshot.Entries) > 0 {
+		files, dirs = allowedTargetScope(snapshot)
+		if len(files) > 0 || len(dirs) > 0 {
+			return false, files, dirs
+		}
+	}
+	for _, target := range intent.Targets {
+		if target.Kind != contract.TargetPath {
+			continue
+		}
+		if target.Directory {
+			dirs = append(dirs, target.Value)
+		} else {
+			files[target.Value] = true
+		}
+	}
+	if len(files) > 0 || len(dirs) > 0 {
+		return false, files, uniqueStrings(dirs)
+	}
+	return intent.Kind == contract.ObjectiveMutation, files, dirs
 }
 
 // allowedTargetScope turns a snapshot into exact files and package directories.
@@ -722,6 +1054,10 @@ func allowedTargetScope(snapshot *TargetSnapshot) (map[string]bool, []string) {
 	for _, entry := range snapshot.Entries {
 		switch entry.Target.Kind {
 		case contract.TargetPath, contract.TargetSymbol:
+			if entry.Target.Kind == contract.TargetPath && entry.Target.Directory {
+				dirs = append(dirs, entry.Target.Value)
+				continue
+			}
 			for _, state := range entry.Files {
 				files[state.Path] = true
 			}
@@ -736,22 +1072,45 @@ func allowedTargetScope(snapshot *TargetSnapshot) (map[string]bool, []string) {
 	return files, uniqueStrings(dirs)
 }
 
-// observedMutationPath returns the repository-relative path of one mutation.
-func observedMutationPath(root string, outcome ToolOutcome, allowedFiles map[string]bool, allowedDirs []string) (string, bool) {
+// observedMutationPaths returns the repository-relative paths the runtime can
+// attribute to one mutation outcome.
+//
+// The tool's own AffectedPaths is the strongest evidence because it is
+// produced by the code that performed the write. The authorization scope is
+// the next: a file capability admitted for a concrete path names it. A shell
+// command that mentions a scoped target is the last deterministic fallback.
+func observedMutationPaths(root string, outcome ToolOutcome, allowedFiles map[string]bool, allowedDirs []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(raw string) {
+		if rel, ok := repositoryRelative(root, raw); ok && !seen[rel] {
+			seen[rel] = true
+			out = append(out, rel)
+		}
+	}
+	for _, path := range outcome.Result.AffectedPaths {
+		add(path)
+	}
 	if outcome.Authorization != nil &&
 		outcome.Authorization.Capability == security.CapabilityWrite &&
 		outcome.Authorization.Scope.Class == security.ScopeInside &&
 		outcome.Authorization.Scope.Path != "" {
-		if rel, ok := repositoryRelative(root, outcome.Authorization.Scope.Path); ok {
-			return rel, true
+		add(outcome.Authorization.Scope.Path)
+	}
+	for _, key := range []string{"path", "file", "target"} {
+		if raw := detailString(outcome.Result.Details, key); raw != "" {
+			add(raw)
 		}
+	}
+	if len(out) > 0 {
+		return out
 	}
 	if outcome.Authorization != nil && outcome.Authorization.Capability == security.CapabilityExec {
 		if command := detailString(outcome.Result.Details, "command"); command != "" {
-			// Deterministic attribution: a command that names a target path is
-			// attributed to that path. The runtime does not parse the command's
-			// argument roles, so a shell command that changes several paths is
-			// a documented limitation of exec-scope attribution.
+			// Deterministic attribution: a command that names a scoped target
+			// is attributed to that target. The runtime does not parse the
+			// command's argument roles, so a command that changes several
+			// paths relies on the run's journal diff instead.
 			paths := make([]string, 0, len(allowedFiles))
 			for path := range allowedFiles {
 				paths = append(paths, path)
@@ -759,24 +1118,18 @@ func observedMutationPath(root string, outcome ToolOutcome, allowedFiles map[str
 			sort.Strings(paths)
 			for _, path := range paths {
 				if commandMentions(command, path) {
-					return path, true
+					add(path)
 				}
 			}
 			for _, dir := range allowedDirs {
 				if dir != "." && commandMentions(command, dir) {
-					return dir, true
+					add(dir)
 				}
 			}
 		}
 	}
-	for _, key := range []string{"path", "file", "target"} {
-		if raw := detailString(outcome.Result.Details, key); raw != "" {
-			if rel, ok := repositoryRelative(root, raw); ok {
-				return rel, true
-			}
-		}
-	}
-	return "", false
+	sort.Strings(out)
+	return out
 }
 
 // commandMentions reports whether a command names a path as a whole token.
@@ -828,6 +1181,20 @@ func pathAllowed(path string, files map[string]bool, dirs []string) bool {
 
 // repositoryRelative converts a path to the workspace-relative spelling.
 func repositoryRelative(root, value string) (string, bool) {
+	if strings.TrimSpace(root) == "" {
+		// A caller with no workspace root can still reason about a path that is
+		// already repository-relative. An absolute or escaping path is not a
+		// repository coordinate, so it stays unattributed rather than becoming
+		// a guessed one.
+		value = filepath.ToSlash(strings.TrimSpace(value))
+		value = strings.TrimPrefix(value, "./")
+		if value == "" || value == "." || filepath.IsAbs(value) ||
+			value == ".." || strings.HasPrefix(value, "../") ||
+			strings.Contains(value, "/../") {
+			return "", false
+		}
+		return value, true
+	}
 	scope := security.NormalizeScope(root, value)
 	if scope.Class != security.ScopeInside || scope.Path == "" {
 		return "", false

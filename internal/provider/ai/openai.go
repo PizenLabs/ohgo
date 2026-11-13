@@ -58,8 +58,11 @@ type openAIStreamOptions struct {
 }
 
 type openAIMessage struct {
-	Role       string                 `json:"role"`
-	Content    []openAIContent        `json:"content,omitempty"`
+	Role string `json:"role"`
+	// Content is a string for system and tool messages and a list of content
+	// parts for user and assistant messages. A tool result with no output is
+	// the empty string: a text part with no text is rejected by providers.
+	Content    any                    `json:"content,omitempty"`
 	ToolCalls  []openAIReplayToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string                 `json:"tool_call_id,omitempty"`
 	Name       string                 `json:"name,omitempty"`
@@ -246,7 +249,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (*Stream, erro
 func toOpenAIMessages(messages []Message, system []SystemPromptBlock) ([]openAIMessage, error) {
 	out := make([]openAIMessage, 0, len(messages)+len(system))
 	if text := joinSystem(system); text != "" {
-		out = append(out, openAIMessage{Role: "system", Content: []openAIContent{{Type: "text", Text: text}}})
+		out = append(out, openAIMessage{Role: "system", Content: text})
 	}
 
 	for _, msg := range messages {
@@ -264,7 +267,7 @@ func toOpenAIMessages(messages []Message, system []SystemPromptBlock) ([]openAIM
 				Role:       "tool",
 				ToolCallID: m.ToolCallID,
 				Name:       m.ToolName,
-				Content:    []openAIContent{{Type: "text", Text: m.Text()}},
+				Content:    m.Text(),
 			})
 		default:
 			return nil, fmt.Errorf("ai: unsupported message type %T", msg)
@@ -308,12 +311,16 @@ func toOpenAIUserContent(content []ContentBlock) ([]openAIContent, error) {
 
 func openAIAssistantMessage(msg AssistantMessage) openAIMessage {
 	out := openAIMessage{Role: "assistant"}
+	var parts []openAIContent
 	for _, block := range msg.Content {
 		switch b := block.(type) {
 		case TextContent:
 			if b.Text != "" {
-				out.Content = append(out.Content, openAIContent{Type: "text", Text: b.Text})
+				parts = append(parts, openAIContent{Type: "text", Text: b.Text})
 			}
+		case ThinkingContent:
+			// The wire model has no replayable reasoning channel. The canonical
+			// validator rejects a turn that carries only reasoning.
 		case ToolCall:
 			args, _ := json.Marshal(b.Arguments)
 			out.ToolCalls = append(out.ToolCalls, openAIReplayToolCall{
@@ -326,9 +333,10 @@ func openAIAssistantMessage(msg AssistantMessage) openAIMessage {
 			})
 		}
 	}
-	// OpenAI requires exactly one of content or tool_calls to be present.
-	if len(out.Content) == 0 && len(out.ToolCalls) == 0 {
-		out.Content = append(out.Content, openAIContent{Type: "text", Text: ""})
+	// OpenAI requires exactly one of content or tool_calls to be present. A
+	// tool-call turn omits content entirely; there is no empty text part.
+	if len(parts) > 0 {
+		out.Content = parts
 	}
 	return out
 }

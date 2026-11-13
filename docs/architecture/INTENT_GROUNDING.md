@@ -247,7 +247,12 @@ claim. “No test files were surfaced in the probes — worth verifying” descr
 this run's observations and names the limitation; it completes. The same
 sentence with a global scope (“no test files exist in the repository”) is still
 an absence conclusion and needs coverage. “Not evaluated”, “not checked”, “no
-evidence”, and “worth verifying” are explicit lower-assertion forms. A claim
+evidence”, and “worth verifying” are explicit lower-assertion forms. The bound
+may also sit in the claim itself: “no tests detected in inspected scope”,
+“nothing in the files read”, “the test inventory wasn't queried”. Those name
+what was inspected or what never ran, so they are reports, not repository
+conclusions. The global-scope veto outranks every bounded form: one bounded
+phrase cannot excuse a repository-wide claim in the same sentence. A claim
 that a check did not run (“no tests were run”) is a fact about the run, not a
 repository property. The same holds for a change report: “no files were
 modified” describes what the run did to the workspace. It is not an absence

@@ -60,7 +60,7 @@ func capturingLoop(t *testing.T, requests *int32, systems *[][]ai.SystemPromptBl
 				Content: []ai.ContentBlock{ai.TextContent{Text: "answer"}},
 			}), nil
 		},
-		Tools: []agent.Tool{&idleTool{}},
+		Tools: runtimeCaps(&idleTool{}),
 	})
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)

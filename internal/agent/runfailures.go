@@ -22,6 +22,13 @@ var (
 	// ErrToolNormalizationFailed means provider tool-call syntax could not be
 	// normalized into canonical calls after the bounded recovery request.
 	ErrToolNormalizationFailed = errors.New("agent: TOOL_NORMALIZATION_FAILED")
+	// ErrInvalidProviderContext means the assembled outbound conversation
+	// violates the provider-independent canonical contract. It is an internal
+	// construction/serialization failure, not a provider or model failure: the
+	// request never leaves the runtime, and the message names the offending
+	// index, role, provenance, and shape so the constructing stage is
+	// identifiable. See ai.ValidateMessages.
+	ErrInvalidProviderContext = errors.New("agent: INVALID_PROVIDER_CONTEXT")
 )
 
 // Failure classes attached to Result.FailureClass. They are strings because a
@@ -47,6 +54,16 @@ const (
 	// ToolFailureExecutionFailed is an execution that started and did not
 	// complete. It never implies that retrying is safe.
 	ToolFailureExecutionFailed = "tool_execution_failed"
+	// ToolFailureOutsideWorkspace is a command refused before execution
+	// because its own syntax names a persistent write outside the authorized
+	// workspace. Nothing ran, so this is a control decision, not a failed
+	// action.
+	ToolFailureOutsideWorkspace = "outside_workspace"
+	// ToolFailureCapabilityUnavailable is a proposal for a capability the task
+	// surface does not offer. Nothing ran. It is discovery feedback for the
+	// model, distinct from an execution failure, and the control plane blocks
+	// the task before this can happen for a *required* capability.
+	ToolFailureCapabilityUnavailable = "tool_capability_unavailable"
 )
 
 // normalizationFailureReason renders structured normalization evidence without

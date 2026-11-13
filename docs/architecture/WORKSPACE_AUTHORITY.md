@@ -382,6 +382,52 @@ BUILD answers the question because reading is within BUILD's authority.
 A turn is a boundary: the next turn is routed from the workspace in force at
 that point. No transient handler state is carried back.
 
+### Capability preflight
+
+Authority is a permission, not a guarantee. BUILD may mutate, but only if a
+capability that mutates was built. The two facts are separate and the runtime
+checks both, in this order:
+
+```text
+intent contract   → required capabilities   (contract.RequiredCapabilities)
+constructed tools → available operations    (agent.AvailableOperations)
+live authority    → permitted operations    (workspace.Workspace.Permits)
+                  → ready | capability_unavailable | authority_denied
+```
+
+`workspace.PreflightTurn` answers this before the first model turn. When a
+mandatory capability is absent the turn is refused with **zero model turns**: no
+provider request, no tool call, no prose explaining the limit. The task is
+recorded as BLOCKED with the class `CAPABILITY_UNAVAILABLE`, which is distinct
+from a model failure, a verification failure, or a review.
+
+The projection enforces the same invariant on every later request
+(`cognition.CapabilityGap` → `agent.ProjectionReport.MissingCapabilities`). A
+projection that reports a missing mandatory capability is not sent; the loop
+returns `agent.ErrCapabilityUnavailable` before the provider call. That is what
+makes "the model discovers it cannot act" unreachable rather than merely
+unlikely.
+
+Requirements are derived from the contract, never from the model and never from
+a fixed list per workspace:
+
+| Contract | Required capabilities |
+| --- | --- |
+| informational | read |
+| execution | read, command execution |
+| mutation | read, the mutation operation the request names (create/modify/delete), command execution when a check is required |
+| conditional mutation | read (the investigation phase it starts with) |
+
+Reading is required but not blocking: an answer can be produced from the
+conversation, and a repository-scoped answer with no observation is already a
+review verdict the evidence layer reports. Mutation and execution are blocking
+because without them the requested work cannot happen at all.
+
+Authority and capability are reported separately. A request the live workspace
+forbids is `AUTHORITY_DENIED` (`RouteTurn` refuses it, or `PhaseContract`
+projects it to its informational phase); a request no constructed capability can
+perform is `CAPABILITY_UNAVAILABLE`. Neither is collapsed into `NEEDS_REVIEW`.
+
 ---
 
 ## 6. Escalation and cooperation
@@ -665,6 +711,46 @@ crossing ASK prints the required target and asks for an explicit `/ask`,
 `/fuzz`, or `/build`, then the user resends the request. It never runs a
 human-boundary request under the wrong authority.
 
+### What an approval approves
+
+A widening confirmation is a decision about the request that triggered it, and
+the record says so. When that request states its own executable objective, the
+handoff carries it as `ApprovedObjective` alongside the task objective it
+started under:
+
+```text
+ASK   "what is this project?"                     informational task
+user  "ok, convert this project to Next.js"       mutation objective
+      -> handoff { from: ask, to: build,
+                   objective:         "what is this project?",
+                   approvedObjective: "ok, convert this project to Next.js" }
+human approves
+BUILD turn runs the approved objective's contract
+```
+
+The applied transition re-scopes the task to the objective the approving turn
+carries. Identity, carried context, and observed evidence survive — they
+describe the repository, not the question — while the completion contract and
+its declared requirements belong to the approved objective.
+
+Adoption is decided by the approval's lifecycle, not by comparing prose. The
+recorded objective is the approving request's own text; the turn's contract may
+be derived from a prepared form of it, because a long prompt is compressed before
+the model sees it. What is authoritative is that a human approved moving
+authority for the turn that follows the decision — that turn's contract is the
+one to run. A handoff that recorded no new objective preserves the task's
+objective and still requires an exact match, so an unrelated prompt conflicts
+with the open task instead of inheriting it.
+
+A request that states no executable objective (a question, an acknowledgement,
+`do it`) approves nothing new and leaves the task's objective in force.
+
+Without this, a BUILD turn runs the previous informational contract: the task
+shape permits reading only, the model is offered no mutation or execution
+capability, and an execution request is answered with a manual plan. The
+capability preflight is not a substitute for this rule — the runtime did have the
+capability; the contract selected for the turn did not ask for it.
+
 ## 11. Tests
 
 The invariants are behavioural: they assert that a call never executes, not
@@ -719,6 +805,13 @@ that a classifier returned a string.
 | A failed check resolves after correction | `agent.TestEvaluateCompletionResolvesAFailedVerificationAfterCorrection` |
 | A verification artifact needs an observed check | `agent.TestLoopTracksVerificationAfterTheLastDefiniteChange`, `tools.TestArtifactVerificationRequiresAnObservedCheck`, `cmd/ohgo.TestArtifactToolFollowsTheLiveWorkspace` |
 | Model specialization survives a switch | `cmd/ohgo.TestSwitchWorkspaceRebindsTheRoleModel` |
+| Capability preflight blocks before the model runs | `workspace.TestPreflightBlocksMutationWithoutMutationCapability`, `workspace.TestPreflightBlocksExecutionWithoutExecutionCapability`, `tui.TestBuildMutationIsBlockedBeforeTheModelWithoutMutationCapability`, `agent.TestMissingCapabilityStopsBeforeTheModelTurn` |
+| Capability and authority are different verdicts | `workspace.TestPreflightDistinguishesAuthorityFromCapability` |
+| A performable objective still reaches the model | `tui.TestBuildMutationReachesTheModelWhenTheCapabilityExists`, `agent.TestReadyProjectionStillReachesTheModel`, `workspace.TestPreflightReadyWhenTheSurfaceCanPerformTheObjective` |
+| Requirements are minimal and contract-derived | `contract.TestMutationContractRequiresReadMutateAndExecute`, `contract.TestInformationalContractRequiresReadOnly`, `contract.TestUndirectedMutationIsSatisfiedByEitherWriteOrPatch`, `contract.TestReadRequirementDoesNotBlock`, `contract.TestUnmetCapabilitiesReportsTheBlockingGap` |
+| A deferred phase is not a capability gap | `workspace.TestPreflightAcceptsDeferredPhaseUnderLowerAuthority` |
+| A withheld proposal is a capability rejection, not a failure | `agent.TestWithheldToolProposalIsACapabilityRejection` |
+| An approval covers the turn it was granted for | `task.TestApprovedHandoffAdoptsTheApprovedObjective`, `task.TestApprovedHandoffAdoptsTheContractOfTheTurnThatFollowsIt`, `task.TestHandoffWithoutAnApprovedObjectiveDoesNotAdoptAnotherObjective`, `tui.TestHumanApprovedHandoffRunsTheApprovedObjective`, `tui.TestHumanApprovalCoversTheTurnThatFollowsIt`, `tui.TestApprovedTransitionObjectiveOnlyTakesExecutableRequests`, `tui.TestPendingHandoffWithoutApprovedObjectiveKeepsTheTaskContract` |
 | A rework follow-up is a mutation objective | `workspace.TestClassifyTreatsReworkAsRepositoryChange`, `cognition.TestBuildShapeAllowsMutationForAReworkObjectiveInBuild`, `tui.TestRedesignFollowUpStartsANewMutationTaskAndCannotProveFromDesignWork` |
 | A question about a rework stays informational | `workspace.TestClassifyKeepsReworkQuestionsInformational` |
 | A rework under ASK is refused before the model | `tui.TestRedesignUnderAskIsRefusedBeforeTheModel` |
