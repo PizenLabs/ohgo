@@ -204,6 +204,11 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// A resumed task that already applied a change must stay in verification
 	// even though this run starts with no mutation of its own.
 	execution := ExecutionFromEvidence(p.Evidence)
+	// Capability availability is a fact about the runtime, not about this
+	// turn's evidence, so it is resolved before any stage or budget narrowing.
+	// A gap here means no later turn can succeed either.
+	available := agent.AvailableOperations(req.Tools)
+	gaps := CapabilityGap(shape, available)
 	// Sufficiency is an evidence verdict, not a resource verdict. Budget
 	// exhaustion withholds tools (Candidates checks it directly), but a
 	// proven change followed by a successful check must not be downgraded just
@@ -289,6 +294,17 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	report.Excluded = candidates.Excluded
 	report.ExperienceApplied = append([]string(nil), advice.Matched...)
 	report.ExperienceHints = append([]string(nil), advice.Hints...)
+	report.RequiredCapabilities = capabilityLabels(shape.RequiredCapabilities)
+	report.AvailableOperations = operationLabels(available)
+	report.MissingCapabilities = capabilityLabels(gaps)
+	// A required capability the runtime cannot perform closes the action
+	// surface for the same reason a completed objective does: no proposal can
+	// make progress. The loop refuses to send the request at all, so the model
+	// is never asked to explain a limit it cannot act on.
+	if len(gaps) > 0 {
+		candidates.Tools = []agent.Tool{}
+		candidates.AnswerOnly = true
+	}
 	report.Sufficiency = string(suff.State)
 	report.Stage = string(suff.Stage)
 	report.Progress = "advancing"
@@ -312,6 +328,10 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		(shape.Kind == contract.ObjectiveInformational && suff.Kind == BlockCapabilityFailure)
 	report.Terminal = suff.Kind == BlockCapabilityFailure || suff.Kind == BlockProgressStalled
 	switch {
+	case len(gaps) > 0:
+		// The capability verdict is the actual reason this request cannot
+		// run, so it takes precedence over a secondary evidence verdict.
+		report.StopReason = capabilityGapReason(gaps)
 	case suff.Kind == BlockProgressStalled:
 		report.StopReason = "no meaningful task progress: " + strings.Join(suff.Reasons, "; ")
 	case report.Terminal:

@@ -144,9 +144,20 @@ func newSubagentSpawner(opts options, registry *ai.Registry, parentTools []agent
 			authority = opts.authority().String()
 		}
 		facts := cognition.ProbeFacts(opts.root)
-		shape := cognition.BuildShape(intent, cognition.ShapeParams{
+		// The same phase projection the top-level paths use: an assignment the
+		// child's authority cannot perform is judged by the informational phase
+		// it can produce. Without this the child's shape would claim a mutation
+		// under a read-only authority, which no other host does.
+		shapeIntent, phaseDeferred := intent, false
+		if parsed, err := workspace.Parse(authority); err == nil {
+			if phase, deferred := workspace.PhaseContract(intent, parsed); deferred {
+				shapeIntent, phaseDeferred = phase, true
+			}
+		}
+		shape := cognition.BuildShape(shapeIntent, cognition.ShapeParams{
 			Authority: authority,
 			Intent:    "execute",
+			Phase:     phaseDeferred,
 			Facts:     facts,
 			Snapshot:  spec.Snapshot,
 		})

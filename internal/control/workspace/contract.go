@@ -21,6 +21,28 @@ type (
 	VerificationCheck       = contract.VerificationCheck
 	VerificationRequirement = contract.VerificationRequirement
 	IntentContract          = contract.IntentContract
+	Operation               = contract.Operation
+	Capability              = contract.Capability
+	CapabilityNeed          = contract.CapabilityNeed
+)
+
+const (
+	// Request capabilities.
+	CapabilityRead        = contract.CapabilityRead
+	CapabilityExecute     = contract.CapabilityExecute
+	CapabilityInvestigate = contract.CapabilityInvestigate
+	CapabilityMutate      = contract.CapabilityMutate
+)
+
+const (
+	OpRead    = contract.OpRead
+	OpSearch  = contract.OpSearch
+	OpInspect = contract.OpInspect
+	OpExec    = contract.OpExec
+	OpWrite   = contract.OpWrite
+	OpPatch   = contract.OpPatch
+	OpDelete  = contract.OpDelete
+	OpMove    = contract.OpMove
 )
 
 const (

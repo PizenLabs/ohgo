@@ -112,6 +112,12 @@ func projectTaskVerdict(verdict agent.RunVerdict, reason string, phase bool) (ta
 		// Cancellation is a pause, not a failure verdict: the human's stop is
 		// the more truthful transition for a non-terminal run.
 		return taskActionPause, reason
+	case agent.RunBlocked:
+		// The objective needs a capability this runtime cannot provide. The
+		// task becomes BLOCKED (a failed lifecycle, never a review of work
+		// that did not happen), and the reason carries the machine-readable
+		// class so a diagnostic path can distinguish it from a model failure.
+		return taskActionFail, agent.RunBlocked.String() + ": " + reason
 	case agent.RunFailed:
 		return taskActionFail, reason
 	default: // agent.RunPaused

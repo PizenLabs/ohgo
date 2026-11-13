@@ -90,8 +90,39 @@ immutable.
   metadata; a broad project survey now requires an observed source read before
   it can close. The state block names that missing class directly.
 
+### Added
+
+- Capability preflight: `contract.IntentContract.RequiredCapabilities` derives
+  the operations an objective needs (reading, the mutation operation the request
+  names, command execution when the contract requires a check) and
+  `workspace.PreflightTurn` compares them against the constructed tool set and
+  the live authority before the first model turn. A missing mandatory capability
+  is refused with zero provider requests, no tool call, and a task recorded as
+  BLOCKED with the class `CAPABILITY_UNAVAILABLE`; it is not a model failure, a
+  verification failure, or a review. `cognition.CapabilityGap` enforces the same
+  invariant on every later request through
+  `agent.ProjectionReport.MissingCapabilities`, and the loop returns
+  `agent.ErrCapabilityUnavailable` before it sends the request. Reading is
+  required but not blocking: an observation-free answer is still the evidence
+  layer's review verdict.
+- `RunVerdict.String()` names the run classification (`COMPLETED`,
+  `NEEDS_REVIEW`, `PAUSED`, `FAILED`, `CANCELLED`, `CAPABILITY_UNAVAILABLE`) so
+  the TUI, the headless verdict, and durable task records share one vocabulary.
+
 ### Fixed
 
+- An approved widening transition now runs the objective it approved. The handoff
+  records the approving request's objective (`Handoff.ApprovedObjective`), the
+  turn gate attaches only that objective, and `Controller.Begin` re-scopes the
+  task's completion contract to it while keeping identity, carried context, and
+  observed evidence. Previously ASK → BUILD ran the task's previous
+  informational contract, so the BUILD turn was shaped as a read-only
+  investigation: no write or command capability was offered, the model reported
+  that it could not edit, and an execution request came back as a manual
+  implementation plan.
+- A capability the task surface withholds is now classified as
+  `tool_capability_unavailable` instead of an unclassified candidate rejection,
+  so a withheld proposal is diagnosable without parsing prose.
 - A reasoning-only assistant turn is no longer replayed as conversation
   content. The retried empty answer stayed in the run's turns, and every host
   rebuilt its next request from them; the resulting assistant message had no

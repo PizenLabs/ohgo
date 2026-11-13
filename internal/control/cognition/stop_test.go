@@ -23,9 +23,15 @@ func readTurn(callID, path, body string) agent.Turn {
 
 func informationalProjection(t *testing.T, shape TaskShape, turns []agent.Turn) agent.ProjectionResult {
 	t.Helper()
+	// The production runtime always builds a mutation and a command
+	// capability; these fixtures describe objectives that need them, so a
+	// read-only surface would be reported as a capability block instead of
+	// exercising the projection rule under test.
 	tools := []agent.Tool{
 		testTool{name: "read", tier: agent.TierRead},
 		testTool{name: "ls", tier: agent.TierRead},
+		testTool{name: "write", tier: agent.TierWrite},
+		testTool{name: "bash", tier: agent.TierExec},
 	}
 	projector := NewProjector(shape, NewEvidenceState(), RepositoryFacts{Go: true})
 	return projector.Project(agent.ProjectionRequest{
@@ -255,7 +261,11 @@ func TestProjectorStopsAfterConsecutiveNoProgressInVerification(t *testing.T) {
 	evidence := NewEvidenceState()
 	evidence.ObserveOutcome(writeEvidence("write-1", "README.md"))
 	projector := NewProjector(shape, evidence, RepositoryFacts{Go: true})
-	tools := []agent.Tool{testTool{name: "read", tier: agent.TierRead}}
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "write", tier: agent.TierWrite},
+		testTool{name: "bash", tier: agent.TierExec},
+	}
 
 	request := func(turns []agent.Turn) agent.ProjectionResult {
 		return projector.Project(agent.ProjectionRequest{

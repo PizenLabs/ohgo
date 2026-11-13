@@ -124,6 +124,17 @@ type ProjectionReport struct {
 	// ExperienceHints are the bounded advisory lines appended to the runtime
 	// state block. They are guidance, never a capability or completion claim.
 	ExperienceHints []string `json:"experience_hints,omitempty"`
+	// RequiredCapabilities names the capabilities the objective needs, in
+	// shape order. It is derived from the completion contract, never from
+	// model output.
+	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
+	// AvailableOperations names what the constructed tool set can perform.
+	// It is the availability fact the preflight compared against.
+	AvailableOperations []string `json:"available_operations,omitempty"`
+	// MissingCapabilities names the required capabilities the runtime cannot
+	// perform. Non-empty means the loop must not send this request: the
+	// objective cannot be executed, and a model turn would only discover it.
+	MissingCapabilities []string `json:"missing_capabilities,omitempty"`
 }
 
 // ProjectionElision is one tool-result replacement in a projection.

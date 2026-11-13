@@ -19,7 +19,7 @@ import (
 // its own types. Vocabularies stay separate; the decision does not.
 type RunVerdict int
 
-// Run verdicts.
+// RunVerdicts and their classes.
 const (
 	// RunCompleted means the contract was satisfied by observed evidence.
 	RunCompleted RunVerdict = iota
@@ -36,7 +36,37 @@ const (
 	// status, or a transcript marked interrupted), but neither may treat it as
 	// success.
 	RunCancelled
+	// RunBlocked means the objective cannot be executed by this runtime: a
+	// required capability is unavailable or the live authority forbids it. It
+	// is not a model failure and not a review: nothing ran, and repeating the
+	// turn cannot change the outcome until the human changes the runtime or
+	// the objective.
+	RunBlocked
 )
+
+// String returns the machine-readable class of the verdict.
+//
+// It is the vocabulary durable records and diagnostics carry, so a shell never
+// has to re-invent the class name or parse a reason string. A blocked capability
+// is `CAPABILITY_UNAVAILABLE`, which is deliberately not the same word as a
+// failed run or a review.
+func (v RunVerdict) String() string {
+	switch v {
+	case RunCompleted:
+		return "COMPLETED"
+	case RunNeedsReview:
+		return "NEEDS_REVIEW"
+	case RunPaused:
+		return "PAUSED"
+	case RunFailed:
+		return "FAILED"
+	case RunCancelled:
+		return "CANCELLED"
+	case RunBlocked:
+		return "CAPABILITY_UNAVAILABLE"
+	}
+	return "UNKNOWN"
+}
 
 // ClassifyRun maps a finished run's error and evidence to one verdict and its
 // evidence reason.
@@ -72,6 +102,16 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 			reason = "the runtime closed the task because no further action can make progress"
 		}
 		return RunNeedsReview, reason
+	case errors.Is(err, ErrCapabilityUnavailable):
+		// The control plane refused the turn before the provider was called.
+		// Nothing executed and no model output exists, so this is neither a
+		// model failure nor a review of work: the objective is unreachable in
+		// this runtime until a capability or the objective changes.
+		reason := strings.TrimSpace(strings.TrimPrefix(err.Error(), ErrCapabilityUnavailable.Error()+": "))
+		if reason == "" {
+			reason = "a required capability is unavailable in this runtime"
+		}
+		return RunBlocked, reason
 	case errors.Is(err, ErrNoModelOutput), errors.Is(err, ErrExecutionIntentWithoutTool),
 		errors.Is(err, ErrToolNormalizationFailed):
 		// These are model/protocol lifecycle failures before any requested

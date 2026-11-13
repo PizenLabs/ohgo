@@ -86,50 +86,6 @@ func (w Workspace) Purpose() string {
 	return "unknown"
 }
 
-// Operation is a class of action a tool may perform.
-//
-// Operations are coarser than tool names and finer than "mutation": the
-// authority boundary cares whether an action changes the repository, not which
-// tool implemented it.
-type Operation string
-
-// Operations.
-const (
-	// OpRead reads a file or resource without changing it.
-	OpRead Operation = "read"
-	// OpSearch finds files or text without changing them.
-	OpSearch Operation = "search"
-	// OpInspect examines state (repository, dependencies, git) without
-	// changing it.
-	OpInspect Operation = "inspect"
-	// OpExec runs a process. Execution is not mutation: a process may run in
-	// a workspace that cannot change the repository (§5.2).
-	OpExec Operation = "exec"
-	// OpWrite creates or modifies a file.
-	OpWrite Operation = "write"
-	// OpPatch applies an in-place edit.
-	OpPatch Operation = "patch"
-	// OpDelete removes a file.
-	OpDelete Operation = "delete"
-	// OpMove renames or moves a file.
-	OpMove Operation = "move"
-)
-
-// Mutates reports whether an operation changes the repository.
-//
-// It is the exported form of the mutation test, so the security layer can
-// classify a request as state-changing without duplicating the rule.
-func (op Operation) Mutates() bool { return op.mutation() }
-
-// mutation reports whether an operation changes the repository.
-func (op Operation) mutation() bool {
-	switch op {
-	case OpWrite, OpPatch, OpDelete, OpMove:
-		return true
-	}
-	return false
-}
-
 // Encompasses reports whether w holds at least other's authority.
 //
 // The three authorities form a strict chain — ASK ⊂ FUZZ ⊂ BUILD — because
@@ -163,7 +119,7 @@ func authorityRank(w Workspace) int {
 // classify is not one it can grant (`The model proposes, the runtime
 // decides`).
 func (w Workspace) Permits(op Operation) bool {
-	if op.mutation() {
+	if op.Mutates() {
 		return w == Build
 	}
 	switch op {
@@ -235,7 +191,7 @@ func Admit(w Workspace, op Operation) error {
 // reasonFor names why an operation was refused, so the refusal is legible.
 func reasonFor(w Workspace, op Operation) string {
 	switch {
-	case op.mutation():
+	case op.Mutates():
 		return ReasonMutationNotPermitted
 	case op == OpExec:
 		return ReasonExecNotPermitted

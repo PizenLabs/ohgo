@@ -53,7 +53,7 @@ func TestRedesignFollowUpStartsANewMutationTaskAndCannotProveFromDesignWork(t *t
 	loop, err := agent.New(agent.Config{
 		Model:    ai.Model{ID: "m", Provider: "p"},
 		Stream:   stream,
-		Tools:    []agent.Tool{&idleTool{}},
+		Tools:    runtimeCaps(&idleTool{}),
 		MaxTurns: 8,
 	})
 	if err != nil {

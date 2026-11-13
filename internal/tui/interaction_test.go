@@ -9,6 +9,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
 	"github.com/PizenLabs/ohgo/internal/execution/exec"
+	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -346,7 +347,12 @@ func scriptedLoop(t *testing.T, texts ...string) *agent.Loop {
 	loop, err := agent.New(agent.Config{
 		Model:  ai.Model{ID: "m", Provider: "p"},
 		Stream: stream,
-		Tools:  []agent.Tool{&idleTool{}},
+		// The production runtime always builds a read, a mutation, and an
+		// execution capability. A scripted loop with only one of them would be
+		// refused by the capability preflight instead of exercising the turn
+		// behaviour under test. None of these is ever called: the scripted
+		// answers request no tools.
+		Tools: runtimeCaps(&idleTool{}),
 	})
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
@@ -354,8 +360,60 @@ func scriptedLoop(t *testing.T, texts ...string) *agent.Loop {
 	return loop
 }
 
-// idleTool is never called: the scripted answers request no tools.
+// runtimeCaps completes a fixture's tool set with the capabilities the
+// production runtime always builds: a repository mutation capability and a
+// command capability.
+//
+// Tests about continuity, routing, presentation, or completion are not about
+// what the runtime can do, and a fixture with only one of those capabilities
+// would be refused by the capability preflight before reaching the behaviour
+// under test. The added tools are never called by the scripted answers.
+func runtimeCaps(tools ...agent.Tool) []agent.Tool {
+	names := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		names[tool.Name()] = true
+	}
+	if !names["write"] {
+		tools = append(tools, idleWriteTool{})
+	}
+	if !names["bash"] {
+		tools = append(tools, idleExecTool{})
+	}
+	return tools
+}
+
+// idleTool is never called: the scripted answers request no tools. It declares
+// the read/execution capability the production runtime always builds.
 type idleTool struct{ blockingTool }
+
+// idleWriteTool declares the mutation capability so a scripted mutation
+// objective is not refused by the capability preflight. It never runs.
+type idleWriteTool struct{}
+
+func (idleWriteTool) Name() string                   { return "write" }
+func (idleWriteTool) Description() string            { return "idle write capability" }
+func (idleWriteTool) Parameters() *jsonschema.Schema { return nil }
+func (idleWriteTool) Approval() agent.Approval {
+	return agent.Approval{Tier: agent.TierWrite}
+}
+func (idleWriteTool) Exclusive(map[string]any) bool { return false }
+func (idleWriteTool) Execute(agent.Context, map[string]any) agent.Result {
+	return agent.Result{Text: "idle write"}
+}
+
+// idleExecTool declares a command capability for the same reason.
+type idleExecTool struct{}
+
+func (idleExecTool) Name() string                   { return "bash" }
+func (idleExecTool) Description() string            { return "idle command capability" }
+func (idleExecTool) Parameters() *jsonschema.Schema { return nil }
+func (idleExecTool) Approval() agent.Approval {
+	return agent.Approval{Tier: agent.TierExec}
+}
+func (idleExecTool) Exclusive(map[string]any) bool { return false }
+func (idleExecTool) Execute(agent.Context, map[string]any) agent.Result {
+	return agent.Result{Text: "idle exec"}
+}
 
 func TestQueuedPromptsDrainInOrder(t *testing.T) {
 	p := NewProgram(scriptedLoop(t, "one", "two"), "test", 0)

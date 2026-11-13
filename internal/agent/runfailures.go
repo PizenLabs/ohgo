@@ -54,6 +54,11 @@ const (
 	// ToolFailureExecutionFailed is an execution that started and did not
 	// complete. It never implies that retrying is safe.
 	ToolFailureExecutionFailed = "tool_execution_failed"
+	// ToolFailureCapabilityUnavailable is a proposal for a capability the task
+	// surface does not offer. Nothing ran. It is discovery feedback for the
+	// model, distinct from an execution failure, and the control plane blocks
+	// the task before this can happen for a *required* capability.
+	ToolFailureCapabilityUnavailable = "tool_capability_unavailable"
 )
 
 // normalizationFailureReason renders structured normalization evidence without

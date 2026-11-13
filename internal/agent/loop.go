@@ -29,6 +29,15 @@ var ErrTurnLimit = errors.New("agent: turn limit reached")
 // must report it as review rather than success.
 var ErrTaskBlocked = errors.New("agent: task blocked")
 
+// ErrCapabilityUnavailable means the objective requires an operation the
+// runtime cannot perform, discovered before the model was asked to act.
+//
+// It is deliberately distinct from ErrTaskBlocked and from a failed execution:
+// nothing ran, nothing failed, and no model turn was spent. The caller must
+// report it as a blocked capability rather than a review or a model failure, so
+// the human can decide whether to enable the capability or change the objective.
+var ErrCapabilityUnavailable = errors.New("agent: capability unavailable")
+
 // DefaultMaxTurns bounds a run when the caller does not choose a budget.
 //
 // The deadline bounds money spent on wall-clock time; this bounds the number
@@ -914,6 +923,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			report.Messages = len(requestMessages)
 			if l.cfg.OnProjection != nil {
 				l.cfg.OnProjection(report)
+			}
+			// The control plane resolved the objective's required capabilities
+			// and the runtime cannot perform one of them. No later turn can
+			// either, so the request is never sent: the model is not asked to
+			// discover a limit by proposing an action that cannot run, and the
+			// turn is not spent on prose that explains it.
+			if len(report.MissingCapabilities) > 0 {
+				reason := strings.TrimSpace(report.StopReason)
+				if reason == "" {
+					reason = "the runtime cannot perform a required capability: " +
+						strings.Join(report.MissingCapabilities, ", ")
+				}
+				return turns, fmt.Errorf("%w: %s", ErrCapabilityUnavailable, reason)
 			}
 		} else if forceAnswer {
 			activeTools = []Tool{}
@@ -1851,6 +1873,7 @@ func (l *Loop) execute(
 				Result: Result{
 					Text:              fmt.Sprintf("No tool is available in the current task stage; this call is not offered for the objective. Answer from the evidence already established. Ignored call: %q.", call.Name),
 					IsError:           true,
+					FailureClass:      ToolFailureCapabilityUnavailable,
 					CandidateRejected: true,
 					AnswerRequired:    !policyRefusal,
 				},
@@ -1869,6 +1892,7 @@ func (l *Loop) execute(
 					Text: fmt.Sprintf("Tool %q is not offered in the current task stage. Available tools: %s.",
 						call.Name, strings.Join(sorted(names), ", ")),
 					IsError:           true,
+					FailureClass:      ToolFailureCapabilityUnavailable,
 					CandidateRejected: true,
 				},
 			}

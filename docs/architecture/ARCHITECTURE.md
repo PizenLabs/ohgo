@@ -287,6 +287,39 @@ Compaction itself is injected, never constructed in the loop: `New` fails
 without a summarizer when compaction is enabled, and the summarizer takes
 its `StreamFn` as a parameter so tests substitute a stub.
 
+### Capability preflight
+
+Before a turn is admitted, the control plane compares what the objective needs
+against what this runtime can actually do:
+
+```text
+contract.RequiredCapabilities     read, and the operations the objective needs
+agent.AvailableOperations(tools)  what the constructed tool set can perform
+workspace.Workspace.Permits       what the live authority allows
+```
+
+`workspace.PreflightTurn` is the host-side verdict and
+`cognition.CapabilityGap` the per-request one. Both are deterministic: no model
+call, no repository probe, no second planner. A missing *mandatory* capability
+(mutation, command execution) stops the turn before the provider is called and
+is reported as `CAPABILITY_UNAVAILABLE` with a BLOCKED task — never as a model
+failure, a verification failure, or a review. Reading is required but not
+mandatory: an observation-free answer is already a review verdict the evidence
+layer reports.
+
+The contract's requirement is minimal on purpose: a documentation change does
+not require command execution unless the contract itself requires a check, and
+an undirected change is satisfied by either a create or an edit. Capabilities
+are never derived from the workspace name (`BUILD implies write` is exactly the
+inference this removes), and never from model output.
+
+A capability answer is about the runtime, not the environment. `exec` being
+available says the runtime can run commands; it says nothing about whether
+`node`, `npm`, or a network exists. Environment facts stay the objective's own
+work, discovered through the capability when the objective actually needs them,
+and are not part of the preflight: probing every environment before every turn
+would spend the tool calls the preflight exists to save.
+
 ### Provider stream normalization
 
 `ai.Stream` is the canonical event boundary between a provider's wire
@@ -930,10 +963,19 @@ Protocol/lifecycle failures are classified before a generic verdict:
 are reported as review (non-terminal), preserving the task identity. Tool
 outcomes carry a provider-agnostic `FailureClass` such as `tool_start_failed`,
 `tool_runtime_failed`, `tool_timeout`, `tool_cancelled`,
-`tool_authorization_denied`, `verification_failed`, or
-`verification_insufficient`, so the UI can say whether failure happened before
-or after execution. A model claim, a tool emission, and a zero exit code remain
-distinct from verification and proof.
+`tool_authorization_denied`, `tool_capability_unavailable`,
+`verification_failed`, or `verification_insufficient`, so the UI can say whether
+failure happened before or after execution. A model claim, a tool emission, and a
+zero exit code remain distinct from verification and proof.
+
+An unavailable capability is its own terminal class. `agent.ErrCapabilityUnavailable`
+is returned before any provider request when the objective needs an operation no
+constructed capability can perform; it classifies as `RunBlocked`, the task
+records `CAPABILITY_UNAVAILABLE`, and its `ObjectiveState` is `BLOCKED`. It is
+not `NEEDS_REVIEW` (nothing happened to review), not `FAILED` (nothing failed),
+and not a model failure. An operation the live authority forbids is
+`AUTHORITY_DENIED`, decided by `RouteTurn` or by projecting the objective to its
+informational phase.
 
 A deadline is not a failure: reporting it as one would make callers discard
 work they were entitled to keep.

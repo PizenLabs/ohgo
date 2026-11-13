@@ -721,7 +721,7 @@ func TestReadinessC04AskAndFuzzCannotMutateThroughRuntime(t *testing.T) {
 		readinessToolCall("write-1", "write", map[string]any{"path": "allowed.txt", "content": "written\n"}),
 		readinessAnswer("wrote it"),
 	}
-	r := newReadinessRuntime(t, root, workspace.Build, []agent.Tool{tools.NewWriteTool(root)}, messages)
+	r := newReadinessRuntime(t, root, workspace.Build, runtimeCaps(tools.NewWriteTool(root)), messages)
 	r.turnAs("write allowed.txt", workspace.Build)
 	data, err := os.ReadFile(filepath.Join(root, "allowed.txt"))
 	if err != nil || string(data) != "written\n" {

@@ -397,6 +397,13 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 	c.role = c.currentRole()
 	c.roleKnown = c.role.Valid()
 
+	// adopted reports that this boundary superseded the task's objective with
+	// the one the human approved. The open-task contract check below uses it to
+	// allow the incoming contract to replace the persisted one: the approval was
+	// for this objective, so refusing its contract would run the previous task's
+	// work under the new authority.
+	adopted := false
+
 	// An approved handoff is applied at the turn boundary, where the live role
 	// is known and the task is being attached. Applying it here keeps identity
 	// detection working: the turn gate still sees the source role and treats
@@ -404,8 +411,17 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 	if handoff := c.task.Handoff; handoff != nil {
 		switch handoff.Status {
 		case HandoffApproved:
+			// A handoff that recorded an approved objective covers the turn
+			// that follows the decision, and that turn states the objective it
+			// runs. The recorded objective is the approving request's own text;
+			// the turn's contract may be derived from a prepared form of it (a
+			// long prompt is compressed before the model sees it), so the
+			// approval is decided by its lifecycle, not by comparing prose. A
+			// handoff that recorded no objective preserves the task objective
+			// and must still match it exactly.
+			approved := strings.TrimSpace(handoff.ApprovedObjective)
 			switch {
-			case handoff.Objective != objective:
+			case approved == "" && handoff.Objective != objective:
 				handoff.Status = HandoffFailed
 				handoff.Failure = "the requested objective does not match the approved handoff"
 				handoff.UpdatedAt = now
@@ -414,6 +430,11 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 				handoff.Failure = "the live role " + c.role.Label() + " does not match the approved target " + handoff.To.Label()
 				handoff.UpdatedAt = now
 			default:
+				if handoff.Objective != objective {
+					c.task.Objective = objective
+					handoff.Objective = objective
+					adopted = true
+				}
 				if err := c.applyApprovedHandoff(now); err != nil {
 					return Task{}, err
 				}
@@ -448,8 +469,31 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 				ErrObjectiveConflict, c.task.Objective)
 		}
 		if !reflect.DeepEqual(*c.task.Contract, intent) {
-			return Task{}, fmt.Errorf("%w: persisted %q, requested %q",
-				ErrObjectiveConflict, c.task.Contract.Objective, objective)
+			if !adopted {
+				return Task{}, fmt.Errorf("%w: persisted %q, requested %q",
+					ErrObjectiveConflict, c.task.Contract.Objective, objective)
+			}
+			// The human approved this objective under the new authority, so the
+			// task adopts its contract. Identity, observed evidence, and carried
+			// context survive; only the completion boundary changes, which is
+			// exactly what the approval decided. The previous objective's
+			// requirements no longer describe this task, so they are dropped
+			// while the observations that established repository facts stay.
+			cloned := cloneContract(intent)
+			c.task.Contract = &cloned
+			if c.evidence != nil {
+				c.evidence.ResetRequirements()
+			}
+			if c.resetSource != nil {
+				c.resetSource()
+			}
+			c.task.AppendEvent(TimelineEvent{
+				At:      now,
+				Kind:    TimelineHandoff,
+				Role:    c.role,
+				Status:  string(HandoffApplied),
+				Summary: "objective re-scoped by the approved transition: " + describeObjective(objective),
+			})
 		}
 		// A paused, reviewable, or pending task resumes with its identity
 		// intact; a running one continues (a turn boundary, not a new task).

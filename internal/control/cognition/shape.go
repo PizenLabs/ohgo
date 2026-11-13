@@ -119,6 +119,12 @@ type TaskShape struct {
 	// Budget is an optional snapshot of the enclosing grant. Zero fields mean
 	// unknown, never unlimited.
 	Budget BudgetShape `json:"budget,omitempty"`
+	// RequiredCapabilities is what executing this contract needs the runtime to
+	// be able to perform, derived from the contract itself. The projection
+	// compares it against the constructed tool set before a model turn, so a
+	// capability the runtime cannot provide stops the turn instead of costing
+	// one to discover.
+	RequiredCapabilities []contract.CapabilityNeed `json:"requiredCapabilities,omitempty"`
 }
 
 // Authority describes the turn's effective authority.
@@ -464,6 +470,10 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		},
 		Verification: append([]contract.VerificationRequirement(nil), intent.Verification...),
 		Budget:       params.Budget,
+		// The contract is the only source of capability requirements. A phase
+		// contract therefore asks for reading only, which is exactly what the
+		// deferred authority can perform.
+		RequiredCapabilities: intent.RequiredCapabilities(),
 	}
 	if shape.Kind == "" {
 		shape.Kind = contract.ObjectiveInformational

@@ -137,6 +137,11 @@ func projectRun(err error, turns []agent.Turn, intent contract.IntentContract, s
 		// Cancellation is authoritative: verified work is not completed after
 		// the user interrupted the process.
 		return newOutcome(runCancelled, reason)
+	case agent.RunBlocked:
+		// The objective needs a capability this runtime cannot provide. Nothing
+		// ran, so it is reported with its own class instead of as a model
+		// failure; a script still sees a non-zero exit.
+		return newOutcome(runFailed, agent.RunBlocked.String()+": "+reason)
 	default:
 		return newOutcome(runFailed, reason)
 	}

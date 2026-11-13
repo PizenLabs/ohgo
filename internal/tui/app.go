@@ -4642,7 +4642,7 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 	// turn will create one under the target role.
 	handoffID := ""
 	if p.task.ProposeHandoff != nil && p.hasOpenTask() {
-		view, err := p.task.ProposeHandoff(target, pending.Reason, summary, workspaceState)
+		view, err := p.task.ProposeHandoff(target, pending.Reason, summary, workspaceState, approvedTransitionObjective(text))
 		if err != nil {
 			p.state.Apply(Notice{Text: "handoff: " + err.Error()})
 			p.restoreAuthorityRequest(text)
@@ -5322,6 +5322,15 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 					return
 				}
 				intent = current.Contract
+				// An approved widening transition that stated its own objective
+				// runs that objective's contract. The persisted contract
+				// describes the task it was working on before the approval;
+				// running it here would shape a BUILD turn as the ASK
+				// investigation the user just moved past, which is how a
+				// mutation request reached a read-only tool surface.
+				if approved, ok := handoffContract(current, workspace.BuildIntentContract(text)); ok {
+					intent = approved
+				}
 				if current.Snapshot != nil {
 					cloned := *current.Snapshot
 					if p.completionRoot != "" {
@@ -5406,9 +5415,32 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// investigation/answer phase into a false evidence gap. The persisted
 	// contract is unchanged; only the projection is narrowed.
 	shapeIntent, phaseDeferred := intent, false
-	if parsed, err := workspace.Parse(authorityLabel); err == nil {
-		if phase, deferred := workspace.PhaseContract(intent, parsed); deferred {
+	parsedAuthority, authorityErr := workspace.Parse(authorityLabel)
+	if authorityErr == nil {
+		if phase, deferred := workspace.PhaseContract(intent, parsedAuthority); deferred {
 			shapeIntent, phaseDeferred = phase, true
+		}
+	}
+	// Capability preflight, before any model turn. Authority is a permission,
+	// not a promise: a BUILD turn whose objective needs a repository change or
+	// a command must be refused here when the runtime cannot provide it.
+	// Otherwise the model discovers the limit by proposing a call the task
+	// surface withholds and then improvises prose, which spends a turn and
+	// answers an execution request with a plan.
+	//
+	// The verdict is deterministic: the contract says what the objective needs,
+	// and the constructed tool set says what this runtime can do. It is judged
+	// against the shape phase, because a deferred objective legitimately needs
+	// nothing beyond reading under the current authority.
+	if authorityErr == nil {
+		preflight := workspace.PreflightTurn(parsedAuthority, shapeIntent, p.loop.Tools())
+		if !preflight.Ready() {
+			reason := preflight.Reason()
+			if p.task.Fail != nil {
+				p.PublishTask(p.task.Fail(agent.RunBlocked.String() + ": " + reason))
+			}
+			abortTurn("BLOCKED — " + reason + ". No files were changed and no implementation was attempted.")
+			return
 		}
 	}
 	shape := cognition.BuildShape(shapeIntent, cognition.ShapeParams{

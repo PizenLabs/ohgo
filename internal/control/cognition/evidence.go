@@ -450,6 +450,20 @@ func NewEvidenceState() *EvidenceState {
 	}
 }
 
+// ResetRequirements drops the declared needs because the completion contract
+// changed.
+//
+// A task that is re-scoped by an approved transition keeps its observations —
+// they are facts about the repository and remain true — but the previous
+// objective's needs no longer describe what would satisfy this one, and holding
+// them would report a permanent evidence gap for an objective nobody asked for.
+func (s *EvidenceState) ResetRequirements() {
+	if s == nil {
+		return
+	}
+	s.Requirements = nil
+}
+
 // Clone returns a deep copy, so a checkpoint cannot alias the live state.
 func (s *EvidenceState) Clone() *EvidenceState {
 	if s == nil {

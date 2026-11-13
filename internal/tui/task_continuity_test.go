@@ -56,7 +56,7 @@ func TestRoleChangeKeepsTaskIdentityAndContext(t *testing.T) {
 	loop, err := agent.New(agent.Config{
 		Model:  ai.Model{ID: "m", Provider: "p"},
 		Stream: stream,
-		Tools:  []agent.Tool{&runtimeWriteTool{path: "note.txt"}},
+		Tools:  runtimeCaps(&runtimeWriteTool{path: "note.txt"}),
 	})
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
@@ -488,9 +488,10 @@ func runtimeHooks(controller *task.Controller) TaskHooks {
 			recorded, err := controller.PreviewHandoff(task.HandoffInput{To: target})
 			return runtimeHandoffView(recorded), err
 		},
-		ProposeHandoff: func(target workspace.Workspace, reason, summary, workspaceState string) (HandoffView, error) {
+		ProposeHandoff: func(target workspace.Workspace, reason, summary, workspaceState, approvedObjective string) (HandoffView, error) {
 			recorded, err := controller.ProposeHandoff(task.HandoffInput{
 				To: target, Reason: reason, Summary: summary, Workspace: workspaceState,
+				ApprovedObjective: approvedObjective,
 			})
 			return runtimeHandoffView(recorded), err
 		},
@@ -573,6 +574,7 @@ func runtimeResume(current task.Task) TaskResume {
 		resume.HandoffTo = current.Handoff.To.String()
 		resume.HandoffBy = current.Handoff.ApprovedBy
 		resume.HandoffConsumed = current.Handoff.Consumed
+		resume.HandoffApprovedObjective = current.Handoff.ApprovedObjective
 	}
 	if current.Contract != nil {
 		resume.Contract = *current.Contract
