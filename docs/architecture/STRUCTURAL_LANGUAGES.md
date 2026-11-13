@@ -58,6 +58,35 @@ unknown summary. `UNSUPPORTED` is used for a form the adapter cannot resolve
 (e.g. a Go method reference or semantic dispatch). This is syntax-level
 resolution, not compiler/type-checker certainty.
 
+## Snapshot disclosure
+
+Every `structure` result header states three things the model cannot infer from
+symbols alone:
+
+- `structural:` carries the four-state verdict and the decisive limitation, so
+  a snapshot whose sources have no adapter in this build reads
+  `UNSUPPORTED (no adapter for .ts, .tsx; 0 of 5 source files parsed)` instead
+  of `PARTIAL`. `PARTIAL` means some supported source produced no facts;
+  `UNPARSED` means parsing is still pending; `UNSUPPORTED` means no adapter can
+  ever parse it.
+- `adapters:` names the adapters compiled into this binary. It is the
+  difference between "this project has no symbols" and "this binary cannot see
+  symbols".
+- `result:` names the slice a truncated view cut, as `files 10 of 14`. Slices a
+  view displayed in full are omitted. `result_reason` names the decisive bound
+  when more than one applied.
+
+Declaration totals (`symbols`, `references`, `calls`, `tests`) are observations,
+not inventory. An overview prints them only when the snapshot could have
+observed them: unparsed source renders `0 (source not parsed)` and adapter-less
+source renders `unobservable (no adapter)`. `test_files` is classified from paths
+at inventory time, so it stays a number even when no adapter can parse the file.
+That separation is what lets a model distinguish "the inventory lists no test
+files" from "the project has no tests".
+
+The same counts are available as machine fields: `truncated`, `reason`, and the
+`bounds` list (`slice`/`shown`/`total`) in the overview details.
+
 ## Deliberate limits
 
 - Tree-sitter adapters do not perform type resolution, overload resolution,

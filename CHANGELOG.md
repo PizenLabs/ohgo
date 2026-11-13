@@ -111,6 +111,29 @@ immutable.
 
 ### Fixed
 
+- `structure` overview no longer reports declaration totals it never observed.
+  Navigation counts (`symbols`, `references`, `calls`, `tests`) render
+  `0 (source not parsed)` before parsing and `unobservable (no adapter)` when no
+  adapter can parse the inventoried sources; `test_files` stays a number
+  because it is classified from paths at inventory time. Previously a Go-only
+  build over a TypeScript project printed `tests: 0 (test_files: 0)`, which an
+  answer read as "the project has no tests" — an absence the inventory cannot
+  establish, and a `needs_review` on an otherwise grounded survey.
+- A structural snapshot no longer reports `PARTIAL` when no adapter in this
+  build can parse its sources. The verdict is `UNSUPPORTED` with the decisive
+  limitation (`no adapter for .ts, .tsx; 0 of 5 source files parsed`), and the
+  header names the compiled `adapters:` so a symbol-free result is attributable
+  to the code or to the build variant.
+- A truncated `structure` result now names the slice it cut and the total it
+  refers to (`result: TRUNCATED (files 10 of 14)`), and the overview exposes the
+  same counts as `bounds`. Previously a 14-file repository reported
+  `result: TRUNCATED` with `result_reason: file_limit` while the rendered text
+  showed the complete file count and no file list, so the model could not tell
+  what was cut and issued a redundant inventory query.
+- `structure` overview applies its entrypoint bound to the merged entrypoint
+  list, reports `entrypoints:` from that list instead of the symbol-only
+  snapshot count, and no longer prints a slice as cut when a view displayed more
+  entries than the snapshot counted.
 - A semantic migration target is no longer read as a file path. `Target` now
   carries explicit `technology`, `repository`, `command`, and `resource` kinds
   alongside `path`/`symbol`/`package`, and `IntentContract.MutationScope` states
