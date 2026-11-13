@@ -36,6 +36,8 @@ func TestCommitEffortPrefersTheCheapestTruthfulDisable(t *testing.T) {
 	}{
 		{"non-reasoning", ai.Model{}, "high", "off"},
 		{"role disabled", ai.Model{Reasoning: true}, "off", "off"},
+		{"role disabled ladder", ai.Model{Reasoning: true, ReasoningEfforts: []string{"low", "high"}}, "off", "low"},
+		{"role disabled native", ai.Model{Reasoning: true, ReasoningDisable: "none"}, "off", "none"},
 		{"anthropic budget", ai.Model{Reasoning: true, API: ai.APIAnthropicMessages}, "high", "off"},
 		{"native disable", ai.Model{Reasoning: true, ReasoningDisable: "none"}, "high", "none"},
 		{"lowest ladder", ai.Model{Reasoning: true, ReasoningEfforts: []string{"low", "high"}}, "high", "low"},

@@ -259,8 +259,50 @@ func TestTruncationRetryBumpsTheBudgetWhenReasoningWasNotRequested(t *testing.T)
 	if calls != 2 {
 		t.Errorf("calls = %d, want one bounded budget retry", calls)
 	}
-	if second.MaxTokens != DefaultProposalTokens*2 {
-		t.Errorf("retry budget = %d, want %d", second.MaxTokens, DefaultProposalTokens*2)
+	if second.MaxTokens != maxProposalRetryTokens {
+		t.Errorf("retry budget = %d, want %d", second.MaxTokens, maxProposalRetryTokens)
+	}
+}
+
+// TestTruncationRetryKeepsTheLeastEffortAndRaisesTheBudget pins the retry for a
+// reasoning-by-default model. Dropping the effort to omission would select the
+// provider default, which is more reasoning than the first attempt; the retry
+// must keep the resolved least effort and spend a larger completion instead.
+func TestTruncationRetryKeepsTheLeastEffortAndRaisesTheBudget(t *testing.T) {
+	repo := newTestRepo(t)
+	initialCommit(t, repo, "base.txt", "base\n")
+	writeTestFile(t, repo, "pkg/new.go", "package pkg\n")
+
+	var calls int
+	var second ai.Request
+	service := &Service{
+		Root:   repo,
+		Model:  ai.Model{Provider: "test", ID: "commit-model", API: "test", Reasoning: true, MaxOutputTokens: 8192},
+		Effort: "low",
+		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+			calls++
+			if calls == 1 {
+				return ai.NewCompletedStream(ai.AssistantMessage{
+					StopReason: ai.StopMaxTokens,
+				}), nil
+			}
+			second = req
+			return ai.NewCompletedStream(ai.AssistantMessage{
+				Content: []ai.ContentBlock{ai.TextContent{Text: "feat(pkg): add a new file"}},
+			}), nil
+		},
+	}
+	if _, err := service.Propose(context.Background()); err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("calls = %d, want one bounded budget retry", calls)
+	}
+	if second.MaxTokens != maxProposalRetryTokens {
+		t.Errorf("retry budget = %d, want %d", second.MaxTokens, maxProposalRetryTokens)
+	}
+	if !second.Reasoning || second.ReasoningEffort != "low" {
+		t.Errorf("retry reasoning = %v/%q, want the least effort kept", second.Reasoning, second.ReasoningEffort)
 	}
 }
 

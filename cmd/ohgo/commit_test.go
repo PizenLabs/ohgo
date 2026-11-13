@@ -86,6 +86,13 @@ func TestCommitUsesTheLeastReasoningTheModelExposes(t *testing.T) {
 	if got := commitEffort(anthropic, "high"); got != "off" {
 		t.Errorf("Anthropic commit effort = %q, want off", got)
 	}
+	// A reasoning-by-default model cannot be disabled by omission: the
+	// provider then applies its default effort, which burned the whole COMMIT
+	// completion on hidden reasoning. The published ladder starts at low.
+	beam := catalog.MustResolve("opencode-go/beam-free")
+	if got := commitEffort(beam, "off"); got != "low" {
+		t.Errorf("reasoning-by-default commit effort = %q, want the lowest level", got)
+	}
 }
 
 // TestCommitBudgetIsDedicatedAndSmall proves /commit does not reuse the coding

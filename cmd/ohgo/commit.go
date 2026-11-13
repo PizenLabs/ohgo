@@ -59,20 +59,26 @@ func commitEffort(model ai.Model, roleEffort string) string {
 	if !model.Reasoning {
 		return "off"
 	}
-	if roleEffort == "off" {
-		return "off"
-	}
 	// Anthropic's thinking control is a slice of the same max_tokens budget.
 	// A COMMIT-sized completion has no room for a valid thinking budget, so the
 	// transport must omit thinking rather than send an invalid request.
 	if model.API == ai.APIAnthropicMessages {
 		return "off"
 	}
+	// "off" means omit the field, but omission is only a truthful disable for
+	// a provider that reasons solely when asked. A model that publishes a
+	// native disable or an effort ladder reasons by default: sending nothing
+	// selects the provider default, which can exhaust the COMMIT completion on
+	// hidden tokens. The cheapest published control is the honest translation
+	// of "off" for those models.
 	if model.ReasoningDisable != "" {
 		return model.ReasoningDisable
 	}
 	if len(model.ReasoningEfforts) > 0 {
 		return model.ReasoningEfforts[0]
+	}
+	if roleEffort == "off" {
+		return "off"
 	}
 	if model.ReasoningMandatory {
 		return roleEffort

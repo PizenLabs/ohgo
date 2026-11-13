@@ -311,11 +311,18 @@ type Service struct {
 // A complete message is roughly 100 tokens, so this cap is a guardrail rather
 // than a target. It is deliberately far below the coding-turn ceiling: COMMIT
 // proposes text and does no reasoning over the repository. A reasoning model
-// that spends hidden tokens here gets one bounded retry with reasoning disabled;
-// if the budget is exhausted again, the failure is reported as
-// ErrModelTruncated rather than accepted as a partial message. The value is
-// clamped to the model's own ceiling where the catalog knows it.
+// that spends hidden tokens here gets one bounded retry with the least effort it
+// exposes and a larger completion; if the budget is exhausted again, the failure
+// is reported as ErrModelTruncated rather than accepted as a partial message.
+// The value is clamped to the model's own ceiling where the catalog knows it.
 const DefaultProposalTokens = 1024
+
+// maxProposalRetryTokens bounds the single truncation retry. The retry exists
+// because a reasoning model can spend the whole visible-completion budget on
+// hidden tokens; repeating the same cap would repeat the failure. It stays
+// below a coding-turn completion because a commit message never needs one, and
+// it is clamped to the model's own ceiling by the caller.
+const maxProposalRetryTokens = 4096
 
 // defaultAttempts is the bounded regeneration policy for invalid output: the
 // first proposal plus at most one validation repair. More turns do not make the
@@ -525,10 +532,9 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 		// A budget-exhausted reply is incomplete by definition, even when it
 		// happens to parse. Accepting it would let a small cap silently shorten
 		// the message. One bounded truncation retry changes how the budget is
-		// spent, never what the commit may contain: an explicitly requested
-		// reasoning effort is disabled, and a model that reasons anyway gets a
-		// bounded larger completion. A second exhaustion is the truthful
-		// failure.
+		// spent, never what the commit may contain: the request keeps the least
+		// reasoning the model exposes and spends a larger completion. A second
+		// exhaustion is the truthful failure.
 		if message.StopReason == ai.StopMaxTokens {
 			if !truncationRetried && attempt+1 < attempts {
 				truncationRetried = true
@@ -542,27 +548,42 @@ func (s *Service) proposeText(ctx context.Context, snapshot *Snapshot, diag *Pro
 				}
 				systemText = prompt.Commit
 				userText += "\n\n" + prompt.CommitTruncatedRetry
-				if enabled {
+				// A retry first reduces reasoning only through a control the
+				// model actually exposes. Dropping the effort to omission is
+				// not a disable for a reasoning-by-default model: it selects
+				// the provider default, which can be more reasoning than the
+				// attempt that just failed.
+				reason := "the previous reply exhausted its output budget"
+				switch {
+				case enabled && !s.Model.Reasoning:
 					enabled, level = false, ""
 					diag.Reasoning = false
 					diag.ReasoningEffort = ""
-					diag.RetryReasons = append(diag.RetryReasons,
-						"the previous reply exhausted its output budget with reasoning enabled")
-				} else {
-					bumped := maxTokens * 2
-					if bumped > 2048 {
-						bumped = 2048
-					}
-					if s.Model.MaxOutputTokens > 0 && bumped > s.Model.MaxOutputTokens {
-						bumped = s.Model.MaxOutputTokens
-					}
-					if bumped > maxTokens {
-						maxTokens = bumped
-						diag.MaxOutputTokens = maxTokens
-					}
-					diag.RetryReasons = append(diag.RetryReasons,
-						"the previous reply exhausted its output budget before any message")
+					reason = "the previous reply exhausted its output budget with reasoning enabled"
+				case enabled && s.Model.ReasoningDisable != "" && level != s.Model.ReasoningDisable:
+					level = s.Model.ReasoningDisable
+					diag.ReasoningEffort = level
+					reason = "the previous reply exhausted its output budget with reasoning enabled"
+				case enabled && len(s.Model.ReasoningEfforts) > 0 && level != s.Model.ReasoningEfforts[0]:
+					level = s.Model.ReasoningEfforts[0]
+					diag.ReasoningEffort = level
+					reason = "the previous reply exhausted its output budget with reasoning enabled"
 				}
+				// The retry must spend more than the attempt that failed. A
+				// same-sized retry repeats the same exhaustion, so the
+				// completion grows regardless of the effort decision above.
+				bumped := maxTokens * 2
+				if bumped < maxProposalRetryTokens {
+					bumped = maxProposalRetryTokens
+				}
+				if s.Model.MaxOutputTokens > 0 && bumped > s.Model.MaxOutputTokens {
+					bumped = s.Model.MaxOutputTokens
+				}
+				if bumped > maxTokens {
+					maxTokens = bumped
+					diag.MaxOutputTokens = maxTokens
+				}
+				diag.RetryReasons = append(diag.RetryReasons, reason)
 				continue
 			}
 			diag.Phase = PhaseProposal
