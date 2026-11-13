@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Component identity is derived from the project structure, not from an
 // arbitrary path substring. A file called api.go inside cart/ is cart, and the
@@ -70,5 +73,105 @@ func TestComponentMatchesTextRequiresAnExplicitHint(t *testing.T) {
 	}
 	if ComponentMatchesText("cart", "") {
 		t.Fatal("an empty hint matched a component")
+	}
+}
+
+// Session 310: "It is an in-progress scaffold: the product-service is fully
+// implemented, the order-service now implements checkout, ..." produced the
+// review subjects "checkout" and "in-progress". A status word followed by an
+// explanation introduces prose, not a component list, and only the text before
+// the status word names its subject.
+func TestRepositoryScaffoldClaimDoesNotFabricateComponents(t *testing.T) {
+	sentence := "It is an in-progress scaffold: the product-service is fully " +
+		"implemented, the order-service now implements checkout, and the other " +
+		"four backend services are health-check stubs."
+	match := mockStatusPattern.FindStringIndex(sentence)
+	if match == nil {
+		t.Fatal("fixture no longer matches the mock/scaffold audit")
+	}
+	subjects := implementationClaimSubjects(sentence, match)
+	if len(subjects) != 0 {
+		var names []string
+		for _, subject := range subjects {
+			names = append(names, implementationSubjectName(subject))
+		}
+		t.Fatalf("subjects = %v, want none: the claim is about the repository, not a component", names)
+	}
+}
+
+// The explicit list form still names components; the guard is about prose, not
+// about colons.
+func TestStatusListStillNamesComponents(t *testing.T) {
+	cases := []struct {
+		sentence string
+		want     []string
+	}{
+		{
+			sentence: "Fully implemented: product-service (REST CRUD), order-service (checkout).",
+			want:     []string{"product-service", "order-service"},
+		},
+		{
+			sentence: "Stubs (health checks only): API-gateway, cart, delivery, notification services.",
+			want:     []string{"API-gateway", "cart", "delivery", "notification"},
+		},
+		{
+			sentence: "product-service is fully implemented.",
+			want:     []string{"product-service"},
+		},
+	}
+	for _, tc := range cases {
+		match := implementationStatusPattern.FindStringIndex(tc.sentence)
+		if match == nil {
+			match = mockStatusPattern.FindStringIndex(tc.sentence)
+		}
+		if match == nil {
+			t.Fatalf("%q no longer matches a status audit", tc.sentence)
+		}
+		var got []string
+		for _, subject := range implementationClaimSubjects(tc.sentence, match) {
+			got = append(got, implementationSubjectName(subject))
+		}
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("%q subjects = %v, want %v", tc.sentence, got, tc.want)
+		}
+	}
+}
+
+// The fabricated-subject review is what the user saw; it must be gone.
+func TestScaffoldReviewNoLongerNamesProseWords(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		claimRead("backend/cmd/product-service/main.go", "package main\nfunc main() {}\n", 98),
+		claimRead("backend/cmd/order-service/main.go", "package main\nfunc main() {}\n", 71),
+	}}}
+	answer := "It is an in-progress scaffold: the product-service is fully implemented, the order-service now implements checkout."
+	reason := strings.ToLower(AssessGrounding(claimContract(), turns, answer).Reason())
+	for _, junk := range []string{"checkout", "in-progress"} {
+		if strings.Contains(reason, junk) {
+			t.Fatalf("reason = %q, want no fabricated subject %q", reason, junk)
+		}
+	}
+}
+func TestComponentSubjectSkipsAdjectiveQualifiers(t *testing.T) {
+	sentence := "Frontend: storefront at /shop and role-protected admin console at /admin, with mock auth (localStorage)."
+	start := strings.Index(sentence, "mock auth")
+	if start < 0 {
+		t.Fatal("fixture changed")
+	}
+	subject := ComponentSubject(sentence, start)
+	if subject == "role-protected" {
+		t.Fatalf("subject = %q, want the component the adjective qualifies", subject)
+	}
+	if subject == "" {
+		t.Fatal("no component subject was extracted at all")
+	}
+	for _, qualifier := range []string{"role-protected", "server-side", "read-only"} {
+		if !componentTokenIsQualifier(qualifier) {
+			t.Errorf("%q was not recognized as a qualifier", qualifier)
+		}
+	}
+	for _, component := range []string{"product-service", "api-gateway", "cart-service"} {
+		if componentTokenIsQualifier(component) {
+			t.Errorf("%q was misread as a qualifier", component)
+		}
 	}
 }

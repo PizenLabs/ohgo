@@ -333,15 +333,20 @@ func ComponentSubjects(sentence string, markerStart, markerEnd int) []string {
 	for _, item := range splitComponentList(sentence, markerEnd) {
 		add(normalizeComponentPhrase(item))
 	}
-	withoutParentheticals := parenthesesPattern.ReplaceAllString(sentence, " ")
+	// A status word's subject precedes it: "product-service is fully
+	// implemented". Scanning the whole sentence let a later explanation
+	// ("implements checkout") become a component the status was supposedly
+	// about.
+	subjectText := sentence[:minInt(markerStart, len(sentence))]
+	withoutParentheticals := parenthesesPattern.ReplaceAllString(subjectText, " ")
 	for _, token := range kebabComponentPattern.FindAllString(withoutParentheticals, -1) {
-		if componentTokenIsRole(token) || componentTokenIsFileName(withoutParentheticals, token) {
+		if componentTokenIsRole(token) || componentTokenIsQualifier(token) || componentTokenIsFileName(withoutParentheticals, token) {
 			continue
 		}
 		add(normalizeComponentPhrase(token))
 	}
 	if len(out) == 0 {
-		for _, candidate := range componentCandidatesFromText(sentence[:minInt(markerStart, len(sentence))]) {
+		for _, candidate := range componentCandidatesFromText(subjectText) {
 			add(candidate)
 		}
 	}
@@ -372,7 +377,7 @@ func componentCandidatesFromText(text string) []string {
 		out = append(out, value)
 	}
 	for _, token := range kebabComponentPattern.FindAllString(text, -1) {
-		if componentTokenIsRole(token) || componentTokenIsFileName(text, token) {
+		if componentTokenIsRole(token) || componentTokenIsQualifier(token) || componentTokenIsFileName(text, token) {
 			continue
 		}
 		add(token)
@@ -414,12 +419,47 @@ func splitComponentList(sentence string, markerEnd int) []string {
 	}
 	tail = parenthesesPattern.ReplaceAllString(tail, " ")
 	items := componentListSeparator.Split(tail, -1)
+	// A colon after a status word introduces either a list of components
+	// ("Fully implemented: product-service, order-service") or an explanation
+	// of the status ("It is an in-progress scaffold: the order-service now
+	// implements checkout, ..."). Only the list form names subjects; reading
+	// the explanation as a list turned "checkout" into the component the
+	// scaffold claim was supposedly about.
+	for _, item := range items {
+		if componentPhraseIsClause(item) {
+			return nil
+		}
+	}
 	for _, item := range items {
 		if normalizeComponentPhrase(item) != "" {
 			return items
 		}
 	}
 	return nil
+}
+
+// componentPhraseIsClause reports an item that is a sentence fragment rather
+// than a component name.
+func componentPhraseIsClause(item string) bool {
+	for _, word := range strings.FieldsFunc(strings.ToLower(item), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		if componentClauseWords[word] {
+			return true
+		}
+	}
+	return false
+}
+
+// componentClauseWords are finite verbs and time qualifiers that mark an
+// explanation. They never appear in a component's name.
+var componentClauseWords = map[string]bool{
+	"implements": true, "implement": true, "implemented": true,
+	"uses": true, "use": true, "using": true, "provides": true,
+	"handles": true, "exposes": true, "supports": true, "returns": true,
+	"renders": true, "calls": true, "serves": true, "runs": true,
+	"starts": true, "now": true, "currently": true, "already": true,
+	"also": true, "still": true,
 }
 
 // normalizeComponentPhrase reduces a phrase to one component label. A
@@ -544,6 +584,28 @@ func componentTokenIsRole(token string) bool {
 	default:
 		return false
 	}
+}
+
+// componentQualifierSuffixes are adjective endings. "role-protected admin
+// console" qualifies the console; the adjective is not a component coordinate,
+// and a review that names it sends the reader to nothing.
+var componentQualifierSuffixes = []string{
+	"-protected", "-based", "-driven", "-first", "-ready", "-facing",
+	"-aware", "-only", "-level", "-side", "-less", "-free", "-oriented",
+	"-focused", "-specific", "-wide", "-enabled", "-powered", "-scoped",
+	"-progress",
+}
+
+// componentTokenIsQualifier reports an adjective phrase masquerading as a
+// component name.
+func componentTokenIsQualifier(token string) bool {
+	lower := strings.ToLower(token)
+	for _, suffix := range componentQualifierSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // componentTokenIsFileName reports a kebab fragment that is part of a filename
