@@ -92,6 +92,12 @@ immutable.
 
 ### Fixed
 
+- `/commit` no longer fails with "the COMMIT model ran out of output budget"
+  for a reasoning-by-default model whose role effort is `off`. Omitting the
+  effort selected the provider default and spent the whole completion on
+  hidden reasoning; the role now sends the lowest published effort when the
+  model cannot be disabled, and the single truncation retry raises the
+  completion budget instead of repeating the same cap.
 - A reused or refused tool outcome now publishes its start/finish pair in its
   own turn. A stale read that had actually run earlier can no longer be
   replayed after the final answer by the host's post-run fallback, which now
