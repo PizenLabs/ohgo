@@ -41,6 +41,12 @@ var (
 			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited)\b`)
 	globalScopePattern = regexp.MustCompile(
 		`(?i)\b(?:repository|repo|project|codebase|workspace)\b`)
+	// rootScopePattern names a location bounded to the top level of the tree.
+	// "No README at repo root" is the narrowest possible absence claim and a
+	// root listing covers it; the word "repo" inside it must not promote it to
+	// a repository-wide claim.
+	rootScopePattern = regexp.MustCompile(
+		`(?i)\b(?:(?:repo(?:sitory)?|project|workspace|directory|folder)?[\s-]*root|top[- ]level)\b`)
 	insufficientSearchPattern = regexp.MustCompile(
 		`(?i)\b(?:i\s+)?(?:could\s+not|couldn't|cannot|can't|was\s+unable\s+to|unable\s+to)\s+(?:be\s+)?(?:find|found|locate|located|read|access|accessed|see|seen)\b`)
 	performedActionPattern = regexp.MustCompile(
@@ -232,8 +238,13 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 		coverage := collectGroundingCoverage(turns)
 		for _, claim := range claims {
 			if !coverage.supports(claim) {
-				add("unsupported_negative_conclusion",
-					fmt.Sprintf("the answer treats %q as absent without evidence covering the claim", claim.Subject))
+				detail := fmt.Sprintf("the answer treats %q as absent without evidence covering the claim", claim.Subject)
+				if coverage.testFiles > 0 && strings.Contains(strings.ToLower(claim.Subject), "test") {
+					detail = fmt.Sprintf(
+						"the answer treats %q as absent, but the observed inventory already reports %d test file(s); inspect them or bound the claim to what was inspected",
+						claim.Subject, coverage.testFiles)
+				}
+				add("unsupported_negative_conclusion", detail)
 				break
 			}
 		}
@@ -366,7 +377,8 @@ func claimContextIsGlobal(answer string, start, end int) bool {
 	if right > len(answer) {
 		right = len(answer)
 	}
-	return globalScopePattern.MatchString(answer[left:right])
+	window := rootScopePattern.ReplaceAllString(answer[left:right], " ")
+	return globalScopePattern.MatchString(window)
 }
 
 // externalClaims returns the assertions an answer makes about state outside the
@@ -476,6 +488,11 @@ type groundingCoverage struct {
 	// narrow Go test-file claim, but only when scope, inventory, and structural
 	// completeness all hold.
 	structuralTestAbsence bool
+	// testFiles is the largest test-file count any observed structure snapshot
+	// reported. A positive count contradicts an absence claim even when the
+	// snapshot is not complete enough to prove zero, and the review should say
+	// so instead of asking for evidence the run already has.
+	testFiles int
 	// rootListing is a complete listing of the repository root.
 	rootListing bool
 	// external reports a successful observation of a remote surface: a
@@ -653,6 +670,10 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 					})
 				}
 			case "structure":
+				structureDetails, _ := outcome.Result.Details.(map[string]any)
+				if count := detailValueInt(structureDetails, "test_files"); count > coverage.testFiles {
+					coverage.testFiles = count
+				}
 				if complete && structureProvesNoTestFiles(outcome) {
 					coverage.structuralTestAbsence = true
 				}
