@@ -136,13 +136,18 @@ request action = unknown
 A rejection is returned to the model as a structured tool error, and the loop
 allows one recovery request. The refusal itself is not a completion event: the
 model must see the reason before its accompanying narration can be judged as an
-answer. If the recovery also proposes only refused actions and emits no answer,
-the loop closes the still-open action surface and makes one answer-only request
-instead of blocking. The same recovery applies when the model stops with no text
-at all immediately after a refusal-only turn: an empty stop is not an answer, so
-the loop drops the empty assistant message and asks once for the answer from the
-evidence. Nothing can execute, so the evidence already gathered is the only basis
-for the answer; completion still decides whether it is sufficient.
+answer. A tool call that accompanies a substantive answer is not an
+action-fidelity rejection when the stage withholds it or the run already has
+the exact observation: it is continuation after the answer and is dropped
+before dispatch rather than executed or returned as a tool error (the closure
+contract lives in [`ARCHITECTURE.md`](ARCHITECTURE.md)). If the recovery also
+proposes only refused actions and emits no answer, the loop closes the
+still-open action surface and makes one answer-only request instead of
+blocking. The same recovery applies when the model stops with no text at all
+immediately after a refusal-only turn: an empty stop is not an answer, so the
+loop drops the empty assistant message and asks once for the answer from the
+evidence. Nothing can execute, so the evidence already gathered is the only
+basis for the answer; completion still decides whether it is sufficient.
 
 A second empty stop can happen on the answer-only request itself: the surface
 is already closed and the model returns only reasoning. The runtime has asked
@@ -272,11 +277,50 @@ successful execution      what actually ran
 directory listing         names and sizes, not content or line counts
 ```
 
+The runtime keeps the claim classes explicit. The status is a projection of the
+same evidence ledger the answer audit uses, never a second evidence store:
+
+| claim class | evidence it requires | coverage it needs |
+| --- | --- | --- |
+| project identity | documentation, configuration/manifest, inventory, or source | the project the answer names |
+| topology | configuration or structural inventory | the named snapshot and scope |
+| configuration | a configuration or manifest observation | the configuration path |
+| implementation status | source content for the named component | each named component; whole-component completeness needs a current complete source scope |
+| dependency use | `DECLARED` < `IMPORTED` < `INITIALIZED` < `USED_IN_SOURCE` < `OBSERVED_AT_RUNTIME` | the component that owns the evidence |
+| behavior | source content or live runtime observation | the named component; a named port must appear in the same observation |
+| runtime state | a live runtime observation | the named component's live process |
+| structural relationship | a structural observation or source call site binding both endpoints | both named endpoints |
+| absence | current complete untruncated scope, complete inventory, relevant query | the exact file or complete repository scope |
+| test inventory | a complete current unscoped test inventory | the test inventory scope |
+
 A runtime-behavior claim (“cart validates against product”, “order publishes
-events”, “delivery fulfills”, “code listens on :8082”) needs source content
-that carries the behavior, or a live runtime observation that carries the
-named port; a dependency, topology, or documentation declaration is not
-enough. A port in the behavior clause must appear in the same source
+events”, “delivery fulfills”, “code listens on :8082”, “the worker connects to
+Redis”) needs source content that carries the behavior, or a live runtime
+observation that carries it. A named port must appear in the same source
+observation or runtime address; reading product-service's listener does not
+prove that cart-service uses a different port. A runtime observation without a
+port can support “connects” only when the observed process output carries that
+behavior. A dependency, topology, or documentation declaration is not enough.
+A transitive “is running the job” claim is behavior evidence, not the live
+process predicate.
+
+A runtime-state claim (“the service is running”, “is live”, “is healthy”) is
+different again: configuration declares that a service exists and source
+describes what it would do, but only a live runtime observation establishes
+that a process is running now. A source observation never implies runtime
+execution.
+
+A concrete test count (“the project has 120 tests”, “there are 42 test files”)
+is a test-inventory claim. It needs a complete, current, unscoped test
+inventory; a README, metadata overview, partial query, or stale snapshot cannot
+establish the count. Zero is a valid observed count only under the same
+completeness gate that supports test absence.
+
+A structural relationship claim (“Order Checkout calls payment.Authorize”)
+needs an observation that binds both endpoints: a structural graph/reference
+result, or a source call site containing both names and the call syntax.
+Reading one endpoint is not evidence of the relation, and documentation or
+configuration is not a code relationship. A port in the behavior clause must appear in the same source
 observation or runtime address: reading product-service's listener does not
 prove that cart-service uses a different port. Documentation attribution (“the
 README describes …”) and an explicit limitation (“not verified”) are
@@ -315,6 +359,16 @@ observed, the admissible form is narrower: “the inspected handler implements
 the observed CRUD endpoints” or “I have not verified whether the component is
 fully implemented.”
 
+A capability list inside a status claim is audited separately. “Product-service
+is fully implemented with CRUD, Redis caching, graceful shutdown, and structured
+logging” asserts each named capability; a complete component scope proves what
+was inspected, not that every capability is present. Each aspect needs source
+evidence: CRUD verbs, a cache operation, shutdown/signal handling, a logging
+client, and so on. A capability outside the bounded vocabulary remains covered
+by the ordinary implementation and dependency audits. A mock, scaffold, or
+placeholder claim needs the marker in the component's source, not merely a read
+of the component path.
+
 Dependency claims are a separate category with their own strength ladder:
 `DECLARED` (manifest/configuration), `IMPORTED` (source import), `INITIALIZED`
 (constructed client or opened connection), `USED_IN_SOURCE` (a concrete source
@@ -348,8 +402,10 @@ The claim audit applies to informational answers only. A mutation answer is
 judged by target, mutation, and verification evidence, not by its prose. The
 informational runtime state block carries the same boundary as evidence-derived
 statuses: observed implementation, runtime, configuration, documentation,
-inventory, source paths, dependency strength, scope, and the test-inventory
-support state. It also carries a bounded, actionable evidence frontier derived
+inventory, structural relationships, source paths, dependency strength, scope,
+and the test-inventory support state. The same projection exposes per-class
+coverage (`SUPPORTED`, `PARTIAL`, `NOT_OBSERVED`) so the planner and the answer
+audit agree about which claim classes the current ledger can justify. It also carries a bounded, actionable evidence frontier derived
 from the observations themselves: which components lack source content, whether
 the test inventory is complete, whether scope is partial or truncated, and
 whether dependency evidence is only declared or imported. The frontier never
@@ -368,6 +424,27 @@ already refused the action.
 The completion evaluator still owns truth. Grounding does not replace target
 snapshots, mutation evidence, verification scopes, or the evidence-sufficiency
 veto.
+
+### 4.8 Recovery integrity
+
+Tool recovery preserves the evidence lifecycle:
+
+```text
+recovery
+  → evidence update
+  → answer audit
+  → completion evaluation
+```
+
+A request-level rejection (invalid argument, invalid selector, unknown tool,
+unsupported operation, authority denial, budget exhaustion, stale evidence) is
+diagnostic history, not a repository fact and not a capability outage. It must
+not poison unrelated provider health or block a task that still has an
+independent evidence path. A corrected invocation may add valid evidence; the
+earlier failure remains in the durable ledger. Recovery never fabricates the
+evidence the failed call would have produced, never erases a valid observation,
+and never promotes a task to `PROVEN` by itself. Only the completion evaluator,
+using the answer and the evidence contract, can do that.
 
 ## 5. Escalation thresholds
 
@@ -431,6 +508,19 @@ request path.
   language-shaped import/constructor/operation markers. A dependency outside
   the vocabulary is not recognized by this layer; the evidence and provenance
   gates still apply.
+- Runtime-state detection is English-pattern based and distinguishes the
+  live-process predicate (“is running”) from transitive behavior (“is running
+  the job”). A paraphrase outside the pattern is left to the behavior and
+  provenance gates.
+- Structural-relationship detection requires a dotted endpoint and an explicit
+  relation verb. A paraphrase or a prose relation without a code coordinate is
+  not audited here; the structural and provenance gates still apply.
+- Test-count detection recognizes an explicit project/inventory count. A count
+  embedded in an unusual phrase may escape the pattern; a recognized count
+  without a complete current inventory is reviewed, never accepted.
+- Implementation-aspect detection uses a bounded capability vocabulary. A
+  capability outside the vocabulary is not forced into an aspect check; the
+  component-level status and source-scope rules still apply.
 - Concept absence uses a bounded vocabulary and scope markers. A paraphrased
   unbounded absence can escape detection; the gate is conservative in the
   review direction, never an absence proof.

@@ -1085,17 +1085,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			return turns, nil
 		}
 
-		// The runtime already holds the evidence an informational objective
-		// requires, and the model produced visible text. That text is the
-		// candidate answer; calls emitted with it are continuation after the
-		// answer. They were never actions: execute none of them and record
-		// none of them. Publishing them as failed calls put red error cards
-		// after a finished answer and made the transcript look broken.
-		//
-		// The call blocks are dropped from the stored assistant message too.
-		// A persisted tool call with no result is an invalid conversation for
-		// the next provider request; the answer is the whole final message.
-		if closed && strings.TrimSpace(assistant.Text()) != "" {
+		// A substantive answer is the terminal transition when the rest of the
+		// batch is continuation: every call is either a capability the task
+		// stage withheld or an exact repetition of an observation already in
+		// hand, so no call can add evidence. Dispatching them would only append
+		// refusal or reuse cards after a finished answer. A batch with a new
+		// offered capability keeps the normal path; narration before real work
+		// is not an answer. The call blocks are dropped from the stored
+		// assistant message too, because a persisted call with no result is an
+		// invalid conversation for the next provider request. A closed surface
+		// has no recovery, so its text is the only output available.
+		if text := strings.TrimSpace(assistant.Text()); text != "" &&
+			(closed || (!answerIsDeferredPlan(text) &&
+				l.noEvidenceInBatch(activeByName, calls, len(turns)))) {
 			turn.Assistant = answerWithoutToolCalls(assistant)
 			turns = append(turns, turn)
 			if l.cfg.OnTurn != nil {
@@ -1603,10 +1605,10 @@ func batchMayMutate(byName map[string]Tool, calls []ai.ToolCall) bool {
 // answerWithoutToolCalls returns the answer-shaped projection of a final
 // assistant message.
 //
-// A model can emit visible prose and tool calls in one message. When the
-// action surface is already closed and the prose is the answer, the calls are
-// continuation after the answer, not actions the runtime performed. Keeping
-// them would either force a dispatch that can only produce a refusal or leave
+// A model can emit visible prose and tool calls in one message. When the prose
+// is a substantive answer and the batch cannot add evidence (or the surface is
+// closed), the calls are continuation after the answer, not actions the runtime
+// performed. Keeping them would execute work after a finished answer or leave
 // an invalid tool call without a result in the stored conversation. The text,
 // reasoning, and usage are preserved; only call blocks and the tool-use stop
 // reason are removed.
@@ -1623,6 +1625,32 @@ func answerWithoutToolCalls(message ai.AssistantMessage) ai.AssistantMessage {
 		message.StopReason = ai.StopEndTurn
 	}
 	return message
+}
+
+// noEvidenceInBatch reports whether every call is a non-policy capability that
+// cannot add evidence: the task projection withheld it, or it repeats an
+// observation already current in this run.
+//
+// A new offered capability, an unknown tool, or a policy-sensitive proposal
+// returns false. Policy-sensitive calls stay visible because they are attempted
+// actions, and a new offered observation may be real work rather than
+// continuation after an answer.
+func (l *Loop) noEvidenceInBatch(active map[string]Tool, calls []ai.ToolCall, turnIndex int) bool {
+	if l.cfg.Project == nil || len(calls) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		tool, built := l.builtTool(call.Name)
+		if !built || policySensitive(tool) {
+			return false
+		}
+		if _, offered := active[call.Name]; offered {
+			if _, reused := l.priorObservation(call, turnIndex); !reused {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // batchToolNames lists the tools in a batch, in call order.
@@ -1656,7 +1684,7 @@ func (l *Loop) execute(
 	call ai.ToolCall,
 	turn Turn,
 	turnIndex int,
-) ToolOutcome {
+) (out ToolOutcome) {
 	fail := func(text string) ToolOutcome {
 		return ToolOutcome{CallID: call.ID, ToolName: call.Name, Result: Result{Text: text, IsError: true}}
 	}
@@ -1665,6 +1693,60 @@ func (l *Loop) execute(
 			Text: text, IsError: true, FailureClass: class,
 		}}
 	}
+
+	// Every outcome the transcript keeps needs a matching start and finish
+	// report. A reused or refused call returns before the execution seam, so
+	// deferring the report to the host's post-run pass would replay an early
+	// outcome after a later answer. AnswerRequired refusals are deliberately
+	// excluded: the transcript projection removes them, so publishing a card
+	// would leave a live block the completed turn does not own.
+	callStarted := time.Now()
+	started := time.Time{}
+	announced := false
+	announce := func(args map[string]any) {
+		if announced || l.cfg.OnToolProgress == nil {
+			return
+		}
+		announced = true
+		if args == nil {
+			args = call.Arguments
+		}
+		elapsed := time.Since(callStarted)
+		if !started.IsZero() {
+			elapsed = time.Since(started)
+		}
+		l.cfg.OnToolProgress(ToolProgress{
+			CallID:   call.ID,
+			ToolName: call.Name,
+			Args:     args,
+			Elapsed:  elapsed,
+		})
+	}
+	defer func() {
+		if out.CallID == "" || out.Result.AnswerRequired {
+			return
+		}
+		announce(out.Args)
+		if l.cfg.OnToolProgress == nil {
+			return
+		}
+		args := out.Args
+		if args == nil {
+			args = call.Arguments
+		}
+		elapsed := time.Since(callStarted)
+		if !started.IsZero() {
+			elapsed = time.Since(started)
+		}
+		l.cfg.OnToolProgress(ToolProgress{
+			CallID:   call.ID,
+			ToolName: call.Name,
+			Args:     args,
+			Result:   out.Result,
+			Final:    true,
+			Elapsed:  elapsed,
+		})
+	}()
 
 	// A repeated failed proposal is decided before the capability boundary.
 	// The control plane recorded the failure class and retry budget; this
@@ -1707,13 +1789,7 @@ func (l *Loop) execute(
 			// projected out of the transcript (see TranscriptTurn).
 			policyRefusal := false
 			if tool, ok := l.builtTool(call.Name); ok {
-				for _, class := range ToolActionClasses(tool) {
-					switch class {
-					case ActionMutate, ActionExecute, ActionDelegate,
-						ActionExternal, ActionConfigured:
-						policyRefusal = true
-					}
-				}
+				policyRefusal = policySensitive(tool)
 			}
 			return ToolOutcome{
 				CallID:   call.ID,
@@ -1792,11 +1868,11 @@ func (l *Loop) execute(
 	}
 
 	if l.cfg.BeforeToolCall != nil {
-		outcome := l.cfg.BeforeToolCall(BeforeToolCallContext{
+		before := l.cfg.BeforeToolCall(BeforeToolCallContext{
 			Tool: tool, Call: call, Args: args, Turn: turn, Turns: turnIndex,
 		})
-		if outcome.Block {
-			reason := outcome.Reason
+		if before.Block {
+			reason := before.Reason
 			if reason == "" {
 				reason = "blocked by policy"
 			}
@@ -1805,8 +1881,8 @@ func (l *Loop) execute(
 				Result: Result{Text: reason, IsError: true, FailureClass: ToolFailureAuthorization},
 			}
 		}
-		if outcome.Args != nil {
-			args = outcome.Args
+		if before.Args != nil {
+			args = before.Args
 			if err := ValidateArgs(tool, args); err != nil {
 				return failClass(ToolFailureInvalidArgument,
 					fmt.Sprintf("Invalid arguments for %q: %v", call.Name, err))
@@ -1941,7 +2017,7 @@ func (l *Loop) execute(
 		return fail(err.Error())
 	}
 
-	started := time.Now()
+	started = time.Now()
 	toolCtx := Context{
 		Ctx:       ctx,
 		CallID:    call.ID,
@@ -1958,12 +2034,7 @@ func (l *Loop) execute(
 	if l.cfg.OnToolProgress != nil {
 		// Announce the call before it runs, so a UI can show it immediately
 		// with no output yet.
-		l.cfg.OnToolProgress(ToolProgress{
-			CallID:   call.ID,
-			ToolName: call.Name,
-			Args:     args,
-			Elapsed:  time.Since(started),
-		})
+		announce(args)
 		// Forward the tool's own partial reports. The closure captures only
 		// immutable values, so concurrent calls in one batch stay independent.
 		toolCtx.OnProgress = func(partial Result) {
@@ -2004,17 +2075,6 @@ func (l *Loop) execute(
 		if override.Details != nil {
 			result.Details = override.Details
 		}
-	}
-
-	if l.cfg.OnToolProgress != nil {
-		l.cfg.OnToolProgress(ToolProgress{
-			CallID:   call.ID,
-			ToolName: call.Name,
-			Args:     args,
-			Result:   result,
-			Final:    true,
-			Elapsed:  time.Since(started),
-		})
 	}
 
 	return ToolOutcome{

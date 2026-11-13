@@ -80,6 +80,20 @@ type MutationReporter interface {
 	MutationOperations() []contract.ChangeOp
 }
 
+// policySensitive reports whether a capability can change the workspace, run a
+// process, delegate, reach external knowledge, or was explicitly configured.
+// Such a proposal is an attempted action, not observation continuation, so a
+// refusal must stay visible to the user.
+func policySensitive(tool Tool) bool {
+	for _, class := range ToolActionClasses(tool) {
+		switch class {
+		case ActionMutate, ActionExecute, ActionDelegate, ActionExternal, ActionConfigured:
+			return true
+		}
+	}
+	return false
+}
+
 // ToolActionClasses returns the declared classes, or the approval-tier default.
 func ToolActionClasses(tool Tool) []ActionClass {
 	if classifier, ok := tool.(ActionClassifier); ok {

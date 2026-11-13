@@ -1265,6 +1265,11 @@ func structuralSource(details map[string]any, tool, callID, path string, start, 
 			scope = "PARTIAL"
 		}
 	}
+	// An unresolved nested repository is a scope gap even when a producer
+	// reports scope_complete. Its files are absent from this snapshot.
+	if structuralNestedUnresolved(details) {
+		scope = "PARTIAL"
+	}
 	inventory := ""
 	if complete, ok := details["inventory_complete"].(bool); ok {
 		if complete {
@@ -1293,6 +1298,18 @@ func structuralSource(details map[string]any, tool, callID, path string, start, 
 		ExcludedSourceFiles:   detailInt(details, "excluded_source_files"),
 		UnsupportedSources:    structuralUnsupportedSources(details),
 	}
+}
+
+// structuralNestedUnresolved reports a nested repository boundary the
+// snapshot did not include. It is a scope gap independent of the producer's
+// own scope boolean.
+func structuralNestedUnresolved(details map[string]any) bool {
+	for _, project := range coordinateMaps(details["nested_projects"]) {
+		if included, ok := project["included"].(bool); !ok || !included {
+			return true
+		}
+	}
+	return false
 }
 
 // structuralExcludedRoots counts the scope gaps in a structural result.

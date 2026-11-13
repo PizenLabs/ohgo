@@ -92,6 +92,18 @@ immutable.
 
 ### Fixed
 
+- A reused or refused tool outcome now publishes its start/finish pair in its
+  own turn. A stale read that had actually run earlier can no longer be
+  replayed after the final answer by the host's post-run fallback, which now
+  publishes per completed turn.
+- A substantive answer that shares one assistant message with a batch that
+  cannot add evidence—every call is withheld by the task stage or repeats an
+  observation already current in the run—is now the agent loop's terminal
+  transition. Those continuation calls are dropped before dispatch, so a
+  finished answer is no longer followed by refusal or reuse cards. A new
+  offered capability keeps the normal path because the text may be narration
+  before real work; a message that only announces an action keeps the bounded
+  recovery, and policy-sensitive proposals remain visible.
 - An invalid tool invocation no longer poisons capability health or blocks a
   recoverable task. Argument, selector, unknown-tool, unsupported-operation,
   authority, budget, and stale-evidence failures are request-level: the
@@ -107,6 +119,19 @@ immutable.
   later explicit read clause (`check this project and analyze what this project
   is about?`) now carries a strong READ signal and reaches the ASK authority
   boundary instead of silently staying in BUILD.
+- An investigative opener followed by an explanatory clause (`investigate this
+  project and analyze what this project is about?`) now remains a strong
+  INVESTIGATE request. The explanatory clause describes the investigation's
+  deliverable instead of contesting it into an ambiguous READ, so an automatic
+  BUILD session hands the turn to FUZZ before the model runs. `trace` and
+  `explore`, and causal/relational inquiry such as `find why`, `find where`, and
+  `analyze how`, are investigation signals; `analyze what` and other pure
+  explanations remain READ. A leading investigation followed by a change
+  ("investigate and fix the checkout failure") starts in FUZZ and hands off to
+  BUILD after evidence exists.
+- An automatic one-shot handoff now updates the session's persisted workspace
+  and model snapshot. A turn that ran under FUZZ is no longer listed or resumed
+  as BUILD because only the in-memory session recorded the move.
 - A truncated metadata overview's `tests: 0` is no longer treated as proof that
   no tests exist. Only a complete, unscoped structural test inventory (or the
   narrow complete Go scan) can support a test-file absence claim, and the

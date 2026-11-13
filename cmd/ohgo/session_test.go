@@ -6,6 +6,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/project"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/provider/catalog"
@@ -325,6 +326,37 @@ func TestMachineStateSurvivesProjectDeletion(t *testing.T) {
 	}
 	if len(msgs) != 1 || msgs[0].Text != "remember" {
 		t.Errorf("session transcript lost after project deletion: %+v", msgs)
+	}
+}
+
+// A one-shot automatic handoff must survive in the session snapshot. Otherwise
+// a turn that ran under FUZZ is listed and resumed as BUILD, and the next turn
+// starts from an authority the runtime did not use.
+func TestRecordRunAuthorityPersistsAnAutomaticHandoff(t *testing.T) {
+	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	sess, err := store.CreateWith(session.CreateOptions{
+		Cwd: t.TempDir(), Model: "anthropic/claude-sonnet-4-5", Workspace: "build",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := catalog.MustResolve("anthropic/claude-sonnet-4-5")
+	recordRunAuthority(store, &sess, workspace.Fuzz, model)
+
+	if sess.Workspace != "fuzz" || sess.Model != model.Ref() {
+		t.Fatalf("in-memory authority = %s/%s, want fuzz/%s", sess.Workspace, sess.Model, model.Ref())
+	}
+	got, err := store.Get(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workspace != "fuzz" || got.Model != model.Ref() {
+		t.Fatalf("stored authority = %s/%s, want fuzz/%s", got.Workspace, got.Model, model.Ref())
 	}
 }
 

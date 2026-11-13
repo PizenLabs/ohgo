@@ -271,7 +271,9 @@ func TestTerminalSurfaceEmptyResponseKeepsTheBlockedReason(t *testing.T) {
 // A refused proposal with visible text is not a completion event. The runtime
 // withheld the action and asked the model to choose another; the text that
 // accompanied it has not been seen with the refusal yet. The model gets one
-// recovery request, and its answer is what ends the run.
+// recovery request, and its answer is what ends the run. The text here only
+// announces an action, so it is not a terminal answer; a substantive answer
+// with only withheld observation calls is handled by the terminal transition.
 func TestRefusedProposalWithTextGetsOneRecoveryRequest(t *testing.T) {
 	const answer = "I cannot inspect .ohgo in this task stage; here is the analysis from the evidence."
 	result := runSurface(t,
@@ -360,6 +362,106 @@ func TestClosedSurfaceFinalAnswerDropsContinuationCalls(t *testing.T) {
 	})
 	if !got.Complete() {
 		t.Fatalf("answer = %s (%s), want COMPLETED", got.State, got.Reason)
+	}
+}
+
+// A task stage can withhold one observation capability while still offering
+// others. When the model emits a substantive answer after a read, its batch
+// repeats that read and adds the withheld listing: the whole batch is
+// continuation, because neither call can add evidence. The loop must drop both
+// before dispatch instead of publishing a refusal or a reuse card after the
+// answer.
+func TestPartialSurfaceFinalAnswerDropsContinuationBatch(t *testing.T) {
+	const answer = "The project is a controlled coding agent with a read-only evidence loop."
+	result := runSurface(t,
+		[]agent.Tool{evidenceListTool{}, evidenceReadTool{}},
+		[]ai.AssistantMessage{
+			surfaceCall("read", "read", map[string]any{"path": "README.md"}),
+			{
+				Content: []ai.ContentBlock{
+					ai.TextContent{Text: answer},
+					ai.ToolCall{ID: "stale", Name: "ls", Arguments: map[string]any{"path": "."}},
+					ai.ToolCall{ID: "read", Name: "read", Arguments: map[string]any{"path": "README.md"}},
+				},
+				StopReason: ai.StopToolUse,
+			},
+			surfaceAnswer("should never be requested"),
+		},
+		func(agent.ProjectionRequest) agent.ProjectionResult {
+			return agent.ProjectionResult{
+				Tools:  []agent.Tool{evidenceReadTool{}},
+				Report: agent.ProjectionReport{Sufficiency: "INSUFFICIENT", Stage: "explore"},
+			}
+		}, 6)
+
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	if result.requests != 2 {
+		t.Fatalf("model requests = %d, want the read plus the answer (2)", result.requests)
+	}
+	if len(result.turns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(result.turns))
+	}
+	if len(result.turns[0].Results) != 1 {
+		t.Fatalf("first outcomes = %+v, want the read", result.turns[0].Results)
+	}
+	last := result.turns[1]
+	if last.Assistant.Text() != answer {
+		t.Fatalf("answer = %q, want the model's text", last.Assistant.Text())
+	}
+	if len(last.Results) != 0 {
+		t.Fatalf("outcomes = %+v, want no dispatched continuation", last.Results)
+	}
+	if calls := last.Assistant.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("stored tool calls = %+v, want none", calls)
+	}
+	if last.Assistant.StopReason != ai.StopEndTurn {
+		t.Fatalf("stop reason = %q, want end_turn after the answer", last.Assistant.StopReason)
+	}
+}
+
+// A withheld policy-sensitive action is not observation continuation. Even
+// when the model also emitted a substantive answer, the attempted mutation must
+// stay visible to the user; the loop dispatches it and records the refusal.
+func TestPartialSurfacePolicyRefusalAfterAnswerStaysVisible(t *testing.T) {
+	result := runSurface(t,
+		[]agent.Tool{surfaceWriteTool{}, evidenceReadTool{}},
+		[]ai.AssistantMessage{
+			{
+				Content: []ai.ContentBlock{
+					ai.TextContent{Text: "The project is a controlled coding agent."},
+					ai.ToolCall{ID: "write", Name: "write", Arguments: map[string]any{"path": "x"}},
+				},
+				StopReason: ai.StopToolUse,
+			},
+			surfaceAnswer("the write was refused"),
+		},
+		func(agent.ProjectionRequest) agent.ProjectionResult {
+			return agent.ProjectionResult{
+				Tools:  []agent.Tool{evidenceReadTool{}},
+				Report: agent.ProjectionReport{Sufficiency: "INSUFFICIENT", Stage: "explore"},
+			}
+		}, 6)
+
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	if result.requests != 2 {
+		t.Fatalf("model requests = %d, want the refusal plus one recovery (2)", result.requests)
+	}
+	if len(result.turns) == 0 || len(result.turns[0].Results) != 1 {
+		t.Fatalf("turns = %+v, want one refused write", result.turns)
+	}
+	outcome := result.turns[0].Results[0]
+	if !outcome.Result.CandidateRejected || !outcome.Refused() {
+		t.Fatalf("outcome = %+v, want a control refusal", outcome)
+	}
+	if outcome.Result.AnswerRequired {
+		t.Fatal("a policy-sensitive mutation was classified as answer continuation")
+	}
+	if projected := agent.TranscriptTurn(result.turns[0]); len(projected.Results) != 1 {
+		t.Fatalf("projected results = %+v, want the policy refusal preserved", projected.Results)
 	}
 }
 

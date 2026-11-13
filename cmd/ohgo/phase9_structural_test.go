@@ -347,6 +347,221 @@ func TestNestedRepositoryProjectAnalysis(t *testing.T) {
 	}
 }
 
+// TestClaimCoverageContractRealProject is the gated end-to-end validation of
+// the claim/evidence contract on the mixed frontend/nested-Go project that
+// previously exposed configuration-as-behavior, implementation-as-documentation,
+// and partial-absence failures. It skips unless the caller supplies the project
+// root, so the suite never depends on a machine-specific path.
+func TestClaimCoverageContractRealProject(t *testing.T) {
+	root := strings.TrimSpace(os.Getenv("OHGO_ECOMMERCE_ROOT"))
+	if root == "" {
+		t.Skip("set OHGO_ECOMMERCE_ROOT to the representative mixed project")
+	}
+	source := tools.NewStructuralSource(root)
+	structure := tools.NewStructureTool(source)
+	read := tools.NewReadTool(root)
+	ctx := agent.Context{Ctx: context.Background()}
+
+	intent := contract.IntentContract{
+		Objective: "check this project and analyze what this project is about?",
+		Kind:      contract.ObjectiveInformational,
+		Grounding: &contract.IntentGrounding{
+			Objective:  "check this project and analyze what this project is about?",
+			Action:     contract.GroundingRead,
+			Actions:    []contract.GroundingAction{contract.GroundingRead},
+			Confidence: contract.GroundingConfidenceHigh,
+		},
+	}
+	shape := cognition.BuildShape(intent, cognition.ShapeParams{
+		Authority: "ask", Intent: "read", Facts: cognition.ProbeFacts(root),
+	})
+	state := cognition.NewEvidenceState()
+	var outcomes []agent.ToolOutcome
+
+	// A request-level structural rejection is recoverable and must not block.
+	badArgs := map[string]any{"path": "backend"}
+	rejected := structure.Execute(ctx, badArgs)
+	if !rejected.IsError || rejected.FailureClass != agent.ToolFailureInvalidSelector {
+		t.Fatalf("invalid structure request = %+v, want an invalid selector", rejected)
+	}
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "invalid-structure", ToolName: "structure", Args: badArgs, Result: rejected,
+	})
+	if failures := state.FailureState(); failures.Blocking != nil {
+		t.Fatalf("one request rejection blocked the task: %+v", failures.Blocking)
+	}
+	if len(state.Failures) == 0 {
+		t.Fatal("the request rejection was not retained as diagnostic history")
+	}
+
+	// The corrected request acquires evidence. The failure remains history.
+	overview := structure.Execute(ctx, map[string]any{"view": "overview"})
+	if overview.IsError {
+		t.Fatalf("corrected overview: %s", overview.Text)
+	}
+	corrected := agent.ToolOutcome{
+		CallID: "overview", ToolName: "structure",
+		Args: map[string]any{"view": "overview"}, Result: overview,
+	}
+	state.ObserveOutcome(corrected)
+	outcomes = append(outcomes,
+		agent.ToolOutcome{CallID: "invalid-structure", ToolName: "structure", Args: badArgs, Result: rejected},
+		corrected,
+	)
+	if _, ok := state.Find("structure:overview"); !ok {
+		t.Fatal("the corrected overview did not add evidence")
+	}
+	if len(state.Failures) == 0 {
+		t.Fatal("the earlier rejection was erased by the successful correction")
+	}
+
+	// Mixed evidence: documentation, manifest/configuration, and source content
+	// are acquired separately.
+	for _, path := range []string{
+		"README.md",
+		"backend/go.mod",
+		"backend/docker-compose.yml",
+		"backend/cmd/product-service/main.go",
+		"backend/cmd/cart-service/main.go",
+	} {
+		result := read.Execute(ctx, map[string]any{"path": path})
+		if result.IsError {
+			t.Fatalf("read %s: %s", path, result.Text)
+		}
+		outcome := agent.ToolOutcome{
+			CallID:   "read-" + path,
+			ToolName: "read",
+			Args:     map[string]any{"path": path},
+			Result:   result,
+		}
+		state.ObserveOutcome(outcome)
+		outcomes = append(outcomes, outcome)
+	}
+
+	summary := state.ClaimSummary()
+	coverage := summary.Coverage()
+	states := map[cognition.ClaimClass]cognition.ClaimCoverageState{}
+	for _, entry := range coverage {
+		states[entry.Class] = entry.State
+	}
+	if !summary.HasDocumentation || !summary.HasConfiguration || !summary.HasImplementation {
+		t.Fatalf("mixed evidence was not classified: %+v", summary)
+	}
+	if summary.HasRuntime {
+		t.Fatalf("configuration/source was recorded as runtime: %+v", summary)
+	}
+	if states[cognition.ClaimImplementationStatus] != cognition.ClaimSupported {
+		t.Fatalf("implementation coverage = %s", states[cognition.ClaimImplementationStatus])
+	}
+	if states[cognition.ClaimRuntimeState] != cognition.ClaimUnobserved {
+		t.Fatalf("runtime-state coverage = %s, want NOT_OBSERVED", states[cognition.ClaimRuntimeState])
+	}
+	if states[cognition.ClaimAbsence] == cognition.ClaimSupported {
+		t.Fatalf("mixed partial scope supported repository-wide absence: %+v", summary)
+	}
+	if states[cognition.ClaimTestInventory] != cognition.ClaimUnobserved {
+		t.Fatalf("test inventory = %s, want NOT_OBSERVED", states[cognition.ClaimTestInventory])
+	}
+
+	suff := cognition.EvaluateSufficiency(shape, state, cognition.ExecutionState{}, false)
+	if suff.State == cognition.Blocked || suff.Kind == cognition.BlockCapabilityFailure {
+		t.Fatalf("recoverable evidence run was falsely blocked: %+v", suff)
+	}
+	if suff.State != cognition.Sufficient || suff.Stage != cognition.StageAnswer {
+		t.Fatalf("mixed documentation/configuration/source evidence = %s/%s, want SUFFICIENT/answer: %v",
+			suff.State, suff.Stage, suff.Missing)
+	}
+
+	// The strongest answer the evidence supports: documentation attributed,
+	// source claims bound to inspected files, no runtime promotion.
+	supported := strings.Join([]string{
+		"According to the README, the project is an e-commerce platform with a Go backend and a React frontend.",
+		"The observed backend/go.mod declares the Go module `ecommerce`.",
+		"The inspected backend/cmd/product-service/main.go initializes Redis and starts an HTTP listener.",
+		"The inspected backend/cmd/cart-service/main.go listens on :8082.",
+		"Compose maps cart-service to host port 8082.",
+		"A live runtime was not observed, so its running state remains unverified.",
+	}, "\n\n")
+	grounding := agent.AssessGrounding(intent,
+		[]agent.Turn{{Results: outcomes}}, supported)
+	if !grounding.Pass() {
+		t.Fatalf("the strongest supported answer was reviewed: %s", grounding.Reason())
+	}
+
+	turns := []agent.Turn{
+		{Results: outcomes},
+		{Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{
+			ai.TextContent{Text: supported},
+		}}},
+	}
+	review := ""
+	if len(suff.Missing) > 0 {
+		review = strings.Join(suff.Missing, ", ")
+	}
+	verdict := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns:          turns,
+		Contract:       intent,
+		Provenance:     state.Provenance(shape),
+		EvidenceReview: review,
+		Root:           root,
+	})
+	if !verdict.Complete() {
+		t.Fatalf("the strongest supported answer did not complete: %s", verdict.Reason)
+	}
+
+	// The same evidence cannot support documentation/config-derived status,
+	// runtime state, a test count, a structural relationship, or a broad
+	// absence.
+	overclaim := strings.Join([]string{
+		"Product-service is fully implemented with CRUD, Redis caching, graceful shutdown, and structured logging.",
+		"The product service listens on :8082.",
+		"The cart service is running.",
+		"The project has 120 tests.",
+		"Order Checkout calls payment.Authorize.",
+		"The project uses Redis at runtime.",
+	}, "\n\n")
+	overAssessment := agent.AssessGrounding(intent,
+		[]agent.Turn{{Results: outcomes}}, overclaim)
+	if overAssessment.Pass() {
+		t.Fatal("the overclaim was accepted")
+	}
+	codes := map[string]bool{}
+	for _, issue := range overAssessment.Issues {
+		codes[issue.Code] = true
+	}
+	for _, want := range []string{
+		"unsupported_completeness_claim",
+		"unsupported_runtime_state",
+		"unsupported_test_inventory_claim",
+		"unsupported_structural_claim",
+		"unsupported_dependency_claim",
+	} {
+		if !codes[want] {
+			t.Fatalf("overclaim codes = %v, want %s", codes, want)
+		}
+	}
+	overVerdict := agent.EvaluateTaskCompletion(agent.CompletionInput{
+		Turns: []agent.Turn{
+			{Results: outcomes},
+			{Assistant: ai.AssistantMessage{Content: []ai.ContentBlock{
+				ai.TextContent{Text: overclaim},
+			}}},
+		},
+		Contract:       intent,
+		Provenance:     state.Provenance(shape),
+		EvidenceReview: review,
+		Root:           root,
+	})
+	if overVerdict.Complete() {
+		t.Fatal("the overclaim was promoted to PROVEN")
+	}
+	t.Logf("claim coverage: implementation=%s runtime_state=%s absence=%s test_inventory=%s",
+		states[cognition.ClaimImplementationStatus],
+		states[cognition.ClaimRuntimeState],
+		states[cognition.ClaimAbsence],
+		states[cognition.ClaimTestInventory])
+}
+
 // TestSelfAnalysisStructuralRuntime is the gated self-analysis baseline. It
 // verifies that the same runtime comprehends OHGO's own architecture without
 // changing the native Go path.

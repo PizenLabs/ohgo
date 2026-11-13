@@ -266,6 +266,8 @@ func claimEvidenceBlock(evidence *EvidenceState) string {
 	line.WriteString(claimStatus(summary.HasDocumentation))
 	line.WriteString("; inventory=")
 	line.WriteString(claimStatus(summary.HasInventory))
+	line.WriteString("; structural=")
+	line.WriteString(claimStatus(summary.HasStructural))
 	line.WriteString("; source_paths=")
 	line.WriteString(claimStatus(summary.HasSourcePath))
 	line.WriteString("; dependency=")

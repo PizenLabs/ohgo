@@ -28,6 +28,11 @@ type ClaimSummary struct {
 	// HasInventory reports a file/directory/structural inventory. It proves
 	// names exist; it does not prove what their content does.
 	HasInventory bool
+	// HasStructural reports a structural relationship or declaration
+	// observation (a graph edge, symbol, package, or structure row). It is
+	// narrower than inventory: it can bind two code endpoints, which an
+	// inventory cannot.
+	HasStructural bool
 	// HasSourcePath reports source coordinates observed without source
 	// content, such as a glob result or a structural file row.
 	HasSourcePath bool
@@ -181,6 +186,9 @@ func (s *EvidenceState) ClaimSummary() ClaimSummary {
 			}
 		case EvidenceStructural:
 			summary.HasInventory = true
+			if structuralRelationshipEvidence(item) {
+				summary.HasStructural = true
+			}
 			if isComponentSeedPath(item.Source.Path) {
 				if name := agent.ComponentFromPath(item.Source.Path); name != "" {
 					addComponent(name, false, true, item.Source.Path)
@@ -346,6 +354,26 @@ func sortedComponentEvidence(values map[string]*ComponentEvidence) []ComponentEv
 	return out
 }
 
+// structuralRelationshipEvidence reports a structural query that observed
+// edges or references rather than only an inventory. A file list or overview
+// proves coordinates exist; it does not bind two code endpoints.
+func structuralRelationshipEvidence(item EvidenceItem) bool {
+	switch item.Source.Tool {
+	case "graph", "refs":
+		return true
+	}
+	switch item.View {
+	case "relations", "impact":
+		return true
+	}
+	for _, prefix := range []string{"graph_edge:", "call:", "ref:"} {
+		if strings.HasPrefix(item.ID, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // runtimeDependencySignal reports a runtime observation whose output names a
 // dependency and a readiness/operation signal. A live service alone does not
 // prove that it uses a particular dependency.
@@ -500,7 +528,10 @@ func testInventoryState(item EvidenceItem) string {
 		item.Source.ScopeCompleteness == "COMPLETE" &&
 		item.Source.InventoryCompleteness == "COMPLETE" &&
 		item.Source.Completeness == "COMPLETE" &&
-		!item.Source.Truncated {
+		!item.Source.Truncated &&
+		item.Source.ExcludedRoots == 0 &&
+		item.Source.ExcludedSourceFiles == 0 &&
+		item.Source.UnsupportedSources == 0 {
 		return "COMPLETE"
 	}
 	return "PARTIAL"

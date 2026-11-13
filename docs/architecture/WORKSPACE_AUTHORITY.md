@@ -67,7 +67,7 @@ question can carry execution intent and an imperative can be informational.
 | ------------- | ---------------------------------------------------------------- | ----------------- |
 | `READ`        | what is…, why does…, how does…, explain, describe, summarize, compare, what changed… | ASK |
 | `EXECUTE`     | implement, fix, modify, refactor, redesign, rework, create, delete, apply, run, change… | BUILD |
-| `INVESTIGATE` | reproduce, investigate, diagnose, troubleshoot, stress, probe, try to break, find edge cases, benchmark, test failure modes… | FUZZ |
+| `INVESTIGATE` | reproduce, investigate, trace, explore, diagnose, troubleshoot, stress, probe, try to break, find edge cases, find why/where, analyze how/why, benchmark, test failure modes… | FUZZ |
 
 Intent and completion are different axes. A standalone `INVESTIGATE` request
 routes to FUZZ because the work may execute probes, but its completion contract
@@ -124,13 +124,31 @@ The list of low-confidence examples the spec calls ambiguous — "Take a look at
 this.", "Can you handle this?", "Check this.", "Make this better." — all
 classify as `READ`.
 
-A later clause with an explicit, unambiguous read head strengthens the READ
-signal. "Check this project and analyze what this project is about?" opens with
-the ambiguous verb `check`, so its first clause alone is only a moderate READ;
-the later `analyze` clause is the objective's verb and makes the prediction
-strong. Strength is still a level, not a score, and a later noun phrase is
-deliberately not enough. A later mutation clause still wins as the objective,
-so "check this project and create the missing files" remains EXECUTE.
+A later clause with an explicit, unambiguous read head can strengthen a leading
+READ signal. "Check this project and analyze what this project is about?" opens
+with the ambiguous verb `check`, so its first clause alone is only a moderate
+READ; the later `analyze` clause is the objective's verb and makes the
+prediction strong. Strength is still a level, not a score, and a later noun
+phrase is deliberately not enough. A later mutation clause still wins as the
+objective, so "check this project and create the missing files" remains EXECUTE.
+
+The same later-read rule must not contest an investigative opener. "Investigate
+this project and analyze what this project is about?" asks for an investigation
+whose deliverable is an explanation; `analyze` describes that answer rather
+than opening a rival READ objective. Treating it as a rival made the prediction
+both READ and ambiguous, which left an automatic BUILD session in BUILD and
+never reached FUZZ. A leading investigative objective therefore owns the turn,
+and a later explanatory clause does not downgrade it. The complement still
+matters for a single verb: "analyze how this subsystem is connected" and "find
+where this behavior comes from" are investigations, while "analyze what this
+project is about" remains READ.
+
+A leading investigation is also the current phase of a composite objective.
+"Investigate and fix the checkout failure" starts in FUZZ and hands the
+confirmed change to BUILD; the leading investigation is not weakened by the
+later mutation. The reverse order, "fix it and then try to break it", remains
+ambiguous because the change is the leading objective and the investigation may
+be its verification.
 
 `Classify` returns the intent alone. `ClassifyPrediction` returns it with an
 **evidence level**, because routing may want to know how well the request was
@@ -138,9 +156,9 @@ placed without inventing a probability:
 
 | Strength    | Meaning                                                              |
 | ----------- | -------------------------------------------------------------------- |
-| `strong`    | the leading verb matched the winning intent, and no rival is as strong |
+| `strong`    | a leading objective matched, and any later clause is read as the next phase rather than as a rival |
 | `moderate`  | only a corroborating phrase matched, uncontested                     |
-| `ambiguous` | nothing matched (the `READ` fallback), or a rival signal is at least as strong |
+| `ambiguous` | nothing matched (the `READ` fallback), or the signals are contested without a clear leading objective |
 
 A level is not a score. The classifier has no calibrated probability, so
 nothing may render one (§9).
@@ -484,7 +502,10 @@ session
 ```
 
 `SwitchWorkspace` persists the active workspace, the effective model, and moves
-the gate together. `RouteTurn` never persists anything.
+the gate together. An automatic handoff has the same durable effect: the one-shot
+path records the target workspace and the model it will actually call before the
+loop runs, so a later resume starts from the authority that executed rather than
+the default it started with. `RouteTurn` never persists anything.
 
 ---
 
@@ -660,6 +681,10 @@ that a classifier returned a string.
 | G — routing never changes authority | `workspace.TestRouteTurnNeverChangesTheActiveWorkspace`, `cmd/ohgo.TestRouteTurnKeepsBuildAuthority` |
 | H — authority is runtime-enforced, not prompt-enforced | `cmd/ohgo.TestAuthorityIsEnforcedWithoutPromptInstructions` |
 | Classifier contract | `workspace.TestClassifyReadsCapabilityNotGrammar`, `TestClassifyFallsBackToTheLowerAuthority` |
+| Investigation survives an explanatory clause | `workspace.TestInvestigativeObjectiveSurvivesAnExplanatoryClause`, `cmd/ohgo.TestTurnTransitionRoutesInvestigativeAnalysisToFuzz`, `tui.TestInvestigativeRequestAutomaticallyStartsInFuzz` |
+| Explanation does not widen to investigation | `workspace.TestExplanatoryRequestsStayAsk` |
+| Composite investigation starts in FUZZ | `workspace.TestLeadingInvestigationWithLaterMutationStartsInFuzz` |
+| Explicit BUILD choice is not reclassified | `tui.TestAmbiguousWorkspaceChoiceRunsOnlyAfterHumanSelection`, `tui.TestExplicitBuildChoiceRunsInvestigationWithoutDowngrade` |
 | UI consults the router | `tui.TestRunTurnRefusesBlockedIntentBeforeTheModel`, `tui.TestRunTurnProjectsDelegatedRouteTruthfully` |
 | UI never moves the workspace | `tui.TestDelegatedTurnNeverSwitchesWorkspace`, `tui.TestRenderShowsTurnSemanticsWithoutMovingTheWorkspace` |
 | Turn state is ephemeral | `tui.TestTurnSemanticsAreClearedOnCompletion`, `cmd/ohgo.TestDelegatedTurnDoesNotLeakIntoTheNextRoute` |

@@ -11,6 +11,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/cognition"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
@@ -72,6 +73,143 @@ func (trajectoryGry) ActionClasses() []agent.ActionClass {
 }
 func (trajectoryGry) Execute(agent.Context, map[string]any) agent.Result {
 	return agent.Result{Text: "architecture observed"}
+}
+
+type trajectoryGlob struct{}
+
+func (trajectoryGlob) Name() string        { return "glob" }
+func (trajectoryGlob) Description() string { return "find files" }
+func (trajectoryGlob) Parameters() *jsonschema.Schema {
+	return jsonschema.MustCompile([]byte(`{"type":"object","properties":{"pattern":{"type":"string"}}}`))
+}
+func (trajectoryGlob) Approval() agent.Approval      { return agent.Approval{Tier: agent.TierRead} }
+func (trajectoryGlob) Exclusive(map[string]any) bool { return false }
+func (trajectoryGlob) Execute(agent.Context, map[string]any) agent.Result {
+	return agent.Result{Text: "backend/cmd/product-service/main.go"}
+}
+
+// A repeated README read after a substantive answer is the smallest version of
+// the observed #237 trajectory. The read is still offered, but it is an exact
+// observation already in hand, so the answer is terminal and the call is
+// continuation.
+func TestRepeatedReadAfterAnswerIsDropped(t *testing.T) {
+	facts := cognition.RepositoryFacts{Go: true}
+	shape := cognition.BuildShape(contract.IntentContract{
+		Objective: "check this project and analyze what this project is about?",
+		Kind:      contract.ObjectiveInformational,
+	}, cognition.ShapeParams{Authority: "ask", Intent: "read", Facts: facts})
+	projector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
+
+	const answer = "The project is a Go service with an observed product-service entrypoint."
+	result := runSurface(t,
+		[]agent.Tool{trajectoryRead{}, trajectoryList{}},
+		[]ai.AssistantMessage{
+			surfaceCall("read-1", "read", map[string]any{"path": "README.md"}),
+			{
+				Content: []ai.ContentBlock{
+					ai.TextContent{Text: answer},
+					ai.ToolCall{ID: "read-2", Name: "read", Arguments: map[string]any{"path": "README.md"}},
+				},
+				StopReason: ai.StopToolUse,
+			},
+			surfaceAnswer("should never be requested"),
+		}, projector.Project, 6)
+
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	if result.requests != 2 {
+		t.Fatalf("model requests = %d, want the read plus the answer (2)", result.requests)
+	}
+	if len(result.turns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(result.turns))
+	}
+	last := result.turns[1]
+	if len(last.Results) != 0 {
+		t.Fatalf("outcomes = %+v, want no dispatched continuation", last.Results)
+	}
+	if calls := last.Assistant.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("stored tool calls = %+v, want none", calls)
+	}
+}
+
+// The practical ASK trajectory: documentation and an inventory listing are
+// observed, then the model answers while repeating the README read and
+// proposing another inventory scan. The source-acquisition stage withholds
+// glob, and the read is an exact observation already in hand; neither call can
+// add evidence. The answer is the terminal transition, so the loop must
+// dispatch neither.
+func TestWithheldInventoryCallAfterAnswerIsNotDispatched(t *testing.T) {
+	facts := cognition.RepositoryFacts{Go: true}
+	shape := cognition.BuildShape(contract.IntentContract{
+		Objective: "check this project and analyze what this project is about?",
+		Kind:      contract.ObjectiveInformational,
+	}, cognition.ShapeParams{Authority: "ask", Intent: "read", Facts: facts})
+	projector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
+
+	const answer = "The project is a Go service with an observed product-service entrypoint."
+	result := runSurface(t,
+		[]agent.Tool{trajectoryRead{}, trajectoryList{}, trajectoryGlob{}},
+		[]ai.AssistantMessage{
+			{
+				Content: []ai.ContentBlock{
+					ai.ToolCall{ID: "read", Name: "read", Arguments: map[string]any{"path": "README.md"}},
+					ai.ToolCall{ID: "ls", Name: "ls", Arguments: map[string]any{"path": "backend/cmd"}},
+				},
+				StopReason: ai.StopToolUse,
+			},
+			{
+				Content: []ai.ContentBlock{
+					ai.TextContent{Text: answer},
+					ai.ToolCall{ID: "glob", Name: "glob", Arguments: map[string]any{"pattern": "backend/**/*.go"}},
+					ai.ToolCall{ID: "read", Name: "read", Arguments: map[string]any{"path": "README.md"}},
+				},
+				StopReason: ai.StopToolUse,
+			},
+			surfaceAnswer("should never be requested"),
+		}, projector.Project, 6)
+
+	if result.err != nil {
+		t.Fatalf("Run: %v", result.err)
+	}
+	if result.requests != 2 {
+		t.Fatalf("model requests = %d, want the observations plus the answer (2)", result.requests)
+	}
+	if len(result.turns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(result.turns))
+	}
+	if len(result.reports) != 2 {
+		t.Fatalf("projections = %d, want 2", len(result.reports))
+	}
+	withheld := false
+	for _, exclusion := range result.reports[1].Excluded {
+		if exclusion.Tool == "glob" && strings.Contains(exclusion.Reason, "source content") {
+			withheld = true
+		}
+	}
+	if !withheld {
+		t.Fatalf("second projection exclusions = %+v, want glob withheld for source acquisition",
+			result.reports[1].Excluded)
+	}
+	offeredRead := false
+	for _, name := range result.reports[1].ToolNames {
+		if name == "read" {
+			offeredRead = true
+		}
+	}
+	if !offeredRead {
+		t.Fatalf("second projection tools = %v, want read still offered", result.reports[1].ToolNames)
+	}
+	last := result.turns[len(result.turns)-1]
+	if last.Assistant.Text() != answer {
+		t.Fatalf("answer = %q, want the model's text", last.Assistant.Text())
+	}
+	if len(last.Results) != 0 {
+		t.Fatalf("outcomes = %+v, want no dispatched continuation", last.Results)
+	}
+	if calls := last.Assistant.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("stored tool calls = %+v, want none", calls)
+	}
 }
 
 // The observed North transcript: seven observations satisfy the repository
