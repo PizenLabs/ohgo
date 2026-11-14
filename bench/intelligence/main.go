@@ -1,9 +1,9 @@
 // Command intelligence benchmarks the unified intelligence runtime.
 //
-// It measures retrieval cold/warm/query/incremental cost at increasing
-// repository sizes and compares planner-selected work with a full run over the
-// same synthetic repository. Synthetic source keeps the shape exact and
-// repeatable; relevance quality is measured by the labeled corpus test.
+// Latency is reported as median and p95 over repeated rounds so a single noisy
+// run cannot be mistaken for a regression. Memory can be measured per phase
+// (ast, retrieval, investigation) in a fresh process, because a single process
+// heap conflates the repository snapshot with the retrieval index.
 package main
 
 import (
@@ -26,16 +26,18 @@ import (
 
 func main() {
 	sizes := flag.String("sizes", "100,1000,5000", "comma-separated repository sizes")
+	rounds := flag.Int("rounds", 5, "measurement rounds per size")
 	keep := flag.Bool("keep", false, "keep generated repositories")
+	phase := flag.String("phase", "", "memory phase to measure: ast, retrieval, investigation")
 	flag.Parse()
-	fmt.Println("| files | cold | warm load | refresh | query-only p50 | docs |")
+	if *phase != "" {
+		runPhase(*sizes, *phase)
+		return
+	}
+	fmt.Println("| files | cold med/p95 | warm med/p95 | refresh med/p95 | query med/p95 | docs |")
 	fmt.Println("|---:|---:|---:|---:|---:|---:|")
 	for _, size := range parseSizes(*sizes) {
 		dir, err := syntheticRepo(size)
-		if err != nil {
-			fail(err)
-		}
-		cacheDir, err := os.MkdirTemp("", "ohgo-intel-cache-*")
 		if err != nil {
 			fail(err)
 		}
@@ -43,48 +45,63 @@ func main() {
 		if err != nil {
 			fail(err)
 		}
-		workspace := retrieval.NewWorkspace(dir, cacheDir, retrieval.DefaultOptions())
+		measureSize(dir, index, size, *rounds)
+		if !*keep {
+			_ = os.RemoveAll(dir)
+		}
+	}
+}
+
+func measureSize(dir string, index *ast.Index, size, rounds int) {
+	if rounds < 1 {
+		rounds = 1
+	}
+	coldDurations := make([]time.Duration, 0, rounds)
+	warmDurations := make([]time.Duration, 0, rounds)
+	refreshDurations := make([]time.Duration, 0, rounds)
+	queryDurations := make([]time.Duration, 0, rounds*15)
+	var documents int
+	for round := 0; round < rounds; round++ {
+		cacheDir, err := os.MkdirTemp("", "ohgo-intel-cache-*")
+		if err != nil {
+			fail(err)
+		}
 		start := time.Now()
-		_, coldStats, err := workspace.Search(context.Background(), index, retrieval.Query{Text: "handler payment", Limit: 5})
+		workspace := retrieval.NewWorkspace(dir, cacheDir, retrieval.DefaultOptions())
+		_, stats, err := workspace.Search(context.Background(), index, retrieval.Query{Text: "handler payment", Limit: 5})
 		if err != nil {
 			fail(err)
 		}
-		cold := time.Since(start)
+		coldDurations = append(coldDurations, time.Since(start))
+		documents = stats.Documents
+
 		start = time.Now()
-		_, _, err = retrieval.NewWorkspace(dir, cacheDir, retrieval.DefaultOptions()).
-			Search(context.Background(), index, retrieval.Query{Text: "handler payment", Limit: 5})
-		if err != nil {
+		warm := retrieval.NewWorkspace(dir, cacheDir, retrieval.DefaultOptions())
+		if _, _, err := warm.Search(context.Background(), index, retrieval.Query{Text: "handler payment", Limit: 5}); err != nil {
 			fail(err)
 		}
-		warm := time.Since(start)
+		warmDurations = append(warmDurations, time.Since(start))
+
 		start = time.Now()
 		if _, err := workspace.Refresh(context.Background(), index); err != nil {
 			fail(err)
 		}
-		refresh := time.Since(start)
-		durations := make([]time.Duration, 0, 11)
-		for i := 0; i < 11; i++ {
+		refreshDurations = append(refreshDurations, time.Since(start))
+
+		for i := 0; i < 15; i++ {
 			start = time.Now()
 			if _, err := workspace.Query(retrieval.Query{Text: "handler payment", Limit: 5}); err != nil {
 				fail(err)
 			}
-			durations = append(durations, time.Since(start))
+			queryDurations = append(queryDurations, time.Since(start))
 		}
-		sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
-		runtime.GC()
-		var memory runtime.MemStats
-		runtime.ReadMemStats(&memory)
-		fmt.Printf("| %d | %s | %s | %s | %s | %d |\n", size, round(cold), round(warm), round(refresh),
-			round(durations[len(durations)/2]), coldStats.Documents)
-		fmt.Printf("\nheap after warm index (%d docs): %.1f MiB allocated, %.1f MiB system\n\n",
-			coldStats.Documents, float64(memory.HeapAlloc)/(1<<20), float64(memory.Sys)/(1<<20))
-		if size <= 5000 {
-			adaptive(dir, index, size)
-		}
-		if !*keep {
-			_ = os.RemoveAll(dir)
-			_ = os.RemoveAll(cacheDir)
-		}
+		_ = os.RemoveAll(cacheDir)
+	}
+	fmt.Printf("| %d | %s | %s | %s | %s | %d |\n", size,
+		medianP95(coldDurations), medianP95(warmDurations), medianP95(refreshDurations),
+		medianP95(queryDurations), documents)
+	if size <= 5000 {
+		adaptive(dir, index, size)
 	}
 }
 
@@ -117,10 +134,6 @@ func adaptive(dir string, index *ast.Index, size int) {
 		if err != nil {
 			fail(err)
 		}
-		providers := make([]string, 0, len(result.Steps))
-		for _, step := range result.Steps {
-			providers = append(providers, string(step.Provider))
-		}
 		adaptiveElapsed := time.Since(start)
 		fullStart := time.Now()
 		structuralIntent, ok := structural.ParseIntent(string(intent))
@@ -143,9 +156,79 @@ func adaptive(dir string, index *ast.Index, size int) {
 		}
 		fullElapsed := time.Since(fullStart)
 		_ = os.RemoveAll(fullCache)
+		providers := make([]string, 0, len(result.Steps))
+		for _, step := range result.Steps {
+			providers = append(providers, string(step.Provider))
+		}
 		fmt.Printf("| %d | %s | %s | %s | %s | %.2f | %s |\n", size, intent, round(adaptiveElapsed),
 			round(fullElapsed), strings.Join(providers, "+"), result.Confidence, result.StopReason)
 	}
+}
+
+// runPhase measures one subsystem in a fresh process so heap numbers are not
+// conflated. It is invoked with -phase and a single size.
+func runPhase(sizes, phase string) {
+	parsed := parseSizes(sizes)
+	if len(parsed) == 0 {
+		fail(fmt.Errorf("no size"))
+	}
+	size := parsed[0]
+	dir, err := syntheticRepo(size)
+	if err != nil {
+		fail(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	index, err := ast.NewIndex(dir)
+	if err != nil {
+		fail(err)
+	}
+	inventory, err := index.Inventory(context.Background(), ast.InventoryQuery{MaxFiles: 200000})
+	if err != nil {
+		fail(err)
+	}
+	report := func(label string) {
+		runtime.GC()
+		var memory runtime.MemStats
+		runtime.ReadMemStats(&memory)
+		fmt.Printf("| %s | %.1f MiB | %.1f MiB |\n", label,
+			float64(memory.HeapAlloc)/(1<<20), float64(memory.HeapInuse)/(1<<20))
+	}
+	fmt.Println("| phase | heap alloc | heap inuse |")
+	fmt.Println("|---|---:|---:|")
+	report(fmt.Sprintf("ast inventory (%d files)", len(inventory.Files)))
+	if phase == "ast" {
+		return
+	}
+	workspace := retrieval.NewWorkspace(dir, "", retrieval.DefaultOptions())
+	start := time.Now()
+	if _, _, err := workspace.Search(context.Background(), index, retrieval.Query{Text: "handler payment", Limit: 5}); err != nil {
+		fail(err)
+	}
+	report(fmt.Sprintf("ast + retrieval cold (%.0f ms)", float64(time.Since(start).Milliseconds())))
+	if phase == "retrieval" {
+		return
+	}
+	source := &inventorySource{index: index}
+	cache, err := os.MkdirTemp("", "ohgo-intel-mem-*")
+	if err != nil {
+		fail(err)
+	}
+	defer func() { _ = os.RemoveAll(cache) }()
+	engine := investigate.New(
+		&investigate.StructuralProvider{Source: source, Cache: structural.NewFileCache(cache), Root: dir},
+		&investigate.RetrievalProvider{Workspace: workspace, Source: index, Root: dir},
+	)
+	if _, err := engine.Run(context.Background(), investigate.Request{
+		Question: "where is handler 42 implemented?", Intent: planner.IntentLocate, Focus: "pkg42",
+		Budget: investigate.Budget{MaxSteps: 3},
+	}); err != nil {
+		fail(err)
+	}
+	report("ast + retrieval + investigation")
+	runtime.KeepAlive(engine)
+	runtime.KeepAlive(workspace)
+	runtime.KeepAlive(index)
+	runtime.KeepAlive(inventory)
 }
 
 func syntheticRepo(files int) (string, error) {
@@ -198,6 +281,20 @@ func (s *inventorySource) Inventory(ctx context.Context, query ast.InventoryQuer
 
 func (s *inventorySource) Dependencies(ctx context.Context, query ast.DependencyQuery) (ast.DependencyResult, error) {
 	return s.index.Dependencies(ctx, query)
+}
+
+func medianP95(values []time.Duration) string {
+	if len(values) == 0 {
+		return "-"
+	}
+	sorted := append([]time.Duration(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	median := sorted[len(sorted)/2]
+	p95 := sorted[(len(sorted)*95)/100]
+	if p95 < median {
+		p95 = median
+	}
+	return round(median).String() + " / " + round(p95).String()
 }
 
 func round(duration time.Duration) time.Duration {

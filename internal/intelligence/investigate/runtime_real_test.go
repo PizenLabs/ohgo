@@ -38,6 +38,14 @@ func TestRealDlvRuntimeEvidence(t *testing.T) {
 		t.Skip("developer mode is disabled; debugserver cannot run the fixture")
 	}
 	root := t.TempDir()
+	// Delve resolves source files by the path embedded in the binary. On
+	// macOS /var is a symlink to /private/var; mixing the two forms leaves the
+	// breakpoint unverified and the debuggee runs to completion.
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root = resolved
 	mainPath := filepath.Join(root, "main.go")
 	source := `package main
 
@@ -60,7 +68,9 @@ func add(a, b int) int {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(root, "app")
-	build := exec.Command(goTool, "build", "-o", binary, ".")
+	// Disable inlining so the fixture's known lines are real statements; an
+	// optimized build can merge them and leave the breakpoint unverified.
+	build := exec.Command(goTool, "build", "-gcflags=all=-N -l", "-o", binary, ".")
 	build.Dir = root
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build fixture: %v: %s", err, output)
@@ -151,7 +161,21 @@ func add(a, b int) int {
 		t.Fatalf("budget exhaustion was not explicit: records=%d issues=%v", len(observation.Records), observation.Issues)
 	}
 
-	if err := session.Continue(ctx, firstThread(t, ctx, session)); err != nil {
+	thread := firstThread(t, ctx, session)
+	if err := session.Next(ctx, thread); err != nil {
+		t.Fatalf("step over: %v", err)
+	}
+	if _, err := session.WaitEvent(ctx, "stopped"); err != nil {
+		t.Fatalf("wait stopped after step: %v", err)
+	}
+	frames, err := session.StackTrace(ctx, thread, 5)
+	if err != nil || len(frames) == 0 {
+		t.Fatalf("stack after step: %v", err)
+	}
+	if frames[0].Line != 12 {
+		t.Fatalf("stepped to line %d, want 12", frames[0].Line)
+	}
+	if err := session.Continue(ctx, thread); err != nil {
 		t.Fatalf("continue: %v", err)
 	}
 	if _, err := session.WaitEvent(ctx, "exited"); err != nil {

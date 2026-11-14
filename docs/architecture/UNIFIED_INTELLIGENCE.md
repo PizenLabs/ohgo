@@ -336,33 +336,40 @@ stopping reason. It never returns raw graphs, LSP/DAP payloads, or indexes.
 | structural intelligence | yes | yes | yes (`structure`, `investigate`) |
 | Okapi BM25 retrieval | yes | yes (labeled corpus + invariants) | yes (`retrieve`, `investigate`) |
 | semantic intelligence | yes | yes (fake + real gopls, including the live provider) | yes (`investigate`, gopls when installed) |
-| runtime intelligence | yes | yes (fake adapter); real `dlv` **not** validated | no (provider adapter is not composed) |
+| runtime intelligence | yes | yes (fake adapter + real `dlv` fixture through the orchestrator) | no (authority decision, not a capability gap) |
 | unified evidence engine | yes | yes, including orchestrator fixtures | yes, inside `investigate` |
 | closed-loop planner | yes | yes (selection, reassessment, budget) | yes (`investigate`) |
 | shared wire framing | yes | via LSP/DAP suites | — |
 
 Known gaps, stated rather than implied:
 
-1. Real `dlv` is not validated end to end. The client supports Delve's
-   dial-client transport (`--client-addr={addr}`), and the real fixture reaches
-   `initialize` + `launch`; this machine has developer mode disabled, so
-   `debugserver` starts the debuggee suspended and Delve never answers launch.
-   The real test skips with that reason. The dial transport itself is validated
-   with a real subprocess over loopback and with the fake adapter composed into
-   the orchestrator (runtime records, shared meter, budget exhaustion). Runtime
-   is still not exposed as a model-facing debug tool.
+1. Runtime is validated against a real debugger but is not exposed to the
+   model. `TestRealDlvRuntimeEvidence` builds a fixture with `-gcflags=all=-N
+   -l` (optimized builds can merge the known lines and leave the breakpoint
+   unverified), launches it through `dlv dap --client-addr={addr}`, stops at a
+   verified breakpoint, and drives threads/stack/scopes/variables through the
+   orchestrator's runtime provider into the shared evidence engine and meter.
+   The test skips only when dlv is absent or macOS developer mode is disabled.
+   Exposing launch/attach/evaluate as a model tool remains a separate authority
+   decision; the execution plane has no runtime tool.
 2. Retrieval relevance is validated on a synthetic labeled corpus, not on a
    large human-labeled repository corpus.
-3. Retrieval at 20,000 documents after the integer-slot postings change:
-   cold 1.0 s, warm 285 ms, refresh 183 ms, query-only **5 ms**. At 50,000 files
-   (20k cap): cold 1.26 s, warm 467 ms, refresh 380 ms, query-only 5 ms. The
-   earlier 281 ms figure was reconciliation, not BM25 scoring. The AST inventory
-   now exposes its observed mtime so retrieval does not stat every file twice.
+3. Retrieval medians (5 rounds, 15 queries each) after the integer-slot
+   postings change: 5,000 files cold 280 ms, warm 67 ms, refresh 48 ms,
+   query-only 0.8 ms; 20,000 files cold 1.11 s, warm 286 ms, refresh 189 ms,
+   query-only 5 ms; 50,000 files (20k cap) query-only 5 ms. The earlier
+   single-run 5k "112/126 ms" was run-to-run variance, not a regression. The
+   AST inventory exposes its observed mtime so retrieval does not stat every
+   file twice.
 4. Semantic manager instances are per investigation step: a warm `gopls` is not
    reused across separate `investigate` calls.
 5. Adaptive-vs-full benchmarking covers structural + retrieval only; semantic
    and runtime rows are unavailable to the benchmark harness. Measured at 5,000
    files: project 30 ms adaptive vs 222 ms full; locate 124 ms vs 136 ms.
-6. Memory is measured only at the process level: heap after a warm 20k-document
-   index is 91.6 MiB (50k-file run: 219.9 MiB including the larger snapshot).
-   Per-provider and subprocess memory are unmeasured.
+6. Memory is decomposed by phase in fresh processes (heap alloc):
+   5,000 files: AST inventory 23.6 MiB, retrieval index +10.8 MiB,
+   investigation +0.1 MiB. 20,000: 94.5 / +43.3 / +0.1 MiB. 50,000 (20k index
+   cap): 227.6 / +43.2 / +0.1 MiB. The dominant retained structure is the AST
+   source snapshot, not retrieval; the investigation layer adds almost nothing
+   after its transient analysis is collected. LSP/DAP subprocess memory is still
+   unmeasured.
