@@ -44,6 +44,19 @@ daemon, graph database, or evidence path.
   targeted/impact views parse the pending supported files on demand. Semantic
   activation is reserved and fails explicitly because no semantic resolver is
   configured.
+- `structure` also exposes the adaptive analysis layer as two views:
+  `analysis` (intent-aware plan, multi-resolution summary, architecture and
+  boundary evidence, coverage, issues, cache outcome) and `expand` (the direct
+  children of one node). The engine behind them is
+  `intelligence/structural`; the capability only renders what the planner
+  selected. A project intent stays metadata-first, while architecture,
+  locate, flow, impact, and isolation raise the activation floor and require
+  edges or parsed declarations. Evidence states (`OBSERVED`,
+  `PARTIALLY_OBSERVED`, `INFERRED`, `VERIFIED`, `UNKNOWN`) travel with the
+  result; no analysis can promote an inferred fact or a path convention into
+  proof. Planner tables, strategy versions, cache invalidation, and failure
+  semantics are canonical in
+  [`STRUCTURAL_INTELLIGENCE.md`](STRUCTURAL_INTELLIGENCE.md).
 
 The index is an incremental in-process snapshot, not a stateless per-file
 searcher. A normal refresh stats the tree, parses only added or changed source

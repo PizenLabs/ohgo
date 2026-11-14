@@ -216,7 +216,7 @@ func (idx *Index) fileInfoLocked(rel string, rec fileRecord) FileInfo {
 		Path: rel, Dir: dirOf(rel), Package: rec.packageName,
 		Language: rec.language, Adapter: rec.adapter, Kind: rec.kind, Test: rec.test,
 		Parsed: rec.parsed, ParseError: parseError, Unsupported: unsupported,
-		Size: rec.size, Symbols: len(rec.symbols), Exports: exportedCount(rec.symbols),
+		Size: rec.size, ModUnixNano: rec.mtime, Symbols: len(rec.symbols), Exports: exportedCount(rec.symbols),
 	}
 }
 

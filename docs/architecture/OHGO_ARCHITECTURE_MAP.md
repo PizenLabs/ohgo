@@ -76,7 +76,7 @@ create a boundary that does not exist.
 | **runtime** | `agent` | The turn loop, tool dispatch, the authorization sequence, grounding admission, completion evaluation, subagent execution, the projection seam, the edit-journal seam | Tool implementations, workspace policy, persistence, rendering |
 | **control** | `control/contract`, `control/budget`, `control/workspace`, `control/cognition`, `security` | Completion vocabulary (including the capability a contract requires); resource admission; authority policy + routing + intent contracts + transition decisions + capability preflight; task shape + evidence + narrowing; the authorization kernel | Execution, persistence, presentation |
 | **execution** | `execution/tools`, `execution/mcp`, `execution/sandbox`, `execution/shell`, `execution/exec` | Concrete capabilities; MCP transport + classification; the OS read-only boundary; shell-output decoding; the human `!` escape | The decision to allow an operation |
-| **intelligence** | `intelligence/ast`, `intelligence/ignore` | One in-process, incremental structural snapshot (Go native plus pinned tree-sitter adapters; symbols, packages/namespaces, files, tests, entrypoints, imports, references, calls, explicit relations, language coverage) and repository scoping | Anything about the agent, models, or UI |
+| **intelligence** | `intelligence/ast`, `intelligence/ignore`, `intelligence/structural`, `intelligence/retrieval`, `intelligence/semantic`, `intelligence/runtime`, `intelligence/evidence`, `intelligence/planner`, `intelligence/investigate`, `intelligence/wire` | One in-process, incremental structural snapshot (Go native plus pinned tree-sitter adapters; symbols, packages/namespaces, files, tests, entrypoints, imports, references, calls, explicit relations, language coverage), repository scoping, the adaptive structural analysis layer (multi-resolution model, evidence/confidence, strategy portfolio, planner, bounded graph analysis, result cache), Okapi BM25 retrieval, LSP semantic observations, authorized DAP runtime observations, the shared evidence engine, and the cross-provider planner | Anything about the agent, models, authority, or UI |
 | **provider** | `provider/ai`, `provider/catalog`, `provider/creds` | Wire protocols and streams; canonical stream normalization (native and serialized tool calls); model facts and discovery; credential resolution | Policy, routing, cost decisions, execution authority |
 | **continuity** | `continuity/session`, `continuity/task`, `continuity/recovery`, `memory` | The durable transcript; the durable task checkpoint; the edit history; the project-memory trust boundary | What should be recorded (that is control-plane) |
 | **experience** | `experience` | Verified execution experience: deterministic incidents, lessons, candidate strategies, validation, promotion, scoped store, and advisory path advice | Authority, evidence, completion, task lifecycle, transcript, tool execution |
@@ -110,6 +110,14 @@ edges that are architecturally forbidden (the ones enforced today are marked).
 | `internal/execution/sandbox` | OS boundary | stdlib only **\[ENFORCED]** | every module package |
 | `internal/intelligence/ast` | the structural index (native Go plus optional cgo adapters) | stdlib plus the pinned parsing dependency; no module-internal imports **\[ENFORCED]** | `agent`, `control/*`, `execution/*`, `provider/*`, `tui` **\[ENFORCED]** |
 | `internal/intelligence/ignore` | repo scoping | stdlib only **\[ENFORCED]** | every module package |
+| `internal/intelligence/structural` | adaptive structural analysis (model, evidence, planner, strategies, cache) | `intelligence/ast`, `intelligence/evidence`; stdlib — no agent/control/execution/provider/continuity imports **\[ENFORCED]** | own a parser, a second index, authority, or model-facing prose |
+| `internal/intelligence/retrieval` | Okapi BM25F ranking, incremental index, persistence | `intelligence/ast`; stdlib — no runtime/control imports **\[ENFORCED]** | structural facts, symbol resolution, or authority |
+| `internal/intelligence/semantic` | LSP transport/client, lazy server lifecycle, semantic requests | `intelligence/wire`; stdlib — no agent/control/execution imports **\[ENFORCED]** | apply edits, own symbol identity, or bypass authorization |
+| `internal/intelligence/runtime` | DAP transport/client, authorized debug sessions | `intelligence/wire`; stdlib — no agent/control/execution imports **\[ENFORCED]** | own process authority, bypass the Execution Plane, or evaluate without approval |
+| `internal/intelligence/evidence` | unified evidence records, correlation, contradiction retention | stdlib only **\[ENFORCED]** | observe the repository, rank, or authorize |
+| `internal/intelligence/planner` | cross-provider plan selection, cost, stopping reasons, reassessment | stdlib only **\[ENFORCED]** | start providers, grant authority, or execute work |
+| `internal/intelligence/investigate` | adaptive provider execution, shared evidence convergence, bounded investigation result | `intelligence/*`; stdlib — no `agent`/`control`/`execution`/`provider`/`tui` imports **\[ENFORCED]** | launch adapters without their manager, grant authority, cache runtime evidence as source truth, expose raw payloads |
+| `internal/intelligence/wire` | shared Content-Length JSON framing for LSP/DAP | stdlib only **\[ENFORCED]** | protocol schemas or provider policy |
 | `internal/provider/*` | wire, facts, secrets | `internal/provider/*`, `state` — **only** | `agent`, `control/*`, `execution/*`, `continuity/*`, `intelligence/*`, `tui` **\[ENFORCED]** |
 | `internal/continuity/session` | transcript | `agent`, `provider/ai`, `state`, `tokens`, `control/workspace` | `tui`, `commit`, `startup`, `update`, `history` **\[ENFORCED]** |
 | `internal/continuity/task` | durable task | `agent`, `control/{budget,cognition,contract,workspace}`, `project` | `tui` **\[ENFORCED]**; also `execution/*` by direction |
@@ -163,6 +171,15 @@ completion verification describe the same repository snapshot. Go stays on the
 native backend; other language adapters are syntax-only, pinned in `go.mod`,
 and compiled only with `cgo`. A no-cgo build keeps Go and reports the rest as
 unsupported rather than creating a second lexical truth.
+
+`intelligence/structural` is the interpretation layer over that one snapshot:
+it decides resolution, source classes, dependency graphs, analysis strategy, and
+confidence, but it owns no parser and no second index. Its planner, strategy
+portfolio, cache, and failure semantics are canonical in
+[`STRUCTURAL_INTELLIGENCE.md`](STRUCTURAL_INTELLIGENCE.md). A future capability
+(investigation, change planning, impact analysis, BUILD scope selection, commit
+grouping) consumes this layer; it must not re-derive structure from the
+filesystem.
 
 ### 4.4 Provider plane is below the runtime
 
@@ -256,6 +273,12 @@ reasoning, and `internal/architecture/rules_test.go` is the executable form.
 |---|---|---|
 | **New tool / execution capability** | `internal/execution/tools/<name>.go`, embedding `tools.Base`; register in `cmd/ohgo/build.go: buildTools` | Declare a false `Approval` tier; know about the TUI; decide its own authorization |
 | **New repository-intelligence query** | `internal/intelligence/ast` (snapshot/query capability) + a thin tool in `internal/execution/tools`; share `tools.StructuralSource` | Import `agent`; build a second index; return stale coordinates or a duplicate graph |
+| **New structural analysis strategy** | a `strategy` entry in `internal/intelligence/structural/plan.go` + a `run` in `strategies.go`; benchmark row in `bench/structural` | Add a second graph implementation, run unbounded algorithms, or use directory names as architecture evidence |
+| **New consumer of structural analysis** | `structural.NewAnalyzer` over the shared `*ast.Index` (or an equivalent `structural.Source`) | Re-read the filesystem, keep a parallel cache, or bypass the evidence states |
+| **New retrieval signal** | `internal/intelligence/retrieval` (fields, weights, reranking) with a labeled-corpus assertion; expose through the bounded `retrieve` tool | Turn relevance into confidence, rebuild the corpus per change, or index source text |
+| **New semantic capability** | `internal/intelligence/semantic` client method gated on a negotiated LSP capability | Apply edits, execute server commands, or assume a capability the server did not advertise |
+| **New runtime observation** | `internal/intelligence/runtime` session method gated on a negotiated DAP capability and an authorized session | Start an adapter without authorization, evaluate unrestricted expressions, or cache runtime values as new facts |
+| **New cross-provider decision** | a candidate row in `internal/intelligence/planner` plus a test for the selection/skip reason | Start a provider, infer authorization from intent, or hide a skipped provider |
 | **New provider** | `internal/provider/ai/<name>.go` implementing `ai.Provider`; register in `Registry.ProviderFor`; env var in `provider/creds`; facts in `provider/catalog` | Reach into `agent` or config policy; add a per-model special case in the loop |
 | **New model-selection policy** | facts in `provider/catalog`; persisted roles in `config`; resolution in `cmd/ohgo/options.go`; `harness` applies it | Make `agent` choose a model; branch on a model id in the engine |
 | **New persistence record** | the owning `continuity/*` package + a versioned schema; a migration note in the migration doc | Add a second source of truth; change a JSON shape without a version bump |

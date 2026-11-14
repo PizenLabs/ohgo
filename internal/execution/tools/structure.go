@@ -10,6 +10,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
+	"github.com/PizenLabs/ohgo/internal/intelligence/structural"
 )
 
 // StructureTool answers bounded project-structure inventory questions.
@@ -33,12 +34,13 @@ type StructureTool struct {
 // for a view the tool does not actually accept.
 var structureViews = []string{
 	"overview", "scope", "languages", "files", "packages", "entrypoints",
-	"configs", "tests", "relations", "impact",
+	"configs", "tests", "relations", "impact", "analysis", "expand",
 }
 
 // structureArgs is the registered argument vocabulary, in schema order.
 var structureArgs = []string{
 	"view", "path", "package", "symbol", "limit", "skip", "depth", "activation",
+	"intent", "level", "node",
 }
 
 func structureViewEnum() []any {
@@ -75,8 +77,12 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 			"by path convention is a discovery, not proof that it runs. "+
 			"Structural inventory and coordinates "+
 			"are not source content: read the component's source before making "+
-			"an implementation-status or dependency-use claim. Semantic "+
-			"activation is unsupported and fails explicitly.",
+			"an implementation-status or dependency-use claim. For a "+
+			"task-dependent analysis use view=analysis with an intent; it "+
+			"returns a plan, a multi-resolution summary, evidence states, "+
+			"coverage, and explicit issues, and view=expand returns one "+
+			"node's direct children. Semantic activation is unsupported and "+
+			"fails explicitly.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -123,6 +129,25 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 					"enum":        []any{"overview", "targeted", "impact", "semantic"},
 					"description": "Requested structural depth. Defaults from the view. Semantic is explicitly unsupported in this build.",
 				},
+				"intent": map[string]any{
+					"type": "string",
+					"enum": []any{
+						"project", "architecture", "locate", "flow", "impact", "isolation",
+					},
+					"description": "Analysis intent for view=analysis. It selects the cheapest sufficient strategy portfolio; locate/flow/impact/isolation also need path or symbol. Defaults to project.",
+				},
+				"level": map[string]any{
+					"type": "string",
+					"enum": []any{
+						"project", "workspace", "module", "package", "file", "symbol", "relationship",
+					},
+					"description": "Deepest structural resolution the analysis may materialise. Defaults to package; a deeper level costs more and is never required just to summarise.",
+				},
+				"node": map[string]any{
+					"type":        "string",
+					"minLength":   1,
+					"description": "Structural node id for view=expand, as returned by view=analysis details.nodes.",
+				},
 			},
 		},
 		agent.Approval{Tier: agent.TierRead},
@@ -144,20 +169,20 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 		return agent.ErrorResult("%v", err)
 	}
 	if err := validateStructureArgs(args); err != nil {
-		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 
 	view := "overview"
 	if raw, ok := args["view"]; ok {
 		value, ok := raw.(string)
 		if !ok {
-			return structureRequestError(agent.ToolFailureInvalidArgument,
+			return requestError(agent.ToolFailureInvalidArgument,
 				"argument %q must be a string; nothing executed. Valid views: %s.",
 				"view", strings.Join(structureViews, ", "))
 		}
 		view = strings.TrimSpace(value)
 		if !validStructureView(view) {
-			return structureRequestError(agent.ToolFailureInvalidSelector,
+			return requestError(agent.ToolFailureInvalidSelector,
 				"unsupported view %q; nothing executed. Valid views: %s. To inspect a path, use view %q with path %q.",
 				value, strings.Join(structureViews, ", "), "files", value)
 		}
@@ -165,54 +190,126 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 
 	pathArg, err := strArg(args, "path", "")
 	if err != nil {
-		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	pathArg = strings.TrimSpace(pathArg)
 	packageArg, err := strArg(args, "package", "")
 	if err != nil {
-		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	packageArg = strings.TrimSpace(packageArg)
 	symbolArg, err := strArg(args, "symbol", "")
 	if err != nil {
-		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	symbolArg = strings.TrimSpace(symbolArg)
 	limit, err := intArg(args, "limit", ast.StructureDefaultLimit)
 	if err != nil {
-		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	if limit < 1 || limit > ast.StructureMaxLimit {
-		return structureRequestError(agent.ToolFailureInvalidArgument,
+		return requestError(agent.ToolFailureInvalidArgument,
 			"limit must be between 1 and %d, got %d; nothing executed.", ast.StructureMaxLimit, limit)
 	}
 	skip, err := intArg(args, "skip", 0)
 	if err != nil {
-		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	if skip < 0 {
-		return structureRequestError(agent.ToolFailureInvalidArgument,
+		return requestError(agent.ToolFailureInvalidArgument,
 			"skip must be >= 0, got %d; nothing executed.", skip)
 	}
+	intentArg, err := strArg(args, "intent", "")
+	if err != nil {
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+	}
+	intentArg = strings.TrimSpace(intentArg)
+	analysisIntent := structural.IntentProject
+	if intentArg != "" {
+		parsed, ok := structural.ParseIntent(intentArg)
+		if !ok {
+			return requestError(agent.ToolFailureInvalidSelector,
+				"unsupported intent %q; nothing executed. Valid intents: project, architecture, locate, flow, impact, isolation.",
+				intentArg)
+		}
+		analysisIntent = parsed
+	}
+	levelArg, err := strArg(args, "level", "")
+	if err != nil {
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+	}
+	analysisLevel := structural.LevelPackage
+	if strings.TrimSpace(levelArg) != "" {
+		parsed, ok := structural.ParseLevel(strings.TrimSpace(levelArg))
+		if !ok {
+			return requestError(agent.ToolFailureInvalidSelector,
+				"unsupported level %q; nothing executed. Valid levels: project, workspace, module, package, file, symbol, relationship.",
+				levelArg)
+		}
+		analysisLevel = parsed
+	}
+	nodeArg, err := strArg(args, "node", "")
+	if err != nil {
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+	}
+	nodeArg = strings.TrimSpace(nodeArg)
 	depth, err := intArg(args, "depth", 1)
 	if err != nil {
-		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	if depth < 1 || depth > ast.RefMaxDepth {
-		return structureRequestError(agent.ToolFailureInvalidArgument,
+		return requestError(agent.ToolFailureInvalidArgument,
 			"depth must be between 1 and %d, got %d; nothing executed.", ast.RefMaxDepth, depth)
 	}
+	switch view {
+	case "analysis":
+		if nodeArg != "" || argPresent(args, "skip") || argPresent(args, "depth") {
+			return requestError(agent.ToolFailureInvalidArgument,
+				"view analysis takes intent, level, path or symbol, limit, and activation; node, skip, and depth belong to other views. Remove them.")
+		}
+		if packageArg != "" {
+			return requestError(agent.ToolFailureInvalidSelector,
+				"view analysis does not take a package selector; nothing executed. Use path or symbol, or view %q.", "packages")
+		}
+		if structural.RequiresFocus(analysisIntent) && pathArg == "" && symbolArg == "" {
+			return requestError(agent.ToolFailureInvalidArgument,
+				"intent %q requires path or symbol; nothing executed. Provide {\"view\":\"analysis\",\"intent\":%q,\"symbol\":\"Name\"} or path.",
+				analysisIntent, analysisIntent)
+		}
+		if !structural.RequiresFocus(analysisIntent) && (pathArg != "" || symbolArg != "") {
+			return requestError(agent.ToolFailureInvalidSelector,
+				"intent %q is repository-wide and does not take path or symbol; nothing executed. Use intent locate, flow, impact, or isolation for a selector.", analysisIntent)
+		}
+	case "expand":
+		if intentArg != "" || levelArg != "" || argPresent(args, "skip") || argPresent(args, "depth") {
+			return requestError(agent.ToolFailureInvalidArgument,
+				"view expand takes node or path, and limit; intent, level, skip, and depth belong to analysis or other views. Remove them.")
+		}
+		if symbolArg != "" || packageArg != "" {
+			return requestError(agent.ToolFailureInvalidSelector,
+				"view expand takes node or path, not symbol or package; nothing executed.")
+		}
+		if nodeArg == "" && pathArg == "" {
+			return requestError(agent.ToolFailureInvalidArgument,
+				"view expand requires node or path; nothing executed. Call view analysis first and use a details.nodes id, or pass path.")
+		}
+	default:
+		if intentArg != "" || levelArg != "" || nodeArg != "" {
+			return requestError(agent.ToolFailureInvalidArgument,
+				"intent, level, and node belong to views analysis and expand; nothing executed. Remove them or use view %q.", "analysis")
+		}
+	}
 	if (view == "impact" || view == "relations") && symbolArg == "" && pathArg == "" {
-		return structureRequestError(agent.ToolFailureInvalidArgument,
+		return requestError(agent.ToolFailureInvalidArgument,
 			"%s requires symbol or path; nothing executed. Provide {\"view\":%q,\"symbol\":\"Name\"} or {\"view\":%q,\"path\":\"internal/foo\"}.",
 			view, view, view)
 	}
-	activation, err := structureActivation(args, view)
+	activation, err := structureActivation(args, view, analysisIntent)
 	if err != nil {
-		return structureRequestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
 	if activation == ast.ActivationSemantic {
-		return structureRequestError(agent.ToolFailureUnsupported,
+		return requestError(agent.ToolFailureUnsupported,
 			"semantic structural activation is unsupported: no semantic resolver is configured; nothing executed. Use activation \"overview\", \"targeted\", or \"impact\".")
 	}
 	switch view {
@@ -226,7 +323,7 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 	if pathArg != "" {
 		resolved, err := resolvePath(t.Root, pathArg)
 		if err != nil {
-			return structureRequestError(agent.ToolFailureInvalidArgument,
+			return requestError(agent.ToolFailureInvalidArgument,
 				"resolve path %q: %v; nothing executed.", pathArg, err)
 		}
 		if _, err := os.Stat(resolved); err != nil {
@@ -238,7 +335,7 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 		}
 		rel, err := filepath.Rel(t.Root, resolved)
 		if err != nil {
-			return structureRequestError(agent.ToolFailureInvalidArgument,
+			return requestError(agent.ToolFailureInvalidArgument,
 				"relativize %q: %v; nothing executed.", pathArg, err)
 		}
 		pathArg = filepath.ToSlash(rel)
@@ -280,6 +377,14 @@ func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Re
 		return t.relationsView(ctx, idx, symbolArg, pathArg, depth, limit)
 	case "impact":
 		return t.impact(ctx, idx, symbolArg, pathArg, depth, limit)
+	case "analysis":
+		focus := symbolArg
+		if focus == "" {
+			focus = pathArg
+		}
+		return t.analysisView(ctx, idx, analysisIntent, focus, analysisLevel, limit)
+	case "expand":
+		return t.expandView(ctx, idx, nodeArg, pathArg, limit)
 	default:
 		return agent.ErrorResult("unsupported view %q", view)
 	}
@@ -1026,6 +1131,13 @@ func (t *StructureTool) impact(ctx agent.Context, idx *ast.Index, symbolArg, pat
 }
 
 // validateStructureArgs rejects arguments outside the closed schema.
+// argPresent reports whether the caller supplied an argument at all, which is
+// different from supplying its default value.
+func argPresent(args map[string]any, name string) bool {
+	_, ok := args[name]
+	return ok
+}
+
 func validateStructureArgs(args map[string]any) error {
 	allowed := make(map[string]bool, len(structureArgs))
 	for _, name := range structureArgs {
@@ -1050,10 +1162,10 @@ func validStructureView(view string) bool {
 	return false
 }
 
-// structureRequestError builds a typed request-level rejection. It is an error
+// requestError builds a typed request-level rejection. It is an error
 // for the model, never a capability-health event: nothing executed, the tool
 // remains available, and a corrected invocation is eligible immediately.
-func structureRequestError(class, format string, args ...any) agent.Result {
+func requestError(class, format string, args ...any) agent.Result {
 	return agent.Result{
 		Text:         fmt.Sprintf(format, args...),
 		IsError:      true,
@@ -1082,7 +1194,7 @@ func structureSelectorCorrection(view, pathArg, packageArg, symbolArg string) ag
 	if len(alternatives) > 0 {
 		hint = strings.Join(alternatives, "; ")
 	}
-	return structureRequestError(agent.ToolFailureInvalidSelector,
+	return requestError(agent.ToolFailureInvalidSelector,
 		"%s does not take path, package, or symbol selectors; nothing executed. To inspect that coordinate, %s. Valid views: %s.",
 		view, hint, strings.Join(structureViews, ", "))
 }
@@ -1090,11 +1202,19 @@ func structureSelectorCorrection(view, pathArg, packageArg, symbolArg string) ag
 // structureActivation resolves the requested depth and rejects a view that
 // would need more than the caller allowed. The default is the smallest depth
 // that can answer the view: overview views stay metadata-only.
-func structureActivation(args map[string]any, view string) (ast.Activation, error) {
+func structureActivation(args map[string]any, view string, intent structural.Intent) (ast.Activation, error) {
 	required := ast.ActivationOverview
 	switch view {
-	case "overview", "scope", "languages", "files", "configs":
+	case "overview", "scope", "languages", "files", "configs", "expand":
 		required = ast.ActivationOverview
+	case "analysis":
+		// A project orientation is metadata-first; every other intent needs
+		// parsed declarations and edges to be answerable at all.
+		if intent == structural.IntentProject {
+			required = ast.ActivationOverview
+		} else {
+			required = ast.ActivationTargeted
+		}
 	case "packages", "entrypoints", "tests":
 		required = ast.ActivationTargeted
 	case "relations", "impact":
