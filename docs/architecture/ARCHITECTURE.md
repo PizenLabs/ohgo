@@ -1113,7 +1113,7 @@ Root runs the interactive session; subcommands: `run`, `sessions` (+
 
 Both interactive paths share one backend (`harness.go`): the full-screen
 UI and the plain REPL call the same code for `/model` (static then live
-discovery), `/compact`, `/compaction` (diagnostic compaction report),
+discovery), `/compact` (state-first manual compaction with a concise outcome),
 `/sessions`/`/resume`, `/jobs`, `/usage`,
 `/status`, `/update` (the same `update.Service` authority as `ohgo update`),
 `/doctor`, `/connect` (a Provider Manager modal browses the
