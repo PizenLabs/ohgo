@@ -32,6 +32,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -254,6 +264,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -299,6 +319,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -611,6 +641,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -653,6 +693,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -753,6 +803,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -789,6 +849,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -828,6 +898,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -901,6 +981,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -970,6 +1060,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -998,6 +1098,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -1040,6 +1150,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -1133,6 +1253,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -1190,6 +1320,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -1256,6 +1396,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -1301,6 +1451,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
@@ -1531,6 +1691,16 @@ immutable.
 - The DAP dial-client transport is validated with a real subprocess over
   loopback and composed into the investigation orchestrator: runtime records
   land in the shared evidence engine and consume the shared DAP meter.
+- Real debugger validation: `TestRealDlvRuntimeEvidence` now passes against
+  `dlv dap` when macOS developer mode is enabled. The fixture is built with
+  `-gcflags=all=-N -l` and canonical paths so the known breakpoint verifies;
+  the session stops, exposes threads/stack/scopes/variables through the runtime
+  provider, continues to exit, and closes as `TERMINATED`.
+- `bench/intelligence` reports median/p95 over repeated rounds and can measure
+  memory per phase in a fresh process (`-phase ast|retrieval|investigation`).
+  The 5k refresh "regression" was variance: median 48 ms, p95 52 ms. Memory at
+  20k files decomposes to 94.5 MiB AST snapshot, +43.3 MiB retrieval index,
+  +0.1 MiB investigation state.
 
 ### Fixed
 
