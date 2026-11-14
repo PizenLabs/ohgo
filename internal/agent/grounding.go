@@ -365,19 +365,36 @@ func negativeClaims(answer string) []negativeClaim {
 	return out
 }
 
-// claimContextIsGlobal reports whether the sentence around a claim names the
-// repository as a whole. "README.md does not exist in this repository" is not
-// the same claim as "README.md is absent from docs/".
+// claimContextIsGlobal reports whether the sentence containing a claim names
+// the repository as a whole. "README.md does not exist in this repository" is
+// not the same claim as "README.md is absent from docs/".
+//
+// The window is the claim's own sentence, not a fixed byte radius: session 324
+// reviewed "no LICENSE file" as a repository-wide absence because the word
+// "repo" in the *next* sentence ("a scaffolded e-commerce microservices repo
+// …") fell inside the radius. A parenthetical aside is excluded too — "nested
+// backend/.git (root repo ignores backend/)" describes the git layout, it does
+// not scope the other items in the list.
 func claimContextIsGlobal(answer string, start, end int) bool {
-	left := start - 80
-	if left < 0 {
-		left = 0
+	begin, finish := 0, len(answer)
+	for _, match := range claimSentenceBoundary.FindAllStringIndex(answer, -1) {
+		if match[1] <= start {
+			begin = match[1]
+			continue
+		}
+		if match[0] >= end {
+			finish = match[0]
+			break
+		}
 	}
-	right := end + 80
-	if right > len(answer) {
-		right = len(answer)
+	if begin > start {
+		begin = 0
 	}
-	window := rootScopePattern.ReplaceAllString(answer[left:right], " ")
+	if finish < end {
+		finish = len(answer)
+	}
+	window := parenthesesPattern.ReplaceAllString(answer[begin:finish], " ")
+	window = rootScopePattern.ReplaceAllString(window, " ")
 	return globalScopePattern.MatchString(window)
 }
 
@@ -613,6 +630,17 @@ func isFileClaim(claim string) bool {
 // isRootFileName reports whether claim names one file at the root rather than
 // a concept.
 func isRootFileName(claim string) bool {
+	claim = strings.TrimSpace(strings.ToLower(claim))
+	// The negative-claim reader captures "no LICENSE file" as the subject
+	// "license file". The trailing noun names the artifact, not a different
+	// claim, so it must not defeat the root-file vocabulary (session 324
+	// reviewed a true root absence because of it).
+	for _, suffix := range []string{" file", " files", " document"} {
+		if strings.HasSuffix(claim, suffix) {
+			claim = strings.TrimSpace(strings.TrimSuffix(claim, suffix))
+			break
+		}
+	}
 	switch claim {
 	case "readme", "readme.md", "license", "changelog", "dockerfile",
 		"makefile", "go.mod", "package.json", ".gitignore":

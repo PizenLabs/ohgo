@@ -538,6 +538,44 @@ func TestEvaluateTaskCompletionRejectsRootListingAsGlobalProof(t *testing.T) {
 	}
 }
 
+// Session 324: "no LICENSE file" was reviewed although the run had listed the
+// root and the file really is absent. Two things had promoted it to a
+// repository-wide claim and hidden the root-file vocabulary: the word "repo" in
+// the next sentence fell inside the fixed byte radius, and the claim subject
+// kept its trailing "file". Scope is the claim's sentence, and a complete root
+// listing covers a root-file absence.
+func TestEvaluateTaskCompletionAcceptsRootFileAbsence(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective: "check this project and analyze what this project is about?",
+		Action:    contract.GroundingRead,
+		Actions:   []contract.GroundingAction{contract.GroundingRead},
+	})
+	rootListing := Turn{Results: []ToolOutcome{{
+		ToolName: "ls",
+		Args:     map[string]any{"path": "."},
+		Result: Result{Text: ".\nsrc/\nREADME.md\npackage.json\n", Details: map[string]any{
+			"path": ".", "entries": 4, "depth": 2, "truncated": false,
+		}},
+	}}}
+	answer := "Notable issues: nested backend/.git (root repo ignores backend/), " +
+		"empty migrations, no LICENSE file.\n\n" +
+		"In short: the repo holds services and a frontend."
+	verdict := EvaluateTaskCompletion(CompletionInput{
+		Turns:    []Turn{rootListing, answerTurnNoTools(answer)},
+		Contract: intent,
+	})
+	if !verdict.Complete() {
+		t.Fatalf("a root-file absence with a root listing was reviewed: %s", verdict.Reason)
+	}
+	// Without the listing the absence is unproven, and the review still names it.
+	if verdict := EvaluateTaskCompletion(CompletionInput{
+		Turns:    []Turn{answerTurnNoTools(answer)},
+		Contract: intent,
+	}); verdict.Complete() {
+		t.Fatal("a root-file absence without a listing completed")
+	}
+}
+
 // A complete recursive file scan can prove a file is absent; the conclusion is
 // then allowed to complete.
 func TestEvaluateTaskCompletionAcceptsProvenFileAbsence(t *testing.T) {
