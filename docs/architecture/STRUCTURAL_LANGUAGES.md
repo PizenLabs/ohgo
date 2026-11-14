@@ -1,7 +1,9 @@
 # Structural Language Coverage
 
 This document is the canonical capability table for the native structural
-runtime. Topology and ownership remain in
+runtime's observation layer. The interpretation layer over it — the adaptive
+planner, strategy portfolio, evidence semantics, and result cache — is canonical
+in [`STRUCTURAL_INTELLIGENCE.md`](STRUCTURAL_INTELLIGENCE.md). Topology and ownership remain in
 [`OHGO_ARCHITECTURE_MAP.md`](OHGO_ARCHITECTURE_MAP.md); runtime behaviour is in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 

@@ -16,6 +16,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/prompt"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
+	"github.com/PizenLabs/ohgo/internal/state"
 )
 
 // buildTools assembles the tool set for a session.
@@ -42,8 +43,23 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 	bash := tools.NewBashTool(opts.root)
 	// One structural source serves both coordinate and relationship queries.
 	// Constructing it does not parse the repository; the first structural
-	// query does, and every later graph query reads that same snapshot.
-	structural := tools.NewStructuralSource(opts.root)
+	// query does, and every later graph query reads that same snapshot. The
+	// analysis cache is machine-scoped and optional: without a resolvable
+	// state directory the engine still analyses, just without warm reuse.
+	structuralCache := ""
+	if dir, err := state.Path("cache", "structural"); err == nil {
+		structuralCache = dir
+	}
+	structural := tools.NewStructuralSourceWithOptions(opts.root, tools.StructuralSourceOptions{
+		AnalysisCacheDir: structuralCache,
+	})
+	// The retrieval index is its own bounded cache entry: term postings are not
+	// analysis results, and sharing the structural cache directory would mix
+	// two schemas.
+	retrievalCache := ""
+	if dir, err := state.Path("cache", "retrieval"); err == nil {
+		retrievalCache = dir
+	}
 	toolSet := []agent.Tool{
 		tools.NewReadTool(opts.root),
 		tools.NewWriteTool(opts.root),
@@ -59,6 +75,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewGraphTool(structural),
 		tools.NewRefsTool(structural),
 		tools.NewStructureTool(structural),
+		tools.NewRetrieveTool(structural, retrievalCache),
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}

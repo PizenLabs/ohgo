@@ -7,6 +7,62 @@ immutable.
 
 ### Added
 
+- Adaptive structural intelligence: `intelligence/structural` interprets the
+  shared `ast.Index` snapshot as a typed, multi-resolution model instead of a
+  flat inventory. It owns evidence states (`OBSERVED`, `PARTIALLY_OBSERVED`,
+  `INFERRED`, `VERIFIED`, `UNKNOWN`) with weakest-link confidence, source-class
+  classification, a strategy portfolio, an intent-aware planner with recorded
+  cost/reason/stopping decisions, bounded graph intelligence (SCC, cycles,
+  condensation, layering, degree and bounded betweenness centrality), a bounded
+  modularity strategy (`modularity-label-propagation`), and a versioned analysis cache keyed by schema,
+  analyzer, snapshot identity, and request. `structure` adds `analysis` and
+  `expand` views plus `intent`, `level`, and `node` arguments; the engine is
+  read-only and reuses the existing snapshot, impact resolver, and authorization
+  boundaries. `ast` adds whole-snapshot `Inventory` and language-neutral
+  `Dependencies` projections for in-process analysis. Canonical documentation:
+  [`docs/architecture/STRUCTURAL_INTELLIGENCE.md`](docs/architecture/STRUCTURAL_INTELLIGENCE.md).
+
+- Semantic intelligence: `intelligence/semantic` implements the LSP JSON-RPC
+  client and a lazy, deduplicated, bounded server manager: capability
+  negotiation, document synchronization, definition/references/document and
+  workspace symbols, hover, call hierarchy, and diagnostics, with per-request
+  timeout, cancellation, crash surfacing, and restart bounds. It never applies
+  workspace edits: `workspace/applyEdit`, rename, and execute-command paths are
+  refused so BUILD remains the only mutation authority. Verified against a fake
+  protocol server and real `gopls`.
+
+- Runtime intelligence: `intelligence/runtime` implements the Debug Adapter
+  Protocol client and an authorized session manager with explicit states
+  (`CREATED` … `TERMINATED`/`FAILED`), bounded sessions, breakpoints, threads,
+  stack traces, scopes, variables, stepping, exceptions, and gated `evaluate`.
+  Launch/attach/evaluate/terminate require an injected authorizer; cleanup
+  disconnects, then kills the adapter process group so a hung adapter cannot
+  orphan the debuggee. Reverse requests are refused.
+
+- Retrieval: `intelligence/retrieval` implements Okapi BM25F over path,
+  identifier, and comment fields with language-aware tokenization, exact
+  identifier and path reranking, bounded postings, deterministic ranking,
+  incremental per-file updates, deletion, and a versioned persisted index.
+  `retrieve` exposes bounded ranked candidates to the model. A labeled corpus
+  test measures MRR/Recall@5 against a path-search baseline; `bench/retrieval`
+  reports cold/warm/refresh cost and query latency on a real repository.
+
+- Unified evidence: `intelligence/evidence` owns the shared state vocabulary
+  (structural now aliases it), content-addressed records with provider/source/
+  scope/freshness provenance, deduplication, agreement grouping, and preserved
+  contradictions. `VERIFIED` requires an explicit proof constructor, so a
+  successful provider call cannot upgrade an observation.
+
+- Intelligence planner: `intelligence/planner` selects a bounded,
+  deterministic provider plan per intent with cost bands, expected confidence,
+  stopping reasons, and explicit skip reasons (including "no authorized runtime
+  session"). It is a pure decision layer: it starts no process and grants no
+  authority.
+
+- Shared wire framing: `intelligence/wire` owns the Content-Length JSON
+  transport used by both LSP and DAP, with one size bound and one malformed
+  frame contract.
+
 - Structured verification runtime: the `verify` capability owns a service
   lifecycle (`STARTING`/`RUNNING`/`READY`/`FAILED`/`STOPPING`/`STOPPED`/
   `TIMED_OUT`), HTTP/TCP/output readiness, port discovery, bounded HTTP and

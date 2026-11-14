@@ -21,23 +21,45 @@ import (
 // adapter as well: the index is dependency-free, so .gitignore semantics are
 // injected rather than imported into intelligence/ast.
 type StructuralSource struct {
-	root  string
-	scope *ignoreScope
+	root     string
+	scope    *ignoreScope
+	cacheDir string
 
 	mu  sync.Mutex
 	idx *ast.Index
 }
 
+// StructuralSourceOptions configures optional structural services.
+type StructuralSourceOptions struct {
+	// AnalysisCacheDir persists adaptive analyses between runs. An empty value
+	// disables persistence; analysis still works, just without warm reuse.
+	AnalysisCacheDir string
+}
+
 // NewStructuralSource returns a lazy index handle for root.
 func NewStructuralSource(root string) *StructuralSource {
+	return NewStructuralSourceWithOptions(root, StructuralSourceOptions{})
+}
+
+// NewStructuralSourceWithOptions returns a lazy index handle with services.
+func NewStructuralSourceWithOptions(root string, opts StructuralSourceOptions) *StructuralSource {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		absRoot = root
 	}
 	return &StructuralSource{
-		root:  absRoot,
-		scope: &ignoreScope{root: absRoot},
+		root:     absRoot,
+		scope:    &ignoreScope{root: absRoot},
+		cacheDir: opts.AnalysisCacheDir,
 	}
+}
+
+// AnalysisCacheDir reports where adaptive analyses may be cached.
+func (s *StructuralSource) AnalysisCacheDir() string {
+	if s == nil {
+		return ""
+	}
+	return s.cacheDir
 }
 
 // Root returns the absolute workspace root the source was built for.
