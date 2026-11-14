@@ -224,6 +224,18 @@ func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out i
 	})
 	projector := cognition.NewProjector(shape, cognition.NewEvidenceState(), facts)
 	loop.SetProjectionHook(projector.Project)
+	// A stateless run has no durable task checkpoint, but it still has
+	// authoritative authority, objective, and contract. Compaction reconstructs
+	// from those rather than from a model summary.
+	compactionBaseline := cognition.CompactionProjection(shape, nil, "", "", nil)
+	loop.SetCompactionProjection(func() (agent.ContextProjection, bool) {
+		projection := cognition.CompactionProjection(shape, projector.Evidence, "", "", nil)
+		if err := cognition.ValidateCompactionProjection(projection, compactionBaseline); err != nil {
+			return agent.ContextProjection{}, false
+		}
+		return projection, true
+	})
+	defer loop.SetCompactionProjection(nil)
 	var lastReport agent.ProjectionReport
 	haveReport := false
 	loop.SetProjectionReportHook(func(report agent.ProjectionReport) {

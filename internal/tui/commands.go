@@ -163,6 +163,119 @@ func (p *Program) compactNow() tea.Cmd {
 	}
 }
 
+// compactionNow runs the deterministic manual compaction diagnostic and
+// rewrites the live history only when the compactor succeeded. Every metric is
+// read from runtime state: token counts from the same estimator the trigger
+// uses, record counts from the durable task, and changed paths from the
+// evidence state. A count the runtime does not own is omitted rather than
+// guessed.
+func (p *Program) compactionNow() tea.Cmd {
+	if p.compactor == nil {
+		p.state.Apply(Notice{Text: "manual compaction is unavailable"})
+		return nil
+	}
+	if p.state.Status.Busy {
+		p.state.Apply(Notice{Text: "wait for the turn to finish before compacting"})
+		return nil
+	}
+	p.mu.Lock()
+	history := append([]agent.Message(nil), p.history...)
+	p.mu.Unlock()
+	if len(history) == 0 {
+		p.state.Apply(Notice{Text: "nothing to compact: the transcript is empty"})
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		before := estimateTurnInput(history, nil)
+		compacted, _, err := p.compactor(ctx, history)
+		if err != nil {
+			p.publish(Notice{Text: "compaction: " + err.Error()})
+			return nil
+		}
+		after := estimateTurnInput(compacted, nil)
+		p.mu.Lock()
+		p.history = compacted
+		p.mu.Unlock()
+		p.publish(HistoryReplaced{Entries: EntriesFromMessages(compacted)})
+
+		stats, changed, haveCounts := p.compactionPreserved()
+		objective, authority, completion := "", p.state.Status.Workspace, ""
+		if p.task.Current != nil {
+			if current, ok := p.task.Current(); ok {
+				objective = current.Objective
+				completion = current.ObjectiveState
+			}
+		}
+		reduction := 0.0
+		if before > 0 {
+			reduction = float64(before-after) / float64(before) * 100
+		}
+		var sb strings.Builder
+		sb.WriteString("Compaction complete\n\nContext\n")
+		fmt.Fprintf(&sb, "  before: %s\n", formatCount(before))
+		fmt.Fprintf(&sb, "  after:  %s\n", formatCount(after))
+		fmt.Fprintf(&sb, "  reduction: %.1f%%\n", reduction)
+		if window := p.state.Status.ContextWindow; window > 0 {
+			fmt.Fprintf(&sb, "  window: %s\n", formatCount(window))
+		}
+		sb.WriteString("\nPreserved\n")
+		fmt.Fprintf(&sb, "  objective: %s\n", yesNo(objective != ""))
+		if authority != "" {
+			fmt.Fprintf(&sb, "  authority: %s\n", authority)
+		}
+		if completion != "" {
+			fmt.Fprintf(&sb, "  completion: %s\n", completion)
+		}
+		if haveCounts {
+			fmt.Fprintf(&sb, "  facts: %d\n", stats.Facts)
+			fmt.Fprintf(&sb, "  hypotheses: %d\n", stats.Hypotheses)
+			fmt.Fprintf(&sb, "  evidence: %d\n", stats.Evidence)
+			fmt.Fprintf(&sb, "  changed files: %d\n", changed)
+			fmt.Fprintf(&sb, "  verification: %d\n", stats.Verifications)
+			fmt.Fprintf(&sb, "  open questions: %d\n", stats.Questions)
+			fmt.Fprintf(&sb, "  constraints: %d\n", stats.Constraints)
+		} else {
+			sb.WriteString("  durable task counts: unavailable\n")
+		}
+		sb.WriteString("\nHistorical records retained: yes (durable session transcript)\n")
+		p.publish(Notice{Text: strings.TrimRight(sb.String(), "\n")})
+		return nil
+	}
+}
+
+// compactionPreserved reads counts from the durable task and evidence state.
+func (p *Program) compactionPreserved() (TaskStats, int, bool) {
+	var stats TaskStats
+	haveCounts := p.task.Stats != nil
+	if haveCounts {
+		stats = p.task.Stats()
+	}
+	if p.task.Evidence == nil {
+		return stats, 0, haveCounts
+	}
+	evidence := p.task.Evidence()
+	if evidence == nil {
+		return stats, 0, haveCounts
+	}
+	paths := map[string]bool{}
+	for _, item := range evidence.Items {
+		if item.Source.Path != "" && strings.HasPrefix(item.ID, "mutation:") {
+			paths[item.Source.Path] = true
+		}
+	}
+	return stats, len(paths), haveCounts
+}
+
+// yesNo renders a boolean fact without inventing a third state.
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
+}
+
 // currentProvider splits "provider/id" for the active marker.
 func currentProvider(model string) string {
 	provider, _, _ := strings.Cut(model, "/")

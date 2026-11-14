@@ -525,12 +525,21 @@ func (h *harness) CompactHistory(ctx context.Context, history []agent.Message) (
 	if window <= 0 {
 		return nil, "", fmt.Errorf("compact: the model has no context window to compact into")
 	}
-	result, err := agent.Compact(ctx, history, compactionFromSettings(h.settingsOrDefault()), window,
-		newSummarizer(h.registry.StreamFn(), h.model))
+	// The manual path uses the same intelligent compactor as the loop:
+	// deterministic trimming and size bounds run first even when no durable
+	// task projection is available. A manual command is not a turn, so it has
+	// no task state to reconstruct from; the semantic fallback is the correct
+	// level here.
+	result, err := agent.CompactWith(ctx, history, agent.CompactOptions{
+		Compaction: compactionFromSettings(h.settingsOrDefault()),
+		Window:     window,
+		Summarize:  newSummarizer(h.registry.StreamFn(), h.model),
+	})
 	if err != nil {
 		return nil, "", err
 	}
-	summary := fmt.Sprintf("%d messages summarised, %d retained", result.Compacted, result.Retained)
+	summary := fmt.Sprintf("%d messages compacted (%s), %d retained, %d -> %d tokens",
+		result.Compacted, result.Mode, result.Retained, result.BeforeTokens, result.AfterTokens)
 	return result.Messages, summary, nil
 }
 

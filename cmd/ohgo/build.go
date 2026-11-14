@@ -402,6 +402,11 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		onTurn = func(turn agent.Turn) { printTurn(out, turn) }
 	}
 
+	// One recall archive serves the loop's compaction and the recall tool, so an
+	// id a compaction writes always resolves to the text it replaced.
+	recall := agent.NewRecallStore()
+	toolSet = append(toolSet, tools.NewRecallTool(recall))
+
 	loop, err := agent.New(agent.Config{
 		Model:                    opts.model,
 		Stream:                   registry.StreamFn(),
@@ -425,9 +430,10 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		Authorize:  opts.security,
 		Compaction: compactionFromSettings(opts.settings),
 		Summarize:  newSummarizer(registry.StreamFn(), opts.model, opts.budget),
+		Recall:     recall,
 		OnCompact: func(result agent.CompactResult) {
-			_, _ = fmt.Fprintf(out, "[compacted %d messages into %d tokens; %d retained]\n",
-				result.Compacted, result.AfterTokens, result.Retained)
+			_, _ = fmt.Fprintf(out, "[compacted %s: %d -> %d tokens; %d retained]\n",
+				result.Mode, result.BeforeTokens, result.AfterTokens, result.Retained)
 		},
 	})
 	if err != nil {
@@ -474,6 +480,24 @@ func compactionFromSettings(settings config.Settings) agent.Compaction {
 	}
 	if settings.Compaction.ThresholdPercent != nil {
 		c.ThresholdPercent = *settings.Compaction.ThresholdPercent
+	}
+	if settings.Compaction.KeepRecentToolResults != nil {
+		c.KeepRecentToolResults = *settings.Compaction.KeepRecentToolResults
+	}
+	if settings.Compaction.ExpectedOutputTokens != nil {
+		c.ExpectedOutputTokens = *settings.Compaction.ExpectedOutputTokens
+	}
+	if settings.Compaction.SafetyMarginPercent != nil {
+		c.SafetyMarginPercent = *settings.Compaction.SafetyMarginPercent
+	}
+	if settings.Compaction.MonitorPercent != nil {
+		c.MonitorPercent = *settings.Compaction.MonitorPercent
+	}
+	if settings.Compaction.PreparePercent != nil {
+		c.PreparePercent = *settings.Compaction.PreparePercent
+	}
+	if settings.Compaction.MaxAttempts != nil {
+		c.MaxAttempts = *settings.Compaction.MaxAttempts
 	}
 	return c
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/security"
+	"github.com/PizenLabs/ohgo/internal/tokens"
 )
 
 // ErrNoTools means the loop was started with an empty tool set.
@@ -209,6 +210,17 @@ type Config struct {
 	Summarize SummarizeFunc
 	// OnCompact reports each compaction, for logging and UI.
 	OnCompact func(CompactResult)
+	// OnCompactionMetrics reports structured compaction diagnostics. It is
+	// separate from OnCompact so a host can publish metadata without parsing
+	// the human-facing result.
+	OnCompactionMetrics func(CompactionMetrics)
+	// Recall is the bounded archive that lets a compacted context retrieve a
+	// trimmed observation by id. Nil disables id references.
+	Recall *RecallStore
+	// CompactionProjection returns the authoritative durable state a
+	// state-first compaction reconstructs from. It must be control-plane
+	// data, never model output. Nil uses the semantic fallback.
+	CompactionProjection func() (ContextProjection, bool)
 	// Project builds the next request view from authoritative runtime state.
 	//
 	// It may replace the messages sent on this turn, append system blocks, and
@@ -391,6 +403,13 @@ type Loop struct {
 	// runSeq issues a local run identity for mutation provenance when the host
 	// has none. It is process-local and never a durable task identity.
 	runSeq int
+	// compactionAttempts bounds context rewrites in one run. It is reset at
+	// Run start so a pathological loop cannot compact forever.
+	compactionAttempts int
+	// compactionCooldown skips the next trigger after a rewrite. The rebuilt
+	// context is the smallest truthful one available; re-running compaction
+	// before the provider sees it would summarise the summary.
+	compactionCooldown int
 }
 
 // observationRecord is one current read-only observation. Turn keeps a
@@ -495,7 +514,8 @@ func New(cfg Config) (*Loop, error) {
 	// Compaction without a summarizer would leave context growing until the
 	// provider rejects the request, so refuse the misconfiguration here rather
 	// than discovering it mid-conversation.
-	if cfg.Compaction.Enabled && cfg.Compaction.Strategy != StrategyOff && cfg.Summarize == nil {
+	if cfg.Compaction.Enabled && cfg.Compaction.Strategy != StrategyOff &&
+		cfg.Summarize == nil && cfg.CompactionProjection == nil {
 		return nil, ErrNoSummarizer
 	}
 	return &Loop{
@@ -728,6 +748,14 @@ func (l *Loop) SetCompactHook(hook func(CompactResult)) {
 	l.cfg.OnCompact = hook
 }
 
+// SetCompactionProjection installs the control plane's durable-state source
+// after construction, or nil to use the semantic fallback. It is a view of
+// authoritative state: the loop validates it and retains its previous context
+// when the projection is malformed.
+func (l *Loop) SetCompactionProjection(source func() (ContextProjection, bool)) {
+	l.cfg.CompactionProjection = source
+}
+
 // SetJournal installs the edit-recovery seam after construction.
 //
 // The host rebuilds it when the active session changes, so a checkpoint can
@@ -764,6 +792,8 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	runID := fmt.Sprintf("run-%d", l.runSeq)
 	l.lastMutation = MutationProvenance{}
 	l.mutationMu.Unlock()
+	l.compactionAttempts = 0
+	l.compactionCooldown = 0
 
 	edit := &runEdit{journal: l.cfg.Journal}
 	defer func() {
@@ -867,7 +897,11 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			return turns, nil
 		}
 
-		if l.compactIfNeeded(ctx, &live) {
+		compacted, compactErr := l.compactIfNeeded(ctx, &live)
+		if compactErr != nil {
+			return turns, compactErr
+		}
+		if compacted {
 			// Compaction rewrites the conversation, so the per-message history
 			// provenance no longer describes it. The reconstructed context is
 			// history by definition.
@@ -2325,43 +2359,181 @@ func sorted(values []string) []string {
 	return out
 }
 
-// compactIfNeeded reduces live context when it has grown past the trigger.
+// compactIfNeeded reduces live context when the projected next request no
+// longer fits the model window.
 //
 // It reports whether a compaction happened. When it did, the caller should
 // restart the turn rather than send a request built from the pre-compaction
 // context.
 //
-// The decision uses the local estimate, floored by the provider-reported size
-// from the previous turn: a request transform can compress the wire below the
-// real stored conversation, so trusting the provider alone would defer
-// compaction until the request is rejected.
-func (l *Loop) compactIfNeeded(ctx context.Context, live *[]Message) bool {
+// The decision uses the full projected request — stored conversation, system
+// blocks, tool definitions, the durable task projection, the expected output,
+// and a safety margin — floored by the provider-reported size from the
+// previous turn. Measuring the conversation alone let a large tool surface or
+// output budget overflow a window that looked half empty.
+func (l *Loop) compactIfNeeded(ctx context.Context, live *[]Message) (bool, error) {
 	c := l.cfg.Compaction
-	if !c.Enabled || c.Strategy == StrategyOff || l.cfg.Summarize == nil {
-		return false
+	if !c.Enabled || c.Strategy == StrategyOff {
+		return false, nil
+	}
+	if l.compactionCooldown > 0 {
+		l.compactionCooldown--
+		return false, nil
 	}
 	window := l.model().ContextWindow
 	if window <= 0 {
-		return false
+		return false, nil
+	}
+	if l.cfg.Summarize == nil && l.cfg.CompactionProjection == nil {
+		return false, nil
 	}
 
-	estimate := EstimateMessages(*live)
-	contextTokens := CompactionContextTokens(l.lastProviderTokens, estimate)
-	if !ShouldCompact(contextTokens, window, c) {
-		return false
+	measure := l.measureContext(*live, window, c)
+	if !NeedsCompaction(measure) {
+		return false, nil
 	}
+	if l.compactionAttempts >= c.maxAttempts() {
+		// Another compaction would repeat the same rewrite. Report the truth
+		// rather than sending a request that cannot fit.
+		return false, fmt.Errorf("%w: compaction ran %d times and the projected request is still %d of a %d-token window",
+			ErrContextOverflow, l.compactionAttempts, measure.Projected, window)
+	}
+	l.compactionAttempts++
 
-	result, err := Compact(ctx, *live, c, window, l.cfg.Summarize)
+	result, err := CompactWith(ctx, *live, CompactOptions{
+		Compaction:           c,
+		Window:               window,
+		Summarize:            l.cfg.Summarize,
+		Projection:           l.cfg.CompactionProjection,
+		Recall:               l.cfg.Recall,
+		ExpectedOutputTokens: l.expectedOutput(window, c),
+		ContextBudgetTokens:  contextBudget(measure),
+		Trigger:              measure.Pressure,
+	})
 	if err != nil {
-		// A failed compaction must not abort the run: the context still fits
-		// the window, so sending it is better than failing. The next trigger
-		// will retry.
-		return false
+		// A failed compaction must not abort the run while the context still
+		// fits. Deterministic trimming is the safe fallback; if it cannot make
+		// the request safe either, report a truthful overflow instead of
+		// silently sending it.
+		emergency, report := TrimMessages(*live, c, l.cfg.Recall)
+		// Deduplication may have nothing to remove while a single oversized
+		// payload still overflows. Bound the remaining payloads as the second
+		// deterministic step before giving up.
+		if next := l.measureContext(emergency, window, c); report.ToolResultsTrimmed == 0 || next.Pressure == PressureCritical {
+			if bounded, boundReport := BoundToolResults(emergency, l.cfg.Recall, minBoundToolBytes); boundReport.ToolResultsTrimmed > 0 {
+				emergency = bounded
+				report.ToolResultsTrimmed += boundReport.ToolResultsTrimmed
+				report.BytesRemoved += boundReport.BytesRemoved
+			}
+		}
+		if report.ToolResultsTrimmed > 0 {
+			next := l.measureContext(emergency, window, c)
+			if next.Projected < measure.Projected {
+				*live = emergency
+				l.lastProviderTokens = 0
+				errResult := CompactResult{
+					Messages:     emergency,
+					BeforeTokens: measure.ContextTokens,
+					AfterTokens:  EstimateMessages(emergency),
+					Mode:         "trim",
+					Trimmed:      report.ToolResultsTrimmed,
+					Methods:      []string{"trim"},
+					Metrics: CompactionMetrics{
+						ContextBefore:      measure.ContextTokens,
+						ContextAfter:       EstimateMessages(emergency),
+						ContextLimit:       window,
+						ProjectedBefore:    measure.Projected,
+						Trigger:            measure.Pressure,
+						Mode:               "trim",
+						ToolOutputRemoved:  report.BytesRemoved,
+						CompactionFailures: 1,
+					},
+				}
+				if l.cfg.OnCompact != nil {
+					l.cfg.OnCompact(errResult)
+				}
+				l.reportCompactionMetrics(errResult.Metrics)
+				return true, nil
+			}
+		}
+		return false, fmt.Errorf("%w: %w", ErrContextOverflow, err)
 	}
+
 	*live = result.Messages
 	l.lastProviderTokens = 0
+	result.Metrics.ProjectedBefore = measure.Projected
+	post := l.measureContext(*live, window, c)
+	result.Metrics.ContextAfter = post.ContextTokens
 	if l.cfg.OnCompact != nil {
 		l.cfg.OnCompact(result)
 	}
-	return true
+	l.reportCompactionMetrics(result.Metrics)
+	if post.Pressure == PressureCritical {
+		if l.compactionAttempts >= c.maxAttempts() {
+			return false, fmt.Errorf("%w: rebuilt context is still projected at %d of a %d-token window",
+				ErrContextOverflow, post.Projected, window)
+		}
+		// Another rewrite may still fit. Do not cool down, or the loop would
+		// send the request it just found unsafe.
+		l.compactionCooldown = 0
+		return true, nil
+	}
+	// The rebuilt context is the smallest truthful projection available.
+	// Further compaction here would summarise the summary, so let the provider
+	// see it; the next turn starts a fresh decision.
+	l.compactionCooldown = 1
+	return true, nil
+}
+
+// expectedOutput is the completion budget used for prediction. The per-request
+// MaxTokens is a ceiling, not a promise: predicting it in full would report a
+// large window as overflowing before any conversation accumulated.
+func (l *Loop) expectedOutput(window int, c Compaction) int {
+	expected := c.expectedOutput(window)
+	if l.cfg.MaxTokens > 0 && l.cfg.MaxTokens < expected {
+		expected = l.cfg.MaxTokens
+	}
+	return expected
+}
+
+// contextBudget is the conversation room left after every non-context cost.
+// It is the tighter of the trigger and the window's real headroom, so a
+// rebuilt context cannot overflow just because the trigger was generous.
+func contextBudget(m RequestMeasurement) int {
+	budget := m.Window - m.SystemTokens - m.ToolTokens - m.ExpectedOutputTokens - m.SafetyMarginTokens
+	if budget < 1 {
+		return 1
+	}
+	if budget > m.Threshold {
+		budget = m.Threshold
+	}
+	return budget
+}
+
+// measureContext accounts for every billed component of the next request.
+func (l *Loop) measureContext(messages []Message, window int, c Compaction) RequestMeasurement {
+	system := l.system()
+	taskTokens := 0
+	if l.cfg.CompactionProjection != nil {
+		if projection, ok := l.cfg.CompactionProjection(); ok {
+			taskTokens = tokens.Count(projection.Render(), tokens.ModeEstimate)
+		}
+	}
+	return MeasureRequest(MeasureInput{
+		ContextTokens:        EstimateMessages(messages),
+		ProviderTokens:       l.lastProviderTokens,
+		SystemTokens:         EstimateSystemTokens(system),
+		ToolTokens:           EstimateToolTokens(l.cfg.Tools),
+		TaskStateTokens:      taskTokens,
+		ExpectedOutputTokens: l.expectedOutput(window, c),
+		Window:               window,
+	}, c)
+}
+
+// reportCompactionMetrics publishes structured diagnostics without ever
+// including source content.
+func (l *Loop) reportCompactionMetrics(metrics CompactionMetrics) {
+	if l.cfg.OnCompactionMetrics != nil {
+		l.cfg.OnCompactionMetrics(metrics)
+	}
 }

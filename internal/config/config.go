@@ -387,6 +387,20 @@ type Compaction struct {
 	KeepRecent *int `json:"keepRecent,omitempty"`
 	// ThresholdPercent triggers compaction at this fraction of the window.
 	ThresholdPercent *float64 `json:"thresholdPercent,omitempty"`
+	// KeepRecentToolResults is the number of trailing tool results retained
+	// exactly during deterministic trimming.
+	KeepRecentToolResults *int `json:"keepRecentToolResults,omitempty"`
+	// ExpectedOutputTokens is the completion budget included in the projected
+	// request size. Zero derives it from the window.
+	ExpectedOutputTokens *int `json:"expectedOutputTokens,omitempty"`
+	// SafetyMarginPercent is held back from the window for estimator error.
+	SafetyMarginPercent *float64 `json:"safetyMarginPercent,omitempty"`
+	// MonitorPercent is the band where the runtime starts measuring pressure.
+	MonitorPercent *float64 `json:"monitorPercent,omitempty"`
+	// PreparePercent is the band where a compaction projection is prepared.
+	PreparePercent *float64 `json:"preparePercent,omitempty"`
+	// MaxAttempts bounds context rewrites in one turn.
+	MaxAttempts *int `json:"maxAttempts,omitempty"`
 }
 
 // Default returns the built-in settings.

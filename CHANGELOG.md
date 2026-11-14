@@ -7,6 +7,19 @@ immutable.
 
 ### Added
 
+- Intelligent context compaction. The loop now measures the *projected* next
+  request (messages, system blocks, tool definitions, durable task projection,
+  expected output, safety margin) and classifies pressure as
+  `NORMAL`/`MONITOR`/`PREPARE`/`COMPACT`/`CRITICAL`. `agent.CompactWith` applies
+  deterministic deduplication and size bounds first, then rebuilds from the
+  control plane's authoritative `ContextProjection` (authority, objective,
+  completion, durable orientation blocks) plus a bounded recent suffix, and only
+  falls back to a semantic summary when no valid projection exists. Replaced
+  tool output is archived under stable ids and retrievable with the new
+  read-only `recall` tool. Rewrites are bounded per run and a request that still
+  cannot fit returns `ErrContextOverflow` instead of sending it or claiming
+  completion. `/compaction` reports measured before/after tokens and durable
+  record counts.
 - Unified investigation orchestration: `intelligence/investigate` executes the
   planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
   CORRELATE → REASSESS`). One shared evidence engine receives every provider's
@@ -24,6 +37,11 @@ immutable.
 
 ### Changed
 
+- Compaction settings now include `keepRecentToolResults`,
+  `expectedOutputTokens`, `safetyMarginPercent`, `monitorPercent`,
+  `preparePercent`, and `maxAttempts`. State-first reconstruction never updates
+  or replaces durable task state, so authority, objective, facts, hypotheses,
+  verification results, and completion survive compaction unchanged.
 - Retrieval postings now reference integer document slots instead of path
   strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
   per-posting string header and map lookup are gone. The AST inventory exposes

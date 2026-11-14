@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/control/cognition"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -557,4 +558,62 @@ func findStatusLine(t *testing.T, out, marker string) string {
 	}
 	t.Fatalf("no status line containing %q in %q", marker, out)
 	return ""
+}
+
+// TestCompactionReportsOnlyRuntimeCounts proves /compaction's diagnostics come
+// from durable runtime state, not from a rendered guess.
+func TestCompactionReportsOnlyRuntimeCounts(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Status.Workspace = "ASK"
+	p.state.Status.ContextWindow = 100000
+	p.history = []agent.Message{
+		agent.UserMessage{Text: strings.Repeat("a", 4000)},
+		agent.UserMessage{Text: "old"},
+	}
+	evidence := cognition.NewEvidenceState()
+	evidence.Items = []cognition.EvidenceItem{
+		{ID: "mutation:store.go", Status: cognition.StatusKnown, Source: cognition.Source{Path: "store.go"}},
+		{ID: "file:a.go", Status: cognition.StatusKnown, Source: cognition.Source{Path: "a.go"}},
+	}
+	p.SetTaskHooks(TaskHooks{
+		Current: func() (TaskResume, bool) {
+			return TaskResume{Objective: "fix the store", ObjectiveState: "NEEDS_REVIEW"}, true
+		},
+		Stats: func() TaskStats {
+			return TaskStats{Constraints: 1, Facts: 2, Hypotheses: 1, Evidence: 3, Verifications: 2, Questions: 4}
+		},
+		Evidence: func() *cognition.EvidenceState { return evidence },
+	})
+	p.SetCompactor(func(ctx context.Context, history []agent.Message) ([]agent.Message, string, error) {
+		return []agent.Message{agent.UserMessage{Text: "summary"}}, "compacted", nil
+	})
+	cmd := p.runCommand(Command{Name: "compaction"})
+	if cmd == nil {
+		t.Fatal("no compaction command produced")
+	}
+	cmd()
+	var notice string
+	timeout := time.After(2 * time.Second)
+	for notice == "" {
+		select {
+		case event := <-p.events:
+			if n, ok := event.(Notice); ok && strings.Contains(n.Text, "Compaction complete") {
+				notice = n.Text
+			}
+		case <-timeout:
+			t.Fatal("no compaction report published")
+		}
+	}
+	for _, want := range []string{
+		"authority: ASK", "completion: NEEDS_REVIEW", "facts: 2", "hypotheses: 1",
+		"evidence: 3", "changed files: 1", "verification: 2", "open questions: 4",
+		"constraints: 1", "Historical records retained: yes",
+	} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("report lost %q:\n%s", want, notice)
+		}
+	}
+	if len(p.history) != 1 {
+		t.Fatalf("history = %d messages, want the compacted one", len(p.history))
+	}
 }

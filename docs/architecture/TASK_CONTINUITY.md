@@ -283,6 +283,48 @@ The model cannot change authoritative state by generating a context
 representation. It receives text; only an explicit controller write changes the
 checkpoint.
 
+### 5.1 Compaction
+
+Compaction is a context *projection*, not a new task state. It never writes the
+checkpoint, never changes authority, and never changes completion. The
+authoritative sources stay exactly as they were:
+
+```text
+Tier 0  live authority            workspace policy / security gate
+Tier 1  durable task state        task.ContextFor blocks + cognition evidence
+Tier 2  recent working set        the trailing valid cut of the conversation
+Tier 3  addressable history       recall archive, referenced by id
+```
+
+The agent loop measures the projected next request, not just the conversation:
+stored messages, system blocks, tool definitions, the durable projection, the
+expected output, and a safety margin. The resulting `NORMAL`/`MONITOR`/
+`PREPARE`/`COMPACT`/`CRITICAL` band decides whether to rewrite. The trigger is
+`agent.CompactWith`, which applies these levels in order:
+
+1. deterministic deduplication of repeated observations and size-bound tool
+   payloads, archiving the originals;
+2. a state-first rebuild from `agent.ContextProjection` (control-plane
+   authority, objective, completion, and durable orientation blocks) plus a
+   bounded recent suffix;
+3. semantic summarization only when no valid projection exists.
+
+A projection is validated before use; a candidate that changes authority,
+objective, or completion is refused and the previous context is retained. The
+semantic summary is narrative only: it is never a state source, so a hypothesis
+cannot become a fact and a failed check cannot become a pass through
+compaction. No summary-of-summary chain exists — each rewrite reconstructs from
+authoritative state.
+
+The loop bounds rewrites per run. If the rebuilt request is still projected
+over the window after the configured attempts, it returns
+`agent.ErrContextOverflow` instead of sending an impossible request or claiming
+completion. Replaced tool output is archived under stable ids (`E1`, `E2`, …)
+and the model may retrieve one with the read-only `recall` tool.
+
+`/compaction` runs the same path manually and reports measured before/after
+tokens plus counts read from the durable task and evidence state.
+
 ---
 
 ## 6. Persistence and compatibility

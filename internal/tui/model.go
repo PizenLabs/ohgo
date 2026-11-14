@@ -4461,6 +4461,7 @@ var Commands = []CommandSpec{
 		{Usage: "-c", Description: "copy the active session context (alias --context)"},
 	}},
 	{Name: "compact", Usage: "compact", Description: "summarise context now", Category: CommandGroupControl},
+	{Name: "compaction", Usage: "compaction", Description: "run context compaction and report preserved state", Category: CommandGroupControl},
 	{Name: "quit", Usage: "quit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
 	{Name: "exit", Usage: "exit", Description: "exit the session", Hidden: true, Category: CommandGroupControl},
 	{Name: "q", Usage: "q", Description: "exit the session", Hidden: true, Category: CommandGroupControl},

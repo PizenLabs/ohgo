@@ -41,6 +41,18 @@ type TaskItem struct {
 // reports, and never derives execution state from it. Err carries a checkpoint
 // failure so the transcript can say the durable write did not land rather than
 // showing a state that was not persisted.
+// TaskStats is what the active task currently holds. Every field comes from
+// durable runtime state; an empty layer reports zero rather than an estimate.
+type TaskStats struct {
+	Constraints   int
+	Facts         int
+	Hypotheses    int
+	Evidence      int
+	Verifications int
+	Questions     int
+	ChangedFiles  int
+}
+
 type TaskProjection struct {
 	// ID identifies the task. Empty means no task layer is installed and the
 	// projection is dropped.
@@ -284,6 +296,9 @@ type TaskHooks struct {
 	// updates it in place; the controller checkpoints it at lifecycle
 	// boundaries. Nil disables task-shaped projection.
 	Evidence func() *cognition.EvidenceState
+	// Stats returns truthful counts of the active task's durable records, for
+	// /compaction diagnostics. Nil means the layer does not report counts.
+	Stats func() TaskStats
 	// RecordProjection stores the last projection audit for /audit.
 	RecordProjection func(agent.ProjectionReport)
 	// LastProjection returns the last projection report, if one exists. It is
