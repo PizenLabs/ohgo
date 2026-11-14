@@ -224,3 +224,41 @@ func TestEvaluateRejectsEmptyExpression(t *testing.T) {
 	}
 	_ = session.Close()
 }
+
+// TestDialTransportLifecycle proves the dial-client transport with a real
+// subprocess and a loopback socket: the adapter connects back, the handshake is
+// the same as stdio, and cleanup ends the process.
+func TestDialTransportLifecycle(t *testing.T) {
+	manager := NewManager(t.TempDir(), Config{
+		Adapters: map[string]Spec{"fake": {
+			Name:       "fake",
+			Command:    []string{os.Args[0], "-test.run=TestDAPHelperAdapter"},
+			Env:        []string{"OHGO_DAP_HELPER=1", "OHGO_DAP_DIAL={addr}"},
+			DialClient: true, ConnectTimeout: 5 * time.Second,
+		}},
+		MaxSessions:   1,
+		Authorize:     func(context.Context, Action, string) error { return nil },
+		LaunchTimeout: 5 * time.Second,
+		Grace:         time.Second,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := manager.Launch(ctx, LaunchRequest{Adapter: "fake"})
+	if err != nil {
+		t.Fatalf("launch over dial transport: %v", err)
+	}
+	if _, err := session.WaitEvent(ctx, "stopped"); err != nil {
+		t.Fatalf("wait stopped: %v", err)
+	}
+	threads, err := session.Threads(ctx)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("threads = %v, %v", threads, err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if state := session.State(); state != StateTerminated {
+		t.Fatalf("state = %s, want TERMINATED", state)
+	}
+}

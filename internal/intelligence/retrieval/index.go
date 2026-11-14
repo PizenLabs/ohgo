@@ -212,8 +212,8 @@ func DocumentFromSource(rel, language, kind string, test bool, size, modUnixNano
 
 // posting is one document's contribution to one term.
 type posting struct {
-	id string
-	tf TermFrequency
+	doc int32
+	tf  TermFrequency
 }
 
 // Index is a bounded, deterministic BM25F index.
@@ -222,9 +222,15 @@ type posting struct {
 // incremental: only the affected document's postings are removed and rebuilt,
 // so one changed file never triggers a corpus rebuild.
 type Index struct {
-	mu       sync.RWMutex
-	opts     Options
-	docs     map[string]Document
+	mu   sync.RWMutex
+	opts Options
+	// ids maps a path to its stable record slot. records holds the documents;
+	// postings reference the integer slot, not the path. A path string costs a
+	// header per posting and a map lookup per candidate; an int32 costs 4 bytes
+	// and one slice index.
+	ids      map[string]int32
+	records  []Document
+	free     []int32
 	postings map[string][]posting
 	df       map[string]int
 	total    [FieldCount]int64
@@ -235,7 +241,7 @@ type Index struct {
 func NewIndex(opts Options) *Index {
 	return &Index{
 		opts:     opts.normalize(),
-		docs:     make(map[string]Document),
+		ids:      make(map[string]int32),
 		postings: make(map[string][]posting),
 		df:       make(map[string]int),
 	}
@@ -264,12 +270,14 @@ func (idx *Index) Apply(updates []Document, removals []string) error {
 		if update.Path == "" {
 			return errors.New("retrieval: document has no path")
 		}
-		if _, exists := idx.docs[update.Path]; !exists && len(idx.docs) >= idx.opts.MaxDocs {
+		if _, exists := idx.ids[update.Path]; !exists && len(idx.ids) >= idx.opts.MaxDocs {
 			return ErrCapacity
 		}
 		idx.removeLocked(update.Path, touched)
 		doc := update.clone()
-		idx.docs[doc.Path] = doc
+		id := idx.allocateLocked()
+		idx.ids[doc.Path] = id
+		idx.records[id] = doc
 		if doc.Truncated {
 			idx.trunc++
 		}
@@ -277,7 +285,7 @@ func (idx *Index) Apply(updates []Document, removals []string) error {
 			idx.total[field] += int64(doc.Length[field])
 		}
 		for term, tf := range doc.Terms {
-			idx.postings[term] = append(idx.postings[term], posting{id: doc.Path, tf: tf})
+			idx.postings[term] = append(idx.postings[term], posting{doc: id, tf: tf})
 			idx.df[term]++
 			touched[term] = struct{}{}
 		}
@@ -286,10 +294,39 @@ func (idx *Index) Apply(updates []Document, removals []string) error {
 	// turn one changed file into global work, which retrieval must avoid.
 	for term := range touched {
 		list := idx.postings[term]
-		sort.Slice(list, func(i, j int) bool { return list[i].id < list[j].id })
+		sort.Slice(list, func(i, j int) bool { return list[i].doc < list[j].doc })
 		idx.postings[term] = list
 	}
 	return nil
+}
+
+// bulkAppend inserts one document without sorting its posting lists.
+//
+// Load uses it so rebuilding a large corpus sorts each posting list once
+// instead of once per document; that per-document sort is quadratic in the
+// number of documents sharing a term.
+func (idx *Index) bulkAppend(doc Document) {
+	id := idx.allocateLocked()
+	idx.ids[doc.Path] = id
+	idx.records[id] = doc
+	if doc.Truncated {
+		idx.trunc++
+	}
+	for field := Field(0); field < FieldCount; field++ {
+		idx.total[field] += int64(doc.Length[field])
+	}
+	for term, tf := range doc.Terms {
+		idx.postings[term] = append(idx.postings[term], posting{doc: id, tf: tf})
+		idx.df[term]++
+	}
+}
+
+// bulkSort sorts every posting list once after a bulk load.
+func (idx *Index) bulkSort() {
+	for term, list := range idx.postings {
+		sort.Slice(list, func(i, j int) bool { return list[i].doc < list[j].doc })
+		idx.postings[term] = list
+	}
 }
 
 // Update inserts or replaces one document.
@@ -305,10 +342,11 @@ func (idx *Index) Remove(rel string) error {
 // removeLocked removes one document's postings and totals, recording the terms
 // whose posting lists changed.
 func (idx *Index) removeLocked(rel string, touched map[string]struct{}) {
-	doc, ok := idx.docs[rel]
+	id, ok := idx.ids[rel]
 	if !ok {
 		return
 	}
+	doc := idx.records[id]
 	if doc.Truncated {
 		idx.trunc--
 	}
@@ -320,7 +358,7 @@ func (idx *Index) removeLocked(rel string, touched map[string]struct{}) {
 		list := idx.postings[term]
 		kept := list[:0]
 		for _, entry := range list {
-			if entry.id != rel {
+			if entry.doc != id {
 				kept = append(kept, entry)
 			}
 		}
@@ -332,7 +370,20 @@ func (idx *Index) removeLocked(rel string, touched map[string]struct{}) {
 			idx.df[term] = len(kept)
 		}
 	}
-	delete(idx.docs, rel)
+	delete(idx.ids, rel)
+	idx.records[id] = Document{}
+	idx.free = append(idx.free, id)
+}
+
+// allocateLocked returns a record slot, reusing a freed slot when possible.
+func (idx *Index) allocateLocked() int32 {
+	if len(idx.free) > 0 {
+		id := idx.free[len(idx.free)-1]
+		idx.free = idx.free[:len(idx.free)-1]
+		return id
+	}
+	idx.records = append(idx.records, Document{})
+	return int32(len(idx.records) - 1)
 }
 
 // Stats is a point-in-time index summary.
@@ -349,7 +400,7 @@ func (idx *Index) Stats() Stats {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	stats := Stats{
-		Documents:     len(idx.docs),
+		Documents:     len(idx.ids),
 		Terms:         len(idx.df),
 		TruncatedDocs: idx.trunc,
 		TotalLength:   idx.total,
@@ -372,7 +423,7 @@ var (
 )
 
 const (
-	cacheSchema   = "retrieval/v1"
+	cacheSchema   = "retrieval/v2"
 	cacheFileName = "retrieval-index.gob"
 )
 
@@ -381,7 +432,27 @@ type envelope struct {
 	Schema  string
 	Root    string
 	Options Options
-	Docs    []Document
+	Docs    []storedDocument
+}
+
+// storedDocument is the columnar cache form of Document.
+//
+// Gob decodes a map[string]TermFrequency by allocating a map entry at a time,
+// which dominates warm load on a large corpus. Flattened sorted slices decode
+// several times faster and remain deterministic; the in-memory Document shape
+// is rebuilt only for the documents that are actually loaded.
+type storedDocument struct {
+	Path        string
+	Language    string
+	Kind        string
+	Test        bool
+	Generated   bool
+	Size        int64
+	ModUnixNano int64
+	Length      [FieldCount]int
+	Terms       []string
+	Frequency   []TermFrequency
+	Truncated   bool
 }
 
 // Save writes the index atomically into dir.
@@ -395,9 +466,33 @@ func (idx *Index) Save(dir, root string) error {
 		return nil
 	}
 	idx.mu.RLock()
-	docs := make([]Document, 0, len(idx.docs))
-	for _, doc := range idx.docs {
-		docs = append(docs, doc.clone())
+	docs := make([]storedDocument, 0, len(idx.ids))
+	for _, doc := range idx.records {
+		if doc.Path == "" {
+			continue
+		}
+		stored := storedDocument{
+			Path: doc.Path, Language: doc.Language, Kind: doc.Kind,
+			Test: doc.Test, Generated: doc.Generated, Size: doc.Size,
+			ModUnixNano: doc.ModUnixNano, Length: doc.Length, Truncated: doc.Truncated,
+			Terms: make([]string, 0, len(doc.Terms)), Frequency: make([]TermFrequency, 0, len(doc.Terms)),
+		}
+		for term, tf := range doc.Terms {
+			stored.Terms = append(stored.Terms, term)
+			stored.Frequency = append(stored.Frequency, tf)
+		}
+		order := make([]int, len(stored.Terms))
+		for i := range order {
+			order[i] = i
+		}
+		sort.Slice(order, func(i, j int) bool { return stored.Terms[order[i]] < stored.Terms[order[j]] })
+		terms := make([]string, len(order))
+		frequency := make([]TermFrequency, len(order))
+		for i, source := range order {
+			terms[i], frequency[i] = stored.Terms[source], stored.Frequency[source]
+		}
+		stored.Terms, stored.Frequency = terms, frequency
+		docs = append(docs, stored)
 	}
 	opts := idx.opts
 	idx.mu.RUnlock()
@@ -458,14 +553,22 @@ func Load(dir, root string, opts Options) (*Index, error) {
 		return nil, fmt.Errorf("%w: %d documents exceed %d", ErrCacheIdentity, len(stored.Docs), opts.MaxDocs)
 	}
 	idx := NewIndex(opts)
-	for _, doc := range stored.Docs {
-		if doc.Path == "" || len(doc.Terms) > opts.MaxTermsPerDoc {
-			return nil, fmt.Errorf("%w: malformed document %q", ErrCacheIdentity, doc.Path)
+	for _, stored := range stored.Docs {
+		if stored.Path == "" || len(stored.Terms) > opts.MaxTermsPerDoc || len(stored.Terms) != len(stored.Frequency) {
+			return nil, fmt.Errorf("%w: malformed document %q", ErrCacheIdentity, stored.Path)
 		}
-		if err := idx.Update(doc); err != nil {
-			return nil, err
+		doc := Document{
+			Path: stored.Path, Language: stored.Language, Kind: stored.Kind,
+			Test: stored.Test, Generated: stored.Generated, Size: stored.Size,
+			ModUnixNano: stored.ModUnixNano, Length: stored.Length, Truncated: stored.Truncated,
+			Terms: make(map[string]TermFrequency, len(stored.Terms)),
 		}
+		for i, term := range stored.Terms {
+			doc.Terms[term] = stored.Frequency[i]
+		}
+		idx.bulkAppend(doc)
 	}
+	idx.bulkSort()
 	return idx, nil
 }
 
@@ -476,10 +579,11 @@ func Load(dir, root string, opts Options) (*Index, error) {
 func (idx *Index) Signature(rel string) (size, modUnixNano int64, ok bool) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	doc, found := idx.docs[rel]
+	id, found := idx.ids[rel]
 	if !found {
 		return 0, 0, false
 	}
+	doc := idx.records[id]
 	return doc.Size, doc.ModUnixNano, true
 }
 
@@ -487,19 +591,19 @@ func (idx *Index) Signature(rel string) (size, modUnixNano int64, ok bool) {
 func (idx *Index) Document(rel string) (Document, bool) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	doc, ok := idx.docs[rel]
+	id, ok := idx.ids[rel]
 	if !ok {
 		return Document{}, false
 	}
-	return doc.clone(), true
+	return idx.records[id].clone(), true
 }
 
 // Paths returns the indexed paths in sorted order.
 func (idx *Index) Paths() []string {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	paths := make([]string, 0, len(idx.docs))
-	for rel := range idx.docs {
+	paths := make([]string, 0, len(idx.ids))
+	for rel := range idx.ids {
 		paths = append(paths, rel)
 	}
 	sort.Strings(paths)

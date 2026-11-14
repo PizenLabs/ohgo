@@ -167,13 +167,20 @@ func (ix *Indexer) sync(ctx context.Context, source Source, current *Index) (*In
 		}
 		row := selected[rel]
 		full := filepath.Join(root, filepath.FromSlash(rel))
-		info, statErr := os.Stat(full)
-		if statErr != nil {
-			stats.Issues = appendIssue(stats.Issues, fmt.Sprintf("%s: %v", rel, statErr))
-			continue
+		// The AST inventory already observed size and mtime. Statting again
+		// doubles the per-call filesystem work; only a source that does not
+		// carry the signature (a test stand-in or an older adapter) falls back.
+		size, modTime := row.Size, row.ModUnixNano
+		if modTime == 0 {
+			info, statErr := os.Stat(full)
+			if statErr != nil {
+				stats.Issues = appendIssue(stats.Issues, fmt.Sprintf("%s: %v", rel, statErr))
+				continue
+			}
+			size, modTime = info.Size(), info.ModTime().UnixNano()
 		}
-		if size, modUnixNano, ok := index.Signature(rel); ok &&
-			size == info.Size() && modUnixNano == info.ModTime().UnixNano() {
+		if cachedSize, cachedMod, ok := index.Signature(rel); ok &&
+			cachedSize == size && cachedMod == modTime {
 			stats.Reused++
 			continue
 		}
@@ -186,7 +193,7 @@ func (ix *Indexer) sync(ctx context.Context, source Source, current *Index) (*In
 			stats.Truncated = true
 		}
 		stats.BytesRead += int64(len(content))
-		doc := DocumentFromSource(rel, row.Language, string(row.Kind), row.Test, info.Size(), info.ModTime().UnixNano(), content, opts)
+		doc := DocumentFromSource(rel, row.Language, string(row.Kind), row.Test, size, modTime, content, opts)
 		doc.Generated = generatedPath(rel)
 		if _, _, ok := index.Signature(rel); ok {
 			stats.Updated++
@@ -206,9 +213,12 @@ func (ix *Indexer) sync(ctx context.Context, source Source, current *Index) (*In
 			continue
 		}
 		// A truncated inventory must not delete documents that still exist on
-		// disk; only a genuinely missing file is removed.
-		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); statErr == nil {
-			continue
+		// disk; only a genuinely missing file is removed. A complete inventory
+		// already proved absence, so it needs no extra stats.
+		if inventory.FilesTruncated {
+			if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); statErr == nil {
+				continue
+			}
 		}
 		removals = append(removals, rel)
 		stats.Removed++

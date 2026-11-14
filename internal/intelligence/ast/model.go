@@ -419,6 +419,9 @@ type FileInfo struct {
 	// Unsupported reports a source extension this build has no adapter for.
 	Unsupported bool  `json:"unsupported,omitempty"`
 	Size        int64 `json:"size"`
+	// ModUnixNano is the observed modification time, so a consumer that also
+	// keys on size (retrieval) does not have to stat the file a second time.
+	ModUnixNano int64 `json:"mod_unix_nano,omitempty"`
 	Symbols     int   `json:"symbols"`
 	Exports     int   `json:"exports,omitempty"`
 }

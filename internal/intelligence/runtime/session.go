@@ -63,6 +63,14 @@ type Spec struct {
 	Env []string
 	// Dir is the adapter working directory (usually the workspace root).
 	Dir string
+	// DialClient starts the adapter with {addr} replaced by a loopback
+	// listener this process opens, and waits for the adapter to dial in.
+	// Delve's `dlv dap` transport uses this shape; stdio adapters leave it
+	// false.
+	DialClient bool
+	// ConnectTimeout bounds how long the adapter may take to dial back.
+	// Zero uses 10s.
+	ConnectTimeout time.Duration
 }
 
 // Config configures a Manager.
@@ -576,14 +584,22 @@ func (m *Manager) Launch(ctx context.Context, request LaunchRequest) (*Session, 
 	if len(arguments) == 0 {
 		arguments = json.RawMessage("{}")
 	}
-	if err := client.request(setupCtx, command, arguments, nil); err != nil {
-		session.fail()
-		release()
-		return nil, err
-	}
+	// Delve answers launch only after configurationDone, so the handshake
+	// cannot wait for the response before configuring breakpoints. The fake
+	// adapter answers immediately; the buffered channel covers both.
+	launchDone := client.requestFuture(setupCtx, command, arguments)
 	// Some adapters answer launch before sending initialized; others send it
 	// first. The event is buffered either way.
 	if _, err := session.WaitEvent(setupCtx, "initialized"); err != nil {
+		select {
+		case launchErr := <-launchDone:
+			if launchErr != nil {
+				session.fail()
+				release()
+				return nil, launchErr
+			}
+		default:
+		}
 		session.fail()
 		release()
 		return nil, err
@@ -596,6 +612,11 @@ func (m *Manager) Launch(ctx context.Context, request LaunchRequest) (*Session, 
 		}
 	}
 	if err := client.request(setupCtx, "configurationDone", map[string]any{}, nil); err != nil {
+		session.fail()
+		release()
+		return nil, err
+	}
+	if err := <-launchDone; err != nil {
 		session.fail()
 		release()
 		return nil, err

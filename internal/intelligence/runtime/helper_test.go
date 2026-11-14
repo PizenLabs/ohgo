@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"testing"
 
@@ -17,10 +19,19 @@ func TestDAPHelperAdapter(t *testing.T) {
 		t.Skip("helper process entry point")
 	}
 	mode := os.Getenv("OHGO_DAP_MODE")
+	if addr := os.Getenv("OHGO_DAP_DIAL"); addr != "" {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			os.Exit(4)
+		}
+		serveAdapter(bufio.NewReader(conn), conn, mode)
+		_ = conn.Close()
+		return
+	}
 	serveAdapter(bufio.NewReader(os.Stdin), os.Stdout, mode)
 }
 
-func serveAdapter(reader *bufio.Reader, writer *os.File, mode string) {
+func serveAdapter(reader *bufio.Reader, writer io.Writer, mode string) {
 	seq := 0
 	event := func(name string, body any) {
 		seq++

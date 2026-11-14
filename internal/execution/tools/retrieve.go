@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -34,12 +33,9 @@ type RetrieveTool struct {
 	Root string
 	// source is the shared repository snapshot the index is reconciled with.
 	source *StructuralSource
-	// indexer owns persistence and incremental reconciliation.
-	indexer *retrieval.Indexer
-
-	mu    sync.Mutex
-	index *retrieval.Index
-	stats retrieval.SyncStats
+	// workspace is the shared live index: the investigation orchestrator
+	// reads the same state instead of building a second corpus.
+	workspace *retrieval.Workspace
 }
 
 // NewRetrieveTool returns the retrieval capability over source.
@@ -52,9 +48,9 @@ func NewRetrieveTool(source *StructuralSource, cacheDir string) *RetrieveTool {
 		root = source.Root()
 	}
 	tool := &RetrieveTool{
-		Root:    root,
-		source:  source,
-		indexer: retrieval.NewIndexer(root, cacheDir, retrieval.DefaultOptions()),
+		Root:      root,
+		source:    source,
+		workspace: retrieval.NewWorkspace(root, cacheDir, retrieval.DefaultOptions()),
 	}
 	tool.Base = NewBase("retrieve",
 		"Rank repository files by relevance to a task query before reading them. "+
@@ -103,6 +99,15 @@ func NewRetrieveTool(source *StructuralSource, cacheDir string) *RetrieveTool {
 	return tool
 }
 
+// Workspace returns the shared live index, so the investigation orchestrator
+// can rank against the same corpus instead of building a second one.
+func (t *RetrieveTool) Workspace() *retrieval.Workspace {
+	if t == nil {
+		return nil
+	}
+	return t.workspace
+}
+
 // Execute implements agent.Tool.
 func (t *RetrieveTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 	if err := checkCancelled(ctx.Ctx); err != nil {
@@ -148,20 +153,11 @@ func (t *RetrieveTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 		return agent.ErrorResult("retrieval has no repository source; nothing executed.")
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	index, err := t.source.Index()
 	if err != nil {
 		return agent.ErrorResult("retrieval could not open the repository snapshot: %v", err)
 	}
-	reconciled, stats, err := t.indexer.Refresh(ctx.Ctx, index, t.index)
-	if err != nil {
-		return requestError(agent.ToolFailureRuntime,
-			"retrieval could not reconcile the index: %v; no ranking was produced.", err)
-	}
-	t.index, t.stats = reconciled, stats
-
-	result, err := reconciled.Search(retrieval.Query{
+	result, stats, err := t.workspace.Search(ctx.Ctx, index, retrieval.Query{
 		Text:         query,
 		Limit:        limit,
 		IncludeTests: includeTests,

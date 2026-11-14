@@ -41,7 +41,8 @@ become a second mutation or process-execution path.
 | `intelligence/semantic` | LSP transport, server lifecycle, semantic requests, diagnostics | apply edits, own symbol identity, bypass authority |
 | `intelligence/runtime` | DAP transport, session lifecycle, runtime observation | own process authorization, replace the execution plane |
 | `intelligence/evidence` | shared state vocabulary, records, correlation, contradictions | observe, rank, or authorize |
-| `intelligence/planner` | provider selection, cost/gain, stopping reasons | start a provider, grant authority, execute work |
+| `intelligence/planner` | provider selection, cost/gain, stopping reasons, closed-loop reassessment | start a provider, grant authority, execute work |
+| `intelligence/investigate` | adaptive execution: shared context, evidence convergence, correlation, bounded result | start a provider outside its contract, cache runtime evidence as source truth, expose raw payloads |
 | `intelligence/wire` | Content-Length JSON framing shared by LSP and DAP | protocol schemas or provider policy |
 
 `internal/architecture` enforces that every package under `intelligence/` has no
@@ -299,26 +300,69 @@ unavailable provider is never reported as "the fact is absent".
 - `VERIFIED` remains the only proof state and cannot be manufactured by a
   provider result.
 
-## 11. Status
+## 11. Orchestration
+
+`intelligence/investigate` is the execution layer the planner was missing. One
+run owns:
+
+- a typed `Request` (question, intent, focus, budget) and one normalized budget;
+- one shared `evidence.Engine` that every provider publishes into;
+- one `Meter` charged by language-server and debug-adapter requests;
+- one plan trace: selected steps with reasons, unselected providers with
+  reasons, observed confidence/coverage, and the stop reason.
+
+The loop is `PLAN → EXECUTE ONE STEP → OBSERVE → CORRELATE → REASSESS`. The
+planner is re-entered after every step with the *observed* confidence and the
+set of executed providers, so a provider that produced little evidence does not
+count as a completed estimate. Executed providers are never selected again.
+
+Provider adapters:
+
+| Adapter | Source | Availability rule |
+|---|---|---|
+| structural | shared `ast.Index` + analysis cache | source configured |
+| retrieval | shared `retrieval.Workspace` | workspace and source configured |
+| semantic | LSP manager (starts lazily, closes after the step) | a server spec exists (composition checks the binary) |
+| runtime | already-authorized `runtime.Session` | session alive and STOPPED; never launched here |
+
+The `investigate` tool is the model-facing entrypoint. It returns bounded
+facts, provider states, contradictions, issues, confidence, coverage, and the
+stopping reason. It never returns raw graphs, LSP/DAP payloads, or indexes.
+
+## 12. Status
 
 | Capability | Implemented | Tested | Integrated into a model-facing tool |
 |---|---|---|---|
-| structural intelligence | yes | yes | yes (`structure`) |
-| Okapi BM25 retrieval | yes | yes (labeled corpus + invariants) | yes (`retrieve`) |
-| LSP semantic observations | yes | yes (fake + real gopls) | no |
-| DAP runtime observations | yes | yes (fake adapter) | no |
-| unified evidence engine | yes | yes | no (tools publish local evidence detail) |
-| cross-provider planner | yes | yes | no |
+| structural intelligence | yes | yes | yes (`structure`, `investigate`) |
+| Okapi BM25 retrieval | yes | yes (labeled corpus + invariants) | yes (`retrieve`, `investigate`) |
+| semantic intelligence | yes | yes (fake + real gopls, including the live provider) | yes (`investigate`, gopls when installed) |
+| runtime intelligence | yes | yes (fake adapter); real `dlv` **not** validated | no (provider adapter is not composed) |
+| unified evidence engine | yes | yes, including orchestrator fixtures | yes, inside `investigate` |
+| closed-loop planner | yes | yes (selection, reassessment, budget) | yes (`investigate`) |
 | shared wire framing | yes | via LSP/DAP suites | — |
 
 Known gaps, stated rather than implied:
 
-1. The planner is not yet an orchestrator; no capability executes a
-   cross-provider plan.
-2. Semantic and runtime providers have no model-facing tool; they are libraries
-   with real tests, not yet usable by the agent loop.
-3. Real `dlv` integration is not validated (fake adapter only).
-4. Retrieval relevance is validated on a synthetic labeled corpus, not on a
+1. Real `dlv` is not validated end to end. The client supports Delve's
+   dial-client transport (`--client-addr={addr}`), and the real fixture reaches
+   `initialize` + `launch`; this machine has developer mode disabled, so
+   `debugserver` starts the debuggee suspended and Delve never answers launch.
+   The real test skips with that reason. The dial transport itself is validated
+   with a real subprocess over loopback and with the fake adapter composed into
+   the orchestrator (runtime records, shared meter, budget exhaustion). Runtime
+   is still not exposed as a model-facing debug tool.
+2. Retrieval relevance is validated on a synthetic labeled corpus, not on a
    large human-labeled repository corpus.
-5. LSP manager server specs are not yet wired into composition, so `gopls` is
-   not started for normal sessions.
+3. Retrieval at 20,000 documents after the integer-slot postings change:
+   cold 1.0 s, warm 285 ms, refresh 183 ms, query-only **5 ms**. At 50,000 files
+   (20k cap): cold 1.26 s, warm 467 ms, refresh 380 ms, query-only 5 ms. The
+   earlier 281 ms figure was reconciliation, not BM25 scoring. The AST inventory
+   now exposes its observed mtime so retrieval does not stat every file twice.
+4. Semantic manager instances are per investigation step: a warm `gopls` is not
+   reused across separate `investigate` calls.
+5. Adaptive-vs-full benchmarking covers structural + retrieval only; semantic
+   and runtime rows are unavailable to the benchmark harness. Measured at 5,000
+   files: project 30 ms adaptive vs 222 ms full; locate 124 ms vs 136 ms.
+6. Memory is measured only at the process level: heap after a warm 20k-document
+   index is 91.6 MiB (50k-file run: 219.9 MiB including the larger snapshot).
+   Per-provider and subprocess memory are unmeasured.

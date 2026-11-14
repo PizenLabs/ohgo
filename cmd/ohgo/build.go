@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -14,6 +15,10 @@ import (
 	"github.com/PizenLabs/ohgo/internal/control/cognition"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
+	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
+	"github.com/PizenLabs/ohgo/internal/intelligence/investigate"
+	"github.com/PizenLabs/ohgo/internal/intelligence/semantic"
+	"github.com/PizenLabs/ohgo/internal/intelligence/structural"
 	"github.com/PizenLabs/ohgo/internal/prompt"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/state"
@@ -60,6 +65,18 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 	if dir, err := state.Path("cache", "retrieval"); err == nil {
 		retrievalCache = dir
 	}
+	// One retrieval workspace serves both the retrieve tool and the
+	// investigation orchestrator: a second index over the same tree would be
+	// duplicated work and duplicated staleness.
+	retrieve := tools.NewRetrieveTool(structural, retrievalCache)
+	// Semantic intelligence is composed lazily: no language server starts at
+	// Ohgo startup, and a machine without gopls simply reports the provider as
+	// unavailable rather than pretending it looked.
+	investigation := investigate.New(
+		&investigate.StructuralProvider{Source: sourceFor(structural), Cache: structuralCacheFor(structural), Root: opts.root},
+		&investigate.RetrievalProvider{Workspace: retrieve.Workspace(), Source: sourceFor(structural), Root: opts.root},
+		semanticProvider(opts.root),
+	)
 	toolSet := []agent.Tool{
 		tools.NewReadTool(opts.root),
 		tools.NewWriteTool(opts.root),
@@ -75,7 +92,8 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewGraphTool(structural),
 		tools.NewRefsTool(structural),
 		tools.NewStructureTool(structural),
-		tools.NewRetrieveTool(structural, retrievalCache),
+		retrieve,
+		tools.NewInvestigateTool(opts.root, investigation, investigate.Budget{}),
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}
@@ -110,6 +128,52 @@ func buildSubagentPrompt(opts options) tools.SystemBuilder {
 			},
 			{Text: "Your assignment:\n" + task},
 		}
+	}
+}
+
+// sourceFor returns the structural source's inventory seam.
+func sourceFor(source *tools.StructuralSource) *astIndexSource {
+	return &astIndexSource{source: source}
+}
+
+type astIndexSource struct{ source *tools.StructuralSource }
+
+func (s *astIndexSource) Inventory(ctx context.Context, query ast.InventoryQuery) (ast.Inventory, error) {
+	index, err := s.source.Index()
+	if err != nil {
+		return ast.Inventory{}, err
+	}
+	return index.Inventory(ctx, query)
+}
+
+func (s *astIndexSource) Dependencies(ctx context.Context, query ast.DependencyQuery) (ast.DependencyResult, error) {
+	index, err := s.source.Index()
+	if err != nil {
+		return ast.DependencyResult{}, err
+	}
+	return index.Dependencies(ctx, query)
+}
+
+func structuralCacheFor(source *tools.StructuralSource) structural.Cache {
+	if dir := source.AnalysisCacheDir(); dir != "" {
+		return structural.NewFileCache(dir)
+	}
+	return nil
+}
+
+// semanticProvider configures gopls only when it is actually installed.
+func semanticProvider(root string) *investigate.SemanticProvider {
+	path, err := exec.LookPath("gopls")
+	if err != nil {
+		return &investigate.SemanticProvider{}
+	}
+	return &investigate.SemanticProvider{
+		Root: root,
+		Start: func(ctx context.Context) (*semantic.Manager, error) {
+			return semantic.NewManager(root, []semantic.Spec{{
+				Name: "gopls", Languages: []string{"go"}, Command: []string{path, "serve"},
+			}}, 1), nil
+		},
 	}
 }
 

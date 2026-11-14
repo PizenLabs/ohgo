@@ -168,12 +168,46 @@ var intents = map[Intent]struct {
 // DefaultMaxSteps bounds providers per plan.
 const DefaultMaxSteps = 5
 
+// Progress is what an investigation has already established.
+//
+// It is the closed-loop input: the caller reports observed confidence, not the
+// plan's estimate, so a provider that returned little usable evidence does not
+// silently count as a completed step.
+type Progress struct {
+	// Executed names providers that already ran in this investigation.
+	Executed map[Provider]bool
+	// Confidence is the observed confidence in [0,1].
+	Confidence float64
+	// Coverage is the observed task coverage in [0,1].
+	Coverage float64
+}
+
+// Reassess returns the remaining plan after observed progress.
+//
+// Executed providers are never selected again. The plan starts from the
+// observed confidence, so the same step budget means "additional work", not
+// cumulative work. A plan with no remaining steps is returned with the stop
+// reason rather than as an error.
+func Reassess(intent Intent, availability Availability, budget Budget, progress Progress) (Plan, error) {
+	if progress.Confidence < 0 {
+		progress.Confidence = 0
+	}
+	if progress.Confidence > 1 {
+		progress.Confidence = 1
+	}
+	return build(intent, availability, budget, &progress)
+}
+
 // Build returns a deterministic plan for intent.
 //
 // Mandatory steps run in table order when available. Optional steps are ranked
 // by gain per cost unit and added until the target confidence is met or the
 // step budget is exhausted; ties break on provider name.
 func Build(intent Intent, availability Availability, budget Budget) (Plan, error) {
+	return build(intent, availability, budget, nil)
+}
+
+func build(intent Intent, availability Availability, budget Budget, progress *Progress) (Plan, error) {
 	spec, ok := intents[intent]
 	if !ok {
 		return Plan{}, fmt.Errorf("%w: %q", ErrUnknownIntent, intent)
@@ -186,6 +220,12 @@ func Build(intent Intent, availability Availability, budget Budget) (Plan, error
 		maxSteps = 8
 	}
 	plan := Plan{Intent: intent, Target: spec.target, Confidence: 0}
+	if progress != nil {
+		plan.Confidence = progress.Confidence
+	}
+	executed := func(provider Provider) bool {
+		return progress != nil && progress.Executed != nil && progress.Executed[provider]
+	}
 	available := map[Provider]bool{
 		ProviderStructural: availability.Structural,
 		ProviderRetrieval:  availability.Retrieval,
@@ -194,6 +234,10 @@ func Build(intent Intent, availability Availability, budget Budget) (Plan, error
 	}
 
 	for _, step := range spec.steps {
+		if executed(step.provider) {
+			plan.Skips = append(plan.Skips, Skip{step.provider, "already executed in this investigation"})
+			continue
+		}
 		if step.mandatory && available[step.provider] && len(plan.Steps) < maxSteps {
 			plan.Steps = append(plan.Steps, makeStep(step, plan.Confidence))
 			plan.Confidence = plan.Steps[len(plan.Steps)-1].EstimatedConfidence
@@ -202,6 +246,8 @@ func Build(intent Intent, availability Availability, budget Budget) (Plan, error
 	optional := make([]candidate, 0, len(spec.steps))
 	for _, step := range spec.steps {
 		switch {
+		case executed(step.provider):
+			continue
 		case step.mandatory:
 			if !available[step.provider] {
 				plan.Skips = append(plan.Skips, Skip{step.provider, "provider unavailable; the mandatory step cannot run"})
@@ -246,7 +292,27 @@ func Build(intent Intent, availability Availability, budget Budget) (Plan, error
 	default:
 		plan.Stop = StopPartial
 	}
-	if len(plan.Steps) == 0 {
+	// Runtime is always accounted for: an investigation must be able to state
+	// that it did not debug, and why. Other providers are row-scoped.
+	runtimeNamed := false
+	for _, skip := range plan.Skips {
+		if skip.Provider == ProviderRuntime {
+			runtimeNamed = true
+		}
+	}
+	for _, step := range plan.Steps {
+		if step.Provider == ProviderRuntime {
+			runtimeNamed = true
+		}
+	}
+	if !runtimeNamed {
+		reason := "no authorized runtime session; debug adapters are not started for this intent"
+		if available[ProviderRuntime] {
+			reason = "an authorized runtime session exists but this intent does not justify execution"
+		}
+		plan.Skips = append(plan.Skips, Skip{ProviderRuntime, reason})
+	}
+	if len(plan.Steps) == 0 && plan.Confidence < spec.target {
 		return plan, fmt.Errorf("%w: %q", ErrNoProvider, intent)
 	}
 	sort.SliceStable(plan.Skips, func(i, j int) bool {

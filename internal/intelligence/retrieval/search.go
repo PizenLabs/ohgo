@@ -98,7 +98,7 @@ func (idx *Index) Search(q Query) (Result, error) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	documents := len(idx.docs)
+	documents := len(idx.ids)
 	if documents == 0 {
 		return Result{QueryTerms: terms}, nil
 	}
@@ -114,7 +114,8 @@ func (idx *Index) Search(q Query) (Result, error) {
 		bm25    float64
 		matches []string
 	}
-	acc := make(map[string]*accumulation, 64)
+	acc := make([]accumulation, len(idx.records))
+	touched := make([]int32, 0, 64)
 	for _, term := range terms {
 		list, ok := idx.postings[term]
 		if !ok {
@@ -127,8 +128,9 @@ func (idx *Index) Search(q Query) (Result, error) {
 		}
 		weight := float64(queryWeights[term])
 		for _, entry := range list {
-			doc := idx.docs[entry.id]
-			if !candidate(doc, q, scope) {
+			id := entry.doc
+			doc := idx.records[id]
+			if doc.Path == "" || !candidate(doc, q, scope) {
 				continue
 			}
 			combined := 0.0
@@ -144,19 +146,19 @@ func (idx *Index) Search(q Query) (Result, error) {
 				continue
 			}
 			termScore := inverse * combined * (idx.opts.K1 + 1) / (combined + idx.opts.K1)
-			current, ok := acc[entry.id]
-			if !ok {
-				current = &accumulation{}
-				acc[entry.id] = current
+			current := &acc[id]
+			if len(current.matches) == 0 {
+				touched = append(touched, id)
 			}
 			current.bm25 += termScore * weight
 			current.matches = append(current.matches, term)
 		}
 	}
 
-	hits := make([]Hit, 0, len(acc))
-	for rel, current := range acc {
-		doc := idx.docs[rel]
+	hits := make([]Hit, 0, len(touched))
+	for _, id := range touched {
+		doc := idx.records[id]
+		current := &acc[id]
 		hit := Hit{
 			Path:      doc.Path,
 			BM25:      current.bm25,
@@ -176,7 +178,7 @@ func (idx *Index) Search(q Query) (Result, error) {
 			}
 		}
 		if q.Proximity != nil {
-			hit.Proximity = clamp01(q.Proximity(rel))
+			hit.Proximity = clamp01(q.Proximity(doc.Path))
 		}
 		multiplier := 1.0
 		if hit.Exact {

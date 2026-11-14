@@ -7,6 +7,49 @@ immutable.
 
 ### Added
 
+- Unified investigation orchestration: `intelligence/investigate` executes the
+  planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
+  CORRELATE → REASSESS`). One shared evidence engine receives every provider's
+  records, one meter bounds LSP/DAP requests, and each run reports selected and
+  skipped providers with reasons, observed confidence/coverage, contradictions,
+  and the stop reason. Provider adapters cover structural analysis, the shared
+  Okapi BM25F workspace, live LSP declarations/references/call hierarchy, and an
+  already-authorized stopped debug session. `planner.Reassess` never re-selects
+  an executed provider and only reports "no provider" when the target is
+  genuinely unmet. The new `investigate` tool is the model-facing entrypoint and
+  returns bounded facts instead of raw payloads. Composition shares one
+  retrieval workspace between `retrieve` and `investigate`, and starts `gopls`
+  lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
+  cost and adaptive provider selection at 100–50,000 synthetic files.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
+### Fixed
+
+- Runtime DAP transport: added the dial-client mode Delve requires
+  (`dlv dap --client-addr={addr}`). The launch request is sent without blocking,
+  so adapters that answer launch only after `configurationDone` no longer
+  deadlock the handshake. A real fixture reaches initialize + launch; the
+  integration test skips on machines where developer mode is disabled and
+  debugserver cannot run the debuggee.
+- Retrieval benchmark: query-only cost is now measured separately from
+  reconciliation (23 ms vs 225 ms at 20,000 documents). No BM25F change was
+  made because the profile did not justify one.
+- Retrieval warm load: persisted documents are decoded from a columnar
+  envelope and posting lists are sorted once per load instead of once per
+  document. Measured on the synthetic benchmark: 20,000 documents 12.3 s → 353
+  ms; 50,000 files 13.4 s → 554 ms. The old per-document sort was quadratic in
+  the number of documents sharing a term.
+
 - Adaptive structural intelligence: `intelligence/structural` interprets the
   shared `ast.Index` snapshot as a typed, multi-resolution model instead of a
   flat inventory. It owns evidence states (`OBSERVED`, `PARTIALLY_OBSERVED`,
@@ -186,6 +229,49 @@ immutable.
 
 ### Added
 
+- Unified investigation orchestration: `intelligence/investigate` executes the
+  planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
+  CORRELATE → REASSESS`). One shared evidence engine receives every provider's
+  records, one meter bounds LSP/DAP requests, and each run reports selected and
+  skipped providers with reasons, observed confidence/coverage, contradictions,
+  and the stop reason. Provider adapters cover structural analysis, the shared
+  Okapi BM25F workspace, live LSP declarations/references/call hierarchy, and an
+  already-authorized stopped debug session. `planner.Reassess` never re-selects
+  an executed provider and only reports "no provider" when the target is
+  genuinely unmet. The new `investigate` tool is the model-facing entrypoint and
+  returns bounded facts instead of raw payloads. Composition shares one
+  retrieval workspace between `retrieve` and `investigate`, and starts `gopls`
+  lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
+  cost and adaptive provider selection at 100–50,000 synthetic files.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
+### Fixed
+
+- Runtime DAP transport: added the dial-client mode Delve requires
+  (`dlv dap --client-addr={addr}`). The launch request is sent without blocking,
+  so adapters that answer launch only after `configurationDone` no longer
+  deadlock the handshake. A real fixture reaches initialize + launch; the
+  integration test skips on machines where developer mode is disabled and
+  debugserver cannot run the debuggee.
+- Retrieval benchmark: query-only cost is now measured separately from
+  reconciliation (23 ms vs 225 ms at 20,000 documents). No BM25F change was
+  made because the profile did not justify one.
+- Retrieval warm load: persisted documents are decoded from a columnar
+  envelope and posting lists are sorted once per load instead of once per
+  document. Measured on the synthetic benchmark: 20,000 documents 12.3 s → 353
+  ms; 50,000 files 13.4 s → 554 ms. The old per-document sort was quadratic in
+  the number of documents sharing a term.
+
 - Capability preflight: `contract.IntentContract.RequiredCapabilities` derives
   the operations an objective needs (reading, the mutation operation the request
   names, command execution when the contract requires a check) and
@@ -202,6 +288,17 @@ immutable.
 - `RunVerdict.String()` names the run classification (`COMPLETED`,
   `NEEDS_REVIEW`, `PAUSED`, `FAILED`, `CANCELLED`, `CAPABILITY_UNAVAILABLE`) so
   the TUI, the headless verdict, and durable task records share one vocabulary.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
 
 ### Fixed
 
@@ -489,6 +586,49 @@ immutable.
 
 ### Added
 
+- Unified investigation orchestration: `intelligence/investigate` executes the
+  planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
+  CORRELATE → REASSESS`). One shared evidence engine receives every provider's
+  records, one meter bounds LSP/DAP requests, and each run reports selected and
+  skipped providers with reasons, observed confidence/coverage, contradictions,
+  and the stop reason. Provider adapters cover structural analysis, the shared
+  Okapi BM25F workspace, live LSP declarations/references/call hierarchy, and an
+  already-authorized stopped debug session. `planner.Reassess` never re-selects
+  an executed provider and only reports "no provider" when the target is
+  genuinely unmet. The new `investigate` tool is the model-facing entrypoint and
+  returns bounded facts instead of raw payloads. Composition shares one
+  retrieval workspace between `retrieve` and `investigate`, and starts `gopls`
+  lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
+  cost and adaptive provider selection at 100–50,000 synthetic files.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
+### Fixed
+
+- Runtime DAP transport: added the dial-client mode Delve requires
+  (`dlv dap --client-addr={addr}`). The launch request is sent without blocking,
+  so adapters that answer launch only after `configurationDone` no longer
+  deadlock the handshake. A real fixture reaches initialize + launch; the
+  integration test skips on machines where developer mode is disabled and
+  debugserver cannot run the debuggee.
+- Retrieval benchmark: query-only cost is now measured separately from
+  reconciliation (23 ms vs 225 ms at 20,000 documents). No BM25F change was
+  made because the profile did not justify one.
+- Retrieval warm load: persisted documents are decoded from a columnar
+  envelope and posting lists are sorted once per load instead of once per
+  document. Measured on the synthetic benchmark: 20,000 documents 12.3 s → 353
+  ms; 50,000 files 13.4 s → 554 ms. The old per-document sort was quadratic in
+  the number of documents sharing a term.
+
 - Automatic appearance: `internal/tui/design` is now the single token source for
   a Dark and a Light palette, and `theme` is stored as a preference — `auto`,
   `dark`, or `light` — resolved once at startup. `auto` follows the host
@@ -502,6 +642,17 @@ immutable.
   authority change; the first keystroke replaces the hint without touching the
   buffer. The quickstart command grid and its per-project random tip are
   removed in favour of one framed panel with a static tip.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
 
 ### Fixed
 
@@ -577,6 +728,49 @@ immutable.
 
 ### Added
 
+- Unified investigation orchestration: `intelligence/investigate` executes the
+  planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
+  CORRELATE → REASSESS`). One shared evidence engine receives every provider's
+  records, one meter bounds LSP/DAP requests, and each run reports selected and
+  skipped providers with reasons, observed confidence/coverage, contradictions,
+  and the stop reason. Provider adapters cover structural analysis, the shared
+  Okapi BM25F workspace, live LSP declarations/references/call hierarchy, and an
+  already-authorized stopped debug session. `planner.Reassess` never re-selects
+  an executed provider and only reports "no provider" when the target is
+  genuinely unmet. The new `investigate` tool is the model-facing entrypoint and
+  returns bounded facts instead of raw payloads. Composition shares one
+  retrieval workspace between `retrieve` and `investigate`, and starts `gopls`
+  lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
+  cost and adaptive provider selection at 100–50,000 synthetic files.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
+### Fixed
+
+- Runtime DAP transport: added the dial-client mode Delve requires
+  (`dlv dap --client-addr={addr}`). The launch request is sent without blocking,
+  so adapters that answer launch only after `configurationDone` no longer
+  deadlock the handshake. A real fixture reaches initialize + launch; the
+  integration test skips on machines where developer mode is disabled and
+  debugserver cannot run the debuggee.
+- Retrieval benchmark: query-only cost is now measured separately from
+  reconciliation (23 ms vs 225 ms at 20,000 documents). No BM25F change was
+  made because the profile did not justify one.
+- Retrieval warm load: persisted documents are decoded from a columnar
+  envelope and posting lists are sorted once per load instead of once per
+  document. Measured on the synthetic benchmark: 20,000 documents 12.3 s → 353
+  ms; 50,000 files 13.4 s → 554 ms. The old per-document sort was quadratic in
+  the number of documents sharing a term.
+
 - Adaptive execution experience: `internal/experience` extracts deterministic
   incidents from completed turns, derives bounded lessons and candidate path
   preferences, and applies only promoted experience. The projector may reorder
@@ -584,6 +778,17 @@ immutable.
   completion, budgets, and task state are unchanged. `/experience` inspects or
   retires records, and `<project>/.ohgo/experience.json` is a versioned,
   bounded, cold-start-safe store.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
 
 ### Fixed
 
@@ -597,6 +802,49 @@ immutable.
 ## [v0.0.9] - 2026-11-08
 
 ### Added
+
+- Unified investigation orchestration: `intelligence/investigate` executes the
+  planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
+  CORRELATE → REASSESS`). One shared evidence engine receives every provider's
+  records, one meter bounds LSP/DAP requests, and each run reports selected and
+  skipped providers with reasons, observed confidence/coverage, contradictions,
+  and the stop reason. Provider adapters cover structural analysis, the shared
+  Okapi BM25F workspace, live LSP declarations/references/call hierarchy, and an
+  already-authorized stopped debug session. `planner.Reassess` never re-selects
+  an executed provider and only reports "no provider" when the target is
+  genuinely unmet. The new `investigate` tool is the model-facing entrypoint and
+  returns bounded facts instead of raw payloads. Composition shares one
+  retrieval workspace between `retrieve` and `investigate`, and starts `gopls`
+  lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
+  cost and adaptive provider selection at 100–50,000 synthetic files.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
+### Fixed
+
+- Runtime DAP transport: added the dial-client mode Delve requires
+  (`dlv dap --client-addr={addr}`). The launch request is sent without blocking,
+  so adapters that answer launch only after `configurationDone` no longer
+  deadlock the handshake. A real fixture reaches initialize + launch; the
+  integration test skips on machines where developer mode is disabled and
+  debugserver cannot run the debuggee.
+- Retrieval benchmark: query-only cost is now measured separately from
+  reconciliation (23 ms vs 225 ms at 20,000 documents). No BM25F change was
+  made because the profile did not justify one.
+- Retrieval warm load: persisted documents are decoded from a columnar
+  envelope and posting lists are sorted once per load instead of once per
+  document. Measured on the synthetic benchmark: 20,000 documents 12.3 s → 353
+  ms; 50,000 files 13.4 s → 554 ms. The old per-document sort was quadratic in
+  the number of documents sharing a term.
 
 - Hybrid master-prompt offloading: prompts with at least 50 lines or 4000 runes
   are written to `<project>/.ohgo/scratch/prompt_<session>_<timestamp>.md` and
@@ -627,6 +875,49 @@ immutable.
 ## [v0.0.8] - 2026-11-05
 
 ### Added
+
+- Unified investigation orchestration: `intelligence/investigate` executes the
+  planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
+  CORRELATE → REASSESS`). One shared evidence engine receives every provider's
+  records, one meter bounds LSP/DAP requests, and each run reports selected and
+  skipped providers with reasons, observed confidence/coverage, contradictions,
+  and the stop reason. Provider adapters cover structural analysis, the shared
+  Okapi BM25F workspace, live LSP declarations/references/call hierarchy, and an
+  already-authorized stopped debug session. `planner.Reassess` never re-selects
+  an executed provider and only reports "no provider" when the target is
+  genuinely unmet. The new `investigate` tool is the model-facing entrypoint and
+  returns bounded facts instead of raw payloads. Composition shares one
+  retrieval workspace between `retrieve` and `investigate`, and starts `gopls`
+  lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
+  cost and adaptive provider selection at 100–50,000 synthetic files.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
+### Fixed
+
+- Runtime DAP transport: added the dial-client mode Delve requires
+  (`dlv dap --client-addr={addr}`). The launch request is sent without blocking,
+  so adapters that answer launch only after `configurationDone` no longer
+  deadlock the handshake. A real fixture reaches initialize + launch; the
+  integration test skips on machines where developer mode is disabled and
+  debugserver cannot run the debuggee.
+- Retrieval benchmark: query-only cost is now measured separately from
+  reconciliation (23 ms vs 225 ms at 20,000 documents). No BM25F change was
+  made because the profile did not justify one.
+- Retrieval warm load: persisted documents are decoded from a columnar
+  envelope and posting lists are sorted once per load instead of once per
+  document. Measured on the synthetic benchmark: 20,000 documents 12.3 s → 353
+  ms; 50,000 files 13.4 s → 554 ms. The old per-document sort was quadratic in
+  the number of documents sharing a term.
 
 - Provider tool-call normalization: assistant text that carries a serialized
   `<invoke>` or `<tool_call>` envelope becomes a canonical tool call before the
@@ -669,6 +960,17 @@ immutable.
   tool call in its logical position instead of merging it into the trailing
   block.
 
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
 ### Fixed
 
 - Closed-surface answers: post-answer tool calls are dropped instead of
@@ -686,6 +988,17 @@ immutable.
 
 ## [v0.0.6] - 2026-11-03
 
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
 ### Fixed
 
 - A quit now cancels an in-flight background update check: the observer is bound
@@ -701,6 +1014,49 @@ immutable.
 ## [v0.0.5] - 2026-11-03
 
 ### Added
+
+- Unified investigation orchestration: `intelligence/investigate` executes the
+  planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
+  CORRELATE → REASSESS`). One shared evidence engine receives every provider's
+  records, one meter bounds LSP/DAP requests, and each run reports selected and
+  skipped providers with reasons, observed confidence/coverage, contradictions,
+  and the stop reason. Provider adapters cover structural analysis, the shared
+  Okapi BM25F workspace, live LSP declarations/references/call hierarchy, and an
+  already-authorized stopped debug session. `planner.Reassess` never re-selects
+  an executed provider and only reports "no provider" when the target is
+  genuinely unmet. The new `investigate` tool is the model-facing entrypoint and
+  returns bounded facts instead of raw payloads. Composition shares one
+  retrieval workspace between `retrieve` and `investigate`, and starts `gopls`
+  lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
+  cost and adaptive provider selection at 100–50,000 synthetic files.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
+### Fixed
+
+- Runtime DAP transport: added the dial-client mode Delve requires
+  (`dlv dap --client-addr={addr}`). The launch request is sent without blocking,
+  so adapters that answer launch only after `configurationDone` no longer
+  deadlock the handshake. A real fixture reaches initialize + launch; the
+  integration test skips on machines where developer mode is disabled and
+  debugserver cannot run the debuggee.
+- Retrieval benchmark: query-only cost is now measured separately from
+  reconciliation (23 ms vs 225 ms at 20,000 documents). No BM25F change was
+  made because the profile did not justify one.
+- Retrieval warm load: persisted documents are decoded from a columnar
+  envelope and posting lists are sorted once per load instead of once per
+  document. Measured on the synthetic benchmark: 20,000 documents 12.3 s → 353
+  ms; 50,000 files 13.4 s → 554 ms. The old per-document sort was quadratic in
+  the number of documents sharing a term.
 
 - Task continuity Phase 1: the durable task now owns structured, role-independent
   context (verified facts, hypotheses, evidence references, questions) and
@@ -767,6 +1123,17 @@ immutable.
   the first retained event is the creation event. Repeated pause and review
   boundaries are idempotent, and task-context mutations use the injected clock.
 
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
 ### Fixed
 
 - A failed completion checkpoint can no longer be published as
@@ -797,6 +1164,49 @@ immutable.
 ## [v0.0.4] - 2026-11-02
 
 ### Added
+
+- Unified investigation orchestration: `intelligence/investigate` executes the
+  planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
+  CORRELATE → REASSESS`). One shared evidence engine receives every provider's
+  records, one meter bounds LSP/DAP requests, and each run reports selected and
+  skipped providers with reasons, observed confidence/coverage, contradictions,
+  and the stop reason. Provider adapters cover structural analysis, the shared
+  Okapi BM25F workspace, live LSP declarations/references/call hierarchy, and an
+  already-authorized stopped debug session. `planner.Reassess` never re-selects
+  an executed provider and only reports "no provider" when the target is
+  genuinely unmet. The new `investigate` tool is the model-facing entrypoint and
+  returns bounded facts instead of raw payloads. Composition shares one
+  retrieval workspace between `retrieve` and `investigate`, and starts `gopls`
+  lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
+  cost and adaptive provider selection at 100–50,000 synthetic files.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
+### Fixed
+
+- Runtime DAP transport: added the dial-client mode Delve requires
+  (`dlv dap --client-addr={addr}`). The launch request is sent without blocking,
+  so adapters that answer launch only after `configurationDone` no longer
+  deadlock the handshake. A real fixture reaches initialize + launch; the
+  integration test skips on machines where developer mode is disabled and
+  debugserver cannot run the debuggee.
+- Retrieval benchmark: query-only cost is now measured separately from
+  reconciliation (23 ms vs 225 ms at 20,000 documents). No BM25F change was
+  made because the profile did not justify one.
+- Retrieval warm load: persisted documents are decoded from a columnar
+  envelope and posting lists are sorted once per load instead of once per
+  document. Measured on the synthetic benchmark: 20,000 documents 12.3 s → 353
+  ms; 50,000 files 13.4 s → 554 ms. The old per-document sort was quadratic in
+  the number of documents sharing a term.
 
 - `space` in the full-screen transcript returns to the live edge when the
   composer is idle and the view is scrolled up, so a reader inspecting earlier
@@ -836,6 +1246,17 @@ immutable.
   content-bearing observation. A listing or an answer from memory is
   `NEEDS_REVIEW`, not `COMPLETED`.
 
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
 ### Fixed
 
 - Authority admission no longer escalates an informational question that
@@ -854,6 +1275,49 @@ immutable.
 ## [v0.0.3] - 2026-10-29
 
 ### Added
+
+- Unified investigation orchestration: `intelligence/investigate` executes the
+  planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
+  CORRELATE → REASSESS`). One shared evidence engine receives every provider's
+  records, one meter bounds LSP/DAP requests, and each run reports selected and
+  skipped providers with reasons, observed confidence/coverage, contradictions,
+  and the stop reason. Provider adapters cover structural analysis, the shared
+  Okapi BM25F workspace, live LSP declarations/references/call hierarchy, and an
+  already-authorized stopped debug session. `planner.Reassess` never re-selects
+  an executed provider and only reports "no provider" when the target is
+  genuinely unmet. The new `investigate` tool is the model-facing entrypoint and
+  returns bounded facts instead of raw payloads. Composition shares one
+  retrieval workspace between `retrieve` and `investigate`, and starts `gopls`
+  lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
+  cost and adaptive provider selection at 100–50,000 synthetic files.
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
+
+### Fixed
+
+- Runtime DAP transport: added the dial-client mode Delve requires
+  (`dlv dap --client-addr={addr}`). The launch request is sent without blocking,
+  so adapters that answer launch only after `configurationDone` no longer
+  deadlock the handshake. A real fixture reaches initialize + launch; the
+  integration test skips on machines where developer mode is disabled and
+  debugserver cannot run the debuggee.
+- Retrieval benchmark: query-only cost is now measured separately from
+  reconciliation (23 ms vs 225 ms at 20,000 documents). No BM25F change was
+  made because the profile did not justify one.
+- Retrieval warm load: persisted documents are decoded from a columnar
+  envelope and posting lists are sorted once per load instead of once per
+  document. Measured on the synthetic benchmark: 20,000 documents 12.3 s → 353
+  ms; 50,000 files 13.4 s → 554 ms. The old per-document sort was quadratic in
+  the number of documents sharing a term.
 
 - Explicit self-update: `ohgo update` (`--check` to observe only) resolves the
   published GitHub release, selects the tarball by the running `GOOS`/`GOARCH`,
@@ -1056,6 +1520,17 @@ immutable.
 - The TUI terminal task transition and cancellation share one atomic claim, so
   a cancel that wins cannot be followed by `COMPLETED`.
 
+
+### Changed
+
+- Retrieval postings now reference integer document slots instead of path
+  strings: query-only p50 at 20,000 documents fell from 23 ms to 5 ms, and the
+  per-posting string header and map lookup are gone. The AST inventory exposes
+  the observed modification time, so retrieval no longer stats every file a
+  second time after the inventory's freshness pass (refresh 243 ms → 183 ms).
+- The DAP dial-client transport is validated with a real subprocess over
+  loopback and composed into the investigation orchestrator: runtime records
+  land in the shared evidence engine and consume the shared DAP meter.
 
 ### Fixed
 

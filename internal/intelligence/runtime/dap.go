@@ -16,8 +16,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,6 +202,9 @@ func startClient(spec Spec, onEvent func(Event)) (*client, error) {
 	if len(spec.Command) == 0 {
 		return nil, errors.New("runtime: debug adapter has no command")
 	}
+	if spec.DialClient {
+		return startDialClient(spec, onEvent)
+	}
 	command := exec.Command(spec.Command[0], spec.Command[1:]...)
 	if spec.Dir != "" {
 		command.Dir = spec.Dir
@@ -237,6 +242,79 @@ func startClient(spec Spec, onEvent func(Event)) (*client, error) {
 	go c.readLoop()
 	go c.waitLoop()
 	return c, nil
+}
+
+// startDialClient starts an adapter that connects back to a loopback listener.
+//
+// This is Delve's `dlv dap --client-addr=host:port` shape: the adapter owns the
+// debuggee, while Ohgo owns the socket. The listener is closed immediately
+// after the single accepted connection, so nothing else can join the session.
+func startDialClient(spec Spec, onEvent func(Event)) (*client, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("runtime: listen: %w", err)
+	}
+	defer func() { _ = listener.Close() }()
+	command := exec.Command(spec.Command[0], substituteAddr(spec.Command[1:], listener.Addr().String())...)
+	if spec.Dir != "" {
+		command.Dir = spec.Dir
+	}
+	if len(spec.Env) > 0 {
+		command.Env = append(os.Environ(), substituteAddr(spec.Env, listener.Addr().String())...)
+	}
+	configureProcess(command)
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("runtime: stderr: %w", err)
+	}
+	if err := command.Start(); err != nil {
+		return nil, fmt.Errorf("runtime: start %q: %w", spec.Name, err)
+	}
+	acceptDeadline := spec.ConnectTimeout
+	if acceptDeadline <= 0 {
+		acceptDeadline = 10 * time.Second
+	}
+	if tcp, ok := listener.(*net.TCPListener); ok {
+		_ = tcp.SetDeadline(time.Now().Add(acceptDeadline))
+	}
+	conn, err := listener.Accept()
+	if err != nil {
+		killProcess(command)
+		_ = command.Wait()
+		return nil, fmt.Errorf("runtime: adapter %q did not connect: %w", spec.Name, err)
+	}
+	c := &client{
+		cmd:      command,
+		stdin:    conn,
+		stdout:   conn,
+		stderr:   &stderrBuffer{limit: 4096},
+		pending:  make(map[int]chan Response),
+		done:     make(chan struct{}),
+		waitDone: make(chan struct{}),
+		onEvent:  onEvent,
+	}
+	go c.drainStderr(stderr)
+	go c.readLoop()
+	go c.waitLoop()
+	return c, nil
+}
+
+// substituteAddr replaces the {addr} placeholder in adapter arguments.
+func substituteAddr(args []string, addr string) []string {
+	out := make([]string, len(args))
+	for i, arg := range args {
+		out[i] = strings.ReplaceAll(arg, "{addr}", addr)
+	}
+	return out
+}
+
+// requestFuture sends one request without waiting for the response, so the
+// caller can continue the DAP handshake. Some adapters (Delve) answer launch
+// only after configurationDone; waiting for the reply first deadlocks.
+func (c *client) requestFuture(ctx context.Context, command string, arguments any) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- c.request(ctx, command, arguments, nil) }()
+	return done
 }
 
 // initialize performs the initialize handshake.
