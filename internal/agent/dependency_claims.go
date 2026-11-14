@@ -31,20 +31,23 @@ const (
 	dependencyRuntime
 )
 
-func (l dependencyLevel) String() string {
-	switch l {
+// dependencyObservationPhrase describes the strongest observation the run holds.
+// The review is read by a person, so a level label alone ("NOT_OBSERVED") does
+// not say what is missing.
+func dependencyObservationPhrase(level dependencyLevel) string {
+	switch level {
 	case dependencyDeclared:
-		return "DECLARED"
+		return "the run observed only a declaration"
 	case dependencyImported:
-		return "IMPORTED"
+		return "the run observed only an import"
 	case dependencyInitializedLevel:
-		return "INITIALIZED"
+		return "the run observed only an initialized client"
 	case dependencyUsed:
-		return "USED_IN_SOURCE"
+		return "the run observed a source operation but no runtime behavior"
 	case dependencyRuntime:
-		return "OBSERVED_AT_RUNTIME"
+		return "the run observed runtime behavior"
 	default:
-		return "NOT_OBSERVED"
+		return "the run observed no declaration, import, initialization, or source use"
 	}
 }
 
@@ -125,8 +128,8 @@ func dependencyClaimIssues(sentence string, turns []Turn) []claimIssue {
 			where = subject
 		}
 		detail := fmt.Sprintf(
-			"the answer claims %q for %s, but the run observed only %s; a declaration, import, or initialized client is not the same as a source operation. Verify the operation or use the weaker wording",
-			claim, where, observed.String())
+			"the answer claims %q for %s, but %s; a declaration, import, or initialized client is not the same as a source operation. Verify the operation or use the weaker wording",
+			claim, where, dependencyObservationPhrase(observed))
 		if coordinator != "" {
 			detail += " (observed at " + coordinator + ")"
 		}
@@ -147,8 +150,8 @@ func dependencyClaimIssues(sentence string, turns []Turn) []claimIssue {
 			return []claimIssue{{
 				Code: "unsupported_dependency_claim",
 				Detail: fmt.Sprintf(
-					"the answer claims %q, but the run observed only %s; caching requires a concrete cache operation in the component's source",
-					boundedClaim(dependencyClaimPhrase(sentence, index, spec)), observed.String()),
+					"the answer claims %q, but %s; caching requires a concrete cache operation in the component's source",
+					boundedClaim(dependencyClaimPhrase(sentence, index, spec)), dependencyObservationPhrase(observed)),
 			}}
 		}
 	}
@@ -451,9 +454,31 @@ func dependencyClaimPhrase(sentence string, index int, spec dependencySpec) stri
 	if start < 0 {
 		start = 0
 	}
+	// Never begin inside a word. Session 322 quoted the claim as "T API under
+	// `/api/v1`, …": the 40-byte window started mid-way through "REST", which
+	// reads as a typo and hides what the sentence actually claimed. Walk back
+	// to the start of that word so the quote keeps it.
+	for start > 0 && !claimPhraseBoundary(sentence[start-1]) {
+		start--
+	}
 	end := index + len(spec.name) + 60
 	if end > len(sentence) {
 		end = len(sentence)
 	}
+	// The same rule applies to the tail: finish the word instead of cutting it
+	// in half. boundedClaim bounds the display length.
+	for end < len(sentence) && !claimPhraseBoundary(sentence[end]) {
+		end++
+	}
 	return strings.TrimSpace(sentence[start:end])
+}
+
+// claimPhraseBoundary reports a byte that separates words in a quoted claim.
+func claimPhraseBoundary(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r':
+		return true
+	default:
+		return false
+	}
 }

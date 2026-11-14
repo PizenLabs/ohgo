@@ -26,19 +26,31 @@ import (
 // implementation is actually complete.
 
 var (
+	// statusNegationPattern names a negation that binds to the status word.
+	// "Not production-ready" and "the service is not fully implemented" assert
+	// the opposite of a completion claim; "not only fully implemented" does
+	// not, so only a bounded set of adverbs may sit between the two.
+	statusNegationPattern = regexp.MustCompile(`(?i)(?:^|\s)(?:not|never)\s+` +
+		`(?:(?:yet|actually|currently|really|fully|entirely|strictly)\s+)?$|` +
+		`(?:isn't|aren't|wasn't|weren't|no\s+longer)\s+$`)
+
 	// mockStatusPattern names a mock, scaffold, or placeholder claim. Unlike a
 	// bare stub claim, the marker is observable in source (a mock import, a
 	// scaffold comment, a fixture reference), so the audit can require the
 	// observation to show it rather than only the component path.
 	mockStatusPattern = regexp.MustCompile(`(?i)\b(?:` +
 		`mock(?:ed)?\s+(?:data|auth(?:entication)?|backend|api)|` +
+		`(?:is|are|was|were)\s+(?:a\s+)?mock\b|` +
 		`scaffold(?:ed)?\b|` +
 		`placeholder\b` +
 		`)`)
 
 	// implementationStatusPattern matches a declarative completion, stub, mock,
-	// or scaffold claim. Bare "implemented" and "stubs" are deliberately
-	// absent: headings such as "implemented vs. stubs" are not claims.
+	// or delivered-object claim. Bare "implemented" and "stubs" are
+	// deliberately absent: headings such as "implemented vs. stubs" are not
+	// claims. The present-tense verb form is present because it attaches a
+	// concrete delivered object ("order-service implements a checkout API"),
+	// which is a status claim even without a completion adjective.
 	implementationStatusPattern = regexp.MustCompile(`(?i)\b(?:` +
 		`fully[\s-]+implemented|` +
 		`completely[\s-]+implemented|` +
@@ -47,16 +59,29 @@ var (
 		`feature[\s-]+complete|` +
 		`production[\s-]+ready|` +
 		`stubs?\s*\(|` +
+		`stubs?\s*:|` +
 		`(?:is|are)\s+(?:a\s+)?(?:[a-z0-9][a-z0-9-]*\s+){0,2}stubs?\b|` +
 		`health[\s-]+check[\s-]+only\b|` +
 		`mock(?:ed)?\s+(?:data|auth(?:entication)?|backend|api)\b|` +
 		`scaffold(?:ed)?\b|` +
 		`placeholder\b|` +
 		`\b(?:is|are)\s+mocked\b|` +
+		`\b(?:implements?|implementing)\s+(?:a\s+|an\s+|the\s+)?(?:[a-z0-9][a-z0-9-]*\s+){0,2}` +
+		`(?:api|service|backend|frontend|application|endpoint|crud|feature|functionality|workflow|pipeline)\b|` +
 		`\bimplemented\s+(?:service|backend|frontend|api|application)\b|` +
 		`\b(?:service|backend|frontend|api)\s+(?:is|are)\s+implemented\b` +
 		`)`)
 )
+
+// statusClaimNegated reports whether a negation binds to the status phrase that
+// starts at start.
+func statusClaimNegated(sentence string, start int) bool {
+	left := start - 24
+	if left < 0 {
+		left = 0
+	}
+	return statusNegationPattern.MatchString(sentence[left:start])
+}
 
 // implementationSubject is one component a status claim names.
 type implementationSubject struct {
@@ -119,9 +144,18 @@ var mockMarkers = []string{
 func implementationClaimIssue(sentence string, turns []Turn) *claimIssue {
 	match := implementationStatusPattern.FindStringIndex(sentence)
 	if match == nil {
+		// The mock vocabulary names status too ("Auth is mock") without a
+		// completion adjective, so it participates in the same gate.
+		match = mockStatusPattern.FindStringIndex(sentence)
+	}
+	if match == nil {
 		return nil
 	}
-	claim := boundedClaim(sentence[match[0]:match[1]])
+	if statusClaimNegated(sentence, match[0]) {
+		// "Not production-ready" is the inverse of a completion claim.
+		return nil
+	}
+	claim := boundedClaim(strings.TrimRight(sentence[match[0]:match[1]], " (:"))
 	subjects := implementationClaimSubjects(sentence, match)
 	if len(subjects) == 0 {
 		if !sourceObservationExists(turns) {
@@ -262,7 +296,7 @@ func implementationAspectIssue(sentence string, match []int, subjects []implemen
 
 // implementationAspectTail returns the aspect list after a status marker. It is
 // deliberately narrow: only an explicit "with/including/that includes/featuring"
-// clause is treated as a capability list.
+// clause or a parenthetical list is treated as a capability list.
 func implementationAspectTail(sentence string, start int) string {
 	if start < 0 || start >= len(sentence) {
 		return ""
@@ -270,19 +304,26 @@ func implementationAspectTail(sentence string, start int) string {
 	rest := sentence[start:]
 	lower := strings.ToLower(rest)
 	best := -1
-	markerLength := 0
-	for _, marker := range []string{" with ", " including ", " that includes ", " featuring "} {
-		if index := strings.Index(lower, marker); index >= 0 && (best < 0 || index < best) {
+	marker := ""
+	for _, candidate := range []string{" with ", " including ", " that includes ", " featuring ", " ("} {
+		if index := strings.Index(lower, candidate); index >= 0 && (best < 0 || index < best) {
 			best = index
-			markerLength = len(marker)
+			marker = candidate
 		}
 	}
 	if best < 0 {
 		return ""
 	}
-	tail := rest[best+markerLength:]
-	if cut := strings.IndexAny(tail, ".;\n"); cut >= 0 {
-		tail = tail[:cut]
+	tail := rest[best+len(marker):]
+	// A parenthetical list ends at its closing bracket; a clause ends at the
+	// sentence boundary. Reading past either would attribute the next claim's
+	// capabilities to this one.
+	cut := ".;\n"
+	if marker == " (" {
+		cut = ")"
+	}
+	if index := strings.IndexAny(tail, cut); index >= 0 {
+		tail = tail[:index]
 	}
 	return strings.TrimSpace(tail)
 }
