@@ -83,7 +83,7 @@ var defaultDocumentation = strings.Join([]string{
 	"  /diff             inspect the working-tree diff",
 	"  /undo             revert the last agent edit",
 	"  /redo             restore an undone agent edit",
-	"  /compact          summarise context now",
+	"  /compact          compact context, preserving task state",
 	"  /quit             exit the session",
 	"",
 	"Authority modes: /ask (read-only), /fuzz (explore), /build (modify).",

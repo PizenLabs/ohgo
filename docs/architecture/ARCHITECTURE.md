@@ -295,7 +295,9 @@ One `Loop.Run` call is one turn:
 1. Resolve the model once at startup (`resolveModel`: flag → settings →
    env → catalog default; unknown is an error, never a fallback). The
    completion budget is the model's own ceiling, clamped, never a flat
-   constant. Compaction runs first, if due.
+   constant. Compaction runs first when the *projected* request (messages,
+   system blocks, tool definitions, durable projection, expected output, and a
+   safety margin) crosses the policy band.
 2. Stream the assistant message; reassemble tool calls in emission order.
 3. Approve each call (settings policy → hook → default deny; `--yes`
    skips), run approved calls with bounded concurrency, exclusive tools
@@ -307,9 +309,14 @@ One `Loop.Run` call is one turn:
 The caller owns the conversation: the REPL and the TUI accumulate history
 across turns and rebase it after compaction (`rebaseHistory`), because
 re-appending to a pre-compaction list would resurrect summarised context.
-Compaction itself is injected, never constructed in the loop: `New` fails
-without a summarizer when compaction is enabled, and the summarizer takes
-its `StreamFn` as a parameter so tests substitute a stub.
+Compaction itself is injected, never constructed in the loop. `agent.CompactWith`
+prefers deterministic trimming and a state-first rebuild from
+`agent.ContextProjection`; the semantic summarizer is the fallback, and `New`
+refuses an enabled compaction with neither seam. The projection is supplied by
+the control/continuity plane (`cognition.CompactionProjection`), validated
+before use, and never includes model prose. Replaced tool output is addressable
+through the `recall` tool. The full contract is in
+[`TASK_CONTINUITY.md`](TASK_CONTINUITY.md) §5.1.
 
 ### Capability preflight
 
@@ -1106,7 +1113,8 @@ Root runs the interactive session; subcommands: `run`, `sessions` (+
 
 Both interactive paths share one backend (`harness.go`): the full-screen
 UI and the plain REPL call the same code for `/model` (static then live
-discovery), `/compact`, `/sessions`/`/resume`, `/jobs`, `/usage`,
+discovery), `/compact` (state-first manual compaction with a concise outcome),
+`/sessions`/`/resume`, `/jobs`, `/usage`,
 `/status`, `/update` (the same `update.Service` authority as `ohgo update`),
 `/doctor`, `/connect` (a Provider Manager modal browses the
 credential roster, an API-key modal collects the credential — pasted or

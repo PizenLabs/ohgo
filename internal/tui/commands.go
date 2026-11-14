@@ -45,9 +45,6 @@ type ProvidersFunc func() []ProviderRow
 // ProbeFinished itself.
 type ProbeFunc func(ctx context.Context) ProbeFinished
 
-// Compactor summarises a history on demand for /compact.
-type Compactor func(ctx context.Context, history []agent.Message) (newHistory []agent.Message, summary string, err error)
-
 // CredentialDeleter removes a saved credential for /disconnect, reporting
 // what it did (or why the credential is not removable here).
 type CredentialDeleter func(provider string) (string, error)
@@ -127,9 +124,13 @@ func (p *Program) retryLast() tea.Cmd {
 	return p.submit(text)
 }
 
-// compactNow summarises context on demand through the installed compactor.
-// It refuses while busy: compacting under a running turn would rebase history
-// the turn is still writing to.
+// compactNow reduces the active context through the installed production
+// compactor. It refuses while busy: compacting under a running turn would
+// rebase history the turn is still writing to.
+//
+// The command supplies the authoritative projection when the durable task
+// layer is present, so the normal path is a state-first reconstruction with no
+// model call. The semantic summarizer is only the fallback the harness owns.
 func (p *Program) compactNow() tea.Cmd {
 	if p.compactor == nil {
 		p.state.Apply(Notice{Text: "manual compaction is unavailable"})
@@ -139,6 +140,14 @@ func (p *Program) compactNow() tea.Cmd {
 		p.state.Apply(Notice{Text: "wait for the turn to finish before compacting"})
 		return nil
 	}
+	if p.state.CompactionActive() {
+		p.state.Apply(Notice{Text: "compaction is already running"})
+		return nil
+	}
+	if p.state.CommitActive() {
+		p.state.Apply(Notice{Text: "wait for the commit to finish before compacting"})
+		return nil
+	}
 	p.mu.Lock()
 	history := append([]agent.Message(nil), p.history...)
 	p.mu.Unlock()
@@ -146,19 +155,42 @@ func (p *Program) compactNow() tea.Cmd {
 		p.state.Apply(Notice{Text: "nothing to compact: the transcript is empty"})
 		return nil
 	}
+
+	request := CompactionRequest{History: history}
+	if projection, ok := p.compactionProjection(); ok {
+		request.Projection = projection
+		request.HasProjection = true
+	}
+	// The activity is real: the command is running off the update goroutine.
+	// It is the only live surface for the operation; the terminal notice
+	// carries the structured outcome.
+	p.publish(CompactionChanged{Phase: CompactionRunning, At: time.Now()})
+
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		compacted, summary, err := p.compactor(ctx, history)
+		result, err := p.compactor(ctx, request)
+		// Stop the activity before publishing the terminal result, so the
+		// result is the only representation left on screen.
+		p.publish(CompactionChanged{Phase: CompactionDone})
 		if err != nil {
-			p.publish(Notice{Text: "compact: " + err.Error()})
+			// The concise text is for the user; the structured error stays in
+			// the opt-in trace for diagnosis.
+			p.trace("compact.error " + err.Error())
+			p.publish(Notice{Text: CompactionErrorText(err)})
+			return nil
+		}
+		if len(result.Messages) == 0 {
+			p.publish(Notice{Text: "Context compaction incomplete: no compacted context was produced.\nTask state was not modified; conversation left unchanged."})
 			return nil
 		}
 		p.mu.Lock()
-		p.history = compacted
+		p.history = result.Messages
 		p.mu.Unlock()
-		p.publish(HistoryReplaced{Entries: EntriesFromMessages(compacted)})
-		p.publish(Notice{Text: "compacted: " + summary})
+		p.trace(fmt.Sprintf("compact.result mode=%s before=%d after=%d trigger=%s",
+			result.Mode, result.BeforeTokens, result.AfterTokens, result.Metrics.Trigger))
+		p.publish(HistoryReplaced{Entries: EntriesFromMessages(result.Messages)})
+		p.publish(Notice{Text: CompactionResultText(result)})
 		return nil
 	}
 }

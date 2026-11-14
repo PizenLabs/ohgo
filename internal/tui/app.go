@@ -761,7 +761,7 @@ func (p *Program) SetUsageLog(log *agent.UsageLog) {
 	p.usage = log
 }
 
-// SetCompactor installs the summarizer behind /compact.
+// SetCompactor installs the production compaction backend behind /compact.
 func (p *Program) SetCompactor(compact Compactor) {
 	p.compactor = compact
 }
@@ -995,7 +995,7 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The commit activity shares the one spinner cadence. Advancing it
 		// keeps the elapsed clocks and the label sweep moving without a
 		// second timer.
-		if p.state.Status.Busy || p.state.SupportBusy() || p.state.CommitActive() {
+		if p.state.Status.Busy || p.state.SupportBusy() || p.state.CommitActive() || p.state.CompactionActive() {
 			if p.lastSpinnerAt.IsZero() || at.Sub(p.lastSpinnerAt) >= spinnerInterval {
 				p.state.Status.Spinner = AdvanceSpinner(p.state.Status.Spinner, len(spinnerFrames))
 				p.lastSpinnerAt = at
@@ -5379,9 +5379,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// any provider call, so an interruption during this turn has something to
 	// checkpoint. Bookkeeping only — it neither gates nor authorizes the turn.
 	taskID := ""
+	taskObjectiveState := ""
 	if p.task.Begin != nil {
 		projection := p.task.Begin(intent, targetSnapshot)
 		taskID = projection.ID
+		taskObjectiveState = projection.ObjectiveState
 		p.PublishTask(projection)
 		if projection.Err != "" {
 			abortTurn("task state was not recorded: " + projection.Err)
@@ -5457,17 +5459,49 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			priorEvidence = evidence.Clone()
 		}
 	}
+	// The compaction projection is a projection of authoritative state, never
+	// a model summary. It reuses the same durable evidence the per-turn
+	// projector observes and the same task orientation blocks the checkpoint
+	// renders, so a compaction cannot change authority, objective, evidence,
+	// or completion. Capturing completion at the turn boundary is correct: only
+	// an authoritative runtime event may change it, and none happens mid-run.
 	if p.task.Evidence != nil {
 		projector := cognition.NewProjector(shape, p.task.Evidence(), facts)
 		projector.Advisor = p.experience.Advisor
 		p.loop.SetProjectionHook(projector.Project)
 		p.loop.SetProjectionReportHook(p.task.RecordProjection)
+		var taskBlocks []string
+		if p.task.Context != nil {
+			taskBlocks = p.task.Context()
+		}
+		// Capture the projection at the turn boundary. The loop runs on its own
+		// goroutine and the task controller is not concurrent; a fixed snapshot
+		// is both true (durable state changes only at checkpoint boundaries) and
+		// race-free. The bounded recent suffix carries anything observed during
+		// this run.
+		projection := cognition.CompactionProjection(
+			shape, p.task.Evidence().Clone(), taskObjectiveState, "", taskBlocks)
+		baseline := cognition.CompactionProjection(shape, nil, taskObjectiveState, "", taskBlocks)
+		if err := cognition.ValidateCompactionProjection(projection, baseline); err != nil {
+			p.loop.SetCompactionProjection(nil)
+		} else {
+			p.loop.SetCompactionProjection(func() (agent.ContextProjection, bool) {
+				return projection, true
+			})
+		}
 	} else {
 		// A program built without durable evidence keeps the pre-Phase-9
-		// behaviour exactly: full context and the full tool set.
+		// behaviour exactly for projection, but compaction still reconstructs
+		// from the runtime's own task shape and authority rather than a model
+		// summary.
 		p.loop.SetProjectionHook(nil)
 		p.loop.SetProjectionReportHook(nil)
+		projection := cognition.CompactionProjection(shape, nil, taskObjectiveState, "", nil)
+		p.loop.SetCompactionProjection(func() (agent.ContextProjection, bool) {
+			return projection, projection.Objective != "" && projection.Authority != ""
+		})
 	}
+	defer p.loop.SetCompactionProjection(nil)
 
 	user := agent.UserMessage{Text: text}
 	persistTo(user)

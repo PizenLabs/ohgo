@@ -148,13 +148,17 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 				copyREPL(out, history, lastEditDiff, command.Args)
 				continue
 			case "compact":
-				compacted, summary, err := h.CompactHistory(context.Background(), history)
+				result, err := h.CompactHistory(context.Background(), tui.CompactionRequest{History: history})
 				if err != nil {
-					_, _ = fmt.Fprintf(out, "compact: %v\n", err)
+					_, _ = fmt.Fprintf(out, "%s\n", tui.CompactionErrorText(err))
 					continue
 				}
-				history = compacted
-				_, _ = fmt.Fprintf(out, "Compacted: %s.\n", summary)
+				if len(result.Messages) == 0 {
+					_, _ = fmt.Fprintln(out, "Compact failed: no compacted context was produced.")
+					continue
+				}
+				history = result.Messages
+				_, _ = fmt.Fprintln(out, tui.CompactionResultText(result))
 				continue
 			case "connect":
 				if err := h.ConnectREPL(out, reader); err != nil {

@@ -441,8 +441,8 @@ func runSession(cmd *cobra.Command, args []string) error {
 			},
 		)
 		program.SetUsageLog(held.usage)
-		program.SetCompactor(func(ctx context.Context, history []agent.Message) ([]agent.Message, string, error) {
-			return held.CompactHistory(ctx, history)
+		program.SetCompactor(func(ctx context.Context, req tui.CompactionRequest) (agent.CompactResult, error) {
+			return held.CompactHistory(ctx, req)
 		})
 		program.SetDoctorFunc(held.DoctorLines)
 		program.SetMCPHooks(mcpHooks(opts))
@@ -583,8 +583,12 @@ func runSession(cmd *cobra.Command, args []string) error {
 		// every turn prints raw text over the alt-screen and persists twice.
 		loop.SetTurnHook(nil)
 		loop.SetCompactHook(func(result agent.CompactResult) {
-			program.PublishNotice(fmt.Sprintf("context compacted: %d messages summarised, %d retained",
-				result.Compacted, result.Retained))
+			mode := result.Mode
+			if mode == "" {
+				mode = "compacted"
+			}
+			program.PublishNotice(fmt.Sprintf("context %s · %s → %s tokens · task continuity preserved",
+				mode, formatTokens(result.BeforeTokens), formatTokens(result.AfterTokens)))
 			// Compaction rebuilds context; the checkpoint must survive it
 			// unchanged. Syncing re-records the same task state, so a crash
 			// between compaction and the next turn resumes the same task.

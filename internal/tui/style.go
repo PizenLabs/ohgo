@@ -376,6 +376,9 @@ const (
 	// RuntimeCommitting means the dedicated /commit workflow is generating a
 	// proposal or executing one approved proposal.
 	RuntimeCommitting RuntimeState = "committing"
+	// RuntimeCompacting means the explicit /compact control-plane operation is
+	// rebuilding context. It is not an agent turn.
+	RuntimeCompacting RuntimeState = "compacting"
 	// RuntimeShuttingDown means the session is exiting.
 	RuntimeShuttingDown RuntimeState = "shutting down"
 )
@@ -385,8 +388,11 @@ func DeriveRuntime(s State) RuntimeState {
 	if s.Quit {
 		return RuntimeShuttingDown
 	}
-	// Commit work is an explicit lifecycle, not an inference from Busy: the
-	// agent turn is idle while the commit model is answering.
+	// Compaction and commit are explicit lifecycles, not inferences from Busy:
+	// the agent turn is idle while either control-plane operation runs.
+	if s.CompactionActive() {
+		return RuntimeCompacting
+	}
 	if s.CommitActive() {
 		return RuntimeCommitting
 	}
@@ -434,7 +440,7 @@ func RuntimeMarker(r RuntimeState) string {
 	switch r {
 	case RuntimeIdle:
 		return "○"
-	case RuntimeStreaming, RuntimeWorking, RuntimeRunningTool, RuntimeCommitting:
+	case RuntimeStreaming, RuntimeWorking, RuntimeRunningTool, RuntimeCommitting, RuntimeCompacting:
 		return "●"
 	case RuntimeAwaitingApproval:
 		return "◐"

@@ -73,6 +73,8 @@ func telemetryIntentLabel(s State, thinking ThinkingState) string {
 		return "executing tools…"
 	case ThinkingRespond:
 		return "formatting response…"
+	case ThinkingCompaction:
+		return "compacting context…"
 	case ThinkingCommit:
 		if thinking.Label == "execute" {
 			return "executing commit…"

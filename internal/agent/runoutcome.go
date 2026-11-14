@@ -112,6 +112,16 @@ func ClassifyRun(err error, input CompletionInput, deadlineExpired bool) (RunVer
 			reason = "a required capability is unavailable in this runtime"
 		}
 		return RunBlocked, reason
+	case errors.Is(err, ErrContextOverflow):
+		// The task state is intact; the runtime could not construct a request
+		// that fits this model window. Report review rather than completion or
+		// a terminal failure, so a larger model or a narrower objective can
+		// continue the same task.
+		reason := strings.TrimSpace(strings.TrimPrefix(err.Error(), ErrContextOverflow.Error()+": "))
+		if reason == "" {
+			reason = "the context could not be reduced to fit the model window"
+		}
+		return RunNeedsReview, reason
 	case errors.Is(err, ErrNoModelOutput), errors.Is(err, ErrExecutionIntentWithoutTool),
 		errors.Is(err, ErrToolNormalizationFailed):
 		// These are model/protocol lifecycle failures before any requested

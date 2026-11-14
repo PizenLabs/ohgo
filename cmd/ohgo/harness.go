@@ -513,25 +513,78 @@ func (h *harness) roleEffortFor(role string) string {
 	return strings.TrimSpace(effort)
 }
 
-// CompactHistory summarises a history on demand, returning the rebuilt
-// conversation. An empty history is refused rather than summarised: a
-// summary of nothing would replace the transcript with a handover to
-// nowhere.
-func (h *harness) CompactHistory(ctx context.Context, history []agent.Message) ([]agent.Message, string, error) {
-	if len(history) == 0 {
-		return nil, "", fmt.Errorf("nothing to compact: the transcript is empty")
+// CompactHistory runs one manual /compact through the same agent.CompactWith
+// pipeline automatic compaction uses.
+//
+// The request carries the Program's authoritative projection. When it is
+// present, CompactWith performs a state-first reconstruction and never calls
+// the summarizer. The semantic fallback is built here only because a task
+// without durable state still needs a path; it charges the loop's existing
+// model-call grant before opening a stream.
+func (h *harness) CompactHistory(ctx context.Context, req tui.CompactionRequest) (agent.CompactResult, error) {
+	if len(req.History) == 0 {
+		return agent.CompactResult{}, fmt.Errorf("nothing to compact: the transcript is empty")
 	}
 	window := h.model.ContextWindow
 	if window <= 0 {
-		return nil, "", fmt.Errorf("compact: the model has no context window to compact into")
+		return agent.CompactResult{}, fmt.Errorf("compact: the model has no context window to compact into")
 	}
-	result, err := agent.Compact(ctx, history, compactionFromSettings(h.settingsOrDefault()), window,
-		newSummarizer(h.registry.StreamFn(), h.model))
-	if err != nil {
-		return nil, "", err
+	settings := h.settingsOrDefault()
+	policy := compactionFromSettings(settings)
+	if h.loop != nil {
+		policy = h.loop.CompactionPolicy()
 	}
-	summary := fmt.Sprintf("%d messages summarised, %d retained", result.Compacted, result.Retained)
-	return result.Messages, summary, nil
+	opts := agent.CompactOptions{
+		Compaction: policy,
+		Window:     window,
+	}
+
+	var measure agent.RequestMeasurement
+	if h.loop != nil {
+		measure = h.loop.MeasureCompaction(req.History, req.Projection, req.HasProjection)
+		opts.Recall = h.loop.Recall()
+	} else {
+		taskTokens := 0
+		if req.HasProjection {
+			taskTokens = agent.EstimateMessages([]agent.Message{
+				agent.UserMessage{Text: req.Projection.Render()},
+			})
+		}
+		measure = agent.MeasureRequest(agent.MeasureInput{
+			ContextTokens:        agent.EstimateMessages(req.History),
+			TaskStateTokens:      taskTokens,
+			ExpectedOutputTokens: settings.MaxTokens,
+			Window:               window,
+		}, policy)
+	}
+	opts.Trigger = measure.Pressure
+	if budgetTokens := measure.ContextBudget(); budgetTokens > 0 {
+		opts.ContextBudgetTokens = budgetTokens
+	}
+	if req.HasProjection {
+		projection := req.Projection
+		opts.Projection = func() (agent.ContextProjection, bool) { return projection, true }
+	}
+	if h.registry != nil {
+		opts.Summarize = h.chargeSummarizer(newSummarizer(h.registry.StreamFn(), h.model))
+	}
+	return agent.CompactWith(ctx, req.History, opts)
+}
+
+// chargeSummarizer wraps the semantic fallback in the loop's existing
+// model-call admission. It never creates a second budget and never bypasses an
+// exhausted grant.
+func (h *harness) chargeSummarizer(inner agent.SummarizeFunc) agent.SummarizeFunc {
+	return func(ctx context.Context, messages []agent.Message) (string, error) {
+		if h.loop != nil {
+			if b := h.loop.Budget(); b != nil {
+				if err := b.Admit(budget.DimensionModelCalls); err != nil {
+					return "", err
+				}
+			}
+		}
+		return inner(ctx, messages)
+	}
 }
 
 // journal returns the loop's checkpoint seam for the current session, or nil
