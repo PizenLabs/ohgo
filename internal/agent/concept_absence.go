@@ -24,6 +24,25 @@ var (
 	// conceptNoPattern catches "there is no X", "has no X", "contains no X".
 	conceptNoPattern = regexp.MustCompile(
 		`(?i)\b(?:there\s+(?:is|are)|has|have|contains?|includes?)\s+no\s+([a-z][a-z0-9+#.-]*(?:\s+[a-z][a-z0-9+#.-]*){0,2})\b`)
+	// conceptNoQualifiedPattern catches "no real/actual/working X". The
+	// qualifier turns a list item into an existence conclusion ("it looks
+	// present but is not"), which is the semantic absence this layer owns.
+	conceptNoQualifiedPattern = regexp.MustCompile(
+		`(?i)\bno\s+(?:real|actual|working|proper|native)\s+([a-z][a-z0-9+#.-]*(?:\s+[a-z][a-z0-9+#.-]*){0,2})\b`)
+	// conceptNoBareListPattern catches the head item of an absence list: "No
+	// JWT, RabbitMQ client code, gRPC server". Only a leading item qualifies;
+	// a bare "no X" inside prose stays with the inventory facts the survey
+	// tests admit ("no Cache-Control", "no database").
+	conceptNoBareListPattern = regexp.MustCompile(
+		`(?i)^\s*(?:[-*•]\s*)?no\s+(?:real\s+|actual\s+|working\s+|proper\s+|native\s+)?` +
+			`([a-z][a-z0-9+#.-]*)\s*,`)
+	// conceptNoMechanismPattern catches a list item that denies an
+	// implementation mechanism: "no RabbitMQ client code", "no gRPC server
+	// wired up". A bare "no Cache-Control" or "no database" is an inventory
+	// fact a bounded survey demonstrated, so it stays out.
+	conceptNoMechanismPattern = regexp.MustCompile(
+		`(?i)(?:^|[,;:]\s*|[-*•]\s+|\band\s+|\bbut\s+)no\s+([a-z][a-z0-9+#.-]*)` +
+			`(?:\s+[a-z][a-z0-9+#.-]*){0,1}\s+(?:client|server|handler|implementation|integration|wiring|wired|code|worker|adapter)\b`)
 	// conceptDoesNotUsePattern catches "does not use X" and "does not include X".
 	conceptDoesNotUsePattern = regexp.MustCompile(
 		`(?i)\b(?:does|do|did)\s+not\s+(?:use|implement|support|include|have)\s+([a-z][a-z0-9+#.-]*(?:\s+[a-z][a-z0-9+#.-]*){0,2})\b`)
@@ -76,6 +95,9 @@ func conceptAbsenceSubject(sentence string) string {
 	for _, pattern := range []*regexp.Regexp{
 		conceptNotImplementedPattern,
 		conceptNoPattern,
+		conceptNoQualifiedPattern,
+		conceptNoBareListPattern,
+		conceptNoMechanismPattern,
 		conceptDoesNotUsePattern,
 		conceptUnusedPattern,
 		conceptNoIntegrationPattern,
