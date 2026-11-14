@@ -1429,6 +1429,25 @@ func (l *Loop) SetBudget(b *budget.Budget) {
 // Budget returns the grant this loop is currently enforcing.
 func (l *Loop) Budget() *budget.Budget { return l.budget }
 
+// CompactionPolicy returns the policy automatic compaction uses. Manual
+// compaction reads it so the two triggers cannot diverge.
+func (l *Loop) CompactionPolicy() Compaction { return l.cfg.Compaction }
+
+// Recall returns the run's archive so a manual compaction can write the same
+// ids the recall tool resolves.
+func (l *Loop) Recall() *RecallStore { return l.cfg.Recall }
+
+// MeasureCompaction measures a supplied history against the loop's live policy
+// and tool/system overhead. It is the manual-command counterpart of the
+// automatic trigger: both use the same MeasureRequest call.
+func (l *Loop) MeasureCompaction(messages []Message, projection ContextProjection, hasProjection bool) RequestMeasurement {
+	window := l.model().ContextWindow
+	if window <= 0 {
+		return RequestMeasurement{}
+	}
+	return l.measureMessages(messages, window, l.cfg.Compaction, projection, hasProjection)
+}
+
 // Deadline returns the effective wall-clock bound for the run.
 //
 // A headless caller uses it to distinguish a run that stopped because the
@@ -2407,7 +2426,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, live *[]Message) (bool, erro
 		Projection:           l.cfg.CompactionProjection,
 		Recall:               l.cfg.Recall,
 		ExpectedOutputTokens: l.expectedOutput(window, c),
-		ContextBudgetTokens:  contextBudget(measure),
+		ContextBudgetTokens:  measure.ContextBudget(),
 		Trigger:              measure.Pressure,
 	})
 	if err != nil {
@@ -2496,28 +2515,23 @@ func (l *Loop) expectedOutput(window int, c Compaction) int {
 	return expected
 }
 
-// contextBudget is the conversation room left after every non-context cost.
-// It is the tighter of the trigger and the window's real headroom, so a
-// rebuilt context cannot overflow just because the trigger was generous.
-func contextBudget(m RequestMeasurement) int {
-	budget := m.Window - m.SystemTokens - m.ToolTokens - m.ExpectedOutputTokens - m.SafetyMarginTokens
-	if budget < 1 {
-		return 1
-	}
-	if budget > m.Threshold {
-		budget = m.Threshold
-	}
-	return budget
-}
-
 // measureContext accounts for every billed component of the next request.
 func (l *Loop) measureContext(messages []Message, window int, c Compaction) RequestMeasurement {
+	var projection ContextProjection
+	has := false
+	if l.cfg.CompactionProjection != nil {
+		projection, has = l.cfg.CompactionProjection()
+	}
+	return l.measureMessages(messages, window, c, projection, has)
+}
+
+// measureMessages is the one measurement path. Automatic compaction and the
+// manual command both reach it, so pressure cannot be calculated twice.
+func (l *Loop) measureMessages(messages []Message, window int, c Compaction, projection ContextProjection, hasProjection bool) RequestMeasurement {
 	system := l.system()
 	taskTokens := 0
-	if l.cfg.CompactionProjection != nil {
-		if projection, ok := l.cfg.CompactionProjection(); ok {
-			taskTokens = tokens.Count(projection.Render(), tokens.ModeEstimate)
-		}
+	if hasProjection {
+		taskTokens = tokens.Count(projection.Render(), tokens.ModeEstimate)
 	}
 	return MeasureRequest(MeasureInput{
 		ContextTokens:        EstimateMessages(messages),

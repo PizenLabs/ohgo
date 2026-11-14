@@ -322,8 +322,11 @@ over the window after the configured attempts, it returns
 completion. Replaced tool output is archived under stable ids (`E1`, `E2`, …)
 and the model may retrieve one with the read-only `recall` tool.
 
-`/compaction` runs the same path manually and reports measured before/after
-tokens plus counts read from the durable task and evidence state.
+`/compact` runs the same path manually: the Program supplies the authoritative
+projection, `MeasureRequest` supplies the pressure, and `agent.CompactWith`
+performs the rebuild. It reports measured before/after estimated tokens and the
+pressure band. Semantic summarization is the fallback only when no valid
+projection exists.
 
 ---
 

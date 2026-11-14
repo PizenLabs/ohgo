@@ -761,7 +761,7 @@ func (p *Program) SetUsageLog(log *agent.UsageLog) {
 	p.usage = log
 }
 
-// SetCompactor installs the summarizer behind /compact.
+// SetCompactor installs the production compaction backend behind /compact.
 func (p *Program) SetCompactor(compact Compactor) {
 	p.compactor = compact
 }
@@ -2185,9 +2185,6 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 
 	case "compact":
 		return p.compactNow()
-
-	case "compaction":
-		return p.compactionNow()
 
 	case "undo":
 		p.recoverWorkspace(recovery.OpUndo)

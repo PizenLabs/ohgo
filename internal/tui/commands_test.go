@@ -421,8 +421,9 @@ func TestRetryWithNoHistoryReports(t *testing.T) {
 
 func TestCompactNeedsHistory(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
-	p.SetCompactor(func(ctx context.Context, history []agent.Message) ([]agent.Message, string, error) {
-		return history, "0 summarised", nil
+	p.SetCompactor(func(ctx context.Context, req CompactionRequest) (agent.CompactResult, error) {
+		t.Fatal("the compactor ran for an empty transcript")
+		return agent.CompactResult{}, nil
 	})
 	Command{Name: "compact"}.runOn(p)
 	found := false
@@ -439,11 +440,16 @@ func TestCompactNeedsHistory(t *testing.T) {
 func TestCompactReplacesHistory(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.history = []agent.Message{agent.UserMessage{Text: "old"}}
-	p.SetCompactor(func(ctx context.Context, history []agent.Message) ([]agent.Message, string, error) {
-		if len(history) != 1 {
-			t.Errorf("compactor got %d messages, want the full history", len(history))
+	p.SetCompactor(func(ctx context.Context, req CompactionRequest) (agent.CompactResult, error) {
+		if len(req.History) != 1 {
+			t.Errorf("compactor got %d messages, want the full history", len(req.History))
 		}
-		return []agent.Message{agent.UserMessage{Text: "summary-handover"}}, "1 summarised", nil
+		return agent.CompactResult{
+			Messages:     []agent.Message{agent.UserMessage{Text: "summary-handover"}},
+			BeforeTokens: 1000,
+			AfterTokens:  100,
+			Mode:         agent.ModeReconstructed,
+		}, nil
 	})
 	compactCmd := p.runCommand(Command{Name: "compact"})
 	if compactCmd == nil {
@@ -560,60 +566,177 @@ func findStatusLine(t *testing.T, out, marker string) string {
 	return ""
 }
 
-// TestCompactionReportsOnlyRuntimeCounts proves /compaction's diagnostics come
-// from durable runtime state, not from a rendered guess.
-func TestCompactionReportsOnlyRuntimeCounts(t *testing.T) {
+// TestCompactCommandSurface proves only /compact is user-facing.
+func TestCompactCommandSurface(t *testing.T) {
+	found := false
+	for _, command := range Commands {
+		if command.Name == "compaction" {
+			t.Fatal("/compaction is still registered")
+		}
+		if command.Name == "compact" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("/compact is not registered")
+	}
+	for _, command := range filterCommands("compaction") {
+		if command.Name == "compaction" {
+			t.Fatal("help/autocomplete still exposes /compaction")
+		}
+	}
+}
+
+// TestCompactUsesProjectionAndConciseResult proves the command supplies the
+// authoritative projection and shows one concise outcome.
+func TestCompactUsesProjectionAndConciseResult(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Status.Workspace = "ASK"
-	p.state.Status.ContextWindow = 100000
-	p.history = []agent.Message{
-		agent.UserMessage{Text: strings.Repeat("a", 4000)},
-		agent.UserMessage{Text: "old"},
-	}
+	p.history = []agent.Message{agent.UserMessage{Text: strings.Repeat("a", 4000)}}
 	evidence := cognition.NewEvidenceState()
-	evidence.Items = []cognition.EvidenceItem{
-		{ID: "mutation:store.go", Status: cognition.StatusKnown, Source: cognition.Source{Path: "store.go"}},
-		{ID: "file:a.go", Status: cognition.StatusKnown, Source: cognition.Source{Path: "a.go"}},
-	}
 	p.SetTaskHooks(TaskHooks{
 		Current: func() (TaskResume, bool) {
-			return TaskResume{Objective: "fix the store", ObjectiveState: "NEEDS_REVIEW"}, true
+			return TaskResume{Objective: "fix the store", ObjectiveState: "NEEDS_REVIEW", Role: "ask"}, true
 		},
-		Stats: func() TaskStats {
-			return TaskStats{Constraints: 1, Facts: 2, Hypotheses: 1, Evidence: 3, Verifications: 2, Questions: 4}
+		Context: func() []string {
+			return []string{"Objective: fix the store", "Authority: ASK (read)", "Hypotheses: the cache is stale"}
 		},
 		Evidence: func() *cognition.EvidenceState { return evidence },
 	})
-	p.SetCompactor(func(ctx context.Context, history []agent.Message) ([]agent.Message, string, error) {
-		return []agent.Message{agent.UserMessage{Text: "summary"}}, "compacted", nil
+	p.SetCompactor(func(ctx context.Context, req CompactionRequest) (agent.CompactResult, error) {
+		if !req.HasProjection {
+			t.Fatal("the command did not supply the authoritative projection")
+		}
+		if req.Projection.Objective != "fix the store" || !strings.Contains(req.Projection.Authority, "ask") {
+			t.Fatalf("projection = %+v, want the durable objective and ASK authority", req.Projection)
+		}
+		return agent.CompactResult{
+			Messages:     []agent.Message{agent.UserMessage{Text: "reconstructed"}},
+			BeforeTokens: 27928,
+			AfterTokens:  365,
+			Mode:         agent.ModeReconstructed,
+			Metrics:      agent.CompactionMetrics{Trigger: agent.PressureCompact},
+		}, nil
 	})
-	cmd := p.runCommand(Command{Name: "compaction"})
+	cmd := p.runCommand(Command{Name: "compact"})
 	if cmd == nil {
-		t.Fatal("no compaction command produced")
+		t.Fatal("no compact command produced")
 	}
 	cmd()
-	var notice string
+	var notices []string
 	timeout := time.After(2 * time.Second)
-	for notice == "" {
+	for {
 		select {
 		case event := <-p.events:
-			if n, ok := event.(Notice); ok && strings.Contains(n.Text, "Compaction complete") {
-				notice = n.Text
+			if n, ok := event.(Notice); ok {
+				notices = append(notices, n.Text)
 			}
 		case <-timeout:
-			t.Fatal("no compaction report published")
+			if len(notices) == 0 {
+				t.Fatal("no compaction result published")
+			}
+			goto checked
 		}
 	}
-	for _, want := range []string{
-		"authority: ASK", "completion: NEEDS_REVIEW", "facts: 2", "hypotheses: 1",
-		"evidence: 3", "changed files: 1", "verification: 2", "open questions: 4",
-		"constraints: 1", "Historical records retained: yes",
-	} {
+checked:
+	if len(notices) != 1 {
+		t.Fatalf("notices = %v, want one coherent result", notices)
+	}
+	notice := notices[0]
+	for _, want := range []string{"Compacted", "27,928", "365", "98.69% reduced", "COMPACT"} {
 		if !strings.Contains(notice, want) {
-			t.Fatalf("report lost %q:\n%s", want, notice)
+			t.Fatalf("result = %q, want %q", notice, want)
 		}
 	}
-	if len(p.history) != 1 {
-		t.Fatalf("history = %d messages, want the compacted one", len(p.history))
+	for _, forbidden := range []string{"summarizer", "ContextProjection", "MeasureRequest", "Tier 0"} {
+		if strings.Contains(notice, forbidden) {
+			t.Fatalf("result leaked implementation detail %q: %s", forbidden, notice)
+		}
+	}
+	if len(p.history) != 1 || p.history[0].(agent.UserMessage).Text != "reconstructed" {
+		t.Fatalf("history = %+v, want the reconstructed context", p.history)
+	}
+}
+
+// TestCompactFailureIsUserFacing proves the typed summarizer failure becomes a
+// concise message and leaves the working history untouched.
+func TestCompactFailureIsUserFacing(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.history = []agent.Message{agent.UserMessage{Text: "old"}}
+	p.SetCompactor(func(ctx context.Context, req CompactionRequest) (agent.CompactResult, error) {
+		return agent.CompactResult{}, agent.ErrEmptySummary
+	})
+	cmd := p.runCommand(Command{Name: "compact"})
+	if cmd == nil {
+		t.Fatal("no compact command produced")
+	}
+	cmd()
+	var failure string
+	timeout := time.After(2 * time.Second)
+	for failure == "" {
+		select {
+		case event := <-p.events:
+			if n, ok := event.(Notice); ok && strings.Contains(n.Text, "Compact failed") {
+				failure = n.Text
+			}
+		case <-timeout:
+			t.Fatal("no failure notice published")
+		}
+	}
+	if failure != "Compact failed: no valid compaction summary was produced." {
+		t.Fatalf("failure = %q", failure)
+	}
+	if strings.Contains(failure, "agent:") || strings.Contains(failure, "summarizer returned") {
+		t.Fatalf("failure leaked an internal error: %q", failure)
+	}
+	if len(p.history) != 1 || p.history[0].(agent.UserMessage).Text != "old" {
+		t.Fatalf("history changed on failure: %+v", p.history)
+	}
+}
+
+// TestCompactFallsBackWithoutProjection proves the command does not invent a
+// durable projection: with no task layer it asks the shared pipeline for the
+// semantic fallback and still publishes one concise result.
+func TestCompactFallsBackWithoutProjection(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.history = []agent.Message{agent.UserMessage{Text: "old"}}
+	p.SetCompactor(func(ctx context.Context, req CompactionRequest) (agent.CompactResult, error) {
+		if req.HasProjection {
+			t.Fatal("a projection was supplied without a durable task")
+		}
+		return agent.CompactResult{
+			Messages:     []agent.Message{agent.UserMessage{Text: "summarised"}},
+			BeforeTokens: 1000,
+			AfterTokens:  200,
+			Mode:         agent.ModeSummarized,
+			Metrics:      agent.CompactionMetrics{Trigger: agent.PressureCompact},
+		}, nil
+	})
+	cmd := p.runCommand(Command{Name: "compact"})
+	if cmd == nil {
+		t.Fatal("no compact command produced")
+	}
+	cmd()
+	var notices []string
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-p.events:
+			if n, ok := event.(Notice); ok {
+				notices = append(notices, n.Text)
+			}
+		case <-timeout:
+			if len(notices) < 2 {
+				t.Fatalf("notices = %v, want an activity and a result", notices)
+			}
+			goto checked
+		}
+	}
+checked:
+	if notices[0] != "Compacting context…" {
+		t.Fatalf("activity = %q", notices[0])
+	}
+	if !strings.Contains(notices[len(notices)-1], "Compacted") {
+		t.Fatalf("result = %q", notices[len(notices)-1])
 	}
 }

@@ -419,6 +419,23 @@ func MeasureRequest(in MeasureInput, c Compaction) RequestMeasurement {
 	}
 }
 
+// ContextBudget is the conversation room left after every non-context cost.
+// It is the tighter of the trigger and the window's real headroom, so a
+// rebuilt context cannot overflow just because the trigger was generous.
+func (m RequestMeasurement) ContextBudget() int {
+	if m.Window <= 0 {
+		return 0
+	}
+	budget := m.Window - m.SystemTokens - m.ToolTokens - m.ExpectedOutputTokens - m.SafetyMarginTokens
+	if budget < 1 {
+		return 1
+	}
+	if m.Threshold > 0 && budget > m.Threshold {
+		budget = m.Threshold
+	}
+	return budget
+}
+
 // NeedsCompaction reports whether the measurement requires a rewrite before
 // the next request.
 func NeedsCompaction(m RequestMeasurement) bool {
@@ -594,7 +611,10 @@ func fitCut(messages []Message, keepRecent, target int) int {
 			return cut
 		}
 	}
-	return selectCut(messages, 1)
+	// No suffix fits. The caller either reconstructs from durable state alone
+	// or summarizes the whole conversation; keeping an oversized tail would
+	// only reproduce the overflow.
+	return -1
 }
 
 // SummarizeFunc replaces a message range with a summary.
@@ -633,6 +653,9 @@ const (
 	ModeReconstructed = "reconstructed"
 	// ModeSummarized means the semantic fallback replaced a prefix.
 	ModeSummarized = "summarized"
+	// ModeUnchanged means the requested compaction was already as small as the
+	// authoritative projection, so the context was returned unchanged.
+	ModeUnchanged = "unchanged"
 )
 
 // PreservationCounts is what a reconstruction preserved by category. It is
@@ -1160,11 +1183,35 @@ func CompactWith(ctx context.Context, messages []Message, opts CompactOptions) (
 				result.Metrics.CompactionFailures++
 				return result, err
 			}
+			after := EstimateMessages(out)
+			if after >= before {
+				if NeedsCompaction(RequestMeasurement{Pressure: opts.Trigger}) {
+					// A triggered compaction that does not reduce would loop or
+					// leave an unsafe request. Report it; the loop's emergency
+					// trim / overflow policy owns the next step.
+					result.Metrics.CompactionFailures++
+					return result, ErrCompactionIneffective
+				}
+				// A manual request on an already-compact context is a safe
+				// no-op. It must not grow the working history.
+				result.Messages = append([]Message(nil), messages...)
+				result.Mode = ModeUnchanged
+				result.Retained = len(messages)
+				result.AfterTokens = before
+				result.Methods = append(result.Methods, "unchanged")
+				result.Metrics.Mode = ModeUnchanged
+				result.Metrics.ContextAfter = before
+				result.Metrics.TokensSaved = 0
+				result.Metrics.EvidencePreserved = projection.Counts.Evidence
+				result.Metrics.StateItemsPreserved = projection.Counts.Total()
+				result.Metrics.DurationMS = time.Since(started).Milliseconds()
+				return result, nil
+			}
 			result.Messages = out
 			result.Mode = ModeReconstructed
 			result.Compacted = len(trimmed) - retained
 			result.Retained = retained
-			result.AfterTokens = EstimateMessages(out)
+			result.AfterTokens = after
 			result.Methods = append(result.Methods, "reconstruct")
 			result.Metrics.Mode = ModeReconstructed
 			result.Metrics.ContextAfter = result.AfterTokens
@@ -1276,6 +1323,11 @@ func compactSummary(ctx context.Context, messages []Message, c Compaction, windo
 	}
 	if fitTarget > 0 && EstimateMessages(messages[cut:]) > fitTarget-minSummaryTokens {
 		cut = fitCut(messages, c.KeepRecent, fitTarget-minSummaryTokens)
+	}
+	if cut <= 0 && fitTarget > 0 {
+		// No recent suffix fits beside the summary. Preserve the whole
+		// conversation in the handover rather than sending an oversized tail.
+		cut = len(messages)
 	}
 	if cut <= 0 {
 		return CompactResult{}, ErrNothingToCompact

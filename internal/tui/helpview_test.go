@@ -187,7 +187,7 @@ func TestHelpCenterEnterOnShortcutIsInert(t *testing.T) {
 // user who remembers what a command does can still find it.
 func TestHelpCenterFilterMatchesDescription(t *testing.T) {
 	view := NewHelpCenter(filterCommands(""))
-	view.SetFilter("summar")
+	view.SetFilter("task state")
 	got := view.ActiveItems()
 	if len(got) != 1 || got[0].Name != "compact" {
 		t.Errorf("filtered = %+v, want only /compact", got)

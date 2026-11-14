@@ -441,8 +441,8 @@ func runSession(cmd *cobra.Command, args []string) error {
 			},
 		)
 		program.SetUsageLog(held.usage)
-		program.SetCompactor(func(ctx context.Context, history []agent.Message) ([]agent.Message, string, error) {
-			return held.CompactHistory(ctx, history)
+		program.SetCompactor(func(ctx context.Context, req tui.CompactionRequest) (agent.CompactResult, error) {
+			return held.CompactHistory(ctx, req)
 		})
 		program.SetDoctorFunc(held.DoctorLines)
 		program.SetMCPHooks(mcpHooks(opts))

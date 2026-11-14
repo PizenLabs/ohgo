@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,9 +14,12 @@ import (
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/control/budget"
+	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 	"github.com/PizenLabs/ohgo/internal/provider/creds"
+	"github.com/PizenLabs/ohgo/internal/tui"
 )
 
 // testHarness builds a backend with an isolated HOME and no credentials.
@@ -95,7 +99,7 @@ func TestDisconnectRemovesOnlyFileCredentials(t *testing.T) {
 
 func TestCompactHistoryNeedsHistory(t *testing.T) {
 	h := testHarness(t)
-	if _, _, err := h.CompactHistory(context.Background(), nil); err == nil {
+	if _, err := h.CompactHistory(context.Background(), tui.CompactionRequest{}); err == nil {
 		t.Error("an empty transcript compacted")
 	}
 }
@@ -194,5 +198,178 @@ func TestResumeSessionMovesPointer(t *testing.T) {
 	}
 	if _, _, err := h.ResumeSession(99999); err == nil {
 		t.Error("an unknown session resumed")
+	}
+}
+
+// TestCompactHistoryPrefersTheAuthoritativeProjection proves the manual command
+// reaches the state-first pipeline. The harness registry has no credential, so
+// any semantic fallback would fail; success is evidence that no summarizer call
+// was made.
+func TestCompactHistoryPrefersTheAuthoritativeProjection(t *testing.T) {
+	h := testHarness(t)
+	projection := agent.ContextProjection{
+		Authority: "ASK · read-only",
+		Objective: "explain the allocator",
+		Blocks:    []string{"Verified facts: the allocator is central", "Next action: answer"},
+	}
+	var history []agent.Message
+	for i := range 30 {
+		id := fmt.Sprintf("c%d", i)
+		history = append(history, agent.UserMessage{Text: strings.Repeat("explore ", 400)})
+		history = append(history, agent.AssistantMessage{Message: ai.AssistantMessage{
+			Content: []ai.ContentBlock{ai.ToolCall{ID: id, Name: "read", Arguments: map[string]any{"path": "store.go"}}},
+		}})
+		history = append(history, agent.ToolResultMessage{
+			ToolCallID: id, ToolName: "read",
+			Content: ai.TextBlocks(strings.Repeat("source line\n", 200)),
+		})
+	}
+	result, err := h.CompactHistory(context.Background(), tui.CompactionRequest{
+		History: history, Projection: projection, HasProjection: true,
+	})
+	if err != nil {
+		t.Fatalf("CompactHistory: %v", err)
+	}
+	if result.Mode != agent.ModeReconstructed {
+		t.Fatalf("mode = %q, want reconstructed", result.Mode)
+	}
+	if result.AfterTokens >= result.BeforeTokens {
+		t.Fatalf("no reduction: %d -> %d", result.BeforeTokens, result.AfterTokens)
+	}
+	if len(result.Messages) == 0 {
+		t.Fatal("no compacted context produced")
+	}
+	header := result.Messages[0].(agent.UserMessage).Text
+	if !strings.Contains(header, "explain the allocator") || !strings.Contains(header, "ASK") {
+		t.Fatalf("reconstruction lost task truth:\n%s", header)
+	}
+}
+
+// TestCompactCommandSurfaceIsSingle is the command-surface contract at the
+// backend boundary: only /compact is documented for manual compaction.
+func TestCompactCommandSurfaceIsSingle(t *testing.T) {
+	names := map[string]bool{}
+	for _, command := range tui.Commands {
+		names[command.Name] = true
+	}
+	if !names["compact"] {
+		t.Fatal("/compact is missing")
+	}
+	if names["compaction"] {
+		t.Fatal("/compaction is still registered")
+	}
+}
+
+// TestCompactHistoryChargesTheLoopBudget proves the manual fallback cannot
+// bypass the existing model-call grant.
+func TestCompactHistoryChargesTheLoopBudget(t *testing.T) {
+	h := testHarness(t)
+	loop, err := agent.New(agent.Config{
+		Model: ai.Model{ID: "m", Provider: "p", ContextWindow: 4000},
+		Stream: func(context.Context, ai.Request) (*ai.Stream, error) {
+			t.Fatal("the summarizer stream was opened despite an exhausted budget")
+			return nil, nil
+		},
+		Tools:  []agent.Tool{tools.NewReadTool(t.TempDir())},
+		Budget: budget.New(budget.Limits{ModelCalls: 1}),
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	if err := loop.Budget().Admit(budget.DimensionModelCalls); err != nil {
+		t.Fatalf("consume the grant: %v", err)
+	}
+	h.loop = loop
+	var history []agent.Message
+	for i := range 12 {
+		history = append(history, agent.UserMessage{Text: fmt.Sprintf("step %d", i)})
+	}
+	_, err = h.CompactHistory(context.Background(), tui.CompactionRequest{History: history})
+	if !errors.Is(err, budget.ErrExhausted) {
+		t.Fatalf("err = %v, want budget.ErrExhausted", err)
+	}
+}
+
+// TestCompactHistoryDoesNotMutateTheRepository proves /compact is context
+// management only: the working tree and file contents are unchanged.
+func TestCompactHistoryDoesNotMutateTheRepository(t *testing.T) {
+	h := testHarness(t)
+	path := filepath.Join(h.root, "store.go")
+	if err := os.WriteFile(path, []byte("package store\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := agent.ContextProjection{
+		Authority: "BUILD · mutation permitted",
+		Objective: "fix the store",
+		Blocks:    []string{"Verified facts: the store exists", "Next action: run the test"},
+	}
+	history := []agent.Message{
+		agent.UserMessage{Text: strings.Repeat("context ", 400)},
+		agent.UserMessage{Text: "continue"},
+	}
+	if _, err := h.CompactHistory(context.Background(), tui.CompactionRequest{
+		History: history, Projection: projection, HasProjection: true,
+	}); err != nil {
+		t.Fatalf("CompactHistory: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("compaction changed a repository file")
+	}
+}
+
+// TestCompactHistoryRepeatedIsStable proves repeated manual compaction keeps
+// reconstructing the same authoritative state instead of summarizing a summary.
+func TestCompactHistoryRepeatedIsStable(t *testing.T) {
+	h := testHarness(t)
+	projection := agent.ContextProjection{
+		Authority:  "ASK · read-only",
+		Objective:  "explain the allocator",
+		Completion: "NEEDS_REVIEW",
+		Blocks: []string{
+			"Verified facts: the allocator is central",
+			"Hypotheses: the cache is stale",
+			"Verification: FAILED go test ./internal/store",
+			"Verification: PASSED go test ./internal/store -run TestOpen",
+			"Next action: answer",
+		},
+	}
+	history := []agent.Message{
+		agent.UserMessage{Text: strings.Repeat("explore ", 500)},
+		agent.UserMessage{Text: "continue"},
+	}
+	var header string
+	for attempt := range 3 {
+		result, err := h.CompactHistory(context.Background(), tui.CompactionRequest{
+			History: history, Projection: projection, HasProjection: true,
+		})
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt+1, err)
+		}
+		if result.Mode != agent.ModeReconstructed && result.Mode != agent.ModeUnchanged {
+			t.Fatalf("attempt %d mode = %q, want reconstructed or unchanged", attempt+1, result.Mode)
+		}
+		if len(result.Messages) == 0 {
+			t.Fatalf("attempt %d produced no context", attempt+1)
+		}
+		got := result.Messages[0].(agent.UserMessage).Text
+		if attempt == 0 {
+			header = got
+		} else if got != header {
+			t.Fatalf("attempt %d changed the authoritative reconstruction:\n%s\n---\n%s", attempt+1, header, got)
+		}
+		history = result.Messages
+	}
+	for _, want := range []string{"ASK", "explain the allocator", "NEEDS_REVIEW", "Hypotheses:", "FAILED", "PASSED", "Next action"} {
+		if !strings.Contains(header, want) {
+			t.Fatalf("reconstruction lost %q:\n%s", want, header)
+		}
 	}
 }
