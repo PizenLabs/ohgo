@@ -175,3 +175,57 @@ func TestComponentSubjectSkipsAdjectiveQualifiers(t *testing.T) {
 		}
 	}
 }
+
+// Session 318: "go-ecommerce is a full-stack e-commerce platform, currently a
+// work-in-progress scaffold: …" produced the review subjects go-ecommerce,
+// full-stack, and e-commerce. The project name and the predicate's adjectives
+// name no component the runtime can read, so the review sent the model to three
+// paths that do not exist.
+func TestProjectDescriptionIsNotAComponentList(t *testing.T) {
+	sentence := "go-ecommerce is a full-stack e-commerce platform, currently a " +
+		"work-in-progress scaffold: a React + TypeScript storefront/admin UI on " +
+		"the frontend and a Go (Golang) microservices backend."
+	match := mockStatusPattern.FindStringIndex(sentence)
+	if match == nil {
+		t.Fatal("fixture no longer matches the scaffold audit")
+	}
+	if subjects := implementationClaimSubjects(sentence, match); len(subjects) != 0 {
+		var names []string
+		for _, subject := range subjects {
+			names = append(names, implementationSubjectName(subject))
+		}
+		t.Fatalf("subjects = %v, want none: the sentence describes the project, not a component", names)
+	}
+}
+
+// A route names a screen, not a component coordinate. "/admin" cannot be
+// satisfied by reading the admin page, because a path under src/ derives to the
+// frontend.
+func TestRouteNamesAreNotComponentSubjects(t *testing.T) {
+	sentence := "Splits into /shop (customer storefront) and /admin " +
+		"(role-protected console), plus /login with mock auth stored in localStorage."
+	match := mockStatusPattern.FindStringIndex(sentence)
+	if match == nil {
+		t.Fatal("fixture no longer matches the mock audit")
+	}
+	if subjects := implementationClaimSubjects(sentence, match); len(subjects) != 0 {
+		t.Fatalf("subjects = %+v, want none: a route is not a component", subjects)
+	}
+}
+
+// The coordinate filter must not reject real component names: the audit still
+// names every service a stub claim covers.
+func TestKebabCoordinatesStillNameComponents(t *testing.T) {
+	sentence := "The API-gateway and cart-service are health-check stubs."
+	match := implementationStatusPattern.FindStringIndex(sentence)
+	if match == nil {
+		t.Fatal("fixture no longer matches the stub audit")
+	}
+	var got []string
+	for _, subject := range implementationClaimSubjects(sentence, match) {
+		got = append(got, implementationSubjectName(subject))
+	}
+	if strings.Join(got, ",") != "API-gateway,cart-service" {
+		t.Fatalf("subjects = %v, want [API-gateway cart-service]", got)
+	}
+}
