@@ -18,8 +18,10 @@ immutable.
   tool output is archived under stable ids and retrievable with the new
   read-only `recall` tool. Rewrites are bounded per run and a request that still
   cannot fit returns `ErrContextOverflow` instead of sending it or claiming
-  completion. `/compact` runs the same pipeline manually and reports measured
-  before/after estimated tokens and the pressure band.
+  completion. `/compact` runs the same pipeline manually with one activity-line
+  lifecycle; its terminal result reports measured before/after estimated
+  tokens and only the state/evidence categories the structured outcome
+  preserved, with a degraded label when the semantic fallback ran.
 - Unified investigation orchestration: `intelligence/investigate` executes the
   planner's plan as a closed loop (`PLAN → EXECUTE ONE STEP → OBSERVE →
   CORRELATE → REASSESS`). One shared evidence engine receives every provider's

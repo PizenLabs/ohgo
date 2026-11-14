@@ -324,9 +324,13 @@ and the model may retrieve one with the read-only `recall` tool.
 
 `/compact` runs the same path manually: the Program supplies the authoritative
 projection, `MeasureRequest` supplies the pressure, and `agent.CompactWith`
-performs the rebuild. It reports measured before/after estimated tokens and the
-pressure band. Semantic summarization is the fallback only when no valid
-projection exists.
+performs the rebuild. While it runs, the one activity line says
+"compacting context…"; the terminal notice reports measured before/after
+estimated tokens and names only the categories the structured outcome actually
+preserved. The internal pressure band is not shown. Semantic summarization is
+the fallback only when no valid projection exists; that outcome is labeled
+"reduced continuity" rather than claiming durable state was preserved. A
+failure leaves the task state and working conversation unchanged.
 
 ---
 
