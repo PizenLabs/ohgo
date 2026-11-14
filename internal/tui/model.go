@@ -774,6 +774,10 @@ type State struct {
 	// source the activity line, header, and tests read; the proposal payload
 	// itself lives in the Program because it contains non-renderable state.
 	Commit *CommitActivity
+	// Compaction is the explicit /compact lifecycle, or nil when idle. It is
+	// the single source the activity line reads while the command runs; the
+	// terminal result is a deterministic transcript notice.
+	Compaction *CompactionActivity
 	// QuitConfirm is a non-nil quit-confirmation prompt opened by /q. It
 	// reuses PendingApproval for its Yes/No choices so the conservative
 	// default and the no-wrap navigation match the tool approval dialog.
@@ -1549,6 +1553,13 @@ func (s *State) Apply(event Event) {
 		s.Status.ContextUsed = e.AfterTokens
 		s.Status.ContextWindow = e.Window
 		s.growScroll(1)
+
+	case CompactionChanged:
+		if e.Phase == CompactionRunning {
+			s.Compaction = &CompactionActivity{Phase: e.Phase, StartedAt: e.At}
+		} else {
+			s.Compaction = nil
+		}
 
 	case CommitChanged:
 		if e.Phase == CommitIdle {

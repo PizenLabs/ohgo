@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/control/budget"
@@ -32,25 +33,164 @@ type CompactionRequest struct {
 // Compactor runs one manual compaction through the production pipeline.
 type Compactor func(ctx context.Context, req CompactionRequest) (agent.CompactResult, error)
 
-// CompactionResultText renders one successful /compact outcome.
+// CompactionPhase is the explicit /compact lifecycle. It is stored in State
+// so the one activity line can represent the work while it is in flight,
+// without a second progress subsystem.
+type CompactionPhase string
+
+const (
+	// CompactionIdle means no manual compaction is running.
+	CompactionIdle CompactionPhase = ""
+	// CompactionRunning means the production compaction pipeline is active.
+	CompactionRunning CompactionPhase = "running"
+	// CompactionDone clears the activity once the result or failure is
+	// published. The result itself is a deterministic transcript notice.
+	CompactionDone CompactionPhase = "done"
+)
+
+// CompactionActivity is the live /compact activity state plus its truthful
+// start time. It never carries result text: the structured outcome owns that.
+type CompactionActivity struct {
+	Phase     CompactionPhase
+	StartedAt time.Time
+}
+
+// Active reports whether the compaction lifecycle still owns the activity
+// line. A terminal result clears it.
+func (c *CompactionActivity) Active() bool {
+	return c != nil && c.Phase == CompactionRunning
+}
+
+// CompactionActive reports an in-flight explicit /compact operation.
+func (s State) CompactionActive() bool { return s.Compaction.Active() }
+
+// CompactionChanged moves the explicit /compact lifecycle. It is the only
+// write path, so the activity line cannot claim a phase the command did not
+// publish.
+type CompactionChanged struct {
+	Phase CompactionPhase
+	// At is when the running phase began. Zero means unknown and suppresses
+	// the elapsed segment rather than fabricating one.
+	At time.Time
+}
+
+func (CompactionChanged) eventKind() string { return "compaction_changed" }
+
+// CompactionOutcomeKind distinguishes a state-first rebuild from the semantic
+// fallback and from a safe no-op. It is derived from the structured
+// CompactResult, never from rendered text.
+type CompactionOutcomeKind string
+
+const (
+	// CompactionComplete means authoritative durable state rebuilt the
+	// context.
+	CompactionComplete CompactionOutcomeKind = "complete"
+	// CompactionDegraded means the semantic fallback ran because no durable
+	// projection was available. The result is successful but continuity is
+	// reduced.
+	CompactionDegraded CompactionOutcomeKind = "degraded"
+	// CompactionUnchanged means the context was already as compact as the
+	// authoritative projection.
+	CompactionUnchanged CompactionOutcomeKind = "unchanged"
+)
+
+// CompactionOutcome is the deterministic, renderer-facing view of a successful
+// compaction. Every field comes from CompactResult; the renderer does not
+// re-measure context or infer preservation from prose.
+type CompactionOutcome struct {
+	Kind              CompactionOutcomeKind
+	StatePreserved    bool
+	EvidencePreserved int
+	ContextRebuilt    bool
+	RedundancyRemoved int
+	BeforeTokens      int
+	AfterTokens       int
+	Reduction         float64
+}
+
+// CompactionOutcomeFrom maps the authoritative result to the presentation
+// contract.
+func CompactionOutcomeFrom(result agent.CompactResult) CompactionOutcome {
+	out := CompactionOutcome{
+		Kind:              CompactionComplete,
+		EvidencePreserved: result.Metrics.EvidencePreserved,
+		RedundancyRemoved: result.Compacted + result.Trimmed,
+		BeforeTokens:      result.BeforeTokens,
+		AfterTokens:       result.AfterTokens,
+	}
+	if result.BeforeTokens > 0 {
+		out.Reduction = float64(result.BeforeTokens-result.AfterTokens) / float64(result.BeforeTokens) * 100
+	}
+	switch result.Mode {
+	case agent.ModeReconstructed:
+		out.StatePreserved = true
+		out.ContextRebuilt = true
+	case agent.ModeSummarized:
+		out.Kind = CompactionDegraded
+		out.ContextRebuilt = true
+	case agent.ModeUnchanged:
+		out.Kind = CompactionUnchanged
+		out.StatePreserved = true
+	default:
+		// A successful result with no recognized mode still came through the
+		// production pipeline; do not invent preservation claims for it.
+	}
+	return out
+}
+
+// CompactionResultText renders the deterministic final /compact block.
 //
-// It is intentionally short: the user asked for the result, not the pipeline.
-// Token figures are estimates because the runtime has no provider-billed
-// measurement for a request that was never sent.
+// The lifecycle is represented by the activity line while the operation runs;
+// this block is the terminal result. It is intentionally short, uses only
+// facts the structured outcome carries, and never includes the internal
+// pressure band.
 func CompactionResultText(result agent.CompactResult) string {
-	if result.Mode == agent.ModeUnchanged {
-		return fmt.Sprintf("Context already compact · %s est. tokens", exactCount(result.BeforeTokens))
+	return CompactionOutcomeFrom(result).Text()
+}
+
+// Text renders one CompactionOutcome as a concise terminal block.
+func (o CompactionOutcome) Text() string {
+	var b strings.Builder
+	switch o.Kind {
+	case CompactionDegraded:
+		b.WriteString("Context compacted with reduced continuity\n")
+		b.WriteString("  ! Durable task state was unavailable; a semantic summary was used\n")
+	case CompactionUnchanged:
+		b.WriteString("Context already compact\n")
+	default:
+		b.WriteString("Context compacted\n")
 	}
-	if result.BeforeTokens <= 0 {
-		return "Compacted · context reduced"
+	if o.StatePreserved {
+		b.WriteString("  ✓ Task state preserved\n")
 	}
-	reduction := float64(result.BeforeTokens-result.AfterTokens) / float64(result.BeforeTokens) * 100
-	text := fmt.Sprintf("Compacted · %s → %s est. tokens · %.2f%% reduced",
-		exactCount(result.BeforeTokens), exactCount(result.AfterTokens), reduction)
-	if result.Metrics.Trigger != "" {
-		text += " · " + string(result.Metrics.Trigger)
+	if o.EvidencePreserved > 0 {
+		fmt.Fprintf(&b, "  ✓ Evidence preserved (%d items)\n", o.EvidencePreserved)
 	}
-	return text
+	if o.ContextRebuilt {
+		if o.Kind == CompactionDegraded {
+			b.WriteString("  ✓ Conversation context rebuilt from the summary\n")
+		} else {
+			b.WriteString("  ✓ Conversation context rebuilt from task state\n")
+		}
+	}
+	if o.RedundancyRemoved > 0 {
+		b.WriteString("  ✓ Redundant history removed\n")
+	}
+	if o.Kind == CompactionUnchanged {
+		b.WriteString("  ✓ No further reduction was needed\n")
+	}
+	b.WriteByte('\n')
+	switch {
+	case o.BeforeTokens > 0 && o.AfterTokens > 0:
+		fmt.Fprintf(&b, "%s → %s est. tokens · %.2f%% reduced\n",
+			exactCount(o.BeforeTokens), exactCount(o.AfterTokens), o.Reduction)
+	case o.BeforeTokens > 0:
+		fmt.Fprintf(&b, "%s est. tokens\n", exactCount(o.BeforeTokens))
+	default:
+		b.WriteString("context reduced\n")
+	}
+	b.WriteString("\nReady to continue.")
+	return b.String()
 }
 
 // exactCount renders a token estimate with thousands separators. Compaction is
@@ -68,29 +208,38 @@ func exactCount(n int) string {
 
 // CompactionErrorText maps a structured compaction failure to a concise,
 // user-facing message. The typed error remains available to logs and tests.
+//
+// Every failure leaves the durable task state and the working conversation
+// untouched: compaction produces a candidate, and only a validated result is
+// installed. The message states that boundary instead of implying the task
+// itself failed.
 func CompactionErrorText(err error) string {
-	switch {
-	case err == nil:
+	if err == nil {
 		return ""
+	}
+	reason := ""
+	switch {
 	case errors.Is(err, agent.ErrEmptySummary):
-		return "Compact failed: no valid compaction summary was produced."
+		reason = "no valid compaction summary was produced"
 	case errors.Is(err, agent.ErrContextOverflow):
-		return "Compact failed: context remains too large after bounded compaction."
+		reason = "context remains too large after bounded compaction"
 	case errors.Is(err, agent.ErrCompactionIneffective):
-		return "Compact failed: context could not be reduced further."
+		reason = "context could not be reduced further"
 	case errors.Is(err, budget.ErrExhausted):
-		return "Compact failed: model-call budget exhausted."
+		reason = "model-call budget exhausted"
 	case errors.Is(err, agent.ErrNothingToCompact):
 		return "Nothing to compact: the transcript is already minimal."
 	case errors.Is(err, agent.ErrNoContextWindow):
-		return "Compact failed: the model has no usable context window."
+		reason = "the model has no usable context window"
 	case errors.Is(err, agent.ErrNoSummarizer):
-		return "Compact failed: no durable projection or summarizer is available."
+		reason = "no durable task state or summarizer is available"
 	case errors.Is(err, agent.ErrInvalidProjection):
-		return "Compact failed: the saved task state could not be reconstructed safely."
+		reason = "the saved task state could not be reconstructed safely"
 	default:
-		return "Compact failed: " + strings.TrimSpace(strings.TrimPrefix(err.Error(), "agent: "))
+		reason = strings.TrimSpace(strings.TrimPrefix(err.Error(), "agent: "))
+		return "Context compaction incomplete: " + reason + "\nTask state was not modified; conversation left unchanged."
 	}
+	return "Context compaction incomplete: " + reason + ".\nTask state was not modified; conversation left unchanged."
 }
 
 // compactionProjection builds the authoritative projection for /compact from

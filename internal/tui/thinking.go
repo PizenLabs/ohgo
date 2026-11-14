@@ -51,6 +51,9 @@ const (
 	// distinct phase because no agent turn is running, so the ordinary
 	// Busy-derived label would be false.
 	ThinkingCommit ThinkingPhase = "commit"
+	// ThinkingCompaction means the explicit /compact pipeline is running. Like
+	// commit, it is a control-plane lifecycle rather than an agent turn.
+	ThinkingCompaction ThinkingPhase = "compact"
 )
 
 // ThinkingState is the presentation contract for the activity line.
@@ -97,9 +100,18 @@ type ThinkingState struct {
 // selection defers to DeriveRuntime, the existing single owner of "which phase
 // is this", so the activity line can never drift from the header's phase word.
 func ProjectThinking(s State) ThinkingState {
-	// /commit owns its own lifecycle and runs while the agent turn is idle.
-	// Read it first so the activity line names the work that is actually in
-	// flight rather than reporting an idle session.
+	// /compact and /commit own explicit lifecycles and run while the agent
+	// turn is idle. Read them first so the activity line names the work that
+	// is actually in flight rather than reporting an idle session.
+	if s.CompactionActive() && !s.Quit {
+		return ThinkingState{
+			Active:    true,
+			Phase:     ThinkingCompaction,
+			Label:     "compacting",
+			Detail:    "context",
+			StartedAt: s.Compaction.StartedAt,
+		}
+	}
 	if s.CommitActive() && !s.Quit {
 		label := "prepare"
 		if s.Commit.Phase == CommitExecuting {

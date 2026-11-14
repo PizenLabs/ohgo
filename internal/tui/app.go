@@ -995,7 +995,7 @@ func (p *Program) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The commit activity shares the one spinner cadence. Advancing it
 		// keeps the elapsed clocks and the label sweep moving without a
 		// second timer.
-		if p.state.Status.Busy || p.state.SupportBusy() || p.state.CommitActive() {
+		if p.state.Status.Busy || p.state.SupportBusy() || p.state.CommitActive() || p.state.CompactionActive() {
 			if p.lastSpinnerAt.IsZero() || at.Sub(p.lastSpinnerAt) >= spinnerInterval {
 				p.state.Status.Spinner = AdvanceSpinner(p.state.Status.Spinner, len(spinnerFrames))
 				p.lastSpinnerAt = at

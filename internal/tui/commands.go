@@ -140,6 +140,14 @@ func (p *Program) compactNow() tea.Cmd {
 		p.state.Apply(Notice{Text: "wait for the turn to finish before compacting"})
 		return nil
 	}
+	if p.state.CompactionActive() {
+		p.state.Apply(Notice{Text: "compaction is already running"})
+		return nil
+	}
+	if p.state.CommitActive() {
+		p.state.Apply(Notice{Text: "wait for the commit to finish before compacting"})
+		return nil
+	}
 	p.mu.Lock()
 	history := append([]agent.Message(nil), p.history...)
 	p.mu.Unlock()
@@ -152,17 +160,19 @@ func (p *Program) compactNow() tea.Cmd {
 	if projection, ok := p.compactionProjection(); ok {
 		request.Projection = projection
 		request.HasProjection = true
-	} else {
-		// A fallback may call the model and take real time. The state-first
-		// path is fast enough that an intermediate activity would only add
-		// noise, so it goes straight to the result.
-		p.publish(Notice{Text: "Compacting context…"})
 	}
+	// The activity is real: the command is running off the update goroutine.
+	// It is the only live surface for the operation; the terminal notice
+	// carries the structured outcome.
+	p.publish(CompactionChanged{Phase: CompactionRunning, At: time.Now()})
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		result, err := p.compactor(ctx, request)
+		// Stop the activity before publishing the terminal result, so the
+		// result is the only representation left on screen.
+		p.publish(CompactionChanged{Phase: CompactionDone})
 		if err != nil {
 			// The concise text is for the user; the structured error stays in
 			// the opt-in trace for diagnosis.
@@ -171,7 +181,7 @@ func (p *Program) compactNow() tea.Cmd {
 			return nil
 		}
 		if len(result.Messages) == 0 {
-			p.publish(Notice{Text: "Compact failed: no compacted context was produced."})
+			p.publish(Notice{Text: "Context compaction incomplete: no compacted context was produced.\nTask state was not modified; conversation left unchanged."})
 			return nil
 		}
 		p.mu.Lock()
