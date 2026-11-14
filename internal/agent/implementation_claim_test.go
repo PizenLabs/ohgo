@@ -281,3 +281,183 @@ func TestImplementationAndAbsenceClaimsAreBothReviewed(t *testing.T) {
 		}
 	}
 }
+
+// The plain verb form is a status claim too. "order-service also implements a
+// checkout API (… idempotent order creation …)" attaches a capability to a
+// component, so the capability itself needs source evidence: reading only the
+// entrypoint proves the component exists, not that checkout is idempotent.
+func TestImplementVerbClaimRequiresEachCapability(t *testing.T) {
+	entrypoint := claimRead("backend/cmd/order-service/main.go",
+		"package main\n\nfunc main() {\n\tdb.AutoMigrate(&domain.Order{})\n}", 71)
+	answer := "order-service also implements a checkout API " +
+		"(server-computed totals, idempotent order creation, status updates, AutoMigrate)."
+
+	assessment := AssessGrounding(claimContract(), []Turn{{Results: []ToolOutcome{entrypoint}}}, answer)
+	if assessment.Pass() {
+		t.Fatal("an implementation claim with an unobserved capability was accepted")
+	}
+	reason := strings.ToLower(assessment.Reason())
+	for _, want := range []string{"implements a checkout api", "order-service", "idempotency"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason = %q, want %q", assessment.Reason(), want)
+		}
+	}
+
+	// The same claim is admissible once the observed source for that component
+	// shows the capability. Review is bounded by evidence, not by vocabulary.
+	service := claimRead("backend/internal/order/service/service.go",
+		"package service\n\n// Create is idempotent on the caller's key.\nfunc (s *Service) Create() error { return nil }", 120)
+	supported := []Turn{{Results: []ToolOutcome{entrypoint, service}}}
+	if verdict := claimVerdict(supported, answer); !verdict.Complete() {
+		t.Fatalf("a capability observed in the component source was reviewed: %s", verdict.Reason)
+	}
+}
+
+// "Auth is mock" is a status claim even though it carries no completion
+// adjective and no "mock data" noun. The component path is not the evidence:
+// the observed source has to show a mock.
+func TestCopulaMockClaimRequiresAMockMarker(t *testing.T) {
+	answer := "Auth is mock (localStorage, two hardcoded demo accounts)."
+	real := claimRead("backend/internal/auth/service.go",
+		"package auth\n\nfunc Verify(token string) error { return nil }", 60)
+	assessment := AssessGrounding(claimContract(), []Turn{{Results: []ToolOutcome{real}}}, answer)
+	if assessment.Pass() {
+		t.Fatal("a mock claim whose source shows no mock was accepted")
+	}
+	reason := strings.ToLower(assessment.Reason())
+	for _, want := range []string{"mock", "auth"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason = %q, want %q", assessment.Reason(), want)
+		}
+	}
+
+	mock := claimRead("backend/internal/auth/mock.go",
+		"package auth\n\n// mock verifier used by the demo build.\nfunc Verify(token string) error { return nil }", 30)
+	supported := []Turn{{Results: []ToolOutcome{mock}}}
+	if verdict := claimVerdict(supported, answer); !verdict.Complete() {
+		t.Fatalf("a mock marker in the component source was reviewed: %s", verdict.Reason)
+	}
+}
+
+// A feature phrase belongs to the surface that owns it. "Frontend auth is mock
+// only" is a claim about the frontend; naming "auth" would send the model to a
+// component no path can match, because a file under src/ derives to frontend.
+func TestFrontendSurfaceOwnsAnAuthClaim(t *testing.T) {
+	answer := "Frontend auth is mock only (demo accounts: admin@ecommerce.com)."
+	assessment := AssessGrounding(claimContract(), nil, answer)
+	if assessment.Pass() {
+		t.Fatal("a mock claim with no observed frontend source was accepted")
+	}
+	reason := strings.ToLower(assessment.Reason())
+	if !strings.Contains(reason, "frontend") {
+		t.Fatalf("reason = %q, want the owning surface", assessment.Reason())
+	}
+
+	auth := claimRead("src/contexts/AuthContext.tsx",
+		"const user = localStorage.getItem('user'); // mock auth for the demo", 80)
+	supported := []Turn{{Results: []ToolOutcome{auth}}}
+	if verdict := claimVerdict(supported, answer); !verdict.Complete() {
+		t.Fatalf("frontend source with a mock marker was reviewed: %s", verdict.Reason)
+	}
+}
+
+// A colon list followed by an em-dash explanation is still a list of
+// components. "Stubs (health-check only): api-gateway, cart-service, … — plain
+// net/http" asserts a status for every name, so every service the run did not
+// read is a review.
+func TestStubListNamesEveryUnreadService(t *testing.T) {
+	answer := "Stubs (health-check only): api-gateway, cart-service, delivery-service, " +
+		"notification-service — plain net/http /health + /ready, no business logic."
+	gateway := claimRead("backend/cmd/api-gateway/main.go", "package main\n\nfunc main() {}\n", 16)
+	assessment := AssessGrounding(claimContract(), []Turn{{Results: []ToolOutcome{gateway}}}, answer)
+	if assessment.Pass() {
+		t.Fatal("a stub claim for unread services was accepted")
+	}
+	reason := strings.ToLower(assessment.Reason())
+	for _, want := range []string{"cart-service", "delivery-service", "notification-service"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason = %q, want %q", assessment.Reason(), want)
+		}
+	}
+	if strings.Contains(reason, "api-gateway") {
+		t.Fatalf("reason = %q, want only the unread services", assessment.Reason())
+	}
+
+	all := []Turn{{Results: []ToolOutcome{
+		gateway,
+		claimRead("backend/cmd/cart-service/main.go", "package main\n\nfunc main() {}\n", 12),
+		claimRead("backend/cmd/delivery-service/main.go", "package main\n\nfunc main() {}\n", 12),
+		claimRead("backend/cmd/notification-service/main.go", "package main\n\nfunc main() {}\n", 12),
+	}}}
+	if verdict := claimVerdict(all, answer); !verdict.Complete() {
+		t.Fatalf("a stub claim with source for every service was reviewed: %s", verdict.Reason)
+	}
+}
+
+// "Not production-ready" asserts the opposite of a completion claim. The
+// status vocabulary must not read the negated adjective as a claim.
+func TestNegatedStatusIsNotACompletionClaim(t *testing.T) {
+	for _, answer := range []string{
+		"Not production-ready; messaging, auth, and API integration remain roadmap items.",
+		"The frontend is not feature-complete.",
+		"It is not fully implemented.",
+	} {
+		if assessment := AssessGrounding(claimContract(), nil, answer); !assessment.Pass() {
+			t.Fatalf("%q was reviewed as a completion claim: %s", answer, assessment.Reason())
+		}
+	}
+	// Without the negation the same adjective is still a claim.
+	if assessment := AssessGrounding(claimContract(), nil, "Production-ready service."); assessment.Pass() {
+		t.Fatal("an unnegated completeness claim was accepted")
+	}
+}
+
+// An adjective-first status names its subject after the marker. Reviewing
+// "Feature-complete UI" as an unnamed component asked for information the
+// sentence already provided.
+func TestAdjectiveFirstStatusNamesItsComponent(t *testing.T) {
+	answer := "Feature-complete UI with mock data; not yet wired to backend APIs."
+	assessment := AssessGrounding(claimContract(), nil, answer)
+	if assessment.Pass() {
+		t.Fatal("a completeness claim with no frontend source was accepted")
+	}
+	reason := strings.ToLower(assessment.Reason())
+	if !strings.Contains(reason, "frontend") {
+		t.Fatalf("reason = %q, want the component the sentence names", assessment.Reason())
+	}
+	if strings.Contains(reason, "without naming the component") {
+		t.Fatalf("reason = %q, want the named component", assessment.Reason())
+	}
+}
+
+// "Stubs: api-gateway, cart-service, …" is a status list: every service the run
+// did not read is a review, and reading them all clears it.
+func TestStubsColonListNamesEveryUnreadService(t *testing.T) {
+	answer := "Stubs: api-gateway, cart-service, delivery-service, notification-service " +
+		"(only /health and /ready endpoints)."
+	gateway := claimRead("backend/cmd/api-gateway/main.go", stubServiceSource, 16)
+	assessment := AssessGrounding(claimContract(), []Turn{{Results: []ToolOutcome{gateway}}}, answer)
+	if assessment.Pass() {
+		t.Fatal("a stub claim for unread services was accepted")
+	}
+	reason := strings.ToLower(assessment.Reason())
+	for _, want := range []string{"cart-service", "delivery-service", "notification-service"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason = %q, want %q", assessment.Reason(), want)
+		}
+	}
+
+	all := []Turn{{Results: []ToolOutcome{
+		gateway,
+		claimRead("backend/cmd/cart-service/main.go", stubServiceSource, 12),
+		claimRead("backend/cmd/delivery-service/main.go", stubServiceSource, 12),
+		claimRead("backend/cmd/notification-service/main.go", stubServiceSource, 12),
+	}}}
+	if verdict := claimVerdict(all, answer); !verdict.Complete() {
+		t.Fatalf("a stub claim with source for every service was reviewed: %s", verdict.Reason)
+	}
+}
+
+// stubServiceSource is a health-check-only service: the stub claim's capability
+// list ("only /health and /ready endpoints") is what the source shows.
+const stubServiceSource = "package main\n\nfunc main() {\n\thttp.HandleFunc(\"/health\", ok)\n\thttp.HandleFunc(\"/ready\", ok)\n}\n"

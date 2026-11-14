@@ -438,9 +438,10 @@ type PackageInfo struct {
 	Ambiguous bool     `json:"ambiguous"`
 }
 
-// Entrypoint is one proven Go entrypoint: a non-test main function in package
-// main. A package named main without a main function is not fabricated into an
-// entrypoint.
+// Entrypoint is one entry coordinate. An adapter-proven entry (a non-test main
+// function in package main) carries Verified=true. A framework route module
+// discovered by filename convention carries Verified=false: the path proves a
+// module exists at a recognized location, not that any code runs it.
 type Entrypoint struct {
 	Path          string   `json:"path"`
 	Package       string   `json:"package"`
@@ -451,6 +452,9 @@ type Entrypoint struct {
 	Line          int      `json:"line"`
 	EndLine       int      `json:"end_line"`
 	Column        int      `json:"column"`
+	// Verified distinguishes an adapter-proven entry from a convention
+	// discovery. A consumer that needs execution evidence must check it.
+	Verified bool `json:"verified"`
 }
 
 // TestInfo is one test declaration coordinate.
@@ -496,12 +500,17 @@ type OverviewResult struct {
 	Configs     []ConfigInfo  `json:"configs,omitempty"`
 	// EntrypointsTotal counts every merged entrypoint before the bound was
 	// applied, so a truncated overview can attribute the cut.
-	EntrypointsTotal int                   `json:"entrypoints_total,omitempty"`
-	Languages        []LanguageCoverage    `json:"languages,omitempty"`
-	Unsupported      []UnsupportedLanguage `json:"unsupported_languages,omitempty"`
-	Frameworks       []string              `json:"frameworks,omitempty"`
-	Truncated        bool                  `json:"truncated"`
-	Reason           string                `json:"reason,omitempty"`
+	EntrypointsTotal int `json:"entrypoints_total,omitempty"`
+	// EntrypointsVerified and EntrypointsDiscovered split that total by
+	// provenance: an adapter proved the entry, or a filename convention only
+	// discovered it.
+	EntrypointsVerified   int                   `json:"entrypoints_verified,omitempty"`
+	EntrypointsDiscovered int                   `json:"entrypoints_discovered,omitempty"`
+	Languages             []LanguageCoverage    `json:"languages,omitempty"`
+	Unsupported           []UnsupportedLanguage `json:"unsupported_languages,omitempty"`
+	Frameworks            []string              `json:"frameworks,omitempty"`
+	Truncated             bool                  `json:"truncated"`
+	Reason                string                `json:"reason,omitempty"`
 }
 
 // Query bounds for inventory queries. They deliberately match the existing
@@ -555,8 +564,13 @@ type PackageResult struct {
 type EntrypointResult struct {
 	Snapshot    SnapshotInfo `json:"snapshot"`
 	Entrypoints []Entrypoint `json:"entrypoints"`
-	Truncated   bool         `json:"truncated"`
-	Reason      string       `json:"reason,omitempty"`
+	// Total counts every merged entry before the bound; Verified counts the
+	// adapter-proven subset and Discovered the convention-only remainder.
+	Total      int    `json:"total"`
+	Verified   int    `json:"verified"`
+	Discovered int    `json:"discovered"`
+	Truncated  bool   `json:"truncated"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // ConfigResult is the complete bounded configuration inventory.

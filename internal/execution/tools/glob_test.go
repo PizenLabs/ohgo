@@ -99,6 +99,52 @@ func TestGlobDoubleStarMatchesAcrossDirectories(t *testing.T) {
 	}
 }
 
+func TestGlobExpandsBraceAlternation(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"app/page.tsx":       "x",
+		"app/globals.css":    "y",
+		"app/util.ts":        "z",
+		"components/ui/a.ts": "w",
+	})
+
+	// A model writes this because a shell would expand it. Treated as a
+	// literal, the pattern matches nothing and the model retries with a second
+	// scan instead of reading the tree it already asked for.
+	got := globPaths(t, NewGlobTool(root), map[string]any{"pattern": "app/**/*.{ts,tsx,mdx,css}"})
+	want := []string{"app/util.ts", "app/page.tsx", "app/globals.css"}
+	if len(got) != len(want) {
+		t.Fatalf("matches = %v, want %v", got, want)
+	}
+	for _, path := range want {
+		found := false
+		for _, match := range got {
+			if match == path {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("matches = %v, want %q", got, path)
+		}
+	}
+}
+
+func TestGlobBraceAlternationIsNestedAndBounded(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{"a/b/x.tsx": "x", "a/y.ts": "y"})
+
+	got := globPaths(t, NewGlobTool(root), map[string]any{"pattern": "a/**/*.{ts{,x},mdx}"})
+	if len(got) != 2 {
+		t.Fatalf("matches = %v, want both a/y.ts and a/b/x.tsx", got)
+	}
+
+	// An unterminated group is not alternation; it must stay a literal rather
+	// than expand into an unbounded or invalid pattern.
+	if got := globPaths(t, NewGlobTool(root), map[string]any{"pattern": "a/**/*.{ts"}); len(got) != 0 {
+		t.Fatalf("unterminated brace matched %v, want no matches", got)
+	}
+}
+
 func TestGlobLimitsResults(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{}

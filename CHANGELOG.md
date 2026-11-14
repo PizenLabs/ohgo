@@ -67,9 +67,39 @@ immutable.
   `OBSERVED_AT_RUNTIME` ladder; unbounded concept absences stay review; and an
   identical read-only observation in a later turn is reused instead of
   re-executed.
+- Source-citation audit: an answer that presents a repository file as evidence
+  (`(lib/search.ts)`) must have opened it. A listing proves the path exists, not
+  what it does, so a citation of an unread file is now a review
+  (`unsupported_source_citation`) instead of an inspected-looking inference.
+  Prose mentions, route tables, and non-source files are not citations.
+- Dependency-wiring audit: a mechanism phrase attached to a declared dependency
+  ("FlexSearch with a build-time prebuilt index") is now a review
+  (`unsupported_wiring_claim`) unless source evidence of that dependency was
+  observed. Dependency names are read from the manifests the run actually
+  opened, not from a hardcoded ecosystem list; a version-only stack row, and a
+  property in the next comma-separated item, stay declaration claims.
 
 ### Changed
 
+- An observation reused from an earlier turn now replays the recorded payload
+  instead of a first-line summary. The previous notice named the coordinate and
+  withheld the evidence, so the model had to repeat the call to recover data it
+  had already paid for; the replay is bounded at 32 KiB and states the cut.
+- `structure` has one entrypoint authority. The overview and the `entrypoints`
+  view derive from the same merged list and report `verified`/`discovered`
+  totals, so a convention-discovered route module (`app/page.tsx`) can no
+  longer be counted in one view and missing from the other. A framework route
+  module stays a discovery even after parsing: the adapter matched its path,
+  which is not proof that it executes.
+- The structure header names what each axis covers (`scope: COMPLETE (path
+  inclusion)`, `inventory: COMPLETE (file observation)`, and `graph_state`
+  qualified by whether structural knowledge is complete). A snapshot whose
+  source has no adapter can no longer read as a complete understanding of the
+  repository.
+- `ls` accepts `depth` and walks a bounded pre-order tree in one read-only
+  call, honouring `.gitignore` and pruning dependency/build directories, with
+  an explicit notice when the entry limit stopped the walk. This is the
+  topology primitive a read-only session needs without shell access.
 - Repository scoping is injected into the structural index from the shared
   `ignore.Matcher`, so `.gitignore` membership has one owner and `ast` stays a
   dependency-free intelligence leaf. A rule or scope fingerprint change
@@ -119,6 +149,97 @@ immutable.
 
 ### Fixed
 
+- A negated status is not a completion claim. "Not production-ready" and "the
+  frontend is not feature-complete" were audited as if the answer asserted the
+  opposite; a negation that binds to the status word now exempts the sentence,
+  while "production-ready service" remains a claim.
+- An adjective-first status names its subject after the marker. "Feature-complete
+  UI with mock data" was reviewed as an unnamed component even though the
+  sentence names the UI; the post-marker noun is read when no subject precedes
+  the status.
+- "Stubs: api-gateway, cart-service, …" is a status list like "Stubs
+  (health-check only): …". Every named service is a subject, so the ones the run
+  never read are reviewed.
+- A root-file absence is covered by a root listing. "no LICENSE file" (and "no
+  README file") is a concrete claim about the repository root, but the claim
+  subject kept its trailing "file", so the root-file vocabulary did not
+  recognize it and a true absence was reviewed.
+- A claim's scope is its own sentence. Session 324's "no LICENSE file" was
+  promoted to a repository-wide claim by the word "repo" in the *next* sentence,
+  and a parenthetical aside ("nested backend/.git (root repo ignores backend/)")
+  was read as a scope marker. The scope window is now the claim's sentence with
+  parentheticals removed, so neighbouring prose cannot widen a local claim.
+- A dependency review quotes whole words. Session 322's review read
+  "T API under /api/v1, …" because the 40-byte window around the mention
+  started inside "REST"; the quote now widens to word boundaries, so it reads
+  "REST API under /api/v1, …".
+- A colon list of components followed by an em-dash explanation is still a
+  list. "Stubs (health-check only): api-gateway, cart-service,
+  delivery-service, notification-service — plain net/http /health + /ready"
+  now names every service, so the three the run never read are reviewed
+  instead of being dropped with the explanation's clause. The status label in
+  the review also no longer ends in the opening parenthesis ("Stubs", not
+  "Stubs (").
+- A leading absence item introduces a concept list. "No JWT, RabbitMQ client
+  code, gRPC server, or migrations" is now a concept-absence conclusion; a bare
+  "no X" elsewhere in a sentence ("no Cache-Control", "no database") stays an
+  inventory fact the bounded survey admits.
+- A description of the project is not a component list. "go-ecommerce is a
+  full-stack e-commerce platform, currently a work-in-progress scaffold" named
+  `go-ecommerce`, `full-stack`, and `e-commerce` as review subjects — three
+  coordinates no source path can satisfy. A status claim's subject now ends at
+  the predicate's copula, a hyphenated token must have a component role
+  (`product-service`, `api-gateway`; not a project name or a domain adjective),
+  a route (`/admin`) is not a component, and every item of a colon list must be
+  a component name rather than prose that happens to end in one.
+- "Frontend auth is mock only (demo accounts: admin@ecommerce.com)" named `auth`
+  or the email address as the review subject although a file under `src/`
+  derives to the frontend. A surface noun (`frontend`, `backend`, `client`,
+  `web`, `ui`, `storefront`) now owns the feature phrase it qualifies, and a
+  colon inside a parenthetical no longer starts a component list.
+- An implementation claim's plain verb form is now audited. "order-service also
+  implements a checkout API (server-computed totals, idempotent order creation)"
+  names a component and a capability; the capability list is read from the
+  parenthetical as well as from a "with …" clause, and each named capability
+  must appear in the observed source for that component. Reading only
+  `cmd/order-service/main.go` no longer supports "idempotent order creation".
+- "Auth is mock" is a status claim even without a completion adjective or a
+  "mock data" noun. The mock vocabulary now includes the copula form, so the
+  observed source must show a mock marker instead of only the component path.
+- A list-item absence about an implementation mechanism is now a concept-absence
+  conclusion: "No real JWT/auth", "no RabbitMQ client code", "no gRPC server
+  wired up". A bare "no Cache-Control" or "no database" is an inventory fact a
+  bounded survey demonstrated and remains admissible.
+- A dependency-strength review says what the run did observe ("only a
+  declaration", "only an initialized client", "no declaration, import,
+  initialization, or source use") instead of printing the internal
+  `NOT_OBSERVED` label.
+- A status word's subject is read from the text before it. A colon after a
+  status word introduces either a component list ("Fully implemented:
+  product-service, order-service") or an explanation of the status ("It is an
+  in-progress scaffold: the order-service now implements checkout, …"). Only
+  the list form names subjects, so the explanation's verbs and adjectives are no
+  longer reported as components ("checkout", "in-progress") in a review that no
+  source path can satisfy.
+- A test-absence review now names the contradiction it already holds: when an
+  observed structure snapshot reported test files, "No Go tests exist" is
+  answered with that count ("the observed inventory already reports 5 test
+  file(s)") instead of asking for evidence the run already has. Without a count
+  the general absence reason is unchanged.
+- A kebab adjective is no longer extracted as a component subject. Session 307's
+  "role-protected admin console" produced the review subject "role-protected",
+  so the model was told to read a component no path can match; qualifier
+  suffixes (`-protected`, `-based`, `-driven`, `-ready`, …) are skipped and the
+  qualified noun is named instead.
+- Root-scoped absence claims ("No README at repo root") are no longer promoted
+  to repository-wide claims by the word "repo" inside "repo root". A complete
+  root listing covers them; the repository-wide form still requires coverage
+  that can establish it, so an unrelated mention of the root does not weaken a
+  real global claim.
+- `glob` expands `{ts,tsx}` alternation instead of treating the pattern as a
+  literal. A shell-style pattern previously matched nothing and reported "no
+  files matched", which reads as an empty tree and sends the model into a
+  retry loop; expansion is bounded and nested groups are supported.
 - A survey answer that bounds its negatives to what it inspected is no longer
   reviewed as a repository-wide absence claim. "No tests detected in inspected
   scope (test inventory not queried)" completes; "the project has no tests"

@@ -41,6 +41,12 @@ var (
 			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited)\b`)
 	globalScopePattern = regexp.MustCompile(
 		`(?i)\b(?:repository|repo|project|codebase|workspace)\b`)
+	// rootScopePattern names a location bounded to the top level of the tree.
+	// "No README at repo root" is the narrowest possible absence claim and a
+	// root listing covers it; the word "repo" inside it must not promote it to
+	// a repository-wide claim.
+	rootScopePattern = regexp.MustCompile(
+		`(?i)\b(?:(?:repo(?:sitory)?|project|workspace|directory|folder)?[\s-]*root|top[- ]level)\b`)
 	insufficientSearchPattern = regexp.MustCompile(
 		`(?i)\b(?:i\s+)?(?:could\s+not|couldn't|cannot|can't|was\s+unable\s+to|unable\s+to)\s+(?:be\s+)?(?:find|found|locate|located|read|access|accessed|see|seen)\b`)
 	performedActionPattern = regexp.MustCompile(
@@ -232,8 +238,13 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 		coverage := collectGroundingCoverage(turns)
 		for _, claim := range claims {
 			if !coverage.supports(claim) {
-				add("unsupported_negative_conclusion",
-					fmt.Sprintf("the answer treats %q as absent without evidence covering the claim", claim.Subject))
+				detail := fmt.Sprintf("the answer treats %q as absent without evidence covering the claim", claim.Subject)
+				if coverage.testFiles > 0 && strings.Contains(strings.ToLower(claim.Subject), "test") {
+					detail = fmt.Sprintf(
+						"the answer treats %q as absent, but the observed inventory already reports %d test file(s); inspect them or bound the claim to what was inspected",
+						claim.Subject, coverage.testFiles)
+				}
+				add("unsupported_negative_conclusion", detail)
 				break
 			}
 		}
@@ -354,19 +365,37 @@ func negativeClaims(answer string) []negativeClaim {
 	return out
 }
 
-// claimContextIsGlobal reports whether the sentence around a claim names the
-// repository as a whole. "README.md does not exist in this repository" is not
-// the same claim as "README.md is absent from docs/".
+// claimContextIsGlobal reports whether the sentence containing a claim names
+// the repository as a whole. "README.md does not exist in this repository" is
+// not the same claim as "README.md is absent from docs/".
+//
+// The window is the claim's own sentence, not a fixed byte radius: session 324
+// reviewed "no LICENSE file" as a repository-wide absence because the word
+// "repo" in the *next* sentence ("a scaffolded e-commerce microservices repo
+// …") fell inside the radius. A parenthetical aside is excluded too — "nested
+// backend/.git (root repo ignores backend/)" describes the git layout, it does
+// not scope the other items in the list.
 func claimContextIsGlobal(answer string, start, end int) bool {
-	left := start - 80
-	if left < 0 {
-		left = 0
+	begin, finish := 0, len(answer)
+	for _, match := range claimSentenceBoundary.FindAllStringIndex(answer, -1) {
+		if match[1] <= start {
+			begin = match[1]
+			continue
+		}
+		if match[0] >= end {
+			finish = match[0]
+			break
+		}
 	}
-	right := end + 80
-	if right > len(answer) {
-		right = len(answer)
+	if begin > start {
+		begin = 0
 	}
-	return globalScopePattern.MatchString(answer[left:right])
+	if finish < end {
+		finish = len(answer)
+	}
+	window := parenthesesPattern.ReplaceAllString(answer[begin:finish], " ")
+	window = rootScopePattern.ReplaceAllString(window, " ")
+	return globalScopePattern.MatchString(window)
 }
 
 // externalClaims returns the assertions an answer makes about state outside the
@@ -476,6 +505,11 @@ type groundingCoverage struct {
 	// narrow Go test-file claim, but only when scope, inventory, and structural
 	// completeness all hold.
 	structuralTestAbsence bool
+	// testFiles is the largest test-file count any observed structure snapshot
+	// reported. A positive count contradicts an absence claim even when the
+	// snapshot is not complete enough to prove zero, and the review should say
+	// so instead of asking for evidence the run already has.
+	testFiles int
 	// rootListing is a complete listing of the repository root.
 	rootListing bool
 	// external reports a successful observation of a remote surface: a
@@ -596,6 +630,17 @@ func isFileClaim(claim string) bool {
 // isRootFileName reports whether claim names one file at the root rather than
 // a concept.
 func isRootFileName(claim string) bool {
+	claim = strings.TrimSpace(strings.ToLower(claim))
+	// The negative-claim reader captures "no LICENSE file" as the subject
+	// "license file". The trailing noun names the artifact, not a different
+	// claim, so it must not defeat the root-file vocabulary (session 324
+	// reviewed a true root absence because of it).
+	for _, suffix := range []string{" file", " files", " document"} {
+		if strings.HasSuffix(claim, suffix) {
+			claim = strings.TrimSpace(strings.TrimSuffix(claim, suffix))
+			break
+		}
+	}
 	switch claim {
 	case "readme", "readme.md", "license", "changelog", "dockerfile",
 		"makefile", "go.mod", "package.json", ".gitignore":
@@ -653,6 +698,10 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 					})
 				}
 			case "structure":
+				structureDetails, _ := outcome.Result.Details.(map[string]any)
+				if count := detailValueInt(structureDetails, "test_files"); count > coverage.testFiles {
+					coverage.testFiles = count
+				}
 				if complete && structureProvesNoTestFiles(outcome) {
 					coverage.structuralTestAbsence = true
 				}

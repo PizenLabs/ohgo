@@ -224,7 +224,13 @@ A supported file absence (for example a complete `glob "**/*"` with no
 glob that pruned `.gitignore` paths, a timed-out scan, or a truncated result
 cannot prove absence. The glob tool names an exclusion so the answer can widen
 the scan with `"gitignore": false` instead of concluding the pruned subtree does
-not exist. A concept claim (“no documentation”, “no tests”)
+not exist. A **root-file** absence (`README`, `LICENSE`, `package.json`, …) is
+narrower: a complete root listing covers it, and the claim subject may carry the
+artifact noun ("no LICENSE file") without becoming a category claim. The claim's
+scope is its own sentence, with parenthetical asides removed; a repository word
+in a neighbouring sentence or in an explanation ("nested backend/.git (root repo
+ignores backend/)") does not promote it to a repository-wide claim. A concept
+claim (“no documentation”, “no tests”)
 cannot be proven by a file scan and stays `NEEDS_REVIEW`. The one narrow
 exception is Go's mandatory `_test.go` suffix: a complete recursive scan of
 every `.go` file that contains no `_test.go` file proves the narrowed claim “no
@@ -342,16 +348,42 @@ model's pre-answer state block can report `implementation=NOT_OBSERVED` and
 execution.
 
 An implementation-status claim (“fully implemented”, “stubs (health checks
-only)”, “mock data”, “scaffolded”) is a positive claim about source content.
-A README, manifest, Compose file, directory listing, glob result, or structural
-inventory does not establish it. The audit extracts the components the claim
+only)”, “mock data”, “scaffolded”, “order-service implements a checkout API”,
+“auth is mock”) is a positive claim about source content. A README, manifest,
+Compose file, directory listing, glob result, or structural inventory does not
+establish it. The plain verb form counts because it attaches a delivered object
+to a component; the copula form counts because the adjective asserts the
+component's state. The audit extracts the components the claim
 names — a kebab coordinate such as `product-service`, an explicit list after
-the colon, or a recognized component noun — and requires a source read or
-source-scoped grep for each. Reading product-service source supports
+the colon (`Fully implemented: …`, `Stubs: …`), or a recognized component
+noun — and requires a source read or
+source-scoped grep for each. An adjective-first status names its subject after
+the adjective ("feature-complete UI" is the frontend), and a negation that binds
+to the status ("not production-ready", "is not fully implemented") asserts the
+inverse of a completion claim, so it is not audited as one. Reading
+product-service source supports
 product-service, not order-service or the frontend. Component identity is
 derived from the path's project structure: a file named `api.go` inside
 `cart/` is cart, not the API gateway, and an absolute user directory is never a
 component.
+
+The subject is bounded so the audit cannot invent a coordinate. It ends at the
+copula that introduces the predicate, so "go-ecommerce is a full-stack
+e-commerce platform, currently a work-in-progress scaffold" is a statement
+about the project, not claims about `go-ecommerce`, `full-stack`, and
+`e-commerce`. A hyphenated token must carry a component role
+(`product-service`, `api-gateway`, `admin-console`); a project name or a domain
+adjective does not qualify. A route (`/admin`) is a screen, not a coordinate,
+and a colon inside a parenthetical does not start a component list. Every item
+of an explicit colon list must itself be a component name, because the same
+colon often introduces an explanation ("a scaffold: a React storefront and a Go
+microservices backend") rather than subjects. An em-dash clause after the names
+explains the status and is not part of the list: "Stubs (health-check only):
+api-gateway, cart-service — plain net/http" still names both services. A
+surface noun
+(`frontend`, `backend`, `client`, `web`, `ui`, `storefront`) owns the feature
+phrase it qualifies: "frontend auth" is the frontend, since a path under
+`src/` derives to the frontend, never to `auth`.
 
 Strong completeness wording (“fully implemented”, “completely implemented”,
 “feature-complete”, “production-ready”, “fully functional”) additionally
@@ -367,7 +399,10 @@ fully implemented.”
 A capability list inside a status claim is audited separately. “Product-service
 is fully implemented with CRUD, Redis caching, graceful shutdown, and structured
 logging” asserts each named capability; a complete component scope proves what
-was inspected, not that every capability is present. Each aspect needs source
+was inspected, not that every capability is present. The list is read from a
+“with/including/featuring” clause or from a parenthetical after the claim
+(“implements a checkout API (idempotent order creation, status updates)”). Each
+aspect needs source
 evidence: CRUD verbs, a cache operation, shutdown/signal handling, a logging
 client, and so on. A capability outside the bounded vocabulary remains covered
 by the ordinary implementation and dependency audits. A mock, scaffold, or
@@ -385,13 +420,20 @@ product-service's Redis operations do not support “order-service uses Redis.�
 A README statement is documentation, not dependency evidence.
 
 A concept-level negative conclusion (“JWT is not implemented”, “RabbitMQ is
-unused”, “there is no authentication”, “no database integration”) is not
+unused”, “there is no authentication”, “no database integration”, “no real
+JWT/auth”, “no RabbitMQ client code”, “no gRPC server wired up”, “No JWT,
+RabbitMQ client code, …”) is not
 proved by a complete file inventory or one empty search. It remains
 `NEEDS_REVIEW` unless the answer bounds it to what was inspected (“no JWT
 implementation was found in the inspected authentication source”, “the
 inspected source did not show RabbitMQ operations”) or explicitly says it could
 not verify the claim. File and test absence keep their stricter completeness
 gate; a concept absence has no deterministic proof mechanism in this layer.
+A bare “no X” list item that names no implementation mechanism (“no
+Cache-Control”, “no database”) is an inventory fact the run demonstrated and is
+not promoted to a concept absence. Only the leading item of an absence list is
+read as the conclusion (“No JWT, RabbitMQ client code, …”); a bare “no X”
+elsewhere in the sentence stays with the inventory facts.
 
 A concrete line count needs the file's read `totalLines` (or a line-count
 command). A directory listing's byte size is not a line count; a gross

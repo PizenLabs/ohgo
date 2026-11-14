@@ -15,6 +15,17 @@ var (
 	// kebabComponentPattern extracts a concrete component coordinate such as
 	// "product-service" or "api-gateway".
 	kebabComponentPattern = regexp.MustCompile(`(?i)\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b`)
+	// statusCopulaPattern names the copula that introduces a nominal or
+	// adjective predicate. The subject of a status claim ends there: in
+	// "go-ecommerce is a full-stack e-commerce platform, currently a
+	// work-in-progress scaffold" the words after "is" describe the project, so
+	// "full-stack" and "e-commerce" are adjectives, not components the claim is
+	// about.
+	statusCopulaPattern = regexp.MustCompile(`(?i)\b(?:is|are|was|were|remains?)\b`)
+	// routeTokenPattern names a page or URL route. A route is a screen, not a
+	// component coordinate: reading "/admin"'s page would not satisfy a claim
+	// whose component identity is the frontend.
+	routeTokenPattern = regexp.MustCompile(`(?:^|\s)/[a-z0-9_.:/-]+`)
 	// componentListSeparator splits an explicit component list.
 	componentListSeparator = regexp.MustCompile(`(?i),\s*|\s+and\s+`)
 )
@@ -320,6 +331,12 @@ func ComponentSubject(sentence string, markerStart int) string {
 // preserving their order. The explicit list after a colon is preferred; the
 // bounded kebab and noun vocabulary follows.
 func ComponentSubjects(sentence string, markerStart, markerEnd int) []string {
+	// A status marker may own the colon that introduces its list
+	// ("Stubs: api-gateway, …"). The list reader needs the colon outside the
+	// marker to see the names.
+	if markerEnd > markerStart && markerEnd <= len(sentence) && sentence[markerEnd-1] == ':' {
+		markerEnd--
+	}
 	var out []string
 	seen := map[string]bool{}
 	add := func(value string) {
@@ -333,19 +350,90 @@ func ComponentSubjects(sentence string, markerStart, markerEnd int) []string {
 	for _, item := range splitComponentList(sentence, markerEnd) {
 		add(normalizeComponentPhrase(item))
 	}
-	withoutParentheticals := parenthesesPattern.ReplaceAllString(sentence, " ")
+	// A status word's subject precedes it: "product-service is fully
+	// implemented". Scanning the whole sentence let a later explanation
+	// ("implements checkout") become a component the status was supposedly
+	// about. The scan also stops at the copula that introduces the predicate
+	// and drops routes, so a description of the project does not become a list
+	// of components.
+	subjectText := statusSubjectPhrase(sentence[:minInt(markerStart, len(sentence))])
+	withoutParentheticals := parenthesesPattern.ReplaceAllString(subjectText, " ")
 	for _, token := range kebabComponentPattern.FindAllString(withoutParentheticals, -1) {
-		if componentTokenIsRole(token) || componentTokenIsFileName(withoutParentheticals, token) {
+		if componentTokenIsRole(token) || componentTokenIsQualifier(token) ||
+			componentTokenIsFileName(withoutParentheticals, token) ||
+			!componentKebabQualifies(token) {
 			continue
 		}
 		add(normalizeComponentPhrase(token))
 	}
 	if len(out) == 0 {
-		for _, candidate := range componentCandidatesFromText(sentence[:minInt(markerStart, len(sentence))]) {
+		for _, candidate := range componentCandidatesFromText(subjectText) {
 			add(candidate)
 		}
 	}
+	if len(out) == 0 {
+		// An adjective-first status names its subject after the marker:
+		// "Feature-complete UI with mock data". Only the phrase immediately
+		// after the status is read, so a later clause's noun ("no backend order
+		// path exists") is not attributed to this claim.
+		if subject := postStatusSubject(sentence[minInt(markerEnd, len(sentence)):]); subject != "" {
+			add(subject)
+		}
+	}
 	return out
+}
+
+// componentPhraseBreakers end the noun phrase that follows a status word.
+var componentPhraseBreakers = map[string]bool{
+	"no": true, "not": true, "never": true, "only": true, "any": true,
+	"all": true, "some": true, "every": true, "each": true,
+	"with": true, "for": true, "in": true, "on": true, "to": true,
+	"by": true, "from": true, "as": true, "at": true, "of": true,
+}
+
+// postStatusSubject returns the component an adjective-first status names
+// immediately after the marker ("Feature-complete UI", "customer storefront").
+// It reads at most three words and stops at the first phrase breaker, so an
+// unrelated noun later in the sentence cannot become the claim's subject.
+func postStatusSubject(tail string) string {
+	if cut := strings.IndexAny(tail, ",;:.!?()\n"); cut >= 0 {
+		tail = tail[:cut]
+	}
+	words := componentPhraseWords(tail)
+	for len(words) > 0 {
+		switch words[0] {
+		case "the", "a", "an", "and", "or":
+			words = words[1:]
+			continue
+		}
+		break
+	}
+	var window []string
+	for _, word := range words {
+		if len(window) >= 3 || componentPhraseBreakers[word] || componentClauseWords[word] {
+			break
+		}
+		window = append(window, word)
+	}
+	if surface := firstSurfaceComponent(window); surface != "" {
+		return surface
+	}
+	for _, word := range window {
+		if componentNouns[word] {
+			return word
+		}
+	}
+	return ""
+}
+
+// statusSubjectPhrase bounds the text a status claim's subject can come from.
+// The predicate's copula ends the subject, and a route never names a component.
+func statusSubjectPhrase(before string) string {
+	before = routeTokenPattern.ReplaceAllString(before, " ")
+	if matches := statusCopulaPattern.FindAllStringIndex(before, -1); len(matches) > 0 {
+		return before[:matches[len(matches)-1][0]]
+	}
+	return before
 }
 
 // minInt bounds a marker index without importing a generic helper package.
@@ -360,6 +448,7 @@ func minInt(a, b int) int {
 // components it names. It is deliberately conservative: a phrase with no
 // recognizable component returns nothing rather than inventing one.
 func componentCandidatesFromText(text string) []string {
+	text = routeTokenPattern.ReplaceAllString(text, " ")
 	text = parenthesesPattern.ReplaceAllString(text, " ")
 	var out []string
 	seen := map[string]bool{}
@@ -372,29 +461,87 @@ func componentCandidatesFromText(text string) []string {
 		out = append(out, value)
 	}
 	for _, token := range kebabComponentPattern.FindAllString(text, -1) {
-		if componentTokenIsRole(token) || componentTokenIsFileName(text, token) {
+		if componentTokenIsRole(token) || componentTokenIsQualifier(token) ||
+			componentTokenIsFileName(text, token) || !componentKebabQualifies(token) {
 			continue
 		}
 		add(token)
 	}
 	// Recognized component nouns, from the end of each comma-separated phrase.
 	for _, clause := range componentListSeparator.Split(text, -1) {
-		words := strings.FieldsFunc(strings.ToLower(clause), func(r rune) bool {
-			return (r < 'a' || r > 'z') && (r < '0' || r > '9')
-		})
-		for i := len(words) - 1; i >= 0; i-- {
-			word := words[i]
-			if componentTrailingWords[word] {
-				continue
+		words := componentPhraseWords(clause)
+		surface := firstSurfaceComponent(words)
+		word := lastComponentNoun(words)
+		if word == "" {
+			// A clause that names only a surface ("Frontend: storefront at
+			// …") still has an owner; the surface is the component.
+			if surface != "" {
+				add(surface)
 			}
-			if componentNouns[word] {
-				add(word)
-				break
-			}
-			break
+			continue
 		}
+		// A surface qualifier owns a feature phrase: "frontend auth" is the
+		// frontend, not a new auth component. The feature noun is a capability
+		// of that surface, and only the surface's source can establish it.
+		if surface != "" && word != surface {
+			add(surface)
+			continue
+		}
+		add(word)
 	}
 	return out
+}
+
+// lastComponentNoun returns the component noun that ends a clause, skipping the
+// grammar words that may trail it ("the frontend uses"). A word that is not a
+// component noun ends the scan: ordinary prose does not name a component.
+func lastComponentNoun(words []string) string {
+	for i := len(words) - 1; i >= 0; i-- {
+		word := words[i]
+		if componentTrailingWords[word] {
+			continue
+		}
+		if componentNouns[word] {
+			return word
+		}
+		return ""
+	}
+	return ""
+}
+
+// componentPhraseWords splits a phrase into lowercase words.
+func componentPhraseWords(clause string) []string {
+	return strings.FieldsFunc(strings.ToLower(clause), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+}
+
+// firstSurfaceComponent returns the surface that owns a phrase, if it names one.
+func firstSurfaceComponent(words []string) string {
+	for _, word := range words {
+		if componentSurfaceNouns[word] {
+			return canonicalComponent(word)
+		}
+	}
+	return ""
+}
+
+// componentKebabQualifies reports a hyphenated token whose parts name a
+// component role. A project name ("go-ecommerce") or a domain adjective
+// ("full-stack", "e-commerce") has no component role, so it is not a coordinate
+// the answer can be asked to read. Ordinary coordinates keep working:
+// product-service, api-gateway, admin-console, order-worker.
+func componentKebabQualifies(token string) bool {
+	parts := strings.Split(strings.ToLower(token), "-")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if componentNouns[part] {
+			return true
+		}
+	}
+	return false
 }
 
 // splitComponentList returns the explicit list after a colon when the colon is
@@ -405,7 +552,10 @@ func splitComponentList(sentence string, markerEnd int) []string {
 	}
 	rest := sentence[markerEnd:]
 	colon := strings.Index(rest, ":")
-	if colon < 0 || colon > 48 || strings.ContainsAny(rest[:colon], ";?!") {
+	// A colon inside a parenthetical belongs to the explanation, not to a
+	// component list: "mock only (demo accounts: admin@ecommerce.com)" names no
+	// component. The open bracket before the colon disqualifies the list.
+	if colon < 0 || colon > 48 || strings.ContainsAny(rest[:colon], ";?!(") {
 		return nil
 	}
 	tail := strings.TrimSpace(rest[colon+1:])
@@ -413,13 +563,54 @@ func splitComponentList(sentence string, markerEnd int) []string {
 		return nil
 	}
 	tail = parenthesesPattern.ReplaceAllString(tail, " ")
+	// An em dash after the names introduces an explanation of the status:
+	// "Stubs (health-check only): api-gateway, cart-service — plain net/http".
+	// The names are still the subjects; the clause after the dash is not.
+	if cut := strings.IndexAny(tail, "—–"); cut >= 0 {
+		tail = tail[:cut]
+	}
 	items := componentListSeparator.Split(tail, -1)
+	// A colon after a status word introduces either a list of components
+	// ("Fully implemented: product-service, order-service") or an explanation
+	// of the status ("It is an in-progress scaffold: the order-service now
+	// implements checkout, ..."). Only the list form names subjects; reading
+	// the explanation as a list turned "checkout" into the component the
+	// scaffold claim was supposedly about. Every item must therefore be a
+	// component name, not prose that happens to end in one ("a Go
+	// microservices backend").
 	for _, item := range items {
-		if normalizeComponentPhrase(item) != "" {
-			return items
+		if strings.TrimSpace(item) == "" {
+			continue
+		}
+		if componentPhraseIsClause(item) || normalizeComponentPhrase(item) == "" {
+			return nil
 		}
 	}
-	return nil
+	return items
+}
+
+// componentPhraseIsClause reports an item that is a sentence fragment rather
+// than a component name.
+func componentPhraseIsClause(item string) bool {
+	for _, word := range strings.FieldsFunc(strings.ToLower(item), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		if componentClauseWords[word] {
+			return true
+		}
+	}
+	return false
+}
+
+// componentClauseWords are finite verbs and time qualifiers that mark an
+// explanation. They never appear in a component's name.
+var componentClauseWords = map[string]bool{
+	"implements": true, "implement": true, "implemented": true,
+	"uses": true, "use": true, "using": true, "provides": true,
+	"handles": true, "exposes": true, "supports": true, "returns": true,
+	"renders": true, "calls": true, "serves": true, "runs": true,
+	"starts": true, "now": true, "currently": true, "already": true,
+	"also": true, "still": true,
 }
 
 // normalizeComponentPhrase reduces a phrase to one component label. A
@@ -478,6 +669,9 @@ func normalizeComponentPhrase(raw string) string {
 	if label == "" || len(label) > 48 {
 		return ""
 	}
+	if strings.Contains(label, "-") && !componentKebabQualifies(label) {
+		return ""
+	}
 	return label
 }
 
@@ -519,6 +713,14 @@ var componentTrailingWords = map[string]bool{
 	"application": true, "platform": true,
 }
 
+// componentSurfaceNouns are roots that own everything below them. A feature
+// phrase that names one is a claim about that surface: "frontend auth" is the
+// frontend, because a path under src/ derives to frontend, not to auth.
+var componentSurfaceNouns = map[string]bool{
+	"frontend": true, "backend": true, "client": true, "web": true,
+	"ui": true, "storefront": true,
+}
+
 // componentNouns is the finite component vocabulary. A kebab coordinate is
 // also accepted; the list keeps ordinary prose from becoming a subject.
 var componentNouns = map[string]bool{
@@ -544,6 +746,28 @@ func componentTokenIsRole(token string) bool {
 	default:
 		return false
 	}
+}
+
+// componentQualifierSuffixes are adjective endings. "role-protected admin
+// console" qualifies the console; the adjective is not a component coordinate,
+// and a review that names it sends the reader to nothing.
+var componentQualifierSuffixes = []string{
+	"-protected", "-based", "-driven", "-first", "-ready", "-facing",
+	"-aware", "-only", "-level", "-side", "-less", "-free", "-oriented",
+	"-focused", "-specific", "-wide", "-enabled", "-powered", "-scoped",
+	"-progress",
+}
+
+// componentTokenIsQualifier reports an adjective phrase masquerading as a
+// component name.
+func componentTokenIsQualifier(token string) bool {
+	lower := strings.ToLower(token)
+	for _, suffix := range componentQualifierSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // componentTokenIsFileName reports a kebab fragment that is part of a filename

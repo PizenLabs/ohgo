@@ -171,46 +171,23 @@ func (idx *Index) Overview(ctx context.Context, limit int) (OverviewResult, erro
 		}
 	}
 	result.Files = files
-	for rel, rec := range idx.files {
-		for _, entry := range rec.entrypoints {
-			result.Entrypoints = append(result.Entrypoints, Entrypoint{
-				Path: rel, Package: entry.Package, Symbol: entry.Name,
-				QualifiedName: entry.QualifiedName, Language: entry.Language,
-				NativeKind: entry.NativeKind, Line: entry.Line,
-				EndLine: entry.EndLine, Column: entry.Column,
-			})
-		}
-	}
-	sort.SliceStable(result.Entrypoints, func(i, j int) bool {
-		if result.Entrypoints[i].Path != result.Entrypoints[j].Path {
-			return result.Entrypoints[i].Path < result.Entrypoints[j].Path
-		}
-		return result.Entrypoints[i].Line < result.Entrypoints[j].Line
-	})
 	if len(result.Packages) > result.Snapshot.Packages {
 		result.Snapshot.Packages = len(result.Packages)
 	}
-	seenEntrypoints := map[string]bool{}
-	for _, entry := range result.Entrypoints {
-		seenEntrypoints[entry.Path+"\x00"+entry.QualifiedName] = true
-	}
-	for _, entry := range conventionalEntrypoints(idx.files) {
-		if seenEntrypoints[entry.Path] {
-			continue
-		}
-		seenEntrypoints[entry.Path] = true
-		result.Entrypoints = append(result.Entrypoints, entry)
-	}
-	// The bound applies to the merged list, and the total is recorded before the
-	// cut so a truncated overview can name how many it dropped.
-	result.EntrypointsTotal = len(result.Entrypoints)
-	if len(result.Entrypoints) > StructureMaxLimit {
-		result.Entrypoints = result.Entrypoints[:StructureMaxLimit]
+	merged := idx.mergedEntrypointsLocked()
+	// The bound applies to the merged list, and the totals are recorded before
+	// the cut so a truncated overview can name how many it dropped.
+	result.EntrypointsTotal = len(merged)
+	result.EntrypointsVerified = verifiedEntrypoints(merged)
+	result.EntrypointsDiscovered = result.EntrypointsTotal - result.EntrypointsVerified
+	if len(merged) > StructureMaxLimit {
+		merged = merged[:StructureMaxLimit]
 		result.Truncated = true
 		if result.Reason == "" {
 			result.Reason = "entrypoint_limit"
 		}
 	}
+	result.Entrypoints = merged
 	result.Configs = configFacts(idx.files, idx.modulePath)
 	result.Frameworks = frameworkFacts(result.Configs)
 	if len(result.Configs) > StructureMaxLimit {
@@ -324,9 +301,10 @@ func (idx *Index) languagePackagesLocked(query PackageQuery, scope string, scope
 	return out
 }
 
-// Entrypoints returns every proven non-test Go entrypoint. It is bounded by
-// the inventory ceiling; a repository with more entrypoints than that is
-// reported as truncated rather than silently cut.
+// Entrypoints returns every entry coordinate: adapter-proven executables and
+// framework-convention discoveries, in one list with Verified distinguishing
+// them. It is bounded by the inventory ceiling; a repository with more
+// entrypoints than that is reported as truncated rather than silently cut.
 func (idx *Index) Entrypoints(ctx context.Context) (EntrypointResult, error) {
 	if err := ctx.Err(); err != nil {
 		return EntrypointResult{}, err
@@ -341,31 +319,77 @@ func (idx *Index) Entrypoints(ctx context.Context) (EntrypointResult, error) {
 	}
 
 	result := EntrypointResult{Snapshot: idx.infoLocked()}
-	for rel, rec := range idx.files {
-		for _, entry := range rec.entrypoints {
-			result.Entrypoints = append(result.Entrypoints, Entrypoint{
-				Path:          rel,
-				Package:       entry.Package,
-				Symbol:        entry.Name,
-				QualifiedName: entry.QualifiedName,
-				Line:          entry.Line,
-				EndLine:       entry.EndLine,
-				Column:        entry.Column,
-			})
-		}
-	}
-	sort.SliceStable(result.Entrypoints, func(i, j int) bool {
-		if result.Entrypoints[i].Path != result.Entrypoints[j].Path {
-			return result.Entrypoints[i].Path < result.Entrypoints[j].Path
-		}
-		return result.Entrypoints[i].Line < result.Entrypoints[j].Line
-	})
-	if len(result.Entrypoints) > StructureMaxLimit {
-		result.Entrypoints = result.Entrypoints[:StructureMaxLimit]
+	merged := idx.mergedEntrypointsLocked()
+	result.Total = len(merged)
+	result.Verified = verifiedEntrypoints(merged)
+	result.Discovered = result.Total - result.Verified
+	if len(merged) > StructureMaxLimit {
+		merged = merged[:StructureMaxLimit]
 		result.Truncated = true
 		result.Reason = "limit"
 	}
+	result.Entrypoints = merged
 	return result, nil
+}
+
+// frameworkRouteKinds are the native kinds that identify a framework route
+// module by path convention. Parsing such a file proves the module exists and
+// gives the entry a symbol name; it does not prove execution, so these stay
+// discoveries.
+var frameworkRouteKinds = map[string]bool{
+	"route_entrypoint": true,
+	"route_convention": true,
+}
+
+// mergedEntrypointsLocked is the single entrypoint authority for the overview
+// and the entrypoints view.
+//
+// It merges two provenances into one list: adapter-proven executables (a
+// non-test main function in a language that has one) and framework route
+// modules discovered by path convention. Verified separates them. A route
+// module is emitted once: when an adapter parsed the file, the parsed
+// coordinate replaces the filename-only discovery, so the same module cannot
+// appear twice with two symbol names. Caller holds idx.mu.
+func (idx *Index) mergedEntrypointsLocked() []Entrypoint {
+	out := make([]Entrypoint, 0, len(idx.files))
+	parsedPaths := map[string]bool{}
+	for rel, rec := range idx.files {
+		for _, entry := range rec.entrypoints {
+			parsedPaths[rel] = true
+			out = append(out, Entrypoint{
+				Path: rel, Package: entry.Package, Symbol: entry.Name,
+				QualifiedName: entry.QualifiedName, Language: entry.Language,
+				NativeKind: entry.NativeKind, Line: entry.Line,
+				EndLine: entry.EndLine, Column: entry.Column,
+				Verified: !frameworkRouteKinds[entry.NativeKind],
+			})
+		}
+	}
+	for _, entry := range conventionalEntrypoints(idx.files) {
+		// The module is already represented by its parsed coordinate.
+		if parsedPaths[entry.Path] {
+			continue
+		}
+		out = append(out, entry)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Path != out[j].Path {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].Line < out[j].Line
+	})
+	return out
+}
+
+// verifiedEntrypoints counts the entries an adapter proved.
+func verifiedEntrypoints(entries []Entrypoint) int {
+	verified := 0
+	for _, entry := range entries {
+		if entry.Verified {
+			verified++
+		}
+	}
+	return verified
 }
 
 // Configs returns the allowlisted configuration inventory.
