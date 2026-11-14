@@ -459,6 +459,9 @@ func TestConceptAbsenceStaysBoundedOrReviewed(t *testing.T) {
 		"The project does not use Redis.",
 		"Authentication is unused.",
 		"No authentication.",
+		"No real JWT/auth.",
+		"No RabbitMQ client code.",
+		"No gRPC server wired up.",
 	}
 	for _, answer := range unbounded {
 		if codes := evidenceCodes(t, manifest, answer); !codes["unsupported_concept_absence"] {
@@ -482,6 +485,54 @@ func TestNonAssertiveLanguageIsNotAClaim(t *testing.T) {
 		if codes := evidenceCodes(t, turns, answer); len(codes) > 0 {
 			t.Fatalf("%q produced %v, want non-assertive language ignored", answer, codes)
 		}
+	}
+}
+
+// A bare "no X" is often an inventory fact the run itself demonstrated ("no
+// Cache-Control" from a measured response, "no database" from a complete
+// listing), not a semantic absence conclusion. Only a qualifier or a denied
+// implementation mechanism makes it a claim.
+func TestBareNoListItemNeedsAMechanism(t *testing.T) {
+	for _, answer := range []string{
+		"The static server sends no Content-Encoding and no Cache-Control.",
+		"The inspected tree has no API routes, no database, and no tests detected.",
+		"- No API routes, no database, no tests detected in inspected scope.",
+	} {
+		if subject := conceptAbsenceSubject(answer); subject != "" {
+			t.Fatalf("%q = %q, want no concept-absence claim", answer, subject)
+		}
+	}
+	for _, answer := range []string{
+		"No real JWT/auth.",
+		"No RabbitMQ client code.",
+		"No gRPC server wired up.",
+		"• No JWT, RabbitMQ client code, gRPC server, or migrations (empty migrations/).",
+	} {
+		if subject := conceptAbsenceSubject(answer); subject == "" {
+			t.Fatalf("%q produced no concept-absence subject", answer)
+		}
+	}
+}
+
+// Session 322's review quoted the claim as "T API under `/api/v1`, …": a
+// 40-byte window began inside "REST". A quoted claim is bounded by words, not
+// by bytes, so the reader can tell what the sentence actually claimed.
+func TestDependencyClaimPhraseQuotesWholeWords(t *testing.T) {
+	sentence := "Only product-service is fully implemented (Gin REST API under " +
+		"`/api/v1`, GORM/PostgreSQL, Redis caching, graceful shutdown, structured logging)."
+	index := strings.Index(strings.ToLower(sentence), "redis")
+	if index < 0 {
+		t.Fatal("fixture changed")
+	}
+	phrase := dependencyClaimPhrase(sentence, index, dependencySpec{name: "redis"})
+	if strings.HasPrefix(phrase, "T API") {
+		t.Fatalf("phrase = %q, want a whole-word start", phrase)
+	}
+	if !strings.HasPrefix(phrase, "REST API under") {
+		t.Fatalf("phrase = %q, want the claim's words", phrase)
+	}
+	if !strings.Contains(phrase, "Redis caching") {
+		t.Fatalf("phrase = %q, want the claimed mention", phrase)
 	}
 }
 
