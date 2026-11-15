@@ -854,3 +854,65 @@ func TestUnrunTestsAreNotExcusedAsABoundedReport(t *testing.T) {
 		t.Error("the run-fact form was treated as a repository absence")
 	}
 }
+
+// A git inspection is bounded evidence. `git tag -l`, `git branch -a` and
+// `git remote` list a whole namespace, and `git log` on an unborn branch states
+// the absence outright. The bash tool publishes that observation, so an answer
+// reporting the empty result is not the unproven absence the negative-claim
+// gate exists to catch.
+func TestEvaluateTaskCompletionAcceptsObservedVCSAbsence(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective: "Inspect the repository's git state.",
+		Action:    contract.GroundingRead,
+		Actions:   []contract.GroundingAction{contract.GroundingRead},
+		Scope:     contract.GroundingScope{Kind: contract.ScopeRepository},
+	})
+	turns := func(observation map[string]any) []Turn {
+		return []Turn{
+			{Results: []ToolOutcome{{
+				ToolName: "bash",
+				Args:     map[string]any{"command": "git status && git log --oneline -5"},
+				Result: Result{
+					Text:    "$ git status && git log --oneline -5\n\nOn branch master\n\nNo commits yet\n\nfatal: your current branch 'master' does not have any commits yet\n\n[exit code 128, 55ms]",
+					IsError: true,
+					Details: observation,
+				},
+			}}},
+			{Results: []ToolOutcome{{
+				ToolName: "bash",
+				Args:     map[string]any{"command": "git branch -a; git tag -l; git remote"},
+				Result: Result{
+					Text:    "$ git branch -a; git tag -l; git remote\n\n[exit code 0, 59ms]",
+					Details: observation,
+				},
+			}}},
+			answerTurnNoTools("The repository has no commits, no branches besides the implicit master, no tags, and no remotes."),
+		}
+	}
+	observed := map[string]any{
+		"command":     "git branch -a; git tag -l; git remote",
+		"exitCode":    0,
+		"git_absence": []string{"commit", "branch", "tag", "remote"},
+	}
+	verdict := EvaluateTaskCompletion(CompletionInput{
+		Turns:    turns(observed),
+		Contract: intent,
+	})
+	if !verdict.Complete() {
+		t.Fatalf("an absence established by a complete git enumeration was reviewed: %s", verdict.Reason)
+	}
+
+	// Control: the same answer without the tool's structured observation keeps
+	// the review boundary. The test defends the evidence path, not a relaxed
+	// absence rule.
+	verdict = EvaluateTaskCompletion(CompletionInput{
+		Turns:    turns(map[string]any{"command": "git branch -a; git tag -l; git remote", "exitCode": 0}),
+		Contract: intent,
+	})
+	if verdict.Complete() {
+		t.Fatal("an unobserved VCS absence was reported complete")
+	}
+	if !strings.Contains(verdict.Reason, "intent grounding") {
+		t.Fatalf("control reason = %q, want the unproven-absence boundary", verdict.Reason)
+	}
+}

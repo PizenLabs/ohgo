@@ -300,6 +300,21 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 	text += fmt.Sprintf("\n\n[exit code %d, %s]", exitCode, elapsed.Round(time.Millisecond))
 
+	details := map[string]any{
+		"command":  command,
+		"exitCode": exitCode,
+		"duration": elapsed.String(),
+	}
+	// A complete VCS enumeration, or an output that names an absence outright,
+	// is evidence the completion gate can trust. It is published from the
+	// observation rather than inferred later from the model's prose.
+	if absent := GitAbsenceNamespaces(command, combined, exitCode, t.Root); len(absent) > 0 {
+		details["git_absence"] = absent
+	}
+	if GitObservation(command, exitCode, t.Root) {
+		details["git_observation"] = true
+	}
+
 	if exitCode != 0 {
 		return agent.Result{
 			Text:          text,
@@ -309,11 +324,7 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 			Executes:      true,
 			Finished:      true,
 			FailureClass:  agent.ToolFailureRuntime,
-			Details: map[string]any{
-				"command":  command,
-				"exitCode": exitCode,
-				"duration": elapsed.String(),
-			},
+			Details:       details,
 		}
 	}
 	verification := VerificationForIn(t.Root, command)
@@ -325,11 +336,7 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		Finished:      true,
 		Verifies:      verification != nil,
 		Verification:  verification,
-		Details: map[string]any{
-			"command":  command,
-			"exitCode": 0,
-			"duration": elapsed.String(),
-		},
+		Details:       details,
 	}
 }
 

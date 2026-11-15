@@ -86,6 +86,12 @@ type TaskShape struct {
 	// the boundary where documentation claims must stay distinguishable from
 	// observed implementation facts.
 	BroadRepositoryAnalysis bool `json:"broadRepositoryAnalysis,omitempty"`
+	// VCSInspection reports that the objective is about version-control state
+	// (commits, branches, tags, the working tree) rather than the repository's
+	// content. Its evidence is a git inspection, not a source survey, so a
+	// requirement for implementation structure would ask the run for something
+	// the question does not need.
+	VCSInspection bool `json:"vcsInspection,omitempty"`
 	// RepositoryFacts is the bounded workspace probe captured when the shape
 	// was built. Sufficiency uses it to decide whether a broad account needs an
 	// implementation observation or documentation alone is all the project
@@ -502,6 +508,7 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 
 	shape.RepositoryScope = repositoryScope(shape.Objective, intent)
 	shape.BroadRepositoryAnalysis = shape.RepositoryScope && broadRepositoryAnalysis(shape.Objective, intent)
+	shape.VCSInspection = vcsInspection(shape.Objective)
 	shape.NeedsCodeNavigation = needsCodeNavigation(shape.Objective, intent)
 	shape.NeedsRelationshipNavigation = needsRelationshipNavigation(shape.Objective)
 	shape.StructuralDepth = deriveStructuralDepth(shape)
@@ -1028,6 +1035,51 @@ func requestsContent(objective string) bool {
 	return false
 }
 
+// structuralAnalysisRequested reports whether the objective asks for the
+// repository's content structure (architecture, modules, design, stack) rather
+// than only its version-control state.
+func structuralAnalysisRequested(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	return containsAnyPhrase(normalized, structuralConceptPhrases)
+}
+
+// vcsInspection reports whether the objective asks about version-control
+// state: commits, branches, tags, the working tree, or a diff. A question like
+// that is answered by inspecting repository metadata, so requiring a source
+// survey would demand evidence the answer never uses.
+//
+// It can coexist with a broad account ("analyze the architecture and its git
+// history"): the caller keeps the survey when the request also asks for the
+// repository's content structure.
+func vcsInspection(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	if containsAnyWord(normalized, []string{"git"}) {
+		// Naming git is not enough: "explain how git hooks are configured" is a
+		// question about the implementation. Only a state noun makes the
+		// objective inspectable through git metadata.
+		for _, noun := range []string{
+			"status", "log", "branch", "branches", "tag", "tags",
+			"commit", "commits", "diff", "remote", "remotes", "stash",
+			"worktree", "head", "state", "history", "vcs",
+		} {
+			if containsAnyWord(normalized, []string{noun}) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, phrase := range []string{
+		" version control ", " commit history ", " uncommitted changes ",
+		" uncommitted work ", " untracked files ", " staged changes ",
+		" working tree ", " vcs ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // broadRepositoryAnalysis reports whether the request's objective is a
 // repository-wide account rather than one targeted fact.
 //
@@ -1281,11 +1333,17 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 				}
 			}
 		}
-		if shape.RepositoryScope {
+		// A version-control question is satisfied by the git inspection it
+		// names, not by a source survey. Survey evidence is still required when
+		// the request also asks about the repository's content structure.
+		if shape.RepositoryScope && (!shape.VCSInspection || structuralAnalysisRequested(shape.Objective)) {
 			add("repository_overview", "the answer is about the repository")
 			if shape.BroadRepositoryAnalysis {
 				add("repository_survey", "a broad overview needs a second content observation or the repository's structure")
 			}
+		}
+		if shape.VCSInspection {
+			add("vcs_observation", "the answer is about the repository's version-control state")
 		}
 		if wantsTestInventory(shape.Objective) &&
 			(shape.BroadRepositoryAnalysis || testAbsenceQuestion(shape.Objective)) {

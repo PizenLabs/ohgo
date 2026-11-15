@@ -628,3 +628,28 @@ func TestEvaluateTaskCompletionRequiresAContract(t *testing.T) {
 		t.Fatal("completion without a contract was accepted")
 	}
 }
+
+// A targetless behavioural objective whose request stated the expected outcome
+// is satisfied by the observed change and a successful check of the named kind.
+// The check is bounded by the changed packages, so it does not need a repo-wide
+// run: the reported bug was never in the unrelated packages.
+func TestEvaluateTaskCompletionAcceptsStatedOutcomeWithALocalCheck(t *testing.T) {
+	root := t.TempDir()
+	writeTarget(t, root, "layout/tmpl/cart/show.gohtml", "old\n")
+	intent := contract.IntentContract{
+		Objective:           "Fix the per-line total so it equals unit price times quantity, then verify the affected tests pass.",
+		Kind:                contract.ObjectiveMutation,
+		BehavioralObjective: true,
+		Verification:        []contract.VerificationRequirement{{Kind: contract.VerifyAny, Check: contract.CheckTest}},
+	}
+	writeTarget(t, root, "layout/tmpl/cart/show.gohtml", "new\n")
+
+	verdict := evaluate(root, intent, nil, nil, []Turn{
+		{Results: []ToolOutcome{mutationOutcome(root, "layout/tmpl/cart/show.gohtml")}},
+		{Results: []ToolOutcome{verificationOutcomeWithCheck(contract.CheckTest, VerificationScope{Path: "layout"})}},
+		cleanStop(),
+	})
+	if !verdict.Complete() {
+		t.Fatalf("an observed fix with its named check was not complete: %s", verdict.Reason)
+	}
+}

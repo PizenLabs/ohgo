@@ -3,6 +3,7 @@ package tools
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -31,6 +32,8 @@ func TestCommandCapabilityClassifiesExecutionAsExec(t *testing.T) {
 		"git branch",
 		"git config --get user.name",
 		"git stash list",
+		"find . -name '*.go'",
+		"find . -type f -exec grep -l x {} +",
 		"echo done 2>/dev/null",
 		"go test ./... 2>&1 | tee /dev/null",
 		"FOO=bar go test ./...",
@@ -72,6 +75,8 @@ func TestCommandCapabilityClassifiesMutationAsWrite(t *testing.T) {
 		"echo 'package main' > internal/generated.go",
 		"echo more >> notes.txt",
 		"cat template.txt > out.txt",
+		"find . -name '*.tmp' -delete",
+		"find . -name '*.go' -fprint list.txt",
 		"sed -i 's/a/b/' file.go",
 		"sed -i.bak 's/a/b/' file.go",
 		"sed --in-place 's/a/b/' file.go",
@@ -317,5 +322,131 @@ func TestCommandAffectedPaths(t *testing.T) {
 		if !found {
 			t.Errorf("CommandAffectedPaths(%q) = %v, want %q", command, CommandAffectedPaths(command, root), want)
 		}
+	}
+}
+
+// A git mutation stays a mutation when a global option sits between "git" and
+// the subcommand. Reading the first non-flag word treated the option's value as
+// the subcommand, so `git -C . commit` was admitted as an execution and the
+// change it made never reached completion evidence.
+func TestCommandCapabilitySeesGitMutationsBehindGlobalOptions(t *testing.T) {
+	commands := []string{
+		"git -C . commit -m x",
+		"git -c core.pager=cat commit -m x",
+		"git --git-dir .git commit -m x",
+		"git --work-tree . commit -m x",
+		"git -C . reset --hard",
+		"git -C . clean -fd",
+	}
+	for _, command := range commands {
+		if got := commandCapability(command); got != agent.TierWrite {
+			t.Errorf("commandCapability(%q) = %s, want write: the subcommand mutates", command, got)
+		}
+	}
+
+	// The same options on a read subcommand stay exec, so a global option is not
+	// itself treated as a write.
+	for _, command := range []string{
+		"git -C . status",
+		"git -c core.pager=cat log --oneline -5",
+		"git --git-dir .git diff",
+	} {
+		if got := commandCapability(command); got != agent.TierExec {
+			t.Errorf("commandCapability(%q) = %s, want exec", command, got)
+		}
+	}
+}
+
+// A positional name creates a branch or a remote, and a note subcommand writes
+// notes. Only the flag forms were classified, so these writes looked like reads.
+func TestCommandCapabilitySeesPositionalGitWrites(t *testing.T) {
+	writing := []string{
+		"git branch feature-x",
+		"git branch feature-x main",
+		"git remote add origin https://example.com/x.git",
+		"git remote remove origin",
+		"git notes add -m note HEAD",
+	}
+	for _, command := range writing {
+		if got := commandCapability(command); got != agent.TierWrite {
+			t.Errorf("commandCapability(%q) = %s, want write", command, got)
+		}
+	}
+
+	reading := []string{
+		"git branch",
+		"git branch -a",
+		"git branch -l 'release/*'",
+		"git branch --show-current",
+		"git remote",
+		"git remote -v",
+		"git notes list",
+	}
+	for _, command := range reading {
+		if got := commandCapability(command); got != agent.TierExec {
+			t.Errorf("commandCapability(%q) = %s, want exec", command, got)
+		}
+	}
+}
+
+// A complete enumeration against this workspace is absence evidence; a filtered,
+// piped, conditional, or other-repository invocation is not.
+func TestGitAbsenceNamespacesRequiresACompleteLocalEnumeration(t *testing.T) {
+	root := "/workspace/project"
+	cases := []struct {
+		name     string
+		command  string
+		output   string
+		exitCode int
+		want     []string
+	}{
+		{"tags", "git tag -l", "", 0, []string{"tag"}},
+		{"bare tag", "git tag", "", 0, []string{"tag"}},
+		{"branches", "git branch -a", "", 0, []string{"branch"}},
+		{"remotes", "git remote -v", "", 0, []string{"remote"}},
+		{"compound", "git branch -a; git tag -l; git diff --stat", "a\nb\n", 0, []string{"branch", "tag"}},
+		{"inside root", "git -C backend tag -l", "", 0, []string{"tag"}},
+		{"unborn branch", "git log --oneline -5", "fatal: your current branch 'master' does not have any commits yet\n", 128, []string{"commit"}},
+		{"scoped tag", "git tag -l 'v*'", "", 0, nil},
+		{"piped tag", "git tag -l | head -20", "", 0, nil},
+		{"conditional", "git tag -l || true", "", 0, nil},
+		{"other repo", "git -C /other tag -l", "", 0, nil},
+		{"other repo commit text", "git -C /other log", "No commits yet\n", 128, nil},
+		{"not a repo", "git tag -l", "fatal: not a git repository\n", 0, nil},
+		{"failed enumeration", "git branch -a", "", 1, nil},
+		{"truncated enumeration", "git tag -l", "[output truncated at 30000 bytes]", 0, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := GitAbsenceNamespaces(tc.command, tc.output, tc.exitCode, root)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("GitAbsenceNamespaces(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
+	}
+}
+
+// A successful read subcommand is a version-control observation; a mutating
+// one, or a failed run, is not. A VCS-state question needs the former.
+func TestGitObservationExcludesMutationsAndFailures(t *testing.T) {
+	reading := []string{"git status", "git log --oneline -5", "git branch -a", "git tag -l", "git diff --stat"}
+	for _, command := range reading {
+		if !GitObservation(command, 0, "/workspace/project") {
+			t.Errorf("GitObservation(%q) = false, want a completed inspection", command)
+		}
+	}
+	for _, command := range []string{"git commit -m x", "git push", "git -C . reset --hard"} {
+		if GitObservation(command, 0, "/workspace/project") {
+			t.Errorf("GitObservation(%q) = true, want a change excluded", command)
+		}
+	}
+	if GitObservation("git status", 128, "/workspace/project") {
+		t.Error("a failed git command was recorded as an observation")
+	}
+	if GitObservation("go test ./...", 0, "/workspace/project") {
+		t.Error("a non-git command was recorded as a version-control observation")
+	}
+	if GitObservation("git -C /other status", 0, "/workspace/project") {
+		t.Error("another repository's state was recorded as this workspace's observation")
 	}
 }
