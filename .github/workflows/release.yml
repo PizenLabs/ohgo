@@ -24,6 +24,12 @@ concurrency:
 jobs:
   verify:
     name: verify release tree
+    # Only a stable tag publishes itself. A suffixed tag (v0.1.2-beta) is a
+    # prerelease, and pushing one must not create a release; it is published on
+    # purpose with workflow_dispatch, which keeps the prerelease flag below
+    # meaningful. The trigger filter cannot express this exclusion, so the gate
+    # lives here, where every downstream job inherits it through `needs`.
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

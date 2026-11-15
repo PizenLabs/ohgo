@@ -115,6 +115,42 @@ func TestCommandCapabilityClassifiesMutationAsWrite(t *testing.T) {
 	}
 }
 
+// A tag listing is read-only. Classifying it as a mutation makes the runtime
+// demand a check for a change that never happened; the run that motivated this
+// test then spent its remaining turns trying to discover the change and was
+// stopped as stalled with the release workflow still unedited.
+func TestCommandCapabilityKeepsTagListingExecutable(t *testing.T) {
+	listing := []string{
+		"git tag",
+		"git tag -l",
+		"git tag --list",
+		"git tag --list 'v*'",
+		"git tag -n",
+		"git tag -n5",
+		"git tag -v v0.1.2",
+		"git tag --contains HEAD",
+		"git tag --sort=-v:refname",
+		"cd repo && git tag | head -50 && git branch -a && echo '---status---' && git status --short",
+	}
+	for _, command := range listing {
+		if got := commandCapability(command); got != agent.TierExec {
+			t.Errorf("commandCapability(%q) = %s, want exec: listing tags does not change the repository", command, got)
+		}
+	}
+
+	writing := []string{
+		"git tag v0.1.3",
+		"git tag -a v0.1.3 -m release",
+		"git tag -d v0.1.2",
+		"git tag -f v0.1.2 HEAD~1",
+	}
+	for _, command := range writing {
+		if got := commandCapability(command); got != agent.TierWrite {
+			t.Errorf("commandCapability(%q) = %s, want write", command, got)
+		}
+	}
+}
+
 func TestCommandCapabilityIgnoresQuotedRedirectsAndText(t *testing.T) {
 	// A '>' inside quotes is data, not a redirect: a false write classification
 	// would block a legitimate read-only FUZZ command.
