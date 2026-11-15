@@ -278,11 +278,15 @@ final job writes `sha256sums.txt` and publishes the four tarballs with generated
 GitHub release notes. Every job runs on `ubuntu-latest`, so the release never
 consumes a paid macOS or Windows runner.
 
-A tag with a prerelease suffix (for example `v1.0.0-rc1`) is published with the
-GitHub prerelease flag. That keeps `/releases/latest`, and therefore
-`install.sh`, resolving to the last stable release: the updater rejects
-prereleases, so a prerelease marked stable would strand new installs on a build
-the client refuses to update from.
+Only a stable tag publishes itself. A suffixed tag (for example
+`v1.0.0-rc1`) does not start the workflow on push: the verify job's condition
+skips every prerelease ref. Publish one on purpose with the manual dispatch
+below, which is also what makes the prerelease flag meaningful.
+
+A tag with a prerelease suffix is published with the GitHub prerelease flag.
+That keeps `/releases/latest`, and therefore `install.sh`, resolving to the last
+stable release: the updater rejects prereleases, so a prerelease marked stable
+would strand new installs on a build the client refuses to update from.
 
 To rebuild and republish an existing tag without creating a new one, run the
 workflow manually with that tag as the `tag` input. `CHANGELOG.md` remains the
