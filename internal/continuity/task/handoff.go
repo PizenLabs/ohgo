@@ -283,6 +283,13 @@ func (c *Controller) recordWorkspaceSwitch(from, to workspace.Workspace, reason,
 	// control-plane move may repair stale metadata after a restart: the live
 	// workspace is the source, and the transition records that fact.
 	if approvedBy == "human" {
+		// A new session may start in the default workspace and then switch to
+		// the restored task's role. The session authority moved to match the
+		// task; the task did not move, so there is no transition to record and
+		// no source to fabricate.
+		if recorded := c.task.LastRole(); recorded.Valid() && recorded == to {
+			return nil
+		}
 		if recorded := c.task.LastRole(); recorded.Valid() && recorded != from {
 			return fmt.Errorf("%w: the task last ran under %q, not the claimed source %q",
 				ErrInvalidHandoff, recorded, from)

@@ -560,13 +560,22 @@ func IsVerificationContinuation(text string) bool {
 	if normalized == "" {
 		return false
 	}
-	if !hasExistingResultReference(normalized) {
-		return false
+	// The check and the reference must be in the same clause. A pronoun in a
+	// later clause can refer to a new subject the request named, not to the
+	// task's result: in "check this project and analyze what it is about", the
+	// check has no result reference and "it" belongs to the new analysis.
+	for _, entry := range requestClauses(normalized) {
+		if !hasExistingResultReference(entry.text) {
+			continue
+		}
+		if hasVerificationAction(entry.text) {
+			return true
+		}
+		if hasOutcomeQuestion(entry.text) && hasOutcomeWord(entry.text) {
+			return true
+		}
 	}
-	if hasVerificationAction(normalized) {
-		return true
-	}
-	return hasOutcomeQuestion(normalized) && hasOutcomeWord(normalized)
+	return false
 }
 
 // hasVerificationAction reports an explicit check request.

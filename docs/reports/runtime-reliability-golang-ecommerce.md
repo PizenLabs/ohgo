@@ -14,7 +14,7 @@
 
 **STABLE FOR TESTED SURFACE.**
 
-Five confirmed Ohgo defects were repaired at their owning layer, each with a
+Seven confirmed Ohgo defects were repaired at their owning layer, each with a
 regression that fails before the fix and passes after it, and each affected
 real-project scenario was re-executed. No critical or high-severity runtime
 defect remains in the exercised surface. The residual failures below are model
@@ -32,6 +32,9 @@ test fails on the pre-fix templates and passes on the fixed ones.
 | --- | --- | --- | --- | ---: | --- | --- |
 | A1 | repository understanding ("analyze what this project is about") | ASK | beam-free | 17 | NEEDS_REVIEW | MODEL_BEHAVIOR |
 | A2 | architecture + entry points | ASK | beam-free | 17 | NEEDS_REVIEW | MODEL_BEHAVIOR |
+| A3 | repository understanding with a stale open task present (operator run, session 395) | ASK | beam-free | 16 | NEEDS_REVIEW | **RUNTIME_CONTINUATION** |
+| A4 | A3 re-executed after the fix (real TUI, unconsumed human handoff) | ASK | beam-free | 8 | NEEDS_REVIEW | provenance review only |
+| A5 | A4 re-executed by the operator after the task was restored (session 400) | ASK | beam-free | 11 | NEEDS_REVIEW | provenance review only |
 | B | checkout investigation, reproduce | FUZZ | beam-free | 42 | PAUSED 30/30 | MODEL_BEHAVIOR |
 | C1 | free-shipping bug report (ambiguous intent) | BUILD | beam-free | 68 | PAUSED 60/60 | MODEL_BEHAVIOR |
 | C2 | cart line-total bug report | BUILD | beam-free | 43 | PAUSED 40/40 | MODEL_BEHAVIOR |
@@ -46,8 +49,8 @@ test fails on the pre-fix templates and passes on the fixed ones.
 | H | ignored files / hidden metadata | ASK | beam-free | 2 | COMPLETED | — |
 | R | resume a PAUSED FUZZ task (session 380) | FUZZ | beam-free | 7 | COMPLETED | — |
 
-Counts: 15 scenarios, 6 COMPLETED, 6 NEEDS_REVIEW, 3 PAUSED, 0 FAILED, 0
-BLOCKED. Five runtime defects, two model-behavior limits, zero environment
+Counts: 18 scenarios, 6 COMPLETED, 9 NEEDS_REVIEW, 3 PAUSED, 0 FAILED, 0
+BLOCKED. Seven runtime defects, two model-behavior limits, zero environment
 failures, zero target-project failures after the fix.
 
 ## Runtime defects discovered
@@ -115,6 +118,33 @@ failures, zero target-project failures after the fix.
 | Fix | `forceFadeRendering` clears `NO_COLOR`/`REDUCED_MOTION`/`NO_ANIMATION`, sets a colour-capable `TERM`, forces TrueColor, and restores both. The skip in `TestCompletedToolTweensStatusColor` was removed so the contract is always exercised. |
 | Regression | Those three tests, run under this machine's `NO_COLOR=1 TERM=dumb`. |
 
+### D6 — an unrelated prompt was attached to a stale open task
+
+| Field | Value |
+| --- | --- |
+| Severity | High |
+| Subsystem | RUNTIME_CONTINUATION (`internal/tui`, `internal/control/workspace`) |
+| Observed | A `NEEDS_REVIEW` task with objective `.q` was open. The next prompt, "check this project and analyze what this project is about?", was recorded into that task (`progress.json`: same task id, 16 turns, contract objective `.q`), the model was briefed "Continue this task from the recorded checkpoint", and the run was judged against `.q`'s contract. The model spent turns resolving the conflicting instructions before answering. |
+| Expected | A prompt that states a different objective starts a new task; the stale task stays durable and reachable but does not own the turn or supply its briefing. |
+| First incorrect transition | `handoffContinuation` returned `HANDOFF_CONTINUATION` for the question because a human-approved/applied handoff was treated as ownership by lifecycle alone. An informational request records no approved objective (`approvedTransitionObjective` is empty), so the turn then replaced its own contract with the task's persisted `.q` contract. |
+| Adjacent over-attachment | `IsVerificationContinuation` matched a bare "it" in a separate clause ("… analyze what it is about"), so an analysis request could attach to an open mutation task as a verification; `implementationRefinement` treated a request with a stated read action ("check this project", "explain the architecture") as an unexplained delta of the mutation task. |
+| Fix | A handoff attaches the next turn only when it recorded that turn's objective (executable requests) or when the turn's objective is the task's own. Verification requires the check and the result reference in the same clause. Refinement requires the unclassified fallback: a known grounding action is a new request. |
+| Regression | `TestHumanApprovalOfAnInformationalRequestDoesNotAttachIt`; `TestInformationalQuestionAfterAHumanSwitchStartsANewTask` (asserts a new task id and objective, and that the model's runtime state carries neither the resume directive nor `.q`); the updated `TestOpenTaskContinuationBypassesWorkspacePrediction`; `TestVerificationContinuationIsAboutExistingWork`. The two new regressions were run with the rules reverted and failed; the two updated tests pin the narrowed ownership contract. |
+| Verification | Pre-fix probe: decision `HANDOFF_CONTINUATION`, same task id, stale directive present. After the fix: new task, question objective, no stale directive, full validation green. Real TUI replay (A4): fresh ASK session over the same `.ohgo` with an unconsumed applied human BUILD -> ASK handoff on `.q`; the run created task `c17c48c9…` with the question as objective, archived `.q` under `.tasks/`, and the model's runtime state carried no resume directive (the only `.q` in the transcript is the startup resumable-task panel). The run ended in review on a documentation-provenance nit, not on the task contract. |
+
+### D7 — a switch to the task's own role was reported as a continuity failure
+
+| Field | Value |
+| --- | --- |
+| Severity | Low |
+| Subsystem | RUNTIME_CONTINUATION (`internal/continuity/task`) |
+| Observed | A new session started in the default BUILD authority over a restored ASK task. Switching to ASK published "workspace switched; task continuity was not recorded: task: invalid handoff: the task last ran under \"ask\", not the claimed source \"build\"" (sessions 395 and 400). |
+| Expected | The session authority moving to the role the task already runs under needs no task transition; it must not report a continuity failure or fabricate a handoff source. |
+| Root cause | `recordWorkspaceSwitch` compared the live source against the task's last role but did not recognise that the target already equals it. |
+| Fix | The human path returns without recording when the task's last role equals the target. The automatic path still records the live source so stale metadata after a restart is repaired, which the narrowing contract test pins. |
+| Regression | `TestSwitchToTheTasksRoleIsNotATransition` — fails before the fix with the exact message above; also asserts a real role change still records and the stale-recovery narrowing is unchanged. |
+| Verification | Focused tests pass; the boot sequence above no longer publishes the notice (the task role already agreed with the new authority). |
+
 ## Invariant results
 
 | Invariant | Result | Evidence |
@@ -125,7 +155,7 @@ failures, zero target-project failures after the fix.
 | Sufficiency | **FIXED** | D3: VCS observations satisfy VCS questions; source surveys remain required for architecture questions. |
 | Verification | PASS | D3 smoke run was refused completion after a shell redirect without a check; C4 completed only after a green test. |
 | Completion | **FIXED** | D4: observed change + named oracle completes; an unbounded mutation stays reviewable; misalignment and unexpected-path checks are unchanged. |
-| Continuation | PASS | Session 380 (PAUSED at 30/30) resumed with the same FUZZ authority and reached the correct checkout root cause from retained evidence in 7 calls. |
+| Continuation | **FIXED** | Session 380 (PAUSED at 30/30) resumed with the same FUZZ authority and reached the correct checkout root cause from retained evidence in 7 calls. D6: an unrelated prompt no longer inherits a stale task objective or its resume directive. D7: a switch to the task's own role is a no-op, not a failure. |
 | Budget | PASS | B, C1, C2 stopped as PAUSED at the configured turn cap with the reason reported, never as success. |
 | Persistence | PASS | Sessions, transcripts, and `--resume` agree on model, workspace, and history after process restarts. |
 
@@ -144,6 +174,10 @@ the fix reverted:
 - `TestBuildIntentContractAcceptsAStatedExpectedOutcome`
 - `TestExpectedOutcomeDistinguishesResultsFromSubjectiveImprovement`
 - `TestEvaluateTaskCompletionAcceptsStatedOutcomeWithALocalCheck`
+- `TestHumanApprovalOfAnInformationalRequestDoesNotAttachIt`
+- `TestInformationalQuestionAfterAHumanSwitchStartsANewTask`
+- `TestVerificationContinuationIsAboutExistingWork` (clause scope)
+- `TestSwitchToTheTasksRoleIsNotATransition`
 - `internal/tui` fade tests under `NO_COLOR=1 TERM=dumb`
 
 Full validation: `gofmt -l` empty, `go build ./...`, `go vet ./...`,
@@ -159,6 +193,12 @@ Full validation: `gofmt -l` empty, `go build ./...`, `go vet ./...`,
   runtime behavior and were reviewed. The runtime-state briefing already states
   the claim rule ("configuration declares topology, not execution; implementation
   status and behavior need source/runtime evidence"); the model did not follow it.
+  A4/A5 were reviewed for the same reason at the level of a single term: `HTMX`
+  and `GoCommerce` were observed only in the README, while the implementation
+  does reference htmx (`backend/layout/tmpl/layout.gohtml`,
+  `backend/layout/http.go`, `backend/layout/bounded_context.go`) in files those
+  runs never read. The review is truthful; the answer's remedy is attribution or
+  one source read, not a runtime change.
 - **Honest-gap answers are completable for informational objectives.** D and H
   were COMPLETED while stating an evidence gap. This is pinned behavior: a
   bounded uncertainty report ("could not verify X from the inspected files") is

@@ -477,14 +477,22 @@ func TestOpenTaskContinuationBypassesWorkspacePrediction(t *testing.T) {
 		t.Fatal("a terminal task owned a continuation")
 	}
 
+	// An applied handoff is the next turn's continuation signal for the task's
+	// own work. It does not own an unrelated objective: the switch moved
+	// authority, not the task's identity.
+	intent := workspace.BuildIntentContract("implement the follow-up")
 	p.task.Current = func() (TaskResume, bool) {
 		return TaskResume{
 			ID: "task-1", Status: "RUNNING",
 			HandoffStatus: "APPLIED", HandoffTo: "BUILD",
+			HasContract: true, Contract: intent,
 		}, true
 	}
 	p.workspace.Current = func() string { return "BUILD" }
 	if !p.continuesOpenTask("implement the follow-up") {
 		t.Fatal("an applied handoff did not own its next turn")
+	}
+	if p.continuesOpenTask("check this project and analyze what it is about") {
+		t.Fatal("an applied handoff attached an unrelated objective")
 	}
 }

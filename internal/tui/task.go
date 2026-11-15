@@ -905,10 +905,18 @@ func handoffContinuation(current TaskResume, active, text string, next contract.
 	if strings.EqualFold(strings.TrimSpace(current.HandoffBy), "control-plane") {
 		return objectiveContinuation(current, next) || taskFollowUp(current, text)
 	}
-	// A human approval is itself the continuation decision, and it covers the
-	// turn that follows it: that turn states the objective the human approved,
-	// so it is ownership by lifecycle rather than by comparing prose.
-	return true
+	// A human approval covers the turn that follows it only when that turn
+	// states the objective it runs. An executable request records that
+	// objective on the handoff, so the approving turn attaches by lifecycle
+	// rather than by comparing prose. An informational request records none;
+	// approving a workspace move for it says nothing about the open task's
+	// objective, so a different objective is a new intent. Attaching it would
+	// run the task's persisted contract while the user asked something else and
+	// brief the model to continue work that was never requested.
+	if strings.TrimSpace(current.HandoffApprovedObjective) != "" {
+		return true
+	}
+	return objectiveContinuation(current, next)
 }
 
 // approvedTransitionObjective is the objective a widening approval covers.
@@ -1039,6 +1047,13 @@ func implementationRefinement(current TaskResume, text, active string, next cont
 		return false
 	}
 	if next.Grounding != nil && len(next.Grounding.Actions) > 0 {
+		return false
+	}
+	// A stated read (or investigate/execute) action is a capability signal of
+	// its own: "check this project", "explain the architecture" are new READ
+	// objectives, not a delta inside the open mutation. Only the unclassified
+	// fallback can be a refinement of the task's own object.
+	if next.Grounding != nil && next.Grounding.Action.Known() {
 		return false
 	}
 	if hasNoMutationConstraint(next) {
