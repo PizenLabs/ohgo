@@ -254,6 +254,33 @@ func TestProposalEscCancelsWithoutRecordingOrRunning(t *testing.T) {
 	}
 }
 
+// promptText joins every system block and the trailing runtime state of one
+// request: the full text the model is given, regardless of which region carries
+// it.
+func promptText(system []ai.SystemPromptBlock, messages []ai.Message) string {
+	var sb strings.Builder
+	for _, block := range system {
+		sb.WriteString(block.Text)
+		sb.WriteString("\n")
+	}
+	if len(messages) > 0 {
+		if tail, ok := messages[len(messages)-1].(ai.RuntimeStateMessage); ok {
+			sb.WriteString(tail.Text)
+		}
+	}
+	return sb.String()
+}
+
+// systemText joins the system blocks of one request: the cached prefix.
+func systemText(system []ai.SystemPromptBlock) string {
+	var sb strings.Builder
+	for _, block := range system {
+		sb.WriteString(block.Text)
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
 // TestProposalDecisionReachesExecutionAsTrustedState proves the human's choice
 // becomes structured control-plane state and reaches the model as a
 // human-authored block, while the user's message is untouched.
@@ -291,19 +318,20 @@ func TestProposalDecisionReachesExecutionAsTrustedState(t *testing.T) {
 	}
 
 	var block string
-	for _, sys := range systems {
-		for _, b := range sys {
-			if strings.Contains(b.Text, "decided by the human") {
-				block = b.Text
-			}
+	for i, sys := range systems {
+		if text := promptText(sys, messages[i]); strings.Contains(text, "decided by the human") {
+			block = text
+		}
+		if strings.Contains(systemText(sys), "decided by the human") {
+			t.Errorf("the decision entered the cached system prefix: %q", systemText(sys))
 		}
 	}
 	if block == "" {
-		t.Fatalf("no human-decision system block reached the provider: %+v", systems)
+		t.Fatalf("no human-decision block reached the provider: %+v", systems)
 	}
 	for _, want := range []string{"One file", "one self-contained file", "small portfolio site"} {
 		if !strings.Contains(block, want) {
-			t.Errorf("system block %q lost %q", block, want)
+			t.Errorf("decision block %q lost %q", block, want)
 		}
 	}
 	for _, batch := range messages {
@@ -336,11 +364,9 @@ func TestProposalDelegationAddsNoConstraint(t *testing.T) {
 	}
 	cmd()
 
-	for _, sys := range systems {
-		for _, b := range sys {
-			if strings.Contains(b.Text, "decided by the human") {
-				t.Errorf("a delegated choice still constrained execution: %q", b.Text)
-			}
+	for i, sys := range systems {
+		if text := promptText(sys, messages[i]); strings.Contains(text, "decided by the human") {
+			t.Errorf("a delegated choice still constrained execution: %q", text)
 		}
 	}
 	p.mu.Lock()
@@ -461,6 +487,7 @@ func TestContinuationReusesStandingProposal(t *testing.T) {
 		cmd()
 	}
 	systems = nil
+	messages = nil
 
 	done := make(chan struct{})
 	go func() { defer close(done); p.runTurn("continue") }()
@@ -468,11 +495,9 @@ func TestContinuationReusesStandingProposal(t *testing.T) {
 	<-done
 
 	constrained := false
-	for _, sys := range systems {
-		for _, b := range sys {
-			if strings.Contains(b.Text, "decided by the human") {
-				constrained = true
-			}
+	for i, sys := range systems {
+		if strings.Contains(promptText(sys, messages[i]), "decided by the human") {
+			constrained = true
 		}
 	}
 	if !constrained {
@@ -480,16 +505,15 @@ func TestContinuationReusesStandingProposal(t *testing.T) {
 	}
 
 	systems = nil
+	messages = nil
 	done = make(chan struct{})
 	go func() { defer close(done); p.runTurn("explain how the build works") }()
 	collectTurn(t, p)
 	<-done
 
-	for _, sys := range systems {
-		for _, b := range sys {
-			if strings.Contains(b.Text, "decided by the human") {
-				t.Errorf("an unrelated turn inherited the decision: %q", b.Text)
-			}
+	for i, sys := range systems {
+		if text := promptText(sys, messages[i]); strings.Contains(text, "decided by the human") {
+			t.Errorf("an unrelated turn inherited the decision: %q", text)
 		}
 	}
 }

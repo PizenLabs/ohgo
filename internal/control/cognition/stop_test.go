@@ -71,9 +71,7 @@ func TestProjectorEscalatesWhenATurnAddsNoEvidenceButRequirementsRemain(t *testi
 		t.Fatalf("sufficiency = %s, want INSUFFICIENT", projected.Report.Sufficiency)
 	}
 	state := ""
-	for _, block := range projected.System {
-		state += block.Text
-	}
+	state += strings.Join(projected.Runtime, "\n")
 	for _, want := range []string{"no new evidence", "repository_survey", "Next evidence"} {
 		if !strings.Contains(state, want) {
 			t.Fatalf("the runtime state does not explain the escalation with %q:\n%s", want, state)

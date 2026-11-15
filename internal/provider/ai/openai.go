@@ -269,6 +269,13 @@ func toOpenAIMessages(messages []Message, system []SystemPromptBlock) ([]openAIM
 				Name:       m.ToolName,
 				Content:    m.Text(),
 			})
+		case RuntimeStateMessage:
+			// Chat Completions has no runtime role, so the briefing travels in
+			// the user role and carries its own envelope. Empty text is
+			// dropped: a content part with no text is rejected by providers.
+			if m.Text != "" {
+				out = append(out, openAIMessage{Role: "user", Content: m.Text})
+			}
 		default:
 			return nil, fmt.Errorf("ai: unsupported message type %T", msg)
 		}

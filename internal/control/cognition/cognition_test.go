@@ -370,43 +370,73 @@ func TestEvidenceExternalRetainsProvenanceAndUntrustedMark(t *testing.T) {
 	}
 }
 
-func TestProjectionElidesStructuralResultsAndKeepsRecentExact(t *testing.T) {
-	state := NewEvidenceState()
-	state.ObserveOutcome(agent.ToolOutcome{
+// A tool result's wire form is a function of the result alone. This is the
+// cache contract the projection exists to serve: the provider cached the bytes
+// of a message when it was first sent, so a later turn must not re-render it
+// because the conversation grew.
+func TestProjectionBoundsEachResultIndependentOfHistory(t *testing.T) {
+	structural := NewEvidenceState()
+	structural.ObserveOutcome(agent.ToolOutcome{
 		CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "."},
 		Result: agent.Result{Text: "a\nb\nc", Details: map[string]any{"path": ".", "entries": 3}},
 	})
-	messages := []agent.Message{
+	head := []agent.Message{
 		agent.UserMessage{Text: "check"},
 		agent.ToolResultMessage{ToolCallID: "ls-1", ToolName: "ls", Content: []ai.ContentBlock{ai.TextContent{Text: "a\nb\nc"}}},
-		agent.ToolResultMessage{ToolCallID: "read-1", ToolName: "read", Content: []ai.ContentBlock{ai.TextContent{Text: "exact recent"}}},
 	}
-	projected, report := projectMessages(messages, state, ProjectorOptions{KeepRecentToolResults: 1, ExactKeepBytes: 4096})
-	if len(projected) != len(messages) {
-		t.Fatalf("projection removed messages: %d -> %d", len(messages), len(projected))
+	exact := strings.Repeat("x", 2048)
+	state := structural
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "read-1", ToolName: "read", Args: map[string]any{"path": "file.go"},
+		Result: agent.Result{Text: exact, Details: map[string]any{"path": "file.go", "totalLines": 1, "offset": 1, "limit": 2000}},
+	})
+	read := agent.ToolResultMessage{ToolCallID: "read-1", ToolName: "read", Content: []ai.ContentBlock{ai.TextContent{Text: exact}}}
+
+	early, earlyReport := projectMessages(append(append([]agent.Message(nil), head...), read), state, ProjectorOptions{})
+	later := append(append([]agent.Message(nil), head...), read)
+	for i := range 12 {
+		filler := agent.ToolResultMessage{
+			ToolCallID: "filler-" + itoa(i), ToolName: "grep",
+			Content: []ai.ContentBlock{ai.TextContent{Text: strings.Repeat("y", 512)}},
+		}
+		later = append(later, filler)
 	}
-	first, _ := projected[1].(agent.ToolResultMessage)
+	late, lateReport := projectMessages(later, state, ProjectorOptions{})
+
+	earlyRead, _ := early[2].(agent.ToolResultMessage)
+	lateRead, _ := late[2].(agent.ToolResultMessage)
+	if earlyRead.Text() != lateRead.Text() {
+		t.Fatalf("an already-sent result was re-rendered as the history grew:\n early %d bytes\n late  %d bytes",
+			len(earlyRead.Text()), len(lateRead.Text()))
+	}
+	first, _ := early[1].(agent.ToolResultMessage)
 	if !strings.Contains(first.Text(), "summarized from runtime evidence") {
-		t.Fatalf("old structural result was not elided: %q", first.Text())
+		t.Fatalf("structural result was not summarized: %q", first.Text())
 	}
-	second, _ := projected[2].(agent.ToolResultMessage)
-	if second.Text() != "exact recent" {
-		t.Fatalf("recent result was rewritten: %q", second.Text())
+	if earlyRead.Text() != exact {
+		t.Fatalf("a result inside the exact bound was rewritten: %d bytes", len(earlyRead.Text()))
 	}
-	if len(report.Elisions) != 1 {
-		t.Fatalf("elisions = %d, want 1", len(report.Elisions))
+	if len(earlyReport.Elisions) != 1 {
+		t.Fatalf("elisions = %d, want the structural result summarized and the exact one kept", len(earlyReport.Elisions))
+	}
+	if lateRead.Text() != earlyRead.Text() {
+		t.Fatalf("the exact result changed once more history arrived")
+	}
+	if len(lateReport.Elisions) < len(earlyReport.Elisions) {
+		t.Fatalf("appending history reduced elisions: %d < %d", len(lateReport.Elisions), len(earlyReport.Elisions))
 	}
 }
 
-func TestProjectionEnforcesExactWorkingSetBudget(t *testing.T) {
-	// The budget is a contract, not a hint. Previously an old exact result
-	// smaller than ExactKeepBytes bypassed the working-set budget and every
-	// page of a large file stayed verbatim.
+// Aggregate growth is compaction's job. Per-request re-elision used to shrink
+// the request by rewriting messages the provider had already cached, which
+// traded a bounded token saving for a full prefix invalidation.
+func TestProjectionDoesNotRewriteOversizedResultsPerRequest(t *testing.T) {
 	state := NewEvidenceState()
 	messages := []agent.Message{agent.UserMessage{Text: "read several files"}}
-	for i := 0; i < 5; i++ {
+	options := ProjectorOptions{}
+	for i := range 5 {
 		path := "file" + itoa(i) + ".go"
-		text := strings.Repeat("x", 2048)
+		text := strings.Repeat("x", options.normalized().ExactKeepBytes*2)
 		state.ObserveOutcome(agent.ToolOutcome{
 			CallID: "read-" + itoa(i), ToolName: "read", Args: map[string]any{"path": path},
 			Result: agent.Result{Text: text, Details: map[string]any{"path": path, "totalLines": 1, "offset": 1, "limit": 2000}},
@@ -416,27 +446,26 @@ func TestProjectionEnforcesExactWorkingSetBudget(t *testing.T) {
 			Content: []ai.ContentBlock{ai.TextContent{Text: text}},
 		})
 	}
-	options := ProjectorOptions{
-		KeepRecentToolResults: 1,
-		ExactKeepBytes:        4096,
-		ToolResultBudgetBytes: 4096,
+	first, _ := projectMessages(messages, state, options)
+	second, _ := projectMessages(messages, state, options)
+	for i := range first {
+		left, leftOK := first[i].(agent.ToolResultMessage)
+		right, rightOK := second[i].(agent.ToolResultMessage)
+		if leftOK != rightOK {
+			t.Fatalf("message %d changed kind between identical projections", i)
+		}
+		if leftOK && left.Text() != right.Text() {
+			t.Fatalf("message %d is not a pure function of its evidence", i)
+		}
 	}
-	projected, report := projectMessages(messages, state, options)
-	exactBytes := 0
-	for _, message := range projected {
+	for _, message := range first {
 		result, ok := message.(agent.ToolResultMessage)
 		if !ok {
 			continue
 		}
-		if !strings.Contains(result.Text(), "summarized from runtime evidence") {
-			exactBytes += len(result.Text())
+		if len(result.Text()) > options.normalized().ExactKeepBytes+256 {
+			t.Fatalf("result = %d bytes, want it bounded by the per-result cap", len(result.Text()))
 		}
-	}
-	if exactBytes > options.ToolResultBudgetBytes {
-		t.Fatalf("exact tool-result bytes = %d, over budget %d", exactBytes, options.ToolResultBudgetBytes)
-	}
-	if len(report.Elisions) == 0 {
-		t.Fatal("old exact results were not summarized")
 	}
 }
 
@@ -455,7 +484,7 @@ func TestProjectionKeepsConflictingEvidenceExact(t *testing.T) {
 		agent.ToolResultMessage{ToolCallID: "read-2", ToolName: "read", Content: []ai.ContentBlock{ai.TextContent{Text: "1\tnew"}}},
 		agent.ToolResultMessage{ToolCallID: "tail", ToolName: "read", Content: []ai.ContentBlock{ai.TextContent{Text: "tail"}}},
 	}
-	projected, report := projectMessages(messages, state, ProjectorOptions{KeepRecentToolResults: 1, ExactKeepBytes: 4096})
+	projected, report := projectMessages(messages, state, ProjectorOptions{ExactKeepBytes: 4096})
 	if len(report.Elisions) != 0 {
 		t.Fatalf("conflicting evidence must not be summarized, elisions = %#v", report.Elisions)
 	}
@@ -1080,8 +1109,8 @@ func TestProjectorReportsEvidenceAndElidesOldResults(t *testing.T) {
 	if result.Report.Shape == "" || result.Report.Evidence == "" {
 		t.Fatalf("report is missing shape/evidence: %#v", result.Report)
 	}
-	if len(result.System) != 1 || !strings.Contains(result.System[0].Text, "Runtime state") {
-		t.Fatalf("system block = %#v", result.System)
+	if len(result.Runtime) != 1 || !strings.Contains(result.Runtime[0], "Runtime state") {
+		t.Fatalf("runtime block = %#v", result.Runtime)
 	}
 }
 
@@ -1222,5 +1251,75 @@ func TestBuildShapeHonorsAContractedNoMutationLimit(t *testing.T) {
 	}
 	if shape.Authority.MutationAllowed {
 		t.Fatal("a contracted no-mutation limit left mutation permitted")
+	}
+}
+
+// Equivalent evidence must serialize identically: the runtime state block is
+// part of the request, and two builds of the same semantic state that differ
+// would invalidate the provider's cache without any state having changed.
+func TestRenderStateIsDeterministicForEquivalentEvidence(t *testing.T) {
+	build := func() (*EvidenceState, ExecutionState) {
+		state := NewEvidenceState()
+		for i := range 6 {
+			path := "pkg/file" + itoa(i) + ".go"
+			state.ObserveOutcome(agent.ToolOutcome{
+				CallID:   "call-" + itoa(i),
+				ToolName: "read",
+				Args:     map[string]any{"path": path},
+				Result: agent.Result{
+					Text:    "package pkg\nfunc f" + itoa(i) + "() {}\n",
+					Details: map[string]any{"path": path, "totalLines": 2, "offset": 1, "limit": 100},
+				},
+			})
+		}
+		return state, ExecutionFromEvidence(state)
+	}
+	shape := BuildShape(contract.IntentContract{
+		Objective: "Explain the package.",
+		Kind:      contract.ObjectiveInformational,
+	}, ShapeParams{Authority: "ask", Facts: RepositoryFacts{Go: true, Markers: []string{"go.mod"}}})
+	render := func(state *EvidenceState, execution ExecutionState) string {
+		suff := EvaluateSufficiency(shape, state, execution, false)
+		candidates := Candidates(shape, state, execution, nil, RepositoryFacts{Go: true}, suff)
+		return RenderState(shape, state, execution, suff, candidates, DefaultStateBlockBytes, DefaultStateBlockItems)
+	}
+	firstState, firstExecution := build()
+	secondState, secondExecution := build()
+	first := render(firstState, firstExecution)
+	second := render(secondState, secondExecution)
+	if first != second {
+		t.Fatalf("equivalent evidence rendered differently:\n--- first ---\n%s\n--- second ---\n%s", first, second)
+	}
+	if first == "" {
+		t.Fatal("the state block is empty; the comparison proved nothing")
+	}
+}
+
+// The withheld-tool notices are derived from a map of reasons. Equivalent tool
+// surfaces must produce the same text regardless of the input order, because
+// the notice text is part of the request.
+func TestCandidateNoticesAreOrderIndependent(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Objective: "Explain the build.",
+		Kind:      contract.ObjectiveInformational,
+	}, ShapeParams{Authority: "ask"})
+	suff := EvaluateSufficiency(shape, NewEvidenceState(), ExecutionState{}, false)
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "write", tier: agent.TierWrite, ops: []contract.ChangeOp{contract.ChangeCreate}},
+		testTool{name: "edit", tier: agent.TierWrite, ops: []contract.ChangeOp{contract.ChangeModify}},
+		testTool{name: "bash", tier: agent.TierExec, classes: []agent.ActionClass{agent.ActionExecute}},
+	}
+	first := Candidates(shape, NewEvidenceState(), ExecutionState{}, tools, RepositoryFacts{}, suff)
+	reversed := []agent.Tool{tools[3], tools[2], tools[1], tools[0]}
+	second := Candidates(shape, NewEvidenceState(), ExecutionState{}, reversed, RepositoryFacts{}, suff)
+	if strings.Join(first.Notices, "|") != strings.Join(second.Notices, "|") {
+		t.Fatalf("notices depend on input order:\n%v\n%v", first.Notices, second.Notices)
+	}
+	if first.CandidateSummary(2000) != second.CandidateSummary(2000) {
+		t.Fatalf("candidate summary depends on input order")
+	}
+	if len(first.Notices) == 0 {
+		t.Fatal("no notices rendered; the comparison proved nothing")
 	}
 }

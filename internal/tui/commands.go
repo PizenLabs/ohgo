@@ -72,10 +72,16 @@ type connectFlow struct {
 
 // formatCount renders large token counts compactly.
 func formatCount(n int) string {
-	if n >= 1_000_000 {
+	// The magnitude decides the unit, so a negative delta abbreviates the same
+	// way its positive counterpart does.
+	magnitude := n
+	if magnitude < 0 {
+		magnitude = -magnitude
+	}
+	if magnitude >= 1_000_000 {
 		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 	}
-	if n >= 1_000 {
+	if magnitude >= 1_000 {
 		return fmt.Sprintf("%dk", n/1_000)
 	}
 	return fmt.Sprintf("%d", n)

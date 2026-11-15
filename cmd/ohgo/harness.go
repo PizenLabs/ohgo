@@ -85,6 +85,12 @@ func newHarness(registry *ai.Registry, loop *agent.Loop, store *session.Store, s
 		registry: registry, loop: loop, store: store, sess: sess,
 		usage: usage, settings: settings, root: root, model: model,
 	}
+	if loop != nil {
+		// The loop reports one cache sample per provider request. The turn
+		// totals alone cannot say whether a request repeated the previous
+		// prefix, which is the only part of prompt-cache behaviour Ohgo owns.
+		loop.SetUsageLog(usage)
+	}
 	h.bindSession(sess)
 	return h
 }

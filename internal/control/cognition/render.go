@@ -13,7 +13,13 @@ import (
 // one screen and must not crowd out the evidence it summarizes.
 const (
 	// DefaultStateBlockBytes bounds the model-facing runtime state block.
-	DefaultStateBlockBytes = 1400
+	//
+	// The block is the request's volatile tail, appended after every cached
+	// byte, so its size costs no cache reuse. Sizing it below the contract and
+	// the action surface silently deletes the instruction the model must
+	// follow, which is why the budget covers a full briefing rather than one
+	// terminal screen.
+	DefaultStateBlockBytes = 2200
 	// DefaultStateBlockItems bounds the evidence lines in the block.
 	DefaultStateBlockItems = 12
 	// AuditBlockBytes bounds the persisted audit projection.
@@ -27,7 +33,14 @@ const (
 // derived, required, and external evidence, and it carries provenance for each
 // line. External evidence is never presented as instruction.
 func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionState, suff Sufficiency, candidates CandidateSet, maxBytes, maxItems int) string {
-	if evidence == nil || (len(evidence.Items) == 0 && execution.ToolCalls == 0) {
+	if evidence == nil {
+		evidence = NewEvidenceState()
+	}
+	// An empty state has nothing to report, with one exception: when the
+	// workspace root cannot be enumerated, the block is the only place that
+	// says so. Returning "" there left the model with no tools, no evidence,
+	// and no explanation of why its surface was empty.
+	if len(evidence.Items) == 0 && execution.ToolCalls == 0 && shape.RepositoryFacts.RootError == "" {
 		return ""
 	}
 	if maxBytes <= 0 {
@@ -115,11 +128,11 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	}
 	sections = append(sections, verdictLine.String())
 
-	if len(suff.Next) > 0 {
-		sections = append(sections, fmt.Sprintf("Next evidence: %s\n",
-			bound(strings.Join(uniqueStrings(suff.Next), "; "), 220)))
-	}
 	var suffLine strings.Builder
+	// The action surface precedes the evidence detail: it is the part the model
+	// must obey, and it is the first thing a tight byte budget would otherwise
+	// drop — a briefing that hides which actions exist and why one is useless is
+	// worse than one that omits a frontier coordinate.
 	fmt.Fprintf(&suffLine, "Available actions: %s\n", candidates.CandidateSummary(420))
 	if len(candidates.Tools) == 0 &&
 		(candidates.AnswerOnly || suff.Stage == StageAnswer ||
@@ -143,7 +156,27 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 	if len(candidates.Notices) > 0 {
 		fmt.Fprintf(&suffLine, "Withheld: %s\n", bound(strings.Join(candidates.Notices, "; "), 420))
 	}
+	// A redundant capability is still offered: it remains in the tool block so
+	// the request's cached prefix survives the verdict. Saying it here, next to
+	// the actions that can close the gap, is what keeps the offer from reading
+	// as an endorsement.
+	if len(candidates.Redundant) > 0 {
+		names := make([]string, 0, len(candidates.Redundant))
+		reasons := make([]string, 0, len(candidates.Redundant))
+		for _, entry := range candidates.Redundant {
+			names = append(names, entry.Tool)
+			reasons = append(reasons, entry.Reason)
+		}
+		fmt.Fprintf(&suffLine, "Available but cannot close the gap: %s (%s)\n",
+			bound(strings.Join(uniqueStrings(names), ", "), 120),
+			bound(strings.Join(uniqueStrings(reasons), "; "), 260))
+	}
 	sections = append(sections, suffLine.String())
+
+	if len(suff.Next) > 0 {
+		sections = append(sections, fmt.Sprintf("Next evidence: %s\n",
+			bound(strings.Join(uniqueStrings(suff.Next), "; "), 220)))
+	}
 
 	failures := evidence.FailureState()
 	var corrections, failed []FailureRecord
@@ -433,6 +466,13 @@ func sourceSuffix(source Source) string {
 // The probe is a hint, never evidence: completion still requires an observation.
 func workspaceProbeSummary(facts RepositoryFacts) string {
 	var parts []string
+	if facts.RootError != "" {
+		// First and unconditional: a model that reads a language list without
+		// this concludes the project is small, when in fact nothing could be
+		// listed. Naming it removes that false confidence without claiming
+		// anything the probe did not measure.
+		parts = append(parts, "root not enumerable ("+facts.RootError+")")
+	}
 	if facts.RootFiles > 0 {
 		parts = append(parts, fmt.Sprintf("%d root entries", facts.RootFiles))
 	}

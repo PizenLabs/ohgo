@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/control/contract"
@@ -236,17 +237,32 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 	// that can actually establish absence.
 	if claims := negativeClaims(answer); len(claims) > 0 {
 		coverage := collectGroundingCoverage(turns)
+		// The most specific subject leads. One sentence can produce both a
+		// precise claim ("portfolio file") and the bare noun a pattern matched
+		// ("file"), and reporting the bare noun tells the reader nothing about
+		// what the answer got wrong.
+		sort.SliceStable(claims, func(i, j int) bool {
+			return len(claims[i].Subject) > len(claims[j].Subject)
+		})
 		for _, claim := range claims {
-			if !coverage.supports(claim) {
-				detail := fmt.Sprintf("the answer treats %q as absent without evidence covering the claim", claim.Subject)
-				if coverage.testFiles > 0 && strings.Contains(strings.ToLower(claim.Subject), "test") {
-					detail = fmt.Sprintf(
-						"the answer treats %q as absent, but the observed inventory already reports %d test file(s); inspect them or bound the claim to what was inspected",
-						claim.Subject, coverage.testFiles)
-				}
-				add("unsupported_negative_conclusion", detail)
-				break
+			if coverage.supports(claim) {
+				continue
 			}
+			detail := fmt.Sprintf("the answer treats %q as absent without evidence covering the claim", claim.Subject)
+			if observed := coverage.contradicts(claim.Subject); observed != "" {
+				// The run can do better than "unproven": it listed the very
+				// entry the answer calls missing. Naming it turns a review
+				// boundary into a correction the reader can act on.
+				detail = fmt.Sprintf(
+					"the answer says %q is absent, but this run observed %s; an observation refutes the absence",
+					claim.Subject, observed)
+			} else if coverage.testFiles > 0 && strings.Contains(strings.ToLower(claim.Subject), "test") {
+				detail = fmt.Sprintf(
+					"the answer treats %q as absent, but the observed inventory already reports %d test file(s); inspect them or bound the claim to what was inspected",
+					claim.Subject, coverage.testFiles)
+			}
+			add("unsupported_negative_conclusion", detail)
+			break
 		}
 	}
 	// Claim scope: declared configuration and dependency manifests establish
@@ -261,8 +277,18 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 	}
 	if insufficientSearchPattern.MatchString(answerLower) &&
 		(intent.Kind != contract.ObjectiveMutation || grounding.HasAction(contract.GroundingInvestigate)) {
-		add("unverified_negative_result",
-			"the answer reports an inability to find evidence as the result")
+		detail := "the answer reports an inability to find evidence as the result"
+		// "I could not read it" is not the same as "the request could not be
+		// answered": when the run listed the path, the statement is about a
+		// call that was never made, and the reader needs the path, not the
+		// admission. A capability gap (no adapter for this language) is the
+		// usual origin: it says nothing about access to the file.
+		if path := collectGroundingCoverage(turns).declinesObservedPath(answerLower); path != "" {
+			detail = fmt.Sprintf(
+				"the answer reports it could not read the evidence, but this run observed %s; that gap is a call the run did not make, not a file it could not access",
+				path)
+		}
+		add("unverified_negative_result", detail)
 	}
 	return assessment
 }
@@ -516,12 +542,102 @@ type groundingCoverage struct {
 	// knowledge call, or a command that talked to a remote (a remote check, a
 	// push, an API call).
 	external bool
+	// observedPaths are the names the run actually listed, in observation
+	// order. They exist to contradict an absence claim the run can refute,
+	// which is more useful than reporting that the absence was unproven.
+	observedPaths []string
 }
 
 // globScan is one complete recursive scan.
 type globScan struct {
 	pattern string
 	text    string
+}
+
+// contradicts returns the observed path that refutes an absence claim, or "".
+//
+// The subject is a noun phrase ("portfolio file", "frontend module"), so the
+// comparison is word by word against the stems the run actually listed, never
+// against the phrase itself. Generic nouns are ignored: "no file matched" is a
+// report about a search, not a claim that a name does not exist.
+func (c groundingCoverage) contradicts(subject string) string {
+	tokens := claimNameTokens(subject)
+	if len(tokens) == 0 {
+		return ""
+	}
+	for _, path := range c.observedPaths {
+		stem := strings.ToLower(pathStem(path))
+		if stem == "" {
+			continue
+		}
+		for _, token := range tokens {
+			if stem == token {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
+// declinesObservedPath returns the observed path an answer says it could not
+// read, or "" when the answer names nothing the run actually listed.
+func (c groundingCoverage) declinesObservedPath(answer string) string {
+	best := ""
+	for _, path := range c.observedPaths {
+		stem := strings.ToLower(pathStem(path))
+		if len(stem) < 3 || genericClaimNoun(stem) {
+			continue
+		}
+		if strings.Contains(answer, stem) && len(stem) > len(strings.ToLower(pathStem(best))) {
+			best = path
+		}
+	}
+	return best
+}
+
+// claimNameTokens extracts the words of a claim subject that can name a path.
+func claimNameTokens(subject string) []string {
+	var out []string
+	for _, field := range strings.FieldsFunc(strings.ToLower(subject), func(r rune) bool {
+		return r != '-' && r != '_' && r != '.' && r != '/' &&
+			(r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		token := pathStem(field)
+		if len(token) < 3 || genericClaimNoun(token) {
+			continue
+		}
+		out = append(out, token)
+	}
+	return out
+}
+
+// genericClaimNoun reports a noun that names a kind, never a coordinate.
+func genericClaimNoun(token string) bool {
+	switch token {
+	case "file", "files", "dir", "dirs", "directory", "directories", "folder",
+		"folders", "module", "modules", "component", "components", "route",
+		"routes", "page", "pages", "test", "tests", "package", "packages",
+		"service", "services", "the", "and", "any", "additional", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+// pathStem returns a path's last element without its extension, so
+// "app/portfolio.tsx" and "portfolio" name the same thing.
+func pathStem(value string) string {
+	value = strings.TrimSpace(strings.TrimSuffix(value, "/"))
+	if value == "" {
+		return ""
+	}
+	if index := strings.LastIndexAny(value, "/\\"); index >= 0 {
+		value = value[index+1:]
+	}
+	if index := strings.LastIndex(value, "."); index > 0 {
+		value = value[:index]
+	}
+	return value
 }
 
 // supports reports whether the coverage can establish absence of claim.
@@ -670,6 +786,9 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 				!strings.Contains(text, "more results") &&
 				!strings.Contains(text, "timed out") &&
 				!strings.Contains(text, "excluded by .gitignore")
+			if details, ok := outcome.Result.Details.(map[string]any); ok {
+				coverage.observedPaths = append(coverage.observedPaths, detailStringList(details, "paths")...)
+			}
 			switch outcome.ToolName {
 			case "ls":
 				path := proposalArgString(outcome.Args, "path")
@@ -773,6 +892,25 @@ func detailValueString(details map[string]any, key string) string {
 func detailValueBool(details map[string]any, key string) bool {
 	value, _ := details[key].(bool)
 	return value
+}
+
+// detailStringList returns a structured string list from tool details. A tool
+// that publishes no list contributes nothing, never an empty observation.
+func detailStringList(details map[string]any, key string) []string {
+	switch value := details[key].(type) {
+	case []string:
+		return value
+	case []any:
+		out := make([]string, 0, len(value))
+		for _, item := range value {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func detailValueInt(details map[string]any, key string) int {

@@ -288,6 +288,12 @@ func toAnthropicTools(specs []ToolSpec) []anthropicTool {
 
 func toAnthropicMessages(messages []Message) ([]anthropicMessage, error) {
 	out := make([]anthropicMessage, 0, len(messages))
+	// The cache breakpoint belongs on the last stable turn, never on the
+	// volatile runtime briefing: Anthropic writes a checkpoint at each
+	// cache_control marker and reuses the longest matching prefix, so a marker
+	// that moves forward with the conversation keeps the previous checkpoint
+	// valid while extending the cache over the new history.
+	breakpoint := -1
 	for _, msg := range messages {
 		switch m := msg.(type) {
 		case UserMessage:
@@ -296,8 +302,10 @@ func toAnthropicMessages(messages []Message) ([]anthropicMessage, error) {
 				return nil, err
 			}
 			out = append(out, anthropicMessage{Role: "user", Content: blocks})
+			breakpoint = len(out) - 1
 		case AssistantMessage:
 			out = append(out, anthropicMessage{Role: "assistant", Content: toAnthropicAssistantBlocks(m)})
+			breakpoint = len(out) - 1
 		case ToolResultMessage:
 			block := anthropicBlock{
 				Type:      "tool_result",
@@ -307,8 +315,21 @@ func toAnthropicMessages(messages []Message) ([]anthropicMessage, error) {
 			}
 			// Anthropic requires tool results to arrive in a user turn.
 			out = append(out, anthropicMessage{Role: "user", Content: []anthropicBlock{block}})
+			breakpoint = len(out) - 1
+		case RuntimeStateMessage:
+			if m.Text != "" {
+				out = append(out, anthropicMessage{
+					Role:    "user",
+					Content: []anthropicBlock{{Type: "text", Text: m.Text}},
+				})
+			}
 		default:
 			return nil, fmt.Errorf("ai: unsupported message type %T", msg)
+		}
+	}
+	if breakpoint >= 0 {
+		if blocks := out[breakpoint].Content; len(blocks) > 0 {
+			out[breakpoint].Content[len(blocks)-1].CacheControl = &cacheControl{Type: "ephemeral"}
 		}
 	}
 	return out, nil

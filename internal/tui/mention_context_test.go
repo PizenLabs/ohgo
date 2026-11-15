@@ -120,8 +120,9 @@ func TestMentionContextNilReaderResolvesNothing(t *testing.T) {
 }
 
 // TestRunTurnInjectsMentionedFileContent is the end-to-end contract: a prompt
-// naming a file delivers that file's real bytes to the model through the system
-// context, alongside the loop's own system prompt.
+// naming a file delivers that file's real bytes to the model, alongside the
+// loop's own system prompt. The bytes travel in the request's runtime suffix;
+// the system prefix stays stable so the provider cache survives the turn.
 func TestRunTurnInjectsMentionedFileContent(t *testing.T) {
 	var captured ai.Request
 	loop, err := agent.New(agent.Config{
@@ -147,8 +148,11 @@ func TestRunTurnInjectsMentionedFileContent(t *testing.T) {
 	})
 	p.runTurn("explain @tui/app.go")
 
-	if !systemContains(captured.System, "sentinel = 1") {
-		t.Fatalf("system = %+v, want the referenced file content attached", captured.System)
+	if !runtimeContains(captured.Messages, "sentinel = 1") {
+		t.Fatalf("runtime tail = %#v, want the referenced file content attached", captured.Messages)
+	}
+	if systemContains(captured.System, "sentinel = 1") {
+		t.Fatalf("system = %+v, want the referenced bytes out of the cached prefix", captured.System)
 	}
 	if !systemContains(captured.System, "base system prompt") {
 		t.Fatalf("system = %+v, want the base system prompt preserved", captured.System)
@@ -186,11 +190,11 @@ func TestRunTurnWarnsOnUnreadableMention(t *testing.T) {
 // TestRunTurnClearsMentionContextBetweenTurns proves per-turn context does not
 // leak: a prompt with no reference must not inherit the previous turn's files.
 func TestRunTurnClearsMentionContextBetweenTurns(t *testing.T) {
-	var systems [][]ai.SystemPromptBlock
+	var requests []ai.Request
 	loop, err := agent.New(agent.Config{
 		Model: ai.Model{ID: "m", Provider: "p"},
 		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
-			systems = append(systems, req.System)
+			requests = append(requests, req)
 			return ai.NewCompletedStream(ai.AssistantMessage{
 				Content: []ai.ContentBlock{ai.TextContent{Text: "ok"}},
 			}), nil
@@ -205,15 +209,25 @@ func TestRunTurnClearsMentionContextBetweenTurns(t *testing.T) {
 	p.runTurn("read @a.go")
 	p.runTurn("just chatting")
 
-	if len(systems) != 2 {
-		t.Fatalf("captured %d requests, want 2", len(systems))
+	if len(requests) != 2 {
+		t.Fatalf("captured %d requests, want 2", len(requests))
 	}
-	if !systemContains(systems[0], "SENTINEL CONTENT") {
-		t.Fatalf("first system = %+v, want the reference attached", systems[0])
+	if !runtimeContains(requests[0].Messages, "SENTINEL CONTENT") {
+		t.Fatalf("first request = %#v, want the reference attached", requests[0].Messages)
 	}
-	if systemContains(systems[1], "SENTINEL CONTENT") {
-		t.Fatalf("second system = %+v, want the previous turn's context cleared", systems[1])
+	if runtimeContains(requests[1].Messages, "SENTINEL CONTENT") {
+		t.Fatalf("second request = %#v, want the previous turn's context cleared", requests[1].Messages)
 	}
+}
+
+// runtimeContains reports whether the request's trailing runtime state holds
+// needle.
+func runtimeContains(messages []ai.Message, needle string) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	tail, ok := messages[len(messages)-1].(ai.RuntimeStateMessage)
+	return ok && strings.Contains(tail.Text, needle)
 }
 
 // systemContains reports whether any system block holds needle.

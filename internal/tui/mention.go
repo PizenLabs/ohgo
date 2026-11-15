@@ -6,7 +6,6 @@ import (
 	"unicode"
 
 	"github.com/PizenLabs/ohgo/internal/prompt"
-	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -147,13 +146,14 @@ func mentionContext(text string, read func(path string) (string, error)) (string
 	return prompt.MentionContext(files), warnings
 }
 
-// systemContextBlocks wraps rendered file context as one system block.
+// systemContextBlocks wraps rendered file context as one runtime block.
 //
 // Empty context yields nil, which clears any context from a previous turn: a
-// prompt with no "@" reference must never inherit the last turn's files.
-func systemContextBlocks(text string) []ai.SystemPromptBlock {
+// prompt with no "@" reference must never inherit the last turn's files. The
+// block is part of the request's runtime suffix, not its system prompt.
+func systemContextBlocks(text string) []string {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	return []ai.SystemPromptBlock{{Text: text}}
+	return []string{text}
 }

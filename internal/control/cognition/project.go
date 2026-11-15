@@ -15,32 +15,30 @@ type ProjectorOptions struct {
 	StateBlockBytes int
 	// StateBlockItems bounds evidence lines in the state block.
 	StateBlockItems int
-	// KeepRecentToolResults is the number of trailing tool results always sent
-	// verbatim, so the model keeps its immediate working set.
-	KeepRecentToolResults int
 	// ExactKeepBytes is the largest exact result sent without excerpting.
+	//
+	// The bound is per observation, deliberately: a result's wire form must be
+	// a function of the result alone. Deciding it from the conversation's
+	// current length (a "newest N" window, a total-size budget that a growing
+	// history reallocates) means re-rendering an already-sent message on a
+	// later turn, which invalidates every cached token after it. Aggregate
+	// growth is compaction's job, where reduction is an explicit transition.
 	ExactKeepBytes int
 	// DiagnosticKeepBytes bounds an exact error or check result.
 	DiagnosticKeepBytes int
 	// ExternalKeepBytes bounds external content retained verbatim. Provenance
 	// and the untrusted envelope are always preserved.
 	ExternalKeepBytes int
-	// ToolResultBudgetBytes bounds the total exact tool-result bytes in one
-	// projected request. The newest results are retained first; older exact
-	// observations become evidence summaries. Zero uses the default.
-	ToolResultBudgetBytes int
 }
 
 // DefaultProjectorOptions returns the built-in bounds.
 func DefaultProjectorOptions() ProjectorOptions {
 	return ProjectorOptions{
-		StateBlockBytes:       DefaultStateBlockBytes,
-		StateBlockItems:       DefaultStateBlockItems,
-		KeepRecentToolResults: 2,
-		ExactKeepBytes:        4096,
-		DiagnosticKeepBytes:   8192,
-		ExternalKeepBytes:     4096,
-		ToolResultBudgetBytes: 16 * 1024,
+		StateBlockBytes:     DefaultStateBlockBytes,
+		StateBlockItems:     DefaultStateBlockItems,
+		ExactKeepBytes:      4096,
+		DiagnosticKeepBytes: 8192,
+		ExternalKeepBytes:   4096,
 	}
 }
 
@@ -53,9 +51,6 @@ func (o ProjectorOptions) normalized() ProjectorOptions {
 	if o.StateBlockItems <= 0 {
 		o.StateBlockItems = defaults.StateBlockItems
 	}
-	if o.KeepRecentToolResults < 0 {
-		o.KeepRecentToolResults = defaults.KeepRecentToolResults
-	}
 	if o.ExactKeepBytes <= 0 {
 		o.ExactKeepBytes = defaults.ExactKeepBytes
 	}
@@ -64,9 +59,6 @@ func (o ProjectorOptions) normalized() ProjectorOptions {
 	}
 	if o.ExternalKeepBytes <= 0 {
 		o.ExternalKeepBytes = defaults.ExternalKeepBytes
-	}
-	if o.ToolResultBudgetBytes <= 0 {
-		o.ToolResultBudgetBytes = defaults.ToolResultBudgetBytes
 	}
 	return o
 }
@@ -238,15 +230,22 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	// does not make README, manifests, root listings, or source reads
 	// unavailable; only a genuine absence of every provider is a task block.
 	suff = ReconcileAcquisition(p.Evidence, req.Tools, suff)
+	// The workspace probe measured whether this process can list the root at
+	// all. That is an environment fact, not a provider failure, so it is
+	// applied after the acquisition reconciliation: no remaining provider can
+	// produce a listing, and the model must be told which restriction blocks it
+	// rather than being left to discover it one failing call at a time.
+	suff = workspaceUnreadable(p.Facts, suff)
 	p.trackProgress(req.Turns, suff, novel)
 	p.stall(&suff)
 	failures := p.Evidence.FailureState()
 	candidates := Candidates(shape, p.Evidence, execution, req.Tools, p.Facts, suff)
 	advice := adviceFor(p.Advisor, shape, p.Evidence, execution, suff, candidates.Tools, req.Turns)
-	if len(advice.PreferredTools) > 0 {
-		// The advisor cannot add a tool: orderCandidateTools only reorders the
-		// filtered surface Candidates already decided.
-		candidates.Tools = orderCandidateTools(candidates.Tools, advice.PreferredTools)
+	if line := preferredToolHint(advice.PreferredTools, candidates.Tools); line != "" {
+		// The advisor cannot add a tool, and it does not reorder one either:
+		// the preference travels in the runtime block so the stable tool
+		// definitions stay byte-identical across turns.
+		advice.Hints = append([]string{line}, advice.Hints...)
 	}
 	// A repeated observation with required evidence still missing is not a
 	// reason to close the action surface: the contract is not satisfied, and
@@ -292,6 +291,7 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	report.StateBlockBytes = len(state)
 	report.ToolNames = toolNames(candidates.Tools)
 	report.Excluded = candidates.Excluded
+	report.Redundant = candidates.Redundant
 	report.ExperienceApplied = append([]string(nil), advice.Matched...)
 	report.ExperienceHints = append([]string(nil), advice.Hints...)
 	report.RequiredCapabilities = capabilityLabels(shape.RequiredCapabilities)
@@ -341,9 +341,8 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	report.Shape = shape.Summary()
 	report.Evidence = evidenceSummary(p.Evidence, suff, execution)
 	report.RetentionPolicy = fmt.Sprintf(
-		"newest %d tool result(s) exact; %d-byte exact working set; diagnostics <=%d bytes; external <=%d bytes; structural/derived results summarized",
-		options.KeepRecentToolResults, options.ToolResultBudgetBytes,
-		options.DiagnosticKeepBytes, options.ExternalKeepBytes)
+		"each result bounded once by its own size: exact <=%d bytes, diagnostics <=%d bytes, external <=%d bytes; structural/derived/transient results summarized; aggregate growth is compaction's job",
+		options.ExactKeepBytes, options.DiagnosticKeepBytes, options.ExternalKeepBytes)
 	if len(report.Elisions) == 0 && state == "" && len(candidates.Tools) == len(req.Tools) {
 		report.Reason = "no projection change"
 	}
@@ -355,9 +354,36 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 		Report:   report,
 	}
 	if state != "" {
-		result.System = []ai.SystemPromptBlock{{Text: state}}
+		result.Runtime = []string{state}
 	}
 	return result
+}
+
+// preferredToolHint renders an advisor preference as one advisory line, or ""
+// when there is nothing to prefer.
+//
+// Only names that survived narrowing are named: a preference for a withheld
+// tool would read as an offer the runtime has already refused.
+func preferredToolHint(preferred []string, offered []agent.Tool) string {
+	available := make(map[string]bool, len(offered))
+	for _, tool := range offered {
+		available[tool.Name()] = true
+	}
+	names := make([]string, 0, len(preferred))
+	for _, name := range preferred {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" || !available[trimmed] {
+			continue
+		}
+		names = append(names, trimmed)
+		if len(names) >= 8 {
+			break
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return "prefer these offered tools when they fit: " + strings.Join(names, ", ")
 }
 
 // appendExperienceHints adds bounded advisory guidance to the runtime state
@@ -394,24 +420,24 @@ func executionToolCalls(turns []agent.Turn) int {
 	return total
 }
 
-// projectMessages replaces bounded tool results with evidence summaries while
-// preserving message order and tool-call/result pairing.
+// projectMessages bounds each tool result by its own size and retention.
 //
 // Only tool results are elided. User turns, assistant text, thinking blocks,
 // and tool calls are never rewritten: the projection must not silently change
-// the model's own words or the user's request. The last KeepRecentToolResults
-// are always retained verbatim.
+// the model's own words or the user's request.
+//
+// The decision is a function of the result alone — never of its position in the
+// conversation or of how much history came before it. That is the cache
+// contract: an already-sent message keeps the exact bytes the provider cached,
+// so a growing conversation cannot re-render it. Aggregate growth is handled by
+// compaction, which is a deliberate state transition rather than a per-request
+// side effect.
 func projectMessages(messages []agent.Message, evidence *EvidenceState, options ProjectorOptions) ([]agent.Message, agent.ProjectionReport) {
+	// The bounds are a contract, not a caller preference: an unnormalised zero
+	// would excerpt to zero bytes or elide nothing while reporting an elision.
+	options = options.normalized()
 	report := agent.ProjectionReport{Applied: true}
 	out := make([]agent.Message, 0, len(messages))
-	keepExact := exactWorkingSet(messages, evidence, options)
-	totalToolResults := 0
-	for _, message := range messages {
-		if _, ok := message.(agent.ToolResultMessage); ok {
-			totalToolResults++
-		}
-	}
-	seen := 0
 	for _, message := range messages {
 		result, ok := message.(agent.ToolResultMessage)
 		if !ok {
@@ -420,16 +446,8 @@ func projectMessages(messages []agent.Message, evidence *EvidenceState, options 
 			report.BytesAfter += len(messageBytes(message))
 			continue
 		}
-		seen++
-		index := seen - 1
 		before := len(result.Text())
 		report.BytesBefore += before
-		if keepExact[index] {
-			out = append(out, message)
-			report.BytesAfter += before
-			report.KeptToolResults++
-			continue
-		}
 		item, found := evidenceForCall(evidence, result.ToolCallID)
 		if !found || item.Status == StatusConflicting {
 			out = append(out, message)
@@ -438,36 +456,18 @@ func projectMessages(messages []agent.Message, evidence *EvidenceState, options 
 			continue
 		}
 		policy, text := projectionText(result, item, options)
-		if item.Retention == RetentionExact && !keepExact[index] {
-			isRecent := totalToolResults-index <= options.KeepRecentToolResults
-			if isRecent {
-				// A recent result too large for the exact window keeps a
-				// bounded excerpt rather than disappearing entirely.
-				if policy == "" {
-					policy, text = "exact_excerpt", excerpt(result.Text(), options.ExactKeepBytes,
-						"exact observation excerpted to the working-set window")
-				}
-			} else {
-				// An old exact observation is either in the verbatim working
-				// set or summarized as a whole. This is the budget enforcement
-				// point: the exact working set is the only reason a small old
-				// result stays verbatim.
-				policy, text = "exact_budget_summary", exactSummary(item, result.ToolName)
-			}
-		}
 		if policy == "" {
 			out = append(out, message)
 			report.BytesAfter += before
 			report.KeptToolResults++
 			continue
 		}
-		replaced := agent.ToolResultMessage{
+		out = append(out, agent.ToolResultMessage{
 			ToolCallID: result.ToolCallID,
 			ToolName:   result.ToolName,
 			Content:    []ai.ContentBlock{ai.TextContent{Text: text}},
 			IsError:    result.IsError,
-		}
-		out = append(out, replaced)
+		})
 		after := len(text)
 		report.BytesAfter += after
 		report.Elisions = append(report.Elisions, agent.ProjectionElision{
@@ -479,71 +479,6 @@ func projectMessages(messages []agent.Message, evidence *EvidenceState, options 
 		})
 	}
 	return out, report
-}
-
-// exactWorkingSet selects which tool results stay verbatim.
-//
-// The newest KeepRecentToolResults are always retained as the immediate working
-// set. Older exact observations are retained while the total exact budget
-// allows; the rest become evidence summaries. Structural, derived, diagnostic,
-// and external results follow their own retention policy.
-func exactWorkingSet(messages []agent.Message, evidence *EvidenceState, options ProjectorOptions) map[int]bool {
-	type result struct {
-		index     int
-		size      int
-		retention Retention
-		found     bool
-	}
-	var results []result
-	index := 0
-	for _, message := range messages {
-		typed, ok := message.(agent.ToolResultMessage)
-		if !ok {
-			continue
-		}
-		entry := result{index: index, size: len(typed.Text())}
-		if item, found := evidenceForCall(evidence, typed.ToolCallID); found {
-			entry.retention = item.Retention
-			entry.found = true
-		}
-		results = append(results, entry)
-		index++
-	}
-
-	keep := map[int]bool{}
-	recent := options.KeepRecentToolResults
-	used := 0
-	for i := len(results) - 1; i >= 0; i-- {
-		entry := results[i]
-		if recent > 0 {
-			// The newest results are the working set, but one enormous result
-			// must still be bounded; the excerpt policy handles that case.
-			if entry.size <= options.ExactKeepBytes {
-				keep[entry.index] = true
-				used += entry.size
-			}
-			recent--
-			continue
-		}
-		if entry.found && entry.retention == RetentionExact &&
-			used+entry.size <= options.ToolResultBudgetBytes {
-			keep[entry.index] = true
-			used += entry.size
-		}
-	}
-	return keep
-}
-
-// exactSummary renders an exact observation that no longer fits the working
-// set. The provenance and size stay visible; the payload is recoverable by a
-// later read.
-func exactSummary(item EvidenceItem, tool string) string {
-	summary := strings.TrimSpace(item.Summary)
-	if summary == "" {
-		summary = "observation"
-	}
-	return fmt.Sprintf("[%s result summarized from runtime evidence; %d retained bytes]\n%s",
-		tool, len(item.Value), bound(summary, 360))
 }
 
 // projectionText decides the retention policy for one tool result.

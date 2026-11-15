@@ -181,15 +181,27 @@ func TestWithheldInventoryCallAfterAnswerIsNotDispatched(t *testing.T) {
 	if len(result.reports) != 2 {
 		t.Fatalf("projections = %d, want 2", len(result.reports))
 	}
-	withheld := false
-	for _, exclusion := range result.reports[1].Excluded {
-		if exclusion.Tool == "glob" && strings.Contains(exclusion.Reason, "source content") {
-			withheld = true
+	redundant := false
+	for _, entry := range result.reports[1].Redundant {
+		if entry.Tool == "glob" && strings.Contains(entry.Reason, "source content") {
+			redundant = true
 		}
 	}
-	if !withheld {
-		t.Fatalf("second projection exclusions = %+v, want glob withheld for source acquisition",
-			result.reports[1].Excluded)
+	if !redundant {
+		t.Fatalf("second projection redundancy = %+v, want glob unable to close the source gap",
+			result.reports[1].Redundant)
+	}
+	// The verdict is a report, not a surface change: withdrawing glob here
+	// would rewrite the tool block and invalidate every cached token behind it
+	// for the rest of the run.
+	offeredGlob := false
+	for _, name := range result.reports[1].ToolNames {
+		if name == "glob" {
+			offeredGlob = true
+		}
+	}
+	if !offeredGlob {
+		t.Fatalf("glob was withdrawn: tool names = %v", result.reports[1].ToolNames)
 	}
 	offeredRead := false
 	for _, name := range result.reports[1].ToolNames {

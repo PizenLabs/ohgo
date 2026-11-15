@@ -325,3 +325,42 @@ func TestUsageViewMapsLedger(t *testing.T) {
 		t.Errorf("session cost = %v, want %v", view.SessionCost, want)
 	}
 }
+
+// The cache rows report the share of the last prompt the provider served from
+// cache and whether that share moved. A drop is labeled by cause: a compaction
+// or a role switch is expected, a repeated prefix that reused less is not.
+func TestUsageModalReportsCacheLocality(t *testing.T) {
+	view := usageViewFixture()
+	view.HasCache = true
+	view.CacheRatio = 0.9967
+	view.UncachedInput = 104
+	view.CacheDelta = -30096
+	view.CacheVerdict = agent.CacheExpected
+	view.CacheCause = "rewind"
+
+	out := strings.Join(usageCardLines(view, 84, 0), "\n")
+	for _, want := range []string{
+		"  Cache Reuse · 99.7%",
+		"  Uncached    · 104",
+		"  Cache Change · -30k EXPECTED · rewind",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("card missing %q:\n%s", want, out)
+		}
+	}
+
+	suspicious := view
+	suspicious.CacheVerdict = agent.CacheSuspicious
+	suspicious.CacheCause = "request unchanged"
+	suspicious.CacheDelta = -1200
+	if out := usageCard(suspicious, 84, 0); !strings.Contains(out, "SUSPICIOUS · request unchanged") {
+		t.Fatalf("a suspicious regression is not visible:\n%s", out)
+	}
+
+	first := view
+	first.HasCache = true
+	first.CacheVerdict = ""
+	if out := usageCard(first, 84, 0); !strings.Contains(out, "first request") {
+		t.Fatalf("the first request has no explicit state:\n%s", out)
+	}
+}

@@ -759,18 +759,21 @@ func TestTaskProjectionDoesNotChangeExecutionState(t *testing.T) {
 	}
 }
 
-// Context reconstruction must reach the model: the task orientation is injected
-// as system context on the turn, not kept as a UI decoration.
+// Context reconstruction must reach the model: the task orientation is
+// injected as the turn's runtime state — not kept as a UI decoration, and not
+// in the cached system prefix.
 func TestRunTurnInjectsTaskContext(t *testing.T) {
 	var (
-		mu     sync.Mutex
-		system []ai.SystemPromptBlock
+		mu       sync.Mutex
+		system   []ai.SystemPromptBlock
+		messages []ai.Message
 	)
 	loop, err := agent.New(agent.Config{
 		Model: ai.Model{ID: "m", Provider: "p"},
 		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
 			mu.Lock()
 			system = req.System
+			messages = req.Messages
 			mu.Unlock()
 			return ai.NewCompletedStream(ai.AssistantMessage{
 				Content: []ai.ContentBlock{ai.TextContent{Text: "ok"}},
@@ -804,10 +807,16 @@ func TestRunTurnInjectsTaskContext(t *testing.T) {
 		joined.WriteString(block.Text)
 		joined.WriteString("\n")
 	}
-	got := joined.String()
+	if prefix := joined.String(); strings.Contains(prefix, "Task continuity") {
+		t.Errorf("task orientation entered the cached system prefix:\n%s", prefix)
+	}
+	tail, ok := messages[len(messages)-1].(ai.RuntimeStateMessage)
+	if !ok {
+		t.Fatalf("the request has no runtime state tail: %#v", messages)
+	}
 	for _, want := range []string{"Task continuity", "Objective: ship phase 1", "Next action: run tests"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("system prompt is missing %q:\n%s", want, got)
+		if !strings.Contains(tail.Text, want) {
+			t.Errorf("runtime state is missing %q:\n%s", want, tail.Text)
 		}
 	}
 }

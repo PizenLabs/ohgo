@@ -594,7 +594,12 @@ func (s *Session) log(result Result) {
 	)
 }
 
-// PlanEvidence is the bounded system block for the planning stage.
+// PlanEvidence is the bounded runtime block for the planning stage.
+//
+// It is stable for the whole run, so it is carried as the request's runtime
+// suffix rather than as a system block: the adapter installs it after the loop
+// exists, and the system prefix must stay identical across requests for the
+// provider's prompt cache to hold.
 func (s *Session) PlanEvidence() []ai.SystemPromptBlock {
 	if s == nil {
 		return nil

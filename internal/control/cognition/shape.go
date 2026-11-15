@@ -233,6 +233,12 @@ type RepositoryFacts struct {
 	Make       bool     `json:"make,omitempty"`
 	Markers    []string `json:"markers,omitempty"`
 	RootFiles  int      `json:"rootFiles,omitempty"`
+	// RootError is the root enumeration failure, when the process may stat the
+	// workspace but not list it (a macOS TCC denial reports "operation not
+	// permitted" for readdir while stat succeeds). It is not a hint about the
+	// project: it says discovery is impossible, so the runtime must not offer a
+	// repository-wide account as if a tool could still produce one.
+	RootError string `json:"rootError,omitempty"`
 }
 
 // HasLanguage reports whether the probe found the named language.
@@ -340,6 +346,11 @@ func ProbeFacts(root string) RepositoryFacts {
 	if err == nil {
 		facts.RootFiles = len(entries)
 		probeSourceEntries(root, "", 0, &facts, map[string]bool{})
+	} else {
+		// Markers are still real: stat needs no enumeration, so a root that
+		// cannot be listed can still prove which manifests exist. Only the
+		// listing itself is unavailable, and the facts must say which.
+		facts.RootError = bound(err.Error(), 200)
 	}
 	sort.Strings(facts.Markers)
 	return facts

@@ -35,7 +35,16 @@ type UsageLog struct {
 	// turns counts completed turns, so /usage can say "no turns yet" rather
 	// than showing zeros that read as measured.
 	turns int
+	// cache holds the most recent per-request cache samples, newest last. They
+	// are separate from the turn totals because cache locality is a property of
+	// consecutive requests inside a run, not of a session sum: a total cannot
+	// show that request 7 re-read 30k tokens that request 6 had already sent.
+	cache []CacheSample
 }
+
+// cacheSampleLimit bounds the retained per-request samples. Two are required to
+// classify a regression; more than a handful is history nobody reads.
+const cacheSampleLimit = 16
 
 // Add folds completed turns into the log. Turns with no reported usage
 // contribute nothing: a missing measurement is not a zero measurement, but
@@ -149,4 +158,47 @@ func (l *UsageLog) Report(estimated bool) string {
 	}
 	return fmt.Sprintf("%d turns · %s input %d, output %d ($%.4f) · %s",
 		l.turns, kind, l.input, l.output, l.cost.Total(l.usageLocked()), kind)
+}
+
+// Observe records one measured request and its request shape.
+//
+// It is the write path for cache locality: the loop calls it once per provider
+// request, so the ledger can answer "did this request repeat the last prefix"
+// separately from "how many tokens did this session spend".
+func (l *UsageLog) Observe(sample CacheSample) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.cache = append(l.cache, sample)
+	if len(l.cache) > cacheSampleLimit {
+		l.cache = append(l.cache[:0], l.cache[len(l.cache)-cacheSampleLimit:]...)
+	}
+}
+
+// LastCache returns the most recent measured request, or false when the loop
+// has not reported one.
+func (l *UsageLog) LastCache() (CacheSample, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.cache) == 0 {
+		return CacheSample{}, false
+	}
+	return l.cache[len(l.cache)-1], true
+}
+
+// CacheRegression compares the latest request with the one before it.
+//
+// It reports false when fewer than two requests are measured: a single request
+// has no previous prefix, so there is nothing to regress from.
+func (l *UsageLog) CacheRegression() (CacheRegression, CacheSample, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.cache) < 2 {
+		return CacheRegression{}, CacheSample{}, false
+	}
+	current := l.cache[len(l.cache)-1]
+	regression, ok := ClassifyCache(l.cache[len(l.cache)-2], current)
+	if !ok {
+		return CacheRegression{}, CacheSample{}, false
+	}
+	return regression, current, true
 }

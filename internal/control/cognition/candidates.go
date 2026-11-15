@@ -20,6 +20,17 @@ type CandidateSet struct {
 	Tools []agent.Tool
 	// Excluded names every withheld tool and why.
 	Excluded []agent.CandidateExclusion
+	// Redundant names capabilities that stay offered but cannot close the
+	// current gap.
+	//
+	// They are reported instead of removed because removing one rewrites the
+	// request's tool block, and a provider cache matches a prefix: the
+	// invalidation is every cached token behind the tool block, paid again at
+	// each narrowing and never recovered for that request. The surface is
+	// therefore reserved for capability and authority verdicts, and an
+	// effectiveness verdict travels in the runtime briefing, where changing it
+	// costs only the tail it already occupies.
+	Redundant []agent.CandidateExclusion
 	// Notices are bounded summaries for the audit and the runtime state block.
 	Notices []string
 	// AnswerOnly reports that the runtime closed the action surface because no
@@ -90,8 +101,10 @@ func Candidates(shape TaskShape, evidence *EvidenceState, execution ExecutionSta
 			continue
 		}
 		if sourceOnlyRemains(shape, evidence, suff) && inventoryOnlyTool(tool) {
-			exclude(tool, "the remaining evidence requires source content; another inventory cannot satisfy it")
-			continue
+			// Reported, not withdrawn: "Withheld" must stay true to its word.
+			set.Redundant = append(set.Redundant, agent.CandidateExclusion{
+				Tool: tool.Name(), Reason: redundantInventoryReason,
+			})
 		}
 		if reason, excluded := candidateExclusion(shape, execution, tool, facts, suff); excluded {
 			exclude(tool, reason)
@@ -111,11 +124,14 @@ func Candidates(shape TaskShape, evidence *EvidenceState, execution ExecutionSta
 	return set
 }
 
+// redundantInventoryReason explains why a listing cannot close a source gap.
+const redundantInventoryReason = "the remaining evidence requires source content; another inventory cannot satisfy it"
+
 // sourceOnlyRemains reports a broad repository account whose inventory is
 // already known but whose implementation content is missing. A glob or
 // directory listing cannot resolve that gap: another path list is not source
-// content, and offering it let a model spend the turn budget rediscovering the
-// same tree instead of reading the component it needs.
+// content. The verdict does not withdraw the capability — see
+// CandidateSet.Redundant — it marks the call as unable to advance the task.
 func sourceOnlyRemains(shape TaskShape, evidence *EvidenceState, suff Sufficiency) bool {
 	if shape.Kind != contract.ObjectiveInformational || !shape.RepositoryScope ||
 		!shape.BroadRepositoryAnalysis || suff.State != Insufficient {
@@ -128,9 +144,10 @@ func sourceOnlyRemains(shape TaskShape, evidence *EvidenceState, suff Sufficienc
 	if summary.HasImplementation || !summary.HasInventory {
 		return false
 	}
-	// Withhold inventory tools only when there is a concrete component to
-	// inspect. Excluding every ls/glob as soon as a root listing exists would
-	// also block the path discovery that identifies those components.
+	// Mark inventory tools redundant only when there is a concrete component
+	// to inspect. Treating every ls/glob as redundant as soon as a root listing
+	// exists would also dismiss the path discovery that identifies those
+	// components.
 	for _, component := range summary.Components {
 		if component.Structural && !component.SourceContent {
 			return true

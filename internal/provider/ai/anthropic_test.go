@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -261,7 +262,11 @@ func TestAnthropicSendsAuthAndCacheControl(t *testing.T) {
 			{Text: "You are ohgo."},
 			{Text: "Cacheable tail.", Cache: true},
 		},
-		Messages:  []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "hi"}}}},
+		Messages: []Message{
+			UserMessage{Content: []ContentBlock{TextContent{Text: "hi"}}},
+			AssistantMessage{Content: []ContentBlock{TextContent{Text: "there"}}},
+			RuntimeStateMessage{Text: "runtime briefing"},
+		},
 		MaxTokens: 1024,
 	})
 	if err != nil {
@@ -273,9 +278,49 @@ func TestAnthropicSendsAuthAndCacheControl(t *testing.T) {
 	if gotVersion != AnthropicVersion {
 		t.Errorf("anthropic-version = %q, want %q", gotVersion, AnthropicVersion)
 	}
-	// Only the final system block may carry cache_control: marking one block
-	// is enough to cache the longest matching prefix.
-	if got := strings.Count(captured, `"cache_control"`); got != 1 {
-		t.Errorf("cache_control occurrences = %d, want 1; body %s", got, captured)
+	// Two breakpoints: the final system block (the stable prompt) and the last
+	// stable conversation turn. Anthropic writes a cache checkpoint at each
+	// marker and reuses the longest matching prefix, so the message marker is
+	// what lets it cache the conversation at all. The volatile runtime briefing
+	// never carries one: caching it would only pin bytes that change every
+	// request.
+	var body struct {
+		System   []anthropicSystem  `json:"system"`
+		Messages []anthropicMessage `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(captured), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got := strings.Count(captured, `"cache_control"`); got != 2 {
+		t.Errorf("cache_control occurrences = %d, want 2; body %s", got, captured)
+	}
+	if len(body.System) != 2 || body.System[1].CacheControl == nil {
+		t.Errorf("system breakpoint missing: %+v", body.System)
+	}
+	if body.System[0].CacheControl != nil {
+		t.Errorf("an early system block carries cache_control: %+v", body.System[0])
+	}
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3; body %s", len(body.Messages), captured)
+	}
+	if body.Messages[2].Content[0].CacheControl != nil {
+		t.Errorf("the volatile runtime briefing carries cache_control: %+v", body.Messages[2])
+	}
+	marked := 0
+	for _, message := range body.Messages[:2] {
+		for _, block := range message.Content {
+			if block.CacheControl != nil {
+				marked++
+			}
+		}
+	}
+	if marked != 1 {
+		t.Errorf("stable-turn breakpoints = %d, want exactly one", marked)
+	}
+	if body.Messages[0].Content[0].CacheControl != nil {
+		t.Errorf("the breakpoint is on a non-final stable message: %+v", body.Messages[0])
+	}
+	if body.Messages[1].Content[len(body.Messages[1].Content)-1].CacheControl == nil {
+		t.Errorf("the last stable message has no breakpoint: %+v", body.Messages[1])
 	}
 }

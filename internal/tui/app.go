@@ -756,9 +756,17 @@ func (p *Program) SetModelControl(hooks ModelControlHooks) {
 	p.modelControl = hooks
 }
 
-// SetUsageLog installs the ledger behind /usage.
+// SetUsageLog installs the ledger behind /usage and the loop's per-request
+// cache samples.
+//
+// Both halves are the same ledger on purpose: cache locality is a property of
+// consecutive requests, so it has to be measured where the requests are built,
+// not reconstructed from turn totals after the fact.
 func (p *Program) SetUsageLog(log *agent.UsageLog) {
 	p.usage = log
+	if p.loop != nil {
+		p.loop.SetUsageLog(log)
+	}
 }
 
 // SetCompactor installs the production compaction backend behind /compact.
@@ -4371,15 +4379,15 @@ func (p *Program) proposalFor(text string) *ProposalResolution {
 // The copy itself lives in the prompt package; this only maps trusted state
 // onto it. A delegated choice yields no block: the human explicitly granted
 // the authority, and there is nothing to convey.
-func proposalSystemBlock(res *ProposalResolution) *ai.SystemPromptBlock {
+func proposalSystemBlock(res *ProposalResolution) string {
 	if res == nil {
-		return nil
+		return ""
 	}
 	text, ok := prompt.ProposalDecision(res.Label, res.Directive, res.Question, res.Subject)
 	if !ok {
-		return nil
+		return ""
 	}
-	return &ai.SystemPromptBlock{Text: text}
+	return text
 }
 
 // submit runs one turn off the UI goroutine.
@@ -5612,12 +5620,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		}
 	})
 
-	// "@" references are attached to the request as real system context, not
-	// left as a UI decoration: the prompt's tokens resolve against the
-	// workspace here, once, so the model reasons over the actual bytes. The
-	// context is set every turn — including to nil — so a prompt with no
-	// reference never inherits the previous turn's files. A reference that
-	// cannot be read warns in the transcript rather than sending nothing.
+	// "@" references are attached to the request as real context, not left as
+	// a UI decoration: the prompt's tokens resolve against the workspace here,
+	// once, so the model reasons over the actual bytes. The context is set
+	// every turn — including to nil — so a prompt with no reference never
+	// inherits the previous turn's files. A reference that cannot be read warns
+	// in the transcript rather than sending nothing.
 	contextText, warnings := mentionContext(text, p.readMention)
 	for _, warning := range warnings {
 		p.publish(Notice{Text: warning})
@@ -5625,22 +5633,28 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// Context is reconstructed, not replayed: the mention context plus the
 	// deterministic task orientation. Both are set every turn — including to
 	// nil — so a prompt never inherits the previous turn's context.
+	//
+	// They travel as the request's runtime suffix, never as system blocks. The
+	// system prompt precedes the conversation on every wire protocol, so a
+	// briefing that changes per turn placed there would invalidate the cached
+	// conversation on every request; as the final message it costs only its own
+	// bytes.
 	blocks := systemContextBlocks(contextText)
 	if p.task.Context != nil {
 		if taskContext := p.task.Context(); len(taskContext) > 0 {
-			blocks = append(blocks, ai.SystemPromptBlock{
-				Text: "Task continuity (runtime state, not a new user request):\n\n" + strings.Join(taskContext, "\n") + "\n\nThis task state is authoritative orientation for where execution stopped. The user's current message remains the instruction; when a resume directive is present, continue from that checkpoint and do not re-plan from the objective or repeat completed discovery unless current evidence is insufficient. Missing todos or a persisted plan are not blockers; derive the remaining steps internally and continue.",
-			})
+			blocks = append(blocks, "Task continuity (runtime state, not a new user request):\n\n"+
+				strings.Join(taskContext, "\n")+
+				"\n\nThis task state is authoritative orientation for where execution stopped. The user's current message remains the instruction; when a resume directive is present, continue from that checkpoint and do not re-plan from the objective or repeat completed discovery unless current evidence is insufficient. Missing todos or a persisted plan are not blockers; derive the remaining steps internally and continue.")
 		}
 	}
 	// A standing human proposal decision rides the same reconstructed context
 	// with control-plane provenance. proposalFor drops a decision its request
 	// no longer matches, so an unrelated turn cannot inherit it — and a turn
 	// with no standing decision sets no block, exactly as before.
-	if block := proposalSystemBlock(p.proposalFor(text)); block != nil {
-		blocks = append(blocks, *block)
+	if block := proposalSystemBlock(p.proposalFor(text)); block != "" {
+		blocks = append(blocks, block)
 	}
-	p.loop.SetSystemContext(blocks)
+	p.loop.SetRuntimeContext(blocks)
 
 	// The recovery seam is bound at the turn boundary, to the session this
 	// turn belongs to. A /new during the turn cannot retarget it, and the
@@ -6163,13 +6177,13 @@ func (p *Program) resetSessionTelemetryLocked() {
 // matching the compaction trigger's own counting rather than inventing a
 // second tokenizer. The provider's measured usage corrects it at each turn
 // boundary, so a heuristic miss never survives the turn.
-func estimateTurnInput(request []agent.Message, blocks []ai.SystemPromptBlock) int {
+func estimateTurnInput(request []agent.Message, blocks []string) int {
 	estimate := agent.EstimateMessages(request)
 	if len(blocks) > 0 {
 		texts := make([]string, 0, len(blocks))
 		for _, block := range blocks {
-			if block.Text != "" {
-				texts = append(texts, block.Text)
+			if block != "" {
+				texts = append(texts, block)
 			}
 		}
 		estimate += tokens.CountBlocks(texts, tokens.ModeEstimate)

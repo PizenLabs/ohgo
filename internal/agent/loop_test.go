@@ -454,10 +454,14 @@ func TestSetTurnHookReplacesAndSilencesReports(t *testing.T) {
 	}
 }
 
-// Per-turn system context is appended after the loop's base system prompt, and
-// clearing it removes it on the next request. This is how referenced-file
-// context reaches the model without rebuilding the loop.
-func TestSystemContextAppendsAfterBaseSystem(t *testing.T) {
+// Per-turn context reaches the model as the request's final message, never as a
+// system block, and clearing it removes it on the next request.
+//
+// The distinction is the cache contract, not formatting: the system prompt
+// precedes the whole conversation, so a per-turn block there invalidates the
+// provider's cached prefix. The failure a consumer sees when this regresses is
+// every request re-reading the full history.
+func TestRuntimeContextIsTheFinalMessage(t *testing.T) {
 	stream, requests := scriptedStream(
 		ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "ok"}}},
 		ai.AssistantMessage{Content: []ai.ContentBlock{ai.TextContent{Text: "ok"}}},
@@ -473,12 +477,12 @@ func TestSystemContextAppendsAfterBaseSystem(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	loop.SetSystemContext([]ai.SystemPromptBlock{{Text: "attached file"}})
+	loop.SetRuntimeContext([]string{"attached file"})
 	if _, err := loop.Run(ctx, []Message{UserMessage{Text: "go"}}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	loop.SetSystemContext(nil)
+	loop.SetRuntimeContext(nil)
 	if _, err := loop.Run(ctx, []Message{UserMessage{Text: "go"}}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -487,10 +491,17 @@ func TestSystemContextAppendsAfterBaseSystem(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("requests = %d, want 2", len(got))
 	}
-	if len(got[0].System) != 2 || got[0].System[0].Text != "base" || got[0].System[1].Text != "attached file" {
-		t.Fatalf("first system = %+v, want base then context", got[0].System)
+	if len(got[0].System) != 1 || got[0].System[0].Text != "base" {
+		t.Fatalf("first system = %+v, want the stable base prompt alone", got[0].System)
 	}
-	if len(got[1].System) != 1 || got[1].System[0].Text != "base" {
-		t.Fatalf("second system = %+v, want the base prompt alone after clearing", got[1].System)
+	last, ok := got[0].Messages[len(got[0].Messages)-1].(ai.RuntimeStateMessage)
+	if !ok || last.Text != "attached file" {
+		t.Fatalf("first request tail = %#v, want the runtime state message", got[0].Messages[len(got[0].Messages)-1])
+	}
+	if len(got[1].Messages) == 0 {
+		t.Fatalf("second request has no messages")
+	}
+	if _, ok := got[1].Messages[len(got[1].Messages)-1].(ai.RuntimeStateMessage); ok {
+		t.Fatalf("second request still carries cleared runtime context")
 	}
 }

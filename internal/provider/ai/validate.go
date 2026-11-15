@@ -30,6 +30,9 @@ const (
 	ProvenanceSynthetic Provenance = "synthetic"
 	// ProvenanceRecovery is a bounded protocol/answer recovery request.
 	ProvenanceRecovery Provenance = "recovery"
+	// ProvenanceRuntimeState is the trailing runtime briefing that keeps the
+	// cached request prefix stable across turns.
+	ProvenanceRuntimeState Provenance = "runtime_state"
 )
 
 // Issue kinds reported by the canonical message validator.
@@ -257,6 +260,12 @@ func validateMessage(index int, msg Message, provenance Provenance) []MessageIss
 				"assistant message has no text or tool call to send"))
 		}
 		return issues
+	case RuntimeStateMessage:
+		if m.Text == "" {
+			return []MessageIssue{issue(RoleRuntime, IssueUnsendableUser,
+				"runtime state message has no text")}
+		}
+		return nil
 	case ToolResultMessage:
 		var issues []MessageIssue
 		if m.ToolCallID == "" {

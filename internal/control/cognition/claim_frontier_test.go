@@ -359,16 +359,18 @@ func cloneMap(input map[string]any) map[string]any {
 }
 
 // Once the inventory is known and the missing requirement is implementation
-// content, glob/ls cannot make progress. The runtime withholds them so the
-// next action is a target read, not another tree walk.
-func TestSourceAcquisitionWithholdsInventoryTools(t *testing.T) {
+// content, glob/ls cannot make progress. The runtime says so and keeps them
+// offered: removing them would rewrite the request's tool block, and a provider
+// cache matches a prefix, so the verdict would cost every cached token behind
+// the block on every request that follows.
+func TestSourceAcquisitionMarksInventoryToolsRedundant(t *testing.T) {
 	shape := broadShape(RepositoryFacts{Go: true})
 	projector := NewProjector(shape, NewEvidenceState(), shape.RepositoryFacts)
 	result := projector.Project(agent.ProjectionRequest{
 		Messages: []agent.Message{agent.UserMessage{Text: shape.Objective}},
 		Turns: []agent.Turn{{Results: []agent.ToolOutcome{
 			readEvidenceForTest("read-1", "README.md", "# Project"),
-			agent.ToolOutcome{
+			{
 				CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "backend/cmd"},
 				Result: agent.Result{Text: "backend/cmd\napi-gateway/\norder-service/\n",
 					Details: map[string]any{"path": "backend/cmd", "entries": 2}},
@@ -387,17 +389,26 @@ func TestSourceAcquisitionWithholdsInventoryTools(t *testing.T) {
 	if !names["read"] {
 		t.Fatalf("offered tools = %+v, want read", names)
 	}
-	if names["glob"] || names["ls"] {
-		t.Fatalf("offered tools = %+v, inventory tools must be withheld for source acquisition", names)
+	if !names["glob"] || !names["ls"] {
+		t.Fatalf("offered tools = %+v, want the inventory tools still offered", names)
+	}
+	for _, exclusion := range result.Report.Excluded {
+		if exclusion.Tool == "glob" || exclusion.Tool == "ls" {
+			t.Fatalf("withheld %q: an effectiveness verdict must not change the tool block", exclusion.Tool)
+		}
 	}
 	var reason string
-	for _, exclusion := range result.Report.Excluded {
-		if exclusion.Tool == "glob" {
-			reason = exclusion.Reason
+	for _, redundant := range result.Report.Redundant {
+		if redundant.Tool == "glob" {
+			reason = redundant.Reason
 		}
 	}
 	if !strings.Contains(reason, "source content") {
-		t.Fatalf("glob exclusion reason = %q, want the source-content requirement", reason)
+		t.Fatalf("glob redundancy reason = %q, want the source-content requirement", reason)
+	}
+	briefing := strings.Join(result.Runtime, "\n")
+	if !strings.Contains(briefing, "cannot close the gap") {
+		t.Fatalf("runtime briefing does not state the redundancy:\n%s", briefing)
 	}
 }
 
@@ -514,7 +525,7 @@ func TestClaimEvidenceBlockNeverUpgradesEvidenceClass(t *testing.T) {
 func TestClaimStateIsDeterministic(t *testing.T) {
 	shape := broadShape(RepositoryFacts{Go: true})
 	outcomes := []agent.ToolOutcome{
-		agent.ToolOutcome{
+		{
 			CallID: "ls-1", ToolName: "ls", Args: map[string]any{"path": "backend/cmd"},
 			Result: agent.Result{Text: "backend/cmd\norder-service/\napi-gateway/\n",
 				Details: map[string]any{"path": "backend/cmd", "entries": 2}},

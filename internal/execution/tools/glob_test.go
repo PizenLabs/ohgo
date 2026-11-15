@@ -397,3 +397,39 @@ func TestGlobDoesNotInventGitignoreWhenNothingWasIgnored(t *testing.T) {
 		t.Fatalf("details = %#v, want ignored=0", result.Details)
 	}
 }
+
+// A directory the process cannot open is not an empty directory. The scan never
+// ran, so "No files matched" would be a fabricated observation of absence — the
+// failure a macOS permission denial produced in practice.
+func TestGlobReportsAnUnreadableRootInsteadOfAbsence(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{"keep.go": "package keep"})
+	target := filepath.Join(root, "sealed")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o000); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(target, 0o755) })
+	if _, err := os.ReadDir(target); err == nil {
+		t.Skip("the directory is still listable; the permission bit was not enforced")
+	}
+
+	result := NewGlobTool(root).Execute(testContext(), map[string]any{"pattern": "*", "path": "sealed"})
+	if !result.IsError {
+		t.Fatalf("result = %+v, want a failed scan", result)
+	}
+	if strings.HasPrefix(result.Text, "No files matched") || strings.Contains(result.Text, "No files matched") {
+		t.Fatalf("text = %q, want no absence claim for an unread scan", result.Text)
+	}
+	if !strings.Contains(result.Text, "not evidence that the files do not exist") {
+		t.Fatalf("text = %q, want the absence boundary stated", result.Text)
+	}
+	if result.FailureClass != agent.ToolFailureExecutionFailed {
+		t.Fatalf("class = %q, want %q", result.FailureClass, agent.ToolFailureExecutionFailed)
+	}
+	if result.ObservedAbsence {
+		t.Fatal("an unread scan reported observed absence")
+	}
+}
