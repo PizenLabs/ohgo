@@ -592,9 +592,11 @@ func gitMutates(args []string) bool {
 	switch sub {
 	case "commit", "add", "rm", "mv", "checkout", "switch", "restore", "reset",
 		"clean", "merge", "rebase", "cherry-pick", "revert", "apply",
-		"am", "init", "clone", "fetch", "pull", "push", "tag", "gc", "prune",
+		"am", "init", "clone", "fetch", "pull", "push", "gc", "prune",
 		"filter-branch", "submodule":
 		return true
+	case "tag":
+		return tagMutates(args[1:])
 	case "stash":
 		// "git stash" with no subcommand pushes (mutating); list and show
 		// only read.
@@ -627,6 +629,52 @@ func gitMutates(args []string) bool {
 			}
 		}
 		return false
+	}
+	return false
+}
+
+// tagMutates reports whether `git tag` with args changes the repository.
+//
+// Listing and verifying only read: `git tag`, `git tag -l`, `git tag -n`,
+// `git tag -v <name>`, and the filtering and display selectors below. Deleting,
+// forcing, annotating, signing, or messaging writes, and so does any positional
+// tag name, which the command treats as a tag to create.
+//
+// This argument-aware form exists because classifying a plain listing as a
+// mutation does not merely over-report: the runtime then demands a check for a
+// change that never happened, so the task cannot leave the verification stage
+// and a BUILD run deadlocks against an obligation only it can see.
+func tagMutates(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "-d", "--delete", "-f", "--force", "-a", "--annotate",
+			"-s", "--sign", "-m", "--message", "-F", "--file", "-u", "--local-user":
+			return true
+		}
+	}
+	for _, arg := range args {
+		switch {
+		case arg == "-l", arg == "--list", arg == "-v", arg == "--verify",
+			strings.HasPrefix(arg, "-n"),
+			strings.HasPrefix(arg, "--contains"),
+			strings.HasPrefix(arg, "--points-at"),
+			strings.HasPrefix(arg, "--merged"),
+			strings.HasPrefix(arg, "--no-merged"),
+			strings.HasPrefix(arg, "--no-contains"),
+			strings.HasPrefix(arg, "--sort"),
+			strings.HasPrefix(arg, "--format"),
+			strings.HasPrefix(arg, "--column"):
+			// A selector cannot create or delete a tag, even when a pattern,
+			// commit, or format string follows it.
+			return false
+		}
+	}
+	// With no selector and no flag, `git tag` lists. A positional argument is
+	// the tag name to create.
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			return true
+		}
 	}
 	return false
 }
