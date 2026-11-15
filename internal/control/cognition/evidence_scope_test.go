@@ -185,3 +185,64 @@ func TestRepositoryScopeRecognisesDeicticHostingQuestions(t *testing.T) {
 		}
 	}
 }
+
+// A version-control question is answered by inspecting repository metadata, not
+// by surveying the source. The shape must ask for the inspection it can use,
+// and a completed git read must satisfy it; otherwise a correct answer is
+// vetoed as insufficient at the explore stage.
+func TestVCSQuestionRequiresAGitObservationNotASourceSurvey(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Inspect the repository's git state: run git status and git tag -l.",
+	}, ShapeParams{Authority: "ask"})
+	keys := requirementKeys(shape.RequiredKnowledge)
+	if !keys["vcs_observation"] {
+		t.Fatalf("required knowledge = %+v, want vcs_observation", shape.RequiredKnowledge)
+	}
+	if keys["repository_overview"] || keys["repository_survey"] {
+		t.Fatalf("a git-state question demanded a source survey: %+v", shape.RequiredKnowledge)
+	}
+
+	evidence := NewEvidenceState()
+	evidence.ensureRequirements(shape)
+	if suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false); suff.State != Insufficient {
+		t.Fatalf("no observation: sufficiency = %s/%s, want INSUFFICIENT", suff.State, suff.Stage)
+	}
+
+	evidence.ObserveOutcome(agent.ToolOutcome{
+		CallID: "git-1", ToolName: "bash",
+		Args: map[string]any{"command": "git status"},
+		Result: agent.Result{
+			Text:     "$ git status\n\nOn branch master\n\n[exit code 0, 12ms]",
+			Executes: true, Finished: true,
+			Details: map[string]any{"command": "git status", "exitCode": 0, "git_observation": true},
+		},
+	})
+	if !evidence.hasVCSObservation() {
+		t.Fatalf("a completed git inspection was not recorded: %+v", evidence.Items)
+	}
+	if suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false); suff.State != Sufficient {
+		t.Fatalf("observed: sufficiency = %s/%s, want SUFFICIENT (%v)", suff.State, suff.Stage, suff.Missing)
+	}
+
+	// A broad repository question still needs implementation evidence: the VCS
+	// requirement must not have replaced the survey for every repository task.
+	broad := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Analyze this project's architecture.",
+	}, ShapeParams{Authority: "ask"})
+	if !requirementKeys(broad.RequiredKnowledge)["repository_survey"] {
+		t.Fatalf("a broad analysis lost its survey requirement: %+v", broad.RequiredKnowledge)
+	}
+
+	// Naming git is not the same as asking about VCS state. "git hooks" is a
+	// question about the implementation, so it must not be satisfied by a git
+	// observation.
+	implementation := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Explain how git hooks are configured in this repository.",
+	}, ShapeParams{Authority: "ask"})
+	if requirementKeys(implementation.RequiredKnowledge)["vcs_observation"] {
+		t.Fatalf("an implementation question became a VCS inspection: %+v", implementation.RequiredKnowledge)
+	}
+}

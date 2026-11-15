@@ -14,6 +14,22 @@ import (
 	"github.com/PizenLabs/ohgo/internal/tui/design"
 )
 
+// forceFadeRendering makes the entrance-animation contract testable regardless
+// of the developer's terminal environment. NO_COLOR and a dumb TERM legitimately
+// disable the ramp in production; a test that skipped there would never exercise
+// the contract, and one that assumed them unset fails on a machine that sets
+// them. Both are cleared for the duration of the test.
+func forceFadeRendering(t *testing.T) {
+	t.Helper()
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("REDUCED_MOTION", "")
+	t.Setenv("NO_ANIMATION", "")
+	prev := termenv.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+}
+
 // A fast call may not snap from nothing to a checkmark. The executing frame is
 // held for the perception floor, while the measured duration and outcome are
 // already final in state.
@@ -189,9 +205,7 @@ func TestLiveToolBatchStaysExpandedUntilSettled(t *testing.T) {
 // The fade is a three-phase RGB ramp, not a single frame pop. The plain text
 // is unchanged at every phase; only the entrance colour/dim flag moves.
 func TestFadeStepsThroughThreeRGBPhases(t *testing.T) {
-	prev := termenv.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(prev)
+	forceFadeRendering(t)
 
 	at := time.Now()
 	s := New()
@@ -235,9 +249,7 @@ func TestFadeStepsThroughThreeRGBPhases(t *testing.T) {
 // The closing answer line eases in on AssistantDone even when the block itself
 // appeared long ago; the rest of the answer is already settled history.
 func TestAssistantFinalLineFadesOnSettle(t *testing.T) {
-	prev := termenv.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(prev)
+	forceFadeRendering(t)
 
 	at := time.Now().Add(-time.Second)
 	s := New()
@@ -388,12 +400,7 @@ func TestStatusSlotWidthIsInvariant(t *testing.T) {
 // running amber to the settled palette in one tick. The glyph itself is a
 // check from the first terminal instant, in the same fixed slot.
 func TestCompletedToolTweensStatusColor(t *testing.T) {
-	prev := termenv.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(prev)
-	if !fadeSupported() {
-		t.Skip("colour tweening is disabled in this terminal environment")
-	}
+	forceFadeRendering(t)
 
 	start := time.Now().Add(-2 * time.Second)
 	settle := start.Add(time.Second)

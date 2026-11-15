@@ -55,7 +55,8 @@ func TestGitTagListingReportsNoMutationEvidence(t *testing.T) {
 	}
 
 	created := tool.Execute(agent.Context{Ctx: context.Background()}, map[string]any{
-		"command": "git tag -a v0.1.3 -m release",
+		// The tool inherits the real environment, not this test's identity vars.
+		"command": "git -c user.email=ohgo@example.com -c user.name=ohgo tag -a v0.1.3 -m release",
 	})
 	if created.IsError {
 		t.Fatalf("creating a tag failed: %s", created.Text)

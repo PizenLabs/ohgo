@@ -201,3 +201,107 @@ func TestPendingHandoffWithoutApprovedObjectiveKeepsTheTaskContract(t *testing.T
 		t.Fatalf("a handoff with no approved objective replaced the contract with %+v", got)
 	}
 }
+
+// Approving a workspace move for an informational request is not a decision to
+// continue the open task. The observed failure: a NEEDS_REVIEW ".q" task and a
+// new "check this project" question; the approved BUILD -> ASK handoff attached
+// the question to ".q", so the run executed the old contract and was briefed to
+// resume work the user never asked to continue.
+func TestHumanApprovalOfAnInformationalRequestDoesNotAttachIt(t *testing.T) {
+	const question = "check this project and analyze what this project is about?"
+	current := TaskResume{
+		Status:                   "NEEDS_REVIEW",
+		Objective:                ".q",
+		Role:                     "ask",
+		HandoffStatus:            "APPROVED",
+		HandoffTo:                "ask",
+		HandoffBy:                "human",
+		HandoffApprovedObjective: "",
+		HasContract:              true,
+		Contract: contract.IntentContract{
+			Objective: ".q",
+			Kind:      contract.ObjectiveInformational,
+		},
+	}
+	next := workspace.BuildIntentContract(question)
+	if decision, owned := taskTurnDecision(current, question, "ask", next); owned {
+		t.Fatalf("an unrelated informational request attached to the open task: decision=%q", decision)
+	}
+
+	// The same objective still continues through the approval: the turn is the
+	// task's own work under the newly approved authority.
+	same := current
+	same.Objective = question
+	same.Contract.Objective = question
+	if decision, owned := taskTurnDecision(same, question, "ask", next); !owned || decision != "HANDOFF_CONTINUATION" {
+		t.Fatalf("the task's own objective did not continue: decision=%q owned=%t", decision, owned)
+	}
+}
+
+// End-to-end regression for the observed continuation failure: a NEEDS_REVIEW
+// ".q" task under ASK, an applied human BUILD -> ASK switch, then the unrelated
+// question "check this project...". The question must start a new task; before
+// the fix it attached to ".q", ran the old informational contract, and the turn
+// briefing told the model to continue from ".q"'s checkpoint.
+func TestInformationalQuestionAfterAHumanSwitchStartsANewTask(t *testing.T) {
+	role := workspace.Build
+	controller := task.NewController(task.NewStore(t.TempDir()), nil)
+	controller.SetRoleSource(func() workspace.Workspace { return role })
+	started, err := controller.Begin(workspace.BuildIntentContract(".q"), nil)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := controller.NeedsReview("intent grounding: unsupported runtime claim"); err != nil {
+		t.Fatalf("NeedsReview: %v", err)
+	}
+	// The accepted switch moves the live authority and records the applied
+	// human transition on the open task.
+	role = workspace.Ask
+	if err := controller.RecordWorkspaceSwitch(workspace.Build, workspace.Ask, ""); err != nil {
+		t.Fatalf("RecordWorkspaceSwitch: %v", err)
+	}
+
+	var runtimeState string
+	stream := func(_ context.Context, req ai.Request) (*ai.Stream, error) {
+		if last := req.Messages[len(req.Messages)-1]; last != nil {
+			if state, ok := last.(ai.RuntimeStateMessage); ok {
+				runtimeState = state.Text
+			}
+		}
+		return ai.NewCompletedStream(ai.AssistantMessage{
+			Content:    []ai.ContentBlock{ai.TextContent{Text: "GoCommerce is a Go e-commerce app."}},
+			StopReason: ai.StopEndTurn,
+		}), nil
+	}
+	loop, err := agent.New(agent.Config{
+		Model:  ai.Model{ID: "m", Provider: "p"},
+		Stream: stream,
+		Tools:  runtimeCaps(&runtimeBashTool{}),
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	program := NewProgram(loop, "test", 0)
+	program.SetWorkspaceSwitcher(WorkspaceHooks{Current: func() string { return string(role) }})
+	program.SetTaskHooks(runtimeHooks(controller))
+
+	const question = "check this project and analyze what this project is about?"
+	program.runTurn(question)
+
+	current, ok := controller.Current()
+	if !ok {
+		t.Fatal("the question recorded no task")
+	}
+	if current.ID == started.ID {
+		t.Fatalf("the question continued the stale task %q instead of starting a new one", started.ID)
+	}
+	if current.Objective != question {
+		t.Fatalf("new task objective = %q, want the question", current.Objective)
+	}
+	// The stale task's orientation must not reach the model: the resume
+	// directive is the observable instruction the observed run followed.
+	if strings.Contains(runtimeState, "Continue this task from the recorded checkpoint") ||
+		strings.Contains(runtimeState, ".q") {
+		t.Fatalf("the new turn carried the stale task directive:\n%s", runtimeState)
+	}
+}

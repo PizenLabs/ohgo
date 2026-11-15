@@ -974,3 +974,41 @@ func TestProjectionLessRecoveryClosesAnUnapprovedHandoff(t *testing.T) {
 		t.Fatalf("Sync after recovery: %v", err)
 	}
 }
+
+// A workspace move to the role the task already runs under is not a task
+// transition. A new session may start in the default workspace and then switch
+// to the restored task's role; reporting "continuity was not recorded" for that
+// ordinary sequence is false, and recording it as a handoff would name a source
+// role the task never held.
+func TestSwitchToTheTasksRoleIsNotATransition(t *testing.T) {
+	role := workspace.Ask
+	controller := NewController(NewStore(t.TempDir()), nil)
+	controller.SetRoleSource(func() workspace.Workspace { return role })
+	if _, err := controller.Begin(testIntent("check the project"), nil); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := controller.RecordWorkspaceSwitch(workspace.Build, workspace.Ask, ""); err != nil {
+		t.Fatalf("a switch to the task's own role was refused: %v", err)
+	}
+	current, ok := controller.Current()
+	if !ok {
+		t.Fatal("the task disappeared")
+	}
+	if current.Handoff != nil {
+		t.Fatalf("a no-op role switch recorded a handoff: %+v", current.Handoff)
+	}
+	if current.LastRole() != workspace.Ask {
+		t.Fatalf("task role = %s, want ASK", current.LastRole())
+	}
+
+	// A move that really changes the task's role still records, and a human
+	// source the task never held is still refused.
+	role = workspace.Build
+	if err := controller.RecordWorkspaceSwitch(workspace.Ask, workspace.Build, ""); err != nil {
+		t.Fatalf("a real role change was refused: %v", err)
+	}
+	current, _ = controller.Current()
+	if current.Handoff == nil || current.Handoff.From != workspace.Ask || current.Handoff.To != workspace.Build {
+		t.Fatalf("real switch handoff = %+v", current.Handoff)
+	}
+}

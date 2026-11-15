@@ -546,6 +546,11 @@ type groundingCoverage struct {
 	// order. They exist to contradict an absence claim the run can refute,
 	// which is more useful than reporting that the absence was unproven.
 	observedPaths []string
+	// vcsAbsence holds the VCS namespaces an observation established empty: a
+	// complete enumeration (`git tag -l`) or an output that stated the absence
+	// outright ("No commits yet"). A git inspection is bounded evidence, so an
+	// answer reporting its empty result is not an unproven absence.
+	vcsAbsence map[string]bool
 }
 
 // globScan is one complete recursive scan.
@@ -651,6 +656,9 @@ func (c groundingCoverage) supports(claim negativeClaim) bool {
 	if claim.Subject == "" {
 		return false
 	}
+	if c.supportsVCS(claim.Subject) {
+		return true
+	}
 	if !claim.Global && c.rootListing && isRootFileName(claim.Subject) {
 		return true
 	}
@@ -667,6 +675,37 @@ func (c groundingCoverage) supports(claim negativeClaim) bool {
 		}
 	}
 	return false
+}
+
+// supportsVCS reports an absence the run's git inspection established. The
+// mapping is finite on purpose: only VCS namespaces a complete enumeration can
+// list are covered, so a sentence about a concept ("no authentication") stays
+// a semantic claim the inspection cannot prove.
+func (c groundingCoverage) supportsVCS(subject string) bool {
+	if len(c.vcsAbsence) == 0 {
+		return false
+	}
+	for _, raw := range strings.FieldsFunc(subject, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		namespace, ok := vcsNamespaceSingular[raw]
+		if ok && c.vcsAbsence[namespace] {
+			return true
+		}
+	}
+	return false
+}
+
+// vcsNamespaceSingular maps the nouns an answer uses to the namespace a git
+// enumeration reports.
+var vcsNamespaceSingular = map[string]string{
+	"commit": "commit", "commits": "commit",
+	"tag": "tag", "tags": "tag",
+	"branch": "branch", "branches": "branch",
+	"remote": "remote", "remotes": "remote",
+	"stash": "stash", "stashes": "stash",
+	"worktree": "worktree", "worktrees": "worktree",
+	"note": "note", "notes": "note",
 }
 
 // supportsGoTestFiles reports a Go test-file absence proven by a complete
@@ -770,6 +809,21 @@ func collectGroundingCoverage(turns []Turn) groundingCoverage {
 	var coverage groundingCoverage
 	for _, turn := range turns {
 		for _, outcome := range turn.Results {
+			// A structured absence observation is evidence even when the command
+			// exited non-zero: `git log` on an unborn branch reports "does not
+			// have any commits yet" on stderr, and the tool publishes that fact
+			// rather than the model's reading of it. The generic error filter
+			// below stays in force for everything else.
+			if outcome.ToolName == "bash" {
+				if details, ok := outcome.Result.Details.(map[string]any); ok {
+					for _, namespace := range detailStringList(details, "git_absence") {
+						if coverage.vcsAbsence == nil {
+							coverage.vcsAbsence = map[string]bool{}
+						}
+						coverage.vcsAbsence[namespace] = true
+					}
+				}
+			}
 			if outcome.Result.IsError || outcome.Refused() {
 				continue
 			}

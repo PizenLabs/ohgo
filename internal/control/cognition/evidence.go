@@ -609,6 +609,8 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 		return s.hasRepositoryOverview()
 	case key == "repository_survey":
 		return s.hasRepositorySurvey(s.Facts)
+	case key == "vcs_observation":
+		return s.hasVCSObservation()
 	case key == "external_observation":
 		return s.HasExternalObservation()
 	case key == "test_inventory":
@@ -625,6 +627,21 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 		}
 		return false
 	}
+}
+
+// hasVCSObservation reports at least one completed version-control inspection.
+// A command the tool did not mark as a read, a refusal, or a failed run is not
+// an observation of the repository's state.
+func (s *EvidenceState) hasVCSObservation() bool {
+	for _, item := range s.Items {
+		if !strings.HasPrefix(item.ID, "vcs:") {
+			continue
+		}
+		if item.Status != StatusRequired && item.Status != StatusUnknown && item.Status != StatusConflicting {
+			return true
+		}
+	}
+	return false
 }
 
 // hasAnyExact reports whether any exact observation exists.
@@ -1543,6 +1560,25 @@ func (s *EvidenceState) addBash(outcome agent.ToolOutcome, details map[string]an
 		Executed:   executed,
 		Runtime:    runtime,
 	})
+	if observed, _ := details["git_observation"].(bool); observed {
+		// A completed git inspection is evidence of version-control state. It
+		// is not implementation evidence, so it carries diagnostic provenance
+		// and cannot stand in for a source read.
+		if s.upsert(EvidenceItem{
+			ID:         "vcs:" + digest(idKey),
+			Status:     StatusKnown,
+			Retention:  RetentionExact,
+			Provenance: ProvenanceDiagnostic,
+			Summary:    bound("version-control observation: "+summary, MaxEvidenceSummaryBytes),
+			Value:      text,
+			Digest:     digest(text),
+			Source:     Source{Tool: outcome.ToolName, CallID: outcome.CallID},
+			Seq:        seq,
+			Executed:   true,
+		}) {
+			changed = true
+		}
+	}
 	if outcome.Result.Verifies {
 		check := ""
 		scope := ""

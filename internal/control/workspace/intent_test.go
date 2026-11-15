@@ -579,6 +579,7 @@ func TestVerificationContinuationIsAboutExistingWork(t *testing.T) {
 		"check this project",
 		"check the parser",
 		"check whether the authentication flow works",
+		"check this project and analyze what it is about",
 		"are the tests flaky?",
 		"add tests for the parser",
 		"write tests for the parser",

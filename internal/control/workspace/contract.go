@@ -196,6 +196,11 @@ func BuildIntentContract(text string) IntentContract {
 	// request's own verification, before the mutation default adds VerifyAny.
 	conceptOracle := len(contract.Targets) == 0 && len(contract.Verification) > 0 &&
 		contract.Grounding.HasConcept()
+	// A request that states the expected outcome ("... so it equals unit price
+	// times quantity") names the oracle even when it names no path. The wrong
+	// value in the report and the expected value are the check the run must
+	// establish, so the objective is assessable from observed evidence.
+	expectedOracle := expectedOutcomeObjective(objective)
 
 	if contract.Kind == ObjectiveMutation {
 		// Phase 3 already requires a successful check after a change. Making it
@@ -203,15 +208,21 @@ func BuildIntentContract(text string) IntentContract {
 		if len(contract.Verification) == 0 {
 			contract.Verification = []VerificationRequirement{{Kind: VerifyAny}}
 		}
-		if conceptOracle {
+		if conceptOracle || expectedOracle {
 			contract.BehavioralObjective = true
 		}
 		// A behavioural objective with no target has no package to scope the
 		// check to. Requiring a repo-wide check is the only way to establish
 		// that "the failing tests" are actually fixed; a narrow pass in an
 		// unrelated package is not evidence for an unbounded oracle.
+		//
+		// An expected-outcome clause is different: it binds the check to the
+		// behaviour the request described, and the evaluator bounds a
+		// targetless behavioural objective by the packages the run changed.
+		// Forcing a repo-wide check there would reject a correct local fix
+		// because unrelated packages were not re-tested.
 		if contract.BehavioralObjective && len(contract.Targets) == 0 &&
-			!hasVerificationScope(contract.Verification) {
+			!hasVerificationScope(contract.Verification) && !expectedOracle {
 			contract.Verification = []VerificationRequirement{{
 				Kind:  VerifyScope,
 				Scope: "*",
@@ -566,6 +577,35 @@ func mentionsCheck(text string) bool {
 		}
 	}
 	return false
+}
+
+// expectedOutcomeObjective reports whether the request states the result the
+// change must produce: an expected-value clause ("so it equals 40.00 USD"),
+// a normative outcome ("should show 40.00"), or an explicitly expected result.
+//
+// It is not a target. It is the oracle a targetless mutation needs: without it
+// the runtime cannot tell "something changed" from "the reported behaviour is
+// fixed", and the objective must stay reviewable.
+func expectedOutcomeObjective(text string) bool {
+	normalized := strings.TrimSpace(text)
+	for _, pattern := range expectedOutcomePatterns {
+		if pattern.MatchString(normalized) {
+			return true
+		}
+	}
+	return false
+}
+
+// expectedOutcomePatterns name a result, never a file. The clause must carry a
+// value, a comparison, or a failure that stops happening: "so it equals unit
+// price times quantity" and "so it no longer crashes" are oracles, while a
+// subjective "so it is cleaner" is not. The subject is a short noun phrase so
+// ordinary prose does not qualify.
+var expectedOutcomePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bso\s+(?:that\s+)?(?:it|they|the\s+[a-z0-9_ -]{1,40})\s+(?:equals?|shows?|displays?|renders?|returns?)\b[^.]{0,80}?(?:\d|times|equal|same|more\s+than|less\s+than|instead\s+of)`),
+	regexp.MustCompile(`(?i)\b(?:should|must)\s+(?:be|equal|show|display|render|return)\b[^.]{0,60}?(?:\d|times|equal|same|instead\s+of)`),
+	regexp.MustCompile(`(?i)\b(?:no\s+longer|does\s+not|doesn't|must\s+not)\s+(?:crash(?:es)?|fail(?:s)?|error(?:s)?|hang(?:s)?|panic(?:s)?|leak(?:s)?|break(?:s)?|throw(?:s)?)\b`),
+	regexp.MustCompile(`(?i)\bexpected\s+(?:behaviou?r|result|output|value|outcome)\b`),
 }
 
 // behavioralMutationObjective reports that the request's success condition is

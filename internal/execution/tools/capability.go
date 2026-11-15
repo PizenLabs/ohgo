@@ -450,6 +450,24 @@ func mutatingProgramInRoot(program string, args []string, root string) bool {
 		return hasMutatingSubcommand(program, args)
 	case "git":
 		return gitMutates(args)
+	case "find":
+		return findMutates(args)
+	}
+	return false
+}
+
+// findMutates reports find predicates whose own effect is a write: -delete
+// removes the matched entries, and the -fprint family writes a file.
+//
+// -exec is deliberately not modelled. The executed program and its arguments
+// are opaque to static parsing, and the OS sandbox remains the boundary that
+// stops an unrecognised program.
+func findMutates(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "-delete", "-fprint", "-fprint0", "-fprintf":
+			return true
+		}
 	}
 	return false
 }
@@ -584,11 +602,16 @@ func firstNonFlagAfter(args []string, sub string) string {
 	return ""
 }
 
-// gitMutates reports whether a git subcommand changes the worktree, the index,
+// gitMutates reports whether a git invocation changes the worktree, the index,
 // or the repository. Read subcommands (status, log, diff, show, blame, …) leave
 // it untouched and stay exec.
+//
+// The subcommand is resolved past the global options that consume a value.
+// `git -C repo commit` and `git -c core.pager=cat commit` change the repository
+// exactly like `git commit`; treating the option's value as the subcommand made
+// the runtime miss the change and report execution instead of mutation.
 func gitMutates(args []string) bool {
-	sub := firstNonFlag(args)
+	sub, rest := gitSubcommand(args)
 	switch sub {
 	case "commit", "add", "rm", "mv", "checkout", "switch", "restore", "reset",
 		"clean", "merge", "rebase", "cherry-pick", "revert", "apply",
@@ -596,41 +619,136 @@ func gitMutates(args []string) bool {
 		"filter-branch", "submodule":
 		return true
 	case "tag":
-		return tagMutates(args[1:])
+		return tagMutates(rest)
 	case "stash":
 		// "git stash" with no subcommand pushes (mutating); list and show
 		// only read.
-		sub := firstNonFlagAfter(args, "stash")
+		sub := firstNonFlag(rest)
 		return sub != "list" && sub != "show"
 	case "branch":
-		// "git branch" lists; "git branch -d/-m/-D/-M/-c/C" mutates refs.
-		for _, arg := range args {
-			if strings.HasPrefix(arg, "-d") || strings.HasPrefix(arg, "-D") ||
-				strings.HasPrefix(arg, "-m") || strings.HasPrefix(arg, "-M") ||
-				strings.HasPrefix(arg, "-c") || strings.HasPrefix(arg, "-C") {
-				return true
-			}
-		}
-		return false
+		return branchMutates(rest)
 	case "config":
-		// Reading config is exec; writing it is mutation.
-		for _, arg := range args {
-			if arg == "--add" || arg == "--unset" || arg == "--replace-all" {
-				return true
-			}
-		}
-		// "git config key value" writes when a value is present.
-		return len(nonFlagArgsAfter(args, "config")) >= 2
-	case "worktree", "notes":
-		for _, arg := range args {
-			switch arg {
-			case "add", "remove", "prune", "move", "lock", "unlock":
-				return true
-			}
-		}
-		return false
+		return configMutates(rest)
+	case "worktree":
+		return subcommandIn(rest, "add", "remove", "prune", "move", "lock", "unlock")
+	case "notes":
+		return subcommandIn(rest, "add", "copy", "append", "edit", "merge", "prune", "remove")
+	case "remote":
+		return subcommandIn(rest, "add", "remove", "rm", "rename", "set-url", "set-head", "prune", "update")
 	}
 	return false
+}
+
+// gitGlobalValueOptions are the git options whose next word is a value, not the
+// subcommand. An option spelled with an attached value (`--git-dir=.git`)
+// already starts with a dash and needs no special case.
+var gitGlobalValueOptions = map[string]bool{
+	"-C": true, "-c": true, "--git-dir": true, "--work-tree": true,
+	"--namespace": true, "--exec-path": true, "--super-prefix": true,
+	"--config-env": true,
+}
+
+// gitSubcommand resolves the subcommand a git invocation runs and the arguments
+// that follow it. An invocation with no subcommand returns "", nil.
+//
+// A shell wrapper or an assignment is already removed by programAndArgs, so the
+// remaining words are git's own. Reading the first non-flag word directly was
+// wrong for the value-taking options above: it returned the option's value, so
+// a mutating subcommand appeared to be absent.
+func gitSubcommand(args []string) (string, []string) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			if i+1 < len(args) {
+				return args[i+1], args[i+2:]
+			}
+			return "", nil
+		case gitGlobalValueOptions[arg]:
+			i++
+		case strings.HasPrefix(arg, "-"):
+			// Another option. Options that take an attached value
+			// (--git-dir=.git) are one word, so nothing else is skipped.
+		default:
+			return arg, args[i+1:]
+		}
+	}
+	return "", nil
+}
+
+// subcommandIn reports whether the first positional argument is one of names.
+func subcommandIn(args []string, names ...string) bool {
+	first := firstNonFlag(args)
+	for _, name := range names {
+		if first == name {
+			return true
+		}
+	}
+	return false
+}
+
+// branchMutates reports whether `git branch` with args changes refs.
+//
+// Listing flags (and a pattern after --list) only read. A delete, move, or copy
+// flag writes. So does any bare name, because `git branch feature` creates that
+// branch: classifying it as a read made a real ref change invisible.
+func branchMutates(args []string) bool {
+	listing := false
+	for _, arg := range args {
+		switch {
+		case arg == "-l", arg == "--list", arg == "-a", arg == "--all",
+			arg == "-r", arg == "--remotes", arg == "-v", arg == "-vv",
+			arg == "--show-current", arg == "-i", arg == "--ignore-case":
+			listing = true
+		case strings.HasPrefix(arg, "--contains"), strings.HasPrefix(arg, "--merged"),
+			strings.HasPrefix(arg, "--no-merged"), strings.HasPrefix(arg, "--points-at"),
+			strings.HasPrefix(arg, "--sort"), strings.HasPrefix(arg, "--format"),
+			strings.HasPrefix(arg, "--column"):
+			listing = true
+		case strings.HasPrefix(arg, "-d"), strings.HasPrefix(arg, "-D"),
+			strings.HasPrefix(arg, "-m"), strings.HasPrefix(arg, "-M"),
+			strings.HasPrefix(arg, "-c"), strings.HasPrefix(arg, "-C"),
+			arg == "-u", arg == "--set-upstream-to", arg == "--unset-upstream",
+			arg == "--edit-description":
+			return true
+		}
+	}
+	if listing {
+		return false
+	}
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			return true
+		}
+	}
+	return false
+}
+
+// configMutates reports whether `git config` with args writes configuration.
+//
+// Reading a key (`git config user.name`, `git config --get user.name`) and
+// listing are reads. Two positional words are key and value, which writes. The
+// values of the options that consume one (--file, --type, --default, …) are not
+// positional words and must not be counted as a write.
+func configMutates(args []string) bool {
+	positional := 0
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--add", arg == "--unset", arg == "--unset-all",
+			arg == "--replace-all", arg == "--rename-section", arg == "--remove-section",
+			arg == "-e", arg == "--edit":
+			return true
+		case arg == "-f", arg == "--file", arg == "--blob", arg == "-t",
+			arg == "--type", arg == "--default", arg == "--comment":
+			i++
+		case strings.HasPrefix(arg, "-"):
+			// A flag, or an option with an attached value.
+		default:
+			positional++
+		}
+	}
+	return positional >= 2
 }
 
 // tagMutates reports whether `git tag` with args changes the repository.
@@ -679,6 +797,186 @@ func tagMutates(args []string) bool {
 	return false
 }
 
+// GitObservation reports whether a finished shell command inspected
+// version-control state without changing it. A VCS-state question is answered
+// by that inspection, so the run can prove it looked rather than guessed.
+//
+// A mutating invocation is excluded: a commit or a push changes the repository
+// and is a change obligation, not an observation of the current state.
+func GitObservation(command string, exitCode int, root string) bool {
+	if exitCode != 0 {
+		return false
+	}
+	for _, segment := range shellSegments(command) {
+		words := shellWords(segment)
+		program, args := programAndArgs(words)
+		if path.Base(program) != "git" || !gitRepositoryInRoot(args, root) {
+			continue
+		}
+		if !gitMutates(args) {
+			return true
+		}
+	}
+	return false
+}
+
+// GitAbsenceNamespaces reports the VCS namespaces one finished shell command
+// established empty for the workspace rooted at root.
+//
+// A complete enumeration (`git tag -l`, `git branch -a`, `git remote`) is
+// evidence, not narration: an empty listing is the whole list, so an answer
+// reporting no tags is a bounded observation rather than an unproven absence.
+// The tool publishes it so the completion gate can tell the two apart without
+// re-implementing shell grammar in the agent kernel.
+//
+// It is deliberately narrow. Only a successful, unpiped command whose git
+// segment unambiguously enumerates a whole namespace counts: a selector, a
+// pattern, a pipeline, or an invocation that names another repository
+// establishes nothing about this workspace. An output that states the absence
+// outright ("No commits yet") counts regardless of exit status, because that
+// sentence is itself the observation.
+func GitAbsenceNamespaces(command, output string, exitCode int, root string) []string {
+	if strings.Contains(command, "`") || strings.Contains(command, "$(") ||
+		strings.Contains(command, "||") || strings.Contains(command, "|") {
+		return nil
+	}
+	lowerOutput := strings.ToLower(output)
+	if strings.Contains(lowerOutput, "not a git repository") {
+		return nil
+	}
+	// The observation must be about this workspace. A command that only names
+	// another repository establishes nothing here, including the wording of its
+	// output ("No commits yet").
+	local := false
+	for _, segment := range shellSegments(command) {
+		words := shellWords(segment)
+		program, args := programAndArgs(words)
+		if path.Base(program) == "git" && gitRepositoryInRoot(args, root) {
+			local = true
+			break
+		}
+	}
+	if !local {
+		return nil
+	}
+	seen := map[string]bool{}
+	var namespaces []string
+	add := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			namespaces = append(namespaces, name)
+		}
+	}
+	if strings.Contains(lowerOutput, "no commits yet") ||
+		strings.Contains(lowerOutput, "does not have any commits yet") {
+		add("commit")
+	}
+	// A truncated listing is not the whole namespace, so it proves nothing.
+	if exitCode != 0 || strings.Contains(output, "[output truncated") {
+		return namespaces
+	}
+	for _, segment := range shellSegments(command) {
+		words := shellWords(segment)
+		program, args := programAndArgs(words)
+		if path.Base(program) != "git" || !gitRepositoryInRoot(args, root) {
+			continue
+		}
+		sub, rest := gitSubcommand(args)
+		if namespace := completeGitEnumeration(sub, rest); namespace != "" {
+			add(namespace)
+		}
+	}
+	return namespaces
+}
+
+// completeGitEnumeration names the namespace one git invocation lists in full,
+// or "" when the invocation selects, filters, verifies, or writes instead.
+func completeGitEnumeration(sub string, args []string) string {
+	switch sub {
+	case "tag":
+		for _, arg := range args {
+			switch arg {
+			case "-l", "--list", "-n", "--column", "-i", "--ignore-case":
+				continue
+			}
+			if strings.HasPrefix(arg, "-n") || strings.HasPrefix(arg, "--sort") ||
+				strings.HasPrefix(arg, "--format") || strings.HasPrefix(arg, "--column") {
+				continue
+			}
+			// A positional word is a pattern, a verify target, or a tag to
+			// create; none of them lists the whole namespace.
+			return ""
+		}
+		return "tag"
+	case "branch":
+		for _, arg := range args {
+			switch arg {
+			case "-a", "--all", "-r", "--remotes", "-l", "--list", "-v", "-vv",
+				"--show-current", "-i", "--ignore-case":
+				continue
+			}
+			if strings.HasPrefix(arg, "--contains") || strings.HasPrefix(arg, "--merged") ||
+				strings.HasPrefix(arg, "--no-merged") || strings.HasPrefix(arg, "--points-at") ||
+				strings.HasPrefix(arg, "--sort") || strings.HasPrefix(arg, "--format") ||
+				strings.HasPrefix(arg, "--column") {
+				continue
+			}
+			return ""
+		}
+		return "branch"
+	case "remote":
+		for _, arg := range args {
+			if arg != "-v" && arg != "--verbose" {
+				return ""
+			}
+		}
+		return "remote"
+	case "stash":
+		if firstNonFlag(args) == "list" {
+			return "stash"
+		}
+	case "worktree":
+		if firstNonFlag(args) == "list" {
+			return "worktree"
+		}
+	case "notes":
+		if firstNonFlag(args) == "" || firstNonFlag(args) == "list" {
+			return "note"
+		}
+	}
+	return ""
+}
+
+// gitRepositoryInRoot reports whether a git invocation whose repository the
+// command names explicitly still names this workspace. An empty root means the
+// caller did not bound the observation, so it is accepted.
+func gitRepositoryInRoot(args []string, root string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return true
+	}
+	root = resolveCommandPath(root)
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-C":
+			if i+1 >= len(args) {
+				return false
+			}
+			target, ok := resolveShellPath(args[i+1], root)
+			if !ok || !pathWithinRoot(root, target) {
+				return false
+			}
+			i++
+		case args[i] == "--git-dir", args[i] == "--work-tree",
+			strings.HasPrefix(args[i], "--git-dir="), strings.HasPrefix(args[i], "--work-tree="):
+			// The repository or worktree is named explicitly and is not resolved
+			// here, so the observation cannot be attributed to this workspace.
+			return false
+		}
+	}
+	return true
+}
+
 // firstNonFlag returns the first argument that is not a flag.
 func firstNonFlag(args []string) string {
 	for _, arg := range args {
@@ -687,24 +985,6 @@ func firstNonFlag(args []string) string {
 		}
 	}
 	return ""
-}
-
-// nonFlagArgsAfter counts non-flag arguments after the leading subcommand.
-func nonFlagArgsAfter(args []string, sub string) []string {
-	var out []string
-	seen := false
-	for _, arg := range args {
-		if !seen {
-			if arg == sub {
-				seen = true
-			}
-			continue
-		}
-		if !strings.HasPrefix(arg, "-") {
-			out = append(out, arg)
-		}
-	}
-	return out
 }
 
 // hasOutputRedirectInRoot reports whether the command redirects a stream into a

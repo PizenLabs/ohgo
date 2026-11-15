@@ -351,3 +351,45 @@ func TestBashAllowsAbsolutePathInsideWorkspace(t *testing.T) {
 		t.Fatalf("the command did not create the inside path: %v", err)
 	}
 }
+
+// A git invocation that changes refs or config is a mutation even when a global
+// option carries a value, and even when no file changes. The tool's evidence
+// flag drives completion and affected paths, so misclassifying it let a real
+// change be reported as an ordinary execution.
+func TestBashReportsGitWritesAsMutationAndGitReadsAsExecution(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	tool := NewBashTool(root)
+	// Identity is passed explicitly: the commits below run through the tool,
+	// which inherits neither the test's environment nor a global git config.
+	for _, setup := range []string{
+		"git init -q",
+		"git -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init",
+	} {
+		if result := tool.Execute(agent.Context{Ctx: context.Background()}, map[string]any{"command": setup}); result.IsError {
+			t.Fatalf("setup %q failed: %s", setup, result.Text)
+		}
+	}
+
+	writes := []string{
+		"git branch feature-x",
+		"git -C . -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m second",
+		"git remote add origin https://example.com/x.git",
+	}
+	for _, command := range writes {
+		result := tool.Execute(agent.Context{Ctx: context.Background()}, map[string]any{"command": command})
+		if result.IsError {
+			t.Fatalf("%q failed: %s", command, result.Text)
+		}
+		if !result.Mutates {
+			t.Errorf("%q was not reported as a mutation", command)
+		}
+	}
+
+	read := tool.Execute(agent.Context{Ctx: context.Background()}, map[string]any{"command": "git status --short && git branch -a"})
+	if read.IsError || read.Mutates {
+		t.Fatalf("a read-only git inspection = error %v, mutates %v: %s", read.IsError, read.Mutates, read.Text)
+	}
+}
