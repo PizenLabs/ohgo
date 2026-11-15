@@ -370,3 +370,38 @@ func TestBehavioralFixObjectiveIsVerifiable(t *testing.T) {
 		t.Fatalf("verification = %+v, want a repository-scoped check", contract.Verification)
 	}
 }
+
+// A bug report states the expected result and the wrong one it replaces. That
+// expected-outcome clause is the oracle a targetless mutation needs: the run
+// can be judged by the change plus a successful check, without the runtime
+// guessing a file. Before this, a correct fix and its regression test were
+// reported as an ambiguous objective and never completed.
+func TestBuildIntentContractAcceptsAStatedExpectedOutcome(t *testing.T) {
+	contract := BuildIntentContract("Bug report: on the cart page, a row with quantity 2 of a 20.00 USD item " +
+		"shows 'total 20.00 USD', while the cart footer shows 40.00 USD. Fix the per-line total so it equals unit " +
+		"price times quantity, add a regression test that renders the page and proves it, then verify the affected tests pass.")
+	if contract.Kind != ObjectiveMutation {
+		t.Fatalf("kind = %s, want mutation", contract.Kind)
+	}
+	if contract.Ambiguous || !contract.BehavioralObjective {
+		t.Fatalf("contract = %+v, want a behavioural objective with a stated outcome", contract)
+	}
+	want := []VerificationRequirement{{Kind: VerifyAny, Check: CheckTest}}
+	if !reflect.DeepEqual(contract.Verification, want) {
+		t.Fatalf("verification = %+v, want the named check %+v", contract.Verification, want)
+	}
+}
+
+// The expected-outcome oracle is a result, not a subjective improvement. A
+// statement that a failure stops happening is checkable; "so it is cleaner" is
+// not, and must keep the review boundary.
+func TestExpectedOutcomeDistinguishesResultsFromSubjectiveImprovement(t *testing.T) {
+	checkable := BuildIntentContract("Fix the login so it no longer fails.")
+	if checkable.Ambiguous || !checkable.BehavioralObjective {
+		t.Fatalf("a stated failure-free outcome was marked ambiguous: %+v", checkable)
+	}
+	subjective := BuildIntentContract("Refactor the parser so it is cleaner.")
+	if !subjective.Ambiguous || subjective.BehavioralObjective {
+		t.Fatalf("a subjective improvement became a verifiable objective: %+v", subjective)
+	}
+}
