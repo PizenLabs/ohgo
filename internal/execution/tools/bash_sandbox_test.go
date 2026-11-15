@@ -362,6 +362,8 @@ func TestBashReportsGitWritesAsMutationAndGitReadsAsExecution(t *testing.T) {
 	}
 	root := t.TempDir()
 	tool := NewBashTool(root)
+	// Identity is passed explicitly: the commits below run through the tool,
+	// which inherits neither the test's environment nor a global git config.
 	for _, setup := range []string{
 		"git init -q",
 		"git -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init",
@@ -373,7 +375,7 @@ func TestBashReportsGitWritesAsMutationAndGitReadsAsExecution(t *testing.T) {
 
 	writes := []string{
 		"git branch feature-x",
-		"git -C . commit -q --allow-empty -m second",
+		"git -C . -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m second",
 		"git remote add origin https://example.com/x.git",
 	}
 	for _, command := range writes {
