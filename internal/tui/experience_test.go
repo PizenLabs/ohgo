@@ -146,8 +146,11 @@ func TestRunTurnUsesAdvisorAndRecordsObservation(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	mu.Unlock()
-	if strings.Join(names, ",") != "grep,read" {
-		t.Fatalf("offered tools = %v, want the advisor's preferred order", names)
+	if strings.Join(names, ",") != "read,grep" {
+		// The preference is guidance in the runtime block, never a reordering:
+		// the tool definitions precede the conversation on the wire, so a
+		// reorder would invalidate the provider's cached prefix.
+		t.Fatalf("offered tools = %v, want the loop's own order", names)
 	}
 	if observed.Outcome != "completed" {
 		t.Fatalf("observed outcome = %q, want completed", observed.Outcome)

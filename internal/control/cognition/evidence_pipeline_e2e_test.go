@@ -79,9 +79,7 @@ func runPipeline(t *testing.T, root, prompt, authority string, facts RepositoryF
 		Root:           root,
 	})
 	var system strings.Builder
-	for _, block := range projected.System {
-		system.WriteString(block.Text)
-	}
+	system.WriteString(strings.Join(projected.Runtime, "\n"))
 	return pipelineResult{
 		Intent: intent, Shape: shape, State: state,
 		Projected: projected, Review: review, System: system.String(),

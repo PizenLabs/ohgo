@@ -1,6 +1,7 @@
 package cognition
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -517,6 +518,60 @@ func EvaluateSufficiency(shape TaskShape, evidence *EvidenceState, execution Exe
 		result.Reasons = append(result.Reasons, "the required repository evidence is known")
 		return result
 	}
+}
+
+// requiresEnumeration reports whether an evidence key can only be established
+// by listing a directory or walking the repository.
+//
+// A statable manifest is not enough: the runtime already refuses to treat
+// manifests, configuration, and inventory as implementation evidence, so a
+// process that cannot list the workspace cannot produce these observations
+// however many tools remain offered.
+func requiresEnumeration(key string) bool {
+	switch key {
+	case "repository_overview", "repository_survey":
+		return true
+	}
+	return false
+}
+
+// workspaceUnreadable converts "the workspace root cannot be listed" into the
+// blocker it is.
+//
+// Without this, an unenumerable root (a macOS TCC denial reports "operation not
+// permitted" for readdir while stat still succeeds) reached the model as a
+// sentence about the project instead of a sentence about the environment: the
+// tools each failed on their own, the ledger saw a different signature each
+// time, and the run ended on the generic progress-stall verdict while the real
+// cause — nothing in this process can list the workspace — was never stated.
+//
+// It runs after ReconcileAcquisition and only for requirements that no
+// remaining provider can satisfy, because a targeted read of a path the model
+// already knows may still succeed when enumeration does not.
+func workspaceUnreadable(facts RepositoryFacts, suff Sufficiency) Sufficiency {
+	if strings.TrimSpace(facts.RootError) == "" || suff.State == Blocked || len(suff.Missing) == 0 {
+		return suff
+	}
+	unreachable := make([]string, 0, len(suff.Missing))
+	for _, key := range suff.Missing {
+		if requiresEnumeration(key) {
+			unreachable = append(unreachable, key)
+		}
+	}
+	if len(unreachable) == 0 {
+		return suff
+	}
+	suff.State = Blocked
+	suff.Stage = StageBlocked
+	suff.Kind = BlockCapabilityFailure
+	suff.Reasons = append([]string{fmt.Sprintf(
+		"the workspace root cannot be enumerated (%s), so %s cannot be established by any offered tool",
+		facts.RootError, strings.Join(unreachable, " or "))}, suff.Reasons...)
+	suff.Next = []string{
+		"report the environment restriction: the process cannot list the workspace, so no repository-wide observation is possible; do not retry discovery",
+		"grant this process read access to the workspace directory or start ohgo from a directory it can list",
+	}
+	return suff
 }
 
 // ReconcileAcquisition keeps a capability failure from closing the task while

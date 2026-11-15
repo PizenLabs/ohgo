@@ -209,10 +209,11 @@ func buildIntent(text string) contract.IntentContract {
 	return workspace.BuildIntentContract(text)
 }
 
-// Continuity orientation is a system block, not a message. The previous task
+// Continuity orientation rides the request's runtime suffix. The previous task
 // and the objective may orient the model, but they must never become user or
-// assistant content, and the message list stays canonical.
-func TestContinuityContextIsASystemBlockNotAMessage(t *testing.T) {
+// assistant conversation content, must never enter the cached system prefix,
+// and the message list stays canonical.
+func TestContinuityContextIsRuntimeStateNotConversation(t *testing.T) {
 	stream := &recordingStream{script: []ai.AssistantMessage{{
 		Content: []ai.ContentBlock{ai.TextContent{Text: "acknowledged"}},
 	}}}
@@ -243,11 +244,15 @@ func TestContinuityContextIsASystemBlockNotAMessage(t *testing.T) {
 	for _, block := range request.System {
 		system += block.Text
 	}
-	if !strings.Contains(system, "Task continuity") || !strings.Contains(system, "Previous objective") {
-		t.Fatalf("system blocks = %q, want the reconstructed continuity orientation", system)
+	if strings.Contains(system, "Task continuity") || strings.Contains(system, "Previous objective") {
+		t.Fatalf("system prefix = %q, want the stable prompt alone: a per-turn block here invalidates the provider cache", system)
 	}
-	if len(request.Messages) != 1 {
-		t.Fatalf("messages = %d, want the user request only: %#v", len(request.Messages), request.Messages)
+	if len(request.Messages) != 2 {
+		t.Fatalf("messages = %d, want the user request and the runtime state: %#v", len(request.Messages), request.Messages)
+	}
+	tail, ok := request.Messages[len(request.Messages)-1].(ai.RuntimeStateMessage)
+	if !ok || !strings.Contains(tail.Text, "Task continuity") || !strings.Contains(tail.Text, "Previous objective") {
+		t.Fatalf("runtime tail = %#v, want the reconstructed continuity orientation", request.Messages[len(request.Messages)-1])
 	}
 	user, ok := request.Messages[0].(ai.UserMessage)
 	if !ok || user.Text() != "run this project help me" {

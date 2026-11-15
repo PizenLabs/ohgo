@@ -30,16 +30,40 @@ func (f *fakeAdvisor) Advise(req AdviceRequest) Advice {
 	return f.advice
 }
 
-func TestOrderCandidateToolsOnlyReorders(t *testing.T) {
+// A preference is guidance, not a tool-list rewrite: tool definitions precede
+// the conversation on every wire protocol, so reordering them between turns
+// would invalidate the provider's cached prefix to convey something the
+// advisory line says outright.
+func TestPreferredToolsBecomeAdviceWithoutReordering(t *testing.T) {
 	tools := []agent.Tool{adviceTool{"read"}, adviceTool{"grep"}, adviceTool{"write"}}
-	ordered := orderCandidateTools(tools, []string{"write", "missing", "read"})
-	names := toolNameList(ordered)
-	want := []string{"write", "read", "grep"}
-	if strings.Join(names, ",") != strings.Join(want, ",") {
-		t.Fatalf("order = %v, want %v", names, want)
+	line := preferredToolHint([]string{"write", "missing", "read"}, tools)
+	if !strings.Contains(line, "write") || !strings.Contains(line, "read") {
+		t.Fatalf("hint = %q, want the preferred names", line)
 	}
-	if len(ordered) != len(tools) {
-		t.Fatalf("tools = %d, want the same %d tools", len(ordered), len(tools))
+	if strings.Contains(line, "missing") {
+		t.Fatalf("hint = %q, want only offered names", line)
+	}
+	preferred := BuildShape(contract.IntentContract{Objective: "inspect", Kind: contract.ObjectiveInformational}, ShapeParams{Authority: "ask", Intent: "read"})
+	projector := NewProjector(preferred, NewEvidenceState(), RepositoryFacts{})
+	projector.Advisor = &fakeAdvisor{advice: Advice{PreferredTools: []string{"write", "read"}}}
+	result := projector.Project(agent.ProjectionRequest{
+		Tools: tools,
+		Turns: []agent.Turn{{Results: []agent.ToolOutcome{{
+			CallID:   "1",
+			ToolName: "read",
+			Args:     map[string]any{"path": "src/main.go"},
+			Result:   agent.Result{Text: "package parser", Details: map[string]any{"path": "src/main.go"}},
+		}}}},
+	})
+	if names := toolNameList(result.Tools); strings.Join(names, ",") != "read,grep,write" {
+		t.Fatalf("tools = %v, want the loop's own order", names)
+	}
+	state := ""
+	if len(result.Runtime) > 0 {
+		state = result.Runtime[0]
+	}
+	if !strings.Contains(state, "prefer these offered tools") {
+		t.Fatalf("runtime state = %q, want the advisory preference line", state)
 	}
 }
 
@@ -70,8 +94,8 @@ func TestProjectorAppliesExperienceWithoutWideningTheSurface(t *testing.T) {
 	if len(advisor.req.Tools) != 3 {
 		t.Fatalf("advisor saw %d tools, want the pre-existing 3", len(advisor.req.Tools))
 	}
-	if len(result.Tools) == 0 || result.Tools[0].Name() != "grep" {
-		t.Fatalf("tools = %v, want grep ordered first", toolNameList(result.Tools))
+	if names := toolNameList(result.Tools); strings.Join(names, ",") != "read,grep,write" {
+		t.Fatalf("tools = %v, want the offered order preserved", names)
 	}
 	for _, tool := range result.Tools {
 		if tool.Name() == "not-offered" {
@@ -79,8 +103,8 @@ func TestProjectorAppliesExperienceWithoutWideningTheSurface(t *testing.T) {
 		}
 	}
 	state := ""
-	if len(result.System) > 0 {
-		state = result.System[0].Text
+	if len(result.Runtime) > 0 {
+		state = result.Runtime[0]
 	}
 	if !strings.Contains(state, "Experience guidance (advisory, not authority)") {
 		t.Fatalf("state = %q, want advisory guidance", state)
@@ -121,12 +145,14 @@ func TestExperienceAdviceIsBounded(t *testing.T) {
 			Result:   agent.Result{Text: "package parser", Details: map[string]any{"path": "src/main.go"}},
 		}}}},
 	})
-	if len(result.Report.ExperienceHints) > 3 {
-		t.Fatalf("hints = %d, want at most 3", len(result.Report.ExperienceHints))
+	// The advisor's preference is rendered as one further advisory line, and
+	// the rendered block stays inside its byte budget either way.
+	if len(result.Report.ExperienceHints) > 4 {
+		t.Fatalf("hints = %d, want at most 4", len(result.Report.ExperienceHints))
 	}
 	state := ""
-	if len(result.System) > 0 {
-		state = result.System[0].Text
+	if len(result.Runtime) > 0 {
+		state = result.Runtime[0]
 	}
 	if len(state) > DefaultStateBlockBytes+8 {
 		t.Fatalf("state bytes = %d, want bounded by %d", len(state), DefaultStateBlockBytes)
@@ -176,8 +202,8 @@ func TestProjectorWithoutAdvisorIsUnchanged(t *testing.T) {
 	if names := toolNameList(result.Tools); strings.Join(names, ",") != "read,grep" {
 		t.Fatalf("tools = %v, want the original order", names)
 	}
-	for _, block := range result.System {
-		if strings.Contains(block.Text, "Experience guidance") {
+	for _, block := range result.Runtime {
+		if strings.Contains(block, "Experience guidance") {
 			t.Fatal("nil advisor produced experience guidance")
 		}
 	}

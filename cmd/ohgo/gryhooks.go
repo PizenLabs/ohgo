@@ -27,7 +27,13 @@ func attachGRYEvidence(ctx context.Context, root, taskID, text string, loop *age
 	session := gryhook.NewSession(runner, taskID, text)
 	session.BeforePlan(ctx)
 	if blocks := session.PlanEvidence(); len(blocks) > 0 {
-		loop.SetSystemContext(blocks)
+		texts := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			if block.Text != "" {
+				texts = append(texts, block.Text)
+			}
+		}
+		loop.SetRuntimeContext(texts)
 	}
 	gryhook.Install(loop, session)
 	return session

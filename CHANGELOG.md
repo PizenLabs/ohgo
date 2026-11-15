@@ -37,8 +37,61 @@ immutable.
   lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
   cost and adaptive provider selection at 100–50,000 synthetic files.
 
+### Fixed
+
+- `structure` separates the facts that fail independently: `scope_gaps` names
+  the excluded source files instead of reporting only a count, and a view whose
+  structural coverage is incomplete states `source_access: AVAILABLE`, so
+  missing adapter coverage is never read as a denied read. A project whose
+  extensions have no registry entry at all is classified `UNSUPPORTED` instead
+  of `PARTIAL`, which had invited waiting for parsing that can never happen.
+
+- A review that rejects an absence claim now names the observation that refutes
+  it. `ls` and `glob` publish the paths they observed, and the claim audit
+  reports "the answer says X is absent, but this run observed app/X.tsx" instead
+  of "X is absent without evidence covering the claim". The audit also reports
+  the specific subject ("portfolio file") rather than the bare noun a pattern
+  matched ("file").
+
+- A tool the control plane judged unable to close the current gap (an inventory
+  listing when the answer still needs component source) is now reported in the
+  runtime briefing instead of withdrawn from the request. The withdrawal rewrote
+  the tool block, and a provider cache matches a prefix, so it invalidated every
+  cached token behind the block: an observed broad-analysis session dropped from
+  13,920 reused bytes to 527 on the request that changed the tools. The action
+  surface now changes only for capability and authority verdicts.
+
+- An unenumerable workspace root is now one environment blocker instead of a
+  run of unrelated tool failures. `cognition.ProbeFacts` records the root
+  enumeration error (`RepositoryFacts.RootError`) while keeping the markers it
+  could still stat, the runtime block leads with the restriction, and the
+  projection closes the task with the measured cause when the objective needs a
+  listing. `glob` no longer answers `No files matched` for a directory it never
+  read: the scan error is returned as `execution_failed`, and `ls` classifies an
+  unreadable directory the same way instead of reporting a remote tool error.
+  Previously a permission-denied root cost four turns and ended on "no
+  meaningful task progress", naming neither the path nor the cause.
 ### Changed
 
+- Context construction now protects the provider's prompt cache. Every request
+  has three regions in order: the stable system prefix and tool definitions, the
+  append-only conversation, and one trailing `ai.RuntimeStateMessage`. Per-turn
+  state — referenced files, the task continuity briefing, a standing proposal
+  decision, the projection's runtime state block, and one-shot recovery
+  directives — travels in that suffix instead of a system block, so the bytes
+  before it stay identical between turns. `Loop.freezePrefix` restores the form
+  an already-sent message was first sent with, and the projector bounds each
+  tool result by its own size rather than by a moving "recent results" window,
+  which used to rewrite cached history on every request. Compaction remains the
+  only deliberate prefix break and reports itself as an expected rewind.
+  `agent.UsageLog` records one `CacheSample` per request; `ClassifyCache`
+  separates an `EXPECTED` drop (system, tools, model, or rewind changed) from a
+  `SUSPICIOUS` one (the prefix repeated and less was reused), and `/usage`
+  renders the ratio, the uncached input, and the verdict. The Anthropic
+  transport marks the final system block and the last stable conversation turn
+  as cache breakpoints. Measured on the production provider path, cached input
+  over a ten-request session rose from 4,992 to 14,824 tokens with no
+  per-request regression.
 - Compaction settings now include `keepRecentToolResults`,
   `expectedOutputTokens`, `safetyMarginPercent`, `monitorPercent`,
   `preparePercent`, and `maxAttempts`. State-first reconstruction never updates

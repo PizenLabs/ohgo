@@ -196,8 +196,10 @@ func runRefusedProbeScript(t *testing.T, script []ai.AssistantMessage) refusedPr
 		Stream: func(_ context.Context, req ai.Request) (*ai.Stream, error) {
 			toolCounts = append(toolCounts, len(req.Tools))
 			if len(req.Messages) > 0 {
-				if user, ok := req.Messages[len(req.Messages)-1].(ai.UserMessage); ok &&
-					user.Text() == "runtime answer request" {
+				// The runtime answer request is a one-shot directive: it rides
+				// the request's trailing runtime state, not the conversation.
+				if tail, ok := req.Messages[len(req.Messages)-1].(ai.RuntimeStateMessage); ok &&
+					strings.Contains(tail.Text, "runtime answer request") {
 					answerNudged = true
 				}
 			}

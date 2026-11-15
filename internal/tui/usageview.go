@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -66,6 +67,22 @@ type UsageView struct {
 	// Providers lists the known providers with credential status. The card
 	// renders one row per entry.
 	Providers []ProviderRow
+	// HasCache reports a measured per-request cache sample exists. The
+	// provider owns prompt caching; this reports only the share of the last
+	// prompt it served from cache and whether that share moved.
+	HasCache bool
+	// CacheRatio is the cached share of the last prompt, in [0, 1].
+	CacheRatio float64
+	// UncachedInput is the input the provider had to process on the last
+	// request: the number that costs latency when cache locality is lost.
+	UncachedInput int
+	// CacheDelta is the change in cached tokens since the previous request.
+	CacheDelta int
+	// CacheVerdict classifies that change: STABLE, EXPECTED, or SUSPICIOUS.
+	// Empty when fewer than two requests have been measured.
+	CacheVerdict string
+	// CacheCause explains the verdict in one short phrase.
+	CacheCause string
 }
 
 // RenderUsageModal composes the /usage card as an ANSI string.
@@ -114,6 +131,13 @@ func usageModalContent(view UsageView, pal *Palette, interior int) []string {
 			field("Total Tokens", formatCount(usageRequestTotal(view.LastRequest))),
 			field("Turns", formatCount(view.TurnCount)),
 		)
+		if view.HasCache {
+			usage = append(usage,
+				field("Cache Reuse", usageCacheReuseLine(view)),
+				field("Uncached", formatCount(view.UncachedInput)),
+				field("Cache Change", usageCacheChangeLine(view)),
+			)
+		}
 	} else {
 		usage = append(usage, field("Activity", "no requests measured yet"))
 	}
@@ -182,6 +206,46 @@ func usageProviderRow(provider ProviderRow, active bool, pal *Palette, interior 
 func usageHintLine(pal *Palette, interior int) string {
 	line := strings.Repeat(" ", statusFieldIndent) + pal.Muted.Render(usageHint)
 	return TruncateToWidth(line, interior)
+}
+
+// usageCacheCause renders the shortest honest explanation of a verdict.
+func usageCacheCause(regression agent.CacheRegression) string {
+	switch regression.Class {
+	case agent.CacheExpected:
+		if len(regression.Causes) > 0 {
+			return strings.Join(regression.Causes, ", ")
+		}
+		return "prefix changed"
+	case agent.CacheSuspicious:
+		return "request unchanged"
+	default:
+		return ""
+	}
+}
+
+// usageCacheReuseLine renders the cached share of the last prompt.
+func usageCacheReuseLine(view UsageView) string {
+	return fmt.Sprintf("%.1f%%", view.CacheRatio*100)
+}
+
+// usageCacheChangeLine renders the cached-token change with its verdict.
+//
+// A drop is not automatically a fault: a role switch, a tool change, or a
+// compaction rebuilds the prefix on purpose. The verdict only says SUSPICIOUS
+// when the request repeated the previous prefix and still reused less.
+func usageCacheChangeLine(view UsageView) string {
+	if view.CacheVerdict == "" {
+		return "— (first request)"
+	}
+	sign := "+"
+	if view.CacheDelta < 0 {
+		sign = ""
+	}
+	line := sign + formatCount(view.CacheDelta) + " " + view.CacheVerdict
+	if view.CacheCause != "" {
+		line += " · " + view.CacheCause
+	}
+	return line
 }
 
 // usageMaxTokensLine renders the completion budget, or unknown when the model
@@ -265,6 +329,17 @@ func (p *Program) usageView() UsageView {
 		view.SessionCost = p.usage.CostOf(p.state.SessionIn, liveSessionOut(p.state), 0, 0)
 		if last, ok := p.usage.Last(); ok {
 			view.LastRequest = last
+		}
+		if sample, ok := p.usage.LastCache(); ok {
+			view.HasCache = true
+			view.CacheRatio = sample.CacheRatio()
+			view.UncachedInput = sample.UncachedInput()
+			view.CacheDelta = sample.CacheRead
+			if regression, _, ok := p.usage.CacheRegression(); ok {
+				view.CacheDelta = regression.Delta
+				view.CacheVerdict = regression.Class
+				view.CacheCause = usageCacheCause(regression)
+			}
 		}
 	}
 	return view

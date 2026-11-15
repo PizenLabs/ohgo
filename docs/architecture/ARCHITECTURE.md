@@ -43,7 +43,13 @@ daemon, graph database, or evidence path.
   importers, and tests. Its `overview` and `languages` views are metadata-first;
   targeted/impact views parse the pending supported files on demand. Semantic
   activation is reserved and fails explicitly because no semantic resolver is
-  configured.
+  configured. Every view's header states four independent dimensions —
+  `scope` (path inclusion), `inventory` (file observation), `structural`
+  (parsed coverage) and `source_access` — because they fail independently: a
+  build without an adapter for the project's language reports
+  `structural: UNSUPPORTED` while files stay readable, and an excluded source
+  file is named beside its count so a coverage gap is never mistaken for a
+  denied read.
 - `structure` also exposes the adaptive analysis layer as two views:
   `analysis` (intent-aware plan, multi-resolution summary, architecture and
   boundary evidence, coverage, issues, cache outcome) and `expand` (the direct
@@ -318,6 +324,77 @@ before use, and never includes model prose. Replaced tool output is addressable
 through the `recall` tool. The full contract is in
 [`TASK_CONTINUITY.md`](TASK_CONTINUITY.md) §5.1.
 
+### Request shape and provider cache locality
+
+The provider owns prompt caching; Ohgo owns nothing here. What Ohgo controls is
+whether the next request repeats the bytes the previous one sent, because a
+provider cache matches a **prefix**: the first changed byte invalidates every
+cached token after it.
+
+Every outbound request therefore has exactly three regions, in this order:
+
+```text
+stable prefix        system blocks (identity, environment, authority contract,
+                     project instructions, settings) + tool definitions
+append-only history  user, assistant, and tool-result messages
+runtime suffix       ONE ai.RuntimeStateMessage: the per-turn briefing
+```
+
+- **Nothing per-turn may enter the stable prefix.** `prompt.Build` renders it
+  once per request from the same inputs; `Loop.system` returns it untouched and
+  appends no context. Referenced files, the task continuity briefing, a standing
+  proposal decision, and the projection's runtime state block are runtime
+  context (`Loop.SetRuntimeContext`, `ProjectionResult.Runtime`), not system
+  blocks: a volatile system block sits ahead of the whole conversation on every
+  wire protocol, so it would make the provider re-read the history on every
+  turn.
+- **The conversation is append-only.** `Loop.freezePrefix` restores the bytes an
+  already-sent message was first sent with and reports any projector rewrite it
+  suppressed. A projection still bounds each result, but the bound is a function
+  of the result alone (`ProjectorOptions.ExactKeepBytes`), never of the
+  conversation's current length: aggregate growth is compaction's job, where
+  reduction is a deliberate transition rather than a per-request side effect.
+- **The runtime suffix is a view, never state.** It is rebuilt per request, never
+  persisted, appears exactly once, and is last so the model reads the current
+  direction last. One-shot recovery directives (the answer request, protocol and
+  execution-intent recovery) ride it too, so a stale "no tool is available" is
+  never replayed into later history.
+- **The tool block changes only for a capability or authority verdict.** The
+  surface is part of the stable prefix, so removing one tool invalidates every
+  cached token behind it. An *effectiveness* verdict — an inventory listing
+  cannot close a source-content gap, for example — therefore stays in the
+  request: `CandidateSet.Redundant` reports it, the runtime briefing states it
+  next to the actions that can close the gap, and a call to one after an answer
+  is continuation rather than evidence (`Loop.noEvidenceInBatch`). Withdrawing
+  such a tool bought no behaviour and cost the whole prefix: a broad-analysis
+  session that withdrew `glob`/`ls` on its fourth request reused 527 of 13,920
+  bytes. With the verdict reported instead, the block is byte-identical for the
+  exploration and the reused prefix grows to the closure request.
+- **Compaction is the one deliberate prefix break.** It keeps the system prefix
+  and tool definitions, rebuilds from durable state, and is reported as an
+  expected rewind rather than a provider fault. Surface closure (answer, block,
+  or complete) is the one deliberate change to the tool block, and it ends the
+  run's exploration rather than continuing it.
+
+`agent.UsageLog` records one `CacheSample` per request — the provider's reported
+input, output, reasoning, cache read/write, and the structural `RequestShape`
+(system/tool/model stability, reused message count, suppressed rewrites, rewind).
+`ClassifyCache` separates an **EXPECTED** drop (the request changed: system,
+tools, model, or a rewind) from a **SUSPICIOUS** one (the request repeated the
+previous prefix and still reused less, or a rewrite had to be suppressed). The
+ledger is diagnosis only: it never controls construction, and provider cache
+state is never authority. `/usage` renders the ratio, the uncached input, and the
+verdict.
+
+Transport detail: Anthropic carries `cache_control` on the final system block and
+on the last stable conversation turn (its documented sliding-window pattern),
+never on the volatile suffix; OpenAI-compatible and Ollama requests depend on the
+provider's implicit prefix cache, so the guarantee they get is structural — the
+prefix they receive is byte-stable between turns. The trace target is an initial
+request with smaller, more useful context and a following request whose uncached
+input is only the new bytes (observed: 30,518 input → 104 input with 31,296
+cached tokens, ~99.7% reuse).
+
 ### Capability preflight
 
 Before a turn is admitted, the control plane compares what the objective needs
@@ -521,7 +598,12 @@ user's request before execution and the evidence the runtime observed.
   ladder (`DECLARED`/`IMPORTED`/`INITIALIZED`/`USED_IN_SOURCE`/runtime) and is
   bound to the component the evidence came from. A concept absence ("JWT is not
   implemented") remains bounded to the inspected scope unless a scoped proof is
-  available; a complete file inventory is not a semantic absence proof. A
+  available; a complete file inventory is not a semantic absence proof. An
+  absence claim the run can *refute* is reported as the contradiction it is:
+  `ls` and `glob` publish the names they observed, and a claim whose subject
+  matches one — preferring the specific subject over the bare noun a pattern
+  matched — names that observation instead of asking for coverage the run
+  already has. A
   concrete line count needs the read's measurement, an independent-deployment
   conclusion needs a deployment artifact, and a path-scoped inference needs an
   observation of that path. The evaluator does not judge answer relevance beyond
@@ -684,8 +766,23 @@ the model said. Two properties keep the loop honest and small:
   message cannot add evidence: every call is either a capability the stage
   withheld or an exact repetition of an observation already current in the run.
   The loop drops those continuation calls before dispatch, so a finished answer
-  is not followed by refusal or reuse cards. A new offered capability keeps the
-  normal path because the text may be narration before real work. A message
+  is not followed by refusal or reuse cards.
+- **An unenumerable workspace is one environment blocker, not a series of tool
+  failures.** The probe records a root enumeration failure
+  (`RepositoryFacts.RootError`) — a macOS TCC denial reports `operation not
+  permitted` for `readdir` while `stat` still succeeds, so markers stay real
+  while the listing does not. The projection converts that into the same
+  terminal boundary as a failed capability, after acquisition reconciliation and
+  only for requirements that genuinely need a listing (`repository_overview`,
+  `repository_survey`): a targeted read of a known path may still succeed. The
+  runtime block leads with the restriction and the reason names the measured
+  cause, so the model reports the environment instead of rediscovering it one
+  failing call at a time. Discovery tools must never report absence for a read
+  that never happened: `glob` returns an `execution_failed` result naming the
+  cause rather than `No files matched`, and `ls` classifies an unreadable
+  directory the same way.
+- **A turn that only narrates keeps the surface.** A new offered capability keeps
+  the normal path because the text may be narration before real work. A message
   that only announces an action keeps the bounded recovery, and a
   policy-sensitive proposal is still dispatched so its refusal remains visible.
   The loop can also force the boundary itself: after a refused-proposal
@@ -885,11 +982,13 @@ temp-then-rename atomic, and safe to delete. Project experience becomes global
 only through an explicit `PromoteToGlobal` after three independent observations,
 zero contradictions, and a passed regression check.
 
-Application is a narrow advisory seam. `cognition.Projector.Advisor` may move
-tool names already in the offered surface earlier and append at most three
-bounded hints to the runtime state block. It cannot add or remove a tool, grant
-a capability, bypass the security gate, change evidence/sufficiency, or mark a
-task complete. The model still chooses the action; the control plane still
+Application is a narrow advisory seam. `cognition.Projector.Advisor` appends at
+most three bounded hints to the runtime state block, plus one advisory line
+naming tools that are already offered. It cannot add, remove, or reorder a tool
+— the tool definitions precede the conversation on the wire, so a per-turn
+reorder would cost the provider's cached prefix to convey a preference the
+guidance line states for free. It cannot grant a capability, bypass the security
+gate, change evidence/sufficiency, or mark a task complete. The model still chooses the action; the control plane still
 decides; the safety boundary is unchanged. `/experience` is a read-only
 inspection surface except for explicit human `retire`/`reject` commands.
 

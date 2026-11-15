@@ -156,11 +156,16 @@ func describeStructural(info ast.SnapshotInfo) structuralState {
 			Detail: fmt.Sprintf("%d supported source files not parsed yet", info.PendingFiles),
 		}
 	case unsupportedOnlySource(info):
-		return structuralState{
-			Label: "UNSUPPORTED",
-			Detail: fmt.Sprintf("no adapter for %s; 0 of %d source files parsed",
-				strings.Join(unsupportedExtensions(info), ", "), info.SourceFiles),
+		// An extension with no registry entry is not counted in SourceFiles,
+		// so "0 of 0 parsed" would understate a real inventory gap.
+		detail := "no adapter for " + strings.Join(unsupportedExtensions(info), ", ")
+		if info.SourceFiles > 0 {
+			detail += fmt.Sprintf("; 0 of %d source files parsed", info.SourceFiles)
+		} else {
+			detail += fmt.Sprintf("; %d inventoried file(s) cannot be parsed in this build",
+				unsupportedFileCount(info))
 		}
+		return structuralState{Label: "UNSUPPORTED", Detail: detail}
 	case info.FailedFiles > 0:
 		return structuralState{
 			Label:  "PARTIAL",
@@ -171,21 +176,42 @@ func describeStructural(info ast.SnapshotInfo) structuralState {
 	}
 }
 
-// unsupportedOnlySource reports that every source-bearing language in the
+// unsupportedOnlySource reports that every source-bearing file in the
 // inventory lacks an adapter in this build. It is the difference between "no
 // symbols found" and "symbols are unreachable in this binary".
+//
+// An extension with no registry entry (a Python or Swift file) has no language
+// coverage at all, so it is counted from the unsupported list. Treating it as
+// "some source files produced no structural facts" would report PARTIAL for a
+// project this build can never parse and invite a reader to wait for evidence
+// that cannot arrive.
 func unsupportedOnlySource(info ast.SnapshotInfo) bool {
-	source := 0
+	if info.ParsedFiles > 0 {
+		return false
+	}
+	files := 0
 	for _, coverage := range info.Languages {
 		if coverage.Files == 0 {
 			continue
 		}
-		source += coverage.Files
 		if coverage.Supported {
 			return false
 		}
+		files += coverage.Files
 	}
-	return source > 0 && info.ParsedFiles == 0
+	for _, item := range info.Unsupported {
+		files += item.Files
+	}
+	return files > 0
+}
+
+// unsupportedFileCount totals the inventoried files this build cannot parse.
+func unsupportedFileCount(info ast.SnapshotInfo) int {
+	files := 0
+	for _, item := range info.Unsupported {
+		files += item.Files
+	}
+	return files
 }
 
 // unsupportedExtensions lists inventoried extensions with no adapter in the

@@ -177,3 +177,41 @@ func TestProposalDecisionDelegationAddsNoConstraint(t *testing.T) {
 		t.Errorf("delegation constrained execution with %q", text)
 	}
 }
+
+// The system prompt is the provider cache's prefix. Two builds of the same
+// workspace must be byte-identical, and nothing finer than a calendar date may
+// enter it: a clock reading, a counter, or an unordered list would invalidate
+// every cached token on each request.
+func TestBuildIsStableAndCarriesNoSubDayClock(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "AGENTS.md"), "project rules")
+
+	first := strings.Join(Build(root, WorkspaceContract("build")), "\n\n")
+	second := strings.Join(Build(root, WorkspaceContract("build")), "\n\n")
+	if first != second {
+		t.Fatalf("Build is not deterministic:\n--- first ---\n%s\n--- second ---\n%s", first, second)
+	}
+	if !strings.Contains(first, "Date: ") {
+		t.Fatalf("the environment block lost its date line:\n%s", first)
+	}
+	// One date, and only a date: HH:MM:SS, an epoch count, or a nanosecond
+	// value in the prefix would change between requests.
+	if got := strings.Count(first, "Date: "); got != 1 {
+		t.Fatalf("date lines = %d, want 1", got)
+	}
+	for _, volatile := range []string{":00Z", "unix", "elapsed", "request id"} {
+		if strings.Contains(strings.ToLower(first), volatile) {
+			t.Fatalf("the stable prefix carries %q:\n%s", volatile, first)
+		}
+	}
+}
+
+// The tool roster is part of the stable prefix, so it is sorted by name: the
+// runtime's construction order is an implementation detail, not context.
+func TestToolCatalogIsSorted(t *testing.T) {
+	got := ToolCatalog([]string{"write", "bash", "read"})
+	want := "Available tools: bash, read, write."
+	if got != want {
+		t.Fatalf("catalog = %q, want %q", got, want)
+	}
+}

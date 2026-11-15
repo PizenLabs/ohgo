@@ -121,6 +121,12 @@ func toOllamaMessages(messages []Message, system []SystemPromptBlock) ([]ollamaM
 			out = append(out, ollamaMessage{Role: "assistant", Content: strings.Join(parts, "\n")})
 		case ToolResultMessage:
 			out = append(out, ollamaMessage{Role: "tool", Content: m.Text()})
+		case RuntimeStateMessage:
+			// The wire role has no runtime variant; the envelope in the text
+			// is what tells the model this is state, not a user request.
+			if m.Text != "" {
+				out = append(out, ollamaMessage{Role: "user", Content: m.Text})
+			}
 		default:
 			return nil, fmt.Errorf("ai: unsupported message type %T", msg)
 		}

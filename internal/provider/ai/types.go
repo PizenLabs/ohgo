@@ -15,11 +15,15 @@ import (
 // Role identifies the author of a message.
 type Role string
 
-// The three roles that appear on the wire.
+// The roles that appear on the wire.
 const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
 	RoleTool      Role = "toolResult"
+	// RoleRuntime is runtime-authored state, not conversation. Transports
+	// carry it in the user role because no chat protocol has a mid-conversation
+	// system role; the runtime never reads it back as user input.
+	RoleRuntime Role = "runtimeState"
 )
 
 // StopReason records why an assistant turn ended.
@@ -254,6 +258,30 @@ func (ToolResultMessage) Role() Role { return RoleTool }
 
 // Text joins every text block in the message with newlines.
 func (m ToolResultMessage) Text() string { return joinText(m.Content) }
+
+// RuntimeStateMessage is runtime-authored state delivered at the end of the
+// request.
+//
+// It exists because provider-side prompt caching keys on the request prefix,
+// and every chat protocol places the system prompt before the conversation. A
+// briefing that changes on each request therefore invalidates the whole cached
+// conversation when it is a system block, which is exactly what Ohgo used to
+// do: the per-request runtime state block sat in the system prompt ahead of
+// thirty thousand tokens of history and forced the provider to re-read all of
+// it. Carrying the same state as the final message keeps the stable prefix
+// (system, tools, history) byte-identical between requests and confines the
+// volatile bytes to the request anyway.
+//
+// The message is a transport-level view. It is never persisted in the session
+// transcript, never treated as user input, and never grants authority: the
+// workspace, security gate, and control plane remain the only authority paths.
+type RuntimeStateMessage struct {
+	// Text is the runtime-authored briefing, including its own envelope.
+	Text string
+}
+
+// Role implements Message.
+func (RuntimeStateMessage) Role() Role { return RoleRuntime }
 
 func joinText(blocks []ContentBlock) string {
 	var sb []byte

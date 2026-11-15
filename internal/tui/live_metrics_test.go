@@ -126,10 +126,10 @@ func TestEstimateTurnInputCountsRequest(t *testing.T) {
 	if base <= empty {
 		t.Fatalf("estimate non-empty = %d, want > empty %d", base, empty)
 	}
-	blocks := []ai.SystemPromptBlock{{Text: strings.Repeat("sys ", 100)}}
+	blocks := []string{strings.Repeat("sys ", 100)}
 	withSys := estimateTurnInput(req, blocks)
 	if withSys <= base {
-		t.Fatalf("estimate with system = %d, want > base %d", withSys, base)
+		t.Fatalf("estimate with runtime context = %d, want > base %d", withSys, base)
 	}
 }
 

@@ -45,8 +45,13 @@ type ProjectionResult struct {
 	Messages []Message
 	// Tools replaces the offered tool set for this request when non-nil.
 	Tools []Tool
-	// System is appended after the base system prompt.
-	System []ai.SystemPromptBlock
+	// Runtime is appended as the request's final runtime-state message, after
+	// every cached message. It is the projection's briefing: current stage,
+	// sufficiency, offered actions, and the evidence it rests on. A projector
+	// must not return it as a system block, because a volatile system block
+	// precedes the whole conversation and would invalidate the cached prefix on
+	// every request.
+	Runtime []string
 	// Refusals maps a call signature (agent.CallSignature) to the runtime
 	// reason it must not execute again. It is how the control plane's failure
 	// memory reaches the execution boundary: a repeated failed proposal is
@@ -84,6 +89,12 @@ type ProjectionReport struct {
 	ToolNames []string `json:"tool_names,omitempty"`
 	// Excluded names the tools withheld and why.
 	Excluded []CandidateExclusion `json:"excluded,omitempty"`
+	// Redundant names offered capabilities that cannot close the current gap.
+	// They stay in the request's tool block so its cached prefix survives: a
+	// narrowed tool set invalidates every cached token behind it, and an
+	// effectiveness verdict is not worth that. A redundant capability is
+	// continuation after an answer, never new evidence.
+	Redundant []CandidateExclusion `json:"redundant,omitempty"`
 	// Sufficiency is the evidence-sufficiency verdict.
 	Sufficiency string `json:"sufficiency,omitempty"`
 	// Stage is the projected task stage.

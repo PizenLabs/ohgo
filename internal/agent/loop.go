@@ -119,26 +119,34 @@ type Config struct {
 	// to change it. The returned slice is used as-is; the loop never mutates
 	// it.
 	SystemFn func() []ai.SystemPromptBlock
-	// SystemContext appends extra system-prompt blocks after System on every
-	// request. It is how a caller injects per-turn context — files the user
-	// referenced, for example — without rebuilding the loop. Set it with
-	// SetSystemContext before Run.
-	SystemContext []ai.SystemPromptBlock
-	// AnswerRequest is the user-role message appended when an answer-only
-	// request returns no visible text. It makes the closed action surface
-	// explicit in the conversation rather than leaving the model to infer it
-	// from a system block after a tool result. It is a runtime view, never
-	// persisted, and empty disables it while keeping the one retry.
+	// RuntimeContext is runtime-authored state delivered as the request's
+	// final message on every request: files the user referenced, the task
+	// continuity briefing, a standing proposal decision.
+	//
+	// It is deliberately not a system block. Provider prompt caching keys on
+	// the request prefix, and the system prompt precedes the whole
+	// conversation, so a briefing that changes per request placed there
+	// invalidates every cached token of history. The same briefing carried as
+	// the last message keeps system, tools, and history byte-identical between
+	// requests and confines the volatile bytes to the tail. Set it with
+	// SetRuntimeContext before Run.
+	RuntimeContext []string
+	// AnswerRequest is the directive carried on the next request when an
+	// answer-only request returned no visible text.
+	//
+	// It rides the request's runtime suffix, not the conversation: a directive
+	// that says "no tool is available" must not become history that every later
+	// request replays. Empty disables it while keeping the one retry.
 	AnswerRequest string
-	// ExecutionRecoveryRequest is the user-role message appended once when the
-	// model announces an action but emits no tool call. It asks for the actual
+	// ExecutionRecoveryRequest is the directive carried once when the model
+	// announces an action but emits no tool call. It asks for the actual
 	// canonical call; the runtime never executes the prose. Empty keeps the
 	// classification but does not spend the recovery request.
 	ExecutionRecoveryRequest string
-	// ProtocolRecoveryRequest is the user-role message appended once when a
-	// serialized tool-call envelope could not be normalized. It asks for a
-	// native or correctly serialized call without inventing arguments. Empty
-	// keeps the classification but does not spend the recovery request.
+	// ProtocolRecoveryRequest is the directive carried once when a serialized
+	// tool-call envelope could not be normalized. It asks for a native or
+	// correctly serialized call without inventing arguments. Empty keeps the
+	// classification but does not spend the recovery request.
 	ProtocolRecoveryRequest string
 	// Tools are offered to the model.
 	Tools []Tool
@@ -152,6 +160,10 @@ type Config struct {
 	ToolChoice ai.ToolChoice
 	// SessionID is forwarded to providers that support session caching.
 	SessionID string
+	// Usage receives one cache sample per request. Nil disables the sample; the
+	// request shape is still computed, because it is what enforces the
+	// append-only conversation.
+	Usage *UsageLog
 	// TransformContext rewrites the agent messages before conversion.
 	TransformContext func(messages []Message) []Message
 	// GetToolChoice resolves the tool choice per turn.
@@ -410,6 +422,21 @@ type Loop struct {
 	// context is the smallest truthful one available; re-running compaction
 	// before the provider sees it would summarise the summary.
 	compactionCooldown int
+	// frozen and prefix carry the previous request's message list and shape.
+	// They enforce the append-only conversation and make cache locality
+	// observable; both survive across Run calls, because the provider cache
+	// spans a session, not a turn.
+	frozen []ai.Message
+	prefix prefixState
+}
+
+// SetUsageLog installs the ledger that receives per-request cache samples.
+//
+// It is separate from the turn ledger the host folds after Run, because cache
+// locality is a property of each request inside a run, not of its totals. Pass
+// nil to stop reporting.
+func (l *Loop) SetUsageLog(log *UsageLog) {
+	l.cfg.Usage = log
 }
 
 // observationRecord is one current read-only observation. Turn keeps a
@@ -871,6 +898,13 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	activityObserved := false
 	stopReason := ""
 	turns = nil
+	// nudges are the one-shot runtime directives for the next request only:
+	// the answer request, the execution-intent recovery, and the protocol
+	// recovery. They are not conversation content — a stale "no tool is
+	// available" replayed on a later request is both wrong and a duplicate —
+	// so they ride the runtime suffix and are cleared once that request is
+	// sent.
+	var nudges []string
 	for {
 		if err := ctx.Err(); err != nil {
 			return turns, err
@@ -904,8 +938,11 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if compacted {
 			// Compaction rewrites the conversation, so the per-message history
 			// provenance no longer describes it. The reconstructed context is
-			// history by definition.
+			// history by definition. The append-only baseline is dropped with
+			// it: compaction is the one deliberate prefix break, and keeping
+			// the old bytes would undo it.
 			origins = historyOrigins(len(live))
+			l.forgetFrozenHistory()
 			continue
 		}
 
@@ -916,11 +953,24 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// it and a later turn can still re-read the source.
 		requestMessages := live
 		requestSystem := l.system()
+		// runtimeBlocks is the volatile tail of this request: caller-supplied
+		// per-turn state first, then the projection's briefing, then any
+		// one-shot directive, so the directive is the last thing read. It is
+		// rebuilt per request and never stored, so the conversation stays
+		// append-only.
+		runtimeBlocks := make([]string, 0, len(l.cfg.RuntimeContext)+len(nudges)+1)
+		runtimeBlocks = append(runtimeBlocks, l.cfg.RuntimeContext...)
+		runtimeBlocks = append(runtimeBlocks, nudges...)
 		activeTools := tools
 		answerEligible := false
 		terminal := false
 		closed := false
 		refusals := map[string]string(nil)
+		// redundant names offered capabilities the control plane judged unable
+		// to close the current gap. They stay offered so the request's tool
+		// block, and therefore its cached prefix, survives; the loop still
+		// refuses to treat a call to one as evidence.
+		var redundant map[string]bool
 		if l.cfg.Project != nil {
 			projected := l.cfg.Project(ProjectionRequest{
 				Messages:    copyMessages(live),
@@ -945,10 +995,14 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			if projected.Tools != nil {
 				activeTools = projected.Tools
 			}
-			if len(projected.System) > 0 {
-				requestSystem = append(append([]ai.SystemPromptBlock(nil), requestSystem...), projected.System...)
-			}
+			runtimeBlocks = append(runtimeBlocks, projected.Runtime...)
 			report := projected.Report
+			for _, entry := range report.Redundant {
+				if redundant == nil {
+					redundant = make(map[string]bool, len(report.Redundant))
+				}
+				redundant[entry.Tool] = true
+			}
 			answerEligible = report.AnswerEligible
 			terminal = report.Terminal
 			stopReason = report.StopReason
@@ -1018,9 +1072,27 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			closed = true
 		}
 
+		activeByName := make(map[string]Tool, len(activeTools))
+		for _, tool := range activeTools {
+			activeByName[tool.Name()] = tool
+		}
+		specs := Specs(activeTools)
+
 		converted, requestOrigins, err := l.convert(requestMessages, origins)
 		if err != nil {
 			return turns, fmt.Errorf("agent: convert context: %w", err)
+		}
+		// The conversation is append-only from here on. A projection may elide
+		// a tool result, but the form a result was first sent in is the form
+		// the provider cached; rewriting it later would invalidate every cached
+		// token after it to save a few hundred bytes.
+		shape := l.freezePrefix(converted, requestSystem, specs)
+		// Per-turn state rides at the very end, after every cached byte. The
+		// slice is copied because append would otherwise write into the live
+		// conversation's spare capacity.
+		if text := joinRuntime(runtimeBlocks); text != "" {
+			converted = append(append([]ai.Message(nil), converted...), ai.RuntimeStateMessage{Text: text})
+			requestOrigins = append(requestOrigins, ai.ProvenanceRuntimeState)
 		}
 		// The canonical contract is checked before any transport sees the
 		// conversation. A malformed message is an internal construction
@@ -1028,12 +1100,6 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if err := ai.ValidateMessages(converted, requestOrigins); err != nil {
 			return turns, fmt.Errorf("%w: %w", ErrInvalidProviderContext, err)
 		}
-
-		activeByName := make(map[string]Tool, len(activeTools))
-		for _, tool := range activeTools {
-			activeByName[tool.Name()] = tool
-		}
-		specs := Specs(activeTools)
 
 		toolChoice := l.cfg.ToolChoice
 		if l.cfg.GetToolChoice != nil {
@@ -1073,6 +1139,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// The provider's own context count is the floor for the next
 		// compaction decision.
 		l.lastProviderTokens = assistant.Usage.Total
+		l.observeRequest(len(turns), shape, assistant.Usage)
+		// The directives belonged to the request that was just sent.
+		nudges = nil
 
 		turn := Turn{Assistant: assistant}
 		live = append(live, AssistantMessage{Message: assistant})
@@ -1114,8 +1183,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				if !normalizationRecoveryAttempted && len(activeTools) > 0 && len(turns) < l.cfg.MaxTurns {
 					normalizationRecoveryAttempted = true
 					if strings.TrimSpace(l.cfg.ProtocolRecoveryRequest) != "" {
-						live = append(live, UserMessage{Text: l.cfg.ProtocolRecoveryRequest})
-						origins = append(origins, ai.ProvenanceRecovery)
+						nudges = append(nudges, l.cfg.ProtocolRecoveryRequest)
 					}
 					continue
 				}
@@ -1132,8 +1200,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				if !executionRecoveryAttempted && len(turns) < l.cfg.MaxTurns {
 					executionRecoveryAttempted = true
 					if strings.TrimSpace(l.cfg.ExecutionRecoveryRequest) != "" {
-						live = append(live, UserMessage{Text: l.cfg.ExecutionRecoveryRequest})
-						origins = append(origins, ai.ProvenanceRecovery)
+						nudges = append(nudges, l.cfg.ExecutionRecoveryRequest)
 					}
 					continue
 				}
@@ -1170,8 +1237,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				live = live[:len(live)-1]
 				origins = origins[:len(origins)-1]
 				if strings.TrimSpace(l.cfg.AnswerRequest) != "" {
-					live = append(live, UserMessage{Text: l.cfg.AnswerRequest})
-					origins = append(origins, ai.ProvenanceRecovery)
+					nudges = append(nudges, l.cfg.AnswerRequest)
 				}
 				// Keep the retry answer-only even if a projector would
 				// otherwise re-offer the probe surface. The model already had
@@ -1218,7 +1284,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		// has no recovery, so its text is the only output available.
 		if text := strings.TrimSpace(assistant.Text()); text != "" &&
 			(closed || (!answerIsDeferredPlan(text) &&
-				l.noEvidenceInBatch(activeByName, calls, len(turns)))) {
+				l.noEvidenceInBatch(activeByName, redundant, calls, len(turns)))) {
 			turn.Assistant = answerWithoutToolCalls(assistant)
 			turns = append(turns, turn)
 			if l.cfg.OnTurn != nil {
@@ -1507,31 +1573,28 @@ func (l *Loop) model() ai.Model {
 	return l.cfg.Model
 }
 
-// system returns the system prompt for the next request: the base blocks with
-// any per-turn context appended. It copies rather than appending in place, so a
-// caller's System slice is never mutated and two requests cannot share backing
-// storage that one of them later overwrites.
+// system returns the system prompt for the next request: exactly the stable
+// prefix the host supplied. Nothing per-turn is appended here.
+//
+// The distinction is the whole cache contract. A system block sits ahead of the
+// conversation on every wire protocol, so anything volatile in it makes the
+// provider re-read the entire request each turn; per-turn state travels as the
+// request's runtime message instead (see RuntimeContext).
 func (l *Loop) system() []ai.SystemPromptBlock {
-	base := l.cfg.System
 	if l.cfg.SystemFn != nil {
-		base = l.cfg.SystemFn()
+		return l.cfg.SystemFn()
 	}
-	if len(l.cfg.SystemContext) == 0 {
-		return base
-	}
-	out := make([]ai.SystemPromptBlock, 0, len(base)+len(l.cfg.SystemContext))
-	out = append(out, base...)
-	return append(out, l.cfg.SystemContext...)
+	return l.cfg.System
 }
 
-// SetSystemContext installs extra system-prompt blocks appended after the
-// loop's base System on every subsequent request. It is how a caller injects
-// per-turn context — files the user referenced, for example — without rebuilding
-// the loop. Pass nil to clear it.
+// SetRuntimeContext installs the runtime state carried as the request's final
+// message on every subsequent request. It is how a caller injects per-turn
+// context — files the user referenced, the task continuity briefing — without
+// rebuilding the loop or touching the cached prefix. Pass nil to clear it.
 //
 // It must be called before Run, never during one.
-func (l *Loop) SetSystemContext(blocks []ai.SystemPromptBlock) {
-	l.cfg.SystemContext = blocks
+func (l *Loop) SetRuntimeContext(blocks []string) {
+	l.cfg.RuntimeContext = blocks
 }
 
 // SetModel switches the model for subsequent requests.
@@ -1805,7 +1868,7 @@ func answerWithoutToolCalls(message ai.AssistantMessage) ai.AssistantMessage {
 // returns false. Policy-sensitive calls stay visible because they are attempted
 // actions, and a new offered observation may be real work rather than
 // continuation after an answer.
-func (l *Loop) noEvidenceInBatch(active map[string]Tool, calls []ai.ToolCall, turnIndex int) bool {
+func (l *Loop) noEvidenceInBatch(active map[string]Tool, redundant map[string]bool, calls []ai.ToolCall, turnIndex int) bool {
 	if l.cfg.Project == nil || len(calls) == 0 {
 		return false
 	}
@@ -1813,6 +1876,12 @@ func (l *Loop) noEvidenceInBatch(active map[string]Tool, calls []ai.ToolCall, tu
 		tool, built := l.builtTool(call.Name)
 		if !built || policySensitive(tool) {
 			return false
+		}
+		// A capability the control plane judged unable to close the current
+		// gap cannot add evidence, whether or not it is still offered: it stays
+		// in the tool block only to keep the cached prefix intact.
+		if redundant[call.Name] {
+			continue
 		}
 		if _, offered := active[call.Name]; offered {
 			if _, reused := l.priorObservation(call, turnIndex); !reused {

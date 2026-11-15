@@ -1,7 +1,6 @@
 package cognition
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -31,8 +30,13 @@ type AdviceRequest struct {
 
 // Advice is an advisory recommendation from promoted experience.
 type Advice struct {
-	// PreferredTools names tools already in the request's offered set. The
-	// projection may only reorder them; a name that is not offered is ignored.
+	// PreferredTools names tools already in the request's offered set.
+	//
+	// The projection renders them as one advisory line, never as a reordering
+	// of the tool definitions. Tool definitions precede the conversation on
+	// every wire protocol, so reordering them between turns invalidates the
+	// provider's whole cached prefix to convey a preference the guidance line
+	// carries for free.
 	PreferredTools []string
 	// Hints are bounded advisory lines for the runtime state block.
 	Hints []string
@@ -103,36 +107,5 @@ func boundAdvice(advice Advice) Advice {
 			break
 		}
 	}
-	return out
-}
-
-// orderCandidateTools moves preferred names to the front while preserving the
-// original order of everything else. It never adds a tool: the input slice is
-// the complete, already-authorized surface.
-func orderCandidateTools(tools []agent.Tool, preferred []string) []agent.Tool {
-	if len(tools) == 0 || len(preferred) == 0 {
-		return tools
-	}
-	rank := make(map[string]int, len(preferred))
-	for i, name := range preferred {
-		if _, ok := rank[name]; !ok {
-			rank[name] = i
-		}
-	}
-	out := append([]agent.Tool(nil), tools...)
-	sort.SliceStable(out, func(i, j int) bool {
-		ri, iok := rank[out[i].Name()]
-		rj, jok := rank[out[j].Name()]
-		switch {
-		case iok && jok:
-			return ri < rj
-		case iok:
-			return true
-		case jok:
-			return false
-		default:
-			return false
-		}
-	})
 	return out
 }

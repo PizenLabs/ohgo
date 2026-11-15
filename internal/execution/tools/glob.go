@@ -200,7 +200,22 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	defer cancel()
 
 	ignorer := newIgnorer(t.Root, useGitignore)
-	matches, timedOut, ignored, excluded := t.scan(scanCtx, scanRoot, pattern, hidden, ignorer)
+	matches, timedOut, ignored, excluded, scanErr := t.scan(scanCtx, scanRoot, pattern, hidden, ignorer)
+	if scanErr != nil {
+		// The scan never entered the requested directory. Reporting "no files
+		// matched" here is a factual claim about the workspace that nothing
+		// observed: an unlistable root (a permission denial, a TCC denial on
+		// macOS) produces exactly one failed open, and the model would conclude
+		// the tree is empty.
+		return agent.Result{
+			Text: fmt.Sprintf(
+				"scan failed: %v — the directory was never read, so no file was observed. "+
+					"This is not evidence that the files do not exist.",
+				scanErr),
+			IsError:      true,
+			FailureClass: agent.ToolFailureExecutionFailed,
+		}
+	}
 
 	sort.SliceStable(matches, func(i, j int) bool {
 		if matches[i].modTime.Equal(matches[j].modTime) {
@@ -279,6 +294,12 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	if truncated {
 		text += fmt.Sprintf("\n\n[showing %d of %d matches — raise \"limit\" or narrow the pattern]", limit, totalMatches)
 	}
+	// The matched paths are structured as well as rendered: the claim audit
+	// compares an answer's absence claim against what the run actually listed.
+	paths := make([]string, 0, len(matches))
+	for _, match := range matches {
+		paths = append(paths, filepath.ToSlash(match.rel))
+	}
 	return agent.Result{
 		Text: text,
 		Details: map[string]any{
@@ -289,6 +310,7 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 			"ignored":   ignored,
 			"excluded":  excluded,
 			"gitignore": useGitignore,
+			"paths":     paths,
 		},
 	}
 }
@@ -301,7 +323,11 @@ func (t *GlobTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 // for the caller: "no matches" must not be presented as an empty tree when the
 // only reason is a rule, and a pruned scan is not a complete project
 // inventory.
-func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bool, ignorer *ignorer) ([]globResult, bool, int, int) {
+// scan walks scanRoot, returning the matches and the error that stopped the walk
+// at the requested directory. A failure below the root is skipped: the rest of
+// the tree is still worth reporting, and one unreadable subtree is not evidence
+// about the request.
+func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bool, ignorer *ignorer) ([]globResult, bool, int, int, error) {
 	var (
 		matches  []globResult
 		timedOut bool
@@ -377,11 +403,9 @@ func (t *GlobTool) scan(ctx context.Context, scanRoot, pattern string, hidden bo
 		return nil
 	})
 	if walkErr != nil {
-		// The walk failed at the root of the scan; the caller converts this
-		// into a tool error.
-		return matches, timedOut, ignored, excluded
+		return matches, timedOut, ignored, excluded, walkErr
 	}
-	return matches, timedOut || ctx.Err() != nil, ignored, excluded
+	return matches, timedOut || ctx.Err() != nil, ignored, excluded, nil
 }
 
 // globBraceLimit caps the alternatives one pattern may expand to. A pattern is

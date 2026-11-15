@@ -126,9 +126,7 @@ func TestProjectionKeepsSourceMissingClaimOpen(t *testing.T) {
 		t.Fatal("a source-free broad analysis had no evidence review")
 	}
 	var system strings.Builder
-	for _, block := range result.System {
-		system.WriteString(block.Text)
-	}
+	system.WriteString(strings.Join(result.Runtime, "\n"))
 	if !strings.Contains(system.String(), "implementation=NOT_OBSERVED") {
 		t.Fatalf("state block did not name the missing implementation class:\n%s", system.String())
 	}

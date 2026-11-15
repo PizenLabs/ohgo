@@ -406,9 +406,7 @@ func TestForceAnswerClosesAnOpenInvestigationSurface(t *testing.T) {
 		t.Fatal("the forced-answer projection did not mark the answer boundary")
 	}
 	var state strings.Builder
-	for _, block := range projected.System {
-		state.WriteString(block.Text)
-	}
+	state.WriteString(strings.Join(projected.Runtime, "\n"))
 	if !strings.Contains(state.String(), "no tool is available") {
 		t.Fatalf("state block does not tell the model to answer:\n%s", state.String())
 	}

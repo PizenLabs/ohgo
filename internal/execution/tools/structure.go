@@ -553,7 +553,13 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 	if repeated {
 		text.WriteString("repeated: true (the same snapshot was already reported)\n")
 	}
-	fmt.Fprintf(&text, "languages: %s\n", languageSummary(info.Languages))
+	// An empty line would read as "no languages", which is a different fact
+	// from "an inventoried extension this build cannot name a language for".
+	summary := languageSummary(info.Languages)
+	if summary == "" {
+		summary = "none with an adapter (see unsupported_source)"
+	}
+	fmt.Fprintf(&text, "languages: %s\n", summary)
 	if len(result.Frameworks) > 0 {
 		fmt.Fprintf(&text, "frameworks: %s\n", strings.Join(result.Frameworks, ", "))
 	}
@@ -649,6 +655,29 @@ func (t *StructureTool) scope(ctx agent.Context, idx *ast.Index) agent.Result {
 	}
 	addStructuralProvenance(details, idx, info.ScopeComplete)
 	return agent.Result{Text: strings.TrimRight(text.String(), "\n"), Details: details}
+}
+
+// excludedFileSuffix names the excluded source files beside their count, so a
+// count is never the only thing a reader can act on. The list is bounded by the
+// scan and by the display budget, and the truncation is stated rather than
+// implied.
+func excludedFileSuffix(files []ast.ExcludedFile) string {
+	const shown = 3
+	if len(files) == 0 {
+		return ""
+	}
+	names := make([]string, 0, shown)
+	for i, file := range files {
+		if i >= shown {
+			break
+		}
+		names = append(names, file.Path)
+	}
+	suffix := " (" + strings.Join(names, ", ")
+	if len(files) > shown {
+		suffix += fmt.Sprintf(", %d more", len(files)-shown)
+	}
+	return suffix + ")"
 }
 
 // writeScopeInventory renders the excluded roots and included nested projects
@@ -1318,14 +1347,25 @@ func writeStructureHeader(text *strings.Builder, status, view string, info ast.S
 	// a global verdict, so each names what it actually covers.
 	fmt.Fprintf(text, "scope: %s (path inclusion)\n", completeLabel(info.ScopeComplete))
 	if !info.ScopeComplete {
-		fmt.Fprintf(text, "scope_gaps: %d excluded_roots, %d excluded_source_files\n",
-			len(info.ExcludedRoots), info.ExcludedSourceFiles)
+		// A bare count invites the reader to assume the gap is the file it
+		// wants. Naming the excluded source files settles it: a generated
+		// declaration is not a module the run should go looking for.
+		fmt.Fprintf(text, "scope_gaps: %d excluded_roots, %d excluded_source_files%s\n",
+			len(info.ExcludedRoots), info.ExcludedSourceFiles, excludedFileSuffix(info.ExcludedFiles))
 	}
 	fmt.Fprintf(text, "inventory: %s (file observation)\n", completeLabel(info.InventoryComplete))
-	if state := describeStructural(info); state.Detail != "" {
+	state := describeStructural(info)
+	if state.Detail != "" {
 		fmt.Fprintf(text, "structural: %s (%s)\n", state.Label, state.Detail)
 	} else {
 		fmt.Fprintf(text, "structural: %s\n", state.Label)
+	}
+	if state.Label != "COMPLETE" {
+		// Missing adapter coverage is a property of this binary, never of the
+		// reader's access. Stated together, the two facts that made a model
+		// conclude "the file was excluded, so I could not read it" no longer
+		// compose into that inference.
+		text.WriteString("source_access: AVAILABLE (read, grep, and glob open these files; adapter coverage limits only the parsed structure)\n")
 	}
 	fmt.Fprintf(text, "adapters: %s\n", adapterSummary())
 	fmt.Fprintf(text, "result: %s%s\n", resultLabel(resultTruncated), sliceSuffix(shown))

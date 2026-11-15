@@ -146,7 +146,12 @@ func (t *LsTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 		if os.IsNotExist(err) {
 			return absenceResult("read directory: %v", err)
 		}
-		return agent.ErrorResult("read directory: %v", err)
+		// A local read that never happened is not a remote tool error: the
+		// class decides whether the ledger treats the failure as a capability,
+		// and a permission denial is an execution that could not start.
+		result := agent.ErrorResult("read directory: %v", err)
+		result.FailureClass = agent.ToolFailureExecutionFailed
+		return result
 	}
 
 	// A flat listing stays literal: it shows what the directory holds, even a
@@ -226,6 +231,21 @@ func (t *LsTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 		}
 	}
 
+	// The observed names are structured as well as rendered: the claim audit
+	// needs the inventory itself to tell "the answer says this is missing" from
+	// "this very entry was listed", and re-parsing the ASCII listing would tie
+	// the audit to the display format.
+	paths := make([]string, 0, len(entries))
+	for _, item := range entries {
+		name := item.rel
+		if item.isDir {
+			name += "/"
+		}
+		if header != "" && header != "." {
+			name = header + "/" + name
+		}
+		paths = append(paths, name)
+	}
 	return agent.Result{
 		Text: text,
 		Details: map[string]any{
@@ -233,6 +253,7 @@ func (t *LsTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
 			"entries":   len(entries),
 			"depth":     depth,
 			"truncated": truncated,
+			"paths":     paths,
 		},
 	}
 }
