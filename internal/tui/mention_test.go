@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 // fileRoster is a small workspace used by the "@" trigger tests.
@@ -23,14 +26,210 @@ func TestFileTriggerRendersInlinePalette(t *testing.T) {
 	if p.state.Picker != nil {
 		t.Fatalf("picker = %+v, want no modal overlay for @", p.state.Picker)
 	}
-	out := Render(p.state)
+	out := ansi.Strip(Render(p.state))
 	if !strings.Contains(out, "FILES") {
 		t.Errorf("inline palette missing its FILES header:\n%s", out)
 	}
-	for _, want := range []string{"@main.go", "@pkg/", "@pkg/util.go", "@tui/app.go"} {
+	// A path row is two columns: the directory context and the target name.
+	// The trigger symbol belongs to the composer, not to the row.
+	for _, want := range []string{"main.go", "pkg/", "util.go", "tui/", "app.go"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("inline palette missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "@pkg/") {
+		t.Errorf("a path row rendered as one glued reference:\n%s", out)
+	}
+}
+
+// TestFilePaletteRendersTwoColumns pins the file grid: the directory context
+// fills a left column and every target name starts at one shared cell, so a
+// path list reads as a table instead of as a run of full references.
+func TestFilePaletteRendersTwoColumns(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.SetMentionLister(func() []string {
+		return []string{
+			"cmd/ohgo/workspace/file.go",
+			"cmd/ohgo/workspace/config.yaml",
+			"docs/OVERVIEW.md",
+			"main.go",
+		}
+	})
+	p.state.Apply(TerminalResized{Width: 100, Height: 24})
+	p.state.Apply(ComposerChanged{Text: "@", Cursor: 1})
+	p.ensureMentionRoster()
+	out := ansi.Strip(Render(p.state))
+
+	cellOf := func(text string) int {
+		t.Helper()
+		for _, line := range strings.Split(out, "\n") {
+			if at := strings.Index(line, text); at >= 0 {
+				return CellWidth(line[:at])
+			}
+		}
+		t.Fatalf("rendered palette missing %q:\n%s", text, out)
+		return 0
+	}
+	target := cellOf("file.go")
+	for _, name := range []string{"config.yaml", "OVERVIEW.md", "main.go"} {
+		if got := cellOf(name); got != target {
+			t.Errorf("%s starts at cell %d, want the shared target column %d:\n%s", name, got, target, out)
+		}
+	}
+	for _, dir := range []string{"cmd/ohgo/workspace/", "docs/"} {
+		if got := cellOf(dir); got >= target {
+			t.Errorf("context %q starts at cell %d, want left of the target column %d:\n%s", dir, got, target, out)
+		}
+	}
+}
+
+// TestFilePaletteTruncatesThePathFromTheLeft pins the overflow contract: a
+// directory deeper than its column loses its head while the target name — the
+// part the user is choosing between — stays whole, and the visible context
+// still begins at a separator so it reads as a shortened path rather than as a
+// corrupted one.
+func TestFilePaletteTruncatesThePathFromTheLeft(t *testing.T) {
+	parent := "alpha/bravo/charlie/delta/echo/foxtrot/golf/hotel/india/juliet/kilo/"
+	p := NewProgram(nil, "test", 0)
+	p.SetMentionLister(func() []string { return []string{parent + "file.go"} })
+	p.state.Apply(TerminalResized{Width: 80, Height: 24})
+	p.state.Apply(ComposerChanged{Text: "@", Cursor: 1})
+	p.ensureMentionRoster()
+	out := ansi.Strip(Render(p.state))
+
+	at := strings.Index(out, "file.go")
+	if at < 0 {
+		t.Fatalf("the target name was truncated away:\n%s", out)
+	}
+	head := out[:at]
+	if i := strings.LastIndex(head, "▸"); i >= 0 {
+		head = head[i+len("▸"):]
+	}
+	context := strings.TrimSpace(head)
+	if !strings.HasPrefix(context, "…/") {
+		t.Errorf("context column %q does not elide at a segment boundary", context)
+	}
+	if !strings.HasSuffix(context, "kilo/") {
+		t.Errorf("context column %q does not keep the nearest directory", context)
+	}
+	if strings.Contains(out, "alpha") || strings.Contains(out, "charlie") {
+		t.Errorf("the dropped head still renders:\n%s", out)
+	}
+}
+
+// TestFilePaletteKeepsItsBoxWidth proves the file grid never overflows its
+// frame, where the box would soft-wrap and push the composer down a row.
+func TestFilePaletteKeepsItsBoxWidth(t *testing.T) {
+	roster := []string{
+		"cmd/ohgo/workspace/internal/execution/tools/palette_renderer_with_a_long_name.go",
+		"docs/architecture/OVERVIEW.md",
+		"main.go",
+	}
+	for width := 40; width <= 120; width += 7 {
+		p := NewProgram(nil, "test", 0)
+		p.SetMentionLister(func() []string { return roster })
+		p.state.Apply(TerminalResized{Width: width, Height: 24})
+		p.state.Apply(ComposerChanged{Text: "@", Cursor: 1})
+		p.ensureMentionRoster()
+		lines := strings.Split(ansi.Strip(Render(p.state)), "\n")
+		frame := 0
+		for _, line := range lines {
+			if strings.Contains(line, " FILES ") && strings.HasPrefix(line, "│") {
+				frame = CellWidth(line)
+				break
+			}
+		}
+		if frame == 0 {
+			t.Fatalf("width %d: file palette did not render:\n%s", width, strings.Join(lines, "\n"))
+		}
+		for _, line := range lines {
+			if strings.HasPrefix(line, "│") && strings.HasSuffix(line, "│") {
+				if got := CellWidth(line); got != frame {
+					t.Fatalf("width %d: palette row is %d cells, frame is %d: %q", width, got, frame, line)
+				}
+			}
+		}
+	}
+}
+
+// TestFilePaletteRootWindowStartsNamesAtTheMarker proves a workspace-root
+// listing does not indent every name under a context column that never prints:
+// with no directory to show, each row begins at its marker.
+func TestFilePaletteRootWindowStartsNamesAtTheMarker(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.SetMentionLister(func() []string { return []string{"cmd/", "docs/", "main.go"} })
+	p.state.Apply(TerminalResized{Width: 80, Height: 24})
+	p.state.Apply(ComposerChanged{Text: "@", Cursor: 1})
+	p.ensureMentionRoster()
+	out := ansi.Strip(Render(p.state))
+
+	// Box border plus one padding cell, then the two-cell marker gutter.
+	const want = 4
+	for _, name := range []string{"cmd/", "docs/", "main.go"} {
+		found := false
+		for _, line := range strings.Split(out, "\n") {
+			at := strings.Index(line, name)
+			if !strings.HasPrefix(line, "│") || at < 0 {
+				continue
+			}
+			found = true
+			if got := CellWidth(line[:at]); got != want {
+				t.Errorf("%q starts at cell %d, want %d flush after the marker:\n%s", name, got, want, out)
+			}
+		}
+		if !found {
+			t.Errorf("rendered palette missing %q:\n%s", name, out)
+		}
+	}
+}
+
+// TestFilePalettePaintsTheSelectedRowAcrossBothColumns pins the selection
+// contract: the active row carries the selection surface behind its context,
+// gutter, and target — one bar spanning both columns — while an inactive row
+// paints no surface at all, so the row Enter would accept is unambiguous.
+func TestFilePalettePaintsTheSelectedRowAcrossBothColumns(t *testing.T) {
+	prev := termenv.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	p := NewProgram(nil, "test", 0)
+	p.SetMentionLister(func() []string { return []string{"cmd/file.go", "cmd/config.yaml"} })
+	p.state.Apply(TerminalResized{Width: 100, Height: 24})
+	p.state.Apply(ComposerChanged{Text: "@", Cursor: 1})
+	p.ensureMentionRoster()
+	raw := Render(p.state)
+
+	rowOf := func(text string) string {
+		t.Helper()
+		for _, line := range strings.Split(raw, "\n") {
+			if strings.Contains(ansi.Strip(line), text) {
+				return line
+			}
+		}
+		t.Fatalf("rendered palette missing %q:\n%s", text, ansi.Strip(raw))
+		return ""
+	}
+	surface := "48;2;" + rgbSeq(DarkTokens().SurfaceSelection)
+	painted := func(row string) (context, target bool) {
+		for _, span := range strings.Split(row, "\x1b[0m") {
+			text := ansi.Strip(span)
+			painted := strings.Contains(span, surface)
+			if strings.Contains(text, "cmd/") && painted {
+				context = true
+			}
+			if strings.Contains(text, "file.go") && painted {
+				target = true
+			}
+		}
+		return context, target
+	}
+	context, target := painted(rowOf("file.go"))
+	if !context || !target {
+		t.Errorf("selected row paints context=%v target=%v, want a highlight across both columns:\n%q",
+			context, target, rowOf("file.go"))
+	}
+	if got := strings.Count(rowOf("config.yaml"), surface); got != 0 {
+		t.Errorf("inactive row painted the selection surface %d times", got)
 	}
 }
 
