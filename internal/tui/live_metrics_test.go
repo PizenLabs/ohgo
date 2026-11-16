@@ -62,7 +62,7 @@ func TestBusyHintRowKeepsLiveMetricsWithoutSessionMarker(t *testing.T) {
 	s.Apply(SessionMetricsUpdated{Input: 200, Output: 0})
 	s.Apply(AssistantDelta{Text: strings.Repeat("x", 400)})
 
-	row := composerHintsFor(s)
+	row := unboundedFooter(s)
 	if !strings.Contains(row, "↓") || !strings.Contains(row, "esc cancel") {
 		t.Fatalf("busy hint row = %q, want live download plus cancel keys", row)
 	}

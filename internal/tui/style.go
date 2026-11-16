@@ -343,18 +343,6 @@ func WorkspaceBadge(accent, label string) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(accent)).Bold(true).Render(label)
 }
 
-// ComposerHints returns the contextual hint row for the composer.
-//
-// Every hint shown must work: enter submits, alt+enter / ctrl+j inserts a
-// break, esc cancels a turn, pgup/pgdn scroll. The idle set teaches the two
-// discovery paths (/ commands, ? help) so nobody must memorise them first.
-func ComposerHints(busy bool) string {
-	if busy {
-		return "enter queue · esc cancel · alt+enter break · pgup/pgdn scroll"
-	}
-	return "enter send · alt+enter break · / commands · ? help"
-}
-
 // RuntimeState names the agent/UI phase for header and status.
 //
 // It is derived from State on every render, never stored: stored phases drift

@@ -7,6 +7,18 @@ immutable.
 
 ### Changed
 
+- The bottom status bar is now a priority projection of runtime state rather
+  than a fixed sentence. Runtime telemetry (`⏱` duration, `↑` input, `↓`
+  output, context consumption `%`, measured cost) is P0 and survives longest;
+  repository identity and branch are P1, the turn/session marker is P2, and
+  contextual key hints are P3. The layout measures the frame and selects whole
+  items by priority instead of allowing the terminal to clip the row, so a long
+  repository path or an unrelated shortcut can no longer obscure the context
+  percentage in a split pane. Repository paths truncate from the left
+  (`…/Golang/go-ecommerce:main`, then `…/go-ecommerce:main`), the context
+  percentage owns its own slot and takes the warning/error role only at
+  significant pressure, and action hints appear only when their binding works
+  in the current state and fit whole.
 - Every settled turn now closes with one terminal footer in a single slot:
   a deterministic `✓ verified · …` summary for a clean turn (tool-call and
   changed-file counts plus check status), a subdued `⚠ needs review: …` block

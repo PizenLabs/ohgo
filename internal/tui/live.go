@@ -980,6 +980,10 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 	return append(out, hintStyle.Render(liveHintsFor(s, layout)))
 }
 
+// livePaletteKeys is the compact navigation row the live region falls back to
+// when the full palette key sentence cannot fit one row.
+const livePaletteKeys = "↑↓ enter esc"
+
 // liveHintsFor is the composer's hint row. It names only bindings that work
 // in this mode, and no scrolling key is advertised: the terminal owns the
 // wheel here and ohgo never asks it for it.
@@ -988,31 +992,32 @@ func liveComposerLines(s State, pal *Palette, layout Layout) []string {
 // soft-wraps and breaks the live region's row count: the region is erased and
 // rewritten from that count, so a row that silently becomes two would leave
 // the composer a row below where the renderer looks for it.
+//
+// Both candidates come from the status projection, so the live surface cannot
+// advertise a key the framed footer has already dropped as irrelevant.
 func liveHintsFor(s State, layout Layout) string {
-	var choices []string
-	switch {
-	case interruptConfirmVisible(s):
-		// The double-tap warning owns the row while it waits, exactly as in
-		// the framed composer: the second Esc is the only useful key now.
-		choices = []string{interruptConfirmText}
-	case len(paletteEntriesFor(s)) > 0 && s.ConnectKey == nil:
-		choices = []string{"↑↓ navigate · enter/tab accept · esc dismiss", "↑↓ enter esc"}
-	case s.Status.Busy:
-		choices = []string{"enter queue · esc cancel · alt+enter break", "enter queue · esc cancel"}
-	default:
-		// Idle hints share composerHintsFor, so the live surface gets the
-		// same progressive disclosure: shortcuts fresh, telemetry once a
-		// prompt has run. The short fallbacks keep a narrow terminal in one
-		// row.
-		choices = []string{composerHintsFor(s), "enter send"}
-	}
 	width := displayWidth(s, layout)
-	for _, text := range choices {
-		if CellWidth(text) <= width {
+	projection := projectStatusBarFor(s, statusSurfaceLive)
+	if projection.notice != nil {
+		if CellWidth(projection.notice.text) <= width {
+			return projection.notice.text
+		}
+		if projection.notice.tone == statusToneNeutral {
+			// A clipped navigation sentence teaches half a binding; the
+			// compact form names the same keys in one row.
+			return livePaletteKeys
+		}
+		return TruncateToWidth(projection.notice.text, width)
+	}
+	rail := joinStatusItems(projection.actions)
+	for _, text := range []string{statusLineFor(projection), rail} {
+		if text != "" && CellWidth(text) <= width {
 			return text
 		}
 	}
-	return choices[len(choices)-1]
+	// The rail is atomic: when even the highest-priority hint cannot fit, the
+	// row stays empty rather than teaching a clipped key.
+	return ""
 }
 
 // printTranscript hands sealed rows to the renderer, which writes them above

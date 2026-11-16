@@ -9,12 +9,6 @@ import (
 	"github.com/PizenLabs/ohgo/internal/tokens"
 )
 
-// SessionShortcutBar is the right zone of the telemetry footer: the two
-// discovery paths that cost nothing and always work. "? help" opens the
-// Command & Help Center on an empty composer and "^p settings" opens it too, so
-// the hints never advertise a key that does something else.
-const SessionShortcutBar = "? help · ^p settings"
-
 // liveSessionOut reports the output count the footer must show right now:
 // measured session total plus the in-flight estimate while a turn runs.
 //
@@ -89,88 +83,49 @@ func withTurnElapsed(state State, text string) string {
 	return timer + "  " + text
 }
 
-// busyTelemetry renders the live token/count zone for the busy footer: the
-// incrementally updating metrics (↑/↓ with live % and measured cost) plus
-// the path:branch worktree orientation with its compact dirty state, but
-// never the session marker.
+// measuredStatusText renders the measured telemetry zone as one unbounded
+// string. The footer itself renders the structured projection, so this helper
+// exists for callers that need a single string (the live overview and the
+// incremental-growth tests); it never re-derives an order of its own.
 //
-// The existing chrome contract parks the session marker while a turn runs —
-// the hint row belongs to the queue/cancel keys until the turn ends — so the
-// busy row must not reintroduce "#N". Path and git status stay because
-// orientation must not disappear mid-run. Hiding only "#N" keeps that
-// contract while still fixing the stale-statusline defect: ↑/↓/% now grow on
-// every AssistantDelta via liveSessionOut/livePercent instead of waiting for
-// the terminal completion hook.
-func busyTelemetry(state State) string {
+// The timer is a turn-level anchor the footer owns, and the session marker
+// parks while a turn runs, so both are explicit choices rather than accidents
+// of concatenation.
+func measuredStatusText(state State, includeTurn bool) string {
 	if !state.SessionActive {
 		return ""
 	}
-	var parts []string
-	if state.SessionIn > 0 {
-		parts = append(parts, "↑"+formatTokens(state.SessionIn))
-	}
-	if liveOut := liveSessionOut(state); liveOut > 0 {
-		out := "↓" + formatTokens(liveOut)
-		if pct := livePercent(state); pct >= 0 {
-			out += fmt.Sprintf(" (%d%%)", pct)
+	projection := projectStatusBar(state)
+	items := make([]statusItem, 0, len(projection.items))
+	for _, item := range projection.items {
+		if !item.visible {
+			continue
 		}
-		parts = append(parts, out)
-	} else if pct := livePercent(state); pct >= 0 {
-		parts = append(parts, fmt.Sprintf("(%d%%)", pct))
+		switch item.field {
+		case statusKindDuration:
+			continue
+		case statusKindTurn:
+			if !includeTurn {
+				continue
+			}
+		}
+		items = append(items, item)
 	}
-	if usage := sanitizeInline(strings.TrimSpace(state.Status.UsageText)); usage != "" {
-		parts = append(parts, usage)
-	}
-	if path := sessionPathBranch(state); path != "" {
-		parts = append(parts, path)
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Join(parts, " · ")
+	return joinStatusItems(items)
 }
 
-// sessionTelemetry renders the left zone of the telemetry footer: measured
-// session metrics and context, or "" when nothing has been measured yet.
-//
-// Format is "↑<in> · ↓<out> (<ctx%>) · <cost> · <session> ·
-// <path>:<branch> [+<staged> !<modified> ?<untracked>]",
-// with unknown counters absent rather than "0". The arrows read without
-// colour, the parenthesised context budget ties to the output count it
-// scopes, and the trailing session plus path:branch plus compact worktree
-// state orients. A fresh,
-// unmeasured session shows nothing it did not measure here; the minimal
-// path-only row is owned by the hint bar, not here.
+// busyTelemetry renders the live token/count zone for the busy footer: the
+// incrementally updating metrics plus the worktree orientation, but never the
+// session marker the chrome contract parks during a turn.
+func busyTelemetry(state State) string {
+	return measuredStatusText(state, false)
+}
+
+// sessionTelemetry renders the measured idle telemetry zone, or "" when the
+// session has measured nothing yet. Unknown counters stay absent rather than
+// rendering as fabricated zeros.
 func sessionTelemetry(state State) string {
-	if !state.SessionActive {
-		return ""
-	}
-	var parts []string
-	if state.SessionIn > 0 {
-		parts = append(parts, "↑"+formatTokens(state.SessionIn))
-	}
-	if liveOut := liveSessionOut(state); liveOut > 0 {
-		out := "↓" + formatTokens(liveOut)
-		if pct := livePercent(state); pct >= 0 {
-			out += fmt.Sprintf(" (%d%%)", pct)
-		}
-		parts = append(parts, out)
-	} else if pct := livePercent(state); pct >= 0 {
-		parts = append(parts, fmt.Sprintf("(%d%%)", pct))
-	}
-	if strings.TrimSpace(state.Status.UsageText) != "" {
-		parts = append(parts, sanitizeInline(strings.TrimSpace(state.Status.UsageText)))
-	}
-	if session := sanitizeInline(strings.TrimSpace(state.Status.Session)); session != "" {
-		parts = append(parts, session)
-	}
-	if path := sessionPathBranch(state); path != "" {
-		parts = append(parts, path)
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Join(parts, " · ")
+	return measuredStatusText(state, true)
 }
 
 // gitCompactStatus renders the measured worktree state compactly for the
@@ -235,75 +190,41 @@ func sessionPathBranch(state State) string {
 	return sessionPathBranchWidth(state, 24)
 }
 
-// sessionBarRow joins the left telemetry zone and the right shortcut zone
-// into one footer row. When width is positive the right zone pins to the far
-// edge with blank padding; when the row cannot fit, the right yields first so
-// measured telemetry (token counts, cost) survives over shortcuts, and the
-// whole row truncates to width rather than wrapping. Non-positive widths join
-// with " · " and never pad, for tests and unknown viewports.
+// sessionBarRow joins the telemetry zone and the contextual action rail into
+// one footer row. When width is positive and both fit with a clean gap, the
+// rail pins to the far edge with blank padding.
+//
+// The rail is atomic: a clipped "alt+enter bre…" teaches nothing, so when the
+// gap is too small the rail yields entirely and the telemetry keeps the row.
+// Non-positive widths join with " · " and never pad, for tests and unknown
+// viewports.
 func sessionBarRow(left, right string, width int) string {
 	left = strings.TrimSpace(left)
 	right = strings.TrimSpace(right)
-	if left == "" {
-		if width > 0 {
-			return TruncateToWidth(right, width)
+	if width <= 0 {
+		switch {
+		case left == "":
+			return right
+		case right == "":
+			return left
+		default:
+			return left + " · " + right
 		}
-		return right
+	}
+	if left == "" {
+		// A rail that does not fit is removed whole rather than cut short.
+		if CellWidth(right) <= width {
+			return right
+		}
+		return ""
 	}
 	if right == "" {
-		if width > 0 {
-			return TruncateToWidth(left, width)
-		}
-		return left
-	}
-	if width <= 0 {
-		return left + " · " + right
-	}
-	gap := width - CellWidth(left) - CellWidth(right)
-	if gap < 2 {
-		// Too narrow for a split: the left wins so token/cost telemetry
-		// stays visible in split-pane minimum sizes. Keep the left whole
-		// plus a truncated right when the "? help" head still fits;
-		// otherwise the left alone wins over a sliver, and truncation of
-		// the left (which keeps its token-first head) is the last resort.
-		sep := " · "
-		if CellWidth(left)+CellWidth(sep) < width && width-CellWidth(left)-CellWidth(sep) >= CellWidth("? help") {
-			return left + sep + TruncateToWidth(right, width-CellWidth(left)-CellWidth(sep))
-		}
 		return TruncateToWidth(left, width)
 	}
-	return left + strings.Repeat(" ", gap) + right
-}
-
-// idleHintZones reports the two footer zones for an idle composer: left
-// session metrics and context, right shortcuts.
-//
-// Fresh sessions (no prompt, no recallable history) show minimal path-only
-// left with the full "? help · ^p settings" right, because ^p genuinely opens
-// settings there. Once a prompt exists the left reveals full telemetry and the
-// right narrows to "? help": ^p returns to history recall, so advertising
-// settings would lie (see app.go ^p handling). Unknown counters stay absent;
-// an empty left keeps the footer clean rather than inventing zeros.
-func idleHintZones(state State) (left, right string) {
-	if telemetry := sessionTelemetry(state); telemetry != "" {
-		return telemetry, "? help"
+	if gap := width - CellWidth(left) - CellWidth(right); gap >= 2 {
+		return left + strings.Repeat(" ", gap) + right
 	}
-	if state.SessionActive || len(state.Submitted) > 0 {
-		return "", "? help"
-	}
-	// Fresh and unmeasured: only what is present and essential — session,
-	// measured cost, path — never invented zeros and never a 0% budget.
-	var parts []string
-	if usage := sanitizeInline(strings.TrimSpace(state.Status.UsageText)); usage != "" {
-		parts = append(parts, usage)
-	}
-	if session := sanitizeInline(strings.TrimSpace(state.Status.Session)); session != "" {
-		parts = append(parts, session)
-	}
-	if path := sessionPathBranch(state); path != "" {
-		parts = append(parts, path)
-	}
-	return strings.Join(parts, " · "), SessionShortcutBar
+	return TruncateToWidth(left, width)
 }
 
 // formatTokens renders a token count compactly with one decimal under a
