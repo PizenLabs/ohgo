@@ -229,9 +229,9 @@ func TestVerificationQuestionContinuationKeepsTaskIdentityAndProves(t *testing.T
 
 	predicted := false
 	predict := r.program.workspace.Predict
-	r.program.workspace.Predict = func(text string) (TurnTransition, bool) {
+	r.program.workspace.Predict = func(text string, taskOwned bool) (TurnTransition, bool) {
 		predicted = true
-		return predict(text)
+		return predict(text, taskOwned)
 	}
 	cmd := r.program.submit("check whether the fix worked")
 	if predicted {

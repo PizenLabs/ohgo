@@ -169,6 +169,13 @@ type Task struct {
 	// optional; a task written before it existed derives the same value from
 	// its role contexts.
 	ActiveRole workspace.Workspace `json:"activeRole,omitempty"`
+	// ExecutionContract is the authority the task was created under and the
+	// capabilities a human has authorized since. It is the persistent origin
+	// that keeps "origin=build, current=ask" meaningful; it is never the live
+	// gate and cannot admit a call. It is additive and optional; a checkpoint
+	// written before it existed derives a conservative contract from the
+	// restored role.
+	ExecutionContract workspace.ExecutionContract `json:"executionContract,omitempty"`
 	// Handoff is the task's current cross-role transition record, when one
 	// exists. It is continuity and recovery metadata: a pending handoff makes
 	// an interrupted approval diagnosable, and an applied handoff names the
@@ -234,6 +241,15 @@ func (t Task) Validate() error {
 	}
 	if t.ActiveRole != "" && !t.ActiveRole.Valid() {
 		return fmt.Errorf("%w: unknown active role %q", ErrInvalidTask, t.ActiveRole)
+	}
+	if t.ExecutionContract.Origin != "" && !t.ExecutionContract.Valid() {
+		return fmt.Errorf("%w: unknown execution origin %q", ErrInvalidTask, t.ExecutionContract.Origin)
+	}
+	if (t.ExecutionContract.Execute || t.ExecutionContract.Mutate) && !t.ExecutionContract.Valid() {
+		return fmt.Errorf("%w: execution capabilities without a valid origin", ErrInvalidTask)
+	}
+	if t.ExecutionContract.Mutate && !t.ExecutionContract.Execute {
+		return fmt.Errorf("%w: mutation authority without execution authority", ErrInvalidTask)
 	}
 	if t.Handoff != nil {
 		if err := t.Handoff.Validate(t); err != nil {
@@ -363,6 +379,19 @@ func (t Task) LastRole() workspace.Workspace {
 		return t.ActiveRole
 	}
 	return t.Context.LastRole()
+}
+
+// Origin returns the authority under which the task was created.
+//
+// It is read from the persisted execution contract, never from the current
+// role. A task written before the contract existed has no recorded origin, so
+// the zero Workspace is returned rather than fabricating one from the role it
+// happens to be running under now.
+func (t Task) Origin() workspace.Workspace {
+	if t.ExecutionContract.Valid() {
+		return t.ExecutionContract.Origin
+	}
+	return ""
 }
 
 // Todo returns the item with the given id.

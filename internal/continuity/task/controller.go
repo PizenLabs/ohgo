@@ -520,6 +520,9 @@ func (c *Controller) Begin(intent contract.IntentContract, snapshot *agent.Targe
 			return Task{}, err
 		}
 		created.UpdatedAt = now
+		// The origin is the authority under which the master task is created.
+		// It is captured once here and never reconstructed from later roles.
+		created.ExecutionContract = workspace.ContractFor(c.role)
 		cloned := cloneContract(intent)
 		created.Contract = &cloned
 		if snapshot != nil {

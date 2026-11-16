@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 )
 
 // ErrCorruptTask means task.md could not be parsed into a task.
@@ -75,6 +77,10 @@ func RenderMarkdown(t Task) string {
 
 	sb.WriteString("## Meta\n\n")
 	fmt.Fprintf(&sb, "- id: %s\n", sanitizeLine(t.ID))
+	if t.ExecutionContract.Valid() {
+		fmt.Fprintf(&sb, "- origin: %s\n", t.Origin().Label())
+		fmt.Fprintf(&sb, "- authority: %s\n", authorityList(t.ExecutionContract))
+	}
 	if t.Phase != "" {
 		fmt.Fprintf(&sb, "- phase: %s\n", sanitizeLine(t.Phase))
 	}
@@ -262,9 +268,37 @@ func applyMeta(t *Task, bullet string) {
 		t.ID = value
 	case "phase":
 		t.Phase = value
+	case "origin":
+		if origin, err := workspace.Parse(value); err == nil {
+			t.ExecutionContract.Origin = origin
+		}
+	case "authority":
+		t.ExecutionContract = t.ExecutionContract.Normalize()
+		for _, part := range strings.Split(value, ",") {
+			switch strings.ToLower(strings.TrimSpace(part)) {
+			case string(workspace.CapabilityExecute):
+				t.ExecutionContract.Execute = true
+			case string(workspace.CapabilityMutate):
+				t.ExecutionContract.Mutate = true
+			}
+		}
+		t.ExecutionContract = t.ExecutionContract.Normalize()
 	case "updated":
 		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
 			t.UpdatedAt = parsed
 		}
 	}
+}
+
+// authorityList renders the contract's capabilities for the human projection.
+// The order follows the authority chain, so a narrower contract is a prefix.
+func authorityList(contract workspace.ExecutionContract) string {
+	parts := []string{string(workspace.CapabilityRead)}
+	if contract.Execute {
+		parts = append(parts, string(workspace.CapabilityExecute))
+	}
+	if contract.Mutate {
+		parts = append(parts, string(workspace.CapabilityMutate))
+	}
+	return strings.Join(parts, ", ")
 }

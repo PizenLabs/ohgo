@@ -146,12 +146,12 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (*Stream, e
 	if req.Temperature != nil {
 		body.Temperature = req.Temperature
 	}
-	if req.Reasoning && req.Model.Reasoning {
-		effort := req.ReasoningEffort
-		if effort == "" {
-			effort = "medium"
-		}
-		budget := thinkingBudgetForEffort(effort, req.Model.MaxOutputTokens)
+	if req.Reasoning && req.Model.Reasoning && req.ReasoningEffort != "" {
+		// The thinking budget is drawn from the completion budget this request
+		// actually sends, not the model's maximum: a budget above max_tokens is
+		// rejected by the provider, and reasoning must not claim capacity the
+		// completion does not have.
+		budget := thinkingBudgetForEffort(req.ReasoningEffort, body.MaxTokens)
 		if budget > 0 {
 			body.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: budget}
 		}
@@ -237,10 +237,12 @@ func thinkingBudgetForEffort(effort string, maxOutput int) int {
 		fraction = 0.1
 	case "medium":
 		fraction = 0.25
-	case "high":
+	case "high", "xhigh", "max":
 		fraction = 0.5
 	default:
-		fraction = 0.25
+		// An effort the ladder does not name (including "none") is not a
+		// budget the runtime may invent. No thinking block is attached.
+		return 0
 	}
 	budget := int(float64(maxOutput) * fraction)
 	// The API rejects budgets below this floor.
@@ -249,6 +251,11 @@ func thinkingBudgetForEffort(effort string, maxOutput int) int {
 	}
 	if budget > maxOutput {
 		budget = maxOutput
+	}
+	// The API requires the thinking budget to be strictly below max_tokens. A
+	// completion too small to hold both is omitted rather than sent invalid.
+	if budget >= maxOutput {
+		return 0
 	}
 	return budget
 }

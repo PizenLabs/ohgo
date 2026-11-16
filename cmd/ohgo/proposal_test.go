@@ -56,7 +56,7 @@ func TestTurnTransitionSurfacesRequestDerivedProposal(t *testing.T) {
 	h.root = t.TempDir()
 
 	const request = "Create a small portfolio site for John Smith."
-	proposal, ok := turnTransition(h, request)
+	proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), request)
 	if !ok {
 		t.Fatal("a target-less greenfield creation produced no proposal")
 	}
@@ -95,7 +95,7 @@ func TestTurnTransitionQuestionsVaryWithTheRequest(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, request := range requests {
-		proposal, ok := turnTransition(h, request)
+		proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), request)
 		if !ok {
 			t.Errorf("%q produced no proposal", request)
 			continue
@@ -126,13 +126,13 @@ func TestTurnTransitionSuppressesResolvedProposal(t *testing.T) {
 		"Implement a helper function.",
 		"Add a test for the parser.",
 	} {
-		if proposal, ok := turnTransition(h, request); ok {
+		if proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), request); ok {
 			t.Errorf("%q proposed (kind %q) despite resolved or ordinary work", request, proposal.Kind)
 		}
 	}
 
 	h.root = conventionFixture(t)
-	if proposal, ok := turnTransition(h, "Create a small portfolio site for John Smith."); ok {
+	if proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), "Create a small portfolio site for John Smith."); ok {
 		t.Errorf("the request proposed despite the project convention (kind %q)", proposal.Kind)
 	}
 }
@@ -146,7 +146,7 @@ func TestTurnTransitionAlternativeDimensionUsesTheSameSeam(t *testing.T) {
 	h.root = t.TempDir()
 
 	const request = "Implement config loading. Extend the existing loader vs introduce a new loader path."
-	proposal, ok := turnTransition(h, request)
+	proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), request)
 	if !ok {
 		t.Fatal("an explicit choice produced no proposal")
 	}
@@ -172,7 +172,7 @@ func TestTurnTransitionPrefersWorkspaceNarrowing(t *testing.T) {
 	h := routedHarness(gate, nil, "BUILD")
 	h.root = t.TempDir()
 
-	proposal, ok := turnTransition(h, "why does this function return nil here?")
+	proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), "why does this function return nil here?")
 	if !ok {
 		t.Fatal("a strong informational request produced no proposal")
 	}

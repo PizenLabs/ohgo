@@ -41,7 +41,7 @@ func (o *countingOwner) asked() []string {
 // install wires the owner onto a program. The Switch closure mirrors the
 // production one: it moves the owner and publishes the new identity, so a test
 // observes the same chrome a real transition produces.
-func (o *countingOwner) install(p *Program, predict func(string) (TurnTransition, bool)) {
+func (o *countingOwner) install(p *Program, predict func(string, bool) (TurnTransition, bool)) {
 	accents := map[string]string{"ASK": ModeAccentAsk, "BUILD": ModeAccentBuild, "FUZZ": ModeAccentFuzz}
 	p.SetWorkspaceSwitcher(WorkspaceHooks{
 		Current: o.ws,
@@ -67,8 +67,8 @@ func (o *countingOwner) install(p *Program, predict func(string) (TurnTransition
 // request and nothing otherwise. It mirrors the production policy's shape
 // without depending on it, and reads the owner's live workspace so it stops
 // proposing once the transition lands.
-func readProposal(owner *countingOwner) func(string) (TurnTransition, bool) {
-	return func(text string) (TurnTransition, bool) {
+func readProposal(owner *countingOwner) func(string, bool) (TurnTransition, bool) {
+	return func(text string, _ bool) (TurnTransition, bool) {
 		if owner.ws() == "BUILD" && strings.HasPrefix(text, "why") {
 			return TurnTransition{
 				Current: "BUILD", Proposed: "ASK",
@@ -294,7 +294,7 @@ func TestAcceptedSwitchFailureDoesNotRunTheTurn(t *testing.T) {
 	p.SetWorkspaceSwitcher(WorkspaceHooks{
 		Current: func() string { return "BUILD" },
 		Switch:  func(string) error { return errSwitchRefused },
-		Predict: func(string) (TurnTransition, bool) {
+		Predict: func(string, bool) (TurnTransition, bool) {
 			return TurnTransition{Current: "BUILD", Proposed: "ASK", Question: "Switch to ASK?", Reason: "info"}, true
 		},
 	})

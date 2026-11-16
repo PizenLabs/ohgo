@@ -12,6 +12,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/continuity/task"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/history"
@@ -113,6 +114,7 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 	held.rec = recoverer
 	held.usage.SetCost(opts.model.Cost)
 	held.workspace = opts.authority().Label()
+	held.autoReasoning = opts.autoReasoning
 	held.gate = opts.gate
 	held.security = opts.security
 	held.support = surface
@@ -186,6 +188,16 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		},
 	})
 	installWorkspaceHooks(program, held, controller, &opts)
+	program.SetReasoningSelector(func(intent workspace.IntentContract, text string, request []agent.Message) (bool, string) {
+		var current *task.Task
+		if controller != nil {
+			if open, ok := controller.Current(); ok {
+				opened := open
+				current = &opened
+			}
+		}
+		return held.reasoningForWork(intent, workspace.AnalyzeRequest(text), current, request)
+	})
 	program.SetJobsLister(func() []tui.JobItem {
 		for _, tool := range loop.Tools() {
 			bash, ok := tool.(*tools.BashTool)

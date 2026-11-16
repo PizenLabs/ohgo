@@ -74,7 +74,7 @@ create a boundary that does not exist.
 | Domain | Packages | Owns | Does **not** own |
 |---|---|---|---|
 | **runtime** | `agent` | The turn loop, tool dispatch, the authorization sequence, grounding admission, completion evaluation, subagent execution, the projection seam, the edit-journal seam | Tool implementations, workspace policy, persistence, rendering |
-| **control** | `control/contract`, `control/budget`, `control/workspace`, `control/cognition`, `security` | Completion vocabulary (including the capability a contract requires); resource admission; authority policy + routing + intent contracts + transition decisions + capability preflight; task shape + evidence + narrowing; the authorization kernel | Execution, persistence, presentation |
+| **control** | `control/contract`, `control/budget`, `control/workspace`, `control/cognition`, `security` | Completion vocabulary (including the capability a contract requires); resource admission; authority policy + routing + intent contracts + persistent task execution authority + transition decisions + capability preflight; task shape + evidence + narrowing + reasoning demand; the authorization kernel | Execution, persistence, presentation |
 | **execution** | `execution/tools`, `execution/mcp`, `execution/sandbox`, `execution/shell`, `execution/exec` | Concrete capabilities; MCP transport + classification; the OS read-only boundary; shell-output decoding; the human `!` escape | The decision to allow an operation |
 | **intelligence** | `intelligence/ast`, `intelligence/ignore`, `intelligence/structural`, `intelligence/retrieval`, `intelligence/semantic`, `intelligence/runtime`, `intelligence/evidence`, `intelligence/planner`, `intelligence/investigate`, `intelligence/wire` | One in-process, incremental structural snapshot (Go native plus pinned tree-sitter adapters; symbols, packages/namespaces, files, tests, entrypoints, imports, references, calls, explicit relations, language coverage), repository scoping, the adaptive structural analysis layer (multi-resolution model, evidence/confidence, strategy portfolio, planner, bounded graph analysis, result cache), Okapi BM25 retrieval, LSP semantic observations, authorized DAP runtime observations, the shared evidence engine, and the cross-provider planner | Anything about the agent, models, authority, or UI |
 | **provider** | `provider/ai`, `provider/catalog`, `provider/creds` | Wire protocols and streams; canonical stream normalization (native and serialized tool calls); model facts and discovery; credential resolution | Policy, routing, cost decisions, execution authority |
@@ -101,8 +101,8 @@ edges that are architecturally forbidden (the ones enforced today are marked).
 | `internal/agent` | the engine | `control/{contract,budget}`, `security`, `provider/ai`, `tokens`, `jsonschema` — **exactly these** | `control/workspace`, `control/cognition`, `execution/*`, `continuity/*`, `tui`, `commit`, `prompt`, `catalog`, `ast` **\[ENFORCED]** |
 | `internal/security` | authorization kernel | stdlib only **\[ENFORCED]** | every module package |
 | `internal/promptopt` | deterministic prompt/title text transforms | stdlib only **\[ENFORCED]** | every module package |
-| `internal/control/workspace` | authority + routing | `agent`, `control/contract` | `execution/*`, `continuity/*`, `tui` **\[ENFORCED]** |
-| `internal/control/cognition` | shape + evidence | `agent`, `control/{contract,budget}`, `provider/ai`, `external/knowledge` | `execution/*`, `continuity/*`, `tui` **\[ENFORCED]** |
+| `internal/control/workspace` | authority + routing + persistent execution authority | `agent`, `control/contract` | `execution/*`, `continuity/*`, `tui` **\[ENFORCED]** |
+| `internal/control/cognition` | shape + evidence + reasoning demand | `agent`, `control/{contract,budget}`, `provider/ai`, `external/knowledge` | `execution/*`, `continuity/*`, `tui` **\[ENFORCED]** |
 | `internal/control/contract` | completion vocabulary | stdlib only **\[ENFORCED]** | every module package |
 | `internal/control/budget` | resource admission | stdlib only **\[ENFORCED]** | every module package |
 | `internal/execution/tools` | capabilities | `agent`, `control/*`, `security`, `provider/ai`, `intelligence/*`, `execution/{mcp,sandbox}`, `external/*`, `jsonschema`, `diff`, `edit` | `continuity/*`, `tui` **\[ENFORCED]** |
@@ -220,6 +220,7 @@ Read this before adding a field to anything.
 | Session authority snapshot | `session.Session` | in-memory session | harness rows | `session.Store.SetAuthority` (one writer) |
 | Completion verdict | `agent.Evaluate*Completion` | the run | `runState`, `task.Action` | `task.Status` |
 | Task objective/contract | `contract.IntentContract` | `task.Task` | `task.md` | `progress.json` |
+| Task execution authority (origin + human grants) | `workspace.ExecutionContract` | `task.Task` | `task.md` Meta, transition policy input | `progress.json` (`executionContract`) |
 | Task shared context, facts, hypotheses, evidence, questions | `task.SharedContext` | `task.Controller` | `task.ContextFor` | `progress.json` (`context`) |
 | Role execution context | `task.RoleContext` | the task | `task.ContextFor` (active role only) | `progress.json` (`context.roles`) |
 | Task active role (continuity metadata, never authority) | `task.Task.ActiveRole` | `task.Controller` | `task.ContextFor`, turn gate | `progress.json` (`activeRole`) |
@@ -281,6 +282,8 @@ reasoning, and `internal/architecture/rules_test.go` is the executable form.
 | **New cross-provider decision** | a candidate row in `internal/intelligence/planner` plus a test for the selection/skip reason | Start a provider, infer authorization from intent, or hide a skipped provider |
 | **New provider** | `internal/provider/ai/<name>.go` implementing `ai.Provider`; register in `Registry.ProviderFor`; env var in `provider/creds`; facts in `provider/catalog` | Reach into `agent` or config policy; add a per-model special case in the loop |
 | **New model-selection policy** | facts in `provider/catalog`; persisted roles in `config`; resolution in `cmd/ohgo/options.go`; `harness` applies it | Make `agent` choose a model; branch on a model id in the engine |
+| **New authority transition rule** | transition policy in `control/workspace/decision.go`, with the task's `ExecutionContract` as an input and a matrix row in `decision_test.go` | Use the current role as the task's origin; add a second router; cross ASK automatically |
+| **New reasoning policy** | demand signals and native mapping in `control/cognition/reasoning.go`; apply the returned setting in `cmd/ohgo` (and the TUI selector seam) | Add a universal effort enum; branch on a role or model id; invent a level when the ladder is unknown |
 | **New persistence record** | the owning `continuity/*` package + a versioned schema; a migration note in the migration doc | Add a second source of truth; change a JSON shape without a version bump |
 | **New task transition** | `internal/continuity/task` (legality) + `internal/tui` projection of it | Let the TUI decide the transition; let a tool set task status |
 | **New completion signal** | `internal/agent` (`verification.go` / `completion.go` / evidence scan), consumed by `ClassifyRun` | Read a model claim; decide completion in `tui` or in a tool |

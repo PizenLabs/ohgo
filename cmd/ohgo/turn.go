@@ -32,13 +32,13 @@ func turnAuthority(held *harness, text string) tui.TurnAuthority {
 // side-effect-free: prediction runs before the turn, so it must not install a
 // handler or move the gate. The accepted or automatic move is applied later
 // through the workspace owner.
-func turnTransition(held *harness, text string) (tui.TurnTransition, bool) {
+func turnTransition(held *harness, contract workspace.ExecutionContract, text string) (tui.TurnTransition, bool) {
 	active := held.activeWorkspace()
 	// A continuation of an open task is resolved by the task layer before
 	// prediction. A standalone "run the tests" is not a continuation, though:
 	// without task ownership it is an execution request and must be routed.
 	requirement := workspace.AnalyzeRequest(text)
-	decision := workspace.DecideTransition(active, requirement)
+	decision := workspace.DecideTransition(active, contract, requirement)
 	if decision.Proposed() {
 		current, proposed := decision.Current.Style(), decision.Target.Style()
 		kind := tui.TransitionKindWorkspace

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/PizenLabs/ohgo/internal/control/workspace"
 )
 
 // archivedFile is the on-disk form of a detached durable task.
@@ -66,6 +68,7 @@ func (s *Store) ArchiveTask(t Task, progress Progress) error {
 		progress.Status = t.Status
 	}
 	progress.ActiveRole = t.LastRole()
+	progress.ExecutionContract = t.ExecutionContract.Normalize()
 	if t.Handoff != nil {
 		cloned := t.Handoff.Clone()
 		progress.Handoff = &cloned
@@ -278,6 +281,17 @@ func sanitizeArchived(file *archivedFile) archiveRepairs {
 		file.Progress.ActiveRole = ""
 		repairs.add("the archived checkpoint role was invalid and was dropped", "active role")
 	}
+	// The execution contract is durable authority evidence, not the live gate.
+	// Prefer the task's copy (the archive's primary record), fall back to the
+	// checkpoint's additive copy, and only then derive from the restored role.
+	if !file.Task.ExecutionContract.Valid() {
+		file.Task.ExecutionContract = file.Progress.ExecutionContract
+	}
+	file.Task.ExecutionContract = file.Task.ExecutionContract.Normalize()
+	if !file.Task.ExecutionContract.Valid() {
+		file.Task.ExecutionContract = workspace.ContractFor(file.Task.LastRole())
+	}
+	file.Progress.ExecutionContract = file.Task.ExecutionContract
 	if file.Task.Status == StatusCompleted {
 		// Completion resolves the review boundary. Preserve the historical
 		// reason in the timeline, not as a current archived-task warning.

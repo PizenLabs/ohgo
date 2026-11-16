@@ -75,6 +75,14 @@ type harness struct {
 	// announce anything. The function reads only the local cache; it never
 	// performs network I/O in the prompt loop.
 	updateNotice func(io.Writer)
+	// autoReasoning reports that the turn's reasoning level is selected from
+	// the work's demand because no human effort override applies.
+	autoReasoning bool
+	// lastReasoningEffort is the level the demand selector last applied. It
+	// survives a role handoff, because reasoning is independent of role, and
+	// feeds the header badge without inventing a level for a disabled or
+	// mandatory-reasoning model.
+	lastReasoningEffort string
 }
 
 // newHarness assembles the backend. usage and settings may be nil only where
@@ -278,9 +286,14 @@ func (h *harness) AssignRole(update tui.RoleAssignment) (tui.RoleAssignment, []t
 	}
 	if h.sessionRole() == string(role) {
 		h.applyModel(model)
-		enabled, level := h.reasoningFor(effort)
-		if h.loop != nil {
-			h.loop.SetReasoning(enabled, level)
+		// Under AUTO an empty role effort means "let the work decide". Setting
+		// the global default here would replace that decision until the next
+		// turn boundary; an explicit effort is still the human's override.
+		if effort != "" || !h.autoReasoning {
+			enabled, level := h.reasoningFor(effort)
+			if h.loop != nil {
+				h.loop.SetReasoning(enabled, level)
+			}
 		}
 		h.recordSessionAuthority(model)
 	}
@@ -500,9 +513,11 @@ func (h *harness) SetModel(ref string) (ai.Model, error) {
 	if err := config.Save(*h.settings); err != nil {
 		return model, fmt.Errorf("save configuration: %w", err)
 	}
-	enabled, level := h.reasoningFor(effort)
-	if h.loop != nil {
-		h.loop.SetReasoning(enabled, level)
+	if effort != "" || !h.autoReasoning {
+		enabled, level := h.reasoningFor(effort)
+		if h.loop != nil {
+			h.loop.SetReasoning(enabled, level)
+		}
 	}
 	if role == h.sessionRole() {
 		h.recordSessionAuthority(model)
@@ -970,12 +985,14 @@ func (h *harness) SwitchWorkspace(name string) (workspace.Workspace, error) {
 			}
 			if model, rerr := resolve(ref); rerr == nil {
 				h.applyModel(model)
-				enabled, level := h.reasoningFor(strings.TrimSpace(effort))
-				if h.loop != nil {
-					h.loop.SetReasoning(enabled, level)
+				if !h.autoReasoning {
+					enabled, level := h.reasoningFor(strings.TrimSpace(effort))
+					if h.loop != nil {
+						h.loop.SetReasoning(enabled, level)
+					}
 				}
 			}
-		} else {
+		} else if !h.autoReasoning {
 			enabled, level := h.reasoningFor("")
 			if h.loop != nil {
 				h.loop.SetReasoning(enabled, level)

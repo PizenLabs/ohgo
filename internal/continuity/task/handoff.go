@@ -298,9 +298,18 @@ func (c *Controller) recordWorkspaceSwitch(from, to workspace.Workspace, reason,
 	// A transition proposal already recorded this exact move. Leave it in its
 	// approved state so the turn boundary applies it with the human's reason
 	// and summary instead of replacing it with the generic command record.
+	// The widening itself happens in applyApprovedHandoff when the approval is
+	// actually applied, so this path persists nothing.
 	if existing := c.task.Handoff; existing != nil && existing.From == from && existing.To == to &&
 		(existing.Status == HandoffApproved || existing.Status == HandoffApplied) {
 		return nil
+	}
+	if approvedBy == "human" {
+		// An explicit human workspace command is itself the authorization for
+		// the target role. Widen the persistent contract to the capability the
+		// human actually selected; a narrowing command changes only the live
+		// role and leaves the granted capabilities intact.
+		c.task.ExecutionContract = c.task.ExecutionContract.Authorize(to)
 	}
 	before := c.snapshotState()
 	now := c.now().UTC()
@@ -580,6 +589,11 @@ func (c *Controller) applyApprovedHandoff(now time.Time) error {
 	handoff.Failure = ""
 	handoff.Consumed = false
 	c.task.ActiveRole = handoff.To
+	// The human-approved target is the authorization this task now holds. The
+	// origin stays immutable; only the capability flags widen. Recording it
+	// here, after the live gate actually moved, keeps the persisted contract
+	// from ever claiming authority the runtime did not apply.
+	c.task.ExecutionContract = c.task.ExecutionContract.Authorize(handoff.To)
 	c.role = handoff.To
 	c.roleKnown = true
 	c.task.UpdatedAt = now

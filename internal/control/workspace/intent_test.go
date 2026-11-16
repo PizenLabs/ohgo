@@ -230,7 +230,7 @@ func TestProjectAnalysisPromptRoutesToAsk(t *testing.T) {
 	if prediction.Intent != IntentRead || prediction.Strength != StrengthStrong {
 		t.Fatalf("prediction = %+v, want a strong READ signal", prediction)
 	}
-	decision := DecideTransition(Build, AnalyzeRequest(text))
+	decision := DecideTransition(Build, ContractFor(Build), AnalyzeRequest(text))
 	if !decision.NeedsConfirmation() || decision.Target != Ask {
 		t.Fatalf("decision = %+v, want the ASK confirmation boundary", decision)
 	}
@@ -261,7 +261,7 @@ func TestInvestigativeObjectiveSurvivesAnExplanatoryClause(t *testing.T) {
 			if requirement.Capability != CapabilityInvestigate || requirement.Intent != IntentInvestigate {
 				t.Fatalf("requirement = %+v, want investigation", requirement)
 			}
-			decision := DecideTransition(Build, requirement)
+			decision := DecideTransition(Build, ContractFor(Build), requirement)
 			if !decision.Automatic() || decision.Target != Fuzz {
 				t.Fatalf("decision = %+v, want an automatic BUILD -> FUZZ handoff", decision)
 			}
@@ -306,14 +306,14 @@ func TestLeadingInvestigationWithLaterMutationStartsInFuzz(t *testing.T) {
 	if prediction.Intent != IntentInvestigate || prediction.Strength != StrengthStrong {
 		t.Fatalf("prediction = %+v, want a strong investigation phase", prediction)
 	}
-	first := DecideTransition(Build, AnalyzeRequest(text))
+	first := DecideTransition(Build, ContractFor(Build), AnalyzeRequest(text))
 	if !first.Automatic() || first.Target != Fuzz {
 		t.Fatalf("initial decision = %+v, want an automatic BUILD -> FUZZ handoff", first)
 	}
 
 	// Once FUZZ has the evidence and the user asks for the change itself, the
 	// same objective crosses to the only mutation authority.
-	next := DecideTransition(Fuzz, AnalyzeRequest("fix the checkout failure"))
+	next := DecideTransition(Fuzz, ContractFor(Build), AnalyzeRequest("fix the checkout failure"))
 	if !next.Automatic() || next.Target != Build {
 		t.Fatalf("follow-up decision = %+v, want an automatic FUZZ -> BUILD handoff", next)
 	}
@@ -344,7 +344,7 @@ func TestAmbiguousReadVerbStaysInACapableWorkspace(t *testing.T) {
 	if !route.Allowed() || route.Required != "" {
 		t.Errorf("route = %+v, want the capable BUILD workspace", route)
 	}
-	decision := DecideTransition(Build, AnalyzeRequest("check this project"))
+	decision := DecideTransition(Build, ContractFor(Build), AnalyzeRequest("check this project"))
 	if decision.Proposed() {
 		t.Errorf("decision = %+v, want no workspace change for a moderate read", decision)
 	}
@@ -746,7 +746,7 @@ func TestWholeChangeProhibitionWithReadRequestNarrowsToAsk(t *testing.T) {
 	if prediction.Intent != IntentRead || prediction.Strength != StrengthStrong {
 		t.Fatalf("prediction = %+v, want a strong READ signal", prediction)
 	}
-	decision := DecideTransition(Build, AnalyzeRequest(text))
+	decision := DecideTransition(Build, ContractFor(Build), AnalyzeRequest(text))
 	if !decision.NeedsConfirmation() || decision.Target != Ask {
 		t.Fatalf("decision = %+v, want the ASK confirmation boundary", decision)
 	}

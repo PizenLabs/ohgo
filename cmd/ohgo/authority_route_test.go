@@ -288,10 +288,13 @@ func TestFuzzFindingDoesNotAuthorizeMutation(t *testing.T) {
 	}
 }
 
-// TestFuzzMutationHandsOffToBuild is the cooperative row of the matrix:
-// FUZZ cannot mutate, so a repository-change request moves to BUILD
-// automatically, through the same switch owner.
-func TestFuzzMutationHandsOffToBuild(t *testing.T) {
+// TestFuzzMutationNeedsBuildAuthority is the FUZZ safety row of the matrix: a
+// standalone FUZZ session has no mutation authorization, so it cannot acquire
+// it from a request. The line-oriented REPL has no decision surface and reports
+// the authority the request needs instead of running it under the wrong gate.
+// A BUILD-authorized master task is the separate automatic path; see the
+// workspace and TUI transition tests.
+func TestFuzzMutationNeedsBuildAuthority(t *testing.T) {
 	t.Setenv("OHGO_HISTORY_FILE", "")
 	write := &spyTool{name: "write", tier: agent.TierWrite}
 	stream := &routeStream{call: writeCall()}
@@ -302,15 +305,15 @@ func TestFuzzMutationHandsOffToBuild(t *testing.T) {
 	if err := repl(h, &out, strings.NewReader("fix the bug\n/quit\n"), nil); err != nil {
 		t.Fatalf("repl: %v", err)
 	}
-	if got := write.executions(); got != 1 {
-		t.Errorf("mutations = %d, want the automatic BUILD execution", got)
+	if got := write.executions(); got != 0 {
+		t.Errorf("mutations = %d, want 0 without mutation authority", got)
 	}
-	if gate.Workspace() != workspace.Build || h.activeWorkspace() != workspace.Build {
-		t.Fatalf("gate/active = %s/%s, want BUILD after the automatic handoff",
+	if gate.Workspace() != workspace.Fuzz || h.activeWorkspace() != workspace.Fuzz {
+		t.Fatalf("gate/active = %s/%s, want FUZZ to stay in force",
 			gate.Workspace(), h.activeWorkspace())
 	}
-	if !strings.Contains(out.String(), "workspace FUZZ -> BUILD") {
-		t.Errorf("the automatic handoff was not reported:\n%s", out.String())
+	if !strings.Contains(out.String(), "this request needs BUILD authority") {
+		t.Errorf("the required BUILD transition was not reported:\n%s", out.String())
 	}
 }
 

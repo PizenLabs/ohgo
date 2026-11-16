@@ -22,6 +22,18 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 	// requests can reach this owner at once. The transition itself is one
 	// authority move and must be serialized.
 	var handoffMu sync.Mutex
+	// executionContract projects the master task's authority. With no open task
+	// the current role is the only authority evidence, and ContractFor derives
+	// the same conservative contract a new task would get. This is a read: the
+	// task layer never grants a capability by being consulted.
+	executionContract := func() workspace.ExecutionContract {
+		if controller != nil {
+			if current, ok := controller.Current(); ok && current.ExecutionContract.Valid() {
+				return current.ExecutionContract
+			}
+		}
+		return workspace.ContractFor(held.activeWorkspace())
+	}
 	switchTo := func(name, reason, workspaceState string, automatic bool) error {
 		from := held.activeWorkspace()
 		ws, err := held.SwitchWorkspace(name)
@@ -51,12 +63,24 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 		})
 		// A workspace move rebinds the session's model and effort: the header
 		// follows the newly effective role rather than naming a model the loop
-		// no longer calls.
+		// no longer calls. Under AUTO the effort belongs to the work, not the
+		// role, so the last selected level survives the move; only an explicit
+		// per-role effort replaces it.
 		program.PublishModel(held.model.Ref())
 		program.PublishEffort(func() string {
 			role := held.sessionRole()
 			if role == "" {
 				role = strings.ToLower(ws.String())
+			}
+			if held.autoReasoning {
+				if explicit := held.roleEffortFor(role); explicit != "" {
+					enabled, level := held.reasoningFor(explicit)
+					if !enabled {
+						return ""
+					}
+					return level
+				}
+				return held.lastReasoningEffort
 			}
 			enabled, level := held.reasoningFor(held.roleEffortFor(role))
 			if !enabled {
@@ -74,7 +98,10 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 		Switch:           func(name string) error { return switchTo(name, "", "", false) },
 		SwitchWithReason: func(name, reason, workspaceState string) error { return switchTo(name, reason, workspaceState, true) },
 		PrepareTurn:      func(text string) tui.TurnAuthority { return turnAuthority(held, text) },
-		Predict:          func(text string) (tui.TurnTransition, bool) { return turnTransition(held, text) },
+		Predict: func(text string, taskOwned bool) (tui.TurnTransition, bool) {
+			return turnTransition(held, executionContractForTurn(held.activeWorkspace(), taskOwned, executionContract), text)
+		},
+		ExecutionContract: executionContract,
 		// The tool boundary is the other place a staged task changes phase:
 		// the model files a finding (FUZZ) or changes source (BUILD) before it
 		// has any reason to ask. The control plane applies its ordinary
@@ -84,7 +111,7 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 		Handoff: func(_ ai.ToolCall, tool agent.Tool, args map[string]any) bool {
 			handoffMu.Lock()
 			defer handoffMu.Unlock()
-			next, ok := automaticToolHandoff(held.activeWorkspace(), tool, args)
+			next, ok := automaticToolHandoff(held.activeWorkspace(), executionContract(), tool, args)
 			if !ok {
 				return false
 			}
@@ -103,6 +130,21 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 	})
 }
 
+// executionContractForTurn selects the authority evidence a transition
+// prediction may consult.
+//
+// Only a prompt the open task owns may use the task's persistent contract. A
+// genuinely new objective starts a new task under the live role, so inheriting
+// a previous task's grant would let one task authorize another.
+func executionContractForTurn(active workspace.Workspace, taskOwned bool, taskContract func() workspace.ExecutionContract) workspace.ExecutionContract {
+	if taskOwned && taskContract != nil {
+		if contract := taskContract(); contract.Valid() {
+			return contract
+		}
+	}
+	return workspace.ContractFor(active)
+}
+
 // automaticToolHandoff decides whether one concrete tool call needs an
 // automatic BUILD <-> FUZZ move, and returns the decision when it does.
 //
@@ -111,6 +153,6 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 // call, never of the model's narration, and both go through the same policy as
 // a request. ASK is never crossed automatically: a plan under FUZZ or a write
 // under ASK stays where it is and the security boundary refuses it.
-func automaticToolHandoff(active workspace.Workspace, tool agent.Tool, args map[string]any) (workspace.TransitionDecision, bool) {
-	return workspace.ToolCallTransition(active, tool, args)
+func automaticToolHandoff(active workspace.Workspace, contract workspace.ExecutionContract, tool agent.Tool, args map[string]any) (workspace.TransitionDecision, bool) {
+	return workspace.ToolCallTransition(active, contract, tool, args)
 }

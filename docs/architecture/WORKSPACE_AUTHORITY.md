@@ -56,6 +56,41 @@ The deepest form of the rule:
 
 Writes through the loop are exactly where this is enforced, never in a prompt.
 
+### 2.1 Origin, contract, and role
+
+Three facts are deliberately separate:
+
+```text
+Origin        immutable   the authority the master task was created under
+Contract      persistent  origin + the capabilities a human has authorized
+Live role     ephemeral   the authority boundary for the current phase
+Gate          enforced    the per-call operation admission
+```
+
+`workspace.ExecutionContract` is the task's persisted authority evidence:
+
+```text
+ExecutionContract
+  Origin   ask | fuzz | build
+  Execute  bool
+  Mutate   bool
+```
+
+- `Origin` is captured when a new task is created and never reconstructed from
+  the current role. `origin=build, current=ask` is a valid, meaningful state.
+- `Execute` and `Mutate` only widen through a human authorization: an accepted
+  transition, or an explicit `/ask`, `/fuzz`, or `/build` command.
+- A narrowing move changes the live role only. It does not erase the grant.
+- The contract is never an admission path. `workspace.Admit` and the security
+  gate remain the only per-call authority.
+- A legacy checkpoint that predates the field derives a conservative contract
+  from the role it was last running under; no origin can be recovered from a
+  file that never stored one.
+- A genuinely new objective does not inherit the open task's contract. The turn
+  boundary decides whether the prompt is a continuation; prediction may consult
+  the task grant only for an owned continuation, and a new task is created
+  under the live role.
+
 ---
 
 ## 3. Intent
@@ -190,34 +225,38 @@ turn as a mutation objective.
 - `confirm` — a human authority-boundary decision.
 
 ```text
-ACTIVE   REQUEST                         DECISION
-────────────────────────────────────────────────────────────────────
-ASK      READ / analysis                 stay ASK
-ASK      greeting / continuation         stay ASK
-ASK      EXECUTE / MUTATE                confirm BUILD
-ASK      INVESTIGATE                     confirm FUZZ
+ACTIVE   REQUEST                         CONTRACT            DECISION
+────────────────────────────────────────────────────────────────────────────
+ASK      READ / analysis                 any                 stay ASK
+ASK      greeting / continuation         any                 stay ASK
+ASK      EXECUTE / MUTATE                any                 confirm BUILD
+ASK      INVESTIGATE                     any                 confirm FUZZ
 
-BUILD    READ (ambiguous/moderate)       stay BUILD
-BUILD    READ (strong question)          confirm ASK
-BUILD    EXECUTE / MUTATE                stay BUILD
-BUILD    INVESTIGATE (strong/staged)     automatic FUZZ
-BUILD    INVESTIGATE (weak/moderate)     stay BUILD
+BUILD    READ (ambiguous/moderate)       any                 stay BUILD
+BUILD    READ (strong question)          any                 confirm ASK
+BUILD    EXECUTE / MUTATE                any                 stay BUILD
+BUILD    INVESTIGATE (strong/staged)     any                 automatic FUZZ
+BUILD    INVESTIGATE (weak/moderate)     any                 stay BUILD
 
-FUZZ     READ (ambiguous/moderate)       stay FUZZ
-FUZZ     READ (strong question)          confirm ASK
-FUZZ     EXECUTE (non-mutating)          stay FUZZ
-FUZZ     INVESTIGATE                     stay FUZZ
-FUZZ     MUTATE                          automatic BUILD
+FUZZ     READ (ambiguous/moderate)       any                 stay FUZZ
+FUZZ     READ (strong question)          any                 confirm ASK
+FUZZ     EXECUTE (non-mutating)          any                 stay FUZZ
+FUZZ     INVESTIGATE                     any                 stay FUZZ
+FUZZ     MUTATE                          mutate authorized   automatic BUILD
+FUZZ     MUTATE                          no mutation grant   confirm BUILD
 ```
 
 The thresholds are deliberate:
 
 - crossing **into ASK** requires strong READ evidence, so a vague "check this"
   does not interrupt a BUILD/FUZZ session;
-- crossing **out of ASK** requires at least moderate evidence for a new
-  capability; an explicit mutation always qualifies;
+- crossing **out of ASK** always requires a human decision, even when the task's
+  contract was widened earlier: the ASK boundary is protected, not bypassed by
+  a grant;
 - BUILD → FUZZ requires a strong investigation signal;
-- FUZZ → BUILD is automatic whenever the request actually needs mutation;
+- FUZZ → BUILD is automatic only when the task contract already authorizes
+  mutation. A standalone FUZZ task, or a FUZZ phase of a task that was never
+  authorized to mutate, asks for BUILD;
 - every automatic decision has BUILD and FUZZ as both endpoints. ASK is never
   crossed automatically in either direction.
 
@@ -308,8 +347,11 @@ contract and the delta, never from similarity alone.
 
 A contract records `ConditionalMutation` when the request stages an
 investigation/understanding phase before a conditional future change. `Kind`
-remains `ObjectiveMutation` so the change is authorized and grounded when the
-branch is reached; the marker says the current phase is not yet that change.
+remains `ObjectiveMutation` so the change is grounded and judged as a
+completion objective when the branch is reached; the marker says the current
+phase is not yet that change. The marker does not grant authority: the later
+branch still crosses the transition policy, and a FUZZ phase without mutation
+authorization asks before BUILD.
 
 A task contract can require a change while the current turn runs under ASK or
 FUZZ. The turn cannot perform the change, but it can still produce the
@@ -442,7 +484,8 @@ The human boundary is asymmetric:
   control plane selects the target, and the owner applies it before the turn.
 - **FUZZ still cannot mutate.** The FUZZ → BUILD handoff happens first; the
   per-call gate remains the safety boundary. A finding from FUZZ never grants
-  mutation authority inside FUZZ.
+  mutation authority inside FUZZ, and a FUZZ session the task contract never
+  authorized to mutate must ask before BUILD.
 - **BUILD retains mutation authority**, but it is not obliged to mutate an
   investigation it can answer.
 
@@ -453,7 +496,8 @@ The only ways authority changes are:
    snapshot;
 2. an accepted human-boundary decision;
 3. an automatic BUILD ↔ FUZZ decision from `workspace.DecideTransition`,
-   whether the request text or a grounded tool call produced it.
+   whether the request text or a grounded tool call produced it, when the task
+   contract already authorizes the target capability.
 
 The agent may propose intent through its request text or through a tool it
 calls, but it cannot move authority. The control plane owns the decision, and
@@ -546,6 +590,12 @@ session
     ├── capability       READ / EXECUTE / INVESTIGATE / MUTATE
     └── admitted gate    active gate value for the turn
 ```
+
+The durable task keeps the other half of the authority history:
+`Task.ExecutionContract.Origin` and the capabilities a human authorized.
+`progress.json` carries it across a resume. The session's live workspace remains
+the gate; the task contract is evidence used by the transition policy, not a
+second admission path.
 
 `SwitchWorkspace` persists the active workspace, the effective model, and moves
 the gate together. An automatic handoff has the same durable effect: the one-shot
@@ -763,7 +813,12 @@ that a classifier returned a string.
 | C — BUILD may read and investigate | `cmd/ohgo.TestBuildExecutesExplicitMutation`, `workspace.TestRouteTurnTransitionMatrix` |
 | D — BUILD analysis does not force mutation | `tui.TestBuildAnalysisConfirmsAskBoundary` |
 | E — a FUZZ finding does not authorize mutation | `cmd/ohgo.TestFuzzFindingDoesNotAuthorizeMutation` |
-| F — mutation requires BUILD, automatically from FUZZ | `cmd/ohgo.TestFuzzMutationHandsOffToBuild`, `workspace.TestRouteTurnTransitionMatrix` |
+| F — mutation requires BUILD; a standalone FUZZ task confirms | `cmd/ohgo.TestFuzzMutationNeedsBuildAuthority`, `workspace.TestDecideTransitionMatrix` |
+| A BUILD-authorized task may use BUILD ↔ FUZZ without a prompt | `workspace.TestFuzzMutationRequiresTaskMutationAuthority`, `cmd/ohgo.TestTurnTransitionUsesTaskMutationAuthority` |
+| Origin is persistent, not the current role | `task.TestTaskOriginSurvivesAutomaticRoleChangeAndResume` |
+| Only a human authorization widens the contract | `task.TestApprovedWideningKeepsOriginAndAddsAuthority`, `task.TestExplicitNarrowingPreservesGrantedAuthority`, `task.TestExplicitFuzzChoiceDoesNotGrantMutation` |
+| A widened ASK task still confirms leaving ASK | `workspace.TestWidenedAskTaskStillConfirmsLeavingAsk` |
+| Legacy checkpoints derive a conservative contract | `task.TestLegacyCheckpointDerivesContractFromTheRestoredRole` |
 | G — routing never changes authority | `workspace.TestRouteTurnNeverChangesTheActiveWorkspace`, `cmd/ohgo.TestRouteTurnKeepsBuildAuthority` |
 | H — authority is runtime-enforced, not prompt-enforced | `cmd/ohgo.TestAuthorityIsEnforcedWithoutPromptInstructions` |
 | Classifier contract | `workspace.TestClassifyReadsCapabilityNotGrammar`, `TestClassifyFallsBackToTheLowerAuthority` |
