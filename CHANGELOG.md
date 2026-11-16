@@ -5,6 +5,18 @@ immutable.
 
 ## [Unreleased]
 
+### Fixed
+
+- Release objectives are workspace-scoped even when they name one carrier
+  file. "Update the version and changelog.json" no longer narrows the mutation
+  scope to that literal path, so the version markers and notes the objective
+  necessarily updates are not reported as unrelated. A named file that is
+  absent at the repository root is resolved from the run's own observed change
+  when exactly one changed path carries that basename.
+- A search command that finds nothing (`grep`/`rg`/`git grep` exit code 1) is an
+  absence observation, not a runtime failure. A completed task no longer ends
+  `NEEDS_REVIEW` because a trailing probe confirmed a string was gone.
+
 ## [v0.1.2] - 2026-11-16
 
 ### Added
