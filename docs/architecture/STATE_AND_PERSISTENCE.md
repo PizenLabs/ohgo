@@ -49,7 +49,7 @@ function.
 | Path | Meaning | Owner | Lifecycle |
 | --- | --- | --- | --- |
 | `project.yml` | `{id, name, root, user.name}` — stable project identity, human-readable project name, and the project worker identity | `project` | project; authoritative; machine-local, gitignored |
-| `progress.json` | authoritative durable task checkpoint (schema version 3, read-old/refuse-newer): identity, lifecycle, contract, snapshot, budget, evidence state, active role and handoff record (continuity metadata, never authority), the bounded timeline and completion proof, and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries, checkpoint write is the commit point |
+| `progress.json` | authoritative durable task checkpoint (schema version 4, read-old/refuse-newer): identity, lifecycle, contract, snapshot, budget, evidence state, active role, handoff record (continuity metadata, never authority), persistent execution contract (origin + human-authorized capabilities, evidence for the transition policy, never the gate), the bounded timeline and completion proof, and structured shared/role context whose evidence entries reference the same file's evidence state | `task` | project; authoritative; rewritten atomically at lifecycle boundaries, checkpoint write is the commit point |
 | `task.md` | human- and model-readable task projection | `task` | project; projection only; never authoritative over `progress.json` |
 | `tasks/<id>.json` | detached task archive, including its context | `task` | project; durable until resumed, cancelled, or deleted by the human |
 | `experience.json` | bounded, versioned execution experience: incidents, lessons, candidates, validation, promotion, contradiction, retirement | `experience` | project; advisory; deleting it is a safe cold start |
@@ -251,6 +251,7 @@ never let global state become an accidental authority for project-local state.**
 | task shared context (facts, hypotheses, evidence, questions) | `task` | `<project>/.ohgo/progress.json` (`context`) | authoritative | task | resume or archive |
 | role execution context (ASK/FUZZ/BUILD) | `task` | `<project>/.ohgo/progress.json` (`context.roles`) | authoritative for continuity; never authority | task | resume or archive |
 | role handoff (source/target, disposition, carried references) | `task` | `<project>/.ohgo/progress.json` (`handoff`) | authoritative for recovery; never authority | task | resume or archive |
+| task execution contract (origin + human-authorized capabilities) | `task` | `<project>/.ohgo/progress.json` (`executionContract`) | authoritative for the transition policy; never the live gate | task | resume or archive |
 | detached task | `task` | `<project>/.ohgo/tasks/<id>.json` | authoritative until closed | task | `/task resume` |
 | verified execution experience | `experience` | `<project>/.ohgo/experience.json` | advisory only; never authority, evidence, or completion | project | delete = cold start |
 | global execution experience | `experience` | `~/.ohgo/experience/global.json` | advisory only; explicit validated promotion only | machine | delete = cold start |
@@ -730,9 +731,12 @@ isolated `HOME` and temporary Git projects (never the user's real `~/.ohgo`):
 20. A task identity is independent of the active session and execution role.
     Changing role never mints a new task.
 21. `progress.json` is the single authoritative task checkpoint; `task.md` is a
-    lossy projection and never outranks it. The checkpoint schema is version 3:
+    lossy projection and never outranks it. The checkpoint schema is version 4:
     a newer reader accepts older versions, and an older reader refuses a newer
     version rather than rewriting it without the fields it does not know.
+    Version 4 adds the task's persistent execution contract. A version-1–3
+    checkpoint has no origin to recover, so its contract is derived
+    conservatively from the restored role and reported as legacy provenance.
 22. Verified facts require current, usable evidence. A hypothesis, a repeated
     assertion, an inconclusive result, or a model claim never becomes a fact by
     being recorded.
