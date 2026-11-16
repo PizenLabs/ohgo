@@ -88,10 +88,11 @@ type tickMsg time.Time
 // faster than this.
 const spinnerInterval = 90 * time.Millisecond
 
-// frameInterval is the presentation clock. It is faster than the spinner so a
-// three-phase fade and a 150ms dwell can actually be painted on distinct
-// frames, while the spinner is advanced only once per spinnerInterval.
-const frameInterval = 30 * time.Millisecond
+// frameInterval is the presentation clock: 30 FPS (~33ms). It is faster than
+// the spinner so a three-phase fade and a 150ms dwell can actually be painted
+// on distinct frames, while the spinner is advanced only once per
+// spinnerInterval.
+const frameInterval = 33 * time.Millisecond
 
 // renderFPS is the viewport paint ceiling. Token deltas can arrive hundreds of
 // times a second, but the terminal only needs a coherent frame: the renderer

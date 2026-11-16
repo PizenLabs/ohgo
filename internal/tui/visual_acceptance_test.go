@@ -134,7 +134,7 @@ func TestFramesDegradeAcrossColorProfiles(t *testing.T) {
 				s.Apply(TerminalResized{Width: 80, Height: 24})
 				frame := Render(s)
 				plain := ansi.Strip(frame)
-				for _, want := range []string{"read internal/execution/shell/retry.go", "file not found", "go test", "executing tools…"} {
+				for _, want := range []string{"read internal/execution/shell/retry.go", "file not found", "go test", "running tests"} {
 					if !strings.Contains(plain, want) {
 						t.Errorf("%s/%s lost %q", tc.name, theme, want)
 					}

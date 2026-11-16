@@ -40,14 +40,14 @@ func liveTelemetryVisible(s State) bool {
 	return projectLiveTelemetry(s).Active
 }
 
-// projectLiveTelemetry maps the runtime to the bar's semantic phrase and
-// measured anchors.
+// projectLiveTelemetry maps the runtime to the bar's contextual phrase and
+// animated marker.
 func projectLiveTelemetry(s State) liveTelemetry {
 	thinking := ProjectThinking(s)
 	if !thinking.Active {
 		return liveTelemetry{}
 	}
-	label := telemetryIntentLabel(s, thinking)
+	label := telemetryLabel(s, thinking)
 	if label == "" {
 		return liveTelemetry{}
 	}
@@ -58,40 +58,43 @@ func projectLiveTelemetry(s State) liveTelemetry {
 	}
 }
 
-// telemetryIntentLabel names what the runtime is doing in user-facing terms.
+// telemetryIntentLabel is the coarse phase fallback for the live bar.
 //
-// The labels describe the phase the runtime can actually prove: "preparing
-// workspace" is a busy turn that has not produced reasoning or text yet;
-// "reasoning internals" requires an open reasoning entry; "executing tools"
-// requires a running tool; "formatting response" requires visible answer text.
-// No label is inferred from model prose or a tool name.
+// The concrete action phrase is derived earlier from runtime evidence
+// (telemetry_status.go): a running tool's argument payload or an open thought
+// channel. This function names the phase only when that evidence is too thin,
+// so the bar never goes blank mid-turn:
+// "preparing workspace" is a busy turn that has not produced reasoning or text
+// yet; "reasoning internals" requires an open reasoning entry; "executing
+// tools" requires a running tool; "formatting response" requires visible
+// answer text. The fallback is never inferred from model prose.
 func telemetryIntentLabel(s State, thinking ThinkingState) string {
 	switch thinking.Phase {
 	case ThinkingWaiting:
-		return "waiting for approval…"
+		return "waiting for approval"
 	case ThinkingTool:
-		return "executing tools…"
+		return "executing tools"
 	case ThinkingRespond:
-		return "formatting response…"
+		return "formatting response"
 	case ThinkingCompaction:
-		return "compacting context…"
+		return "compacting context"
 	case ThinkingCommit:
 		if thinking.Label == "execute" {
-			return "executing commit…"
+			return "executing commit"
 		}
-		return "preparing commit…"
+		return "preparing commit"
 	case ThinkingModel:
 		if s.openReasoning() >= 0 {
-			return "reasoning internals…"
+			return "reasoning internals"
 		}
 		if telemetryReasoningSettled(s) {
 			// The trace just became a collapsible Thought block. The bar's
-			// phase would otherwise fall back to "preparing workspace…" and
+			// phase would otherwise fall back to "preparing workspace" and
 			// claim work the transcript now represents. Clearing the content
 			// here is the dismissal contract; the reserved row stays put.
 			return ""
 		}
-		return "preparing workspace…"
+		return "preparing workspace"
 	default:
 		return ""
 	}
@@ -109,15 +112,16 @@ func telemetryReasoningSettled(s State) bool {
 }
 
 // renderLiveTelemetryBar renders the bar at the state's latest presentation
-// tick. Duration and token metrics are deliberately absent: they live in the
+// frame. Duration and token metrics are deliberately absent: they live in the
 // bottom status line, and a render never fabricates a duration from wall time.
 func renderLiveTelemetryBar(s State, pal *Palette, layout Layout) string {
-	return renderLiveTelemetryBarAt(s, pal, layout, s.Status.Spinner)
+	return renderLiveTelemetryBarAt(s, pal, layout, int(s.frame))
 }
 
-// renderLiveTelemetryBarAt is the deterministic seam: tick is supplied so tests
-// can pin the shimmer frame.
-func renderLiveTelemetryBarAt(s State, pal *Palette, layout Layout, tick int) string {
+// renderLiveTelemetryBarAt is the deterministic seam: frame is supplied so
+// tests can pin the shimmer coordinate. The spinner keeps its own slower
+// cadence from the measured tick.
+func renderLiveTelemetryBarAt(s State, pal *Palette, layout Layout, frame int) string {
 	bar := projectLiveTelemetry(s)
 	if !bar.Active {
 		return ""
@@ -126,13 +130,13 @@ func renderLiveTelemetryBarAt(s State, pal *Palette, layout Layout, tick int) st
 	if width <= 0 {
 		return ""
 	}
-	return composeTelemetryIntent(bar.Label, width, pal, bar.Animated, tick)
+	return composeTelemetryIntent(bar.Label, width, pal, bar.Animated, s.Status.Spinner, frame)
 }
 
 // composeTelemetryIntent paints the only content the live bar owns: the marker
-// and the semantic intent. The label is measured and truncated before styling
-// so ShimmerText escapes cannot overflow the row.
-func composeTelemetryIntent(label string, width int, pal *Palette, animated bool, tick int) string {
+// and the contextual intent. The label is measured and cut before styling so
+// shimmer escapes cannot overflow the row.
+func composeTelemetryIntent(label string, width int, pal *Palette, animated bool, spinnerTick, frame int) string {
 	if width <= 0 {
 		return ""
 	}
@@ -141,9 +145,11 @@ func composeTelemetryIntent(label string, width int, pal *Palette, animated bool
 	if labelBudget < 0 {
 		labelBudget = 0
 	}
-	label = TruncateToWidth(label, labelBudget)
+	// Cut without an ellipsis: the status contract forbids trailing dots, and
+	// the live row itself already signals that work is ongoing.
+	label = CellPrefix(label, labelBudget)
 
-	glyph := spinnerGlyph(tick)
+	glyph := spinnerGlyph(spinnerTick)
 	if !animated {
 		glyph = thinkingGlyph(ThinkingWaiting)
 	}
@@ -153,7 +159,7 @@ func composeTelemetryIntent(label string, width int, pal *Palette, animated bool
 	}
 	styledLabel := pal.Status.Render(label)
 	if animated && shimmerSupported() {
-		styledLabel = ShimmerTextForTheme(label, tick, themeOf(pal))
+		styledLabel = ShimmerTextForTheme(label, frame, themeOf(pal))
 	}
 	return styledGlyph + " " + styledLabel
 }

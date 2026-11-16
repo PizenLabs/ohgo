@@ -350,7 +350,7 @@ func TestCommitShowsImmediateProgressAndKeepsTheLoopResponsive(t *testing.T) {
 		t.Fatalf("phase = %q active=%v immediately after /commit, want proposing", p.state.CommitPhase(), p.state.CommitActive())
 	}
 	out := stripANSI(Render(p.state))
-	if !strings.Contains(out, spinnerGlyph(p.state.Status.Spinner)+" preparing commit…") {
+	if !strings.Contains(out, spinnerGlyph(p.state.Status.Spinner)+" preparing commit") {
 		t.Errorf("render = %q, want the live commit telemetry bar before the model answers", out)
 	}
 
@@ -360,7 +360,7 @@ func TestCommitShowsImmediateProgressAndKeepsTheLoopResponsive(t *testing.T) {
 	if p.state.Status.Spinner == before {
 		t.Error("the activity tick did not advance while the provider was pending")
 	}
-	if out := stripANSI(Render(p.state)); !strings.Contains(out, "preparing commit…") {
+	if out := stripANSI(Render(p.state)); !strings.Contains(out, "preparing commit") {
 		t.Errorf("render = %q, want the stable telemetry label", out)
 	}
 
