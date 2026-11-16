@@ -60,6 +60,44 @@ func TestPathTargetStillNarrowsMutationScope(t *testing.T) {
 	}
 }
 
+// A version or release operation is a project-level fact carried by several
+// files. Naming one of them must not turn the objective into a path-bounded
+// change that forbids the version markers and notes it necessarily updates.
+func TestVersionReleaseObjectiveScopesTheWorkspace(t *testing.T) {
+	for _, text := range []string{
+		"update new version to v0.1.2 and update changelog.json",
+		"bump the version to 2.0.0 and update CHANGELOG.md",
+	} {
+		t.Run(text, func(t *testing.T) {
+			intent := BuildIntentContract(text)
+			if intent.Kind != ObjectiveMutation {
+				t.Fatalf("kind = %s, want mutation", intent.Kind)
+			}
+			if intent.MutationScope.Kind != MutationScopeWorkspace {
+				t.Fatalf("mutation scope = %+v, want workspace", intent.MutationScope)
+			}
+			named := false
+			for _, target := range intent.Targets {
+				if target.Kind == TargetPath {
+					named = true
+				}
+			}
+			if !named {
+				t.Fatalf("the named file disappeared from the targets: %+v", intent.Targets)
+			}
+		})
+	}
+}
+
+// A plain file update stays path-bounded: the release rule must not widen every
+// named-file mutation.
+func TestPlainFileUpdateKeepsPathScope(t *testing.T) {
+	intent := BuildIntentContract("update changelog.json")
+	if intent.MutationScope.Kind != MutationScopePaths {
+		t.Fatalf("mutation scope = %+v, want paths", intent.MutationScope)
+	}
+}
+
 // A named file inside a repository migration is part of the workspace scope,
 // not a boundary that makes every other migrated file unexpected.
 func TestRepositoryMigrationKeepsWorkspaceScopeWithNamedFile(t *testing.T) {
