@@ -11,13 +11,18 @@ immutable.
   a deterministic `✓ verified · …` summary for a clean turn (tool-call and
   changed-file counts plus check status), a subdued `⚠ needs review: …` block
   for an evidence boundary, or `○ cancelled · turn interrupted by user` for an
-  aborted turn. Clean footers are strictly one row and truncate with an
-  ellipsis; review reasons wrap word-safely. The footer is derived from the
-  runtime's observed outcomes, never from the assistant's closing prose, and it
-  never shares a turn with another footer.
+  aborted turn. Clean and cancelled footers are strictly one row and truncate
+  with an ellipsis; review reasons wrap in full at a two-space hanging indent
+  and are never clipped mid-sentence. The footer is derived from the runtime's
+  observed outcomes, never from the assistant's closing prose, and it never
+  shares a turn with another footer.
 
 ### Fixed
 
+- Long `⚠ needs review:` reasons no longer end in `...` after wrapping. The
+  runtime keeps the full verifier reason, and the footer renders up to three
+  distinct clauses word-wrapped at the content width with a two-space hanging
+  indent, so provenance and failure details stay actionable at narrow widths.
 - Release objectives are workspace-scoped even when they name one carrier
   file. "Update the version and changelog.json" no longer narrows the mutation
   scope to that literal path, so the version markers and notes the objective

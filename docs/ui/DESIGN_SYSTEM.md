@@ -215,7 +215,10 @@ calibration guard, not a claim of full terminal-theme conformance.
 - Every settled turn closes with exactly one terminal footer: `✓ verified` plus
   deterministic telemetry for a clean turn (muted cyan `Footer` token, one row,
   ellipsis on overflow), `⚠ needs review: …` for an evidence boundary (muted
-  italic, wraps word-safely), or `○ cancelled · turn interrupted by user`.
+  italic, wrapped in full at a two-space hanging indent, never ellipsized), or
+  `○ cancelled · turn interrupted by user` (one row, ellipsis on overflow).
+  A review reason keeps at most three distinct semicolon-separated findings;
+  the cap lands on a clause boundary, so no finding is cut mid-sentence.
   The footer sits directly below the answer, separated by one blank row, and
   never carries model-generated prose or enters a copy payload.
 - A direct shell block follows the same rule: the command is `TextPrimary`, the

@@ -216,7 +216,7 @@ func footerText(footer *TurnFooter) string {
 	}
 	switch footer.Kind {
 	case FooterReview:
-		reason := strings.TrimSpace(sanitizeInline(footer.Detail))
+		reason := agent.CompactReviewReason(strings.TrimSpace(sanitizeInline(footer.Detail)))
 		if reason == "" {
 			return footerReviewGlyph + " " + footerReviewLabel
 		}
@@ -234,11 +234,13 @@ func footerText(footer *TurnFooter) string {
 
 // footerLines folds a footer to its display rows.
 //
-// A review may wrap: its reason is prose and hiding half of it would hide the
-// evidence boundary. Continuation rows align under the narrative rather than
-// under the glyph, so the block reads as one paragraph. Every other footer is
-// a status anchor and is strictly one row, truncated with an ellipsis so a
-// clean turn never consumes additional vertical space.
+// A review may wrap and is never truncated: its reason is the evidence
+// boundary, and hiding part of it would hide the finding. The first row keeps
+// the glyph and label; continuation rows take a two-space hanging indent so
+// the block stays read as one paragraph without carrying the label column
+// down the page. Every other footer is a status anchor and is strictly one
+// row, truncated with an ellipsis so a clean turn never consumes additional
+// vertical space.
 func footerLines(footer *TurnFooter, width int) []string {
 	line := footerText(footer)
 	if line == "" {
@@ -251,23 +253,80 @@ func footerLines(footer *TurnFooter, width int) []string {
 		return []string{TruncateToWidth(line, width)}
 	}
 	prefix := footerReviewGlyph + " " + footerReviewLabel + " "
-	body := strings.TrimPrefix(line, prefix)
-	prefixWidth := CellWidth(prefix)
-	bodyWidth := width - prefixWidth
-	if bodyWidth < 8 {
+	body, ok := strings.CutPrefix(line, prefix)
+	if !ok || strings.TrimSpace(body) == "" {
 		return WrapToWidth(line, width)
 	}
-	rows := WrapToWidth(body, bodyWidth)
-	out := make([]string, 0, len(rows))
-	indent := strings.Repeat(" ", prefixWidth)
-	for i, row := range rows {
-		if i == 0 {
-			out = append(out, prefix+row)
+	if CellWidth(prefix) >= width {
+		return WrapToWidth(line, width)
+	}
+	return wrapHanging(prefix, body, width, 2)
+}
+
+// wrapHanging word-wraps body under a first-line prefix and a fixed
+// continuation indent. The first row and continuation rows have different
+// width budgets, so a shared WrapToWidth call cannot express this shape.
+// Words longer than a row are hard-sliced rather than allowed to overflow.
+func wrapHanging(prefix, body string, width, indent int) []string {
+	if width <= 0 {
+		return []string{prefix + body}
+	}
+	if indent < 0 {
+		indent = 0
+	}
+	if indent > width-1 {
+		indent = width - 1
+	}
+	continuation := strings.Repeat(" ", indent)
+	line := prefix
+	budget := width - CellWidth(prefix)
+	used := 0
+	hasBody := false
+	var rows []string
+	flush := func() {
+		if !hasBody {
+			return
+		}
+		rows = append(rows, line)
+		line = continuation
+		budget = width - CellWidth(continuation)
+		used = 0
+		hasBody = false
+	}
+	for _, word := range strings.Fields(body) {
+		wordWidth := CellWidth(word)
+		if hasBody && used+1+wordWidth <= budget {
+			line += " " + word
+			used += 1 + wordWidth
 			continue
 		}
-		out = append(out, indent+row)
+		if !hasBody && wordWidth <= budget {
+			line += word
+			used = wordWidth
+			hasBody = true
+			continue
+		}
+		flush()
+		if wordWidth <= budget {
+			line += word
+			used = wordWidth
+			hasBody = true
+			continue
+		}
+		for _, chunk := range sliceCells(word, budget) {
+			if hasBody {
+				flush()
+			}
+			line += chunk
+			used = CellWidth(chunk)
+			hasBody = true
+		}
 	}
-	return out
+	flush()
+	if len(rows) == 0 {
+		return []string{strings.TrimRight(prefix, " ")}
+	}
+	return rows
 }
 
 // footerStyle selects the footer's quiet presentation tier.

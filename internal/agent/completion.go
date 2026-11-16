@@ -633,7 +633,7 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		}
 	}
 	if len(reasons) > 0 {
-		return needsReview("%s", boundedReason(strings.Join(orderedUnique(reasons), "; ")))
+		return needsReview("%s", strings.Join(orderedUnique(reasons), "; "))
 	}
 	// Semantic integrity comes before the model's claim of success. A
 	// deterministic answer check can veto completion even when every
@@ -641,11 +641,11 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	// negative conclusion is not a completed objective.
 	grounding := AssessGrounding(effective, input.Turns, last.Assistant.Text())
 	if !grounding.Pass() {
-		return needsReview("intent grounding: %s", boundedReason(grounding.Reason()))
+		return needsReview("intent grounding: %s", grounding.Reason())
 	}
 	provenance := AssessAnswerProvenance(effective, last.Assistant.Text(), input.Provenance)
 	if !provenance.Pass() {
-		return needsReview("answer provenance: %s", boundedReason(provenance.Reason()))
+		return needsReview("answer provenance: %s", provenance.Reason())
 	}
 	if input.Provenance.ExternalRequired && !input.Provenance.ExternalObserved {
 		// A request that explicitly needs external knowledge is not complete
@@ -666,7 +666,7 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 		// The cognitive layer is authoritative about what evidence it has.
 		// A model answering while the runtime still reports missing evidence
 		// is a guess, not a proven completion.
-		return needsReview("%s", boundedReason(review))
+		return needsReview("%s", review)
 	}
 	return Completion{State: CompletionComplete}
 }
@@ -1030,11 +1030,33 @@ func orderedUnique(values []string) []string {
 	return out
 }
 
-func boundedReason(reason string) string {
-	const limit = 512
-	runes := []rune(strings.TrimSpace(reason))
-	if len(runes) <= limit {
-		return string(runes)
+// maxReviewClauses bounds a review reason to the distinct findings a person
+// can act on in one footer.
+const maxReviewClauses = 3
+
+// CompactReviewReason keeps the first distinct clauses of a verifier reason.
+//
+// It never clips a clause mid-sentence: a partial finding reads as a different
+// claim from the one the runtime made. The cap is therefore applied only at a
+// semicolon boundary, and duplicate clauses are dropped case-insensitively so
+// repeated evidence does not crowd out a new violation.
+func CompactReviewReason(reason string) string {
+	clauses := make([]string, 0, maxReviewClauses)
+	seen := make(map[string]bool, maxReviewClauses)
+	for _, raw := range strings.Split(reason, ";") {
+		clause := strings.TrimSpace(raw)
+		if clause == "" {
+			continue
+		}
+		key := strings.ToLower(strings.Join(strings.Fields(clause), " "))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		clauses = append(clauses, clause)
+		if len(clauses) == maxReviewClauses {
+			break
+		}
 	}
-	return string(runes[:limit-3]) + "..."
+	return strings.Join(clauses, "; ")
 }

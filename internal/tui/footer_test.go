@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -143,6 +144,109 @@ func TestReviewFooterWrapsWithoutBreakingWords(t *testing.T) {
 		if !strings.Contains(joined, word) {
 			t.Fatalf("wrapping broke %q: %q", word, joined)
 		}
+	}
+	for _, marker := range []string{"...", "…"} {
+		if strings.Contains(joined, marker) {
+			t.Fatalf("review footer was truncated with %q: %q", marker, joined)
+		}
+	}
+	for _, row := range rows[1:] {
+		if !strings.HasPrefix(row, "  ") || strings.HasPrefix(row, "   ") {
+			t.Fatalf("continuation row %q lacks the two-space hanging indent", row)
+		}
+	}
+}
+
+// A long multi-clause reason stays fully visible at standard and narrow
+// widths: the review must wrap, never clip a clause with an ellipsis.
+func TestReviewFooterKeepsLongReasonAtStandardAndNarrowWidths(t *testing.T) {
+	reason := `intent grounding: the answer treats "path" as absent without evidence covering the claim; the answer states "mock auth" as implementation state, but no source observation covers admin; the answer presents documentation-only term gocommerce as an observed repository fact`
+	footer := &TurnFooter{Kind: FooterReview, Detail: reason}
+	for _, width := range []int{120, 60} {
+		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
+			rows := footerLines(footer, width)
+			if len(rows) < 2 {
+				t.Fatalf("rows = %d, want a wrapped review", len(rows))
+			}
+			if !strings.HasPrefix(rows[0], "⚠ needs review: ") {
+				t.Fatalf("first row = %q, want the review prefix", rows[0])
+			}
+			joined := strings.Join(strings.Fields(strings.Join(rows, " ")), " ")
+			for _, phrase := range []string{
+				`treats "path" as absent`,
+				`states "mock auth" as implementation state`,
+				"documentation-only term gocommerce",
+			} {
+				if !strings.Contains(joined, phrase) {
+					t.Fatalf("row set lost %q: %q", phrase, joined)
+				}
+			}
+			for _, marker := range []string{"...", "…"} {
+				if strings.Contains(joined, marker) {
+					t.Fatalf("review footer was truncated with %q: %q", marker, joined)
+				}
+			}
+			for i, row := range rows {
+				if CellWidth(row) > width {
+					t.Fatalf("row %d = %q exceeds the %d-cell budget", i, row, width)
+				}
+				if i == 0 {
+					continue
+				}
+				if !strings.HasPrefix(row, "  ") || strings.HasPrefix(row, "   ") {
+					t.Fatalf("continuation row %d = %q lacks the two-space hanging indent", i, row)
+				}
+			}
+		})
+	}
+}
+
+// The composed frame carries every wrapped review row at standard and narrow
+// widths; no render stage re-clamps the block to one row.
+func TestReviewFooterRendersFullReasonInFrame(t *testing.T) {
+	reason := `intent grounding: the answer treats "path" as absent without evidence covering the claim; the answer states "mock auth" as implementation state, but no source observation covers admin; the answer presents documentation-only term gocommerce as an observed repository fact`
+	footer := &TurnFooter{Kind: FooterReview, Detail: reason}
+	for _, width := range []int{120, 60} {
+		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
+			state := New()
+			state.Apply(TerminalResized{Width: width, Height: 40})
+			state.Apply(UserSubmitted{Text: "check it", Seq: 1})
+			state.Apply(AssistantDelta{Text: "It is gocommerce.", Seq: 1})
+			state.Apply(AssistantDone{Seq: 1, Footer: footer})
+			frame := ansi.Strip(Render(state))
+			for _, row := range footerLines(footer, textWidth(ComputeLayout(state))) {
+				if !strings.Contains(frame, strings.TrimRight(row, " ")) {
+					t.Fatalf("frame lost review row %q:\n%s", row, frame)
+				}
+			}
+		})
+	}
+}
+
+// Repeated clauses are collapsed and only the first distinct findings are
+// rendered; the cap lands on a clause boundary, never mid-sentence.
+func TestReviewFooterCompactsDistinctClauses(t *testing.T) {
+	footer := &TurnFooter{
+		Kind:   FooterReview,
+		Detail: "first finding; second finding; First finding; third finding; fourth finding",
+	}
+	want := "⚠ needs review: first finding; second finding; third finding"
+	if got := footerText(footer); got != want {
+		t.Fatalf("footer = %q, want %q", got, want)
+	}
+}
+
+// A cancelled footer, like a verified one, is a one-row status anchor.
+func TestCancelledFooterTruncatesToOneLine(t *testing.T) {
+	rows := footerLines(&TurnFooter{Kind: FooterCancelled}, 24)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want exactly one", len(rows))
+	}
+	if CellWidth(rows[0]) > 24 {
+		t.Fatalf("row %q exceeds the 24-cell budget", rows[0])
+	}
+	if !strings.HasSuffix(rows[0], "…") {
+		t.Fatalf("row %q was not truncated with an ellipsis", rows[0])
 	}
 }
 
