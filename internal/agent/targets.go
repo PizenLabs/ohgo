@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -534,6 +535,109 @@ func CheckTargets(snapshot *TargetSnapshot, resolver StructuralResolver) Structu
 	}
 	sort.Strings(evidence.Unexpected)
 	return evidence
+}
+
+// ResolveAbsentNamedTargets maps a bare path target that was absent before the
+// run to the unique observed changed path with the same basename.
+//
+// A user who names "changelog.json" without a directory has named a file, not
+// necessarily a repository-root coordinate. When the literal coordinate did not
+// exist before the run and the run changed exactly one file with that basename,
+// the observed path is the target's evidence-backed coordinate. Zero or
+// multiple matches are left alone: ambiguity must stay a review boundary, never
+// a guess. Only a modify-style request is resolved; a create request is owned
+// by the literal coordinate.
+func ResolveAbsentNamedTargets(snapshot *TargetSnapshot, observed []string) map[string]string {
+	if snapshot == nil || len(observed) == 0 {
+		return nil
+	}
+	var resolved map[string]string
+	for _, entry := range snapshot.Entries {
+		if entry.Target.Kind != contract.TargetPath || entry.Target.Directory {
+			continue
+		}
+		if entry.Operation != contract.ChangeModify && entry.Operation != contract.ChangeAny {
+			continue
+		}
+		name := strings.TrimSpace(entry.Target.Value)
+		if name == "" || strings.ContainsAny(name, `/\`) {
+			continue
+		}
+		if len(entry.Files) > 0 && entry.Files[0].Exists {
+			continue
+		}
+		match := ""
+		count := 0
+		for _, candidate := range observed {
+			if candidate == name || path.Base(candidate) != name {
+				continue
+			}
+			match = candidate
+			count++
+		}
+		if count != 1 {
+			continue
+		}
+		if resolved == nil {
+			resolved = map[string]string{}
+		}
+		resolved[name] = match
+	}
+	return resolved
+}
+
+// ApplyResolvedTargets marks the checks a resolved named target satisfies.
+//
+// The run's own observed change is the evidence: the literal coordinate was
+// absent, so a pre/post comparison can only report it missing. The resolution
+// is applied only to the statuses that comparison can produce for that shape,
+// never to a contradiction such as a deletion in place of a modify.
+func ApplyResolvedTargets(checks []TargetCheck, resolved map[string]string) []TargetCheck {
+	if len(resolved) == 0 {
+		return checks
+	}
+	for i := range checks {
+		check := &checks[i]
+		if check.Target.Kind != contract.TargetPath || check.Target.Directory {
+			continue
+		}
+		resolvedPath, ok := resolved[check.Target.Value]
+		if !ok {
+			continue
+		}
+		switch check.Status {
+		case TargetMissing, TargetUnresolved, TargetUnchanged:
+		default:
+			continue
+		}
+		check.Status = TargetSatisfied
+		check.Detail = fmt.Sprintf("named target %q resolved to observed changed path %q",
+			check.Target.Value, resolvedPath)
+	}
+	return checks
+}
+
+// WithResolvedTargetScope admits the resolved coordinate into a path-scoped
+// contract, so the change that satisfied the named target is not also reported
+// as outside the requested scope. A workspace-scoped contract already admits
+// every path.
+func WithResolvedTargetScope(intent contract.IntentContract, resolved map[string]string) contract.IntentContract {
+	if len(resolved) == 0 || intent.MutationScope.Kind != contract.MutationScopePaths {
+		return intent
+	}
+	files := append([]string(nil), intent.MutationScope.Files...)
+	seen := make(map[string]bool, len(files))
+	for _, file := range files {
+		seen[file] = true
+	}
+	for _, path := range resolved {
+		if !seen[path] {
+			seen[path] = true
+			files = append(files, path)
+		}
+	}
+	intent.MutationScope.Files = files
+	return intent
 }
 
 // TargetEvidenceWithoutSnapshot derives the checks a contract can still make

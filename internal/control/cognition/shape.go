@@ -151,6 +151,11 @@ type MutationScope struct {
 	// Allowed reports that a repository change is both requested and within
 	// the active authority.
 	Allowed bool `json:"allowed"`
+	// Workspace reports that the objective may change any path inside the
+	// authorized workspace. A named path in a workspace-scoped objective is a
+	// required target, never a boundary that forbids the other files the
+	// objective needs.
+	Workspace bool `json:"workspace,omitempty"`
 	// Explicit reports that the request named at least one target.
 	Explicit bool `json:"explicit"`
 	// Targets are the coordinates the request named.
@@ -540,8 +545,9 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 	}
 
 	shape.Mutation = MutationScope{
-		Allowed: authority == "build" && shape.Kind == contract.ObjectiveMutation,
-		Targets: append([]contract.Target(nil), intent.Targets...),
+		Allowed:   authority == "build" && shape.Kind == contract.ObjectiveMutation,
+		Workspace: intent.MutationScope.Workspace(),
+		Targets:   append([]contract.Target(nil), intent.Targets...),
 	}
 	shape.Authority.MutationAllowed = shape.Mutation.Allowed
 	shape.Authority.ReadOnly = !shape.Mutation.Allowed
@@ -554,10 +560,13 @@ func BuildShape(intent contract.IntentContract, params ShapeParams) TaskShape {
 		shape.Mutation.Operations = appendOperation(shape.Mutation.Operations, intent.OperationFor(target))
 	}
 	// Explicitness is a filesystem property, not a target count. A technology
-	// migration names a target ("Next.js") but its scope is the whole
-	// workspace; treating the semantic name as a path boundary would forbid
-	// every file the migration must touch.
-	shape.Mutation.Explicit = intent.MutationScope.ExplicitPaths() || len(shape.Mutation.Paths) > 0
+	// migration or a release names a target but its scope is the whole
+	// workspace; treating the semantic operation as a path boundary would
+	// forbid every file the objective must touch. A workspace-scoped contract
+	// is therefore never an explicit path boundary, even when it also names a
+	// file that carries part of the result.
+	shape.Mutation.Explicit = !shape.Mutation.Workspace &&
+		(intent.MutationScope.ExplicitPaths() || len(shape.Mutation.Paths) > 0)
 	sort.Strings(shape.Mutation.Paths)
 	shape.Mutation.DeleteRequested = requestsDelete(shape.Objective)
 	shape.Mutation.UnrelatedForbidden = shape.Mutation.Allowed && shape.Mutation.Explicit
@@ -607,7 +616,9 @@ func (s TaskShape) Summary() string {
 	parts = append(parts, string(s.Kind))
 	if s.Mutation.Allowed {
 		scope := "unbounded"
-		if len(s.Mutation.Paths) > 0 {
+		if s.Mutation.Workspace {
+			scope = "workspace"
+		} else if len(s.Mutation.Paths) > 0 {
 			scope = strings.Join(s.Mutation.Paths, ",")
 		}
 		parts = append(parts, "mutation="+scope)

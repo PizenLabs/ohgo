@@ -316,16 +316,21 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	}
 
 	if exitCode != 0 {
-		return agent.Result{
-			Text:          text,
-			IsError:       true,
-			Mutates:       mutates,
-			AffectedPaths: affectedPaths,
-			Executes:      true,
-			Finished:      true,
-			FailureClass:  agent.ToolFailureRuntime,
-			Details:       details,
+		absence := CommandAbsence(command, exitCode)
+		result := agent.Result{
+			Text:            text,
+			IsError:         true,
+			ObservedAbsence: absence,
+			Mutates:         mutates,
+			AffectedPaths:   affectedPaths,
+			Executes:        true,
+			Finished:        true,
+			Details:         details,
 		}
+		if !absence {
+			result.FailureClass = agent.ToolFailureRuntime
+		}
+		return result
 	}
 	verification := VerificationForIn(t.Root, command)
 	return agent.Result{

@@ -2,6 +2,7 @@ package cognition
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -262,4 +263,38 @@ func completionFor(shape TaskShape, paths []string) agent.Completion {
 		Contract:       contract.IntentContract{Objective: shape.Objective, Kind: contract.ObjectiveInformational},
 		EvidenceReview: result.Report.EvidenceReview(),
 	})
+}
+
+// A release objective is workspace-scoped even when it names one carrier file.
+// The state block must say so: a "mutation scope: changelog.json / unrelated
+// forbidden" line is what makes the model re-litigate whether the version
+// markers may change.
+func TestWorkspaceReleaseScopeRendersAsWorkspace(t *testing.T) {
+	intent := contract.IntentContract{
+		Objective: "update new version to v0.1.2 and update changelog.json",
+		Kind:      contract.ObjectiveMutation,
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "changelog.json"}},
+		MutationScope: contract.MutationScope{
+			Kind: contract.MutationScopeWorkspace,
+		},
+		Verification: []contract.VerificationRequirement{{Kind: contract.VerifyAny}},
+	}
+	shape := BuildShape(intent, ShapeParams{Authority: "build"})
+	if !shape.Mutation.Workspace {
+		t.Fatal("a workspace contract produced a path-bounded task shape")
+	}
+	if shape.Mutation.UnrelatedForbidden {
+		t.Fatal("a workspace objective forbade unrelated mutation")
+	}
+	if got := shape.Summary(); !strings.Contains(got, "mutation=workspace") {
+		t.Fatalf("summary = %q, want mutation=workspace", got)
+	}
+	state := RenderState(shape, NewEvidenceState(), ExecutionState{ToolCalls: 1},
+		Sufficiency{State: Sufficient, Stage: StageAct}, CandidateSet{}, 0, 0)
+	if !strings.Contains(state, "Mutation scope: workspace") {
+		t.Fatalf("state block does not name the workspace scope:\n%s", state)
+	}
+	if strings.Contains(state, "Unrelated mutation: forbidden") {
+		t.Fatalf("state block forbids unrelated mutation for a workspace objective:\n%s", state)
+	}
 }

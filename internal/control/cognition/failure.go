@@ -299,6 +299,22 @@ func (s *EvidenceState) resolveNonFatalFailures() {
 	}
 }
 
+// resolveFailuresBefore marks every failure older than a successful check as
+// recovered. A passing verification establishes that the final state is sound,
+// so an earlier failed probe no longer blocks the next action. The live
+// execution summary applies the same rule; without it here the durable ledger
+// would keep reporting a failure the run already recovered from.
+func (s *EvidenceState) resolveFailuresBefore(seq int) {
+	if s == nil {
+		return
+	}
+	for i := range s.Failures {
+		if s.Failures[i].Seq < seq && !s.Failures[i].Resolved {
+			s.Failures[i].Resolved = true
+		}
+	}
+}
+
 // resolveFailure marks a failure recovered by a later successful observation of
 // the same coordinate. An exact success resolves its exact record; a success
 // against the same target resolves any failure for that target, so a corrected

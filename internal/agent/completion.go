@@ -555,16 +555,20 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	if input.Snapshot != nil && input.Snapshot.Root != "" {
 		root = input.Snapshot.Root
 	}
+	observedPaths := ObservedMutationPathsWithProvenance(root, input.Turns, input.Snapshot, input.Mutations)
+	resolvedTargets := ResolveAbsentNamedTargets(input.Snapshot, observedPaths)
+	scoped := WithResolvedTargetScope(effective, resolvedTargets)
 
 	var structural StructuralEvidence
 	if effective.Kind == contract.ObjectiveMutation && len(effective.Targets) > 0 {
 		if input.Snapshot != nil {
 			structural = CheckTargets(input.Snapshot, input.Resolver)
+			structural.Checks = ApplyResolvedTargets(structural.Checks, resolvedTargets)
 		} else {
 			structural = TargetEvidenceWithoutSnapshot(effective)
 		}
 	}
-	classified := ClassifyMutations(root, input.Turns, effective, input.Snapshot, input.Mutations)
+	classified := ClassifyMutations(root, input.Turns, scoped, input.Snapshot, input.Mutations)
 	for _, mutation := range classified {
 		switch mutation.Class {
 		case MutationUnexpected, MutationOutsideWorkspace:
@@ -575,9 +579,9 @@ func EvaluateTaskCompletion(input CompletionInput) Completion {
 	}
 	structural.Unexpected = uniqueSorted(structural.Unexpected)
 	structural.Unattributed = uniqueSorted(structural.Unattributed)
-	behavioral := AssessBehavior(effective, input.Snapshot, evidence,
-		goSourceDirectories(ObservedMutationPathsWithProvenance(root, input.Turns, input.Snapshot, input.Mutations)))
-	assessment := AssessAlignment(effective, structural, behavioral)
+	behavioral := AssessBehavior(scoped, input.Snapshot, evidence,
+		goSourceDirectories(observedPaths))
+	assessment := AssessAlignment(scoped, structural, behavioral)
 
 	var reasons []string
 	if effective.Kind == contract.ObjectiveMutation && len(effective.Targets) > 0 {

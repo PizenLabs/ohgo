@@ -95,11 +95,15 @@ func RenderState(shape TaskShape, evidence *EvidenceState, execution ExecutionSt
 			strings.Join(shape.Ambiguities, ", "))
 	}
 	if shape.Mutation.Allowed {
-		scope := "not explicit"
-		if len(shape.Mutation.Paths) > 0 {
-			scope = strings.Join(shape.Mutation.Paths, ", ")
+		if shape.Mutation.Workspace {
+			contractLine.WriteString("Mutation scope: workspace (any path inside the authorized workspace)\n")
+		} else {
+			scope := "not explicit"
+			if len(shape.Mutation.Paths) > 0 {
+				scope = strings.Join(shape.Mutation.Paths, ", ")
+			}
+			fmt.Fprintf(&contractLine, "Mutation scope: %s\n", scope)
 		}
-		fmt.Fprintf(&contractLine, "Mutation scope: %s\n", scope)
 		if shape.Mutation.UnrelatedForbidden {
 			contractLine.WriteString("Unrelated mutation: forbidden\n")
 		}

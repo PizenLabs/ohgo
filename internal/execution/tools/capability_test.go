@@ -450,3 +450,34 @@ func TestGitObservationExcludesMutationsAndFailures(t *testing.T) {
 		t.Error("another repository's state was recorded as this workspace's observation")
 	}
 }
+
+// Search programs use exit code 1 for "no matches". That is a successful
+// negative observation; a nonzero exit from any other program remains a
+// failure, and a pipeline's exit belongs to its final program.
+func TestCommandAbsenceClassifiesSearchNoMatch(t *testing.T) {
+	absence := []string{
+		`grep -rn "needle" --include="*.go" .`,
+		`cd /workspace && grep -rn "needle" .`,
+		`rg needle`,
+		`git grep needle`,
+		`git -C /workspace grep needle`,
+	}
+	for _, command := range absence {
+		if !CommandAbsence(command, 1) {
+			t.Errorf("CommandAbsence(%q, 1) = false, want a no-match observation", command)
+		}
+	}
+	failures := map[string]int{
+		`grep -rn "needle" .`:       2,
+		`go test ./...`:             1,
+		`grep needle | head`:        1,
+		`cat missing.txt`:           1,
+		`git status`:                1,
+		`cd /workspace && go build`: 1,
+	}
+	for command, code := range failures {
+		if CommandAbsence(command, code) {
+			t.Errorf("CommandAbsence(%q, %d) = true, want a failure", command, code)
+		}
+	}
+}
