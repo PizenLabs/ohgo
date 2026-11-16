@@ -199,7 +199,7 @@ func TestHeaderAndFooterDoNotDuplicateIdentity(t *testing.T) {
 	if strings.Contains(strings.ToLower(footer), "ohgo") {
 		t.Errorf("footer = %q, want no duplicate identity", footer)
 	}
-	if !strings.Contains(footer, "(50%)") {
+	if !strings.Contains(footer, "50%") {
 		t.Errorf("footer = %q, want the context budget", footer)
 	}
 }

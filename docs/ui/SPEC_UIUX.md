@@ -709,7 +709,7 @@ During a turn, the bar names the live action:
 The bottom status line leads with the measured turn timer:
 
 ```text
-⏱ 4.5s  ↑9.7k · ↓219 (0%) · #85 · …/Golang/go-template:master
+⏱ 4.5s  ↑9.7k · ↓219 · 0% · $0.02 · #85 · …/Golang/go-template:master
 ```
 
 - The timer starts at `0s` when a prompt is submitted, advances from frame
@@ -718,6 +718,30 @@ The bottom status line leads with the measured turn timer:
   idle observation.
 - Submitting the next prompt resets it to `0s` for the new turn.
 - Formatting uses the shared measured vocabulary: `420ms`, `4.5s`, `1m 12s`.
+
+The line is a priority projection of runtime state, not a fixed footer. Each
+slot declares its priority, state relevance, and whether it may be truncated;
+the layout measures the frame and selects what fits instead of letting the
+terminal clip the row.
+
+- Runtime telemetry is P0: timer, input tokens, output tokens, context
+  consumption percentage, and the measured cost from the same accounting.
+  These slots are atomic — a clipped token count would read as a smaller
+  measurement.
+- Repository identity (`path:branch` plus compact worktree marks) is P1, the
+  turn/session marker is P2, and contextual key hints are P3. Lower priority
+  yields before higher priority.
+- The context percentage is live consumption of the model window. It owns its
+  own slot so a long path or a low-value hint cannot displace it, and it may
+  take the warning or error role at significant pressure; the number itself
+  always states the meaning, so colour is never the only signal.
+- Repository paths truncate from the left (`…/Golang/go-template:master`, then
+  `…/go-template:master`). The repository leaf and branch outlive leading
+  segments.
+- The action rail shows only keys that work in the current state: cancel while
+  a turn runs, queue/newline chords for a draft, submit for an idle draft, the
+  way back while scrolled, and discovery on a fresh composer. It may be empty,
+  and a hint that does not fit is omitted whole rather than cut short.
 
 Concrete actions stay in their transcript entries: a running tool's summary
 and a Thought trace's prose are never repeated in the bar, and the bar's phase

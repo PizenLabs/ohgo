@@ -9,6 +9,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// unboundedFooter is the full projection row with no width budget: it asserts
+// which facts and hints exist, independent of what a given width fits.
+func unboundedFooter(s State) string {
+	return statusLineFor(projectStatusBar(s))
+}
+
 // A fresh session shows the shortcut bar and no token counters: there is
 // nothing measured to report, so reporting "↑0 / ↓0" would be a lie.
 func TestSessionBarHiddenOnFreshSession(t *testing.T) {
@@ -26,7 +32,7 @@ func TestSessionBarHiddenOnFreshSession(t *testing.T) {
 	if !strings.Contains(out, "? help") || !strings.Contains(out, "^p settings") {
 		t.Fatalf("fresh session lost the shortcut bar:\n%s", out)
 	}
-	if got := composerHintsFor(s); got != SessionShortcutBar {
+	if got := unboundedFooter(s); got != "? help · ^p settings" {
 		t.Errorf("fresh helper row = %q, want the shortcut bar", got)
 	}
 }
@@ -42,7 +48,7 @@ func TestSessionTelemetryVisibleAfterFirstRun(t *testing.T) {
 	s.Apply(AssistantDone{})
 	s.Apply(SessionMetricsUpdated{Input: 1200, Output: 340, Elapsed: 3 * time.Second})
 
-	row := composerHintsFor(s)
+	row := unboundedFooter(s)
 	for _, want := range []string{"↑1.2k", "↓340", "? help"} {
 		if !strings.Contains(row, want) {
 			t.Errorf("telemetry row = %q, want %q", row, want)
@@ -73,7 +79,7 @@ func TestSessionBarClearedWithTranscript(t *testing.T) {
 		t.Fatalf("clear left telemetry behind: active=%v in=%d out=%d elapsed=%s",
 			s.SessionActive, s.SessionIn, s.SessionOut, s.SessionElapsed)
 	}
-	if row := composerHintsFor(s); strings.Contains(row, "in: ") || strings.Contains(row, "out: ") {
+	if row := unboundedFooter(s); strings.Contains(row, "in: ") || strings.Contains(row, "out: ") {
 		t.Errorf("cleared session still shows counters: %q", row)
 	}
 }
@@ -158,11 +164,11 @@ func TestSessionBarSplitsTelemetryAndShortcuts(t *testing.T) {
 // Fresh shows minimal path-only left with full shortcuts; active reveals full
 // telemetry and narrows the right so ^p never promises settings when it
 // recalls history. Either way the left never invents zeros.
-func TestIdleHintZonesKeepCtrlPTruthful(t *testing.T) {
+func TestHintZonesKeepCtrlPTruthful(t *testing.T) {
 	fresh := New()
 	fresh.Apply(WorkspaceUpdated{Cwd: "/work/proj", HasCwd: true, GitBranch: "main", HasGit: true})
-	left, right := idleHintZones(fresh)
-	if right != SessionShortcutBar || !strings.Contains(right, "^p settings") {
+	left, right := statusZones(fresh)
+	if right != "? help · ^p settings" || !strings.Contains(right, "^p settings") {
 		t.Errorf("fresh right = %q, want the full shortcut bar", right)
 	}
 	if left == "" || !strings.Contains(left, "proj") {
@@ -174,7 +180,7 @@ func TestIdleHintZonesKeepCtrlPTruthful(t *testing.T) {
 	active.Apply(AssistantDone{})
 	active.Apply(SessionMetricsUpdated{Input: 500, Output: 100})
 	active.Apply(WorkspaceUpdated{Cwd: "/work/proj", HasCwd: true, HasGit: false})
-	left, right = idleHintZones(active)
+	left, right = statusZones(active)
 	if !strings.Contains(left, "↑500") || !strings.Contains(left, "↓100") {
 		t.Errorf("active left = %q, want measured ↑/↓ telemetry", left)
 	}
@@ -290,10 +296,10 @@ func TestBusyFooterShowsGitWithoutSessionMarker(t *testing.T) {
 	}
 }
 
-// The busy footer is two zones, like the idle one: the turn timer and measured
-// telemetry own the left, and the queue/cancel keys pin to the far edge. While
-// they trailed the metrics as one joined sentence they read as more telemetry,
-// so the row competed with the transcript instead of reporting the turn.
+// The busy footer is two zones: the turn timer and measured telemetry own the
+// left, and the contextual action rail pins to the far edge. Only the keys that
+// work right now appear; a draft is what makes the queue and newline chords
+// relevant, so an empty composer advertises cancel alone.
 func TestBusyFooterPinsActionKeysToTheFarEdge(t *testing.T) {
 	s := New()
 	s.Status.Model = "p/m"
@@ -301,6 +307,7 @@ func TestBusyFooterPinsActionKeysToTheFarEdge(t *testing.T) {
 	s.Apply(UserSubmitted{Text: "go"})
 	s.Apply(SessionMetricsUpdated{Input: 1200, Output: 340})
 
+	const rail = "esc cancel"
 	rows := map[string]string{
 		"plain":  ansi.Strip(composerHintBar(s, 120)),
 		"framed": ansi.Strip(composerHintRow(s, forcedPalette(), 120)),
@@ -309,14 +316,14 @@ func TestBusyFooterPinsActionKeysToTheFarEdge(t *testing.T) {
 		if got := CellWidth(row); got != 120 {
 			t.Fatalf("%s footer row is %d cells, want the full 120-cell frame: %q", name, got, row)
 		}
-		if !strings.HasSuffix(row, ComposerHints(true)) {
+		if !strings.HasSuffix(row, rail) {
 			t.Fatalf("%s footer row = %q, want the action keys pinned at the far edge", name, row)
 		}
-		head := strings.TrimSpace(strings.TrimSuffix(row, ComposerHints(true)))
+		head := strings.TrimSpace(strings.TrimSuffix(row, rail))
 		if !strings.HasPrefix(head, "⏱") || !strings.Contains(head, "↑1.2k") {
 			t.Fatalf("%s footer head = %q, want the turn timer and metrics at the left", name, head)
 		}
-		if strings.Contains(head, "· enter queue") {
+		if strings.Contains(head, "· esc cancel") || strings.Contains(head, "enter queue") {
 			t.Fatalf("%s footer head = %q, want the keys out of the metric sentence", name, head)
 		}
 	}
@@ -334,7 +341,7 @@ func TestHintZoneRendersOneFocusTierBelowTelemetry(t *testing.T) {
 	s.Apply(SessionMetricsUpdated{Input: 1200, Output: 340})
 
 	pal := forcedPalette()
-	left, right := composerHintZones(s)
+	left, right := statusZones(s)
 	if right == "" || left == "" {
 		t.Fatalf("busy zones = (%q, %q), want both populated", left, right)
 	}

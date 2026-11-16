@@ -448,89 +448,26 @@ func composeWorkspaceFrame(sb *strings.Builder, body, sidebar string, layout Lay
 	}
 }
 
-// composerHintZones reports the footer's two zones for the current
-// interaction: the measured left zone and the action-key right zone.
-//
-// An open approval owns the interaction, so neither zone is produced: the
-// dialog has captured enter, esc, and the scroll keys, and advertising them
-// here would contradict the key line it prints instead. ComputeLayout drops
-// the row in the same case, so the frame keeps its budget either way.
-func composerHintZones(state State) (left, right string) {
-	if state.Pending != nil || state.QuitConfirm != nil || state.Transition != nil || state.UpdateRestart != nil || state.PostUpdate != nil {
-		return "", ""
-	}
-	if interruptConfirmVisible(state) {
-		// The armed warning replaces the ordinary busy hints: the one key the
-		// user needs this instant is the second Esc, not the queue chord.
-		return interruptConfirmText, ""
-	}
-	if paletteOwnsKeys(state) && state.ConnectKey == nil {
-		return "↑↓ navigate · enter/tab accept · esc dismiss", ""
-	}
-	if state.Status.Busy {
-		// The busy footer keeps the turn timer and measured session telemetry
-		// at the left and pins the queue/cancel keys to the right edge. Joined
-		// into one sentence, the keys trailed the metrics and read as more
-		// telemetry, so the row competed with the transcript instead of
-		// reporting. The live phase lives in the telemetry bar above the
-		// composer, so repeating it here would put one fact on two surfaces,
-		// and nothing here changes the row count, so a hand-off can never move
-		// the composer.
-		return withTurnElapsed(state, busyTelemetry(state)), ComposerHints(true)
-	}
-	left, right = idleHintZones(state)
-	return withTurnElapsed(state, left), right
-}
-
-// composerHintsFor joins the zones into the single row the live region and
-// narrow fallbacks render. Every hint shown must work.
-//
-// Progressive disclosure: a fresh session shows minimal path-only left with
-// the full shortcut right ("? help · ^p settings"); the first executed prompt
-// swaps the left for measured telemetry (↑in · ↓out (ctx%) · cost · path:branch)
-// and narrows the right to "? help" so ^p never promises settings when it
-// recalls history. The measured turn timer leads that line once a prompt has
-// run. The busy and slash-navigation rows stay authoritative while they apply.
-func composerHintsFor(state State) string {
-	left, right := composerHintZones(state)
-	switch {
-	case left == "":
-		return right
-	case right == "":
-		return left
-	}
-	return left + " · " + right
-}
-
-// composerHintBar renders the zones padded to the frame edges when width
-// allows. A row too narrow to split truncates instead of wrapping: the left
-// zone's metric-first head survives over the shortcuts, and the key the user
-// needs this instant stays intact while a warning or the command palette owns
-// the row, because those own the whole line rather than a zone.
+// composerHintBar renders the budgeted footer for a width. It projects the
+// state, allocates by priority, and only then renders, so the terminal never
+// decides what survives by clipping.
 func composerHintBar(state State, width int) string {
-	if width <= 0 {
-		return composerHintsFor(state)
-	}
-	left, right := composerHintZones(state)
-	return sessionBarRow(left, right, width)
+	return renderStatusBar(state, nil, width)
 }
 
-// composerHintRow renders the footer in the two focus tiers it owns: the
-// measured left zone in the readable muted role, and the action-key right zone
-// in faint, where it stays available without competing with telemetry or the
+// composerHintRow renders the footer in the two focus tiers it owns: runtime
+// telemetry in the readable muted role, and the contextual action rail in
+// faint, where it stays available without competing with telemetry or the
 // transcript. Position carries the de-emphasis as much as colour does — the
-// right zone is pinned to the frame edge across the full row of padding — so
-// the eye reaches the metrics first even on a terminal that renders only the
-// colour distinction.
+// rail is pinned to the frame edge across the full row of padding — so the eye
+// reaches the metrics first even on a terminal that renders only the colour
+// distinction.
 //
-// A hazard warning is not metadata: it takes the warning role for the whole
-// row so it cannot be mistaken for an ordinary hint.
+// Context pressure is the one semantic tone in the row: it takes the warning
+// or danger role while the percentage itself still states the meaning. A
+// hazard warning owns the whole row so it cannot be mistaken for metadata.
 func composerHintRow(state State, pal *Palette, width int) string {
-	if interruptConfirmVisible(state) {
-		return ExtrasFor(state.Theme).Warning.Render(composerHintBar(state, width))
-	}
-	left, right := composerHintZones(state)
-	return sessionBarRow(pal.Muted.Render(left), pal.Faint.Render(right), width)
+	return renderStatusBar(state, pal, width)
 }
 
 // renderMini concedes a viewport too small for the workbench. It keeps the
