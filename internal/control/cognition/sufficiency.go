@@ -271,10 +271,19 @@ func ExecutionFromEvidence(state *EvidenceState) ExecutionState {
 			out.BackgroundStarted = true
 		}
 	}
+	// A successful check after a failure recovered it: the final state was
+	// observed sound, so the earlier failure no longer blocks the next action.
+	// This is the durable counterpart of SummarizeExecution's live rule. Without
+	// it a resumed task reconstructed an old failure from the ledger and
+	// reported NEEDS_REVIEW even though every later check passed.
 	for _, failure := range state.FailureState().Records {
-		if failure.Failures > 0 {
-			out.PendingFailures[failure.Tool] = failure.Failures
+		if failure.Failures == 0 {
+			continue
 		}
+		if failure.Seq > 0 && out.LastVerification >= failure.Seq {
+			continue
+		}
+		out.PendingFailures[failure.Tool] = failure.Failures
 	}
 	sort.Strings(out.MutatedPaths)
 	out.VerifiedAfterMutation = out.Mutated && out.LastVerification >= out.LastMutation

@@ -126,10 +126,10 @@ type Palette struct {
 	// Separator draws full-width rules (header divider, composer frames) in
 	// the dim slate chrome style, distinct from the muted body text.
 	Separator lipgloss.Style
-	// Recap renders the single completion line under a finished task block.
-	// It is the quietest text in the transcript: italic, dimmer than metadata,
-	// never a second answer, and never part of the block's copy payload.
-	Recap lipgloss.Style
+	// Footer renders the clean-turn terminal status line. It is the quietest
+	// text in the transcript: italic, dimmer than metadata, never a second
+	// answer, and never part of the block's copy payload.
+	Footer lipgloss.Style
 	// SupportHi highlights key entities inside the $sup answer viewport:
 	// reference blue for concepts/technologies, gold for dates/specs.
 	// Main-chat markdown never uses them, so the overlay hierarchy stays
@@ -194,7 +194,7 @@ func DarkPalette() *Palette {
 			Cyan:         fg(t.DiffHeader),
 			Comment:      fg(t.TextMuted).Italic(true),
 			Separator:    fg(t.BorderDefault),
-			Recap:        fg(t.Recap).Italic(true),
+			Footer:       fg(t.Footer).Italic(true),
 			SupportHi:    fg(t.SupportPrimary).Bold(true),
 			SupportHiAlt: fg(t.SupportSecondary).Bold(true),
 		}
@@ -258,7 +258,7 @@ func LightPalette() *Palette {
 			Cyan:         fg(t.DiffHeader),
 			Comment:      fg(t.TextMuted).Italic(true),
 			Separator:    fg(t.BorderDefault),
-			Recap:        fg(t.Recap).Italic(true),
+			Footer:       fg(t.Footer).Italic(true),
 			SupportHi:    fg(t.SupportPrimary).Bold(true),
 			SupportHiAlt: fg(t.SupportSecondary).Bold(true),
 		}
@@ -2183,12 +2183,14 @@ func renderEntryContent(sb *strings.Builder, entry Entry, pal *Palette, layout L
 		}
 		sb.WriteString("\n")
 
-	case EntryRecap:
-		// No separator row: this is the terminal footer of the task, so the
-		// next prompt follows it directly. The footer owns at most two rows.
+	case EntryFooter:
+		// No separator row: this is the terminal footer of the turn, so the
+		// next prompt follows it directly. A review may wrap; every other
+		// footer stays on one row.
 		writeGap()
-		for _, line := range recapLines(entry.Recap, textWidth(layout)) {
-			sb.WriteString(pal.Recap.Render(line) + "\n")
+		style := footerStyle(entry.Footer, pal)
+		for _, line := range footerLines(entry.Footer, textWidth(layout)) {
+			sb.WriteString(style.Render(line) + "\n")
 		}
 
 	case EntrySupport:

@@ -351,3 +351,42 @@ func TestDirectoryScopedPromptReachesAnswerAfterListingAndFileRead(t *testing.T)
 		t.Fatal("the answer stage was not reachable after the directory listing and file read")
 	}
 }
+
+// A durable failure is recovered by a later successful check, exactly as it is
+// in the live execution state. Reconstructing the ledger without that rule made
+// a resumed task report the old failure even though the final state passed.
+func TestExecutionFromEvidenceClearsFailureRecoveredByLaterCheck(t *testing.T) {
+	evidence := NewEvidenceState()
+	evidence.ObserveOutcome(agent.ToolOutcome{
+		CallID: "fail-1", ToolName: "bash",
+		Args: map[string]any{"command": "grep needle ."},
+		Result: agent.Result{
+			Text: "no match", IsError: true,
+			FailureClass: agent.ToolFailureRuntime,
+		},
+	})
+	if execution := ExecutionFromEvidence(evidence); execution.PendingFailures["bash"] == 0 {
+		t.Fatalf("the unresolved failure was not reconstructed: %+v", execution.PendingFailures)
+	}
+
+	evidence.ObserveOutcome(verifyEvidence("check-1"))
+	execution := ExecutionFromEvidence(evidence)
+	if execution.PendingFailures["bash"] != 0 {
+		t.Fatalf("a later successful check did not clear the failure: %+v", execution.PendingFailures)
+	}
+
+	// A failure that happens after the check is a new, unrecovered observation.
+	late := NewEvidenceState()
+	late.ObserveOutcome(verifyEvidence("check-2"))
+	late.ObserveOutcome(agent.ToolOutcome{
+		CallID: "fail-2", ToolName: "bash",
+		Args: map[string]any{"command": "grep needle ."},
+		Result: agent.Result{
+			Text: "no match", IsError: true,
+			FailureClass: agent.ToolFailureRuntime,
+		},
+	})
+	if execution := ExecutionFromEvidence(late); execution.PendingFailures["bash"] == 0 {
+		t.Fatalf("a failure after the last check was treated as recovered: %+v", execution.PendingFailures)
+	}
+}

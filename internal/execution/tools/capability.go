@@ -67,9 +67,45 @@ func CommandMutatesInRoot(command, root string) bool {
 	return commandWritesInRoot(command, root)
 }
 
-// OutsideWorkspaceMutation returns the first target a command would write
-// outside the workspace and outside the operating system's temporary area.
+// CommandAbsence reports whether a finished shell command's non-zero exit is a
+// successful negative observation rather than an execution failure.
 //
+// Search programs use exit code 1 for "nothing matched": grep, rg, and
+// git grep all report a normal empty result that way. Treating it as a runtime
+// failure turned a completed task into NEEDS_REVIEW merely because the model
+// checked for a string that was no longer there. Exit code 2 and above remain
+// real failures. Only the final executed segment is inspected: in a pipeline
+// the exit status belongs to the last program, and a wrapper that is not a
+// search program did not establish the absence.
+func CommandAbsence(command string, exitCode int) bool {
+	if exitCode != 1 {
+		return false
+	}
+	segments := shellSegments(command)
+	for i := len(segments) - 1; i >= 0; i-- {
+		segment := strings.TrimSpace(segments[i])
+		if segment == "" {
+			continue
+		}
+		return segmentSearches(segment)
+	}
+	return false
+}
+
+// segmentSearches reports whether one shell segment runs a search program whose
+// exit code 1 means "no matches".
+func segmentSearches(segment string) bool {
+	program, args := programAndArgs(shellWords(segment))
+	switch path.Base(program) {
+	case "grep", "egrep", "fgrep", "rg", "ag", "ack", "ack-grep":
+		return true
+	case "git":
+		sub, _ := gitSubcommand(args)
+		return sub == "grep"
+	}
+	return false
+}
+
 // This is a deterministic pre-execution boundary, not a classifier: it only
 // names a target the command's own syntax spells out (a redirect, rm, cp, mv,
 // mkdir, sed -i, …). It deliberately does not guess through command

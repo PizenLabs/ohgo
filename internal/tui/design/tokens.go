@@ -67,7 +67,7 @@ type Tokens struct {
 	User      string
 	ToolName  string
 	Prompt    string
-	Recap     string
+	Footer    string
 	Idle      string
 	Info      string
 
@@ -160,7 +160,7 @@ func Dark() Tokens {
 		User:      "#5FB3A1",
 		ToolName:  "#8FB3C9",
 		Prompt:    "#5FB3A1",
-		Recap:     "#6E9C93",
+		Footer:    "#6E9C93",
 		Idle:      "#7E8BA0",
 		Info:      "#8FB4D9",
 
@@ -231,7 +231,7 @@ func Light() Tokens {
 		User:      "#1F6F61",
 		ToolName:  "#2F6B7D",
 		Prompt:    "#1F6F61",
-		Recap:     "#4E7069",
+		Footer:    "#4E7069",
 		Idle:      "#626B7A",
 		Info:      "#3C6E96",
 

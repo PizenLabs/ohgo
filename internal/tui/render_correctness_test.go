@@ -676,7 +676,7 @@ func TestOverlayCleanupOnCancelAndQuit(t *testing.T) {
 	p := NewProgram(nil, "test", 0)
 	p.state.Apply(UserSubmitted{Text: "work"})
 	p.state.Apply(MessageQueued{Text: "stale"})
-	p.cancelTurnNow("cancelled")
+	p.cancelTurnNow()
 	if len(p.state.Queued) != 0 {
 		t.Errorf("Queued = %v, want cancellation to drop prompts typed against the abandoned turn", p.state.Queued)
 	}
@@ -686,20 +686,20 @@ func TestOverlayCleanupOnCancelAndQuit(t *testing.T) {
 	if p.state.Status.Busy {
 		t.Error("spinner still claims working after cancellation")
 	}
-	found := false
-	for _, entry := range p.state.Entries {
-		if entry.Kind == EntryNotice && strings.Contains(entry.Notice, "cancelled") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("entries = %+v, want the single cancellation line", p.state.Entries)
-	}
 	// A second cancel is idempotent: no duplicate transition, no duplicate line.
 	before := len(p.state.Entries)
-	p.cancelTurnNow("cancelled")
+	p.cancelTurnNow()
 	if len(p.state.Entries) != before {
 		t.Errorf("entries grew on repeated cancel: want one semantic transition")
+	}
+	footers := 0
+	for _, entry := range p.state.Entries {
+		if entry.Kind == EntryFooter {
+			footers++
+		}
+	}
+	if footers != 1 {
+		t.Errorf("cancellation footers = %d, want exactly one", footers)
 	}
 	// An idle ctrl+c with nothing to abort must not quit: it points at the
 	// deliberate exit chords instead, so a reflex keypress is safe.

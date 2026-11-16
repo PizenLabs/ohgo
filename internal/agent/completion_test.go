@@ -552,3 +552,79 @@ func TestDeferredPlanDetectionIsNarrow(t *testing.T) {
 		}
 	}
 }
+
+// A release objective names a carrier file the user knows by basename, while
+// the canonical coordinate lives deeper in the repository. The run's own
+// observed change must resolve that target and the workspace scope must admit
+// the other version files. A trailing search that found nothing is an absence
+// observation, not an unrecovered failure.
+func TestReleaseCompletionResolvesNamedFileAndAcceptsSearchAbsence(t *testing.T) {
+	root := t.TempDir()
+	intent := contract.IntentContract{
+		Objective: "update new version to v0.1.2 and update changelog.json",
+		Kind:      contract.ObjectiveMutation,
+		Targets: []contract.Target{{
+			Kind: contract.TargetPath, Value: "changelog.json",
+		}},
+		ExpectedChanges: []contract.ExpectedChange{{
+			Target:    contract.Target{Kind: contract.TargetPath, Value: "changelog.json"},
+			Operation: contract.ChangeModify,
+		}},
+		MutationScope: contract.MutationScope{Kind: contract.MutationScopeWorkspace},
+		Verification:  []contract.VerificationRequirement{{Kind: contract.VerifyAny}},
+	}
+	snapshot := CaptureTargets(root, intent, nil)
+	if snapshot == nil || len(snapshot.Entries) == 0 {
+		t.Fatal("the named target was not captured")
+	}
+
+	turns := []Turn{
+		{Results: []ToolOutcome{
+			toolOutcome("write", Result{Text: "wrote changelog", Mutates: true,
+				Details: map[string]any{"path": "internal/update/changelog.json"}}),
+			toolOutcome("write", Result{Text: "wrote version", Mutates: true,
+				Details: map[string]any{"path": "VERSION"}}),
+		}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text: "ok", Executes: true, Finished: true, Verifies: true,
+		})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text: "no matches", IsError: true, ObservedAbsence: true,
+		})}},
+		cleanStop(),
+	}
+	got := EvaluateTaskCompletion(CompletionInput{
+		Turns:    turns,
+		Contract: intent,
+		Snapshot: snapshot,
+		Root:     root,
+	})
+	if !got.Complete() {
+		t.Fatalf("completion = %s (%s), want COMPLETED", got.State, got.Reason)
+	}
+}
+
+// A bare-name resolution is only made when exactly one observed change carries
+// that basename. Two candidates leave the target unresolved rather than
+// inventing a coordinate.
+func TestAbsentNamedTargetResolutionRequiresOneCandidate(t *testing.T) {
+	root := t.TempDir()
+	intent := contract.IntentContract{
+		Objective: "update changelog.json",
+		Kind:      contract.ObjectiveMutation,
+		Targets:   []contract.Target{{Kind: contract.TargetPath, Value: "changelog.json"}},
+		ExpectedChanges: []contract.ExpectedChange{{
+			Target:    contract.Target{Kind: contract.TargetPath, Value: "changelog.json"},
+			Operation: contract.ChangeModify,
+		}},
+		MutationScope: contract.MutationScope{Kind: contract.MutationScopePaths, Files: []string{"changelog.json"}},
+	}
+	snapshot := CaptureTargets(root, intent, nil)
+	resolved := ResolveAbsentNamedTargets(snapshot, []string{
+		"internal/update/changelog.json",
+		"docs/changelog.json",
+	})
+	if len(resolved) != 0 {
+		t.Fatalf("ambiguous observed paths were resolved: %v", resolved)
+	}
+}

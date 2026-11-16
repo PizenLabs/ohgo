@@ -913,6 +913,14 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 		s.resolveNonFatalFailures()
 	}
 	s.resolveFailure(outcome)
+	if outcome.Result.Verifies {
+		// A successful check proves the final state is sound, so every earlier
+		// failure is recovered even when the retry used a different capability
+		// or coordinate. The live execution summary already applies this rule;
+		// the durable ledger must agree or a resumed task reports a failure the
+		// run already closed.
+		s.resolveFailuresBefore(seq)
+	}
 
 	switch tool {
 	case "read":

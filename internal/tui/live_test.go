@@ -124,41 +124,38 @@ func TestLiveRegionOnlyHoldsLiveRows(t *testing.T) {
 	}
 }
 
-// A task block is sealed when it first appears, so its completion recap is a
-// separate scrollback line. It must wait for the final answer, appear once, and
-// never be rewritten on later frames.
-func TestLiveTaskRecapIsWrittenOnceAfterTheAnswer(t *testing.T) {
+// The turn footer is a sealed scrollback line. It must wait for the final
+// answer, appear once, and never be rewritten on later frames.
+func TestLiveTurnFooterIsWrittenOnceAfterTheAnswer(t *testing.T) {
 	p, _ := newLiveProgram()
 	p.state.Apply(TerminalResized{Width: 80, Height: 30})
 
 	var history []string
-	history = append(history, liveEvent(p, UserSubmitted{Text: "ship it"})...)
+	history = append(history, liveEvent(p, UserSubmitted{Text: "ship it", Seq: 1})...)
 	history = append(history, liveEvent(p, TaskProjected{Projection: TaskProjection{
 		ID: "t1", Status: "RUNNING", Objective: "ship it",
 	}})...)
-	history = append(history, liveEvent(p, AssistantDelta{Text: "the answer"})...)
-	history = append(history, liveEvent(p, TaskProjected{Projection: TaskProjection{
-		ID: "t1", Status: "COMPLETED", Objective: "ship it",
-		Recap: "Updated the release config and verified the build.",
-	}})...)
+	history = append(history, liveEvent(p, AssistantDelta{Text: "the answer", Seq: 1})...)
 
-	if strings.Contains(ansi.Strip(strings.Join(history, "\n")), recapPrefix) {
-		t.Fatal("the recap printed before the streaming answer was sealed")
+	if strings.Contains(ansi.Strip(strings.Join(history, "\n")), "✓ verified") {
+		t.Fatal("the footer printed before the streaming answer was sealed")
 	}
 
-	history = append(history, liveEvent(p, AssistantDone{})...)
+	history = append(history, liveEvent(p, AssistantDone{
+		Seq: 1, Footer: verifiedFooter(nil, "ask"),
+	})...)
 	joined := ansi.Strip(strings.Join(history, "\n"))
-	want := recapPrefix + " Updated the release config and verified the build."
+	want := "✓ verified · 0 tool calls · read-only analysis · provenance clean"
 	if !strings.Contains(joined, want) {
-		t.Fatalf("the completed task printed no recap:\n%s", joined)
+		t.Fatalf("the settled turn printed no footer:\n%s", joined)
 	}
-	if got := strings.Count(joined, recapPrefix); got != 1 {
-		t.Fatalf("recap printed %d times, want exactly one:\n%s", got, joined)
+	if got := strings.Count(joined, "✓ verified"); got != 1 {
+		t.Fatalf("footer printed %d times, want exactly one:\n%s", got, joined)
 	}
 
 	history = append(history, liveEvent(p, Notice{Text: "still done"})...)
-	if got := strings.Count(ansi.Strip(strings.Join(history, "\n")), recapPrefix); got != 1 {
-		t.Fatalf("a later frame duplicated the recap (%d copies):\n%s", got, joined)
+	if got := strings.Count(ansi.Strip(strings.Join(history, "\n")), "✓ verified"); got != 1 {
+		t.Fatalf("a later frame duplicated the footer (%d copies):\n%s", got, joined)
 	}
 }
 

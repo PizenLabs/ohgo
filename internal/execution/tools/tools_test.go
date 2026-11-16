@@ -297,6 +297,33 @@ func TestBashToolMarksNonZeroExitAsError(t *testing.T) {
 	}
 }
 
+// A search that finds nothing exits 1 and is a successful negative
+// observation, not an unrecovered runtime failure. The result stays an error
+// for the model, but completion and the failure ledger must not veto it.
+func TestBashToolTreatsSearchNoMatchAsObservedAbsence(t *testing.T) {
+	root := t.TempDir()
+	result := NewBashTool(root).Execute(testContext(), map[string]any{
+		"command": `grep -rn "needle" .`,
+	})
+	if !result.IsError {
+		t.Fatal("absence must stay visible to the model as an error")
+	}
+	if !result.ObservedAbsence {
+		t.Fatalf("grep no-match was not an absence observation: %+v", result)
+	}
+	if result.FailureClass != "" {
+		t.Fatalf("failure class = %q, want none for an absence observation", result.FailureClass)
+	}
+
+	failed := NewBashTool(root).Execute(testContext(), map[string]any{"command": "false"})
+	if !failed.IsError || failed.ObservedAbsence {
+		t.Fatalf("a non-search exit 1 was recorded as absence: %+v", failed)
+	}
+	if failed.FailureClass != agent.ToolFailureRuntime {
+		t.Fatalf("failure class = %q, want %q", failed.FailureClass, agent.ToolFailureRuntime)
+	}
+}
+
 func TestBashToolTimesOut(t *testing.T) {
 	root := t.TempDir()
 	result := NewBashTool(root).Execute(testContext(), map[string]any{

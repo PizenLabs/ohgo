@@ -533,11 +533,13 @@ func liveEntryLinesRaw(s State, index int, e Entry, pal *Palette, layout Layout)
 		}
 		return append(taskLines(e.Task, pal, layout), "")
 
-	case EntryRecap:
+	case EntryFooter:
 		// No separator row: the footer sits directly above the next prompt.
-		lines := recapLines(e.Recap, textWidth(layout))
-		for i, line := range lines {
-			lines[i] = pal.Recap.Render(line)
+		// A review wraps; every other footer stays on one row.
+		lines := footerLines(e.Footer, textWidth(layout))
+		style := footerStyle(e.Footer, pal)
+		for i := range lines {
+			lines[i] = style.Render(lines[i])
 		}
 		return lines
 	}

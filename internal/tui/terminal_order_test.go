@@ -71,7 +71,6 @@ func TestRunTurnPublishesTerminalVerdictWithoutControlRefusalCards(t *testing.T)
 	}
 	verdict := -1
 	toolCards := 0
-	lastEvent := -1
 	for i, event := range events {
 		switch typed := event.(type) {
 		case Notice:
@@ -81,7 +80,9 @@ func TestRunTurnPublishesTerminalVerdictWithoutControlRefusalCards(t *testing.T)
 		case ToolStarted, ToolFinished:
 			toolCards++
 		case AssistantDone:
-			lastEvent = i
+			if typed.Footer != nil && typed.Footer.Kind == FooterReview {
+				verdict = i
+			}
 		}
 	}
 	if verdict < 0 {
@@ -90,7 +91,7 @@ func TestRunTurnPublishesTerminalVerdictWithoutControlRefusalCards(t *testing.T)
 	if toolCards != 0 {
 		t.Fatalf("control refusals reached the transcript as %d tool cards: %+v", toolCards, events)
 	}
-	if lastEvent < verdict {
-		t.Fatalf("turn was marked done before its verdict: done=%d verdict=%d", lastEvent, verdict)
+	if verdict != len(events)-1 {
+		t.Fatalf("the verdict is not the turn's terminal event: verdict=%d events=%d", verdict, len(events))
 	}
 }
