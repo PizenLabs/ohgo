@@ -777,6 +777,15 @@ var migrationDestination = regexp.MustCompile(
 var repositoryReference = regexp.MustCompile(
 	`(?i)\b(?:this|the|our|my|current)\s+(?:project|repository|repo|codebase|workspace|app|application)\b`)
 
+// repositoryOperation matches a project-level operation whose facts several
+// files carry. A version bump is the canonical example: the version is a
+// project fact, not a coordinate, so naming one file that happens to carry it
+// ("update the version and changelog.json") does not bound the change to that
+// file. The same reading already applies to a technology migration.
+var repositoryOperation = regexp.MustCompile(
+	`(?i)\b(?:bump|update|set|change|cut|publish|release|increment)\b[^.\n]{0,48}\b(?:version|release)\b|` +
+		`\b(?:version|release)\b[^.\n]{0,48}\b(?:bump|update|set|change|cut|publish|increment)\b`)
+
 // migrationDestinationStopWords are grammar words that can follow "to" without
 // naming a technology.
 var migrationDestinationStopWords = map[string]bool{
@@ -851,6 +860,13 @@ func mutationScopeFor(intent IntentContract) contract.MutationScope {
 		if target.Kind == TargetRepository {
 			return contract.MutationScope{Kind: MutationScopeWorkspace}
 		}
+	}
+	// A project-level operation is not bounded by the file it happens to name.
+	// Keeping a version bump inside "changelog.json" would forbid the version
+	// markers and release notes the same objective necessarily updates, and
+	// the model would have to re-litigate the scope on every turn.
+	if repositoryOperation.MatchString(intent.Objective) {
+		return contract.MutationScope{Kind: MutationScopeWorkspace}
 	}
 	var files, dirs []string
 	for _, target := range intent.Targets {
