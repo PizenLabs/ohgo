@@ -5,6 +5,8 @@ immutable.
 
 ## [Unreleased]
 
+## [v0.1.2] - 2026-11-16
+
 ### Added
 
 - Intelligent context compaction. The loop now measures the *projected* next
