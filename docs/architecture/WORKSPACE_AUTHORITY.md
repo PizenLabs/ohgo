@@ -91,6 +91,27 @@ ExecutionContract
   the task grant only for an owned continuation, and a new task is created
   under the live role.
 
+### 2.2 Hosts without a durable task
+
+`ohgo run` and the plain line REPL have no durable task record, but they still
+have one session authority. Each captures an in-memory `ExecutionContract` from
+the role the session started under, before any automatic phase change. Every
+later turn and tool-boundary decision reads that contract, so a BUILD session
+that hands off to FUZZ for investigation does not lose the mutation grant it
+started with: the subsequent write hands back to BUILD automatically. A human
+switch (`/fuzz`, `/build`, `/ask`) widens the contract through the same
+`Authorize` rule; an automatic move never does, because the policy only permits
+a BUILD ↔ FUZZ move the contract already covers.
+
+This is the persistent-task invariant without persistence, not a second
+authority path:
+
+- the live gate still admits every call;
+- the contract only widens through a human decision;
+- a new process starts a new session contract, because the stateless host has
+  nowhere to restore the old one. Durable resume belongs to the full-screen
+  task controller, which persists the contract in `progress.json`.
+
 ---
 
 ## 3. Intent

@@ -296,7 +296,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		// so leaving ASK remains an explicit /ask, /fuzz, or /build command.
 		authority := ""
 		if h.loop != nil {
-			decision := workspace.DecideTransition(h.activeWorkspace(), workspace.ContractFor(h.activeWorkspace()), workspace.AnalyzeRequest(text))
+			decision := workspace.DecideTransition(h.activeWorkspace(), h.activeContract(), workspace.AnalyzeRequest(text))
 			switch {
 			case decision.Automatic():
 				from := h.activeWorkspace()

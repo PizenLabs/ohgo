@@ -111,6 +111,11 @@ type Config struct {
 	ModelFn func() ai.Model
 	// Stream opens a completion. Required.
 	Stream ai.StreamFn
+	// Retry bounds transparent retries when the transport is temporarily
+	// unavailable. It applies only before any model output exists, so a retry
+	// cannot repeat a tool effect or spend an extra turn. The zero value uses
+	// DefaultRetryPolicy.
+	Retry RetryPolicy
 	// System is the system prompt, in order.
 	System []ai.SystemPromptBlock
 	// SystemFn resolves the system prompt per request. When set it overrides
@@ -1117,7 +1122,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			return turns, turnBudgetError(err)
 		}
 
-		stream, err := l.cfg.Stream(ctx, ai.Request{
+		stream, err := l.openStream(ctx, ai.Request{
 			Model:           l.model(),
 			Messages:        converted,
 			System:          requestSystem,

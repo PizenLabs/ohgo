@@ -51,6 +51,14 @@ type harness struct {
 	// caller did not supply one, in which case /status omits it rather than
 	// inventing an authority.
 	workspace string
+	// contract is the session's persistent execution authority for hosts with no
+	// durable task controller. It is captured from the role the session started
+	// under and only widens through a human-authorized switch, so an automatic
+	// BUILD -> FUZZ phase change does not lose the mutation grant the session
+	// was created with. In the full-screen host an open task's persisted
+	// contract takes precedence; this field is the fallback when no task owns
+	// the turn.
+	contract workspace.ExecutionContract
 	// gate is the live authority shared with the loop and any subagent. Nil
 	// for a harness built without one (a bare test), in which case authority
 	// is applied by replacing the loop's admission hook directly.
@@ -999,6 +1007,11 @@ func (h *harness) SwitchWorkspace(name string) (workspace.Workspace, error) {
 			}
 		}
 	}
+	// A human or control-plane move is applied through this one owner. It may
+	// widen the session contract (a switch to a stronger role), but it never
+	// removes a grant: narrowing changes only the live role. The policy already
+	// decided the move was permitted, so this cannot grant unapproved authority.
+	h.contract = h.activeContract().Authorize(ws)
 	h.applyAuthority(ws)
 	h.workspace = ws.Label()
 	if h.sess != nil {
@@ -1009,6 +1022,18 @@ func (h *harness) SwitchWorkspace(name string) (workspace.Workspace, error) {
 	// each assemble it.
 	h.recordSessionAuthority(h.model)
 	return ws, nil
+}
+
+// activeContract is the session authority evidence for a stateless host.
+//
+// It is the persistent contract when one has been captured, otherwise the
+// authority the session currently holds. It is read-only evidence: the live
+// gate still admits every call.
+func (h *harness) activeContract() workspace.ExecutionContract {
+	if h.contract.Valid() {
+		return h.contract
+	}
+	return workspace.ContractFor(h.activeWorkspace())
 }
 
 // activeWorkspace parses the harness's workspace label.

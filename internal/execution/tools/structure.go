@@ -94,8 +94,7 @@ func NewStructureTool(source *StructuralSource) *StructureTool {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"minLength":   1,
-					"description": "File or directory inside the working directory.",
+					"description": "File or directory inside the working directory. Empty scopes the whole project.",
 				},
 				"package": map[string]any{
 					"type":        "string",

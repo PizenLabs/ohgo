@@ -61,8 +61,7 @@ func NewRefsTool(source *StructuralSource) *RefsTool {
 					"description": "references (default), callers, or callees.",
 				},
 				"path": map[string]any{
-					"type":      "string",
-					"minLength": 1,
+					"type": "string",
 					"description": "File or directory inside the working directory; scopes " +
 						"the symbol declaration and disambiguates a repeated name.",
 				},

@@ -1,7 +1,10 @@
 # AUTO Orchestration: Origin, Authority, and Reasoning Demand
 
-> **Status:** implemented and verified; deterministic gates and representative
-> real-model boundaries validated (see *Implementation Result*).
+> **Status:** implemented, deterministically verified, and benchmarked. Live
+> acceptance is partially validated: routing and protected boundaries passed on
+> a real repository, while a continuous live BUILD↔FUZZ master loop was blocked
+> by the available provider quota and local-model tool reliability (see
+> *Live Acceptance*). Certification is therefore **not** claimed.
 > **Scope:** persistent task execution authority, capability-based role
 > orchestration, protected authority transitions, and demand-driven
 > provider-native reasoning selection.
@@ -27,7 +30,7 @@ Make the existing runtime determine, for each request or internal phase:
 The master task remains one identity. Role changes are execution phases of that
 task, not new authority grants.
 
-## Current Architecture
+## Architecture Survey
 
 ```text
 User request
@@ -87,7 +90,7 @@ The discovered owners are:
 - **The authority move already exists.** `harness.SwitchWorkspace` is the only
   writer of the live gate, session authority, and effective role model.
 
-## Problem
+## Genuine Gaps
 
 The current policy uses the **live role** as the whole authority fact. It cannot
 answer whether a FUZZ-origin task has *ever* been authorized to mutate, and it
@@ -264,7 +267,7 @@ Routing consumes, in order:
 
 No keyword table maps words to roles. Ambiguity resolves downward (READ).
 
-## Reasoning AUTO
+## AUTO Reasoning
 
 ```text
 intent contract + task state + capability
@@ -281,6 +284,31 @@ agent.Loop.SetReasoning before the turn
 ```
 
 The selected effort is applied once per turn. Role handoffs keep it.
+
+## Task Orchestration
+
+A master objective is one task with execution phases, not a sequence of new
+tasks. The existing `agent.Loop.Run` is the only orchestration loop:
+
+```text
+request capability + task contract
+        ↓
+workspace.DecideTransition        choose the phase (or stay)
+        ↓
+harness.SwitchWorkspace           move the one live gate
+        ↓
+agent loop                        ground → call tool → observe → repeat
+        ↓
+workspace.ToolCallTransition      change phase when the call itself does
+        ↓
+existing completion/evidence      decide the verdict
+```
+
+A BUILD-authorized task may enter FUZZ on a strong investigation and return to
+BUILD on a mutating call without human confirmation. The contract does not
+change. A subtask inherits the live gate and cannot exceed the parent contract;
+the existing subagent budget and gate tests remain the evidence. There is no
+second planner, router, or work queue.
 
 ## Provider Capability Constraints
 
@@ -339,6 +367,38 @@ The selected effort is applied once per turn. Role handoffs keep it.
 18. Authority state survives checkpoint and resume.
 19. AUTO chooses the minimum sufficient authority.
 20. AUTO chooses the minimum sufficient reasoning.
+
+## Benchmark Plan
+
+- A deterministic matrix at the host seam (routing, boundaries, master loop,
+  session grant, reasoning demand, budget clamp, provider mapping), repeated at
+  least three times.
+- Adversarial cases for each protected boundary, asserting zero provider calls
+  and zero tool executions on refusal.
+- Live acceptance on the external project with a read-only ASK matrix and an
+  isolated mutation copy, recording model calls, tool calls, wall time,
+  authority lines and the terminal verdict.
+- Root-cause analysis for every miss, at the owning subsystem, followed by a
+  regression test and a rerun.
+
+## Acceptance Tests
+
+The real-project matrix is: understanding, recommendation, architecture
+analysis, ASK execution boundary, BUILD mutation, failure recovery, and resume.
+Tests 1–4 run against the checkout read-only; mutation runs only in an isolated
+copy. The acceptance checkout's Git history is never touched. Results are in
+*Real Project Acceptance Results*.
+
+## Failure Scenarios
+
+The deterministic suite exercises: ASK attempting execute/mutate, FUZZ
+attempting mutation without a grant, BUILD leaving for ASK without confirmation,
+a new objective inheriting an unrelated grant, an unsupported provider
+reasoning value, an unknown reasoning ladder, budget/context exhaustion, a
+transient provider failure, a rejected request, and a model claiming completion
+without evidence. Live runs additionally exercised provider rate limits,
+provider-side tool-call rejection, a weak model's repeated wrong-directory
+commands, and a prose-only verification claim.
 
 ## Verification Plan
 
@@ -450,6 +510,16 @@ Reasoning:
 - `internal/tui/reasoning.go` (new), `internal/tui/app.go`
 - `internal/provider/ai/openai.go`, `internal/provider/ai/anthropic.go`
 
+Benchmark and hardening:
+
+- `internal/agent/retry.go` (new), `internal/agent/retry_test.go` (new),
+  `internal/agent/loop.go`
+- `cmd/ohgo/harness.go`, `cmd/ohgo/repl.go`, `cmd/ohgo/run.go`,
+  `cmd/ohgo/workspacehooks.go` (stateless session authority)
+- `cmd/ohgo/auto_benchmark_test.go` (new deterministic benchmark)
+- `internal/execution/tools/bash.go`, `structure.go`, `symbols.go`, `refs.go`
+- `internal/execution/tools/path_selector_schema_test.go` (new)
+
 Documentation:
 
 - `docs/architecture/OHGO_ARCHITECTURE_MAP.md`
@@ -481,6 +551,14 @@ New invariant tests:
   configuration when absent.
 - `provider/ai`: an unspecified effort is omitted on OpenAI and Anthropic; a
   known native level still travels.
+- `agent`: a transient status/timeout is retried without extra turn spend; a
+  request rejection is not; a backoff that would cross the deadline is not
+  started; cancellation ends the retry.
+- `execution/tools`: the empty `path` selector is valid for `structure`,
+  `symbols`, and `refs`; `bash` runs in a contained `cwd` and refuses an escape.
+- `cmd/ohgo/auto_benchmark_test.go`: the 66-row routing matrix, ASK/FUZZ
+  boundary admission, the BUILD→FUZZ→BUILD master loop, the stateless session
+  grant, the reasoning demand/budget/provider matrix.
 
 Existing behavior that intentionally changed:
 
@@ -492,7 +570,10 @@ Existing behavior that intentionally changed:
 Diagnostic observation during implementation: the new tests failed against the
 old behavior (the standalone FUZZ handoff, the implicit `medium` fallback, and a
 simple rename scoring as moderate), which is the regression evidence that they
-are not vacuous.
+are not vacuous. The benchmark-driven fixes were verified the same way: the
+session-grant test fails without `harness.activeContract`, and the schema test
+fails while `path` carries `minLength` despite the implementation accepting the
+empty form.
 
 ## Real-Model Validation
 
@@ -525,7 +606,7 @@ go build ./...                 pass
 go vet ./...                   pass
 gofmt -l .                     empty
 go test ./...                  pass
-go test -count=1 ./...         pass (52 packages, fresh)
+go test -count=1 ./...         pass (58 packages, fresh)
 go test -race ./...            pass (no data races)
 golangci-lint run ./...        0 issues
 ```
@@ -535,23 +616,182 @@ package. The existing subagent authority tests (`internal/agent` and
 `cmd/ohgo`) continue to prove that a delegated child inherits the parent's gate
 and cannot mutate through inherited FUZZ authority.
 
-## Remaining Risks
+## Benchmark Suite
 
-- The reasoning demand is deterministic and structural. It can under- or
-  over-estimate novelty that is not visible in the contract; the budget clamp
-  bounds the cost, and an explicit human effort always overrides it.
-- A real BUILD master-task run is still subject to provider rate limits. The
-  runtime reports that as a failure, never as completion, but a full live
-  orchestration trace needs a provider with enough TPM.
+The deterministic benchmark lives in `cmd/ohgo/auto_benchmark_test.go` and runs
+as an ordinary repository test:
+
+```text
+go test ./cmd/ohgo -run TestAuto -count=3
+```
+
+It covers:
+
+| Benchmark | What it executes | Invariant |
+| --- | --- | --- |
+| `TestAutoRoutingBenchmarkMatrix` | 66 role/prompt rows (information, deep analysis, recommendation, execution, mutation, investigation, ambiguous wording, the master objective) through the host prediction seam | the capability decides the disposition; ASK is protected in both directions; BUILD↔FUZZ is automatic only when the contract covers the target |
+| `TestAutoAskExecutionBoundaryNeverReachesTheModel` | an ASK session asking for a benchmark | refusal before the provider and before any command |
+| `TestAutoFuzzMutationBoundaryNeedsTheTaskGrant` | a standalone FUZZ write and an authorized FUZZ write | no self-granted mutation; automatic BUILD only with the grant |
+| `TestAutoMasterTaskOrchestratesBuildFuzzBuild` | one task: finding → reproduction → write → verification → answer | phases move BUILD→FUZZ→BUILD; one task contract; every tool runs under the phase authority |
+| `TestAutoSessionKeepsItsGrantAcrossAutomaticPhases` | a BUILD REPL turn that investigates, then a turn that fixes | leaving BUILD for FUZZ does not lose the mutation grant |
+| `TestAutoReasoningBenchmarkDemandLevels` | rename, request trace, diagnosis with competing evidence | demand follows structure, not role, and rises with evidence |
+| `TestAutoReasoningBenchmarkBudgetClamp` | one call, one turn, three calls, 95% and 80% context | demand is lowered, never maximized |
+| `TestAutoReasoningBenchmarkProviderCapability` | full ladder, limited ladder, disable value, no capability, unknown ladder, mandatory reasoning | a published native value or omission; never an invented level |
+
+## Benchmark Results
+
+Run on 2026-11-17 in the repository:
+
+```text
+go test ./cmd/ohgo -run TestAuto -count=3        pass (3 repetitions)
+go test ./internal/control/workspace              pass
+go test ./internal/control/cognition              pass
+go test ./internal/continuity/task                pass
+go test ./internal/agent                          pass
+go test ./internal/execution/tools                pass
+```
+
+Observed:
+
+| Scenario | Expected | Actual | Result |
+| --- | --- | --- | --- |
+| ASK information | ASK, no execution | stay ASK, 0 provider calls on a refused boundary | pass |
+| ASK deep analysis | ASK | stay ASK | pass |
+| recommendation | ASK | stay ASK | pass |
+| ASK → execution | confirmation, no silent run | confirmation; 0 model calls, 0 commands | pass |
+| ASK → BUILD | confirmation | confirmation (protected handoff) | pass |
+| BUILD → ASK | confirmation | confirmation in both ASK directions | pass |
+| BUILD → FUZZ | automatic | automatic on a strong investigation | pass |
+| FUZZ → BUILD | automatic when authorized | automatic with a BUILD contract; confirmation without it | pass |
+| FUZZ mutation without authority | blocked | blocked at the tool boundary | pass |
+| master task | BUILD→FUZZ→BUILD→verify | `[FUZZ BUILD]`, 5 model turns, 4 tool executions, one contract | pass |
+| new objective | no authority inheritance | live role contract only | pass |
+| resume | origin and grant preserved | checkpoint/reload tests preserve both | pass |
+| reasoning minimal/high | native or omitted | lowest/highest published rung; unknown omitted | pass |
+| unsupported reasoning | omitted | omitted | pass |
+| provider failure | truthful failure | retried only when transient; otherwise FAILED | pass |
+
+The matrix was also run against the pre-fix behavior during development: the
+session-grant test failed before `harness.activeContract`, and the live provider
+rejected the empty `structure` path before the schema alignment. Both are
+regression evidence, not vacuous assertions.
+
+## Real Project Acceptance Results
+
+Environment: the real acceptance project
+`/Users/anvndev/Documents/Project/Golang/ecommerce`, read-only for ASK tests and
+an isolated copy for mutation. Providers: Groq `openai/gpt-oss-120b` and
+`gpt-oss-20b` (8,000 TPM tier), and local Ollama `qwen3:8b`. Sessions used an
+isolated `HOME`.
+
+| Test | Prompt / intent | Observed | Verdict |
+| --- | --- | --- | --- |
+| 1. Understanding | "Check this project and analyze what this project is about." | ASK stayed ASK; 10 model calls, 9 tool calls, 237 s; answer grounded in read source | `COMPLETED` |
+| 2. Recommendation | "Suggest technologies that could complete this project." | ASK stayed ASK; no mutation; 6 model calls, 5 tool calls; answer overclaimed two dependency behaviours | `NEEDS_REVIEW` (truthful) |
+| 3. Architecture | "Analyze the architecture and identify the most important areas to improve." | ASK stayed ASK; no mutation; provider rejected the 7th request at 8,967 tokens against the 8,000 TPM tier | `FAILED` (truthful) |
+| 4. ASK execution boundary | "Run a benchmark and compare the performance." | refused before the model: `this request needs BUILD authority` | pass |
+| 4. FUZZ mutation boundary | `--workspace fuzz "Fix the failing test."` | refused before the model: `this request needs BUILD authority` | pass |
+| 4. BUILD informational boundary | `--workspace build "What is dependency injection?"` | refused before the model: `this request needs ASK authority` | pass |
+| 5. BUILD mutation | isolated copy with a seeded `Complete` guard defect; "Investigate why TestComplete_HappyPath fails…" | automatic `BUILD -> FUZZ`; the local investigation model produced no evidence and did not mutate | `NEEDS_REVIEW` |
+| 5. BUILD mutation (direct) | seeded defect; edit + test instruction | the `edit` succeeded, `cd backend && go test ./repricing/...` passed all packages, 8 model calls / 13 tool calls | `NEEDS_REVIEW` (scope label mismatch: required "repricing", verified "backend/repricing") |
+| 6. Failure recovery | a local model claimed "all tests passed" in prose after an edit, without calling a command | `NEEDS_REVIEW: the repository change or execution was not followed by a successful verification`; the claim was not promoted to evidence | truthful, false completion prevented |
+| 6. Failure recovery | repeated provider generation faults | invalid tool arguments and an unparsable generation ended as `FAILED`; nothing was changed | truthful, not a pass |
+| 7. Resume | durable task checkpoint/reload | deterministic checkpoint, reload, role-change and grant-preservation tests | pass (deterministic) |
+
+The ASK runs did not execute a command or change a file. The BUILD copy was the
+only mutated target; the acceptance checkout and its Git history were untouched.
+
+## Fixes Applied
+
+Four root-cause fixes came out of the benchmark and live acceptance:
+
+1. transient transport retry at the agent's model boundary;
+2. tool schemas aligned with the empty-selector behaviour they already accept;
+3. a contained `cwd` for shell commands;
+4. one session contract for stateless hosts, preserved across automatic phases.
+
+The detailed mapping is in *Failure Analysis*.
+
+## Failure Analysis
+
+| Observed failure | Root-cause category | Fix |
+| --- | --- | --- |
+| Groq returned HTTP 429 after a few requests | provider / transport | `agent.RetryPolicy`: bounded deadline-aware retry for transient statuses and timeouts; request errors are not retried |
+| Groq rejected `structure` because `path` was `""` | tool contract | the schema forbade a value the implementation already treats as "whole project"; `structure`, `symbols`, and `refs` now accept the empty selector |
+| The model passed `cwd` to `bash`, which silently ignored it and re-ran from the repository root | tool contract | `bash` now supports a root-contained `cwd`; invalid directories and escapes are refused |
+| A BUILD session that moved to FUZZ lost its mutation grant on the next turn | authority / continuity | stateless hosts keep an in-memory session contract captured from the starting role; automatic phases never narrow it |
+| A provider-side generated tool call that failed the provider's schema ended the run | provider / generation | documented; retrying a deterministic generation fault would spend a request without new evidence, and the run reports `FAILED` |
+
+The first four were fixed at their owner, not at the benchmark prompt. No
+prompt-specific branch was added.
+
+## Performance / Efficiency Findings
+
+- ASK understanding used 9 tool calls, including one duplicate `ls`; the loop's
+  read-only replay guard caught the final duplicate and told the model to reuse
+  the earlier payload.
+- A weak local model repeated a failing `go test` from the wrong directory
+  before `cwd` existed; after the fix, an explicit subdirectory ran in place.
+- No unnecessary ASK↔BUILD or BUILD→FUZZ transition was observed in the live
+  runs; an ASK request never escalated just because analysis was difficult.
+- A refused boundary spends zero provider requests and zero tool calls.
+- Token usage is not persisted in the session; live metrics therefore record
+  model calls, tool calls, wall time, authority lines, and the terminal verdict.
+  The deterministic benchmark asserts the exact turn and tool counts.
+
+## Final Regression Results
+
+After all fixes, on the tested working tree:
+
+```text
+go build ./...                     pass
+go vet ./...                       pass
+gofmt -l .                         empty
+go test -count=1 ./...             pass (58 packages)
+go test -race ./...                pass (no data races)
+golangci-lint run ./...            0 issues
+go test ./cmd/ohgo -run TestAuto -count=3   pass
+```
+
+## Remaining Limitations
+
+- A continuous live BUILD → FUZZ → BUILD master loop was not completed. The
+  deterministic loop test exercises the exact authority path, but the available
+  live providers could not: Groq's 8,000 TPM tier rejects realistic
+  single-request contexts with HTTP 413, and the installed 8B local models do
+  not follow the repository tool protocol reliably.
+- Local models with 8B parameters produced invalid provider-side tool calls and
+  prose descriptions of tools (`qwen2.5-coder`, `llama3.1`, `command-r7b`); those
+  runs correctly ended `FAILED`/`NEEDS_REVIEW`.
+- Completion scope matching is literal. A request whose requirement names
+  "repricing" while the verified command covers "backend/repricing" reports
+  review rather than success. The conservative direction is intentional; a
+  unique-suffix resolver would be a separate target-resolution feature.
+- A provider generation fault is not retried. This is deliberate: the request
+  itself is not the failure, but a blind retry cannot be distinguished from a
+  deterministic incompatibility without an invented heuristic.
+- The reasoning demand is structural. A terse but architecturally broad request
+  can start at minimal demand and rise only as the task gains targets,
+  hypotheses, or verification requirements.
 - Legacy checkpoints (schema 1–3) derive an origin from the restored role
-  because the original grant was never stored. The derived contract is
-  documented as legacy provenance; it is never presented as an original origin.
-- The TUI's `taskOwned` prediction input uses the existing continuation
-  classifier. A future continuation category must extend that classifier, not
-  bypass it; otherwise a new objective could be treated as an owned turn.
+  because the original grant was never stored. It is documented as legacy
+  provenance, never as an original origin.
+- The plain REPL is stateless: its session contract survives authority moves
+  inside the process, but not a process restart. Durable resume belongs to the
+  full-screen task controller.
+- `--no-tools` still reports `agent: no tools registered`; this was observed
+  while preparing a minimal live run and is outside the AUTO authority path.
 
-## Completion Status
+## Certification Status
 
-`IMPLEMENTED_AND_VERIFIED` for the deterministic implementation and the
-repository gates. `PARTIALLY_VALIDATED` for the live full master-task loop,
-limited by the available provider's rate budget rather than a runtime failure.
+```text
+IMPLEMENTED_AND_VERIFIED   yes
+BENCHMARK_VERIFIED         yes (deterministic matrix, adversarial boundaries, repetitions)
+ACCEPTANCE_VALIDATED       no  (partially validated on the real project)
+CERTIFIED_FOR_REAL_PROJECT_USE   no
+```
+
+Evidence supports the first two. Live ASK routing, protected boundaries, and
+BUILD mutation/verification are validated, but a full live master-task loop and
+repeated real-provider stability runs are not. Claiming certification would
+exceed the evidence.

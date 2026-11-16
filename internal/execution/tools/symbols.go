@@ -64,8 +64,7 @@ func NewSymbolsToolWithSource(source *StructuralSource) *SymbolsTool {
 						"Examples: GrepTool.Execute, tools.GrepTool.Execute, agent.Tool.",
 				},
 				"path": map[string]any{
-					"type":      "string",
-					"minLength": 1,
+					"type": "string",
 					"description": "File or directory, relative to the working directory. " +
 						"Lists its declarations, or scopes a symbol or package query.",
 				},

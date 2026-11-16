@@ -599,3 +599,40 @@ func TestEditToolStillRefusesAnAmbiguousMatch(t *testing.T) {
 		t.Errorf("the file was modified by a refused edit: %q", data)
 	}
 }
+
+// A model names a submodule with cwd instead of spelling a shell `cd`. The
+// command must actually run there, because a silently ignored working
+// directory turns a correct invocation into a misleading failure.
+func TestBashToolRunsInTheRequestedSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "backend"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "backend", "go.mod"), []byte("module example.com/app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := NewBashTool(root).Execute(testContext(), map[string]any{
+		"command": "cat go.mod", "cwd": "backend",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Text)
+	}
+	if !strings.Contains(result.Text, "module example.com/app") {
+		t.Fatalf("command did not run in backend: %s", result.Text)
+	}
+}
+
+// The per-call directory is still bounded by the workspace: a command may move
+// down the tree, never out of it.
+func TestBashToolRefusesCWDOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	for _, cwd := range []string{"..", outside} {
+		result := NewBashTool(root).Execute(testContext(), map[string]any{
+			"command": "pwd", "cwd": cwd,
+		})
+		if !result.IsError {
+			t.Fatalf("cwd %q was accepted: %s", cwd, result.Text)
+		}
+	}
+}

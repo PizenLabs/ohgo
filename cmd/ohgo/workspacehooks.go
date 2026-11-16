@@ -32,7 +32,7 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 				return current.ExecutionContract
 			}
 		}
-		return workspace.ContractFor(held.activeWorkspace())
+		return held.activeContract()
 	}
 	switchTo := func(name, reason, workspaceState string, automatic bool) error {
 		from := held.activeWorkspace()

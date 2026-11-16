@@ -493,6 +493,16 @@ The rule is:
 > Provider-specific model output is normalized into canonical `ai` events
 > before it enters agent execution or rendering.
 
+A transport failure that produced no model output is retried before that
+normalization boundary. `agent.RetryPolicy` is the single policy: transient
+statuses (408, 425, 429, 5xx) and network timeouts are retried with a bounded,
+deadline-aware exponential backoff, honoring a provider's `Retry-After` up to
+the cap. A request the provider rejected on its merits (400/401/403/404, a
+context overflow, a cancellation) is never retried, and a retry re-issues the
+identical request before any assistant message or tool call exists, so it
+cannot duplicate a tool effect or spend an additional turn. Exhausting the
+policy reports the provider failure; it never becomes completion.
+
 Native tool calls and serialized tool calls inside assistant text are two
 transport representations of the same logical intent. Both converge on
 `ai.ToolCall`. A recognized serialized envelope is converted at the boundary;

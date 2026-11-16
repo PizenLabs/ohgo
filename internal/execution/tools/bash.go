@@ -55,6 +55,11 @@ func NewBashTool(root string) *BashTool {
 					"type":        "string",
 					"description": "The command to run.",
 				},
+				"cwd": map[string]any{
+					"type":        "string",
+					"minLength":   1,
+					"description": "Working directory for the command, relative to the project root. Defaults to the project root.",
+				},
 				"timeout": map[string]any{
 					"type":        "integer",
 					"description": "Timeout in milliseconds.",
@@ -171,6 +176,25 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 		}
 	}
 
+	// A per-call working directory is how a model scopes a build or test
+	// command to a submodule without a shell `cd`. It is resolved through the
+	// same containment rule as every other path argument: a command may move
+	// down the tree, never out of it.
+	dir := t.Root
+	if raw, err := strArg(args, "cwd", ""); err != nil {
+		return agent.ErrorResult("%v", err)
+	} else if strings.TrimSpace(raw) != "" {
+		resolved, err := resolvePath(t.Root, raw)
+		if err != nil {
+			return agent.ErrorResult("cwd: %v", err)
+		}
+		info, err := os.Stat(resolved)
+		if err != nil || !info.IsDir() {
+			return agent.ErrorResult("cwd %q is not a directory", raw)
+		}
+		dir = resolved
+	}
+
 	timeout := t.Timeout
 	if timeout <= 0 {
 		timeout = BashDefaultTimeout
@@ -207,7 +231,7 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 	if background, err := boolArg(args, "background", false); err != nil {
 		return agent.ErrorResult("%v", err)
 	} else if background {
-		return t.spawnBackground(ctx, command, timeout, ctx.ReadOnly, mutates)
+		return t.spawnBackground(ctx, command, dir, timeout, ctx.ReadOnly, mutates)
 	}
 
 	// The request context is the parent so a run-level abort still kills the
@@ -217,7 +241,7 @@ func (t *BashTool) Execute(ctx agent.Context, args map[string]any) agent.Result 
 
 	cmd, err := sandbox.Command(runCtx, sandbox.Spec{
 		Argv:     []string{"sh", "-c", command},
-		Dir:      t.Root,
+		Dir:      dir,
 		Root:     t.Root,
 		ReadOnly: ctx.ReadOnly,
 	})
@@ -364,7 +388,7 @@ func effectiveDeadline(ctx agent.Context) time.Time {
 // context on purpose — binding it would kill the job when the turn ends,
 // which is exactly when background work must survive — so jobs live until
 // they exit, are killed by their timeout, or the ohgo process ends.
-func (t *BashTool) spawnBackground(ctx agent.Context, command string, timeout time.Duration, readOnly, mutates bool) agent.Result {
+func (t *BashTool) spawnBackground(ctx agent.Context, command, dir string, timeout time.Duration, readOnly, mutates bool) agent.Result {
 	// A detached job is still part of the root execution tree. Its wall-clock
 	// bound is the stricter of the per-job timeout and the root deadline, so a
 	// child cannot outlive the tree by asking for a long timeout. The budget's
@@ -402,7 +426,7 @@ func (t *BashTool) spawnBackground(ctx agent.Context, command string, timeout ti
 	// must not escape the read-only boundary the turn was authorized under.
 	cmd, err := sandbox.Command(context.Background(), sandbox.Spec{
 		Argv:     []string{"sh", "-c", command},
-		Dir:      t.Root,
+		Dir:      dir,
 		Root:     t.Root,
 		ReadOnly: readOnly,
 	})

@@ -93,7 +93,12 @@ func runOnce(cmd *cobra.Command, text string) error {
 	// turn. BUILD <-> FUZZ moves automatically; crossing ASK is a human
 	// decision, and a one-shot command has no decision surface, so it reports
 	// the workspace the request needs instead of silently running elsewhere.
-	decision := workspace.DecideTransition(opts.authority(), workspace.ContractFor(opts.authority()), workspace.AnalyzeRequest(text))
+	// The run contract is captured before any automatic phase change. The role
+	// may move BUILD -> FUZZ for investigation, but the authority the run was
+	// started under does not move with it: the later write still needs the
+	// mutation grant the caller gave this run.
+	contract := workspace.ContractFor(opts.authority())
+	decision := workspace.DecideTransition(opts.authority(), contract, workspace.AnalyzeRequest(text))
 	switch {
 	case decision.Automatic():
 		opts.setAuthority(decision.Target)
@@ -162,7 +167,7 @@ func runOnce(cmd *cobra.Command, text string) error {
 	loop.SetWorkspaceHandoff(func(_ ai.ToolCall, tool agent.Tool, args map[string]any) bool {
 		handoffMu.Lock()
 		defer handoffMu.Unlock()
-		decision, ok := automaticToolHandoff(opts.authority(), workspace.ContractFor(opts.authority()), tool, args)
+		decision, ok := automaticToolHandoff(opts.authority(), contract, tool, args)
 		if !ok {
 			return false
 		}
@@ -691,7 +696,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	plain.loop.SetWorkspaceHandoff(func(_ ai.ToolCall, tool agent.Tool, args map[string]any) bool {
 		replHandoffMu.Lock()
 		defer replHandoffMu.Unlock()
-		decision, ok := automaticToolHandoff(plain.activeWorkspace(), workspace.ContractFor(plain.activeWorkspace()), tool, args)
+		decision, ok := automaticToolHandoff(plain.activeWorkspace(), plain.activeContract(), tool, args)
 		if !ok {
 			return false
 		}
