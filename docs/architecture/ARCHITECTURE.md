@@ -1358,13 +1358,23 @@ approval, shutting down) are computed per render, never stored.
   idle, so starting, handing off, and finishing a turn cannot move the
   composer. The
   bar's left group is the shared spinner, one space, and the shimmering
-  runtime intent (`preparing workspace…`, `reasoning internals…`, `executing
-  tools…`, `formatting response…`); the middle is pure whitespace; the right
-  group pins measured elapsed time and the compact downward output volume
+  contextual action. The phrase names what the runtime is actually doing:
+  a running tool contributes its argument-derived present-participle progress
+  (`reading retry.go`, `running tests`, `resolving dependencies`), an open
+  thought channel contributes its primary action (`inspecting the repository`),
+  and only a phase with no concrete evidence falls back to the semantic word
+  (`preparing workspace`, `formatting response`). Phrases are lowercase and
+  carry no trailing dots: the live row already implies ongoing work. Phrases are latched for a
+  500ms floor so fast calls cannot flicker the row; the queued update coalesces
+  to the newest action still true when the floor expires. The middle is pure
+  whitespace; the right group pins measured elapsed time and the compact
+  downward output volume
   (`3.9s · ↓1.1k tokens`) to the frame edge. Width math runs on plain text
   before shimmer escapes are applied, so the right block cannot jitter.
-  Concrete tool summaries and reasoning prose never appear there, and the
-  phase is not repeated in the hint or status row. Output-first mode paints the
+  The shimmer is a 30 FPS float coordinate with a cosine falloff of radius
+  five; intensity above 0.65 adds weight and the colour interpolates between
+  the muted and primary text roles. A terminal without TrueColor keeps the
+  plain styled phrase. Output-first mode paints the
   same bar immediately above its composer. The active runtime phase is
   absent from the header, and the workspace authority (`ASK`, `BUILD`, `FUZZ`)
   appears only at the prompt boundary. A tool finalizes into that same block,

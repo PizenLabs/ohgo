@@ -37,6 +37,20 @@ immutable.
   lazily when installed. `bench/intelligence` measures retrieval cold/warm/query
   cost and adaptive provider selection at 100–50,000 synthetic files.
 
+### Changed
+
+- The live telemetry bar now names the concrete action instead of a fixed
+  phase. A running tool's argument payload maps deterministically to a
+  present-participle description (`reading retry.go`, `running tests`,
+  `resolving dependencies`); an open thought channel contributes its primary
+  action (`inspecting the repository`). Phrases are lowercase and carry no
+  trailing dots, while paths and code symbols keep their spelling. Phrases hold a 500ms display floor and
+  coalesce bursts to the newest still-live action, so fast calls cannot flicker
+  the row. The shimmer is now a 30 FPS `float64` wave with a radius-5 cosine
+  falloff, bold intensity above 0.65, and TrueColor interpolation between the
+  muted and primary text roles; terminals without TrueColor keep the plain
+  styled phrase.
+
 ### Fixed
 
 - `structure` separates the facts that fail independently: `scope_gaps` names
