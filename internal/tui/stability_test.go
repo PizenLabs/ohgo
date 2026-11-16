@@ -194,13 +194,17 @@ func TestLiveStatusLineDoesNotDuplicateEntryActivity(t *testing.T) {
 	// Once no entry owns the concrete action, the fixed telemetry bar above
 	// the composer names the phase. The status row stays telemetry-only, so
 	// the phase cannot appear twice.
-	s.Apply(ToolFinished{ID: "c1", Text: "package a\n", Summary: "1 line", At: time.Now(), Seq: 1})
+	finishedAt := time.Now()
+	s.Apply(ToolFinished{ID: "c1", Text: "package a\n", Summary: "1 line", At: finishedAt, Seq: 1})
+	// The action phrase holds its 500ms floor; once the floor expires the
+	// bar falls back to the phase that remains true.
+	s.Apply(FrameTick{At: finishedAt.Add(telemetryStatusDwell)})
 	out := ansi.Strip(Render(s))
-	if !strings.Contains(out, "preparing workspace…") {
+	if !strings.Contains(out, "preparing workspace") {
 		t.Fatalf("telemetry bar did not name the phase:\n%s", out)
 	}
 	status = ansi.Strip(liveStatusLine(s, pal, ComputeLayout(s)))
-	if strings.Contains(status, "preparing workspace…") {
+	if strings.Contains(status, "preparing workspace") {
 		t.Fatalf("status footer repeated the bar phase: %q", status)
 	}
 }

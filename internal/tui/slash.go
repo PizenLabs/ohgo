@@ -59,21 +59,34 @@ const (
 
 // paletteEntry is one inline suggestion row.
 //
-// Every trigger renders through this one shape, so the layout, the fixed name
-// column, the marker, and the section headers are identical whether the row is
-// a command, a file, or a support shortcut.
+// Every trigger renders through this one shape and one box, so the marker, the
+// section headers, and the selection treatment are identical whether the row
+// is a command, a file, or a support shortcut. Only the two content columns
+// differ: a path row splits into directory context and target, every other row
+// into name and description.
 type paletteEntry struct {
-	// Name is the display token including its trigger: "/model", "@src/",
-	// "$sup".
+	// Name is the identity token including its trigger: "/model", "@src/",
+	// "$sup". A path row keeps the whole reference here and splits it across
+	// Parent and Base for display.
 	Name string
-	// Detail is the second column: a command's description, a path's type, or
-	// a shortcut's blurb. A command may carry a "· current" suffix.
+	// Detail is the muted second column of a non-path row: a command's
+	// description or a shortcut's blurb. A command may carry a "· current"
+	// suffix.
 	Detail string
 	// Insert is the exact text spliced into the composer on accept.
 	Insert string
 	// Group is the section header. An empty group suppresses the header, so a
 	// single-group palette can omit it.
 	Group string
+	// Path marks a workspace path row, which renders on the file grid instead
+	// of the name/description grid.
+	Path bool
+	// Parent is a path row's directory context, trailing slash included and
+	// empty at the workspace root.
+	Parent string
+	// Base is a path row's target name. A folder keeps its trailing slash, so
+	// the row says what accepting it does without a separate type tag.
+	Base string
 }
 
 // paletteToken finds the trigger word that contains cursor.
@@ -148,31 +161,45 @@ var supportShortcuts = []paletteEntry{
 
 // paletteStyles names the semantic styles the palette uses, resolved once per
 // theme so the row builder never reaches for a raw colour.
+//
+// Each grid has two content columns: the left one carries context, the right
+// one carries the thing being chosen. The target is therefore always the
+// strongest text on a row, and the context stays one tier quieter. Selection
+// adds the selection surface behind every segment — context, gutter, and
+// target — so the highlight reads as one bar instead of coloured text.
 type paletteStyles struct {
 	border       lipgloss.Style
 	header       lipgloss.Style
 	marker       lipgloss.Style
 	activeName   lipgloss.Style
+	activePath   lipgloss.Style
 	activeDesc   lipgloss.Style
+	activeFill   lipgloss.Style
 	inactiveName lipgloss.Style
+	inactivePath lipgloss.Style
 	inactiveDesc lipgloss.Style
 }
 
 // paletteStylesFor resolves the palette styles from the shared chrome tokens.
 //
-// Dark follows the design tokens exactly: active name in ColorPrimary and
-// bold, active description in ColorText, inactive name in ColorMuted, inactive
-// description in ColorDim, border in ColorDim. Light keeps the same roles with
-// the darkened counterparts so a bright screen stays legible.
+// Dark follows the design tokens exactly: the selected target is the title
+// tier in bold on the selection surface, the selected context the secondary
+// tier on that same surface, inactive targets the body tier, inactive context
+// the muted tier, and the border the default border. Light keeps the same
+// roles with the darkened counterparts so a bright screen stays legible.
 func paletteStylesFor(theme string) paletteStyles {
 	t := design.For(theme)
+	selected := lipgloss.Color(t.SurfaceSelection)
 	return paletteStyles{
 		border:       fg(t.BorderDefault),
 		header:       fg(t.TextMuted).Bold(true),
-		marker:       fg(t.Brand),
-		activeName:   fg(t.Brand).Bold(true),
-		activeDesc:   fg(t.TextPrimary),
-		inactiveName: fg(t.TextMuted),
+		marker:       fg(t.Brand).Background(selected),
+		activeName:   fg(t.TextTitle).Bold(true).Background(selected),
+		activePath:   fg(t.TextSecondary).Background(selected),
+		activeDesc:   fg(t.TextPrimary).Background(selected),
+		activeFill:   lipgloss.NewStyle().Background(selected),
+		inactiveName: fg(t.TextPrimary),
+		inactivePath: fg(t.TextMuted),
 		inactiveDesc: fg(t.BorderStrong),
 	}
 }
@@ -282,18 +309,43 @@ func fileEntries(files []string, query string) []paletteEntry {
 
 // fileEntry renders one workspace path row. A trailing slash marks a folder.
 //
-// A completed file gets a trailing space so the next word starts a new token
-// instead of gluing to the path ("@index.html check this"). A folder gets no
-// space: the user is still composing a path, so the next typed segment must
-// continue it ("@pkg/" + "util.go").
+// The row splits the path across the grid's two columns: the directory keeps
+// the context on the left, the base name is the target on the right. A
+// completed file gets a trailing space on accept so the next word starts a new
+// token instead of gluing to the path ("@index.html check this"). A folder
+// gets no space: the user is still composing a path, so the next typed segment
+// must continue it ("@pkg/" + "util.go").
 func fileEntry(path string) paletteEntry {
-	detail := "file"
 	insert := "@" + path + " "
 	if strings.HasSuffix(path, "/") {
-		detail = "folder"
 		insert = "@" + path
 	}
-	return paletteEntry{Name: "@" + path, Detail: detail, Insert: insert, Group: "FILES"}
+	parent, base := splitPathColumns(path)
+	return paletteEntry{
+		Name:   "@" + path,
+		Path:   true,
+		Parent: parent,
+		Base:   base,
+		Insert: insert,
+		Group:  "FILES",
+	}
+}
+
+// splitPathColumns splits a workspace path into the muted context column and
+// the bright target column.
+//
+// The target is the last segment; a folder keeps its trailing slash, which is
+// also what tells the user that accepting it continues the path. The context
+// is every segment before it, trailing slash included, because a bare
+// "docs" + "app.go" would read as two unrelated words. A path at the workspace
+// root has no context at all.
+func splitPathColumns(path string) (parent, base string) {
+	if trimmed := strings.TrimSuffix(path, "/"); trimmed != "" {
+		if at := strings.LastIndex(trimmed, "/"); at >= 0 {
+			return path[:at+1], path[at+1:]
+		}
+	}
+	return "", path
 }
 
 // filterSupport builds the "$" palette rows for a query.
@@ -539,18 +591,7 @@ func renderPaletteBox(req paletteRequest) string {
 		return ""
 	}
 	inner := paletteInnerWidth(req.width)
-	nameW := PaletteNameCols
-	if avail := inner - paletteMarkerCols - 1; nameW > avail {
-		nameW = avail
-	}
-	if nameW < 4 {
-		nameW = 4
-	}
-	// Description budget: the fixed gutter, name column, and one separator.
-	descW := inner - paletteMarkerCols - nameW - 1
-	if descW < 0 {
-		descW = 0
-	}
+	grid := paletteGridFor(req.shown, inner)
 
 	var lines []string
 	if req.above {
@@ -562,7 +603,7 @@ func renderPaletteBox(req paletteRequest) string {
 			lines = append(lines, req.styles.header.Render(padPaletteRow(entry.Group, inner)))
 			lastGroup = entry.Group
 		}
-		lines = append(lines, paletteItemRow(entry, req.startIndex+i == req.cursor, nameW, descW, inner, req.styles))
+		lines = append(lines, paletteItemRow(entry, req.startIndex+i == req.cursor, grid, req.styles))
 	}
 	if req.below {
 		hidden := req.total - req.startIndex - len(req.shown)
@@ -587,29 +628,119 @@ func renderPaletteBox(req paletteRequest) string {
 	return box.Render(strings.Join(lines, "\n"))
 }
 
-// paletteItemRow renders one suggestion row. The selection is carried by the
-// marker glyph and by colour together: a monochrome terminal still shows which
-// row Enter would accept.
-func paletteItemRow(entry paletteEntry, selected bool, nameW, descW, inner int, st paletteStyles) string {
-	marker := "  "
-	nameStyle := st.inactiveName
-	descStyle := st.inactiveDesc
+// paletteGutterCols is the gap between a path row's two columns. Two cells
+// keep the muted directory visually detached from the bright target; one cell
+// would read as part of the name.
+const paletteGutterCols = 2
+
+// paletteGrid is the column grid one box renders every row on: the marker, the
+// left column, one gutter, and the right column that fills the rest.
+//
+// Every row in a box comes from one trigger, so the grid is resolved once and
+// no row can start a column at a different cell. Cycling the cursor therefore
+// only repaints — it never reflows the list.
+type paletteGrid struct {
+	leftW  int
+	gutter int
+	rightW int
+}
+
+// paletteGridFor resolves the grid for one box's rows.
+//
+// A command row keeps the fixed name column, so a description always starts at
+// the same cell. A path row sizes its context column to the widest directory
+// among the visible rows, bounded by half the content: a deeper path truncates
+// from the left rather than pushing every target toward the right edge, and the
+// target — the name the user is actually choosing — always keeps its full
+// width.
+func paletteGridFor(shown []paletteEntry, inner int) paletteGrid {
+	avail := inner - paletteMarkerCols
+	dirW, baseW := 0, 0
+	pathRows := false
+	for _, entry := range shown {
+		if !entry.Path {
+			continue
+		}
+		pathRows = true
+		dirW = max(dirW, CellWidth(entry.Parent))
+		baseW = max(baseW, CellWidth(entry.Base))
+	}
+	if pathRows {
+		dirW = min(dirW, max(avail-paletteGutterCols-baseW, 0))
+		dirW = min(dirW, max(avail/2, 0))
+		// A window of workspace-root entries has no context at all; dropping
+		// the gutter then keeps those names hard against the marker instead of
+		// indenting them under a column that never prints.
+		gutter := paletteGutterCols
+		if dirW == 0 {
+			gutter = 0
+		}
+		return paletteGrid{
+			leftW:  dirW,
+			gutter: gutter,
+			rightW: max(avail-dirW-gutter, 0),
+		}
+	}
+	nameW := PaletteNameCols
+	if limit := avail - 1; nameW > limit {
+		nameW = limit
+	}
+	if nameW < 4 {
+		nameW = 4
+	}
+	return paletteGrid{leftW: nameW, gutter: 1, rightW: max(avail-nameW-1, 0)}
+}
+
+// paletteItemRow renders one suggestion row on the shared column grid.
+//
+// Selection is carried by three independent channels — the chevron, the
+// selection surface behind every segment, and the brightened text — so the row
+// Enter would accept is unmistakable in colour and in a monochrome terminal.
+func paletteItemRow(entry paletteEntry, selected bool, grid paletteGrid, st paletteStyles) string {
+	left, right := entry.Name, entry.Detail
+	leftStyle, rightStyle := st.inactiveName, st.inactiveDesc
+	if entry.Path {
+		left, right = fitPathColumn(entry.Parent, grid.leftW), entry.Base
+		leftStyle = st.inactivePath
+	}
+	marker := strings.Repeat(" ", paletteMarkerCols)
+	fill := lipgloss.NewStyle()
 	if selected {
 		marker = st.marker.Render("▸ ")
-		nameStyle = st.activeName
-		descStyle = st.activeDesc
+		fill = st.activeFill
+		leftStyle, rightStyle = st.activeName, st.activeDesc
+		if entry.Path {
+			leftStyle = st.activePath
+		}
 	}
-	name := padCells(entry.Name, nameW)
-	if CellWidth(name) > nameW {
-		name = TruncateToWidth(name, nameW)
+	return marker +
+		leftStyle.Render(padCells(left, grid.leftW)) +
+		fill.Render(strings.Repeat(" ", grid.gutter)) +
+		rightStyle.Render(padCells(right, grid.rightW))
+}
+
+// fitPathColumn fits a directory context into its column.
+//
+// Whole leading segments are dropped first, so the visible path always starts
+// at a separator (…/tui/design/): a column cut mid-segment (…cs/architecture/)
+// reads as corrupted text rather than as elision. Only a path with no
+// separator left to anchor on falls back to a cell-exact cut.
+func fitPathColumn(parent string, width int) string {
+	if CellWidth(parent) <= width {
+		return parent
 	}
-	desc := TruncateToWidth(entry.Detail, descW)
-	// Pad the description so the styled row is exactly `inner` cells wide.
-	gap := inner - paletteMarkerCols - nameW - 1 - CellWidth(desc)
-	if gap > 0 {
-		desc += strings.Repeat(" ", gap)
+	runes := []rune(parent)
+	// Slices starting at a later separator are strictly shorter, so the first
+	// one that fits is the longest tail the column can hold.
+	for i := 0; i+1 < len(runes); i++ {
+		if runes[i] != '/' {
+			continue
+		}
+		if candidate := "…" + string(runes[i:]); CellWidth(candidate) <= width {
+			return candidate
+		}
 	}
-	return marker + nameStyle.Render(name) + " " + descStyle.Render(desc)
+	return TruncateLeftToWidth(parent, width)
 }
 
 // paletteInnerWidth is the content width inside the border and padding. It

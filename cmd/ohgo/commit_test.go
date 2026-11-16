@@ -169,7 +169,7 @@ func TestCommitEndToEndUsesTheConfiguredModelAndCommitsOnlyTheApprovedScope(t *t
 	if proposeCmd == nil {
 		t.Fatal("/commit produced no proposal command")
 	}
-	if view := plainView(program); !strings.Contains(view, "preparing commit…") {
+	if view := plainView(program); !strings.Contains(view, "preparing commit") {
 		t.Fatalf("view before the provider answered = %q, want immediate commit progress", view)
 	}
 
@@ -208,7 +208,7 @@ func TestCommitEndToEndUsesTheConfiguredModelAndCommitsOnlyTheApprovedScope(t *t
 	if executeCmd == nil {
 		t.Fatal("approval produced no execution command")
 	}
-	if view := plainView(program); !strings.Contains(view, "executing commit…") {
+	if view := plainView(program); !strings.Contains(view, "executing commit") {
 		t.Errorf("view after approval = %q, want execution progress", view)
 	}
 	program.Update(executeCmd())
@@ -270,7 +270,7 @@ func TestCommitRetryAndEditThroughTheTUI(t *testing.T) {
 	if retryCmd == nil {
 		t.Fatal("retry key produced no proposal command")
 	}
-	if view := plainView(program); !strings.Contains(view, "preparing commit…") {
+	if view := plainView(program); !strings.Contains(view, "preparing commit") {
 		t.Errorf("retry view = %q, want immediate progress", view)
 	}
 	program.Update(retryCmd())

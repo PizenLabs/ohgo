@@ -685,16 +685,24 @@ paints nothing: the transcript flows directly into the composer instead of
 paying for a blank line or a duplicate summary of the status bar. When a turn
 finishes (`AssistantDone` or `TurnCancelled`), the row disappears immediately.
 
-During a turn, the bar carries intent only:
+During a turn, the bar names the live action:
 
 ```text
-⠋ formatting response...
+⠋ reading retry.go
 ```
 
-- The shared Braille spinner, exactly one space, then the semantic intent
-  (`preparing workspace…`, `reasoning internals…`, `executing tools…`,
-  `formatting response…`). The intent text carries the shimmer wave; the
-  spinner carries liveness.
+- The shared Braille spinner, exactly one space, then the contextual action.
+  A running tool maps its argument payload to a deterministic
+  present-participle description (`reading retry.go`, `running tests`,
+  `resolving dependencies`); an open thought channel contributes the primary
+  verb of its first clause (`inspecting the repository`). A phase with no
+  concrete evidence falls back to `preparing workspace` or
+  `formatting response`. The phrase is lowercase and carries no trailing dots;
+  paths, file names, and code symbols keep their spelling. The text carries the
+  shimmer wave; the spinner carries liveness.
+- A phrase stays visible for at least 500ms. Rapid updates coalesce to the
+  newest action still true when the floor expires, so a fast call is readable
+  without replaying stale work.
 - No duration, token, context, session, or path metric appears here. Those
   facts have exactly one home: the bottom status line.
 

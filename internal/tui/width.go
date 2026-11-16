@@ -112,6 +112,28 @@ func CellPrefix(s string, width int) string {
 	return runewidth.Truncate(stripped, width, "")
 }
 
+// TruncateLeftToWidth cuts s to at most width cells, keeping its tail and
+// leading with one ellipsis cell.
+//
+// A path shown beside its own base name is context: the tail (the directory
+// that contains the name) is what makes it decidable, while the workspace root
+// it started from is already known. Losing the head instead of the tail keeps
+// the context adjacent to the name it qualifies.
+func TruncateLeftToWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	s = expandTabsStyled(s)
+	stripped := ansi.Strip(s)
+	if runewidth.StringWidth(stripped) <= width {
+		return s
+	}
+	if width == 1 {
+		return "…"
+	}
+	return "…" + suffixCells(stripped, width-1)
+}
+
 // TruncateMiddleToWidth cuts s to at most width cells, keeping both the head
 // and the tail and replacing the removed middle with one ellipsis cell.
 //

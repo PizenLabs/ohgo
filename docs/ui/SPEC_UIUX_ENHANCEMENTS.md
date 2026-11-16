@@ -105,15 +105,20 @@ transcript renderer does not introduce a second diff engine.
 - Running tools and shell escapes keep their established static liveness
   markers. The enhancement is scoped to model responding and reasoning, not a
   return to per-tool spinners.
-- The program advances the shared tick every 90 ms. Stream deltas, tool
-  progress, and metric updates cannot advance the glyph faster. Reduced-motion,
+- The program advances the spinner tick every 90 ms. Stream deltas, tool
+  progress, and metric updates cannot advance the glyph faster. The shimmer
+  runs on the faster 30 FPS presentation frame. Reduced-motion,
   `NO_COLOR`, and non-TrueColor terminals keep the throttled spinner but skip
   the optional shimmer.
-- The live telemetry bar's intent word shares the same tick for a restrained
-  shimmer wave; its middle spacer stays pure whitespace. The wave carries no
-  semantic state: the intent word, the measured duration, and the output volume
-  are the information, and the motion only proves the turn is still being
-  processed.
+- The live telemetry bar's contextual action (lowercase, no trailing dots) shares the presentation frame for
+  a restrained shimmer wave; its middle spacer stays pure whitespace. The wave
+  is driven at 30 FPS by a continuous `float64` head: character intensity is a
+  cosine falloff with radius five, intensity above 0.65 adds bold weight, and
+  the colour linearly interpolates between the muted and primary text roles.
+  Width math runs on the plain label before the TrueColor escapes, so a long
+  action truncates safely. The wave carries no semantic state: the action
+  phrase, the measured duration, and the output volume are the information,
+  and the motion only proves the turn is still being processed.
 
 ## 4. Performance and verification
 

@@ -939,6 +939,10 @@ type State struct {
 	// read it instead of wall time so a tick produces one coherent frame;
 	// zero falls back to time.Now for one-shot renders.
 	frameAt time.Time
+	// telemetry is the contextual live action phrase and its dwell anchor.
+	// It is presentation state only: every frame re-derives the candidate
+	// from the runtime, so the latch can delay pixels but never execution.
+	telemetry telemetryStatus
 	// animated names blocks whose projection changes with the frame: a new
 	// block fading in, or a fast tool/reasoning block holding its dwell
 	// frame. It stays small and is pruned when each effect settles.
@@ -1034,6 +1038,7 @@ func (s *State) Apply(event Event) {
 			}
 		}
 		s.advancePresentation(at)
+		s.noteTelemetryStatus(at)
 
 	case UserSubmitted:
 		seq := e.Seq
@@ -1043,6 +1048,7 @@ func (s *State) Apply(event Event) {
 		s.TurnSeq = seq
 		s.Cancelled = false
 		s.TurnStartedAt = e.At
+		s.resetTelemetryStatus()
 		// A new prompt starts a fresh measured turn in the bottom status line.
 		s.TurnElapsed = 0
 		// A resolved decision never outlives the turn it was made for: a new
@@ -1081,6 +1087,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.appendReasoning(e.Text, e.At)
 		s.growScroll(strings.Count(e.Text, "\n"))
+		s.noteTelemetryStatus(e.At)
 
 	case AssistantDelta:
 		if e.Seq != 0 && e.Seq != s.TurnSeq {
@@ -1096,6 +1103,7 @@ func (s *State) Apply(event Event) {
 		s.appendAssistant(e.Text, e.At)
 		s.OutputTokens = s.currentOutputTokens()
 		s.growScroll(strings.Count(e.Text, "\n"))
+		s.noteTelemetryStatus(e.At)
 
 	case AssistantDone:
 		// A turn boundary supersedes any pending proposal. A proposal can
@@ -1127,6 +1135,7 @@ func (s *State) Apply(event Event) {
 		// The stream is settled now, so a task that completed during the turn
 		// can close with its footer at the true tail of the output.
 		s.appendTaskRecap()
+		s.resetTelemetryStatus()
 
 	case TurnCancelled:
 		// The same turn-boundary rule as AssistantDone: a cancellation can
@@ -1184,6 +1193,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.pushEntry(Entry{Kind: EntryNotice, Notice: text})
 		s.growScroll(countLines(text))
+		s.resetTelemetryStatus()
 
 	case ToolStarted:
 		if e.Seq != 0 && e.Seq != s.TurnSeq {
@@ -1239,6 +1249,7 @@ func (s *State) Apply(event Event) {
 		s.markAnimated(tool.run.start)
 		s.runningTools++
 		s.growScroll(1)
+		s.noteTelemetryStatus(e.At)
 
 	case ToolPreview:
 		if e.Seq != 0 && e.Seq != s.TurnSeq {
@@ -1307,6 +1318,7 @@ func (s *State) Apply(event Event) {
 			s.markAnimated(tool.run.start)
 		}
 		s.growScroll(countLines(e.Text) + 1)
+		s.noteTelemetryStatus(e.At)
 
 	case ToolToggled:
 		// Expansion is presentation-only: flipping it never re-runs the
@@ -1517,6 +1529,7 @@ func (s *State) Apply(event Event) {
 		s.ScrollSeq++
 		s.Follow = true
 		s.resetSessionMetrics()
+		s.resetTelemetryStatus()
 		// A waiting or terminal commit phase belongs to the session that
 		// produced it. An execution already in flight stays visible so its
 		// real result is reported rather than silently swallowed.
@@ -1560,6 +1573,7 @@ func (s *State) Apply(event Event) {
 		} else {
 			s.Compaction = nil
 		}
+		s.noteTelemetryStatus(e.At)
 
 	case CommitChanged:
 		if e.Phase == CommitIdle {
@@ -1573,6 +1587,7 @@ func (s *State) Apply(event Event) {
 			started = s.Commit.StartedAt
 		}
 		s.Commit = &CommitActivity{Phase: e.Phase, StartedAt: started, Text: e.Text}
+		s.noteTelemetryStatus(started)
 
 	case ApprovalAsked:
 		s.Pending = &PendingApproval{
@@ -1589,6 +1604,7 @@ func (s *State) Apply(event Event) {
 			Proposal:        e.Proposal,
 			Commit:          e.Commit,
 		}
+		s.noteTelemetryStatus(time.Time{})
 
 	case ApprovalMoved:
 		if s.Pending != nil {
@@ -1597,6 +1613,7 @@ func (s *State) Apply(event Event) {
 
 	case ApprovalAnswered:
 		s.Pending = nil
+		s.noteTelemetryStatus(time.Time{})
 
 	case QuitConfirmOpened:
 		s.QuitConfirm = &PendingApproval{

@@ -28,12 +28,12 @@ func TestCompactionActivityOwnsOneSurface(t *testing.T) {
 	if !activity.Thinking.Active || activity.Thinking.Phase != ThinkingCompaction {
 		t.Fatalf("thinking = %+v, want the compaction phase", activity.Thinking)
 	}
-	if got := projectLiveTelemetry(s).Label; got != "compacting context…" {
+	if got := projectLiveTelemetry(s).Label; got != "compacting context" {
 		t.Fatalf("telemetry = %q", got)
 	}
 	s.Apply(TerminalResized{Width: 96, Height: 30})
 	out := stripANSI(Render(s))
-	if got := strings.Count(out, "compacting context…"); got != 1 {
+	if got := strings.Count(out, "compacting context"); got != 1 {
 		t.Fatalf("activity appeared %d times, want once:\n%s", got, out)
 	}
 
@@ -44,7 +44,7 @@ func TestCompactionActivityOwnsOneSurface(t *testing.T) {
 	if activity := ProjectActivity(s); activity.Surface != ActivityNone {
 		t.Fatalf("surface = %s after completion, want none", activity.Surface)
 	}
-	if out := stripANSI(Render(s)); strings.Contains(out, "compacting context…") {
+	if out := stripANSI(Render(s)); strings.Contains(out, "compacting context") {
 		t.Fatalf("completed compaction left a stale activity:\n%s", out)
 	}
 }

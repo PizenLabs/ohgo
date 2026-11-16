@@ -173,8 +173,8 @@ func TestToolFinalizationReplacesLiveRepresentationExactlyOnce(t *testing.T) {
 	if !strings.Contains(done, "✔ read a.go") {
 		t.Fatalf("completed tool lost its terminal marker:\n%s", done)
 	}
-	if !strings.Contains(done, "preparing workspace…") {
-		t.Fatalf("busy turn lost its live telemetry bar:\n%s", done)
+	if got := ComputeLayout(s).TelemetryLines; got != 1 {
+		t.Fatalf("busy turn lost its live telemetry row: %d lines\n%s", got, done)
 	}
 	if got := strings.Count(done, "read a.go"); got != 1 {
 		t.Fatalf("completed action appeared %d times, want one:\n%s", got, done)
@@ -268,8 +268,8 @@ func TestFailedToolFinalizesExactlyOnce(t *testing.T) {
 	if strings.Contains(out, "◌ read missing.go") || strings.Contains(out, "⠋ read missing.go") || strings.Contains(out, "running") {
 		t.Fatalf("failed tool kept a live representation:\n%s", out)
 	}
-	if !strings.Contains(out, "preparing workspace…") {
-		t.Fatalf("busy turn lost its live telemetry bar:\n%s", out)
+	if got := ComputeLayout(s).TelemetryLines; got != 1 {
+		t.Fatalf("busy turn lost its live telemetry row: %d lines\n%s", got, out)
 	}
 	if got := strings.Count(out, "✗ read missing.go"); got != 1 {
 		t.Fatalf("failure badge appeared %d times, want one:\n%s", got, out)

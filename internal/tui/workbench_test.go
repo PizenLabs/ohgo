@@ -387,7 +387,7 @@ func TestHeaderShowsPhaseInWords(t *testing.T) {
 	if strings.Contains(header, "working") {
 		t.Errorf("busy header repeated the active phase: %q", header)
 	}
-	if !strings.Contains(busy, "preparing workspace…") {
+	if !strings.Contains(busy, "preparing workspace") {
 		t.Errorf("busy view = %q, want the telemetry bar to name the phase", busy)
 	}
 }

@@ -26,7 +26,7 @@ func TestLiveTelemetryBarNamesEveryRuntimePhase(t *testing.T) {
 		{
 			name:  "waiting for the first token",
 			state: base,
-			want:  "preparing workspace…",
+			want:  "preparing workspace",
 		},
 		{
 			name: "open reasoning trace",
@@ -35,7 +35,7 @@ func TestLiveTelemetryBarNamesEveryRuntimePhase(t *testing.T) {
 				s.Apply(ReasoningDelta{Text: "inspect", At: at.Add(time.Millisecond), Seq: 1})
 				return s
 			},
-			want: "reasoning internals…",
+			want: "inspecting",
 		},
 		{
 			name: "running tool",
@@ -44,7 +44,7 @@ func TestLiveTelemetryBarNamesEveryRuntimePhase(t *testing.T) {
 				s.Apply(ToolStarted{ID: "c1", Name: "read", Summary: "read a.go", At: at, Seq: 1})
 				return s
 			},
-			want: "executing tools…",
+			want: "reading a.go",
 		},
 		{
 			name: "streaming answer",
@@ -53,7 +53,7 @@ func TestLiveTelemetryBarNamesEveryRuntimePhase(t *testing.T) {
 				s.Apply(AssistantDelta{Text: "hello", At: at.Add(time.Millisecond), Seq: 1})
 				return s
 			},
-			want: "formatting response…",
+			want: "formatting response",
 		},
 		{
 			name: "blocked on approval",
@@ -62,21 +62,21 @@ func TestLiveTelemetryBarNamesEveryRuntimePhase(t *testing.T) {
 				s.Apply(ApprovalAsked{ToolName: "read", Summary: "read a.go", Choices: []string{"Yes", "No"}})
 				return s
 			},
-			want: "waiting for approval…",
+			want: "waiting for approval",
 		},
 		{
 			name: "commit proposal",
 			state: func() State {
 				return State{Commit: &CommitActivity{Phase: CommitProposing, StartedAt: at}}
 			},
-			want: "preparing commit…",
+			want: "preparing commit",
 		},
 		{
 			name: "commit execution",
 			state: func() State {
 				return State{Commit: &CommitActivity{Phase: CommitExecuting, StartedAt: at}}
 			},
-			want: "executing commit…",
+			want: "executing commit",
 		},
 	}
 
@@ -166,7 +166,7 @@ func TestLiveTelemetryRowExistsOnlyWhileTurnRuns(t *testing.T) {
 	if got := ComputeLayout(s).TelemetryLines; got != 1 {
 		t.Fatalf("busy telemetry rows = %d, want the live row", got)
 	}
-	if out := ansi.Strip(Render(s)); !strings.Contains(out, "preparing workspace…") {
+	if out := ansi.Strip(Render(s)); !strings.Contains(out, "preparing workspace") {
 		t.Fatalf("busy frame lost the telemetry phrase:\n%s", out)
 	}
 
@@ -174,7 +174,7 @@ func TestLiveTelemetryRowExistsOnlyWhileTurnRuns(t *testing.T) {
 	if got := composerRow("streaming"); got != want {
 		t.Fatalf("streaming composer row = %d, want the fixed row %d", got, want)
 	}
-	if out := ansi.Strip(Render(s)); !strings.Contains(out, "formatting response…") {
+	if out := ansi.Strip(Render(s)); !strings.Contains(out, "formatting response") {
 		t.Fatalf("streaming frame lost the telemetry phrase:\n%s", out)
 	}
 
@@ -189,7 +189,7 @@ func TestLiveTelemetryRowExistsOnlyWhileTurnRuns(t *testing.T) {
 		t.Fatalf("settled frame painted a stale telemetry row: %q", bar)
 	}
 	out := ansi.Strip(Render(s))
-	if strings.Contains(out, "formatting response…") {
+	if strings.Contains(out, "formatting response") {
 		t.Fatalf("settled frame kept the live intent row:\n%s", out)
 	}
 	if !strings.Contains(out, "⏱ 2s") {
@@ -281,7 +281,7 @@ func TestLiveTelemetryBarCarriesIntentOnly(t *testing.T) {
 
 	layout := ComputeLayout(s)
 	bar := ansi.Strip(renderLiveTelemetryBarAt(s, PaletteFor(s.Theme), layout, 0))
-	if got, want := bar, spinnerFrames[0]+" formatting response…"; got != want {
+	if got, want := bar, spinnerFrames[0]+" formatting response"; got != want {
 		t.Fatalf("live bar = %q, want intent only %q", got, want)
 	}
 	for _, banned := range []string{"⏱", "↓", "tokens", "#", "master"} {
@@ -296,7 +296,7 @@ func TestLiveTelemetryBarCarriesIntentOnly(t *testing.T) {
 		if strings.Contains(frame, "⏱") || strings.Contains(frame, "tokens") {
 			t.Fatalf("tick %d: live bar grew telemetry: %q", tick, frame)
 		}
-		if !strings.HasSuffix(frame, "formatting response…") {
+		if !strings.HasSuffix(frame, "formatting response") {
 			t.Fatalf("tick %d: live intent moved: %q", tick, frame)
 		}
 	}
@@ -310,7 +310,7 @@ func TestLiveTelemetryBarCarriesIntentOnly(t *testing.T) {
 	if strings.Contains(thinking, "⏱") || strings.Contains(thinking, "↓") {
 		t.Fatalf("thinking bar leaked bottom telemetry: %q", thinking)
 	}
-	if !strings.HasSuffix(thinking, "preparing workspace…") {
+	if !strings.HasSuffix(thinking, "preparing workspace") {
 		t.Fatalf("thinking bar lost its intent: %q", thinking)
 	}
 }
@@ -330,7 +330,7 @@ func TestOutputFirstTelemetryBarSitsAboveComposer(t *testing.T) {
 	if len(lines) < 2 {
 		t.Fatalf("live composer rows = %d, want bar plus input", len(lines))
 	}
-	if !strings.Contains(ansi.Strip(lines[0]), "preparing workspace…") {
+	if !strings.Contains(ansi.Strip(lines[0]), "preparing workspace") {
 		t.Fatalf("row above the prompt = %q, want the telemetry bar", ansi.Strip(lines[0]))
 	}
 	if !strings.Contains(ansi.Strip(lines[1]), "› ") {
@@ -362,7 +362,7 @@ func TestOutputFirstIdleFrameHasNoTelemetryRow(t *testing.T) {
 	}
 	for _, line := range lines {
 		plain := ansi.Strip(line)
-		if strings.Contains(plain, "preparing workspace…") || strings.Contains(plain, "⏱") {
+		if strings.Contains(plain, "preparing workspace") || strings.Contains(plain, "⏱") {
 			t.Fatalf("idle composer kept a telemetry row: %q", plain)
 		}
 	}

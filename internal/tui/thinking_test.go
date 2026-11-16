@@ -257,11 +257,11 @@ func TestViewShowsAndClearsThinkingLine(t *testing.T) {
 	s.Apply(UserSubmitted{Text: "go"})
 
 	out := Render(s)
-	if !strings.Contains(out, "preparing workspace…") {
+	if !strings.Contains(out, "preparing workspace") {
 		t.Fatalf("busy view lost its telemetry bar:\n%s", out)
 	}
 	s.Apply(AssistantDone{})
-	if out := Render(s); strings.Contains(out, "preparing workspace…") {
+	if out := Render(s); strings.Contains(out, "preparing workspace") {
 		t.Fatalf("completed view kept a stale telemetry label:\n%s", out)
 	}
 }
