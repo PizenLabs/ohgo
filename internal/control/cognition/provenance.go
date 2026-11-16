@@ -51,7 +51,7 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 	summary.DocumentationPaths = claims.DocumentationPaths
 	var documentation, implementation, external []string
 	var manifests []string
-	titles := map[string]bool{}
+	identity := map[string]bool{}
 	for _, item := range s.Items {
 		if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
 			continue
@@ -59,8 +59,8 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 		switch item.Provenance {
 		case ProvenanceDocumentation:
 			documentation = append(documentation, item.Value)
-			for _, term := range DocumentationTitleTerms(item.Value) {
-				titles[term] = true
+			for _, term := range DocumentationIdentityTerms(item.Value) {
+				identity[term] = true
 			}
 		case ProvenanceExternal:
 			if strings.TrimSpace(item.Value) != "" || strings.TrimSpace(item.Summary) != "" {
@@ -106,7 +106,7 @@ func (s *EvidenceState) Provenance(shape TaskShape) agent.EvidenceProvenance {
 			addLanguageIdentity(observed, language)
 		}
 	}
-	summary.DocumentationTerms = documentationOnlyTerms(documentation, observed, titles)
+	summary.DocumentationTerms = documentationOnlyTerms(documentation, observed, identity)
 	return summary
 }
 
@@ -133,13 +133,15 @@ func addLanguageIdentity(observed map[string]bool, language string) {
 // documentationOnlyTerms returns bounded specific terms that appear in
 // documentation but nowhere in the observed implementation or external
 // evidence. Generic nouns ("platform", "service") are not claims; proper names
-// and concrete metrics are.
-func documentationOnlyTerms(documentation []string, observed, titles map[string]bool) []string {
+// and concrete metrics are. Identity terms are not claims: the answer may name
+// the project the documentation names without attributing an implementation
+// fact.
+func documentationOnlyTerms(documentation []string, observed, identity map[string]bool) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, text := range documentation {
 		for _, term := range documentationClaimTerms(text) {
-			if seen[term] || observed[term] || titles[term] {
+			if seen[term] || observed[term] || identity[term] {
 				continue
 			}
 			seen[term] = true
@@ -153,21 +155,51 @@ func documentationOnlyTerms(documentation []string, observed, titles map[string]
 	return out
 }
 
-// DocumentationTitleTerms returns the content terms of a document's title: the
-// first non-empty line when it looks like a heading rather than a sentence.
-// The project's own name is identity, not an unverified implementation claim.
-func DocumentationTitleTerms(text string) []string {
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+// identityDefinition recognises an opening line that defines the subject:
+// "GoCommerce is an e-commerce application". Only the subject is identity; the
+// predicate remains a documented claim about the implementation.
+var identityDefinition = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9.+_-]*)\s+(?:is|are)\s+`)
+
+// DocumentationIdentityTerms returns the terms a document uses to name its
+// subject: the title, and the name an opening definition introduces.
+//
+// The project's own name is identity, and documentation is the evidence class
+// that establishes a project-identity claim. The title alone is not enough: a
+// README heading is often the repository slug ("# go-ecommerce") while the
+// product name appears only in the first paragraph, so the name would be
+// audited as an unverified implementation fact and veto an honest survey.
+func DocumentationIdentityTerms(text string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(terms []string) {
+		for _, term := range terms {
+			if term == "" || seen[term] {
+				continue
+			}
+			seen[term] = true
+			out = append(out, term)
+		}
+	}
+	heading := false
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "#"))
 		if line == "" {
 			continue
 		}
-		if len(line) > 120 || strings.ContainsAny(line, ".!?") {
-			return nil
+		if !heading && len(line) <= 120 && !strings.ContainsAny(line, ".!?") {
+			heading = true
+			add(ContentTerms(line))
+			continue
 		}
-		return ContentTerms(line)
+		if match := identityDefinition.FindStringSubmatch(line); match != nil {
+			subject := strings.ToLower(match[1])
+			if !genericProvenanceTerm(subject) {
+				add(ContentTerms(subject))
+			}
+		}
+		break
 	}
-	return nil
+	return out
 }
 
 // numericClaimPattern keeps a metric such as "99.9%" or "100+" comparable even

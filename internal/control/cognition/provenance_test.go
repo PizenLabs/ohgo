@@ -346,6 +346,47 @@ func TestDocumentationTitleAndGenericNounsAreNotClaims(t *testing.T) {
 	}
 }
 
+// A README heading is often the repository slug while the project name appears
+// only in the opening definition. That name is identity — documentation is the
+// evidence class for a project-identity claim — so naming it must not veto an
+// otherwise grounded survey. The exemption must not widen to the document's
+// technical vocabulary.
+func TestRepositorySlugHeadingKeepsProjectIdentityOutOfClaims(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md",
+			"# go-ecommerce\n\nGoCommerce is an e-commerce application written in Go and HTMX. The backend uses PostgreSQL."),
+		readEvidenceForTest("read-2", "main.go", "package main"),
+	)
+	summary := state.Provenance(shape)
+	for _, term := range summary.DocumentationTerms {
+		if term == "gocommerce" {
+			t.Fatalf("the project's own name was audited as an implementation claim: %+v", summary.DocumentationTerms)
+		}
+	}
+	foundTech := false
+	for _, term := range summary.DocumentationTerms {
+		if term == "postgresql" {
+			foundTech = true
+		}
+	}
+	if !foundTech {
+		t.Fatalf("the identity exemption swallowed a documented implementation claim: %+v", summary.DocumentationTerms)
+	}
+
+	intent := contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "check this project and analyze what this project is about?",
+	}
+	if assessment := agent.AssessAnswerProvenance(intent, "This project is GoCommerce.", summary); !assessment.Pass() {
+		t.Fatalf("naming the documented project identity was rejected: %s", assessment.Reason())
+	}
+	if assessment := agent.AssessAnswerProvenance(intent, "The backend uses PostgreSQL.", summary); assessment.Pass() {
+		t.Fatal("an unattributed documented implementation claim passed")
+	}
+}
+
 // Manifest dependency tokens are observed facts even when they are embedded in
 // a path-style module line.
 func TestManifestDependencyTermsAreObserved(t *testing.T) {

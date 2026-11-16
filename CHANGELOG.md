@@ -31,6 +31,13 @@ immutable.
 
 ### Fixed
 
+- A documented project identity is no longer reported as an unverified
+  implementation claim. `DocumentationIdentityTerms` also reads the name an
+  opening definition introduces (`GoCommerce is an e-commerce application`), so
+  a README whose heading is only the repository slug (`# go-ecommerce`) no
+  longer vetoes an honest survey for naming the project. Documentation remains
+  the evidence class for project identity; the document's technical vocabulary
+  stays attribution-bound.
 - Long `⚠ needs review:` reasons no longer end in `...` after wrapping. The
   runtime keeps the full verifier reason, and the footer renders up to three
   distinct clauses word-wrapped at the content width with a two-space hanging

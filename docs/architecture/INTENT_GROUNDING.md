@@ -304,6 +304,12 @@ same evidence ledger the answer audit uses, never a second evidence store:
 | absence | current complete untruncated scope, complete inventory, relevant query | the exact file or complete repository scope |
 | test inventory | a complete current unscoped test inventory | the test inventory scope |
 
+The project name a document establishes in its title or opening definition is
+identity. Documentation is the required evidence for a project-identity claim,
+so the answer may name the project without attributing an implementation fact.
+The rest of the document's technical vocabulary is a documented claim about the
+implementation and stays attribution-bound.
+
 A runtime-behavior claim (“cart validates against product”, “order publishes
 events”, “delivery fulfills”, “code listens on :8082”, “the worker connects to
 Redis”) needs source content that carries the behavior, or a live runtime
