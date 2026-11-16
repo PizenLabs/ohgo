@@ -160,7 +160,7 @@ Text: `TextTitle`, `TextPrimary`, `TextSecondary`, `TextMuted`,
 Borders: `BorderSubtle`, `BorderDefault`, `BorderStrong`, `BorderFocus`.
 
 Chrome: `Brand`, `BrandMute`, `Model`, `Check`, `Active`, `Prompt`, `User`,
-`ToolName`, `Recap`, `Idle`, `Info`.
+`ToolName`, `Footer`, `Idle`, `Info`.
 
 Document: `Heading`, `Emphasis`, `ListMarker`, `ThoughtHeader`, `ThoughtBody`.
 
@@ -208,7 +208,16 @@ calibration guard, not a claim of full terminal-theme conformance.
   count and duration stay `TextMuted`, so the row has one structural anchor
   without becoming a status claim.
 - A `needs review` task row and its reason use `Warning`: a human decision is
-  pending, and the row must not hide among muted telemetry.
+  pending, and the row must not hide among muted telemetry. The turn's terminal
+  review footer stays in the subdued notice tier (`TextMuted`, italic) and is
+  distinguished by its `⚠` glyph, so the verdict is scannable without becoming
+  an alert.
+- Every settled turn closes with exactly one terminal footer: `✓ verified` plus
+  deterministic telemetry for a clean turn (muted cyan `Footer` token, one row,
+  ellipsis on overflow), `⚠ needs review: …` for an evidence boundary (muted
+  italic, wraps word-safely), or `○ cancelled · turn interrupted by user`.
+  The footer sits directly below the answer, separated by one blank row, and
+  never carries model-generated prose or enters a copy payload.
 - A direct shell block follows the same rule: the command is `TextPrimary`, the
   exit code is `TextMuted`, and the measured duration is `TextFaint`.
 - Reasoning uses the amber thought pair: a bold `ThoughtHeader` disclosure row

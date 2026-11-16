@@ -203,7 +203,7 @@ func TestTokenContrast(t *testing.T) {
 				"heading":        tok.Heading,
 				"emphasis":       tok.Emphasis,
 				"list marker":    tok.ListMarker,
-				"recap":          tok.Recap,
+				"footer":         tok.Footer,
 				"code string":    tok.CodeString,
 				"diff header":    tok.DiffHeader,
 				"diff context":   tok.DiffContext,

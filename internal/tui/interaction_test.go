@@ -296,12 +296,12 @@ func TestCtrlCCancelsInsteadOfQuitting(t *testing.T) {
 	}
 	found := false
 	for _, entry := range p.state.Entries {
-		if entry.Kind == EntryNotice && strings.Contains(entry.Notice, "cancelled") {
+		if entry.Kind == EntryFooter && entry.Footer != nil && entry.Footer.Kind == FooterCancelled {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("entries = %+v, want the single cancellation line", p.state.Entries)
+		t.Errorf("entries = %+v, want the single cancellation footer", p.state.Entries)
 	}
 }
 
@@ -478,7 +478,7 @@ func TestCancelReachesARunningTool(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the tool never started")
 	}
-	p.cancelTurnNow("cancelled")
+	p.cancelTurnNow()
 
 	select {
 	case <-done:
@@ -508,7 +508,7 @@ func TestCancelledStreamReportsInterruption(t *testing.T) {
 	}()
 	// Let the turn block in the stream, then cancel like ctrl+c does.
 	time.Sleep(200 * time.Millisecond)
-	p.cancelTurnNow("cancelled")
+	p.cancelTurnNow()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -551,15 +551,15 @@ drain:
 	if cancelled > 1 {
 		t.Errorf("TurnCancelled published %d times, want at most one terminal transition", cancelled)
 	}
-	// The synchronous path already recorded the single user-visible line.
+	// The synchronous path already recorded the single user-visible footer.
 	found := false
 	for _, entry := range p.state.Entries {
-		if entry.Kind == EntryNotice && entry.Notice == "cancelled" {
+		if entry.Kind == EntryFooter && entry.Footer != nil && entry.Footer.Kind == FooterCancelled {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("entries = %+v, want the single cancellation line", p.state.Entries)
+		t.Errorf("entries = %+v, want the single cancellation footer", p.state.Entries)
 	}
 }
 

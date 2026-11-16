@@ -5,6 +5,17 @@ immutable.
 
 ## [Unreleased]
 
+### Changed
+
+- Every settled turn now closes with one terminal footer in a single slot:
+  a deterministic `✓ verified · …` summary for a clean turn (tool-call and
+  changed-file counts plus check status), a subdued `⚠ needs review: …` block
+  for an evidence boundary, or `○ cancelled · turn interrupted by user` for an
+  aborted turn. Clean footers are strictly one row and truncate with an
+  ellipsis; review reasons wrap word-safely. The footer is derived from the
+  runtime's observed outcomes, never from the assistant's closing prose, and it
+  never shares a turn with another footer.
+
 ### Fixed
 
 - Release objectives are workspace-scoped even when they name one carrier

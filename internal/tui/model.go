@@ -86,10 +86,10 @@ type Entry struct {
 	// Task is set when Kind is EntryTask: the compact projection of the
 	// durable task state.
 	Task *TaskProjection
-	// Recap is set when Kind is EntryRecap: the semantic completion footer,
-	// appended after every response and tool block for the task has settled.
+	// Footer is set when Kind is EntryFooter: the turn's single terminal
+	// status line, appended after the answer and every tool outcome settle.
 	// It is display metadata, never copyable block content.
-	Recap string
+	Footer *TurnFooter
 	// SupportText is set when Kind is EntrySupport: the question when
 	// SupportIsQuestion, else the answer.
 	SupportText string
@@ -123,11 +123,11 @@ const (
 	// projection, never an owner: it carries no execution authority and the
 	// task domain remains the single source of truth.
 	EntryTask EntryKind = "task"
-	// EntryRecap is the trailing completion footer for a task. It is
-	// appended only after the task is COMPLETED and the stream has settled,
-	// so it always lands below the response it describes rather than in the
-	// task block above it.
-	EntryRecap EntryKind = "recap"
+	// EntryFooter is the turn's single terminal footer. It is appended after
+	// the stream settles, so it always lands below the response it describes
+	// rather than in the task block above it. A turn renders exactly one:
+	// verified, review, or cancelled.
+	EntryFooter EntryKind = "footer"
 	// EntrySupport is one turn of the ephemeral $sup surface. It is rendered
 	// but never persisted and never enters the model's context (§10.2, I17).
 	EntrySupport EntryKind = "support"
@@ -869,11 +869,11 @@ type State struct {
 	// closedAssistant marks that the trailing assistant entry has ended, so
 	// the next turn opens a new one.
 	closedAssistant bool
-	// recapEmitted records the task IDs whose completion footer is already in
-	// the transcript. The footer is a separate trailing entry, so this map is
-	// the dedup memory that keeps a repeated projection from stacking a second
-	// line. A new task identity is a new footer.
-	recapEmitted map[string]bool
+	// footerEmitted records that the current turn already rendered its single
+	// terminal footer. AssistantDone and TurnCancelled share the slot, so a
+	// cancellation followed by a late completion cannot stack a second line.
+	// A new prompt resets it.
+	footerEmitted bool
 	// task is the latest projected task state. The transcript keeps its
 	// EntryTask for history and live mode; the sticky sidebar/header reads
 	// this cached projection so a canvas frame never scans a long transcript
@@ -1047,6 +1047,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.TurnSeq = seq
 		s.Cancelled = false
+		s.footerEmitted = false
 		s.TurnStartedAt = e.At
 		s.resetTelemetryStatus()
 		// A new prompt starts a fresh measured turn in the bottom status line.
@@ -1132,9 +1133,9 @@ func (s *State) Apply(event Event) {
 		// A trailing tool batch becomes a compact telemetry footer only once
 		// the turn has settled; until then another call may still join it.
 		s.bumpTailToolRun()
-		// The stream is settled now, so a task that completed during the turn
-		// can close with its footer at the true tail of the output.
-		s.appendTaskRecap()
+		// The stream is settled now, so the turn's single terminal footer
+		// lands at the true tail of the output.
+		s.appendTurnFooter(e.Footer, e.At)
 		s.resetTelemetryStatus()
 
 	case TurnCancelled:
@@ -1187,12 +1188,7 @@ func (s *State) Apply(event Event) {
 			}
 		}
 		s.bumpTailToolRun()
-		text := e.Text
-		if text == "" {
-			text = "cancelled"
-		}
-		s.pushEntry(Entry{Kind: EntryNotice, Notice: text})
-		s.growScroll(countLines(text))
+		s.appendTurnFooter(&TurnFooter{Kind: FooterCancelled}, e.At)
 		s.resetTelemetryStatus()
 
 	case ToolStarted:
@@ -1496,15 +1492,11 @@ func (s *State) Apply(event Event) {
 		if index >= 0 {
 			s.Entries[index].Task = &projection
 			s.bumpEntry(index)
-		} else {
+		} else if !s.insertBeforeTrailingFooter(Entry{Kind: EntryTask, Task: &projection}) {
 			s.Entries = append(s.Entries, Entry{Kind: EntryTask, Task: &projection})
 			s.assignIdentity(len(s.Entries) - 1)
-			s.growScroll(len(projection.Items) + 2)
 		}
-		// A completed projection that arrives after the stream already
-		// settled (or outside a turn) still gets its footer; one arriving
-		// mid-stream waits for AssistantDone.
-		s.appendTaskRecap()
+		s.growScroll(len(projection.Items) + 2)
 
 	case HistoryReplaced:
 		// A resumed session continues rather than restarts: the replayed
@@ -1517,7 +1509,7 @@ func (s *State) Apply(event Event) {
 		s.task = latestTaskProjection(s)
 		s.taskKnown = true
 		s.closedAssistant = true
-		s.recapEmitted = nil
+		s.footerEmitted = false
 		s.OutputTokens = 0
 		s.Transition = nil
 		s.Selection = nil
@@ -2657,7 +2649,7 @@ func (s *State) Apply(event Event) {
 		// confirmed; a stale expiry after this is a no-op via the generation.
 		s.CopyNotice = ""
 		s.closedAssistant = false
-		s.recapEmitted = nil
+		s.footerEmitted = false
 		s.OutputTokens = 0
 		s.resetSessionMetrics()
 		// Clearing returns to the onboarding interaction, so the placeholder
@@ -3085,55 +3077,42 @@ func defaultApprovalSelection(choices []string) int {
 	return len(choices) - 1
 }
 
-// appendTaskRecap adds the completion footer at the tail of the transcript.
+// appendTurnFooter writes the turn's single terminal footer.
 //
-// The footer is a lifecycle event, not part of the task block: it is emitted
-// only when the task is COMPLETED and nothing is still streaming. That is what
-// puts it below the answer the user just read instead of above it in the task
-// header. One entry is emitted per task identity; repeated projections or a
-// second AssistantDone cannot duplicate it.
-func (s *State) appendTaskRecap() {
-	if !s.streamSettled() {
+// The footer is a lifecycle event, not part of the task block: it lands after
+// the answer the user just read. The slot is exclusive, so a cancellation
+// followed by a late AssistantDone cannot print two lines, and a repeated
+// boundary cannot duplicate one. A legacy caller that supplies no footer
+// leaves the transcript unchanged rather than inventing a verdict.
+func (s *State) appendTurnFooter(footer *TurnFooter, at time.Time) {
+	if footer == nil || s.footerEmitted {
 		return
 	}
-	task := s.tailTask()
-	if task == nil {
-		return
-	}
-	text := taskRecapText(task)
-	if text == "" {
-		return
-	}
-	key := task.ID
-	if key == "" {
-		key = text
-	}
-	if s.recapEmitted[key] {
-		return
-	}
-	if s.recapEmitted == nil {
-		s.recapEmitted = make(map[string]bool)
-	}
-	s.recapEmitted[key] = true
-	s.pushEntry(Entry{Kind: EntryRecap, Recap: text})
-	s.growScroll(1)
+	s.footerEmitted = true
+	s.pushEntry(Entry{Kind: EntryFooter, Footer: footer, AppearedAt: at})
+	s.growScroll(countLines(footerText(footer)))
 }
 
-// streamSettled reports whether the active turn has finished emitting: no
-// busy turn, no open assistant block, and no tool still running.
-func (s *State) streamSettled() bool {
-	return !s.Status.Busy && s.openAssistant() < 0 && s.openReasoning() < 0 && !hasRunningTool(*s)
-}
-
-// tailTask returns the most recent task projection, or nil when the transcript
-// has none.
-func (s *State) tailTask() *TaskProjection {
-	for i := len(s.Entries) - 1; i >= 0; i-- {
-		if s.Entries[i].Kind == EntryTask && s.Entries[i].Task != nil {
-			return s.Entries[i].Task
-		}
+// insertBeforeTrailingFooter keeps the turn's footer terminal when a late
+// projection arrives after the turn boundary.
+//
+// A cancellation is applied synchronously, while the run goroutine may still
+// publish its paused task projection. Appending that block below the footer
+// would leave the transcript looking as though work continued after the turn
+// closed, so the projection takes the row immediately above the footer.
+func (s *State) insertBeforeTrailingFooter(entry Entry) bool {
+	if !s.footerEmitted || len(s.Entries) == 0 {
+		return false
 	}
-	return nil
+	last := len(s.Entries) - 1
+	if s.Entries[last].Kind != EntryFooter {
+		return false
+	}
+	s.Entries = append(s.Entries, Entry{})
+	copy(s.Entries[last+1:], s.Entries[last:])
+	s.Entries[last] = entry
+	s.assignIdentity(last)
+	return true
 }
 
 // openAssistant returns the index of the trailing assistant entry that can
@@ -3412,6 +3391,11 @@ type AssistantDone struct {
 	At time.Time
 	// Seq identifies the turn. Zero accepts any turn for legacy callers.
 	Seq int
+	// Footer is the turn's single terminal status line, derived by the
+	// runtime from its own verification state. Nil means the turn has no
+	// settled verdict (an aborted turn that never ran). A cancelled turn is
+	// closed by TurnCancelled instead, which owns the same slot.
+	Footer *TurnFooter
 }
 
 func (AssistantDone) eventKind() string { return "assistant_done" }
@@ -3423,8 +3407,6 @@ func (AssistantDone) eventKind() string { return "assistant_done" }
 type TurnCancelled struct {
 	// Seq identifies the turn. Zero means the current turn.
 	Seq int
-	// Text is the user-visible cancellation line. Empty renders "cancelled".
-	Text string
 	// At is when cancellation settled. Zero means unknown.
 	At time.Time
 }

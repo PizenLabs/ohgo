@@ -126,7 +126,7 @@ func TestProjectThinkingTerminalStatesAreInactive(t *testing.T) {
 
 	cancelled := New()
 	cancelled.Apply(UserSubmitted{Text: "go"})
-	cancelled.Apply(TurnCancelled{Seq: 1, Text: "cancelled"})
+	cancelled.Apply(TurnCancelled{Seq: 1})
 
 	failed := New()
 	failed.Apply(UserSubmitted{Text: "go"})

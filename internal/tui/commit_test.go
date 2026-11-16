@@ -748,7 +748,7 @@ func TestUnrelatedTurnCancellationDoesNotCancelCommit(t *testing.T) {
 	}
 
 	// A turn cancellation is a different lifetime.
-	p.cancelTurnNow("cancelled")
+	p.cancelTurnNow()
 	select {
 	case <-ctx.Done():
 		t.Fatalf("an unrelated turn cancelled the commit request: %v", context.Cause(ctx))

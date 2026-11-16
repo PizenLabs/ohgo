@@ -22,11 +22,6 @@ const (
 	taskStateDone    = "done"
 )
 
-// reviewPrefix is the terminal marker for a turn that stopped at an evidence
-// boundary. It is the review counterpart of the completion recap: the answer
-// remains above, and this line says why the runtime did not claim completion.
-const reviewPrefix = "needs review:"
-
 // TaskItem is one projected todo row.
 type TaskItem struct {
 	// State is one of pending, active, or done.
@@ -57,16 +52,6 @@ type TaskProjection struct {
 	Items []TaskItem
 	// Err reports a projection or checkpoint failure, empty on success.
 	Err string
-	// Recap is the semantic completion narrative, set exactly once when the
-	// task reaches COMPLETED. It describes what the run accomplished from
-	// observed evidence rather than echoing the objective or reporting
-	// telemetry. It is presentation metadata only: never persisted, never
-	// sent to the model, and never part of the block's copy payload. The
-	// state layer copies it into a trailing EntryRecap after the stream
-	// settles, so it renders below the answer rather than inside this block;
-	// the status check prevents a premature or stale value from claiming a
-	// finish.
-	Recap string
 	// ObjectiveState projects whether the objective is actually proven. It is
 	// empty for a layer that does not report it.
 	ObjectiveState string

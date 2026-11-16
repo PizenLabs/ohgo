@@ -196,7 +196,7 @@ func TestCancellationLeavesNoLiveTool(t *testing.T) {
 	s.Apply(TerminalResized{Width: 80, Height: 24})
 	s.Apply(UserSubmitted{Text: "go", Seq: 1})
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "go test ./...", At: time.Now(), Seq: 1})
-	s.Apply(TurnCancelled{Seq: 1, Text: "cancelled", At: time.Now()})
+	s.Apply(TurnCancelled{Seq: 1, At: time.Now()})
 
 	out := ansi.Strip(Render(s))
 	for _, marker := range []string{"◌", "⠋"} {

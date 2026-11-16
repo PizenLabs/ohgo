@@ -224,8 +224,8 @@ func TestCancelledToolFinalizesExactlyOnce(t *testing.T) {
 	s.Apply(ToolStarted{ID: "c1", Name: "bash", Summary: "go test ./...", At: time.Now(), Seq: 1})
 	id := s.Entries[1].ID
 
-	s.Apply(TurnCancelled{Seq: 1, Text: "cancelled", At: time.Now()})
-	s.Apply(TurnCancelled{Seq: 1, Text: "cancelled", At: time.Now()})
+	s.Apply(TurnCancelled{Seq: 1, At: time.Now()})
+	s.Apply(TurnCancelled{Seq: 1, At: time.Now()})
 
 	if len(s.Entries) != 3 { // user, tool, cancellation notice
 		t.Fatalf("entries = %d, want user, tool, notice", len(s.Entries))

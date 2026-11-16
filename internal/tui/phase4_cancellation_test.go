@@ -242,7 +242,7 @@ func TestCancelDuringPostRunTransitionPauses(t *testing.T) {
 	p.beforeTaskTransition = func() {
 		// The completion verdict is already complete here; this is the exact
 		// pre-transition window the old check-then-act code exposed.
-		p.cancelTurnNow("cancelled")
+		p.cancelTurnNow()
 	}
 
 	p.runTurn("Fix GrepTool in tools/grep.go and run go test ./tools")
@@ -293,7 +293,7 @@ func TestCancelDuringReviewTransitionPauses(t *testing.T) {
 			return TaskProjection{ID: "t1", Status: "NEEDS_REVIEW"}
 		},
 	})
-	p.beforeTaskTransition = func() { p.cancelTurnNow("cancelled") }
+	p.beforeTaskTransition = func() { p.cancelTurnNow() }
 
 	p.runTurn("explain this")
 
@@ -389,7 +389,7 @@ func TestRunTurnPausesWhenCancelledDuringPostRunVerification(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("post-run verification never started")
 	}
-	p.cancelTurnNow("cancelled")
+	p.cancelTurnNow()
 	close(resolver.release)
 	select {
 	case <-done:

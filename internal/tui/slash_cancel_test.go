@@ -143,9 +143,9 @@ func TestCancelReachesTerminalIdle(t *testing.T) {
 func TestDuplicateCancelIsIdempotent(t *testing.T) {
 	s := New()
 	s.Apply(UserSubmitted{Text: "work"})
-	s.Apply(TurnCancelled{Text: "cancelled"})
-	s.Apply(TurnCancelled{Text: "cancelled"})
-	s.Apply(TurnCancelled{Text: "cancelled"})
+	s.Apply(TurnCancelled{})
+	s.Apply(TurnCancelled{})
+	s.Apply(TurnCancelled{})
 	if !s.Cancelled {
 		t.Fatal("cancellation lost")
 	}
@@ -154,12 +154,12 @@ func TestDuplicateCancelIsIdempotent(t *testing.T) {
 	}
 	n := 0
 	for _, e := range s.Entries {
-		if e.Kind == EntryNotice && e.Notice == "cancelled" {
+		if e.Kind == EntryFooter && e.Footer != nil && e.Footer.Kind == FooterCancelled {
 			n++
 		}
 	}
 	if n != 1 {
-		t.Errorf("cancellation lines = %d, want exactly one semantic transition", n)
+		t.Errorf("cancellation footers = %d, want exactly one semantic transition", n)
 	}
 }
 

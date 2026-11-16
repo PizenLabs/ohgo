@@ -1474,7 +1474,7 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// the same way an idle esc would.
 			p.state.Apply(QuitConfirmClosed{})
 			if p.state.Status.Busy {
-				p.cancelTurnNow("cancelled")
+				p.cancelTurnNow()
 			}
 			return p, nil
 		}
@@ -1532,7 +1532,7 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Reuse the turn-cancel path, which denies the blocked tool
 			// before cancelling, so aborting can never approve the work it
 			// abandons.
-			p.cancelTurnNow("cancelled")
+			p.cancelTurnNow()
 			return p, nil
 		}
 		return p, nil
@@ -1689,7 +1689,7 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p.state.Status.Busy {
 			if p.state.InterruptConfirm {
 				p.state.resetInterruptConfirm()
-				p.cancelTurnNow("cancelled")
+				p.cancelTurnNow()
 				return p, nil
 			}
 			return p, p.armInterruptConfirm()
@@ -2091,7 +2091,7 @@ func (p *Program) runCommand(command Command) tea.Cmd {
 		case p.state.runningShell() != nil:
 			p.cancelShellNow()
 		case p.state.Status.Busy:
-			p.cancelTurnNow("cancelled")
+			p.cancelTurnNow()
 		default:
 			p.state.Apply(Notice{Text: "no running turn to cancel"})
 		}
@@ -2540,7 +2540,7 @@ func (p *Program) cancelTurnForNewSession() {
 	hasTurn := p.cancelTurn != nil
 	p.mu.Unlock()
 	if hasTurn || p.state.Status.Busy {
-		p.cancelTurnNow("new session")
+		p.cancelTurnNow()
 	}
 }
 
@@ -2631,7 +2631,7 @@ func (p *Program) interruptOrClear() (tea.Model, tea.Cmd) {
 		// than quitting, cancelling a running turn the same way esc would.
 		p.state.Apply(QuitConfirmClosed{})
 		if p.state.Status.Busy {
-			p.cancelTurnNow("cancelled")
+			p.cancelTurnNow()
 		}
 		return p, nil
 	}
@@ -2677,7 +2677,7 @@ func (p *Program) interruptOrClear() (tea.Model, tea.Cmd) {
 	// A running turn wins over typed text: the interrupt must reach the
 	// stream or tool, not just the buffer, so work can actually be stopped.
 	if p.state.Status.Busy {
-		p.cancelTurnNow("cancelled")
+		p.cancelTurnNow()
 		return p, nil
 	}
 	// The inline palette is chrome over the composer: ctrl+c dismisses it
@@ -2758,7 +2758,7 @@ func (p *Program) cancelSupportNow(note string) {
 // and one user-visible line, never a stream of duplicates. The spinner stops
 // with the transition itself, not when the loop unwinds, so the footer can
 // never report working after the turn has terminated.
-func (p *Program) cancelTurnNow(note string) {
+func (p *Program) cancelTurnNow() {
 	// Any real interrupt consumes an armed Esc confirmation. Ctrl+C and
 	// /cancel stay single-step, and a later Esc must start a fresh first press
 	// rather than inheriting this turn's window.
@@ -2782,14 +2782,7 @@ func (p *Program) cancelTurnNow(note string) {
 	if cancel != nil {
 		cancel()
 	}
-	text := note
-	if len(p.state.Queued) > 0 {
-		text += " (queue cleared)"
-	}
-	if text == "" {
-		text = "cancelled"
-	}
-	p.state.Apply(TurnCancelled{Seq: p.state.TurnSeq, Text: text, At: time.Now()})
+	p.state.Apply(TurnCancelled{Seq: p.state.TurnSeq, At: time.Now()})
 }
 
 // queue holds a prompt typed while a turn runs. Past the cap it refuses with
@@ -5865,18 +5858,6 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			projection = TaskProjection{}
 		}
 		if projection.ID != "" {
-			if strings.EqualFold(projection.Status, "COMPLETED") {
-				// The recap is derived here, at the only place that owns both
-				// the completion decision and the run's evidence. It narrates
-				// what the run accomplished from observed tool outcomes and the
-				// assistant's own closing answer; the durable task layer never
-				// stores it.
-				objective := projection.Objective
-				if strings.TrimSpace(objective) == "" {
-					objective = intent.Objective
-				}
-				projection.Recap = recapNarrative(objective, turns)
-			}
 			p.PublishTask(projection)
 		}
 	case taskActionPhaseComplete:
@@ -6083,18 +6064,22 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 		// semantic cancellation already reached the transcript through
 		// TurnCancelled, so only real failures publish here.
 		if errors.Is(loopErr, context.Canceled) {
-			p.publish(TurnCancelled{Seq: seq, Text: "cancelled", At: time.Now()})
-		} else {
+			p.publish(TurnCancelled{Seq: seq, At: time.Now()})
+		} else if reviewNotice == "" {
+			// A review verdict already carries the reason in the single
+			// terminal footer; publishing the error above it would state the
+			// same failure twice.
 			p.publish(Notice{Text: "error: " + loopErr.Error()})
 		}
 	}
-	// A review is the turn's terminal verdict, so it belongs at the end of
-	// the turn, where the reader looks after the answer. The task block also
-	// carries the durable reason, but it can be above the viewport by then.
-	if reviewNotice != "" {
-		p.publish(Notice{Text: reviewPrefix + " " + reviewNotice})
-	}
-	p.publish(AssistantDone{Seq: seq, At: time.Now()})
+	// The terminal verdict is the single footer of the turn. The decision is
+	// derived from the runtime's own action, never from the model's closing
+	// sentence; a cancelled turn is closed by TurnCancelled in the same slot.
+	p.publish(AssistantDone{
+		Seq:    seq,
+		At:     time.Now(),
+		Footer: turnFooterForOutcome(action, reason, reviewNotice, loopErr, turns, activeAuthority),
+	})
 }
 
 // setLocalSessionTitle persists the deterministic label derived from prompt
