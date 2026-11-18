@@ -76,3 +76,13 @@ func TestInvestigateToolRejectsEscapingFocus(t *testing.T) {
 		t.Fatal("expected rejection")
 	}
 }
+
+// The investigation entrypoint is evidence-only. Its approval tier is the
+// authority contract that stops a structural result from becoming a mutation.
+func TestInvestigateToolIsReadOnly(t *testing.T) {
+	engine := investigate.New(stubInvestigationProvider{name: "retrieval"})
+	tool := NewInvestigateTool(t.TempDir(), engine, investigate.Budget{})
+	if got := tool.Approval().Tier; got != agent.TierRead {
+		t.Fatalf("approval tier = %v, want read", got)
+	}
+}

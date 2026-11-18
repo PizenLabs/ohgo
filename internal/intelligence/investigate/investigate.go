@@ -33,6 +33,10 @@ type Budget struct {
 	MaxLSPRequests int
 	// MaxDAPRequests bounds debug-adapter calls in the run.
 	MaxDAPRequests int
+	// MaxExternalRequests bounds calls to an external structural-intelligence
+	// provider. It is capability-neutral: the provider may be gry or another
+	// adapter, so the budget is not named after a vendor.
+	MaxExternalRequests int
 	// MaxOutputBytes is advisory to the renderer; the engine does not truncate.
 	MaxOutputBytes int
 }
@@ -43,6 +47,7 @@ const (
 	DefaultMaxRecords  = 120
 	DefaultMaxLSP      = 24
 	DefaultMaxDAP      = 24
+	DefaultMaxExternal = 8
 	DefaultMaxDuration = 20 * time.Second
 	DefaultMaxOutput   = 8000
 	maxQuestionsChars  = 512
@@ -72,6 +77,9 @@ func (b Budget) normalized() Budget {
 	if b.MaxDAPRequests <= 0 {
 		b.MaxDAPRequests = DefaultMaxDAP
 	}
+	if b.MaxExternalRequests <= 0 {
+		b.MaxExternalRequests = DefaultMaxExternal
+	}
 	if b.MaxOutputBytes <= 0 {
 		b.MaxOutputBytes = DefaultMaxOutput
 	}
@@ -90,9 +98,45 @@ type Request struct {
 	Budget Budget
 }
 
+// Outcome is the explicit result of one provider operation.
+//
+// It is not an evidence state: it says whether the operation ran and what kind
+// of answer it produced. A provider that could not observe must say why rather
+// than returning an empty successful result, because "not established" and "not
+// present" are different facts.
+type Outcome string
+
+// Operation outcomes.
+const (
+	// OutcomeSuccess means the provider completed within its bounds.
+	OutcomeSuccess Outcome = "SUCCESS"
+	// OutcomePartial means usable evidence was returned with an explicit bound
+	// or truncation.
+	OutcomePartial Outcome = "PARTIAL"
+	// OutcomeStale means evidence was returned for an older repository state.
+	OutcomeStale Outcome = "STALE"
+	// OutcomeAmbiguous means the target matched more than one candidate and no
+	// arbitrary choice was made.
+	OutcomeAmbiguous Outcome = "AMBIGUOUS"
+	// OutcomeUnresolved means the provider could not establish the target.
+	OutcomeUnresolved Outcome = "UNRESOLVED"
+	// OutcomeUnavailable means the provider could not run at all.
+	OutcomeUnavailable Outcome = "UNAVAILABLE"
+	// OutcomeNotIndexed means the provider has no index for this workspace.
+	OutcomeNotIndexed Outcome = "NOT_INDEXED"
+	// OutcomeFailed means the operation failed.
+	OutcomeFailed Outcome = "FAILED"
+)
+
 // Observation is what one provider observed. It never replaces prior
 // observations: the engine appends every Record and correlates them.
 type Observation struct {
+	// Outcome classifies the operation. An empty Outcome is treated as success
+	// only when no error was returned, for providers that predate the field.
+	Outcome Outcome
+	// Source names the mechanism that answered the step (for example "native"
+	// or "gry"). It is provenance, not a second provider identity.
+	Source     string
 	State      evidence.State
 	Confidence float64
 	Coverage   float64
@@ -122,16 +166,23 @@ type Provider interface {
 
 // Meter is the one shared budget all providers charge.
 type Meter struct {
-	mu             sync.Mutex
-	lsp, dap       int
-	maxLSP, maxDAP int
+	mu                          sync.Mutex
+	lsp, dap, external          int
+	maxLSP, maxDAP, maxExternal int
 }
 
 // ErrBudget reports that a provider hit its share of the shared budget.
 var ErrBudget = errors.New("investigate: budget exhausted")
 
-func newMeter(b Budget) *Meter {
-	return &Meter{maxLSP: b.MaxLSPRequests, maxDAP: b.MaxDAPRequests}
+// NewMeter returns the shared meter for one investigation. It is exported so a
+// provider can be exercised through its real contract in a test without
+// reaching into the engine.
+func NewMeter(b Budget) *Meter {
+	b = b.normalized()
+	return &Meter{
+		maxLSP: b.MaxLSPRequests, maxDAP: b.MaxDAPRequests,
+		maxExternal: b.MaxExternalRequests,
+	}
 }
 
 // ChargeLSP accounts one language-server request.
@@ -155,6 +206,22 @@ func (m *Meter) ChargeDAP() error {
 	m.dap++
 	return nil
 }
+
+// ChargeExternal accounts one call to an external structural-intelligence
+// provider. An external call is work like any other, so it cannot bypass the
+// shared budget.
+func (m *Meter) ChargeExternal() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.external >= m.maxExternal {
+		return fmt.Errorf("%w: external structural request limit %d", ErrBudget, m.maxExternal)
+	}
+	m.external++
+	return nil
+}
+
+// External reports the external structural requests charged.
+func (m *Meter) External() int { m.mu.Lock(); defer m.mu.Unlock(); return m.external }
 
 // LSP and DAP report consumption.
 func (m *Meter) LSP() int { m.mu.Lock(); defer m.mu.Unlock(); return m.lsp }
@@ -180,6 +247,8 @@ type StepResult struct {
 	Provider   planner.Provider
 	Strategy   string
 	Reason     string
+	Outcome    Outcome
+	Source     string
 	State      evidence.State
 	Confidence float64
 	Coverage   float64
@@ -192,23 +261,24 @@ type StepResult struct {
 // Result is one bounded investigation result. It contains no raw graph, raw
 // protocol payload, or full index.
 type Result struct {
-	Status         Status
-	Intent         planner.Intent
-	Question       string
-	Focus          string
-	Steps          []StepResult
-	Skips          []planner.Skip
-	Facts          []Fact
-	Claims         []evidence.Claim
-	Contradictions []evidence.Contradiction
-	Records        int
-	Confidence     float64
-	Coverage       float64
-	StopReason     string
-	Issues         []string
-	Duration       time.Duration
-	LSPRequests    int
-	DAPRequests    int
+	Status           Status
+	Intent           planner.Intent
+	Question         string
+	Focus            string
+	Steps            []StepResult
+	Skips            []planner.Skip
+	Facts            []Fact
+	Claims           []evidence.Claim
+	Contradictions   []evidence.Contradiction
+	Records          int
+	Confidence       float64
+	Coverage         float64
+	StopReason       string
+	Issues           []string
+	Duration         time.Duration
+	LSPRequests      int
+	DAPRequests      int
+	ExternalRequests int
 }
 
 // Engine runs adaptive investigations over a fixed provider set.
@@ -248,6 +318,11 @@ func (e *Engine) Run(ctx context.Context, req Request) (Result, error) {
 	if intent == "" {
 		intent = InferIntent(question)
 	}
+	// Providers receive the resolved request. An empty intent is a planner
+	// input, not a fact a provider should have to infer again; a structural
+	// provider that saw "" would correctly report that the request has no
+	// structural intent and the run would lose its native path.
+	req.Intent = intent
 	if _, err := planner.Build(intent, planner.Availability{Structural: true}, planner.Budget{MaxSteps: 1}); err != nil {
 		return Result{}, fmt.Errorf("%w: %q", ErrUnknownIntent, intent)
 	}
@@ -258,7 +333,7 @@ func (e *Engine) Run(ctx context.Context, req Request) (Result, error) {
 	result := Result{Intent: intent, Question: question, Focus: req.Focus}
 	available := e.availability(runCtx)
 	engine := evidence.New()
-	meter := newMeter(budget)
+	meter := NewMeter(budget)
 	executed := make(map[planner.Provider]bool)
 	skips := make(map[planner.Provider]planner.Skip)
 	stop := ""
@@ -308,8 +383,16 @@ func (e *Engine) Run(ctx context.Context, req Request) (Result, error) {
 		elapsed := time.Since(stepStart)
 		executed[step.Provider] = true
 		remainingBudget.MaxSteps--
+		if observation.Outcome == "" {
+			if err != nil {
+				observation.Outcome = OutcomeFailed
+			} else {
+				observation.Outcome = OutcomeSuccess
+			}
+		}
 		outcome := StepResult{
 			Provider: step.Provider, Strategy: step.Strategy, Reason: step.Reason,
+			Outcome: observation.Outcome, Source: observation.Source,
 			State: evidence.Unknown, Confidence: result.Confidence,
 			Coverage: result.Coverage, Duration: elapsed,
 			Issues: append([]string(nil), observation.Issues...),
@@ -323,9 +406,15 @@ func (e *Engine) Run(ctx context.Context, req Request) (Result, error) {
 		} else {
 			state := observation.State
 			if state == "" {
-				state = evidence.Observed
+				switch observation.Outcome {
+				case OutcomeSuccess, OutcomePartial, OutcomeStale:
+					state = evidence.Observed
+				default:
+					state = evidence.Unknown
+				}
 			}
 			outcome.State = state
+			outcome.Failed = observation.Outcome == OutcomeFailed
 			outcome.Summary = capText(observation.Summary, maxSummaryChars)
 			result.Facts = append(result.Facts, observation.Facts...)
 			result.Issues = append(result.Issues, observation.Issues...)
@@ -366,6 +455,7 @@ func (e *Engine) Run(ctx context.Context, req Request) (Result, error) {
 	result.StopReason = stop
 	result.Duration = time.Since(start)
 	result.LSPRequests, result.DAPRequests = meter.LSP(), meter.DAP()
+	result.ExternalRequests = meter.External()
 	sort.SliceStable(result.Facts, func(i, j int) bool {
 		if result.Facts[i].Provider != result.Facts[j].Provider {
 			return result.Facts[i].Provider < result.Facts[j].Provider

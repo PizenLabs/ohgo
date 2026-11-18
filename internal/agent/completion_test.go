@@ -628,3 +628,27 @@ func TestAbsentNamedTargetResolutionRequiresOneCandidate(t *testing.T) {
 		t.Fatalf("ambiguous observed paths were resolved: %v", resolved)
 	}
 }
+
+// Structural intelligence can establish what is connected; it cannot establish
+// that the user's requested change happened. A successful investigation turn
+// with gry-shaped evidence must not substitute for an observed mutation.
+func TestStructuralEvidenceCannotCompleteAMutation(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("investigate", Result{
+			Text: "investigation: sufficient · structural/gry(SUCCESS, OBSERVED)",
+			Details: map[string]any{
+				"status":            "sufficient",
+				"outcome":           "SUCCESS",
+				"source":            "gry",
+				"records":           12,
+				"confidence":        0.82,
+				"external_requests": 1,
+			},
+		})}},
+		answerTurn("the change is structurally safe"),
+	}
+	verdict := EvaluateCompletion(turns, true)
+	if verdict.Complete() {
+		t.Fatalf("structural evidence completed a mutation objective: %+v", verdict)
+	}
+}

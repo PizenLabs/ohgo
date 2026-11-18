@@ -151,7 +151,7 @@ func add(a, b int) int {
 	}
 
 	// A bounded meter must stop runtime work explicitly, not report absence.
-	limited := newMeter(Budget{MaxDAPRequests: 1}.normalized())
+	limited := NewMeter(Budget{MaxDAPRequests: 1}.normalized())
 	observation, err := (&RuntimeProvider{Session: session, Root: root}).Observe(ctx,
 		Request{Question: "why", Intent: planner.IntentDebug}, plannerStep(), limited)
 	if err != nil {

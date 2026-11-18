@@ -46,6 +46,12 @@ Ownership:
 - `execution/tools` owns presentation and the argument contract. It never
   decides what to analyse.
 - `control/*` owns authority. The engine is read-only and has no second gate.
+- `intelligence/investigate.StructuralRouter` owns the choice between this
+  engine and an optional external structural provider. This package stays the
+  native implementation and the fallback; it never depends on the external path.
+  The boundary is canonical in
+  [`BOUNDARY_SPECIFICATION.md`](BOUNDARY_SPECIFICATION.md) and the provider
+  behaviour in [`UNIFIED_INTELLIGENCE.md`](UNIFIED_INTELLIGENCE.md).
 
 The engine imports only `intelligence/ast` and the standard library. It cannot
 reach the agent, the control plane, a provider, or a UI; the architecture test

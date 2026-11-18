@@ -211,7 +211,7 @@ func TestBudgetBoundsStepsAndRequests(t *testing.T) {
 	if len(result.Steps) != 1 {
 		t.Fatalf("steps = %d, want 1", len(result.Steps))
 	}
-	meter := newMeter(Budget{MaxLSPRequests: 1})
+	meter := NewMeter(Budget{MaxLSPRequests: 1})
 	if err := meter.ChargeLSP(); err != nil {
 		t.Fatal(err)
 	}
@@ -264,4 +264,32 @@ func TestCancellationStopsTheLoop(t *testing.T) {
 
 func plannerStep() planner.Step {
 	return planner.Step{Provider: planner.ProviderSemantic, Strategy: "definition-references"}
+}
+
+// Providers must see the resolved intent, not the empty "auto" request. A
+// provider that receives "" cannot map the request to its capability and
+// reports a false unsupported outcome, which drops the native structural path.
+func TestProvidersReceiveTheInferredIntent(t *testing.T) {
+	seen := planner.Intent("")
+	provider := &intentRecordingProvider{seen: &seen}
+	if _, err := New(provider).Run(context.Background(), Request{
+		Question: "where is authentication implemented?", Budget: Budget{MaxSteps: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if seen != planner.IntentLocate {
+		t.Fatalf("provider saw intent %q, want locate", seen)
+	}
+}
+
+type intentRecordingProvider struct{ seen *planner.Intent }
+
+func (p *intentRecordingProvider) Name() planner.Provider { return planner.ProviderRetrieval }
+
+func (p *intentRecordingProvider) Available(context.Context) bool { return true }
+
+func (p *intentRecordingProvider) Observe(_ context.Context, req Request, _ planner.Step, _ *Meter) (Observation, error) {
+	*p.seen = req.Intent
+	return Observation{State: evidence.Observed, Confidence: 0.5, Coverage: 0.5,
+		Facts: []Fact{{Provider: "retrieval", Subject: "x", Detail: "y"}}}, nil
 }

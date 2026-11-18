@@ -43,6 +43,7 @@ become a second mutation or process-execution path.
 | `intelligence/evidence` | shared state vocabulary, records, correlation, contradictions | observe, rank, or authorize |
 | `intelligence/planner` | provider selection, cost/gain, stopping reasons, closed-loop reassessment | start a provider, grant authority, execute work |
 | `intelligence/investigate` | adaptive execution: shared context, evidence convergence, correlation, bounded result | start a provider outside its contract, cache runtime evidence as source truth, expose raw payloads |
+| `intelligence/gry` | optional external structural transport, bounded normalization, explicit outcome classification | index a repository, own or mirror a graph, authorize, mutate, complete, or bypass the shared budget |
 | `intelligence/wire` | Content-Length JSON framing shared by LSP and DAP | protocol schemas or provider policy |
 
 `internal/architecture` enforces that every package under `intelligence/` has no
@@ -60,6 +61,11 @@ into one interface:
 - availability (a missing binary or unadvertised LSP capability is a truthful
   "unsupported", never simulated);
 - bounded work (context deadline, size caps, concurrency caps);
+- an explicit operation `Outcome` (`SUCCESS`, `PARTIAL`, `STALE`, `AMBIGUOUS`,
+  `UNRESOLVED`, `UNAVAILABLE`, `NOT_INDEXED`, `FAILED`), separate from the
+  evidence state;
+- a `Source` naming the mechanism that answered the step, separate from the
+  capability identity;
 - observations with provenance and freshness;
 - explicit issues and degradations;
 - deterministic ordering where the algorithm allows it.
@@ -329,11 +335,111 @@ The `investigate` tool is the model-facing entrypoint. It returns bounded
 facts, provider states, contradictions, issues, confidence, coverage, and the
 stopping reason. It never returns raw graphs, LSP/DAP payloads, or indexes.
 
-## 12. Status
+## 12. External structural provider (optional)
+
+`intelligence/investigate.StructuralRouter` is the structural capability
+boundary. It composes two implementations of the same step:
+
+- the native engine in `intelligence/structural`, which is always the default
+  and the fallback;
+- an optional adapter in `intelligence/gry`, which answers the target-shaped,
+  architecture, impact, and verification questions where an indexed repository
+  graph is materially better than re-deriving one.
+
+The adapter is not a provider identity in the planner. It reports
+`planner.ProviderStructural`, sets `Observation.Source` to `gry`, and publishes
+`evidence.ProviderStructural` records with `evidence.SourceGRY`. That separation
+keeps "what was observed" distinct from "which mechanism observed it".
+
+### 12.1 Routing
+
+Routing follows the information need, never the role:
+
+| Information need | Native path | External path |
+|---|---|---|
+| project orientation, filesystem hierarchy | yes; no parsing, no subprocess | not called |
+| architecture shape | fallback | `architecture` (bounded internal packages, languages, entrypoints) |
+| locate with a target | fallback | `search` (all ranked candidates preserved) |
+| flow with a target | fallback | `trace` (both directions) |
+| impact with a target | fallback | `trace` (inbound); without a target, `changes` |
+| debug with a target | fallback | `context` (task, target, tests, unknowns) |
+| verification | fallback | `changes --scope tests` |
+
+A step with no target for a locate/flow/debug need stays native. This is the
+"existing or cheap local evidence first" rule: an external call is not
+automatically an optimization.
+
+### 12.2 Outcome and fallback matrix
+
+| Condition | Returning evidence | Ohgo behaviour |
+|---|---|---|
+| external success | bounded facts, `SUCCESS` | used |
+| external bounded/stale | facts with omission counts / `STALE` | used; limitation preserved |
+| external ambiguous | candidate facts, `AMBIGUOUS` | candidates preserved; native consulted; no arbitrary choice |
+| external unresolved | `UNRESOLVED` | native consulted; "not established", never "absent" |
+| external not indexed | `NOT_INDEXED` | native answers; the optional provider's absence does not qualify the native result |
+| external unavailable/timeout | `UNAVAILABLE` | native answers; no fact is inferred from the failure and the native result is not downgraded |
+| external failed/invalid output | `FAILED` | native answers; the failure is an explicit issue |
+| external absent or disabled | native | native answers; no gry process is started |
+
+The native engine remains the fallback, so an external failure never turns into
+an Ohgo task failure. `NOT_INDEXED` and `UNAVAILABLE` are configuration states,
+not evidence limitations: the router uses the native answer without adding a
+qualifying issue. `FAILED`, `AMBIGUOUS`, and `UNRESOLVED` are preserved because
+they are claims about the target or a real operation failure.
+
+### 12.3 Bounds and budget
+
+One observation retains at most 12 facts and 24 evidence records; omitted counts
+and the reason are explicit. Raw JSON is parsed, never forwarded: source text is
+never requested, and `--include-source` is not reachable. Commands have a hard
+timeout and a raw-output cap. The router charges the shared
+`Meter.ChargeExternal` budget before the adapter runs; the adapter cannot bypass
+it. A budget refusal falls back to native and says so.
+
+### 12.4 Independence and authority
+
+- Composition launches no process, reads no index, and requires no
+  configuration. `ohgo start`, `ohgo run`, `ohgo models`, ASK, FUZZ, BUILD, task
+  creation, and task resume are unchanged without gry.
+- The adapter only exposes the read-only query subcommands listed above. It has
+  no indexing, deletion, mutation, approval, or completion path.
+- `NOT_INDEXED` and `UNRESOLVED` are distinct from absence; a stale or partial
+  observation is marked, not promoted.
+- gry provenance, including `verified`, maps to `OBSERVED`. Only
+  `evidence.Prove` produces `VERIFIED`, and completion remains an
+  `internal/agent` decision over mutation and observation evidence. Structural
+  evidence cannot complete a mutation.
+- Opt out with `OHGO_GRY=0`. `OHGO_GRY_BIN`, `OHGO_GRY_PROJECT`,
+  `OHGO_GRY_TIMEOUT_MS`, `OHGO_GRY_MAX_TOKENS`, `OHGO_GRY_MAX_NODES`,
+  `OHGO_GRY_MAX_ROWS`, and `OHGO_GRY_MAX_DEPTH` are the only tuning knobs.
+
+MCP remains a transport option, not the architecture. Configuring gry as a
+generic MCP server exposes its tool surface to the model as a user-chosen
+capability; the canonical structural integration is this provider, which keeps
+routing, bounds, provenance, and fallback inside Ohgo.
+
+The pre-existing `internal/gryhook` adapter remains an opt-in compatibility
+observation path for headless `ohgo run`: it injects bounded evidence around
+tool calls and cannot authorize, block, or complete. It is not the structural
+provider above, it is disabled by default, and this change adds no lifecycle
+hook to the Control Plane. The capability provider is the canonical integration;
+the hook adapter is retained only for users who explicitly enabled it.
+
+Validation: adapter unit tests cover availability, project resolution, every
+outcome, bounds, provenance, the read-only command surface, real subprocess
+timeout/output caps, and environment filtering; router tests cover the routing
+matrix, fallback, ambiguity, stale evidence, and budget; an end-to-end
+`cmd/ohgo` test drives the real tool set and scripted model against a fake gry
+process; `TestLiveCompatibility` (opt-in `OHGO_GRY_LIVE=1`) exercises a real gry
+installation and index.
+
+## 13. Status
 
 | Capability | Implemented | Tested | Integrated into a model-facing tool |
 |---|---|---|---|
 | structural intelligence | yes | yes | yes (`structure`, `investigate`) |
+| external structural provider (optional) | yes | yes (adapter, router, end-to-end, opt-in live) | yes (`investigate`, when configured and indexed) |
 | Okapi BM25 retrieval | yes | yes (labeled corpus + invariants) | yes (`retrieve`, `investigate`) |
 | semantic intelligence | yes | yes (fake + real gopls, including the live provider) | yes (`investigate`, gopls when installed) |
 | runtime intelligence | yes | yes (fake adapter + real `dlv` fixture through the orchestrator) | no (authority decision, not a capability gap) |

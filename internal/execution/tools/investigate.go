@@ -134,20 +134,21 @@ func (t *InvestigateTool) Execute(ctx agent.Context, args map[string]any) agent.
 		return requestError(agent.ToolFailureRuntime, "investigation did not run: %v", err)
 	}
 	details := map[string]any{
-		"status":         string(result.Status),
-		"intent":         string(result.Intent),
-		"confidence":     result.Confidence,
-		"coverage":       result.Coverage,
-		"stop_reason":    result.StopReason,
-		"providers":      stepDetails(result.Steps),
-		"skips":          result.Skips,
-		"facts":          factDetails(result.Facts),
-		"contradictions": contradictionDetails(result),
-		"issues":         result.Issues,
-		"records":        result.Records,
-		"lsp_requests":   result.LSPRequests,
-		"dap_requests":   result.DAPRequests,
-		"duration_ms":    time.Since(started).Milliseconds(),
+		"status":            string(result.Status),
+		"intent":            string(result.Intent),
+		"confidence":        result.Confidence,
+		"coverage":          result.Coverage,
+		"stop_reason":       result.StopReason,
+		"providers":         stepDetails(result.Steps),
+		"skips":             result.Skips,
+		"facts":             factDetails(result.Facts),
+		"contradictions":    contradictionDetails(result),
+		"issues":            result.Issues,
+		"records":           result.Records,
+		"lsp_requests":      result.LSPRequests,
+		"dap_requests":      result.DAPRequests,
+		"external_requests": result.ExternalRequests,
+		"duration_ms":       time.Since(started).Milliseconds(),
 	}
 	text := formatInvestigation(result)
 	if len(result.Facts) == 0 {
@@ -164,10 +165,10 @@ func formatInvestigation(result investigate.Result) string {
 		parts := make([]string, 0, len(result.Steps))
 		for _, step := range result.Steps {
 			if step.Failed {
-				parts = append(parts, fmt.Sprintf("%s(failed)", step.Provider))
+				parts = append(parts, fmt.Sprintf("%s(failed)", stepLabel(step)))
 				continue
 			}
-			parts = append(parts, fmt.Sprintf("%s(%s)", step.Provider, step.State))
+			parts = append(parts, fmt.Sprintf("%s(%s)", stepLabel(step), step.State))
 		}
 		builder.WriteString("providers: ")
 		builder.WriteString(strings.Join(parts, ", "))
@@ -206,6 +207,13 @@ func formatInvestigation(result investigate.Result) string {
 	return capInvestigationOutput(builder.String())
 }
 
+func stepLabel(step investigate.StepResult) string {
+	if step.Source != "" {
+		return string(step.Provider) + "/" + step.Source
+	}
+	return string(step.Provider)
+}
+
 func capInvestigationOutput(text string) string {
 	if len(text) <= InvestigateMaxOutput {
 		return text
@@ -224,6 +232,8 @@ func stepDetails(steps []investigate.StepResult) []map[string]any {
 			"provider":    string(step.Provider),
 			"strategy":    step.Strategy,
 			"reason":      step.Reason,
+			"outcome":     string(step.Outcome),
+			"source":      step.Source,
 			"state":       string(step.State),
 			"confidence":  step.Confidence,
 			"coverage":    step.Coverage,

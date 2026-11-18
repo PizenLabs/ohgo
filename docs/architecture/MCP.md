@@ -52,6 +52,17 @@ Classification is configuration metadata. It never grants authority. A tool
 with no explicit entry is `unknown` and fails closed. No model call classifies a
 tool.
 
+## MCP is a transport, not the structural-intelligence boundary
+
+A user may configure gry as an MCP server. That exposes gry's own tool surface
+to the model through the same admission and authority path as any other external
+capability; it is a deliberate user configuration, not Ohgo's structural
+integration. The canonical structural path is the bounded provider in
+`intelligence/gry`, selected by `investigate.StructuralRouter`, which keeps
+routing, output bounds, provenance, fallback, and budget accounting inside Ohgo.
+See [`UNIFIED_INTELLIGENCE.md`](UNIFIED_INTELLIGENCE.md) §12 and
+[`BOUNDARY_SPECIFICATION.md`](BOUNDARY_SPECIFICATION.md).
+
 ## Authority
 
 | Workspace | MCP read | MCP execute | MCP interact/mutate |

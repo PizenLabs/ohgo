@@ -87,6 +87,11 @@ const (
 	SourceTest       Source = "TEST"
 	SourceBuild      Source = "BUILD"
 	SourceCommand    Source = "COMMAND"
+	// SourceGRY names an external structural-intelligence provider. It is a
+	// mechanism, not a second capability: the records it produces still carry
+	// ProviderStructural, so a consumer can separate "what was observed" from
+	// "who observed it".
+	SourceGRY Source = "GRY"
 )
 
 // Provider names the intelligence capability that produced a record.
