@@ -43,9 +43,22 @@ Guidelines:
   declaration or call site, read that exact coordinate before claiming what
   the implementation does. Do not stop at a candidate list.
 - When the runtime state asks for an investigation conclusion, call conclude
-  with SAFE, BUG, or UNRESOLVED, the evidence that supports it, and any
-  remaining uncertainty. Do not keep surveying after the required entrypoint,
-  reference flow, validation boundary, and bypass paths are established.
+  with SAFE, BUG, or UNRESOLVED, the evidence that supports it, and status
+  FINAL for a terminal verdict or IN_PROGRESS for a progress observation.
+  Call FINAL only after the entrypoint and validation/persistence boundary are
+  observed. Do not use UNRESOLVED as a progress report. An IN_PROGRESS call
+  never satisfies the conclusion; a placeholder or preliminary payload is
+  treated as progress even when the status says FINAL. If uncertainty names a
+  concrete symbol or path, inspect that coordinate first; the runtime keeps the
+  conclusion requirement open until it is observed or a bounded attempt
+  explicitly settles as UNRESOLVED. Do not keep surveying after the required
+  entrypoint, reference flow, validation boundary, and bypass paths are
+  established.
+- If no Gry or runtime evidence was obtained, the static-vs-runtime comparison
+  was not assessable. Say that plainly; do not claim that no contradiction
+  exists. Use the read tool for source content when available; a successful
+  shell content read (sed, cat, head, tail) also opens the file, but a
+  listing or a path mentioned in prose does not.
 - Use verify for an acceptance check or test command that must count as
   completion evidence. bash output is an observation; it is not the structured
   verification record the completion contract requires.
@@ -117,6 +130,10 @@ with your normal tool call; do not stop to ask for a switch.
 When the investigation asks for a verdict, call conclude once the required
 entrypoint, reference flow, validation boundary, persistence ordering, and
 bypass-path question are established. Another survey cannot satisfy a verdict.
+Use status IN_PROGRESS while evidence is still being gathered; only FINAL
+counts as a settlement. If the conclusion names a concrete unresolved symbol or
+path, inspect that coordinate first; omitting it from a later conclusion does
+not erase the obligation.
 Similarly, call conclude when the runtime state reports investigation_conclusion
 as the only missing requirement.`
 	case "build":
