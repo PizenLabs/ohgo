@@ -74,6 +74,11 @@ type options struct {
 	reasoning bool
 	// effort is the reasoning effort level.
 	effort string
+	// autoReasoning reports that no human effort override applies, so the
+	// turn's reasoning level is selected from the work's demand. An explicit
+	// --effort, --reasoning, per-role effort, or global reasoning setting is
+	// an override and disables AUTO for this invocation.
+	autoReasoning bool
 }
 
 // authority returns the workspace in force.
@@ -217,6 +222,13 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	if _, level, _ := opts.settings.RoleModel(opts.workspace.String()); level != "" {
 		roleEffort = level
 	}
+	// AUTO applies only when the human has not stated a preference. An
+	// explicit flag, a role profile, an enabled global reasoning setting, or a
+	// global "off" is an override; the work's demand must not silently replace
+	// it.
+	globalOff := strings.EqualFold(strings.TrimSpace(opts.settings.ReasoningEffort), "off")
+	opts.autoReasoning = opts.effort == "" && !opts.reasoning &&
+		roleEffort == "" && !opts.settings.Reasoning && !globalOff
 	if opts.effort == "" {
 		opts.effort = roleEffort
 	}

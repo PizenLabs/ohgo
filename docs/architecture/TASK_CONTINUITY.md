@@ -28,6 +28,7 @@ workspace, completes a task, or promotes model output into verified fact.
 | --- | --- | --- | --- |
 | Task identity and lifecycle | `task.Task` | `progress.json` | `task.md`, TUI task block |
 | Completion contract and pre-run snapshot | `task.Task.Contract` / `.Snapshot` | `progress.json` | `task.md`, TUI task block |
+| Task execution authority (origin + authorized capabilities) | `task.Task.ExecutionContract` | `progress.json` (`executionContract`) | `task.md` Meta, transition policy input |
 | Verified facts, hypotheses, evidence, questions | `task.Task.Context` | `progress.json` (`context`) | `task.ContextFor` |
 | Role-specific execution context | `task.Task.Context.Roles` | `progress.json` (`context.roles`) | `task.ContextFor` |
 | Role handoff and its disposition | `task.Task.Handoff` | `progress.json` (`handoff`) | `task.ContextFor`, TUI transition card |
@@ -87,7 +88,10 @@ caller cannot persist a second, divergent representation.
 constraints, coarse phase, execution guidance (todos), next action, creation and
 update times, the completion contract, and `SharedContext`. It also carries
 `ActiveRole`, the execution role it last ran under; that is continuity metadata,
-never authority, and it is additive to the checkpoint.
+never authority, and it is additive to the checkpoint. `ExecutionContract`
+records the authority the task was created under and the capabilities a human
+authorized: the origin never changes, and the capability flags only widen. It
+is evidence for the transition policy, never a second gate.
 
 `SharedContext` is additive to the checkpoint and carries its own schema
 version. It contains:
@@ -336,11 +340,20 @@ failure leaves the task state and working conversation unchanged.
 
 ## 6. Persistence and compatibility
 
-`ProgressVersion` is **3**. Version 2 added the persisted completion contract,
+`ProgressVersion` is **4**. Version 2 added the persisted completion contract,
 pre-run target snapshot, and review reason; version 3 is a **downgrade
-barrier**, not a shape change. Structured context is an additive,
+barrier**, not a shape change; version 4 adds `executionContract` (origin and
+human-authorized capabilities) and is also a downgrade barrier, because a
+version-3 reader would erase it on its next write and silently turn a
+BUILD-authorized task into an ASK-only one. Structured context is an additive,
 self-versioned subdocument (`ContextVersion = 1`), and `activeRole`, `handoff`,
 `timeline`, and `completion` are additive optional fields.
+
+A version-4 reader derives a conservative contract from the restored role for a
+version-1–3 checkpoint. That migration preserves the authority the task was
+running under, but it cannot recover an origin the file never stored; the
+derived origin is therefore legacy provenance, not a claim about the original
+grant.
 
 The exact read/write boundary:
 
@@ -349,8 +362,10 @@ The exact read/write boundary:
 | New binary reads a version-1 or version-2 checkpoint | Supported. Missing fields are zero values; a completed task with no proof reports `COMPLETED_UNPROVEN`. |
 | New binary reads a version-2 checkpoint that carries timeline and proof | Supported; both are restored. |
 | Version-2 binary reads a version-3 checkpoint | Refused with `ErrCheckpointVersion`. It never reaches a rewrite. |
+| Version-3 binary reads a version-4 checkpoint | Refused with `ErrCheckpointVersion`; it cannot erase the execution contract. |
 | Version-2 binary writes a checkpoint | Only possible for a version-2 file; it cannot load a version-3 file, so it cannot erase the Phase 3 fields. |
 | New binary reads a checkpoint written by a version-2 binary | Supported. If that write happened before Phase 3, the timeline and proof are absent and the completion reports `COMPLETED_UNPROVEN`. |
+| New binary reads a version-1–3 checkpoint | Supported; the execution contract is derived conservatively from the restored role. |
 
 Compatibility is therefore **read-old, refuse-newer**: an older reader may read
 older checkpoints, but it must refuse a newer checkpoint rather than silently
@@ -597,9 +612,13 @@ writer at the turn boundary.
   tool; `workspace.Admit` and the security gate are unchanged.
 - The accepted target is re-derived from policy at decision time and must match
   the pending proposal, so a stale or corrupted prompt cannot move authority
-  somewhere the policy never allowed.
+  somewhere the policy never allowed. The re-derivation uses the task's
+  `ExecutionContract`, not only the live role.
 - The only authority move is `SwitchWorkspace`, which parses the target, updates
   the live gate, the effective role model, and the session snapshot together.
+- Applying an approved handoff or recording an explicit human workspace command
+  widens `Task.ExecutionContract` to the target capability. A narrowing command
+  changes only the live role; the origin and the human's grant remain.
 - Recovery never switches authority. It compares an approved record with the
   authority that was restored: a matching target is recorded as applied, a
   matching source stays unapplied, and any third role is reported as a

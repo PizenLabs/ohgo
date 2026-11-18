@@ -296,7 +296,7 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		// so leaving ASK remains an explicit /ask, /fuzz, or /build command.
 		authority := ""
 		if h.loop != nil {
-			decision := workspace.DecideTransition(h.activeWorkspace(), workspace.AnalyzeRequest(text))
+			decision := workspace.DecideTransition(h.activeWorkspace(), h.activeContract(), workspace.AnalyzeRequest(text))
 			switch {
 			case decision.Automatic():
 				from := h.activeWorkspace()
@@ -348,6 +348,13 @@ func repl(h *harness, out io.Writer, in io.Reader, history []agent.Message) erro
 		if h.newBudget != nil {
 			h.loop.SetBudget(h.newBudget())
 		}
+		// The line-oriented REPL has no durable task controller, so the
+		// request contract is the demand evidence. The setting is applied per
+		// turn after the fresh grant is installed and survives the automatic
+		// BUILD <-> FUZZ handoff below.
+		reasoningEnabled, reasoningLevel := h.reasoningForWork(
+			workspace.BuildIntentContract(text), workspace.AnalyzeRequest(text), nil, request)
+		h.loop.SetReasoning(reasoningEnabled, reasoningLevel)
 		// The plain REPL records the same edit boundary as the full-screen UI:
 		// one explicit turn, one recovery point. The journal is bound to the
 		// session this turn belongs to and cleared afterwards.

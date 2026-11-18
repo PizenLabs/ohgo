@@ -480,3 +480,50 @@ func TestOpenAIConvertsToolResultsToToolRole(t *testing.T) {
 		t.Errorf("assistant tool calls = %+v, want one named read", assistant.ToolCalls)
 	}
 }
+
+// An unknown effort is omitted, not replaced with a provider default the
+// caller never selected. The old fallback to "medium" was an invented level on
+// a model whose ladder the catalog had not published.
+func TestOpenAIReasoningOmitsAnUnspecifiedEffort(t *testing.T) {
+	body := "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	server, captured := sseServer(t, body, 0)
+	provider := &OpenAIProvider{APIKey: "sk-test", BaseURL: server.URL}
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:     testOpenAIModel(),
+		Messages:  []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "hi"}}}},
+		MaxTokens: 1024,
+		Reasoning: true,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if _, err := stream.Result(); err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if strings.Contains(*captured, "reasoning_effort") {
+		t.Fatalf("request invented a reasoning effort:\n%s", *captured)
+	}
+}
+
+// A published native level travels unchanged.
+func TestOpenAIReasoningSendsTheNativeEffort(t *testing.T) {
+	body := "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	server, captured := sseServer(t, body, 0)
+	provider := &OpenAIProvider{APIKey: "sk-test", BaseURL: server.URL}
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:           testOpenAIModel(),
+		Messages:        []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "hi"}}}},
+		MaxTokens:       1024,
+		Reasoning:       true,
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if _, err := stream.Result(); err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if !strings.Contains(*captured, `"reasoning_effort":"high"`) {
+		t.Fatalf("request did not carry the native effort:\n%s", *captured)
+	}
+}

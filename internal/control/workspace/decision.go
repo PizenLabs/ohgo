@@ -17,12 +17,20 @@ import (
 // The two boundaries are not symmetric:
 //
 //	ASK <-> BUILD/FUZZ   human authority boundary, always confirmed
-//	BUILD <-> FUZZ       cooperative execution handoff, automatic
+//	BUILD <-> FUZZ       cooperative execution handoff, automatic within the
+//	                     task's authorized capabilities
 //
 // Capability, not intent-handler equality, decides whether the current
 // workspace can already serve the request. BUILD can read and investigate; it
 // only needs to leave those to ASK/FUZZ when doing so is better for the user's
 // intent, not because the operation is impossible.
+//
+// The task's ExecutionContract is the other half of the decision. The live role
+// says what this phase can do; the contract says what the master task was ever
+// authorized to do. FUZZ -> BUILD is automatic only when the task contract
+// already holds mutation authority. A standalone FUZZ task, or a legacy task
+// with no wider grant, crosses that boundary through the human confirmation
+// path instead of acquiring mutation authority from a request.
 
 // Request capabilities are the contract's capability vocabulary. The control
 // plane reads them from one owner so the transition policy and the capability
@@ -116,7 +124,7 @@ func AnalyzeRequest(text string) Requirement {
 // Only a BUILD <-> FUZZ automatic decision is reported as usable here. A plan
 // artifact under FUZZ would cross ASK, which remains a human decision and is
 // left to the ordinary artifact refusal.
-func ToolCallTransition(active Workspace, tool agent.Tool, args map[string]any) (TransitionDecision, bool) {
+func ToolCallTransition(active Workspace, contract ExecutionContract, tool agent.Tool, args map[string]any) (TransitionDecision, bool) {
 	requirement, ok := ToolCallRequirement(tool.Name(), args)
 	if !ok {
 		if !OperationForTool(tool, args).Mutates() {
@@ -129,7 +137,7 @@ func ToolCallTransition(active Workspace, tool agent.Tool, args map[string]any) 
 			Reason:     "the call changes repository state, which belongs to BUILD",
 		}
 	}
-	decision := DecideTransition(active, requirement)
+	decision := DecideTransition(active, contract, requirement)
 	if !decision.Automatic() {
 		return decision, false
 	}
@@ -236,7 +244,12 @@ func (d TransitionDecision) Proposed() bool {
 // It is pure and deterministic. It never moves authority and never reads or
 // writes runtime state. The accepted/automatic target is applied by the host
 // through the existing switch owner.
-func DecideTransition(active Workspace, requirement Requirement) TransitionDecision {
+//
+// contract is the master task's persistent execution authorization. A zero or
+// invalid contract is read as "no task yet", and the active role is the only
+// authority fact, which keeps a standalone request routable without inventing a
+// broader grant.
+func DecideTransition(active Workspace, contract ExecutionContract, requirement Requirement) TransitionDecision {
 	decision := TransitionDecision{
 		Kind:        DecisionStay,
 		Current:     active,
@@ -247,11 +260,19 @@ func DecideTransition(active Workspace, requirement Requirement) TransitionDecis
 	if !active.Valid() || !validCapability(requirement.Capability) {
 		return decision
 	}
+	contract = contract.Normalize()
+	if !contract.Valid() {
+		contract = ContractFor(active)
+	}
 	target := preferredWorkspace(requirement.Capability)
 	switch {
 	case requirement.Capability == CapabilityMutate && active == Fuzz:
-		return automaticDecision(active, Build, requirement,
-			"The request needs a repository change; BUILD is the only mutation authority.")
+		if contract.Permits(CapabilityMutate) {
+			return automaticDecision(active, Build, requirement,
+				"The task is authorized to change the repository; BUILD is the only mutation authority.")
+		}
+		return confirmDecision(active, Build, requirement,
+			"This task has no repository mutation authority; approve BUILD to make the change.")
 	case requirement.Capability == CapabilityInvestigate && active == Build &&
 		requirement.Strength == StrengthStrong:
 		return automaticDecision(active, Fuzz, requirement,
@@ -268,9 +289,14 @@ func DecideTransition(active Workspace, requirement Requirement) TransitionDecis
 		return decision
 	}
 	// Crossing ASK in either direction is a human authority boundary. A move
-	// between BUILD and FUZZ is safe cooperation within the execution side.
+	// between BUILD and FUZZ stays inside the execution side only when the
+	// task is authorized for the target capability.
 	if active == Ask || target == Ask {
 		return confirmDecision(active, target, requirement, confirmationReason(target))
+	}
+	if !contract.Permits(requirement.Capability) {
+		return confirmDecision(active, target, requirement,
+			"This task has not been authorized for "+requirement.Capability.Label()+"; approve "+target.Label()+" to authorize it.")
 	}
 	return automaticDecision(active, target, requirement, automaticReason(active, target))
 }

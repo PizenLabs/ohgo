@@ -15,8 +15,8 @@ import (
 // proposalPredict uses the real control-plane assessment, so the UI test sees
 // the same request-derived question and options production does. It raises a
 // proposal only where the assessment does.
-func proposalPredict() func(string) (TurnTransition, bool) {
-	return func(text string) (TurnTransition, bool) {
+func proposalPredict() func(string, bool) (TurnTransition, bool) {
+	return func(text string, _ bool) (TurnTransition, bool) {
 		proposal, ok := workspace.AssessProposal(workspace.Build, text, workspace.ProposalFacts{})
 		if !ok {
 			return TurnTransition{}, false

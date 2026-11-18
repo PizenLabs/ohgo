@@ -221,6 +221,12 @@ execution`:
   `harness.SwitchWorkspace` remains the single authority move. `task.Handoff`
   records both human and control-plane transitions and their carried references
   in `progress.json`; it is recovery metadata, never a capability.
+- The master task's persistent authority is `workspace.ExecutionContract`:
+  an immutable origin plus the execution/mutation capabilities a human has
+  authorized. It is stored in `progress.json` and consulted by
+  `DecideTransition`; it is never an admission path. A BUILD-authorized task
+  may use BUILD ↔ FUZZ freely, a standalone FUZZ task must confirm before
+  mutation, and leaving ASK is always a human decision.
 
 ### Intent-aware turns
 
@@ -239,11 +245,15 @@ and any subagent read at call time:
   offers a confirmed ASK switch; a strong investigation moves to FUZZ
   automatically.
 - FUZZ can READ, EXECUTE, and INVESTIGATE. A repository-change request moves to
-  BUILD automatically. Mutation is still denied inside FUZZ by the per-call
-  gate.
+  BUILD automatically only when the task's persistent execution contract already
+  authorizes mutation; a standalone FUZZ task asks first. Mutation is still
+  denied inside FUZZ by the per-call gate.
 - Every automatic transition is limited to BUILD ↔ FUZZ. Crossing ASK is always
   a human decision. Removing or changing the mode prompt does not widen
   authority — the gate denies the call regardless.
+- The task's origin and authorized capabilities are persisted with the task and
+  survive role changes and resumes. The current role is never used as a
+  substitute for that history.
 - A staged request ("investigate first; if confirmed, implement") starts in
   investigation. Its conditional mutation is retained for the later branch but
   does not make the current turn a mutation objective.
@@ -395,6 +405,48 @@ request with smaller, more useful context and a following request whose uncached
 input is only the new bytes (observed: 30,518 input → 104 input with 31,296
 cached tokens, ~99.7% reuse).
 
+### Reasoning demand
+
+Reasoning is a property of the work, not the role. Two requests under the same
+authority can need radically different deliberation: "rename this variable"
+needs none, while "refactor the task lifecycle without breaking continuity"
+needs a deep plan. A fixed per-role effort makes ASK permanently shallow and
+BUILD permanently expensive.
+
+`cognition.AssessReasoningDemand` derives one of three internal levels —
+`MINIMAL`, `MODERATE`, `HIGH` — from the completion contract and task state:
+multiple targets, a named verification, a staged objective, investigation
+capability, grounding breadth, material ambiguity, long multi-clause objectives,
+and open todos/hypotheses/questions. These levels are **not** provider values.
+
+`cognition.ClampReasoningDemand` then lowers the level to what the run can
+afford: one remaining turn or model call is minimal; three or fewer cap high at
+moderate; a context near its window drops one level, and 90% or more drops to
+minimal. A high demand never implies unlimited reasoning.
+
+`cognition.ReasoningSetting` maps the demand onto the model's own facts:
+
+```text
+!ai.Model.Reasoning                 omit
+MINIMAL + ReasoningDisable          send the native disable value
+MINIMAL + published ladder          lowest rung
+MODERATE + published ladder         middle rung
+HIGH + published ladder             highest rung
+empty/unknown ladder                omit; never invent a level
+```
+
+The mapping is deterministic and uses only the catalog facts already carried on
+`ai.Model` (`ReasoningEfforts`, `ReasoningDisable`, `ReasoningMandatory`). The
+composition root applies the result with `Loop.SetReasoning` before the first
+provider request. An automatic BUILD ↔ FUZZ handoff **preserves** the setting:
+changing the role must not silently change how deeply the model thinks. An
+explicit `--effort`, a per-role effort, or an enabled global reasoning policy is
+a human override and disables AUTO for that role.
+
+A transport must omit an empty effort rather than manufacture `medium`. A model
+whose reasoning is mandatory is never reported as disabled; omitting the
+configuration is the truthful representation.
+
 ### Capability preflight
 
 Before a turn is admitted, the control plane compares what the objective needs
@@ -440,6 +492,16 @@ The rule is:
 
 > Provider-specific model output is normalized into canonical `ai` events
 > before it enters agent execution or rendering.
+
+A transport failure that produced no model output is retried before that
+normalization boundary. `agent.RetryPolicy` is the single policy: transient
+statuses (408, 425, 429, 5xx) and network timeouts are retried with a bounded,
+deadline-aware exponential backoff, honoring a provider's `Retry-After` up to
+the cap. A request the provider rejected on its merits (400/401/403/404, a
+context overflow, a cancellation) is never retried, and a retry re-issues the
+identical request before any assistant message or tool call exists, so it
+cannot duplicate a tool effect or spend an additional turn. Exhausting the
+policy reports the provider failure; it never becomes completion.
 
 Native tool calls and serialized tool calls inside assistant text are two
 transport representations of the same logical intent. Both converge on

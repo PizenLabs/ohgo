@@ -13,6 +13,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/config"
+	"github.com/PizenLabs/ohgo/internal/continuity/task"
 	"github.com/PizenLabs/ohgo/internal/control/budget"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
@@ -92,7 +93,12 @@ func runOnce(cmd *cobra.Command, text string) error {
 	// turn. BUILD <-> FUZZ moves automatically; crossing ASK is a human
 	// decision, and a one-shot command has no decision surface, so it reports
 	// the workspace the request needs instead of silently running elsewhere.
-	decision := workspace.DecideTransition(opts.authority(), workspace.AnalyzeRequest(text))
+	// The run contract is captured before any automatic phase change. The role
+	// may move BUILD -> FUZZ for investigation, but the authority the run was
+	// started under does not move with it: the later write still needs the
+	// mutation grant the caller gave this run.
+	contract := workspace.ContractFor(opts.authority())
+	decision := workspace.DecideTransition(opts.authority(), contract, workspace.AnalyzeRequest(text))
 	switch {
 	case decision.Automatic():
 		opts.setAuthority(decision.Target)
@@ -141,6 +147,18 @@ func runOnce(cmd *cobra.Command, text string) error {
 		return err
 	}
 	defer tools.StopToolProcesses(loop.Tools())
+	// One-shot turns have no durable task controller, so the request contract
+	// and the run's budget are the demand evidence. The setting is applied
+	// before the first provider request; automatic tool-boundary handoffs keep
+	// it, because reasoning is independent of role.
+	reasoningHost := &harness{
+		loop: loop, settings: &opts.settings, model: opts.model,
+		autoReasoning: opts.autoReasoning, workspace: opts.authority().Label(),
+	}
+	reasoningRequest := append(append([]agent.Message(nil), history...), agent.UserMessage{Text: text})
+	reasoningEnabled, reasoningLevel := reasoningHost.reasoningForWork(
+		workspace.BuildIntentContract(text), workspace.AnalyzeRequest(text), nil, reasoningRequest)
+	loop.SetReasoning(reasoningEnabled, reasoningLevel)
 	// The one-shot path uses the same tool-boundary policy as the interactive
 	// hosts: a staged task can move between BUILD and FUZZ when the model's own
 	// action requires the other capability. The target role's model is
@@ -149,7 +167,7 @@ func runOnce(cmd *cobra.Command, text string) error {
 	loop.SetWorkspaceHandoff(func(_ ai.ToolCall, tool agent.Tool, args map[string]any) bool {
 		handoffMu.Lock()
 		defer handoffMu.Unlock()
-		decision, ok := automaticToolHandoff(opts.authority(), tool, args)
+		decision, ok := automaticToolHandoff(opts.authority(), contract, tool, args)
 		if !ok {
 			return false
 		}
@@ -386,6 +404,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 		held.mcp = opts.mcpRuntime
 		held.usage.SetCost(opts.model.Cost)
 		held.workspace = opts.authority().Label()
+		held.autoReasoning = opts.autoReasoning
 		held.gate = opts.gate
 		held.security = opts.security
 		held.projectID = opts.projectID
@@ -407,11 +426,34 @@ func runSession(cmd *cobra.Command, args []string) error {
 			if role == "" {
 				role = strings.ToLower(opts.authority().String())
 			}
+			if held.autoReasoning {
+				if explicit := held.roleEffortFor(role); explicit != "" {
+					enabled, level := held.reasoningFor(explicit)
+					if !enabled {
+						return ""
+					}
+					return level
+				}
+				return held.lastReasoningEffort
+			}
 			enabled, level := held.reasoningFor(held.roleEffortFor(role))
 			if !enabled {
 				return ""
 			}
 			return level
+		})
+		// Reasoning is selected from the work at each turn boundary, after the
+		// task contract (and any approved objective) is resolved. The host owns
+		// the policy; the program only applies the setting to the loop.
+		program.SetReasoningSelector(func(intent workspace.IntentContract, text string, request []agent.Message) (bool, string) {
+			var current *task.Task
+			if controller != nil {
+				if open, ok := controller.Current(); ok {
+					opened := open
+					current = &opened
+				}
+			}
+			return held.reasoningForWork(intent, workspace.AnalyzeRequest(text), current, request)
 		})
 
 		// A resumed session replays its transcript, so the UI continues rather
@@ -632,6 +674,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	defer func() { _ = plain.rec.Close() }()
 	plain.usage.SetCost(opts.model.Cost)
 	plain.workspace = opts.authority().Label()
+	plain.autoReasoning = opts.autoReasoning
 	plain.gate = opts.gate
 	plain.security = opts.security
 	plain.projectID = opts.projectID
@@ -653,7 +696,7 @@ func runSession(cmd *cobra.Command, args []string) error {
 	plain.loop.SetWorkspaceHandoff(func(_ ai.ToolCall, tool agent.Tool, args map[string]any) bool {
 		replHandoffMu.Lock()
 		defer replHandoffMu.Unlock()
-		decision, ok := automaticToolHandoff(plain.activeWorkspace(), tool, args)
+		decision, ok := automaticToolHandoff(plain.activeWorkspace(), plain.activeContract(), tool, args)
 		if !ok {
 			return false
 		}

@@ -144,11 +144,8 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (*Stream, erro
 	if req.Temperature != nil {
 		body.Temperature = req.Temperature
 	}
-	if req.Reasoning && req.Model.Reasoning {
+	if req.Reasoning && req.Model.Reasoning && req.ReasoningEffort != "" {
 		body.ReasoningEffort = req.ReasoningEffort
-		if body.ReasoningEffort == "" {
-			body.ReasoningEffort = "medium"
-		}
 	}
 
 	messages, err := toOpenAIMessages(req.Messages, req.System)

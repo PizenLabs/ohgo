@@ -27,7 +27,7 @@ func TestAmbiguousWorkspaceChoiceRunsOnlyAfterHumanSelection(t *testing.T) {
 			prepared++
 			return TurnAuthority{Active: current, Blocked: true, Reason: "workspace choice was not applied"}
 		},
-		Predict: func(string) (TurnTransition, bool) {
+		Predict: func(string, bool) (TurnTransition, bool) {
 			return TurnTransition{Kind: TransitionKindAmbiguous, Reason: "ambiguous intent"}, true
 		},
 	})

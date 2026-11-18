@@ -16,7 +16,7 @@ func TestTurnTransitionPredictsWithoutMovingAuthority(t *testing.T) {
 	gate := newAuthorityGate(workspace.Build)
 	h := routedHarness(gate, nil, "BUILD")
 
-	proposal, ok := turnTransition(h, "why does this function return nil here?")
+	proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), "why does this function return nil here?")
 	if !ok {
 		t.Fatal("a strong informational request in BUILD produced no proposal")
 	}
@@ -60,7 +60,7 @@ func TestTurnTransitionMatrixMatchesThePolicy(t *testing.T) {
 		t.Run(tc.active+"_"+tc.text, func(t *testing.T) {
 			gate := newAuthorityGate(workspace.Workspace(tc.active))
 			h := routedHarness(gate, nil, tc.active)
-			proposal, ok := turnTransition(h, tc.text)
+			proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), tc.text)
 			if ok != tc.want {
 				t.Fatalf("turnTransition(%s, %q) = %v, want %v", tc.active, tc.text, ok, tc.want)
 			}
@@ -91,7 +91,7 @@ func TestWideningFromAskIsOnlyAHandoff(t *testing.T) {
 	gate := newAuthorityGate(workspace.Ask)
 	h := routedHarness(gate, nil, "ASK")
 	for _, text := range []string{"implement the fix", "fix the bug", "run the tests", "reproduce the failure"} {
-		proposal, ok := turnTransition(h, text)
+		proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), text)
 		if !ok {
 			t.Errorf("ASK produced no boundary decision for %q", text)
 			continue
@@ -120,7 +120,7 @@ func TestAcceptedTransitionUsesTheAuthoritativeSwitch(t *testing.T) {
 	gate := newAuthorityGate(workspace.Build)
 	h := routedHarness(gate, nil, "BUILD")
 
-	proposal, ok := turnTransition(h, "why does this work?")
+	proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), "why does this work?")
 	if !ok {
 		t.Fatal("no proposal")
 	}
@@ -167,7 +167,7 @@ func TestRejectedTransitionLeavesAuthorityUntouched(t *testing.T) {
 	gate := newAuthorityGate(workspace.Build)
 	h := routedHarness(gate, nil, "BUILD")
 
-	if _, ok := turnTransition(h, "why does this work?"); !ok {
+	if _, ok := turnTransition(h, workspace.ContractFor(workspace.Build), "why does this work?"); !ok {
 		t.Fatal("expected a proposal")
 	}
 	// The user rejects: nothing calls SwitchWorkspace.
@@ -184,7 +184,7 @@ func TestRejectedTransitionLeavesAuthorityUntouched(t *testing.T) {
 func TestTurnTransitionCarriesNoProbability(t *testing.T) {
 	gate := newAuthorityGate(workspace.Build)
 	h := routedHarness(gate, nil, "BUILD")
-	proposal, ok := turnTransition(h, "why does this work?")
+	proposal, ok := turnTransition(h, workspace.ContractFor(workspace.Build), "why does this work?")
 	if !ok {
 		t.Fatal("expected a proposal")
 	}

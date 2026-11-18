@@ -41,36 +41,40 @@ func TestDecideTransitionMatrix(t *testing.T) {
 	cases := []struct {
 		name         string
 		active       Workspace
+		origin       Workspace
 		text         string
 		kind         DecisionKind
 		target       Workspace
 		automatic    bool
 		confirmation bool
 	}{
-		{"ask read", Ask, "Explain the checkout flow.", DecisionStay, Ask, false, false},
-		{"ask greeting", Ask, "hello", DecisionStay, Ask, false, false},
-		{"ask execute", Ask, "Run the tests.", DecisionConfirm, Build, false, true},
-		{"ask mutation", Ask, "Fix the checkout bug.", DecisionConfirm, Build, false, true},
-		{"ask investigate", Ask, "Reproduce the checkout failure.", DecisionConfirm, Fuzz, false, true},
-		{"ask staged", Ask, stagedWorkflowPrompt, DecisionConfirm, Fuzz, false, true},
+		{"ask read", Ask, Ask, "Explain the checkout flow.", DecisionStay, Ask, false, false},
+		{"ask greeting", Ask, Ask, "hello", DecisionStay, Ask, false, false},
+		{"ask execute", Ask, Ask, "Run the tests.", DecisionConfirm, Build, false, true},
+		{"ask mutation", Ask, Ask, "Fix the checkout bug.", DecisionConfirm, Build, false, true},
+		{"ask investigate", Ask, Ask, "Reproduce the checkout failure.", DecisionConfirm, Fuzz, false, true},
+		{"ask staged", Ask, Ask, stagedWorkflowPrompt, DecisionConfirm, Fuzz, false, true},
 
-		{"build mutation", Build, "Fix the checkout bug.", DecisionStay, Build, false, false},
-		{"build execute", Build, "Run the tests.", DecisionStay, Build, false, false},
-		{"build moderate read", Build, "Check this project.", DecisionStay, Build, false, false},
-		{"build strong question", Build, "Why does this work?", DecisionConfirm, Ask, false, true},
-		{"build investigate", Build, "Reproduce the failure under load.", DecisionAutomatic, Fuzz, true, false},
-		{"build staged", Build, stagedWorkflowPrompt, DecisionAutomatic, Fuzz, true, false},
+		{"build mutation", Build, Build, "Fix the checkout bug.", DecisionStay, Build, false, false},
+		{"build execute", Build, Build, "Run the tests.", DecisionStay, Build, false, false},
+		{"build moderate read", Build, Build, "Check this project.", DecisionStay, Build, false, false},
+		{"build strong question", Build, Build, "Why does this work?", DecisionConfirm, Ask, false, true},
+		{"build investigate", Build, Build, "Reproduce the failure under load.", DecisionAutomatic, Fuzz, true, false},
+		{"build staged", Build, Build, stagedWorkflowPrompt, DecisionAutomatic, Fuzz, true, false},
 
-		{"fuzz investigate", Fuzz, "Reproduce the failure.", DecisionStay, Fuzz, false, false},
-		{"fuzz execute", Fuzz, "Run the tests.", DecisionStay, Fuzz, false, false},
-		{"fuzz moderate read", Fuzz, "Check this project.", DecisionStay, Fuzz, false, false},
-		{"fuzz strong question", Fuzz, "Why does this work?", DecisionConfirm, Ask, false, true},
-		{"fuzz staged", Fuzz, stagedWorkflowPrompt, DecisionStay, Fuzz, false, false},
-		{"fuzz mutation", Fuzz, "Fix the checkout bug.", DecisionAutomatic, Build, true, false},
+		{"fuzz investigate", Fuzz, Fuzz, "Reproduce the failure.", DecisionStay, Fuzz, false, false},
+		{"fuzz execute", Fuzz, Fuzz, "Run the tests.", DecisionStay, Fuzz, false, false},
+		{"fuzz moderate read", Fuzz, Fuzz, "Check this project.", DecisionStay, Fuzz, false, false},
+		{"fuzz strong question", Fuzz, Fuzz, "Why does this work?", DecisionConfirm, Ask, false, true},
+		{"fuzz staged", Fuzz, Fuzz, stagedWorkflowPrompt, DecisionStay, Fuzz, false, false},
+		// A task authorized for mutation may hand off automatically. A
+		// standalone FUZZ task has no such authority and must ask.
+		{"fuzz mutation authorized", Fuzz, Build, "Fix the checkout bug.", DecisionAutomatic, Build, true, false},
+		{"fuzz mutation unauthorized", Fuzz, Fuzz, "Fix the checkout bug.", DecisionConfirm, Build, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			decision := DecideTransition(tc.active, AnalyzeRequest(tc.text))
+			decision := DecideTransition(tc.active, ContractFor(tc.origin), AnalyzeRequest(tc.text))
 			if decision.Kind != tc.kind || decision.Target != tc.target {
 				t.Fatalf("decision = %s %s -> %s, want %s %s -> %s",
 					decision.Kind, decision.Current, decision.Target, tc.kind, tc.active, tc.target)
@@ -152,7 +156,13 @@ func TestToolCallTransitionRoutesCapabilityBoundary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			decision, automatic := ToolCallTransition(tc.active, tc.tool, tc.args)
+			origin := tc.active
+			if tc.active == Fuzz {
+				// A FUZZ phase of a BUILD-authorized master task: this is the
+				// internal execution loop the policy must keep automatic.
+				origin = Build
+			}
+			decision, automatic := ToolCallTransition(tc.active, ContractFor(origin), tc.tool, tc.args)
 			if automatic != tc.automatic {
 				t.Fatalf("automatic = %v, want %v (decision=%+v)", automatic, tc.automatic, decision)
 			}
@@ -171,7 +181,7 @@ func TestToolCallTransitionRoutesCapabilityBoundary(t *testing.T) {
 // letting the artifact tool refuse the call.
 func TestToolCallTransitionMovesBuildToFuzzForAFindingArtifact(t *testing.T) {
 	artifact := fakeTool{name: "artifact", tier: agent.TierRead}
-	decision, ok := ToolCallTransition(Build, artifact, map[string]any{
+	decision, ok := ToolCallTransition(Build, ContractFor(Build), artifact, map[string]any{
 		"kind": "finding", "target": "order/checkout",
 		"reproduction": "POST /api/v1/orders", "evidence": "404",
 	})
@@ -190,7 +200,7 @@ func TestToolCallTransitionKeepsReadOnlyShellInFuzz(t *testing.T) {
 		classes:  []agent.ActionClass{agent.ActionExecute, agent.ActionMutate},
 		cap:      agent.TierExec,
 	}
-	decision, automatic := ToolCallTransition(Fuzz, shell, map[string]any{"command": "ls /Applications"})
+	decision, automatic := ToolCallTransition(Fuzz, ContractFor(Build), shell, map[string]any{"command": "ls /Applications"})
 	if automatic {
 		t.Fatalf("read-only shell under FUZZ moved to %s: %+v", decision.Target, decision)
 	}
@@ -200,7 +210,7 @@ func TestToolCallTransitionKeepsReadOnlyShellInFuzz(t *testing.T) {
 func TestTransitionDecisionIsDataOnly(t *testing.T) {
 	for _, active := range All() {
 		before := active
-		decision := DecideTransition(active, AnalyzeRequest("reproduce the failure"))
+		decision := DecideTransition(active, ContractFor(active), AnalyzeRequest("reproduce the failure"))
 		if active != before {
 			t.Fatal("the decision mutated its input workspace")
 		}

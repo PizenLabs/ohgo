@@ -204,14 +204,14 @@ func TestDeclinedAskHandoffLeavesAuthorityAndTaskUnchanged(t *testing.T) {
 // the policy stays in workspace, and only the projection is local. It covers
 // both directions, so a narrowing proposal and a widening handoff reach the
 // same decision surface.
-func predictTransition(active func() workspace.Workspace) func(string) (TurnTransition, bool) {
-	return func(text string) (TurnTransition, bool) {
+func predictTransition(active func() workspace.Workspace) func(string, bool) (TurnTransition, bool) {
+	return func(text string, _ bool) (TurnTransition, bool) {
 		current := active()
 		if !current.Valid() {
 			return TurnTransition{}, false
 		}
 		requirement := workspace.AnalyzeRequest(text)
-		decision := workspace.DecideTransition(current, requirement)
+		decision := workspace.DecideTransition(current, workspace.ContractFor(workspace.Build), requirement)
 		if !decision.Proposed() {
 			return TurnTransition{}, false
 		}

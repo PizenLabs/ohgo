@@ -135,13 +135,13 @@ func TestAutomaticToolHandoffFollowsTheCapabilityBoundary(t *testing.T) {
 		"kind": "finding", "target": "order/checkout",
 		"reproduction": "POST /api/v1/orders", "evidence": "404",
 	}}
-	decision, ok := automaticToolHandoff(workspace.Build, artifact, finding.Arguments)
+	decision, ok := automaticToolHandoff(workspace.Build, workspace.ContractFor(workspace.Build), artifact, finding.Arguments)
 	if !ok || !decision.Automatic() || decision.Target != workspace.Fuzz {
 		t.Fatalf("finding under BUILD = %+v automatic=%v, want an automatic FUZZ move", decision, ok)
 	}
 
 	writeCall := ai.ToolCall{Name: "write", Arguments: map[string]any{"path": "x.go", "content": "package x"}}
-	decision, ok = automaticToolHandoff(workspace.Fuzz, write, writeCall.Arguments)
+	decision, ok = automaticToolHandoff(workspace.Fuzz, workspace.ContractFor(workspace.Build), write, writeCall.Arguments)
 	if !ok || !decision.Automatic() || decision.Target != workspace.Build {
 		t.Fatalf("write under FUZZ = %+v automatic=%v, want an automatic BUILD move", decision, ok)
 	}
@@ -149,14 +149,14 @@ func TestAutomaticToolHandoffFollowsTheCapabilityBoundary(t *testing.T) {
 	// Bash declares mutation as a possible action, but a read-only command is
 	// execution, not a repository change. It must not be forwarded to BUILD.
 	inspect := ai.ToolCall{Name: "bash", Arguments: map[string]any{"command": "ls /Applications"}}
-	if decision, ok := automaticToolHandoff(workspace.Fuzz, bash, inspect.Arguments); ok {
+	if decision, ok := automaticToolHandoff(workspace.Fuzz, workspace.ContractFor(workspace.Build), bash, inspect.Arguments); ok {
 		t.Fatalf("a read-only shell command opened a workspace move: %+v", decision)
 	}
 
 	// A command that provably writes the repository is the invocation that
 	// actually needs the mutation authority.
 	mutate := ai.ToolCall{Name: "bash", Arguments: map[string]any{"command": "touch x"}}
-	decision, ok = automaticToolHandoff(workspace.Fuzz, bash, mutate.Arguments)
+	decision, ok = automaticToolHandoff(workspace.Fuzz, workspace.ContractFor(workspace.Build), bash, mutate.Arguments)
 	if !ok || !decision.Automatic() || decision.Target != workspace.Build {
 		t.Fatalf("mutating shell under FUZZ = %+v automatic=%v, want an automatic BUILD move", decision, ok)
 	}
@@ -164,13 +164,13 @@ func TestAutomaticToolHandoffFollowsTheCapabilityBoundary(t *testing.T) {
 	// Crossing ASK is a human decision, so the adapter must not report it as
 	// an automatic move the caller could apply.
 	plan := ai.ToolCall{Name: "artifact", Arguments: map[string]any{"kind": "plan", "target": "order/checkout"}}
-	if decision, ok := automaticToolHandoff(workspace.Fuzz, artifact, plan.Arguments); ok {
+	if decision, ok := automaticToolHandoff(workspace.Fuzz, workspace.ContractFor(workspace.Build), artifact, plan.Arguments); ok {
 		t.Fatalf("plan under FUZZ was treated as an automatic move: %+v", decision)
 	}
 
 	// A request-independent read stays where it is.
 	read := ai.ToolCall{Name: "read", Arguments: map[string]any{"path": "x.go"}}
-	if decision, ok := automaticToolHandoff(workspace.Build, tools.NewReadTool(root), read.Arguments); ok {
+	if decision, ok := automaticToolHandoff(workspace.Build, workspace.ContractFor(workspace.Build), tools.NewReadTool(root), read.Arguments); ok {
 		t.Fatalf("a read opened a workspace move: %+v", decision)
 	}
 }

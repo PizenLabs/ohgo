@@ -324,3 +324,40 @@ func TestAnthropicSendsAuthAndCacheControl(t *testing.T) {
 		t.Errorf("the last stable message has no breakpoint: %+v", body.Messages[1])
 	}
 }
+
+// Anthropic needs a token budget, so there is nothing safe to send when the
+// caller has no published effort. Omitting the thinking block is truthful;
+// inventing the medium budget was not.
+func TestAnthropicReasoningOmitsAnUnspecifiedEffort(t *testing.T) {
+	server, captured := sseServer(t, anthropicTextStream, 0)
+	provider := &AnthropicProvider{APIKey: "test-key", BaseURL: server.URL, Version: AnthropicVersion}
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:     testModel(),
+		Messages:  []Message{UserMessage{Content: []ContentBlock{TextContent{Text: "hi"}}}},
+		MaxTokens: 1024,
+		Reasoning: true,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if _, err := stream.Result(); err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if strings.Contains(*captured, `"thinking"`) {
+		t.Fatalf("request invented a reasoning budget:\n%s", *captured)
+	}
+}
+
+// A native level maps to the budget scale without an unknown effort falling
+// back to a fabricated value.
+func TestAnthropicReasoningMapsAKnownEffort(t *testing.T) {
+	if budget := thinkingBudgetForEffort("none", 8000); budget != 0 {
+		t.Fatalf("unknown effort budget = %d, want no thinking block", budget)
+	}
+	if budget := thinkingBudgetForEffort("high", 8000); budget <= 0 || budget >= 8000 {
+		t.Fatalf("high effort budget = %d, want a positive budget below max_tokens", budget)
+	}
+	if budget := thinkingBudgetForEffort("high", 1000); budget != 0 {
+		t.Fatalf("tiny completion budget = %d, want thinking omitted", budget)
+	}
+}

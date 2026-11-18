@@ -126,9 +126,9 @@ func newReadinessRuntimeWithTools(t *testing.T, root string, initial workspace.W
 				Reason:  route.Message(),
 			}
 		},
-		Predict: func(text string) (TurnTransition, bool) {
+		Predict: func(text string, _ bool) (TurnTransition, bool) {
 			requirement := workspace.AnalyzeRequest(text)
-			decision := workspace.DecideTransition(role, requirement)
+			decision := workspace.DecideTransition(role, workspace.ContractFor(workspace.Build), requirement)
 			if !decision.Proposed() {
 				return TurnTransition{}, false
 			}
@@ -179,7 +179,7 @@ func (r *readinessRuntime) enableToolHandoff() {
 	handoff := func(_ ai.ToolCall, tool agent.Tool, args map[string]any) bool {
 		mu.Lock()
 		defer mu.Unlock()
-		decision, ok := workspace.ToolCallTransition(*r.role, tool, args)
+		decision, ok := workspace.ToolCallTransition(*r.role, workspace.ContractFor(workspace.Build), tool, args)
 		if !ok {
 			return false
 		}
@@ -251,15 +251,15 @@ func readinessAnswer(text string) ai.AssistantMessage {
 // RC-C06 characterizes the capability policy: ASK must ask before any work it
 // cannot perform, and every such decision is a human-boundary confirmation.
 func TestReadinessC06WideningPolicyShape(t *testing.T) {
-	mutation := workspace.DecideTransition(workspace.Ask, workspace.AnalyzeRequest("Fix GrepTool in tools/grep.go and run go test ./tools"))
+	mutation := workspace.DecideTransition(workspace.Ask, workspace.ContractFor(workspace.Build), workspace.AnalyzeRequest("Fix GrepTool in tools/grep.go and run go test ./tools"))
 	if !mutation.NeedsConfirmation() || mutation.Target != workspace.Build {
 		t.Fatalf("RC-C06: ASK + mutation = %+v, want confirmed BUILD", mutation)
 	}
-	mixed := workspace.DecideTransition(workspace.Ask, workspace.AnalyzeRequest("investigate the flaky test in tools/grep.go then fix it and run go test ./tools"))
+	mixed := workspace.DecideTransition(workspace.Ask, workspace.ContractFor(workspace.Build), workspace.AnalyzeRequest("investigate the flaky test in tools/grep.go then fix it and run go test ./tools"))
 	if !mixed.NeedsConfirmation() || mixed.Target != workspace.Fuzz {
 		t.Fatalf("RC-C06: ASK + mixed investigation = %+v, want the investigation phase under FUZZ", mixed)
 	}
-	pure := workspace.DecideTransition(workspace.Ask, workspace.AnalyzeRequest("investigate why tools/grep.go is slow"))
+	pure := workspace.DecideTransition(workspace.Ask, workspace.ContractFor(workspace.Build), workspace.AnalyzeRequest("investigate why tools/grep.go is slow"))
 	if !pure.NeedsConfirmation() || pure.Target != workspace.Fuzz {
 		t.Fatalf("RC-C06: ASK + investigate = %+v, want FUZZ", pure)
 	}
@@ -278,9 +278,9 @@ func TestReadinessC07FailedSwitchDoesNotReportApplied(t *testing.T) {
 		Switch: func(string) error {
 			return os.ErrPermission
 		},
-		Predict: func(text string) (TurnTransition, bool) {
+		Predict: func(text string, _ bool) (TurnTransition, bool) {
 			requirement := workspace.AnalyzeRequest(text)
-			decision := workspace.DecideTransition(role, requirement)
+			decision := workspace.DecideTransition(role, workspace.ContractFor(workspace.Build), requirement)
 			if !decision.Proposed() {
 				return TurnTransition{}, false
 			}

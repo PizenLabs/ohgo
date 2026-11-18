@@ -35,12 +35,19 @@ import (
 // version-2 binary refuses a version-3 checkpoint with ErrCheckpointVersion
 // before it can rewrite it. Newer binaries keep reading 1 and 2.
 //
+// Version 4 carries the task's persistent ExecutionContract. A version-3 reader
+// would ignore and then erase the origin and the human-authorized capability
+// flags on its next write, silently turning a BUILD task into an ASK-only one,
+// so the downgrade barrier is required rather than optional. A version-4 reader
+// derives a conservative contract from the restored role for older
+// checkpoints; no origin can be recovered from a file that never stored one.
+//
 // Phase 9's evidenceState and audit fields are additive and optional. Phase 1's
 // structured context is an additive, self-versioned subdocument
 // (ContextVersion), and Phase 2's handoff record is additive in the same way.
 // None of them change the meaning of an existing field, so none of them move
 // the version on their own.
-const ProgressVersion = 3
+const ProgressVersion = 4
 
 // File names inside the project-local .ohgo directory.
 const (
@@ -109,6 +116,12 @@ type Progress struct {
 	// objective without inferring one from prompt wording. It is never
 	// authority.
 	ActiveRole workspace.Workspace `json:"activeRole,omitempty"`
+	// ExecutionContract is the persistent authority origin and the capabilities
+	// a human has authorized. It is additive, optional, and never the live gate.
+	// A checkpoint written before it existed loads a conservative contract from
+	// the restored role; no origin can be recovered from a file that never
+	// stored one.
+	ExecutionContract workspace.ExecutionContract `json:"executionContract,omitempty"`
 	// Handoff is the task's current cross-role transition record. It is
 	// additive and optional; a checkpoint written before it existed loads with
 	// no transition. It is recovery metadata, never authority.
@@ -152,6 +165,9 @@ func ProgressFrom(t Task) Progress {
 	// Persist the explicit role. A checkpoint written before the field existed
 	// migrates from its role contexts on the next save.
 	p.ActiveRole = t.LastRole()
+	// The execution contract is authoritative task state, like the contract and
+	// handoff: derived from the task, never from a caller-built Progress.
+	p.ExecutionContract = t.ExecutionContract.Normalize()
 	if t.Handoff != nil {
 		cloned := t.Handoff.Clone()
 		p.Handoff = &cloned
@@ -306,6 +322,10 @@ func (s *Store) SaveCheckpoint(t Task, progress Progress) error {
 		progress.Completion = nil
 	}
 	progress.ActiveRole = t.LastRole()
+	// The task owns the execution contract, like its completion contract and
+	// handoff: a caller-built checkpoint cannot persist a divergent authority
+	// origin or a capability the human never granted.
+	progress.ExecutionContract = t.ExecutionContract.Normalize()
 	if !progress.CheckpointAt.IsZero() && t.UpdatedAt.After(progress.CheckpointAt) {
 		progress.CheckpointAt = t.UpdatedAt
 	}
@@ -433,6 +453,14 @@ func (s *Store) Load() (Snapshot, error) {
 			// A checkpoint written before the explicit field existed derives
 			// the same value from its role contexts.
 			t.ActiveRole = t.Context.LastRole()
+		}
+		t.ExecutionContract = progress.ExecutionContract.Normalize()
+		if !t.ExecutionContract.Valid() {
+			// A checkpoint written before the contract existed has no origin to
+			// recover. Deriving from the last role is the conservative
+			// migration path: it preserves the authority the task was actually
+			// running under instead of inventing a stronger or weaker history.
+			t.ExecutionContract = workspace.ContractFor(t.LastRole())
 		}
 		if progress.Handoff != nil {
 			// The handoff is checked against the real task, not the probe the

@@ -17,7 +17,7 @@ func TestTurnTransitionDoesNotInterruptForCapabilityCompatibleRequests(t *testin
 		"take a look at this",
 		"fix it and then try to break it again",
 	} {
-		if transition, ok := turnTransition(held, request); ok && transition.Automatic {
+		if transition, ok := turnTransition(held, workspace.ContractFor(workspace.Build), request); ok && transition.Automatic {
 			t.Errorf("turnTransition(%q) applied an automatic switch: %+v", request, transition)
 		}
 	}
@@ -30,13 +30,13 @@ func TestTurnTransitionRoutesStagedConditionalByItsCurrentPhase(t *testing.T) {
 	const request = "Investigate the project first. If you confirm a concrete issue, fix it. Otherwise explain what you found."
 
 	ask := routedHarness(newAuthorityGate(workspace.Ask), nil, "ASK")
-	proposal, ok := turnTransition(ask, request)
+	proposal, ok := turnTransition(ask, workspace.ContractFor(workspace.Build), request)
 	if !ok || proposal.Proposed != "FUZZ" || proposal.Automatic {
 		t.Fatalf("ASK staged request = %+v, %v; want a confirmed FUZZ handoff", proposal, ok)
 	}
 
 	build := routedHarness(newAuthorityGate(workspace.Build), nil, "BUILD")
-	proposal, ok = turnTransition(build, request)
+	proposal, ok = turnTransition(build, workspace.ContractFor(workspace.Build), request)
 	if !ok || proposal.Proposed != "FUZZ" || !proposal.Automatic {
 		t.Fatalf("BUILD staged request = %+v, %v; want an automatic FUZZ handoff", proposal, ok)
 	}
@@ -50,7 +50,7 @@ func TestTurnTransitionRoutesInvestigativeAnalysisToFuzz(t *testing.T) {
 	held := &harness{workspace: "BUILD", root: t.TempDir()}
 	const request = "investigate this project and analyze what this project is about?"
 
-	transition, ok := turnTransition(held, request)
+	transition, ok := turnTransition(held, workspace.ContractFor(workspace.Build), request)
 	if !ok {
 		t.Fatal("the investigative request produced no workspace decision")
 	}
@@ -68,7 +68,7 @@ func TestTurnTransitionRoutesInvestigativeAnalysisToFuzz(t *testing.T) {
 func TestTurnTransitionDoesNotAskWorkspaceForNoSignalGreeting(t *testing.T) {
 	held := &harness{workspace: "BUILD", root: t.TempDir()}
 	for _, request := range []string{"hello", "thanks"} {
-		if transition, ok := turnTransition(held, request); ok {
+		if transition, ok := turnTransition(held, workspace.ContractFor(workspace.Build), request); ok {
 			t.Fatalf("acknowledgement %q opened a workspace transition: %+v", request, transition)
 		}
 	}
@@ -83,7 +83,7 @@ func TestTurnTransitionDoesNotAskWorkspaceForTaskContinuation(t *testing.T) {
 		held := routedHarness(gate, nil, active.Label())
 		held.root = t.TempDir()
 		for _, request := range []string{"continue", "verify the fix", "retry", "try again"} {
-			if transition, ok := turnTransition(held, request); ok {
+			if transition, ok := turnTransition(held, workspace.ContractFor(workspace.Build), request); ok {
 				t.Errorf("turnTransition(%s, %q) opened %q (%s -> %s)",
 					active, request, transition.Kind, transition.Current, transition.Proposed)
 			}
@@ -96,7 +96,7 @@ func TestTurnTransitionDoesNotAskWorkspaceForTaskContinuation(t *testing.T) {
 
 func TestPortfolioWebsiteCreationUsesOnlyItsBuildProposal(t *testing.T) {
 	held := &harness{workspace: "BUILD", root: t.TempDir()}
-	transition, ok := turnTransition(held, "create a portfolio website")
+	transition, ok := turnTransition(held, workspace.ContractFor(workspace.Build), "create a portfolio website")
 	if !ok || transition.Kind != tui.TransitionKindProposal || transition.Proposal == nil {
 		t.Fatalf("clear BUILD objective did not produce its implementation proposal: %+v, %v", transition, ok)
 	}

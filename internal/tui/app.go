@@ -500,6 +500,10 @@ type Program struct {
 	// the turn boundary may record a structured observation. It never owns
 	// authority, evidence, completion, or the task lifecycle.
 	experience ExperienceHooks
+	// reasoningSelect is the host's per-turn reasoning policy. Nil keeps the
+	// role's configured reasoning; a selector returns the provider-native
+	// setting the loop should use for this turn.
+	reasoningSelect ReasoningSelector
 	// lastTaskDecision records why the last turn attached, detached, or
 	// started a task: NEW_SESSION, EXPLICIT_RESUME, NEW_INTENT, TASK_DETACH,
 	// TASK_COMPLETE, or NO_TASK. It is diagnostics for /audit and tests, never
@@ -539,12 +543,19 @@ type WorkspaceHooks struct {
 	// PrepareTurn validates a turn's request against the active authority and
 	// reports a refusal before the model is called. It never changes authority.
 	PrepareTurn func(text string) TurnAuthority
+	// ExecutionContract reports the master task's persistent authority. It is
+	// a read: the current role remains the live gate, and a contract cannot
+	// admit a call. Nil derives the contract from the active role.
+	ExecutionContract func() workspace.ExecutionContract
 	// Predict classifies a turn's request and reports the safe workspace
 	// transition its owner would propose, if any. It must not change
 	// authority: the program calls it before deciding a turn, so a proposal
-	// can never move the runtime by being computed. Nil disables transition
-	// proposals entirely.
-	Predict func(text string) (TurnTransition, bool)
+	// can never move the runtime by being computed. taskOwned reports that the
+	// open task owns the prompt (a follow-up or role continuation), which lets
+	// the host read the task's persistent execution authority; a new objective
+	// must not inherit another task's grant. Nil disables transition proposals
+	// entirely.
+	Predict func(text string, taskOwned bool) (TurnTransition, bool)
 	// Handoff is the owner's tool-boundary capability seam. Before a tool
 	// call executes, it may move the session to a workspace that holds the
 	// capability the call needs and report that authority moved. The program
@@ -4438,8 +4449,18 @@ func (p *Program) submit(text string) tea.Cmd {
 	// provider request, tool, or mutation can run while it is pending
 	// (I2, I4-I6). A program without a Predict hook keeps the pre-proposal
 	// behavior and starts the turn immediately.
+	//
+	// taskOwned distinguishes a follow-up to the open task from a genuinely new
+	// objective. Only the former may consult the task's persistent execution
+	// authority: a new objective must be routed from the live role, never from
+	// a previous task's grant.
+	taskOwned := false
+	if p.workspace.Current != nil {
+		active := strings.ToLower(strings.TrimSpace(p.workspace.Current()))
+		_, _, taskOwned = p.taskContinuationFor(text, active)
+	}
 	if p.workspace.Predict != nil && p.state.Transition == nil && p.state.Pending == nil {
-		if proposed, ok := p.workspace.Predict(text); ok {
+		if proposed, ok := p.workspace.Predict(text, taskOwned); ok {
 			if proposed.Automatic {
 				return p.startAutomaticTurn(text, proposed)
 			}
@@ -4624,7 +4645,13 @@ func (p *Program) resolveTransition(accept bool) (tea.Model, tea.Cmd) {
 	// prompt cannot move authority somewhere the policy never allowed.
 	if p.workspace.Current != nil {
 		if current, err := workspace.Parse(p.workspace.Current()); err == nil {
-			decision := workspace.DecideTransition(current, workspace.AnalyzeRequest(text))
+			contract := workspace.ContractFor(current)
+			if p.workspace.ExecutionContract != nil {
+				if _, _, owned := p.taskContinuationFor(text, current.String()); owned {
+					contract = p.workspace.ExecutionContract()
+				}
+			}
+			decision := workspace.DecideTransition(current, contract, workspace.AnalyzeRequest(text))
 			allowed := decision.NeedsConfirmation() && decision.Target == target
 			if !allowed {
 				p.state.Apply(Notice{Text: "this transition is no longer authorized; resend the request"})
@@ -5514,6 +5541,11 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	defer p.loop.SetGrounding(nil)
 
 	request := append(append([]agent.Message(nil), history...), user)
+
+	// Reasoning is selected from the work, not the role, and applied before the
+	// first provider request. It is re-evaluated at every turn boundary; an
+	// internal BUILD <-> FUZZ handoff preserves it.
+	p.applyReasoning(intent, text, request)
 
 	// Progress is forwarded live so a slow tool is visible while it runs.
 	// The loop's hook is installed for the duration of the turn rather than
