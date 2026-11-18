@@ -367,12 +367,16 @@ silently following a changed configuration.
 | Anthropic | `ANTHROPIC_API_KEY` | Messages | 28 bundled |
 | OpenAI | `OPENAI_API_KEY` | Chat Completions | 47 bundled (Responses-only lines excluded) |
 | Groq, Together, Fireworks, DeepSeek, Cerebras, Mistral | per-provider key | Chat Completions | bundled |
+| xAI | `XAI_API_KEY` | Chat Completions | 7 bundled |
+| Google Gemini | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Chat Completions compatibility | 5 bundled |
+| Amazon Bedrock | `AWS_BEARER_TOKEN_BEDROCK` | Converse streaming | 3 bundled |
 | OpenRouter | `OPENROUTER_API_KEY` | Chat Completions | 7 seeds + live discovery |
 | OpenCode Zen / OpenCode Go | `OPENCODE_API_KEY` (shared) | Chat Completions, Messages | 33 / 24 bundled + live discovery |
 | Ollama (local) | none | native chat | live discovery only |
 | Ollama Cloud | `OLLAMA_API_KEY` | native chat | 52 seeds + live discovery |
+| Custom endpoint | `apiKeyEnv` or none | Chat Completions | user-declared |
 
-The bundled catalog contains **331 model facts across 13 providers**. Model
+The bundled catalog contains **346 model facts across 16 providers**. Model
 facts are data: `catalog.Resolve(provider/id)` is the only source, and no code
 branches on a model id string. An unknown model name is an error everywhere —
 a silent fallback would send your conversation to a provider you never chose.
@@ -380,11 +384,45 @@ The OpenCode Zen roster omits free-tier models: Console only serves those to
 the OpenCode client, so they fail from another harness even with a valid API
 key. Go's free models remain because Go serves them externally.
 
-Not yet supported: xAI and Azure/OpenAI Responses-only models (no Responses
-transport), Google Gemini (no `google-generative-ai` transport), AWS Bedrock
-(SigV4 signing), `pi-vfs`/`pi-walker` internals, LSP/DAP, and MCP features
-beyond bounded stdio plus the streamable-HTTP request/response core (standalone
-GET streams, resumability, and server-to-client requests are not implemented).
+Bedrock uses the native Converse streaming protocol, because the OpenAI
+compatible route does not serve Claude models. Authentication is an Amazon
+Bedrock API key; SigV4/IAM signing is not implemented. The endpoint follows
+`AWS_REGION`/`AWS_DEFAULT_REGION` unless an explicit endpoint is configured.
+
+Any additional OpenAI-compatible server — LM Studio, vLLM, llama.cpp,
+LiteLLM, OneAPI, or a hosted service without a bundled transport — is a settings
+entry rather than a new provider implementation. Facts are explicit because a
+local server's `/models` route usually carries no context window or output
+ceiling, and guessing either silently breaks compaction or a request:
+
+```json
+{
+  "endpoints": {
+    "lmstudio": {
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "models": ["qwen3-coder"],
+      "contextWindow": 262144,
+      "maxTokens": 32768,
+      "apiKeyEnv": "LMSTUDIO_API_KEY"
+    }
+  }
+}
+```
+
+Then use `lmstudio/qwen3-coder` as the model reference. `apiKeyEnv` is optional:
+without it the endpoint is keyless. The picker and `/connect` list configured
+endpoints, and a typo in one entry is reported without disabling the others.
+GitHub Models fits the same shape with `baseUrl` set to
+`https://models.github.ai/inference` and `apiKeyEnv` set to `GITHUB_TOKEN`;
+Copilot's short-lived token exchange is not implemented, so a Copilot-only
+subscription is not yet a valid credential.
+
+Not yet supported: Azure/OpenAI Responses-only models (no Responses transport),
+GitHub Copilot's OAuth token exchange, Bedrock SigV4/IAM credentials, and
+`pi-vfs`/`pi-walker` internals. LSP/DAP and MCP features beyond bounded stdio
+plus the streamable-HTTP request/response core are also outside this build
+(standalone GET streams, resumability, and server-to-client requests are not
+implemented).
 
 Credentials resolve in order: explicit request key, `~/.ohgo/credentials.json`
 (0600, written only when you save), environment, then parsed shell startup
