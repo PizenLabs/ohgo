@@ -47,6 +47,16 @@ immutable.
 
 ### Fixed
 
+- A source file paged through a successful shell content reader (`sed`, `cat`,
+  `head`, `tail`, `nl`, `less`, `more`, or `bat`) counts as opened for citation
+  grounding. A listing or a path mentioned in prose still does not count.
+- "No contradiction to arbitrate" is treated as an epistemic limit, not a
+  repository-wide absence. A run without Gry/runtime evidence can say the
+  static-vs-runtime comparison was not assessable instead of being forced to
+  claim no contradiction exists or to perform an unrelated file scan.
+- A failed `recall` of an unknown or evicted compaction id is an observed
+  archive absence, not an unrecovered tool failure. Reading the source directly
+  after the miss can complete the task.
 - A documented project identity is no longer reported as an unverified
   implementation claim. `DocumentationIdentityTerms` also reads the name an
   opening definition introduces (`GoCommerce is an e-commerce application`), so

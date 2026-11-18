@@ -434,7 +434,7 @@ turning gry into a role, a second planner, or a separate state owner.
 
 An investigation that asks for a verdict is not allowed to substitute another
 repository survey for that verdict. Its shape declares
-`investigation_conclusion`; only the `conclude` tool records it:
+`investigation_conclusion`; only a **FINAL** call to the `conclude` tool records it:
 
 ```text
 SAFE | BUG | UNRESOLVED
@@ -444,11 +444,34 @@ uncertainty: material gaps that remain
 
 The requirement is a convergence point, not a proof. `conclude` records an
 observation; the completion evaluator still decides whether the answer is
-supportable. Once it is the only missing requirement, a bounded six-turn conclusion
-window still allows concrete closing reads, but further surveying does not
-reset the requirement; after the window the run reports instead of consuming
-the model-turn grant. A deferred mutation phase keeps its executable surface
-for the later probe; an ordinary investigation closes at its required evidence.
+supportable. Calling the tool is a proposal, not the transition itself:
+`status: IN_PROGRESS`, a placeholder, an explicit insufficiency marker, missing
+evidence, or an unrecognized status is recorded as a progress observation. It
+creates no conclusion item, satisfies no conclusion requirement, and consumes no
+terminal attempt. This is what prevents "placeholder, not yet sufficient" from
+manufacturing a terminal state.
+
+A conclusion is **provisional when its uncertainty names a concrete
+code coordinate** (a selector such as `StockReserver.Reserve` or a Go path). The
+runtime records it for audit but keeps `investigation_conclusion` unsatisfied
+and adds `investigation_target:<coordinate>` ahead of it. Only a new observation
+of that coordinate after the conclusion can clear the target; omitting the
+coordinate from a later conclusion does not erase the obligation. This is the
+evidence-admissibility layer: the conclusion window does not begin merely
+because the investigation has some evidence.
+
+Repeated conclusions still need a hard semantic limit. After
+`MaxConclusionAttempts` and at least one new observation, an explicitly
+`UNRESOLVED` conclusion is accepted with the unresolved coordinate retained in
+the record. A repeated `UNRESOLVED` without a new observation is not an attempt;
+the projection's no-progress bound closes that shape instead.
+
+Once the conclusion is the only missing requirement, a bounded ten-turn
+conclusion window still allows concrete closing reads, but further surveying
+does not reset the requirement; after the window the run reports instead of
+consuming the model-turn grant. A deferred mutation phase keeps its executable
+surface for the later probe; an ordinary investigation closes at its required
+evidence.
 A targetless mutation gets a separate eight-turn act window: it may read the
 implementation once, then must act rather than survey indefinitely. At the end
 of the conclusion window the projection forces the `conclude` tool for the next
