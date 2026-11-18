@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -50,7 +51,11 @@ func (t *RecallTool) Execute(ctx agent.Context, args map[string]any) agent.Resul
 	}
 	item, ok := t.store.Get(id)
 	if !ok {
-		return agent.ErrorResult("recall: no archived observation %q; it may have been evicted or never existed", id)
+		return agent.Result{
+			Text:            fmt.Sprintf("recall: no archived observation %q; it may have been evicted or never existed", id),
+			IsError:         true,
+			ObservedAbsence: true,
+		}
 	}
 	return agent.Result{
 		Text: item.Text,

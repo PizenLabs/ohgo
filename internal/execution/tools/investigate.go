@@ -41,6 +41,10 @@ func NewInvestigateTool(root string, engine *investigate.Engine, budget investig
 	tool.Base = NewBase("investigate",
 		"Investigate a repository question by coordinating structural, lexical "+
 			"(BM25), semantic (language server), and authorized runtime evidence. "+
+			"Call this before a chain of grep/symbol/read calls when the question is "+
+			"relational: call chains, dependencies, architecture, impact, test impact, "+
+			"or interface implementations. Use symbols, grep, and read for one exact "+
+			"coordinate or source excerpt. "+
 			"Chooses the cheapest sufficient path, correlates observations from "+
 			"multiple providers, preserves contradictions, and stops when more "+
 			"analysis is not worth its cost. Returns bounded facts with provider, "+
@@ -65,8 +69,10 @@ func NewInvestigateTool(root string, engine *investigate.Engine, budget investig
 					"description": "Optional task shape. Default auto infers it from the question.",
 				},
 				"focus": map[string]any{
-					"type":        "string",
-					"description": "Optional repository-relative path or symbol the question is about.",
+					"type": "string",
+					"description": "Optional repository-relative path or symbol the question is about. " +
+						"For flow, callers/callees, and impact, prefer the exact symbol name " +
+						"returned by symbols; a file path is better for package or file-level context.",
 				},
 				"max_steps": map[string]any{
 					"type":        "integer",
@@ -134,20 +140,21 @@ func (t *InvestigateTool) Execute(ctx agent.Context, args map[string]any) agent.
 		return requestError(agent.ToolFailureRuntime, "investigation did not run: %v", err)
 	}
 	details := map[string]any{
-		"status":         string(result.Status),
-		"intent":         string(result.Intent),
-		"confidence":     result.Confidence,
-		"coverage":       result.Coverage,
-		"stop_reason":    result.StopReason,
-		"providers":      stepDetails(result.Steps),
-		"skips":          result.Skips,
-		"facts":          factDetails(result.Facts),
-		"contradictions": contradictionDetails(result),
-		"issues":         result.Issues,
-		"records":        result.Records,
-		"lsp_requests":   result.LSPRequests,
-		"dap_requests":   result.DAPRequests,
-		"duration_ms":    time.Since(started).Milliseconds(),
+		"status":            string(result.Status),
+		"intent":            string(result.Intent),
+		"confidence":        result.Confidence,
+		"coverage":          result.Coverage,
+		"stop_reason":       result.StopReason,
+		"providers":         stepDetails(result.Steps),
+		"skips":             result.Skips,
+		"facts":             factDetails(result.Facts),
+		"contradictions":    contradictionDetails(result),
+		"issues":            result.Issues,
+		"records":           result.Records,
+		"lsp_requests":      result.LSPRequests,
+		"dap_requests":      result.DAPRequests,
+		"external_requests": result.ExternalRequests,
+		"duration_ms":       time.Since(started).Milliseconds(),
 	}
 	text := formatInvestigation(result)
 	if len(result.Facts) == 0 {
@@ -158,23 +165,31 @@ func (t *InvestigateTool) Execute(ctx agent.Context, args map[string]any) agent.
 
 func formatInvestigation(result investigate.Result) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "investigation: %s · intent %s · confidence %.2f · coverage %.2f · %s\n",
-		result.Status, result.Intent, result.Confidence, result.Coverage, result.StopReason)
+	fmt.Fprintf(&builder, "investigation: %s", result.Status)
+	if sources := stepSources(result.Steps); sources != "" {
+		fmt.Fprintf(&builder, " · %s", sources)
+	}
+	fmt.Fprintf(&builder, " · intent %s · confidence %.2f · coverage %.2f · %s\n",
+		result.Intent, result.Confidence, result.Coverage, result.StopReason)
 	if len(result.Steps) > 0 {
 		parts := make([]string, 0, len(result.Steps))
 		for _, step := range result.Steps {
 			if step.Failed {
-				parts = append(parts, fmt.Sprintf("%s(failed)", step.Provider))
+				parts = append(parts, fmt.Sprintf("%s(failed)", stepLabel(step)))
 				continue
 			}
-			parts = append(parts, fmt.Sprintf("%s(%s)", step.Provider, step.State))
+			parts = append(parts, fmt.Sprintf("%s(%s)", stepLabel(step), step.State))
 		}
 		builder.WriteString("providers: ")
 		builder.WriteString(strings.Join(parts, ", "))
 		builder.WriteString("\n")
 	}
 	for _, fact := range result.Facts {
-		fmt.Fprintf(&builder, "- [%s] %s — %s\n", fact.Provider, fact.Subject, fact.Detail)
+		provider := fact.Provider
+		if fact.Source != "" {
+			provider += "/" + fact.Source
+		}
+		fmt.Fprintf(&builder, "- [%s] %s — %s\n", provider, fact.Subject, fact.Detail)
 	}
 	if len(result.Contradictions) > 0 {
 		builder.WriteString("contradictions (preserved, not resolved silently):\n")
@@ -206,6 +221,33 @@ func formatInvestigation(result investigate.Result) string {
 	return capInvestigationOutput(builder.String())
 }
 
+// stepSources renders the mechanisms that answered the steps, deduplicated
+// and bounded. It is the compact attribution carried on the first line; the
+// per-fact lines carry the same source at their own resolution.
+func stepSources(steps []investigate.StepResult) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, step := range steps {
+		name := string(step.Provider)
+		if step.Source != "" {
+			name += "/" + step.Source
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return strings.Join(out, ", ")
+}
+
+func stepLabel(step investigate.StepResult) string {
+	if step.Source != "" {
+		return string(step.Provider) + "/" + step.Source
+	}
+	return string(step.Provider)
+}
+
 func capInvestigationOutput(text string) string {
 	if len(text) <= InvestigateMaxOutput {
 		return text
@@ -224,6 +266,8 @@ func stepDetails(steps []investigate.StepResult) []map[string]any {
 			"provider":    string(step.Provider),
 			"strategy":    step.Strategy,
 			"reason":      step.Reason,
+			"outcome":     string(step.Outcome),
+			"source":      step.Source,
 			"state":       string(step.State),
 			"confidence":  step.Confidence,
 			"coverage":    step.Coverage,
@@ -239,7 +283,8 @@ func factDetails(facts []investigate.Fact) []map[string]any {
 	out := make([]map[string]any, 0, len(facts))
 	for _, fact := range facts {
 		out = append(out, map[string]any{
-			"provider": fact.Provider, "subject": fact.Subject, "detail": fact.Detail,
+			"provider": fact.Provider, "source": fact.Source,
+			"subject": fact.Subject, "detail": fact.Detail,
 		})
 	}
 	return out

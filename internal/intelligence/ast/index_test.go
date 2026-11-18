@@ -110,6 +110,29 @@ func TestIndexLookupMissesNothing(t *testing.T) {
 	}
 }
 
+// A method is named Receiver.Method internally, but source and model prompts
+// usually say only the method name. Returning every receiver is the truthful
+// ambiguous answer; returning not_found falsely denied the declaration.
+func TestIndexLookupAcceptsBareMethodNameAsAmbiguous(t *testing.T) {
+	root := indexFixture(t, map[string]string{
+		"a.go": "package tools\n\ntype Widget struct{}\n\nfunc (w Widget) Render() {}\n",
+		"b.go": "package tools\n\ntype Panel struct{}\n\nfunc (p Panel) Render() {}\n",
+	})
+	idx := mustIndex(t, root)
+	got, err := idx.Lookup("Render")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Lookup(\"Render\") = %d results, want 2 receivers", len(got))
+	}
+	for _, match := range got {
+		if match.Kind != KindMethod || match.Name != "Widget.Render" && match.Name != "Panel.Render" {
+			t.Errorf("unexpected match: %+v", match)
+		}
+	}
+}
+
 func TestIndexLookupAcceptsQualifiedName(t *testing.T) {
 	// The model may know the package but not the file. A qualified name is
 	// still an exact coordinate, not a substring search.

@@ -34,6 +34,9 @@ var noMutationPhrases = []string{
 	"dont alter anything", "dont edit anything",
 	"never change anything", "never modify anything", "never touch anything",
 	"without changing anything", "without modifying anything",
+	"do not create a fix", "do not implement a fix", "do not apply a fix",
+	"do not create the fix", "do not implement the fix",
+	"investigation only", "investigation only benchmark",
 	"leave it alone", "leave the code alone", "leave the file alone",
 	"leave the repository alone",
 }

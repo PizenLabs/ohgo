@@ -16,6 +16,7 @@ import (
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/intelligence/ast"
+	gryintel "github.com/PizenLabs/ohgo/internal/intelligence/gry"
 	"github.com/PizenLabs/ohgo/internal/intelligence/investigate"
 	"github.com/PizenLabs/ohgo/internal/intelligence/semantic"
 	"github.com/PizenLabs/ohgo/internal/intelligence/structural"
@@ -73,7 +74,18 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 	// Ohgo startup, and a machine without gopls simply reports the provider as
 	// unavailable rather than pretending it looked.
 	investigation := investigate.New(
-		&investigate.StructuralProvider{Source: sourceFor(structural), Cache: structuralCacheFor(structural), Root: opts.root},
+		&investigate.StructuralRouter{
+			// The native engine is the default and the fallback. The external
+			// adapter answers only the structural questions where a repository
+			// graph is materially better; it cannot authorize, mutate, or
+			// complete anything.
+			Native: &investigate.StructuralProvider{
+				Source: sourceFor(structural),
+				Cache:  structuralCacheFor(structural),
+				Root:   opts.root,
+			},
+			External: gryintel.New(gryintel.FromEnv(opts.root)),
+		},
 		&investigate.RetrievalProvider{Workspace: retrieve.Workspace(), Source: sourceFor(structural), Root: opts.root},
 		semanticProvider(opts.root),
 	)
@@ -94,6 +106,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewStructureTool(structural),
 		retrieve,
 		tools.NewInvestigateTool(opts.root, investigation, investigate.Budget{}),
+		tools.NewConcludeTool(),
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}

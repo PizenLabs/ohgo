@@ -27,3 +27,14 @@ func TestRecallToolReturnsArchivedText(t *testing.T) {
 		t.Fatal("an unknown id was reported as success")
 	}
 }
+
+// An unknown archive id is a truthful observation about the archive, not a
+// failed capability that poisons completion after the model recovers by reading
+// source directly.
+func TestRecallMissingArchiveIsObservedAbsence(t *testing.T) {
+	tool := NewRecallTool(agent.NewRecallStore())
+	result := tool.Execute(agent.Context{Ctx: context.Background()}, map[string]any{"id": "E999"})
+	if !result.IsError || !result.ObservedAbsence {
+		t.Fatalf("missing archive result = %+v, want an observed absence", result)
+	}
+}

@@ -163,7 +163,23 @@ func (t *StructureTool) index() (*ast.Index, error) {
 func (t *StructureTool) Source() *StructuralSource { return t.source }
 
 // Execute implements agent.Tool.
+//
+// The wrapper stamps the producing mechanism into the structured details. The
+// structure tool is always the in-process AST index; the attribution is still
+// explicit so an activity log cannot mistake a native inventory for delegated
+// structural intelligence.
 func (t *StructureTool) Execute(ctx agent.Context, args map[string]any) agent.Result {
+	result := t.execute(ctx, args)
+	details, _ := result.Details.(map[string]any)
+	if details == nil {
+		details = map[string]any{}
+	}
+	details["provider"] = "native"
+	result.Details = details
+	return result
+}
+
+func (t *StructureTool) execute(ctx agent.Context, args map[string]any) agent.Result {
 	if err := checkCancelled(ctx.Ctx); err != nil {
 		return agent.ErrorResult("%v", err)
 	}
@@ -1326,7 +1342,9 @@ func (s structureSliceCount) Cut() bool {
 }
 
 func writeStructureHeader(text *strings.Builder, status, view string, info ast.SnapshotInfo, resultTruncated bool, reason string, shown ...structureSliceCount) {
-	fmt.Fprintf(text, "status: %s\n", status)
+	// Provider attribution rides the first line so the collapsed transcript
+	// row is truthful too, not only the expanded body.
+	fmt.Fprintf(text, "status: %s · provider: native\n", status)
 	fmt.Fprintf(text, "view: %s\n", view)
 	fmt.Fprintf(text, "snapshot_id: %s\n", info.SnapshotID)
 	fmt.Fprintf(text, "generation: %d\n", info.Generation)

@@ -33,6 +33,35 @@ Guidelines:
   explicit relations, and static impact). Overview is metadata-first; ask for
   a targeted or impact view only when the task needs declarations or
   relationships.
+- Use investigate first for relational questions: call chains, callers or
+  callees, dependency and impact analysis, test impact, interface
+  implementations, and architecture flow. It returns bounded facts with
+  provenance and uncertainty. Do not follow a sufficient investigation with
+  broad graph dumps or repeated symbol searches; use symbols, refs, graph, or
+  read for one exact coordinate or source excerpt.
+- An investigation is evidence, not proof. When it identifies a concrete
+  declaration or call site, read that exact coordinate before claiming what
+  the implementation does. Do not stop at a candidate list.
+- When the runtime state asks for an investigation conclusion, call conclude
+  with SAFE, BUG, or UNRESOLVED, the evidence that supports it, and status
+  FINAL for a terminal verdict or IN_PROGRESS for a progress observation.
+  Call FINAL only after the entrypoint and validation/persistence boundary are
+  observed. Do not use UNRESOLVED as a progress report. An IN_PROGRESS call
+  never satisfies the conclusion; a placeholder or preliminary payload is
+  treated as progress even when the status says FINAL. If uncertainty names a
+  concrete symbol or path, inspect that coordinate first; the runtime keeps the
+  conclusion requirement open until it is observed or a bounded attempt
+  explicitly settles as UNRESOLVED. Do not keep surveying after the required
+  entrypoint, reference flow, validation boundary, and bypass paths are
+  established.
+- If no Gry or runtime evidence was obtained, the static-vs-runtime comparison
+  was not assessable. Say that plainly; do not claim that no contradiction
+  exists. Use the read tool for source content when available; a successful
+  shell content read (sed, cat, head, tail) also opens the file, but a
+  listing or a path mentioned in prose does not.
+- Use verify for an acceptance check or test command that must count as
+  completion evidence. bash output is an observation; it is not the structured
+  verification record the completion contract requires.
 - Make the smallest change that solves the problem. Do not refactor code the
   task did not ask you to touch.
 - Never guess a file's contents. Read it before editing it.
@@ -97,7 +126,16 @@ stress the implementation. You must not modify the repository.
 A finding is not authorisation to change code: report the defect and evidence.
 When an established fix needs a repository change, the control plane hands this
 same task to BUILD automatically before the change executes. Propose the change
-with your normal tool call; do not stop to ask for a switch.`
+with your normal tool call; do not stop to ask for a switch.
+When the investigation asks for a verdict, call conclude once the required
+entrypoint, reference flow, validation boundary, persistence ordering, and
+bypass-path question are established. Another survey cannot satisfy a verdict.
+Use status IN_PROGRESS while evidence is still being gathered; only FINAL
+counts as a settlement. If the conclusion names a concrete unresolved symbol or
+path, inspect that coordinate first; omitting it from a later conclusion does
+not erase the obligation.
+Similarly, call conclude when the runtime state reports investigation_conclusion
+as the only missing requirement.`
 	case "build":
 		return `You are operating in BUILD mode: the mutation authority.
 The user's current objective is an execution instruction, not a request for
@@ -105,9 +143,43 @@ advice. Inspect the repository, reason, derive an internal plan, and carry
 the objective through to implementation and verification.
 Task status, todos, and persisted plans are state and context, not blockers:
 a missing plan means derive one internally, never stop to ask the user.
+After a repository change, run the runtime's verify tool for the acceptance
+check. A bash assertion is an observation, not the structured verification
+evidence the completion contract requires.
 Mutations remain subject to the runtime security policy.`
 	}
 	return ""
+}
+
+// InvestigationHint returns a one-line runtime hint for a turn whose text is
+// asking for repository relationships rather than one exact coordinate.
+//
+// It is recency steering, not authority: the tool still decides what evidence
+// exists, and the model may answer from evidence it already has. The hint is
+// only emitted for the structural classes where a chain of grep/symbol/read
+// calls usually costs more than one bounded investigation.
+func InvestigationHint(text string) string {
+	lower := strings.ToLower(text)
+	structural := []string{
+		"call chain", "caller", "callee", "called by", "calls ",
+		"depend on", "depends on", "dependency", "dependencies", "imports", "imported by",
+		"impact", "affected", "architecture", "flow from", "reaches",
+		"route", "handler", "implements", "implementation of", "references",
+		"used by", "what uses",
+	}
+	matched := false
+	for _, phrase := range structural {
+		if strings.Contains(lower, phrase) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return ""
+	}
+	return "Runtime information routing: this is a structural relationship question. " +
+		"Prefer one bounded investigate call before a chain of grep/symbol/read calls; " +
+		"then read the exact coordinate it identifies. An investigation is evidence, not proof."
 }
 
 // ProposalDecision renders a recorded human proposal decision as

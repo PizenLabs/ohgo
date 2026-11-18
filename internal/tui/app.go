@@ -1637,6 +1637,15 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// A KeyRunes event is text, even when that text spells a key name. Bubble
+	// Tea reports a paste or a fast keystroke burst as one KeyRunes message,
+	// so switching on msg.String() first would consume "end" as the End key
+	// and silently drop it from the prompt.
+	if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+		p.insertComposerText(msg)
+		return p, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+o":
 		// Expand or collapse the latest activity block. Presentation-only:
@@ -1905,49 +1914,51 @@ func (p *Program) handleKeyCore(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	default:
-		// Space arrives as KeySpace, not KeyRunes: without this branch no
-		// space can ever be typed into the composer.
-		switch msg.Type {
-		case tea.KeyRunes, tea.KeySpace:
-			text := string(msg.Runes)
-			if msg.Type == tea.KeySpace {
-				text = " "
-			}
-			// Space is the reader's jump to latest: while detached with an
-			// idle composer, it re-engages the live edge instead of starting
-			// the next prompt with a blank. Any draft keeps it literal, so
-			// prose is never stolen. The scrolled-up marker advertises it.
-			if msg.Type == tea.KeySpace && p.live == nil && !p.state.Follow && wheelScrolls(p.state) {
-				p.state.Apply(ScrollToBottom{})
-				return p, nil
-			}
-			// "?" on an empty composer opens contextual help from the
-			// authoritative registry. While composing it stays literal:
-			// help must never steal a question mark being typed.
-			if text == "?" && strings.TrimSpace(p.state.Input) == "" && p.state.ConnectKey == nil {
-				p.openHelpCenter("")
-				return p, nil
-			}
-			// A large bracketed paste folds into one inline chip: the full
-			// payload is retained for submission while the composer stays a
-			// single row. Short pastes, and keystroke streams from terminals
-			// without bracketed paste, stay literal.
-			if shouldCollapsePaste(msg.Paste, text) {
-				p.state.Apply(PasteCollapsed{Text: text, Lines: pasteLineCount(text)})
-				return p, nil
-			}
-			// KeyRunes (typed or pasted, including bracketed pastes) is user
-			// text: it inserts verbatim at the cursor. The application must
-			// not second-guess prose that resembles protocol bytes.
-			composed := insertAt(p.state.Input, p.state.Cursor, text)
-			cursor := p.state.Cursor + len([]rune(text))
-			p.state.Apply(ComposerChanged{Text: composed, Cursor: cursor})
-			// The insertion may have just opened a trigger word (a typed or
-			// pasted "@"), so install the roster before the next render.
-			p.ensureMentionRoster()
-		}
 		return p, nil
 	}
+}
+
+// insertComposerText inserts a KeyRunes or KeySpace event verbatim. It owns
+// paste collapse, the empty-composer help trigger, and the live-edge space
+// behavior, because those rules apply to text regardless of whether the text
+// arrives letter by letter or as one bracketed paste.
+func (p *Program) insertComposerText(msg tea.KeyMsg) {
+	text := string(msg.Runes)
+	if msg.Type == tea.KeySpace {
+		text = " "
+	}
+	// Space is the reader's jump to latest: while detached with an idle
+	// composer, it re-engages the live edge instead of starting the next
+	// prompt with a blank. Any draft keeps it literal, so prose is never
+	// stolen. The scrolled-up marker advertises it.
+	if msg.Type == tea.KeySpace && p.live == nil && !p.state.Follow && wheelScrolls(p.state) {
+		p.state.Apply(ScrollToBottom{})
+		return
+	}
+	// "?" on an empty composer opens contextual help from the authoritative
+	// registry. While composing it stays literal: help must never steal a
+	// question mark being typed.
+	if text == "?" && strings.TrimSpace(p.state.Input) == "" && p.state.ConnectKey == nil {
+		p.openHelpCenter("")
+		return
+	}
+	// A large bracketed paste folds into one inline chip: the full payload is
+	// retained for submission while the composer stays a single row. Short
+	// pastes, and keystroke streams from terminals without bracketed paste,
+	// stay literal.
+	if shouldCollapsePaste(msg.Paste, text) {
+		p.state.Apply(PasteCollapsed{Text: text, Lines: pasteLineCount(text)})
+		return
+	}
+	// KeyRunes (typed or pasted, including bracketed pastes) is user text: it
+	// inserts verbatim at the cursor. The application must not second-guess
+	// prose that resembles protocol bytes.
+	composed := insertAt(p.state.Input, p.state.Cursor, text)
+	cursor := p.state.Cursor + len([]rune(text))
+	p.state.Apply(ComposerChanged{Text: composed, Cursor: cursor})
+	// The insertion may have just opened a trigger word (a typed or pasted
+	// "@"), so install the roster before the next render.
+	p.ensureMentionRoster()
 }
 
 // ensureMentionRoster installs the "@" workspace roster the first time the
@@ -2563,10 +2574,17 @@ func (p *Program) detachTaskForNewSession() {
 		return
 	}
 	projection := p.task.Detach()
-	if projection.ID != "" && projection.Err == "" {
+	if projection.Err != "" {
+		// A failed detach leaves the task attached. Clearing the header would
+		// make the UI contradict the live session boundary.
+		p.state.Apply(Notice{Text: "new session: " + projection.Err})
+		return
+	}
+	if projection.ID != "" {
 		p.PublishTask(projection)
 		p.recordTaskDecision("TASK_DETACH")
 	}
+	p.ClearTask()
 }
 
 // chooseTask resumes the task chosen from the /task resume picker.
@@ -3713,6 +3731,11 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 		p.state.Apply(CommitChanged{Phase: CommitIdle})
 	}
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
+	if len(opened.History) > 0 {
+		p.state.Apply(UsageUnknown{})
+	} else {
+		p.state.Apply(UsageKnown{})
+	}
 	if sess != nil {
 		// The adopted session owns the composer border immediately: its slot
 		// and stored label are local facts, so no later read has to arrive
@@ -5582,6 +5605,22 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			}
 		}
 	})
+	// The provider hook is the only truthful source for a slow or failed
+	// transport. It reports each attempt and backoff before the loop sleeps, so
+	// a 429 never masquerades as workspace preparation.
+	p.loop.SetProviderActivityHook(func(activity agent.ProviderActivity) {
+		message := ""
+		if activity.Err != nil {
+			message = sanitizeInline(activity.Err.Error())
+		}
+		p.publish(ProviderStatusEvent{
+			Phase: string(activity.Phase), Attempt: activity.Attempt,
+			Attempts: activity.Attempts, Delay: activity.Delay,
+			Status: activity.Status, Message: message, At: time.Now(), Seq: seq,
+		})
+	})
+	defer p.loop.SetProviderActivityHook(nil)
+
 	// The progress hook carries every transcript-visible call, including a
 	// reused or refused one that never reached execution. This ledger tracks
 	// what the live channel actually published, so the post-run pass can
@@ -5679,6 +5718,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// with no standing decision sets no block, exactly as before.
 	if block := proposalSystemBlock(p.proposalFor(text)); block != "" {
 		blocks = append(blocks, block)
+	}
+	// Recency steering for relationship questions: the same guidance is in
+	// the system prompt, but a weak model following a long transcript needs it
+	// at the tail where the next request actually attends.
+	if hint := prompt.InvestigationHint(text); hint != "" {
+		blocks = append(blocks, hint)
 	}
 	p.loop.SetRuntimeContext(blocks)
 
@@ -6351,6 +6396,7 @@ func (p *Program) AttachSession(store *session.Store, sess *session.Session, his
 		return
 	}
 	p.state.Apply(HistoryReplaced{Entries: EntriesFromMessages(history)})
+	p.state.Apply(UsageUnknown{})
 	if sess != nil {
 		p.state.Apply(Notice{Text: fmt.Sprintf("resumed session %d (%d messages)", sess.ID, len(history))})
 		// A leftover interrupted recovery belongs to this session's workspace,

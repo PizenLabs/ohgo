@@ -12,7 +12,8 @@ import (
 )
 
 type stubInvestigationProvider struct {
-	name string
+	name   string
+	source string
 }
 
 func (p stubInvestigationProvider) Name() planner.Provider { return planner.Provider(p.name) }
@@ -28,7 +29,8 @@ func (p stubInvestigationProvider) Observe(context.Context, investigate.Request,
 			Subject: "file:auth.go", Relation: "ranked_for", Object: "authentication",
 			State: evidence.Observed, Confidence: 0.8,
 		}},
-		Facts: []investigate.Fact{{Provider: p.name, Subject: "auth.go", Detail: "score 1.0"}},
+		Source: p.source,
+		Facts:  []investigate.Fact{{Provider: p.name, Subject: "auth.go", Detail: "score 1.0"}},
 	}, nil
 }
 
@@ -74,5 +76,37 @@ func TestInvestigateToolRejectsEscapingFocus(t *testing.T) {
 	})
 	if !result.IsError {
 		t.Fatal("expected rejection")
+	}
+}
+
+// The investigation entrypoint is evidence-only. Its approval tier is the
+// authority contract that stops a structural result from becoming a mutation.
+func TestInvestigateToolIsReadOnly(t *testing.T) {
+	engine := investigate.New(stubInvestigationProvider{name: "retrieval"})
+	tool := NewInvestigateTool(t.TempDir(), engine, investigate.Budget{})
+	if got := tool.Approval().Tier; got != agent.TierRead {
+		t.Fatalf("approval tier = %v, want read", got)
+	}
+}
+
+// A structural result must say which mechanism produced it. The step provider
+// is structural; the source distinguishes native AST from delegated Gry
+// evidence without making Gry a second role.
+func TestInvestigateToolRendersFactProviderAttribution(t *testing.T) {
+	engine := investigate.New(stubInvestigationProvider{name: "structural", source: "gry"})
+	tool := NewInvestigateTool(t.TempDir(), engine, investigate.Budget{})
+	result := tool.Execute(agent.Context{Ctx: context.Background()}, map[string]any{
+		"question": "what calls checkout?", "intent": "flow", "focus": "checkout",
+	})
+	if result.IsError {
+		t.Fatalf("execute failed: %s", result.Text)
+	}
+	if !strings.Contains(result.Text, "[structural/gry]") {
+		t.Fatalf("rendered facts lost the mechanism:\n%s", result.Text)
+	}
+	details := result.Details.(map[string]any)
+	facts, _ := details["facts"].([]map[string]any)
+	if len(facts) == 0 || facts[0]["source"] != "gry" {
+		t.Fatalf("fact details lost the source: %+v", facts)
 	}
 }

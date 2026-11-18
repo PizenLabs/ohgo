@@ -84,3 +84,26 @@ func TestProsePathMentionIsNotACitation(t *testing.T) {
 		t.Fatalf("prose mentions were treated as citations: %+v", issues)
 	}
 }
+
+// A source file paged through a shell content reader was opened. Treating the
+// `sed` observation as a listing forced a false review even though the cited
+// path's contents were in the run.
+func TestBashSourceReadSupportsCitation(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{{
+		ToolName: "bash",
+		Args:     map[string]any{"command": "cd backend && sed -n 200,400p checkout/app/checkout.go"},
+		Result:   Result{Text: "package app\n\nfunc Place() {}\n"},
+	}}}}
+	if issue := citationClaimIssue("Place calls Reserve before Save (checkout/app/checkout.go).", turns); issue != nil {
+		t.Fatalf("a shell source read was treated as an unopened citation: %+v", issue)
+	}
+	// A command that only lists the path does not count.
+	listing := []Turn{{Results: []ToolOutcome{{
+		ToolName: "bash",
+		Args:     map[string]any{"command": "ls checkout/app/checkout.go"},
+		Result:   Result{Text: "checkout/app/checkout.go\n"},
+	}}}}
+	if issue := citationClaimIssue("Place calls Reserve before Save (checkout/app/checkout.go).", listing); issue == nil {
+		t.Fatal("a listing was treated as a source observation")
+	}
+}

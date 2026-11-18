@@ -569,8 +569,6 @@ func groundingConstraints(text string) []string {
 			}
 		}
 	}
-	add("no_mutation", "do not modify", "do not change", "read only",
-		"without modifying", "without changing")
 	if contract.NoMutationRequested(text) {
 		out = appendUnique(out, "no_mutation")
 	}

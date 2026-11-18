@@ -364,3 +364,31 @@ func TestUsageModalReportsCacheLocality(t *testing.T) {
 		t.Fatalf("the first request has no explicit state:\n%s", out)
 	}
 }
+
+// A resumed transcript has no persisted usage ledger. The card must say so
+// rather than rendering "no requests measured yet", which reads as a complete
+// zero history.
+func TestResumedUsageIsExplicitlyUnavailable(t *testing.T) {
+	view := UsageView{Provider: "p", Model: "p/m", MaxTokens: 1000, UsageUnknown: true}
+	out := stripANSI(usageCard(view, 90, 40))
+	if !strings.Contains(out, "unavailable after restart") {
+		t.Fatalf("usage card = %q, want the unavailable state", out)
+	}
+	if strings.Contains(out, "no requests measured yet") {
+		t.Fatalf("usage card claimed a measured empty history: %q", out)
+	}
+}
+
+// Once a new turn reports measured usage, the card must distinguish the
+// measured suffix from the unavailable history instead of presenting a
+// partial total as complete.
+func TestPartialUsageAfterResumeIsLabeled(t *testing.T) {
+	view := UsageView{
+		Provider: "p", Model: "p/m", MaxTokens: 1000, UsageUnknown: true,
+		HasUsage: true, TurnCount: 1, LastRequest: ai.Usage{Input: 20, Output: 5, Total: 25},
+	}
+	out := stripANSI(usageCard(view, 90, 40))
+	if !strings.Contains(out, "partial since restart") {
+		t.Fatalf("usage card = %q, want the partial marker", out)
+	}
+}

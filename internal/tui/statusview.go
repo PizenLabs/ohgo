@@ -89,6 +89,12 @@ type StatusView struct {
 	// window means unknown and renders as such rather than "0%".
 	ContextUsed   int
 	ContextWindow int
+	// ContextKnown reports that ContextUsed is a measurement. A resumed
+	// transcript carries no persisted usage, so its context is unavailable.
+	ContextKnown bool
+	// UsageUnknown reports that the session's prior token usage was not
+	// persisted. The token row must say so rather than render zeros.
+	UsageUnknown bool
 	// Model is the active "provider/id".
 	Model string
 	// Workspace is the authority label, e.g. "BUILD".
@@ -369,8 +375,15 @@ func statusEngineLine(engine StatusEngine) string {
 // total, and the turn count.
 func statusTokensLine(view StatusView) string {
 	total := view.TokensIn + view.TokensOut
-	return fmt.Sprintf("↑%s · ↓%s (%s total) · %s",
+	if view.UsageUnknown && total == 0 {
+		return fmt.Sprintf("unavailable after restart (usage is not persisted) · %d messages", view.Turns)
+	}
+	line := fmt.Sprintf("↑%s · ↓%s (%s total) · %s",
 		formatCount(view.TokensIn), formatCount(view.TokensOut), formatCount(total), statusTurns(view.Turns))
+	if view.UsageUnknown {
+		line += " · partial since restart"
+	}
+	return line
 }
 
 // statusContextLine composes the context budget row. An unknown window renders
@@ -378,6 +391,12 @@ func statusTokensLine(view StatusView) string {
 func statusContextLine(view StatusView) string {
 	if view.ContextWindow <= 0 {
 		return "unknown window"
+	}
+	if !view.ContextKnown {
+		if view.UsageUnknown {
+			return "unavailable after restart (usage is not persisted)"
+		}
+		return "not measured yet"
 	}
 	pct := view.ContextUsed * 100 / view.ContextWindow
 	if pct < 0 {
@@ -523,9 +542,11 @@ func (p *Program) statusView() StatusView {
 		Prompt:        prompt,
 		TokensIn:      p.state.SessionIn,
 		TokensOut:     liveSessionOut(p.state),
+		UsageUnknown:  p.state.UsageUnknown,
 		Turns:         turns,
 		ContextUsed:   liveContextUsed(p.state),
 		ContextWindow: p.state.Status.ContextWindow,
+		ContextKnown:  p.state.Status.ContextKnown,
 		Model:         p.state.Status.Model,
 		Workspace:     p.state.Status.Workspace,
 		Policy:        statusPolicy(p.state.Status.Workspace),

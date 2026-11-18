@@ -963,7 +963,7 @@ func externalRequirement(objective string) ExternalRequirement {
 		"release notes", "search the web", "search online", "look up online",
 		"web search", "from the web", "website", "published documentation",
 		"external documentation", "up-to-date documentation", "current documentation",
-		"gry", "mcp", "model context protocol",
+		"mcp", "model context protocol",
 	} {
 		if strings.Contains(normalized, " "+phrase+" ") {
 			return ExternalRequirement{Required: true, Reason: "the request asks for external knowledge"}
@@ -984,8 +984,6 @@ func constraintVocabulary(objective string) []string {
 			}
 		}
 	}
-	add("no_mutation", "do not modify anything", "do not change anything",
-		"read only", "without modifying", "without changing")
 	if contract.NoMutationRequested(objective) {
 		out = append(out, "no_mutation")
 	}
@@ -1319,6 +1317,14 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 		if shape.RepositoryScope || len(intent.Targets) == 0 {
 			add("repository_overview", "a repository change needs enough structure to place it correctly")
 		}
+		if len(intent.Targets) == 0 && shape.RepositoryFacts.HasSourceCode() && !documentationChange(shape.Objective) {
+			// A targetless code change names no coordinate to edit. Without an
+			// implementation observation the model can only survey forever;
+			// require one source read, then commit. A documentation-only change
+			// is satisfied by the documentation it will edit, not by unrelated
+			// source.
+			add("implementation_observation", "a change without a named target needs an implementation observation before acting")
+		}
 		if len(shape.Verification) > 0 {
 			add("verification", "the contract requires a successful check after the change")
 		}
@@ -1360,8 +1366,102 @@ func requiredKnowledge(shape TaskShape, intent contract.IntentContract) []Knowle
 			(shape.BroadRepositoryAnalysis || testAbsenceQuestion(shape.Objective)) {
 			add("test_inventory", "the request asks about tests, so a complete filtered inventory is needed before any absence claim")
 		}
+		if shape.Investigation && !shape.Phase && diagnosticProbeRequired(shape.Objective) {
+			add("execution_result", "the investigation must observe the failing behavior, not only read about it")
+		}
+		if shape.Investigation && !shape.Phase && (conclusionRequired(shape.Objective) || failureInvestigation(shape.Objective)) {
+			add("investigation_conclusion", "the investigation must record SAFE, BUG, or UNRESOLVED with the evidence that supports it")
+			if shape.RepositoryScope && !shape.BroadRepositoryAnalysis {
+				// A repository-wide verdict needs at least two content observations
+				// before the conclusion surface takes over; one file cannot establish
+				// an entrypoint and a bypass answer.
+				add("repository_survey", "a repository-wide verdict needs more than one content observation before concluding")
+			}
+		}
+		if shape.Investigation {
+			content := false
+			for _, need := range needs {
+				if need.Key == "repository_overview" || need.Key == "repository_survey" ||
+					strings.HasPrefix(need.Key, "target_content:") {
+					content = true
+					break
+				}
+			}
+			if !content {
+				add("repository_overview", "an investigation needs at least one content-bearing repository observation")
+			}
+		}
 	}
 	return needs
+}
+
+// documentationChange reports a targetless mutation whose subject is prose,
+// comments, or documentation rather than implementation source.
+func documentationChange(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	for _, phrase := range []string{
+		" documentation ", " docs ", " readme ", " guide ", " guides ",
+		" comment ", " comments ", " changelog ", " prose ", " manual ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// diagnosticProbeRequired reports an investigation whose answer depends on
+// observed behavior: a failure, reproduction, crash, or performance symptom.
+// "Investigate the architecture" is answerable from source; "investigate why
+// the test is failing" is not, so the latter keeps the executable surface open
+// until a command actually runs. A successful unrelated command is still not
+// the probe; the completion boundary judges the evidence, not the turn count.
+func diagnosticProbeRequired(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	for _, phrase := range []string{
+		" failing ", " failure ", " reproduce ", " reproduction ", " crash ",
+		" panics ", " panic ", " bottleneck ", " why does ", " why is ",
+		" debug ", " race ", " deadlock ", " hangs ", " stutters ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// failureInvestigation reports an investigation whose subject is a failure
+// mode. Those prompts need a verdict even when they do not spell out the word
+// "conclude": "the parser doesn't validate empty input" is a claim that must be
+// closed as SAFE, BUG, or UNRESOLVED, not left as another survey.
+func failureInvestigation(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	for _, phrase := range []string{
+		" failure ", " failures ", " failing ", " bug ", " bugs ", " crash ",
+		" panics ", " panic ", " deadlock ", " race condition ", " reproduce ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// conclusionRequired reports an investigation prompt that explicitly asks for
+// a terminal verdict. A plain explanation does not need a verdict artifact; a
+// production-safety benchmark that says "conclude SAFE, BUG, or UNRESOLVED"
+// does, because otherwise another repository survey can always look useful.
+func conclusionRequired(objective string) bool {
+	normalized := " " + normalizeWords(objective) + " "
+	for _, phrase := range []string{
+		" conclude ", " conclusion ", " verdict ", " safe or bug ",
+		" safe bug ", " safe or unresolved ", " bug or unresolved ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // completionConditions derives the deterministic completion conditions.

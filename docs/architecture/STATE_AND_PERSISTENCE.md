@@ -70,6 +70,12 @@ a project's worker, and the gate never writes it.
 
 ### Session scope — `sessions.db`
 
+Provider usage is intentionally not a session-store column: the transcript
+stores messages, not billed token totals. A resumed session therefore reports
+token usage and context as **unavailable after restart**, never as measured
+zeros. Turns run after the resume are measured and labelled partial since
+restart; `/new` starts a genuinely empty ledger.
+
 ```text
 sessions   (id, created_at, updated_at, cwd, model, workspace, project, title, archived, protected)
 messages   (id, session_id → sessions, seq, role, payload, created_at)

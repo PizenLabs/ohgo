@@ -23,6 +23,7 @@ func statusViewFixture() StatusView {
 		Turns:         7,
 		ContextUsed:   500,
 		ContextWindow: 2000,
+		ContextKnown:  true,
 		Model:         "ollama/qwen2.5-coder:7b",
 		Workspace:     "ASK",
 		Policy:        "Read-Only",
@@ -247,5 +248,22 @@ func TestStatusPolicy(t *testing.T) {
 		if got := statusPolicy(in); got != want {
 			t.Errorf("statusPolicy(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A resumed session has transcript messages but no persisted token ledger.
+// The status card must not print "↑0 · ↓0 · 20 turns" as if that were a
+// measured empty history.
+func TestStatusTokensAfterResumeAreUnavailable(t *testing.T) {
+	view := statusViewFixture()
+	view.UsageUnknown = true
+	view.TokensIn, view.TokensOut = 0, 0
+	view.Turns = 20
+	line := statusTokensLine(view)
+	if !strings.Contains(line, "unavailable after restart") || !strings.Contains(line, "20 messages") {
+		t.Fatalf("token line = %q, want unavailable with the transcript count", line)
+	}
+	if strings.Contains(line, "↑0") {
+		t.Fatalf("token line fabricated zero usage: %q", line)
 	}
 }

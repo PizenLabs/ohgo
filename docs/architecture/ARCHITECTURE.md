@@ -361,9 +361,14 @@ runtime suffix       ONE ai.RuntimeStateMessage: the per-turn briefing
 - **The conversation is append-only.** `Loop.freezePrefix` restores the bytes an
   already-sent message was first sent with and reports any projector rewrite it
   suppressed. A projection still bounds each result, but the bound is a function
-  of the result alone (`ProjectorOptions.ExactKeepBytes`), never of the
-  conversation's current length: aggregate growth is compaction's job, where
-  reduction is a deliberate transition rather than a per-request side effect.
+  of the result alone (`ProjectorOptions.ExactKeepBytes`,
+  `ProjectorOptions.StructuralKeepBytes`), never of the conversation's current
+  length: aggregate growth is compaction's job, where reduction is a deliberate
+  transition rather than a per-request side effect. Structural observations
+  (grep, symbols, graph, refs, structure) keep their exact coordinates up to the
+  structural bound and are then excerpted with the cut stated; a short summary
+  is reserved for derived or transient evidence because discarding coordinates
+  makes the model repeat the query.
 - **The runtime suffix is a view, never state.** It is rebuilt per request, never
   persisted, appears exactly once, and is last so the model reads the current
   direction last. One-shot recovery directives (the answer request, protocol and
@@ -501,7 +506,11 @@ the cap. A request the provider rejected on its merits (400/401/403/404, a
 context overflow, a cancellation) is never retried, and a retry re-issues the
 identical request before any assistant message or tool call exists, so it
 cannot duplicate a tool effect or spend an additional turn. Exhausting the
-policy reports the provider failure; it never becomes completion.
+policy reports the provider failure; it never becomes completion. The loop
+reports each `ProviderRequested`, `ProviderRetrying`, `ProviderFailed`, and
+`ProviderRecovered` transition through `OnProviderActivity` before it sleeps,
+so the UI names the measured status, attempt, and backoff instead of showing
+"preparing workspace" through a hidden retry window.
 
 Native tool calls and serialized tool calls inside assistant text are two
 transport representations of the same logical intent. Both converge on
@@ -1425,7 +1434,10 @@ approval, shutting down) are computed per render, never stored.
   (`reading retry.go`, `running tests`, `resolving dependencies`), an open
   thought channel contributes its primary action (`inspecting the repository`),
   and only a phase with no concrete evidence falls back to the semantic word
-  (`preparing workspace`, `formatting response`). Phrases are lowercase and
+  (`preparing workspace`, `formatting response`). A provider transport state
+  overrides the fallback with the measured status and retry countdown
+  (`rate limited · retry 2/6 in 20s`, `credential rejected · stopped`), so a
+  429 is never presented as workspace preparation. Phrases are lowercase and
   carry no trailing dots: the live row already implies ongoing work. Phrases are latched for a
   500ms floor so fast calls cannot flicker the row; the queued update coalesces
   to the newest action still true when the floor expires. The middle is pure

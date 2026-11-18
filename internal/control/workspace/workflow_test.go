@@ -125,3 +125,78 @@ func TestBuildIntentContractRecognizesAContractedNoMutationLimit(t *testing.T) {
 		t.Fatal("a contracted no-mutation limit was dropped from the contract")
 	}
 }
+
+// A deliverable that mentions read-only validation and asks not to change
+// anything else is a mutation task. The quoted sentence is content, and
+// "anything else" scopes the prohibition; neither is a whole-change limit.
+func TestBuildIntentContractIgnoresQuotedReadOnlyDeliverable(t *testing.T) {
+	const request = `Add a short "Validation note" section at the end of README.md containing exactly one sentence: "This repository was used for a read-only Ohgo validation." Do not change anything else. Verify the file content after the edit.`
+	intent := BuildIntentContract(request)
+	if intent.Kind != ObjectiveMutation {
+		t.Fatalf("kind = %s, want mutation", intent.Kind)
+	}
+	if intent.Grounding == nil {
+		t.Fatal("no grounding")
+	}
+	for _, constraint := range intent.Grounding.Constraints {
+		if constraint == "no_mutation" {
+			t.Fatal("the quoted deliverable or scoped limit became a whole-change prohibition")
+		}
+	}
+}
+
+// Appending a line is a repository mutation even though the verb is not
+// "add". Without this vocabulary the contract stays informational, the
+// mutation tools are withheld, and the model is told mutation is forbidden.
+func TestBuildIntentContractRecognizesAppend(t *testing.T) {
+	const request = `Append exactly one line comment "// ohgo validation" to the end of backend/go.mod. Do not change any other file.`
+	if !RequestsMutation(request) {
+		t.Fatal("append was not recognized as a mutation request")
+	}
+	intent := BuildIntentContract(request)
+	if intent.Kind != ObjectiveMutation {
+		t.Fatalf("kind = %s, want mutation", intent.Kind)
+	}
+}
+
+// The benchmark's investigation-only prompt names a fix only to forbid it.
+// It must stay informational, with no target or verification requirement that
+// the FUZZ role can never satisfy.
+func TestInvestigationOnlyPromptDoesNotBecomeMutation(t *testing.T) {
+	text := `Investigate the order-creation flow and determine whether there is any production-reachable path.
+
+The investigation must answer:
+1. What is the actual production entrypoint?
+2. Does validation happen before persistence?
+3. Are there any bypass paths?
+4. Conclude one of SAFE, BUG, or UNRESOLVED.
+
+Do not modify source code, tests, configuration, migrations, or repository state.
+Do not create a fix. This is an investigation-only benchmark.`
+	c := BuildIntentContract(text)
+	if c.Kind != ObjectiveInformational {
+		t.Fatalf("kind = %s, want informational", c.Kind)
+	}
+	if c.ConditionalMutation {
+		t.Fatal("the investigation-only prompt was marked conditional mutation")
+	}
+	for _, target := range c.Targets {
+		if strings.EqualFold(target.Value, "UNRESOLVED") {
+			t.Fatalf("terminal-state word became a symbol target: %+v", c.Targets)
+		}
+	}
+}
+
+// A negated clause is a prohibition, not a change request. The same clause
+// model already handles grounding actions; mutation classification must agree.
+func TestNegatedMutationClauseDoesNotRequestMutation(t *testing.T) {
+	for _, text := range []string{
+		"Do not create a fix.",
+		"Do not modify source code; explain the flow.",
+		"Never implement the change; report the finding.",
+	} {
+		if RequestsMutation(text) {
+			t.Errorf("RequestsMutation(%q) = true, want false", text)
+		}
+	}
+}

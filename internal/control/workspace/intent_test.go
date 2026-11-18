@@ -758,3 +758,13 @@ func TestWholeChangeProhibitionWithReadRequestNarrowsToAsk(t *testing.T) {
 		t.Fatal("the no-mutation limit was dropped")
 	}
 }
+
+// A comma before a participial "using …" phrase must not turn a read request
+// into an execution request. That made ASK refuse a normal structural question
+// at the authority boundary.
+func TestParticipialUsingDoesNotEscalateReadRequest(t *testing.T) {
+	const text = `Explain the call chain from AdminCreateProduct in backend/layout/http_admin_products.go to product persistence, using structural evidence.`
+	if got := AnalyzeRequest(text).Capability; got != CapabilityRead {
+		t.Fatalf("capability = %s, want read", got)
+	}
+}

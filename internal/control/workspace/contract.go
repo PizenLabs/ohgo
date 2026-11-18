@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"path"
 	"regexp"
 	"strings"
 
@@ -86,6 +87,7 @@ const (
 // the completion evaluator can return NEEDS_REVIEW instead of guessing.
 func BuildIntentContract(text string) IntentContract {
 	objective := strings.TrimSpace(text)
+	noMutation := contract.NoMutationRequested(objective)
 	contract := IntentContract{Objective: objective}
 
 	if objective == "" {
@@ -97,7 +99,14 @@ func BuildIntentContract(text string) IntentContract {
 	}
 
 	intent := Classify(objective)
+	// A whole-change prohibition is an authority boundary, not a hidden
+	// mutation request. The regular classifier already excludes negated
+	// clauses; this guard also covers phrasings such as "do not create a fix"
+	// and "investigation only" that name the change as a class.
 	mutation := RequestsMutation(objective)
+	if noMutation && !ConditionalWorkflow(objective) {
+		mutation = false
+	}
 	// A staged conditional request keeps the change as its objective so the
 	// semantics, targets, and verification survive for the branch, but records
 	// that the change is deferred until the investigation finds a reason for it.
@@ -432,13 +441,14 @@ func verificationRequirements(text string, kind ObjectiveKind) []VerificationReq
 	}
 	for _, match := range verificationCommand.FindAllStringSubmatchIndex(text, -1) {
 		check := commandCheck(text[match[2]:match[3]])
+		base := commandWorkingDirectory(text[:match[0]])
 		scopes := commandScopes(text[match[1]:])
 		if len(scopes) == 0 {
-			addScope(".", check)
+			addScope(scopeUnder(base, "."), check)
 			continue
 		}
 		for _, scope := range scopes {
-			addScope(scope, check)
+			addScope(scopeUnder(base, scope), check)
 		}
 	}
 	prose := proseCheck(text)
@@ -449,6 +459,47 @@ func verificationRequirements(text string, kind ObjectiveKind) []VerificationReq
 		addScope(scope, prose)
 	}
 	return out
+}
+
+// commandWorkingDirectory returns the directory named by a `cd <dir> &&`
+// prefix immediately before a verification command. Multi-module repositories
+// commonly write "cd backend && go test ./..."; without the prefix the parser
+// treats "./..." as the repository root and demands coverage the command never
+// claimed.
+func commandWorkingDirectory(prefix string) string {
+	segment := prefix
+	if index := strings.LastIndexAny(segment, ";\n"); index >= 0 {
+		segment = segment[index+1:]
+	}
+	fields := strings.Fields(segment)
+	for index := len(fields) - 1; index >= 0; index-- {
+		token := strings.Trim(fields[index], "'\"")
+		if !strings.EqualFold(token, "cd") || index+1 >= len(fields) {
+			continue
+		}
+		dir := strings.Trim(fields[index+1], "'\"")
+		dir = strings.TrimSpace(dir)
+		if dir == "" || dir == "&&" || strings.HasPrefix(dir, "/") || strings.Contains(dir, "..") {
+			return ""
+		}
+		return strings.Trim(dir, "/")
+	}
+	return ""
+}
+
+// scopeUnder places a parsed command scope under its working directory.
+func scopeUnder(base, scope string) string {
+	if base == "" {
+		return scope
+	}
+	switch scope {
+	case "", "*", ".":
+		return base
+	}
+	if strings.HasPrefix(scope, "/") || strings.Contains(scope, "..") {
+		return ""
+	}
+	return path.Join(base, scope)
 }
 
 // commandCheck maps a Go verification subcommand to the check it performs.
@@ -1363,6 +1414,11 @@ var symbolStopWords = map[string]bool{
 	"ok": true, "cli": true, "tui": true, "api": true, "url": true,
 	"json": true, "http": true, "https": true, "id": true, "ast": true,
 	"sse": true, "ui": true, "ai": true,
+	// Terminal-state vocabulary in an investigation prompt is not a symbol
+	// target. "Conclude SAFE, BUG, or UNRESOLVED" must not become an
+	// impossible coordinate requirement.
+	"safe": true, "bug": true, "bugs": true, "unresolved": true,
+	"blocked": true, "pass": true, "fail": true, "failing": true,
 	"github": true, "gitlab": true, "bitbucket": true, "npm": true, "pypi": true,
 	"dockerhub": true, "openai": true, "anthropic": true, "google": true,
 	"microsoft": true, "amazon": true, "aws": true, "azure": true, "gcp": true,

@@ -9,6 +9,40 @@ import (
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
+// ProviderActivityPhase is the transport-visible provider state.
+//
+// It is a projection of the retry loop, not a second retry policy: the loop
+// owns the attempt count, delay, and classification, and a UI only renders
+// what it reports.
+type ProviderActivityPhase string
+
+// Provider activity phases.
+const (
+	// ProviderRequested means one attempt is currently in flight.
+	ProviderRequested ProviderActivityPhase = "requested"
+	// ProviderRetrying means an attempt failed and the loop is waiting before
+	// the next identical attempt.
+	ProviderRetrying ProviderActivityPhase = "retrying"
+	// ProviderFailed means no further attempt will be made in this run.
+	ProviderFailed ProviderActivityPhase = "failed"
+	// ProviderRecovered means an attempt opened successfully after a retry.
+	ProviderRecovered ProviderActivityPhase = "recovered"
+)
+
+// ProviderActivity reports one provider transport transition.
+//
+// Err is the transport failure, Status is the HTTP status when the provider
+// supplied one, and Delay is the wait before the next attempt. The UI must not
+// have to parse Err to know whether the request is merely rate-limited.
+type ProviderActivity struct {
+	Phase    ProviderActivityPhase
+	Attempt  int
+	Attempts int
+	Delay    time.Duration
+	Status   int
+	Err      error
+}
+
 // RetryPolicy bounds retries for a provider request that produced no model
 // output because the transport was temporarily unavailable.
 //
@@ -110,27 +144,65 @@ func (p RetryPolicy) delay(attempt int, err error) time.Duration {
 // openStream issues one provider request, retrying only a transient transport
 // failure. The request is identical on every attempt, so a rate limit cannot
 // duplicate model-visible work.
+//
+// Every transition is reported before the wait starts. A UI must not keep
+// saying "preparing workspace" while the loop sleeps through a 429 backoff.
 func (l *Loop) openStream(ctx context.Context, req ai.Request) (*ai.Stream, error) {
 	policy := l.cfg.Retry.normalized()
 	var lastErr error
 	for attempt := 0; attempt < policy.Attempts; attempt++ {
+		l.reportProvider(ProviderActivity{
+			Phase: ProviderRequested, Attempt: attempt + 1, Attempts: policy.Attempts,
+		})
 		stream, err := l.cfg.Stream(ctx, req)
 		if err == nil {
+			l.reportProvider(ProviderActivity{
+				Phase: ProviderRecovered, Attempt: attempt + 1, Attempts: policy.Attempts,
+			})
 			return stream, nil
 		}
 		lastErr = err
 		if attempt == policy.Attempts-1 || !retryableProviderError(err) {
+			l.reportProvider(ProviderActivity{
+				Phase: ProviderFailed, Attempt: attempt + 1, Attempts: policy.Attempts,
+				Status: providerHTTPStatus(err), Err: err,
+			})
 			return nil, lastErr
 		}
 		delay := policy.delay(attempt, err)
 		if !l.canWait(delay) {
+			l.reportProvider(ProviderActivity{
+				Phase: ProviderFailed, Attempt: attempt + 1, Attempts: policy.Attempts,
+				Status: providerHTTPStatus(err), Err: lastErr,
+			})
 			return nil, lastErr
 		}
+		l.reportProvider(ProviderActivity{
+			Phase: ProviderRetrying, Attempt: attempt + 1, Attempts: policy.Attempts,
+			Delay: delay, Status: providerHTTPStatus(err), Err: err,
+		})
 		if err := waitContext(ctx, delay); err != nil {
 			return nil, err
 		}
 	}
 	return nil, lastErr
+}
+
+// reportProvider publishes one transport transition when a host is listening.
+func (l *Loop) reportProvider(activity ProviderActivity) {
+	if l.cfg.OnProviderActivity != nil {
+		l.cfg.OnProviderActivity(activity)
+	}
+}
+
+// providerHTTPStatus extracts the HTTP status from a provider rejection, or 0
+// when the failure was a transport timeout without a response.
+func providerHTTPStatus(err error) int {
+	var status providerStatus
+	if errors.As(err, &status) {
+		return status.StatusCode()
+	}
+	return 0
 }
 
 // canWait reports whether a retry delay still fits inside the run's wall-clock

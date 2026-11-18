@@ -1,5 +1,10 @@
 package tui
 
+import (
+	"fmt"
+	"time"
+)
+
 // Live telemetry bar.
 //
 // The bar is a projection, never a second state machine: it reads the same
@@ -69,6 +74,11 @@ func projectLiveTelemetry(s State) liveTelemetry {
 // tools" requires a running tool; "formatting response" requires visible
 // answer text. The fallback is never inferred from model prose.
 func telemetryIntentLabel(s State, thinking ThinkingState) string {
+	if s.ProviderWait != nil {
+		if label := providerWaitLabel(*s.ProviderWait, s.frameAt); label != "" {
+			return label
+		}
+	}
 	switch thinking.Phase {
 	case ThinkingWaiting:
 		return "waiting for approval"
@@ -97,6 +107,57 @@ func telemetryIntentLabel(s State, thinking ThinkingState) string {
 		return "preparing workspace"
 	default:
 		return ""
+	}
+}
+
+// providerWaitLabel names the transport state the loop reported. It never
+// guesses from the model or from elapsed wall time: a retry label carries the
+// loop's own attempt count and measured backoff.
+func providerWaitLabel(w ProviderWait, now time.Time) string {
+	kind := providerFailureKind(w.Status)
+	switch w.Phase {
+	case "requested":
+		return "waiting for provider"
+	case "retrying":
+		delay := w.Delay
+		// The event carries the measured backoff, but a static "in 30s"
+		// goes stale while the user watches. frameAt is the latest
+		// presentation tick; absent a tick, the event time is the best
+		// measured anchor.
+		if delay > 0 && !w.At.IsZero() && !now.IsZero() {
+			if remaining := w.At.Add(delay).Sub(now); remaining > 0 {
+				delay = remaining
+			} else {
+				delay = 0
+			}
+		}
+		if delay > 0 {
+			return fmt.Sprintf("%s · retry %d/%d in %s", kind, w.Attempt+1, w.Attempts, formatDurationPrecise(delay))
+		}
+		return fmt.Sprintf("%s · retry %d/%d", kind, w.Attempt+1, w.Attempts)
+	case "failed":
+		return kind + " · stopped"
+	default:
+		return ""
+	}
+}
+
+// providerFailureKind classifies a provider transport failure by the status the
+// provider actually returned. A zero status is a transport failure without a
+// response; it is not guessed to be a rate limit.
+func providerFailureKind(status int) string {
+	switch status {
+	case 401, 403:
+		return "credential rejected"
+	case 408, 504:
+		return "provider timeout"
+	case 429:
+		return "rate limited"
+	default:
+		if status >= 500 {
+			return "provider unavailable"
+		}
+		return "provider error"
 	}
 }
 

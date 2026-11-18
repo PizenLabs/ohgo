@@ -51,6 +51,12 @@ func TestStructureToolAnswersInventoryViews(t *testing.T) {
 	if details["snapshot_id"] == "" || details["generation"] == nil {
 		t.Errorf("overview lacks snapshot provenance: %+v", details)
 	}
+	if details["provider"] != "native" {
+		t.Errorf("structure provider = %v, want native", details["provider"])
+	}
+	if !strings.Contains(overview.Text, "provider: native") {
+		t.Errorf("structure text omits provider attribution:\n%s", overview.Text)
+	}
 	if !strings.Contains(overview.Text, "pending_files: 3") ||
 		!strings.Contains(overview.Text, "languages: Go=UNPARSED/3") {
 		t.Errorf("adaptive overview did not disclose its unparsed inventory:\n%s", overview.Text)

@@ -58,6 +58,10 @@ type ProjectionResult struct {
 	// refused before any tool runs, while a different proposal stays possible.
 	// A refusal narrows the action space and never grants authority.
 	Refusals map[string]string
+	// ToolChoice constrains this request's tool use when non-zero. A projector
+	// uses it only for a capability it already offered; it cannot name a tool
+	// outside the projected surface, and it never grants authority.
+	ToolChoice ai.ToolChoice
 	// Report describes what the projection did, for audit.
 	Report ProjectionReport
 }

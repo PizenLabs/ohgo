@@ -191,6 +191,9 @@ type Config struct {
 	WorkspaceHandoff func(call ai.ToolCall, tool Tool, args map[string]any) (moved bool)
 	// OnTurn is called after each turn, for streaming progress to a UI.
 	OnTurn func(Turn)
+	// OnProviderActivity reports provider attempts, retries, failures, and
+	// recovery. It runs on the request goroutine and must not block.
+	OnProviderActivity func(ProviderActivity)
 	// OnTextDelta receives visible model text while a stream is still open,
 	// in order. A UI publishes each delta so the answer reveals as it is
 	// generated instead of landing as one block when the turn completes.
@@ -768,6 +771,12 @@ func (l *Loop) SetTurnHook(hook func(Turn)) {
 	l.cfg.OnTurn = hook
 }
 
+// SetProviderActivityHook installs the transport-state reporter after
+// construction, or nil to silence it. It must be set before Run.
+func (l *Loop) SetProviderActivityHook(hook func(ProviderActivity)) {
+	l.cfg.OnProviderActivity = hook
+}
+
 // SetCompactHook installs the compaction reporter after construction, or nil
 // to silence compaction reports.
 //
@@ -971,6 +980,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		terminal := false
 		closed := false
 		refusals := map[string]string(nil)
+		var projectedToolChoice ai.ToolChoice
 		// redundant names offered capabilities the control plane judged unable
 		// to close the current gap. They stay offered so the request's tool
 		// block, and therefore its cached prefix, survives; the loop still
@@ -1012,6 +1022,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			terminal = report.Terminal
 			stopReason = report.StopReason
 			refusals = projected.Refusals
+			if projected.ToolChoice.Type != "" || projected.ToolChoice.ToolName != "" {
+				projectedToolChoice = projected.ToolChoice
+			}
 			report.Applied = true
 			report.Turn = len(turns)
 			if emptyProjection {
@@ -1109,6 +1122,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		toolChoice := l.cfg.ToolChoice
 		if l.cfg.GetToolChoice != nil {
 			toolChoice = l.cfg.GetToolChoice()
+		}
+		if projectedToolChoice.Type != "" || projectedToolChoice.ToolName != "" {
+			toolChoice = projectedToolChoice
 		}
 
 		if err := ctx.Err(); err != nil {

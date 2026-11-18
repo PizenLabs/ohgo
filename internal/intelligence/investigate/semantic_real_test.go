@@ -45,7 +45,7 @@ func TestSemanticProviderResolvesWithGopls(t *testing.T) {
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	observation, err := provider.Observe(ctx, Request{Question: "Serve"}, plannerStep(), newMeter(Budget{}.normalized()))
+	observation, err := provider.Observe(ctx, Request{Question: "Serve"}, plannerStep(), NewMeter(Budget{}.normalized()))
 	if err != nil {
 		t.Fatalf("observe: %v", err)
 	}

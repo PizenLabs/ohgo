@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/external/knowledge"
 )
 
@@ -103,9 +104,10 @@ const (
 	// adapter, resolution, completeness, and truncation; version 4 adds
 	// project-scope completeness; version 5 adds bounded structural counts
 	// for claim support; version 6 adds inventory completeness, scope gaps,
-	// and the producing structural view. Older records stay readable because
+	// and the producing structural view; version 7 adds a conclusion's
+	// explicit unresolved code coordinates. Older records stay readable because
 	// every new field is optional and additive.
-	EvidenceVersion = 6
+	EvidenceVersion = 7
 )
 
 // Source records where one observation came from.
@@ -212,6 +214,11 @@ type EvidenceItem struct {
 	// when one applies. It lets the claim projection distinguish an inventory
 	// from a targeted source observation without parsing the rendered line.
 	View string `json:"view,omitempty"`
+	// Unresolved names the concrete code coordinates a conclusion still
+	// depends on. A conclusion is recorded for audit even when one of these is
+	// unresolved, but it is not admissible until the runtime observes the
+	// coordinate or a bounded attempt classifies the conclusion as UNRESOLVED.
+	Unresolved []string `json:"unresolved,omitempty"`
 }
 
 // EvidenceClass is the claim-facing class of one observation.
@@ -609,6 +616,18 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 		return s.hasRepositoryOverview()
 	case key == "repository_survey":
 		return s.hasRepositorySurvey(s.Facts)
+	case key == "implementation_observation":
+		return s.hasImplementationObservation()
+	case key == "investigation_conclusion":
+		// Only the latest conclusion is authoritative. An earlier complete
+		// conclusion cannot mask a later one that names a new unresolved
+		// coordinate; otherwise the admissibility gate is bypassed by history.
+		latest, ok := s.latestConclusion()
+		return ok && latest.Complete && latest.Status != StatusConflicting &&
+			latest.Status != StatusRequired && latest.Status != StatusUnknown &&
+			!contract.IsProvisionalConclusion(latest.Value)
+	case strings.HasPrefix(key, "investigation_target:"):
+		return s.investigationTargetObserved(strings.TrimPrefix(key, "investigation_target:"), execution)
 	case key == "vcs_observation":
 		return s.hasVCSObservation()
 	case key == "external_observation":
@@ -680,6 +699,33 @@ func (s *EvidenceState) hasRepositoryOverview() bool {
 			// A search that returned no payload or a structural query with no
 			// coordinates observed nothing content-bearing.
 			if strings.TrimSpace(item.Value) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasImplementationObservation reports whether at least one source-content
+// observation exists. A targetless mutation needs a concrete implementation
+// fact before it can choose an edit; documentation and manifests are not
+// enough to place the change.
+func (s *EvidenceState) hasImplementationObservation() bool {
+	if s == nil {
+		return false
+	}
+	for _, item := range s.Items {
+		if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(item.ID, "file:"):
+			if item.Retention == RetentionExact && strings.TrimSpace(item.Value) != "" &&
+				isImplementationObservation(item) {
+				return true
+			}
+		case strings.HasPrefix(item.ID, "search:grep:"), strings.HasPrefix(item.ID, "symbols:"):
+			if strings.TrimSpace(item.Value) != "" && isImplementationObservation(item) {
 				return true
 			}
 		}
@@ -943,6 +989,10 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 		return true, s.addSymbols(outcome, details, seq)
 	case "graph", "refs", "structure":
 		return true, s.addStructural(outcome, details, seq)
+	case "investigate":
+		return true, s.addInvestigation(outcome, details, seq)
+	case "conclude":
+		return true, s.addConclusion(outcome, details, seq)
 	case "write", "edit", "delete":
 		return true, s.addMutation(outcome, path, details, seq)
 	case "bash", "verify":
@@ -1197,6 +1247,264 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 		}
 	}
 	return changed
+}
+
+// addConclusion records the model's terminal investigation verdict.
+//
+// It is a control observation, not a proof: the evidence and uncertainty are
+// preserved verbatim for review, and completion still evaluates the claims.
+// A conclusion that names a concrete unresolved code coordinate is recorded
+// provisionally. The named coordinate becomes the next evidence requirement;
+// another conclusion cannot close the task until that coordinate was observed
+// or a bounded number of attempts explicitly classifies the result as
+// UNRESOLVED. This is what keeps "I could not determine X" from becoming a
+// terminal answer before X was even inspected.
+func (s *EvidenceState) addConclusion(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
+	verdict := strings.ToUpper(strings.TrimSpace(detailString(details, "verdict")))
+	if verdict == "" {
+		return false
+	}
+	status := strings.ToUpper(strings.TrimSpace(detailString(details, "status")))
+	if status == "" {
+		status = "FINAL" // legacy observations predate the explicit status
+	}
+	evidence := strings.TrimSpace(detailString(details, "evidence"))
+	uncertainty := strings.TrimSpace(detailString(details, "uncertainty"))
+	// Admission is a control decision, not a consequence of calling the tool.
+	// A payload that says it is provisional, lacks supporting evidence, or
+	// carries an unrecognized status remains an observation. It cannot satisfy
+	// investigation_conclusion or open the answer boundary.
+	if status == "IN_PROGRESS" || (status != "FINAL" && status != "") ||
+		evidence == "" || contract.IsProvisionalConclusion(evidence, uncertainty) {
+		return s.addConclusionProgress(outcome, verdict, evidence, details, seq)
+	}
+	targets := unresolvedConclusionTargets(uncertainty)
+	previous, hasPrevious := s.latestConclusion()
+	// A provisional conclusion's obligation cannot be erased by simply
+	// omitting it from the next call. If it is not observed, it remains the
+	// frontier; if it was observed, the next conclusion may close the task.
+	if hasPrevious && !previous.Complete && len(previous.Unresolved) > 0 {
+		targets = mergeConclusionTargets(previous.Unresolved, targets)
+	}
+	attempts := 1
+	newEvidence := false
+	if hasPrevious && !previous.Complete {
+		attempts = previous.Counts["attempts"] + 1
+		newEvidence = s.hasObservationAfter(previous.Seq)
+	}
+	resolved := len(targets) == 0
+	if !resolved && hasPrevious && !previous.Complete {
+		resolved = s.targetsObservedAfter(previous.Seq, targets)
+	}
+	// A bounded investigation may explicitly settle as UNRESOLVED after it
+	// actually attempted the named gap. A repeated conclusion with no new
+	// observation is not an attempt; the projection's no-progress bound closes
+	// that shape instead of accepting it here.
+	hardLimit := !resolved && verdict == "UNRESOLVED" &&
+		attempts >= MaxConclusionAttempts && newEvidence
+	complete := resolved || hardLimit
+	unresolved := append([]string(nil), targets...)
+	if complete && resolved {
+		unresolved = nil
+	}
+	value := "verdict: " + verdict + "\nevidence: " + evidence
+	if uncertainty != "" {
+		value += "\nuncertainty: " + uncertainty
+	}
+	item := EvidenceItem{
+		ID:         "conclusion:" + digest(verdict+"\x00"+evidence),
+		Status:     StatusKnown,
+		Retention:  RetentionExact,
+		Provenance: ProvenanceDiagnostic,
+		Summary:    bound("conclusion "+verdict+": "+evidence, MaxEvidenceSummaryBytes),
+		Value:      bound(value, MaxEvidenceValueBytes),
+		Digest:     digest(value),
+		Complete:   complete,
+		Unresolved: unresolved,
+		View:       "conclusion",
+		Source:     Source{Tool: "conclude", CallID: outcome.CallID},
+		Seq:        seq,
+		Counts:     map[string]int{"attempts": attempts},
+	}
+	if !complete {
+		item.Conflict = "provisional conclusion: unresolved " + strings.Join(unresolved, ", ")
+	} else if hardLimit {
+		item.Conflict = "semantic limit reached: " + strings.Join(unresolved, ", ") + " remains unresolved"
+	}
+	return s.upsert(item)
+}
+
+// addConclusionProgress records an explicit progress observation. It is not a
+// conclusion: it does not satisfy investigation_conclusion, does not create or
+// clear a targeted obligation, and does not consume the terminal attempt
+// budget. The return value is deliberately false so replaying a progress marker
+// is not counted as new evidence or as task advancement.
+func (s *EvidenceState) addConclusionProgress(outcome agent.ToolOutcome, verdict, evidence string, details map[string]any, seq int) bool {
+	uncertainty := strings.TrimSpace(detailString(details, "uncertainty"))
+	value := "verdict candidate: " + verdict + "\nevidence: " + evidence
+	if uncertainty != "" {
+		value += "\nuncertainty: " + uncertainty
+	}
+	s.upsert(EvidenceItem{
+		ID:         "conclusion-progress:" + digest(verdict+"\x00"+evidence+"\x00"+uncertainty),
+		Status:     StatusKnown,
+		Retention:  RetentionDiagnostic,
+		Provenance: ProvenanceDiagnostic,
+		Summary:    bound("conclusion progress: "+evidence, MaxEvidenceSummaryBytes),
+		Value:      bound(value, MaxEvidenceValueBytes),
+		Digest:     digest(value),
+		Complete:   false,
+		View:       "conclusion_progress",
+		Source:     Source{Tool: "conclude", CallID: outcome.CallID},
+		Seq:        seq,
+	})
+	return false
+}
+
+// latestConclusion returns the most recently recorded conclusion.
+func (s *EvidenceState) latestConclusion() (EvidenceItem, bool) {
+	var latest EvidenceItem
+	found := false
+	for _, item := range s.Items {
+		if !strings.HasPrefix(item.ID, "conclusion:") {
+			continue
+		}
+		if !found || item.Seq > latest.Seq {
+			latest = item
+			found = true
+		}
+	}
+	return latest, found
+}
+
+// PendingConclusionTargets returns the named unresolved code coordinates of the
+// latest conclusion. It is empty once the conclusion is admissible, including
+// a bounded UNRESOLVED settlement.
+func (s *EvidenceState) PendingConclusionTargets() []string {
+	if s == nil {
+		return nil
+	}
+	latest, ok := s.latestConclusion()
+	if !ok || latest.Complete {
+		return nil
+	}
+	return append([]string(nil), latest.Unresolved...)
+}
+
+// investigationTargetObserved reports whether a pending conclusion's named
+// coordinate has been observed after that conclusion. Prior evidence is not
+// enough: the model explicitly declared the fact unresolved, so the runtime
+// requires a targeted observation rather than accepting a substring in an
+// earlier survey.
+func (s *EvidenceState) investigationTargetObserved(target string, _ ExecutionState) bool {
+	if s == nil || strings.TrimSpace(target) == "" {
+		return false
+	}
+	latest, ok := s.latestConclusion()
+	if !ok || latest.Complete {
+		return false
+	}
+	for _, unresolved := range latest.Unresolved {
+		if unresolved == target {
+			return s.targetsObservedAfter(latest.Seq, []string{target})
+		}
+	}
+	return false
+}
+
+// isConclusionObservation reports control records produced by conclude. A
+// progress record is not evidence of the repository and cannot satisfy either
+// a conclusion or a named target.
+func isConclusionObservation(id string) bool {
+	return strings.HasPrefix(id, "conclusion:") || strings.HasPrefix(id, "conclusion-progress:")
+}
+
+// hasObservationAfter reports whether the state recorded a non-conclusion
+// observation after seq. It is the attempt evidence for a hard UNRESOLVED
+// settlement: repeating a conclusion without doing anything is not an attempt.
+func (s *EvidenceState) hasObservationAfter(seq int) bool {
+	for _, item := range s.Items {
+		if item.Seq <= seq || isConclusionObservation(item.ID) {
+			continue
+		}
+		if item.Status == StatusRequired || item.Status == StatusUnknown {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// targetsObservedAfter reports whether every named target appears in a
+// non-conclusion observation after seq.
+func (s *EvidenceState) targetsObservedAfter(seq int, targets []string) bool {
+	if len(targets) == 0 {
+		return true
+	}
+	observed := make(map[string]bool, len(targets))
+	for _, item := range s.Items {
+		if item.Seq <= seq || isConclusionObservation(item.ID) {
+			continue
+		}
+		if item.Status == StatusRequired || item.Status == StatusUnknown {
+			continue
+		}
+		haystack := item.Source.Path + "\n" + item.ID + "\n" + item.Summary + "\n" + item.Value
+		for _, target := range targets {
+			if conclusionTargetMatches(haystack, target) {
+				observed[target] = true
+			}
+		}
+	}
+	for _, target := range targets {
+		if !observed[target] {
+			return false
+		}
+	}
+	return true
+}
+
+// addInvestigation records one bounded investigation as structural evidence.
+//
+// The tool result is a provider-backed observation, not model narration: its
+// status, stop reason, facts, and provider attribution are what the runtime
+// saw. Recording it is what lets a later projection know that an investigation
+// was actually attempted instead of treating the call as a generic protocol
+// event. The item does not claim the answer is proven; it records the
+// investigation's own conclusion and leaves completion to the evidence
+// evaluator.
+func (s *EvidenceState) addInvestigation(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
+	question := argString(outcome.Args, "question")
+	if strings.TrimSpace(question) == "" {
+		question = "investigation"
+	}
+	status := detailString(details, "status")
+	stop := detailString(details, "stop_reason")
+	if status == "" {
+		status = "unknown"
+	}
+	id := "investigation:" + question
+	if len(id) > 180 {
+		id = "investigation:" + digest(question)
+	}
+	summary := "investigation " + status
+	if stop != "" {
+		summary += " — " + stop
+	}
+	value := bound(outcome.Result.Text, MaxEvidenceValueBytes)
+	return s.upsert(EvidenceItem{
+		ID:         id,
+		Status:     StatusDerived,
+		Retention:  RetentionStructural,
+		Provenance: ProvenanceObservation,
+		Summary:    bound(summary, MaxEvidenceSummaryBytes),
+		Value:      value,
+		Digest:     digest(value),
+		Complete:   status == "sufficient",
+		View:       "investigate",
+		Source:     Source{Tool: "investigate", CallID: outcome.CallID},
+		Seq:        seq,
+	})
 }
 
 // addStructural records graph, refs, and structure observations as structural
@@ -1766,6 +2074,9 @@ func (s *EvidenceState) Bytes() int {
 // counts are small but they are still retained state, so they are counted.
 func (i EvidenceItem) retainedBytes() int {
 	total := len(i.ID) + len(i.Summary) + len(i.Value) + len(i.Conflict)
+	for _, target := range i.Unresolved {
+		total += len(target) + 1
+	}
 	for key := range i.Counts {
 		total += len(key) + 8
 	}

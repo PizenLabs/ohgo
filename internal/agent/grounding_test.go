@@ -916,3 +916,19 @@ func TestEvaluateTaskCompletionAcceptsObservedVCSAbsence(t *testing.T) {
 		t.Fatalf("control reason = %q, want the unproven-absence boundary", verdict.Reason)
 	}
 }
+
+// "No X to arbitrate" is an epistemic limit, not a repository absence. A run
+// without Gry/runtime evidence must be allowed to say it could not compare,
+// rather than fabricating a contradiction or demanding a file scan.
+func TestEpistemicContradictionLimitIsNotAbsence(t *testing.T) {
+	answer := "No Gry/runtime evidence was obtained, so there is no static-vs-runtime contradiction to arbitrate."
+	if claims := negativeClaims(answer); len(claims) != 0 {
+		t.Fatalf("an epistemic limit was treated as an absence claim: %+v", claims)
+	}
+	// The same sentence without the epistemic boundary remains an assertion
+	// that the contradiction does not exist and still needs evidence.
+	claims := negativeClaims("There is no static-vs-runtime contradiction in this repository.")
+	if len(claims) == 0 {
+		t.Fatal("an actual absence assertion was ignored")
+	}
+}

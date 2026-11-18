@@ -221,6 +221,12 @@ func ClassifyPrediction(text string) Prediction {
 		}
 		token := clauseHead(entry.text)
 		requested = append(requested, entry.text)
+		// "…, using structural evidence" is a participial modifier of the
+		// read request, not a second imperative. A leading "using npx …"
+		// remains execute evidence because that clause is the objective.
+		if i > 0 && token == "using" {
+			continue
+		}
 		if clauseInvestigates(entry.text) {
 			investigateHead = true
 		}
@@ -944,6 +950,7 @@ var mutationHeads = map[string]bool{
 	"migrate": true, "commit": true, "revert": true, "replace": true,
 	"introduce": true, "generate": true, "rewrite": true, "drop": true,
 	"merge": true, "publish": true, "deploy": true, "bump": true,
+	"append": true, "prepend": true, "insert": true,
 	"wire": true, "format": true, "configure": true, "enable": true,
 	"disable": true, "reset": true, "clean": true, "tidy": true,
 	"init": true, "initialize": true, "bootstrap": true, "scaffold": true,
@@ -1016,7 +1023,7 @@ func RequestsMutation(text string) bool {
 // helper is shared with the conditional-workflow analysis so the two cannot
 // disagree about which clause carries the change.
 func clauseRequestsMutation(entry clause) bool {
-	if entry.asked {
+	if entry.asked || negatedClause(entry.text) {
 		// A question about a change ("does this update GitHub?") does not
 		// request the change. Stating it as a mutation objective would make
 		// completion demand evidence the user never asked for.

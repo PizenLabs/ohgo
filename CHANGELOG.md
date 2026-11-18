@@ -5,6 +5,22 @@ immutable.
 
 ## [Unreleased]
 
+### Added
+
+- An optional external structural-intelligence provider for `investigate`.
+  `investigate.StructuralRouter` keeps the native structural engine as the
+  default and fallback, and uses the `intelligence/gry` adapter only for
+  information needs where an indexed repository graph is materially better
+  (architecture, targeted locate/flow/debug, impact, and test verification).
+  External observations are bounded, provenance-tagged (`SourceGRY`, never
+  `VERIFIED`), budgeted, and explicitly classified as `SUCCESS`, `PARTIAL`,
+  `STALE`, `AMBIGUOUS`, `UNRESOLVED`, `UNAVAILABLE`, `NOT_INDEXED`, or `FAILED`.
+  gry remains optional: no startup path launches it, it cannot mutate,
+  authorize, or complete a task, and its absence or failure falls back to the
+  native engine. The boundary is documented in
+  `docs/architecture/BOUNDARY_SPECIFICATION.md` and
+  `docs/architecture/UNIFIED_INTELLIGENCE.md` §12.
+
 ### Changed
 
 - The bottom status bar is now a priority projection of runtime state rather
@@ -31,6 +47,16 @@ immutable.
 
 ### Fixed
 
+- A source file paged through a successful shell content reader (`sed`, `cat`,
+  `head`, `tail`, `nl`, `less`, `more`, or `bat`) counts as opened for citation
+  grounding. A listing or a path mentioned in prose still does not count.
+- "No contradiction to arbitrate" is treated as an epistemic limit, not a
+  repository-wide absence. A run without Gry/runtime evidence can say the
+  static-vs-runtime comparison was not assessable instead of being forced to
+  claim no contradiction exists or to perform an unrelated file scan.
+- A failed `recall` of an unknown or evicted compaction id is an observed
+  archive absence, not an unrecovered tool failure. Reading the source directly
+  after the miss can complete the task.
 - A documented project identity is no longer reported as an unverified
   implementation claim. `DocumentationIdentityTerms` also reads the name an
   opening definition introduces (`GoCommerce is an e-commerce application`), so

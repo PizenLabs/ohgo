@@ -86,7 +86,7 @@ func TestRuntimeEvidenceEntersSharedEngine(t *testing.T) {
 		t.Fatalf("result not reassessed: confidence %.2f stop %q", result.Confidence, result.StopReason)
 	}
 
-	limited := newMeter(Budget{MaxDAPRequests: 1}.normalized())
+	limited := NewMeter(Budget{MaxDAPRequests: 1}.normalized())
 	observation, err := (&RuntimeProvider{Session: session, Root: "/workspace"}).Observe(ctx,
 		Request{Question: "why", Intent: planner.IntentDebug}, plannerStep(), limited)
 	if err != nil {

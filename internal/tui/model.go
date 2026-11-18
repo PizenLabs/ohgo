@@ -563,6 +563,10 @@ type Status struct {
 	// ContextUsed and ContextWindow size the budget display.
 	ContextUsed   int
 	ContextWindow int
+	// ContextKnown reports that ContextUsed is a real measurement for this
+	// session. A resumed session starts false: the transcript is restored, but
+	// provider usage was never persisted, so 0 would be a false measurement.
+	ContextKnown bool
 	// Busy marks that a turn is in flight.
 	Busy bool
 	// Spinner is the animation frame index; the caller owns advancing it.
@@ -627,6 +631,28 @@ type Status struct {
 	UpdateStage string
 }
 
+// ProviderWait is the live provider transport state.
+//
+// It is a projection of the loop's retry report, not a timer: Attempt,
+// Attempts, Delay, and Status are measured by the loop. At anchors the
+// countdown; the bar never substitutes render time for the measured start.
+type ProviderWait struct {
+	// Phase is requested, retrying, failed, or recovered.
+	Phase string
+	// Attempt is the failed or in-flight attempt number, 1-based.
+	Attempt int
+	// Attempts is the total attempts the retry policy allows.
+	Attempts int
+	// Delay is the measured backoff before the next attempt.
+	Delay time.Duration
+	// Status is the HTTP status when the provider supplied one.
+	Status int
+	// Message is the scrubbed transport failure for a terminal failure.
+	Message string
+	// At is when the transition was reported.
+	At time.Time
+}
+
 // VersionLabel normalizes a raw version for display alongside the brand.
 //
 // It trims surrounding space, reports "" for unknown, and ensures the
@@ -652,6 +678,11 @@ func (s Status) Percent() int {
 	if s.ContextWindow <= 0 {
 		return -1
 	}
+	if !s.ContextKnown && s.ContextUsed == 0 {
+		// A restored transcript has no measured context. Rendering 0% would
+		// claim an empty context the runtime never observed.
+		return -1
+	}
 	return tokens.Percent(s.ContextUsed, s.ContextWindow)
 }
 
@@ -661,6 +692,13 @@ type State struct {
 	Entries []Entry
 	// Status is the footer.
 	Status Status
+	// ProviderWait is the current provider transport state while a turn runs.
+	// Nil means no provider failure or retry is outstanding.
+	ProviderWait *ProviderWait
+	// UsageUnknown reports that this session's prior token usage is not
+	// available. It is set when a stored transcript is resumed: usage was
+	// never persisted, so reporting zero would be false precision.
+	UsageUnknown bool
 	// Tip is the rotating hint the composer paints ahead of the caret while
 	// the input is empty. A submitted prompt advances it to the next curated
 	// entry; repaints, resizes, and theme changes never shuffle it.
@@ -1047,6 +1085,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.TurnSeq = seq
 		s.Cancelled = false
+		s.ProviderWait = nil
 		s.footerEmitted = false
 		s.TurnStartedAt = e.At
 		s.resetTelemetryStatus()
@@ -1086,6 +1125,7 @@ func (s *State) Apply(event Event) {
 		if s.Cancelled {
 			return
 		}
+		s.ProviderWait = nil
 		s.appendReasoning(e.Text, e.At)
 		s.growScroll(strings.Count(e.Text, "\n"))
 		s.noteTelemetryStatus(e.At)
@@ -1097,6 +1137,7 @@ func (s *State) Apply(event Event) {
 		if s.Cancelled {
 			return
 		}
+		s.ProviderWait = nil
 		// Visible text ends any open reasoning trace: the model has moved from
 		// thinking to answering, so the collapsed block must stop claiming to
 		// be live.
@@ -1114,6 +1155,7 @@ func (s *State) Apply(event Event) {
 		if e.Seq != 0 && e.Seq != s.TurnSeq {
 			return
 		}
+		s.ProviderWait = nil
 		// Close the trailing assistant entry: without this the next turn would
 		// append to it and the transcript would read as one continuous answer.
 		s.closeReasoning(e.At)
@@ -1150,6 +1192,7 @@ func (s *State) Apply(event Event) {
 		}
 		s.Cancelled = true
 		s.Status.Busy = false
+		s.ProviderWait = nil
 		s.lockTurnElapsed(e.At)
 		s.Queued = nil
 		s.closeReasoning(e.At)
@@ -1472,6 +1515,13 @@ func (s *State) Apply(event Event) {
 			s.PostUpdate.Err = strings.TrimSpace(e.Err)
 		}
 
+	case TaskCleared:
+		// A new session starts without a live task. The previous task block,
+		// when present, is transcript history; the sticky header must not keep
+		// claiming an objective this session does not own.
+		s.task = nil
+		s.taskKnown = true
+
 	case TaskProjected:
 		// The projection replaces the current task block in place, so a long
 		// turn does not stack a fresh panel on every todo change. A dropped
@@ -1504,6 +1554,7 @@ func (s *State) Apply(event Event) {
 		// boundary, so the progressive-disclosure telemetry restarts clean:
 		// the prior session's token counts and clock do not belong to it.
 		s.replaceEntries(e.Entries)
+		s.ProviderWait = nil
 		s.task = nil
 		s.taskKnown = false
 		s.task = latestTaskProjection(s)
@@ -1535,9 +1586,34 @@ func (s *State) Apply(event Event) {
 		// server exits.
 		s.Integrations = append([]IntegrationStatus(nil), e.Items...)
 
+	case ProviderStatusEvent:
+		if e.Seq != 0 && e.Seq != s.TurnSeq {
+			return
+		}
+		// A transport transition is immediate: it must not wait behind the
+		// presentation dwell that smooths tool phrases.
+		s.telemetry = telemetryStatus{}
+		if e.Phase == "recovered" || e.Phase == "" {
+			s.ProviderWait = nil
+			break
+		}
+		s.ProviderWait = &ProviderWait{
+			Phase: e.Phase, Attempt: e.Attempt, Attempts: e.Attempts,
+			Delay: e.Delay, Status: e.Status, Message: e.Message, At: e.At,
+		}
+
 	case ContextUpdated:
 		s.Status.ContextUsed = e.Used
 		s.Status.ContextWindow = e.Window
+		s.Status.ContextKnown = true
+
+	case UsageUnknown:
+		s.UsageUnknown = true
+		s.Status.ContextKnown = false
+		s.Status.ContextUsed = 0
+
+	case UsageKnown:
+		s.UsageUnknown = false
 
 	case ModelEffortUpdated:
 		s.Status.Effort = NormalizeEffort(e.Effort)
@@ -1557,6 +1633,7 @@ func (s *State) Apply(event Event) {
 		s.assignIdentity(len(s.Entries) - 1)
 		s.Status.ContextUsed = e.AfterTokens
 		s.Status.ContextWindow = e.Window
+		s.Status.ContextKnown = true
 		s.growScroll(1)
 
 	case CompactionChanged:
@@ -2651,6 +2728,7 @@ func (s *State) Apply(event Event) {
 		s.closedAssistant = false
 		s.footerEmitted = false
 		s.OutputTokens = 0
+		s.UsageUnknown = false
 		s.resetSessionMetrics()
 		// Clearing returns to the onboarding interaction, so the placeholder
 		// starts from that pool rather than carrying an active-session hint.
@@ -2663,6 +2741,8 @@ func (s *State) Apply(event Event) {
 // back to the shortcut hints rather than reporting zeros.
 func (s *State) resetSessionMetrics() {
 	s.SessionActive = false
+	s.Status.ContextKnown = false
+	s.Status.ContextUsed = 0
 	s.SessionIn = 0
 	s.SessionOut = 0
 	s.SessionElapsed = 0
@@ -3659,6 +3739,33 @@ func (PostUpdateAcknowledged) eventKind() string { return "post_update_acknowled
 type PostUpdateAckFailed struct{ Err string }
 
 func (PostUpdateAckFailed) eventKind() string { return "post_update_ack_failed" }
+
+// ProviderStatusEvent reports one provider transport transition from the
+// loop. It is presentation input, never an authority or retry decision.
+type ProviderStatusEvent struct {
+	Phase    string
+	Attempt  int
+	Attempts int
+	Delay    time.Duration
+	Status   int
+	Message  string
+	At       time.Time
+	Seq      int
+}
+
+func (ProviderStatusEvent) eventKind() string { return "provider_status" }
+
+// UsageUnknown marks the session's prior usage as unavailable. It is used
+// when a stored transcript is resumed and no usage ledger was persisted.
+type UsageUnknown struct{}
+
+func (UsageUnknown) eventKind() string { return "usage_unknown" }
+
+// UsageKnown clears the unavailable marker for a genuinely new session, whose
+// ledger starts empty rather than unknown.
+type UsageKnown struct{}
+
+func (UsageKnown) eventKind() string { return "usage_known" }
 
 // ContextUpdated sizes the budget display.
 type ContextUpdated struct {

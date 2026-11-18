@@ -39,11 +39,13 @@ type CandidateSet struct {
 }
 
 // informationalEvidenceBoundary reports whether an informational objective has
-// all the evidence its projection can use. A deferred phase or an investigation
-// that still needs execution its authority permits is not at the answer
-// boundary: its next step may be a probe or a command, not prose. The same
-// predicate drives both the candidate surface and AnswerEligible so the two
-// cannot disagree.
+// all the evidence its projection can use. The verdict is the required-evidence
+// boundary: execution availability is not itself a missing observation. A FUZZ
+// investigation may keep an executable surface while it still needs a probe,
+// but once its required knowledge is satisfied (including any explicit
+// execution_result requirement), another command is optional exploration, not a
+// license to keep the surface open forever. The same predicate drives both the
+// candidate surface and AnswerEligible so the two cannot disagree.
 func informationalEvidenceBoundary(shape TaskShape, suff Sufficiency) bool {
 	if shape.Kind != contract.ObjectiveInformational {
 		return false
@@ -51,8 +53,11 @@ func informationalEvidenceBoundary(shape TaskShape, suff Sufficiency) bool {
 	if suff.Stage != StageAnswer && suff.Stage != StageComplete {
 		return false
 	}
-	if (shape.Phase || shape.Investigation) &&
-		shape.NeedsExecution && shape.Authority.ExecutionAllowed {
+	// A deferred mutation's investigation phase is not the deliverable: the
+	// same task may still need to probe before the BUILD branch. Keep the
+	// executable surface for that phase; an ordinary investigation closes on
+	// its required evidence.
+	if shape.Phase && shape.NeedsExecution && shape.Authority.ExecutionAllowed {
 		return false
 	}
 	return shape.RepositoryScope || len(shape.RequiredKnowledge) > 0

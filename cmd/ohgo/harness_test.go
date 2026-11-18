@@ -373,3 +373,49 @@ func TestCompactHistoryRepeatedIsStable(t *testing.T) {
 		}
 	}
 }
+
+// The TUI's /doctor must diagnose the model the session is actually using,
+// not the catalog default. A default-model credential failure next to a live
+// active-provider banner is a contradictory surface.
+func TestDoctorLinesUseTheActiveModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	clearProviderKeys(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"data":[]}`)
+	}))
+	defer server.Close()
+
+	registry := ai.NewRegistry()
+	registry.SetBaseURL("openrouter", server.URL)
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	var model ai.Model
+	for _, candidate := range catalog.List() {
+		if candidate.Provider == "openrouter" {
+			model = candidate
+			break
+		}
+	}
+	if model.Ref() == "" {
+		t.Fatal("no openrouter model in the catalog")
+	}
+	settings := config.Default()
+	h := newHarness(registry, nil, nil, nil, &agent.UsageLog{}, &settings, t.TempDir(), model)
+
+	var modelLine, credentialLine string
+	for _, line := range h.DoctorLines() {
+		switch line.Name {
+		case "model":
+			modelLine = line.Detail
+		case "credentials":
+			credentialLine = line.Detail
+		}
+	}
+	if !strings.Contains(modelLine, model.Ref()) {
+		t.Fatalf("doctor model line = %q, want the active %q", modelLine, model.Ref())
+	}
+	if !strings.Contains(credentialLine, "openrouter") {
+		t.Fatalf("doctor credential line = %q, want the active provider", credentialLine)
+	}
+}

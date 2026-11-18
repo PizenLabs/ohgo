@@ -284,7 +284,7 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		if !recovered.Status.IsTerminal() {
 			program.PublishTask(taskProjection(recovered, nil))
 			if resumable, lerr := controller.ListResumable(); lerr == nil && len(resumable) > 0 {
-				program.PublishNotice("1 resumable task available (see /task list)")
+				program.PublishNotice(resumableTasksNotice(len(resumable)))
 			}
 		} else {
 			// Listing is also what detects unreadable archives; a terminal live
@@ -307,6 +307,16 @@ func installTaskContinuity(program *tui.Program, root string, toolSet []agent.To
 		}
 	}
 	return controller
+}
+
+// resumableTasksNotice reports the actual number of durable tasks, not a
+// hardcoded singleton. The count is user-facing state and must match
+// /task list.
+func resumableTasksNotice(count int) string {
+	if count == 1 {
+		return "1 resumable task available (see /task list)"
+	}
+	return fmt.Sprintf("%d resumable tasks available (see /task list)", count)
 }
 
 // artifactBuffer captures artifacts recorded by the artifact tool during a

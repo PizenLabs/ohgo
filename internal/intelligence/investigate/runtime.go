@@ -32,11 +32,15 @@ func (p *RuntimeProvider) Available(context.Context) bool {
 
 // Observe implements Provider.
 func (p *RuntimeProvider) Observe(ctx context.Context, req Request, _ planner.Step, meter *Meter) (Observation, error) {
-	observation := Observation{State: evidence.Observed, Confidence: 0.6, Coverage: 0.4}
+	observation := Observation{
+		Outcome: OutcomeSuccess,
+		State:   evidence.Observed, Confidence: 0.6, Coverage: 0.4,
+	}
 	if p.Session == nil {
 		return Observation{}, fmt.Errorf("no debug session")
 	}
 	if state := p.Session.State(); state != rt.StateStopped {
+		observation.Outcome = OutcomeUnavailable
 		observation.State = evidence.Unknown
 		observation.Confidence = 0
 		observation.Coverage = 0
@@ -45,6 +49,7 @@ func (p *RuntimeProvider) Observe(ctx context.Context, req Request, _ planner.St
 		return observation, nil
 	}
 	if err := meter.ChargeDAP(); err != nil {
+		observation.Outcome = OutcomeUnavailable
 		observation.Issues = append(observation.Issues, err.Error())
 		return observation, nil
 	}

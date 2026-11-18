@@ -118,3 +118,64 @@ func TestLoopStopsRetryingOnCancellation(t *testing.T) {
 		t.Fatalf("Run error = %v, want context.Canceled", err)
 	}
 }
+
+// A rate limit must be visible while the loop waits. The UI previously saw
+// only "preparing workspace" for the whole backoff, so a 429 looked like a
+// stalled workspace for minutes.
+func TestProviderActivityReportsRateLimitBeforeTheBackoff(t *testing.T) {
+	stream, _ := retryStream(1, statusErr{status: 429, retry: 1})
+	loop := retryLoop(t, stream, RetryPolicy{Attempts: 3, Base: time.Millisecond, Max: 2 * time.Millisecond}, time.Time{})
+	var activities []ProviderActivity
+	loop.SetProviderActivityHook(func(a ProviderActivity) { activities = append(activities, a) })
+
+	if _, err := loop.Run(context.Background(), []Message{UserMessage{Text: "answer"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var retry *ProviderActivity
+	for i := range activities {
+		if activities[i].Phase == ProviderRetrying {
+			retry = &activities[i]
+			break
+		}
+	}
+	if retry == nil {
+		t.Fatalf("activities = %+v, want a retrying phase", activities)
+	}
+	if retry.Status != 429 {
+		t.Errorf("retry status = %d, want 429", retry.Status)
+	}
+	if retry.Delay <= 0 || retry.Delay > time.Second {
+		t.Errorf("retry delay = %s, want the measured backoff", retry.Delay)
+	}
+	if retry.Attempt != 1 || retry.Attempts != 3 {
+		t.Errorf("retry attempt = %d/%d, want 1/3", retry.Attempt, retry.Attempts)
+	}
+	foundRecovered := false
+	for _, a := range activities {
+		if a.Phase == ProviderRecovered {
+			foundRecovered = true
+		}
+	}
+	if !foundRecovered {
+		t.Errorf("activities = %+v, want a recovered phase", activities)
+	}
+}
+
+// A non-retryable rejection is terminal immediately; the UI must not show a
+// retry countdown for a request that will never be repeated.
+func TestProviderActivityReportsTerminalFailure(t *testing.T) {
+	stream, attempts := retryStream(1, statusErr{status: 401})
+	loop := retryLoop(t, stream, RetryPolicy{Attempts: 4, Base: time.Millisecond, Max: 2 * time.Millisecond}, time.Time{})
+	var last ProviderActivity
+	loop.SetProviderActivityHook(func(a ProviderActivity) { last = a })
+
+	if _, err := loop.Run(context.Background(), []Message{UserMessage{Text: "answer"}}); err == nil {
+		t.Fatal("a 401 must surface as an error")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("provider attempts = %d, want 1", got)
+	}
+	if last.Phase != ProviderFailed || last.Status != 401 || last.Attempt != 1 {
+		t.Fatalf("last activity = %+v, want failed 401 on attempt 1", last)
+	}
+}

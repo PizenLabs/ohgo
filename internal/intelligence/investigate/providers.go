@@ -29,7 +29,10 @@ func (p *StructuralProvider) Available(context.Context) bool { return p != nil &
 func (p *StructuralProvider) Observe(ctx context.Context, req Request, step planner.Step, _ *Meter) (Observation, error) {
 	intent, focus, ok := structuralRequest(req)
 	if !ok {
-		return Observation{Issues: []string{"semantic request has no structural intent"}}, nil
+		return Observation{
+			Outcome: OutcomeUnavailable,
+			Issues:  []string{"semantic request has no structural intent"},
+		}, nil
 	}
 	analysis, err := structural.NewAnalyzer(p.Source, p.Cache).Analyze(ctx, structural.Request{
 		Intent: intent, Focus: focus, MaxFiles: 4000, MaxSteps: 5,
@@ -37,9 +40,15 @@ func (p *StructuralProvider) Observe(ctx context.Context, req Request, step plan
 	if err != nil {
 		return Observation{}, fmt.Errorf("structural analysis: %w", err)
 	}
+	outcome := OutcomeSuccess
+	if !analysis.Coverage.Complete() {
+		outcome = OutcomePartial
+	}
 	snapshot := fmt.Sprintf("structural:%s:%d", analysis.AnalyzerVersion, analysis.Coverage.Files)
 	scope := evidence.Scope{Workspace: p.Root, Path: focus}
 	observation := Observation{
+		Outcome:    outcome,
+		Source:     "native",
 		State:      analysis.Coverage.State,
 		Confidence: analysis.Coverage.Confidence,
 		Coverage:   structuralCoverage(intent, analysis),
@@ -170,12 +179,14 @@ func (p *RetrievalProvider) Observe(ctx context.Context, req Request, _ planner.
 		return Observation{}, fmt.Errorf("BM25 retrieval: %w", err)
 	}
 	observation := Observation{
+		Outcome:    OutcomeSuccess,
 		State:      evidence.Observed,
 		Confidence: 0.5,
 		Coverage:   0.35,
 		Summary:    fmt.Sprintf("%d hits from %d documents (%s index)", len(result.Hits), result.Documents, stats.Cache),
 	}
 	if len(result.Hits) == 0 {
+		observation.Outcome = OutcomeUnresolved
 		observation.State = evidence.Unknown
 		observation.Confidence = 0.2
 		observation.Coverage = 0.1

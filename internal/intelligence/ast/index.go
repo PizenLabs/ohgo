@@ -1244,6 +1244,12 @@ func (idx *Index) ParseFailures() int {
 }
 
 // Lookup returns symbols whose name or qualified name exactly matches name.
+//
+// A method's canonical name is Receiver.Method, because a bare method name is
+// ambiguous across types. A caller that names only the method (as source and
+// model prompts usually do) still gets every receiver's declaration, marked
+// ambiguous by the tool layer; returning nothing would falsely claim the
+// symbol does not exist.
 func (idx *Index) Lookup(name string) ([]Match, error) {
 	if err := idx.ensureFresh(); err != nil {
 		return nil, err
@@ -1257,13 +1263,23 @@ func (idx *Index) Lookup(name string) ([]Match, error) {
 	var out []Match
 	for _, rec := range idx.files {
 		for _, s := range rec.symbols {
-			if s.Name == name || s.QualifiedName == name {
+			if s.Name == name || s.QualifiedName == name ||
+				(s.Kind == KindMethod && methodBaseName(s.Name) == name) {
 				out = append(out, s)
 			}
 		}
 	}
 	sortSymbols(out)
 	return out, nil
+}
+
+// methodBaseName returns the method's bare name from a Receiver.Method
+// coordinate. A non-method name is returned unchanged.
+func methodBaseName(name string) string {
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		return name[i+1:]
+	}
+	return name
 }
 
 // File returns the symbols declared in the given file.

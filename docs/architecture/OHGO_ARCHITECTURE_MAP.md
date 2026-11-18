@@ -76,7 +76,7 @@ create a boundary that does not exist.
 | **runtime** | `agent` | The turn loop, tool dispatch, the authorization sequence, grounding admission, completion evaluation, subagent execution, the projection seam, the edit-journal seam | Tool implementations, workspace policy, persistence, rendering |
 | **control** | `control/contract`, `control/budget`, `control/workspace`, `control/cognition`, `security` | Completion vocabulary (including the capability a contract requires); resource admission; authority policy + routing + intent contracts + persistent task execution authority + transition decisions + capability preflight; task shape + evidence + narrowing + reasoning demand; the authorization kernel | Execution, persistence, presentation |
 | **execution** | `execution/tools`, `execution/mcp`, `execution/sandbox`, `execution/shell`, `execution/exec` | Concrete capabilities; MCP transport + classification; the OS read-only boundary; shell-output decoding; the human `!` escape | The decision to allow an operation |
-| **intelligence** | `intelligence/ast`, `intelligence/ignore`, `intelligence/structural`, `intelligence/retrieval`, `intelligence/semantic`, `intelligence/runtime`, `intelligence/evidence`, `intelligence/planner`, `intelligence/investigate`, `intelligence/wire` | One in-process, incremental structural snapshot (Go native plus pinned tree-sitter adapters; symbols, packages/namespaces, files, tests, entrypoints, imports, references, calls, explicit relations, language coverage), repository scoping, the adaptive structural analysis layer (multi-resolution model, evidence/confidence, strategy portfolio, planner, bounded graph analysis, result cache), Okapi BM25 retrieval, LSP semantic observations, authorized DAP runtime observations, the shared evidence engine, and the cross-provider planner | Anything about the agent, models, authority, or UI |
+| **intelligence** | `intelligence/ast`, `intelligence/ignore`, `intelligence/structural`, `intelligence/retrieval`, `intelligence/semantic`, `intelligence/runtime`, `intelligence/evidence`, `intelligence/planner`, `intelligence/investigate`, `intelligence/gry`, `intelligence/wire` | One in-process, incremental structural snapshot (Go native plus pinned tree-sitter adapters; symbols, packages/namespaces, files, tests, entrypoints, imports, references, calls, explicit relations, language coverage), repository scoping, the adaptive structural analysis layer (multi-resolution model, evidence/confidence, strategy portfolio, planner, bounded graph analysis, result cache), Okapi BM25 retrieval, LSP semantic observations, authorized DAP runtime observations, the shared evidence engine, and the cross-provider planner | Anything about the agent, models, authority, or UI |
 | **provider** | `provider/ai`, `provider/catalog`, `provider/creds` | Wire protocols and streams; canonical stream normalization (native and serialized tool calls); model facts and discovery; credential resolution | Policy, routing, cost decisions, execution authority |
 | **continuity** | `continuity/session`, `continuity/task`, `continuity/recovery`, `memory` | The durable transcript; the durable task checkpoint; the edit history; the project-memory trust boundary | What should be recorded (that is control-plane) |
 | **experience** | `experience` | Verified execution experience: deterministic incidents, lessons, candidate strategies, validation, promotion, scoped store, and advisory path advice | Authority, evidence, completion, task lifecycle, transcript, tool execution |
@@ -117,6 +117,7 @@ edges that are architecturally forbidden (the ones enforced today are marked).
 | `internal/intelligence/evidence` | unified evidence records, correlation, contradiction retention | stdlib only **\[ENFORCED]** | observe the repository, rank, or authorize |
 | `internal/intelligence/planner` | cross-provider plan selection, cost, stopping reasons, reassessment | stdlib only **\[ENFORCED]** | start providers, grant authority, or execute work |
 | `internal/intelligence/investigate` | adaptive provider execution, shared evidence convergence, bounded investigation result | `intelligence/*`; stdlib — no `agent`/`control`/`execution`/`provider`/`tui` imports **\[ENFORCED]** | launch adapters without their manager, grant authority, cache runtime evidence as source truth, expose raw payloads |
+| `internal/intelligence/gry` | optional external structural-intelligence transport + bounded evidence normalization | `intelligence/{investigate,evidence,planner}`; stdlib — no `agent`/`control`/`execution`/`provider`/`tui` imports **\[ENFORCED]** | index a repository, mirror the external graph, mutate, authorize, complete, or bypass the shared budget |
 | `internal/intelligence/wire` | shared Content-Length JSON framing for LSP/DAP | stdlib only **\[ENFORCED]** | protocol schemas or provider policy |
 | `internal/provider/*` | wire, facts, secrets | `internal/provider/*`, `state` — **only** | `agent`, `control/*`, `execution/*`, `continuity/*`, `intelligence/*`, `tui` **\[ENFORCED]** |
 | `internal/continuity/session` | transcript | `agent`, `provider/ai`, `state`, `tokens`, `control/workspace` | `tui`, `commit`, `startup`, `update`, `history` **\[ENFORCED]** |
@@ -180,6 +181,17 @@ portfolio, cache, and failure semantics are canonical in
 (investigation, change planning, impact analysis, BUILD scope selection, commit
 grouping) consumes this layer; it must not re-derive structure from the
 filesystem.
+
+`intelligence/investigate.StructuralRouter` makes the structural capability one
+boundary with two implementations: the native engine above, and an optional
+external adapter in `intelligence/gry`. The router chooses by information need
+(orientation stays native; target-shaped, architecture, impact, and verification
+steps may use the external provider), and the native engine remains the fallback
+and the answer when the external provider is absent, disabled, stale, ambiguous,
+unresolved, or failed. The adapter is read-only, bounded, and is not required for
+Ohgo to start or operate. The authority and evidence contract is canonical in
+[`BOUNDARY_SPECIFICATION.md`](BOUNDARY_SPECIFICATION.md); the provider behaviour
+is in [`UNIFIED_INTELLIGENCE.md`](UNIFIED_INTELLIGENCE.md).
 
 ### 4.4 Provider plane is below the runtime
 
@@ -280,6 +292,7 @@ reasoning, and `internal/architecture/rules_test.go` is the executable form.
 | **New semantic capability** | `internal/intelligence/semantic` client method gated on a negotiated LSP capability | Apply edits, execute server commands, or assume a capability the server did not advertise |
 | **New runtime observation** | `internal/intelligence/runtime` session method gated on a negotiated DAP capability and an authorized session | Start an adapter without authorization, evaluate unrestricted expressions, or cache runtime values as new facts |
 | **New cross-provider decision** | a candidate row in `internal/intelligence/planner` plus a test for the selection/skip reason | Start a provider, infer authorization from intent, or hide a skipped provider |
+| **New external structural-intelligence provider** | an adapter in `internal/intelligence/<name>` implementing `investigate.Provider`, selected by `investigate.StructuralRouter`; bounded facts plus `evidence.Source<Name>` provenance | Make it mandatory, copy its graph, let it authorize/mutate/complete, or expose raw responses to the model |
 | **New provider** | `internal/provider/ai/<name>.go` implementing `ai.Provider`; register in `Registry.ProviderFor`; env var in `provider/creds`; facts in `provider/catalog` | Reach into `agent` or config policy; add a per-model special case in the loop |
 | **New model-selection policy** | facts in `provider/catalog`; persisted roles in `config`; resolution in `cmd/ohgo/options.go`; `harness` applies it | Make `agent` choose a model; branch on a model id in the engine |
 | **New authority transition rule** | transition policy in `control/workspace/decision.go`, with the task's `ExecutionContract` as an input and a matrix row in `decision_test.go` | Use the current role as the task's origin; add a second router; cross ASK automatically |

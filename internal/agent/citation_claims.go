@@ -2,8 +2,16 @@ package agent
 
 import (
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// A shell command can open a source file just as the dedicated read tool can.
+// The audit accepts the content-reading forms below; it does not accept a
+// listing or a search that only names the path.
+var shellSourceReadPattern = regexp.MustCompile(
+	`(?i)(?:^|[;&|]\s*|\b(?:then|do)\s+)(?:cd\s+[^;&|]+\s*&&\s*)?(?:cat|sed|head|tail|nl|less|more|bat)\b`)
 
 // A path citation is an evidence reference: the answer points the reader at the
 // file that is supposed to establish its claim.
@@ -23,7 +31,7 @@ func citationClaimIssue(sentence string, turns []Turn) *claimIssue {
 		if !isImplementationPath(path) || !citedAsEvidence(sentence, match[0]) {
 			continue
 		}
-		if citationSourceObserved(turns, path) {
+		if citationSourceObserved(turns, path) || shellSourceCitationObserved(turns, path) {
 			continue
 		}
 		return &claimIssue{
@@ -44,6 +52,34 @@ func citedAsEvidence(sentence string, start int) bool {
 		i--
 	}
 	return i >= 0 && (sentence[i] == '(' || sentence[i] == '[')
+}
+
+// shellSourceCitationObserved reports a successful shell content read of the
+// cited path. Models frequently page a large Go file through `sed` instead of
+// the read tool; refusing that observation would report a file as unopened even
+// though its contents were in the run. Only a listed content reader counts, so
+// a directory listing or a path mentioned in a command is still not evidence.
+func shellSourceCitationObserved(turns []Turn, path string) bool {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		return false
+	}
+	for _, turn := range turns {
+		for _, outcome := range turn.Results {
+			if outcome.ToolName != "bash" || outcome.Result.IsError || outcome.Refused() ||
+				outcome.Result.Rejected() {
+				continue
+			}
+			command := filepath.ToSlash(proposalArgString(outcome.Args, "command"))
+			if command == "" || !shellSourceReadPattern.MatchString(command) {
+				continue
+			}
+			if strings.Contains(command, path) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // citationSourceObserved reports a source observation of the cited path. A

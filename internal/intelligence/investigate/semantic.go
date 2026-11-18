@@ -37,7 +37,7 @@ func (p *SemanticProvider) Available(context.Context) bool { return p != nil && 
 // Observe implements Provider.
 func (p *SemanticProvider) Observe(ctx context.Context, req Request, _ planner.Step, meter *Meter) (Observation, error) {
 	if err := meter.ChargeLSP(); err != nil {
-		return Observation{Issues: []string{err.Error()}}, nil
+		return Observation{Outcome: OutcomeUnavailable, Issues: []string{err.Error()}}, nil
 	}
 	manager, err := p.Start(ctx)
 	if err != nil {
@@ -46,21 +46,27 @@ func (p *SemanticProvider) Observe(ctx context.Context, req Request, _ planner.S
 	defer func() { _ = manager.Close() }()
 	servers := manager.Servers()
 	if len(servers) == 0 {
-		return Observation{Issues: []string{"semantic: no language server is configured for this workspace"}}, nil
+		return Observation{
+			Outcome: OutcomeUnavailable,
+			Issues:  []string{"semantic: no language server is configured for this workspace"},
+		}, nil
 	}
 	client, err := manager.Client(ctx, servers[0])
 	if err != nil {
 		return Observation{}, fmt.Errorf("language server %s: %w", servers[0], err)
 	}
 	if !client.Supports("workspace/symbol") {
-		return Observation{Issues: []string{
+		return Observation{Outcome: OutcomeUnavailable, Issues: []string{
 			"semantic: the language server does not support workspace/symbol; declaration resolution is unavailable, not absent",
 		}}, nil
 	}
 	symbols, err := client.WorkspaceSymbols(ctx, req.Question)
 	if err != nil {
 		if errors.Is(err, semantic.ErrUnsupportedCapability) {
-			return Observation{Issues: []string{"semantic: workspace/symbol is unsupported: " + err.Error()}}, nil
+			return Observation{
+				Outcome: OutcomeUnavailable,
+				Issues:  []string{"semantic: workspace/symbol is unsupported: " + err.Error()},
+			}, nil
 		}
 		return Observation{}, fmt.Errorf("workspace/symbol: %w", err)
 	}
@@ -72,12 +78,14 @@ func (p *SemanticProvider) Observe(ctx context.Context, req Request, _ planner.S
 		symbols = symbols[:limit]
 	}
 	observation := Observation{
+		Outcome:    OutcomeSuccess,
 		State:      evidence.Observed,
 		Confidence: 0.6,
 		Coverage:   0.3,
 		Summary:    fmt.Sprintf("%d declarations resolved by %s", len(symbols), servers[0]),
 	}
 	if len(symbols) == 0 {
+		observation.Outcome = OutcomeUnresolved
 		observation.State = evidence.Unknown
 		observation.Confidence = 0.3
 		observation.Coverage = 0.1

@@ -43,6 +43,7 @@ become a second mutation or process-execution path.
 | `intelligence/evidence` | shared state vocabulary, records, correlation, contradictions | observe, rank, or authorize |
 | `intelligence/planner` | provider selection, cost/gain, stopping reasons, closed-loop reassessment | start a provider, grant authority, execute work |
 | `intelligence/investigate` | adaptive execution: shared context, evidence convergence, correlation, bounded result | start a provider outside its contract, cache runtime evidence as source truth, expose raw payloads |
+| `intelligence/gry` | optional external structural transport, bounded normalization, explicit outcome classification | index a repository, own or mirror a graph, authorize, mutate, complete, or bypass the shared budget |
 | `intelligence/wire` | Content-Length JSON framing shared by LSP and DAP | protocol schemas or provider policy |
 
 `internal/architecture` enforces that every package under `intelligence/` has no
@@ -60,6 +61,11 @@ into one interface:
 - availability (a missing binary or unadvertised LSP capability is a truthful
   "unsupported", never simulated);
 - bounded work (context deadline, size caps, concurrency caps);
+- an explicit operation `Outcome` (`SUCCESS`, `PARTIAL`, `STALE`, `AMBIGUOUS`,
+  `UNRESOLVED`, `UNAVAILABLE`, `NOT_INDEXED`, `FAILED`), separate from the
+  evidence state;
+- a `Source` naming the mechanism that answered the step, separate from the
+  capability identity;
 - observations with provenance and freshness;
 - explicit issues and degradations;
 - deterministic ordering where the algorithm allows it.
@@ -329,16 +335,186 @@ The `investigate` tool is the model-facing entrypoint. It returns bounded
 facts, provider states, contradictions, issues, confidence, coverage, and the
 stopping reason. It never returns raw graphs, LSP/DAP payloads, or indexes.
 
-## 12. Status
+## 12. External structural provider (optional)
+
+`intelligence/investigate.StructuralRouter` is the structural capability
+boundary. It composes two implementations of the same step:
+
+- the native engine in `intelligence/structural`, which is always the default
+  and the fallback;
+- an optional adapter in `intelligence/gry`, which answers the target-shaped,
+  architecture, impact, and verification questions where an indexed repository
+  graph is materially better than re-deriving one.
+
+The adapter is not a provider identity in the planner. It reports
+`planner.ProviderStructural`, sets `Observation.Source` to `gry`, and publishes
+`evidence.ProviderStructural` records with `evidence.SourceGRY`. That separation
+keeps "what was observed" distinct from "which mechanism observed it".
+
+### 12.1 Routing
+
+Routing follows the information need, never the role:
+
+| Information need | Native path | External path |
+|---|---|---|
+| project orientation, filesystem hierarchy | yes; no parsing, no subprocess | not called |
+| architecture shape | fallback | `architecture` (bounded internal packages, languages, entrypoints) |
+| locate with a target | fallback | `search` (all ranked candidates preserved) |
+| flow with a target | fallback | `trace` (both directions) |
+| impact with a target | fallback | `trace` (inbound); without a target, `changes` |
+| debug with a target | fallback | `context` (task, target, tests, unknowns) |
+| verification | fallback | `changes --scope tests` |
+
+A step with no target for a locate/flow/debug need stays native. This is the
+"existing or cheap local evidence first" rule: an external call is not
+automatically an optimization.
+
+### 12.2 Outcome and fallback matrix
+
+| Condition | Returning evidence | Ohgo behaviour |
+|---|---|---|
+| external success | bounded facts, `SUCCESS` | used |
+| external bounded/stale | facts with omission counts / `STALE` | used; limitation preserved |
+| external ambiguous | candidate facts, `AMBIGUOUS` | candidates preserved; native consulted; no arbitrary choice |
+| external unresolved | `UNRESOLVED` | native consulted; "not established", never "absent" |
+| external not indexed | `NOT_INDEXED` | native answers; the optional provider's absence does not qualify the native result |
+| external unavailable/timeout | `UNAVAILABLE` | native answers; no fact is inferred from the failure and the native result is not downgraded |
+| external failed/invalid output | `FAILED` | native answers; the failure is an explicit issue |
+| external absent or disabled | native | native answers; no gry process is started |
+
+The native engine remains the fallback, so an external failure never turns into
+an Ohgo task failure. `NOT_INDEXED` and `UNAVAILABLE` are configuration states,
+not evidence limitations: the router uses the native answer without adding a
+qualifying issue. `FAILED`, `AMBIGUOUS`, and `UNRESOLVED` are preserved because
+they are claims about the target or a real operation failure.
+
+### 12.3 Bounds and budget
+
+One observation retains at most 12 facts and 24 evidence records; omitted counts
+and the reason are explicit. Raw JSON is parsed, never forwarded: source text is
+never requested, and `--include-source` is not reachable. Commands have a hard
+timeout and a raw-output cap. The router charges the shared
+`Meter.ChargeExternal` budget before the adapter runs; the adapter cannot bypass
+it. A budget refusal falls back to native and says so.
+
+### 12.4 Independence and authority
+
+- Composition launches no process, reads no index, and requires no
+  configuration. `ohgo start`, `ohgo run`, `ohgo models`, ASK, FUZZ, BUILD, task
+  creation, and task resume are unchanged without gry.
+- The adapter only exposes the read-only query subcommands listed above. It has
+  no indexing, deletion, mutation, approval, or completion path.
+- `NOT_INDEXED` and `UNRESOLVED` are distinct from absence; a stale or partial
+  observation is marked, not promoted.
+- gry provenance, including `verified`, maps to `OBSERVED`. Only
+  `evidence.Prove` produces `VERIFIED`, and completion remains an
+  `internal/agent` decision over mutation and observation evidence. Structural
+  evidence cannot complete a mutation.
+- Opt out with `OHGO_GRY=0`. `OHGO_GRY_BIN`, `OHGO_GRY_PROJECT`,
+  `OHGO_GRY_TIMEOUT_MS`, `OHGO_GRY_MAX_TOKENS`, `OHGO_GRY_MAX_NODES`,
+  `OHGO_GRY_MAX_ROWS`, and `OHGO_GRY_MAX_DEPTH` are the only tuning knobs.
+
+### 12.5 Provider attribution
+
+Attribution is presentation of provenance, not a second provider identity.
+Every `investigate.Fact` carries its mechanism, and the model-facing rendering
+keeps it beside the capability:
+
+- `[structural/native]` or `[structural/gry]` on each fact;
+- `investigate: sufficient · structural/gry · intent …` on the first line, so a
+  collapsed transcript row is still truthful;
+- `status: … · provider: native` on every `structure` result, because the
+  `structure` tool is always the in-process AST index.
+
+The step-level provider remains `structural`; `gry` is a source. This lets a
+user distinguish native analysis from delegated structural evidence without
+turning gry into a role, a second planner, or a separate state owner.
+
+### 12.6 Investigation closure
+
+An investigation that asks for a verdict is not allowed to substitute another
+repository survey for that verdict. Its shape declares
+`investigation_conclusion`; only a **FINAL** call to the `conclude` tool records it:
+
+```text
+SAFE | BUG | UNRESOLVED
+evidence: entrypoint, identifier flow, validation boundary, persistence ordering
+uncertainty: material gaps that remain
+```
+
+The requirement is a convergence point, not a proof. `conclude` records an
+observation; the completion evaluator still decides whether the answer is
+supportable. Calling the tool is a proposal, not the transition itself:
+`status: IN_PROGRESS`, a placeholder, an explicit insufficiency marker, missing
+evidence, or an unrecognized status is recorded as a progress observation. It
+creates no conclusion item, satisfies no conclusion requirement, and consumes no
+terminal attempt. This is what prevents "placeholder, not yet sufficient" from
+manufacturing a terminal state.
+
+A conclusion is **provisional when its uncertainty names a concrete
+code coordinate** (a selector such as `StockReserver.Reserve` or a Go path). The
+runtime records it for audit but keeps `investigation_conclusion` unsatisfied
+and adds `investigation_target:<coordinate>` ahead of it. Only a new observation
+of that coordinate after the conclusion can clear the target; omitting the
+coordinate from a later conclusion does not erase the obligation. This is the
+evidence-admissibility layer: the conclusion window does not begin merely
+because the investigation has some evidence.
+
+Repeated conclusions still need a hard semantic limit. After
+`MaxConclusionAttempts` and at least one new observation, an explicitly
+`UNRESOLVED` conclusion is accepted with the unresolved coordinate retained in
+the record. A repeated `UNRESOLVED` without a new observation is not an attempt;
+the projection's no-progress bound closes that shape instead.
+
+Once the conclusion is the only missing requirement, a bounded ten-turn
+conclusion window still allows concrete closing reads, but further surveying
+does not reset the requirement; after the window the run reports instead of
+consuming the model-turn grant. A deferred mutation phase keeps its executable
+surface for the later probe; an ordinary investigation closes at its required
+evidence.
+A targetless mutation gets a separate eight-turn act window: it may read the
+implementation once, then must act rather than survey indefinitely. At the end
+of the conclusion window the projection forces the `conclude` tool for the next
+request; the tool was already offered, so this is a transition, not a new
+capability.
+
+The contract also treats a negated fix (`Do not create a fix`, `investigation
+only`) as informational rather than mutation, and treats Gry as optional
+structural intelligence. Only an explicitly requested MCP capability, URL, or
+external documentation creates `external_observation`.
+
+MCP remains a transport option, not the architecture. Configuring gry as a
+generic MCP server exposes its tool surface to the model as a user-chosen
+capability; the canonical structural integration is this provider, which keeps
+routing, bounds, provenance, and fallback inside Ohgo.
+
+The pre-existing `internal/gryhook` adapter remains an opt-in compatibility
+observation path for headless `ohgo run`: it injects bounded evidence around
+tool calls and cannot authorize, block, or complete. It is not the structural
+provider above, it is disabled by default, and this change adds no lifecycle
+hook to the Control Plane. The capability provider is the canonical integration;
+the hook adapter is retained only for users who explicitly enabled it.
+
+Validation: adapter unit tests cover availability, project resolution, every
+outcome, bounds, provenance, the read-only command surface, real subprocess
+timeout/output caps, and environment filtering; router tests cover the routing
+matrix, fallback, ambiguity, stale evidence, and budget; an end-to-end
+`cmd/ohgo` test drives the real tool set and scripted model against a fake gry
+process; `TestLiveCompatibility` (opt-in `OHGO_GRY_LIVE=1`) exercises a real gry
+installation and index.
+
+## 13. Status
 
 | Capability | Implemented | Tested | Integrated into a model-facing tool |
 |---|---|---|---|
 | structural intelligence | yes | yes | yes (`structure`, `investigate`) |
+| external structural provider (optional) | yes | yes (adapter, router, end-to-end, opt-in live) | yes (`investigate`, when configured and indexed) |
 | Okapi BM25 retrieval | yes | yes (labeled corpus + invariants) | yes (`retrieve`, `investigate`) |
 | semantic intelligence | yes | yes (fake + real gopls, including the live provider) | yes (`investigate`, gopls when installed) |
 | runtime intelligence | yes | yes (fake adapter + real `dlv` fixture through the orchestrator) | no (authority decision, not a capability gap) |
 | unified evidence engine | yes | yes, including orchestrator fixtures | yes, inside `investigate` |
 | closed-loop planner | yes | yes (selection, reassessment, budget) | yes (`investigate`) |
+| investigation conclusion | yes | yes (verdict, evidence, stall bound) | yes (`conclude`) |
 | shared wire framing | yes | via LSP/DAP suites | — |
 
 Known gaps, stated rather than implied:
