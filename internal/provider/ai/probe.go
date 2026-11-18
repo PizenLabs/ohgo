@@ -59,6 +59,12 @@ func ProbeProvider(ctx context.Context, client *http.Client, api API, baseURL, a
 	case APIAnthropicMessages:
 		url = base + "/v1/models"
 		key = apiKey
+	case APIBedrockConverse:
+		// bedrock-runtime has no OpenAI model-list operation. The mantle
+		// compatibility endpoint exposes one with the same API key, so a probe
+		// can still verify the credential without spending a completion.
+		url = bedrockProbeURL(base)
+		key = apiKey
 	default:
 		url = base + "/models"
 		key = apiKey
@@ -115,6 +121,22 @@ func ProbeProvider(ctx context.Context, client *http.Client, api API, baseURL, a
 	result.Models = len(payload.Data) + len(payload.Models)
 	result.Detail = fmt.Sprintf("endpoint reachable, credential accepted, %d models listed", result.Models)
 	return result
+}
+
+// bedrockProbeURL chooses the endpoint that can actually answer a model list.
+//
+// A runtime or unset endpoint is checked through mantle's /v1/models; an
+// explicit gateway or test server is checked at its own /models.
+func bedrockProbeURL(base string) string {
+	base = strings.TrimRight(base, "/")
+	if base != "" && base != BedrockDefaultBaseURL && !strings.Contains(base, "bedrock-runtime.") {
+		return base + "/models"
+	}
+	region := BedrockRegion(base)
+	if region == "" {
+		region = "us-east-1"
+	}
+	return "https://bedrock-mantle." + region + ".api.aws/v1/models"
 }
 
 // probeConnDetail classifies a dial failure with the fix, not just the error.

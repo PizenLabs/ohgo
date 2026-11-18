@@ -11,7 +11,7 @@ Upstream: `packages/catalog/src/models.json`
 real facts: id, provider, API, route, base URL, context window, max output,
 reasoning flag, input modalities, per-million-token prices, thinking ladder.
 
-Current content: **331 models across 13 providers** (see `ohgo models`).
+Current content: **346 models across 16 providers** (see `ohgo models`).
 
 Regen: `python3 scripts/extract-upstream.py [upstream-models.json]
 [catalog.json]`. It converts only rows this build can speak
@@ -71,8 +71,10 @@ and keeps cached rows with a reason when a refresh fails.
    - `route: openai-chat-completions` for OpenAI chat models (upstream uses
      Responses; those models also accept Chat Completions).
    - Native `ollama-chat` for Ollama local and Cloud.
-   - Exclude Responses-only lines (codex, internal codenames, xai), Gemini
-     rows, Bedrock rows, and anything without real windows and prices.
+   - Native `bedrock-converse` for Bedrock rows; exclude Responses-only lines
+     (codex, internal codenames), `google-generative-ai` rows (Gemini uses the
+     OpenAI compatibility endpoint via `openai-chat-completions`), and anything
+     without real windows and prices.
 4. Validate: `go test ./internal/provider/catalog/` — `TestCatalogIsWellFormed` rejects entries
    with no id/provider, non-positive windows, output exceeding context, or no
    input modalities. `TestResolveReturnsRealFacts` pins the values that were

@@ -60,6 +60,7 @@ var providerEnvVars = map[string][]string{
 	"fireworks":    {"FIREWORKS_API_KEY"},
 	"xai":          {"XAI_API_KEY"},
 	"cerebras":     {"CEREBRAS_API_KEY"},
+	"bedrock":      {"AWS_BEARER_TOKEN_BEDROCK"},
 	"ollama":       {},
 	"ollama-cloud": {"OLLAMA_API_KEY"},
 	"opencode-zen": {"OPENCODE_API_KEY"},

@@ -113,7 +113,13 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 		add("catalog", true, fmt.Sprintf("%d models across %d providers", len(models), len(providers)))
 	}
 
-	model, err := resolveModel(settings, modelFlag, os.Getenv("OHGO_MODEL"), catalog.Resolve)
+	if warnings := registerEndpoints(registry, settings); len(warnings) > 0 {
+		add("endpoints", false, strings.Join(warnings, "; "))
+	} else if len(settings.Endpoints) > 0 {
+		add("endpoints", true, fmt.Sprintf("%d configured endpoint(s)", len(settings.Endpoints)))
+	}
+
+	model, err := resolveModel(settings, modelFlag, os.Getenv("OHGO_MODEL"), dynamicResolver(context.Background(), registry))
 	if err != nil {
 		add("model", false, err.Error())
 	} else {
@@ -136,7 +142,7 @@ func collectReports(modelFlag string, registry *ai.Registry) []doctorReport {
 	if err == nil {
 		key, _ := registry.ResolveAPIKey(model.Provider)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		probe := ai.ProbeProvider(ctx, nil, model.API, model.BaseURL, key)
+		probe := ai.ProbeProvider(ctx, nil, model.API, registry.EndpointFor(model), key)
 		cancel()
 		add("endpoint", probe.Reachable && probe.Authenticated, probe.Detail)
 	} else {

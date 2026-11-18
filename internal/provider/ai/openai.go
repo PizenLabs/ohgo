@@ -168,7 +168,10 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (*Stream, erro
 		}
 	}
 
-	headers := map[string]string{"Authorization": "Bearer " + p.APIKey}
+	headers := map[string]string{}
+	if p.APIKey != "" {
+		headers["Authorization"] = "Bearer " + p.APIKey
+	}
 	if p.Organization != "" {
 		headers["OpenAI-Organization"] = p.Organization
 	}

@@ -101,6 +101,9 @@ func newHarness(registry *ai.Registry, loop *agent.Loop, store *session.Store, s
 		registry: registry, loop: loop, store: store, sess: sess,
 		usage: usage, settings: settings, root: root, model: model,
 	}
+	if settings != nil {
+		_ = registerEndpoints(registry, *settings)
+	}
 	if loop != nil {
 		// The loop reports one cache sample per provider request. The turn
 		// totals alone cannot say whether a request repeated the previous
@@ -135,12 +138,22 @@ func (h *harness) ProviderRows() []tui.ProviderRow {
 			counts[entry.Model.Provider]++
 		}
 	}
+	extra := map[string]bool{}
+	for _, model := range endpointModels(h.registry) {
+		counts[model.Provider]++
+		extra[model.Provider] = true
+	}
 	var rows []tui.ProviderRow
-	for _, name := range catalog.ProviderNames() {
+	seen := map[string]bool{}
+	appendRow := func(name string, display, driver string) {
+		if seen[name] {
+			return
+		}
+		seen[name] = true
 		row := tui.ProviderRow{
 			ID:     name,
-			Name:   providerDisplayName(name),
-			Driver: providerDriver(name),
+			Name:   display,
+			Driver: driver,
 			Count:  counts[name],
 		}
 		_, source, err := h.registry.ResolveAPIKeySource(name)
@@ -156,6 +169,23 @@ func (h *harness) ProviderRows() []tui.ProviderRow {
 		}
 		rows = append(rows, row)
 	}
+	for _, name := range catalog.ProviderNames() {
+		appendRow(name, providerDisplayName(name), providerDriver(name))
+	}
+	if len(extra) > 0 {
+		names := make([]string, 0, len(extra))
+		for name := range extra {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			display := name
+			if spec, ok := h.registry.Endpoint(name); ok && spec.Name != "" {
+				display = spec.Name
+			}
+			appendRow(name, display, providerDriver(name))
+		}
+	}
 	return rows
 }
 
@@ -167,6 +197,8 @@ func providerDriver(provider string) string {
 	switch providerAPI(provider) {
 	case ai.APIAnthropicMessages:
 		return "Anthropic Messages"
+	case ai.APIBedrockConverse:
+		return "Bedrock Converse"
 	case ai.APIOllamaChat:
 		return "Ollama Chat"
 	default:
@@ -183,6 +215,8 @@ func providerAPI(provider string) ai.API {
 		return ai.APIOllamaChat
 	case "anthropic":
 		return ai.APIAnthropicMessages
+	case "bedrock":
+		return ai.APIBedrockConverse
 	default:
 		return ai.APIOpenAIChatCompletions
 	}
@@ -208,6 +242,14 @@ func (h *harness) RoleAssignments() []tui.RoleAssignment {
 	facts := map[string]catalog.SnapshotEntry{}
 	for _, entry := range h.snapshotEntries() {
 		facts[entry.Model.Ref()] = entry
+	}
+	for _, model := range endpointModels(h.registry) {
+		facts[model.Ref()] = catalog.SnapshotEntry{
+			Model:          model,
+			Origin:         "bundled",
+			Thinking:       &catalog.Thinking{Mode: "effort", Efforts: append([]string(nil), model.ReasoningEfforts...)},
+			ReasoningKnown: true,
+		}
 	}
 	settings := h.settingsOrDefault()
 	var out []tui.RoleAssignment
@@ -236,6 +278,11 @@ func (h *harness) roleAssignment(role, ref, effort, source string, facts map[str
 			assignment.Efforts = thinkingEfforts(entry.Thinking)
 			assignment.Reasoning = entry.Model.Reasoning
 			assignment.ReasoningKnown = entry.ReasoningKnown
+		} else if model, handled, err := h.registry.CustomModel(ref); handled && err == nil {
+			assignment.Name = model.Name
+			assignment.Reasoning = model.Reasoning
+			assignment.ReasoningKnown = true
+			assignment.Efforts = append([]string(nil), model.ReasoningEfforts...)
 		} else if model, err := catalog.Resolve(ref); err == nil {
 			assignment.Name = model.Name
 			assignment.Reasoning = model.Reasoning
@@ -281,12 +328,9 @@ func (h *harness) AssignRole(update tui.RoleAssignment) (tui.RoleAssignment, []t
 	}
 	canonical := model.Ref()
 	effort := strings.TrimSpace(update.Effort)
-	if effort != "" && effort != tui.EffortOff {
-		ladder := catalog.ThinkingFor(canonical)
-		if !ladder.Supports(effort) {
-			return tui.RoleAssignment{}, h.RoleAssignments(),
-				fmt.Errorf("%s does not expose thinking effort %q", canonical, effort)
-		}
+	if effort != "" && effort != tui.EffortOff && !h.effortSupported(canonical, model, effort) {
+		return tui.RoleAssignment{}, h.RoleAssignments(),
+			fmt.Errorf("%s does not expose thinking effort %q", canonical, effort)
 	}
 	h.settings.AssignRole(string(role), canonical, effort)
 	if err := config.Save(*h.settings); err != nil {
@@ -355,6 +399,27 @@ func thinkingEfforts(thinking *catalog.Thinking) []string {
 	return append([]string(nil), thinking.Efforts...)
 }
 
+// supportsEffort reports whether the resolved model exposes an effort. It
+// reads the model's own ladder, so a configured endpoint and a catalog model
+// are validated by the same contract.
+func supportsEffort(model ai.Model, effort string) bool {
+	for _, candidate := range model.ReasoningEfforts {
+		if candidate == effort {
+			return true
+		}
+	}
+	return false
+}
+
+// effortSupported preserves the catalog's merged-roster ladder for bundled
+// providers while reading the configured facts for an endpoint provider.
+func (h *harness) effortSupported(ref string, model ai.Model, effort string) bool {
+	if _, handled, err := h.registry.CustomModel(ref); handled && err == nil {
+		return supportsEffort(model, effort)
+	}
+	return catalog.ThinkingFor(ref).Supports(effort)
+}
+
 // applyModel moves the loop, the ledger pricing, and the harness model
 // together. Splitting those updates would leave the status line naming a model
 // the loop is not calling, or value new tokens at old prices.
@@ -391,10 +456,7 @@ func keyHint(err error) string {
 // completion. Reachability and credential acceptance are all it claims;
 // tool-call health needs a real turn, which it says rather than implies.
 func (h *harness) ProbeCurrent(ctx context.Context) tui.ProbeFinished {
-	baseURL := h.model.BaseURL
-	if override, ok := h.registry.BaseURLOverride(h.model.Provider); ok {
-		baseURL = override
-	}
+	baseURL := h.registry.EndpointFor(h.model)
 	key, _ := h.registry.ResolveAPIKey(h.model.Provider)
 	result := ai.ProbeProvider(ctx, nil, h.model.API, baseURL, key)
 	return tui.ProbeFinished{OK: result.Reachable && result.Authenticated, Detail: result.Detail}
@@ -514,7 +576,7 @@ func (h *harness) SetModel(ref string) (ai.Model, error) {
 	// the incompatible claim is dropped instead of persisted to fail at
 	// invocation time. A still-valid effort survives the switch.
 	effort := h.roleEffortFor(role)
-	if effort != "" && effort != tui.EffortOff && !catalog.ThinkingFor(canonical).Supports(effort) {
+	if effort != "" && effort != tui.EffortOff && !h.effortSupported(canonical, model, effort) {
 		effort = ""
 	}
 	h.settings.AssignRole(role, canonical, effort)

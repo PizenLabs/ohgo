@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,7 +23,7 @@ import (
 // "free" query against their names without ever rendering them as verified
 // free. Ids stay native "provider/id" so selection resolves through the
 // existing switcher without aliasing or fabrication.
-func catalogSnapshot() tui.CatalogSnapshot {
+func catalogSnapshot(registry *ai.Registry) tui.CatalogSnapshot {
 	entries, stale := catalog.SnapshotAll()
 	options := make([]tui.ModelOption, 0, len(entries))
 	for _, entry := range entries {
@@ -82,6 +83,37 @@ func catalogSnapshot() tui.CatalogSnapshot {
 			ReasoningKnown:  entry.ReasoningKnown,
 		})
 	}
+	for _, model := range endpointModels(registry) {
+		var caps []string
+		if model.Reasoning {
+			caps = append(caps, "reasoning")
+		}
+		for _, modality := range model.InputModalities {
+			if modality == "image" {
+				caps = append(caps, "images")
+				break
+			}
+		}
+		detail := []string{formatTokens(model.ContextWindow) + " ctx", "configured endpoint"}
+		if len(caps) > 0 {
+			detail = append(detail, strings.Join(caps, "+"))
+		}
+		options = append(options, tui.ModelOption{
+			ID:              model.Ref(),
+			Provider:        model.Provider,
+			Title:           model.Name,
+			Detail:          strings.Join(detail, " · "),
+			Name:            model.Name,
+			Context:         model.ContextWindow,
+			Origin:          "bundled",
+			Capabilities:    caps,
+			MaxOutput:       model.MaxOutputTokens,
+			InputModalities: append([]string(nil), model.InputModalities...),
+			ThinkingEfforts: append([]string(nil), model.ReasoningEfforts...),
+			Reasoning:       model.Reasoning,
+			ReasoningKnown:  true,
+		})
+	}
 	origin := "live"
 	if stale {
 		origin = "cached"
@@ -124,7 +156,7 @@ func refreshModelCatalog(parent context.Context, held *harness, seq int) tea.Cmd
 				failures = append(failures, provider+": "+shortCatalogError(err))
 			}
 		}
-		snapshot := catalogSnapshot()
+		snapshot := catalogSnapshot(held.registry)
 		snapshot.Origin = "live"
 		snapshot.Stale = false
 		errMsg := ""
@@ -232,32 +264,54 @@ func (h *harness) validateProvider(ctx context.Context, provider, key string) ([
 		key = resolved
 	}
 	baseURL, _ := catalog.ProviderBaseURL(provider)
-	if override, ok := h.registry.BaseURLOverride(provider); ok {
-		baseURL = override
-	}
 	api := providerAPI(provider)
+	var declared []string
+	if spec, ok := h.registry.Endpoint(provider); ok {
+		baseURL = spec.BaseURL
+		api = ai.APIOpenAIChatCompletions
+		declared = make([]string, 0, len(spec.Models))
+		for id := range spec.Models {
+			declared = append(declared, id)
+		}
+		sort.Strings(declared)
+	}
+	if provider == "bedrock" {
+		api = ai.APIBedrockConverse
+	}
+	baseURL = h.registry.EndpointFor(ai.Model{Provider: provider, API: api, BaseURL: baseURL})
 	probe := ai.ProbeProvider(ctx, nil, api, baseURL, key)
 	if !probe.Reachable || !probe.Authenticated {
 		return nil, "", fmt.Errorf("%s", probe.Detail)
+	}
+	if len(declared) > 0 {
+		return declared, probe.Detail, nil
+	}
+	if provider == "bedrock" {
+		return h.bundledModelIDs(provider, probe.Detail)
 	}
 	models, err := catalog.DiscoverModels(ctx, nil, provider, baseURL, key)
 	if err != nil {
 		// Discovery failing after a good probe still validates the
 		// credential: the connection works, only the roster fetch did not.
 		// Fall back to bundled rows so setup can proceed.
-		bundled, berr := catalog.ListForProvider(provider)
-		if berr != nil || len(bundled) == 0 {
-			return nil, "", err
-		}
-		var ids []string
-		for _, model := range bundled {
-			ids = append(ids, model.ID)
-		}
-		return ids, probe.Detail + " (bundled roster)", nil
+		return h.bundledModelIDs(provider, probe.Detail)
 	}
 	var ids []string
 	for _, model := range models {
 		ids = append(ids, model.ID)
 	}
 	return ids, probe.Detail, nil
+}
+
+// bundledModelIDs lists a provider's bundled models after a successful probe.
+func (h *harness) bundledModelIDs(provider, detail string) ([]string, string, error) {
+	bundled, err := catalog.ListForProvider(provider)
+	if err != nil || len(bundled) == 0 {
+		return nil, "", err
+	}
+	var ids []string
+	for _, model := range bundled {
+		ids = append(ids, model.ID)
+	}
+	return ids, detail + " (bundled roster)", nil
 }

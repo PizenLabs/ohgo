@@ -7,6 +7,19 @@ immutable.
 
 ### Added
 
+- Native Amazon Bedrock support through ConverseStream, with the AWS binary
+  event-stream decoder (prelude and message CRC validation), tool calls,
+  signed reasoning replay, usage, and modeled exceptions. Authentication is an
+  Amazon Bedrock API key; `AWS_REGION`/`AWS_DEFAULT_REGION` select the runtime
+  endpoint. SigV4/IAM signing remains unsupported.
+- xAI and Google Gemini provider rows and model facts. Both use the shared
+  Chat Completions transport; Gemini uses its OpenAI compatibility endpoint.
+- User-declared OpenAI-compatible endpoints under `settings.endpoints`. One
+  entry supplies the base URL, model ids, context/output facts, and optional
+  credential variable, covering LM Studio, vLLM, llama.cpp, LiteLLM, OneAPI,
+  and internal proxies without a new provider implementation. Endpoint models
+  appear in the picker and provider roster, and malformed entries are reported
+  without disabling the others.
 - An optional external structural-intelligence provider for `investigate`.
   `investigate.StructuralRouter` keeps the native structural engine as the
   default and fallback, and uses the `intelligence/gry` adapter only for

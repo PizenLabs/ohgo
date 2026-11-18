@@ -36,6 +36,15 @@ type Registry struct {
 	baseURLs map[string]string
 	// providers caches constructed providers keyed by "provider|baseURL".
 	providers map[string]Provider
+	// endpoints holds user-declared OpenAI-compatible providers and their
+	// model facts. They resolve before the bundled catalog so an internal
+	// gateway can shadow a public provider without a rebuild.
+	endpoints map[string]EndpointSpec
+	// providerEnv holds declared credential variable names for endpoint
+	// providers that are not in creds' built-in table.
+	providerEnv map[string][]string
+	// keyOptional marks endpoint providers that work without a credential.
+	keyOptional map[string]bool
 	// sessionIDs assigns one stable fallback session identity per provider, so
 	// a gateway that requires the header still works when the host has no
 	// session store.
@@ -59,11 +68,14 @@ type Registry struct {
 // NewRegistry returns an empty registry with pooled HTTP defaults.
 func NewRegistry() *Registry {
 	return &Registry{
-		apiKeys:    map[string]string{},
-		baseURLs:   map[string]string{},
-		providers:  map[string]Provider{},
-		sessionIDs: map[string]string{},
-		httpClient: &http.Client{Timeout: DefaultHTTPTimeout},
+		apiKeys:     map[string]string{},
+		baseURLs:    map[string]string{},
+		providers:   map[string]Provider{},
+		endpoints:   map[string]EndpointSpec{},
+		providerEnv: map[string][]string{},
+		keyOptional: map[string]bool{},
+		sessionIDs:  map[string]string{},
+		httpClient:  &http.Client{Timeout: DefaultHTTPTimeout},
 	}
 }
 
@@ -156,7 +168,7 @@ func (r *Registry) ResolveAPIKeySource(provider string) (key, source string, err
 			return key, "explicit", nil
 		}
 	}
-	vars, known := creds.ProviderEnvVars(provider)
+	vars, known, optional := r.credentialVars(provider)
 	if !known {
 		return "", "", fmt.Errorf("%w: %q", errUnknownProvider, provider)
 	}
@@ -192,10 +204,25 @@ func (r *Registry) ResolveAPIKeySource(provider string) (key, source string, err
 			return value, source, nil
 		}
 	}
-	if len(vars) == 0 {
+	if len(vars) == 0 || optional {
 		return "", "none required", nil
 	}
 	return "", "", fmt.Errorf("%w: %s (set %s)", ErrMissingAPIKey, provider, strings.Join(vars, " or "))
+}
+
+// credentialVars reports the credential names and keylessness for a provider.
+// A registered endpoint owns its declaration; everything else consults the
+// single authoritative creds table.
+func (r *Registry) credentialVars(provider string) (vars []string, known, optional bool) {
+	r.mu.RLock()
+	vars, declared := r.providerEnv[provider]
+	optional = r.keyOptional[provider]
+	r.mu.RUnlock()
+	if declared {
+		return vars, true, optional
+	}
+	vars, known = creds.ProviderEnvVars(provider)
+	return vars, known, optional
 }
 
 // credentialStore opens the file store, or returns nil when it cannot be
@@ -235,6 +262,7 @@ func (r *Registry) ProviderFor(model Model) (Provider, error) {
 	if override := r.baseURLs[model.Provider]; override != "" {
 		baseURL = override
 	}
+	baseURL = r.endpointFor(model, baseURL)
 
 	// The cache key is the endpoint actually used, not the model's own field.
 	//
@@ -298,6 +326,15 @@ func (r *Registry) ProviderFor(model Model) (Provider, error) {
 		ollama.Client = r.httpClient
 		ollama.BaseURL = baseURL
 		provider = ollama
+	case APIBedrockConverse:
+		key, keyErr := r.ResolveAPIKey(model.Provider)
+		if keyErr != nil {
+			return nil, keyErr
+		}
+		bedrock := NewBedrockProvider(key)
+		bedrock.Client = r.httpClient
+		bedrock.BaseURL = baseURL
+		provider = bedrock
 	default:
 		return nil, unknownAPIError{API: model.API}
 	}
@@ -309,6 +346,37 @@ func (r *Registry) ProviderFor(model Model) (Provider, error) {
 	}
 	r.providers[cacheKey] = provider
 	return provider, nil
+}
+
+// EndpointFor returns the endpoint a request for model actually uses.
+//
+// It is the one endpoint-resolution path: the registry override wins, then a
+// Bedrock region default, then the model's own base. Diagnostics and probes
+// call it so they never claim to check a host the transport would not use.
+func (r *Registry) EndpointFor(model Model) string {
+	base := model.BaseURL
+	if override, ok := r.BaseURLOverride(model.Provider); ok {
+		base = override
+	}
+	return r.endpointFor(model, base)
+}
+
+func (r *Registry) endpointFor(model Model, base string) string {
+	if model.API != APIBedrockConverse {
+		return base
+	}
+	// Only the catalog's unregioned default follows AWS_REGION. An explicit
+	// endpoint — a gateway, a test server, or a pinned regional host — stays
+	// exactly where the caller put it.
+	if base != "" && base != BedrockDefaultBaseURL {
+		return base
+	}
+	for _, name := range BedrockRegionEnv {
+		if region := strings.TrimSpace(os.Getenv(name)); region != "" {
+			return BedrockBaseURL(region)
+		}
+	}
+	return base
 }
 
 // StreamFn opens a completion. Implementations must return a non-nil stream

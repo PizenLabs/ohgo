@@ -177,6 +177,9 @@ func resolveOptions(cmd *cobra.Command) (options, *ai.Registry, error) {
 	// providers may need it during resolution. Both registries read the same
 	// sources, so the one the loop later builds agrees with this one.
 	registry := ai.NewRegistry()
+	for _, warning := range registerEndpoints(registry, opts.settings) {
+		fmt.Fprintf(os.Stderr, "ohgo: %s\n", warning)
+	}
 	model, modelErr := resolveWorkspaceModel(opts.settings, opts.workspace, flagValue(cmd, "model"), os.Getenv("OHGO_MODEL"),
 		dynamicResolver(context.Background(), registry))
 	if modelErr != nil {
@@ -406,6 +409,9 @@ func resolveModelRef(settingsModel func() (provider, id string, ok bool), flagMo
 // hanging startup.
 func dynamicResolver(ctx context.Context, registry *ai.Registry) func(string) (ai.Model, error) {
 	return func(ref string) (ai.Model, error) {
+		if model, handled, err := registry.CustomModel(ref); handled {
+			return model, err
+		}
 		if model, err := catalog.Resolve(ref); err == nil {
 			return model, nil
 		} else {

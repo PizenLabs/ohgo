@@ -15,6 +15,7 @@ var providerKeyVars = []string{
 	"AZURE_OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GROQ_API_KEY",
 	"MISTRAL_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY",
 	"TOGETHER_API_KEY", "FIREWORKS_API_KEY", "XAI_API_KEY", "CEREBRAS_API_KEY",
+	"AWS_BEARER_TOKEN_BEDROCK",
 }
 
 // clearProviderKeys removes every credential from the environment.

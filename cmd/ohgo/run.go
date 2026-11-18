@@ -19,7 +19,6 @@ import (
 	"github.com/PizenLabs/ohgo/internal/execution/tools"
 	"github.com/PizenLabs/ohgo/internal/history"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 	"github.com/PizenLabs/ohgo/internal/startup"
 	"github.com/PizenLabs/ohgo/internal/tui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -496,15 +495,9 @@ func runSession(cmd *cobra.Command, args []string) error {
 			return held.Disconnect(provider)
 		})
 		program.SetConnectHooks(connectHooks(held))
-		program.SetModelLister(func() []string {
-			var ids []string
-			for _, model := range catalog.List() {
-				ids = append(ids, model.Ref())
-			}
-			return ids
-		})
+		program.SetModelLister(func() []string { return modelRefs(held.registry) })
 		program.SetCatalogHooks(tui.CatalogHooks{
-			Snapshot: func() tui.CatalogSnapshot { return catalogSnapshot() },
+			Snapshot: func() tui.CatalogSnapshot { return catalogSnapshot(held.registry) },
 			Refresh: func(ctx context.Context, seq int) tea.Cmd {
 				return refreshModelCatalog(ctx, held, seq)
 			},
