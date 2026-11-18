@@ -390,10 +390,22 @@ Bedrock API key; SigV4/IAM signing is not implemented. The endpoint follows
 `AWS_REGION`/`AWS_DEFAULT_REGION` unless an explicit endpoint is configured.
 
 Any additional OpenAI-compatible server — LM Studio, vLLM, llama.cpp,
-LiteLLM, OneAPI, or a hosted service without a bundled transport — is a settings
-entry rather than a new provider implementation. Facts are explicit because a
-local server's `/models` route usually carries no context window or output
-ceiling, and guessing either silently breaks compaction or a request:
+LiteLLM, OneAPI, or a hosted service without a bundled transport — is a
+configuration entry rather than a new provider implementation. In MODEL
+CONTROL it appears as **+ Custom** in the provider list:
+
+```text
+/model → Custom → a → name, base URL, optional API-key environment
+                 → Enter probe → Space select → a add → Ctrl+S save
+```
+
+Probing is evidence: it reports reachability, credential acceptance, and
+discovered models, and it writes nothing. Models enter the catalog only when
+you explicitly select them and save. The editor asks only for name, base URL,
+and `apiKeyEnv`; context and output ceilings are conservative automatic
+fallbacks, labeled as such, unless a hand-edited endpoint supplies explicit
+values. Endpoints live in the global `~/.ohgo/settings.json`; no project-local
+file shadows them, and a restart reconstructs the same registry and catalog:
 
 ```json
 {
@@ -401,8 +413,6 @@ ceiling, and guessing either silently breaks compaction or a request:
     "lmstudio": {
       "baseUrl": "http://127.0.0.1:1234/v1",
       "models": ["qwen3-coder"],
-      "contextWindow": 262144,
-      "maxTokens": 32768,
       "apiKeyEnv": "LMSTUDIO_API_KEY"
     }
   }
@@ -410,8 +420,10 @@ ceiling, and guessing either silently breaks compaction or a request:
 ```
 
 Then use `lmstudio/qwen3-coder` as the model reference. `apiKeyEnv` is optional:
-without it the endpoint is keyless. The picker and `/connect` list configured
-endpoints, and a typo in one entry is reported without disabling the others.
+without it the endpoint is keyless. The per-endpoint `contextWindow` and
+`maxTokens` fields remain available for a hand edit when the automatic
+fallbacks are wrong. A typo in one entry is reported without disabling the
+others.
 GitHub Models fits the same shape with `baseUrl` set to
 `https://models.github.ai/inference` and `apiKeyEnv` set to `GITHUB_TOKEN`;
 Copilot's short-lived token exchange is not implemented, so a Copilot-only

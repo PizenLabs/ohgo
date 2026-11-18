@@ -14,12 +14,16 @@ immutable.
   endpoint. SigV4/IAM signing remains unsupported.
 - xAI and Google Gemini provider rows and model facts. Both use the shared
   Chat Completions transport; Gemini uses its OpenAI compatibility endpoint.
-- User-declared OpenAI-compatible endpoints under `settings.endpoints`. One
-  entry supplies the base URL, model ids, context/output facts, and optional
-  credential variable, covering LM Studio, vLLM, llama.cpp, LiteLLM, OneAPI,
-  and internal proxies without a new provider implementation. Endpoint models
-  appear in the picker and provider roster, and malformed entries are reported
-  without disabling the others.
+- MODEL CONTROL's **+ Custom** provider for user-declared OpenAI-compatible
+  endpoints, persisted atomically in global `~/.ohgo/settings.json`. The compact
+  editor asks for a name, base URL, and optional `apiKeyEnv`; Enter probes
+  asynchronously, discovered models are explicit selectable evidence, and only
+  Ctrl+S writes configuration. Endpoint models use the normal model rows,
+  references, role assignment, and catalog snapshot. Editing keeps the stable
+  provider key, deletion removes the registry entries and clears dangling role
+  references, and missing context/output facts use labeled automatic fallbacks.
+  This covers LM Studio, vLLM, llama.cpp, LiteLLM, OneAPI, and internal proxies
+  without a new provider implementation.
 - An optional external structural-intelligence provider for `investigate`.
   `investigate.StructuralRouter` keeps the native structural engine as the
   default and fallback, and uses the `intelligence/gry` adapter only for

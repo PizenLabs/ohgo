@@ -1273,11 +1273,16 @@ name, and (for the gateways) the `x-opencode-session` header named in catalog
 metadata and filled from the loop's session identity. Bedrock has its own
 transport because its Chat Completions route does not serve Claude models;
 authentication is an Amazon Bedrock API key. A user-declared OpenAI-compatible
-endpoint (`settings.endpoints`) reuses the Chat Completions transport with
-explicit model facts, so local servers and internal gateways need no provider
-implementation. `ai.ProbeProvider` checks reachability + authentication without
-spending a completion and backs `/connect` validation, `/usage`, `/status`, and
-the TUI probe view. Azure and Responses-only model lines remain excluded on
+endpoint (`settings.endpoints`) reuses the Chat Completions transport, so local
+servers and internal gateways need no provider implementation. MODEL CONTROL's
+`+ Custom` row is the only endpoint surface: it reads the global settings
+authority, persists through `config.Save`, and refreshes the registry so the
+catalog is derived, never a second store. The editor exposes name, base URL,
+and an API-key environment variable; context/output ceilings default to labeled
+conservative fallbacks. `ai.ProbeProvider` checks reachability, authentication,
+and model discovery without spending a completion or writing configuration; it
+backs `/connect` validation, `/usage`, `/status`, endpoint probing, and the TUI
+probe view. Azure and Responses-only model lines remain excluded on
 purpose (no Responses transport in this build), enforced by the catalog's
 transport tripwire.
 
