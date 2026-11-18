@@ -175,6 +175,58 @@ func TestUnresolvedResolveIsNotAbsence(t *testing.T) {
 	}
 }
 
+// A flow question is forward-only. Querying both directions lets inbound
+// callers crowd out the outbound path the user asked for, which forces the
+// model to repeat the exploration with grep/read.
+func TestFlowTraceIsOutboundOnly(t *testing.T) {
+	run := &recordedRun{reply: func([]string) ([]byte, []byte, error) {
+		return []byte(`{"found":true,"start":{"qn":"pkg.A"},"total":1,"returned":1,"rows":[
+			{"hop":1,"direction":"outbound","edge":"CALLS","qn":"pkg.B","file":"b.go","lines":[1,2],"observed":true}
+		]}`), nil, nil
+	}}
+	provider := testProvider(t, run)
+	obs := observe(t, provider, investigate.Request{Intent: planner.IntentFlow, Focus: "pkg.A"})
+	if obs.Outcome != investigate.OutcomeSuccess {
+		t.Fatalf("outcome = %s, want SUCCESS", obs.Outcome)
+	}
+	if len(run.calls) != 1 {
+		t.Fatalf("commands = %v, want one trace", run.calls)
+	}
+	direction := ""
+	for i, arg := range run.calls[0] {
+		if arg == "--direction" && i+1 < len(run.calls[0]) {
+			direction = run.calls[0][i+1]
+		}
+	}
+	if direction != "outbound" {
+		t.Fatalf("trace direction = %q, want outbound", direction)
+	}
+}
+
+// Reverse wording asks for the path into the focus. The final wrapper keeps
+// the direction test identical while the question supplies the intent.
+func TestReverseFlowQuestionTracesInbound(t *testing.T) {
+	run := &recordedRun{reply: func([]string) ([]byte, []byte, error) {
+		return []byte(`{"found":true,"start":{"qn":"pkg.B"},"total":1,"returned":1,"rows":[
+			{"hop":1,"direction":"inbound","edge":"CALLS","qn":"pkg.A","file":"a.go","lines":[1,2],"observed":true}
+		]}`), nil, nil
+	}}
+	provider := testProvider(t, run)
+	_ = observe(t, provider, investigate.Request{
+		Intent: planner.IntentFlow, Focus: "pkg.B",
+		Question: "Who calls pkg.B?",
+	})
+	direction := ""
+	for i, arg := range run.calls[0] {
+		if arg == "--direction" && i+1 < len(run.calls[0]) {
+			direction = run.calls[0][i+1]
+		}
+	}
+	if direction != "inbound" {
+		t.Fatalf("trace direction = %q, want inbound", direction)
+	}
+}
+
 func TestTraceAmbiguityPreservesCandidatesAndTheDecisionBoundary(t *testing.T) {
 	run := &recordedRun{reply: func(args []string) ([]byte, []byte, error) {
 		return []byte(`{"found":false,"ambiguous":true,"message":"ambiguous symbol: Run matches 3 indexed symbols","candidates":[

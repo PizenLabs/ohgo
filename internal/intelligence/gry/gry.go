@@ -122,7 +122,10 @@ func (p *Provider) Observe(ctx context.Context, req investigate.Request, _ plann
 	case opResolve:
 		observation = p.observeResolve(ctx, project, req)
 	case opTrace:
-		observation = p.observeTrace(ctx, project, req, "both")
+		// A forward flow question asks what the focus reaches next, not who
+		// else calls it. "both" doubled the graph and buried the forward path
+		// behind inbound callers. A reverse question names its direction.
+		observation = p.observeTrace(ctx, project, req, traceDirection(req))
 	case opTraceInbound:
 		observation = p.observeTrace(ctx, project, req, "inbound")
 	case opArchitecture:
@@ -135,6 +138,22 @@ func (p *Provider) Observe(ctx context.Context, req investigate.Request, _ plann
 		observation = p.observeContext(ctx, project, req)
 	}
 	return boundObservation(observation), nil
+}
+
+// traceDirection selects the trace direction from the question's information
+// need, not from the caller's role. Reverse wording is deliberate; the default
+// is the forward path a "from A to B" question asks for.
+func traceDirection(req investigate.Request) string {
+	question := strings.ToLower(req.Question)
+	for _, phrase := range []string{
+		"who calls", "callers", "inbound", "used by", "references to",
+		"reach ", "reaches ",
+	} {
+		if strings.Contains(question, phrase) {
+			return "inbound"
+		}
+	}
+	return "outbound"
 }
 
 // operation is the structural information requirement, not a gry tool name.
