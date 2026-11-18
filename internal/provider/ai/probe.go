@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -29,8 +30,16 @@ type ProbeResult struct {
 	// Authenticated reports discovery accepted the credential. A keyless
 	// local server counts as authenticated when it answers.
 	Authenticated bool
+	// Protocol reports the discovery document decoded into the shape this
+	// transport understands. A 200 with unreadable JSON proves reachability
+	// and auth, not OpenAI compatibility.
+	Protocol bool
 	// Models counts discovered entries, when discovery succeeded.
 	Models int
+	// ModelIDs are the discovered ids, sorted and de-duplicated. They are
+	// runtime evidence only: nothing here is persisted or resolves until the
+	// user adds it to configuration.
+	ModelIDs []string
 	// Detail is the human summary naming the outcome and the fix.
 	Detail string
 }
@@ -109,8 +118,15 @@ func ProbeProvider(ctx context.Context, client *http.Client, api API, baseURL, a
 	// A 200 with unparseable JSON still proves reachability and auth; the
 	// model count is the only thing lost.
 	var payload struct {
-		Data   []any `json:"data"`
-		Models []any `json:"models"`
+		Data []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"data"`
+		Models []struct {
+			ID    string `json:"id"`
+			Name  string `json:"name"`
+			Model string `json:"model"`
+		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		result.Authenticated = true
@@ -118,6 +134,23 @@ func ProbeProvider(ctx context.Context, client *http.Client, api API, baseURL, a
 		return result
 	}
 	result.Authenticated = true
+	result.Protocol = true
+	ids := make([]string, 0, len(payload.Data)+len(payload.Models))
+	for _, entry := range payload.Data {
+		ids = append(ids, entry.ID, entry.Name)
+	}
+	for _, entry := range payload.Models {
+		ids = append(ids, entry.ID, entry.Name, entry.Model)
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			result.ModelIDs = append(result.ModelIDs, id)
+		}
+	}
+	sort.Strings(result.ModelIDs)
 	result.Models = len(payload.Data) + len(payload.Models)
 	result.Detail = fmt.Sprintf("endpoint reachable, credential accepted, %d models listed", result.Models)
 	return result

@@ -518,6 +518,16 @@ func runSession(cmd *cobra.Command, args []string) error {
 			SaveKey: func(provider, key string) error {
 				return held.SavePlaneKey(provider, key)
 			},
+			Endpoints: func() []tui.EndpointOption { return held.EndpointOptions() },
+			SaveEndpoint: func(draft tui.EndpointDraft) ([]tui.EndpointOption, error) {
+				return held.SaveEndpoint(draft)
+			},
+			DeleteEndpoint: func(key string) ([]tui.EndpointOption, error) {
+				return held.DeleteEndpoint(key)
+			},
+			ProbeEndpoint: func(ctx context.Context, draft tui.EndpointDraft) tui.EndpointProbeResult {
+				return held.ProbeEndpoint(ctx, draft)
+			},
 		})
 		// Workspace commands route through the harness seam: the program never
 		// owns authority, it asks the owner to move it at a turn boundary.

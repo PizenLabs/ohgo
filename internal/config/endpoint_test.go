@@ -22,6 +22,49 @@ func TestEndpointValidateAcceptsALocalServer(t *testing.T) {
 	}
 }
 
+// TestEndpointValidateAcceptsAnAddressBeforeModels is the save-first workflow:
+// the user may store the URL and add discovered models afterwards, so the
+// address is a valid configured endpoint with a zero-model roster.
+func TestEndpointValidateAcceptsAnAddressBeforeModels(t *testing.T) {
+	endpoint := Endpoint{BaseURL: "http://127.0.0.1:1234/v1"}
+	if err := endpoint.Validate("local"); err != nil {
+		t.Fatalf("model-less endpoint refused: %v", err)
+	}
+	endpoint.EnsureModelFacts()
+	if endpoint.ContextWindow != DefaultEndpointContextWindow || endpoint.MaxTokens != DefaultEndpointMaxTokens {
+		t.Errorf("defaults = %d/%d, want %d/%d", endpoint.ContextWindow, endpoint.MaxTokens,
+			DefaultEndpointContextWindow, DefaultEndpointMaxTokens)
+	}
+}
+
+// TestEndpointValidateAcceptsAutomaticFacts proves a hand-edited endpoint can
+// omit the ceilings; the registry applies the same labeled fallback the editor
+// uses instead of refusing the address.
+func TestEndpointValidateAcceptsAutomaticFacts(t *testing.T) {
+	endpoint := Endpoint{BaseURL: "http://127.0.0.1:1234/v1", Models: []string{"m"}}
+	if err := endpoint.Validate("local"); err != nil {
+		t.Fatalf("automatic facts refused: %v", err)
+	}
+	endpoint.EnsureModelFacts()
+	if !endpoint.FactsAutomatic || endpoint.ContextWindow <= 0 || endpoint.MaxTokens <= 0 {
+		t.Errorf("facts = %+v, want labeled automatic defaults", endpoint)
+	}
+}
+
+func TestEndpointKeyDerivesAStableReferencePrefix(t *testing.T) {
+	cases := map[string]string{
+		"vLLM Local":   "vllm-local",
+		"  LM Studio ": "lm-studio",
+		"my_gateway":   "my_gateway",
+		"###":          "",
+	}
+	for name, want := range cases {
+		if got := EndpointKey(name); got != want {
+			t.Errorf("EndpointKey(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
 // TestEndpointValidateRejectsUnusableFacts is the guard that keeps a typo from
 // becoming a wrong context window or a provider-side 400 at request time.
 func TestEndpointValidateRejectsUnusableFacts(t *testing.T) {
@@ -32,10 +75,7 @@ func TestEndpointValidateRejectsUnusableFacts(t *testing.T) {
 	}{
 		{"missing base", func(e *Endpoint) { e.BaseURL = "" }, "baseUrl"},
 		{"non-http base", func(e *Endpoint) { e.BaseURL = "ftp://host/v1" }, "http or https"},
-		{"no models", func(e *Endpoint) { e.Models = nil }, "no models"},
 		{"duplicate model", func(e *Endpoint) { e.Models = []string{"a", "a"} }, "twice"},
-		{"no context", func(e *Endpoint) { e.ContextWindow = 0 }, "contextWindow"},
-		{"no output", func(e *Endpoint) { e.MaxTokens = 0 }, "maxTokens"},
 		{"output above context", func(e *Endpoint) { e.MaxTokens = e.ContextWindow + 1 }, "exceeds"},
 		{"bad env", func(e *Endpoint) { e.APIKeyEnv = "not a name" }, "apiKeyEnv"},
 		{"no text", func(e *Endpoint) { e.Input = []string{"image"} }, "include text"},

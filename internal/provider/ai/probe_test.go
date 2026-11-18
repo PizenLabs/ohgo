@@ -27,8 +27,11 @@ func TestProbeClassifiesReachableAndAuthenticated(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result := ProbeProvider(ctx, server.Client(), APIOpenAIChatCompletions, server.URL, "k")
-	if !result.Reachable || !result.Authenticated || result.Models != 2 {
+	if !result.Reachable || !result.Authenticated || !result.Protocol || result.Models != 2 {
 		t.Errorf("result = %+v, want reachable/authenticated/2", result)
+	}
+	if len(result.ModelIDs) != 2 || result.ModelIDs[0] != "a" || result.ModelIDs[1] != "b" {
+		t.Errorf("model ids = %v, want sorted [a b]", result.ModelIDs)
 	}
 	if !strings.Contains(result.Detail, "2 models") {
 		t.Errorf("detail = %q, want the count", result.Detail)

@@ -128,6 +128,12 @@ func planeModalTitle(plane *ModelPlaneState) string {
 	if plane.Auth != nil {
 		return "MODEL CONTROL · providers"
 	}
+	if plane.CustomDelete != nil {
+		return "MODEL CONTROL · custom"
+	}
+	if plane.CustomActive() && plane.Stage == PlaneStageBrowse {
+		return "MODEL CONTROL · custom"
+	}
 	if plane.Variant != nil {
 		return "MODEL CONTROL · search"
 	}
@@ -269,10 +275,18 @@ func renderFullPlaneArea(sb *strings.Builder, state State, pal *Palette, layout 
 	leftWidth, rightWidth := planeColumns(state, layout)
 
 	var left, right []string
-	if plane.Mode == PlaneRoles {
+	switch {
+	case plane.CustomDelete != nil:
+		left = renderCustomDeletePane(plane, pal, displayWidth(state, layout))
+	case plane.CustomActive() && plane.Stage == PlaneStageBrowse && (plane.CustomView == CustomViewEditor || plane.CustomView == CustomViewDiscovery):
+		left = renderCustomPane(plane, pal, state, layout, displayWidth(state, layout), 0)
+	case plane.Mode == PlaneRoles:
 		left = renderPlaneRolesPane(plane, pal, leftWidth)
 		right = renderPlaneAssignmentPane(plane, pal, rightWidth)
-	} else {
+	case plane.CustomActive() && plane.Stage == PlaneStageBrowse:
+		left = renderPlaneProvidersPane(plane, pal, state, leftWidth)
+		right = renderCustomPane(plane, pal, state, layout, rightWidth, 0)
+	default:
 		left = renderPlaneProvidersPane(plane, pal, state, leftWidth)
 		right = renderPlaneModelsPane(plane, pal, state, layout, rightWidth)
 	}
@@ -346,6 +360,12 @@ func renderPlaneModal(plane *ModelPlaneState, pal *Palette, state State, layout 
 		// The key prompt replaces the body wherever it was opened from:
 		// entry must stay visible and masked while nothing behind moves.
 		body = fitPane(renderPlaneAuthPane(plane, pal, interior, bodyH), bodyH)
+	case plane.CustomDelete != nil:
+		body = fitPane(renderCustomDeletePane(plane, pal, interior), bodyH)
+	case plane.CustomActive() && plane.Stage == PlaneStageBrowse && plane.CustomView == CustomViewEditor:
+		body = fitPane(renderCustomEditorPane(plane, pal, interior), bodyH)
+	case plane.CustomActive() && plane.Stage == PlaneStageBrowse && plane.CustomView == CustomViewDiscovery:
+		body = fitPane(renderCustomDiscoveryPane(plane, pal, interior, bodyH), bodyH)
 	case plane.Variant != nil:
 		// The variant prompt replaces the body wherever it was opened
 		// from: choosing must stay visible in both flows.
@@ -362,6 +382,10 @@ func renderPlaneModal(plane *ModelPlaneState, pal *Palette, state State, layout 
 		body = fitPane(renderPlaneFlow(plane, pal, interior, bodyH), bodyH)
 	case stacked:
 		body = renderPlaneStacked(plane, pal, state, layout, interior, bodyH)
+	case plane.CustomActive() && plane.Stage == PlaneStageBrowse:
+		left := fitPane(renderPlaneProvidersPane(plane, pal, state, leftW), bodyH)
+		right := fitPane(renderCustomPane(plane, pal, state, layout, rightW, bodyH), bodyH)
+		body = zipColumns(left, right, leftW, pal.Muted.Render("│"))
 	case plane.Mode == PlaneRoles:
 		left := fitPane(renderPlaneRolesPane(plane, pal, leftW), bodyH)
 		right := fitPane(renderPlaneAssignmentPane(plane, pal, rightW), bodyH)
@@ -446,11 +470,19 @@ func renderPlaneStacked(plane *ModelPlaneState, pal *Palette, state State, layou
 	if plane.Variant != nil {
 		return fitPane(renderPlaneVariantPane(plane, pal, width, contentH), contentH)
 	}
+	if plane.CustomDelete != nil {
+		return fitPane(renderCustomDeletePane(plane, pal, width), contentH)
+	}
+	if plane.CustomActive() && plane.Stage == PlaneStageBrowse && plane.CustomView != CustomViewEndpoints && plane.CustomView != CustomViewEndpoint {
+		return fitPane(renderCustomPane(plane, pal, state, layout, width, contentH), contentH)
+	}
 	var lines []string
-	switch plane.Focus {
-	case PlaneFocusProviders, PlaneFocusSearch:
+	switch {
+	case plane.CustomActive() && plane.Stage == PlaneStageBrowse && plane.Focus == PlaneFocusModels:
+		lines = renderCustomPane(plane, pal, state, layout, width, contentH)
+	case plane.Focus == PlaneFocusProviders || plane.Focus == PlaneFocusSearch:
 		lines = renderPlaneProvidersPane(plane, pal, state, width)
-	case PlaneFocusRoles:
+	case plane.Focus == PlaneFocusRoles:
 		lines = append(lines, renderPlaneRolesPane(plane, pal, width)...)
 		lines = append(lines, pal.Muted.Render(TruncateToWidth(strings.Repeat("─", maxInt(width, 1)), width)))
 		lines = append(lines, renderPlaneAssignmentPane(plane, pal, width)...)
@@ -651,6 +683,26 @@ func planeFooter(plane *ModelPlaneState, pal *Palette, width int) string {
 	hints := "←→ pane  ·  ↑↓ select  ·  Enter choose  ·  Tab roles  ·  Esc exit"
 	if plane.Auth != nil {
 		hints = "Enter save  ·  Esc cancel"
+	} else if plane.CustomDelete != nil {
+		hints = "y delete  ·  n cancel"
+	} else if plane.CustomActive() && plane.Stage == PlaneStageBrowse && plane.CustomView == CustomViewEditor {
+		hints = "Tab field · Enter probe · m models · Ctrl+S save · Esc cancel"
+	} else if plane.CustomActive() && plane.Stage == PlaneStageBrowse && plane.CustomView == CustomViewDiscovery {
+		hints = "↑↓ select · space toggle · a add selected · Esc cancel"
+	} else if plane.CustomActive() && plane.Stage == PlaneStageBrowse && plane.Focus == PlaneFocusProviders {
+		if plane.CustomView == CustomViewEndpoints && len(plane.Endpoints) == 0 {
+			hints = "Enter add endpoint · Esc exit"
+		} else {
+			hints = "←→ pane · ↑↓ provider · Enter endpoints · a add · Esc exit"
+		}
+	} else if plane.CustomActive() && plane.Stage == PlaneStageBrowse && plane.CustomView == CustomViewEndpoint {
+		if len(plane.VisibleModels()) > 0 {
+			hints = "↑↓ model · Enter assign · p probe · e edit · d delete · Esc back"
+		} else {
+			hints = "p probe · e edit · d delete · Esc back"
+		}
+	} else if plane.CustomActive() && plane.Stage == PlaneStageBrowse {
+		hints = "↑↓ endpoint · Enter open · a add · e edit · d delete · p probe · Esc exit"
 	} else if plane.Variant != nil {
 		hints = "↑↓ choose variant · Enter confirm · Esc cancel"
 	} else if plane.Stage == PlaneStageRole {
@@ -798,6 +850,12 @@ func renderPlaneProvidersPane(plane *ModelPlaneState, pal *Palette, state State,
 	}
 
 	lines = append(lines, pal.Muted.Render(TruncateToWidth(strings.Repeat("─", maxInt(width, 1)), width)))
+	if plane.CustomActive() && plane.CustomView != CustomViewEndpoint {
+		lines = append(lines, pal.Muted.Render(TruncateToWidth("Custom endpoints", width)))
+		lines = append(lines, pal.Muted.Render(TruncateToWidth(
+			fmt.Sprintf("%d configured", len(plane.Endpoints)), width)))
+		return lines
+	}
 	searchHeading := "Search / Filter"
 	if plane.Focus == PlaneFocusSearch {
 		searchHeading = "▶ Search / Filter"
@@ -807,6 +865,14 @@ func renderPlaneProvidersPane(plane *ModelPlaneState, pal *Palette, state State,
 
 	total := len(plane.Models)
 	visible := len(plane.VisibleModels())
+	if plane.CustomActive() {
+		if endpoint, ok := plane.customEndpointModel(); ok {
+			total = len(endpoint.Models)
+		} else {
+			total = 0
+			visible = 0
+		}
+	}
 	lines = append(lines, pal.Muted.Render(TruncateToWidth(
 		fmt.Sprintf("%d of %d models", visible, total), width)))
 	return lines
@@ -823,6 +889,9 @@ func renderProviderRow(index int, plane *ModelPlaneState, row ProviderRow, pal *
 		name = "All providers"
 	} else {
 		count = formatCount(row.Count)
+		if row.Custom && row.Count == 0 {
+			count = ""
+		}
 	}
 	glyph, glyphStyle := providerGlyph(row, pal)
 	marker := "  "
@@ -845,6 +914,12 @@ func renderProviderRow(index int, plane *ModelPlaneState, row ProviderRow, pal *
 func providerGlyph(row ProviderRow, pal *Palette) (string, lipgloss.Style) {
 	if row.ID == AllProviders {
 		return "≡", pal.Muted
+	}
+	if row.Custom {
+		if row.Configured {
+			return "✓", pal.ToolDone
+		}
+		return "+", pal.Muted
 	}
 	if row.Configured {
 		return "✓", pal.ToolDone
@@ -1274,7 +1349,11 @@ func planeContext(model ModelOption) string {
 	if model.Context <= 0 {
 		return "unknown"
 	}
-	return formatCount(model.Context) + " tokens"
+	out := formatCount(model.Context) + " tokens"
+	if model.ContextAutomatic {
+		out += " (automatic)"
+	}
+	return out
 }
 
 // planeOutput renders the maximum completion, or "unknown".
@@ -1282,7 +1361,11 @@ func planeOutput(model ModelOption) string {
 	if model.MaxOutput <= 0 {
 		return "unknown"
 	}
-	return formatCount(model.MaxOutput) + " tokens"
+	out := formatCount(model.MaxOutput) + " tokens"
+	if model.MaxOutputAutomatic {
+		out += " (automatic)"
+	}
+	return out
 }
 
 // planeModalities renders the input modalities, or "unknown" when the source

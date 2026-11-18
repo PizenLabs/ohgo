@@ -99,19 +99,21 @@ func catalogSnapshot(registry *ai.Registry) tui.CatalogSnapshot {
 			detail = append(detail, strings.Join(caps, "+"))
 		}
 		options = append(options, tui.ModelOption{
-			ID:              model.Ref(),
-			Provider:        model.Provider,
-			Title:           model.Name,
-			Detail:          strings.Join(detail, " · "),
-			Name:            model.Name,
-			Context:         model.ContextWindow,
-			Origin:          "bundled",
-			Capabilities:    caps,
-			MaxOutput:       model.MaxOutputTokens,
-			InputModalities: append([]string(nil), model.InputModalities...),
-			ThinkingEfforts: append([]string(nil), model.ReasoningEfforts...),
-			Reasoning:       model.Reasoning,
-			ReasoningKnown:  true,
+			ID:                 model.Ref(),
+			Provider:           model.Provider,
+			Title:              model.Name,
+			Detail:             strings.Join(detail, " · "),
+			Name:               model.Name,
+			Context:            model.ContextWindow,
+			ContextAutomatic:   model.ContextAutomatic,
+			Origin:             "bundled",
+			Capabilities:       caps,
+			MaxOutput:          model.MaxOutputTokens,
+			MaxOutputAutomatic: model.MaxOutputAutomatic,
+			InputModalities:    append([]string(nil), model.InputModalities...),
+			ThinkingEfforts:    append([]string(nil), model.ReasoningEfforts...),
+			Reasoning:          model.Reasoning,
+			ReasoningKnown:     model.Reasoning || len(model.ReasoningEfforts) > 0,
 		})
 	}
 	origin := "live"

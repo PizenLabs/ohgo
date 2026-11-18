@@ -2432,6 +2432,131 @@ func (s *State) Apply(event Event) {
 			s.Plane.SetVisibleRows(e.Rows)
 		}
 
+	case PlaneEndpointsChanged:
+		if s.Plane != nil {
+			if e.Roles != nil {
+				s.Plane.SetRoles(e.Roles)
+			}
+			s.Plane.ApplyEndpointsSaved(e.Endpoints, e.Providers, e.Notice)
+		}
+
+	case PlaneEndpointOpened:
+		if s.Plane != nil {
+			s.Plane.OpenEndpoint(e.Key)
+		}
+
+	case PlaneEndpointAdded:
+		if s.Plane != nil {
+			s.Plane.OpenNewEndpoint()
+		}
+
+	case PlaneEndpointEdited:
+		if s.Plane != nil {
+			if !s.Plane.OpenEditEndpoint() {
+				s.Plane.Notice = "select an endpoint first"
+			}
+		}
+
+	case PlaneEndpointBack:
+		if s.Plane != nil {
+			s.Plane.BackCustom()
+		}
+
+	case PlaneEndpointFieldMoved:
+		if s.Plane != nil {
+			s.Plane.MoveEditorFocus(e.Delta)
+		}
+
+	case PlaneEndpointCursorMoved:
+		if s.Plane != nil {
+			s.Plane.MoveEditorCursor(e.Delta)
+		}
+
+	case PlaneEndpointTyped:
+		if s.Plane != nil {
+			s.Plane.InsertEditorText(e.Text)
+		}
+
+	case PlaneEndpointBackspace:
+		if s.Plane != nil {
+			s.Plane.DeleteEditorBefore()
+		}
+
+	case PlaneEndpointDelete:
+		if s.Plane != nil {
+			s.Plane.DeleteEditorAt()
+		}
+
+	case PlaneEndpointProbeStarted:
+		if s.Plane != nil && s.Plane.EndpointEditor != nil {
+			s.Plane.EndpointEditor.ProbeSeq = e.Seq
+			s.Plane.EndpointEditor.Probing = true
+			s.Plane.EndpointEditor.ProbeStatus = "probing…"
+		}
+
+	case PlaneEndpointProbeFinished:
+		if s.Plane != nil {
+			s.Plane.ApplyEndpointProbe(e.Seq, e.BaseURL, e.APIKeyEnv, e.Result)
+		}
+
+	case PlaneEndpointProbing:
+		if s.Plane != nil {
+			s.Plane.EndpointProbeSeq = e.Seq
+			s.Plane.EndpointProbing = true
+			s.Plane.EndpointProbe = EndpointProbeResult{Detail: "probing…"}
+			s.Plane.Notice = ""
+		}
+
+	case PlaneEndpointEvidence:
+		if s.Plane != nil && e.Seq == s.Plane.EndpointProbeSeq && e.Key == s.Plane.customEndpointKey {
+			s.Plane.EndpointProbing = false
+			s.Plane.EndpointProbe = e.Result
+			s.Plane.Notice = e.Result.Detail
+		}
+
+	case PlaneEndpointDiscoveryOpened:
+		if s.Plane != nil {
+			s.Plane.OpenDiscovery()
+		}
+
+	case PlaneEndpointDiscoveryMoved:
+		if s.Plane != nil {
+			s.Plane.MoveDiscovery(e.Delta)
+		}
+
+	case PlaneEndpointDiscoveryToggled:
+		if s.Plane != nil {
+			s.Plane.ToggleDiscovery()
+		}
+
+	case PlaneEndpointDiscoveryAdded:
+		if s.Plane != nil {
+			if count := s.Plane.AddDiscoverySelection(); count > 0 {
+				s.Plane.Notice = fmt.Sprintf("%d models staged — Ctrl+S saves", count)
+			} else {
+				s.Plane.Notice = "no models selected"
+			}
+		}
+
+	case PlaneEndpointDeleteAsked:
+		if s.Plane != nil {
+			s.Plane.AskDeleteEndpoint()
+		}
+
+	case PlaneEndpointDeleteCancelled:
+		if s.Plane != nil {
+			s.Plane.CancelDeleteEndpoint()
+		}
+
+	case PlaneEndpointFailed:
+		if s.Plane != nil {
+			s.Plane.Notice = e.Notice
+			if s.Plane.EndpointEditor != nil {
+				s.Plane.EndpointEditor.Probing = false
+				s.Plane.EndpointEditor.ProbeStatus = e.Notice
+			}
+		}
+
 	case ConnectKeyOpened:
 		// A fresh buffer: the previous provider's key is never carried over.
 		view := e.View
@@ -4982,6 +5107,8 @@ type ModelPlaneOpened struct {
 	Models []ModelOption
 	// Roles is the effective role configuration.
 	Roles []RoleAssignment
+	// Endpoints is the configured custom-endpoint roster.
+	Endpoints []EndpointOption
 	// ActiveRole is the role an Enter applies to in model mode.
 	ActiveRole string
 	// Loading reports the first roster has not arrived yet.
@@ -5217,6 +5344,131 @@ func (PlaneAuthFailed) eventKind() string { return "plane_auth_failed" }
 type PlaneRowsChanged struct{ Rows int }
 
 func (PlaneRowsChanged) eventKind() string { return "plane_rows_changed" }
+
+// PlaneEndpointsChanged swaps the configured endpoint roster from the
+// configuration authority and returns to the endpoint list.
+type PlaneEndpointsChanged struct {
+	// Endpoints is the refreshed endpoint roster.
+	Endpoints []EndpointOption
+	// Providers is the refreshed provider pane, or nil to leave it.
+	Providers []ProviderRow
+	// Roles is the refreshed effective role roster, or nil to leave it.
+	Roles []RoleAssignment
+	// Notice is the confirmation or refusal.
+	Notice string
+}
+
+func (PlaneEndpointsChanged) eventKind() string { return "plane_endpoints_changed" }
+
+// PlaneEndpointOpened shows one configured endpoint's models.
+type PlaneEndpointOpened struct{ Key string }
+
+func (PlaneEndpointOpened) eventKind() string { return "plane_endpoint_opened" }
+
+// PlaneEndpointAdded starts the compact editor for a new endpoint.
+type PlaneEndpointAdded struct{}
+
+func (PlaneEndpointAdded) eventKind() string { return "plane_endpoint_added" }
+
+// PlaneEndpointEdited starts the compact editor for the visible endpoint.
+type PlaneEndpointEdited struct{}
+
+func (PlaneEndpointEdited) eventKind() string { return "plane_endpoint_edited" }
+
+// PlaneEndpointBack returns one level from discovery, editor, or detail.
+type PlaneEndpointBack struct{}
+
+func (PlaneEndpointBack) eventKind() string { return "plane_endpoint_back" }
+
+// PlaneEndpointFieldMoved moves the editor's focused field.
+type PlaneEndpointFieldMoved struct{ Delta int }
+
+func (PlaneEndpointFieldMoved) eventKind() string { return "plane_endpoint_field_moved" }
+
+// PlaneEndpointCursorMoved moves the cursor inside the focused field.
+type PlaneEndpointCursorMoved struct{ Delta int }
+
+func (PlaneEndpointCursorMoved) eventKind() string { return "plane_endpoint_cursor_moved" }
+
+// PlaneEndpointTyped inserts text into the focused field.
+type PlaneEndpointTyped struct{ Text string }
+
+func (PlaneEndpointTyped) eventKind() string { return "plane_endpoint_typed" }
+
+// PlaneEndpointBackspace deletes before the focused cursor.
+type PlaneEndpointBackspace struct{}
+
+func (PlaneEndpointBackspace) eventKind() string { return "plane_endpoint_backspace" }
+
+// PlaneEndpointDelete deletes at the focused cursor.
+type PlaneEndpointDelete struct{}
+
+func (PlaneEndpointDelete) eventKind() string { return "plane_endpoint_delete" }
+
+// PlaneEndpointProbeStarted marks a probe in flight and records its sequence.
+type PlaneEndpointProbeStarted struct{ Seq int }
+
+func (PlaneEndpointProbeStarted) eventKind() string { return "plane_endpoint_probe_started" }
+
+// PlaneEndpointProbeFinished records probe evidence for the matching request.
+type PlaneEndpointProbeFinished struct {
+	Seq       int
+	BaseURL   string
+	APIKeyEnv string
+	Result    EndpointProbeResult
+}
+
+func (PlaneEndpointProbeFinished) eventKind() string { return "plane_endpoint_probe_finished" }
+
+// PlaneEndpointProbing marks a detail-view probe in flight.
+type PlaneEndpointProbing struct{ Seq int }
+
+func (PlaneEndpointProbing) eventKind() string { return "plane_endpoint_probing" }
+
+// PlaneEndpointEvidence records detail-view probe evidence. It is never
+// persistence authority.
+type PlaneEndpointEvidence struct {
+	Seq    int
+	Key    string
+	Result EndpointProbeResult
+}
+
+func (PlaneEndpointEvidence) eventKind() string { return "plane_endpoint_evidence" }
+
+// PlaneEndpointDiscoveryOpened shows discovered/model selection.
+type PlaneEndpointDiscoveryOpened struct{}
+
+func (PlaneEndpointDiscoveryOpened) eventKind() string { return "plane_endpoint_discovery_opened" }
+
+// PlaneEndpointDiscoveryMoved shifts the discovered-model highlight.
+type PlaneEndpointDiscoveryMoved struct{ Delta int }
+
+func (PlaneEndpointDiscoveryMoved) eventKind() string { return "plane_endpoint_discovery_moved" }
+
+// PlaneEndpointDiscoveryToggled flips the highlighted model's selection.
+type PlaneEndpointDiscoveryToggled struct{}
+
+func (PlaneEndpointDiscoveryToggled) eventKind() string { return "plane_endpoint_discovery_toggled" }
+
+// PlaneEndpointDiscoveryAdded copies the selection into the editor draft.
+type PlaneEndpointDiscoveryAdded struct{}
+
+func (PlaneEndpointDiscoveryAdded) eventKind() string { return "plane_endpoint_discovery_added" }
+
+// PlaneEndpointDeleteAsked opens the y/n confirmation for the visible endpoint.
+type PlaneEndpointDeleteAsked struct{}
+
+func (PlaneEndpointDeleteAsked) eventKind() string { return "plane_endpoint_delete_asked" }
+
+// PlaneEndpointDeleteCancelled dismisses the confirmation.
+type PlaneEndpointDeleteCancelled struct{}
+
+func (PlaneEndpointDeleteCancelled) eventKind() string { return "plane_endpoint_delete_cancelled" }
+
+// PlaneEndpointFailed reports a refused save/delete without losing the editor.
+type PlaneEndpointFailed struct{ Notice string }
+
+func (PlaneEndpointFailed) eventKind() string { return "plane_endpoint_failed" }
 
 // HistoryReplaced swaps the transcript for replayed entries on resume.
 type HistoryReplaced struct {
@@ -5571,6 +5823,9 @@ type ModelOption struct {
 	Name string
 	// Context is the context window in tokens, or zero when unknown.
 	Context int
+	// ContextAutomatic reports Context is a conservative fallback rather
+	// than discovered or user-verified metadata.
+	ContextAutomatic bool
 	// PriceKnown reports explicit pricing metadata backs this row. Free is
 	// meaningless without it, and the row must not claim a price.
 	PriceKnown bool
@@ -5586,6 +5841,8 @@ type ModelOption struct {
 	// MaxOutput is the model's maximum completion in tokens, or zero when
 	// unknown.
 	MaxOutput int
+	// MaxOutputAutomatic reports MaxOutput is a conservative fallback.
+	MaxOutputAutomatic bool
 	// CostInput, CostOutput, CostCacheRead and CostCacheWrite are the
 	// per-million-token USD schedule. They are meaningful only when
 	// PriceKnown is true; a zero under PriceKnown is a real zero (free),
@@ -5623,8 +5880,10 @@ func sameModelOptions(a, b []ModelOption) bool {
 		x, y := a[i], b[i]
 		if x.ID != y.ID || x.Provider != y.Provider || x.Title != y.Title ||
 			x.Detail != y.Detail || x.Active != y.Active || x.Name != y.Name ||
-			x.Context != y.Context || x.PriceKnown != y.PriceKnown ||
-			x.Free != y.Free || x.MaxOutput != y.MaxOutput || x.CostInput != y.CostInput ||
+			x.Context != y.Context || x.ContextAutomatic != y.ContextAutomatic ||
+			x.PriceKnown != y.PriceKnown ||
+			x.Free != y.Free || x.MaxOutput != y.MaxOutput || x.MaxOutputAutomatic != y.MaxOutputAutomatic ||
+			x.CostInput != y.CostInput ||
 			x.CostOutput != y.CostOutput || x.CostCacheRead != y.CostCacheRead ||
 			x.CostCacheWrite != y.CostCacheWrite || x.Reasoning != y.Reasoning ||
 			x.ReasoningKnown != y.ReasoningKnown ||

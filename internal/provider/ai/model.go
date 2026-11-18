@@ -55,8 +55,13 @@ type Model struct {
 	BaseURL string
 	// ContextWindow is the maximum total tokens the model accepts.
 	ContextWindow int
+	// ContextAutomatic reports ContextWindow is a conservative fallback,
+	// not discovered or user-verified metadata. Display-only.
+	ContextAutomatic bool
 	// MaxOutputTokens is the largest completion the model will emit.
 	MaxOutputTokens int
+	// MaxOutputAutomatic reports MaxOutputTokens is a conservative fallback.
+	MaxOutputAutomatic bool
 	// Cost is the price schedule.
 	Cost Cost
 	// Reasoning reports whether the model accepts a thinking budget.

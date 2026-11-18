@@ -79,12 +79,12 @@ func TestEndpointNameCannotShadowABuiltin(t *testing.T) {
 func TestMalformedEndpointIsReportedAndSkipped(t *testing.T) {
 	settings := endpointSettings()
 	bad := settings.Endpoints["lmstudio"]
-	bad.ContextWindow = 0
+	bad.MaxTokens = bad.ContextWindow + 1
 	settings.Endpoints["broken"] = bad
 	registry := ai.NewRegistry()
 	registry.SetCredentialsFile(t.TempDir() + "/credentials.json")
 	warnings := registerEndpoints(registry, settings)
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "contextWindow") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "exceeds") {
 		t.Fatalf("warnings = %v", warnings)
 	}
 	if _, err := dynamicResolver(context.Background(), registry)("lmstudio/qwen3-coder"); err != nil {

@@ -179,6 +179,16 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		SaveKey: func(provider, key string) error {
 			return held.SavePlaneKey(provider, key)
 		},
+		Endpoints: func() []tui.EndpointOption { return held.EndpointOptions() },
+		SaveEndpoint: func(draft tui.EndpointDraft) ([]tui.EndpointOption, error) {
+			return held.SaveEndpoint(draft)
+		},
+		DeleteEndpoint: func(key string) ([]tui.EndpointOption, error) {
+			return held.DeleteEndpoint(key)
+		},
+		ProbeEndpoint: func(ctx context.Context, draft tui.EndpointDraft) tui.EndpointProbeResult {
+			return held.ProbeEndpoint(ctx, draft)
+		},
 	})
 	installWorkspaceHooks(program, held, controller, &opts)
 	program.SetReasoningSelector(func(intent workspace.IntentContract, text string, request []agent.Message) (bool, string) {

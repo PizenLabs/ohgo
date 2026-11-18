@@ -138,11 +138,6 @@ func (h *harness) ProviderRows() []tui.ProviderRow {
 			counts[entry.Model.Provider]++
 		}
 	}
-	extra := map[string]bool{}
-	for _, model := range endpointModels(h.registry) {
-		counts[model.Provider]++
-		extra[model.Provider] = true
-	}
 	var rows []tui.ProviderRow
 	seen := map[string]bool{}
 	appendRow := func(name string, display, driver string) {
@@ -171,20 +166,6 @@ func (h *harness) ProviderRows() []tui.ProviderRow {
 	}
 	for _, name := range catalog.ProviderNames() {
 		appendRow(name, providerDisplayName(name), providerDriver(name))
-	}
-	if len(extra) > 0 {
-		names := make([]string, 0, len(extra))
-		for name := range extra {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			display := name
-			if spec, ok := h.registry.Endpoint(name); ok && spec.Name != "" {
-				display = spec.Name
-			}
-			appendRow(name, display, providerDriver(name))
-		}
 	}
 	return rows
 }
@@ -231,8 +212,274 @@ func (h *harness) ProviderPaneRows() []tui.ProviderRow {
 	for _, row := range rows {
 		total += row.Count
 	}
+	customModels := 0
+	customConfigured := false
+	for _, endpoint := range h.settingsOrDefault().Endpoints {
+		customModels += len(endpoint.Models)
+		customConfigured = true
+	}
+	total += customModels
 	all := tui.ProviderRow{ID: tui.AllProviders, Name: "All providers", Count: total}
-	return append([]tui.ProviderRow{all}, rows...)
+	custom := tui.ProviderRow{
+		ID:         tui.CustomProvider,
+		Name:       tui.CustomProviderName,
+		Driver:     "OpenAI Chat",
+		Count:      customModels,
+		Configured: customConfigured,
+		Custom:     true,
+		KeyDetail:  "not configured",
+	}
+	if customConfigured {
+		custom.KeyDetail = "configured"
+	}
+	return append(append([]tui.ProviderRow{all}, rows...), custom)
+}
+
+// EndpointOptions projects the global configuration's endpoints for the model
+// control plane. It reads the authority, not a derived cache, so a hand edit
+// and an interactive save produce the same view.
+func (h *harness) EndpointOptions() []tui.EndpointOption {
+	settings := h.settingsOrDefault()
+	keys := make([]string, 0, len(settings.Endpoints))
+	for key := range settings.Endpoints {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]tui.EndpointOption, 0, len(keys))
+	for _, key := range keys {
+		endpoint := settings.Endpoints[key]
+		automatic := false
+		if len(endpoint.Models) > 0 {
+			automatic = endpoint.FactsAutomatic || endpoint.ContextWindow <= 0 || endpoint.MaxTokens <= 0
+			endpoint.EnsureModelFacts()
+		}
+		out = append(out, tui.EndpointOption{
+			Key:            key,
+			Name:           endpoint.DisplayName(key),
+			BaseURL:        endpoint.BaseURL,
+			APIKeyEnv:      endpoint.APIKeyEnv,
+			Models:         append([]string(nil), endpoint.Models...),
+			ContextWindow:  endpoint.ContextWindow,
+			MaxTokens:      endpoint.MaxTokens,
+			FactsAutomatic: automatic,
+		})
+	}
+	return out
+}
+
+// SaveEndpoint validates one endpoint, persists it atomically in the global
+// settings file, and refreshes the registry the catalog is derived from.
+//
+// The map key is identity: a new endpoint derives it from the display name,
+// and an edit keeps it, so a rename never changes model references. Duplicate
+// keys or display names are refused rather than silently overwriting.
+func (h *harness) SaveEndpoint(draft tui.EndpointDraft) ([]tui.EndpointOption, error) {
+	if h.settings == nil {
+		return nil, fmt.Errorf("configuration is unavailable")
+	}
+	name := strings.TrimSpace(draft.Name)
+	if name == "" {
+		return nil, fmt.Errorf("endpoint name is required")
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(draft.BaseURL), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("base URL is required")
+	}
+	apiKeyEnv := strings.TrimSpace(draft.APIKeyEnv)
+	key := strings.TrimSpace(draft.Key)
+	next := cloneSettings(*h.settings)
+	if next.Endpoints == nil {
+		next.Endpoints = map[string]config.Endpoint{}
+	}
+	existing, editing := next.Endpoints[key]
+	if key == "" {
+		key = config.EndpointKey(name)
+		if key == "" {
+			return nil, fmt.Errorf("endpoint name needs at least one letter or digit")
+		}
+	}
+	if key == tui.CustomProvider {
+		return nil, fmt.Errorf("%q is reserved for the Custom row; choose another name", tui.CustomProvider)
+	}
+	for _, builtin := range catalog.ProviderNames() {
+		if key == builtin {
+			return nil, fmt.Errorf("%q is a built-in provider; choose another name", key)
+		}
+	}
+	if !editing {
+		if _, clash := next.Endpoints[key]; clash {
+			return nil, fmt.Errorf("an endpoint named %q already exists", key)
+		}
+	}
+	for otherKey, other := range next.Endpoints {
+		if otherKey == key {
+			continue
+		}
+		if strings.EqualFold(other.DisplayName(otherKey), name) {
+			return nil, fmt.Errorf("an endpoint named %q already exists", name)
+		}
+	}
+
+	models := make([]string, 0, len(draft.Models))
+	seen := map[string]bool{}
+	for _, id := range draft.Models {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		if strings.ContainsAny(id, " \t") {
+			return nil, fmt.Errorf("model id %q contains whitespace", id)
+		}
+		seen[id] = true
+		models = append(models, id)
+	}
+	sort.Strings(models)
+
+	endpoint := existing
+	endpoint.Name = name
+	endpoint.BaseURL = baseURL
+	endpoint.APIKeyEnv = apiKeyEnv
+	endpoint.Models = models
+	if len(models) > 0 {
+		endpoint.EnsureModelFacts()
+	}
+	if err := endpoint.Validate(key); err != nil {
+		return nil, err
+	}
+	next.Endpoints[key] = endpoint
+	if editing {
+		keep := map[string]bool{}
+		for _, id := range models {
+			keep[id] = true
+		}
+		pruneEndpointReferences(&next, key, keep)
+	}
+	if err := config.Save(next); err != nil {
+		return nil, fmt.Errorf("save endpoint: %w", err)
+	}
+
+	previous := h.settings.Endpoints
+	*h.settings = next
+	h.syncEndpointRegistry(previous, next)
+	return h.EndpointOptions(), nil
+}
+
+// DeleteEndpoint removes one endpoint from the global configuration and
+// clears role and workspace references that would otherwise dangle.
+func (h *harness) DeleteEndpoint(key string) ([]tui.EndpointOption, error) {
+	if h.settings == nil {
+		return nil, fmt.Errorf("configuration is unavailable")
+	}
+	key = strings.TrimSpace(key)
+	next := cloneSettings(*h.settings)
+	if _, ok := next.Endpoints[key]; !ok {
+		return nil, fmt.Errorf("no endpoint %q", key)
+	}
+	delete(next.Endpoints, key)
+	pruneEndpointReferences(&next, key, nil)
+	if err := config.Save(next); err != nil {
+		return nil, fmt.Errorf("delete endpoint: %w", err)
+	}
+	previous := h.settings.Endpoints
+	*h.settings = next
+	h.syncEndpointRegistry(previous, next)
+	return h.EndpointOptions(), nil
+}
+
+// ProbeEndpoint checks one draft endpoint without persisting anything. The
+// credential comes from the named environment variable; an empty name is a
+// keyless local server.
+func (h *harness) ProbeEndpoint(ctx context.Context, draft tui.EndpointDraft) tui.EndpointProbeResult {
+	baseURL := strings.TrimRight(strings.TrimSpace(draft.BaseURL), "/")
+	env := strings.TrimSpace(draft.APIKeyEnv)
+	key := ""
+	if env != "" {
+		key = os.Getenv(env)
+	}
+	result := ai.ProbeProvider(ctx, nil, ai.APIOpenAIChatCompletions, baseURL, key)
+	out := tui.EndpointProbeResult{
+		Reachable:     result.Reachable,
+		Authenticated: result.Authenticated,
+		Protocol:      result.Protocol,
+		Models:        result.Models,
+		ModelIDs:      append([]string(nil), result.ModelIDs...),
+		Detail:        result.Detail,
+	}
+	if env != "" && key == "" {
+		detail := strings.Replace(result.Detail, "credential accepted, ", "", 1)
+		out.Detail = env + " is not set; probed without a credential; " + detail
+	}
+	return out
+}
+
+// syncEndpointRegistry removes every endpoint the previous configuration
+// declared and registers the new set, so a deleted model or changed base URL
+// cannot survive in a cached provider instance.
+func (h *harness) syncEndpointRegistry(previous map[string]config.Endpoint, next config.Settings) {
+	if h.registry == nil {
+		return
+	}
+	for key := range previous {
+		h.registry.RemoveEndpoint(key)
+	}
+	for key := range next.Endpoints {
+		h.registry.RemoveEndpoint(key)
+	}
+	_ = registerEndpoints(h.registry, next)
+}
+
+// cloneSettings deep-copies the maps and slices an endpoint edit mutates.
+func cloneSettings(settings config.Settings) config.Settings {
+	out := settings
+	out.Models = map[string]string{}
+	for key, value := range settings.Models {
+		out.Models[key] = value
+	}
+	out.Roles = map[string]config.Profile{}
+	for key, value := range settings.Roles {
+		out.Roles[key] = value
+	}
+	out.Endpoints = map[string]config.Endpoint{}
+	for key, value := range settings.Endpoints {
+		value.Models = append([]string(nil), value.Models...)
+		value.Input = append([]string(nil), value.Input...)
+		value.ReasoningEfforts = append([]string(nil), value.ReasoningEfforts...)
+		out.Endpoints[key] = value
+	}
+	return out
+}
+
+// pruneEndpointReferences clears role/workspace/global references to models
+// that the endpoint no longer serves. A nil keep means the endpoint is gone.
+// Leaving these strings behind would make a deleted endpoint look configured
+// while resolution silently fell through to a different model.
+func pruneEndpointReferences(settings *config.Settings, key string, keep map[string]bool) {
+	prefix := key + "/"
+	valid := func(ref string) bool {
+		if !strings.HasPrefix(ref, prefix) {
+			return true
+		}
+		if keep == nil {
+			return false
+		}
+		return keep[strings.TrimPrefix(ref, prefix)]
+	}
+	for role, profile := range settings.Roles {
+		if valid(profile.Model) {
+			continue
+		}
+		profile.Model = ""
+		profile.Effort = ""
+		settings.Roles[role] = profile
+	}
+	for workspace, ref := range settings.Models {
+		if !valid(ref) {
+			delete(settings.Models, workspace)
+		}
+	}
+	if !valid(settings.Model) {
+		settings.Model = ""
+	}
 }
 
 // RoleAssignments reports the effective model profile for every role, with the
@@ -248,7 +495,7 @@ func (h *harness) RoleAssignments() []tui.RoleAssignment {
 			Model:          model,
 			Origin:         "bundled",
 			Thinking:       &catalog.Thinking{Mode: "effort", Efforts: append([]string(nil), model.ReasoningEfforts...)},
-			ReasoningKnown: true,
+			ReasoningKnown: model.Reasoning || len(model.ReasoningEfforts) > 0,
 		}
 	}
 	settings := h.settingsOrDefault()
@@ -281,7 +528,7 @@ func (h *harness) roleAssignment(role, ref, effort, source string, facts map[str
 		} else if model, handled, err := h.registry.CustomModel(ref); handled && err == nil {
 			assignment.Name = model.Name
 			assignment.Reasoning = model.Reasoning
-			assignment.ReasoningKnown = true
+			assignment.ReasoningKnown = model.Reasoning || len(model.ReasoningEfforts) > 0
 			assignment.Efforts = append([]string(nil), model.ReasoningEfforts...)
 		} else if model, err := catalog.Resolve(ref); err == nil {
 			assignment.Name = model.Name

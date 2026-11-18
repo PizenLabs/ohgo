@@ -32,17 +32,28 @@ func registerEndpoints(registry *ai.Registry, settings config.Settings) []string
 
 	var warnings []string
 	for _, name := range names {
+		if name == "custom" {
+			warnings = append(warnings, "endpoint custom conflicts with the model control plane's Custom row; rename it")
+			continue
+		}
 		if builtin[name] {
 			warnings = append(warnings, fmt.Sprintf(
 				"endpoint %s conflicts with the built-in provider of the same name; rename it", name))
 			continue
 		}
 		endpoint := settings.Endpoints[name]
+		endpoint.EnsureModelFacts()
 		if err := endpoint.Validate(name); err != nil {
 			warnings = append(warnings, err.Error())
 			continue
 		}
 		baseURL := strings.TrimRight(strings.TrimSpace(endpoint.BaseURL), "/")
+		if len(endpoint.Models) == 0 {
+			// A configured address with no models is a valid state, not a
+			// provider yet. The pane reads it from settings; registration
+			// waits until the user explicitly adds a model.
+			continue
+		}
 		models := make(map[string]ai.Model, len(endpoint.Models))
 		for _, id := range endpoint.Models {
 			id = strings.TrimSpace(id)
@@ -53,7 +64,9 @@ func registerEndpoints(registry *ai.Registry, settings config.Settings) []string
 				API:                ai.APIOpenAIChatCompletions,
 				BaseURL:            baseURL,
 				ContextWindow:      endpoint.ContextWindow,
+				ContextAutomatic:   endpoint.FactsAutomatic,
 				MaxOutputTokens:    endpoint.MaxTokens,
+				MaxOutputAutomatic: endpoint.FactsAutomatic,
 				Reasoning:          endpoint.Reasoning,
 				ReasoningEfforts:   append([]string(nil), endpoint.ReasoningEfforts...),
 				ReasoningDisable:   endpoint.ReasoningDisable,

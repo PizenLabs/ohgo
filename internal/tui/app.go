@@ -759,6 +759,19 @@ type ModelControlHooks struct {
 	// authority (the file store). Nil means saving is unavailable; the
 	// prompt reports it rather than losing the typed key silently.
 	SaveKey func(provider, key string) error
+	// Endpoints returns the configured custom endpoints from the global
+	// configuration authority. It is the only source for the Custom pane.
+	Endpoints func() []EndpointOption
+	// SaveEndpoint validates and atomically persists one endpoint in the
+	// global configuration, then refreshes the registry so the model roster
+	// is derived from the same authority. An empty Key creates a new endpoint.
+	SaveEndpoint func(draft EndpointDraft) ([]EndpointOption, error)
+	// DeleteEndpoint removes one endpoint from the global configuration and
+	// the derived registry. It returns the remaining endpoints.
+	DeleteEndpoint func(key string) ([]EndpointOption, error)
+	// ProbeEndpoint checks an endpoint's reachability, credential, and model
+	// discovery. It is evidence only: it never writes configuration.
+	ProbeEndpoint func(ctx context.Context, draft EndpointDraft) EndpointProbeResult
 }
 
 // SetModelControl installs the model control plane behind /model. Without it,
@@ -2942,6 +2955,10 @@ func (p *Program) openModelControl() tea.Cmd {
 	if p.modelControl.Roles != nil {
 		roles = p.modelControl.Roles()
 	}
+	var endpoints []EndpointOption
+	if p.modelControl.Endpoints != nil {
+		endpoints = p.modelControl.Endpoints()
+	}
 	activeRole := ""
 	if p.modelControl.ActiveRole != nil {
 		activeRole = p.modelControl.ActiveRole()
@@ -2951,6 +2968,7 @@ func (p *Program) openModelControl() tea.Cmd {
 		Providers:  providers,
 		Models:     snapshot.Options,
 		Roles:      roles,
+		Endpoints:  endpoints,
 		ActiveRole: activeRole,
 		Loading:    loading,
 		Origin:     snapshot.Origin,
@@ -2989,6 +3007,19 @@ func (p *Program) handlePlaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// until a variant is confirmed or the prompt is abandoned.
 	if plane.Variant != nil {
 		return p.handleVariantKey(msg)
+	}
+	if plane.CustomDelete != nil {
+		return p.handleCustomDeleteKey(msg)
+	}
+	if plane.CustomActive() && plane.Stage == PlaneStageBrowse {
+		switch plane.CustomView {
+		case CustomViewEditor:
+			return p.handleCustomEditorKey(msg)
+		case CustomViewDiscovery:
+			return p.handleCustomDiscoveryKey(msg)
+		default:
+			return p.handleCustomBrowseKey(msg)
+		}
 	}
 	switch plane.Stage {
 	case PlaneStageBrowse:
@@ -3156,6 +3187,396 @@ func (p *Program) handleModelBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.state.Apply(PlaneTyped{Text: text})
 		return p, nil
 	}
+}
+
+// handleCustomBrowseKey drives the Custom endpoint list and endpoint detail.
+// It keeps the existing pane contract: arrows move, Enter opens or assigns,
+// Esc backs out one level, and letters are actions because the right pane has
+// no search box of its own.
+func (p *Program) handleCustomBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	plane := p.state.Plane
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
+			return p, nil
+		}
+		if plane.CustomView == CustomViewEndpoint {
+			p.state.Apply(PlaneEndpointBack{})
+			return p, nil
+		}
+		if plane.Filter != "" {
+			p.state.Apply(PlaneFilterCleared{})
+			return p, nil
+		}
+		p.closePlane()
+		return p, nil
+	case "tab", "shift+tab":
+		p.state.Apply(PlaneModeToggled{})
+		return p, nil
+	case "left", "ctrl+b":
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterCursorMoved{Delta: -1})
+			return p, nil
+		}
+		p.state.Apply(PlaneFocusSet{Focus: PlaneFocusProviders})
+		return p, nil
+	case "right", "ctrl+f":
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterCursorMoved{Delta: 1})
+			return p, nil
+		}
+		p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
+		return p, nil
+	case "up", "ctrl+p":
+		p.state.Apply(PlaneMoved{Delta: -1})
+		return p, nil
+	case "down", "ctrl+n":
+		p.state.Apply(PlaneMoved{Delta: 1})
+		return p, nil
+	case "pgup":
+		p.state.Apply(PlanePaged{Delta: -1})
+		return p, nil
+	case "pgdown":
+		p.state.Apply(PlanePaged{Delta: 1})
+		return p, nil
+	case "home", "ctrl+home":
+		p.state.Apply(PlaneTop{})
+		return p, nil
+	case "end", "ctrl+end":
+		p.state.Apply(PlaneBottom{})
+		return p, nil
+	case "enter":
+		if plane.Focus == PlaneFocusProviders {
+			if plane.CustomView == CustomViewEndpoints && len(plane.Endpoints) == 0 {
+				p.state.Apply(PlaneEndpointAdded{})
+				return p, nil
+			}
+			p.state.Apply(PlaneFocusSet{Focus: PlaneFocusModels})
+			return p, nil
+		}
+		if plane.CustomView == CustomViewEndpoint {
+			p.stagePlaneModel()
+			return p, nil
+		}
+		if endpoint, ok := plane.SelectedEndpoint(); ok {
+			p.state.Apply(PlaneEndpointOpened{Key: endpoint.Key})
+		} else {
+			p.state.Apply(PlaneEndpointAdded{})
+		}
+		return p, nil
+	case "a":
+		p.state.Apply(PlaneEndpointAdded{})
+		return p, nil
+	case "e":
+		p.state.Apply(PlaneEndpointEdited{})
+		return p, nil
+	case "d":
+		p.state.Apply(PlaneEndpointDeleteAsked{})
+		return p, nil
+	case "p":
+		return p, p.probeCustomEndpoint()
+	case "backspace", "ctrl+h":
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterBackspace{})
+		}
+		return p, nil
+	case "delete", "ctrl+d":
+		if plane.Focus == PlaneFocusSearch {
+			p.state.Apply(PlaneFilterDelete{})
+		}
+		return p, nil
+	default:
+		if plane.Focus != PlaneFocusSearch {
+			return p, nil
+		}
+		if msg.Type != tea.KeyRunes && msg.Type != tea.KeySpace {
+			return p, nil
+		}
+		text := string(msg.Runes)
+		if msg.Type == tea.KeySpace {
+			text = " "
+		}
+		if text != "" {
+			p.state.Apply(PlaneTyped{Text: text})
+		}
+		return p, nil
+	}
+}
+
+// handleCustomEditorKey edits the compact endpoint form. Enter probes,
+// Ctrl+S saves, m selects models, and Esc discards the draft.
+func (p *Program) handleCustomEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		p.state.Apply(PlaneEndpointBack{})
+		return p, nil
+	case "ctrl+s":
+		p.saveCustomEndpoint()
+		return p, nil
+	case "enter":
+		return p, p.probeCustomEndpoint()
+	case "m":
+		p.state.Apply(PlaneEndpointDiscoveryOpened{})
+		return p, nil
+	case "tab", "down", "ctrl+n":
+		p.state.Apply(PlaneEndpointFieldMoved{Delta: 1})
+		return p, nil
+	case "shift+tab", "up", "ctrl+p":
+		p.state.Apply(PlaneEndpointFieldMoved{Delta: -1})
+		return p, nil
+	case "left", "ctrl+b":
+		p.state.Apply(PlaneEndpointCursorMoved{Delta: -1})
+		return p, nil
+	case "right", "ctrl+f":
+		p.state.Apply(PlaneEndpointCursorMoved{Delta: 1})
+		return p, nil
+	case "home", "ctrl+a":
+		if plane := p.state.Plane; plane != nil && plane.EndpointEditor != nil {
+			value := plane.EndpointEditor.fieldValue(plane.EndpointEditor.Field)
+			p.state.Apply(PlaneEndpointCursorMoved{Delta: -len([]rune(*value))})
+		}
+		return p, nil
+	case "end", "ctrl+e":
+		if plane := p.state.Plane; plane != nil && plane.EndpointEditor != nil {
+			value := plane.EndpointEditor.fieldValue(plane.EndpointEditor.Field)
+			p.state.Apply(PlaneEndpointCursorMoved{Delta: len([]rune(*value))})
+		}
+		return p, nil
+	case "backspace", "ctrl+h":
+		p.state.Apply(PlaneEndpointBackspace{})
+		return p, nil
+	case "delete", "ctrl+d":
+		p.state.Apply(PlaneEndpointDelete{})
+		return p, nil
+	default:
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			text := string(msg.Runes)
+			if msg.Type == tea.KeySpace {
+				text = " "
+			}
+			if text != "" {
+				p.state.Apply(PlaneEndpointTyped{Text: text})
+			}
+		}
+		return p, nil
+	}
+}
+
+// handleCustomDiscoveryKey selects discovered models explicitly. Space
+// toggles, a stages the selection in the unsaved draft, Esc cancels.
+func (p *Program) handleCustomDiscoveryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		p.state.Apply(PlaneEndpointBack{})
+		return p, nil
+	case "up", "ctrl+p":
+		p.state.Apply(PlaneEndpointDiscoveryMoved{Delta: -1})
+		return p, nil
+	case "down", "ctrl+n":
+		p.state.Apply(PlaneEndpointDiscoveryMoved{Delta: 1})
+		return p, nil
+	case "pgup":
+		p.state.Apply(PlaneEndpointDiscoveryMoved{Delta: -10})
+		return p, nil
+	case "pgdown":
+		p.state.Apply(PlaneEndpointDiscoveryMoved{Delta: 10})
+		return p, nil
+	case "home":
+		if plane := p.state.Plane; plane != nil && plane.Discovery != nil {
+			plane.Discovery.Cursor = 0
+		}
+		return p, nil
+	case "end":
+		if plane := p.state.Plane; plane != nil && plane.Discovery != nil {
+			plane.Discovery.Cursor = clampIndex(len(plane.Discovery.Items)-1, len(plane.Discovery.Items))
+		}
+		return p, nil
+	case " ", "space", "enter":
+		p.state.Apply(PlaneEndpointDiscoveryToggled{})
+		return p, nil
+	case "a":
+		p.state.Apply(PlaneEndpointDiscoveryAdded{})
+		return p, nil
+	default:
+		return p, nil
+	}
+}
+
+// handleCustomDeleteKey answers the y/n endpoint deletion confirmation.
+func (p *Program) handleCustomDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y", "enter":
+		plane := p.state.Plane
+		if plane == nil || plane.CustomDelete == nil {
+			return p, nil
+		}
+		key := plane.CustomDelete.Key
+		p.deleteCustomEndpoint(key)
+		return p, nil
+	case "n", "N", "esc", "ctrl+c", "q":
+		p.state.Apply(PlaneEndpointDeleteCancelled{})
+	}
+	return p, nil
+}
+
+// probeCustomEndpoint runs a probe in the background for the editor draft or
+// the visible endpoint. The result is evidence only; nothing persists.
+func (p *Program) probeCustomEndpoint() tea.Cmd {
+	plane := p.state.Plane
+	if plane == nil {
+		return nil
+	}
+	if p.modelControl.ProbeEndpoint == nil {
+		p.state.Apply(PlaneEndpointFailed{Notice: "probing is unavailable"})
+		return nil
+	}
+	if plane.EndpointEditor != nil {
+		seq := plane.EndpointEditor.ProbeSeq + 1
+		draft := plane.EndpointEditor.Draft()
+		p.state.Apply(PlaneEndpointProbeStarted{Seq: seq})
+		return p.probeEndpointCommand(seq, draft)
+	}
+	endpoint := p.visibleEndpoint()
+	if endpoint == nil {
+		p.state.Apply(PlaneEndpointFailed{Notice: "select an endpoint first"})
+		return nil
+	}
+	if plane.CustomView == CustomViewEndpoints {
+		p.state.Apply(PlaneEndpointOpened{Key: endpoint.Key})
+	}
+	draft := EndpointDraft{
+		Key:       endpoint.Key,
+		Name:      endpoint.DisplayName(),
+		BaseURL:   endpoint.BaseURL,
+		APIKeyEnv: endpoint.APIKeyEnv,
+		Models:    append([]string(nil), endpoint.Models...),
+	}
+	seq := plane.EndpointProbeSeq + 1
+	p.state.Apply(PlaneEndpointProbing{Seq: seq})
+	return p.probeEndpointDetailCommand(seq, endpoint.Key, draft)
+}
+
+// probeEndpointCommand runs the editor probe and reports its sequence and
+// target. The target lets the state reject a result the user has edited past.
+func (p *Program) probeEndpointCommand(seq int, draft EndpointDraft) tea.Cmd {
+	probe := p.modelControl.ProbeEndpoint
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return teaEvent{event: PlaneEndpointProbeFinished{
+			Seq:       seq,
+			BaseURL:   draft.BaseURL,
+			APIKeyEnv: draft.APIKeyEnv,
+			Result:    probe(ctx, draft),
+		}}
+	}
+}
+
+// probeEndpointDetailCommand runs a detail-view probe.
+func (p *Program) probeEndpointDetailCommand(seq int, key string, draft EndpointDraft) tea.Cmd {
+	probe := p.modelControl.ProbeEndpoint
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return teaEvent{event: PlaneEndpointEvidence{Seq: seq, Key: key, Result: probe(ctx, draft)}}
+	}
+}
+
+// visibleEndpoint returns the endpoint detail target, or the highlighted row.
+func (p *Program) visibleEndpoint() *EndpointOption {
+	plane := p.state.Plane
+	if plane == nil {
+		return nil
+	}
+	if plane.CustomView == CustomViewEndpoint {
+		if endpoint, ok := plane.customEndpointModel(); ok {
+			return &endpoint
+		}
+	}
+	if endpoint, ok := plane.SelectedEndpoint(); ok {
+		return &endpoint
+	}
+	return nil
+}
+
+// saveCustomEndpoint submits the editor draft through the configuration
+// authority. A refusal keeps the editor open and the typed values intact.
+func (p *Program) saveCustomEndpoint() {
+	plane := p.state.Plane
+	if plane == nil {
+		return
+	}
+	draft, ok := plane.EndpointDraft()
+	if !ok {
+		return
+	}
+	if draft.Name == "" {
+		p.state.Apply(PlaneEndpointFailed{Notice: "endpoint name is required"})
+		return
+	}
+	if draft.BaseURL == "" {
+		p.state.Apply(PlaneEndpointFailed{Notice: "base URL is required"})
+		return
+	}
+	if p.modelControl.SaveEndpoint == nil {
+		p.state.Apply(PlaneEndpointFailed{Notice: "endpoint saving is unavailable"})
+		return
+	}
+	endpoints, err := p.modelControl.SaveEndpoint(draft)
+	if err != nil {
+		p.state.Apply(PlaneEndpointFailed{Notice: sanitizeInline(err.Error())})
+		return
+	}
+	var providers []ProviderRow
+	if p.modelControl.Providers != nil {
+		providers = p.modelControl.Providers()
+	}
+	var roles []RoleAssignment
+	if p.modelControl.Roles != nil {
+		roles = p.modelControl.Roles()
+	}
+	notice := "saved endpoint " + draft.Name
+	if len(draft.Models) == 0 {
+		notice += " · probe to add models"
+	}
+	p.state.Apply(PlaneEndpointsChanged{Endpoints: endpoints, Providers: providers, Roles: roles, Notice: notice})
+	p.refreshSnapshotFromAuthority()
+}
+
+// deleteCustomEndpoint removes one endpoint through the configuration
+// authority, then refreshes the derived roster.
+func (p *Program) deleteCustomEndpoint(key string) {
+	if p.modelControl.DeleteEndpoint == nil {
+		p.state.Apply(PlaneEndpointFailed{Notice: "endpoint deletion is unavailable"})
+		return
+	}
+	endpoints, err := p.modelControl.DeleteEndpoint(key)
+	if err != nil {
+		p.state.Apply(PlaneEndpointFailed{Notice: sanitizeInline(err.Error())})
+		return
+	}
+	var providers []ProviderRow
+	if p.modelControl.Providers != nil {
+		providers = p.modelControl.Providers()
+	}
+	var roles []RoleAssignment
+	if p.modelControl.Roles != nil {
+		roles = p.modelControl.Roles()
+	}
+	p.state.Apply(PlaneEndpointsChanged{Endpoints: endpoints, Providers: providers, Roles: roles, Notice: "deleted endpoint " + key})
+	p.refreshSnapshotFromAuthority()
+}
+
+// refreshSnapshotFromAuthority reapplies the caller's instant catalog snapshot
+// after a configuration change. It never triggers network discovery: the
+// catalog is derived, and the derived value is already available.
+func (p *Program) refreshSnapshotFromAuthority() {
+	if p.catalog.Snapshot == nil {
+		return
+	}
+	snapshot := p.catalog.Snapshot()
+	p.state.Apply(ModelsRefreshed{Snapshot: snapshot})
 }
 
 // handleRoleBrowseKey drives the ROLES list. Enter begins the roles-first

@@ -122,6 +122,34 @@ func (r *Registry) Endpoint(provider string) (EndpointSpec, bool) {
 	return spec, ok
 }
 
+// RemoveEndpoint removes a user-owned provider and every fact derived from it.
+//
+// The config authority is the caller's; this only clears the registry so a
+// deleted or renamed endpoint cannot keep resolving from a stale provider
+// instance. Removing a provider that is not registered is a no-op, which keeps
+// delete idempotent after a failed earlier cleanup.
+func (r *Registry) RemoveEndpoint(provider string) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return
+	}
+	r.mu.Lock()
+	if _, registered := r.endpoints[provider]; !registered {
+		r.mu.Unlock()
+		return
+	}
+	delete(r.endpoints, provider)
+	delete(r.baseURLs, provider)
+	delete(r.providerEnv, provider)
+	delete(r.keyOptional, provider)
+	for key := range r.providers {
+		if strings.HasPrefix(key, provider+"|") {
+			delete(r.providers, key)
+		}
+	}
+	r.mu.Unlock()
+}
+
 // EndpointModels returns every registered endpoint model, sorted by provider
 // then id. It is the picker's source for user-owned providers.
 func (r *Registry) EndpointModels() []Model {
