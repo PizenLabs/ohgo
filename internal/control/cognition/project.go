@@ -256,14 +256,24 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	p.stall(&suff)
 	if len(suff.Missing) == 1 && suff.Missing[0] == "investigation_conclusion" &&
 		suff.State == Insufficient && suff.Stage != StageAnswer && suff.Stage != StageComplete {
-		p.conclusionTurns++
+		// An explicit progress observation is not a terminal attempt and must
+		// not consume the conclusion window. The model is allowed to say "still
+		// investigating" without being pushed one turn closer to a forced
+		// verdict by the act of saying it.
+		// Progress is free while the window is open, but it cannot extend an
+		// already-exhausted window indefinitely: at that point it is a report
+		// boundary, not another investigation attempt.
+		if !lastTurnWasConclusionProgress(req.Turns) ||
+			p.conclusionTurns >= MaxConclusionObservationTurns {
+			p.conclusionTurns++
+		}
 		if p.conclusionTurns > MaxConclusionObservationTurns {
 			suff.State = Blocked
 			suff.Stage = StageBlocked
 			suff.Kind = BlockProgressStalled
 			suff.Reasons = append(suff.Reasons,
 				fmt.Sprintf("the investigation conclusion was requested for %d turns; another observation cannot satisfy it", p.conclusionTurns))
-			suff.Next = []string{"call conclude with SAFE, BUG, or UNRESOLVED and the evidence already established; no further survey is required"}
+			suff.Next = []string{"call conclude with status FINAL, SAFE, BUG, or UNRESOLVED and the evidence already established; no further survey is required"}
 		}
 	} else if suff.Missing == nil || len(suff.Missing) != 1 || suff.Missing[0] != "investigation_conclusion" {
 		p.conclusionTurns = 0
@@ -283,6 +293,24 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	}
 	failures := p.Evidence.FailureState()
 	candidates := Candidates(shape, p.Evidence, execution, req.Tools, p.Facts, suff)
+	// At the end of the conclusion window, make the transition enforceable
+	// rather than advisory. A provider may ignore tool_choice; narrowing the
+	// surface means a continued read is refused by the loop instead of
+	// consuming the last turn on another survey.
+	if p.conclusionTurns >= MaxConclusionObservationTurns &&
+		suff.State == Insufficient && len(suff.Missing) == 1 &&
+		suff.Missing[0] == "investigation_conclusion" {
+		if forced := toolNamed(req.Tools, "conclude"); forced != nil {
+			for _, tool := range candidates.Tools {
+				if tool.Name() != forced.Name() {
+					candidates.Excluded = append(candidates.Excluded, agent.CandidateExclusion{
+						Tool: tool.Name(), Reason: "the investigation conclusion window is closed; only the terminal conclusion is accepted",
+					})
+				}
+			}
+			candidates.Tools = []agent.Tool{forced}
+		}
+	}
 	advice := adviceFor(p.Advisor, shape, p.Evidence, execution, suff, candidates.Tools, req.Turns)
 	if line := preferredToolHint(advice.PreferredTools, candidates.Tools); line != "" {
 		// The advisor cannot add a tool, and it does not reorder one either:
@@ -409,6 +437,17 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	return result
 }
 
+// toolNamed returns the offered tool with name, or nil. It is used only for a
+// control-plane transition whose capability is already present in the surface.
+func toolNamed(tools []agent.Tool, name string) agent.Tool {
+	for _, tool := range tools {
+		if tool.Name() == name {
+			return tool
+		}
+	}
+	return nil
+}
+
 // preferredToolHint renders an advisor preference as one advisory line, or ""
 // when there is nothing to prefer.
 //
@@ -459,6 +498,28 @@ func appendExperienceHints(state string, hints []string, maxBytes int) string {
 	}
 	state += "\n" + block.String()
 	return bound(state, maxBytes)
+}
+
+// lastTurnWasConclusionProgress reports whether the latest completed turn
+// recorded an explicit IN_PROGRESS observation. A progress marker is not a
+// conclusion attempt, so it does not advance the terminal conclusion window.
+func lastTurnWasConclusionProgress(turns []agent.Turn) bool {
+	if len(turns) == 0 {
+		return false
+	}
+	for _, outcome := range turns[len(turns)-1].Results {
+		if outcome.ToolName != "conclude" || outcome.Result.IsError {
+			continue
+		}
+		details := detailsMap(outcome.Result.Details)
+		if strings.EqualFold(detailString(details, "status"), "IN_PROGRESS") ||
+			contract.IsProvisionalConclusion(
+				detailString(details, "evidence"),
+				detailString(details, "uncertainty")) {
+			return true
+		}
+	}
+	return false
 }
 
 // executionToolCalls counts the tool outcomes already observed in a run.

@@ -99,8 +99,15 @@ const MaxActObservationTurns = 8
 // keep reading before it records its verdict. The first two source
 // observations establish the frontier; this window allows the model to close
 // remaining concrete facts, but does not let another repository survey replace
-// the terminal conclusion.
-const MaxConclusionObservationTurns = 6
+// the terminal conclusion. An end-to-end order investigation needed more than
+// six distinct source reads to reach the catalogue reservation implementation;
+// the bound stays finite while leaving room for the closing evidence chain.
+const MaxConclusionObservationTurns = 10
+
+// MaxConclusionAttempts bounds a provisional conclusion that names the same
+// unresolved code coordinate. It lives with the other semantic bounds because
+// it closes an investigation attempt, not a resource grant.
+const MaxConclusionAttempts = 3
 
 // VerificationRecord is one successful check at a run position.
 type VerificationRecord struct {
@@ -678,6 +685,19 @@ func acquisitionProviders(key string, tools []agent.Tool, blocked map[string]boo
 // post-change need, not a pre-action one.
 func missingForAction(shape TaskShape, evidence *EvidenceState, execution ExecutionState) []Requirement {
 	var missing []Requirement
+	// A provisional conclusion names the coordinate it still depends on. Put
+	// that targeted requirement before the general conclusion requirement so
+	// the model sees the next observation, not another invitation to conclude.
+	for _, target := range evidence.PendingConclusionTargets() {
+		key := "investigation_target:" + target
+		if evidence.Satisfied(key, execution) {
+			continue
+		}
+		missing = append(missing, Requirement{
+			Key:    key,
+			Reason: "the conclusion named " + target + " as unresolved; observe it before closing the investigation",
+		})
+	}
 	for _, requirement := range evidence.Requirements {
 		if requirement.Key == "verification" {
 			continue
@@ -755,7 +775,9 @@ func nextEvidence(key string) string {
 	case key == "implementation_observation":
 		return "read the implementation file that contains the requested change; documentation and manifests are not enough to choose an edit"
 	case key == "investigation_conclusion":
-		return "call the conclude tool with SAFE, BUG, or UNRESOLVED, the evidence that supports it, and any remaining uncertainty"
+		return "call the conclude tool with status FINAL, SAFE, BUG, or UNRESOLVED, the evidence that supports it, and any remaining uncertainty"
+	case strings.HasPrefix(key, "investigation_target:"):
+		return "inspect " + strings.TrimPrefix(key, "investigation_target:") + " and determine the named uncertainty; do not repeat the same conclusion until this observation exists"
 	case key == "test_inventory":
 		return "query the structure tool with view=tests, unscoped, and inspect scope, inventory, and structural completeness; an overview test_files count is not a filtered inventory"
 	case key == "external_observation":

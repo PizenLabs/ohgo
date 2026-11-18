@@ -1534,6 +1534,9 @@ func TestConclusionWindowForcesTheConcludeTool(t *testing.T) {
 	if projected.ToolChoice.ToolName != "conclude" {
 		t.Fatalf("tool choice = %+v, want the conclude tool", projected.ToolChoice)
 	}
+	if len(projected.Tools) != 1 || projected.Tools[0].Name() != "conclude" {
+		t.Fatalf("tools = %v, want only the conclude tool at the terminal window", toolNames(projected.Tools))
+	}
 	if projected.Report.Terminal {
 		t.Fatalf("the conclusion window became terminal before the forced call: %+v", projected.Report)
 	}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 )
 
 // ConclusionVerdict is the terminal judgement of a bounded investigation.
@@ -33,17 +34,24 @@ type ConcludeTool struct {
 func NewConcludeTool() *ConcludeTool {
 	tool := &ConcludeTool{}
 	tool.Base = NewBase("conclude",
-		"Record the terminal conclusion of a bounded investigation. Call this "+
-			"only after the production entrypoint, the reference/validation flow, "+
-			"persistence ordering, and bypass paths are sufficiently established. "+
-			"State the verdict, the evidence that supports it, and any remaining "+
-			"uncertainty. This records a conclusion; it does not prove the claim "+
-			"and it does not authorize a change.",
+		"Record a bounded investigation outcome. Use status FINAL only after the "+
+			"production entrypoint, the reference/validation flow, persistence "+
+			"ordering, and bypass paths are sufficiently established; use "+
+			"IN_PROGRESS for a progress observation while evidence is still being "+
+			"gathered. A progress observation never satisfies the conclusion and "+
+			"never starts the answer boundary. State the verdict, the evidence that "+
+			"supports it, and any remaining uncertainty. This records an observation; "+
+			"it does not prove the claim and it does not authorize a change.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"required":             []string{"verdict", "evidence"},
+			"required":             []string{"verdict", "status", "evidence"},
 			"properties": map[string]any{
+				"status": map[string]any{
+					"type":        "string",
+					"enum":        []string{"FINAL", "IN_PROGRESS"},
+					"description": "FINAL records a terminal verdict. IN_PROGRESS records a progress observation only and never satisfies the investigation conclusion or starts the answer boundary.",
+				},
 				"verdict": map[string]any{
 					"type":        "string",
 					"enum":        []string{string(ConclusionSafe), string(ConclusionBug), string(ConclusionUnresolved)},
@@ -58,7 +66,7 @@ func NewConcludeTool() *ConcludeTool {
 				"uncertainty": map[string]any{
 					"type":        "string",
 					"maxLength":   2000,
-					"description": "Material evidence that remains unresolved. Use an empty string only when the verdict is supported without a material gap.",
+					"description": "Material evidence that remains unresolved. Name concrete code coordinates (symbol, selector, or Go path) when one exists; the runtime keeps the investigation open until that coordinate is observed or the bounded attempt limit classifies UNRESOLVED. Use an empty string only when the verdict is supported without a material gap.",
 				},
 			},
 		},
@@ -97,12 +105,37 @@ func (t *ConcludeTool) Execute(ctx agent.Context, args map[string]any) agent.Res
 	if err != nil {
 		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing recorded.", err)
 	}
+	uncertainty = strings.TrimSpace(uncertainty)
+	statusArg, err := strArg(args, "status", "")
+	if err != nil {
+		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing recorded.", err)
+	}
+	status := strings.ToUpper(strings.TrimSpace(statusArg))
+	if status == "" {
+		return requestError(agent.ToolFailureInvalidArgument,
+			"argument \"status\" is required: use FINAL for a terminal verdict or IN_PROGRESS while evidence is still being gathered; nothing recorded.")
+	}
+	if status != "FINAL" && status != "IN_PROGRESS" {
+		return requestError(agent.ToolFailureInvalidArgument,
+			"argument \"status\" must be FINAL or IN_PROGRESS; nothing recorded.")
+	}
+	// A model sometimes puts its progress marker in uncertainty while still
+	// selecting FINAL. The marker is an explicit statement that the verdict is
+	// not terminal; honor it instead of closing the investigation.
+	if status == "FINAL" && contract.IsProvisionalConclusion(evidence, uncertainty) {
+		status = "IN_PROGRESS"
+	}
+	text := fmt.Sprintf("conclusion: %s\n%s", verdict, evidence)
+	if status == "IN_PROGRESS" {
+		text = "progress: investigation remains open; this observation alone does not close the action surface or satisfy the conclusion"
+	}
 	return agent.Result{
-		Text: fmt.Sprintf("conclusion: %s\n%s", verdict, evidence),
+		Text: text,
 		Details: map[string]any{
 			"verdict":     string(verdict),
+			"status":      status,
 			"evidence":    evidence,
-			"uncertainty": strings.TrimSpace(uncertainty),
+			"uncertainty": uncertainty,
 		},
 	}
 }

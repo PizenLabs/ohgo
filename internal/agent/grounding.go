@@ -50,6 +50,13 @@ var (
 		`(?i)\b(?:(?:repo(?:sitory)?|project|workspace|directory|folder)?[\s-]*root|top[- ]level)\b`)
 	insufficientSearchPattern = regexp.MustCompile(
 		`(?i)\b(?:i\s+)?(?:could\s+not|couldn't|cannot|can't|was\s+unable\s+to|unable\s+to)\s+(?:be\s+)?(?:find|found|locate|located|read|access|accessed|see|seen)\b`)
+	// An epistemic limit is not a repository absence. "No contradiction to
+	// arbitrate" says the comparison cannot be made; it does not assert what
+	// the repository contains. The distinction matters when no second evidence
+	// provider (runtime or Gry) was used: the answer must say the comparison was
+	// not assessable, and completion must not demand a file scan for it.
+	negativeEpistemicPattern = regexp.MustCompile(
+		`(?i)\bno\s+[^.\n]{0,80}?\bto\s+(?:arbitrate|assess|establish|verify|compare|evaluate|resolve|determine|inspect|test|run|read|measure|observe)\b`)
 	performedActionPattern = regexp.MustCompile(
 		`(?i)\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?(?:inspected|checked|reviewed|read|examined|scanned|analy[sz]ed|searched|looked\s+at|opened)\b`)
 	restatedObjectivePattern = regexp.MustCompile(
@@ -364,10 +371,11 @@ func negativeClaims(answer string) []negativeClaim {
 			if len(match) < 4 || match[2] < 0 || match[3] < 0 {
 				continue
 			}
+			window := uncertaintyWindow(answer, match[0], match[1])
 			// "No test files were surfaced in the probes" is a report about
 			// this run's observations, not a repository-wide absence. The
 			// same sentence with a global scope remains an absence claim.
-			if boundedNegativeReport(uncertaintyWindow(answer, match[0], match[1])) {
+			if boundedNegativeReport(window) || negativeEpistemicPattern.MatchString(window) {
 				continue
 			}
 			// A statement about what this run changed is not an existence

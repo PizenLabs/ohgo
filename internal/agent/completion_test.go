@@ -652,3 +652,34 @@ func TestStructuralEvidenceCannotCompleteAMutation(t *testing.T) {
 		t.Fatalf("structural evidence completed a mutation objective: %+v", verdict)
 	}
 }
+
+// A failed recall of a compacted observation is a navigation miss, not a
+// poisoned capability. Reading the source directly after it is the recovery.
+func TestFailedRecallDoesNotBlockAfterDirectSourceRead(t *testing.T) {
+	turns := []Turn{
+		{Results: []ToolOutcome{
+			toolOutcome("recall", Result{
+				Text: "recall: no archived observation", IsError: true, ObservedAbsence: true,
+			}),
+			toolOutcome("recall", Result{
+				Text: "recall: no archived observation", IsError: true, ObservedAbsence: true,
+			}),
+		}},
+		{Results: []ToolOutcome{
+			toolOutcome("read", Result{Text: "package checkout\n\nfunc Place() {}\n", Details: map[string]any{
+				"path": "checkout/app/checkout.go", "totalLines": 3, "offset": 1, "limit": 2000,
+			}}),
+		}},
+		answerTurn("checkout/app/checkout.go defines Place."),
+	}
+	got := EvaluateTaskCompletion(CompletionInput{
+		Turns: turns,
+		Contract: contract.IntentContract{
+			Kind:      contract.ObjectiveInformational,
+			Objective: "Inspect checkout/app/checkout.go.",
+		},
+	})
+	if !got.Complete() {
+		t.Fatalf("a direct source read did not recover the recall miss: %s", got.Reason)
+	}
+}
