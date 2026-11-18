@@ -111,6 +111,19 @@ func (r *StructuralRouter) Observe(ctx context.Context, req Request, step planne
 	}
 
 	native.Issues = append(fallbackIssues(externalObservation, externalErr), native.Issues...)
+	// Preserve which mechanism produced each fact when the native and external
+	// observations are combined. The step-level source is "native" because the
+	// native answer is being returned, but a gry fact is still gry evidence.
+	for i := range externalObservation.Facts {
+		if externalObservation.Facts[i].Source == "" {
+			externalObservation.Facts[i].Source = externalObservation.Source
+		}
+	}
+	for i := range native.Facts {
+		if native.Facts[i].Source == "" {
+			native.Facts[i].Source = "native"
+		}
+	}
 	native.Facts = append(append([]Fact(nil), externalObservation.Facts...), native.Facts...)
 	native.Records = append(append([]evidence.Record(nil), externalObservation.Records...), native.Records...)
 	native.Source = "native"

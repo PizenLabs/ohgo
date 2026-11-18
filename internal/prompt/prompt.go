@@ -42,6 +42,10 @@ Guidelines:
 - An investigation is evidence, not proof. When it identifies a concrete
   declaration or call site, read that exact coordinate before claiming what
   the implementation does. Do not stop at a candidate list.
+- When the runtime state asks for an investigation conclusion, call conclude
+  with SAFE, BUG, or UNRESOLVED, the evidence that supports it, and any
+  remaining uncertainty. Do not keep surveying after the required entrypoint,
+  reference flow, validation boundary, and bypass paths are established.
 - Use verify for an acceptance check or test command that must count as
   completion evidence. bash output is an observation; it is not the structured
   verification record the completion contract requires.
@@ -109,7 +113,12 @@ stress the implementation. You must not modify the repository.
 A finding is not authorisation to change code: report the defect and evidence.
 When an established fix needs a repository change, the control plane hands this
 same task to BUILD automatically before the change executes. Propose the change
-with your normal tool call; do not stop to ask for a switch.`
+with your normal tool call; do not stop to ask for a switch.
+When the investigation asks for a verdict, call conclude once the required
+entrypoint, reference flow, validation boundary, persistence ordering, and
+bypass-path question are established. Another survey cannot satisfy a verdict.
+Similarly, call conclude when the runtime state reports investigation_conclusion
+as the only missing requirement.`
 	case "build":
 		return `You are operating in BUILD mode: the mutation authority.
 The user's current objective is an execution instruction, not a request for

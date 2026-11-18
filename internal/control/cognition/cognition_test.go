@@ -993,7 +993,9 @@ func TestEvidenceTrimKeepsContentThatSatisfiesRepositoryNeeds(t *testing.T) {
 	if !state.Satisfied("repository_survey", ExecutionState{}) {
 		t.Fatal("repository_survey was lost when diagnostic output filled the evidence bound")
 	}
-	suff := EvaluateSufficiency(shape, state, ExecutionState{}, false)
+	// The command observations are durable evidence; reconstruct the execution
+	// state they imply rather than testing sufficiency against an empty run.
+	suff := EvaluateSufficiency(shape, state, ExecutionFromEvidence(state), false)
 	if suff.State != Sufficient || suff.Stage != StageAnswer {
 		t.Fatalf("sufficiency = %s/%s, want SUFFICIENT/answer after a long diagnostic run",
 			suff.State, suff.Stage)
@@ -1354,5 +1356,185 @@ func TestCandidateNoticesAreOrderIndependent(t *testing.T) {
 	}
 	if len(first.Notices) == 0 {
 		t.Fatal("no notices rendered; the comparison proved nothing")
+	}
+}
+
+// Gry is an optional structural-intelligence provider, not external knowledge.
+// A mention of Gry must not create an external_observation requirement that the
+// investigate tool cannot satisfy.
+func TestGryMentionDoesNotRequireExternalKnowledge(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Use Gry or targeted execution when it can reduce uncertainty.",
+	}, ShapeParams{Authority: "fuzz", Intent: "investigate"})
+	if shape.External.Required {
+		t.Fatal("Gry was treated as required external knowledge")
+	}
+	if !shape.NeedsCodeNavigation || !shape.NeedsRelationshipNavigation {
+		t.Fatal("an explicit Gry request did not enable structural navigation")
+	}
+}
+
+// A mutation at the act boundary may still read a few coordinates, but it
+// cannot survey forever. After the bounded act window the run reports; the
+// resource grant is not spent on another repository tour.
+func TestActBoundaryStopsUnboundedObservation(t *testing.T) {
+	shape := BuildShape(workspace.BuildIntentContract("Add validation to the product creation endpoint."), ShapeParams{Authority: "build"})
+	projector := NewProjector(shape, NewEvidenceState(), RepositoryFacts{Go: true})
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "write", tier: agent.TierWrite},
+		testTool{name: "bash", tier: agent.TierExec, classes: []agent.ActionClass{agent.ActionExecute, agent.ActionMutate}},
+	}
+	request := func(turns []agent.Turn) agent.ProjectionResult {
+		return projector.Project(agent.ProjectionRequest{
+			Messages: []agent.Message{agent.UserMessage{Text: shape.Objective}},
+			Turns:    turns,
+			Tools:    tools,
+			System:   []ai.SystemPromptBlock{{Text: "base"}},
+		})
+	}
+	var turns []agent.Turn
+	request(turns)
+	var projected agent.ProjectionResult
+	for i := 0; i <= MaxActObservationTurns; i++ {
+		turns = append(turns, readTurn("read-"+itoa(i), "product"+itoa(i)+".go", "package product"))
+		projected = request(turns)
+	}
+	if !projected.Report.Terminal || len(projected.Tools) != 0 {
+		t.Fatalf("unbounded act-stage observation was not stopped: %+v", projected.Report)
+	}
+	if !strings.Contains(projected.Report.StopReason, "action boundary") {
+		t.Fatalf("stop reason = %q", projected.Report.StopReason)
+	}
+}
+
+// An investigate result is provider-backed evidence. Without recording it the
+// ledger sees no observation and the projector cannot tell that a bounded
+// investigation actually ran.
+func TestInvestigationResultBecomesEvidence(t *testing.T) {
+	state := NewEvidenceState()
+	turn := agent.Turn{Results: []agent.ToolOutcome{{
+		CallID: "inv-1", ToolName: "investigate",
+		Args: map[string]any{"question": "where is checkout?"},
+		Result: agent.Result{
+			Text: "investigation: sufficient · intent locate\n- [structural/gry] Checkout — calls order",
+			Details: map[string]any{
+				"status": "sufficient", "stop_reason": "confidence target reached",
+				"facts": []map[string]any{{"provider": "structural", "source": "gry", "subject": "Checkout", "detail": "calls order"}},
+			},
+		},
+	}}}
+	observed, novel := state.ObserveTurns(TaskShape{}, []agent.Turn{turn})
+	if observed == 0 || novel == 0 {
+		t.Fatalf("investigation outcome was not evidence: observed=%d novel=%d", observed, novel)
+	}
+	item, ok := state.Find("investigation:where is checkout?")
+	if !ok || !item.Complete || item.View != "investigate" {
+		t.Fatalf("investigation evidence = %+v, found=%v", item, ok)
+	}
+}
+
+// A verdict-shaped investigation has one requirement no read can satisfy. The
+// conclusion tool is the transition; after it, the surface closes and the model
+// answers rather than surveying forever.
+func TestInvestigationConclusionClosesTheVerdictBoundary(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Investigate the order flow and conclude one of SAFE, BUG, or UNRESOLVED. Do not create a fix.",
+	}, ShapeParams{Authority: "fuzz", Intent: "investigate", Facts: RepositoryFacts{Go: true}})
+	requireNeed(t, shape, "investigation_conclusion", true)
+
+	evidence := NewEvidenceState()
+	read := readTurn("read-1", "checkout.go", "package checkout\n\nfunc Place() {}\n")
+	evidence.ObserveTurns(shape, []agent.Turn{read})
+	if suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false); suff.Stage != StageExplore {
+		t.Fatalf("before conclusion = %s/%s, want explore", suff.State, suff.Stage)
+	}
+	conclusion := agent.Turn{Results: []agent.ToolOutcome{{
+		CallID: "conclude-1", ToolName: "conclude",
+		Args: map[string]any{"verdict": "SAFE", "evidence": "checkout.Place calls Reserve before Save"},
+		Result: agent.Result{
+			Text: "conclusion: SAFE",
+			Details: map[string]any{
+				"verdict": "SAFE", "evidence": "checkout.Place calls Reserve before Save",
+			},
+		},
+	}}}
+	evidence.ObserveTurns(shape, []agent.Turn{conclusion})
+	if suff := EvaluateSufficiency(shape, evidence, ExecutionState{}, false); suff.State != Sufficient || suff.Stage != StageAnswer {
+		t.Fatalf("after conclusion = %s/%s, want SUFFICIENT/answer", suff.State, suff.Stage)
+	}
+}
+
+// After the only missing requirement is the conclusion, repeated reads are not
+// progress. The semantic circuit breaker stops before the model-turn grant.
+func TestConclusionRequirementStopsRepeatedReads(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Investigate the order flow and conclude one of SAFE, BUG, or UNRESOLVED.",
+	}, ShapeParams{Authority: "fuzz", Intent: "investigate", Facts: RepositoryFacts{Go: true}})
+	projector := NewProjector(shape, NewEvidenceState(), RepositoryFacts{Go: true})
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "conclude", tier: agent.TierRead},
+	}
+	request := func(turns []agent.Turn) agent.ProjectionResult {
+		return projector.Project(agent.ProjectionRequest{
+			Messages: []agent.Message{agent.UserMessage{Text: shape.Objective}},
+			Turns:    turns,
+			Tools:    tools,
+			System:   []ai.SystemPromptBlock{{Text: "base"}},
+		})
+	}
+	var turns []agent.Turn
+	request(turns)
+	var projected agent.ProjectionResult
+	// The first read establishes the repository requirement; the conclusion
+	// window allows a bounded number of further reads, then closes.
+	for i := 0; i <= MaxConclusionObservationTurns; i++ {
+		turns = append(turns, readTurn("read-"+itoa(i), "checkout.go", "package checkout\n\nfunc Place() {}"))
+		projected = request(turns)
+	}
+	if !projected.Report.Terminal || len(projected.Tools) != 0 {
+		t.Fatalf("repeated reads did not stop at the conclusion boundary: %+v", projected.Report)
+	}
+	if !strings.Contains(projected.Report.StopReason, "no meaningful task progress") {
+		t.Fatalf("stop reason = %q", projected.Report.StopReason)
+	}
+}
+
+// After the bounded conclusion window, the projection forces the terminal
+// tool. The model cannot turn "conclude" into another repository survey.
+func TestConclusionWindowForcesTheConcludeTool(t *testing.T) {
+	shape := BuildShape(contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Objective: "Investigate CheckoutService.Place and conclude SAFE, BUG, or UNRESOLVED.",
+	}, ShapeParams{Authority: "fuzz", Intent: "investigate", Facts: RepositoryFacts{Go: true}})
+	projector := NewProjector(shape, NewEvidenceState(), RepositoryFacts{Go: true})
+	tools := []agent.Tool{
+		testTool{name: "read", tier: agent.TierRead},
+		testTool{name: "conclude", tier: agent.TierRead},
+	}
+	request := func(turns []agent.Turn) agent.ProjectionResult {
+		return projector.Project(agent.ProjectionRequest{
+			Messages: []agent.Message{agent.UserMessage{Text: shape.Objective}},
+			Turns:    turns,
+			Tools:    tools,
+			System:   []ai.SystemPromptBlock{{Text: "base"}},
+		})
+	}
+	var turns []agent.Turn
+	turns = append(turns, readTurn("read-0", "checkout.go", "package checkout\n\nfunc Place() {}"))
+	projected := request(turns)
+	for i := 1; i < MaxConclusionObservationTurns; i++ {
+		turns = append(turns, readTurn("read-"+itoa(i), "checkout"+itoa(i)+".go", "package checkout"))
+		projected = request(turns)
+	}
+	if projected.ToolChoice.ToolName != "conclude" {
+		t.Fatalf("tool choice = %+v, want the conclude tool", projected.ToolChoice)
+	}
+	if projected.Report.Terminal {
+		t.Fatalf("the conclusion window became terminal before the forced call: %+v", projected.Report)
 	}
 }

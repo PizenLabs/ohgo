@@ -87,6 +87,21 @@ const (
 // by this counter.
 const MaxConsecutiveNoProgress = 4
 
+// MaxActObservationTurns bounds how long a mutation may remain in the act
+// stage while the model keeps observing. It is deliberately larger than the
+// ordinary no-progress bound: a targetless change needs a few source reads,
+// but an unbounded survey is not progress toward the change. After this many
+// projections at the act boundary, the run reports instead of spending the
+// model-turn grant on another repository tour.
+const MaxActObservationTurns = 8
+
+// MaxConclusionObservationTurns bounds how long a completed investigation may
+// keep reading before it records its verdict. The first two source
+// observations establish the frontier; this window allows the model to close
+// remaining concrete facts, but does not let another repository survey replace
+// the terminal conclusion.
+const MaxConclusionObservationTurns = 6
+
 // VerificationRecord is one successful check at a run position.
 type VerificationRecord struct {
 	Position int
@@ -737,6 +752,10 @@ func nextEvidence(key string) string {
 		return "list the repository root and read the entry point or module file"
 	case key == "repository_survey":
 		return "read a source file (entry point or module) for the components the answer will describe; documentation, manifests, configuration, and inventory are not implementation evidence"
+	case key == "implementation_observation":
+		return "read the implementation file that contains the requested change; documentation and manifests are not enough to choose an edit"
+	case key == "investigation_conclusion":
+		return "call the conclude tool with SAFE, BUG, or UNRESOLVED, the evidence that supports it, and any remaining uncertainty"
 	case key == "test_inventory":
 		return "query the structure tool with view=tests, unscoped, and inspect scope, inventory, and structural completeness; an overview test_files count is not a filtered inventory"
 	case key == "external_observation":

@@ -52,7 +52,7 @@ func TestToolBoundaryHandoffRoundTripKeepsOneTask(t *testing.T) {
 		"content": "package checkout\n\nfunc Checkout() string { return \"bad\" }\n",
 	}
 	messages := []ai.AssistantMessage{
-		readinessToolCall("read-0", "read", map[string]any{"path": "go.mod"}),
+		readinessToolCall("read-0", "read", map[string]any{"path": "checkout_test.go"}),
 		readinessToolCall("finding-1", "artifact", finding),
 		readinessToolCall("write-1", "write", writeCheckout),
 		readinessToolCall("change-1", "artifact", map[string]any{

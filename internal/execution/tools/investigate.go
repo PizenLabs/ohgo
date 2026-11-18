@@ -165,8 +165,12 @@ func (t *InvestigateTool) Execute(ctx agent.Context, args map[string]any) agent.
 
 func formatInvestigation(result investigate.Result) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "investigation: %s · intent %s · confidence %.2f · coverage %.2f · %s\n",
-		result.Status, result.Intent, result.Confidence, result.Coverage, result.StopReason)
+	fmt.Fprintf(&builder, "investigation: %s", result.Status)
+	if sources := stepSources(result.Steps); sources != "" {
+		fmt.Fprintf(&builder, " · %s", sources)
+	}
+	fmt.Fprintf(&builder, " · intent %s · confidence %.2f · coverage %.2f · %s\n",
+		result.Intent, result.Confidence, result.Coverage, result.StopReason)
 	if len(result.Steps) > 0 {
 		parts := make([]string, 0, len(result.Steps))
 		for _, step := range result.Steps {
@@ -181,7 +185,11 @@ func formatInvestigation(result investigate.Result) string {
 		builder.WriteString("\n")
 	}
 	for _, fact := range result.Facts {
-		fmt.Fprintf(&builder, "- [%s] %s — %s\n", fact.Provider, fact.Subject, fact.Detail)
+		provider := fact.Provider
+		if fact.Source != "" {
+			provider += "/" + fact.Source
+		}
+		fmt.Fprintf(&builder, "- [%s] %s — %s\n", provider, fact.Subject, fact.Detail)
 	}
 	if len(result.Contradictions) > 0 {
 		builder.WriteString("contradictions (preserved, not resolved silently):\n")
@@ -211,6 +219,26 @@ func formatInvestigation(result investigate.Result) string {
 		fmt.Fprintf(&builder, "evidence: %d records retained; confidence is correlation, not proof of implementation.\n", result.Records)
 	}
 	return capInvestigationOutput(builder.String())
+}
+
+// stepSources renders the mechanisms that answered the steps, deduplicated
+// and bounded. It is the compact attribution carried on the first line; the
+// per-fact lines carry the same source at their own resolution.
+func stepSources(steps []investigate.StepResult) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, step := range steps {
+		name := string(step.Provider)
+		if step.Source != "" {
+			name += "/" + step.Source
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return strings.Join(out, ", ")
 }
 
 func stepLabel(step investigate.StepResult) string {
@@ -255,7 +283,8 @@ func factDetails(facts []investigate.Fact) []map[string]any {
 	out := make([]map[string]any, 0, len(facts))
 	for _, fact := range facts {
 		out = append(out, map[string]any{
-			"provider": fact.Provider, "subject": fact.Subject, "detail": fact.Detail,
+			"provider": fact.Provider, "source": fact.Source,
+			"subject": fact.Subject, "detail": fact.Detail,
 		})
 	}
 	return out

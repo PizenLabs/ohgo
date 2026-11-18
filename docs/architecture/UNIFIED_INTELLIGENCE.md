@@ -414,6 +414,52 @@ it. A budget refusal falls back to native and says so.
   `OHGO_GRY_TIMEOUT_MS`, `OHGO_GRY_MAX_TOKENS`, `OHGO_GRY_MAX_NODES`,
   `OHGO_GRY_MAX_ROWS`, and `OHGO_GRY_MAX_DEPTH` are the only tuning knobs.
 
+### 12.5 Provider attribution
+
+Attribution is presentation of provenance, not a second provider identity.
+Every `investigate.Fact` carries its mechanism, and the model-facing rendering
+keeps it beside the capability:
+
+- `[structural/native]` or `[structural/gry]` on each fact;
+- `investigate: sufficient · structural/gry · intent …` on the first line, so a
+  collapsed transcript row is still truthful;
+- `status: … · provider: native` on every `structure` result, because the
+  `structure` tool is always the in-process AST index.
+
+The step-level provider remains `structural`; `gry` is a source. This lets a
+user distinguish native analysis from delegated structural evidence without
+turning gry into a role, a second planner, or a separate state owner.
+
+### 12.6 Investigation closure
+
+An investigation that asks for a verdict is not allowed to substitute another
+repository survey for that verdict. Its shape declares
+`investigation_conclusion`; only the `conclude` tool records it:
+
+```text
+SAFE | BUG | UNRESOLVED
+evidence: entrypoint, identifier flow, validation boundary, persistence ordering
+uncertainty: material gaps that remain
+```
+
+The requirement is a convergence point, not a proof. `conclude` records an
+observation; the completion evaluator still decides whether the answer is
+supportable. Once it is the only missing requirement, a bounded six-turn conclusion
+window still allows concrete closing reads, but further surveying does not
+reset the requirement; after the window the run reports instead of consuming
+the model-turn grant. A deferred mutation phase keeps its executable surface
+for the later probe; an ordinary investigation closes at its required evidence.
+A targetless mutation gets a separate eight-turn act window: it may read the
+implementation once, then must act rather than survey indefinitely. At the end
+of the conclusion window the projection forces the `conclude` tool for the next
+request; the tool was already offered, so this is a transition, not a new
+capability.
+
+The contract also treats a negated fix (`Do not create a fix`, `investigation
+only`) as informational rather than mutation, and treats Gry as optional
+structural intelligence. Only an explicitly requested MCP capability, URL, or
+external documentation creates `external_observation`.
+
 MCP remains a transport option, not the architecture. Configuring gry as a
 generic MCP server exposes its tool surface to the model as a user-chosen
 capability; the canonical structural integration is this provider, which keeps
@@ -445,6 +491,7 @@ installation and index.
 | runtime intelligence | yes | yes (fake adapter + real `dlv` fixture through the orchestrator) | no (authority decision, not a capability gap) |
 | unified evidence engine | yes | yes, including orchestrator fixtures | yes, inside `investigate` |
 | closed-loop planner | yes | yes (selection, reassessment, budget) | yes (`investigate`) |
+| investigation conclusion | yes | yes (verdict, evidence, stall bound) | yes (`conclude`) |
 | shared wire framing | yes | via LSP/DAP suites | — |
 
 Known gaps, stated rather than implied:

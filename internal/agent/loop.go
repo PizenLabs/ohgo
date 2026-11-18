@@ -980,6 +980,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		terminal := false
 		closed := false
 		refusals := map[string]string(nil)
+		var projectedToolChoice ai.ToolChoice
 		// redundant names offered capabilities the control plane judged unable
 		// to close the current gap. They stay offered so the request's tool
 		// block, and therefore its cached prefix, survives; the loop still
@@ -1021,6 +1022,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			terminal = report.Terminal
 			stopReason = report.StopReason
 			refusals = projected.Refusals
+			if projected.ToolChoice.Type != "" || projected.ToolChoice.ToolName != "" {
+				projectedToolChoice = projected.ToolChoice
+			}
 			report.Applied = true
 			report.Turn = len(turns)
 			if emptyProjection {
@@ -1118,6 +1122,9 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		toolChoice := l.cfg.ToolChoice
 		if l.cfg.GetToolChoice != nil {
 			toolChoice = l.cfg.GetToolChoice()
+		}
+		if projectedToolChoice.Type != "" || projectedToolChoice.ToolName != "" {
+			toolChoice = projectedToolChoice
 		}
 
 		if err := ctx.Err(); err != nil {

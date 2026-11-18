@@ -609,6 +609,16 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 		return s.hasRepositoryOverview()
 	case key == "repository_survey":
 		return s.hasRepositorySurvey(s.Facts)
+	case key == "implementation_observation":
+		return s.hasImplementationObservation()
+	case key == "investigation_conclusion":
+		for _, item := range s.Items {
+			if strings.HasPrefix(item.ID, "conclusion:") && item.Status != StatusConflicting &&
+				item.Status != StatusRequired && item.Status != StatusUnknown {
+				return true
+			}
+		}
+		return false
 	case key == "vcs_observation":
 		return s.hasVCSObservation()
 	case key == "external_observation":
@@ -680,6 +690,33 @@ func (s *EvidenceState) hasRepositoryOverview() bool {
 			// A search that returned no payload or a structural query with no
 			// coordinates observed nothing content-bearing.
 			if strings.TrimSpace(item.Value) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasImplementationObservation reports whether at least one source-content
+// observation exists. A targetless mutation needs a concrete implementation
+// fact before it can choose an edit; documentation and manifests are not
+// enough to place the change.
+func (s *EvidenceState) hasImplementationObservation() bool {
+	if s == nil {
+		return false
+	}
+	for _, item := range s.Items {
+		if item.Status == StatusConflicting || item.Status == StatusUnknown || item.Status == StatusRequired {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(item.ID, "file:"):
+			if item.Retention == RetentionExact && strings.TrimSpace(item.Value) != "" &&
+				isImplementationObservation(item) {
+				return true
+			}
+		case strings.HasPrefix(item.ID, "search:grep:"), strings.HasPrefix(item.ID, "symbols:"):
+			if strings.TrimSpace(item.Value) != "" && isImplementationObservation(item) {
 				return true
 			}
 		}
@@ -943,6 +980,10 @@ func (s *EvidenceState) observe(outcome agent.ToolOutcome) (fact, changed bool) 
 		return true, s.addSymbols(outcome, details, seq)
 	case "graph", "refs", "structure":
 		return true, s.addStructural(outcome, details, seq)
+	case "investigate":
+		return true, s.addInvestigation(outcome, details, seq)
+	case "conclude":
+		return true, s.addConclusion(outcome, details, seq)
 	case "write", "edit", "delete":
 		return true, s.addMutation(outcome, path, details, seq)
 	case "bash", "verify":
@@ -1197,6 +1238,81 @@ func (s *EvidenceState) addSymbols(outcome agent.ToolOutcome, details map[string
 		}
 	}
 	return changed
+}
+
+// addConclusion records the model's terminal investigation verdict.
+//
+// It is a control observation, not a proof: the evidence and uncertainty are
+// preserved verbatim for review, and completion still evaluates the claims.
+// Recording it gives the sufficiency model a requirement that another read
+// cannot satisfy, so an investigation stops looking for one more file.
+func (s *EvidenceState) addConclusion(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
+	verdict := strings.ToUpper(strings.TrimSpace(detailString(details, "verdict")))
+	if verdict == "" {
+		return false
+	}
+	evidence := strings.TrimSpace(detailString(details, "evidence"))
+	uncertainty := strings.TrimSpace(detailString(details, "uncertainty"))
+	value := "verdict: " + verdict + "\nevidence: " + evidence
+	if uncertainty != "" {
+		value += "\nuncertainty: " + uncertainty
+	}
+	return s.upsert(EvidenceItem{
+		ID:         "conclusion:" + digest(verdict+"\x00"+evidence),
+		Status:     StatusKnown,
+		Retention:  RetentionExact,
+		Provenance: ProvenanceDiagnostic,
+		Summary:    bound("conclusion "+verdict+": "+evidence, MaxEvidenceSummaryBytes),
+		Value:      bound(value, MaxEvidenceValueBytes),
+		Digest:     digest(value),
+		Complete:   true,
+		View:       "conclusion",
+		Source:     Source{Tool: "conclude", CallID: outcome.CallID},
+		Seq:        seq,
+	})
+}
+
+// addInvestigation records one bounded investigation as structural evidence.
+//
+// The tool result is a provider-backed observation, not model narration: its
+// status, stop reason, facts, and provider attribution are what the runtime
+// saw. Recording it is what lets a later projection know that an investigation
+// was actually attempted instead of treating the call as a generic protocol
+// event. The item does not claim the answer is proven; it records the
+// investigation's own conclusion and leaves completion to the evidence
+// evaluator.
+func (s *EvidenceState) addInvestigation(outcome agent.ToolOutcome, details map[string]any, seq int) bool {
+	question := argString(outcome.Args, "question")
+	if strings.TrimSpace(question) == "" {
+		question = "investigation"
+	}
+	status := detailString(details, "status")
+	stop := detailString(details, "stop_reason")
+	if status == "" {
+		status = "unknown"
+	}
+	id := "investigation:" + question
+	if len(id) > 180 {
+		id = "investigation:" + digest(question)
+	}
+	summary := "investigation " + status
+	if stop != "" {
+		summary += " — " + stop
+	}
+	value := bound(outcome.Result.Text, MaxEvidenceValueBytes)
+	return s.upsert(EvidenceItem{
+		ID:         id,
+		Status:     StatusDerived,
+		Retention:  RetentionStructural,
+		Provenance: ProvenanceObservation,
+		Summary:    bound(summary, MaxEvidenceSummaryBytes),
+		Value:      value,
+		Digest:     digest(value),
+		Complete:   status == "sufficient",
+		View:       "investigate",
+		Source:     Source{Tool: "investigate", CallID: outcome.CallID},
+		Seq:        seq,
+	})
 }
 
 // addStructural records graph, refs, and structure observations as structural

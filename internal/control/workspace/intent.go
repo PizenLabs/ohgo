@@ -1023,7 +1023,7 @@ func RequestsMutation(text string) bool {
 // helper is shared with the conditional-workflow analysis so the two cannot
 // disagree about which clause carries the change.
 func clauseRequestsMutation(entry clause) bool {
-	if entry.asked {
+	if entry.asked || negatedClause(entry.text) {
 		// A question about a change ("does this update GitHub?") does not
 		// request the change. Stating it as a mutation objective would make
 		// completion demand evidence the user never asked for.

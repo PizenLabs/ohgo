@@ -149,8 +149,13 @@ type Observation struct {
 // Fact is one bounded, model-facing statement from a provider.
 type Fact struct {
 	Provider string
-	Subject  string
-	Detail   string
+	// Source names the mechanism that produced this fact: native, gry, lsp,
+	// retrieval, or dap. It is provenance, not a second provider identity; the
+	// user must be able to tell native structural analysis from delegated gry
+	// evidence without treating gry as a role.
+	Source  string
+	Subject string
+	Detail  string
 }
 
 // Provider is one intelligence capability.
@@ -416,6 +421,13 @@ func (e *Engine) Run(ctx context.Context, req Request) (Result, error) {
 			outcome.State = state
 			outcome.Failed = observation.Outcome == OutcomeFailed
 			outcome.Summary = capText(observation.Summary, maxSummaryChars)
+			// A provider that did not name its mechanism still gets the step's
+			// source, so every displayed structural fact carries attribution.
+			for i := range observation.Facts {
+				if observation.Facts[i].Source == "" {
+					observation.Facts[i].Source = observation.Source
+				}
+			}
 			result.Facts = append(result.Facts, observation.Facts...)
 			result.Issues = append(result.Issues, observation.Issues...)
 			for _, record := range observation.Records {

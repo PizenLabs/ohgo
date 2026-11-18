@@ -106,6 +106,7 @@ func buildTools(opts options, registry *ai.Registry) []agent.Tool {
 		tools.NewStructureTool(structural),
 		retrieve,
 		tools.NewInvestigateTool(opts.root, investigation, investigate.Budget{}),
+		tools.NewConcludeTool(),
 		tools.NewWebFetchTool(),
 		tools.NewTodoTool(),
 	}

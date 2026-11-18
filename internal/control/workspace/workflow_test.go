@@ -158,3 +158,45 @@ func TestBuildIntentContractRecognizesAppend(t *testing.T) {
 		t.Fatalf("kind = %s, want mutation", intent.Kind)
 	}
 }
+
+// The benchmark's investigation-only prompt names a fix only to forbid it.
+// It must stay informational, with no target or verification requirement that
+// the FUZZ role can never satisfy.
+func TestInvestigationOnlyPromptDoesNotBecomeMutation(t *testing.T) {
+	text := `Investigate the order-creation flow and determine whether there is any production-reachable path.
+
+The investigation must answer:
+1. What is the actual production entrypoint?
+2. Does validation happen before persistence?
+3. Are there any bypass paths?
+4. Conclude one of SAFE, BUG, or UNRESOLVED.
+
+Do not modify source code, tests, configuration, migrations, or repository state.
+Do not create a fix. This is an investigation-only benchmark.`
+	c := BuildIntentContract(text)
+	if c.Kind != ObjectiveInformational {
+		t.Fatalf("kind = %s, want informational", c.Kind)
+	}
+	if c.ConditionalMutation {
+		t.Fatal("the investigation-only prompt was marked conditional mutation")
+	}
+	for _, target := range c.Targets {
+		if strings.EqualFold(target.Value, "UNRESOLVED") {
+			t.Fatalf("terminal-state word became a symbol target: %+v", c.Targets)
+		}
+	}
+}
+
+// A negated clause is a prohibition, not a change request. The same clause
+// model already handles grounding actions; mutation classification must agree.
+func TestNegatedMutationClauseDoesNotRequestMutation(t *testing.T) {
+	for _, text := range []string{
+		"Do not create a fix.",
+		"Do not modify source code; explain the flow.",
+		"Never implement the change; report the finding.",
+	} {
+		if RequestsMutation(text) {
+			t.Errorf("RequestsMutation(%q) = true, want false", text)
+		}
+	}
+}

@@ -87,6 +87,7 @@ const (
 // the completion evaluator can return NEEDS_REVIEW instead of guessing.
 func BuildIntentContract(text string) IntentContract {
 	objective := strings.TrimSpace(text)
+	noMutation := contract.NoMutationRequested(objective)
 	contract := IntentContract{Objective: objective}
 
 	if objective == "" {
@@ -98,7 +99,14 @@ func BuildIntentContract(text string) IntentContract {
 	}
 
 	intent := Classify(objective)
+	// A whole-change prohibition is an authority boundary, not a hidden
+	// mutation request. The regular classifier already excludes negated
+	// clauses; this guard also covers phrasings such as "do not create a fix"
+	// and "investigation only" that name the change as a class.
 	mutation := RequestsMutation(objective)
+	if noMutation && !ConditionalWorkflow(objective) {
+		mutation = false
+	}
 	// A staged conditional request keeps the change as its objective so the
 	// semantics, targets, and verification survive for the branch, but records
 	// that the change is deferred until the investigation finds a reason for it.
@@ -1406,6 +1414,11 @@ var symbolStopWords = map[string]bool{
 	"ok": true, "cli": true, "tui": true, "api": true, "url": true,
 	"json": true, "http": true, "https": true, "id": true, "ast": true,
 	"sse": true, "ui": true, "ai": true,
+	// Terminal-state vocabulary in an investigation prompt is not a symbol
+	// target. "Conclude SAFE, BUG, or UNRESOLVED" must not become an
+	// impossible coordinate requirement.
+	"safe": true, "bug": true, "bugs": true, "unresolved": true,
+	"blocked": true, "pass": true, "fail": true, "failing": true,
 	"github": true, "gitlab": true, "bitbucket": true, "npm": true, "pypi": true,
 	"dockerhub": true, "openai": true, "anthropic": true, "google": true,
 	"microsoft": true, "amazon": true, "aws": true, "azure": true, "gcp": true,
