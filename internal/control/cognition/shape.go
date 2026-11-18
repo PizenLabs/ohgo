@@ -984,8 +984,6 @@ func constraintVocabulary(objective string) []string {
 			}
 		}
 	}
-	add("no_mutation", "do not modify anything", "do not change anything",
-		"read only", "without modifying", "without changing")
 	if contract.NoMutationRequested(objective) {
 		out = append(out, "no_mutation")
 	}

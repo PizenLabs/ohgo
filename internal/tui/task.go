@@ -317,6 +317,15 @@ func (p *Program) PublishTask(projection TaskProjection) {
 	p.publish(TaskProjected{Projection: projection})
 }
 
+// TaskCleared removes the sticky task projection at a session boundary. The
+// transcript block remains historical evidence; only the live header clears.
+type TaskCleared struct{}
+
+func (TaskCleared) eventKind() string { return "task_cleared" }
+
+// ClearTask drops the live task projection without claiming the task ended.
+func (p *Program) ClearTask() { p.publish(TaskCleared{}) }
+
 // SyncTask checkpoints and republishes the current task, if a layer is
 // installed. It is the hook a compaction report uses to keep the checkpoint in
 // step with a reconstructed context.
@@ -325,6 +334,30 @@ func (p *Program) SyncTask() {
 		return
 	}
 	p.PublishTask(p.task.Sync())
+}
+
+// taskListLimit keeps /task list from pushing the working state off screen.
+// The full set remains reachable through the /task resume picker.
+const taskListLimit = 10
+
+// taskListNotice renders a bounded summary of resumable tasks.
+func taskListNotice(resumable []TaskResume) string {
+	if len(resumable) == 0 {
+		return "no resumable tasks"
+	}
+	shown := resumable
+	if len(shown) > taskListLimit {
+		shown = shown[:taskListLimit]
+	}
+	var sb strings.Builder
+	sb.WriteString("resumable tasks:")
+	for _, r := range shown {
+		fmt.Fprintf(&sb, "\n  %s %s: %s", r.Status, shortTaskID(r.ID), r.Objective)
+	}
+	if omitted := len(resumable) - len(shown); omitted > 0 {
+		fmt.Fprintf(&sb, "\n  ... %d more; /task resume opens the full picker", omitted)
+	}
+	return sb.String()
 }
 
 // taskCommand handles /task status|list|show|resume|cancel|accept.
@@ -358,17 +391,7 @@ func (p *Program) taskCommand(args []string) {
 			p.state.Apply(Notice{Text: "task listing is unavailable"})
 			return
 		}
-		resumable := p.task.ListResumable()
-		if len(resumable) == 0 {
-			p.state.Apply(Notice{Text: "no resumable tasks"})
-			return
-		}
-		var sb strings.Builder
-		sb.WriteString("resumable tasks:")
-		for _, r := range resumable {
-			fmt.Fprintf(&sb, "\n  %s %s: %s", r.Status, shortTaskID(r.ID), r.Objective)
-		}
-		p.state.Apply(Notice{Text: sb.String()})
+		p.state.Apply(Notice{Text: taskListNotice(p.task.ListResumable())})
 		return
 	case "history":
 		if p.task.ListArchived == nil {

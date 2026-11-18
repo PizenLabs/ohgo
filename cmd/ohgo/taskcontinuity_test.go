@@ -256,3 +256,12 @@ func TestTaskResumeCarriesAnExplicitSwitch(t *testing.T) {
 		t.Fatal("a switch awaiting its next turn was reported consumed")
 	}
 }
+
+func TestResumableTasksNoticeReportsTheRealCount(t *testing.T) {
+	if got := resumableTasksNotice(1); !strings.Contains(got, "1 resumable task") {
+		t.Fatalf("singular notice = %q", got)
+	}
+	if got := resumableTasksNotice(13); !strings.Contains(got, "13 resumable tasks") {
+		t.Fatalf("plural notice = %q", got)
+	}
+}

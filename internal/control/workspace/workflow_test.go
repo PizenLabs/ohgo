@@ -125,3 +125,36 @@ func TestBuildIntentContractRecognizesAContractedNoMutationLimit(t *testing.T) {
 		t.Fatal("a contracted no-mutation limit was dropped from the contract")
 	}
 }
+
+// A deliverable that mentions read-only validation and asks not to change
+// anything else is a mutation task. The quoted sentence is content, and
+// "anything else" scopes the prohibition; neither is a whole-change limit.
+func TestBuildIntentContractIgnoresQuotedReadOnlyDeliverable(t *testing.T) {
+	const request = `Add a short "Validation note" section at the end of README.md containing exactly one sentence: "This repository was used for a read-only Ohgo validation." Do not change anything else. Verify the file content after the edit.`
+	intent := BuildIntentContract(request)
+	if intent.Kind != ObjectiveMutation {
+		t.Fatalf("kind = %s, want mutation", intent.Kind)
+	}
+	if intent.Grounding == nil {
+		t.Fatal("no grounding")
+	}
+	for _, constraint := range intent.Grounding.Constraints {
+		if constraint == "no_mutation" {
+			t.Fatal("the quoted deliverable or scoped limit became a whole-change prohibition")
+		}
+	}
+}
+
+// Appending a line is a repository mutation even though the verb is not
+// "add". Without this vocabulary the contract stays informational, the
+// mutation tools are withheld, and the model is told mutation is forbidden.
+func TestBuildIntentContractRecognizesAppend(t *testing.T) {
+	const request = `Append exactly one line comment "// ohgo validation" to the end of backend/go.mod. Do not change any other file.`
+	if !RequestsMutation(request) {
+		t.Fatal("append was not recognized as a mutation request")
+	}
+	intent := BuildIntentContract(request)
+	if intent.Kind != ObjectiveMutation {
+		t.Fatalf("kind = %s, want mutation", intent.Kind)
+	}
+}

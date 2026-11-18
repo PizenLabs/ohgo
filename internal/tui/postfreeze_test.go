@@ -850,3 +850,19 @@ func TestPostfreezeAdversarialBoundaries(t *testing.T) {
 		t.Fatalf("session = %+v, want %d", q.session, second.ID)
 	}
 }
+
+// /task list is bounded: a long archive must not push the working state off
+// screen, and the omission must be stated rather than silently truncating.
+func TestTaskListNoticeIsBounded(t *testing.T) {
+	tasks := make([]TaskResume, 0, 12)
+	for i := 0; i < 12; i++ {
+		tasks = append(tasks, TaskResume{ID: "task", Status: "NEEDS_REVIEW", Objective: "objective"})
+	}
+	out := taskListNotice(tasks)
+	if got := strings.Count(out, "objective"); got != taskListLimit {
+		t.Fatalf("rendered %d tasks, want %d:\n%s", got, taskListLimit, out)
+	}
+	if !strings.Contains(out, "2 more") {
+		t.Fatalf("omitted count missing:\n%s", out)
+	}
+}

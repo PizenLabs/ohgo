@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"path"
 	"regexp"
 	"strings"
 
@@ -432,13 +433,14 @@ func verificationRequirements(text string, kind ObjectiveKind) []VerificationReq
 	}
 	for _, match := range verificationCommand.FindAllStringSubmatchIndex(text, -1) {
 		check := commandCheck(text[match[2]:match[3]])
+		base := commandWorkingDirectory(text[:match[0]])
 		scopes := commandScopes(text[match[1]:])
 		if len(scopes) == 0 {
-			addScope(".", check)
+			addScope(scopeUnder(base, "."), check)
 			continue
 		}
 		for _, scope := range scopes {
-			addScope(scope, check)
+			addScope(scopeUnder(base, scope), check)
 		}
 	}
 	prose := proseCheck(text)
@@ -449,6 +451,47 @@ func verificationRequirements(text string, kind ObjectiveKind) []VerificationReq
 		addScope(scope, prose)
 	}
 	return out
+}
+
+// commandWorkingDirectory returns the directory named by a `cd <dir> &&`
+// prefix immediately before a verification command. Multi-module repositories
+// commonly write "cd backend && go test ./..."; without the prefix the parser
+// treats "./..." as the repository root and demands coverage the command never
+// claimed.
+func commandWorkingDirectory(prefix string) string {
+	segment := prefix
+	if index := strings.LastIndexAny(segment, ";\n"); index >= 0 {
+		segment = segment[index+1:]
+	}
+	fields := strings.Fields(segment)
+	for index := len(fields) - 1; index >= 0; index-- {
+		token := strings.Trim(fields[index], "'\"")
+		if !strings.EqualFold(token, "cd") || index+1 >= len(fields) {
+			continue
+		}
+		dir := strings.Trim(fields[index+1], "'\"")
+		dir = strings.TrimSpace(dir)
+		if dir == "" || dir == "&&" || strings.HasPrefix(dir, "/") || strings.Contains(dir, "..") {
+			return ""
+		}
+		return strings.Trim(dir, "/")
+	}
+	return ""
+}
+
+// scopeUnder places a parsed command scope under its working directory.
+func scopeUnder(base, scope string) string {
+	if base == "" {
+		return scope
+	}
+	switch scope {
+	case "", "*", ".":
+		return base
+	}
+	if strings.HasPrefix(scope, "/") || strings.Contains(scope, "..") {
+		return ""
+	}
+	return path.Join(base, scope)
 }
 
 // commandCheck maps a Go verification subcommand to the check it performs.

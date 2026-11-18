@@ -1472,6 +1472,13 @@ func (s *State) Apply(event Event) {
 			s.PostUpdate.Err = strings.TrimSpace(e.Err)
 		}
 
+	case TaskCleared:
+		// A new session starts without a live task. The previous task block,
+		// when present, is transcript history; the sticky header must not keep
+		// claiming an objective this session does not own.
+		s.task = nil
+		s.taskKnown = true
+
 	case TaskProjected:
 		// The projection replaces the current task block in place, so a long
 		// turn does not stack a fresh panel on every todo change. A dropped

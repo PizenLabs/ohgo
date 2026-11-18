@@ -815,3 +815,34 @@ func TestTaskReviewRendersItsReason(t *testing.T) {
 		t.Fatalf("the full review reason was truncated:\n%s", joined)
 	}
 }
+
+// A new session clears the live task header while leaving the task durable for
+// /task resume. A stale header would contradict /task status in the same UI.
+func TestTaskClearedRemovesLiveProjection(t *testing.T) {
+	var state State
+	state.Apply(TaskProjected{Projection: TaskProjection{ID: "task-1", Status: "NEEDS_REVIEW", Objective: "old objective"}})
+	if state.task == nil || state.task.ID != "task-1" {
+		t.Fatalf("task = %+v, want the projected task", state.task)
+	}
+	state.Apply(TaskCleared{})
+	if state.task != nil {
+		t.Fatalf("task = %+v, want no live task after clear", state.task)
+	}
+	if latestTaskProjection(&state) != nil {
+		t.Fatal("the sticky projection survived the clear")
+	}
+}
+
+// A failed detach leaves the task attached. Clearing the header would make the
+// new session claim no task while the controller still owns one.
+func TestNewSessionKeepsTaskWhenDetachFails(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(TaskProjected{Projection: TaskProjection{ID: "task-1", Status: "RUNNING", Objective: "open work"}})
+	p.task.Detach = func() TaskProjection {
+		return TaskProjection{ID: "task-1", Err: "archive is unwritable"}
+	}
+	p.detachTaskForNewSession()
+	if p.state.task == nil || p.state.task.ID != "task-1" {
+		t.Fatalf("task = %+v, want the still-attached task", p.state.task)
+	}
+}

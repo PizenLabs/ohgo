@@ -309,6 +309,8 @@ func TestBuildIntentContractVerificationScopeShapes(t *testing.T) {
 		{"Run go test ./tools/...", VerificationRequirement{Kind: VerifyScope, Scope: "tools", Check: CheckTest}},
 		{"Run go test ./...", VerificationRequirement{Kind: VerifyScope, Scope: "*", Check: CheckTest}},
 		{"Run go test .", VerificationRequirement{Kind: VerifyScope, Scope: ".", Check: CheckTest}},
+		{"Run cd backend && go test ./...", VerificationRequirement{Kind: VerifyScope, Scope: "backend", Check: CheckTest}},
+		{"Run cd backend && go test ./tools/...", VerificationRequirement{Kind: VerifyScope, Scope: "backend/tools", Check: CheckTest}},
 	}
 	for _, tc := range cases {
 		contract := BuildIntentContract(tc.text)

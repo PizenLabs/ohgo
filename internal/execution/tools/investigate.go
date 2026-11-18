@@ -41,6 +41,9 @@ func NewInvestigateTool(root string, engine *investigate.Engine, budget investig
 	tool.Base = NewBase("investigate",
 		"Investigate a repository question by coordinating structural, lexical "+
 			"(BM25), semantic (language server), and authorized runtime evidence. "+
+			"Prefer this for call chains, dependencies, architecture, impact, and "+
+			"\"where is X\" questions; use symbols, grep, and read for one exact "+
+			"coordinate or source excerpt. "+
 			"Chooses the cheapest sufficient path, correlates observations from "+
 			"multiple providers, preserves contradictions, and stops when more "+
 			"analysis is not worth its cost. Returns bounded facts with provider, "+
