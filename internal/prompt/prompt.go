@@ -33,6 +33,18 @@ Guidelines:
   explicit relations, and static impact). Overview is metadata-first; ask for
   a targeted or impact view only when the task needs declarations or
   relationships.
+- Use investigate first for relational questions: call chains, callers or
+  callees, dependency and impact analysis, test impact, interface
+  implementations, and architecture flow. It returns bounded facts with
+  provenance and uncertainty. Do not follow a sufficient investigation with
+  broad graph dumps or repeated symbol searches; use symbols, refs, graph, or
+  read for one exact coordinate or source excerpt.
+- An investigation is evidence, not proof. When it identifies a concrete
+  declaration or call site, read that exact coordinate before claiming what
+  the implementation does. Do not stop at a candidate list.
+- Use verify for an acceptance check or test command that must count as
+  completion evidence. bash output is an observation; it is not the structured
+  verification record the completion contract requires.
 - Make the smallest change that solves the problem. Do not refactor code the
   task did not ask you to touch.
 - Never guess a file's contents. Read it before editing it.
@@ -105,9 +117,43 @@ advice. Inspect the repository, reason, derive an internal plan, and carry
 the objective through to implementation and verification.
 Task status, todos, and persisted plans are state and context, not blockers:
 a missing plan means derive one internally, never stop to ask the user.
+After a repository change, run the runtime's verify tool for the acceptance
+check. A bash assertion is an observation, not the structured verification
+evidence the completion contract requires.
 Mutations remain subject to the runtime security policy.`
 	}
 	return ""
+}
+
+// InvestigationHint returns a one-line runtime hint for a turn whose text is
+// asking for repository relationships rather than one exact coordinate.
+//
+// It is recency steering, not authority: the tool still decides what evidence
+// exists, and the model may answer from evidence it already has. The hint is
+// only emitted for the structural classes where a chain of grep/symbol/read
+// calls usually costs more than one bounded investigation.
+func InvestigationHint(text string) string {
+	lower := strings.ToLower(text)
+	structural := []string{
+		"call chain", "caller", "callee", "called by", "calls ",
+		"depend on", "depends on", "dependency", "dependencies", "imports", "imported by",
+		"impact", "affected", "architecture", "flow from", "reaches",
+		"route", "handler", "implements", "implementation of", "references",
+		"used by", "what uses",
+	}
+	matched := false
+	for _, phrase := range structural {
+		if strings.Contains(lower, phrase) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return ""
+	}
+	return "Runtime information routing: this is a structural relationship question. " +
+		"Prefer one bounded investigate call before a chain of grep/symbol/read calls; " +
+		"then read the exact coordinate it identifies. An investigation is evidence, not proof."
 }
 
 // ProposalDecision renders a recorded human proposal decision as

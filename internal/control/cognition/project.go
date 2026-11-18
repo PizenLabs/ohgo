@@ -29,6 +29,11 @@ type ProjectorOptions struct {
 	// ExternalKeepBytes bounds external content retained verbatim. Provenance
 	// and the untrusted envelope are always preserved.
 	ExternalKeepBytes int
+	// StructuralKeepBytes bounds exact structural observations (grep, symbols,
+	// graph, refs, structure). Coordinates are the payload the model needs to
+	// avoid repeating the query; a 360-byte summary discards them and causes
+	// the redundant exploration this cap exists to prevent.
+	StructuralKeepBytes int
 }
 
 // DefaultProjectorOptions returns the built-in bounds.
@@ -39,6 +44,7 @@ func DefaultProjectorOptions() ProjectorOptions {
 		ExactKeepBytes:      4096,
 		DiagnosticKeepBytes: 8192,
 		ExternalKeepBytes:   4096,
+		StructuralKeepBytes: 4096,
 	}
 }
 
@@ -59,6 +65,9 @@ func (o ProjectorOptions) normalized() ProjectorOptions {
 	}
 	if o.ExternalKeepBytes <= 0 {
 		o.ExternalKeepBytes = defaults.ExternalKeepBytes
+	}
+	if o.StructuralKeepBytes <= 0 {
+		o.StructuralKeepBytes = defaults.StructuralKeepBytes
 	}
 	return o
 }
@@ -341,8 +350,8 @@ func (p *Projector) Project(req agent.ProjectionRequest) agent.ProjectionResult 
 	report.Shape = shape.Summary()
 	report.Evidence = evidenceSummary(p.Evidence, suff, execution)
 	report.RetentionPolicy = fmt.Sprintf(
-		"each result bounded once by its own size: exact <=%d bytes, diagnostics <=%d bytes, external <=%d bytes; structural/derived/transient results summarized; aggregate growth is compaction's job",
-		options.ExactKeepBytes, options.DiagnosticKeepBytes, options.ExternalKeepBytes)
+		"each result bounded once by its own size: exact <=%d bytes, diagnostics <=%d bytes, external <=%d bytes, structural <=%d bytes then excerpted; derived/transient results summarized; aggregate growth is compaction's job",
+		options.ExactKeepBytes, options.DiagnosticKeepBytes, options.ExternalKeepBytes, options.StructuralKeepBytes)
 	if len(report.Elisions) == 0 && state == "" && len(candidates.Tools) == len(req.Tools) {
 		report.Reason = "no projection change"
 	}
@@ -509,7 +518,13 @@ func projectionText(result agent.ToolResultMessage, item EvidenceItem, options P
 		}
 		return "exact_excerpt", excerpt(text, options.ExactKeepBytes,
 			"exact observation excerpted; the runtime retained a digest and the full result")
-	case RetentionStructural, RetentionDerived, RetentionTransient:
+	case RetentionStructural:
+		if len(text) <= options.StructuralKeepBytes {
+			return "", ""
+		}
+		return "structural_excerpt", excerpt(text, options.StructuralKeepBytes,
+			"structural observation excerpted; the runtime retained the full result")
+	case RetentionDerived, RetentionTransient:
 		summary := strings.TrimSpace(item.Summary)
 		if summary == "" {
 			summary = result.ToolName + " result recorded"

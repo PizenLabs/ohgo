@@ -361,3 +361,46 @@ func TestHintZoneRendersOneFocusTierBelowTelemetry(t *testing.T) {
 		t.Fatalf("footer = %q, want the keys held back from the readable tier", row)
 	}
 }
+
+// A resumed session has no measured context. The footer must hide the
+// percentage rather than render 0%, and a later measured update must restore
+// it.
+func TestResumedContextIsUnknownUntilMeasured(t *testing.T) {
+	s := New()
+	s.Status.ContextWindow = 1000
+	s.Apply(UsageUnknown{})
+	if got := livePercent(s); got != -1 {
+		t.Fatalf("resumed context percent = %d, want unknown (-1)", got)
+	}
+	if got := statusContextLine(StatusView{ContextWindow: 1000, ContextKnown: false, UsageUnknown: true}); !strings.Contains(got, "unavailable after restart") {
+		t.Fatalf("resumed status context line = %q, want unavailable", got)
+	}
+	if got := statusContextLine(StatusView{ContextWindow: 1000, ContextKnown: false}); !strings.Contains(got, "not measured yet") {
+		t.Fatalf("fresh status context line = %q, want not measured yet", got)
+	}
+	s.Apply(ContextUpdated{Used: 400, Window: 1000})
+	if got := livePercent(s); got != 40 {
+		t.Fatalf("measured context percent = %d, want 40", got)
+	}
+}
+
+// Compaction replaces the transcript but not the session boundary: a resumed
+// session's unknown prior usage must survive it. Only /new clears the unknown
+// marker because only /new starts a session with no prior history.
+func TestUsageUnknownSurvivesHistoryReplacementAndClearsOnNewSession(t *testing.T) {
+	s := New()
+	s.UsageUnknown = true
+	s.Apply(HistoryReplaced{Entries: []Entry{{Kind: EntryUser, UserText: "summarised"}}})
+	if !s.UsageUnknown {
+		t.Fatal("compaction-style history replacement cleared prior-usage unknown")
+	}
+	s.Apply(Cleared{})
+	if s.UsageUnknown {
+		t.Fatal("a cleared session inherited prior-usage unknown")
+	}
+	s.UsageUnknown = true
+	s.Apply(UsageKnown{})
+	if s.UsageUnknown {
+		t.Fatal("a genuinely new session inherited prior-usage unknown")
+	}
+}

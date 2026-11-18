@@ -457,7 +457,7 @@ func (h *harness) DoctorLines() []tui.DoctorLine {
 	if registry == nil {
 		registry = ai.NewRegistry()
 	}
-	reports := collectReports("", registry)
+	reports := collectReports(h.model.Ref(), registry)
 	out := make([]tui.DoctorLine, 0, len(reports))
 	for _, rep := range reports {
 		out = append(out, tui.DoctorLine{Name: rep.Name, OK: rep.OK, Detail: rep.Detail})

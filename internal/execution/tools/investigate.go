@@ -41,8 +41,9 @@ func NewInvestigateTool(root string, engine *investigate.Engine, budget investig
 	tool.Base = NewBase("investigate",
 		"Investigate a repository question by coordinating structural, lexical "+
 			"(BM25), semantic (language server), and authorized runtime evidence. "+
-			"Prefer this for call chains, dependencies, architecture, impact, and "+
-			"\"where is X\" questions; use symbols, grep, and read for one exact "+
+			"Call this before a chain of grep/symbol/read calls when the question is "+
+			"relational: call chains, dependencies, architecture, impact, test impact, "+
+			"or interface implementations. Use symbols, grep, and read for one exact "+
 			"coordinate or source excerpt. "+
 			"Chooses the cheapest sufficient path, correlates observations from "+
 			"multiple providers, preserves contradictions, and stops when more "+
@@ -68,8 +69,10 @@ func NewInvestigateTool(root string, engine *investigate.Engine, budget investig
 					"description": "Optional task shape. Default auto infers it from the question.",
 				},
 				"focus": map[string]any{
-					"type":        "string",
-					"description": "Optional repository-relative path or symbol the question is about.",
+					"type": "string",
+					"description": "Optional repository-relative path or symbol the question is about. " +
+						"For flow, callers/callees, and impact, prefer the exact symbol name " +
+						"returned by symbols; a file path is better for package or file-level context.",
 				},
 				"max_steps": map[string]any{
 					"type":        "integer",

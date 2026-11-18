@@ -191,6 +191,9 @@ type Config struct {
 	WorkspaceHandoff func(call ai.ToolCall, tool Tool, args map[string]any) (moved bool)
 	// OnTurn is called after each turn, for streaming progress to a UI.
 	OnTurn func(Turn)
+	// OnProviderActivity reports provider attempts, retries, failures, and
+	// recovery. It runs on the request goroutine and must not block.
+	OnProviderActivity func(ProviderActivity)
 	// OnTextDelta receives visible model text while a stream is still open,
 	// in order. A UI publishes each delta so the answer reveals as it is
 	// generated instead of landing as one block when the turn completes.
@@ -766,6 +769,12 @@ func (l *Loop) SetProjectionReportHook(hook func(ProjectionReport)) {
 // It must be called before Run, never during one.
 func (l *Loop) SetTurnHook(hook func(Turn)) {
 	l.cfg.OnTurn = hook
+}
+
+// SetProviderActivityHook installs the transport-state reporter after
+// construction, or nil to silence it. It must be set before Run.
+func (l *Loop) SetProviderActivityHook(hook func(ProviderActivity)) {
+	l.cfg.OnProviderActivity = hook
 }
 
 // SetCompactHook installs the compaction reporter after construction, or nil

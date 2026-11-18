@@ -61,7 +61,9 @@ func NewSymbolsToolWithSource(source *StructuralSource) *SymbolsTool {
 					"type":      "string",
 					"minLength": 1,
 					"description": "Exact symbol name or qualified name, case-sensitive. " +
-						"Examples: GrepTool.Execute, tools.GrepTool.Execute, agent.Tool.",
+						"A bare method name returns every receiver's declaration and is " +
+						"reported ambiguous. Examples: GrepTool.Execute, tools.GrepTool.Execute, " +
+						"Execute, agent.Tool.",
 				},
 				"path": map[string]any{
 					"type": "string",

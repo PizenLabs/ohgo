@@ -53,6 +53,9 @@ type UsageView struct {
 	// HasUsage reports the ledger measured at least one request. False renders
 	// the empty state instead of zeros that read as measured.
 	HasUsage bool
+	// UsageUnknown reports that this session's prior usage was not persisted.
+	// A resumed transcript starts here; new turns are measured from that point.
+	UsageUnknown bool
 	// TurnCount is the number of completed turns folded into the ledger.
 	TurnCount int
 	// LastRequest is the most recent measured request, valid when HasUsage.
@@ -138,8 +141,13 @@ func usageModalContent(view UsageView, pal *Palette, interior int) []string {
 				field("Cache Change", usageCacheChangeLine(view)),
 			)
 		}
+	} else if view.UsageUnknown {
+		usage = append(usage, field("Activity", "unavailable after restart (usage is not persisted)"))
 	} else {
 		usage = append(usage, field("Activity", "no requests measured yet"))
+	}
+	if view.UsageUnknown && view.HasUsage {
+		usage = append(usage, field("Activity", "partial since restart; prior turns unavailable"))
 	}
 	usage = append(usage,
 		field("Total Cost", usageCostLine(view.CostKnown, view.TotalCost)),
@@ -324,6 +332,7 @@ func (p *Program) usageView() UsageView {
 		turns, _, _, _, _ := p.usage.Totals()
 		view.TurnCount = turns
 		view.HasUsage = turns > 0
+		view.UsageUnknown = p.state.UsageUnknown
 		view.CostKnown = p.usage.CostKnown()
 		view.TotalCost = p.usage.Cost()
 		view.SessionCost = p.usage.CostOf(p.state.SessionIn, liveSessionOut(p.state), 0, 0)

@@ -367,3 +367,51 @@ func TestOutputFirstIdleFrameHasNoTelemetryRow(t *testing.T) {
 		}
 	}
 }
+
+// A rate-limited provider is a transport state, not workspace preparation.
+// The bar must name the measured attempt, status, and backoff while the loop
+// waits, then release the label when the request opens.
+func TestProviderRetryReplacesPreparingWorkspace(t *testing.T) {
+	at := time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Apply(UserSubmitted{Text: "go", At: at, Seq: 1})
+	s.Apply(ProviderStatusEvent{
+		Phase: "retrying", Attempt: 1, Attempts: 6, Delay: 8 * time.Second,
+		Status: 429, Seq: 1, At: at,
+	})
+	got := projectLiveTelemetry(s).Label
+	for _, want := range []string{"rate limited", "retry 2/6", "8s"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("retry label = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "preparing workspace") {
+		t.Fatalf("retry label still claims workspace preparation: %q", got)
+	}
+
+	// The countdown is measured from the transition, not frozen at the first
+	// render: three seconds into an eight-second backoff leaves five.
+	s.Apply(FrameTick{At: at.Add(3 * time.Second)})
+	if got := projectLiveTelemetry(s).Label; !strings.Contains(got, "5s") {
+		t.Fatalf("retry countdown = %q, want 5s remaining", got)
+	}
+
+	s.Apply(ProviderStatusEvent{Phase: "recovered", Seq: 1, At: at})
+	if got := projectLiveTelemetry(s).Label; strings.Contains(got, "rate limited") {
+		t.Fatalf("recovered provider still shows the retry state: %q", got)
+	}
+}
+
+// A terminal provider failure names the real cause immediately, before the
+// run goroutine returns its transcript error.
+func TestProviderFailureIsVisibleBeforeTheTurnEnds(t *testing.T) {
+	at := time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)
+	s := New()
+	s.Apply(TerminalResized{Width: 100, Height: 30})
+	s.Apply(UserSubmitted{Text: "go", At: at, Seq: 1})
+	s.Apply(ProviderStatusEvent{Phase: "failed", Attempt: 6, Attempts: 6, Status: 503, Seq: 1, At: at})
+	if got := projectLiveTelemetry(s).Label; !strings.Contains(got, "provider unavailable") || !strings.Contains(got, "stopped") {
+		t.Fatalf("failure label = %q, want provider unavailable · stopped", got)
+	}
+}

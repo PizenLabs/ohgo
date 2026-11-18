@@ -44,6 +44,9 @@ func livePercent(state State) int {
 	if state.Status.ContextWindow <= 0 {
 		return -1
 	}
+	if !state.Status.ContextKnown && state.Status.ContextUsed == 0 {
+		return -1
+	}
 	return tokens.Percent(liveContextUsed(state), state.Status.ContextWindow)
 }
 

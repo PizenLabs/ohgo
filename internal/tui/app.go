@@ -3731,6 +3731,11 @@ func (p *Program) adoptSession(sess *session.Session, opened OpenedSession) {
 		p.state.Apply(CommitChanged{Phase: CommitIdle})
 	}
 	p.state.Apply(HistoryReplaced{Entries: opened.Entries})
+	if len(opened.History) > 0 {
+		p.state.Apply(UsageUnknown{})
+	} else {
+		p.state.Apply(UsageKnown{})
+	}
 	if sess != nil {
 		// The adopted session owns the composer border immediately: its slot
 		// and stored label are local facts, so no later read has to arrive
@@ -5600,6 +5605,22 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 			}
 		}
 	})
+	// The provider hook is the only truthful source for a slow or failed
+	// transport. It reports each attempt and backoff before the loop sleeps, so
+	// a 429 never masquerades as workspace preparation.
+	p.loop.SetProviderActivityHook(func(activity agent.ProviderActivity) {
+		message := ""
+		if activity.Err != nil {
+			message = sanitizeInline(activity.Err.Error())
+		}
+		p.publish(ProviderStatusEvent{
+			Phase: string(activity.Phase), Attempt: activity.Attempt,
+			Attempts: activity.Attempts, Delay: activity.Delay,
+			Status: activity.Status, Message: message, At: time.Now(), Seq: seq,
+		})
+	})
+	defer p.loop.SetProviderActivityHook(nil)
+
 	// The progress hook carries every transcript-visible call, including a
 	// reused or refused one that never reached execution. This ledger tracks
 	// what the live channel actually published, so the post-run pass can
@@ -5697,6 +5718,12 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// with no standing decision sets no block, exactly as before.
 	if block := proposalSystemBlock(p.proposalFor(text)); block != "" {
 		blocks = append(blocks, block)
+	}
+	// Recency steering for relationship questions: the same guidance is in
+	// the system prompt, but a weak model following a long transcript needs it
+	// at the tail where the next request actually attends.
+	if hint := prompt.InvestigationHint(text); hint != "" {
+		blocks = append(blocks, hint)
 	}
 	p.loop.SetRuntimeContext(blocks)
 
@@ -6369,6 +6396,7 @@ func (p *Program) AttachSession(store *session.Store, sess *session.Session, his
 		return
 	}
 	p.state.Apply(HistoryReplaced{Entries: EntriesFromMessages(history)})
+	p.state.Apply(UsageUnknown{})
 	if sess != nil {
 		p.state.Apply(Notice{Text: fmt.Sprintf("resumed session %d (%d messages)", sess.ID, len(history))})
 		// A leftover interrupted recovery belongs to this session's workspace,

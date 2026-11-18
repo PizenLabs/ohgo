@@ -215,3 +215,28 @@ func TestToolCatalogIsSorted(t *testing.T) {
 		t.Fatalf("catalog = %q, want %q", got, want)
 	}
 }
+
+// Relationship questions get a runtime routing hint; a single-file read or a
+// mutation objective does not, because the hint would steer away from the
+// shortest path.
+func TestInvestigationHintOnlyForStructuralQuestions(t *testing.T) {
+	for _, text := range []string{
+		"What is the call chain from AdminCreateProduct to the insert?",
+		"Which packages depend on backend/productcatalog/domain?",
+		"What is affected if ProductService.Add changes?",
+		"Where is the HTTP route wired to this handler?",
+	} {
+		if got := InvestigationHint(text); got == "" {
+			t.Errorf("InvestigationHint(%q) = empty, want a routing hint", text)
+		}
+	}
+	for _, text := range []string{
+		"Read backend/layout/http.go and quote line 20.",
+		"Add a validation note to README.md.",
+		"Rename this local variable.",
+	} {
+		if got := InvestigationHint(text); got != "" {
+			t.Errorf("InvestigationHint(%q) = %q, want no hint", text, got)
+		}
+	}
+}

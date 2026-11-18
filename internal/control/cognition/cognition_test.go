@@ -410,20 +410,53 @@ func TestProjectionBoundsEachResultIndependentOfHistory(t *testing.T) {
 			len(earlyRead.Text()), len(lateRead.Text()))
 	}
 	first, _ := early[1].(agent.ToolResultMessage)
-	if !strings.Contains(first.Text(), "summarized from runtime evidence") {
-		t.Fatalf("structural result was not summarized: %q", first.Text())
+	if first.Text() != "a\nb\nc" {
+		t.Fatalf("small structural result lost its coordinates: %q", first.Text())
 	}
 	if earlyRead.Text() != exact {
 		t.Fatalf("a result inside the exact bound was rewritten: %d bytes", len(earlyRead.Text()))
 	}
-	if len(earlyReport.Elisions) != 1 {
-		t.Fatalf("elisions = %d, want the structural result summarized and the exact one kept", len(earlyReport.Elisions))
+	if len(earlyReport.Elisions) != 0 {
+		t.Fatalf("elisions = %d, want both bounded results kept exact", len(earlyReport.Elisions))
 	}
 	if lateRead.Text() != earlyRead.Text() {
 		t.Fatalf("the exact result changed once more history arrived")
 	}
 	if len(lateReport.Elisions) < len(earlyReport.Elisions) {
 		t.Fatalf("appending history reduced elisions: %d < %d", len(lateReport.Elisions), len(earlyReport.Elisions))
+	}
+}
+
+// A structural result larger than the per-result bound is excerpted, not
+// reduced to a summary that discards every coordinate. The cut is stable across
+// later history, so the append-only cache contract still holds.
+func TestLargeStructuralResultIsExcerptedWithCoordinates(t *testing.T) {
+	state := NewEvidenceState()
+	large := "backend/productcatalog/app/product.go:586: func (ps ProductService) Add(...)\n" +
+		strings.Repeat("match line\n", 20)
+	state.ObserveOutcome(agent.ToolOutcome{
+		CallID: "grep-1", ToolName: "grep", Args: map[string]any{"pattern": "Add"},
+		Result: agent.Result{Text: large, Details: map[string]any{"pattern": "Add", "files": 1}},
+	})
+	messages := []agent.Message{
+		agent.UserMessage{Text: "trace"},
+		agent.ToolResultMessage{ToolCallID: "grep-1", ToolName: "grep", Content: []ai.ContentBlock{ai.TextContent{Text: large}}},
+	}
+	early, _ := projectMessages(messages, state, ProjectorOptions{StructuralKeepBytes: 64})
+	result, _ := early[1].(agent.ToolResultMessage)
+	if !strings.Contains(result.Text(), "structural observation excerpted") {
+		t.Fatalf("large structural result was not excerpted: %q", result.Text())
+	}
+	if !strings.Contains(result.Text(), "product.go:586") {
+		t.Fatalf("excerpt discarded the coordinate prefix: %q", result.Text())
+	}
+	later := append(append([]agent.Message(nil), messages...), agent.ToolResultMessage{
+		ToolCallID: "filler", ToolName: "grep", Content: []ai.ContentBlock{ai.TextContent{Text: strings.Repeat("y", 512)}},
+	})
+	late, _ := projectMessages(later, state, ProjectorOptions{StructuralKeepBytes: 64})
+	lateResult, _ := late[1].(agent.ToolResultMessage)
+	if early[1].(agent.ToolResultMessage).Text() != lateResult.Text() {
+		t.Fatal("the excerpt changed when more history arrived")
 	}
 }
 
