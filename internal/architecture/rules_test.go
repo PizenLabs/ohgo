@@ -36,6 +36,7 @@ var domainOf = map[string]string{
 	"internal/project":                  "configuration",
 	"internal/intelligence/ast":         "intelligence",
 	"internal/intelligence/evidence":    "intelligence",
+	"internal/intelligence/gry":         "intelligence",
 	"internal/intelligence/ignore":      "intelligence",
 	"internal/intelligence/investigate": "intelligence",
 	"internal/intelligence/planner":     "intelligence",
