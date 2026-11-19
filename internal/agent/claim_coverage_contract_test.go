@@ -217,6 +217,30 @@ func TestStructuralRelationshipClaimNeedsBothEndpoints(t *testing.T) {
 	}
 }
 
+// A relation fragment is prose, not a claim. A conjunction before the verb and
+// a plural noun that happens to look like the verb ("... and calls
+// s.stock.Reserve", "the Save calls are state transitions") have no endpoint on
+// that side, so auditing them reviews a fragment instead of a relationship.
+func TestStructuralRelationIgnoresProseFragments(t *testing.T) {
+	for _, answer := range []string{
+		"At order time, CheckoutService.Place builds lines from the cart and calls s.stock.Reserve(quantities).",
+		"Other checkout storage.Save calls are state transitions on already-persisted orders.",
+	} {
+		if codes := evidenceCodes(t, nil, answer); codes["unsupported_structural_claim"] {
+			t.Fatalf("%q was audited as a structural relation: %v", answer, codes)
+		}
+	}
+
+	// The boundary this fixes must not disable the audit: a capitalised caller
+	// with one observed endpoint is still a relationship without evidence.
+	oneEndpoint := []Turn{{Results: []ToolOutcome{
+		claimRead("backend/internal/order/service.go", "package order\nfunc Checkout() {}", 20),
+	}}}
+	if codes := evidenceCodes(t, oneEndpoint, "Checkout calls payment.Authorize."); !codes["unsupported_structural_claim"] {
+		t.Fatalf("one endpoint supported a relationship: %v", codes)
+	}
+}
+
 // A whole-component implementation claim does not establish every capability
 // in its "with ..." list. Each asserted aspect needs source evidence.
 func TestImplementationAspectsRequireObservedSource(t *testing.T) {
