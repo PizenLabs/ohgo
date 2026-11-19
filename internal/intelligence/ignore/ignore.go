@@ -196,6 +196,29 @@ func (m *Matcher) IgnoredFrom(base, rel string, isDir bool) bool {
 	return ignored
 }
 
+// Excluded reports whether a root-relative path is outside the workspace
+// boundary: the path itself or any ancestor directory is ignored.
+//
+// A walk prunes an ignored directory, so a file beneath one is never visited
+// even though no rule names it. This is the lookup for a path already in hand
+// (a captured entry, a changed path), where the walk's pruning is not
+// available.
+func (m *Matcher) Excluded(rel string, isDir bool) bool {
+	if m.Ignored(rel, isDir) {
+		return true
+	}
+	for {
+		index := strings.LastIndexByte(rel, '/')
+		if index < 0 {
+			return false
+		}
+		rel = rel[:index]
+		if m.Ignored(rel, true) {
+			return true
+		}
+	}
+}
+
 // Match reports whether rel is excluded and, when it is, the rule that decided
 // it in "source:line: pattern" form.
 func (m *Matcher) Match(rel string, isDir bool) (bool, string) {
