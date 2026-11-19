@@ -51,6 +51,18 @@ PROVIDERS = {
         "name": "Ollama Cloud",
         "baseUrl": "https://ollama.com",
     },
+    "xai": {
+        "name": "xAI",
+        "baseUrl": "https://api.x.ai/v1",
+    },
+    "google": {
+        "name": "Google Gemini",
+        "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+    },
+    "bedrock": {
+        "name": "Amazon Bedrock",
+        "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+    },
 }
 
 ROUTE = {
@@ -65,7 +77,12 @@ def native_id(raw):
 
 def convert(provider, raw_id, row):
     api = row.get("api")
-    if api not in ("openai-completions", "anthropic-messages", "ollama-chat", "openrouter"):
+    # Gemini's native google-generative-ai rows are not a transport this build
+    # has. The service also exposes an OpenAI-compatible chat endpoint, so the
+    # port records that route rather than dropping the model.
+    if provider == "google" and api == "google-generative-ai":
+        api = "openai-completions"
+    if api not in ("openai-completions", "anthropic-messages", "ollama-chat", "openrouter", "bedrock-converse"):
         return None, f"unsupported api {api}"
     ctx = row.get("contextWindow") or 0
     mx = row.get("maxTokens") or 0

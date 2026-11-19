@@ -18,7 +18,6 @@ import (
 	"github.com/PizenLabs/ohgo/internal/history"
 	"github.com/PizenLabs/ohgo/internal/project"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
-	"github.com/PizenLabs/ohgo/internal/provider/catalog"
 	"github.com/PizenLabs/ohgo/internal/startup"
 	"github.com/PizenLabs/ohgo/internal/tui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -160,15 +159,9 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		return held.Disconnect(provider)
 	})
 	program.SetConnectHooks(connectHooks(held))
-	program.SetModelLister(func() []string {
-		var ids []string
-		for _, model := range catalog.List() {
-			ids = append(ids, model.Ref())
-		}
-		return ids
-	})
+	program.SetModelLister(func() []string { return modelRefs(held.registry) })
 	program.SetCatalogHooks(tui.CatalogHooks{
-		Snapshot: func() tui.CatalogSnapshot { return catalogSnapshot() },
+		Snapshot: func() tui.CatalogSnapshot { return catalogSnapshot(held.registry) },
 		Refresh: func(ctx context.Context, seq int) tea.Cmd {
 			return refreshModelCatalog(ctx, held, seq)
 		},
@@ -185,6 +178,16 @@ func runSessionWizard(cmd *cobra.Command, opts options, registry *ai.Registry, o
 		EffectiveWindow: func() int { return held.model.ContextWindow },
 		SaveKey: func(provider, key string) error {
 			return held.SavePlaneKey(provider, key)
+		},
+		Endpoints: func() []tui.EndpointOption { return held.EndpointOptions() },
+		SaveEndpoint: func(draft tui.EndpointDraft) ([]tui.EndpointOption, error) {
+			return held.SaveEndpoint(draft)
+		},
+		DeleteEndpoint: func(key string) ([]tui.EndpointOption, error) {
+			return held.DeleteEndpoint(key)
+		},
+		ProbeEndpoint: func(ctx context.Context, draft tui.EndpointDraft) tui.EndpointProbeResult {
+			return held.ProbeEndpoint(ctx, draft)
 		},
 	})
 	installWorkspaceHooks(program, held, controller, &opts)

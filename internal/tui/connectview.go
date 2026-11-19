@@ -459,7 +459,7 @@ func connectSetupHint(row ProviderRow) string {
 	if need == "" || id == "" {
 		return "missing credential — set one for " + statusValueOr(id, "this provider")
 	}
-	return "Missing " + need + " or config providers." + id + ".api_key"
+	return "Missing " + need + " or save a key with /connect"
 }
 
 // connectDetails builds the bottom configuration block for the highlighted

@@ -7,6 +7,23 @@ immutable.
 
 ### Added
 
+- Native Amazon Bedrock support through ConverseStream, with the AWS binary
+  event-stream decoder (prelude and message CRC validation), tool calls,
+  signed reasoning replay, usage, and modeled exceptions. Authentication is an
+  Amazon Bedrock API key; `AWS_REGION`/`AWS_DEFAULT_REGION` select the runtime
+  endpoint. SigV4/IAM signing remains unsupported.
+- xAI and Google Gemini provider rows and model facts. Both use the shared
+  Chat Completions transport; Gemini uses its OpenAI compatibility endpoint.
+- MODEL CONTROL's **+ Custom** provider for user-declared OpenAI-compatible
+  endpoints, persisted atomically in global `~/.ohgo/settings.json`. The compact
+  editor asks for a name, base URL, and optional `apiKeyEnv`; Enter probes
+  asynchronously, discovered models are explicit selectable evidence, and only
+  Ctrl+S writes configuration. Endpoint models use the normal model rows,
+  references, role assignment, and catalog snapshot. Editing keeps the stable
+  provider key, deletion removes the registry entries and clears dangling role
+  references, and missing context/output facts use labeled automatic fallbacks.
+  This covers LM Studio, vLLM, llama.cpp, LiteLLM, OneAPI, and internal proxies
+  without a new provider implementation.
 - An optional external structural-intelligence provider for `investigate`.
   `investigate.StructuralRouter` keeps the native structural engine as the
   default and fallback, and uses the `intelligence/gry` adapter only for
@@ -44,8 +61,21 @@ immutable.
   and are never clipped mid-sentence. The footer is derived from the runtime's
   observed outcomes, never from the assistant's closing prose, and it never
   shares a turn with another footer.
+- OpenRouter requests now send the canonical application identity:
+  `HTTP-Referer`, `X-OpenRouter-Title: OHGO`, and
+  `X-OpenRouter-Categories: cli-agent`, replacing the legacy `X-Title`. The
+  same identity covers inference and model discovery. Attribution and
+  agentic-harness eligibility are documented as independent states in
+  `docs/architecture/OPENROUTER.md`.
 
 ### Fixed
+
+- An OpenRouter 403 that failed the
+  `Gate Free Endpoints by Agentic Harness` routing step is classified as an
+  eligibility restriction and explained, while preserving the HTTP status,
+  provider error code, and routing step. Other 403s keep their original
+  meaning. The runtime never claims approval, substitutes a model, or switches
+  from a free endpoint to a paid one.
 
 - A source file paged through a successful shell content reader (`sed`, `cat`,
   `head`, `tail`, `nl`, `less`, `more`, or `bat`) counts as opened for citation

@@ -142,6 +142,11 @@ type Settings struct {
 	// changes land. A role with no entry falls back to Models (legacy
 	// workspace overrides), then Model.
 	Roles map[string]Profile `json:"roles,omitempty"`
+	// Endpoints declares user-owned OpenAI-compatible providers: local
+	// servers, internal gateways, and hosted services without a bundled
+	// transport. The map key is the provider half of a "<key>/<model>"
+	// reference. See Endpoint for why the facts are explicit.
+	Endpoints map[string]Endpoint `json:"endpoints,omitempty"`
 	// MaxTokens caps each completion.
 	MaxTokens int `json:"maxTokens,omitempty"`
 	// Reasoning enables extended thinking by default.

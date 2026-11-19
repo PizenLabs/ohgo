@@ -154,7 +154,7 @@ func TestConnectDetailsFollowHighlight(t *testing.T) {
 	view := connectViewFixture()
 	view.Cursor = 1 // groq, missing credential
 	out := connectModalCard(view, 92, 0)
-	if !strings.Contains(out, "Missing GROQ_API_KEY or config providers.groq.api_key") {
+	if !strings.Contains(out, "Missing GROQ_API_KEY or save a key with /connect") {
 		t.Errorf("missing-credential instruction absent:\n%s", out)
 	}
 	if !strings.Contains(out, "[×] missing credential") {
@@ -166,7 +166,7 @@ func TestConnectDetailsFollowHighlight(t *testing.T) {
 // matching the house wording.
 func TestConnectSetupHintForMissingCredential(t *testing.T) {
 	got := connectSetupHint(ProviderRow{ID: "anthropic", KeyDetail: "missing: set ANTHROPIC_API_KEY"})
-	want := "Missing ANTHROPIC_API_KEY or config providers.anthropic.api_key"
+	want := "Missing ANTHROPIC_API_KEY or save a key with /connect"
 	if got != want {
 		t.Errorf("connectSetupHint = %q, want %q", got, want)
 	}

@@ -98,6 +98,13 @@ type httpError struct {
 	Body string
 	// Header carries selected response headers for retry decisions.
 	Header http.Header
+	// Code is the provider's own error code when the body carries one.
+	Code int
+	// Message is the provider's human-readable error message.
+	Message string
+	// FailedRoutingStep is OpenRouter's routing-stage diagnosis, empty when
+	// the response is not an OpenRouter routing error.
+	FailedRoutingStep string
 }
 
 func (e *httpError) Error() string {
@@ -105,8 +112,39 @@ func (e *httpError) Error() string {
 	if len(body) > 512 {
 		body = body[:512] + "…"
 	}
-	return fmt.Sprintf("ai: provider returned HTTP %d: %s", e.Status, strings.TrimSpace(body))
+	message := fmt.Sprintf("ai: provider returned HTTP %d: %s", e.Status, strings.TrimSpace(body))
+	if e.AgenticHarnessRestriction() {
+		message += "\n" + agenticHarnessDiagnostic
+	}
+	return message
 }
+
+// AgenticHarnessRestriction reports whether the response is OpenRouter's
+// agentic-harness routing gate rather than a generic 403.
+//
+// The routing step is authoritative; the message check covers responses from
+// before OpenRouter added the metadata field. Requiring the specific phrase
+// keeps other 403s — spend limits, disabled keys, region blocks — unclassified.
+func (e *httpError) AgenticHarnessRestriction() bool {
+	if e.FailedRoutingStep == OpenRouterAgenticHarnessStep {
+		return true
+	}
+	return e.Status == http.StatusForbidden &&
+		strings.Contains(strings.ToLower(e.Message), "only available on agentic harnesses")
+}
+
+// Unwrap exposes the classification to errors.Is without hiding the transport
+// error from errors.As.
+func (e *httpError) Unwrap() error {
+	if e.AgenticHarnessRestriction() {
+		return ErrAgenticHarnessRestriction
+	}
+	return nil
+}
+
+// agenticHarnessDiagnostic explains the gate without claiming that OHGO is
+// approved. Attribution and eligibility are independent states.
+const agenticHarnessDiagnostic = `OpenRouter blocked this request at "` + OpenRouterAgenticHarnessStep + `": the selected free endpoint is available only to applications OpenRouter recognizes as agentic harnesses. OHGO sends app attribution (HTTP-Referer, X-OpenRouter-Title, X-OpenRouter-Categories: ` + OpenRouterCategories + `), but attribution is not eligibility. Check the app listing at https://openrouter.ai/apps?url=https%3A%2F%2Fohgo.pizenlabs.dev%2F or contact OpenRouter support. OHGO did not substitute another model.`
 
 // StatusCode returns the HTTP status code, for errors.As consumers.
 func (e *httpError) StatusCode() int { return e.Status }
@@ -152,9 +190,38 @@ func doJSON(ctx context.Context, client *http.Client, url string, req any, heade
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		_ = resp.Body.Close()
-		return nil, &httpError{Status: resp.StatusCode, Body: string(body), Header: resp.Header}
+		return nil, newHTTPError(resp.StatusCode, string(body), resp.Header)
 	}
 	return resp, nil
+}
+
+// newHTTPError decodes the provider's JSON error object without losing the raw
+// body. Error metadata is diagnostic evidence: OpenRouter names the routing
+// stage that rejected a request, and that name is what separates an eligibility
+// restriction from a generic 403.
+func newHTTPError(status int, body string, header http.Header) *httpError {
+	failure := &httpError{Status: status, Body: body, Header: header}
+	var payload struct {
+		Error struct {
+			Message  string          `json:"message"`
+			Code     json.RawMessage `json:"code"`
+			Metadata struct {
+				FailedRoutingStep string `json:"failed_routing_step"`
+			} `json:"metadata"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return failure
+	}
+	failure.Message = payload.Error.Message
+	failure.FailedRoutingStep = payload.Error.Metadata.FailedRoutingStep
+	if len(payload.Error.Code) > 0 {
+		var code int
+		if err := json.Unmarshal(payload.Error.Code, &code); err == nil {
+			failure.Code = code
+		}
+	}
+	return failure
 }
 
 // decodeJSONArgs decodes accumulated tool-call argument fragments.

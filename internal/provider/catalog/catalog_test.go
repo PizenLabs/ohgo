@@ -437,6 +437,7 @@ func TestModelAPIMatchesASupportedTransport(t *testing.T) {
 		string(ai.APIAnthropicMessages):     true,
 		string(ai.APIOpenAIChatCompletions): true,
 		string(ai.APIOllamaChat):            true,
+		string(ai.APIBedrockConverse):       true,
 	}
 	for _, model := range List() {
 		if !supported[string(model.API)] {
@@ -585,6 +586,8 @@ func TestEveryCatalogModelDrivesAProvider(t *testing.T) {
 // TestProviderBaseURLMatchesTheRegistry proves the endpoint the provider will
 // actually call is the one the catalog records, not a stale default.
 func TestProviderBaseURLMatchesTheRegistry(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_DEFAULT_REGION", "")
 	registry := ai.NewRegistry()
 	for _, provider := range ProviderNames() {
 		registry.SetAPIKey(provider, "k")
@@ -603,6 +606,8 @@ func TestProviderBaseURLMatchesTheRegistry(t *testing.T) {
 			got = p.BaseURL
 		case *ai.OllamaProvider:
 			got = p.BaseURL
+		case *ai.BedrockProvider:
+			got = p.BaseURL
 		default:
 			t.Errorf("%s/%s built %T, which the test does not know how to inspect",
 				model.Provider, model.ID, built)
@@ -615,9 +620,9 @@ func TestProviderBaseURLMatchesTheRegistry(t *testing.T) {
 	}
 }
 
-// TestOpenAICompatibleProvidersShareOneTransport documents why six providers
-// were added in one pass: they all speak the same wire protocol, so the only
-// per-provider work is a base URL and a credential name.
+// TestOpenAICompatibleProvidersShareOneTransport documents the providers added
+// through the shared Chat Completions transport: the only per-provider work is
+// a base URL and a credential name.
 func TestOpenAICompatibleProvidersShareOneTransport(t *testing.T) {
 	compatible := map[string]string{
 		"groq":      "GROQ_API_KEY",
@@ -626,6 +631,8 @@ func TestOpenAICompatibleProvidersShareOneTransport(t *testing.T) {
 		"deepseek":  "DEEPSEEK_API_KEY",
 		"cerebras":  "CEREBRAS_API_KEY",
 		"mistral":   "MISTRAL_API_KEY",
+		"xai":       "XAI_API_KEY",
+		"google":    "GEMINI_API_KEY",
 	}
 
 	registry := ai.NewRegistry()
@@ -670,18 +677,37 @@ func TestOpenAICompatibleProvidersShareOneTransport(t *testing.T) {
 	}
 }
 
-// TestExcludedProvidersAreDocumented explains the provider the catalog
-// deliberately leaves out, so a later reader does not "fix" the omission.
-func TestExcludedProvidersAreDocumented(t *testing.T) {
-	// xai speaks openai-responses upstream, which this build does not implement.
-	for _, model := range List() {
-		if model.Provider == "xai" {
-			t.Errorf("xai speaks openai-responses and was supposed to be excluded")
+// TestAddedProvidersAreWired pins the provider expansion that matters to
+// users: xAI and Gemini must speak the shared Chat Completions transport, and
+// Bedrock must use the native Converse transport rather than being mis-routed
+// through an OpenAI endpoint that cannot serve Claude.
+func TestAddedProvidersAreWired(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		api      ai.API
+	}{
+		{"xai", ai.APIOpenAIChatCompletions},
+		{"google", ai.APIOpenAIChatCompletions},
+		{"bedrock", ai.APIBedrockConverse},
+	} {
+		models, err := ListForProvider(tc.provider)
+		if err != nil {
+			t.Errorf("ListForProvider(%s): %v", tc.provider, err)
+			continue
+		}
+		if len(models) == 0 {
+			t.Errorf("provider %s has no models", tc.provider)
+			continue
+		}
+		for _, model := range models {
+			if model.API != tc.api {
+				t.Errorf("%s/%s routes %s, want %s", tc.provider, model.ID, model.API, tc.api)
+			}
 		}
 	}
-	// OpenRouter used to be excluded as a custom API; it is now included
-	// through the Chat Completions route with native namespaced ids, so the
-	// old exclusion must be gone rather than lingering in the test.
+
+	// OpenRouter used to be excluded as a custom API; it is included through
+	// the Chat Completions route with native namespaced ids.
 	found := false
 	for _, model := range List() {
 		if model.Provider == "openrouter" {
@@ -693,9 +719,5 @@ func TestExcludedProvidersAreDocumented(t *testing.T) {
 	}
 	if !found {
 		t.Error("openrouter has no models: the inclusion did not land")
-	}
-
-	if _, err := ListForProvider("xai"); err == nil {
-		t.Error("provider xai is present but documented as excluded")
 	}
 }

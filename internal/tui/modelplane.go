@@ -221,6 +221,32 @@ type ModelPlaneState struct {
 	ErrMsg string
 	// Notice is the last confirmation or refusal, shown in the footer.
 	Notice string
+
+	// Endpoints is the configured custom-endpoint roster from the global
+	// configuration authority. It is the only source for the Custom pane.
+	Endpoints []EndpointOption
+	// EndpointCursor selects the highlighted endpoint.
+	EndpointCursor int
+	// EndpointOffset is the first visible endpoint row.
+	EndpointOffset int
+	// CustomView selects the right-pane custom surface.
+	CustomView CustomView
+	// EndpointEditor is the compact add/edit form, or nil.
+	EndpointEditor *CustomEndpointEditor
+	// Discovery is the discovered-model selection overlay, or nil.
+	Discovery *CustomDiscoveryState
+	// CustomDelete is the endpoint deletion confirmation, or nil.
+	CustomDelete *CustomDeleteState
+	// EndpointProbe is the last probe evidence for the visible endpoint.
+	EndpointProbe EndpointProbeResult
+	// EndpointProbing reports a detail-view probe is in flight.
+	EndpointProbing bool
+	// EndpointProbeSeq identifies the latest detail-view probe.
+	EndpointProbeSeq int
+
+	// customEndpointKey is the endpoint opened in detail view, or "" for the
+	// endpoint list.
+	customEndpointKey string
 }
 
 // NewModelPlane opens the control plane over a roster and role list.
@@ -231,6 +257,7 @@ func NewModelPlane(opened ModelPlaneOpened) *ModelPlaneState {
 		Providers:  append([]ProviderRow(nil), opened.Providers...),
 		Models:     append([]ModelOption(nil), opened.Models...),
 		Roles:      append([]RoleAssignment(nil), opened.Roles...),
+		Endpoints:  append([]EndpointOption(nil), opened.Endpoints...),
 		ActiveRole: opened.ActiveRole,
 		Loading:    opened.Loading,
 		Origin:     opened.Origin,
@@ -259,6 +286,17 @@ func (p *ModelPlaneState) selectActiveProvider() {
 			return
 		}
 	}
+	for _, endpoint := range p.Endpoints {
+		if endpoint.Key != active {
+			continue
+		}
+		for i, row := range p.Providers {
+			if row.Custom {
+				p.ProviderCursor = i
+				return
+			}
+		}
+	}
 }
 
 // SelectedProvider returns the highlighted provider row.
@@ -282,6 +320,20 @@ func (p *ModelPlaneState) ProviderScope() string {
 func (p *ModelPlaneState) VisibleModels() []ModelOption {
 	scope := p.ProviderScope()
 	tokens := queryTokens(p.Filter)
+	if scope == CustomProvider {
+		if p.Stage == PlaneStageBrowse && p.CustomView != CustomViewEndpoint {
+			return nil
+		}
+		models := p.customModelOptions()
+		out := models[:0]
+		for _, model := range models {
+			if !matchFields(modelHaystack(model), model.Provider, model.PriceKnown, model.Free, tokens) {
+				continue
+			}
+			out = append(out, model)
+		}
+		return out
+	}
 	var out []ModelOption
 	for _, model := range p.Models {
 		if scope != "" && model.Provider != scope {
@@ -354,6 +406,21 @@ func (p *ModelPlaneState) Move(delta int) {
 		p.RoleCursor = wrap(p.RoleCursor+delta, len(p.Roles))
 		return
 	}
+	if p.CustomActive() && p.Focus == PlaneFocusModels {
+		switch p.CustomView {
+		case CustomViewEndpoints:
+			p.EndpointCursor = wrap(p.EndpointCursor+delta, len(p.Endpoints))
+			p.ensureEndpointVisible()
+		case CustomViewEndpoint:
+			p.ModelCursor = wrap(p.ModelCursor+delta, len(p.VisibleModels()))
+			p.ensureModelVisible()
+		case CustomViewEditor:
+			p.MoveEditorFocus(delta)
+		case CustomViewDiscovery:
+			p.MoveDiscovery(delta)
+		}
+		return
+	}
 	if p.Focus == PlaneFocusProviders {
 		p.ProviderCursor = wrap(p.ProviderCursor+delta, len(p.Providers))
 		// Provider selection re-scopes the model list: reset the model cursor
@@ -406,8 +473,23 @@ func (p *ModelPlaneState) FocusName() string {
 	if p.Auth != nil {
 		return "auth"
 	}
+	if p.CustomDelete != nil {
+		return "delete"
+	}
 	if p.Variant != nil {
 		return "variant"
+	}
+	if p.CustomActive() && p.Stage == PlaneStageBrowse {
+		switch p.CustomView {
+		case CustomViewEditor:
+			return "editor"
+		case CustomViewDiscovery:
+			return "discovery"
+		case CustomViewEndpoint:
+			return "endpoint"
+		default:
+			return "custom"
+		}
 	}
 	switch p.Stage {
 	case PlaneStageRole:
@@ -454,6 +536,22 @@ func (p *ModelPlaneState) Page(delta int) {
 		p.RoleCursor = clampIndex(p.RoleCursor+delta*p.planeStep(), len(p.Roles))
 		return
 	}
+	if p.CustomActive() && p.Focus == PlaneFocusModels {
+		switch p.CustomView {
+		case CustomViewEndpoints:
+			p.EndpointCursor = clampIndex(p.EndpointCursor+delta*p.planeStep(), len(p.Endpoints))
+			p.ensureEndpointVisible()
+		case CustomViewEndpoint:
+			p.pageModel(delta)
+		case CustomViewEditor:
+			p.MoveEditorFocus(delta)
+		case CustomViewDiscovery:
+			if p.Discovery != nil {
+				p.Discovery.Cursor = clampIndex(p.Discovery.Cursor+delta*p.planeStep(), len(p.Discovery.Items))
+			}
+		}
+		return
+	}
 	if p.Focus == PlaneFocusProviders {
 		p.ProviderCursor = clampIndex(p.ProviderCursor+delta*p.planeStep(), len(p.Providers))
 		p.ModelCursor, p.ModelOffset = 0, 0
@@ -497,6 +595,21 @@ func (p *ModelPlaneState) Top() {
 		p.RoleCursor = 0
 		return
 	}
+	if p.CustomActive() && p.Focus == PlaneFocusModels {
+		switch p.CustomView {
+		case CustomViewEndpoints:
+			p.EndpointCursor = clampIndex(0, len(p.Endpoints))
+			p.ensureEndpointVisible()
+		case CustomViewEndpoint:
+			p.ModelCursor = 0
+			p.ensureModelVisible()
+		case CustomViewDiscovery:
+			if p.Discovery != nil {
+				p.Discovery.Cursor = 0
+			}
+		}
+		return
+	}
 	if p.Focus == PlaneFocusProviders {
 		p.ProviderCursor = 0
 		p.ModelCursor, p.ModelOffset = 0, 0
@@ -525,6 +638,21 @@ func (p *ModelPlaneState) Bottom() {
 	}
 	if p.Mode == PlaneRoles {
 		p.RoleCursor = clampIndex(len(p.Roles)-1, len(p.Roles))
+		return
+	}
+	if p.CustomActive() && p.Focus == PlaneFocusModels {
+		switch p.CustomView {
+		case CustomViewEndpoints:
+			p.EndpointCursor = clampIndex(len(p.Endpoints)-1, len(p.Endpoints))
+			p.ensureEndpointVisible()
+		case CustomViewEndpoint:
+			p.ModelCursor = clampIndex(len(p.VisibleModels())-1, len(p.VisibleModels()))
+			p.ensureModelVisible()
+		case CustomViewDiscovery:
+			if p.Discovery != nil {
+				p.Discovery.Cursor = clampIndex(len(p.Discovery.Items)-1, len(p.Discovery.Items))
+			}
+		}
 		return
 	}
 	if p.Focus == PlaneFocusProviders {
@@ -1093,6 +1221,7 @@ func (p *ModelPlaneState) SetVisibleRows(rows int) {
 	p.VisibleRows = rows
 	p.ensureModelVisible()
 	p.ensureProviderVisible()
+	p.ensureEndpointVisible()
 }
 
 // ensureModelVisible adjusts the model scroll offset so the highlight is shown.

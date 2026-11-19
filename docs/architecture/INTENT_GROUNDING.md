@@ -565,9 +565,13 @@ request path.
   live-process predicate (“is running”) from transitive behavior (“is running
   the job”). A paraphrase outside the pattern is left to the behavior and
   provenance gates.
-- Structural-relationship detection requires a dotted endpoint and an explicit
-  relation verb. A paraphrase or a prose relation without a code coordinate is
-  not audited here; the structural and provenance gates still apply.
+- Structural-relationship detection requires a dotted endpoint, an explicit
+  relation verb, and a code-shaped operand on the other side (a dotted
+  coordinate or an identifier with an uppercase letter). A conjunction or a
+  plural noun that happens to sit next to the verb (“… and calls
+  s.stock.Reserve”, “the Save calls are state transitions”) is prose, not a
+  claim; a paraphrase or a prose relation without a code coordinate is not
+  audited here. The structural and provenance gates still apply.
 - Test-count detection recognizes an explicit project/inventory count. A count
   embedded in an unusual phrase may escape the pattern; a recognized count
   without a complete current inventory is reviewed, never accepted.

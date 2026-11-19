@@ -31,6 +31,10 @@ type ProviderRow struct {
 	// Configured reports a credential resolves for this provider. It is not a
 	// health claim: reachability is a probe, and the plane never invents one.
 	Configured bool
+	// Custom marks the synthetic provider row that opens user-owned
+	// OpenAI-compatible endpoints. It is a control surface, not a real
+	// provider key, so it never enters model references.
+	Custom bool
 }
 
 // DoctorFunc runs diagnostics for /doctor.

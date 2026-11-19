@@ -234,7 +234,7 @@ func resolveRoleModel(settings config.Settings, role config.Role, label string, 
 	}
 	canonical := model.Ref()
 	if validate && effort != "" && effort != "off" {
-		if !catalog.ThinkingFor(canonical).Supports(effort) {
+		if !supportsEffort(model, effort) {
 			return ai.Model{}, "", fmt.Errorf("%s: %s does not expose thinking effort %q", label, canonical, effort)
 		}
 	}

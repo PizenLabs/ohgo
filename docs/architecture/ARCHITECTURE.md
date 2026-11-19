@@ -1252,7 +1252,7 @@ create project-local state as a side effect.
 
 ## Transports
 
-Three protocols, not one:
+Four protocols, not one:
 
 - **Anthropic Messages** finalises tool calls inline (`content_block_stop`,
   explicit `message_stop`).
@@ -1260,18 +1260,31 @@ Three protocols, not one:
   fragments have no terminator.
 - **Ollama native** (`ollama-chat`: NDJSON `POST {base}/api/chat`, tool
   calls reassembled per message, `done_reason` mapped with load-as-error).
+- **Bedrock Converse** (`bedrock-converse`: `POST
+  {base}/model/{id}/converse-stream`, AWS binary event-stream framing with
+  prelude and message CRCs, tool calls closed by `contentBlockStop`).
 
 The accumulator strategies differ on purpose — unifying the first two drops
 the first fragment of every call. One Chat Completions transport serves
-groq, together, fireworks, deepseek, cerebras, mistral, plus OpenRouter
-(with attribution headers) and the OpenCode gateways (zen/go); the
-per-provider work is a base URL, a credential name, and (for the gateways)
-the `x-opencode-session` header named in catalog metadata and filled from
-the loop's session identity. `ai.ProbeProvider` checks reachability +
-authentication without spending a completion and backs `/connect` validation,
-`/usage`, `/status`, and the TUI probe view. `xai` and Responses-only model
-lines are excluded on purpose (no Responses transport in this build),
-recorded in `TestExcludedProvidersAreDocumented`.
+groq, together, fireworks, deepseek, cerebras, mistral, xai, Gemini's
+compatibility endpoint, plus OpenRouter (with attribution headers) and the
+OpenCode gateways (zen/go); the per-provider work is a base URL, a credential
+name, and (for the gateways) the `x-opencode-session` header named in catalog
+metadata and filled from the loop's session identity. Bedrock has its own
+transport because its Chat Completions route does not serve Claude models;
+authentication is an Amazon Bedrock API key. A user-declared OpenAI-compatible
+endpoint (`settings.endpoints`) reuses the Chat Completions transport, so local
+servers and internal gateways need no provider implementation. MODEL CONTROL's
+`+ Custom` row is the only endpoint surface: it reads the global settings
+authority, persists through `config.Save`, and refreshes the registry so the
+catalog is derived, never a second store. The editor exposes name, base URL,
+and an API-key environment variable; context/output ceilings default to labeled
+conservative fallbacks. `ai.ProbeProvider` checks reachability, authentication,
+and model discovery without spending a completion or writing configuration; it
+backs `/connect` validation, `/usage`, `/status`, endpoint probing, and the TUI
+probe view. Azure and Responses-only model lines remain excluded on
+purpose (no Responses transport in this build), enforced by the catalog's
+transport tripwire.
 
 ## CLI and harness (`cmd/ohgo`)
 
