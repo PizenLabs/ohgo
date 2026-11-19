@@ -703,8 +703,9 @@ func createsVerifiableArtifact(text string) bool {
 }
 
 // pathToken matches one candidate path-like token. It stops at punctuation so
-// a sentence comma is not part of the path.
-var pathToken = regexp.MustCompile(`[A-Za-z0-9_][A-Za-z0-9_./-]*`)
+// a sentence comma is not part of the path. The optional leading dot keeps a
+// dotfile (".gitignore", ".env") one token instead of matching only its stem.
+var pathToken = regexp.MustCompile(`\.?[A-Za-z0-9_][A-Za-z0-9_./-]*`)
 
 // extensionToken matches a filename extension with at least one letter.
 var extensionToken = regexp.MustCompile(`\.([A-Za-z][A-Za-z0-9]{0,7})$`)
@@ -736,6 +737,13 @@ func looksLikeFile(value string) bool {
 	}
 	if knownFileNames[strings.ToLower(base)] {
 		return true
+	}
+	if len(base) > 1 && base[0] == '.' {
+		// A dotfile is a filename, not a sentence fragment: ".gitignore",
+		// ".env", ".prettierrc". A numeric remainder (".5") is prose.
+		if c := base[1]; c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			return true
+		}
 	}
 	match := extensionToken.FindStringSubmatch(base)
 	if match == nil {

@@ -405,8 +405,12 @@ change.
 
 An execution during the investigation phase runs behind a read-only
 authorization, so it is investigation evidence, not a potential mutation that
-owes a later verification. Only a definite change, or an execution under
-write-capable authority, creates that verification debt.
+owes a later verification. Only a definite change, or a write-capable execution
+the runtime cannot bound, creates that verification debt. The host journal
+bounds it: it pins the workspace identity at the successful check and again at
+run end, so an equal identity proves a later write-capable probe changed
+nothing, while a different identity reopens the obligation even when the
+changed path was expected.
 
 Phase completion narrows the completion requirement; it does not erase an
 explicit request constraint. For a staged conditional objective, `without
