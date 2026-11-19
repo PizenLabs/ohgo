@@ -5,6 +5,22 @@ immutable.
 
 ## [Unreleased]
 
+### Fixed
+
+- A dotfile request (`update .gitignore file`, `read backend/.env`) now names a
+  literal path target. The path tokenizer dropped the leading dot, so the
+  contract was ambiguous and the task could never prove the named file changed.
+- A read-only probe after a successful check (`git status`, a network fetch)
+  no longer reopens the verification obligation when the host edit journal
+  observed the run. The journal pins the workspace identity at the check and at
+  run end; equal identities prove nothing changed, and a different identity
+  reopens the obligation even when the changed path was expected. Without a
+  captured journal, a write-capable execution still owes a later check.
+- Editing `.gitignore` no longer attributes every newly ignored path to the
+  edit. The checkpoint diff compares the before and after captures under their
+  own ignore rules, so a path that only became invisible is not reported as a
+  file change, and a path-scoped `.gitignore` task is not a scope violation.
+
 ## [v0.1.3] - 2026-11-19
 
 ### Added
