@@ -1089,6 +1089,101 @@
           "description": "session shutdown terminates every running job's process group, while normal turns still leave detached jobs available to `wait`."
         }
       ]
+    },
+    "v0.1.3": {
+      "title": "What's new in v0.1.3",
+      "changes": [
+        {
+          "id": "native-amazon-bedrock-support-through-conversest",
+          "type": "added",
+          "title": "Native Amazon Bedrock support through ConverseStream, with the AWS binary event-stream decoder",
+          "description": "(prelude and message CRC validation), tool calls, signed reasoning replay, usage, and modeled exceptions. Authentication is an Amazon Bedrock API key; `AWS_REGION`/`AWS_DEFAULT_REGION` select the runtime endpoint. SigV4/IAM signing remains unsupported."
+        },
+        {
+          "id": "xai-and-google-gemini-provider-rows-and-model-fa",
+          "type": "added",
+          "title": "xAI and Google Gemini provider rows and model facts",
+          "description": "Both use the shared Chat Completions transport; Gemini uses its OpenAI compatibility endpoint."
+        },
+        {
+          "id": "model-control-s-custom-provider-for-user-declare",
+          "type": "added",
+          "title": "MODEL CONTROL's **+ Custom** provider for user-declared OpenAI-compatible endpoints, persisted",
+          "description": "atomically in global `~/.ohgo/settings.json`. The compact editor asks for a name, base URL, and optional `apiKeyEnv`; Enter probes asynchronously, discovered models are explicit selectable evidence, and only Ctrl+S writes configuration. Endpoint models use the normal model rows, references, role assignment, and catalog snapshot. Editing keeps the stable provider key, deletion removes the registry entries and clears dangling role references, and missing context/output facts use labeled automatic fallbacks. This covers LM Studio, vLLM, llama.cpp, LiteLLM, OneAPI, and internal proxies without a new provider implementation."
+        },
+        {
+          "id": "an-optional-external-structural-intelligence-pro",
+          "type": "added",
+          "title": "An optional external structural-intelligence provider for `investigate`",
+          "description": "`investigate.StructuralRouter` keeps the native structural engine as the default and fallback, and uses the `intelligence/gry` adapter only for information needs where an indexed repository graph is materially better (architecture, targeted locate/flow/debug, impact, and test verification). External observations are bounded, provenance-tagged (`SourceGRY`, never `VERIFIED`), budgeted, and explicitly classified as `SUCCESS`, `PARTIAL`, `STALE`, `AMBIGUOUS`, `UNRESOLVED`, `UNAVAILABLE`, `NOT_INDEXED`, or `FAILED`. gry remains optional: no startup path launches it, it cannot mutate, authorize, or complete a task, and its absence or failure falls back to the native engine. The boundary is documented in `docs/architecture/BOUNDARY_SPECIFICATION.md` and `docs/architecture/UNIFIED_INTELLIGENCE.md` §12."
+        },
+        {
+          "id": "the-bottom-status-bar-is-now-a-priority-projecti",
+          "type": "changed",
+          "title": "The bottom status bar is now a priority projection of runtime state rather than a fixed sentence",
+          "description": "Runtime telemetry (`⏱` duration, `↑` input, `↓` output, context consumption `%`, measured cost) is P0 and survives longest; repository identity and branch are P1, the turn/session marker is P2, and contextual key hints are P3. The layout measures the frame and selects whole items by priority instead of allowing the terminal to clip the row, so a long repository path or an unrelated shortcut can no longer obscure the context percentage in a split pane. Repository paths truncate from the left (`…/Golang/go-ecommerce:main`, then `…/go-ecommerce:main`), the context percentage owns its own slot and takes the warning/error role only at significant pressure, and action hints appear only when their binding works in the current state and fit whole."
+        },
+        {
+          "id": "every-settled-turn-now-closes-with-one-terminal",
+          "type": "changed",
+          "title": "Every settled turn now closes with one terminal footer in a single slot",
+          "description": "a deterministic `✓ verified · …` summary for a clean turn (tool-call and changed-file counts plus check status), a subdued `⚠ needs review: …` block for an evidence boundary, or `○ cancelled · turn interrupted by user` for an aborted turn. Clean and cancelled footers are strictly one row and truncate with an ellipsis; review reasons wrap in full at a two-space hanging indent and are never clipped mid-sentence. The footer is derived from the runtime's observed outcomes, never from the assistant's closing prose, and it never shares a turn with another footer."
+        },
+        {
+          "id": "openrouter-requests-now-send-the-canonical-appli",
+          "type": "changed",
+          "title": "OpenRouter requests now send the canonical application identity",
+          "description": "`HTTP-Referer`, `X-OpenRouter-Title: OHGO`, and `X-OpenRouter-Categories: cli-agent`, replacing the legacy `X-Title`. The same identity covers inference and model discovery. Attribution and agentic-harness eligibility are documented as independent states in `docs/architecture/OPENROUTER.md`."
+        },
+        {
+          "id": "an-openrouter-403-that-failed-the-gate-free-endp",
+          "type": "fixed",
+          "title": "An OpenRouter 403 that failed the `Gate Free Endpoints by Agentic Harness` routing step is",
+          "description": "classified as an eligibility restriction and explained, while preserving the HTTP status, provider error code, and routing step. Other 403s keep their original meaning. The runtime never claims approval, substitutes a model, or switches from a free endpoint to a paid one."
+        },
+        {
+          "id": "a-source-file-paged-through-a-successful-shell-c",
+          "type": "fixed",
+          "title": "A source file paged through a successful shell content reader (`sed`, `cat`, `head`, `tail`, `nl`,",
+          "description": "`less`, `more`, or `bat`) counts as opened for citation grounding. A listing or a path mentioned in prose still does not count."
+        },
+        {
+          "id": "no-contradiction-to-arbitrate-is-treated-as-an-e",
+          "type": "fixed",
+          "title": "\"No contradiction to arbitrate\" is treated as an epistemic limit, not a repository-wide absence",
+          "description": "A run without Gry/runtime evidence can say the static-vs-runtime comparison was not assessable instead of being forced to claim no contradiction exists or to perform an unrelated file scan."
+        },
+        {
+          "id": "a-failed-recall-of-an-unknown-or-evicted-compact",
+          "type": "fixed",
+          "title": "A failed `recall` of an unknown or evicted compaction id is an observed archive absence, not an",
+          "description": "unrecovered tool failure. Reading the source directly after the miss can complete the task."
+        },
+        {
+          "id": "a-documented-project-identity-is-no-longer-repor",
+          "type": "fixed",
+          "title": "A documented project identity is no longer reported as an unverified implementation claim",
+          "description": "`DocumentationIdentityTerms` also reads the name an opening definition introduces (`GoCommerce is an e-commerce application`), so a README whose heading is only the repository slug (`# go-ecommerce`) no longer vetoes an honest survey for naming the project. Documentation remains the evidence class for project identity; the document's technical vocabulary stays attribution-bound."
+        },
+        {
+          "id": "long-needs-review-reasons-no-longer-end-in-after",
+          "type": "fixed",
+          "title": "Long `⚠ needs review:` reasons no longer end in `...` after wrapping",
+          "description": "The runtime keeps the full verifier reason, and the footer renders up to three distinct clauses word-wrapped at the content width with a two-space hanging indent, so provenance and failure details stay actionable at narrow widths."
+        },
+        {
+          "id": "release-objectives-are-workspace-scoped-even-whe",
+          "type": "fixed",
+          "title": "Release objectives are workspace-scoped even when they name one carrier file",
+          "description": "\"Update the version and changelog.json\" no longer narrows the mutation scope to that literal path, so the version markers and notes the objective necessarily updates are not reported as unrelated. A named file that is absent at the repository root is resolved from the run's own observed change when exactly one changed path carries that basename."
+        },
+        {
+          "id": "a-search-command-that-finds-nothing-grep-rg-git",
+          "type": "fixed",
+          "title": "A search command that finds nothing (`grep`/`rg`/`git grep` exit code 1) is an absence observation,",
+          "description": "not a runtime failure. A completed task no longer ends `NEEDS_REVIEW` because a trailing probe confirmed a string was gone."
+        }
+      ]
     }
   }
 }
