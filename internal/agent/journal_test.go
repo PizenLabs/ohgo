@@ -5,8 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
 	"github.com/PizenLabs/ohgo/internal/provider/catalog"
@@ -18,6 +20,7 @@ type recordingJournal struct {
 	begins   int
 	commits  int
 	aborts   int
+	marks    int
 	boundary EditBoundary
 	failWith error
 	txn      *recordingTxn
@@ -48,6 +51,11 @@ func (t *recordingTxn) Abort() { t.journal.aborts++ }
 
 func (t *recordingTxn) Mutation() (MutationProvenance, bool) {
 	return MutationProvenance{}, false
+}
+
+func (j *recordingJournal) MarkVerification(context.Context) (string, error) {
+	j.marks++
+	return "tree-" + strconv.Itoa(j.marks), nil
 }
 
 // newTestLoop builds a loop with the given tools and scripted model answers.
@@ -92,6 +100,31 @@ func TestJournalOpensBeforeTheMutatingBatchAndCommitsAtTheEnd(t *testing.T) {
 	// opened; the tool wrote it afterwards.
 	if got, err := os.ReadFile(path); err != nil || string(got) != "package a\n" {
 		t.Errorf("file = %q (%v)", got, err)
+	}
+}
+
+// A successful check pins the workspace identity so completion can prove a
+// later execution changed nothing. The loop asks the transaction, not the
+// controller, so each check belongs to the edit it is verifying.
+func TestJournalMarksTheWorkspaceAtSuccessfulCheck(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.go")
+	journal := &recordingJournal{}
+	loop, _ := newTestLoop(t, journal, []Tool{&fileWriteTool{}, &verificationTool{}},
+		toolCallMessage(ai.ToolCall{ID: "c1", Name: "write", Arguments: map[string]any{
+			"path": path, "content": "package a\n",
+		}}),
+		toolCallMessage(ai.ToolCall{ID: "c2", Name: "bash"}),
+		textMessage("done"),
+	)
+	loop.SetGrounding(&contract.IntentGrounding{MutationIntent: true})
+	if _, err := loop.Run(context.Background(), []Message{UserMessage{Text: "go"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if journal.marks != 1 {
+		t.Fatalf("MarkVerification calls = %d, want 1", journal.marks)
+	}
+	if got := loop.VerifiedTree(); got != "tree-1" {
+		t.Fatalf("VerifiedTree = %q, want the captured identity", got)
 	}
 }
 

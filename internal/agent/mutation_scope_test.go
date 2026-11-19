@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -255,4 +257,178 @@ func cleanStopWithText(text string) Turn {
 	turn := cleanStop()
 	turn.Assistant.Content = append(turn.Assistant.Content, ai.TextContent{Text: text})
 	return turn
+}
+
+// A read-only probe after a successful check is not a new mutation when the
+// host journal observed the run. The journal's workspace diff, not the shell
+// command's shape, says what changed; a task that edited .gitignore and then
+// ran `git status` must still complete. Without the journal the same probe is
+// an unprovable write-capable execution and stays a review boundary.
+func TestPostVerificationObservationRequiresJournalToComplete(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".gitignore")
+	if err := os.WriteFile(path, []byte("*.exe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := contract.Target{Kind: contract.TargetPath, Value: ".gitignore"}
+	intent := contract.IntentContract{
+		Objective:       "update .gitignore file",
+		Kind:            contract.ObjectiveMutation,
+		Targets:         []contract.Target{target},
+		ExpectedChanges: []contract.ExpectedChange{{Target: target, Operation: contract.ChangeModify}},
+		MutationScope:   contract.MutationScope{Kind: contract.MutationScopePaths, Files: []string{".gitignore"}},
+		Verification:    []contract.VerificationRequirement{{Kind: contract.VerifyAny}},
+	}
+	snapshot := CaptureTargets(root, intent, nil)
+	if err := os.WriteFile(path, []byte("*.exe\n*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("write", Result{
+			Text: "wrote .gitignore", Mutates: true,
+			Details: map[string]any{"path": ".gitignore"},
+		})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text: "verification: PASS", Executes: true, Finished: true, Verifies: true,
+			Verification: &VerificationEvidence{Check: contract.CheckAny},
+		})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text: "$ git diff -- .gitignore && git status --short", Executes: true, Finished: true,
+		})}},
+		cleanStopWithText("Updated .gitignore and verified the working tree is clean."),
+	}
+	mutations := MutationProvenance{
+		Captured:     true,
+		Source:       "recovery.edit",
+		Turn:         0,
+		VerifiedTree: "checked-tree",
+		FinalTree:    "checked-tree",
+		Changes:      []MutationChange{{Path: ".gitignore", Status: "M"}},
+	}
+
+	withJournal := EvaluateTaskCompletion(CompletionInput{
+		Turns:     turns,
+		Contract:  intent,
+		Root:      root,
+		Snapshot:  snapshot,
+		Mutations: mutations,
+	})
+	if !withJournal.Complete() {
+		t.Fatalf("a journal-observed post-verification observation was not complete: %s", withJournal.Reason)
+	}
+
+	withoutJournal := EvaluateTaskCompletion(CompletionInput{
+		Turns:    turns,
+		Contract: intent,
+		Root:     root,
+		Snapshot: snapshot,
+	})
+	if withoutJournal.Complete() {
+		t.Fatal("a write-capable execution after the last check completed without journal evidence")
+	}
+	if !strings.Contains(withoutJournal.Reason, "not followed by a successful verification") {
+		t.Fatalf("review reason = %q, want the missing-verification boundary", withoutJournal.Reason)
+	}
+}
+
+// A journal-observed execution after the check must not conceal a change to an
+// already-expected path. The net diff cannot order a change against the check,
+// so completion compares the check-time and run-end workspace identities: equal
+// identities prove nothing changed, different ones reopen the obligation.
+func TestPostVerificationExecutionCannotConcealAChangeToAnExpectedPath(t *testing.T) {
+	root := t.TempDir()
+	gitignore := filepath.Join(root, ".gitignore")
+	code := filepath.Join(root, "a.go")
+	if err := os.WriteFile(gitignore, []byte("*.exe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(code, []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitignoreTarget := contract.Target{Kind: contract.TargetPath, Value: ".gitignore"}
+	codeTarget := contract.Target{Kind: contract.TargetPath, Value: "a.go"}
+	intent := contract.IntentContract{
+		Objective: "update .gitignore and a.go",
+		Kind:      contract.ObjectiveMutation,
+		Targets:   []contract.Target{gitignoreTarget, codeTarget},
+		ExpectedChanges: []contract.ExpectedChange{
+			{Target: gitignoreTarget, Operation: contract.ChangeModify},
+			{Target: codeTarget, Operation: contract.ChangeModify},
+		},
+		MutationScope: contract.MutationScope{
+			Kind:  contract.MutationScopePaths,
+			Files: []string{".gitignore", "a.go"},
+		},
+		Verification: []contract.VerificationRequirement{{Kind: contract.VerifyAny}},
+	}
+	snapshot := CaptureTargets(root, intent, nil)
+	if err := os.WriteFile(gitignore, []byte("*.exe\n*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(code, []byte("package a\n\nfunc X() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	turns := []Turn{
+		{Results: []ToolOutcome{toolOutcome("write", Result{
+			Text: "wrote .gitignore", Mutates: true,
+			Details: map[string]any{"path": ".gitignore"},
+		})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text: "verification: PASS", Executes: true, Finished: true, Verifies: true,
+			Verification: &VerificationEvidence{
+				Check:  contract.CheckAny,
+				Scopes: []VerificationScope{{All: true}},
+			},
+		})}},
+		{Results: []ToolOutcome{toolOutcome("bash", Result{
+			Text: "$ some-opaque-tool", Executes: true, Finished: true,
+		})}},
+		cleanStopWithText("Updated .gitignore and verified it."),
+	}
+
+	changed := EvaluateTaskCompletion(CompletionInput{
+		Turns:    turns,
+		Contract: intent,
+		Root:     root,
+		Snapshot: snapshot,
+		Mutations: MutationProvenance{
+			Captured:     true,
+			Source:       "recovery.edit",
+			Turn:         0,
+			VerifiedTree: "checked-tree",
+			FinalTree:    "mutated-tree",
+			Changes: []MutationChange{
+				{Path: ".gitignore", Status: "M"},
+				{Path: "a.go", Status: "M"},
+			},
+		},
+	})
+	if changed.Complete() {
+		t.Fatal("a change after the check was concealed because the path was expected")
+	}
+	if !strings.Contains(changed.Reason, "not the checked state") {
+		t.Fatalf("review reason = %q, want the post-check identity boundary", changed.Reason)
+	}
+
+	unpinned := EvaluateTaskCompletion(CompletionInput{
+		Turns:    turns,
+		Contract: intent,
+		Root:     root,
+		Snapshot: snapshot,
+		Mutations: MutationProvenance{
+			Captured:  true,
+			Source:    "recovery.edit",
+			Turn:      0,
+			FinalTree: "mutated-tree",
+			Changes: []MutationChange{
+				{Path: ".gitignore", Status: "M"},
+				{Path: "a.go", Status: "M"},
+			},
+		},
+	})
+	if unpinned.Complete() {
+		t.Fatal("a post-check execution completed without a check-time workspace identity")
+	}
 }

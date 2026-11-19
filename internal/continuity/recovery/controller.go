@@ -162,6 +162,7 @@ type editTransaction struct {
 	sequence   int64
 	startedAt  string
 	before     *Tree
+	after      *Tree
 	metadata   map[string]string
 	turn       int
 	changes    []Change
@@ -185,6 +186,7 @@ func (t *editTransaction) Commit(ctx context.Context) error {
 		// start can repair the checkpoint without guessing.
 		return fmt.Errorf("recovery: capture post-edit workspace: %w", err)
 	}
+	t.after = after
 	if err := c.publishEdit(ctx, t, after); err != nil {
 		return err
 	}
@@ -213,8 +215,24 @@ func (t *editTransaction) Mutation() (agent.MutationProvenance, bool) {
 		Turn:         t.turn,
 		Source:       "recovery.edit",
 		Captured:     true,
+		FinalTree:    t.after.Hash(),
 		Changes:      changes,
 	}, true
+}
+
+// MarkVerification returns the workspace identity at a successful check.
+//
+// The identity is the same tree hash a checkpoint capture produces, computed
+// without storing blobs. Completion compares it with the run-end identity:
+// equality is what proves a later write-capable execution changed nothing.
+// It lives on the journal, not the transaction, so a check that runs before
+// the first mutating batch can still pin the state it verified.
+func (c *Controller) MarkVerification(ctx context.Context) (string, error) {
+	tree, err := c.scanner.Scan(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("recovery: capture verification state: %w", err)
+	}
+	return tree.Hash(), nil
 }
 
 // Abort discards an unpublished transaction.
@@ -235,7 +253,7 @@ func (t *editTransaction) Abort() {
 
 // publishEdit turns a captured edit into an immutable checkpoint.
 func (c *Controller) publishEdit(ctx context.Context, t *editTransaction, after *Tree) error {
-	changes := Diff(t.before, after)
+	changes := definitionStableDiff(t.before, after)
 	t.changes = changes
 	if len(changes) == 0 {
 		// An authorizing path that never ran, or a no-op rewrite, is not an
@@ -291,6 +309,52 @@ func (c *Controller) publishEdit(ctx context.Context, t *editTransaction, after 
 		}
 		return nil
 	})
+}
+
+// definitionStableDiff returns the edit's changes without the paths a
+// .gitignore edit only admitted or excluded.
+//
+// A capture applies the workspace's current ignore rules, so editing
+// .gitignore changes which paths the after tree contains even when no file
+// changed: a path the old rules admitted disappears, and a path they excluded
+// appears. That is a change to the workspace's definition, not an edit the run
+// made; reporting it would attribute every newly-ignored asset to the run and
+// turn a correct .gitignore change into a false scope violation.
+func definitionStableDiff(before, after *Tree) []Change {
+	changes := Diff(before, after)
+	if before == nil || after == nil || before.rules == nil || after.rules == nil {
+		return changes
+	}
+	out := changes[:0]
+	for _, change := range changes {
+		if ignoreRuleChanged(before, after, change) {
+			continue
+		}
+		out = append(out, change)
+	}
+	return out
+}
+
+// ignoreRuleChanged reports whether a change is only the new ignore rules
+// excluding or admitting a path that the capture still sees on disk.
+func ignoreRuleChanged(before, after *Tree, change Change) bool {
+	switch change.Status {
+	case ChangeDeleted:
+		entry, ok := before.Lookup(change.Path)
+		if !ok {
+			return false
+		}
+		isDir := entry.Kind == KindDir
+		return !before.rules.Excluded(change.Path, isDir) && after.rules.Excluded(change.Path, isDir)
+	case ChangeAdded:
+		entry, ok := after.Lookup(change.Path)
+		if !ok {
+			return false
+		}
+		isDir := entry.Kind == KindDir
+		return before.rules.Excluded(change.Path, isDir) && !after.rules.Excluded(change.Path, isDir)
+	}
+	return false
 }
 
 // Undo restores the workspace to the state before the applied edit.
@@ -974,3 +1038,4 @@ func plural(count int, one, many string) string {
 
 // Ensure the controller satisfies the loop's capture-only seam.
 var _ agent.EditJournal = (*Controller)(nil)
+var _ agent.VerificationMarker = (*Controller)(nil)

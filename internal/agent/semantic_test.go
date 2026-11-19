@@ -338,7 +338,7 @@ func TestCompletionEvidenceBackgroundSpawnIsNotMutation(t *testing.T) {
 		ToolName: "bash",
 		Result:   Result{Text: "job-1", Executes: true},
 	}}}}
-	evidence := scanCompletionEvidence(turns, true)
+	evidence := scanCompletionEvidence(turns, true, false)
 	if evidence.mutated {
 		t.Fatal("a spawn was counted as a definite mutation")
 	}

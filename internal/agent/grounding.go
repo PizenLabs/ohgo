@@ -170,7 +170,9 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 		assessment.Verdict = contract.GroundingReview
 	}
 
-	evidence := scanCompletionEvidence(turns, intent.Kind == contract.ObjectiveMutation)
+	// Grounding only reads the definite-mutation flag; ordering is decided by
+	// the completion evaluator, which has the journal evidence.
+	evidence := scanCompletionEvidence(turns, intent.Kind == contract.ObjectiveMutation, false)
 	if evidence.mutated && !grounding.MutationIntent {
 		return rejectGrounding("action_invented",
 			"a repository change was observed but the request did not ask for one")

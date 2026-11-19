@@ -420,6 +420,10 @@ type Loop struct {
 	// the run ends, and the host reads it immediately after Run returns.
 	mutationMu   sync.Mutex
 	lastMutation MutationProvenance
+	// lastVerifiedTree is the workspace identity the journal captured at the
+	// run's last successful check. It is compared with the run-end identity so
+	// completion can prove nothing changed after the check.
+	lastVerifiedTree string
 	// runSeq issues a local run identity for mutation provenance when the host
 	// has none. It is process-local and never a durable task identity.
 	runSeq int
@@ -505,6 +509,51 @@ func (l *Loop) recordMutation(provenance MutationProvenance) {
 	l.lastMutation = provenance
 }
 
+// markVerification captures the workspace identity after a successful check.
+//
+// It runs after the whole batch, so a later executing outcome in the same batch
+// would make the capture ambiguous; in that case the identity is left unset and
+// completion keeps the conservative rule. The capture is best-effort: a journal
+// without VerificationMarker simply provides none.
+func (l *Loop) markVerification(ctx context.Context, edit *runEdit, outcomes []ToolOutcome) {
+	if edit == nil {
+		return
+	}
+	if l.cfg.Grounding == nil || !l.cfg.Grounding.MutationIntent {
+		// Only a repository-change objective needs the identity; a read-only
+		// run must not pay a workspace capture for a check it will never owe.
+		return
+	}
+	marker, ok := edit.journal.(VerificationMarker)
+	if !ok {
+		return
+	}
+	lastCheck := -1
+	for index, outcome := range outcomes {
+		if outcome.Result.Verifies && !outcome.Result.IsError {
+			lastCheck = index
+		}
+	}
+	if lastCheck < 0 {
+		return
+	}
+	for _, outcome := range outcomes[lastCheck+1:] {
+		if outcome.Result.Executes && !outcome.ReadOnly() {
+			// A process ran after the check in the same batch. The capture
+			// cannot tell what it changed, so it cannot stand for the verified
+			// state.
+			return
+		}
+	}
+	identity, err := marker.MarkVerification(ctx)
+	if err != nil || identity == "" {
+		return
+	}
+	l.mutationMu.Lock()
+	l.lastVerifiedTree = identity
+	l.mutationMu.Unlock()
+}
+
 // LastMutation returns the mutation evidence published by the most recent run.
 //
 // It is empty when no journal was installed or the journal published nothing.
@@ -519,6 +568,17 @@ func (l *Loop) LastMutation() MutationProvenance {
 	out := l.lastMutation
 	out.Changes = append([]MutationChange(nil), l.lastMutation.Changes...)
 	return out
+}
+
+// VerifiedTree returns the workspace identity captured at the run's last
+// successful check, or "" when the journal could not provide one.
+func (l *Loop) VerifiedTree() string {
+	if l == nil {
+		return ""
+	}
+	l.mutationMu.Lock()
+	defer l.mutationMu.Unlock()
+	return l.lastVerifiedTree
 }
 
 // New returns a Loop. It returns ErrNoTools when the config has no tools,
@@ -832,6 +892,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	l.runSeq++
 	runID := fmt.Sprintf("run-%d", l.runSeq)
 	l.lastMutation = MutationProvenance{}
+	l.lastVerifiedTree = ""
 	l.mutationMu.Unlock()
 	l.compactionAttempts = 0
 	l.compactionCooldown = 0
@@ -844,6 +905,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		commitErr := edit.txn.Commit(context.WithoutCancel(ctx))
 		if provenance, ok := edit.txn.Mutation(); ok {
 			provenance.RunID = runID
+			provenance.VerifiedTree = l.VerifiedTree()
 			l.recordMutation(provenance)
 		}
 		if commitErr == nil {
@@ -1332,6 +1394,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 
 		outcomes, admissionErr := l.dispatch(ctx, activeByName, refusals, assistant, calls, turn, len(turns), edit)
 		turn.Results = outcomes
+		l.markVerification(ctx, edit, outcomes)
 		for _, outcome := range outcomes {
 			live = append(live, ToolResultMessage{
 				ToolCallID: outcome.CallID,
