@@ -9,6 +9,7 @@ import (
 
 	"github.com/PizenLabs/ohgo/internal/commit"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func commitHooksFixture() CommitHooks {
@@ -366,5 +367,34 @@ func TestProjectThinkingNamesCommitExecution(t *testing.T) {
 	}
 	if got.Interruptible {
 		t.Error("an execution was advertised as interruptible")
+	}
+}
+
+// A fully typed /commit reveals its flags, so the plan-and-approve form is
+// discoverable before the user commits to the single-proposal default.
+func TestCommitPaletteShowsFlagSuggestions(t *testing.T) {
+	out := ansi.Strip(RenderSlashPalette("/commit", 0, 100))
+	for _, want := range []string{
+		"/commit",
+		"/commit -a",
+		"/commit --retry",
+		"/commit --edit",
+		"every logical commit",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("palette missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// Accepting the -a row completes the line instead of dispatching the bare
+// command, which would run the single-proposal path the user did not choose.
+func TestCommitPaletteSubcommandCompletesTheFlag(t *testing.T) {
+	p := NewProgram(nil, "test", 0)
+	p.state.Apply(ComposerChanged{Text: "/commit", Cursor: len("/commit")})
+	p.state.PaletteCursor = 1 // "/commit -a"
+	_, _ = p.acceptPalette()
+	if p.state.Input != "/commit -a " {
+		t.Fatalf("input = %q, want the -a form completed", p.state.Input)
 	}
 }
