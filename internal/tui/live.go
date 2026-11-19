@@ -417,8 +417,8 @@ func liveChrome(s State, layout Layout) int {
 }
 
 // firstUnstable is the index of the first entry that can still change: the
-// in-flight assistant answer (per the state's own openAssistant), or a tool
-// still executing (including its dwell floor).
+// in-flight assistant answer (per the state's own openAssistant), a tool run
+// whose scrollback projection is not final, or another live block.
 func firstUnstable(s State) int {
 	first := len(s.Entries)
 	now := s.presentationAt()
@@ -432,9 +432,19 @@ func firstUnstable(s State) int {
 		if i >= first {
 			break
 		}
-		if e.Kind == EntryTool && e.Tool != nil &&
-			(e.Tool.Status == ToolRunning || e.Tool.dwelling(now)) {
-			first = i
+		if e.Kind == EntryTool && e.Tool != nil {
+			// An adjacent batch is one footer, not N rows. Sealing any
+			// member before the run's projection is final would freeze a row
+			// the footer must replace, and scrollback cannot be rewritten.
+			if run := e.Tool.run; run != nil {
+				if !toolRunSealable(s, run, now) && run.start < first {
+					first = run.start
+				}
+			} else if e.Tool.Status == ToolRunning || e.Tool.dwelling(now) {
+				// A hand-built fixture may not have linked a run; keep the
+				// running row itself live.
+				first = i
+			}
 		}
 		if e.Kind == EntryReasoning && e.Reasoning != nil &&
 			e.Reasoning.Closed && e.Reasoning.reasoningPresentationOpen(now) {
@@ -445,6 +455,27 @@ func firstUnstable(s State) int {
 		}
 	}
 	return first
+}
+
+// toolRunSealable reports whether every row of a run may leave for the
+// scrollback now.
+//
+// A trailing run in an active turn is provisional: the next call joins it,
+// and a multi-call run then collapses into one telemetry footer. Sealing a
+// member first would make that footer unpaintable, because output-first mode
+// never rewrites scrollback. A run with only one member is provisional for the
+// same reason until it can no longer gain a sibling.
+func toolRunSealable(s State, run *toolRun, now time.Time) bool {
+	if run == nil || len(run.members) == 0 {
+		return true
+	}
+	if run.end+1 >= len(s.Entries) && s.Status.Busy {
+		return false
+	}
+	if len(run.members) > 1 {
+		return run.settledAt(now) && toolRunGroupActive(s, run, now)
+	}
+	return run.settledAt(now)
 }
 
 // liveEntryLines renders one sealed entry as permanent scrollback. The

@@ -278,7 +278,9 @@ func TestFailedToolFinalizesExactlyOnce(t *testing.T) {
 
 // TestLivePainterKeepsOneLiveRowAndSealsItOnce: output-first mode repaints the
 // running call in the live region, never in history, and seals the finished
-// call exactly once when it completes.
+// call exactly once when its run closes. A trailing call in an active turn is
+// provisional: the next call may join it, and the batch then owns one footer
+// that scrollback cannot be rewritten to admit.
 func TestLivePainterKeepsOneLiveRowAndSealsItOnce(t *testing.T) {
 	s := New()
 	s.Apply(TerminalResized{Width: 96, Height: 24})
@@ -306,17 +308,72 @@ func TestLivePainterKeepsOneLiveRowAndSealsItOnce(t *testing.T) {
 	s.Apply(ToolFinished{ID: "c1", Text: "19 lines\n", Summary: "19 lines", At: finishedAt, Seq: 1})
 	s.Apply(FrameTick{At: finishedAt.Add(toolMinDwell)})
 	history = append(history, painter.render(s)...)
+	if got := countStripped(history, "inspecting backend/internal"); got != 0 {
+		t.Fatalf("a trailing run was sealed before its batch closed: %q", history)
+	}
+	if countStripped(painter.live, "inspecting backend/internal") != 1 {
+		t.Fatalf("finished action left the live region before its run closed: %q", painter.live)
+	}
+	if countStripped(painter.live, liveGlyph+" inspecting") != 0 {
+		t.Fatalf("live region still claims the finished call is running: %q", painter.live)
+	}
+
+	// A following answer entry closes the run: now the call is permanent.
+	s.Apply(AssistantDelta{Text: "done\n", At: finishedAt.Add(time.Second), Seq: 1})
+	history = append(history, painter.render(s)...)
 	if got := countStripped(history, "inspecting backend/internal"); got != 1 {
 		t.Fatalf("sealed history contains the action %d times, want one: %q", got, history)
 	}
 	if countStripped(painter.live, "inspecting backend/internal") != 0 {
 		t.Fatalf("finished action stayed in the live region: %q", painter.live)
 	}
-	if countStripped(painter.live, liveGlyph+" inspecting") != 0 {
-		t.Fatalf("live region still claims the finished call is running: %q", painter.live)
-	}
 	if again := painter.render(s); len(again) != 0 {
 		t.Fatalf("completion was sealed twice: %q", again)
+	}
+}
+
+// TestLiveExclusiveBatchSealsAsOneFooter pins the timing that made the PTY
+// test flaky: an exclusive first call finishes and its dwell floor expires
+// before the second call starts. The first row must not have been sealed in
+// that gap, or the batch footer can never replace it.
+func TestLiveExclusiveBatchSealsAsOneFooter(t *testing.T) {
+	p, _ := newLiveProgram()
+	p.state.Apply(TerminalResized{Width: 96, Height: 30})
+
+	t0 := time.Now()
+	var history []string
+	history = append(history, liveEvent(p, UserSubmitted{Text: "run both", At: t0, Seq: 1})...)
+	history = append(history, liveEvent(p, ToolStarted{ID: "c1", Name: "first", Summary: "first tool", At: t0, Seq: 1})...)
+
+	end1 := t0.Add(2 * time.Millisecond)
+	history = append(history, liveEvent(p, ToolFinished{
+		ID: "c1", Text: "one\ntwo\nthree\n", Summary: "3 lines", At: end1, Seq: 1,
+	})...)
+	// The loaded-runner ordering: the dwell floor expires with no second call
+	// and no answer yet.
+	history = append(history, liveEvent(p, FrameTick{At: end1.Add(toolMinDwell + time.Second)})...)
+	if got := ansi.Strip(strings.Join(history, "\n")); strings.Contains(got, "first tool") {
+		t.Fatalf("the first call was sealed alone before its batch closed:\n%s", got)
+	}
+
+	start2 := end1.Add(time.Minute)
+	history = append(history, liveEvent(p, ToolStarted{ID: "c2", Name: "second", Summary: "second tool", At: start2, Seq: 1})...)
+	end2 := start2.Add(2 * time.Millisecond)
+	history = append(history, liveEvent(p, ToolFinished{
+		ID: "c2", Text: "boom\n", Summary: "1 line", IsError: true, At: end2, Seq: 1,
+	})...)
+	history = append(history, liveEvent(p, FrameTick{At: end2.Add(toolMinDwell + time.Second)})...)
+	history = append(history, liveEvent(p, AssistantDelta{Text: "both ran.", At: end2.Add(time.Second), Seq: 1})...)
+	history = append(history, liveEvent(p, AssistantDone{Seq: 1, At: end2.Add(time.Second)})...)
+
+	sealed := ansi.Strip(strings.Join(history, "\n"))
+	if got := strings.Count(sealed, "+ 2 tools · "); got != 1 {
+		t.Fatalf("the batch footer appeared %d times, want one:\n%s", got, sealed)
+	}
+	for _, individual := range []string{"first tool", "second tool"} {
+		if strings.Contains(sealed, individual) {
+			t.Fatalf("%q was sealed as an individual row instead of the batch footer:\n%s", individual, sealed)
+		}
 	}
 }
 

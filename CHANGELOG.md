@@ -5,6 +5,8 @@ immutable.
 
 ## [Unreleased]
 
+## [v0.1.3] - 2026-11-19
+
 ### Added
 
 - Native Amazon Bedrock support through ConverseStream, with the AWS binary
