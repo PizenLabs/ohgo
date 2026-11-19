@@ -650,6 +650,13 @@ func structuralRelationClaimIssue(sentence string, turns []Turn) *claimIssue {
 		left := sentence[match[2]:match[3]]
 		verb := strings.TrimSpace(sentence[match[4]:match[5]])
 		right := sentence[match[6]:match[7]]
+		// The pattern matches tokens, not operands. A conjunction before the
+		// verb ("... and calls s.stock.Reserve") and a plural noun that ends a
+		// noun phrase ("storage.Save calls are ...") both match without naming
+		// an endpoint; reviewing them would report a fragment as a claim.
+		if !structuralEndpointIsName(left) || !structuralEndpointIsName(right) {
+			continue
+		}
 		if !strings.Contains(left, ".") && !strings.Contains(right, ".") {
 			continue
 		}
@@ -667,6 +674,23 @@ func structuralRelationClaimIssue(sentence string, turns []Turn) *claimIssue {
 		}
 	}
 	return nil
+}
+
+// structuralEndpointIsName reports whether a token can name a code endpoint.
+// A dotted coordinate always can. A bare token needs an uppercase letter: an
+// identifier is capitalised or camelCase, while the prose words the relation
+// pattern also matches around the verb ("and calls ...", "... calls are ...")
+// are lowercase. Skipping those is the documented limit: a relation without a
+// code-shaped operand is not audited here.
+func structuralEndpointIsName(endpoint string) bool {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return false
+	}
+	if strings.Contains(endpoint, ".") {
+		return true
+	}
+	return strings.ToLower(endpoint) != endpoint
 }
 
 // structuralEndpointIsGeneric filters ordinary prose words that are not code
