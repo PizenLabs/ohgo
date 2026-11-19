@@ -127,12 +127,12 @@ func TestProbeNeverLeaksCredentials(t *testing.T) {
 }
 
 // TestOpenRouterSendsAttributionHeaders proves the gateway attribution the
-// provider asks for: application constants, never user data.
+// provider asks for: canonical OpenRouter headers, application constants, and
+// no legacy title header that could disagree with the canonical one.
 func TestOpenRouterSendsAttributionHeaders(t *testing.T) {
-	var referer, title string
+	var got http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		referer = r.Header.Get("HTTP-Referer")
-		title = r.Header.Get("X-Title")
+		got = r.Header.Clone()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -159,8 +159,18 @@ func TestOpenRouterSendsAttributionHeaders(t *testing.T) {
 		t.Fatalf("Stream: %v", err)
 	}
 	_, _ = stream.Result()
-	if referer == "" || title == "" {
-		t.Errorf("referer = %q title = %q, want both attribution headers", referer, title)
+
+	if got.Get("HTTP-Referer") != OpenRouterReferer {
+		t.Errorf("HTTP-Referer = %q, want %q", got.Get("HTTP-Referer"), OpenRouterReferer)
+	}
+	if got.Get("X-OpenRouter-Title") != OpenRouterTitle {
+		t.Errorf("X-OpenRouter-Title = %q, want %q", got.Get("X-OpenRouter-Title"), OpenRouterTitle)
+	}
+	if got.Get("X-OpenRouter-Categories") != OpenRouterCategories {
+		t.Errorf("X-OpenRouter-Categories = %q, want %q", got.Get("X-OpenRouter-Categories"), OpenRouterCategories)
+	}
+	if got.Get("X-Title") != "" {
+		t.Errorf("X-Title = %q, want the legacy header omitted", got.Get("X-Title"))
 	}
 }
 

@@ -306,13 +306,10 @@ func (r *Registry) ProviderFor(model Model) (Provider, error) {
 		openai.Client = r.httpClient
 		openai.BaseURL = baseURL
 		openai.SessionID = r.sessionID(model.Provider)
-		// OpenRouter asks senders to identify for analytics and routing
-		// priority. These are application constants, never user data.
+		// OpenRouter identifies an application through request attribution.
+		// These are application constants, never user data.
 		if model.Provider == "openrouter" {
-			openai.ExtraHeaders = map[string]string{
-				"HTTP-Referer": "https://ohgo.pizenlabs.dev/",
-				"X-Title":      "ohgo",
-			}
+			openai.ExtraHeaders = OpenRouterAttribution()
 		}
 		provider = openai
 	case APIOllamaChat:

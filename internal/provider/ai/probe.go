@@ -85,6 +85,11 @@ func ProbeProvider(ctx context.Context, client *http.Client, api API, baseURL, a
 		return result
 	}
 	httpReq.Header.Set("Accept", "application/json")
+	if api == APIOpenAIChatCompletions && isOpenRouterEndpoint(base) {
+		for key, value := range OpenRouterAttribution() {
+			httpReq.Header.Set(key, value)
+		}
+	}
 	if key != "" {
 		if api == APIAnthropicMessages {
 			httpReq.Header.Set("x-api-key", key)

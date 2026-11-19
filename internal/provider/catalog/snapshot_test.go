@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PizenLabs/ohgo/internal/provider/ai"
 )
 
 // Model-picker catalog sync: OpenRouter decoding, provider-qualified ids,
@@ -52,6 +54,28 @@ func servePayload(t *testing.T, payload string, status int, sawAuth *bool) *http
 		w.WriteHeader(status)
 		_, _ = fmt.Fprint(w, payload)
 	}))
+}
+
+// TestOpenRouterDiscoveryCarriesAttribution keeps every OpenRouter request
+// identified, including the roster fetch that precedes inference.
+func TestOpenRouterDiscoveryCarriesAttribution(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, openRouterPayload)
+	}))
+	defer server.Close()
+
+	if _, err := DiscoverModelsFresh(context.Background(), server.Client(), "openrouter", server.URL, "k"); err != nil {
+		t.Fatalf("DiscoverModelsFresh: %v", err)
+	}
+	for name, want := range ai.OpenRouterAttribution() {
+		if got.Get(name) != want {
+			t.Errorf("%s = %q, want %q", name, got.Get(name), want)
+		}
+	}
 }
 
 func TestOpenRouterDecodesRichEntries(t *testing.T) {

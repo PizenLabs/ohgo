@@ -40,7 +40,7 @@ const discoverCacheSchema = 2
 // are skipped: the harness always offers tools, and a model that cannot take
 // them fails at request time with a confusing provider error instead.
 func discoverOpenRouter(ctx context.Context, client *http.Client, baseURL, apiKey string) ([]record, error) {
-	entries, err := getModelEntries(ctx, client, baseURL+"/models", apiKey)
+	entries, err := getModelEntries(ctx, client, baseURL+"/models", apiKey, ai.OpenRouterAttribution())
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +135,7 @@ func recordFromOpenRouterEntry(id, provider string, entry map[string]any) record
 // offering them would produce a runtime failure the picker could have
 // prevented. Go's free models are included: Go serves them to outside clients.
 func discoverGateway(ctx context.Context, client *http.Client, provider, baseURL, apiKey string, bundled map[string]record) ([]record, error) {
-	entries, err := getModelEntries(ctx, client, baseURL+"/models", apiKey)
+	entries, err := getModelEntries(ctx, client, baseURL+"/models", apiKey, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +305,7 @@ func discoverOllama(ctx context.Context, client *http.Client, provider, nativeBa
 			Model string `json:"model"`
 		} `json:"models"`
 	}
-	if err := getJSON(ctx, client, nativeBase+"/api/tags", apiKey, &tags); err != nil {
+	if err := getJSON(ctx, client, nativeBase+"/api/tags", apiKey, &tags, nil); err != nil {
 		return nil, err
 	}
 	var out []record
@@ -430,18 +430,18 @@ func ollamaContextWindow(info map[string]any) int {
 
 // getModelEntries fetches an OpenAI-compatible models list, accepting both
 // the rich extension shape and the minimal {id} shape.
-func getModelEntries(ctx context.Context, client *http.Client, url, apiKey string) ([]map[string]any, error) {
+func getModelEntries(ctx context.Context, client *http.Client, url, apiKey string, headers map[string]string) ([]map[string]any, error) {
 	var payload struct {
 		Data []map[string]any `json:"data"`
 	}
-	if err := getJSON(ctx, client, url, apiKey, &payload); err != nil {
+	if err := getJSON(ctx, client, url, apiKey, &payload, headers); err != nil {
 		return nil, err
 	}
 	return payload.Data, nil
 }
 
 // getJSON performs an authenticated GET with a bearer key when non-empty.
-func getJSON(ctx context.Context, client *http.Client, url, apiKey string, target any) error {
+func getJSON(ctx context.Context, client *http.Client, url, apiKey string, target any, headers map[string]string) error {
 	if client == nil {
 		client = &http.Client{}
 	}
@@ -450,6 +450,9 @@ func getJSON(ctx context.Context, client *http.Client, url, apiKey string, targe
 		return fmt.Errorf("catalog: request %s: %w", url, err)
 	}
 	httpReq.Header.Set("Accept", "application/json")
+	for key, value := range headers {
+		httpReq.Header.Set(key, value)
+	}
 	if apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
