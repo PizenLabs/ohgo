@@ -61,8 +61,21 @@ immutable.
   and are never clipped mid-sentence. The footer is derived from the runtime's
   observed outcomes, never from the assistant's closing prose, and it never
   shares a turn with another footer.
+- OpenRouter requests now send the canonical application identity:
+  `HTTP-Referer`, `X-OpenRouter-Title: OHGO`, and
+  `X-OpenRouter-Categories: cli-agent`, replacing the legacy `X-Title`. The
+  same identity covers inference and model discovery. Attribution and
+  agentic-harness eligibility are documented as independent states in
+  `docs/architecture/OPENROUTER.md`.
 
 ### Fixed
+
+- An OpenRouter 403 that failed the
+  `Gate Free Endpoints by Agentic Harness` routing step is classified as an
+  eligibility restriction and explained, while preserving the HTTP status,
+  provider error code, and routing step. Other 403s keep their original
+  meaning. The runtime never claims approval, substitutes a model, or switches
+  from a free endpoint to a paid one.
 
 - A source file paged through a successful shell content reader (`sed`, `cat`,
   `head`, `tail`, `nl`, `less`, `more`, or `bat`) counts as opened for citation

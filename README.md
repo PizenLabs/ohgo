@@ -376,6 +376,12 @@ silently following a changed configuration.
 | Ollama Cloud | `OLLAMA_API_KEY` | native chat | 52 seeds + live discovery |
 | Custom endpoint | `apiKeyEnv` or none | Chat Completions | user-declared |
 
+OpenRouter requests carry OHGO's application identity (`HTTP-Referer`,
+`X-OpenRouter-Title: OHGO`, `X-OpenRouter-Categories: cli-agent`). Attribution
+is not agentic-harness eligibility: a gated free endpoint can still return 403.
+The diagnostic, the eligibility states, and the model-switching boundary are in
+[`docs/architecture/OPENROUTER.md`](docs/architecture/OPENROUTER.md).
+
 The bundled catalog contains **346 model facts across 16 providers**. Model
 facts are data: `catalog.Resolve(provider/id)` is the only source, and no code
 branches on a model id string. An unknown model name is an error everywhere —
