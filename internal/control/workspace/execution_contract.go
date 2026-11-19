@@ -77,6 +77,25 @@ func (c ExecutionContract) Permits(capability Capability) bool {
 	return false
 }
 
+// PermitsRole reports whether the contract authorizes the capability a role
+// exercises: ASK reads, FUZZ executes, BUILD mutates.
+//
+// It is the cross-check a restored task needs. An unresolved role, or a role
+// whose capability the contract never granted, is refused so a resumed turn
+// cannot run under an authority the human did not authorize. It is a read: the
+// live gate still admits every individual call.
+func (c ExecutionContract) PermitsRole(role Workspace) bool {
+	switch role {
+	case Ask:
+		return c.Permits(CapabilityRead)
+	case Fuzz:
+		return c.Permits(CapabilityExecute)
+	case Build:
+		return c.Permits(CapabilityMutate)
+	}
+	return false
+}
+
 // Authorize returns the contract widened by a human-authorized target role.
 //
 // It only adds capability. A narrowing role leaves the origin and the granted

@@ -9,6 +9,8 @@ import (
 	"github.com/PizenLabs/ohgo/internal/agent"
 	"github.com/PizenLabs/ohgo/internal/config"
 	"github.com/PizenLabs/ohgo/internal/continuity/session"
+	"github.com/PizenLabs/ohgo/internal/continuity/task"
+	"github.com/PizenLabs/ohgo/internal/control/contract"
 	"github.com/PizenLabs/ohgo/internal/control/workspace"
 	"github.com/PizenLabs/ohgo/internal/jsonschema"
 	"github.com/PizenLabs/ohgo/internal/provider/ai"
@@ -159,5 +161,78 @@ func TestReplWorkspaceCommandsReachOwner(t *testing.T) {
 	}
 	if strings.Contains(text, "unknown command /ask") || strings.Contains(text, "unknown command /fuzz") || strings.Contains(text, "unknown command /build") {
 		t.Errorf("workspace command reported unknown:\n%s", text)
+	}
+}
+
+// The host seam applies the open task's persisted authority, not the restored
+// session default. This is the production path behind the TUI hook: the live
+// gate, the session snapshot, and the task record must agree after it runs.
+func TestApplyTaskAuthorityRestoresTheContractNotTheSessionDefault(t *testing.T) {
+	held := testSwitchHarness(t)
+	if _, err := held.SwitchWorkspace("fuzz"); err != nil {
+		t.Fatalf("SwitchWorkspace(fuzz): %v", err)
+	}
+	root := t.TempDir()
+	controller := task.NewController(task.NewStore(root), nil)
+	controller.SetRoleSource(func() workspace.Workspace { return held.activeWorkspace() })
+	intent := contract.IntentContract{Objective: "investigate the bottleneck", Kind: contract.ObjectiveInformational}
+	if _, err := controller.Begin(intent, nil); err != nil {
+		t.Fatalf("Begin FUZZ: %v", err)
+	}
+
+	// The next process restores the default BUILD workspace.
+	if _, err := held.SwitchWorkspace("build"); err != nil {
+		t.Fatalf("SwitchWorkspace(build): %v", err)
+	}
+	from, to, moved, err := applyTaskAuthority(held, controller)
+	if err != nil {
+		t.Fatalf("applyTaskAuthority: %v", err)
+	}
+	if !moved || from != workspace.Build || to != workspace.Fuzz {
+		t.Fatalf("restore = %s -> %s moved=%v, want BUILD -> FUZZ", from, to, moved)
+	}
+	if got := held.activeWorkspace(); got != workspace.Fuzz {
+		t.Fatalf("live gate = %s, want FUZZ", got)
+	}
+	current, ok := controller.Current()
+	if !ok {
+		t.Fatal("the restored task disappeared")
+	}
+	if current.ActiveRole != workspace.Fuzz {
+		t.Fatalf("recorded role = %s, want FUZZ", current.ActiveRole)
+	}
+	if current.ExecutionContract.Mutate {
+		t.Fatalf("the restore widened the contract: %s", current.ExecutionContract.String())
+	}
+
+	// A second restore is a no-op: the gate already runs under the contract.
+	if _, _, moved, err := applyTaskAuthority(held, controller); err != nil || moved {
+		t.Fatalf("second restore moved=%v err=%v, want an idempotent no-op", moved, err)
+	}
+
+	// The inverse: a BUILD task restored under a FUZZ session keeps BUILD.
+	buildRoot := t.TempDir()
+	buildController := task.NewController(task.NewStore(buildRoot), nil)
+	buildController.SetRoleSource(func() workspace.Workspace { return held.activeWorkspace() })
+	if _, err := held.SwitchWorkspace("build"); err != nil {
+		t.Fatalf("SwitchWorkspace(build): %v", err)
+	}
+	mutation := contract.IntentContract{
+		Objective:    "fix tools/grep.go",
+		Kind:         contract.ObjectiveMutation,
+		Targets:      []contract.Target{{Kind: contract.TargetPath, Value: "tools/grep.go"}},
+		Verification: []contract.VerificationRequirement{{Check: contract.CheckTest, Scope: "tools"}},
+	}
+	if _, err := buildController.Begin(mutation, nil); err != nil {
+		t.Fatalf("Begin BUILD: %v", err)
+	}
+	if _, err := held.SwitchWorkspace("fuzz"); err != nil {
+		t.Fatalf("SwitchWorkspace(fuzz): %v", err)
+	}
+	if _, to, moved, err := applyTaskAuthority(held, buildController); err != nil || !moved || to != workspace.Build {
+		t.Fatalf("restore to %s moved=%v err=%v, want BUILD", to, moved, err)
+	}
+	if got := held.activeWorkspace(); got != workspace.Build {
+		t.Fatalf("live gate = %s, want the granted BUILD", got)
 	}
 }

@@ -130,6 +130,9 @@ func recoveryReport(progressFound, mdFound bool, progressErr, mdErr error, progr
 	if report.State != RecoveryBlocked && progress.CompletionProblem != "" {
 		reconstruct("the completion proof could not be restored: "+progress.CompletionProblem, "completion proof")
 	}
+	if report.State != RecoveryBlocked && progress.AuthorityProblem != "" {
+		reconstruct("task authority was repaired on load: "+progress.AuthorityProblem, "authorized role")
+	}
 	if report.State != RecoveryBlocked && progress.ContextDropped > 0 {
 		reconstruct(fmt.Sprintf("%d records were invalid and were repaired or dropped", progress.ContextDropped), "damaged records")
 	}

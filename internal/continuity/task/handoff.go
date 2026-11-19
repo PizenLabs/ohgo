@@ -787,6 +787,12 @@ func (c *Controller) ReconcileRecoveredHandoff(live workspace.Workspace) (Handof
 				return HandoffRecovery{Handoff: c.task.Handoff.Clone()}, err
 			}
 			c.task.ActiveRole = current.To
+			// The human-approved target is the authorization the task now
+			// holds. applyApprovedHandoff widens the same contract at the turn
+			// boundary; recovery is the other path that records an applied
+			// transition, so it must persist the identical grant instead of
+			// leaving a BUILD role the contract never authorized.
+			c.task.ExecutionContract = c.task.ExecutionContract.Authorize(current.To)
 			c.role = current.To
 			c.roleKnown = true
 			notice = "approved handoff " + current.From.Label() + " -> " + current.To.Label() +

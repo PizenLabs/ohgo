@@ -34,38 +34,19 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 		}
 		return held.activeContract()
 	}
-	switchTo := func(name, reason, workspaceState string, automatic bool) error {
-		from := held.activeWorkspace()
-		ws, err := held.SwitchWorkspace(name)
-		if err != nil {
-			return err
-		}
-		// A slash command is itself the human's decision; an automatic move is
-		// the control plane's decision. Both are recorded as applied
-		// transitions so the next turn stays attached to the same task.
-		if controller != nil {
-			var recordErr error
-			if automatic {
-				recordErr = controller.RecordAutomaticSwitch(from, ws, reason, workspaceState)
-			} else {
-				recordErr = controller.RecordWorkspaceSwitch(from, ws, workspaceState)
-			}
-			if recordErr != nil {
-				program.PublishNotice("workspace switched; task continuity was not recorded: " + recordErr.Error())
-			}
-		}
-		opts.setAuthority(ws)
+	// publishAuthority republishes the chrome that describes the live role. A
+	// workspace move rebinds the session's model and effort: the header follows
+	// the newly effective role rather than naming a model the loop no longer
+	// calls. Under AUTO the effort belongs to the work, not the role, so the
+	// last selected level survives the move; only an explicit per-role effort
+	// replaces it.
+	publishAuthority := func(ws workspace.Workspace) {
 		style := ws.Style()
 		program.PublishWorkspace(tui.WorkspaceUpdated{
 			Workspace:       style.Label,
 			WorkspaceAccent: style.Accent,
 			HasWorkspace:    true,
 		})
-		// A workspace move rebinds the session's model and effort: the header
-		// follows the newly effective role rather than naming a model the loop
-		// no longer calls. Under AUTO the effort belongs to the work, not the
-		// role, so the last selected level survives the move; only an explicit
-		// per-role effort replaces it.
 		program.PublishModel(held.model.Ref())
 		program.PublishEffort(func() string {
 			role := held.sessionRole()
@@ -88,9 +69,57 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 			}
 			return level
 		}())
-		if !automatic {
-			program.PublishNotice("switched to " + style.Label)
+	}
+	switchTo := func(name, reason, workspaceState string, automatic bool) error {
+		from := held.activeWorkspace()
+		ws, err := held.SwitchWorkspace(name)
+		if err != nil {
+			return err
 		}
+		// A slash command is itself the human's decision; an automatic move is
+		// the control plane's decision. Both are recorded as applied
+		// transitions so the next turn stays attached to the same task.
+		if controller != nil {
+			var recordErr error
+			if automatic {
+				recordErr = controller.RecordAutomaticSwitch(from, ws, reason, workspaceState)
+			} else {
+				recordErr = controller.RecordWorkspaceSwitch(from, ws, workspaceState)
+			}
+			if recordErr != nil {
+				program.PublishNotice("workspace switched; task continuity was not recorded: " + recordErr.Error())
+			}
+		}
+		opts.setAuthority(ws)
+		publishAuthority(ws)
+		if !automatic {
+			program.PublishNotice("switched to " + ws.Style().Label)
+		}
+		return nil
+	}
+	// restoreTaskAuthority aligns the live workspace with the open task's
+	// persisted contract. The task layer decides the target (Task.TurnRole);
+	// this function only applies it through the one switch owner, so the live
+	// gate, the session snapshot, and the task record cannot disagree. It never
+	// widens the contract: a role the contract does not grant is refused.
+	//
+	// It is not a handoff: only the ambient session had drifted, so a handoff
+	// record would claim a role change the task never made. The task gets a
+	// resume event naming both roles instead.
+	restoreTaskAuthority := func() error {
+		handoffMu.Lock()
+		defer handoffMu.Unlock()
+		from, to, moved, recordErr := applyTaskAuthority(held, controller)
+		if !moved {
+			return recordErr
+		}
+		opts.setAuthority(to)
+		if recordErr != nil {
+			program.PublishNotice("workspace restored; task continuity was not recorded: " + recordErr.Error())
+		}
+		publishAuthority(to)
+		program.PublishNotice("authority restored: " + from.Label() + " → " + to.Label() +
+			" (the task's contract, not the session default)")
 		return nil
 	}
 	program.SetWorkspaceSwitcher(tui.WorkspaceHooks{
@@ -101,7 +130,8 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 		Predict: func(text string, taskOwned bool) (tui.TurnTransition, bool) {
 			return turnTransition(held, executionContractForTurn(held.activeWorkspace(), taskOwned, executionContract), text)
 		},
-		ExecutionContract: executionContract,
+		ExecutionContract:    executionContract,
+		RestoreTaskAuthority: restoreTaskAuthority,
 		// The tool boundary is the other place a staged task changes phase:
 		// the model files a finding (FUZZ) or changes source (BUILD) before it
 		// has any reason to ask. The control plane applies its ordinary
@@ -128,6 +158,40 @@ func installWorkspaceHooks(program *tui.Program, held *harness, controller *task
 			return true
 		},
 	})
+}
+
+// applyTaskAuthority moves the live workspace to the authority the open task's
+// persisted contract grants.
+//
+// It is the decision half of the turn-boundary restore, kept separate from the
+// TUI chrome so the host boundary can be exercised without a program. The task
+// layer supplies the target; this function only applies it through the one
+// switch owner and records the realignment on the same task.
+//
+// moved reports that the live gate moved. recordErr reports that the move
+// happened but the task record did not: the caller must report that, never run
+// the turn as if the task and the gate agreed.
+func applyTaskAuthority(held *harness, controller *task.Controller) (from, to workspace.Workspace, moved bool, recordErr error) {
+	if held == nil || controller == nil {
+		return "", "", false, nil
+	}
+	current, ok := controller.Current()
+	if !ok {
+		return "", "", false, nil
+	}
+	target := current.TurnRole()
+	if !target.Valid() {
+		return "", "", false, nil
+	}
+	from = held.activeWorkspace()
+	if from == target {
+		return from, target, false, nil
+	}
+	to, err := held.SwitchWorkspace(target.String())
+	if err != nil {
+		return from, target, false, err
+	}
+	return from, to, true, controller.RecordAuthorityRestore(from, to)
 }
 
 // executionContractForTurn selects the authority evidence a transition

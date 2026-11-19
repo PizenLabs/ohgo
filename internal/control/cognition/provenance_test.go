@@ -1,6 +1,8 @@
 package cognition
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -553,5 +555,44 @@ func TestDomainHeadingIsNotAProvenanceClaim(t *testing.T) {
 		if term == "shopping" || term == "cart" {
 			t.Fatalf("documentation terms = %v, want the domain heading excluded", terms)
 		}
+	}
+}
+
+// Documentation stays documentation after the persisted evidence ledger is
+// reloaded. The ledger is written to progress.json at every checkpoint, so a
+// field missing from its wire form would let a resumed answer present a README
+// claim as an observed implementation fact.
+func TestProvenanceSurvivesThePersistedEvidenceLedger(t *testing.T) {
+	shape := broadShape(RepositoryFacts{Go: true})
+	state := NewEvidenceState()
+	observeReads(state, shape,
+		readEvidenceForTest("read-1", "README.md", "The platform uses PostgreSQL and HTMX."),
+		readEvidenceForTest("read-2", "main.go", "package main"),
+	)
+	before := state.Provenance(shape)
+	if !before.HasDocumentation || !before.HasImplementation || !before.RequireAttribution {
+		t.Fatalf("setup provenance = %+v, want documentation + implementation in a broad account", before)
+	}
+	found := false
+	for _, term := range before.DocumentationTerms {
+		if term == "postgresql" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("documentation terms = %v, want postgresql documented-only", before.DocumentationTerms)
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal evidence state: %v", err)
+	}
+	var restored EvidenceState
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("unmarshal evidence state: %v", err)
+	}
+	after := restored.Provenance(shape)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("provenance changed across persistence:\nbefore %+v\nafter  %+v", before, after)
 	}
 }

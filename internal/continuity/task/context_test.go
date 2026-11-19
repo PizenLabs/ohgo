@@ -57,7 +57,7 @@ func TestTaskIdentitySurvivesRoleChangeAndRoleContextsStayIsolated(t *testing.T)
 		t.Fatalf("FUZZ context: %v", err)
 	}
 
-	role = workspace.Ask
+	grantAuthority(t, controller, &role, workspace.Ask)
 	resumedAsAsk, err := controller.Begin(intent, nil)
 	if err != nil {
 		t.Fatalf("Begin as ASK: %v", err)
@@ -72,7 +72,7 @@ func TestTaskIdentitySurvivesRoleChangeAndRoleContextsStayIsolated(t *testing.T)
 		t.Fatalf("ASK context: %v", err)
 	}
 
-	role = workspace.Build
+	grantAuthority(t, controller, &role, workspace.Build)
 	resumedAsBuild, err := controller.Begin(intent, nil)
 	if err != nil {
 		t.Fatalf("Begin as BUILD: %v", err)

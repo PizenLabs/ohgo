@@ -105,7 +105,7 @@ func TestRoleChangeKeepsTaskIdentityAndContext(t *testing.T) {
 
 	// The user switches authority and continues the same objective. The
 	// prompt is not in the continuation phrase list; only the role changed.
-	role = workspace.Fuzz
+	switchAuthority(t, controller, &role, workspace.Fuzz)
 	program.runTurn("fix the flaky test in note.txt")
 	second, ok := controller.Current()
 	if !ok {
@@ -216,6 +216,23 @@ func taskContains(values []string, want string) bool {
 	return false
 }
 
+// switchAuthority models the workspace owner's human switch: the live role
+// moves first, then the transition is recorded, which is what widens the
+// task's persistent contract. A bare role assignment would be a host that
+// skipped the recording boundary, and the task layer refuses to run an open
+// task under authority its contract never granted.
+func switchAuthority(t *testing.T, controller *task.Controller, role *workspace.Workspace, next workspace.Workspace) {
+	t.Helper()
+	from := *role
+	if from == next {
+		return
+	}
+	*role = next
+	if err := controller.RecordWorkspaceSwitch(from, next, ""); err != nil {
+		t.Fatalf("record workspace switch %s -> %s: %v", from.Label(), next.Label(), err)
+	}
+}
+
 // The complete Phase 1 scenario through the real turn entrypoint: ASK reads,
 // FUZZ investigates, BUILD implements and verifies, FUZZ and BUILD resume, the
 // application restarts, and the same task is restored with every context.
@@ -292,7 +309,7 @@ func TestPhase1ContinuityScenarioThroughRuntime(t *testing.T) {
 	}
 
 	// 2. FUZZ investigates, records a reproduction, and resolves a hypothesis.
-	role = workspace.Fuzz
+	switchAuthority(t, controller, &role, workspace.Fuzz)
 	program.runTurn(objective)
 	fuzzTask, ok := controller.Current()
 	if !ok || fuzzTask.ID != firstID {
@@ -324,7 +341,7 @@ func TestPhase1ContinuityScenarioThroughRuntime(t *testing.T) {
 	}
 
 	// 3. BUILD consumes the shared context, implements, and records progress.
-	role = workspace.Build
+	switchAuthority(t, controller, &role, workspace.Build)
 	program.runTurn(objective)
 	buildTask, ok := controller.Current()
 	if !ok || buildTask.ID != firstID {
@@ -347,7 +364,7 @@ func TestPhase1ContinuityScenarioThroughRuntime(t *testing.T) {
 	}
 
 	// 4. FUZZ resumes against the latest implementation without mutation.
-	role = workspace.Fuzz
+	switchAuthority(t, controller, &role, workspace.Fuzz)
 	program.runTurn(objective)
 	fuzzAgain, ok := controller.Current()
 	if !ok || fuzzAgain.ID != firstID {
@@ -365,7 +382,7 @@ func TestPhase1ContinuityScenarioThroughRuntime(t *testing.T) {
 	}
 
 	// 5. BUILD resumes with its own context and the new shared findings.
-	role = workspace.Build
+	switchAuthority(t, controller, &role, workspace.Build)
 	program.runTurn(objective)
 	buildAgain, ok := controller.Current()
 	if !ok || buildAgain.ID != firstID {

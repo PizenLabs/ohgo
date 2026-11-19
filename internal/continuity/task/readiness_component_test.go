@@ -22,6 +22,23 @@ import (
 
 const readinessObjective = "Fix GrepTool in tools/grep.go and run go test ./tools"
 
+// grantAuthority models the workspace owner's human switch: the live role
+// moves first, then the transition is recorded, which is what widens the
+// task's persistent contract. A bare role assignment would be a host that
+// skipped the recording boundary, and Begin refuses to run an open task under
+// authority its contract never granted.
+func grantAuthority(t *testing.T, controller *Controller, role *workspace.Workspace, next workspace.Workspace) {
+	t.Helper()
+	from := *role
+	if from == next {
+		return
+	}
+	*role = next
+	if err := controller.RecordWorkspaceSwitch(from, next, ""); err != nil {
+		t.Fatalf("record workspace switch %s -> %s: %v", from.Label(), next.Label(), err)
+	}
+}
+
 func readinessIntent() contract.IntentContract {
 	return contract.IntentContract{
 		Objective:    readinessObjective,
@@ -77,7 +94,7 @@ func TestReadinessA01TaskIdentityAcrossManyTurns(t *testing.T) {
 	for i, next := range []workspace.Workspace{
 		workspace.Fuzz, workspace.Build, workspace.Ask, workspace.Build, workspace.Fuzz, workspace.Build,
 	} {
-		role = next
+		grantAuthority(t, c, &role, next)
 		advance(&clock)
 		current := mustBegin(t, c, readinessIntent())
 		if current.ID != first.ID {

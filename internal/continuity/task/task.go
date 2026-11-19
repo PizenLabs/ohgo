@@ -164,10 +164,10 @@ type Task struct {
 	// its own schema version.
 	Context SharedContext `json:"context,omitempty"`
 	// ActiveRole is the execution role the task last ran under. It is
-	// continuity metadata, never authority: the turn gate uses it to tell a
-	// role change on the same objective from a new request. It is additive and
-	// optional; a task written before it existed derives the same value from
-	// its role contexts.
+	// continuity metadata that becomes authority evidence only together with
+	// ExecutionContract: TurnRole restores it when the contract authorizes the
+	// capability, so it can never widen the task. A task written before it
+	// existed derives the same value from its role contexts.
 	ActiveRole workspace.Workspace `json:"activeRole,omitempty"`
 	// ExecutionContract is the authority the task was created under and the
 	// capabilities a human has authorized since. It is the persistent origin
@@ -230,6 +230,13 @@ var ErrInvalidTask = errors.New("task: invalid task")
 // existing task or abandon it explicitly; silently attaching a different
 // objective would let the old task inherit unrelated evidence.
 var ErrObjectiveConflict = errors.New("task: new objective conflicts with the active task")
+
+// ErrAuthorityConflict means the live workspace is not one the non-terminal
+// task's execution contract authorizes. The task boundary restores the
+// contract before Begin (Task.TurnRole); reaching it with a wider role means
+// the host skipped that restore, and recording it would persist authority the
+// human never granted.
+var ErrAuthorityConflict = errors.New("task: live authority is not authorized by the task contract")
 
 // Validate reports whether the task satisfies the contract a checkpoint needs.
 func (t Task) Validate() error {
@@ -392,6 +399,36 @@ func (t Task) Origin() workspace.Workspace {
 		return t.ExecutionContract.Origin
 	}
 	return ""
+}
+
+// TurnRole returns the execution role a continuation of this task must run
+// under.
+//
+// The persisted authority contract decides, not the ambient session: the role
+// the task last ran under when the contract authorizes that role's capability,
+// otherwise the strongest authority the contract actually grants. A new
+// session, a restored workspace, a different model, or an older checkpoint can
+// therefore never widen a task's authority, and a granted capability is not
+// lost to the default that happened to be restored.
+//
+// It is the restore target for a task-owned turn. It never grants anything:
+// the host must still move the live gate through the workspace owner, and that
+// gate admits every call. A task with no usable contract and no recorded role
+// reports the zero Workspace, so the caller keeps the live role instead of
+// inventing one.
+func (t Task) TurnRole() workspace.Workspace {
+	if last := t.LastRole(); last.Valid() && t.ExecutionContract.PermitsRole(last) {
+		return last
+	}
+	switch {
+	case t.ExecutionContract.Permits(workspace.CapabilityMutate):
+		return workspace.Build
+	case t.ExecutionContract.Permits(workspace.CapabilityExecute):
+		return workspace.Fuzz
+	case t.ExecutionContract.Valid():
+		return workspace.Ask
+	}
+	return t.LastRole()
 }
 
 // Todo returns the item with the given id.

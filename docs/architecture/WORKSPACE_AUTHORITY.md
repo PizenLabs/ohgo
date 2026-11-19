@@ -91,6 +91,42 @@ ExecutionContract
   the task grant only for an owned continuation, and a new task is created
   under the live role.
 
+### 2.1.1 Resuming an open task
+
+A session's active workspace is persisted per session and defaults to BUILD. It
+is the authority for the *session*, not a grant for an open task that outlived
+it. When a prompt is owned by an open task, the turn boundary restores the
+task's authority before the model is asked:
+
+```text
+Task.ExecutionContract + Task.activeRole
+        │  Task.TurnRole()
+        ▼
+workspace owner (SwitchWorkspace)  →  live gate, session snapshot, model
+        │
+        ▼
+Controller.Begin  (refuses a role the contract never authorized)
+```
+
+- `Task.TurnRole` returns the role the task last ran under when the contract
+  authorizes that role's capability, otherwise the strongest role the contract
+  actually grants. It never widens the contract and never invents an origin.
+- Both directions are restored. A FUZZ task resumed in a BUILD session runs as
+  FUZZ; a BUILD task resumed in a FUZZ session runs as BUILD. Session defaults,
+  restored workspaces, model changes, and older checkpoints are not grants.
+- The restore is recorded on the same task as a resume event, not as a handoff:
+  the task did not change roles, only the ambient session had drifted.
+- Two human decisions win over the restore: an explicit per-turn workspace
+  choice in the selector, and a pending approved handoff (whose target is the
+  authority the approving turn runs under, and whose approval widens the
+  contract when `Begin` applies it).
+- `Controller.Begin` refuses a live role outside the task's contract with
+  `ErrAuthorityConflict`. A host that skips the restore fails loudly instead of
+  persisting the escalation for the next resume to restore.
+- A checkpoint whose recorded role the contract never authorized (written
+  before this rule existed) is repaired on load to the granted authority and
+  reported as `RECONSTRUCTED`. The repair never widens the contract.
+
 ### 2.2 Hosts without a durable task
 
 `ohgo run` and the plain line REPL have no durable task record, but they still
