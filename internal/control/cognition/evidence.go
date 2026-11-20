@@ -585,7 +585,7 @@ func (s *EvidenceState) Satisfied(key string, execution ExecutionState) bool {
 		if path == "" {
 			return false
 		}
-		if item, ok := s.Find("file:" + path); ok && item.Status != StatusConflicting &&
+		if item, ok := s.targetFile(path); ok && item.Status != StatusConflicting &&
 			item.Status != StatusRequired && item.Status != StatusUnknown &&
 			strings.TrimSpace(item.Value) != "" {
 			return true
@@ -790,6 +790,85 @@ func (s *EvidenceState) containsEvidence(kind, value string) bool {
 	return false
 }
 
+// bareDocumentNames are the extensionless documentation names the request
+// extractor treats as files. Only these may resolve to a suffixed document;
+// a bare directory target such as "docs" must still be satisfied by its own
+// listing.
+var bareDocumentNames = map[string]bool{
+	"readme": true, "license": true, "changelog": true,
+}
+
+// targetFile returns the file observation that answers a named file target.
+//
+// A bare document name ("README") names the repository's readme, which is
+// conventionally README.md. The read observation records the real path, so
+// matching only "file:README" would leave the requirement unsatisfied forever
+// and keep offering read tools to a model that had already read the document.
+// Only a documentation-class file can resolve a bare name; a root document
+// wins over one in a subdirectory, and an ambiguous non-root set stays
+// unresolved rather than guessed.
+func (s *EvidenceState) targetFile(path string) (EvidenceItem, bool) {
+	path = cleanPath(path)
+	if path == "" {
+		return EvidenceItem{}, false
+	}
+	if item, ok := s.Find("file:" + path); ok {
+		return item, true
+	}
+	if strings.Contains(path, "/") || filepath.Ext(path) != "" {
+		return EvidenceItem{}, false
+	}
+	stem := strings.ToLower(path)
+	if !bareDocumentNames[stem] {
+		return EvidenceItem{}, false
+	}
+	var root, nested *EvidenceItem
+	nestedCount := 0
+	for i := range s.Items {
+		item := &s.Items[i]
+		if !strings.HasPrefix(item.ID, "file:") {
+			continue
+		}
+		observed := cleanPath(item.Source.Path)
+		if observed == "" || agent.ClassifyPath(observed) != agent.PathDocumentation {
+			continue
+		}
+		if documentStem(observed) != stem {
+			continue
+		}
+		if strings.Contains(observed, "/") {
+			nested = item
+			nestedCount++
+			continue
+		}
+		if root != nil {
+			// Two root documents with the same stem is not a name to guess
+			// between.
+			return EvidenceItem{}, false
+		}
+		root = item
+	}
+	if root != nil {
+		return *root, true
+	}
+	if nested != nil && nestedCount == 1 {
+		return *nested, true
+	}
+	return EvidenceItem{}, false
+}
+
+// documentStem returns the name a documentation file shares with a bare
+// reference: the basename without a documentation suffix.
+func documentStem(path string) string {
+	base := strings.ToLower(filepath.Base(path))
+	ext := strings.ToLower(filepath.Ext(base))
+	switch ext {
+	case ".md", ".markdown", ".rst", ".txt", ".adoc", ".org":
+		return strings.TrimSuffix(base, ext)
+	}
+	return base
+}
+
 // targetStateKnown reports whether a path's existence state is known from a
 // read, a complete directory listing, or a runtime mutation.
 func (s *EvidenceState) targetStateKnown(path string) bool {
@@ -797,7 +876,7 @@ func (s *EvidenceState) targetStateKnown(path string) bool {
 	if path == "" {
 		return false
 	}
-	if item, ok := s.Find("file:" + path); ok {
+	if item, ok := s.targetFile(path); ok {
 		return item.Status == StatusKnown || item.Status == StatusDerived
 	}
 	if item, ok := s.Find("mutation:" + path); ok {
@@ -2310,17 +2389,38 @@ func firstLine(text string) string {
 	return strings.TrimSpace(text)
 }
 
+// stripReadLinePrefix removes the "123\t" prefix the read tool puts on every
+// line of an observation. The stored evidence value is that display text, so a
+// parser of the document's prose must see the line, not its gutter.
+func stripReadLinePrefix(line string) string {
+	trimmed := strings.TrimLeft(line, " \t")
+	digits := 0
+	for digits < len(trimmed) && trimmed[digits] >= '0' && trimmed[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || digits >= len(trimmed) || trimmed[digits] != '\t' {
+		return line
+	}
+	return trimmed[digits+1:]
+}
+
+// stripReadLineNumbers applies stripReadLinePrefix to every line.
+func stripReadLineNumbers(text string) string {
+	if !strings.Contains(text, "\t") {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = stripReadLinePrefix(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // firstContentLine returns the first line of a read result without its line
 // number prefix, so a summary names what the file is rather than "1\tpackage".
 func firstContentLine(text string) string {
 	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if tab := strings.IndexByte(line, '\t'); tab >= 0 {
-			line = strings.TrimSpace(line[tab+1:])
-		}
+		line = strings.TrimSpace(stripReadLinePrefix(line))
 		if line == "" || strings.HasPrefix(line, "[showing ") {
 			continue
 		}

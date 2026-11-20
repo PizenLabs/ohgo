@@ -932,3 +932,60 @@ func TestEpistemicContradictionLimitIsNotAbsence(t *testing.T) {
 		t.Fatal("an actual absence assertion was ignored")
 	}
 }
+
+// A negated event reports that the external state did not happen. Session 733
+// answered "No tests were run and no server/database was executed" and the
+// runtime reviewed it as an assertion that the server was used, because the
+// event pattern saw "server ... executed" and ignored the negation.
+func TestAssessGroundingAcceptsANegatedExternalEvent(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective:  "Investigate this project and analyze what this project is about.",
+		Action:     contract.GroundingRead,
+		Confidence: contract.GroundingConfidenceHigh,
+	})
+	for _, answer := range []string{
+		"No tests were run and no server/database was executed.",
+		"The workflow was not executed.",
+		"The deployment was never published.",
+		"The server hasn't been executed.",
+	} {
+		if assessment := AssessGrounding(intent, nil, answer); !assessment.Pass() {
+			t.Fatalf("%q was reviewed as an external claim: %s", answer, assessment.Reason())
+		}
+	}
+
+	// A positive event in the same shape is still a claim that needs an
+	// observation: the negation must attach to that event, not to the answer.
+	for _, answer := range []string{
+		"The server was executed.",
+		"No tests were run, but the deployment was executed.",
+		"The workflow ran and the server was executed.",
+	} {
+		if assessment := AssessGrounding(intent, nil, answer); assessment.Pass() {
+			t.Fatalf("%q passed without an external observation", answer)
+		}
+	}
+}
+
+// "No source files were read" reports what this run observed, not what the
+// repository contains. Session 731 was reviewed for exactly that sentence
+// while being honest about its evidence gap; a repository-wide absence in the
+// same grammatical shape must still be reviewed.
+func TestNegatedRunObservationIsNotARepositoryAbsence(t *testing.T) {
+	intent := informationalContract(&contract.IntentGrounding{
+		Objective:  "Investigate this project and analyze what this project is about.",
+		Action:     contract.GroundingRead,
+		Confidence: contract.GroundingConfidenceHigh,
+	})
+	for _, answer := range []string{
+		"No source files were read beyond the README, so no implementation behavior was verified.",
+		"No files were inspected in the docs directory.",
+	} {
+		if assessment := AssessGrounding(intent, nil, answer); !assessment.Pass() {
+			t.Fatalf("%q was reviewed as a repository absence: %s", answer, assessment.Reason())
+		}
+	}
+	if assessment := AssessGrounding(intent, nil, "No tests exist in this repository."); assessment.Pass() {
+		t.Fatal("a repository-wide absence claim passed without a scan")
+	}
+}

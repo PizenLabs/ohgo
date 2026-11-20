@@ -38,13 +38,15 @@ var (
 	// and must earn the same coverage.
 	negativeAbsenceOfPattern = regexp.MustCompile(
 		`(?i)\babsence\s+of\s+([a-z0-9][a-z0-9 _./-]{0,40}?)(?:\s+(?:is|are|was|were|in|within|at|on|for|to)\b|[.,;:]|$)`)
-	// changeReportPattern follows a negated quantity with a change predicate.
-	// "No files were modified" reports what the run did to the workspace, not
-	// what the repository contains. No file scan can establish it, and it is
-	// not the existence claim the negative-conclusion check exists to police.
+	// changeReportPattern follows a negated quantity with a run predicate.
+	// "No files were modified" and "no source files were read" report what the
+	// run did, not what the repository contains. No file scan can establish
+	// them, and they are not the existence claim the negative-conclusion check
+	// exists to police.
 	changeReportPattern = regexp.MustCompile(
 		`(?i)^\s*(?:(?:was|were|is|are|has\s+been|have\s+been|had\s+been|got)\s+)?` +
-			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited)\b`)
+			`(?:modified|changed|created|deleted|removed|added|written|rewritten|touched|altered|renamed|moved|edited` +
+			`|read|inspected|examined|reviewed|opened|loaded|queried|searched|sampled|observed)\b`)
 	globalScopePattern = regexp.MustCompile(
 		`(?i)\b(?:repository|repo|project|codebase|workspace)\b`)
 	// rootScopePattern names a location bounded to the top level of the tree.
@@ -85,6 +87,15 @@ var (
 	// what is possible or configured; "was triggered at 03:17" is an event.
 	modalEventPattern = regexp.MustCompile(
 		`(?i)\b(?:can|could|may|might|will|would|should|must|is|are)\s+(?:also\s+|automatically\s+)?(?:be\s+)?$`)
+	// negatedEventPattern marks a negator inside the event's subject phrase:
+	// "the server was not executed", "the workflow hasn't run". The sentence
+	// then reports that the event did not happen.
+	negatedEventPattern = regexp.MustCompile(
+		`(?i)\b(?:not|never|no|none|without|nor|neither)\b|\b\w+n['’]t\b`)
+	// negatedLeadPattern marks a negator immediately before the event's
+	// subject: "no server was executed", "no deployment was published".
+	negatedLeadPattern = regexp.MustCompile(
+		`(?i)\b(?:no|not|never|without|nor|neither)\s+$`)
 	// uncertaintyPattern marks an honest report about external state: the
 	// answer names the claim in order to say it cannot be established.
 	uncertaintyPattern = regexp.MustCompile(
@@ -521,6 +532,12 @@ func externalClaims(answer string) []string {
 			if len(match) >= 4 && descriptiveEventForm(answer, match[2]) {
 				continue
 			}
+			// A negated event reports that the external state did not occur.
+			// "No tests were run and no server/database was executed" is an
+			// evidence-gap report, not the claim that the server was used.
+			if len(match) >= 4 && negatedEventForm(answer, match[0], match[2]) {
+				continue
+			}
 			consider(match[0], match[1])
 		}
 	}
@@ -554,6 +571,27 @@ func descriptiveEventForm(answer string, verbStart int) bool {
 		}
 	}
 	return false
+}
+
+// negatedEventForm reports whether the event verb is negated by its own
+// subject phrase, so the sentence states that the event did not happen.
+//
+// The negator must attach to the subject or sit inside the subject-verb
+// phrase. Scanning the whole sentence would excuse a real claim next to an
+// unrelated negation ("no tests were run, but the deployment was executed"),
+// which is exactly the assertion this check exists to review.
+func negatedEventForm(answer string, subjectStart, verbStart int) bool {
+	if subjectStart < 0 || verbStart <= subjectStart || verbStart > len(answer) {
+		return false
+	}
+	if negatedEventPattern.MatchString(strings.ToLower(answer[subjectStart:verbStart])) {
+		return true
+	}
+	lead := subjectStart - 16
+	if lead < 0 {
+		lead = 0
+	}
+	return negatedLeadPattern.MatchString(strings.ToLower(answer[lead:subjectStart]))
 }
 
 // uncertaintyWindow returns the sentence around a claim, so a hedge in the same
