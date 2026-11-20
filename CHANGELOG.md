@@ -7,6 +7,33 @@ immutable.
 
 ### Fixed
 
+- A documentation reference no longer narrows a project-wide account. "Facts
+  documented by the README" names the README as the source of one claim, but
+  the extracted path target made the request look targeted, so the runtime
+  could answer a source-verified architecture question from the README, a
+  directory listing, and a structural overview. The documentation-axis request
+  keeps its `repository_survey` requirement, which needs an implementation
+  observation before the answer boundary opens.
+- A negated external event is no longer audited as an assertion that it
+  happened. "No tests were run and no server/database was executed" was
+  reviewed as "external state the run never observed"; the event check now
+  requires the negator to attach to the event's own subject phrase, so
+  "no tests were run, but the deployment was executed" is still a claim.
+- A run observation is no longer audited as a repository absence. "No source
+  files were read beyond the README" reports what this run inspected, not that
+  the repository contains no source; the negated-quantity check now recognizes
+  inspection predicates as run facts. "No tests exist in this repository"
+  still needs coverage that can establish absence.
+- A read observation stores the read tool's line-numbered display text. The
+  provenance check now strips that gutter before reading a document's opening
+  definition, so a README's own project name ("GoCommerce is an e-commerce
+  application") is treated as identity instead of an unobserved implementation
+  claim, and a gutter line number is no longer audited as a documented metric.
+- A bare document target (`target_content:README`, `target_state:README`) now
+  resolves to the observed documentation file with the same name (README.md,
+  LICENSE.txt, CHANGELOG.rst). A root document wins over a nested one, and an
+  ambiguous set stays unresolved. Previously the requirement could never be
+  satisfied, so an investigation re-read the README until the run stalled.
 - A dotfile request (`update .gitignore file`, `read backend/.env`) now names a
   literal path target. The path tokenizer dropped the leading dot, so the
   contract was ambiguous and the task could never prove the named file changed.

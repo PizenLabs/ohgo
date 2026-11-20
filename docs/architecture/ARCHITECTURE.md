@@ -782,7 +782,11 @@ the model said. Two properties keep the loop honest and small:
   need: at least two content observations or one content observation plus
   structure. A named coordinate, a specific artifact ("this project's license",
   the test suite, one file), or a named repository concept ("the checkout
-  flow") stays targeted even when the sentence contains a broad verb. The
+  flow") stays targeted even when the sentence contains a broad verb. A
+  documentation path introduced by a provenance phrase ("facts documented by
+  the README", "according to the README") attributes one class of claims
+  rather than naming the subject, so it does not narrow a project-wide account
+  that names the repository itself. The
   classification is deterministic and derived from the objective and the
   contract's targets and concept entities, so unusual wording does not fall
   back to the single-observation policy and narrow questions are not forced
