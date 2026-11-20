@@ -145,7 +145,9 @@ var (
 	// files read". The limitation is part of the claim, not boilerplate around
 	// a repository-wide conclusion.
 	boundedScopePattern = regexp.MustCompile(
-		`(?i)\b(?:in|within)\s+(?:the\s+|this\s+|our\s+|an?\s+)?(?:inspected|read|queried|listed|observed|examined|reviewed|sampled)\s+(?:scope|source|files?|code|content|portion|part|subset|range|listing|inventory)\b`)
+		`(?i)\b(?:in|within)\s+(?:the\s+|this\s+|our\s+|an?\s+)?` +
+			`(?:(?:available|observed|current|provided|returned|partial|complete|full|existing|inspected|read|queried|listed|examined|reviewed|sampled)\s+)?` +
+			`(?:scope|source|files?|code|content|portion|part|subset|range|listing|inventory)\b`)
 
 	// boundedUnqueriedPattern reports that the check behind a negative claim
 	// never ran, which is a run fact rather than a repository property. It is
@@ -201,6 +203,7 @@ func claimScopeIssues(answer string, turns []Turn) []claimIssue {
 		if issue := structuralRelationClaimIssue(sentence, turns); issue != nil {
 			issues = append(issues, *issue)
 		}
+		issues = append(issues, codeClaimIssues(sentence, turns)...)
 		if issue := citationClaimIssue(sentence, turns); issue != nil {
 			issues = append(issues, *issue)
 		}
@@ -230,6 +233,7 @@ func claimScopeIssues(answer string, turns []Turn) []claimIssue {
 func prioritizeClaimIssues(issues []claimIssue) []claimIssue {
 	rank := map[string]int{
 		"unsupported_implementation_claim": 0,
+		"unsupported_code_claim":           1,
 		"unsupported_completeness_claim":   1,
 		"unsupported_runtime_state":        2,
 		"unsupported_dependency_claim":     3,
@@ -969,7 +973,8 @@ func boundedNegativeReport(sentence string) bool {
 	for _, marker := range []string{
 		"not evaluated", "not inspected", "not checked", "not probed",
 		"not searched", "in the inspected scope", "in the inspected source",
-		"in the inspected files", "worth verifying", "would need to check",
+		"in the inspected files", "limited to the inspected", "limited to the tested",
+		"limited to the searched", "worth verifying", "would need to check",
 		"would need to verify", "would need to inspect", "would need to search",
 		"in the probes", "in this pass", "in this scan",
 	} {

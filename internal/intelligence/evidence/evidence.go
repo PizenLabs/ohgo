@@ -127,6 +127,12 @@ const (
 	FreshnessCurrent Freshness = "CURRENT"
 	FreshnessStale   Freshness = "STALE"
 	FreshnessUnknown Freshness = "UNKNOWN"
+	// FreshnessUnavailable means the source required to establish currency
+	// could not be read: a missing workspace root, an outside-root path, an
+	// unreadable file, or an oversized file beyond the verification bound. It
+	// is not STALE (the evidence did not contradict the index) and not UNKNOWN
+	// (freshness was not merely absent): the check itself was impossible.
+	FreshnessUnavailable Freshness = "UNAVAILABLE"
 )
 
 // Ref is one provenance coordinate.

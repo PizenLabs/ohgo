@@ -188,6 +188,10 @@ type Index struct {
 	// when the walk root is a subdirectory. The index never widens its walk
 	// to include a parent module.
 	moduleRoot string
+	// moduleAmbiguous and moduleCandidates record sibling modules no single
+	// module owns. They are scope facts of the same snapshot.
+	moduleAmbiguous  bool
+	moduleCandidates []string
 	// jsPaths is the TypeScript/JavaScript resolution configuration of the
 	// same scan; it is refreshed with the snapshot, never read independently.
 	jsPaths jsPathConfig
@@ -298,6 +302,10 @@ type treeScan struct {
 	// indexed Go files. It may be the walk root, a nested module, or a parent
 	// module when the walk root is a subdirectory of one.
 	moduleRoot string
+	// moduleAmbiguous and moduleCandidates record sibling modules that no
+	// single module owns.
+	moduleAmbiguous  bool
+	moduleCandidates []string
 	// jsPaths is the repository-relative TypeScript/JavaScript alias table
 	// observed for this scan.
 	jsPaths jsPathConfig
@@ -387,7 +395,8 @@ func (idx *Index) scanLockedCtx(ctx context.Context) (treeScan, error) {
 	for _, rel := range nestedRoots {
 		scan.nestedProjects = append(scan.nestedProjects, idx.projectBoundary(rel, scan.excludedRoots))
 	}
-	scan.module, scan.moduleSig, scan.moduleRoot = discoverModule(idx.walkRoot, scan.files)
+	scan.module, scan.moduleSig, scan.moduleRoot, scan.moduleCandidates = discoverModule(idx.walkRoot, scan.files)
+	scan.moduleAmbiguous = len(scan.moduleCandidates) > 0
 	scan.jsPaths = loadJSPaths(idx.walkRoot)
 	return scan, nil
 }
@@ -525,6 +534,10 @@ func (idx *Index) treeChangedLocked(scan treeScan, watchModule bool) bool {
 		}
 	}
 	if watchModule && scan.moduleSig != idx.moduleSig {
+		return true
+	}
+	if watchModule && (scan.moduleAmbiguous != idx.moduleAmbiguous ||
+		strings.Join(scan.moduleCandidates, "\x00") != strings.Join(idx.moduleCandidates, "\x00")) {
 		return true
 	}
 	if len(scan.unreadable) != len(idx.unreadable) {
@@ -863,6 +876,8 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull,
 	idx.modulePath = scan.module
 	idx.moduleSig = scan.moduleSig
 	idx.moduleRoot = scan.moduleRoot
+	idx.moduleAmbiguous = scan.moduleAmbiguous
+	idx.moduleCandidates = append([]string(nil), scan.moduleCandidates...)
 	idx.jsPaths = scan.jsPaths
 	idx.graph = graph
 	idx.symbolGraph = symbolGraph
@@ -1181,9 +1196,9 @@ func nearestModuleRoot(root string) string {
 // An ambiguous layout (several sibling modules) returns no module rather than
 // choosing one: a module identity selected by directory order would silently
 // mis-resolve every import in the other modules.
-func discoverModule(walkRoot string, files map[string]fileSig) (string, moduleSig, string) {
+func discoverModule(walkRoot string, files map[string]fileSig) (string, moduleSig, string, []string) {
 	if module, sig := readModule(walkRoot); module != "" {
-		return module, sig, walkRoot
+		return module, sig, walkRoot, nil
 	}
 
 	var candidates []string
@@ -1202,7 +1217,7 @@ func discoverModule(walkRoot string, files map[string]fileSig) (string, moduleSi
 	})
 	if len(candidates) > 0 {
 		shallow := candidates[0]
-		ambiguous := false
+		var siblings []string
 		for _, candidate := range candidates[1:] {
 			if moduleDepth(candidate) != moduleDepth(shallow) {
 				break
@@ -1212,14 +1227,20 @@ func discoverModule(walkRoot string, files map[string]fileSig) (string, moduleSi
 			if candidate == shallow || strings.HasPrefix(candidate, shallow+"/") {
 				continue
 			}
-			ambiguous = true
-			break
+			siblings = append(siblings, candidate)
 		}
-		if !ambiguous {
+		if len(siblings) == 0 {
 			root := filepath.Join(walkRoot, filepath.FromSlash(shallow))
 			if module, sig := readModule(root); module != "" {
-				return module, sig, root
+				return module, sig, root, nil
 			}
+		} else {
+			// Sibling modules have no single owner. Returning one would
+			// mis-resolve every import in the others; the caller records the
+			// ambiguity instead of silently choosing by directory order.
+			ambiguous := append([]string{shallow}, siblings...)
+			sort.Strings(ambiguous)
+			return "", moduleSig{}, "", ambiguous
 		}
 	}
 
@@ -1228,10 +1249,10 @@ func discoverModule(walkRoot string, files map[string]fileSig) (string, moduleSi
 	// targets that stay inside the walk root.
 	if parent := nearestModuleRoot(filepath.Dir(walkRoot)); parent != "" {
 		if module, sig := readModule(parent); module != "" {
-			return module, sig, parent
+			return module, sig, parent, nil
 		}
 	}
-	return "", moduleSig{}, ""
+	return "", moduleSig{}, "", nil
 }
 
 // moduleDepth counts directory segments; "." is zero.
@@ -1256,6 +1277,9 @@ func sourceFingerprint(scan treeScan) string {
 		_, _ = fmt.Fprintf(hasher, "%s\x00%d\x00%d\n", rel, sig.size, sig.mtime)
 	}
 	_, _ = fmt.Fprintf(hasher, "scope\x00%s\nmodule\x00%s\n", scan.scopeFingerprint, scan.module)
+	for _, candidate := range scan.moduleCandidates {
+		_, _ = fmt.Fprintf(hasher, "module_candidate\x00%s\n", candidate)
+	}
 	for _, root := range scan.excludedRoots {
 		_, _ = fmt.Fprintf(hasher, "excluded\x00%s\n", root.Path)
 	}
@@ -1432,6 +1456,8 @@ func (idx *Index) infoLocked() SnapshotInfo {
 		Root:              idx.Root,
 		Module:            idx.modulePath,
 		ModuleRoot:        idx.moduleRoot,
+		ModuleAmbiguous:   idx.moduleAmbiguous,
+		ModuleCandidates:  append([]string(nil), idx.moduleCandidates...),
 		Generation:        idx.generation,
 		SnapshotID:        idx.snapshotID,
 		SourceFingerprint: idx.sourceFingerprint,

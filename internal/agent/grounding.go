@@ -33,6 +33,11 @@ var (
 		`(?i)\b([a-z0-9][a-z0-9_./-]{1,60})\s+(?:is|are)\s+(?:not\s+present|absent)\b`)
 	negativeMissingPattern = regexp.MustCompile(
 		`(?i)\b([a-z0-9][a-z0-9_./-]{1,60})\s+(?:is|was|are|were)\s+(?:missing|not\s+found)\b`)
+	// negativeAbsenceOfPattern catches the noun form of a repository absence:
+	// "the absence of tests". It is the same conclusion as "there are no tests"
+	// and must earn the same coverage.
+	negativeAbsenceOfPattern = regexp.MustCompile(
+		`(?i)\babsence\s+of\s+([a-z0-9][a-z0-9 _./-]{0,40}?)(?:\s+(?:is|are|was|were|in|within|at|on|for|to)\b|[.,;:]|$)`)
 	// changeReportPattern follows a negated quantity with a change predicate.
 	// "No files were modified" reports what the run did to the workspace, not
 	// what the repository contains. No file scan can establish it, and it is
@@ -284,6 +289,14 @@ func AssessGrounding(intent contract.IntentContract, turns []Turn, answer string
 			add(issue.Code, issue.Detail)
 		}
 	}
+	// The explicit deliverable contract is separate from claim scope: an answer
+	// can avoid every unsupported claim and still omit the field the user asked
+	// for. The facet check owns that obligation.
+	if facets := AssessRequiredFacets(intent, turns, answer); !facets.Pass() {
+		for _, issue := range facets.Issues {
+			add(issue.Code, issue.Detail)
+		}
+	}
 	if insufficientSearchPattern.MatchString(answerLower) &&
 		(intent.Kind != contract.ObjectiveMutation || grounding.HasAction(contract.GroundingInvestigate)) {
 		detail := "the answer reports an inability to find evidence as the result"
@@ -398,6 +411,7 @@ func negativeClaims(answer string) []negativeClaim {
 	addMatches(negativeExistPattern, false)
 	addMatches(negativeAbsentPattern, false)
 	addMatches(negativeMissingPattern, false)
+	addMatches(negativeAbsenceOfPattern, false)
 	return out
 }
 

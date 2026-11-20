@@ -1,5 +1,6 @@
 # Binaries
 /ohgo
+/ohgo-multilang
 *.exe
 .debug/
 
@@ -36,6 +37,7 @@ go.work.sum
 PROGRESS.md
 MEMORY.md
 PORT.md
+ENVIRONMENT.md
 
 # Keep the changelog in the repository; the README links it.
 !CHANGELOG.md

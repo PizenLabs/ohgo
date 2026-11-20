@@ -103,6 +103,14 @@ const ExecutionRecoveryRequest = `Runtime protocol recovery: your previous messa
 // re-emit the operation through the canonical tool channel.
 const ProtocolRecoveryRequest = `Runtime protocol recovery: your previous message contained serialized tool syntax that could not be normalized into a tool call. The malformed call was not executed. Re-emit the operation as a native tool call with complete arguments, or answer without protocol syntax. Do not repeat the serialized envelope.`
 
+// CompletionReviewRequest is the one bounded correction the loop appends when a
+// candidate answer fails the answer-level completion review. The placeholder is
+// replaced with the runtime's evidence reason. The model may use an available
+// tool to acquire the missing observation or qualify the claim; it must not
+// repeat an unsupported conclusion. It is runtime-authored, never persisted as a
+// user turn, and never shown in the transcript.
+const CompletionReviewRequest = `Runtime completion review: the previous answer cannot be accepted because {{reason}}. Correct it now using evidence already observed, or use an available tool to obtain the missing evidence. Do not repeat a claim the evidence does not support. If the missing fact cannot be established, state that limitation explicitly instead of completing the claim.`
+
 // WorkspaceContract returns the semantic contract for a workspace, or "" for
 // an unknown name.
 //

@@ -6031,6 +6031,10 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 	// so a later turn never inherits an objective it did not state.
 	p.loop.SetGrounding(intent.Grounding)
 	defer p.loop.SetGrounding(nil)
+	p.loop.SetAnswerReview(func(turns []agent.Turn, answer string) string {
+		return agent.ReviewInformationalAnswer(intent, turns, answer)
+	})
+	defer p.loop.SetAnswerReview(nil)
 
 	request := append(append([]agent.Message(nil), history...), user)
 
@@ -6265,6 +6269,18 @@ func (p *Program) runTurnWithChoice(text string, choice workspace.Workspace) {
 
 	if p.usage != nil {
 		p.usage.Add(turns)
+	}
+	// Persist the measured ledger for this run, not the cumulative process
+	// log. A resumed session adds a new run's tokens; an unmeasured run leaves
+	// the row as "not measured" rather than a fabricated zero.
+	if p.store != nil && turnSessID != 0 {
+		if measured := session.MeasuredUsage(turns); measured.Known() ||
+			measured.Input > 0 || measured.Output > 0 ||
+			measured.CacheRead > 0 || measured.CacheWrite > 0 {
+			if err := p.store.AddUsage(turnSessID, measured); err != nil {
+				p.publish(Notice{Text: "session usage: " + err.Error()})
+			}
+		}
 	}
 	// Progressive disclosure reads the live session's own accumulation, not
 	// the lifetime /usage ledger: a cleared or resumed session starts clean.

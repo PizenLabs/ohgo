@@ -706,6 +706,9 @@ type SessionItem struct {
 	// Tokens is the token count reconstructed from the stored transcript, or
 	// zero when the provider did not measure one.
 	Tokens int
+	// TokensMeasured reports that Tokens came from the provider's measured
+	// ledger rather than a text estimate.
+	TokensMeasured bool
 	// Messages is the stored message count.
 	Messages int
 	// Prompt is the latest user prompt, or empty when not loaded.

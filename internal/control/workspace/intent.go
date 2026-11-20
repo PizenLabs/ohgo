@@ -224,7 +224,15 @@ func ClassifyPrediction(text string) Prediction {
 		// "…, using structural evidence" is a participial modifier of the
 		// read request, not a second imperative. A leading "using npx …"
 		// remains execute evidence because that clause is the objective.
-		if i > 0 && token == "using" {
+		//
+		// A leading participial form has the same meaning when it names an
+		// evidence source: "Using read-only structural evidence, report the
+		// callers…" asks for the report, not for a process. The classifier
+		// used to read "using" as the gerund of "use" and force FUZZ before
+		// the model saw the read-only request. Only an evidence-scoped,
+		// execution-free clause is skipped; a command, server, or package
+		// runner keeps the execute reading.
+		if token == "using" && (i > 0 || participateUsingModifier(entry.text, len(clauses) > 1)) {
 			continue
 		}
 		if clauseInvestigates(entry.text) {
@@ -825,6 +833,49 @@ var investigativeHeadPhrases = []string{
 	"find why", "find where", "find how", "find whether",
 	"analyze how", "analyse how", "analyze why", "analyse why",
 	"analyze where", "analyse where", "analyze whether", "analyse whether",
+}
+
+// participateUsingModifier reports whether a leading "using …" clause is a
+// participial modifier rather than an execution objective.
+//
+// The rule is deliberately narrow: the clause must name an evidence or
+// analysis source and must not name a command, package runner, server, or
+// executable. "Using npx live-server" stays an execution objective; "Using
+// read-only structural evidence" describes how the following report is
+// produced. A one-clause request has no following objective, so it is not a
+// modifier.
+func participateUsingModifier(clause string, hasFollowing bool) bool {
+	if !hasFollowing {
+		return false
+	}
+	lower := strings.ToLower(clause)
+	if !containsAnyWord(lower,
+		"read-only", "read only", "structural evidence", "source evidence",
+		"static evidence", "the evidence", "existing evidence", "analysis",
+		"inspection", "the inventory", "the snapshot", "the index") {
+		return false
+	}
+	for _, marker := range []string{
+		"npx", "npm ", "pnpm ", "yarn ", "bun ", "live-server", "live server",
+		"dev server", "server", "docker", "make ", "go run", "go test",
+		"python", "node ", "curl", "bash", "sh ", "command", "exec",
+		"subprocess", "serve ", "launch", "start ",
+	} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+// containsAnyWord reports whether text contains one of the markers.
+func containsAnyWord(text string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // clauseInvestigates reports whether a clause opens with an investigative

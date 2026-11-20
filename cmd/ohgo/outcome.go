@@ -186,6 +186,13 @@ func runHeadlessTurnAs(ctx context.Context, loop *agent.Loop, root string, out i
 	// evaluator the entities and ambiguities the user actually stated.
 	loop.SetGrounding(intent.Grounding)
 	defer loop.SetGrounding(nil)
+	// The answer-level review can spend one bounded correction turn. It uses
+	// the same grounding assessment as completion, but it cannot complete the
+	// run; the final verdict still comes from projectRun after the loop stops.
+	loop.SetAnswerReview(func(turns []agent.Turn, answer string) string {
+		return agent.ReviewInformationalAnswer(intent, turns, answer)
+	})
+	defer loop.SetAnswerReview(nil)
 
 	var snapshot *agent.TargetSnapshot
 	if intent.Kind == workspace.ObjectiveMutation && root != "" {

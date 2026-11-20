@@ -153,6 +153,19 @@ type Config struct {
 	// correctly serialized call without inventing arguments. Empty keeps the
 	// classification but does not spend the recovery request.
 	ProtocolRecoveryRequest string
+	// CompletionReviewRequest is the directive carried once when a candidate
+	// answer fails the answer-level completion review. It must contain
+	// {{reason}}; the loop replaces it with the runtime's evidence reason. The
+	// correction may use an available tool to acquire the missing evidence or
+	// qualify the claim. Empty disables correction even when AnswerReview is
+	// installed, so a host cannot spend a turn on an absent instruction.
+	CompletionReviewRequest string
+	// AnswerReview is the optional answer-level completion gate. It receives
+	// the run so far and the candidate answer and returns a non-empty reason
+	// when the answer cannot be published as complete. It can only request a
+	// correction; authority, completion, and publication remain the runtime's.
+	// A nil hook accepts every answer.
+	AnswerReview func(turns []Turn, answer string) string
 	// Tools are offered to the model.
 	Tools []Tool
 	// MaxTokens caps each completion.
@@ -810,6 +823,14 @@ func (l *Loop) SetGrounding(grounding *contract.IntentGrounding) {
 	l.cfg.Grounding = grounding
 }
 
+// SetAnswerReview installs the bounded answer-level completion gate for the
+// next run, or nil to accept every answer. The gate can ask for one corrected
+// answer; it cannot authorize an action, widen the tool set beyond the loop's
+// constructed capabilities, or mark the run complete.
+func (l *Loop) SetAnswerReview(review func(turns []Turn, answer string) string) {
+	l.cfg.AnswerReview = review
+}
+
 // SetProjectionReportHook installs the projection audit reporter.
 //
 // It must be called before Run, never during one. Passing nil silences audit
@@ -953,6 +974,12 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 	// covers both a forced answer after refusals and a natural evidence
 	// boundary where the first answer request produced only reasoning.
 	answerRetried := false
+	// answerCorrectionAttempted and correctionPending implement the one
+	// bounded completion-review correction. The first rejected answer spends
+	// the correction; the next request reopens the constructed tool surface so
+	// the model can acquire the missing evidence instead of rewriting prose.
+	answerCorrectionAttempted := false
+	correctionPending := false
 	// executionRecoveryAttempted and normalizationRecoveryAttempted are the
 	// bounded protocol recoveries. Each is spent at most once per run and the
 	// run/turn budget still bounds the whole loop, so neither can become an
@@ -1109,6 +1136,18 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				activeTools = []Tool{}
 			}
 			closed = answerEligible || terminal || len(activeTools) == 0
+			// The previous answer failed the answer-level review. Reopen the
+			// loop's constructed tool set for exactly this correction request:
+			// the missing evidence may be one read away, while the projection
+			// closed the surface from its own evidence model. This never widens
+			// authority; every call still crosses grounding and the security
+			// gate, and a terminal capability/stall stop is not overridden.
+			if correctionPending && !terminal {
+				activeTools = tools
+				closed = false
+				answerEligible = false
+				forceAnswer = false
+			}
 			// ForceAnswer is loop policy, not a projector hint. Withdraw the
 			// surface even when the projector does not: the model already
 			// spent two turns on proposals the runtime refused, so another
@@ -1151,6 +1190,10 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			activeTools = []Tool{}
 			closed = true
 		}
+		// The reopened surface applies to this correction request only. A
+		// second rejected answer is returned to the host for completion
+		// evaluation rather than spending another turn.
+		correctionPending = false
 
 		activeByName := make(map[string]Tool, len(activeTools))
 		for _, tool := range activeTools {
@@ -1242,6 +1285,7 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 			executionIntentPending = false
 		}
 		if len(calls) == 0 {
+			turn.Assistant = SanitizeAssistantMessage(turn.Assistant)
 			turns = append(turns, turn)
 			if l.cfg.OnTurn != nil {
 				l.cfg.OnTurn(turn)
@@ -1352,6 +1396,16 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 				return turns, fmt.Errorf("%w: the provider produced no visible text and no tool call",
 					ErrNoModelOutput)
 			}
+			if !answerCorrectionAttempted && len(turns) < l.cfg.MaxTurns {
+				if reason := l.answerReviewReason(turns); reason != "" {
+					if directive := completionReviewDirective(l.cfg.CompletionReviewRequest, reason); directive != "" {
+						answerCorrectionAttempted = true
+						correctionPending = true
+						nudges = append(nudges, directive)
+						continue
+					}
+				}
+			}
 			return turns, nil
 		}
 
@@ -1368,10 +1422,24 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (turns []Turn, runEr
 		if text := strings.TrimSpace(assistant.Text()); text != "" &&
 			(closed || (!answerIsDeferredPlan(text) &&
 				l.noEvidenceInBatch(activeByName, redundant, calls, len(turns)))) {
-			turn.Assistant = answerWithoutToolCalls(assistant)
+			turn.Assistant = SanitizeAssistantMessage(answerWithoutToolCalls(assistant))
 			turns = append(turns, turn)
 			if l.cfg.OnTurn != nil {
 				l.cfg.OnTurn(turn)
+			}
+			if !answerCorrectionAttempted && len(turns) < l.cfg.MaxTurns {
+				if reason := l.answerReviewReason(turns); reason != "" {
+					if directive := completionReviewDirective(l.cfg.CompletionReviewRequest, reason); directive != "" {
+						// The stored turn dropped the call blocks; the live
+						// conversation must drop them too, or the correction
+						// request would replay a call with no result.
+						live[len(live)-1] = AssistantMessage{Message: turn.Assistant}
+						answerCorrectionAttempted = true
+						correctionPending = true
+						nudges = append(nudges, directive)
+						continue
+					}
+				}
 			}
 			return turns, nil
 		}

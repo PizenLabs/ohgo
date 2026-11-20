@@ -467,6 +467,7 @@ func buildLoop(opts options, registry *ai.Registry, out io.Writer, store *sessio
 		AnswerRequest:            prompt.AnswerRequest,
 		ExecutionRecoveryRequest: prompt.ExecutionRecoveryRequest,
 		ProtocolRecoveryRequest:  prompt.ProtocolRecoveryRequest,
+		CompletionReviewRequest:  prompt.CompletionReviewRequest,
 		MaxTokens:                opts.maxTokens,
 		Budget:                   opts.budget.Get(),
 		Deadline:                 opts.deadline,

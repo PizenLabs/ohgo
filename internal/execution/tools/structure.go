@@ -1379,6 +1379,9 @@ func writeStructureHeader(text *strings.Builder, status, view string, info ast.S
 	fmt.Fprintf(text, "activation: %s\n", info.Activation)
 	if info.Module != "" {
 		fmt.Fprintf(text, "module: %s\n", info.Module)
+	} else if info.ModuleAmbiguous {
+		fmt.Fprintf(text, "module: AMBIGUOUS (sibling modules: %s)\n", strings.Join(info.ModuleCandidates, ", "))
+		text.WriteString("module_resolution: each sibling module is parsed, but imports are not resolved across module boundaries\n")
 	}
 	// scope and inventory are independent dimensions that are easy to read as
 	// a global verdict, so each names what it actually covers.
@@ -1518,6 +1521,8 @@ func snapshotMap(info ast.SnapshotInfo) map[string]any {
 		"root":               info.Root,
 		"module":             info.Module,
 		"module_root":        info.ModuleRoot,
+		"module_ambiguous":   info.ModuleAmbiguous,
+		"module_candidates":  info.ModuleCandidates,
 		"generation":         info.Generation,
 		"snapshot_id":        info.SnapshotID,
 		"source_fingerprint": info.SourceFingerprint,

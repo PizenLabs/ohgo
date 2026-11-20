@@ -130,6 +130,32 @@ func recordRunAuthority(store *session.Store, sess *session.Session, ws workspac
 	}
 }
 
+// recordRunUsage persists the measured token ledger for one run.
+//
+// It reads the run's own turns, not the process-cumulative log, so a REPL that
+// runs several turns adds each run exactly once. A provider that reports no
+// usage leaves the session ledger unchanged: the runtime must not fabricate a
+// measured zero. The in-memory session is updated as well, so a later turn in
+// the same process sees the same totals the durable row holds. A storage
+// failure is reported but never fails the run.
+func recordRunUsage(store *session.Store, sess *session.Session, turns []agent.Turn) {
+	if sess == nil {
+		return
+	}
+	measured := session.MeasuredUsage(turns)
+	if !measured.Known() && measured.Input == 0 && measured.Output == 0 &&
+		measured.CacheRead == 0 && measured.CacheWrite == 0 {
+		return
+	}
+	sess.Usage.Add(measured)
+	if store == nil {
+		return
+	}
+	if err := store.AddUsage(sess.ID, measured); err != nil {
+		fmt.Fprintf(os.Stderr, "ohgo: could not record session usage: %v\n", err)
+	}
+}
+
 // installSessionManager wires the /sessions Session Manager: the roster
 // listing, the resume opener, and the write actions (new, rename, archive,
 // delete). A nil store installs nothing, so the command reports itself
@@ -158,17 +184,27 @@ func installSessionManager(program *tui.Program, store *session.Store, held *har
 			items := make([]tui.SessionItem, 0, len(list))
 			for _, sess := range list {
 				stat := stats[sess.ID]
+				usage := sess.Usage
+				if !usage.Known() {
+					usage = stat.Usage
+				}
+				tokens := stat.Tokens
+				measured := usage.Known()
+				if measured {
+					tokens = usage.Total()
+				}
 				items = append(items, tui.SessionItem{
-					ID:            sess.ID,
-					Title:         sess.Title,
-					Model:         sess.Model,
-					Updated:       sess.UpdatedAt.Format("2006-01-02 15:04"),
-					Cwd:           sess.Cwd,
-					Tokens:        stat.Tokens,
-					Messages:      stat.Messages,
-					Prompt:        stat.Prompt,
-					InitialPrompt: stat.InitialPrompt,
-					Protected:     sess.Protected,
+					ID:             sess.ID,
+					Title:          sess.Title,
+					Model:          sess.Model,
+					Updated:        sess.UpdatedAt.Format("2006-01-02 15:04"),
+					Cwd:            sess.Cwd,
+					Tokens:         tokens,
+					TokensMeasured: measured,
+					Messages:       stat.Messages,
+					Prompt:         stat.Prompt,
+					InitialPrompt:  stat.InitialPrompt,
+					Protected:      sess.Protected,
 				})
 			}
 			return items, nil

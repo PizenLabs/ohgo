@@ -87,6 +87,81 @@ func (b *observationBuilder) issue(format string, args ...any) {
 	b.obs.Issues = append(b.obs.Issues, fmt.Sprintf(format, args...))
 }
 
+// verifyFreshness reconciles the provider's own freshness claim with a bounded
+// read of the current source. The source is the stronger fact: a claimed
+// current index does not excuse a moved or deleted symbol, and an unreadable
+// source cannot be promoted to CURRENT merely because the provider said so.
+func (b *observationBuilder) verifyFreshness(generation string, claimed freshnessRef, locations []sourceLocation, kind string) {
+	if generation != "" {
+		b.snapshot = "gry:" + b.project + ":" + generation
+	}
+	providerFreshness := freshness(claimed.Freshness, claimed.Stale)
+	sourceFreshness, reasons := verifySourceLocations(b.scope.Workspace, locations)
+	switch {
+	case providerFreshness == evidence.FreshnessStale || sourceFreshness == evidence.FreshnessStale:
+		b.freshness = evidence.FreshnessStale
+		b.obs.Outcome = investigate.OutcomeStale
+		b.obs.Confidence = 0.4
+		if len(reasons) > 0 {
+			b.issue("gry %s evidence is stale: %s; candidates are preserved but not current source facts", kind, strings.Join(reasons, "; "))
+		} else {
+			b.issue("gry %s evidence is stale; candidates are preserved but not current source facts", kind)
+		}
+	case sourceFreshness == evidence.FreshnessUnavailable:
+		b.freshness = evidence.FreshnessUnavailable
+		if b.obs.Outcome == investigate.OutcomeSuccess {
+			b.obs.Outcome = investigate.OutcomePartial
+		}
+		b.issue("gry %s endpoints could not be verified against current source: %s", kind, strings.Join(reasons, "; "))
+	case sourceFreshness == evidence.FreshnessCurrent:
+		// The rows name symbols that still exist in the current workspace.
+		// This verifies the endpoints, not every edge; GRY's own observation
+		// flag and generation remain the edge provenance.
+		b.freshness = evidence.FreshnessCurrent
+	case providerFreshness == evidence.FreshnessCurrent:
+		// The provider claims current and the source did not contradict it, but
+		// no endpoint could be verified. Preserve the claim without upgrading
+		// an unverified row to a source fact.
+		b.freshness = evidence.FreshnessCurrent
+	default:
+		b.freshness = evidence.FreshnessUnknown
+	}
+}
+
+// searchLocations projects search results into source coordinates.
+func searchLocations(results []projectRef) []sourceLocation {
+	out := make([]sourceLocation, 0, len(results))
+	for _, result := range results {
+		name := result.QN
+		if name == "" {
+			name = result.Name
+		}
+		out = append(out, sourceLocation{file: result.File, lines: result.Lines, symbol: name})
+	}
+	return out
+}
+
+// traceLocations projects trace rows into source coordinates.
+func traceLocations(rows []traceRow) []sourceLocation {
+	out := make([]sourceLocation, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, sourceLocation{file: row.File, lines: row.Lines, symbol: row.QN})
+	}
+	return out
+}
+
+// contextLocations projects context nodes and tests into source coordinates.
+func contextLocations(nodes []contextNode, tests []projectRef) []sourceLocation {
+	out := make([]sourceLocation, 0, len(nodes)+len(tests))
+	for _, node := range nodes {
+		out = append(out, sourceLocation{file: node.File, lines: node.Lines, symbol: node.QN})
+	}
+	for _, test := range tests {
+		out = append(out, sourceLocation{file: test.File, lines: test.Lines, symbol: test.QN})
+	}
+	return out
+}
+
 // edgeSubject identifies one graph edge as a functional claim.
 //
 // Correlation groups by (subject, relation) and treats multiple objects as
@@ -179,8 +254,10 @@ func (p *Provider) observeResolve(ctx context.Context, project string, req inves
 	if payload.Total < len(payload.Results) {
 		payload.Total = len(payload.Results)
 	}
+	builder.verifyFreshness(payload.Generation, payload.Freshness, searchLocations(payload.Results), "resolve")
 	builder.obs.Summary = fmt.Sprintf(
-		"gry resolve: %d of %d candidates for %s", payload.Returned, payload.Total, target)
+		"gry resolve: %d of %d candidates for %s (%s)",
+		payload.Returned, payload.Total, target, builder.freshness)
 	for _, result := range payload.Results {
 		subject := result.QN
 		if subject == "" {
@@ -192,11 +269,15 @@ func (p *Provider) observeResolve(ctx context.Context, project string, req inves
 			evidence.Observed, 0.8, refs(result.File, result.Lines), result.Label)
 	}
 	if len(payload.Results) > 1 {
-		builder.obs.Outcome = investigate.OutcomePartial
+		if builder.obs.Outcome == investigate.OutcomeSuccess {
+			builder.obs.Outcome = investigate.OutcomePartial
+		}
 		builder.issue("%d candidates matched %q; no single target was selected", payload.Total, target)
 	}
 	if payload.Total > len(payload.Results) {
-		builder.obs.Outcome = investigate.OutcomePartial
+		if builder.obs.Outcome == investigate.OutcomeSuccess {
+			builder.obs.Outcome = investigate.OutcomePartial
+		}
 		builder.issue("bounded result: showing %d of %d candidates", len(payload.Results), payload.Total)
 	}
 	builder.obs.Confidence = 0.65
@@ -249,9 +330,10 @@ func (p *Provider) observeTrace(ctx context.Context, project string, req investi
 	if start == "" {
 		start = target
 	}
+	builder.verifyFreshness(payload.Generation, payload.Freshness, traceLocations(payload.Rows), "trace")
 	builder.obs.Summary = fmt.Sprintf(
-		"gry trace: %d of %d %s relationships for %s (depth %d)",
-		payload.Returned, payload.Total, direction, start, p.cfg.MaxDepth)
+		"gry trace: %d of %d %s relationships for %s (depth %d, %s)",
+		payload.Returned, payload.Total, direction, start, p.cfg.MaxDepth, builder.freshness)
 	if len(payload.Rows) == 0 {
 		builder.obs.Outcome = investigate.OutcomeUnresolved
 		builder.obs.State = evidence.Unknown
@@ -281,7 +363,9 @@ func (p *Provider) observeTrace(ctx context.Context, project string, req investi
 			fmt.Sprintf("hop=%d direction=%s via=%s", row.Hop, row.Direction, row.ViaQN))
 	}
 	if payload.Truncated || payload.Total > payload.Returned {
-		builder.obs.Outcome = investigate.OutcomePartial
+		if builder.obs.Outcome == investigate.OutcomeSuccess {
+			builder.obs.Outcome = investigate.OutcomePartial
+		}
 		if payload.Total > payload.Returned {
 			builder.issue("bounded traversal: showing %d of %d relationship rows; the rest were not retrieved",
 				payload.Returned, payload.Total)
@@ -338,20 +422,18 @@ func (p *Provider) observeContext(ctx context.Context, project string, req inves
 }
 
 func contextObservation(builder *observationBuilder, payload contextResponse) investigate.Observation {
-	builder.snapshot = "gry:" + builder.project
-	if payload.Generation != "" {
-		builder.snapshot = "gry:" + builder.project + ":" + payload.Generation
+	claimed := payload.Freshness
+	if payload.Status == "stale" || payload.Freshness.Stale {
+		claimed.Stale = true
 	}
-	builder.freshness = freshness(payload.Freshness.Freshness, payload.Freshness.Stale)
-	if builder.freshness == evidence.FreshnessUnknown {
-		builder.freshness = freshness(payload.Evidence.Freshness, false)
+	if claimed.Freshness == "" {
+		claimed.Freshness = payload.Evidence.Freshness
 	}
+	builder.verifyFreshness(payload.Generation, claimed,
+		contextLocations(payload.Nodes, payload.Tests), "context")
 	if payload.Status == "stale" || payload.Freshness.Stale {
 		builder.obs.Outcome = investigate.OutcomeStale
 		builder.obs.Confidence = 0.4
-		if builder.freshness == evidence.FreshnessUnknown {
-			builder.freshness = evidence.FreshnessStale
-		}
 	}
 
 	nodes := payload.Nodes
@@ -675,6 +757,10 @@ func freshness(value string, stale bool) evidence.Freshness {
 		return evidence.FreshnessCurrent
 	case "stale":
 		return evidence.FreshnessStale
+	case "unavailable", "unverifiable":
+		return evidence.FreshnessUnavailable
+	case "unknown":
+		return evidence.FreshnessUnknown
 	default:
 		return evidence.FreshnessUnknown
 	}

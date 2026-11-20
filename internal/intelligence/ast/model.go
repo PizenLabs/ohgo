@@ -270,11 +270,19 @@ type TestDecl struct {
 type SnapshotInfo struct {
 	// Root is the absolute index root.
 	Root string `json:"root"`
-	// Module is the Go module path, empty when there is no usable go.mod.
+	// Module is the Go module path, empty when there is no usable go.mod or
+	// when the workspace contains several sibling modules and no single one
+	// owns the snapshot.
 	Module string `json:"module,omitempty"`
 	// ModuleRoot is the nearest directory above Root that carries go.mod.
 	// It is metadata only; the index never widens its walk to include it.
 	ModuleRoot string `json:"module_root,omitempty"`
+	// ModuleAmbiguous reports sibling go.mod files that no single module owns.
+	// The files are still inventoried and parsed, but cross-module imports are
+	// not resolved; completion must not claim a module-local graph.
+	ModuleAmbiguous bool `json:"module_ambiguous,omitempty"`
+	// ModuleCandidates names the sibling module roots when ambiguous.
+	ModuleCandidates []string `json:"module_candidates,omitempty"`
 	// Generation is process-local and monotonic.
 	Generation uint64 `json:"generation"`
 	// SnapshotID is deterministic identity for this published snapshot.
