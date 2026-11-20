@@ -109,3 +109,35 @@ func TestEntityClaimRejectsAbsenceContradictedByObservation(t *testing.T) {
 		}
 	}
 }
+
+// A correction must quote the identifier it withdraws. That quotation is an
+// epistemic statement about the earlier answer, not a claim that the wrong
+// qualified name is a real symbol; without this, a model cannot recover from a
+// naming slip because the retraction itself still contains the name.
+func TestEntityClaimSkipsRetractedIdentifier(t *testing.T) {
+	turns := []Turn{{Results: []ToolOutcome{
+		readOutcome("backend/reviews/domain/review.go", "package domain\n\nfunc NewReview() {}\n"),
+	}}}
+	for _, answer := range []string{
+		"Correction: I should not have called it `reviews.NewReview`. The observed declaration is `NewReview` in `backend/reviews/domain/review.go`, in package `domain`.",
+		"The correct name is `NewReview` instead of `reviews.NewReview`.",
+	} {
+		if issues := claimScopeIssues(answer, turns); len(issues) != 0 {
+			t.Fatalf("a retracted identifier was reviewed as a claim: %q -> %+v", answer, issues)
+		}
+	}
+	intent := contract.IntentContract{
+		Kind:      contract.ObjectiveInformational,
+		Grounding: &contract.IntentGrounding{},
+	}
+	correction := "Correction: I should not have called it `reviews.NewReview`. The observed declaration is `NewReview` in `backend/reviews/domain/review.go`, in package `domain`."
+	if assessment := AssessGrounding(intent, turns, correction); !assessment.Pass() {
+		t.Fatalf("grounding rejected the correction it asked for: %s", assessment.Reason())
+	}
+	// A plain assertion of the same wrong qualifier is still a claim.
+	assertion := "The `reviews.NewReview` constructor trims the body before storing it."
+	issues := claimScopeIssues(assertion, turns)
+	if len(issues) == 0 || issues[0].Code != "unsupported_code_entity" {
+		t.Fatalf("issues = %+v, want an unsupported_code_entity", issues)
+	}
+}
