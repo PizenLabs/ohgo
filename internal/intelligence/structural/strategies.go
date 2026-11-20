@@ -176,6 +176,91 @@ func runBoundaries(s *analysisState) error {
 	return nil
 }
 
+// countModules reports how many Go module-level nodes the snapshot published.
+// LevelModule also names top-level directories (docs, migrations); those are
+// not Go modules and must not hide a single-module layout.
+func countModules(snapshot *Snapshot) int {
+	return len(goModuleNodes(snapshot))
+}
+
+func goModuleNodes(snapshot *Snapshot) []Node {
+	if snapshot == nil {
+		return nil
+	}
+	var out []Node
+	for _, node := range snapshot.Nodes {
+		if node.Level != LevelModule {
+			continue
+		}
+		if node.Language == ast.LanguageGo {
+			out = append(out, node)
+			continue
+		}
+		for _, language := range node.Languages {
+			if language == ast.LanguageGo {
+				out = append(out, node)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// moduleChildGraph collapses a directory graph to the direct children of the
+// single Go module. It is the resolution a developer uses when the repo
+// contains one Go module under a top-level directory.
+func moduleChildGraph(snapshot *Snapshot, directories *Graph) *Graph {
+	if snapshot == nil || directories == nil {
+		return nil
+	}
+	modules := goModuleNodes(snapshot)
+	if len(modules) != 1 {
+		return nil
+	}
+	module := modules[0]
+	ids := map[string]bool{}
+	edges := make([]GraphEdge, 0, directories.EdgeCount())
+	for _, edge := range directories.Edges() {
+		from := moduleChildID(snapshot, module, edge.From)
+		to := moduleChildID(snapshot, module, edge.To)
+		if from == "" || to == "" || from == to {
+			continue
+		}
+		ids[from], ids[to] = true, true
+		edges = append(edges, GraphEdge{From: from, To: to})
+	}
+	if len(ids) < 3 || len(edges) == 0 {
+		return nil
+	}
+	nodeIDs := make([]string, 0, len(ids))
+	for id := range ids {
+		nodeIDs = append(nodeIDs, id)
+	}
+	return NewGraph(nodeIDs, edges)
+}
+
+// moduleChildID maps one directory node to the module's first path segment.
+func moduleChildID(snapshot *Snapshot, module Node, id string) string {
+	node, ok := snapshot.Node(id)
+	if !ok {
+		return ""
+	}
+	if node.Path == module.Path {
+		return module.ID
+	}
+	prefix := module.Path + "/"
+	if !strings.HasPrefix(node.Path, prefix) {
+		return ""
+	}
+	relative := strings.TrimPrefix(node.Path, prefix)
+	first := strings.SplitN(relative, "/", 2)[0]
+	childID := ast.DirectoryNodeID(path.Join(module.Path, first))
+	if _, ok := snapshot.Node(childID); !ok {
+		return ""
+	}
+	return childID
+}
+
 // runArchitecture infers a pattern from graph shape.
 //
 // The inference is conservative by construction: a cycle, too few modules, or an
@@ -183,11 +268,36 @@ func runBoundaries(s *analysisState) error {
 // label. Directory names are collected as Hints and never used as evidence.
 func runArchitecture(s *analysisState) error {
 	graph := s.moduleGraph
+	resolution := "module"
+	moduleCount := countModules(s.snapshot)
+	// A repository with one Go module nested under its project root has a
+	// single module node. Every dependency then resolves to that node and the
+	// module projection has no edges, even though the code inside it is
+	// layered. Use the module's direct children as the architecture units in
+	// that shape; a whole-project directory graph introduces deeper package
+	// cycles the module root does not see.
+	if moduleCount == 1 && (graph == nil || graph.EdgeCount() == 0) {
+		if child := moduleChildGraph(s.snapshot, s.graph); child != nil && child.Len() >= 3 && child.EdgeCount() > 0 {
+			graph = child
+			resolution = "module-child"
+		}
+	}
+	// No Go module (a non-Go project) or no module-level shape: the directory
+	// projection is the only observed graph available.
+	if (graph == nil || graph.Len() < 3 || graph.EdgeCount() == 0) && moduleCount <= 1 &&
+		s.graph != nil && s.graph.Len() >= 3 && s.graph.EdgeCount() > 0 {
+		graph = s.graph
+		resolution = "directory"
+	}
 	architecture := Architecture{
 		Pattern: "not-established",
 		Basis:   "insufficient-evidence",
 		State:   StateUnknown,
 		Hints:   nameHints(s.snapshot),
+	}
+	if resolution != "module" {
+		architecture.Hints = append(architecture.Hints,
+			"shape inferred at "+resolution+" resolution; the module projection was too coarse")
 	}
 	if graph == nil || graph.Len() < 3 {
 		modules := 0
@@ -239,10 +349,21 @@ func runArchitecture(s *analysisState) error {
 			"module graph is acyclic but shallow: %d modules, %d edges, %d layers",
 			graph.Len(), graph.EdgeCount(), len(layers)))
 	default:
-		architecture.Pattern = "independent modules"
-		architecture.Basis = "graph"
-		confidence = 0.5
-		evidence = append(evidence, "no module-to-module dependency edge was observed")
+		// A zero-edge module graph is much more often a resolution gap than a
+		// set of truly independent deployables. Only claim independence when
+		// the dependency projection is complete; otherwise the honest label is
+		// "not-established", and the reason is attached below.
+		if s.deps != nil && (!s.deps.Complete || len(s.deps.Unresolved) > 0) {
+			architecture.Pattern = "not-established"
+			architecture.Basis = "incomplete-graph"
+			evidence = append(evidence,
+				"no module-to-module dependency edge was observed, but the dependency projection is incomplete")
+		} else {
+			architecture.Pattern = "independent modules"
+			architecture.Basis = "graph"
+			confidence = 0.5
+			evidence = append(evidence, "no module-to-module dependency edge was observed")
+		}
 	}
 	if s.deps != nil && !s.deps.Complete {
 		state = StatePartiallyObserved
@@ -378,8 +499,12 @@ func runSymbolNeighborhood(s *analysisState) error {
 	report.Found = result.Found
 	report.Ambiguous = result.Ambiguous
 	report.Targets = len(result.Targets)
-	report.References = result.Total
+	// References is the reference list only. Impact.Total also contains
+	// callers, callees, importers, and tests; reporting that total here made a
+	// query with one reference and one caller claim two references.
+	report.References = len(result.References)
 	report.Callers = len(result.Callers)
+	report.Callees = len(result.Callees)
 	report.Importers = len(result.Importers)
 	report.Tests = len(result.Tests)
 	report.Nodes = len(result.Nodes)

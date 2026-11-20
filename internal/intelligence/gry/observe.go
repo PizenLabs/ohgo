@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,6 +121,40 @@ func decodeResponse[T any](raw []byte) (T, *failure) {
 	return payload, nil
 }
 
+// searchSymbols asks gry for an exact symbol first, then falls back to its
+// ranked search. The ranked result for "NewOrder" is dominated by
+// NewOrderView/NewOrderSummary and can omit the exact declaration; a locate
+// question that names a symbol must not be answered by lexical neighbours.
+func (p *Provider) searchSymbols(ctx context.Context, project, target string) (searchResponse, *failure) {
+	exactPattern := "^" + regexp.QuoteMeta(target) + "$"
+	raw, queryFailure := p.query(ctx, "search", []string{
+		"search", project,
+		"--name-pattern", exactPattern,
+		"--limit", strconv.Itoa(p.cfg.MaxRows),
+		"--json",
+	})
+	if queryFailure == nil {
+		if payload, decodeFailure := decodeResponse[searchResponse](raw); decodeFailure == nil && len(payload.Results) > 0 {
+			return payload, nil
+		}
+	} else if queryFailure.outcome != investigate.OutcomeUnresolved {
+		return searchResponse{}, queryFailure
+	}
+	raw, queryFailure = p.query(ctx, "search", []string{
+		"search", project, target,
+		"--limit", strconv.Itoa(p.cfg.MaxRows),
+		"--json",
+	})
+	if queryFailure != nil {
+		return searchResponse{}, queryFailure
+	}
+	payload, decodeFailure := decodeResponse[searchResponse](raw)
+	if decodeFailure != nil {
+		return searchResponse{}, decodeFailure
+	}
+	return payload, nil
+}
+
 // observeResolve answers a target-shaped locate question. Search is ranked, so
 // multiple candidates are preserved; the adapter never chooses one silently.
 func (p *Provider) observeResolve(ctx context.Context, project string, req investigate.Request) investigate.Observation {
@@ -130,17 +165,9 @@ func (p *Provider) observeResolve(ctx context.Context, project string, req inves
 		builder.issue("gry resolve requires a target; no query was sent")
 		return builder.finish()
 	}
-	raw, queryFailure := p.query(ctx, "search", []string{
-		"search", project, target,
-		"--limit", strconv.Itoa(p.cfg.MaxRows),
-		"--json",
-	})
+	payload, queryFailure := p.searchSymbols(ctx, project, target)
 	if queryFailure != nil {
 		return failureObservation(queryFailure)
-	}
-	payload, decodeFailure := decodeResponse[searchResponse](raw)
-	if decodeFailure != nil {
-		return failureObservation(decodeFailure)
 	}
 	if len(payload.Results) == 0 {
 		builder.obs.Outcome = investigate.OutcomeUnresolved
@@ -192,6 +219,9 @@ func (p *Provider) observeTrace(ctx context.Context, project string, req investi
 		"--direction", direction,
 		"--depth", strconv.Itoa(p.cfg.MaxDepth),
 		"--limit", strconv.Itoa(p.cfg.MaxRows),
+		// Test call sites are evidence for impact and test-impact questions.
+		// Omitting them made a symbol with thirteen test callers look unused.
+		"--include-tests",
 		"--json",
 	})
 	if queryFailure != nil {

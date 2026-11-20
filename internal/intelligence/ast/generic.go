@@ -367,6 +367,26 @@ func (idx *Index) mergeGenericImpactLocked(ctx context.Context, result *ImpactRe
 					Test: edge.Test, Language: edge.Caller.Language},
 			})
 		}
+		for _, edge := range idx.languageGraph.callsFor(target, RelationCallees) {
+			if len(result.Callees) >= limit {
+				result.Truncated = true
+				if result.Reason == "" {
+					result.Reason = "limit"
+				}
+				break
+			}
+			result.Callees = append(result.Callees, edge)
+			caller := callNodeID(edge.Caller)
+			callee := callNodeID(edge.Callee)
+			nodes[caller] = callNodeToNode(edge.Caller)
+			nodes[callee] = callNodeToNode(edge.Callee)
+			result.Edges = append(result.Edges, Edge{
+				From: caller, To: callee, Kind: EdgeCalls, Certainty: string(edge.Certainty),
+				Resolution: ResolutionResolved, Language: edge.Caller.Language,
+				Source: SourceRef{Path: edge.CallPath, StartLine: edge.CallLine, StartCol: edge.Column,
+					Test: edge.Test, Language: edge.Caller.Language},
+			})
+		}
 		for _, importer := range idx.languageGraph.importersOf(target.Path) {
 			found := false
 			for _, existing := range result.Importers {
@@ -708,7 +728,7 @@ func sortGenericGraph(graph *languageGraph) {
 // resolveRecordImports maps every non-Go import to a repository file when the
 // convention is unambiguous. Go imports stay with the module-aware package
 // graph. Unresolved external modules remain import facts but produce no edge.
-func resolveRecordImports(records map[string]fileRecord) {
+func resolveRecordImports(records map[string]fileRecord, js jsPathConfig) {
 	for rel, rec := range records {
 		if !rec.parsed || rec.err != nil || rec.language == string(LanguageGo) {
 			continue
@@ -716,7 +736,7 @@ func resolveRecordImports(records map[string]fileRecord) {
 		language := rec.languageValue()
 		changed := false
 		for i := range rec.imports {
-			target, resolution := resolveImportTarget(rel, language, rec.imports[i], records)
+			target, resolution := resolveImportTarget(rel, language, rec.imports[i], records, js)
 			rec.imports[i].Resolution = resolution
 			rec.imports[i].Resolved = target
 			changed = true
@@ -726,17 +746,29 @@ func resolveRecordImports(records map[string]fileRecord) {
 		}
 	}
 }
-func resolveImportTarget(from string, language Language, imported Import, files map[string]fileRecord) (string, Resolution) {
+func resolveImportTarget(from string, language Language, imported Import, files map[string]fileRecord, js jsPathConfig) (string, Resolution) {
 	spec := strings.TrimSpace(imported.Path)
 	if spec == "" {
 		return "", ResolutionUnresolved
 	}
 	switch language {
 	case LanguageTypeScript, LanguageTSX, LanguageJavaScript, LanguageJSX:
-		if !strings.HasPrefix(spec, ".") {
+		if strings.HasPrefix(spec, ".") {
+			if target, resolution := resolveRelativeSource(from, spec, jsSourceExtensions, files); resolution == ResolutionResolved {
+				return target, resolution
+			}
+			if generatedBuildPath(path.Join(path.Dir(from), spec)) {
+				return "", ResolutionExcluded
+			}
 			return "", ResolutionUnresolved
 		}
-		return resolveRelativeSource(from, spec, []string{".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}, files)
+		if target, ok := js.resolve(spec, files); ok {
+			return target, ResolutionResolved
+		}
+		if generatedBuildPath(spec) {
+			return "", ResolutionExcluded
+		}
+		return "", ResolutionUnresolved
 	case LanguageJava:
 		return resolvePackageFile(from, spec, ".java", files)
 	case LanguageKotlin:

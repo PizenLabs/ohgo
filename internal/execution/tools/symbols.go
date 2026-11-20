@@ -50,9 +50,12 @@ func NewSymbolsToolWithSource(source *StructuralSource) *SymbolsTool {
 			"TypeScript/TSX, JavaScript/JSX, Java, C#, Rust, Kotlin, Ruby, C, "+
 			"and C++ adapters. Returns repository-relative "+
 			"coordinates (path, package, symbol, kind, start_line, end_line) "+
-			"without source. Use read on a returned coordinate for the exact "+
-			"declaration. Ambiguous, truncated, and partially parsed results "+
-			"are reported explicitly.",
+			"without source. This is a declaration locator only: it does not "+
+			"answer references, callers/callees, tests, or impact. Use refs for "+
+			"one symbol's relationships, structure view=impact for the bounded "+
+			"static neighbourhood, or investigate for a call chain. Use read on "+
+			"a returned coordinate for the exact declaration. Ambiguous, "+
+			"truncated, and partially parsed results are reported explicitly.",
 		map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

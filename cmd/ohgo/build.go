@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/PizenLabs/ohgo/internal/agent"
@@ -180,14 +182,51 @@ func semanticProvider(root string) *investigate.SemanticProvider {
 	if err != nil {
 		return &investigate.SemanticProvider{}
 	}
+	// gopls loads the module whose go.mod is at or below its workspace root.
+	// A repository that keeps the module in backend/ has no module at the
+	// project root, so starting gopls there makes workspace/symbol answer
+	// nothing for a symbol that exists.
 	return &investigate.SemanticProvider{
 		Root: root,
 		Start: func(ctx context.Context) (*semantic.Manager, error) {
-			return semantic.NewManager(root, []semantic.Spec{{
+			return semantic.NewManager(semanticWorkspaceRoot(root), []semantic.Spec{{
 				Name: "gopls", Languages: []string{"go"}, Command: []string{path, "serve"},
 			}}, 1), nil
 		},
 	}
+}
+
+// semanticWorkspaceRoot picks the module gopls should load. It never guesses
+// among several modules: a multi-module workspace keeps the project root and
+// lets the server report what it can.
+func semanticWorkspaceRoot(root string) string {
+	if info, err := os.Stat(filepath.Join(root, "go.mod")); err == nil && info.Mode().IsRegular() {
+		return root
+	}
+	var modules []string
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			if path == root {
+				return nil
+			}
+			name := entry.Name()
+			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Name() == "go.mod" {
+			modules = append(modules, filepath.Dir(path))
+		}
+		return nil
+	})
+	if len(modules) == 1 {
+		return modules[0]
+	}
+	return root
 }
 
 type spawnFunc func(ctx context.Context, spec agent.SubagentSpec) (agent.SubagentResult, error)

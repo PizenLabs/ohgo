@@ -60,6 +60,25 @@ func TestStructureAnalysisIsIntentAware(t *testing.T) {
 	}
 }
 
+// A targeted analysis must allow the symbol-neighborhood strategy. The default
+// package level used to exclude it, so impact and flow returned no focus.
+func TestStructureAnalysisRunsFocusAtDefaultLevel(t *testing.T) {
+	tool := analysisFixture(t)
+	result := tool.Execute(testContext(), map[string]any{
+		"view": "analysis", "intent": "impact", "symbol": "Serve",
+	})
+	if result.IsError {
+		t.Fatalf("analysis failed: %s", result.Text)
+	}
+	if !strings.Contains(result.Text, "focus: Serve") {
+		t.Fatalf("analysis omitted the focus report:\n%s", result.Text)
+	}
+	details := structureDetails(t, result)
+	if _, ok := details["focus_report"]; !ok {
+		t.Fatalf("details omitted focus_report: %v", details)
+	}
+}
+
 // TestStructureAnalysisProjectStaysMetadataFirst pins the cheap default: an
 // orientation request does not parse the repository.
 func TestStructureAnalysisProjectStaysMetadataFirst(t *testing.T) {

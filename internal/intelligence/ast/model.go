@@ -618,23 +618,27 @@ type ImpactQuery struct {
 // ImpactResult is one bounded impact projection. It is static reachability,
 // not a behavioral claim.
 type ImpactResult struct {
-	Snapshot   SnapshotInfo      `json:"snapshot"`
-	QueryType  string            `json:"query_type"`
-	Selector   string            `json:"selector"`
-	Found      bool              `json:"found"`
-	Ambiguous  bool              `json:"ambiguous"`
-	Candidates []RefTarget       `json:"candidates,omitempty"`
-	Targets    []RefTarget       `json:"targets,omitempty"`
-	References []ReferenceSite   `json:"references,omitempty"`
-	Callers    []CallEdge        `json:"callers,omitempty"`
-	Importers  []string          `json:"importers,omitempty"`
-	Tests      []TestAssociation `json:"tests,omitempty"`
-	Nodes      []Node            `json:"nodes,omitempty"`
-	Edges      []Edge            `json:"edges,omitempty"`
-	Total      int               `json:"total"`
-	Truncated  bool              `json:"truncated"`
-	Reason     string            `json:"reason,omitempty"`
-	Unknown    UnknownSummary    `json:"unknown"`
+	Snapshot   SnapshotInfo    `json:"snapshot"`
+	QueryType  string          `json:"query_type"`
+	Selector   string          `json:"selector"`
+	Found      bool            `json:"found"`
+	Ambiguous  bool            `json:"ambiguous"`
+	Candidates []RefTarget     `json:"candidates,omitempty"`
+	Targets    []RefTarget     `json:"targets,omitempty"`
+	References []ReferenceSite `json:"references,omitempty"`
+	Callers    []CallEdge      `json:"callers,omitempty"`
+	// Callees are the forward call edges from the target. They make the impact
+	// projection usable for a flow question, which asks what a component
+	// reaches rather than what reaches it.
+	Callees   []CallEdge        `json:"callees,omitempty"`
+	Importers []string          `json:"importers,omitempty"`
+	Tests     []TestAssociation `json:"tests,omitempty"`
+	Nodes     []Node            `json:"nodes,omitempty"`
+	Edges     []Edge            `json:"edges,omitempty"`
+	Total     int               `json:"total"`
+	Truncated bool              `json:"truncated"`
+	Reason    string            `json:"reason,omitempty"`
+	Unknown   UnknownSummary    `json:"unknown"`
 }
 
 // itoa avoids a strconv import at every identity helper. The values are small

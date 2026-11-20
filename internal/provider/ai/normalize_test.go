@@ -1039,6 +1039,32 @@ func TestNormalizeMessageRecognizesUnderscoredDotsEnvelope(t *testing.T) {
 	}
 }
 
+// ERNIE on a free gateway emitted this envelope as final assistant text. It is
+// a serialized tool call, not an answer, and must normalize to the canonical
+// calls or be reported as residue.
+func TestNormalizeMessageRecognizesErnieToolEnvelope(t *testing.T) {
+	envelope := `<ernie:tool_call>
+<invoke name="read"><parameter name="path">lib/post-loader.ts</parameter></invoke>
+<invoke name="retrieve"><parameter name="query">content pipeline</parameter></invoke>
+</ernie:tool_call>`
+	got := NormalizeMessage(AssistantMessage{
+		Content: []ContentBlock{TextContent{Text: envelope}},
+	}, NormalizeOptions{})
+	calls := got.ToolCalls()
+	if len(calls) != 2 {
+		t.Fatalf("calls = %+v, want the two requested calls", calls)
+	}
+	if calls[0].Name != "read" || calls[0].Arguments["path"] != "lib/post-loader.ts" {
+		t.Fatalf("first call = %+v", calls[0])
+	}
+	if calls[1].Name != "retrieve" || calls[1].Arguments["query"] != "content pipeline" {
+		t.Fatalf("second call = %+v", calls[1])
+	}
+	if got.Text() != "" || got.ProtocolResidue {
+		t.Fatalf("envelope leaked as text=%q residue=%v", got.Text(), got.ProtocolResidue)
+	}
+}
+
 // An opening without underscores can be closed with the underscored marker;
 // both spellings belong to one envelope family.
 func TestNormalizeMessageAcceptsMixedCloseMarker(t *testing.T) {

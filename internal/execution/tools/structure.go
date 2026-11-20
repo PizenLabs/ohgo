@@ -253,7 +253,10 @@ func (t *StructureTool) execute(ctx agent.Context, args map[string]any) agent.Re
 	if err != nil {
 		return requestError(agent.ToolFailureInvalidArgument, "%v; nothing executed.", err)
 	}
-	analysisLevel := structural.LevelPackage
+	// The level is a ceiling, not a forced resolution. A target-shaped
+	// analysis needs room for the symbol-neighborhood strategy; defaulting to
+	// package silently skipped it and returned no focus report.
+	analysisLevel := structural.LevelRelationship
 	if strings.TrimSpace(levelArg) != "" {
 		parsed, ok := structural.ParseLevel(strings.TrimSpace(levelArg))
 		if !ok {
@@ -578,12 +581,13 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 	if len(result.Frameworks) > 0 {
 		fmt.Fprintf(&text, "frameworks: %s\n", strings.Join(result.Frameworks, ", "))
 	}
-	fmt.Fprintf(&text, "packages: %d\n", info.Packages)
-	fmt.Fprintf(&text, "files: %d (go: %d, source: %d, configs: %d)\n", info.Files, info.GoFiles, info.SourceFiles, info.Configs)
 	// Declaration totals are observations, not inventory: an unparsed or
 	// adapter-less snapshot cannot report them as zero without the model
-	// reading that zero as absence.
+	// reading that zero as absence. The package count is derived from parsed
+	// package identity for the same reason.
 	state := describeStructural(info)
+	fmt.Fprintf(&text, "packages: %s\n", declarationCount(info.Packages, state))
+	fmt.Fprintf(&text, "files: %d (go: %d, source: %d, configs: %d)\n", info.Files, info.GoFiles, info.SourceFiles, info.Configs)
 	fmt.Fprintf(&text, "symbols: %s\n", declarationCount(info.Symbols, state))
 	fmt.Fprintf(&text, "references: %s\n", declarationCount(info.References, state))
 	fmt.Fprintf(&text, "calls: %s\n", declarationCount(info.Calls, state))
@@ -591,8 +595,15 @@ func (t *StructureTool) overview(ctx agent.Context, idx *ast.Index, limit int) a
 	// test_files is classified from paths at inventory time, so it stays a
 	// number even when no adapter can parse the file.
 	fmt.Fprintf(&text, "test_files: %d\n", info.TestFiles)
-	fmt.Fprintf(&text, "entrypoints: %d (verified: %d, discovered: %d)\n",
-		result.EntrypointsTotal, result.EntrypointsVerified, result.EntrypointsDiscovered)
+	entrypointNote := ""
+	if result.EntrypointsTotal == 0 && state.Label != "COMPLETE" {
+		// A zero here is an unobserved count, not a proven absence: Go entry
+		// discovery needs a parsed package, and a convention-only discovery
+		// covers web routes only.
+		entrypointNote = "; not established: source not parsed"
+	}
+	fmt.Fprintf(&text, "entrypoints: %d (verified: %d, discovered: %d%s)\n",
+		result.EntrypointsTotal, result.EntrypointsVerified, result.EntrypointsDiscovered, entrypointNote)
 	fmt.Fprintf(&text, "directories: %d\n", info.Directories)
 	fmt.Fprintf(&text, "last_parsed_files: %d\n", info.LastParsedFiles)
 	fmt.Fprintf(&text, "last_reused_files: %d\n", info.LastReusedFiles)
@@ -1003,8 +1014,15 @@ func (t *StructureTool) tests(ctx agent.Context, idx *ast.Index, symbolArg, path
 	if result.Symbol != "" {
 		fmt.Fprintf(&text, "symbol: %s\n", result.Symbol)
 	}
-	fmt.Fprintf(&text, "returned: %d\n", len(result.Tests)+len(result.Associations))
-	fmt.Fprintf(&text, "total: %d\n", result.Total)
+	fmt.Fprintf(&text, "returned: %d\n", len(result.Tests))
+	fmt.Fprintf(&text, "total: %d\n", len(result.Tests))
+	// A symbol query returns two different lists: unique tests and the static
+	// associations that connect them. Folding both into one "returned" count
+	// made returned exceed total (8 of 4) and read as an impossible page.
+	if result.Symbol != "" {
+		fmt.Fprintf(&text, "associations_returned: %d\n", len(result.Associations))
+		fmt.Fprintf(&text, "associations_total: %d\n", result.Total)
+	}
 	text.WriteString("coverage: static_association (not coverage)\n")
 	if result.Ambiguous {
 		text.WriteString("ambiguous: true\n")
@@ -1040,19 +1058,21 @@ func (t *StructureTool) tests(ctx agent.Context, idx *ast.Index, symbolArg, path
 		}
 	}
 	details := map[string]any{
-		"status":       status,
-		"view":         "tests",
-		"snapshot":     snapshotMap(result.Snapshot),
-		"symbol":       result.Symbol,
-		"found":        result.Found,
-		"ambiguous":    result.Ambiguous,
-		"candidates":   refTargetMaps(result.Candidates),
-		"tests":        testMaps(result.Tests),
-		"associations": associationMaps(result.Associations),
-		"total":        result.Total,
-		"returned":     len(result.Tests) + len(result.Associations),
-		"truncated":    result.Truncated,
-		"reason":       result.Reason,
+		"status":             status,
+		"view":               "tests",
+		"snapshot":           snapshotMap(result.Snapshot),
+		"symbol":             result.Symbol,
+		"found":              result.Found,
+		"ambiguous":          result.Ambiguous,
+		"candidates":         refTargetMaps(result.Candidates),
+		"tests":              testMaps(result.Tests),
+		"associations":       associationMaps(result.Associations),
+		"total":              len(result.Tests),
+		"returned":           len(result.Tests),
+		"association_count":  len(result.Associations),
+		"total_associations": result.Total,
+		"truncated":          result.Truncated,
+		"reason":             result.Reason,
 	}
 	complete := !result.Truncated
 	if result.Symbol != "" {

@@ -60,7 +60,7 @@ func (p *SemanticProvider) Observe(ctx context.Context, req Request, _ planner.S
 			"semantic: the language server does not support workspace/symbol; declaration resolution is unavailable, not absent",
 		}}, nil
 	}
-	symbols, err := client.WorkspaceSymbols(ctx, req.Question)
+	symbols, err := client.WorkspaceSymbols(ctx, semanticQuery(req))
 	if err != nil {
 		if errors.Is(err, semantic.ErrUnsupportedCapability) {
 			return Observation{
@@ -138,7 +138,9 @@ func (p *SemanticProvider) enrich(ctx context.Context, client *semantic.Client, 
 	}
 	defer func() { _ = client.CloseDocument(symbol.URI) }()
 	if client.Supports("textDocument/references") && meter.ChargeLSP() == nil {
-		references, err := client.References(ctx, symbol.URI, symbol.Range.Start, true)
+		// The declaration has its own "declared at" fact. Counting it again as
+		// a reference inflates every reference answer by one.
+		references, err := client.References(ctx, symbol.URI, symbol.Range.Start, false)
 		if err != nil {
 			observation.Issues = append(observation.Issues, "semantic: references failed: "+err.Error())
 		} else {
@@ -175,6 +177,20 @@ func (p *SemanticProvider) enrich(ctx context.Context, client *semantic.Client, 
 			observation.Issues = append(observation.Issues, "semantic: call hierarchy failed: "+err.Error())
 		}
 	}
+}
+
+// semanticQuery selects the text a language server should resolve.
+//
+// workspace/symbol is an exact-ish symbol index, not a natural-language search
+// engine. A targeted question ("who calls NewOrder?") names its target in
+// Focus; sending the sentence instead makes gopls return no declaration for a
+// symbol that exists. The question remains the query only for open-ended
+// investigation.
+func semanticQuery(req Request) string {
+	if focus := strings.TrimSpace(req.Focus); focus != "" {
+		return focus
+	}
+	return strings.TrimSpace(req.Question)
 }
 
 func (p *SemanticProvider) relative(uri string) (string, bool) {

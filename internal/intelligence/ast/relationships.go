@@ -871,7 +871,7 @@ func callKey(path string, line int, name string) string {
 // complete declaration table. It runs inside the index build lock and before
 // the snapshot is published, so a cancelled build never exposes partial
 // relationships.
-func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module string, graph *packageGraph) (*symbolGraph, error) {
+func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module, moduleRoot, walkRoot string, graph *packageGraph) (*symbolGraph, error) {
 	g := &symbolGraph{
 		module:                 module,
 		dotAffected:            map[packageKey]map[string]bool{},
@@ -908,7 +908,7 @@ func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module
 	}
 	sort.Strings(paths)
 
-	importTargets := importTargetTable(module, graph)
+	importTargets := importTargetTable(module, moduleRoot, walkRoot, records)
 
 	work := 0
 	check := func() error {
@@ -926,14 +926,14 @@ func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module
 			continue
 		}
 		fileKey := packageKey{dir: packageDir(rel), pkg: rec.packageName}
-		qualifiers, ambiguousQualifiers, dot := qualifierTable(rec, module, graph)
+		qualifiers, ambiguousQualifiers, dot := qualifierTable(rec, module, graph, importTargets)
 		if dot {
 			addDotAffected(g.dotAffected, fileKey, rel)
 			for _, imp := range rec.imports {
 				if imp.Alias != "." {
 					continue
 				}
-				targetDir, local := moduleLocalTarget(module, imp.Path)
+				targetDir, local := importTargets[imp.Path]
 				if !local {
 					continue
 				}
@@ -1057,15 +1057,48 @@ func buildSymbolGraph(ctx context.Context, records map[string]fileRecord, module
 }
 
 // importTargetTable maps module-local import paths to repository directories.
-func importTargetTable(module string, graph *packageGraph) map[string]string {
+//
+// The module root is not necessarily the walk root, so the table is built from
+// the directories that actually contain indexed Go files. Deriving it from the
+// module path by string arithmetic breaks as soon as go.mod is nested; deriving
+// it from observed directories keeps a nested module and a subdirectory walk
+// correct without widening the index.
+func importTargetTable(module, moduleRoot, walkRoot string, records map[string]fileRecord) map[string]string {
 	out := map[string]string{}
-	if module == "" || graph == nil {
+	if module == "" || moduleRoot == "" {
 		return out
 	}
-	for _, dir := range graph.order {
+	conflict := map[string]bool{}
+	seen := map[string]bool{}
+	for rel, rec := range records {
+		if rec.language != string(LanguageGo) {
+			continue
+		}
+		dir := packageDir(rel)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		absDir := filepath.Join(walkRoot, filepath.FromSlash(dir))
+		relToModule, err := filepath.Rel(moduleRoot, absDir)
+		if err != nil {
+			continue
+		}
+		relToModule = filepath.ToSlash(relToModule)
+		if relToModule == ".." || strings.HasPrefix(relToModule, "../") {
+			continue
+		}
 		importPath := module
-		if dir != "." {
-			importPath = module + "/" + dir
+		if relToModule != "." {
+			importPath += "/" + relToModule
+		}
+		if existing, ok := out[importPath]; ok && existing != dir {
+			conflict[importPath] = true
+			delete(out, importPath)
+			continue
+		}
+		if conflict[importPath] {
+			continue
 		}
 		out[importPath] = dir
 	}
@@ -1075,7 +1108,7 @@ func importTargetTable(module string, graph *packageGraph) map[string]string {
 // qualifierTable maps the names a file can use for an import to its import
 // path. A default import's effective name is the target package's declared
 // name, which is only knowable after the target package has been parsed.
-func qualifierTable(rec fileRecord, module string, graph *packageGraph) (map[string]string, map[string]bool, bool) {
+func qualifierTable(rec fileRecord, module string, graph *packageGraph, importTargets map[string]string) (map[string]string, map[string]bool, bool) {
 	qualifiers := map[string]string{}
 	ambiguous := map[string]bool{}
 	dot := false
@@ -1098,12 +1131,10 @@ func qualifierTable(rec fileRecord, module string, graph *packageGraph) (map[str
 			continue
 		case "":
 			base := path.Base(imp.Path)
-			if module != "" && graph != nil {
-				if target, local := moduleLocalTarget(module, imp.Path); local && !unsafeModuleTarget(target) {
-					if node := graph.nodes[target]; node != nil && node.name != "" {
-						add(node.name, imp.Path)
-						continue
-					}
+			if target, local := importTargets[imp.Path]; local && graph != nil {
+				if node := graph.nodes[target]; node != nil && node.name != "" {
+					add(node.name, imp.Path)
+					continue
 				}
 			}
 			add(base, imp.Path)
@@ -1162,8 +1193,11 @@ func resolveRawCall(decls map[packageKey]map[string][]Match, module string, impo
 			if !ok || ambiguousQualifiers[raw.Qualifier] {
 				return callResolution{kind: callDynamic, reason: "ambiguous_import"}
 			}
-			targetDir, local := moduleLocalTarget(module, importPath)
+			targetDir, local := importTargets[importPath]
 			if !local {
+				if moduleLocalImport(module, importPath) {
+					return callResolution{kind: callDynamic, reason: "unresolved_import"}
+				}
 				return callResolution{kind: callExternal}
 			}
 			targetPkg := packageForDir(decls, targetDir)
@@ -1215,8 +1249,11 @@ func resolveRawCall(decls map[packageKey]map[string][]Match, module string, impo
 			if ambiguousQualifiers[raw.Qualifier] {
 				return callResolution{kind: callDynamic, reason: "ambiguous_import"}
 			}
-			targetDir, local := moduleLocalTarget(module, importPath)
+			targetDir, local := importTargets[importPath]
 			if !local {
+				if moduleLocalImport(module, importPath) {
+					return callResolution{kind: callDynamic, reason: "unresolved_import"}
+				}
 				return callResolution{kind: callExternal}
 			}
 			targetPkg := packageForDir(decls, targetDir)
@@ -1267,8 +1304,11 @@ func resolvePointerExpr(decls map[packageKey]map[string][]Match, module string, 
 		if !ok || ambiguousQualifiers[raw.Qualifier] {
 			return callResolution{kind: callDynamic, reason: "function_value"}
 		}
-		targetDir, local := moduleLocalTarget(module, importPath)
+		targetDir, local := importTargets[importPath]
 		if !local {
+			if moduleLocalImport(module, importPath) {
+				return callResolution{kind: callDynamic, reason: "unresolved_import"}
+			}
 			return callResolution{kind: callExternal}
 		}
 		targetPkg := packageForDir(decls, targetDir)
@@ -1326,8 +1366,11 @@ func resolveRawReference(decls map[packageKey]map[string][]Match, module string,
 		if ambiguousQualifiers[raw.Qualifier] {
 			return nil, refAmbiguous
 		}
-		targetDir, local := moduleLocalTarget(module, importPath)
+		targetDir, local := importTargets[importPath]
 		if !local {
+			if moduleLocalImport(module, importPath) {
+				return nil, refUnresolved
+			}
 			return nil, refExternal
 		}
 		targetPkg := packageForDir(decls, targetDir)

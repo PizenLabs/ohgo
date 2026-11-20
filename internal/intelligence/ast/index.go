@@ -183,9 +183,14 @@ type Index struct {
 	// moduleSig fingerprints go.mod so a graph query observes a module-path
 	// change even though that file is not part of the Go parse.
 	moduleSig moduleSig
-	// moduleRoot is the nearest directory at or above Root carrying go.mod.
-	// It is metadata only; the index never widens its walk to include it.
+	// moduleRoot is the absolute directory carrying the go.mod that owns the
+	// indexed Go files: the walk root, a nested module, or a parent module
+	// when the walk root is a subdirectory. The index never widens its walk
+	// to include a parent module.
 	moduleRoot string
+	// jsPaths is the TypeScript/JavaScript resolution configuration of the
+	// same scan; it is refreshed with the snapshot, never read independently.
+	jsPaths jsPathConfig
 	// graph is the package/import projection of the same records. It is
 	// rebuilt with the snapshot, never independently.
 	graph *packageGraph
@@ -289,7 +294,13 @@ type treeScan struct {
 	scopeFingerprint    string
 	module              string
 	moduleSig           moduleSig
-	moduleRoot          string
+	// moduleRoot is the absolute directory carrying the go.mod that owns the
+	// indexed Go files. It may be the walk root, a nested module, or a parent
+	// module when the walk root is a subdirectory of one.
+	moduleRoot string
+	// jsPaths is the repository-relative TypeScript/JavaScript alias table
+	// observed for this scan.
+	jsPaths jsPathConfig
 }
 
 // scanLockedCtx walks the tree and records signatures. It does not parse:
@@ -376,8 +387,8 @@ func (idx *Index) scanLockedCtx(ctx context.Context) (treeScan, error) {
 	for _, rel := range nestedRoots {
 		scan.nestedProjects = append(scan.nestedProjects, idx.projectBoundary(rel, scan.excludedRoots))
 	}
-	scan.module, scan.moduleSig = readModule(idx.walkRoot)
-	scan.moduleRoot = nearestModuleRoot(idx.walkRoot)
+	scan.module, scan.moduleSig, scan.moduleRoot = discoverModule(idx.walkRoot, scan.files)
+	scan.jsPaths = loadJSPaths(idx.walkRoot)
 	return scan, nil
 }
 
@@ -824,13 +835,13 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull,
 		if parseAll {
 			resolution = "full_snapshot"
 		}
-		graph = buildPackageGraph(records, scan.module)
+		graph = buildPackageGraph(records, scan.module, scan.moduleRoot, idx.walkRoot)
 		var err error
-		symbolGraph, err = buildSymbolGraph(ctx, records, scan.module, graph)
+		symbolGraph, err = buildSymbolGraph(ctx, records, scan.module, scan.moduleRoot, idx.walkRoot, graph)
 		if err != nil {
 			return err
 		}
-		resolveRecordImports(records)
+		resolveRecordImports(records, scan.jsPaths)
 		languageGraph, err = buildLanguageGraph(ctx, records)
 		if err != nil {
 			return err
@@ -852,6 +863,7 @@ func (idx *Index) updateLockedCtx(ctx context.Context, scan treeScan, forceFull,
 	idx.modulePath = scan.module
 	idx.moduleSig = scan.moduleSig
 	idx.moduleRoot = scan.moduleRoot
+	idx.jsPaths = scan.jsPaths
 	idx.graph = graph
 	idx.symbolGraph = symbolGraph
 	idx.languageGraph = languageGraph
@@ -895,7 +907,7 @@ func (idx *Index) ensureParsedLockedCtx(ctx context.Context) error {
 	}
 	if len(paths) == 0 {
 		if idx.languageGraph == nil && idx.graph != nil {
-			resolveRecordImports(idx.files)
+			resolveRecordImports(idx.files, idx.jsPaths)
 			graph, err := buildLanguageGraph(ctx, idx.files)
 			if err != nil {
 				return err
@@ -934,12 +946,12 @@ func (idx *Index) ensureParsedLockedCtx(ctx context.Context) error {
 	// A parse error is a published fact about the snapshot, not a reason to
 	// crash the query; failure counts are reported and negative claims stay
 	// incomplete.
-	graph := buildPackageGraph(records, idx.modulePath)
-	symbolGraph, err := buildSymbolGraph(ctx, records, idx.modulePath, graph)
+	graph := buildPackageGraph(records, idx.modulePath, idx.moduleRoot, idx.walkRoot)
+	symbolGraph, err := buildSymbolGraph(ctx, records, idx.modulePath, idx.moduleRoot, idx.walkRoot, graph)
 	if err != nil {
 		return err
 	}
-	resolveRecordImports(records)
+	resolveRecordImports(records, idx.jsPaths)
 	languageGraph, err := buildLanguageGraph(ctx, records)
 	if err != nil {
 		return err
@@ -1155,6 +1167,80 @@ func nearestModuleRoot(root string) string {
 		}
 		current = parent
 	}
+}
+
+// discoverModule finds the go.mod that owns the indexed Go files.
+//
+// The module is not necessarily at the walk root. A repository commonly keeps
+// the Go module in a subdirectory (backend/, service/, ...). Reporting no
+// module in that layout makes every cross-package import unresolved and turns
+// a layered repository into a false "independent modules" architecture. The
+// search therefore checks, in order: the walk root, one unambiguous nested
+// module, then a parent module when the walk root is a subdirectory of one.
+//
+// An ambiguous layout (several sibling modules) returns no module rather than
+// choosing one: a module identity selected by directory order would silently
+// mis-resolve every import in the other modules.
+func discoverModule(walkRoot string, files map[string]fileSig) (string, moduleSig, string) {
+	if module, sig := readModule(walkRoot); module != "" {
+		return module, sig, walkRoot
+	}
+
+	var candidates []string
+	for rel := range files {
+		if filepath.Base(rel) != "go.mod" {
+			continue
+		}
+		candidates = append(candidates, filepath.ToSlash(filepath.Dir(rel)))
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		di, dj := moduleDepth(candidates[i]), moduleDepth(candidates[j])
+		if di != dj {
+			return di < dj
+		}
+		return candidates[i] < candidates[j]
+	})
+	if len(candidates) > 0 {
+		shallow := candidates[0]
+		ambiguous := false
+		for _, candidate := range candidates[1:] {
+			if moduleDepth(candidate) != moduleDepth(shallow) {
+				break
+			}
+			// A module nested inside the shallow candidate does not compete
+			// for ownership; the shallow module is the project boundary.
+			if candidate == shallow || strings.HasPrefix(candidate, shallow+"/") {
+				continue
+			}
+			ambiguous = true
+			break
+		}
+		if !ambiguous {
+			root := filepath.Join(walkRoot, filepath.FromSlash(shallow))
+			if module, sig := readModule(root); module != "" {
+				return module, sig, root
+			}
+		}
+	}
+
+	// The walk root may be a package directory inside a larger module. The
+	// parent module still owns these files; the import target table maps only
+	// targets that stay inside the walk root.
+	if parent := nearestModuleRoot(filepath.Dir(walkRoot)); parent != "" {
+		if module, sig := readModule(parent); module != "" {
+			return module, sig, parent
+		}
+	}
+	return "", moduleSig{}, ""
+}
+
+// moduleDepth counts directory segments; "." is zero.
+func moduleDepth(dir string) int {
+	dir = strings.Trim(filepath.ToSlash(dir), "/")
+	if dir == "" || dir == "." {
+		return 0
+	}
+	return strings.Count(dir, "/") + 1
 }
 
 // sourceFingerprint hashes the path/size/mtime signature set and the scope.
@@ -1491,7 +1577,7 @@ func unsupportedSourceExtension(rel string) string {
 		".lua", ".ex", ".exs", ".dart", ".vue", ".svelte", ".m", ".mm", ".fs",
 		".fsx", ".pl", ".pm", ".r", ".jl", ".zig", ".sol", ".groovy", ".clj",
 		".cljs", ".hs", ".ml", ".mli", ".elm", ".cl", ".adb", ".ads", ".asm",
-		".s", ".ps1", ".bat", ".cmd", ".sql":
+		".s", ".ps1", ".bat", ".cmd", ".sql", ".gohtml", ".tmpl":
 		return ext
 	default:
 		return ""

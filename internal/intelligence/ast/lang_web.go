@@ -4,6 +4,8 @@ package ast
 
 import (
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/javascript"
@@ -119,8 +121,90 @@ func extractTypeScript(p *tsParser) error {
 	for _, child := range namedChildren(root) {
 		extractTSStatement(p, child, "", false)
 	}
+	collectTSReferences(p, root, nil, false, false)
 	addTSFileEntrypoint(p)
 	return nil
+}
+
+// collectTSReferences records the two reference shapes the call collector does
+// not own: a JSX element names the component it renders, and a type identifier
+// names a declared type. Both are syntactic, name-resolved references; the
+// shared language graph emits an edge only when the name resolves to exactly
+// one declaration.
+//
+// Intrinsic JSX elements (`div`, `span`) and declaration names are skipped. A
+// reference to a library type stays unresolved and is disclosed as a static
+// blind spot rather than silently dropped.
+func collectTSReferences(p *tsParser, node, parent *sitter.Node, inTypeParameters, inHeritage bool) {
+	if node == nil {
+		return
+	}
+	typ := node.Type()
+	switch typ {
+	case "type_parameters", "type_parameter":
+		inTypeParameters = true
+	case "extends_clause", "implements_clause", "class_heritage", "extends_type_clause":
+		inHeritage = true
+	}
+	switch typ {
+	case "type_identifier":
+		if !inTypeParameters && !inHeritage && !isTSDeclarationName(parent, node) {
+			name := p.text(node)
+			if isTSComponentName(name) {
+				p.addReference(rawGenericReference{
+					Name: name, Line: p.line(node), Column: p.column(node),
+				})
+			}
+		}
+	case "jsx_opening_element", "jsx_self_closing_element":
+		if nameNode := childField(node, "name"); nameNode != nil {
+			text := p.text(nameNode)
+			name := lastSegment(text)
+			if isTSComponentName(name) {
+				p.addReference(rawGenericReference{
+					Name: name, Qualifier: qualifierText(text),
+					Line: p.line(nameNode), Column: p.column(nameNode),
+				})
+			}
+		}
+	}
+	for _, child := range namedChildren(node) {
+		collectTSReferences(p, child, node, inTypeParameters, inHeritage)
+	}
+}
+
+// isTSDeclarationName reports that node is the declared identifier of parent.
+// The position comparison keeps a reference that merely starts at the same
+// line out of the skip set.
+func isTSDeclarationName(parent, node *sitter.Node) bool {
+	if parent == nil {
+		return false
+	}
+	switch parent.Type() {
+	case "class_declaration", "abstract_class_declaration", "class",
+		"interface_declaration", "type_alias_declaration", "enum_declaration",
+		"function_declaration", "generator_function_declaration",
+		"method_definition", "type_parameter":
+	default:
+		return false
+	}
+	nameNode := childField(parent, "name")
+	if nameNode == nil {
+		return parent.Type() == "type_parameter"
+	}
+	return nameNode.StartByte() == node.StartByte() &&
+		nameNode.EndByte() == node.EndByte()
+}
+
+// isTSComponentName is the JSX/type-name convention: an intrinsic element and
+// a lowercase helper are not a component or a declared type. Using the same
+// test for both shapes keeps primitive names out of the unresolved counter.
+func isTSComponentName(name string) bool {
+	if name == "" {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(name)
+	return unicode.IsUpper(r)
 }
 
 func extractTSStatement(p *tsParser, node *sitter.Node, container string, exported bool) {

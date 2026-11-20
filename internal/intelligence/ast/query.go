@@ -288,8 +288,26 @@ func (idx *Index) languagePackagesLocked(query PackageQuery, scope string, scope
 		info.Symbols += len(rec.symbols)
 		info.Imports += len(rec.imports)
 	}
+	// Importers are a directory-level fact of the same resolved import edges
+	// the dependency projection owns. Reporting zero because the package is
+	// non-Go would turn an uncomputed field into a false absence claim.
+	importers := map[string]map[string]bool{}
+	if idx.languageGraph != nil {
+		for _, edge := range idx.languageGraph.importEdges {
+			from := packageDir(trimFileNodeID(edge.From))
+			to := packageDir(trimFileNodeID(edge.To))
+			if from == "" || to == "" || from == to {
+				continue
+			}
+			if importers[to] == nil {
+				importers[to] = map[string]bool{}
+			}
+			importers[to][from] = true
+		}
+	}
 	out := make([]PackageInfo, 0, len(aggregates))
 	for _, info := range aggregates {
+		info.Importers = len(importers[info.Dir])
 		out = append(out, *info)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -630,6 +648,27 @@ func (idx *Index) Impact(ctx context.Context, query ImpactQuery) (ImpactResult, 
 		})
 	}
 
+	callees, truncated, reason, err := idx.impactCalleesLocked(ctx, callKeys, depth, limit)
+	if err != nil {
+		return ImpactResult{}, err
+	}
+	if truncated {
+		result.Truncated, result.Reason = true, reason
+	}
+	result.Callees = callees
+	for _, edge := range callees {
+		caller := callNodeID(edge.Caller)
+		callee := callNodeID(edge.Callee)
+		nodes[caller] = callNodeToNode(edge.Caller)
+		nodes[callee] = callNodeToNode(edge.Callee)
+		result.Edges = append(result.Edges, Edge{
+			From: caller, To: callee, Kind: EdgeCalls, Certainty: string(edge.Certainty),
+			Resolution: ResolutionResolved, Language: edge.Caller.Language, Adapter: "go",
+			Source: SourceRef{Path: edge.CallPath, StartLine: edge.CallLine, StartCol: edge.Column,
+				Test: edge.Test, Language: edge.Caller.Language, Adapter: "go"},
+		})
+	}
+
 	result.Importers = idx.packageImportersLocked(targets)
 	for _, dir := range result.Importers {
 		from := DirectoryNodeID(dir)
@@ -660,7 +699,8 @@ func (idx *Index) Impact(ctx context.Context, query ImpactQuery) (ImpactResult, 
 		result.Truncated, result.Reason = true, "limit"
 	}
 
-	result.Total = len(result.References) + len(result.Callers) + len(result.Importers) + len(result.Tests)
+	result.Total = len(result.References) + len(result.Callers) + len(result.Callees) +
+		len(result.Importers) + len(result.Tests)
 	result.Nodes = sortedNodes(nodes)
 	result.Unknown = idx.impactUnknownLocked(targets)
 	if result.Truncated && result.Reason == "" {
@@ -843,6 +883,72 @@ func (idx *Index) impactCallersLocked(ctx context.Context, keys map[string]bool,
 			return out[i].Caller.Line < out[j].Caller.Line
 		}
 		return out[i].CallLine < out[j].CallLine
+	})
+	return out, false, "", nil
+}
+
+// impactCalleesLocked is the forward counterpart of impactCallersLocked. It
+// answers "what does this function reach?", which a flow question asks and an
+// impact question does not.
+func (idx *Index) impactCalleesLocked(ctx context.Context, keys map[string]bool, depth, limit int) ([]CallEdge, bool, string, error) {
+	var out []CallEdge
+	if idx.symbolGraph == nil || depth <= 0 {
+		return out, false, "", nil
+	}
+	outgoing := map[string][]CallEdge{}
+	for _, edge := range idx.symbolGraph.calls {
+		outgoing[edge.callerKey] = append(outgoing[edge.callerKey], edge)
+	}
+	frontier := make([]string, 0, len(keys))
+	for key := range keys {
+		frontier = append(frontier, key)
+	}
+	sort.Strings(frontier)
+	seenEdge := map[string]bool{}
+	work := 0
+	for level := 0; level < depth; level++ {
+		next := map[string]bool{}
+		for _, key := range frontier {
+			for _, edge := range outgoing[key] {
+				work++
+				if work%refCancelCheckInterval == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, false, "", err
+					}
+				}
+				if work > RefWorkLimit {
+					return out, true, "work_limit", nil
+				}
+				edgeID := edge.Caller.Path + "\x00" + itoa(edge.Caller.Line) + "\x00" +
+					edge.Callee.Path + "\x00" + itoa(edge.Callee.Line)
+				if seenEdge[edgeID] {
+					continue
+				}
+				seenEdge[edgeID] = true
+				if len(out) >= limit {
+					return out, true, "limit", nil
+				}
+				out = append(out, publicCallEdge(edge))
+				next[edge.calleeKey] = true
+			}
+		}
+		if len(next) == 0 {
+			break
+		}
+		frontier = frontier[:0]
+		for key := range next {
+			frontier = append(frontier, key)
+		}
+		sort.Strings(frontier)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CallPath != out[j].CallPath {
+			return out[i].CallPath < out[j].CallPath
+		}
+		if out[i].CallLine != out[j].CallLine {
+			return out[i].CallLine < out[j].CallLine
+		}
+		return out[i].Column < out[j].Column
 	})
 	return out, false, "", nil
 }

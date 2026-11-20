@@ -80,6 +80,10 @@ const (
 	ResolutionUnresolved  Resolution = "UNRESOLVED"
 	ResolutionAmbiguous   Resolution = "AMBIGUOUS"
 	ResolutionUnsupported Resolution = "UNSUPPORTED"
+	// ResolutionExcluded means the import named a generated/build output path
+	// that the repository intentionally does not index. It is a known
+	// exclusion, not a broken local reference.
+	ResolutionExcluded Resolution = "EXCLUDED"
 )
 
 // Capabilities declares what one adapter can prove.

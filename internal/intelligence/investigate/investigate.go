@@ -141,6 +141,10 @@ type Observation struct {
 	Confidence float64
 	Coverage   float64
 	Summary    string
+	// Sufficient reports that this observation already answers the information
+	// need for the step. It is what lets the router keep a native answer
+	// instead of spending an external request merely because one exists.
+	Sufficient bool
 	Facts      []Fact
 	Records    []evidence.Record
 	Issues     []string
