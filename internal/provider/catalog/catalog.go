@@ -156,6 +156,12 @@ type record struct {
 	// source supplied a pricing object. A zero Cost with Priced=false is
 	// "price unknown", never "free".
 	Priced bool `json:"priced,omitempty"`
+	// PriceUnknown marks a bundled row whose provider publishes no per-token
+	// price schedule — a credit-metered trial endpoint. Cost stays zero because
+	// the money path needs a number, but the picker must not render that zero as
+	// verified free: the provider bills in credits whose price it does not
+	// publish.
+	PriceUnknown bool `json:"priceUnknown,omitempty"`
 }
 
 // api returns the wire protocol this build uses for the record.
@@ -211,10 +217,11 @@ func load() (document, error) {
 		}
 		loaded = doc
 		// Bundled rows are curated facts: their pricing (including zero
-		// for free models) is explicit metadata, not a missing value.
+		// for free models) is explicit metadata, not a missing value — unless
+		// the row declares that its provider publishes no price schedule at all.
 		for _, models := range loaded.Models {
 			for id, rec := range models {
-				rec.Priced = true
+				rec.Priced = !rec.PriceUnknown
 				models[id] = rec
 			}
 		}
