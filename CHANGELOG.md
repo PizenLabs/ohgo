@@ -7,6 +7,12 @@ immutable.
 
 ### Fixed
 
+- An answer that retracts an identifier is no longer audited as a claim that
+  the withdrawn name exists. A rejected answer could not be repaired: the
+  correction had to quote the wrong qualified name to retract it, so intent
+  grounding rejected the fix for repeating the error it corrected. A sentence
+  that withdraws a name is now outside the claim audit; an ordinary assertion
+  of the same name is still reviewed.
 - A documentation reference no longer narrows a project-wide account. "Facts
   documented by the README" names the README as the source of one claim, but
   the extracted path target made the request look targeted, so the runtime
