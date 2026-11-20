@@ -104,10 +104,11 @@ are not resolved across the two modules. The structure header says so.
 
 | Binary | Command | Adapters reported by `doctor` | SHA-256 |
 |---|---|---|---|
-| Portable | `make build` | 1 (`go`) | `0dec6d53…` |
-| Multi-language | `make build-multilang` | 11 (`go` + 10 Tree-sitter) | `7885757a…` |
+| Portable | `make build` | 1 (`go`) | `4d5dec5236f4476a3af492522ad376d1aff6cf637c068c437d8c5bb8f1078b29` |
+| Multi-language | `make build-multilang` | 11 (`go` + 10 Tree-sitter) | `1a9b4cd7b71a148fec9dadd24a4de782d8167a73b3b90622d698c156aba22683` |
 
-Final hashes are recorded in `FINAL_REPORT.md` after the last rebuild.
+The closure rebuild changed the hashes from the prior audit; the source
+measurements above are unchanged.
 
 ## Model ledger
 
@@ -130,6 +131,22 @@ measured provider values, not estimates.
 | 13 | `opencode-go/longcat-2.5-free` | fuzz | 5 | 31,671 | 1,993 | — (before noun-form check) |
 | 14 | `opencode-go/longcat-2.5-free` | fuzz | 5 | 41,475 | 2,173 | — (overclaim reviewed) |
 
-Sessions 1 and 10 have `usage_turns = 0`: the request was refused before the
-provider was called. That is the required distinction between “not measured”
-and “measured zero”.
+Closure sandbox (`ohgo-closure2`; fresh HOME, copied credential only):
+
+| Session | Model | Workspace | Turns | Input | Output | Cache read | Wall time |
+|---|---|---|---|---|---|---|---|
+| 1 | `opencode-go/longcat-2.5-free` | fuzz | 5 | 37,786 | 2,411 | 5,376 | 73.5 s |
+| 2 | `opencode-go/longcat-2.5-free` | ask | 5 | 23,604 | 1,578 | 3,456 | 36.5 s |
+| 3 | `opencode-go/longcat-2.5-free` | ask | 2 | 8,525 | 1,583 | 5,504 | 27.9 s |
+| 4 | `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | ask | 5 | 40,563 | 1,016 | 8,768 | 46.3 s |
+| 5 | `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | ask | 5 | 38,890 | 758 | 21,920 | 14.0 s |
+| 6 | `openrouter/inclusionai/ling-3.2-flash:free` | ask | 0 | 0 | 0 | 0 | 0.0 s (HTTP 429) |
+| 7 | `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | ask | 3 | 24,391 | 1,517 | 4,384 | 23.5 s |
+
+Wall time is the session's `updated_at - created_at`; provider latency and tool
+time are included, so it is not a model benchmark.
+
+Sessions 1 and 10 in the first sandbox and session 6 in the closure sandbox
+have `usage_turns = 0`: the request was refused or rate-limited before the
+provider produced a turn. That is the required distinction between “not
+measured” and “measured zero”.
