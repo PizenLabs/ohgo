@@ -374,6 +374,7 @@ silently following a changed configuration.
 | Anthropic | `ANTHROPIC_API_KEY` | Messages | 28 bundled |
 | OpenAI | `OPENAI_API_KEY` | Chat Completions | 47 bundled (Responses-only lines excluded) |
 | Groq, Together, Fireworks, DeepSeek, Cerebras, Mistral | per-provider key | Chat Completions | bundled |
+| NVIDIA NIM | `NVIDIA_API_KEY` | Chat Completions | 8 bundled |
 | xAI | `XAI_API_KEY` | Chat Completions | 7 bundled |
 | Google Gemini | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Chat Completions compatibility | 5 bundled |
 | Amazon Bedrock | `AWS_BEARER_TOKEN_BEDROCK` | Converse streaming | 3 bundled |
@@ -389,7 +390,7 @@ is not agentic-harness eligibility: a gated free endpoint can still return 403.
 The diagnostic, the eligibility states, and the model-switching boundary are in
 [`docs/architecture/OPENROUTER.md`](docs/architecture/OPENROUTER.md).
 
-The bundled catalog contains **346 model facts across 16 providers**. Model
+The bundled catalog contains **354 model facts across 17 providers**. Model
 facts are data: `catalog.Resolve(provider/id)` is the only source, and no code
 branches on a model id string. An unknown model name is an error everywhere —
 a silent fallback would send your conversation to a provider you never chose.
